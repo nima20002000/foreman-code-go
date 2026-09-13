@@ -21,9 +21,11 @@ export type GraphNodeData = {
   executionStateLabel: string
   stepLabel: string
   waitLabel?: string
-  onSelect?: (agentId: string) => void
-  onCopy?: (workflowNodeId: string) => void
+  connectionArmed?: boolean
+  onSelect?: (agentId: string, workflowNodeId: string) => void
   onUnlink?: (workflowNodeId: string) => void
+  onDelete?: (agentId: string, agentLabel: string) => void
+  onResize?: (workflowNodeId: string, width: number, height: number) => void
 }
 
 export type GraphNode = Node<GraphNodeData, 'agent'>
@@ -42,9 +44,11 @@ export type GraphProjection = {
 
 export type GraphMapperOptions = {
   selectedAgentId?: string
-  onSelectAgent?: (agentId: string) => void
-  onCopyNode?: (workflowNodeId: string) => void
+  armedNodeId?: string
+  onSelectAgent?: (agentId: string, workflowNodeId: string) => void
   onUnlinkNode?: (workflowNodeId: string) => void
+  onDeleteAgent?: (agentId: string, agentLabel: string) => void
+  onResizeNode?: (workflowNodeId: string, width: number, height: number) => void
   /** Authoritative run projections used to name an agent's active wait. */
   runFacts?: readonly WorkflowRunSummary[]
 }

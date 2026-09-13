@@ -35,6 +35,7 @@ const workspaceRoute = createRoute({
 const agentsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workspaces/$workspaceId/agents',
+  validateSearch: UrlSearchSelectionSchema,
   component: AgentsRouteEntry,
 })
 

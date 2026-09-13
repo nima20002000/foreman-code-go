@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ComponentProps } from 'react'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
@@ -10,6 +10,37 @@ import { setMockScenario } from '../../shared/mocks/scenarios'
 import { queryKeys } from '../../shared/api/query'
 import { GraphEditor } from './GraphEditor'
 import { getGraphDraft, useGraphDraftStore, workflowDraftKey } from './store'
+import { deleteAgentForSession, readDeletedAgentIds } from '../agents/localAgents'
+
+vi.mock('@xyflow/react', async () => {
+  const actual = await vi.importActual<typeof import('@xyflow/react')>('@xyflow/react')
+  type ResizeTestProps = {
+    isVisible?: boolean
+    minWidth?: number
+    maxWidth?: number
+    minHeight?: number
+    maxHeight?: number
+    onResizeEnd?: (event: unknown, size: { width: number; height: number }) => void
+  }
+  return {
+    ...actual,
+    NodeResizer: ({ isVisible, minWidth, maxWidth, minHeight, maxHeight, onResizeEnd }: ResizeTestProps) => isVisible ? (
+      <button
+        type="button"
+        className="nodrag"
+        aria-label="Resize selected node"
+        data-min-width={minWidth}
+        data-max-width={maxWidth}
+        data-min-height={minHeight}
+        data-max-height={maxHeight}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={() => onResizeEnd?.({}, { width: 10_000, height: 10 })}
+      >
+        Resize
+      </button>
+    ) : null,
+  }
+})
 
 const workflow: WorkflowDefinition = {
   id: 'workflow-editor-test',
@@ -52,6 +83,7 @@ beforeAll(() => {
 afterEach(() => {
   setMockScenario('normal')
   useGraphDraftStore.getState().clearAllDrafts()
+  sessionStorage.clear()
   vi.useRealTimers()
 })
 
@@ -88,32 +120,97 @@ describe('GraphEditor persistence boundary', () => {
     expect(screen.getByRole('link', { name: 'Open Agents directory' })).toHaveAttribute('href', '/workspaces/workspace-1/agents')
   })
 
-  it('copies and unlinks graph references without exposing global deletion', async () => {
+  it('offers only Unlink and Delete, keeps inside clicks open, and unlinks one graph reference', async () => {
     const user = userEvent.setup()
     const key = workflowDraftKey(workflow.workspaceId, workflow.id)
     renderEditor()
 
-    await user.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
-    expect(screen.getByRole('menu', { name: 'Researcher node actions' })).toBeVisible()
-    expect(screen.getByRole('menuitem', { name: 'Copy' })).toHaveFocus()
-    expect(screen.getByRole('menuitem', { name: 'Delete' })).toBeDisabled()
-    await user.click(screen.getByRole('menuitem', { name: 'Copy' }))
-
-    const copied = getGraphDraft(key)?.workflow.nodes.at(-1)
-    expect(copied?.agentId).toBe('agent-one')
-    expect(copied?.position).toEqual({ x: 120, y: 140 })
-    expect(screen.getByRole('button', { name: 'Discard' })).toBeEnabled()
-
-    await user.click(screen.getByRole('button', { name: 'Discard' }))
-    await user.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
+    const trigger = screen.getByRole('button', { name: 'Open actions for Researcher' })
+    await user.click(trigger)
+    const menu = screen.getByRole('menu', { name: 'Researcher node actions' })
+    expect(menu).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: 'Unlink' })).toHaveFocus()
+    expect(screen.queryByRole('menuitem', { name: 'Copy' })).not.toBeInTheDocument()
+    fireEvent.mouseDown(menu)
+    expect(menu).toBeVisible()
     await user.click(screen.getByRole('menuitem', { name: 'Unlink' }))
 
-    expect(getGraphDraft(key)?.workflow.nodes).toHaveLength(1)
+    expect(screen.queryByRole('menu', { name: 'Researcher node actions' })).not.toBeInTheDocument()
+    expect(getGraphDraft(key)?.workflow.nodes).toHaveLength(2)
     expect(getGraphDraft(key)?.workflow.edges).toHaveLength(0)
-    expect(agents).toHaveLength(2)
+    expect(readDeletedAgentIds(workflow.workspaceId)).toEqual([])
+    expect(screen.getByRole('button', { name: 'Discard' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Researcher agent, Step 1' })).toBeVisible()
+    await waitFor(() => expect(trigger).toHaveFocus())
+
+    await user.click(screen.getByRole('button', { name: 'Add agent to graph' }))
+    expect(within(screen.getByRole('dialog', { name: 'Add agent to graph' })).getByRole('button', { name: /Researcher/ })).toBeVisible()
   })
 
-  it('dismisses the anchored node menu from Escape or an outside click', async () => {
+  it('connects node one to node two by sequential clicks and round-trips through discard and save', async () => {
+    const disconnectedWorkflow = { ...workflow, edges: [] }
+    const key = workflowDraftKey(workflow.workspaceId, workflow.id)
+    const onSelectAgent = vi.fn()
+    const user = userEvent.setup()
+    const { queryClient } = renderEditor({ workflow: disconnectedWorkflow, onSelectAgent })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Researcher agent, Step 1' }))
+    expect(screen.getByTestId('agent-node-agent-one')).toHaveAttribute('data-connection-armed', 'true')
+    expect(screen.getByRole('status')).toHaveTextContent('Researcher is the connection source')
+    fireEvent.click(screen.getByRole('button', { name: 'Developer agent, Step 2' }))
+
+    expect(getGraphDraft(key)?.workflow.edges).toEqual([expect.objectContaining({
+      source: 'step-one',
+      target: 'step-two',
+      label: 'Sequential output handoff',
+    })])
+    expect(screen.queryByText(/is the connection source/)).not.toBeInTheDocument()
+    expect(screen.getByText(/Agent steps connected/)).toBeVisible()
+    expect(onSelectAgent).toHaveBeenNthCalledWith(1, 'agent-one')
+    expect(onSelectAgent).toHaveBeenNthCalledWith(2, 'agent-two')
+
+    await user.click(screen.getByRole('button', { name: 'Discard' }))
+    expect(getGraphDraft(key)).toBeUndefined()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Researcher agent, Step 1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Developer agent, Step 2' }))
+    await user.click(screen.getByRole('button', { name: 'Save graph' }))
+    await waitFor(() => expect(queryClient.getQueryData(queryKeys.workflow(workflow.workspaceId, workflow.id))).toEqual({
+      workflow: expect.objectContaining({
+        edges: [expect.objectContaining({ source: 'step-one', target: 'step-two' })],
+      }),
+    }))
+  })
+
+  it('prevents self-links and duplicate links and cancels arming from Escape or the blank canvas', async () => {
+    const user = userEvent.setup()
+    const onClearAgent = vi.fn()
+    renderEditor({ onClearAgent })
+    const researcher = screen.getByRole('button', { name: 'Researcher agent, Step 1' })
+    const developer = screen.getByRole('button', { name: 'Developer agent, Step 2' })
+
+    fireEvent.click(researcher)
+    fireEvent.click(researcher)
+    expect(getGraphDraft(workflowDraftKey(workflow.workspaceId, workflow.id))).toBeUndefined()
+    expect(screen.getByText(/Connection canceled/)).toBeVisible()
+
+    fireEvent.click(researcher)
+    await user.keyboard('{Escape}')
+    expect(screen.queryByText(/is the connection source/)).not.toBeInTheDocument()
+    expect(getGraphDraft(workflowDraftKey(workflow.workspaceId, workflow.id))).toBeUndefined()
+
+    fireEvent.click(researcher)
+    fireEvent.click(document.querySelector('.react-flow__pane') as HTMLElement)
+    expect(screen.queryByText(/is the connection source/)).not.toBeInTheDocument()
+    expect(onClearAgent).toHaveBeenCalledOnce()
+
+    fireEvent.click(researcher)
+    fireEvent.click(developer)
+    expect(getGraphDraft(workflowDraftKey(workflow.workspaceId, workflow.id))).toBeUndefined()
+    expect(screen.getByText('Those agent steps are already connected.')).toBeVisible()
+  })
+
+  it('dismisses the anchored node menu from Escape or an outside click and restores trigger focus', async () => {
     const user = userEvent.setup()
     renderEditor()
     const trigger = screen.getByRole('button', { name: 'Open actions for Researcher' })
@@ -127,6 +224,118 @@ describe('GraphEditor persistence boundary', () => {
     await user.click(trigger)
     fireEvent.mouseDown(document.body)
     expect(screen.queryByRole('menu', { name: 'Researcher node actions' })).not.toBeInTheDocument()
+    await waitFor(() => expect(trigger).toHaveFocus())
+  })
+
+  it('cancels deletion from Escape or Cancel without changing the catalog or graph', async () => {
+    const user = userEvent.setup()
+    renderEditor()
+    const trigger = screen.getByRole('button', { name: 'Open actions for Researcher' })
+
+    await user.click(trigger)
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    expect(screen.queryByRole('menu', { name: 'Researcher node actions' })).not.toBeInTheDocument()
+    expect(screen.getByRole('alertdialog', { name: 'Delete Researcher from this session?' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    await waitFor(() => expect(trigger).toHaveFocus())
+
+    await user.click(trigger)
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(readDeletedAgentIds(workflow.workspaceId)).toEqual([])
+    expect(getGraphDraft(workflowDraftKey(workflow.workspaceId, workflow.id))).toBeUndefined()
+    expect(screen.getByRole('button', { name: 'Researcher agent, Step 1' })).toBeVisible()
+  })
+
+  it('deletes an agent for the browser session, cleans every reference, and keeps cleanup after discard', async () => {
+    const repeatedWorkflow: WorkflowDefinition = {
+      ...workflow,
+      nodes: [
+        ...workflow.nodes,
+        { id: 'step-three', agentId: 'agent-one', name: 'Researcher again', position: { x: 680, y: 100 } },
+      ],
+      edges: [
+        ...workflow.edges,
+        { id: 'edge-two', source: 'step-three', target: 'step-two' },
+      ],
+    }
+    const key = workflowDraftKey(repeatedWorkflow.workspaceId, repeatedWorkflow.id)
+    const user = userEvent.setup()
+    const { queryClient } = renderEditor({ workflow: repeatedWorkflow })
+
+    await user.click(screen.getAllByRole('button', { name: 'Open actions for Researcher' })[0] as HTMLElement)
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('It does not delete backend data')
+    await user.click(screen.getByRole('button', { name: 'Delete for this session' }))
+
+    expect(getGraphDraft(key)?.workflow.nodes.map((node) => node.agentId)).toEqual(['agent-two'])
+    expect(getGraphDraft(key)?.workflow.edges).toEqual([])
+    expect(readDeletedAgentIds(workflow.workspaceId)).toEqual(['agent-one'])
+    expect(screen.queryByRole('button', { name: /Researcher agent/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/removed for this browser session/)).toBeVisible()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add agent to graph' })).toHaveFocus())
+
+    await user.click(screen.getByRole('button', { name: 'Discard' }))
+    expect(getGraphDraft(key)).toBeUndefined()
+    expect(screen.queryByRole('button', { name: /Researcher agent/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Discard' })).toBeEnabled()
+    expect(screen.getByText(/Session-deleted agents and their references stay removed/)).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Add agent to graph' }))
+    expect(within(screen.getByRole('dialog', { name: 'Add agent to graph' })).queryByRole('button', { name: /Researcher/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Close agent picker' }))
+    await user.click(screen.getByRole('button', { name: 'Save graph' }))
+    await waitFor(() => expect(queryClient.getQueryData(queryKeys.workflow(repeatedWorkflow.workspaceId, repeatedWorkflow.id))).toEqual({
+      workflow: expect.objectContaining({
+        nodes: [expect.objectContaining({ agentId: 'agent-two' })],
+        edges: [],
+      }),
+    }))
+  })
+
+  it('restores session deletion cleanup after a reload-like remount', async () => {
+    deleteAgentForSession(workflow.workspaceId, 'agent-one')
+    const first = renderEditor()
+    expect(screen.queryByRole('button', { name: /Researcher agent/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save graph' })).toBeEnabled()
+
+    first.unmount()
+    useGraphDraftStore.getState().clearAllDrafts()
+    renderEditor()
+    expect(screen.queryByRole('button', { name: /Researcher agent/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Developer agent, Step 1' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Save graph' })).toBeEnabled()
+  })
+
+  it('resizes a selected node within bounds and supports discard and save', async () => {
+    const key = workflowDraftKey(workflow.workspaceId, workflow.id)
+    const user = userEvent.setup()
+    const first = renderEditor({ selectedAgentId: 'agent-one' })
+    const resize = screen.getByRole('button', { name: 'Resize selected node' })
+    expect(resize).toHaveAttribute('data-min-width', '214')
+    expect(resize).toHaveAttribute('data-max-width', '520')
+    expect(resize).toHaveAttribute('data-min-height', '92')
+    expect(resize).toHaveAttribute('data-max-height', '320')
+
+    await user.click(resize)
+    expect(getGraphDraft(key)?.workflow.nodes[0]).toMatchObject({ width: 520, height: 92 })
+    expect(screen.getByRole('button', { name: 'Discard' })).toBeEnabled()
+
+    await user.click(screen.getByRole('button', { name: 'Discard' }))
+    expect(getGraphDraft(key)).toBeUndefined()
+    first.unmount()
+
+    const second = renderEditor({ selectedAgentId: 'agent-one' })
+    await user.click(screen.getByRole('button', { name: 'Resize selected node' }))
+    await user.click(screen.getByRole('button', { name: 'Save graph' }))
+    await waitFor(() => expect(second.queryClient.getQueryData(queryKeys.workflow(workflow.workspaceId, workflow.id))).toEqual({
+      workflow: expect.objectContaining({
+        nodes: expect.arrayContaining([expect.objectContaining({ id: 'step-one', width: 520, height: 92 })]),
+      }),
+    }))
   })
 
   it('keeps actions over the canvas and dismisses discard feedback as a toast', () => {

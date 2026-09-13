@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { routeTree } from '../app/router'
@@ -9,11 +10,14 @@ import { setMockScenario } from '../shared/mocks/scenarios'
 function renderRoute(path: string) {
   const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [path] }) })
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>,
-  )
+  return {
+    router,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    ),
+  }
 }
 
 afterEach(() => {
@@ -23,11 +27,31 @@ afterEach(() => {
 
 describe('workspace section routes', () => {
   it('deep-links to the agents directory and marks its navigation active', async () => {
-    renderRoute('/workspaces/workspace-1/agents')
+    const { router } = renderRoute('/workspaces/workspace-1/agents?agentId=agent-researcher')
 
     expect(await screen.findByRole('heading', { name: 'Agents', level: 1 })).toBeVisible()
     expect(screen.getByRole('link', { name: 'Agents' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByRole('heading', { name: 'Researcher' })).toBeVisible()
+    expect(screen.getByRole('button', { name: /Researcher, researcher, Available/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('dialog', { name: 'Researcher' })).toBeVisible()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Close agent details' }))
+    await waitFor(() => expect(router.state.location.search).toEqual({}))
+
+    const developer = screen.getByRole('button', { name: /Developer, developer, Available/ })
+    developer.focus()
+    await userEvent.setup().keyboard('{Enter}')
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ agentId: 'agent-developer' }))
+    expect(developer).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('dialog', { name: 'Developer' })).toBeVisible()
+  })
+
+  it('handles an unknown agent deep link honestly and clears it from the close control', async () => {
+    const { router } = renderRoute('/workspaces/workspace-1/agents?agentId=agent-missing')
+
+    expect(await screen.findByRole('dialog', { name: 'Agent unavailable' })).toHaveTextContent(
+      'not available in the current workspace or browser session',
+    )
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Close agent details' }))
+    await waitFor(() => expect(router.state.location.search).toEqual({}))
   })
 
   it('shows an honest error state when the agents request fails', async () => {

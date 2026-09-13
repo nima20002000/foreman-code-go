@@ -59,7 +59,14 @@ describe("neutral product contracts", () => {
     ] as const) {
       expect(AgentSchema.parse({ ...agent, executionState }).executionState).toBe(executionState);
     }
-    expect(WorkflowDefinitionSchema.parse(workflow).nodes[0].agentId).toBe("agent-1");
+    expect(WorkflowDefinitionSchema.parse({
+      ...workflow,
+      nodes: [{ ...workflow.nodes[0], width: 280, height: 140 }],
+    }).nodes[0]).toMatchObject({ agentId: "agent-1", width: 280, height: 140 });
+    expect(WorkflowDefinitionSchema.safeParse({
+      ...workflow,
+      nodes: [{ ...workflow.nodes[0], width: 0 }],
+    }).success).toBe(false);
     expect(
       ConversationSchema.parse({ id: "conversation-1", workspaceId: "workspace-1", agentId: "agent-operator" }),
     ).toEqual({ id: "conversation-1", workspaceId: "workspace-1", agentId: "agent-operator" });

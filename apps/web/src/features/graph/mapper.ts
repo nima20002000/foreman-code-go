@@ -16,8 +16,12 @@ import type {
   GraphProjection,
 } from './types'
 
+export const GRAPH_NODE_MIN_WIDTH = 214
+export const GRAPH_NODE_MAX_WIDTH = 520
+export const GRAPH_NODE_MIN_HEIGHT = 92
+export const GRAPH_NODE_MAX_HEIGHT = 320
 const DEFAULT_NODE_WIDTH = 238
-const DEFAULT_NODE_HEIGHT = 92
+const DEFAULT_NODE_HEIGHT = GRAPH_NODE_MIN_HEIGHT
 const DEFAULT_NODE_GAP = 92
 const DEFAULT_NODE_Y = 120
 
@@ -43,6 +47,13 @@ function fallbackPosition(index: number): XYPosition {
 
 function workflowNodePosition(node: WorkflowNode, index: number): XYPosition {
   return node.position ? { x: node.position.x, y: node.position.y } : fallbackPosition(index)
+}
+
+function clampNodeSize(width: number, height: number) {
+  return {
+    width: Math.min(GRAPH_NODE_MAX_WIDTH, Math.max(GRAPH_NODE_MIN_WIDTH, width)),
+    height: Math.min(GRAPH_NODE_MAX_HEIGHT, Math.max(GRAPH_NODE_MIN_HEIGHT, height)),
+  }
 }
 
 function agentState(agent: Agent | undefined): AgentExecutionState | undefined {
@@ -93,12 +104,19 @@ export function workflowToGraph(
   const nodes: GraphNode[] = workflow.nodes.map((workflowNode, index) => {
     const agent = agentsById.get(workflowNode.agentId)
     const state = agentState(agent)
+    const size = clampNodeSize(
+      workflowNode.width ?? DEFAULT_NODE_WIDTH,
+      workflowNode.height ?? DEFAULT_NODE_HEIGHT,
+    )
     return {
       id: workflowNode.id,
       type: 'agent',
       position: workflowNodePosition(workflowNode, index),
-      initialWidth: DEFAULT_NODE_WIDTH,
-      initialHeight: DEFAULT_NODE_HEIGHT,
+      initialWidth: size.width,
+      initialHeight: size.height,
+      width: size.width,
+      height: size.height,
+      style: size,
       selected: options.selectedAgentId === workflowNode.agentId,
       data: {
         workflowNodeId: workflowNode.id,
@@ -110,9 +128,11 @@ export function workflowToGraph(
         executionStateLabel: executionStateLabel(state),
         stepLabel: `Step ${index + 1}`,
         waitLabel: waitLabel(agent, state, options.runFacts),
+        connectionArmed: options.armedNodeId === workflowNode.id,
         onSelect: options.onSelectAgent,
-        onCopy: options.onCopyNode,
         onUnlink: options.onUnlinkNode,
+        onDelete: options.onDeleteAgent,
+        onResize: options.onResizeNode,
       },
     }
   })
@@ -146,13 +166,25 @@ function asDomainEdge(edge: GraphEdge, existing?: WorkflowEdge): WorkflowEdge {
  */
 export function graphToWorkflow(
   workflow: WorkflowDefinition,
-  nodes: readonly Pick<GraphNode, 'id' | 'position'>[],
+  nodes: readonly Pick<GraphNode, 'id' | 'position' | 'width' | 'height' | 'measured'>[],
   edges: readonly Pick<GraphEdge, 'id' | 'source' | 'target' | 'label'>[],
 ): WorkflowDefinition {
   const positions = new Map(nodes.map((node) => [node.id, node.position]))
+  const sizes = new Map(nodes.map((node) => [
+    node.id,
+    clampNodeSize(
+      node.width ?? node.measured?.width ?? DEFAULT_NODE_WIDTH,
+      node.height ?? node.measured?.height ?? DEFAULT_NODE_HEIGHT,
+    ),
+  ]))
   const workflowNodes = workflow.nodes.map((node) => {
     const position = positions.get(node.id)
-    return position ? { ...node, position: { x: position.x, y: position.y } } : { ...node }
+    const size = sizes.get(node.id)
+    return {
+      ...node,
+      ...(position ? { position: { x: position.x, y: position.y } } : {}),
+      ...(size ? size : {}),
+    }
   })
   const existingEdges = new Map(workflow.edges.map((edge) => [edge.id, edge]))
   const workflowEdges = edges.map((edge) => asDomainEdge(edge as GraphEdge, existingEdges.get(edge.id)))
@@ -185,4 +217,33 @@ export function hasConnection(
 
 export function sameWorkflow(left: WorkflowDefinition, right: WorkflowDefinition): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
+}
+
+export function withoutAgentReferences(
+  workflow: WorkflowDefinition,
+  agentIds: ReadonlySet<string>,
+): WorkflowDefinition {
+  if (agentIds.size === 0) return workflow
+  const removedNodeIds = new Set(
+    workflow.nodes.filter((node) => agentIds.has(node.agentId)).map((node) => node.id),
+  )
+  if (removedNodeIds.size === 0) return workflow
+  return {
+    ...workflow,
+    nodes: workflow.nodes.filter((node) => !removedNodeIds.has(node.id)),
+    edges: workflow.edges.filter((edge) => !removedNodeIds.has(edge.source) && !removedNodeIds.has(edge.target)),
+  }
+}
+
+export function resizeWorkflowNode(
+  workflow: WorkflowDefinition,
+  workflowNodeId: string,
+  width: number,
+  height: number,
+): WorkflowDefinition {
+  const size = clampNodeSize(width, height)
+  return {
+    ...workflow,
+    nodes: workflow.nodes.map((node) => node.id === workflowNodeId ? { ...node, ...size } : node),
+  }
 }

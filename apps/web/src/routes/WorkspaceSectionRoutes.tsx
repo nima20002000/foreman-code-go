@@ -1,15 +1,40 @@
-import { useParams } from '@tanstack/react-router'
+import { useCallback } from 'react'
+import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
 
 import { AgentsDirectory } from '../features/agents'
 import { WorkspaceShell, type WorkspaceSection } from '../shared/ui/WorkspaceShell'
 
 export function AgentsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/agents' })
+  const { agentId } = useSearch({ from: '/workspaces/$workspaceId/agents' })
+  const navigate = useNavigate({ from: '/workspaces/$workspaceId/agents' })
+  const selectAgent = useCallback((nextAgentId: string) => {
+    void navigate({ search: (previous) => ({ ...previous, agentId: nextAgentId }) })
+  }, [navigate])
+  const clearAgent = useCallback(() => {
+    void navigate({
+      replace: true,
+      search: (previous) => {
+        const next = { ...previous }
+        delete next.agentId
+        return next
+      },
+    })
+  }, [navigate])
   return (
     <WorkspaceShell
       workspaceId={workspaceId}
       activeSection="agents"
-      slots={{ main: <AgentsDirectory workspaceId={workspaceId} /> }}
+      slots={{
+        main: (
+          <AgentsDirectory
+            workspaceId={workspaceId}
+            selectedAgentId={agentId}
+            onSelectAgent={selectAgent}
+            onClearAgent={clearAgent}
+          />
+        ),
+      }}
     />
   )
 }

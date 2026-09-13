@@ -103,6 +103,8 @@ export const WorkflowNodeSchema = z
       })
       .strict()
       .optional(),
+    width: z.number().finite().positive().optional(),
+    height: z.number().finite().positive().optional(),
   })
   .strict()
   .superRefine((value, context) => {

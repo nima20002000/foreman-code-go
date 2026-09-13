@@ -63,9 +63,16 @@ describe('deterministic mock scenarios', () => {
 
     const saved = await saveGraph({
       workspaceId: 'workspace-1',
-      workflow: { ...current, name: 'Saved graph' },
+      workflow: {
+        ...current,
+        name: 'Saved graph',
+        nodes: current.nodes.map((node, index) => index === 0 ? { ...node, width: 306, height: 132 } : node),
+      },
     })
     expect(saved.workflow.name).toBe('Saved graph')
+    expect(saved.workflow.nodes[0]).toMatchObject({ width: 306, height: 132 })
+    const readBack = await apiClient.getWorkflow({ workspaceId: 'workspace-1', workflowId: current.id })
+    expect(readBack.workflow.nodes[0]).toMatchObject({ width: 306, height: 132 })
 
     setMockScenario('normal', 'graph-save')
     await expect(saveGraph({ workspaceId: 'workspace-1', workflow: saved.workflow })).rejects.toMatchObject({

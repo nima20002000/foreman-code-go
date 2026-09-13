@@ -3,8 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Agent, WorkflowDefinition, WorkflowRunSummary } from '@graphql/contracts'
 
 import {
+  GRAPH_NODE_MAX_HEIGHT,
+  GRAPH_NODE_MAX_WIDTH,
+  GRAPH_NODE_MIN_HEIGHT,
+  GRAPH_NODE_MIN_WIDTH,
   graphToWorkflow,
   makeSequentialHandoffEdge,
+  resizeWorkflowNode,
+  withoutAgentReferences,
   workflowToGraph,
 } from './mapper'
 import {
@@ -121,6 +127,45 @@ describe('workflow graph mapper', () => {
       label: 'Sequential output handoff',
     })
     expect(roundTrip.edges.at(-1)).not.toHaveProperty('data')
+  })
+
+  it('round-trips node dimensions and clamps resize requests to usable bounds', () => {
+    const resized = resizeWorkflowNode(workflow, 'step-research', 10_000, 10)
+    expect(resized.nodes[0]).toMatchObject({
+      width: GRAPH_NODE_MAX_WIDTH,
+      height: GRAPH_NODE_MIN_HEIGHT,
+    })
+
+    const projection = workflowToGraph({ workflow: resized, agents })
+    const roundTrip = graphToWorkflow(workflow, projection.nodes, projection.edges)
+    expect(roundTrip.nodes[0]).toMatchObject({
+      width: GRAPH_NODE_MAX_WIDTH,
+      height: GRAPH_NODE_MIN_HEIGHT,
+    })
+
+    const oppositeBounds = resizeWorkflowNode(workflow, 'step-build', 1, 10_000)
+    expect(oppositeBounds.nodes[1]).toMatchObject({
+      width: GRAPH_NODE_MIN_WIDTH,
+      height: GRAPH_NODE_MAX_HEIGHT,
+    })
+  })
+
+  it('removes every node for a deleted agent and only their connected edges', () => {
+    const repeatedAgentWorkflow: WorkflowDefinition = {
+      ...workflow,
+      nodes: [
+        ...workflow.nodes,
+        { id: 'step-research-again', agentId: 'agent-research', name: 'Researcher again' },
+      ],
+      edges: [
+        ...workflow.edges,
+        { id: 'edge-repeat', source: 'step-research-again', target: 'step-build' },
+      ],
+    }
+
+    const cleaned = withoutAgentReferences(repeatedAgentWorkflow, new Set(['agent-research']))
+    expect(cleaned.nodes.map((node) => node.id)).toEqual(['step-build'])
+    expect(cleaned.edges).toEqual([])
   })
 })
 
