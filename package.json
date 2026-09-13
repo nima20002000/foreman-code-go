@@ -1,0 +1,19 @@
+{
+  "name": "graphql",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=9.15.4"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @graphql/web dev",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "pnpm -r --if-present lint",
+    "test": "pnpm -r --if-present test",
+    "build": "pnpm -r --if-present build",
+    "test:e2e": "pnpm --filter @graphql/web test:e2e"
+  }
+}

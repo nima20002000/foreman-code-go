@@ -1,0 +1,308 @@
+.workflow-graph,
+.workflow-graph-state {
+  --graph-ink: var(--color-text);
+  --graph-muted: var(--color-text-muted);
+  --graph-faint: var(--color-text-faint);
+  --graph-line: var(--color-border);
+  --graph-line-strong: var(--color-border-strong);
+  --graph-panel: var(--color-surface-raised);
+  --graph-subtle: var(--color-surface-subtle);
+  --graph-canvas: var(--color-surface);
+  --graph-edge: var(--color-text-faint);
+  --graph-focus: var(--color-focus);
+  --graph-accent: var(--color-accent);
+  --graph-accent-contrast: var(--color-accent-contrast);
+  --graph-handle: var(--color-text-faint);
+  --graph-minimap-mask: var(--color-minimap-mask);
+  color: var(--graph-ink);
+}
+
+.workflow-graph {
+  display: grid;
+  grid-template-rows: auto auto minmax(420px, 1fr);
+  min-height: 620px;
+  overflow: hidden;
+  border: 1px solid var(--graph-line-strong);
+  border-radius: 2px;
+  background: var(--graph-panel);
+}
+
+.workflow-graph-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 20px 22px 18px;
+  border-bottom: 1px solid var(--graph-line);
+  background: var(--graph-panel);
+}
+
+.workflow-graph-kicker,
+.workflow-agent-node-eyebrow {
+  margin: 0 0 7px;
+  color: var(--graph-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.workflow-graph-toolbar h2,
+.workflow-graph-state h2 {
+  margin: 0;
+  color: var(--graph-ink);
+  font-size: clamp(1.1rem, 1.8vw, 1.4rem);
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+}
+
+.workflow-graph-help {
+  max-width: 610px;
+  margin: 9px 0 0;
+  color: var(--graph-muted);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.workflow-graph-actions {
+  display: flex;
+  align-items: flex-start;
+  align-self: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.workflow-graph-draft-state {
+  padding: 7px 9px;
+  border: 1px solid var(--graph-line-strong);
+  border-radius: 2px;
+  color: var(--graph-ink);
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.workflow-graph-draft-state-dirty {
+  border-style: dashed;
+}
+
+.workflow-graph-action {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--graph-line-strong);
+  border-radius: 2px;
+  background: var(--graph-panel);
+  color: var(--graph-ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.workflow-graph-action:hover:not(:disabled) {
+  border-color: var(--graph-ink);
+  background: var(--graph-subtle);
+}
+
+.workflow-graph-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.workflow-graph-action-primary {
+  border-color: var(--graph-ink);
+  background: var(--graph-ink);
+  color: var(--graph-accent-contrast);
+}
+
+.workflow-graph-action-primary:hover:not(:disabled) {
+  border-color: var(--color-accent-strong);
+  background: var(--color-accent-strong);
+}
+
+.workflow-graph-notice {
+  margin: 0;
+  padding: 10px 22px;
+  border-bottom: 1px solid var(--graph-line);
+  background: var(--graph-subtle);
+  color: var(--graph-ink);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.workflow-graph-notice-success,
+.workflow-graph-notice-info,
+.workflow-graph-notice-error {
+  color: var(--graph-ink);
+}
+
+.workflow-graph-canvas {
+  min-height: 420px;
+  background: var(--graph-canvas);
+}
+
+.workflow-graph-canvas .react-flow {
+  min-height: 420px;
+  background: var(--graph-canvas);
+}
+
+.workflow-graph-canvas .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid var(--graph-line-strong);
+  border-radius: 2px;
+  background: var(--graph-panel);
+}
+
+.workflow-graph-canvas .react-flow__controls-button {
+  border-bottom: 1px solid var(--graph-line);
+  background: var(--graph-panel);
+  fill: var(--graph-ink);
+  color: var(--graph-ink);
+}
+
+.workflow-graph-canvas .react-flow__controls-button:last-child {
+  border-bottom: 0;
+}
+
+.workflow-graph-canvas .react-flow__controls-button:hover {
+  background: var(--graph-subtle);
+}
+
+.workflow-graph-canvas .react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid var(--graph-line-strong);
+  border-radius: 2px;
+  background: var(--graph-panel);
+}
+
+.workflow-graph-canvas .react-flow__minimap-mask {
+  fill: var(--graph-minimap-mask);
+}
+
+.workflow-graph-canvas .react-flow__edge-path {
+  stroke: var(--graph-edge);
+  stroke-width: 1.6;
+}
+
+.workflow-graph-canvas .react-flow__edge-text {
+  fill: var(--graph-muted);
+  font-size: 9px;
+}
+
+.workflow-graph-canvas .react-flow__edge-textbg {
+  fill: var(--graph-canvas);
+}
+
+.workflow-agent-node {
+  position: relative;
+  min-width: 214px;
+  border: 1px solid var(--graph-line-strong);
+  border-radius: 2px;
+  background: var(--graph-panel);
+}
+
+.workflow-agent-node:hover,
+.workflow-agent-node:focus-within {
+  border-color: var(--graph-ink);
+}
+
+.workflow-agent-node-selected {
+  border-color: var(--graph-focus);
+  outline: 1px solid var(--graph-focus);
+  outline-offset: 2px;
+}
+
+.workflow-agent-node-button {
+  display: flex;
+  width: 100%;
+  min-height: 150px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 15px 16px 16px;
+  border: 0;
+  border-radius: 1px;
+  background: transparent;
+  color: var(--graph-ink);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.workflow-agent-node-button:focus-visible {
+  outline: 2px solid var(--graph-focus);
+  outline-offset: -4px;
+}
+
+.workflow-agent-node-label {
+  font-size: 1.03rem;
+  font-weight: 760;
+  letter-spacing: -0.018em;
+  line-height: 1.2;
+}
+
+.workflow-agent-node-role,
+.workflow-agent-node-description {
+  color: var(--graph-muted);
+  font-size: 0.74rem;
+}
+
+.workflow-agent-node-description {
+  max-width: 190px;
+  line-height: 1.4;
+}
+
+.workflow-agent-node-state {
+  display: inline-flex;
+  margin-top: 3px;
+  padding: 4px 7px;
+  border: 1px solid var(--graph-line-strong);
+  border-radius: 2px;
+  color: var(--graph-ink);
+  font-size: 0.69rem;
+  font-weight: 740;
+  line-height: 1.2;
+}
+
+.workflow-agent-node .react-flow__handle {
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--graph-canvas);
+  background: var(--graph-handle);
+}
+
+.workflow-graph-state {
+  display: grid;
+  align-content: center;
+  min-height: 420px;
+  padding: 36px;
+  border: 1px solid var(--graph-line-strong);
+  border-radius: 2px;
+  background: var(--graph-panel);
+}
+
+.workflow-graph-state p:last-child {
+  max-width: 480px;
+  color: var(--graph-muted);
+  line-height: 1.55;
+}
+
+.workflow-graph-state-error {
+  border-style: dashed;
+}
+
+@media (max-width: 720px) {
+  .workflow-graph {
+    min-height: 540px;
+  }
+
+  .workflow-graph-toolbar {
+    flex-direction: column;
+  }
+
+  .workflow-graph-actions {
+    justify-content: flex-start;
+  }
+}
