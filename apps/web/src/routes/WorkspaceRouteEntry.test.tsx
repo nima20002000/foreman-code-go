@@ -49,36 +49,36 @@ describe('WorkspaceRouteEntry integration', () => {
   it('renders the saved workflow and keeps a valid agent selection in the URL', async () => {
     const { router } = renderWorkspace('/workspaces/workspace-1')
 
-    expect(await screen.findByTestId('workspace-name')).toHaveTextContent('Website')
-    expect(screen.getByTestId('runner-name')).toHaveTextContent('Local Runner')
-    expect(screen.getByTestId('runner-health')).toHaveTextContent('Healthy')
     expect(await screen.findByTestId('agent-node-agent-researcher')).toBeInTheDocument()
+    expect(document.querySelector('.shell-header')).not.toBeInTheDocument()
+    expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
 
     const nodeButton = screen.getByTestId('agent-node-agent-researcher').querySelector('button')
     if (!nodeButton) throw new Error('Researcher node button missing')
     fireEvent.click(nodeButton)
 
     await waitFor(() => expect(router.state.location.search.agentId).toBe('agent-researcher'))
-    expect(await screen.findByRole('heading', { name: 'Researcher' })).toBeVisible()
+    expect(nodeButton).toHaveAttribute('aria-pressed', 'true')
+    expect(document.querySelector('.shell-header')).not.toBeInTheDocument()
+    expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
   })
 
-  it('clears the selected agent through router navigation', async () => {
-    const user = userEvent.setup()
+  it('keeps an URL-selected agent in the graph without restoring removed shell panels', async () => {
     const { router } = renderWorkspace('/workspaces/workspace-1?agentId=agent-researcher')
 
-    expect(await screen.findByRole('heading', { name: 'Researcher' })).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Return to Operator' }))
-
-    await waitFor(() => expect(router.state.location.search.agentId).toBeUndefined())
-    expect(await screen.findByRole('heading', { name: 'Operator' })).toBeVisible()
+    const node = await screen.findByTestId('agent-node-agent-researcher')
+    expect(node.querySelector('button')).toHaveAttribute('aria-pressed', 'true')
+    expect(router.state.location.search.agentId).toBe('agent-researcher')
+    expect(document.querySelector('.shell-header')).not.toBeInTheDocument()
+    expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
   })
 
   it('shows a stale selection without exposing unrelated conversation history', async () => {
     renderWorkspace('/workspaces/workspace-1?agentId=agent-old')
 
-    expect(await screen.findByTestId('agent-context-stale')).toBeVisible()
+    expect(await screen.findByTestId('selection-stale')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'History' })).not.toBeInTheDocument()
-    expect(screen.getByText(/selected agent or its conversation is no longer available/i)).toBeVisible()
+    expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
   })
 
   it('renders loading, error, 404 and empty workspace states', async () => {

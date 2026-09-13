@@ -7,7 +7,8 @@ describe('WorkspaceRoute', () => {
     render(<WorkspaceSelection workspaceId="workspace-1" />)
 
     expect(screen.getByTestId('workspace-ready')).toHaveTextContent('Operator is active')
-    expect(screen.getByRole('heading', { name: 'No terminal connected' })).toBeVisible()
+    expect(screen.queryByRole('region', { name: 'Terminal' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
   })
 
   it('exposes loading, error, and stale selection states through props', () => {

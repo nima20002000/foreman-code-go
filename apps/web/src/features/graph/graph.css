@@ -18,21 +18,11 @@
 }
 
 .workflow-graph {
-  display: grid;
-  grid-template-rows: auto auto minmax(420px, 1fr);
-  min-height: 620px;
-  overflow: hidden;
-  border: 1px solid var(--graph-line-strong);
-  border-radius: 2px;
-  background: var(--graph-panel);
-}
-
-.workflow-graph-toolbar {
   display: flex;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 20px 22px 18px;
-  border-bottom: 1px solid var(--graph-line);
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--graph-panel);
 }
 
@@ -47,7 +37,6 @@
   text-transform: uppercase;
 }
 
-.workflow-graph-toolbar h2,
 .workflow-graph-state h2 {
   margin: 0;
   color: var(--graph-ink);
@@ -65,31 +54,48 @@
 }
 
 .workflow-graph-actions {
+  position: absolute;
+  z-index: 4;
+  top: 1.25rem;
+  right: 1.25rem;
   display: flex;
-  align-items: flex-start;
-  align-self: flex-start;
+  max-width: calc(100% - 1.75rem);
+  align-items: center;
   gap: 8px;
+  padding: 0.375rem;
+  border: 1px solid var(--graph-line-strong);
+  border-radius: 3px;
   flex-wrap: wrap;
   justify-content: flex-end;
+  background: color-mix(in srgb, var(--graph-panel) 94%, transparent);
+  box-shadow: 0 0.375rem 1.25rem rgb(0 0 0 / 18%);
 }
 
-.workflow-graph-draft-state {
-  padding: 7px 9px;
+.workflow-graph-add-agent {
+  position: absolute;
+  z-index: 4;
+  top: 1.25rem;
+  left: 1.25rem;
+  display: grid;
+  width: 2.25rem;
+  height: 2.25rem;
+  place-items: center;
+  padding: 0;
   border: 1px solid var(--graph-line-strong);
   border-radius: 2px;
   color: var(--graph-ink);
-  font-size: 0.72rem;
-  font-weight: 650;
-  line-height: 1.2;
-  white-space: nowrap;
+  background: var(--graph-panel);
+  box-shadow: 0 0.375rem 1.25rem rgb(0 0 0 / 18%);
+  cursor: pointer;
 }
 
-.workflow-graph-draft-state-dirty {
-  border-style: dashed;
+.workflow-graph-add-agent:hover {
+  border-color: var(--graph-ink);
+  background: var(--graph-subtle);
 }
 
 .workflow-graph-action {
-  min-height: 34px;
+  min-height: 36px;
   padding: 0 12px;
   border: 1px solid var(--graph-line-strong);
   border-radius: 2px;
@@ -122,33 +128,157 @@
   background: var(--color-accent-strong);
 }
 
-.workflow-graph-notice {
+.workflow-graph-toast {
+  position: absolute;
+  z-index: 4;
+  top: 4.25rem;
+  left: 1.25rem;
+  max-width: min(26rem, calc(100% - 2rem));
   margin: 0;
-  padding: 10px 22px;
-  border-bottom: 1px solid var(--graph-line);
-  background: var(--graph-subtle);
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--graph-line-strong);
+  border-radius: 3px;
+  background: var(--graph-panel);
   color: var(--graph-ink);
   font-size: 0.8rem;
   line-height: 1.4;
+  box-shadow: 0 0.375rem 1.25rem rgb(0 0 0 / 22%);
 }
 
-.workflow-graph-notice-success,
-.workflow-graph-notice-info,
-.workflow-graph-notice-error {
+.agent-picker-backdrop {
+  position: absolute;
+  z-index: 10;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: rgb(8 10 11 / 62%);
+}
+
+.agent-picker-dialog {
+  display: grid;
+  width: min(100%, 34rem);
+  max-height: min(38rem, calc(100vh - 4rem));
+  gap: 1.25rem;
+  padding: 1.25rem;
+  border: 1px solid var(--graph-line-strong);
+  border-radius: 3px;
+  overflow: auto;
   color: var(--graph-ink);
+  background: var(--graph-panel);
+  box-shadow: 0 1.25rem 4rem rgb(0 0 0 / 38%);
+}
+
+.agent-picker-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.agent-picker-heading h2 {
+  margin: 0;
+  font-size: 1.125rem;
+}
+
+.agent-picker-heading p,
+.agent-picker-empty p {
+  margin: 0.375rem 0 0;
+  color: var(--graph-muted);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.agent-picker-heading > button {
+  display: grid;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: var(--graph-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.agent-picker-heading > button:hover {
+  border-color: var(--graph-line-strong);
+  color: var(--graph-ink);
+  background: var(--graph-subtle);
+}
+
+.agent-picker-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.agent-picker-list > button {
+  display: grid;
+  min-height: 3.75rem;
+  gap: 0.25rem;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--graph-line);
+  border-radius: 2px;
+  color: var(--graph-ink);
+  background: var(--graph-canvas);
+  cursor: pointer;
+  text-align: left;
+}
+
+.agent-picker-list > button:hover,
+.agent-picker-list > button:focus-visible {
+  border-color: var(--graph-focus);
+  background: var(--graph-subtle);
+}
+
+.agent-picker-list > button span {
+  color: var(--graph-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.agent-picker-empty {
+  padding: 1.25rem;
+  border: 1px dashed var(--graph-line-strong);
+}
+
+.agent-picker-empty a {
+  display: inline-block;
+  margin-top: 0.875rem;
+  color: var(--graph-ink);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.workflow-graph-toast-success {
+  border-color: var(--graph-accent);
+}
+
+.workflow-graph-toast-error {
+  border-color: var(--color-danger, #c65f5f);
 }
 
 .workflow-graph-canvas {
-  min-height: 420px;
+  position: relative;
+  min-height: 0;
+  flex: 1;
   background: var(--graph-canvas);
 }
 
 .workflow-graph-canvas .react-flow {
-  min-height: 420px;
+  position: absolute !important;
+  inset: 0;
+  width: 100%;
+  height: auto !important;
+  min-height: 0;
   background: var(--graph-canvas);
 }
 
 .workflow-graph-canvas .react-flow__controls {
+  bottom: 1.25rem !important;
+  left: 1.25rem !important;
   overflow: hidden;
   border: 1px solid var(--graph-line-strong);
   border-radius: 2px;
@@ -156,6 +286,8 @@
 }
 
 .workflow-graph-canvas .react-flow__controls-button {
+  width: 2.25rem;
+  height: 2.25rem;
   border-bottom: 1px solid var(--graph-line);
   background: var(--graph-panel);
   fill: var(--graph-ink);
@@ -171,6 +303,8 @@
 }
 
 .workflow-graph-canvas .react-flow__minimap {
+  right: 1.25rem !important;
+  bottom: 1.25rem !important;
   overflow: hidden;
   border: 1px solid var(--graph-line-strong);
   border-radius: 2px;
@@ -198,6 +332,7 @@
 .workflow-agent-node {
   position: relative;
   min-width: 214px;
+  min-height: 92px;
   border: 1px solid var(--graph-line-strong);
   border-radius: 2px;
   background: var(--graph-panel);
@@ -217,11 +352,11 @@
 .workflow-agent-node-button {
   display: flex;
   width: 100%;
-  min-height: 150px;
+  min-height: 90px;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
-  padding: 15px 16px 16px;
+  gap: 0.75rem;
+  padding: 0.875rem 3rem 0.875rem 1rem;
   border: 0;
   border-radius: 1px;
   background: transparent;
@@ -229,6 +364,86 @@
   cursor: pointer;
   font: inherit;
   text-align: left;
+}
+
+.workflow-agent-node-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  color: var(--graph-muted);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+
+.workflow-agent-node-meta span + span::before {
+  margin-right: 0.625rem;
+  color: var(--graph-line-strong);
+  content: '·';
+}
+
+.workflow-agent-node-menu-trigger {
+  position: absolute;
+  z-index: 3;
+  top: 0.5rem;
+  right: 0.5rem;
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: var(--graph-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.workflow-agent-node-menu-trigger:hover,
+.workflow-agent-node-menu-trigger[aria-expanded='true'] {
+  border-color: var(--graph-line-strong);
+  color: var(--graph-ink);
+  background: var(--graph-subtle);
+}
+
+.workflow-agent-node-menu {
+  position: absolute;
+  z-index: 8;
+  top: 2.75rem;
+  right: 0.5rem;
+  display: grid;
+  width: 8.5rem;
+  padding: 0.375rem;
+  border: 1px solid var(--graph-line-strong);
+  border-radius: 2px;
+  background: var(--graph-panel);
+  box-shadow: 0 0.75rem 2rem rgb(0 0 0 / 28%);
+}
+
+.workflow-agent-node-menu button {
+  min-height: 2rem;
+  padding: 0.375rem 0.5rem;
+  border: 0;
+  border-radius: 2px;
+  color: var(--graph-ink);
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-align: left;
+}
+
+.workflow-agent-node-menu button:hover:not(:disabled),
+.workflow-agent-node-menu button:focus-visible {
+  background: var(--graph-subtle);
+}
+
+.workflow-agent-node-menu button:disabled {
+  color: var(--graph-muted);
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 .workflow-agent-node-button:focus-visible {
@@ -240,29 +455,6 @@
   font-size: 1.03rem;
   font-weight: 760;
   letter-spacing: -0.018em;
-  line-height: 1.2;
-}
-
-.workflow-agent-node-role,
-.workflow-agent-node-description {
-  color: var(--graph-muted);
-  font-size: 0.74rem;
-}
-
-.workflow-agent-node-description {
-  max-width: 190px;
-  line-height: 1.4;
-}
-
-.workflow-agent-node-state {
-  display: inline-flex;
-  margin-top: 3px;
-  padding: 4px 7px;
-  border: 1px solid var(--graph-line-strong);
-  border-radius: 2px;
-  color: var(--graph-ink);
-  font-size: 0.69rem;
-  font-weight: 740;
   line-height: 1.2;
 }
 
@@ -294,15 +486,16 @@
 }
 
 @media (max-width: 720px) {
-  .workflow-graph {
-    min-height: 540px;
-  }
-
-  .workflow-graph-toolbar {
-    flex-direction: column;
-  }
-
   .workflow-graph-actions {
-    justify-content: flex-start;
+    left: 1.25rem;
+    justify-content: flex-end;
+  }
+
+  .workflow-graph-toast {
+    top: 8rem;
+  }
+
+  .workflow-graph-add-agent {
+    top: 5rem;
   }
 }

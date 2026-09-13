@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react'
 
-import { TerminalPlaceholder } from '../features/terminal/TerminalPlaceholder'
 import {
   WorkspaceShell,
   type WorkspaceShellSlots,
@@ -74,10 +73,6 @@ function DefaultWorkspaceSlot({ workspaceId }: { workspaceId: string }) {
   return <strong>{workspaceId}</strong>
 }
 
-function DefaultRunnerSlot() {
-  return <span>Not connected</span>
-}
-
 function DefaultGraphSlot({
   workspaceId,
   selectedAgentId,
@@ -146,20 +141,6 @@ function DefaultGraphSlot({
   )
 }
 
-function DefaultContextSlot({ state }: { state: WorkspaceRouteState }) {
-  return (
-    <div className="surface-placeholder">
-      <p className="panel-kicker">Context</p>
-      <h2>{state === 'error' || state === 'not-found' ? 'Context unavailable' : 'Workspace context'}</h2>
-      <p>
-        {state === 'error' || state === 'not-found'
-          ? 'Context is unavailable until the workspace can be loaded.'
-          : 'Details for the selected graph item will appear here.'}
-      </p>
-    </div>
-  )
-}
-
 export function WorkspaceRouteView({
   workspaceId,
   selectedAgentId,
@@ -169,7 +150,6 @@ export function WorkspaceRouteView({
 }: WorkspaceRouteViewProps) {
   const resolvedSlots: WorkspaceShellSlots = {
     workspace: slots?.workspace ?? <DefaultWorkspaceSlot workspaceId={workspaceId} />,
-    runner: slots?.runner ?? <DefaultRunnerSlot />,
     graph:
       slots?.graph ?? (
         <DefaultGraphSlot
@@ -179,8 +159,6 @@ export function WorkspaceRouteView({
           stateMessage={stateMessage}
         />
       ),
-    context: slots?.context ?? <DefaultContextSlot state={state} />,
-    terminal: slots?.terminal ?? <TerminalPlaceholder />,
   }
 
   return (

@@ -1,9 +1,9 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { MoreHorizontal, Plus, X } from 'lucide-react'
 
 import {
   addEdge,
   Background,
-  Controls,
   Handle,
   MiniMap,
   Position,
@@ -14,6 +14,7 @@ import {
   type NodeChange,
   type NodePositionChange,
   type NodeProps,
+  type ReactFlowInstance,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useQueryClient } from '@tanstack/react-query'
@@ -33,6 +34,7 @@ import {
   queryKeys,
 } from '../../shared/api/query'
 import { useTheme } from '../theme'
+import { readLocalAgents } from '../agents/localAgents'
 
 import {
   graphToWorkflow,
@@ -54,6 +56,7 @@ export interface WorkflowGraphProps {
   workflowId: string
   selectedAgentId?: string
   onSelectAgent?: (agentId: string) => void
+  onClearAgent?: () => void
 }
 
 export interface GraphEditorProps {
@@ -63,12 +66,34 @@ export interface GraphEditorProps {
   runFacts?: readonly WorkflowRunSummary[]
   selectedAgentId?: string
   onSelectAgent?: (agentId: string) => void
+  onClearAgent?: () => void
 }
 
 function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
-  const stateText = data.waitLabel
-    ? `${data.executionStateLabel} · ${data.waitLabel}`
-    : data.executionStateLabel
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
+    const closeFromOutside = (event: MouseEvent) => {
+      if (menuRef.current?.contains(event.target as Node) || triggerRef.current?.contains(event.target as Node)) return
+      setMenuOpen(false)
+    }
+    const closeFromEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setMenuOpen(false)
+      triggerRef.current?.focus()
+    }
+    document.addEventListener('mousedown', closeFromOutside)
+    window.addEventListener('keydown', closeFromEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeFromOutside)
+      window.removeEventListener('keydown', closeFromEscape)
+    }
+  }, [menuOpen])
 
   return (
     <article
@@ -81,16 +106,49 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
       <button
         type="button"
         className="workflow-agent-node-button"
-        aria-label={`${data.label} agent, ${stateText}`}
+        aria-label={`${data.label} agent, ${data.stepLabel}`}
         aria-pressed={selected}
         onClick={() => data.onSelect?.(data.agentId)}
       >
-        <span className="workflow-agent-node-eyebrow">Agent step</span>
+        <span className="workflow-agent-node-meta">
+          <span>Agent</span>
+          <span>{data.stepLabel}</span>
+        </span>
         <span className="workflow-agent-node-label">{data.label}</span>
-        {data.role ? <span className="workflow-agent-node-role">{data.role}</span> : null}
-        <span className="workflow-agent-node-state">{stateText}</span>
-        {data.description ? <span className="workflow-agent-node-description">{data.description}</span> : null}
       </button>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="workflow-agent-node-menu-trigger nodrag"
+        aria-label={`Open actions for ${data.label}`}
+        title="Node actions"
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        onClick={(event) => {
+          event.stopPropagation()
+          setMenuOpen((open) => !open)
+        }}
+      >
+        <MoreHorizontal aria-hidden="true" size={17} />
+      </button>
+      {menuOpen ? (
+        <div ref={menuRef} className="workflow-agent-node-menu nodrag" role="menu" aria-label={`${data.label} node actions`}>
+          <button type="button" role="menuitem" onClick={() => { data.onCopy?.(data.workflowNodeId); setMenuOpen(false) }}>Copy</button>
+          <button type="button" role="menuitem" onClick={() => { data.onUnlink?.(data.workflowNodeId); setMenuOpen(false) }}>Unlink</button>
+          <button
+            type="button"
+            role="menuitem"
+            disabled
+            aria-disabled="true"
+            aria-describedby={`delete-node-help-${data.workflowNodeId}`}
+          >
+            Delete
+          </button>
+          <span className="visually-hidden" id={`delete-node-help-${data.workflowNodeId}`}>
+            Deleting reusable agents is not available from the graph.
+          </span>
+        </div>
+      ) : null}
       <Handle type="source" position={Position.Right} isConnectable={isConnectable} />
     </article>
   )
@@ -100,6 +158,21 @@ const nodeTypes = { agent: AgentNode }
 
 function graphErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
+}
+
+function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>) {
+  if (event.key !== 'Tab') return
+  const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href]')]
+  const first = controls[0]
+  const last = controls.at(-1)
+  if (!first || !last) return
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
 }
 
 function updateWorkspaceDetailsCache(
@@ -123,6 +196,7 @@ export function GraphEditor({
   runFacts,
   selectedAgentId,
   onSelectAgent,
+  onClearAgent,
 }: GraphEditorProps) {
   const theme = useTheme()
   const queryClient = useQueryClient()
@@ -131,22 +205,87 @@ export function GraphEditor({
   const updateDraft = useGraphDraftStore((state) => state.updateDraft)
   const discardDraft = useGraphDraftStore((state) => state.discardDraft)
   const [notice, setNotice] = useState<{ kind: 'success' | 'error' | 'info'; text: string }>()
+  const [agentPickerOpen, setAgentPickerOpen] = useState(false)
+  const addAgentButtonRef = useRef<HTMLButtonElement>(null)
+  const agentPickerRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLDivElement>(null)
+  const flowInstanceRef = useRef<ReactFlowInstance<GraphNode, GraphEdge>>(null)
   const saveMutation = useSaveGraphMutation()
+
+  useEffect(() => {
+    if (!notice) return
+    const timeout = window.setTimeout(() => setNotice(undefined), 4_000)
+    return () => window.clearTimeout(timeout)
+  }, [notice])
+
+  useEffect(() => {
+    if (!agentPickerOpen) return
+    const firstControl = agentPickerRef.current?.querySelector<HTMLElement>('[data-agent-picker-option]')
+      ?? agentPickerRef.current?.querySelector<HTMLElement>('button, a[href]')
+    firstControl?.focus()
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setAgentPickerOpen(false)
+      addAgentButtonRef.current?.focus()
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [agentPickerOpen])
 
   const isDirty = draft?.dirty === true
   // Query owns the saved definition. The feature store is consulted only
   // while an unsaved draft exists, so refetches remain visible when clean.
   const currentWorkflow = isDirty && draft ? draft.workflow : workflow
+  const catalogById = new Map(agents.map((agent) => [agent.id, agent]))
+  for (const agent of readLocalAgents(workspaceId)) catalogById.set(agent.id, agent)
+  const catalogAgents = [...catalogById.values()]
   const selectAgent = useCallback(
     (agentId: string) => onSelectAgent?.(agentId),
     [onSelectAgent],
   )
+  const copyGraphNode = useCallback((workflowNodeId: string) => {
+    updateDraft(workflowKey, currentWorkflow, (saved) => {
+      const source = saved.nodes.find((node) => node.id === workflowNodeId)
+      if (!source) return saved
+      const existingIds = new Set(saved.nodes.map((node) => node.id))
+      const baseId = `${source.id}-copy`
+      let id = baseId
+      let suffix = 2
+      while (existingIds.has(id)) {
+        id = `${baseId}-${suffix}`
+        suffix += 1
+      }
+      const sourcePosition = source.position ?? { x: 64, y: 120 }
+      return {
+        ...saved,
+        nodes: [...saved.nodes, {
+          ...source,
+          id,
+          position: { x: sourcePosition.x + 40, y: sourcePosition.y + 40 },
+        }],
+      }
+    })
+  }, [currentWorkflow, updateDraft, workflowKey])
+  const unlinkGraphNode = useCallback((workflowNodeId: string) => {
+    updateDraft(workflowKey, currentWorkflow, (saved) => ({
+      ...saved,
+      nodes: saved.nodes.filter((node) => node.id !== workflowNodeId),
+      edges: saved.edges.filter((edge) => edge.source !== workflowNodeId && edge.target !== workflowNodeId),
+    }))
+  }, [currentWorkflow, updateDraft, workflowKey])
   const graph = useMemo(
     () => workflowToGraph(
       { workflow: currentWorkflow, agents },
-      { selectedAgentId, onSelectAgent: selectAgent, runFacts },
+      {
+        selectedAgentId,
+        onSelectAgent: selectAgent,
+        onCopyNode: copyGraphNode,
+        onUnlinkNode: unlinkGraphNode,
+        runFacts,
+      },
     ),
-    [agents, currentWorkflow, runFacts, selectAgent, selectedAgentId],
+    [agents, copyGraphNode, currentWorkflow, runFacts, selectAgent, selectedAgentId, unlinkGraphNode],
   )
 
   const updateFromGraph = useCallback(
@@ -226,42 +365,52 @@ export function GraphEditor({
     )
   }, [currentWorkflow, discardDraft, isDirty, queryClient, saveMutation, workspaceId, workflowKey])
 
+  const closeAgentPicker = useCallback(() => {
+    setAgentPickerOpen(false)
+    addAgentButtonRef.current?.focus()
+  }, [])
+
+  const addAgentToGraph = useCallback((agent: Agent) => {
+    const existingIds = new Set(currentWorkflow.nodes.map((node) => node.id))
+    const baseId = `node-${agent.id}`
+    let nodeId = baseId
+    let suffix = 2
+    while (existingIds.has(nodeId)) {
+      nodeId = `${baseId}-${suffix}`
+      suffix += 1
+    }
+
+    const canvasBox = canvasRef.current?.getBoundingClientRect()
+    const position = canvasBox && flowInstanceRef.current
+      ? flowInstanceRef.current.screenToFlowPosition({
+          x: canvasBox.left + canvasBox.width / 2 - 119,
+          y: canvasBox.top + canvasBox.height / 2 - 83,
+        })
+      : { x: 64 + currentWorkflow.nodes.length * 330, y: 120 }
+
+    updateDraft(workflowKey, currentWorkflow, (saved) => ({
+      ...saved,
+      nodes: [...saved.nodes, {
+        id: nodeId,
+        agentId: agent.id,
+        name: agent.name,
+        ...(agent.description ? { description: agent.description } : {}),
+        position,
+      }],
+    }))
+    closeAgentPicker()
+  }, [closeAgentPicker, currentWorkflow, updateDraft, workflowKey])
+
   return (
     <section className="workflow-graph" data-testid="workflow-graph" aria-label={`${currentWorkflow.name} workflow graph`}>
-      <header className="workflow-graph-toolbar">
-        <div>
-          <p className="workflow-graph-kicker">Workflow graph</p>
-          <h2>{currentWorkflow.name}</h2>
-          <p className="workflow-graph-help">
-            Connect steps to propose a sequential output handoff. Edges do not grant permissions, reserve resources, or execute work.
-          </p>
-        </div>
-        <div className="workflow-graph-actions">
-          <span className={`workflow-graph-draft-state${isDirty ? ' workflow-graph-draft-state-dirty' : ''}`} role="status">
-            {isDirty ? 'Unsaved changes' : 'Saved definition'}
-          </span>
-          <button type="button" className="workflow-graph-action workflow-graph-action-quiet" onClick={handleDiscard} disabled={!isDirty || saveMutation.isPending}>
-            Discard
-          </button>
-          <button type="button" className="workflow-graph-action workflow-graph-action-primary" onClick={handleSave} disabled={!isDirty || saveMutation.isPending}>
-            {saveMutation.isPending ? 'Saving…' : 'Save graph'}
-          </button>
-        </div>
-      </header>
-
-      {notice ? (
-        <p className={`workflow-graph-notice workflow-graph-notice-${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}>
-          {notice.text}
-        </p>
-      ) : null}
-
-      <div className="workflow-graph-canvas" data-testid="workflow-graph-canvas">
+      <div className="workflow-graph-canvas" data-testid="workflow-graph-canvas" ref={canvasRef}>
         <ReactFlow
           nodes={graph.nodes}
           edges={graph.edges}
           nodeTypes={nodeTypes}
           onNodesChange={onNodesChange}
           onConnect={onConnect}
+          onPaneClick={onClearAgent}
           isValidConnection={isValidConnection}
           nodesDraggable
           nodesConnectable
@@ -274,25 +423,117 @@ export function GraphEditor({
           defaultEdgeOptions={{ type: 'smoothstep', selectable: false }}
           proOptions={{ hideAttribution: true }}
           aria-label="Workflow editor canvas"
+          onInit={(instance) => { flowInstanceRef.current = instance }}
         >
           <Background color={theme === 'dark' ? '#3e474c' : '#deded9'} gap={24} size={1} />
-          <Controls showInteractive={false} position="bottom-left" />
           <MiniMap
             position="bottom-right"
             pannable
             zoomable
+            ariaLabel="Workflow overview"
+            nodeClassName={(node) => node.selected
+              ? 'workflow-graph-minimap-node-selected'
+              : 'workflow-graph-minimap-node'}
             nodeColor={(node) => (node.selected
               ? theme === 'dark' ? '#e1e6e8' : '#3f3f3b'
               : theme === 'dark' ? '#79858b' : '#a8a8a1')}
+            nodeStrokeColor={(node) => (node.selected
+              ? theme === 'dark' ? '#7db7ff' : '#1e5d99'
+              : theme === 'dark' ? '#3e474c' : '#deded9')}
+            nodeStrokeWidth={3}
+            bgColor={theme === 'dark' ? '#22272a' : '#f2f2ef'}
             maskColor={theme === 'dark' ? 'rgba(17, 20, 22, 0.78)' : 'rgba(255, 255, 255, 0.72)'}
           />
         </ReactFlow>
+
+        <button
+          ref={addAgentButtonRef}
+          type="button"
+          className="workflow-graph-add-agent"
+          aria-label="Add agent to graph"
+          title="Add agent to graph"
+          aria-haspopup="dialog"
+          aria-expanded={agentPickerOpen}
+          onClick={() => setAgentPickerOpen(true)}
+        >
+          <Plus aria-hidden="true" size={17} />
+        </button>
+
+        <div className="workflow-graph-actions" aria-label="Graph actions">
+          <button type="button" className="workflow-graph-action workflow-graph-action-quiet" onClick={handleDiscard} disabled={!isDirty || saveMutation.isPending}>
+            Discard
+          </button>
+          <button type="button" className="workflow-graph-action workflow-graph-action-primary" onClick={handleSave} disabled={!isDirty || saveMutation.isPending}>
+            {saveMutation.isPending ? 'Saving…' : 'Save graph'}
+          </button>
+        </div>
+
+        {notice ? (
+          <p
+            className={`workflow-graph-toast workflow-graph-toast-${notice.kind}`}
+            role={notice.kind === 'error' ? 'alert' : 'status'}
+            aria-live={notice.kind === 'error' ? 'assertive' : 'polite'}
+          >
+            {notice.text}
+          </p>
+        ) : null}
+
+        {agentPickerOpen ? (
+          <div
+            className="agent-picker-backdrop"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) closeAgentPicker()
+            }}
+          >
+            <div
+              ref={agentPickerRef}
+              className="agent-picker-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="agent-picker-title"
+              aria-describedby="agent-picker-description"
+              onKeyDown={trapDialogFocus}
+            >
+              <div className="agent-picker-heading">
+                <div>
+                  <h2 id="agent-picker-title">Add agent to graph</h2>
+                  <p id="agent-picker-description">Choose a workspace agent. An agent may be used in more than one workflow step.</p>
+                </div>
+                <button type="button" aria-label="Close agent picker" title="Close" onClick={closeAgentPicker}>
+                  <X aria-hidden="true" size={17} />
+                </button>
+              </div>
+
+              {catalogAgents.length > 0 ? (
+                <div className="agent-picker-list">
+                  {catalogAgents.map((agent, index) => (
+                    <button
+                      key={agent.id}
+                      type="button"
+                      data-agent-picker-option
+                      autoFocus={index === 0}
+                      onClick={() => addAgentToGraph(agent)}
+                    >
+                      <strong>{agent.name}</strong>
+                      <span>{agent.role ?? 'Agent'}{agent.description ? ` · ${agent.description}` : ''}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="agent-picker-empty">
+                  <p>No agents are available in this workspace.</p>
+                  <a href={`/workspaces/${encodeURIComponent(workspaceId)}/agents`}>Open Agents directory</a>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
       </div>
     </section>
   )
 }
 
-export function WorkflowGraph({ workspaceId, workflowId, selectedAgentId, onSelectAgent }: WorkflowGraphProps) {
+export function WorkflowGraph({ workspaceId, workflowId, selectedAgentId, onSelectAgent, onClearAgent }: WorkflowGraphProps) {
   const workflowQuery = useWorkflowQuery(workspaceId, workflowId)
   const agentsQuery = useAgentsQuery(workspaceId)
   const workspaceQuery = useWorkspaceDetailsQuery(workspaceId)
@@ -332,6 +573,7 @@ export function WorkflowGraph({ workspaceId, workflowId, selectedAgentId, onSele
       runFacts={workspaceQuery.data.runs}
       selectedAgentId={selectedAgentId}
       onSelectAgent={onSelectAgent}
+      onClearAgent={onClearAgent}
     />
   )
 }

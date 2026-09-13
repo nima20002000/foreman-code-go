@@ -8,7 +8,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { WorkspaceDetailsResponse } from '@graphql/contracts'
 
 import { WorkflowGraph } from '../features/graph'
-import { OperatorContextPanel } from '../features/operator'
 import { ApiError } from '../shared/api/client'
 import {
   queryKeys,
@@ -36,25 +35,8 @@ function isNotFound(error: unknown): boolean {
   return ApiError.is(error) && error.status === 404
 }
 
-function runnerStatusLabel(status: string | undefined): string {
-  if (!status) return 'Unknown'
-  return status.charAt(0).toUpperCase() + status.slice(1)
-}
-
 function WorkspaceHeader({ details }: { details: WorkspaceDetailsResponse }) {
   return <strong data-testid="workspace-name">{details.workspace.name}</strong>
-}
-
-function RunnerHeader({ details }: { details: WorkspaceDetailsResponse }) {
-  const runner = details.runners?.[0]
-  const status = runner?.health.status
-
-  return (
-    <>
-      <strong data-testid="runner-name">{runner?.name ?? 'Local Runner'}</strong>
-      <span data-testid="runner-health">{runnerStatusLabel(status)}</span>
-    </>
-  )
 }
 
 function cacheWorkspaceProjection(
@@ -182,12 +164,12 @@ export function WorkspaceRouteEntry() {
     [navigate],
   )
 
-  const returnToOperator = useCallback(() => {
+  const clearAgent = useCallback(() => {
     void navigate({
       search: (previous) => {
-        const withoutAgent = { ...previous }
-        delete withoutAgent.agentId
-        return withoutAgent
+        const next = { ...previous }
+        delete next.agentId
+        return next
       },
     })
   }, [navigate])
@@ -239,22 +221,15 @@ export function WorkspaceRouteEntry() {
       state={state}
       slots={{
         workspace: <WorkspaceHeader details={details} />,
-        runner: <RunnerHeader details={details} />,
         graph: workflow ? (
           <WorkflowGraph
             workspaceId={workspaceId}
             workflowId={workflow.id}
             selectedAgentId={agentId}
             onSelectAgent={selectAgent}
+            onClearAgent={clearAgent}
           />
         ) : undefined,
-        context: (
-          <OperatorContextPanel
-            workspaceId={workspaceId}
-            selectedAgentId={agentId}
-            onReturnToOperator={agentId ? returnToOperator : undefined}
-          />
-        ),
       }}
       children={children}
     />

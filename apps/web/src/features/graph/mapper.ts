@@ -17,6 +17,7 @@ import type {
 } from './types'
 
 const DEFAULT_NODE_WIDTH = 238
+const DEFAULT_NODE_HEIGHT = 92
 const DEFAULT_NODE_GAP = 92
 const DEFAULT_NODE_Y = 120
 
@@ -96,6 +97,8 @@ export function workflowToGraph(
       id: workflowNode.id,
       type: 'agent',
       position: workflowNodePosition(workflowNode, index),
+      initialWidth: DEFAULT_NODE_WIDTH,
+      initialHeight: DEFAULT_NODE_HEIGHT,
       selected: options.selectedAgentId === workflowNode.agentId,
       data: {
         workflowNodeId: workflowNode.id,
@@ -105,8 +108,11 @@ export function workflowToGraph(
         description: workflowNode.description ?? agent?.description,
         executionState: state,
         executionStateLabel: executionStateLabel(state),
+        stepLabel: `Step ${index + 1}`,
         waitLabel: waitLabel(agent, state, options.runFacts),
         onSelect: options.onSelectAgent,
+        onCopy: options.onCopyNode,
+        onUnlink: options.onUnlinkNode,
       },
     }
   })
