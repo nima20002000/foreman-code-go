@@ -20,6 +20,7 @@ interface NavigationUiState {
   setWidth: (width: number) => void
   rememberWorkspace: (workspaceId: string) => void
   setWorkspacesExpanded: (expanded: boolean) => void
+  expandOnlyWorkspace: (workspaceId: string) => void
   setWorkspaceExpanded: (workspaceId: string, expanded: boolean) => void
   setSectionExpanded: (
     workspaceId: string,
@@ -98,6 +99,14 @@ export const useNavigationUiStore = create<NavigationUiState>((set) => ({
   },
   setWorkspacesExpanded: (workspacesExpanded) =>
     set((state) => state.workspacesExpanded === workspacesExpanded ? state : { workspacesExpanded }),
+  expandOnlyWorkspace: (workspaceId) =>
+    set((state) => {
+      const expandedIds = Object.entries(state.expandedWorkspaceIds)
+        .filter(([, expanded]) => expanded)
+        .map(([id]) => id)
+      if (expandedIds.length === 1 && expandedIds[0] === workspaceId) return state
+      return { expandedWorkspaceIds: { [workspaceId]: true } }
+    }),
   setWorkspaceExpanded: (workspaceId, expanded) =>
     set((state) => state.expandedWorkspaceIds[workspaceId] === expanded
       ? state

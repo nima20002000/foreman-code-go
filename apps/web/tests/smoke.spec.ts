@@ -225,7 +225,26 @@ test('creates a session workspace from the modal', async ({ page }) => {
 
   await expect(page).toHaveURL(/\/workspaces\/session-/)
   await expect(page.getByTestId('workspace-empty')).toBeVisible()
-  await expect(page.locator('[data-testid^="workspace-entry-session-"]')).toHaveText('Scratch')
+  const sessionWorkspace = page.locator('[data-testid^="workspace-entry-session-"]')
+  const websiteWorkspace = page.getByTestId('workspace-entry-workspace-1')
+  await expect(sessionWorkspace).toHaveText('Scratch')
+  await expect(sessionWorkspace).toHaveClass(/nav-item-active/)
+  await expect(websiteWorkspace).not.toHaveClass(/nav-item-active/)
+  await expect(page.locator('[data-testid^="workspace-entry-"].nav-item-active')).toHaveCount(1)
+  await expect(page.getByRole('button', { name: 'Expand Website' })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  )
+
+  await websiteWorkspace.click()
+  await expect(page).toHaveURL(/\/workspaces\/workspace-1\?workflowId=workflow-content-pipeline$/)
+  await expect(websiteWorkspace).toHaveClass(/nav-item-active/)
+  await expect(sessionWorkspace).not.toHaveClass(/nav-item-active/)
+  await expect(page.locator('[data-testid^="workspace-entry-"].nav-item-active')).toHaveCount(1)
+  await expect(page.getByRole('button', { name: 'Expand Scratch' })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  )
 })
 
 test('keeps graph overlays aligned and collision-free at a narrow viewport', async ({ page }) => {

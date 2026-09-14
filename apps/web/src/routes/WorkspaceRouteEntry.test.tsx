@@ -153,10 +153,27 @@ describe('WorkspaceRouteEntry integration', () => {
     await waitFor(() => expect(router.state.location.pathname).not.toContain(scratchId as string))
     expect(screen.getByTestId('workspace-entry-workspace-1')).toHaveTextContent('Website')
     expect(screen.getByTestId(`workspace-entry-${scratchId}`)).toHaveTextContent('Scratch')
-    expect(screen.getByRole('link', { name: 'Beta' })).toBeVisible()
+    const beta = screen.getByRole('link', { name: 'Beta' })
+    expect(beta).toBeVisible()
+    expect(beta).toHaveClass('nav-item-active')
+    expect(
+      screen.getAllByTestId(/^workspace-entry-/)
+        .filter((entry) => entry.classList.contains('nav-item-active')),
+    ).toEqual([beta])
+    expect(screen.getByRole('button', { name: 'Expand Website' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('button', { name: 'Expand Scratch' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('button', { name: 'Collapse Beta' })).toHaveAttribute('aria-expanded', 'true')
 
     await router.navigate({ to: '/workspaces/$workspaceId', params: { workspaceId: 'workspace-1' } })
-    expect(await screen.findByTestId('workspace-entry-workspace-1')).toHaveTextContent('Website')
+    const website = await screen.findByTestId('workspace-entry-workspace-1')
+    expect(website).toHaveTextContent('Website')
+    expect(website).toHaveClass('nav-item-active')
+    expect(
+      screen.getAllByTestId(/^workspace-entry-/)
+        .filter((entry) => entry.classList.contains('nav-item-active')),
+    ).toEqual([website])
+    expect(screen.getByRole('button', { name: 'Collapse Website' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: 'Expand Beta' })).toHaveAttribute('aria-expanded', 'false')
 
     await router.navigate({
       to: '/workspaces/$workspaceId',

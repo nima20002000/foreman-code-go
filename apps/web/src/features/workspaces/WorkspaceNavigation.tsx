@@ -530,12 +530,13 @@ export function WorkspaceNavigation({
   const workspacesExpanded = useNavigationUiStore((state) => state.workspacesExpanded)
   const setWorkspacesExpanded = useNavigationUiStore((state) => state.setWorkspacesExpanded)
   const expandedWorkspaceIds = useNavigationUiStore((state) => state.expandedWorkspaceIds)
+  const expandOnlyWorkspace = useNavigationUiStore((state) => state.expandOnlyWorkspace)
   const setWorkspaceExpanded = useNavigationUiStore((state) => state.setWorkspaceExpanded)
   const workspacesPresence = usePresence(workspacesExpanded)
 
   useEffect(() => {
-    if (!activeGlobalSection) setWorkspaceExpanded(workspaceId, true)
-  }, [activeGlobalSection, setWorkspaceExpanded, workspaceId])
+    if (!activeGlobalSection) expandOnlyWorkspace(workspaceId)
+  }, [activeGlobalSection, expandOnlyWorkspace, workspaceId])
 
   useEffect(() => {
     for (const workspace of workspaces ?? []) registerWorkspace(workspace)
@@ -630,7 +631,7 @@ export function WorkspaceNavigation({
                     entry={entry}
                     active={entry.id === workspaceId && !activeGlobalSection}
                     expanded={expandedWorkspaceIds[entry.id] ?? entry.id === workspaceId}
-                    onActivate={() => setWorkspaceExpanded(entry.id, true)}
+                    onActivate={() => expandOnlyWorkspace(entry.id)}
                     onToggle={() => toggleWorkspace(entry.id)}
                     activeSection={activeSection}
                     activeWorkflowId={activeWorkflowId}
