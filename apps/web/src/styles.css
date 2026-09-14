@@ -865,7 +865,6 @@ h1 {
    backdrops; the duration tokens collapse to 0s under reduced motion. */
 .workspace-create-dialog,
 .agent-add-backdrop .agent-add-form,
-.agent-detail-dialog,
 .workflow-create-dialog,
 .agent-picker-dialog,
 .agent-picker-popover {
@@ -876,7 +875,6 @@ h1 {
 
 .workspace-create-dialog::-webkit-scrollbar,
 .agent-add-backdrop .agent-add-form::-webkit-scrollbar,
-.agent-detail-dialog::-webkit-scrollbar,
 .workflow-create-dialog::-webkit-scrollbar,
 .agent-picker-dialog::-webkit-scrollbar,
 .agent-picker-popover::-webkit-scrollbar {

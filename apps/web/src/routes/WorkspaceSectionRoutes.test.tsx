@@ -57,27 +57,19 @@ describe('workspace section routes', () => {
 
     expect(await screen.findByRole('heading', { name: 'Agents', level: 1 })).toBeVisible()
     expect(screen.getByRole('link', { name: 'Agents' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByRole('button', { name: /Researcher, researcher, Available/ })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('dialog', { name: 'Researcher' })).toBeVisible()
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Close agent details' }))
-    await waitFor(() => expect(router.state.location.search).toEqual({}))
+    expect(screen.queryByRole('button', { name: /Researcher, researcher, Available/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Researcher' })).not.toBeInTheDocument()
 
-    const developer = screen.getByRole('button', { name: /Developer, developer, Available/ })
-    developer.focus()
-    await userEvent.setup().keyboard('{Enter}')
+    await userEvent.setup().click(screen.getByRole('link', { name: 'Developer' }))
     await waitFor(() => expect(router.state.location.search).toMatchObject({ agentId: 'agent-developer' }))
-    expect(developer).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('dialog', { name: 'Developer' })).toBeVisible()
+    expect(screen.queryByRole('dialog', { name: 'Developer' })).not.toBeInTheDocument()
   })
 
-  it('handles an unknown agent deep link honestly and clears it from the close control', async () => {
-    const { router } = renderRoute('/workspaces/workspace-1/agents?agentId=agent-missing')
+  it('does not open a centered modal for an unknown agent deep link', async () => {
+    renderRoute('/workspaces/workspace-1/agents?agentId=agent-missing')
 
-    expect(await screen.findByRole('dialog', { name: 'Agent unavailable' })).toHaveTextContent(
-      'not available in the current workspace or browser session',
-    )
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Close agent details' }))
-    await waitFor(() => expect(router.state.location.search).toEqual({}))
+    expect(await screen.findByRole('heading', { name: 'Agents', level: 1 })).toBeVisible()
+    expect(screen.queryByRole('dialog', { name: 'Agent unavailable' })).not.toBeInTheDocument()
   })
 
   it('shows an honest error state when the agents request fails', async () => {

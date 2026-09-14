@@ -44,11 +44,11 @@ export interface AgentReorderContainerProps {
 }
 
 export interface AgentReorderCardProps {
-  ref: RefCallback<HTMLButtonElement>
+  ref: RefCallback<HTMLDivElement>
   'data-agent-id': string
   'aria-keyshortcuts': string
-  onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void
-  onKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>) => void
+  onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void
 }
 
 export interface ReorderableAgentsResult {
@@ -73,8 +73,8 @@ interface DragSession {
 
 /**
  * Pointer and keyboard sibling ordering for the agents directory. A short
- * click remains a normal card activation; touch waits for a hold before it
- * claims the gesture, leaving ordinary scrolling and taps alone.
+ * click remains inert; touch waits for a hold before it claims the gesture,
+ * leaving ordinary scrolling and taps alone.
  */
 export function useReorderableAgents(
   workspaceId: string,
@@ -88,14 +88,14 @@ export function useReorderableAgents(
     [items, storedOrder],
   )
   const listRef = useRef<HTMLDivElement | null>(null)
-  const cardRefs = useRef(new Map<string, HTMLButtonElement>())
+  const cardRefs = useRef(new Map<string, HTMLDivElement>())
   const dragRef = useRef<DragSession | null>(null)
   const suppressClickRef = useRef(false)
   const [previewIds, setPreviewIds] = useState<readonly string[] | null>(null)
   const previousRectsRef = useRef(new Map<string, DOMRect>())
   const previousOrderRef = useRef<readonly string[]>(orderedIds)
 
-  const setCardRef = useCallback((id: string, card: HTMLButtonElement | null) => {
+  const setCardRef = useCallback((id: string, card: HTMLDivElement | null) => {
     if (card) cardRefs.current.set(id, card)
     else cardRefs.current.delete(id)
   }, [])
@@ -168,7 +168,7 @@ export function useReorderableAgents(
   )
 
   const beginDrag = useCallback(
-    (event: ReactPointerEvent<HTMLButtonElement>, id: string) => {
+    (event: ReactPointerEvent<HTMLDivElement>, id: string) => {
       if (event.button !== 0 || dragRef.current) return
       if (!listRef.current || !orderedIds.includes(id)) return
 

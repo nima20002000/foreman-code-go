@@ -38,9 +38,6 @@ function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>) {
 function AgentCard({
   agent,
   local,
-  selected,
-  onSelect,
-  buttonRef,
   reorderProps,
   workspaceId,
   blockers,
@@ -49,9 +46,6 @@ function AgentCard({
 }: {
   agent: Agent
   local: boolean
-  selected: boolean
-  onSelect?: (agentId: string) => void
-  buttonRef?: (button: HTMLButtonElement | null) => void
   reorderProps?: AgentReorderCardProps
   workspaceId: string
   blockers: readonly Pick<WorkflowDefinition, 'id' | 'name'>[]
@@ -99,24 +93,18 @@ function AgentCard({
   const role = agent.role ?? 'Agent'
   const status = local ? 'Local session' : executionLabel(agent)
   const { ref: reorderRef, ...reorderAttributes } = reorderProps ?? {}
-  return <div className="agent-directory-card-shell">
-    <button
-      type="button"
-      ref={(button) => {
-        buttonRef?.(button)
-        reorderRef?.(button)
-      }}
-      className="agent-directory-card"
+  return <div
+      ref={reorderRef}
+      className="agent-directory-card-shell"
+      tabIndex={0}
       data-local-agent={local || undefined}
-      data-selected={selected || undefined}
       aria-label={`${agent.name}, ${role}, ${status}`}
-      aria-pressed={selected}
       {...reorderAttributes}
-      onClick={() => onSelect?.(agent.id)}
     >
-      <h2>{agent.name}</h2>
-      <span>{role} · {status}</span>
-    </button>
+      <article className="agent-directory-card">
+        <h2>{agent.name}</h2>
+        <span>{role} · {status}</span>
+      </article>
     <button
       ref={triggerRef}
       type="button"
@@ -124,6 +112,7 @@ function AgentCard({
       aria-label={`Open actions for ${agent.name}`}
       aria-haspopup="dialog"
       aria-expanded={menuOpen}
+      onPointerDown={(event) => event.stopPropagation()}
       onClick={() => {
         if (menuOpen) {
           requestClose()
@@ -140,7 +129,7 @@ function AgentCard({
       <MoreHorizontal aria-hidden="true" size={17} />
     </button>
     {menuOpen ? (
-      <div ref={menuRef} className="agent-directory-card-actions" role="dialog" aria-label={`${agent.name} actions`}>
+      <div ref={menuRef} className="agent-directory-card-actions" role="dialog" aria-label={`${agent.name} actions`} onPointerDown={(event) => event.stopPropagation()}>
         {confirmClose ? (
           <div className="agent-settings-confirm">
             <p>You made changes. Save or discard?</p>
@@ -150,9 +139,20 @@ function AgentCard({
         ) : <>
           <div className="agent-settings-heading">
             <strong>Agent settings</strong>
-            <button type="button" aria-label="Close agent settings" onClick={requestClose}><X aria-hidden="true" size={15} /></button>
+            <div>
+              {harness === 'codex' ? <label className="agent-settings-fast"><input type="checkbox" checked={fastMode} onChange={(event) => setFastMode(event.target.checked)} />Fast mode</label> : null}
+              <button type="button" className="agent-settings-trash" aria-label={`Remove ${agent.name}`} onClick={() => {
+                if (blockers.length > 0) {
+                  setShowBlockers(true)
+                  return
+                }
+                onRemove()
+                closeMenu()
+              }}><Trash2 aria-hidden="true" size={16} /></button>
+              <button type="button" aria-label="Close agent settings" onClick={requestClose}><X aria-hidden="true" size={15} /></button>
+            </div>
           </div>
-          <label>Name<input value={name} onChange={(event) => setName(event.target.value)} /></label>
+          <label className="agent-settings-name">Name<input value={name} onChange={(event) => setName(event.target.value)} /></label>
           <label>Harness<select value={harness} onChange={(event) => setHarness(event.target.value as NonNullable<Agent['harness']>)}>
             <option value="codex">Codex</option><option value="opencode">OpenCode</option>
           </select></label>
@@ -162,7 +162,6 @@ function AgentCard({
           <label>Effort<select value={effort} onChange={(event) => setEffort(event.target.value as NonNullable<Agent['effort']>)}>
             <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option>
           </select></label>
-          {harness === 'codex' ? <label className="agent-settings-fast"><input type="checkbox" checked={fastMode} onChange={(event) => setFastMode(event.target.checked)} />Fast mode</label> : null}
           {showBlockers ? (
           <div className="agent-removal-blocked" role="alert">
             <p>{agent.name} is already in use in:</p>
@@ -180,14 +179,6 @@ function AgentCard({
           ) : null}
           <div className="agent-settings-actions">
             <button type="button" onClick={save} disabled={!dirty}>Save</button>
-            <button type="button" className="agent-settings-trash" aria-label={`Remove ${agent.name}`} onClick={() => {
-          if (blockers.length > 0) {
-            setShowBlockers(true)
-            return
-          }
-          onRemove()
-          closeMenu()
-            }}><Trash2 aria-hidden="true" size={16} /></button>
           </div>
         </>}
       </div>
@@ -199,14 +190,12 @@ export function AgentsDirectoryContent({
   workspaceId,
   agents,
   selectedAgentId,
-  onSelectAgent,
   onClearAgent,
   workflows = [],
 }: {
   workspaceId: string
   agents: readonly Agent[]
   selectedAgentId?: string
-  onSelectAgent?: (agentId: string) => void
   onClearAgent?: () => void
   workflows?: readonly WorkflowDefinition[]
 }) {
@@ -224,13 +213,8 @@ export function AgentsDirectoryContent({
   const [adding, setAdding] = useState(false)
   const [error, setError] = useState<string>()
   const addPresence = usePresence(adding)
-  const detailPresence = usePresence(Boolean(selectedAgentId))
   const addButtonRef = useRef<HTMLButtonElement>(null)
   const dialogRef = useRef<HTMLFormElement>(null)
-  const detailDialogRef = useRef<HTMLDivElement>(null)
-  const detailCloseRef = useRef<HTMLButtonElement>(null)
-  const agentCardRefs = useRef(new Map<string, HTMLButtonElement>())
-  const detailReturnFocusIdRef = useRef<string | undefined>(undefined)
 
   useEffect(() => {
     hydrateWorkspace(workspaceId)
@@ -241,14 +225,6 @@ export function AgentsDirectoryContent({
     setError(undefined)
     addButtonRef.current?.focus()
   }, [])
-
-  const closeAgentDetails = useCallback(() => {
-    const returnFocusId = detailReturnFocusIdRef.current ?? selectedAgentId
-    onClearAgent?.()
-    window.setTimeout(() => {
-      if (returnFocusId) agentCardRefs.current.get(returnFocusId)?.focus()
-    }, 0)
-  }, [onClearAgent, selectedAgentId])
 
   useDismissableSurface({
     open: adding,
@@ -261,18 +237,6 @@ export function AgentsDirectoryContent({
     if (!adding) return
     dialogRef.current?.querySelector<HTMLInputElement>('input[name="name"]')?.focus()
   }, [adding])
-
-  useDismissableSurface({
-    open: Boolean(selectedAgentId),
-    onDismiss: closeAgentDetails,
-    surfaceRef: detailDialogRef,
-  })
-
-  useEffect(() => {
-    if (!selectedAgentId) return
-    setAdding(false)
-    detailCloseRef.current?.focus()
-  }, [selectedAgentId])
 
   const addAgent = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -325,27 +289,6 @@ export function AgentsDirectoryContent({
       ...workflow,
       name: workflowNameOverrides[workflow.id] ?? workflow.name,
     }))
-  const liveAgent = visibleAgents.find((agent) => agent.id === selectedAgentId)
-  const detailAgentSnapshotRef = useRef<Agent | undefined>(liveAgent)
-  if (liveAgent) detailAgentSnapshotRef.current = liveAgent
-  const selectedAgent = liveAgent ?? (detailPresence.exiting ? detailAgentSnapshotRef.current : undefined)
-  const selectedAgentIsLocal = Boolean(selectedAgent && localAgents.some((agent) => agent.id === selectedAgent.id))
-  const openAgentDetails = (agentId: string) => {
-    detailReturnFocusIdRef.current = agentId
-    setAdding(false)
-    onSelectAgent?.(agentId)
-  }
-
-  useEffect(() => {
-    if (selectedAgentId) {
-      detailReturnFocusIdRef.current = selectedAgentId
-      return
-    }
-    const returnFocusId = detailReturnFocusIdRef.current
-    if (!returnFocusId) return
-    window.setTimeout(() => agentCardRefs.current.get(returnFocusId)?.focus(), 0)
-  }, [selectedAgentId])
-
   return (
     <div className="agents-directory" data-testid="agents-directory">
       <header className="agents-directory-header">
@@ -425,13 +368,7 @@ export function AgentsDirectoryContent({
               key={agent.id}
               agent={agent}
               local={localAgentIds.has(agent.id)}
-              selected={selectedAgentId === agent.id}
-              onSelect={openAgentDetails}
               reorderProps={reorder.getCardProps(agent.id)}
-              buttonRef={(button) => {
-                if (button) agentCardRefs.current.set(agent.id, button)
-                else agentCardRefs.current.delete(agent.id)
-              }}
               workspaceId={workspaceId}
               blockers={workspaceWorkflows.filter((workflow) => (
                 workflow.nodes.some((node) => node.agentId === agent.id)
@@ -467,50 +404,6 @@ export function AgentsDirectoryContent({
         {announcement?.message ?? ''}
       </p>
 
-      {detailPresence.mounted ? (
-        <div
-          className="agent-detail-backdrop"
-          data-presence={detailPresence.exiting ? 'exiting' : 'entering'}
-          inert={detailPresence.exiting || undefined}
-        >
-          <div
-            ref={detailDialogRef}
-            className="agent-detail-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="agent-detail-title"
-            aria-describedby="agent-detail-description"
-            onKeyDown={trapDialogFocus}
-          >
-            <div className="agent-detail-heading">
-              <div>
-                <p className="panel-kicker">Agent details</p>
-                <h2 id="agent-detail-title">{selectedAgent ? selectedAgent.name : 'Agent unavailable'}</h2>
-              </div>
-              <button ref={detailCloseRef} type="button" aria-label="Close agent details" onClick={closeAgentDetails}>
-                <X aria-hidden="true" size={17} />
-              </button>
-            </div>
-            {selectedAgent ? (
-              <>
-                <p id="agent-detail-description">
-                  {selectedAgent.description?.trim() || 'No description has been provided.'}
-                </p>
-                <dl className="agent-detail-facts">
-                  <div><dt>Role</dt><dd>{selectedAgent.role ?? 'Agent'}</dd></div>
-                  <div><dt>State</dt><dd>{selectedAgentIsLocal ? 'Not connected' : executionLabel(selectedAgent)}</dd></div>
-                  <div><dt>Model</dt><dd>{selectedAgent.model ?? 'Not specified'}</dd></div>
-                  <div><dt>Source</dt><dd>{selectedAgentIsLocal ? 'Local session' : 'Workspace data'}</dd></div>
-                </dl>
-              </>
-            ) : (
-              <p id="agent-detail-description">
-                This agent is not available in the current workspace or browser session.
-              </p>
-            )}
-          </div>
-        </div>
-      ) : null}
     </div>
   )
 }
@@ -518,12 +411,10 @@ export function AgentsDirectoryContent({
 export function AgentsDirectory({
   workspaceId,
   selectedAgentId,
-  onSelectAgent,
   onClearAgent,
 }: {
   workspaceId: string
   selectedAgentId?: string
-  onSelectAgent?: (agentId: string) => void
   onClearAgent?: () => void
 }) {
   const sessionWorkspace = isSessionWorkspaceId(workspaceId)
@@ -537,7 +428,6 @@ export function AgentsDirectory({
         agents={[]}
         workflows={[]}
         selectedAgentId={selectedAgentId}
-        onSelectAgent={onSelectAgent}
         onClearAgent={onClearAgent}
       />
     )
@@ -564,7 +454,6 @@ export function AgentsDirectory({
       agents={agentsQuery.data.agents}
       workflows={agentsQuery.data.workflows}
       selectedAgentId={selectedAgentId}
-      onSelectAgent={onSelectAgent}
       onClearAgent={onClearAgent}
     />
   )
