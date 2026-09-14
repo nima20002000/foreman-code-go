@@ -284,7 +284,36 @@ export const WorkflowVersionSchema = z
         message: "maxNodeExecutions must allow every workflow node to run once",
       });
     }
+    const nodeIds = new Set<string>();
+    snapshot.definition.nodes.forEach((node, index) => {
+      if (nodeIds.has(node.id)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["definition", "nodes", index, "id"],
+          message: "workflow node IDs must be unique",
+        });
+      }
+      nodeIds.add(node.id);
+    });
+    const edgeIds = new Set<string>();
     snapshot.definition.edges.forEach((edge, index) => {
+      if (edgeIds.has(edge.id)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["definition", "edges", index, "id"],
+          message: "workflow edge IDs must be unique",
+        });
+      }
+      edgeIds.add(edge.id);
+      for (const endpoint of ["source", "target"] as const) {
+        if (!nodeIds.has(edge[endpoint])) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["definition", "edges", index, endpoint],
+            message: `edge ${endpoint} must reference an existing workflow node`,
+          });
+        }
+      }
       if (!edge.route) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
@@ -432,6 +461,17 @@ export const HarnessExecutionSchema = z
         path: ["result"],
         message: "a completed harness execution requires a result and finishedAt",
       });
+    }
+    if (execution.state !== "completed") {
+      for (const field of ["result", "finishedAt"] as const) {
+        if (execution[field] !== undefined) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [field],
+            message: `a non-completed harness execution cannot include ${field}`,
+          });
+        }
+      }
     }
   });
 export type HarnessExecution = z.infer<typeof HarnessExecutionSchema>;

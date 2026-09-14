@@ -1,16 +1,32 @@
+import { loadEnvFile } from 'node:process'
+
 import { buildApp } from './app.js'
 import { loadConfig } from './config.js'
 import { createCheckpointStore } from './infrastructure/checkpoints.js'
 import { createDatabase } from './infrastructure/database.js'
 
 async function main() {
+  // loadEnvFile is available at the declared Node 22.0 runtime baseline, unlike
+  // --env-file-if-exists. Missing local configuration is normal in production.
+  try {
+    loadEnvFile()
+  } catch (error) {
+    if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) {
+      throw error
+    }
+  }
   const config = loadConfig(process.env)
   const database = createDatabase(config.database)
   const checkpoints = createCheckpointStore(
     config.database.connectionString,
     config.checkpoints.schema,
+    config.database,
   )
-  const app = buildApp({ readiness: { database, checkpoints }, logger: true })
+  const app = buildApp({
+    readiness: { database, checkpoints },
+    readinessTimeoutMs: config.readinessTimeoutMs,
+    logger: true,
+  })
 
   app.addHook('onClose', async () => {
     await Promise.allSettled([checkpoints.close(), database.close()])

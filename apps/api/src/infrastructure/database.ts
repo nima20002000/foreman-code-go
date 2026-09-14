@@ -1,29 +1,21 @@
-import pg from 'pg'
+import type pg from 'pg'
+
+import { createPool, queryForReadiness, type DatabaseOptions } from './pool.js'
+
+export type { DatabaseOptions } from './pool.js'
 
 export interface Database {
   readonly pool: pg.Pool
-  ping(): Promise<void>
+  ping(signal?: AbortSignal): Promise<void>
   close(): Promise<void>
 }
 
-export interface DatabaseOptions {
-  connectionString: string
-  maxConnections: number
-  connectionTimeoutMs: number
-}
-
 export function createDatabase(options: DatabaseOptions): Database {
-  const pool = new pg.Pool({
-    connectionString: options.connectionString,
-    max: options.maxConnections,
-    connectionTimeoutMillis: options.connectionTimeoutMs,
-    application_name: 'graphql-api',
-  })
-
+  const pool = createPool(options, 'graphql-api')
   return {
     pool,
-    async ping() {
-      await pool.query('select 1')
+    async ping(signal) {
+      await queryForReadiness(pool, 'select 1', signal)
     },
     async close() {
       await pool.end()

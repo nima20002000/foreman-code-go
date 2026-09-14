@@ -266,6 +266,7 @@ export function workflowToGraph(
 function asDomainEdge(edge: GraphEdge, existing?: WorkflowEdge): WorkflowEdge {
   const label = typeof edge.label === 'string' ? edge.label : existing?.label
   return {
+    ...existing,
     id: edge.id,
     source: edge.source,
     target: edge.target,

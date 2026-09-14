@@ -9,14 +9,15 @@
     "pnpm": ">=9.15.4"
   },
   "scripts": {
-    "dev": "pnpm --filter @graphql/web dev",
-    "dev:api": "pnpm --filter @graphql/api dev",
+    "dev": "pnpm --filter @graphql/contracts build && pnpm --parallel --filter @graphql/contracts --filter @graphql/web dev",
+    "dev:api": "pnpm --filter @graphql/contracts build && pnpm --parallel --filter @graphql/contracts --filter @graphql/api dev",
     "db:up": "docker compose up -d --wait postgres",
     "db:down": "docker compose down",
-    "typecheck": "pnpm -r --if-present typecheck",
-    "lint": "pnpm -r --if-present lint",
-    "test": "pnpm -r --if-present test",
-    "test:integration": "pnpm --filter @graphql/api test:integration",
+    "typecheck": "pnpm --filter @graphql/contracts build && pnpm -r --if-present typecheck",
+    "lint": "pnpm --filter @graphql/contracts build && pnpm -r --if-present lint",
+    "test": "pnpm --filter @graphql/contracts build && pnpm -r --if-present test",
+    "test:integration": "pnpm --filter @graphql/contracts build && pnpm --filter @graphql/api test:integration",
+    "test:production": "node scripts/production-smoke.mjs",
     "build": "pnpm -r --if-present build"
   }
 }

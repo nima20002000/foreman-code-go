@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.16.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
+      - run: node --check scripts/production-smoke.mjs
+      - run: pnpm db:up
+      - run: pnpm test:integration
+      - name: Production start and PostgreSQL restart on Node 22.16.0
+        run: node scripts/production-smoke.mjs --restart-postgres
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.0.0
+      - name: Production start on the declared Node runtime baseline
+        run: node scripts/production-smoke.mjs
+      - name: Stop test infrastructure
+        if: always()
+        run: docker compose down

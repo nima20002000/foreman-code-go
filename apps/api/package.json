@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "node --env-file-if-exists=.env --import tsx src/server.ts",
-    "start": "node --env-file-if-exists=.env dist/server.js",
+    "dev": "node --import tsx src/server.ts",
+    "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run --exclude test/postgres.integration.test.ts",
