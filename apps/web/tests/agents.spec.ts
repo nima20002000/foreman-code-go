@@ -157,7 +157,7 @@ test('connects consecutively selected agent nodes without a source toast', async
   await expect(page).toHaveURL(/\/workspaces\/workspace-1\?workflowId=workflow-content-pipeline$/)
 })
 
-test('keeps the agent picker open while building a connected new workflow', async ({ page }) => {
+test('keeps the agent picker open while adding disconnected workflow agents', async ({ page }) => {
   await page.goto('/workspaces/workspace-1')
   await page.getByRole('button', { name: 'New workflow' }).click()
   await page.getByRole('textbox', { name: 'Name' }).fill('Connected draft')
@@ -173,7 +173,7 @@ test('keeps the agent picker open while building a connected new workflow', asyn
 
   await expect(picker).toBeVisible()
   await expect(page.locator('.react-flow__node')).toHaveCount(2)
-  await expect(page.locator('.react-flow__edge')).toHaveCount(1)
+  await expect(page.locator('.react-flow__edge')).toHaveCount(0)
   await page.keyboard.press('Escape')
   await expect(picker).toBeVisible()
   await picker.getByRole('button', { name: 'Close agent picker' }).click()

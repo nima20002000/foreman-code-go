@@ -129,7 +129,7 @@ describe('GraphEditor persistence boundary', () => {
     expect(getGraphDraft(key)).toBeUndefined()
   })
 
-  it('keeps the picker open and connects consecutively added agents', async () => {
+  it('keeps the picker open and leaves consecutively added agents disconnected', async () => {
     const user = userEvent.setup()
     const emptyWorkflow = { ...workflow, nodes: [], edges: [] }
     const key = workflowDraftKey(emptyWorkflow.workspaceId, emptyWorkflow.id)
@@ -145,9 +145,7 @@ describe('GraphEditor persistence boundary', () => {
     await user.click(within(dialog).getByRole('button', { name: /Developer/ }))
     expect(dialog).toBeVisible()
     expect(getGraphDraft(key)?.workflow.nodes).toHaveLength(2)
-    expect(getGraphDraft(key)?.workflow.edges).toEqual([
-      expect.objectContaining({ source: 'node-agent-one', target: 'node-agent-two' }),
-    ])
+    expect(getGraphDraft(key)?.workflow.edges).toEqual([])
   })
 
   it('shows an honest directory link when the agent catalog is empty', async () => {

@@ -804,27 +804,16 @@ export function GraphEditor({
       : { x: 64 + displayedWorkflow.nodes.length * 330, y: 120 }
     const position = findOpenNodePosition(displayedWorkflow.nodes, anchor)
 
-    let nextEdgeId: string | undefined
-    updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => {
-      const nextNode = {
+    updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => ({
+      ...saved,
+      nodes: [...saved.nodes, {
         id: nodeId,
         agentId: agent.id,
         name: agent.name,
         ...(agent.description ? { description: agent.description } : {}),
         position,
-      }
-      const previousNode = saved.nodes.at(-1)
-      const nextEdge = previousNode && !hasConnection(saved.edges, previousNode.id, nodeId)
-        ? makeWorkflowHandoffEdge(previousNode.id, nodeId)
-        : undefined
-      nextEdgeId = nextEdge?.id
-      return {
-        ...saved,
-        nodes: [...saved.nodes, nextNode],
-        edges: nextEdge ? [...saved.edges, nextEdge] : saved.edges,
-      }
-    })
-    if (nextEdgeId) setEnteringEdgeId(nextEdgeId)
+      }],
+    }))
     if (motionEnabled()) {
       setEnteringNodeIds((current) => new Set(current).add(nodeId))
       const existingTimer = enteringNodeTimersRef.current.get(nodeId)
