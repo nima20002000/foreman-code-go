@@ -18,4 +18,14 @@ describe('workspace session registry', () => {
       { id: 'workspace-2', name: 'Docs' },
     ])
   })
+
+  it('keeps a removed server workspace hidden from later query registration', () => {
+    const store = useWorkspaceSessionStore.getState()
+    store.registerWorkspace({ id: 'workspace-1', name: 'Website' })
+    store.removeWorkspace('workspace-1')
+    store.registerWorkspace({ id: 'workspace-1', name: 'Website' })
+
+    expect(useWorkspaceSessionStore.getState().knownWorkspaces).toEqual([])
+    expect(useWorkspaceSessionStore.getState().hiddenWorkspaceIds).toEqual(['workspace-1'])
+  })
 })

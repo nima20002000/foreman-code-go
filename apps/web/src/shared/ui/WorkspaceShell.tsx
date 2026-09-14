@@ -46,6 +46,8 @@ export interface WorkspaceShellProps {
   activeAgentId?: string
   /** Top-level destination outside the workspace tree. */
   activeGlobalSection?: GlobalNavigationSection
+  /** Workspace directory is selected instead of an individual workspace. */
+  workspaceOverviewActive?: boolean
   /** Server-shaped workspace list; defaults to the active workspace projection. */
   workspaces?: readonly WorkspaceNavigationEntry[]
 }
@@ -67,6 +69,7 @@ export function WorkspaceShell({
   activeWorkflowId,
   activeAgentId,
   activeGlobalSection,
+  workspaceOverviewActive = false,
   workspaces,
 }: WorkspaceShellProps) {
   const navigationCollapsed = useNavigationUiStore((state) => state.collapsed)
@@ -180,6 +183,7 @@ export function WorkspaceShell({
             activeWorkflowId={activeWorkflowId}
             activeAgentId={activeAgentId}
             activeGlobalSection={activeGlobalSection}
+            workspaceOverviewActive={workspaceOverviewActive}
             workspaces={workspaces}
             navigationCollapsed={navigationCollapsed}
           />

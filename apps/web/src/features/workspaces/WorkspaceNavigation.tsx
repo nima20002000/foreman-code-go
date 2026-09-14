@@ -72,6 +72,8 @@ export interface WorkspaceNavigationProps {
    */
   workspaces?: readonly WorkspaceNavigationEntry[]
   navigationCollapsed?: boolean
+  /** The workspace directory is selected instead of a specific workspace. */
+  workspaceOverviewActive?: boolean
   /** Route-supplied submenu content overrides for the active workspace. */
   agentsContent?: ReactNode
   workflowsContent?: ReactNode
@@ -517,6 +519,7 @@ export function WorkspaceNavigation({
   activeGlobalSection,
   workspaces,
   navigationCollapsed = false,
+  workspaceOverviewActive = false,
   agentsContent,
   workflowsContent,
 }: WorkspaceNavigationProps) {
@@ -525,18 +528,14 @@ export function WorkspaceNavigation({
   })
   const sessionWorkspaces = useWorkspaceSessionStore((state) => state.workspaces)
   const knownWorkspaces = useWorkspaceSessionStore((state) => state.knownWorkspaces)
+  const hiddenWorkspaceIds = useWorkspaceSessionStore((state) => state.hiddenWorkspaceIds)
   const registerWorkspace = useWorkspaceSessionStore((state) => state.registerWorkspace)
   const rememberWorkspace = useNavigationUiStore((state) => state.rememberWorkspace)
   const workspacesExpanded = useNavigationUiStore((state) => state.workspacesExpanded)
   const setWorkspacesExpanded = useNavigationUiStore((state) => state.setWorkspacesExpanded)
   const expandedWorkspaceIds = useNavigationUiStore((state) => state.expandedWorkspaceIds)
-  const expandOnlyWorkspace = useNavigationUiStore((state) => state.expandOnlyWorkspace)
   const setWorkspaceExpanded = useNavigationUiStore((state) => state.setWorkspaceExpanded)
   const workspacesPresence = usePresence(workspacesExpanded)
-
-  useEffect(() => {
-    if (!activeGlobalSection) expandOnlyWorkspace(workspaceId)
-  }, [activeGlobalSection, expandOnlyWorkspace, workspaceId])
 
   useEffect(() => {
     for (const workspace of workspaces ?? []) registerWorkspace(workspace)
@@ -546,14 +545,15 @@ export function WorkspaceNavigation({
 
   useEffect(() => {
     const sessionWorkspaceExists = sessionWorkspaces.some((workspace) => workspace.id === workspaceId)
-    if (!activeGlobalSection && (detailsQuery.data?.workspace || sessionWorkspaceExists)) {
+    if (!activeGlobalSection && !workspaceOverviewActive && (detailsQuery.data?.workspace || sessionWorkspaceExists)) {
       rememberWorkspace(workspaceId)
     }
-  }, [activeGlobalSection, detailsQuery.data?.workspace, rememberWorkspace, sessionWorkspaces, workspaceId])
+  }, [activeGlobalSection, detailsQuery.data?.workspace, rememberWorkspace, sessionWorkspaces, workspaceId, workspaceOverviewActive])
 
   const entries = useMemo<readonly WorkspaceNavigationEntry[]>(
     () => {
-      const next = [...knownWorkspaces]
+      const hidden = new Set(hiddenWorkspaceIds)
+      const next = knownWorkspaces.filter((entry) => !hidden.has(entry.id))
       const known = new Set(next.map((entry) => entry.id))
       for (const sessionWorkspace of sessionWorkspaces) {
         if (!known.has(sessionWorkspace.id)) {
@@ -561,7 +561,7 @@ export function WorkspaceNavigation({
           known.add(sessionWorkspace.id)
         }
       }
-      if (!known.has(workspaceId)) {
+      if (!activeGlobalSection && !workspaceOverviewActive && !known.has(workspaceId)) {
         next.unshift({
           id: workspaceId,
           name: detailsQuery.data?.workspace.name ?? workspaceId,
@@ -569,7 +569,7 @@ export function WorkspaceNavigation({
       }
       return next
     },
-    [detailsQuery.data?.workspace.name, knownWorkspaces, sessionWorkspaces, workspaceId],
+    [activeGlobalSection, detailsQuery.data?.workspace.name, hiddenWorkspaceIds, knownWorkspaces, sessionWorkspaces, workspaceId, workspaceOverviewActive],
   )
 
   const entryItems = useMemo(
@@ -592,27 +592,39 @@ export function WorkspaceNavigation({
     setWorkspaceExpanded(id, !(expandedWorkspaceIds[id] ?? id === workspaceId))
   }
 
-  const workspacesActive = !activeGlobalSection && workspaceSections.includes(activeSection)
+  const workspacesActive = workspaceOverviewActive || (
+    !activeGlobalSection && workspaceSections.includes(activeSection)
+  )
 
   return (
     <>
       <ul className="workspace-navigation" data-testid="workspace-navigation">
         <li>
-          <button
-            type="button"
-            className={`nav-item nav-item-parent${workspacesActive ? ' nav-item-active' : ''}`}
-            aria-expanded={workspacesExpanded}
-            aria-controls="workspace-entries"
-            aria-label={navigationCollapsed ? 'Workspaces' : undefined}
-            title="Workspaces"
-            onClick={() => setWorkspacesExpanded(!workspacesExpanded)}
-          >
-            <span className="nav-item-primary">
-              <PanelsTopLeft aria-hidden="true" className="nav-item-icon" size={16} />
-              <span className="nav-item-label">Workspaces</span>
-            </span>
-            <ChevronDown aria-hidden="true" className="nav-item-chevron" size={14} />
-          </button>
+          <div className="nav-item-row">
+            <Link
+              to="/workspaces"
+              activeOptions={{ exact: true }}
+              className={`nav-item nav-item-parent${workspacesActive ? ' nav-item-active' : ''}`}
+              aria-label={navigationCollapsed ? 'Workspaces' : undefined}
+              title="Workspaces"
+            >
+              <span className="nav-item-primary">
+                <PanelsTopLeft aria-hidden="true" className="nav-item-icon" size={16} />
+                <span className="nav-item-label">Workspaces</span>
+              </span>
+            </Link>
+            <button
+              type="button"
+              className="nav-item-toggle"
+              aria-expanded={workspacesExpanded}
+              aria-controls="workspace-entries"
+              aria-label="Workspaces"
+              title="Workspaces"
+              onClick={() => setWorkspacesExpanded(!workspacesExpanded)}
+            >
+              <ChevronDown aria-hidden="true" className="nav-item-chevron" size={14} />
+            </button>
+          </div>
 
           {workspacesPresence.mounted ? (
             <ul
@@ -629,9 +641,11 @@ export function WorkspaceNavigation({
                   <WorkspaceTreeItem
                     key={entry.id}
                     entry={entry}
-                    active={entry.id === workspaceId && !activeGlobalSection}
-                    expanded={expandedWorkspaceIds[entry.id] ?? entry.id === workspaceId}
-                    onActivate={() => expandOnlyWorkspace(entry.id)}
+                    active={entry.id === workspaceId && !activeGlobalSection && !workspaceOverviewActive}
+                    expanded={expandedWorkspaceIds[entry.id] ?? (
+                      entry.id === workspaceId && !activeGlobalSection && !workspaceOverviewActive
+                    )}
+                    onActivate={() => rememberWorkspace(entry.id)}
                     onToggle={() => toggleWorkspace(entry.id)}
                     activeSection={activeSection}
                     activeWorkflowId={activeWorkflowId}

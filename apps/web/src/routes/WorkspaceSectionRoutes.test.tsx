@@ -37,6 +37,21 @@ describe('workspace section routes', () => {
     )
   })
 
+  it('opens the workspace card directory as the default view with child menus closed', async () => {
+    const { router } = renderRoute('/')
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces'))
+    expect(await screen.findByRole('heading', { name: 'Workspaces', level: 1 })).toBeVisible()
+    expect(await screen.findByTestId('workspace-card-workspace-1')).toHaveTextContent('Website')
+    expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByTestId('workspace-entry-workspace-1')).not.toHaveClass('nav-item-active')
+    expect(screen.getByRole('button', { name: 'Expand Website' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
+  })
+
   it('deep-links to the agents directory and marks its navigation active', async () => {
     const { router } = renderRoute('/workspaces/workspace-1/agents?agentId=agent-researcher')
 
@@ -115,7 +130,7 @@ describe('workspace section routes', () => {
     expect(await screen.findByRole('heading', { name: 'Files', level: 1 })).toBeVisible()
     expect(screen.getByTestId('coming-soon')).toHaveTextContent('Coming soon')
     expect(screen.getByRole('link', { name: 'Files' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByRole('button', { name: 'Workspaces' })).toHaveClass('nav-item-active')
+    expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
   })
 
   it('places Browsers under Settings and preserves its deep link', async () => {

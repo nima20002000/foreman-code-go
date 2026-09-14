@@ -27,13 +27,11 @@ test('keeps workspace page titles and section headings on one type scale', async
   expect(await fontSize(sectionHeading)).toBe('18px')
 })
 
-test('keeps placeholder and landing text groups on the shared spacing rhythm', async ({ page }) => {
+test('keeps placeholder and workspace-directory text on the shared spacing rhythm', async ({ page }) => {
   await page.goto('/')
-  const landingLink = page.locator('.shell-card a')
-  await expect(landingLink).toBeVisible()
-  expect(await landingLink.evaluate((element) => getComputedStyle(element).textDecorationLine)).toBe(
-    'underline',
-  )
+  const directoryTitle = page.getByRole('heading', { name: 'Workspaces', level: 1 })
+  await expect(directoryTitle).toBeVisible()
+  expect(await fontSize(directoryTitle)).toBe('24px')
 
   await page.goto('/workspaces/workspace-1')
   await page.getByRole('combobox', { name: 'Mock data scenario' }).selectOption('empty')

@@ -22,7 +22,7 @@ describe('WorkspaceShell', () => {
 
     const workspaces = screen.getByRole('button', { name: 'Workspaces' })
     expect(workspaces).toHaveAttribute('aria-expanded', 'true')
-    expect(workspaces).toHaveClass('nav-item-active')
+    expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
 
     const workflows = screen.getByRole('link', { name: 'Workflows' })
     expect(workflows).toHaveAttribute('href', '/workspaces/workspace-1')
@@ -74,7 +74,7 @@ describe('WorkspaceShell', () => {
 
     expect(screen.getByTestId('workspace-shell')).toHaveClass('workspace-shell-navigation-collapsed')
     expect(screen.getByRole('complementary', { name: 'Primary navigation' })).toHaveAttribute('data-collapsed', 'true')
-    expect(screen.getByRole('button', { name: 'Workspaces' })).toHaveAttribute('title', 'Workspaces')
+    expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveAttribute('title', 'Workspaces')
     expect(screen.getByRole('link', { name: 'Agents' })).toHaveAttribute('title', 'Agents')
 
     const expand = screen.getByRole('button', { name: 'Expand navigation' })
@@ -100,7 +100,7 @@ describe('WorkspaceShell', () => {
 
     expect(screen.getByTestId('sidebar-brand')).toHaveTextContent('GraphQL')
     expect(screen.getByTestId('sidebar-brand').querySelector('.sidebar-brand-name')).toHaveTextContent('GraphQL')
-    expect(screen.getByRole('button', { name: 'Workspaces' })).toHaveAttribute('title', 'Workspaces')
+    expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveAttribute('title', 'Workspaces')
   })
 
   it('marks the current directory route and its parent menu active', async () => {
@@ -109,7 +109,7 @@ describe('WorkspaceShell', () => {
     )
 
     expect(await screen.findByRole('link', { name: 'Agents' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByRole('button', { name: 'Workspaces' })).toHaveClass('nav-item-active')
+    expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
     expect(screen.getByRole('link', { name: 'Workflows' })).not.toHaveAttribute('aria-current')
     expect(screen.getByRole('region', { name: 'Workspace content' })).toHaveTextContent('Directory')
   })
@@ -118,7 +118,7 @@ describe('WorkspaceShell', () => {
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" activeGlobalSection="terminal" />)
 
     expect(await screen.findByRole('link', { name: 'Terminal' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByRole('button', { name: 'Workspaces' })).not.toHaveClass('nav-item-active')
+    expect(screen.getByRole('link', { name: 'Workspaces' })).not.toHaveClass('nav-item-active')
     expect(screen.getByTestId('workspace-entry-workspace-1')).not.toHaveClass('nav-item-active')
   })
 

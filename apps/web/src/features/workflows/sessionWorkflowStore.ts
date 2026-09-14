@@ -13,6 +13,7 @@ interface SessionWorkflowState {
   workflows: Record<string, WorkflowDefinition>
   createSessionWorkflow: (input: SessionWorkflowInput) => WorkflowDefinition
   saveSessionWorkflow: (workflow: WorkflowDefinition) => void
+  removeWorkspaceWorkflows: (workspaceId: string) => void
   clearSessionWorkflows: () => void
 }
 
@@ -50,5 +51,11 @@ export const useSessionWorkflowStore = create<SessionWorkflowState>((set) => ({
       if (!state.workflows[workflow.id]) return state
       return { workflows: { ...state.workflows, [workflow.id]: workflow } }
     }),
+  removeWorkspaceWorkflows: (workspaceId) =>
+    set((state) => ({
+      workflows: Object.fromEntries(
+        Object.entries(state.workflows).filter(([, workflow]) => workflow.workspaceId !== workspaceId),
+      ),
+    })),
   clearSessionWorkflows: () => set({ workflows: {} }),
 }))

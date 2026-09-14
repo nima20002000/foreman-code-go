@@ -1,4 +1,5 @@
 export { WorkspaceNavigation } from './WorkspaceNavigation'
+export { WorkspaceDirectory } from './WorkspaceDirectory'
 export type {
   WorkspaceNavigationEntry,
   WorkspaceNavigationProps,

@@ -42,3 +42,8 @@ export function deleteAgentForSession(workspaceId: string, agentId: string) {
   sessionStorage.setItem(deletedAgentsKey(workspaceId), JSON.stringify(deletedAgentIds))
   return { localAgents, deletedAgentIds }
 }
+
+export function clearWorkspaceAgents(workspaceId: string): void {
+  sessionStorage.removeItem(localAgentsKey(workspaceId))
+  sessionStorage.removeItem(deletedAgentsKey(workspaceId))
+}

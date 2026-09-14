@@ -3,7 +3,23 @@ import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
 
 import { AgentsDirectory } from '../features/agents'
 import { WorkspaceShell, type WorkspaceSection } from '../shared/ui/WorkspaceShell'
-import type { GlobalNavigationSection } from '../features/workspaces'
+import {
+  WorkspaceDirectory,
+  useNavigationUiStore,
+  type GlobalNavigationSection,
+} from '../features/workspaces'
+
+export function WorkspacesRouteEntry() {
+  const activeWorkspaceId = useNavigationUiStore((state) => state.activeWorkspaceId)
+
+  return (
+    <WorkspaceShell
+      workspaceId={activeWorkspaceId ?? 'workspace-1'}
+      workspaceOverviewActive
+      slots={{ main: <WorkspaceDirectory /> }}
+    />
+  )
+}
 
 export function AgentsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/agents' })

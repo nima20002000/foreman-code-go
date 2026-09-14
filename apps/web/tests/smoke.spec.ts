@@ -4,7 +4,18 @@ test('loads the workbench shell', async ({ page }) => {
   await page.goto('/')
 
   await expect(page).toHaveTitle('graphql')
-  await expect(page.getByRole('heading', { name: 'graphql' })).toBeVisible()
+  await expect(page).toHaveURL('/workspaces')
+  await expect(page.getByRole('heading', { name: 'Workspaces', level: 1 })).toBeVisible()
+  await expect(page.getByTestId('workspace-card-workspace-1')).toContainText('Website')
+  await expect(page.getByRole('button', { name: 'Expand Website' })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  )
+
+  await page.getByRole('button', { name: 'Delete Website' }).click()
+  await expect(page.getByTestId('workspace-card-workspace-1')).toHaveCount(0)
+  await expect(page.getByTestId('workspace-directory-empty')).toBeVisible()
+  await expect(page.getByTestId('workspace-entry-workspace-1')).toHaveCount(0)
 })
 
 test('loads workspace data through MSW and keeps agent selection in browser history', async ({ page }) => {
@@ -154,7 +165,7 @@ test('collapses the left navigation to an icon rail and gives the graph the free
   await expect(collapse).toBeFocused()
   await collapse.press('Enter')
   await expect(page.getByRole('button', { name: 'Expand navigation' })).toHaveAttribute('aria-expanded', 'false')
-  await expect(page.getByRole('button', { name: 'Workspaces' })).toHaveAttribute('title', 'Workspaces')
+  await expect(page.getByRole('link', { name: 'Workspaces' })).toHaveAttribute('title', 'Workspaces')
   await expect(page.getByRole('link', { name: 'Agents' })).toHaveAttribute('href', '/workspaces/workspace-1/agents')
   await expect(page.getByRole('link', { name: 'Terminal' })).toHaveAttribute('href', '/terminal')
   await expect(page.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings')
@@ -172,7 +183,7 @@ test('nests workspace destinations under an expandable workspaces menu', async (
 
   const workspaces = page.getByRole('button', { name: 'Workspaces' })
   await expect(workspaces).toHaveAttribute('aria-expanded', 'true')
-  await expect(workspaces).toHaveClass(/nav-item-active/)
+  await expect(page.getByRole('link', { name: 'Workspaces' })).toHaveClass(/nav-item-active/)
 
   const workspaceEntry = page.getByTestId('workspace-entry-workspace-1')
   const workspaceToggle = page.getByRole('button', { name: 'Collapse Website' })
@@ -208,7 +219,7 @@ test('nests workspace destinations under an expandable workspaces menu', async (
   await expect(page.getByRole('heading', { name: 'Files' })).toBeVisible()
   await expect(page.getByTestId('coming-soon')).toContainText('Coming soon')
   await expect(page.getByRole('link', { name: 'Files' })).toHaveAttribute('aria-current', 'page')
-  await expect(workspaces).toHaveClass(/nav-item-active/)
+  await expect(page.getByRole('link', { name: 'Workspaces' })).toHaveClass(/nav-item-active/)
 })
 
 test('creates a session workspace from the modal', async ({ page }) => {
@@ -236,7 +247,14 @@ test('creates a session workspace from the modal', async ({ page }) => {
     'false',
   )
 
-  await websiteWorkspace.click()
+  await page.getByRole('link', { name: 'Workspaces' }).click()
+  await expect(page).toHaveURL('/workspaces')
+  await expect(page.getByTestId('workspace-card-workspace-1')).toContainText('Website')
+  await expect(page.locator('[data-testid^="workspace-card-session-"]')).toContainText('Scratch')
+  await expect(page.getByRole('button', { name: 'Expand Website' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Expand Scratch' })).toBeVisible()
+
+  await page.getByTestId('workspace-card-workspace-1').getByRole('link', { name: 'Website' }).click()
   await expect(page).toHaveURL(/\/workspaces\/workspace-1\?workflowId=workflow-content-pipeline$/)
   await expect(websiteWorkspace).toHaveClass(/nav-item-active/)
   await expect(sessionWorkspace).not.toHaveClass(/nav-item-active/)

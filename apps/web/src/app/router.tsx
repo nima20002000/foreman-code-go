@@ -3,10 +3,10 @@ import {
   createRoute,
   createRouter,
   Outlet,
+  redirect,
 } from '@tanstack/react-router'
 import { UrlSearchSelectionSchema } from '@graphql/contracts'
 
-import { App } from './App'
 import { WorkspaceRouteEntry } from '../routes/WorkspaceRouteEntry'
 import {
   AgentsRouteEntry,
@@ -15,6 +15,7 @@ import {
   GlobalComingSoonRouteEntry,
   GlobalSettingsRouteEntry,
   SettingsRouteEntry,
+  WorkspacesRouteEntry,
 } from '../routes/WorkspaceSectionRoutes'
 
 const rootRoute = createRootRoute({
@@ -24,7 +25,15 @@ const rootRoute = createRootRoute({
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
-  component: App,
+  beforeLoad: () => {
+    throw redirect({ to: '/workspaces' })
+  },
+})
+
+const workspacesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/workspaces',
+  component: WorkspacesRouteEntry,
 })
 
 const workspaceRoute = createRoute({
@@ -84,6 +93,7 @@ const globalSettingsRoute = createRoute({
 
 export const routeTree = rootRoute.addChildren([
   indexRoute,
+  workspacesRoute,
   workspaceRoute,
   agentsRoute,
   browsersRoute,

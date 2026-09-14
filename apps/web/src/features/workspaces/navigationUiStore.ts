@@ -20,13 +20,13 @@ interface NavigationUiState {
   setWidth: (width: number) => void
   rememberWorkspace: (workspaceId: string) => void
   setWorkspacesExpanded: (expanded: boolean) => void
-  expandOnlyWorkspace: (workspaceId: string) => void
   setWorkspaceExpanded: (workspaceId: string, expanded: boolean) => void
   setSectionExpanded: (
     workspaceId: string,
     section: ExpandableWorkspaceSection,
     expanded: boolean,
   ) => void
+  removeWorkspaceState: (workspaceId: string) => void
   reset: () => void
 }
 
@@ -95,18 +95,12 @@ export const useNavigationUiStore = create<NavigationUiState>((set) => ({
     set((state) => state.width === nextWidth ? state : { width: nextWidth })
   },
   rememberWorkspace: (workspaceId) => {
-    set((state) => state.activeWorkspaceId === workspaceId ? state : { activeWorkspaceId: workspaceId })
+    set((state) => state.activeWorkspaceId === workspaceId
+      ? state
+      : { activeWorkspaceId: workspaceId, expandedWorkspaceIds: {} })
   },
   setWorkspacesExpanded: (workspacesExpanded) =>
     set((state) => state.workspacesExpanded === workspacesExpanded ? state : { workspacesExpanded }),
-  expandOnlyWorkspace: (workspaceId) =>
-    set((state) => {
-      const expandedIds = Object.entries(state.expandedWorkspaceIds)
-        .filter(([, expanded]) => expanded)
-        .map(([id]) => id)
-      if (expandedIds.length === 1 && expandedIds[0] === workspaceId) return state
-      return { expandedWorkspaceIds: { [workspaceId]: true } }
-    }),
   setWorkspaceExpanded: (workspaceId, expanded) =>
     set((state) => state.expandedWorkspaceIds[workspaceId] === expanded
       ? state
@@ -120,6 +114,20 @@ export const useNavigationUiStore = create<NavigationUiState>((set) => ({
             [workspaceId]: { ...state.expandedSections[workspaceId], [section]: expanded },
           },
         }),
+  removeWorkspaceState: (workspaceId) =>
+    set((state) => {
+      const expandedWorkspaceIds = { ...state.expandedWorkspaceIds }
+      const expandedSections = { ...state.expandedSections }
+      delete expandedWorkspaceIds[workspaceId]
+      delete expandedSections[workspaceId]
+      return {
+        activeWorkspaceId: state.activeWorkspaceId === workspaceId
+          ? undefined
+          : state.activeWorkspaceId,
+        expandedWorkspaceIds,
+        expandedSections,
+      }
+    }),
   reset: () => {
     removeSessionValue(COLLAPSED_STORAGE_KEY)
     removeSessionValue(WIDTH_STORAGE_KEY)

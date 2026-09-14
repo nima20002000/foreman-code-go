@@ -3,6 +3,7 @@ import type { Agent } from '@graphql/contracts'
 
 import {
   deleteAgentForSession,
+  clearWorkspaceAgents,
   readDeletedAgentIds,
   readLocalAgents,
   writeLocalAgents,
@@ -21,6 +22,7 @@ interface AgentDirectoryState {
   hydrateWorkspace: (workspaceId: string) => void
   setLocalAgents: (workspaceId: string, agents: readonly Agent[]) => void
   deleteAgent: (workspaceId: string, agentId: string) => void
+  removeWorkspace: (workspaceId: string) => void
   announce: (message: string) => void
   reset: () => void
 }
@@ -68,6 +70,16 @@ export const useAgentDirectoryStore = create<AgentDirectoryState>((set) => ({
         [workspaceId]: catalog,
       },
     }))
+  },
+  removeWorkspace: (workspaceId) => {
+    clearWorkspaceAgents(workspaceId)
+    set((state) => {
+      const orders = { ...state.orders }
+      const catalogs = { ...state.catalogs }
+      delete orders[workspaceId]
+      delete catalogs[workspaceId]
+      return { orders, catalogs }
+    })
   },
   announce: (message) =>
     set((state) => ({

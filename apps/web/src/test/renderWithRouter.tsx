@@ -11,6 +11,7 @@ import {
 import { render } from '@testing-library/react'
 
 const shellDestinationPaths = [
+  '/workspaces',
   '/workspaces/$workspaceId',
   '/workspaces/$workspaceId/agents',
   '/workspaces/$workspaceId/files',
