@@ -167,6 +167,8 @@ export function WorkspaceRouteEntry() {
     enabled: !sessionWorkspaceRoute,
   })
   const sessionWorkflows = useSessionWorkflowStore((state) => state.workflows)
+  const workflowNameOverrides = useSessionWorkflowStore((state) => state.workflowNameOverrides)
+  const hiddenWorkflowIds = useSessionWorkflowStore((state) => state.hiddenWorkflowIds)
   const saveSessionWorkflow = useSessionWorkflowStore((state) => state.saveSessionWorkflow)
 
   const selectAgent = useCallback(
@@ -201,15 +203,20 @@ export function WorkspaceRouteEntry() {
     ? sessionWorkspaceDetails(sessionWorkspace)
     : workspaceQuery.data
   const workspaceSessionWorkflows = Object.values(sessionWorkflows).filter(
-    (workflow) => workflow.workspaceId === workspaceId,
+    (workflow) => workflow.workspaceId === workspaceId && !hiddenWorkflowIds.includes(workflow.id),
   )
   const sessionWorkflowCandidate = workflowId ? sessionWorkflows[workflowId] : undefined
   const sessionWorkflow =
-    sessionWorkflowCandidate?.workspaceId === workspaceId ? sessionWorkflowCandidate : undefined
+    sessionWorkflowCandidate?.workspaceId === workspaceId && !hiddenWorkflowIds.includes(sessionWorkflowCandidate.id)
+      ? sessionWorkflowCandidate
+      : undefined
+  const availableWorkflows = resolvedDetails?.workflows
+    .filter((item) => !hiddenWorkflowIds.includes(item.id))
+    .map((item) => ({ ...item, name: workflowNameOverrides[item.id] ?? item.name })) ?? []
   const workflow = resolvedDetails
     ? sessionWorkflow ??
-      resolvedDetails.workflows.find((item) => item.id === workflowId) ??
-      resolvedDetails.workflows[0] ??
+      availableWorkflows.find((item) => item.id === workflowId) ??
+      availableWorkflows[0] ??
       workspaceSessionWorkflows[0]
     : undefined
 

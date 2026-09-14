@@ -11,9 +11,13 @@ export interface SessionWorkflowInput {
 interface SessionWorkflowState {
   /** Session-created workflow definitions keyed by their generated draft id. */
   workflows: Record<string, WorkflowDefinition>
+  workflowNameOverrides: Readonly<Record<string, string>>
+  hiddenWorkflowIds: readonly string[]
   createSessionWorkflow: (input: SessionWorkflowInput) => WorkflowDefinition
   saveSessionWorkflow: (workflow: WorkflowDefinition) => void
   removeWorkspaceWorkflows: (workspaceId: string) => void
+  renameWorkflow: (workflowId: string, name: string) => void
+  removeWorkflow: (workflowId: string) => void
   clearSessionWorkflows: () => void
 }
 
@@ -31,6 +35,8 @@ function nextDraftId(): string {
  */
 export const useSessionWorkflowStore = create<SessionWorkflowState>((set) => ({
   workflows: {},
+  workflowNameOverrides: {},
+  hiddenWorkflowIds: [],
   createSessionWorkflow: (input) => {
     const name = input.name.trim()
     const description = input.description?.trim()
@@ -57,5 +63,28 @@ export const useSessionWorkflowStore = create<SessionWorkflowState>((set) => ({
         Object.entries(state.workflows).filter(([, workflow]) => workflow.workspaceId !== workspaceId),
       ),
     })),
-  clearSessionWorkflows: () => set({ workflows: {} }),
+  renameWorkflow: (workflowId, name) =>
+    set((state) => {
+      const workflow = state.workflows[workflowId]
+      return {
+        workflows: workflow
+          ? { ...state.workflows, [workflowId]: { ...workflow, name } }
+          : state.workflows,
+        workflowNameOverrides: { ...state.workflowNameOverrides, [workflowId]: name },
+      }
+    }),
+  removeWorkflow: (workflowId) =>
+    set((state) => {
+      const workflows = { ...state.workflows }
+      delete workflows[workflowId]
+      return {
+        workflows,
+        hiddenWorkflowIds: [...new Set([...state.hiddenWorkflowIds, workflowId])],
+      }
+    }),
+  clearSessionWorkflows: () => set({
+    workflows: {},
+    workflowNameOverrides: {},
+    hiddenWorkflowIds: [],
+  }),
 }))

@@ -54,6 +54,11 @@ export const HarnessSummarySchema = z
   .strict();
 export type HarnessSummary = z.infer<typeof HarnessSummarySchema>;
 
+export const AgentHarnessSchema = z.enum(["codex", "opencode"]);
+export type AgentHarness = z.infer<typeof AgentHarnessSchema>;
+export const AgentEffortSchema = z.enum(["low", "medium", "high", "xhigh"]);
+export type AgentEffort = z.infer<typeof AgentEffortSchema>;
+
 /** An Agent is a separately addressable worker; workflow nodes reference it by agentId. */
 export const AgentSchema = z
   .object({
@@ -66,7 +71,10 @@ export const AgentSchema = z
     /** Links this logical Agent projection to its current run summary, if any. */
     activeRunId: IdSchema.optional(),
     harnessSummary: HarnessSummarySchema.optional(),
+    harness: AgentHarnessSchema.optional(),
     model: z.string().trim().min(1).optional(),
+    effort: AgentEffortSchema.optional(),
+    fastMode: z.boolean().optional(),
     ...OptionalTimestampFields,
   })
   .strict();

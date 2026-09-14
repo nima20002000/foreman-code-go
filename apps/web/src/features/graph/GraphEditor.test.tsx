@@ -115,8 +115,10 @@ describe('GraphEditor persistence boundary', () => {
     await user.keyboard('{Escape}')
     expect(screen.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
     fireEvent.mouseDown(document.body)
-    expect(screen.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
+    expect(screen.queryByRole('dialog', { name: 'Add agent to graph' })).not.toBeInTheDocument()
+    expect(add).toHaveFocus()
 
+    await user.click(add)
     await user.click(screen.getByRole('dialog', { name: 'Add agent to graph' }).querySelector('[data-agent-picker-option]') as HTMLElement)
     expect(getGraphDraft(key)?.workflow.nodes).toHaveLength(3)
     expect(screen.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
@@ -156,7 +158,7 @@ describe('GraphEditor persistence boundary', () => {
     expect(screen.getByRole('link', { name: 'Open Agents directory' })).toHaveAttribute('href', '/workspaces/workspace-1/agents')
   })
 
-  it('offers only Unlink and Delete, keeps inside clicks open, and unlinks one graph reference', async () => {
+  it('offers graph-only actions, keeps inside clicks open, and unlinks one graph reference', async () => {
     const user = userEvent.setup()
     const key = workflowDraftKey(workflow.workspaceId, workflow.id)
     renderEditor()
@@ -166,6 +168,7 @@ describe('GraphEditor persistence boundary', () => {
     const menu = screen.getByRole('menu', { name: 'Researcher node actions' })
     expect(menu).toBeVisible()
     expect(screen.getByRole('menuitem', { name: 'Unlink' })).toHaveFocus()
+    expect(screen.getByRole('menuitem', { name: 'Remove from workflow' })).toBeVisible()
     expect(screen.queryByRole('menuitem', { name: 'Copy' })).not.toBeInTheDocument()
     fireEvent.mouseDown(menu)
     expect(menu).toBeVisible()
@@ -305,17 +308,21 @@ describe('GraphEditor persistence boundary', () => {
     expect(screen.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
   })
 
-  it('keeps the agent picker open until its close control is used', async () => {
+  it('dismisses the agent picker outside, ignores Escape, and supports its close control', async () => {
     const user = userEvent.setup()
     renderEditor()
     const add = screen.getByRole('button', { name: 'Add agent to graph' })
     await user.click(add)
     expect(screen.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
 
-    fireEvent.mouseDown(document.body)
     await user.keyboard('{Escape}')
     expect(screen.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
 
+    fireEvent.mouseDown(document.body)
+    expect(screen.queryByRole('dialog', { name: 'Add agent to graph' })).not.toBeInTheDocument()
+    expect(add).toHaveFocus()
+
+    await user.click(add)
     await user.click(screen.getByRole('button', { name: 'Close agent picker' }))
     expect(screen.queryByRole('dialog', { name: 'Add agent to graph' })).not.toBeInTheDocument()
     expect(add).toHaveFocus()
@@ -348,30 +355,7 @@ describe('GraphEditor persistence boundary', () => {
     }
   })
 
-  it('cancels deletion from Escape or Cancel without changing the catalog or graph', async () => {
-    const user = userEvent.setup()
-    renderEditor()
-    const trigger = screen.getByRole('button', { name: 'Open actions for Researcher' })
-
-    await user.click(trigger)
-    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
-    expect(screen.queryByRole('menu', { name: 'Researcher node actions' })).not.toBeInTheDocument()
-    expect(screen.getByRole('alertdialog', { name: 'Delete Researcher from this session?' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus()
-    await user.keyboard('{Escape}')
-    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
-    await waitFor(() => expect(trigger).toHaveFocus())
-
-    await user.click(trigger)
-    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
-    await user.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
-    expect(readDeletedAgentIds(workflow.workspaceId)).toEqual([])
-    expect(getGraphDraft(workflowDraftKey(workflow.workspaceId, workflow.id))).toBeUndefined()
-    expect(screen.getByRole('button', { name: 'Researcher agent, Step 1' })).toBeVisible()
-  })
-
-  it('deletes an agent for the browser session, cleans every reference, and keeps cleanup after discard', async () => {
+  it('removes only the selected workflow node without deleting its agent', async () => {
     const repeatedWorkflow: WorkflowDefinition = {
       ...workflow,
       nodes: [
@@ -385,36 +369,19 @@ describe('GraphEditor persistence boundary', () => {
     }
     const key = workflowDraftKey(repeatedWorkflow.workspaceId, repeatedWorkflow.id)
     const user = userEvent.setup()
-    const { queryClient } = renderEditor({ workflow: repeatedWorkflow })
+    renderEditor({ workflow: repeatedWorkflow })
 
     await user.click(screen.getAllByRole('button', { name: 'Open actions for Researcher' })[0] as HTMLElement)
-    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
-    expect(screen.getByRole('alertdialog')).toHaveTextContent('It does not delete backend data')
-    await user.click(screen.getByRole('button', { name: 'Delete for this session' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Remove from workflow' }))
 
-    expect(getGraphDraft(key)?.workflow.nodes.map((node) => node.agentId)).toEqual(['agent-two'])
-    expect(getGraphDraft(key)?.workflow.edges).toEqual([])
-    expect(readDeletedAgentIds(workflow.workspaceId)).toEqual(['agent-one'])
-    expect(screen.queryByRole('button', { name: /Researcher agent/ })).not.toBeInTheDocument()
-    expect(screen.getByText(/removed for this browser session/)).toBeVisible()
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Add agent to graph' })).toHaveFocus())
+    expect(getGraphDraft(key)?.workflow.nodes.map((node) => node.id)).toEqual(['step-two', 'step-three'])
+    expect(getGraphDraft(key)?.workflow.edges.map((edge) => edge.id)).toEqual(['edge-two'])
+    expect(readDeletedAgentIds(workflow.workspaceId)).toEqual([])
+    expect(screen.getByRole('button', { name: 'Researcher again agent, Step 2' })).toBeVisible()
 
     await user.click(screen.getByRole('button', { name: 'Discard' }))
     expect(getGraphDraft(key)).toBeUndefined()
-    expect(screen.queryByRole('button', { name: /Researcher agent/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Discard' })).toBeEnabled()
-    expect(screen.queryByText(/Session-deleted agents and their references stay removed/)).not.toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: 'Add agent to graph' }))
-    expect(within(screen.getByRole('dialog', { name: 'Add agent to graph' })).queryByRole('button', { name: /Researcher/ })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Close agent picker' }))
-    await user.click(screen.getByRole('button', { name: 'Save graph' }))
-    await waitFor(() => expect(queryClient.getQueryData(queryKeys.workflow(repeatedWorkflow.workspaceId, repeatedWorkflow.id))).toEqual({
-      workflow: expect.objectContaining({
-        nodes: [expect.objectContaining({ agentId: 'agent-two' })],
-        edges: [],
-      }),
-    }))
+    expect(screen.getAllByRole('button', { name: /Researcher.*agent/ })).toHaveLength(2)
   })
 
   it('restores session deletion cleanup after a reload-like remount', async () => {
@@ -536,8 +503,7 @@ describe('GraphEditor motion', () => {
     renderEditor()
 
     fireEvent.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Delete for this session' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remove from workflow' }))
 
     expect(screen.queryByRole('button', { name: /Researcher agent/ })).not.toBeInTheDocument()
     expect(document.querySelector('.workflow-agent-node-departing')).toBeInTheDocument()

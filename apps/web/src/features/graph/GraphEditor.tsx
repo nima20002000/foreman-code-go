@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { MoreHorizontal, Play, Plus, X } from 'lucide-react'
 
 import {
@@ -247,11 +247,11 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
             type="button"
             role="menuitem"
             onClick={() => {
-              data.onDelete?.(data.agentId, data.label)
+              data.onRemove?.(data.workflowNodeId)
               setMenuOpen(false)
             }}
           >
-            Delete
+            Remove from workflow
           </button>
         </div>
       ) : null}
@@ -381,21 +381,6 @@ function graphErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
 }
 
-function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>) {
-  if (event.key !== 'Tab') return
-  const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href]')]
-  const first = controls[0]
-  const last = controls.at(-1)
-  if (!first || !last) return
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault()
-    last.focus()
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault()
-    first.focus()
-  }
-}
-
 function updateWorkspaceDetailsCache(
   queryClient: ReturnType<typeof useQueryClient>,
   workspaceId: string,
@@ -428,29 +413,22 @@ export function GraphEditor({
   const discardDraft = useGraphDraftStore((state) => state.discardDraft)
   const [notice, setNotice] = useState<{ kind: 'success' | 'error' | 'info'; text: string }>()
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
-  const [pendingDelete, setPendingDelete] = useState<{ agentId: string; label: string }>()
   const [openMenuNodeId, setOpenMenuNodeId] = useState<string>()
   const [enteringEdgeId, setEnteringEdgeId] = useState<string>()
   const [enteringNodeIds, setEnteringNodeIds] = useState<Set<string>>(() => new Set())
   const [departing, setDeparting] = useState<{ nodes: GraphNode[]; edges: GraphEdge[] }>({ nodes: [], edges: [] })
   const agentCatalog = useAgentDirectoryStore((state) => state.catalogs[workspaceId])
   const hydrateAgentWorkspace = useAgentDirectoryStore((state) => state.hydrateWorkspace)
-  const deleteSessionAgent = useAgentDirectoryStore((state) => state.deleteAgent)
   const localAgents = agentCatalog?.localAgents ?? readLocalAgents(workspaceId)
   const deletedAgentIds = agentCatalog?.deletedAgentIds ?? readDeletedAgentIds(workspaceId)
   const addAgentButtonRef = useRef<HTMLButtonElement>(null)
   const connectionSourceNodeRef = useRef<string | undefined>(undefined)
   const agentPickerRef = useRef<HTMLDivElement>(null)
-  const deleteDialogRef = useRef<HTMLDivElement>(null)
-  const deleteCancelRef = useRef<HTMLButtonElement>(null)
-  const deleteReturnFocusRef = useRef<HTMLButtonElement>(null)
-  const deleteLabelRef = useRef<string | undefined>(undefined)
   const canvasRef = useRef<HTMLDivElement>(null)
   const flowInstanceRef = useRef<ReactFlowInstance<GraphNode, GraphEdge>>(null)
   const departureTimerRef = useRef<number | undefined>(undefined)
   const enteringNodeTimersRef = useRef<Map<string, number>>(new Map())
   const agentPickerPresence = usePresence(agentPickerOpen)
-  const deletePresence = usePresence(pendingDelete !== undefined)
   const nodeMenuValue = useMemo(
     () => ({ openMenuNodeId, setOpenMenuNodeId }),
     [openMenuNodeId],
@@ -488,23 +466,6 @@ export function GraphEditor({
       ?? agentPickerRef.current?.querySelector<HTMLElement>('button, a[href]')
     firstControl?.focus()
   }, [agentPickerOpen])
-
-  const closeDeleteConfirmation = useCallback(() => {
-    setPendingDelete(undefined)
-    window.setTimeout(() => deleteReturnFocusRef.current?.focus(), 0)
-  }, [])
-
-  useEffect(() => {
-    if (!pendingDelete) return
-    deleteCancelRef.current?.focus()
-  }, [pendingDelete])
-
-  useDismissableSurface({
-    open: pendingDelete !== undefined,
-    onDismiss: closeDeleteConfirmation,
-    surfaceRef: deleteDialogRef,
-    triggerRef: deleteReturnFocusRef,
-  })
 
   // Query owns the saved definition. The feature store is consulted only
   // while an unsaved draft exists, so refetches remain visible when clean.
@@ -552,7 +513,7 @@ export function GraphEditor({
           departing: true,
           onSelect: undefined,
           onUnlink: undefined,
-          onDelete: undefined,
+          onRemove: undefined,
           onResize: undefined,
         },
       })),
@@ -620,35 +581,25 @@ export function GraphEditor({
     )
   }, [sessionCleanedWorkflow, updateDraft, workflowKey])
 
-  const requestDeleteAgent = useCallback((agentId: string, label: string) => {
-    deleteReturnFocusRef.current = document.activeElement
-      ?.closest('.workflow-agent-node')
-      ?.querySelector<HTMLButtonElement>('.workflow-agent-node-menu-trigger') ?? null
-    deleteLabelRef.current = label
-    setOpenMenuNodeId(undefined)
-    setPendingDelete({ agentId, label })
-  }, [])
-
-  const confirmDeleteAgent = useCallback(() => {
-    if (!pendingDelete) return
-    const { agentId, label } = pendingDelete
-    const removedNodeIds = new Set(
-      displayedWorkflow.nodes.filter((node) => node.agentId === agentId).map((node) => node.id),
-    )
+  const removeGraphNode = useCallback((workflowNodeId: string) => {
     const projection = workflowToGraph({ workflow: displayedWorkflow, agents: catalogAgents })
-    const departedNodes = projection.nodes.filter((node) => removedNodeIds.has(node.id))
-    const departedEdges = projection.edges
-      .filter((edge) => removedNodeIds.has(edge.source) || removedNodeIds.has(edge.target))
-    deleteSessionAgent(workspaceId, agentId)
-    startDeparture(departedNodes, departedEdges)
-    updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => withoutAgentReferences(saved, new Set([agentId])))
-    setPendingDelete(undefined)
-    setNotice({
-      kind: 'info',
-      text: `${label} was removed for this browser session and unlinked from every graph step. Save the graph to persist reference cleanup.`,
-    })
-    window.setTimeout(() => addAgentButtonRef.current?.focus(), 0)
-  }, [catalogAgents, deleteSessionAgent, displayedWorkflow, pendingDelete, sessionCleanedWorkflow, startDeparture, updateDraft, workspaceId, workflowKey])
+    const removedNodes = projection.nodes.filter((node) => node.id === workflowNodeId)
+    const removedEdges = projection.edges.filter(
+      (edge) => edge.source === workflowNodeId || edge.target === workflowNodeId,
+    )
+    startDeparture(removedNodes, removedEdges)
+    updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => ({
+      ...saved,
+      nodes: saved.nodes.filter((node) => node.id !== workflowNodeId),
+      edges: saved.edges.filter(
+        (edge) => edge.source !== workflowNodeId && edge.target !== workflowNodeId,
+      ),
+    }))
+    if (connectionSourceNodeRef.current === workflowNodeId) {
+      connectionSourceNodeRef.current = undefined
+    }
+    setOpenMenuNodeId(undefined)
+  }, [catalogAgents, displayedWorkflow, sessionCleanedWorkflow, startDeparture, updateDraft, workflowKey])
 
   const graph = useMemo(
     () => workflowToGraph(
@@ -658,13 +609,13 @@ export function GraphEditor({
       onSelectAgent: selectAgent,
         onUnlinkNode: unlinkGraphNode,
         onRemoveEdge: removeGraphEdge,
-        onDeleteAgent: requestDeleteAgent,
+        onRemoveNode: removeGraphNode,
         onResizeNode: resizeGraphNode,
         runFacts,
         enteringNodeIds,
       },
     ),
-    [catalogAgents, displayedWorkflow, enteringNodeIds, removeGraphEdge, requestDeleteAgent, resizeGraphNode, runFacts, selectAgent, selectedAgentId, unlinkGraphNode],
+    [catalogAgents, displayedWorkflow, enteringNodeIds, removeGraphEdge, removeGraphNode, resizeGraphNode, runFacts, selectAgent, selectedAgentId, unlinkGraphNode],
   )
 
   const visibleNodes = useMemo(() => {
@@ -784,6 +735,14 @@ export function GraphEditor({
     setAgentPickerOpen(false)
     addAgentButtonRef.current?.focus()
   }, [])
+
+  useDismissableSurface({
+    open: agentPickerOpen,
+    onDismiss: closeAgentPicker,
+    surfaceRef: agentPickerRef,
+    triggerRef: addAgentButtonRef,
+    dismissOnEscape: false,
+  })
 
   const addAgentToGraph = useCallback((agent: Agent) => {
     const existingIds = new Set(displayedWorkflow.nodes.map((node) => node.id))
@@ -995,39 +954,6 @@ export function GraphEditor({
           </div>
         ) : null}
 
-        {deletePresence.mounted ? (
-          <div
-            className="agent-picker-backdrop"
-            data-presence={deletePresence.exiting ? 'exiting' : 'entering'}
-            inert={deletePresence.exiting || undefined}
-          >
-            <div
-              ref={deleteDialogRef}
-              className="agent-picker-dialog agent-delete-dialog"
-              role="alertdialog"
-              aria-modal="true"
-              aria-labelledby="agent-delete-title"
-              aria-describedby="agent-delete-description"
-              onKeyDown={trapDialogFocus}
-            >
-              <div className="agent-picker-heading">
-                <div>
-                  <h2 id="agent-delete-title">Delete {pendingDelete?.label ?? deleteLabelRef.current} from this session?</h2>
-                  <p id="agent-delete-description">
-                    This removes the agent from this browser session and unlinks every reference to it in the graph draft. It does not delete backend data, and the graph cleanup remains unsaved until you choose Save graph.
-                  </p>
-                </div>
-                <button type="button" aria-label="Close delete confirmation" title="Close" onClick={closeDeleteConfirmation}>
-                  <X aria-hidden="true" size={17} />
-                </button>
-              </div>
-              <div className="agent-delete-actions">
-                <button ref={deleteCancelRef} type="button" onClick={closeDeleteConfirmation}>Cancel</button>
-                <button type="button" className="agent-delete-confirm" onClick={confirmDeleteAgent}>Delete for this session</button>
-              </div>
-            </div>
-          </div>
-        ) : null}
       </div>
     </section>
   )

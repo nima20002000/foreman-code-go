@@ -15,6 +15,7 @@ import { UrlSearchSelectionSchema } from '@graphql/contracts'
 import { setMockScenario } from '../../shared/mocks/scenarios'
 import { useWorkspaceSessionStore } from '../workspaces/workspaceSessionStore'
 import { WorkflowNavigation } from './WorkflowNavigation'
+import { useSessionWorkflowStore } from './sessionWorkflowStore'
 
 function renderNavigation(activeWorkflowId?: string, workspaceId = 'workspace-1') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -50,6 +51,7 @@ function renderNavigation(activeWorkflowId?: string, workspaceId = 'workspace-1'
 afterEach(() => {
   setMockScenario('normal')
   useWorkspaceSessionStore.getState().reset()
+  useSessionWorkflowStore.getState().clearSessionWorkflows()
 })
 
 describe('WorkflowNavigation', () => {
@@ -79,6 +81,21 @@ describe('WorkflowNavigation', () => {
     await waitFor(() =>
       expect(router.state.location.search).toMatchObject({ workflowId: 'workflow-content-pipeline' }),
     )
+  })
+
+  it('renames and removes a workflow from its three-dot actions', async () => {
+    const user = userEvent.setup()
+    renderNavigation('workflow-content-pipeline')
+
+    await user.click(await screen.findByRole('button', { name: 'Open actions for Research to review' }))
+    await user.clear(screen.getByRole('textbox', { name: 'Name' }))
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Review flow')
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    expect(await screen.findByRole('link', { name: 'Review flow' })).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Open actions for Review flow' }))
+    await user.click(screen.getByRole('button', { name: 'Remove workflow' }))
+    expect(screen.queryByRole('link', { name: 'Review flow' })).not.toBeInTheDocument()
   })
 
   it('clears an agent selection when workflow identity changes', async () => {

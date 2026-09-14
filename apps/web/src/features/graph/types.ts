@@ -27,7 +27,7 @@ export type GraphNodeData = {
   entering?: boolean
   onSelect?: (agentId: string, workflowNodeId: string) => void
   onUnlink?: (workflowNodeId: string) => void
-  onDelete?: (agentId: string, agentLabel: string) => void
+  onRemove?: (workflowNodeId: string) => void
   onResize?: (workflowNodeId: string, width: number, height: number) => void
 }
 
@@ -53,7 +53,7 @@ export type GraphMapperOptions = {
   selectedAgentId?: string
   onSelectAgent?: (agentId: string, workflowNodeId: string) => void
   onUnlinkNode?: (workflowNodeId: string) => void
-  onDeleteAgent?: (agentId: string, agentLabel: string) => void
+  onRemoveNode?: (workflowNodeId: string) => void
   onResizeNode?: (workflowNodeId: string, width: number, height: number) => void
   /** Removes a single connection edge without touching its nodes. */
   onRemoveEdge?: (edgeId: string) => void

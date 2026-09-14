@@ -31,8 +31,8 @@ describe('WorkspaceDirectory', () => {
       within(screen.getByTestId(`workspace-card-${scratch.id}`))
         .getByRole('link', { name: 'Scratch' }),
     ).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Delete Website' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Delete Scratch' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open actions for Website' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open actions for Scratch' })).toBeVisible()
   })
 
   it('deletes a workspace card and its session-owned child state', async () => {
@@ -47,7 +47,8 @@ describe('WorkspaceDirectory', () => {
     useNavigationUiStore.getState().rememberWorkspace(workspace.id)
     renderWithRouter(<WorkspaceDirectory />)
 
-    await user.click(await screen.findByRole('button', { name: 'Delete Scratch' }))
+    await user.click(await screen.findByRole('button', { name: 'Open actions for Scratch' }))
+    await user.click(screen.getByRole('button', { name: 'Remove workspace' }))
 
     await waitFor(() => expect(screen.queryByTestId(`workspace-card-${workspace.id}`)).not.toBeInTheDocument())
     expect(useWorkspaceSessionStore.getState().workspaces).toEqual([])
@@ -61,10 +62,23 @@ describe('WorkspaceDirectory', () => {
     const user = userEvent.setup()
     renderWithRouter(<WorkspaceDirectory />)
 
-    await user.click(await screen.findByRole('button', { name: 'Delete Website' }))
+    await user.click(await screen.findByRole('button', { name: 'Open actions for Website' }))
+    await user.click(screen.getByRole('button', { name: 'Remove workspace' }))
 
     expect(await screen.findByTestId('workspace-directory-empty')).toHaveTextContent(
       'Use New workspace in the navigation',
     )
+  })
+
+  it('renames a workspace from its three-dot actions', async () => {
+    const user = userEvent.setup()
+    renderWithRouter(<WorkspaceDirectory />)
+
+    await user.click(await screen.findByRole('button', { name: 'Open actions for Website' }))
+    await user.clear(screen.getByRole('textbox', { name: 'Name' }))
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Docs')
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+
+    expect(await screen.findByTestId('workspace-card-workspace-1')).toHaveTextContent('Docs')
   })
 })

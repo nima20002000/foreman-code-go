@@ -230,7 +230,7 @@ export function workflowToGraph(
         entering: options.enteringNodeIds?.has(workflowNode.id),
         onSelect: options.onSelectAgent,
         onUnlink: options.onUnlinkNode,
-        onDelete: options.onDeleteAgent,
+        onRemove: options.onRemoveNode,
         onResize: options.onResizeNode,
       },
     }

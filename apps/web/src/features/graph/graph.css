@@ -371,41 +371,6 @@
   }
 }
 
-.agent-delete-dialog {
-  width: min(100%, 30rem);
-}
-
-.agent-delete-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-
-.agent-delete-actions button {
-  min-height: 2.25rem;
-  padding: 0.5rem 0.875rem;
-  border: 1px solid var(--graph-line-strong);
-  border-radius: 2px;
-  color: var(--graph-ink);
-  background: var(--graph-panel);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.8125rem;
-  font-weight: 700;
-}
-
-.agent-delete-actions button:hover,
-.agent-delete-actions button:focus-visible {
-  border-color: var(--graph-ink);
-  background: var(--graph-subtle);
-}
-
-.agent-delete-actions .agent-delete-confirm {
-  border-color: var(--color-danger, #c65f5f);
-  color: #fff;
-  background: var(--color-danger, #9f3f3f);
-}
-
 .workflow-graph-toast-success {
   border-color: var(--graph-accent);
 }

@@ -31,7 +31,6 @@ pnpm typecheck
 pnpm lint
 pnpm test
 pnpm build
-pnpm test:e2e
 ```
 
 Keep generated output, local environment files, caches, and credentials out of

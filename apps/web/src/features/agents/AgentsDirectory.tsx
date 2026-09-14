@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { AgentSchema, type Agent } from '@graphql/contracts'
-import { Plus, X } from 'lucide-react'
+import { AgentSchema, type Agent, type WorkflowDefinition } from '@graphql/contracts'
+import { Link } from '@tanstack/react-router'
+import { MoreHorizontal, Plus, Trash2, X } from 'lucide-react'
 
-import { useAgentsQuery } from '../../shared/api/query'
+import { useWorkspaceDetailsQuery } from '../../shared/api/query'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { usePresence } from '../../shared/ui/usePresence'
 import { isSessionWorkspaceId } from '../workspaces/workspaceSessionStore'
+import { useSessionWorkflowStore } from '../workflows/sessionWorkflowStore'
+import { useGraphDraftStore, workflowDraftKey } from '../graph/store'
 import { useAgentDirectoryStore } from './agentDirectoryStore'
 import { readDeletedAgentIds, readLocalAgents } from './localAgents'
 import { useReorderableAgents, type AgentReorderCardProps } from './useReorderableAgents'
@@ -39,6 +42,10 @@ function AgentCard({
   onSelect,
   buttonRef,
   reorderProps,
+  workspaceId,
+  blockers,
+  onRemove,
+  onSave,
 }: {
   agent: Agent
   local: boolean
@@ -46,11 +53,53 @@ function AgentCard({
   onSelect?: (agentId: string) => void
   buttonRef?: (button: HTMLButtonElement | null) => void
   reorderProps?: AgentReorderCardProps
+  workspaceId: string
+  blockers: readonly Pick<WorkflowDefinition, 'id' | 'name'>[]
+  onRemove: () => void
+  onSave: (agent: Agent) => void
 }) {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [showBlockers, setShowBlockers] = useState(false)
+  const [confirmClose, setConfirmClose] = useState(false)
+  const [name, setName] = useState(agent.name)
+  const [harness, setHarness] = useState(agent.harness ?? 'codex')
+  const [model, setModel] = useState(agent.model ?? 'gpt-5.6-codex')
+  const [effort, setEffort] = useState(agent.effort ?? 'medium')
+  const [fastMode, setFastMode] = useState(agent.fastMode ?? false)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const closeMenu = useCallback(() => {
+    setMenuOpen(false)
+    setShowBlockers(false)
+    setConfirmClose(false)
+  }, [])
+  const dirty = name.trim() !== agent.name
+    || harness !== (agent.harness ?? 'codex')
+    || model !== (agent.model ?? 'gpt-5.6-codex')
+    || effort !== (agent.effort ?? 'medium')
+    || fastMode !== (agent.fastMode ?? false)
+  const requestClose = useCallback(() => {
+    if (dirty) setConfirmClose(true)
+    else closeMenu()
+  }, [closeMenu, dirty])
+  const save = useCallback(() => {
+    const nextName = name.trim()
+    if (!nextName) return
+    onSave({
+      ...agent,
+      name: nextName,
+      harness,
+      model,
+      effort,
+      ...(harness === 'codex' ? { fastMode } : { fastMode: undefined }),
+    })
+    closeMenu()
+  }, [agent, closeMenu, effort, fastMode, harness, model, name, onSave])
+  useDismissableSurface({ open: menuOpen, onDismiss: requestClose, surfaceRef: menuRef, triggerRef })
   const role = agent.role ?? 'Agent'
   const status = local ? 'Local session' : executionLabel(agent)
   const { ref: reorderRef, ...reorderAttributes } = reorderProps ?? {}
-  return (
+  return <div className="agent-directory-card-shell">
     <button
       type="button"
       ref={(button) => {
@@ -68,7 +117,82 @@ function AgentCard({
       <h2>{agent.name}</h2>
       <span>{role} · {status}</span>
     </button>
-  )
+    <button
+      ref={triggerRef}
+      type="button"
+      className="agent-directory-card-more"
+      aria-label={`Open actions for ${agent.name}`}
+      aria-haspopup="dialog"
+      aria-expanded={menuOpen}
+      onClick={() => {
+        if (menuOpen) {
+          requestClose()
+          return
+        }
+        setName(agent.name)
+        setHarness(agent.harness ?? 'codex')
+        setModel(agent.model ?? 'gpt-5.6-codex')
+        setEffort(agent.effort ?? 'medium')
+        setFastMode(agent.fastMode ?? false)
+        setMenuOpen(true)
+      }}
+    >
+      <MoreHorizontal aria-hidden="true" size={17} />
+    </button>
+    {menuOpen ? (
+      <div ref={menuRef} className="agent-directory-card-actions" role="dialog" aria-label={`${agent.name} actions`}>
+        {confirmClose ? (
+          <div className="agent-settings-confirm">
+            <p>You made changes. Save or discard?</p>
+            <button type="button" onClick={save}>Save</button>
+            <button type="button" onClick={closeMenu}>Discard</button>
+          </div>
+        ) : <>
+          <div className="agent-settings-heading">
+            <strong>Agent settings</strong>
+            <button type="button" aria-label="Close agent settings" onClick={requestClose}><X aria-hidden="true" size={15} /></button>
+          </div>
+          <label>Name<input value={name} onChange={(event) => setName(event.target.value)} /></label>
+          <label>Harness<select value={harness} onChange={(event) => setHarness(event.target.value as NonNullable<Agent['harness']>)}>
+            <option value="codex">Codex</option><option value="opencode">OpenCode</option>
+          </select></label>
+          <label>Model<select value={model} onChange={(event) => setModel(event.target.value)}>
+            {[...new Set([model, 'gpt-5.6-codex', 'deepseek-v4.1-flash'])].map((value) => <option key={value} value={value}>{value}</option>)}
+          </select></label>
+          <label>Effort<select value={effort} onChange={(event) => setEffort(event.target.value as NonNullable<Agent['effort']>)}>
+            <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option>
+          </select></label>
+          {harness === 'codex' ? <label className="agent-settings-fast"><input type="checkbox" checked={fastMode} onChange={(event) => setFastMode(event.target.checked)} />Fast mode</label> : null}
+          {showBlockers ? (
+          <div className="agent-removal-blocked" role="alert">
+            <p>{agent.name} is already in use in:</p>
+            {blockers.map((workflow) => (
+              <Link
+                key={workflow.id}
+                to="/workspaces/$workspaceId"
+                params={{ workspaceId }}
+                search={{ workflowId: workflow.id }}
+              >
+                {workflow.name}
+              </Link>
+            ))}
+          </div>
+          ) : null}
+          <div className="agent-settings-actions">
+            <button type="button" onClick={save} disabled={!dirty}>Save</button>
+            <button type="button" className="agent-settings-trash" aria-label={`Remove ${agent.name}`} onClick={() => {
+          if (blockers.length > 0) {
+            setShowBlockers(true)
+            return
+          }
+          onRemove()
+          closeMenu()
+            }}><Trash2 aria-hidden="true" size={16} /></button>
+          </div>
+        </>}
+      </div>
+    ) : null}
+  </div>
 }
 
 export function AgentsDirectoryContent({
@@ -77,16 +201,23 @@ export function AgentsDirectoryContent({
   selectedAgentId,
   onSelectAgent,
   onClearAgent,
+  workflows = [],
 }: {
   workspaceId: string
   agents: readonly Agent[]
   selectedAgentId?: string
   onSelectAgent?: (agentId: string) => void
   onClearAgent?: () => void
+  workflows?: readonly WorkflowDefinition[]
 }) {
   const catalog = useAgentDirectoryStore((state) => state.catalogs[workspaceId])
   const hydrateWorkspace = useAgentDirectoryStore((state) => state.hydrateWorkspace)
   const setStoredLocalAgents = useAgentDirectoryStore((state) => state.setLocalAgents)
+  const deleteAgent = useAgentDirectoryStore((state) => state.deleteAgent)
+  const sessionWorkflows = useSessionWorkflowStore((state) => state.workflows)
+  const workflowNameOverrides = useSessionWorkflowStore((state) => state.workflowNameOverrides)
+  const hiddenWorkflowIds = useSessionWorkflowStore((state) => state.hiddenWorkflowIds)
+  const graphDrafts = useGraphDraftStore((state) => state.drafts)
   const localAgents = catalog?.localAgents ?? readLocalAgents(workspaceId)
   const deletedAgentIds = catalog?.deletedAgentIds ?? readDeletedAgentIds(workspaceId)
   const announcement = useAgentDirectoryStore((state) => state.announcement)
@@ -172,7 +303,9 @@ export function AgentsDirectoryContent({
   }
 
   const deletedAgentIdSet = new Set(deletedAgentIds)
-  const visibleAgents = [...agents, ...localAgents].filter((agent) => !deletedAgentIdSet.has(agent.id))
+  const visibleAgents = [...new Map([...agents, ...localAgents]
+    .filter((agent) => !deletedAgentIdSet.has(agent.id))
+    .map((agent) => [agent.id, agent])).values()]
   const reorder = useReorderableAgents(
     workspaceId,
     visibleAgents.map((agent) => ({ id: agent.id, label: agent.name })),
@@ -182,6 +315,16 @@ export function AgentsDirectoryContent({
     .map((agentId) => agentById.get(agentId))
     .filter((agent): agent is Agent => Boolean(agent))
   const localAgentIds = new Set(localAgents.map((agent) => agent.id))
+  const workspaceWorkflows = [
+    ...workflows,
+    ...Object.values(sessionWorkflows).filter((workflow) => workflow.workspaceId === workspaceId),
+  ]
+    .filter((workflow) => !hiddenWorkflowIds.includes(workflow.id))
+    .map((workflow) => graphDrafts[workflowDraftKey(workspaceId, workflow.id)]?.workflow ?? workflow)
+    .map((workflow) => ({
+      ...workflow,
+      name: workflowNameOverrides[workflow.id] ?? workflow.name,
+    }))
   const liveAgent = visibleAgents.find((agent) => agent.id === selectedAgentId)
   const detailAgentSnapshotRef = useRef<Agent | undefined>(liveAgent)
   if (liveAgent) detailAgentSnapshotRef.current = liveAgent
@@ -289,6 +432,21 @@ export function AgentsDirectoryContent({
                 if (button) agentCardRefs.current.set(agent.id, button)
                 else agentCardRefs.current.delete(agent.id)
               }}
+              workspaceId={workspaceId}
+              blockers={workspaceWorkflows.filter((workflow) => (
+                workflow.nodes.some((node) => node.agentId === agent.id)
+              ))}
+              onRemove={() => {
+                deleteAgent(workspaceId, agent.id)
+                if (selectedAgentId === agent.id) onClearAgent?.()
+              }}
+              onSave={(updatedAgent) => {
+                const next = [
+                  ...localAgents.filter((entry) => entry.id !== updatedAgent.id),
+                  updatedAgent,
+                ]
+                setStoredLocalAgents(workspaceId, next)
+              }}
             />
           ))}
         </div>
@@ -369,7 +527,7 @@ export function AgentsDirectory({
   onClearAgent?: () => void
 }) {
   const sessionWorkspace = isSessionWorkspaceId(workspaceId)
-  const agentsQuery = useAgentsQuery(workspaceId, { enabled: !sessionWorkspace })
+  const agentsQuery = useWorkspaceDetailsQuery(workspaceId, { enabled: !sessionWorkspace })
 
   if (sessionWorkspace) {
     return (
@@ -377,6 +535,7 @@ export function AgentsDirectory({
         key={workspaceId}
         workspaceId={workspaceId}
         agents={[]}
+        workflows={[]}
         selectedAgentId={selectedAgentId}
         onSelectAgent={onSelectAgent}
         onClearAgent={onClearAgent}
@@ -403,6 +562,7 @@ export function AgentsDirectory({
       key={workspaceId}
       workspaceId={workspaceId}
       agents={agentsQuery.data.agents}
+      workflows={agentsQuery.data.workflows}
       selectedAgentId={selectedAgentId}
       onSelectAgent={onSelectAgent}
       onClearAgent={onClearAgent}

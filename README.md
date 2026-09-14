@@ -26,7 +26,6 @@ pnpm typecheck
 pnpm lint
 pnpm test
 pnpm build
-pnpm test:e2e
 ```
 
 The checked-in browser mock starts by default during development so the

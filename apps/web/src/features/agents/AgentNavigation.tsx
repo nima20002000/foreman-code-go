@@ -31,10 +31,10 @@ export function AgentNavigation({ workspaceId, activeAgentId }: AgentNavigationP
   const deletedAgentIds = catalog?.deletedAgentIds ?? readDeletedAgentIds(workspaceId)
   const deletedAgentIdSet = new Set(deletedAgentIds)
 
-  const agents = [
+  const agents = [...new Map([
     ...(sessionWorkspace ? [] : agentsQuery.data?.agents ?? []),
     ...localAgents,
-  ].filter((agent) => !deletedAgentIdSet.has(agent.id))
+  ].filter((agent) => !deletedAgentIdSet.has(agent.id)).map((agent) => [agent.id, agent])).values()]
 
   return (
     <section className="agent-navigation" data-testid="agent-navigation" aria-label="Workspace agents">

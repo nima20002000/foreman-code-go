@@ -1,8 +1,8 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { Agent } from '@graphql/contracts'
+import type { Agent, WorkflowDefinition } from '@graphql/contracts'
 
 import { renderWithRouter } from '../../test/renderWithRouter'
 import { setMockScenario } from '../../shared/mocks/scenarios'
@@ -10,6 +10,8 @@ import { AgentsDirectoryContent } from './AgentsDirectory'
 import { AgentNavigation } from './AgentNavigation'
 import { useAgentDirectoryStore } from './agentDirectoryStore'
 import { deleteAgentForSession, writeLocalAgents } from './localAgents'
+import { useGraphDraftStore, workflowDraftKey } from '../graph/store'
+import { useSessionWorkflowStore } from '../workflows/sessionWorkflowStore'
 
 const agents: Agent[] = [
   {
@@ -44,6 +46,8 @@ afterEach(() => {
   setMockScenario('normal')
   sessionStorage.clear()
   useAgentDirectoryStore.getState().reset()
+  useGraphDraftStore.getState().clearAllDrafts()
+  useSessionWorkflowStore.getState().clearSessionWorkflows()
 })
 
 describe('AgentsDirectoryContent', () => {
@@ -102,6 +106,68 @@ describe('AgentsDirectoryContent', () => {
     useAgentDirectoryStore.getState().deleteAgent('session-reactive', createdAgent.id)
     await waitFor(() => expect(screen.queryByRole('link', { name: 'Gamma Agent' })).not.toBeInTheDocument())
     expect(screen.getByTestId('agent-navigation-empty')).toHaveTextContent('No agents yet')
+  })
+
+  it('blocks removal while a selectable workflow uses the agent, then allows it after unlinking', async () => {
+    const user = userEvent.setup()
+    const workflowUsingAgent: WorkflowDefinition = {
+      id: 'workflow-using-researcher',
+      workspaceId: 'workspace-1',
+      name: 'Research flow',
+      executionCondition: { kind: 'manual' },
+      nodes: [{ id: 'research-step', agentId: 'agent-researcher' }],
+      edges: [],
+    }
+    renderWithRouter(
+      <AgentsDirectoryContent
+        workspaceId="workspace-1"
+        agents={agents}
+        workflows={[workflowUsingAgent]}
+      />,
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Open actions for Researcher' }))
+    await user.click(screen.getByRole('button', { name: 'Remove Researcher' }))
+    const workflowLink = screen.getByRole('link', { name: 'Research flow' })
+    expect(screen.getByRole('alert')).toHaveTextContent('Researcher is already in use')
+    expect(workflowLink).toHaveAttribute(
+      'href',
+      expect.stringContaining('workflowId=workflow-using-researcher'),
+    )
+
+    fireEvent.mouseDown(document.body)
+    act(() => {
+      useGraphDraftStore.getState().updateDraft(
+        workflowDraftKey('workspace-1', workflowUsingAgent.id),
+        workflowUsingAgent,
+        (current) => ({ ...current, nodes: [] }),
+      )
+    })
+    await user.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
+    await user.click(screen.getByRole('button', { name: 'Remove Researcher' }))
+
+    expect(screen.queryByRole('button', { name: /Researcher, researcher/ })).not.toBeInTheDocument()
+  })
+
+  it('edits agent settings and confirms before closing dirty changes', async () => {
+    const user = userEvent.setup()
+    renderWithRouter(<AgentsDirectoryContent workspaceId="workspace-1" agents={agents} />)
+
+    await user.click(await screen.findByRole('button', { name: 'Open actions for Researcher' }))
+    const settings = screen.getByRole('dialog', { name: 'Researcher actions' })
+    expect(within(settings).getByRole('textbox', { name: 'Name' })).toHaveValue('Researcher')
+    expect(within(settings).getByRole('combobox', { name: 'Harness' })).toHaveValue('codex')
+    expect(within(settings).getByRole('combobox', { name: 'Model' })).toBeVisible()
+    expect(within(settings).getByRole('combobox', { name: 'Effort' })).toHaveValue('medium')
+    expect(within(settings).getByRole('checkbox', { name: 'Fast mode' })).toBeVisible()
+
+    await user.clear(within(settings).getByRole('textbox', { name: 'Name' }))
+    await user.type(within(settings).getByRole('textbox', { name: 'Name' }), 'Lead Researcher')
+    fireEvent.mouseDown(document.body)
+    expect(settings).toHaveTextContent('You made changes. Save or discard?')
+    await user.click(within(settings).getByRole('button', { name: 'Save' }))
+
+    expect(await screen.findByRole('heading', { name: 'Lead Researcher' })).toBeVisible()
   })
 
   it('keeps local agents usable when the workspace agent request fails', async () => {

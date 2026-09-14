@@ -18,9 +18,11 @@ interface WorkspaceSessionState {
   workspaces: readonly SessionWorkspace[]
   knownWorkspaces: readonly SessionWorkspace[]
   hiddenWorkspaceIds: readonly string[]
+  workspaceNameOverrides: Readonly<Record<string, string>>
   createWorkspace: (name: string) => SessionWorkspace
   registerWorkspace: (workspace: SessionWorkspace) => void
   removeWorkspace: (workspaceId: string) => void
+  renameWorkspace: (workspaceId: string, name: string) => void
   reset: () => void
 }
 
@@ -60,6 +62,7 @@ export const useWorkspaceSessionStore = create<WorkspaceSessionState>((set, get)
   workspaces: [],
   knownWorkspaces: [],
   hiddenWorkspaceIds: [],
+  workspaceNameOverrides: {},
   createWorkspace: (name) => {
     const existingIds = get().workspaces.map((workspace) => workspace.id)
     const workspace: SessionWorkspace = {
@@ -76,16 +79,20 @@ export const useWorkspaceSessionStore = create<WorkspaceSessionState>((set, get)
   registerWorkspace: (workspace) =>
     set((state) => {
       if (state.hiddenWorkspaceIds.includes(workspace.id)) return state
+      const projectedWorkspace = {
+        ...workspace,
+        name: state.workspaceNameOverrides[workspace.id] ?? workspace.name,
+      }
       const existingIndex = state.knownWorkspaces.findIndex((entry) => entry.id === workspace.id)
       const existing = state.knownWorkspaces[existingIndex]
-      if (existing?.name === workspace.name) return state
+      if (existing?.name === projectedWorkspace.name) return state
       if (existingIndex >= 0) {
         const next = [...state.knownWorkspaces]
-        next[existingIndex] = workspace
+        next[existingIndex] = projectedWorkspace
         return { knownWorkspaces: next }
       }
       return {
-        knownWorkspaces: [...state.knownWorkspaces, workspace],
+        knownWorkspaces: [...state.knownWorkspaces, projectedWorkspace],
       }
     }),
   removeWorkspace: (workspaceId) =>
@@ -94,7 +101,22 @@ export const useWorkspaceSessionStore = create<WorkspaceSessionState>((set, get)
       knownWorkspaces: state.knownWorkspaces.filter((workspace) => workspace.id !== workspaceId),
       hiddenWorkspaceIds: [...new Set([...state.hiddenWorkspaceIds, workspaceId])],
     })),
-  reset: () => set({ workspaces: [], knownWorkspaces: [], hiddenWorkspaceIds: [] }),
+  renameWorkspace: (workspaceId, name) =>
+    set((state) => ({
+      workspaces: state.workspaces.map((workspace) => (
+        workspace.id === workspaceId ? { ...workspace, name } : workspace
+      )),
+      knownWorkspaces: state.knownWorkspaces.map((workspace) => (
+        workspace.id === workspaceId ? { ...workspace, name } : workspace
+      )),
+      workspaceNameOverrides: { ...state.workspaceNameOverrides, [workspaceId]: name },
+    })),
+  reset: () => set({
+    workspaces: [],
+    knownWorkspaces: [],
+    hiddenWorkspaceIds: [],
+    workspaceNameOverrides: {},
+  }),
 }))
 
 export function findSessionWorkspace(workspaceId: string): SessionWorkspace | undefined {

@@ -13,7 +13,6 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "lint": "pnpm -r --if-present lint",
     "test": "pnpm -r --if-present test",
-    "build": "pnpm -r --if-present build",
-    "test:e2e": "pnpm --filter @graphql/web test:e2e"
+    "build": "pnpm -r --if-present build"
   }
 }

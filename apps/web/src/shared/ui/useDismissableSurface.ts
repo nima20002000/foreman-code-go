@@ -19,6 +19,8 @@ interface DismissableSurfaceOptions {
    * handling has settled.
    */
   triggerRef?: RefObject<HTMLElement | null>
+  /** Escape closes standard surfaces unless a persistent picker opts out. */
+  dismissOnEscape?: boolean
 }
 
 const openSurfaces = new Map<symbol, () => void>()
@@ -33,6 +35,7 @@ export function useDismissableSurface({
   onDismiss,
   surfaceRef,
   triggerRef,
+  dismissOnEscape = true,
 }: DismissableSurfaceOptions): void {
   const onDismissRef = useRef(onDismiss)
   const surfaceIdRef = useRef<symbol>(Symbol('dismissable-surface'))
@@ -57,7 +60,7 @@ export function useDismissableSurface({
     if (!open) return
 
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
+      if (!dismissOnEscape || event.key !== 'Escape') return
       event.preventDefault()
       onDismissRef.current('escape')
     }
@@ -83,5 +86,5 @@ export function useDismissableSurface({
       window.removeEventListener('keydown', closeOnEscape)
       document.removeEventListener('mousedown', closeOnOutsidePress, true)
     }
-  }, [open, surfaceRef, triggerRef])
+  }, [dismissOnEscape, open, surfaceRef, triggerRef])
 }

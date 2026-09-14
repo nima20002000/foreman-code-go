@@ -1,22 +1,67 @@
-import { useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { PanelsTopLeft, Trash2 } from 'lucide-react'
+import { MoreHorizontal, PanelsTopLeft } from 'lucide-react'
 
 import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
 import { useSessionWorkflowStore } from '../workflows/sessionWorkflowStore'
 import { useWorkspaceDetailsQuery } from '../../shared/api/query'
+import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { useNavigationUiStore } from './navigationUiStore'
 import { useWorkspaceSessionStore } from './workspaceSessionStore'
 
 const DEFAULT_WORKSPACE_ID = 'workspace-1'
+
+function WorkspaceCardActions({ name, onRename, onRemove }: {
+  name: string
+  onRename: (name: string) => void
+  onRemove: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [nextName, setNextName] = useState(name)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const close = useCallback(() => setOpen(false), [])
+  useEffect(() => setNextName(name), [name])
+  useDismissableSurface({ open, onDismiss: close, surfaceRef, triggerRef })
+
+  return (
+    <div className="workspace-card-actions-wrap">
+      <button
+        ref={triggerRef}
+        type="button"
+        className="workspace-card-more"
+        aria-label={`Open actions for ${name}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <MoreHorizontal aria-hidden="true" size={16} />
+      </button>
+      {open ? (
+        <div ref={surfaceRef} className="workspace-card-actions" role="dialog" aria-label={`${name} actions`}>
+          <label>Name<input value={nextName} onChange={(event) => setNextName(event.target.value)} /></label>
+          <button type="button" onClick={() => {
+            const value = nextName.trim()
+            if (!value) return
+            onRename(value)
+            close()
+          }}>Rename</button>
+          <button type="button" onClick={onRemove}>Remove workspace</button>
+        </div>
+      ) : null}
+    </div>
+  )
+}
 
 export function WorkspaceDirectory() {
   const workspaceQuery = useWorkspaceDetailsQuery(DEFAULT_WORKSPACE_ID)
   const sessionWorkspaces = useWorkspaceSessionStore((state) => state.workspaces)
   const knownWorkspaces = useWorkspaceSessionStore((state) => state.knownWorkspaces)
   const hiddenWorkspaceIds = useWorkspaceSessionStore((state) => state.hiddenWorkspaceIds)
+  const workspaceNameOverrides = useWorkspaceSessionStore((state) => state.workspaceNameOverrides)
   const registerWorkspace = useWorkspaceSessionStore((state) => state.registerWorkspace)
   const removeWorkspace = useWorkspaceSessionStore((state) => state.removeWorkspace)
+  const renameWorkspace = useWorkspaceSessionStore((state) => state.renameWorkspace)
   const removeWorkspaceState = useNavigationUiStore((state) => state.removeWorkspaceState)
   const removeWorkspaceAgents = useAgentDirectoryStore((state) => state.removeWorkspace)
   const removeWorkspaceWorkflows = useSessionWorkflowStore(
@@ -36,8 +81,11 @@ export function WorkspaceDirectory() {
     ]
     return [...new Map(entries
       .filter((workspace) => !hidden.has(workspace.id))
-      .map((workspace) => [workspace.id, workspace])).values()]
-  }, [hiddenWorkspaceIds, knownWorkspaces, sessionWorkspaces, workspaceQuery.data?.workspace])
+      .map((workspace) => [workspace.id, {
+        ...workspace,
+        name: workspaceNameOverrides[workspace.id] ?? workspace.name,
+      }])).values()]
+  }, [hiddenWorkspaceIds, knownWorkspaces, sessionWorkspaces, workspaceNameOverrides, workspaceQuery.data?.workspace])
 
   const deleteWorkspace = (workspaceId: string) => {
     removeWorkspace(workspaceId)
@@ -71,15 +119,11 @@ export function WorkspaceDirectory() {
                 <PanelsTopLeft aria-hidden="true" size={18} />
                 <span>{workspace.name}</span>
               </Link>
-              <button
-                type="button"
-                className="workspace-card-delete"
-                aria-label={`Delete ${workspace.name}`}
-                title={`Delete ${workspace.name}`}
-                onClick={() => deleteWorkspace(workspace.id)}
-              >
-                <Trash2 aria-hidden="true" size={16} />
-              </button>
+              <WorkspaceCardActions
+                name={workspace.name}
+                onRename={(name) => renameWorkspace(workspace.id, name)}
+                onRemove={() => deleteWorkspace(workspace.id)}
+              />
             </li>
           ))}
         </ul>
