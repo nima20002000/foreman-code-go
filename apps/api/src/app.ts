@@ -6,6 +6,10 @@ import {
   type ServiceHealth,
 } from '@graphql/contracts'
 import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify'
+import { z } from 'zod'
+
+import { DomainError } from './modules/errors.js'
+import { registerProductRoutes, type ProductServices } from './routes/product.js'
 
 export interface ReadinessDependencies {
   database: { ping(signal?: AbortSignal): Promise<void> }
@@ -15,6 +19,7 @@ export interface ReadinessDependencies {
 export interface BuildAppOptions {
   readiness: ReadinessDependencies
   readinessTimeoutMs?: number
+  product?: ProductServices
   logger?: boolean | FastifyBaseLogger
 }
 
@@ -81,6 +86,28 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     })
     if (response.status === 'unavailable') reply.code(503)
     return response
+  })
+
+  if (options.product) registerProductRoutes(app, options.product)
+
+  app.setErrorHandler((error, request, reply) => {
+    const domain = error instanceof DomainError
+      ? error
+      : error instanceof z.ZodError
+        ? new DomainError('INVALID_REQUEST', 'The request does not match its shared contract.', 400, {
+            issues: error.issues.map((issue) => ({ path: issue.path, message: issue.message })),
+          })
+        : new DomainError('INTERNAL_ERROR', 'The API could not complete the request.', 500)
+    if (domain.status >= 500) request.log.error({ err: error }, domain.message)
+    const body = ApiErrorResponseSchema.parse({
+      error: {
+        code: domain.code,
+        message: domain.message,
+        ...(domain.details ? { details: domain.details } : {}),
+        requestId: request.id,
+      },
+    })
+    return reply.code(domain.status).send(body)
   })
 
   app.setNotFoundHandler((request, reply) => {

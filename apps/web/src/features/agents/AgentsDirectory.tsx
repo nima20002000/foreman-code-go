@@ -26,7 +26,7 @@ const CODEX_MODELS: readonly string[] = [
   'gpt-5.6-sol',
   'gpt-6-astra',
 ]
-const OPENCODE_MODELS: readonly string[] = ['deepseek-v4.1-flash']
+const OPENCODE_MODELS: readonly string[] = ['opencode-go/deepseek-v4.1-flash']
 const STANDARD_EFFORTS: readonly NonNullable<Agent['effort']>[] = [
   'low', 'medium', 'high', 'xhigh', 'max',
 ]
@@ -40,7 +40,11 @@ function initialModel(agent: Agent, harness: NonNullable<Agent['harness']>): str
   return agent.model && options.includes(agent.model) ? agent.model : options[0]
 }
 
-function effortOptions(model: string): readonly NonNullable<Agent['effort']>[] {
+function effortOptions(
+  harness: NonNullable<Agent['harness']>,
+  model: string,
+): readonly NonNullable<Agent['effort']>[] {
+  if (harness === 'opencode') return ['low', 'high', 'max']
   return model === 'gpt-6-astra' ? [...STANDARD_EFFORTS, 'ultra'] : STANDARD_EFFORTS
 }
 
@@ -189,9 +193,9 @@ function AgentCard({
           <div className="agent-settings-field"><span>Harness</span><select aria-label="Harness" value={harness} onChange={(event) => {
             const nextHarness = event.target.value as NonNullable<Agent['harness']>
             setHarness(nextHarness)
-            if (!modelOptions(nextHarness).includes(model)) {
-              setModel(modelOptions(nextHarness)[0])
-            }
+            const nextModel = modelOptions(nextHarness).includes(model) ? model : modelOptions(nextHarness)[0]
+            if (nextModel) setModel(nextModel)
+            if (nextModel && !effortOptions(nextHarness, nextModel).includes(effort)) setEffort('max')
             event.currentTarget.blur()
           }}>
             <option value="codex">Codex</option><option value="opencode">OpenCode</option>
@@ -199,7 +203,7 @@ function AgentCard({
           <div className="agent-settings-field"><span>Model</span><select aria-label="Model" value={model} onChange={(event) => {
             const nextModel = event.target.value
             setModel(nextModel)
-            if (!effortOptions(nextModel).includes(effort)) setEffort('max')
+            if (!effortOptions(harness, nextModel).includes(effort)) setEffort('max')
             event.currentTarget.blur()
           }}>
             {modelOptions(harness).map((value) => <option key={value} value={value}>{value}</option>)}
@@ -208,7 +212,7 @@ function AgentCard({
             setEffort(event.target.value as NonNullable<Agent['effort']>)
             event.currentTarget.blur()
           }}>
-            {effortOptions(model).map((value) => (
+            {effortOptions(harness, model).map((value) => (
               <option key={value} value={value}>{effortLabels[value]}</option>
             ))}
           </select></div>

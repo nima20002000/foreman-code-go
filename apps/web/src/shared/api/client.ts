@@ -2,10 +2,14 @@ import {
   ApiErrorResponseSchema,
   CreateMessageRequestSchema,
   CreateMessageResponseSchema,
+  CreateRunRequestSchema,
+  CreateRunResponseSchema,
   GetAgentRequestSchema,
   GetAgentResponseSchema,
   GetConversationRequestSchema,
   GetConversationResponseSchema,
+  GetRunRequestSchema,
+  GetRunResponseSchema,
   GetWorkflowRequestSchema,
   GetWorkflowResponseSchema,
   ListAgentsRequestSchema,
@@ -22,10 +26,14 @@ import {
   WorkspaceDetailsResponseSchema,
   type CreateMessageRequest,
   type CreateMessageResponse,
+  type CreateRunRequest,
+  type CreateRunResponse,
   type GetAgentRequest,
   type GetAgentResponse,
   type GetConversationRequest,
   type GetConversationResponse,
+  type GetRunRequest,
+  type GetRunResponse,
   type GetWorkflowRequest,
   type GetWorkflowResponse,
   type ListAgentsRequest,
@@ -254,6 +262,24 @@ export class ApiClient {
     )
   }
 
+  startWorkflowRun(input: CreateRunRequest, options?: RequestOptions) {
+    const request = parseRequest(CreateRunRequestSchema, input)
+    return this.request<CreateRunResponse>(
+      `/api/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/runs`,
+      CreateRunResponseSchema,
+      { ...options, method: 'POST', body: request },
+    )
+  }
+
+  getRun(input: GetRunRequest, options?: RequestOptions) {
+    const request = parseRequest(GetRunRequestSchema, input)
+    return this.request<GetRunResponse>(
+      `/api/workspaces/${toPath(request.workspaceId)}/runs/${toPath(request.runId)}`,
+      GetRunResponseSchema,
+      options,
+    )
+  }
+
   listConversations(input: ListConversationsRequest, options?: RequestOptions) {
     const request = parseRequest(ListConversationsRequestSchema, input)
     return this.request<ListConversationsResponse>(
@@ -324,6 +350,8 @@ export const getAgent = apiClient.getAgent.bind(apiClient)
 export const getWorkflow = apiClient.getWorkflow.bind(apiClient)
 export const saveWorkflow = apiClient.saveWorkflow.bind(apiClient)
 export const saveGraph = apiClient.saveGraph.bind(apiClient)
+export const startWorkflowRun = apiClient.startWorkflowRun.bind(apiClient)
+export const getRun = apiClient.getRun.bind(apiClient)
 export const listConversations = apiClient.listConversations.bind(apiClient)
 export const getConversation = apiClient.getConversation.bind(apiClient)
 export const listMessages = apiClient.listMessages.bind(apiClient)

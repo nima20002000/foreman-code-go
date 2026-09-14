@@ -89,14 +89,14 @@ afterEach(() => {
 })
 
 describe('GraphEditor persistence boundary', () => {
-  it('shows a play control without pretending the frontend can execute a workflow', async () => {
+  it('starts a workflow through the API boundary and reads its result', async () => {
     renderEditor()
 
     await userEvent.setup().click(screen.getByRole('button', { name: 'Start workflow' }))
 
-    expect(screen.getByRole('status')).toHaveTextContent(
-      'Workflow execution is not connected in Phase 1.',
-    )
+    expect(await screen.findByTestId('workflow-run-status')).toHaveTextContent('run-mock-started')
+    await waitFor(() => expect(screen.getByTestId('workflow-run-status')).toHaveTextContent('Run completed'))
+    expect(screen.getByTestId('workflow-run-status')).toHaveTextContent('Mock test result')
   })
 
   it('adds a catalog agent through an accessible picker and makes it discardable', async () => {

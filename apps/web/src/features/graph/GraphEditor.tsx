@@ -35,7 +35,9 @@ import type {
 
 import {
   useAgentsQuery,
+  useRunQuery,
   useSaveGraphMutation,
+  useStartWorkflowRunMutation,
   useWorkspaceDetailsQuery,
   useWorkflowQuery,
   queryKeys,
@@ -412,6 +414,7 @@ export function GraphEditor({
   const updateDraft = useGraphDraftStore((state) => state.updateDraft)
   const discardDraft = useGraphDraftStore((state) => state.discardDraft)
   const [notice, setNotice] = useState<{ kind: 'success' | 'error' | 'info'; text: string }>()
+  const [activeRunId, setActiveRunId] = useState<string>()
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
   const [openMenuNodeId, setOpenMenuNodeId] = useState<string>()
   const [enteringEdgeId, setEnteringEdgeId] = useState<string>()
@@ -434,6 +437,24 @@ export function GraphEditor({
     [openMenuNodeId],
   )
   const saveMutation = useSaveGraphMutation()
+  const startRunMutation = useStartWorkflowRunMutation()
+  const runQuery = useRunQuery(workspaceId, activeRunId ?? '', {
+    enabled: Boolean(activeRunId),
+    refetchInterval: (query) => query.state.data?.run.executionState === 'completed' ? false : 1_000,
+  })
+
+  useEffect(() => {
+    const run = runQuery.data?.run
+    if (!run || run.executionState !== 'completed') return
+    if (run.outcome === 'succeeded') {
+      setNotice({ kind: 'success', text: 'Workflow completed with a durable result.' })
+    } else {
+      setNotice({
+        kind: 'error',
+        text: run.result?.error?.message ?? `Workflow finished with outcome ${run.outcome}.`,
+      })
+    }
+  }, [runQuery.data])
 
   useEffect(() => {
     if (!enteringEdgeId) return
@@ -731,6 +752,32 @@ export function GraphEditor({
     )
   }, [discardDraft, displayedWorkflow, isDirty, onSaveSession, queryClient, saveMutation, workspaceId, workflowKey])
 
+  const handleStart = useCallback(() => {
+    if (onSaveSession) {
+      setNotice({ kind: 'info', text: 'Save this workflow to the backend before starting it.' })
+      return
+    }
+    if (isDirty) {
+      setNotice({ kind: 'info', text: 'Save the current graph before starting the workflow.' })
+      return
+    }
+    if (startRunMutation.isPending || runQuery.data?.run.executionState === 'running') return
+    setNotice(undefined)
+    startRunMutation.mutate(
+      { workspaceId, workflowId: displayedWorkflow.id, input: {} },
+      {
+        onSuccess: ({ run }) => {
+          setActiveRunId(run.id)
+          setNotice({ kind: 'info', text: `Run ${run.id} was queued.` })
+        },
+        onError: (error) => setNotice({
+          kind: 'error',
+          text: `Workflow could not start: ${graphErrorMessage(error, 'The backend rejected the run.')}`,
+        }),
+      },
+    )
+  }, [displayedWorkflow.id, isDirty, onSaveSession, runQuery.data?.run.executionState, startRunMutation, workspaceId])
+
   const closeAgentPicker = useCallback(() => {
     setAgentPickerOpen(false)
     addAgentButtonRef.current?.focus()
@@ -850,10 +897,8 @@ export function GraphEditor({
             className="workflow-graph-run"
             aria-label="Start workflow"
             title="Start workflow"
-            onClick={() => setNotice({
-              kind: 'info',
-              text: 'Workflow execution is not connected in Phase 1.',
-            })}
+            disabled={startRunMutation.isPending || runQuery.data?.run.executionState === 'running'}
+            onClick={handleStart}
           >
             <Play aria-hidden="true" size={16} />
           </button>
@@ -886,6 +931,23 @@ export function GraphEditor({
         ) : null}
 
         <div className="workflow-graph-notifications" data-testid="workflow-graph-notifications">
+          {activeRunId ? (
+            <section className="workflow-run-status" data-testid="workflow-run-status" aria-live="polite">
+              <strong>Run {runQuery.data?.run.executionState ?? (runQuery.isError ? 'unavailable' : 'loading')}</strong>
+              <span>{activeRunId}</span>
+              {runQuery.data?.executions.map((execution) => (
+                <span key={execution.id}>
+                  {execution.agentId}: {execution.state}
+                  {execution.nativeSessionId ? ` · ${execution.nativeSessionId}` : ''}
+                </span>
+              ))}
+              {runQuery.data?.run.result?.output !== undefined ? (
+                <pre>{typeof runQuery.data.run.result.output === 'string'
+                  ? runQuery.data.run.result.output
+                  : JSON.stringify(runQuery.data.run.result.output, null, 2)}</pre>
+              ) : null}
+            </section>
+          ) : null}
           {onSaveSession ? (
             <p
               className="workflow-graph-session-notice"

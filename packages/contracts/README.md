@@ -20,7 +20,9 @@ The package deliberately keeps three concepts separate:
 - routing uses explicit outcomes and optional result predicates, while join,
   repeat, and parallelism bounds remain first-class facts;
 - native harness sessions receive their prompt, assigned skill versions,
-  model, and effort through a pinned `HarnessExecutionRequest`.
+  working directory, and harness-specific configuration through a pinned
+  `HarnessExecutionRequest`; Codex reasoning/sandbox/service-tier fields are
+  not reused as OpenCode variant/native-Agent fields.
 
 Agent projections can independently expose `executionState` (and the matching
 `status` vocabulary) as `available`, `working`, `waiting_browser`,

@@ -1,5 +1,9 @@
 # ENG-01 backend foundation
 
+> Historical foundation record. The real workflow slice described in
+> [`ENG-02-real-workflow-engine.md`](./ENG-02-real-workflow-engine.md) now
+> implements several items originally listed below as future work.
+
 ## Implemented and real
 
 - A Fastify API process starts only after its dependencies are ready.
@@ -49,16 +53,16 @@ exposes it.
 ## Commands
 
 ```sh
-pnpm install
-pnpm db:up
+corepack pnpm install
+corepack pnpm db:up
 cp apps/api/.env.example apps/api/.env
-pnpm dev:api
+corepack pnpm dev:api
 curl http://127.0.0.1:3000/health/live
 curl http://127.0.0.1:3000/health/ready
-pnpm test:integration
-pnpm db:down
+corepack pnpm test:integration
+corepack pnpm db:down
 ```
 
-The normal `pnpm typecheck`, `pnpm lint`, `pnpm test`, and `pnpm build` root
+The normal `corepack pnpm typecheck`, `corepack pnpm lint`, `corepack pnpm test`, and `corepack pnpm build` root
 commands include `@graphql/api`. The integration test stays separate so the
 ordinary unit suite does not silently require local infrastructure.

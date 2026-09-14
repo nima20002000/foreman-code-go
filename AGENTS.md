@@ -3,11 +3,10 @@
 ## Scope
 
 This repository contains the React web shell in `apps/web`, the shared
-contracts package in `packages/contracts`, and the ENG-01 Fastify/PostgreSQL
-foundation in `apps/api`. The frontend product flow is still a wireframe and
-interaction foundation: do not add task execution, GraphQL transport, product
-persistence, or real external integrations unless the current workstream
-explicitly authorizes them.
+contracts package in `packages/contracts`, and the Fastify/PostgreSQL workflow
+engine in `apps/api`. The saved Website workflow can run real local Codex and
+OpenCode harnesses. Do not add GraphQL transport or unrelated external
+integrations unless the current workstream explicitly authorizes them.
 
 Keep feature work behind the shared contracts package. The web app should not
 redefine API/domain shapes locally or import server-only code.
@@ -24,17 +23,20 @@ Do not duplicate one state source in another layer without a documented reason.
 
 ## Verification
 
-From the repository root, use the pinned pnpm runtime and run:
+From the repository root, use the pinned pnpm runtime. Plain npm installs are
+blocked because they bypass the strict 48-hour package-release-age policy.
+Run:
 
 ```sh
-pnpm install
-pnpm typecheck
-pnpm lint
-pnpm test
-pnpm build
-pnpm db:up
-pnpm test:integration
-pnpm db:down
+corepack pnpm install
+corepack pnpm typecheck
+corepack pnpm lint
+corepack pnpm test
+corepack pnpm build
+corepack pnpm db:up
+corepack pnpm test:integration
+corepack pnpm test:acceptance
+corepack pnpm db:down
 ```
 
 Keep generated output, local environment files, caches, and credentials out of

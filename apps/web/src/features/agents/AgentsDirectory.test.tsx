@@ -176,7 +176,7 @@ describe('AgentsDirectoryContent', () => {
     expect(within(settings).queryByRole('option', { name: 'Ultra' })).not.toBeInTheDocument()
 
     await user.selectOptions(within(settings).getByRole('combobox', { name: 'Harness' }), 'opencode')
-    expect(modelSelect).toHaveValue('deepseek-v4.1-flash')
+    expect(modelSelect).toHaveValue('opencode-go/deepseek-v4.1-flash')
     expect(within(settings).queryByRole('checkbox', { name: 'Fast mode' })).not.toBeInTheDocument()
     expect(within(settings).getByRole('combobox', { name: 'Harness' })).not.toHaveFocus()
 

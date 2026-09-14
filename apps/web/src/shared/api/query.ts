@@ -7,7 +7,10 @@ import {
 import type {
   CreateMessageRequest,
   CreateMessageResponse,
+  CreateRunRequest,
+  CreateRunResponse,
   GetConversationResponse,
+  GetRunResponse,
   SaveWorkflowRequest,
   SaveWorkflowResponse,
   WorkspaceDetailsResponse,
@@ -16,6 +19,7 @@ import type {
 import {
   apiClient,
   getConversation,
+  getRun,
   getAgent,
   getWorkflow,
   getWorkspaceDetails,
@@ -24,6 +28,7 @@ import {
   listMessages,
   listVisibleResources,
   saveGraph,
+  startWorkflowRun,
   sendUserMessage,
   type RequestOptions,
 } from './client'
@@ -41,6 +46,8 @@ export const queryKeys = {
     ['workbench', 'workspace', workspaceId, 'agent', agentId] as const,
   workflow: (workspaceId: string, workflowId: string) =>
     ['workbench', 'workspace', workspaceId, 'workflow', workflowId] as const,
+  run: (workspaceId: string, runId: string) =>
+    ['workbench', 'workspace', workspaceId, 'run', runId] as const,
   conversations: (workspaceId: string) => ['workbench', 'workspace', workspaceId, 'conversations'] as const,
   conversation: (workspaceId: string, conversationId: string) =>
     ['workbench', 'workspace', workspaceId, 'conversation', conversationId] as const,
@@ -95,6 +102,18 @@ export function useWorkflowQuery(
     ...options,
     queryKey: queryKeys.workflow(workspaceId, workflowId),
     queryFn: ({ signal }) => getWorkflow({ workspaceId, workflowId }, { signal }),
+  })
+}
+
+export function useRunQuery(
+  workspaceId: string,
+  runId: string,
+  options?: QueryOptions<GetRunResponse>,
+) {
+  return useQuery({
+    ...options,
+    queryKey: queryKeys.run(workspaceId, runId),
+    queryFn: ({ signal }) => getRun({ workspaceId, runId }, { signal }),
   })
 }
 
@@ -157,6 +176,18 @@ export function useSaveGraphMutation(options?: SaveGraphMutationOptions) {
 }
 
 export const useSaveWorkflowMutation = useSaveGraphMutation
+
+type StartRunMutationOptions = Omit<
+  UseMutationOptions<CreateRunResponse, Error, CreateRunRequest>,
+  'mutationFn'
+>
+
+export function useStartWorkflowRunMutation(options?: StartRunMutationOptions) {
+  return useMutation({
+    ...options,
+    mutationFn: (input) => startWorkflowRun(input),
+  })
+}
 
 type UserMessageInput = Omit<CreateMessageRequest, 'role'>
 type UserMessageMutationOptions = Omit<

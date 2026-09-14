@@ -38,15 +38,21 @@ export async function queryForReadiness(
 ): Promise<void> {
   signal?.throwIfAborted()
   const client = await pool.connect()
-  let released = false
+  const connection = (client as pg.PoolClient & {
+    connection?: { stream?: { destroy(): void } }
+  }).connection
+  const processId = (client as pg.PoolClient & { processID?: number }).processID
   let failed = false
+  let cancellation: Promise<void> | undefined
   const onError = () => { failed = true }
   const onAbort = () => {
     failed = true
-    if (!released) {
-      released = true
-      client.release(true)
-    }
+    if (!processId || cancellation) return
+    cancellation = cancelBackendQuery(pool.options, processId).catch(() => {
+      // If the cancel connection cannot be established, force-close the
+      // leased socket as a final local cleanup fallback.
+      connection?.stream?.destroy()
+    })
   }
   client.on('error', onError)
   try {
@@ -60,6 +66,17 @@ export async function queryForReadiness(
   } finally {
     signal?.removeEventListener('abort', onAbort)
     client.removeListener('error', onError)
-    if (!released) client.release(failed)
+    if (cancellation) await cancellation
+    client.release(failed)
+  }
+}
+
+async function cancelBackendQuery(options: pg.PoolConfig, processId: number): Promise<void> {
+  const client = new pg.Client(options)
+  try {
+    await client.connect()
+    await client.query('select pg_cancel_backend($1)', [processId])
+  } finally {
+    await client.end().catch(() => undefined)
   }
 }
