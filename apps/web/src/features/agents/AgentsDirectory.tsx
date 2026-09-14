@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { AgentSchema, type Agent, type WorkflowDefinition } from '@graphql/contracts'
 import { Link } from '@tanstack/react-router'
-import { MoreHorizontal, Plus, Trash2, X } from 'lucide-react'
+import { Check, MoreHorizontal, Plus, Trash2, X } from 'lucide-react'
 
 import { useWorkspaceDetailsQuery } from '../../shared/api/query'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
@@ -18,6 +18,39 @@ function executionLabel(agent: Agent): string {
   const value = agent.executionState ?? agent.status
   if (!value) return 'No execution state'
   return value.replaceAll('_', ' ').replace(/^./, (letter) => letter.toUpperCase())
+}
+
+const CODEX_MODELS: readonly string[] = [
+  'gpt-5.6-luna',
+  'gpt-5.6-terra',
+  'gpt-5.6-sol',
+  'gpt-6-astra',
+]
+const OPENCODE_MODELS: readonly string[] = ['deepseek-v4.1-flash']
+const STANDARD_EFFORTS: readonly NonNullable<Agent['effort']>[] = [
+  'low', 'medium', 'high', 'xhigh', 'max',
+]
+
+function modelOptions(harness: NonNullable<Agent['harness']>): readonly string[] {
+  return harness === 'codex' ? CODEX_MODELS : OPENCODE_MODELS
+}
+
+function initialModel(agent: Agent, harness: NonNullable<Agent['harness']>): string {
+  const options = modelOptions(harness)
+  return agent.model && options.includes(agent.model) ? agent.model : options[0]
+}
+
+function effortOptions(model: string): readonly NonNullable<Agent['effort']>[] {
+  return model === 'gpt-6-astra' ? [...STANDARD_EFFORTS, 'ultra'] : STANDARD_EFFORTS
+}
+
+const effortLabels: Record<NonNullable<Agent['effort']>, string> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra high',
+  max: 'Max',
+  ultra: 'Ultra',
 }
 
 function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>) {
@@ -57,7 +90,7 @@ function AgentCard({
   const [confirmClose, setConfirmClose] = useState(false)
   const [name, setName] = useState(agent.name)
   const [harness, setHarness] = useState(agent.harness ?? 'codex')
-  const [model, setModel] = useState(agent.model ?? 'gpt-5.6-codex')
+  const [model, setModel] = useState(() => initialModel(agent, agent.harness ?? 'codex'))
   const [effort, setEffort] = useState(agent.effort ?? 'medium')
   const [fastMode, setFastMode] = useState(agent.fastMode ?? false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -69,7 +102,7 @@ function AgentCard({
   }, [])
   const dirty = name.trim() !== agent.name
     || harness !== (agent.harness ?? 'codex')
-    || model !== (agent.model ?? 'gpt-5.6-codex')
+    || model !== initialModel(agent, agent.harness ?? 'codex')
     || effort !== (agent.effort ?? 'medium')
     || fastMode !== (agent.fastMode ?? false)
   const requestClose = useCallback(() => {
@@ -120,7 +153,7 @@ function AgentCard({
         }
         setName(agent.name)
         setHarness(agent.harness ?? 'codex')
-        setModel(agent.model ?? 'gpt-5.6-codex')
+        setModel(initialModel(agent, agent.harness ?? 'codex'))
         setEffort(agent.effort ?? 'medium')
         setFastMode(agent.fastMode ?? false)
         setMenuOpen(true)
@@ -153,15 +186,32 @@ function AgentCard({
             </div>
           </div>
           <label className="agent-settings-name">Name<input value={name} onChange={(event) => setName(event.target.value)} /></label>
-          <label>Harness<select value={harness} onChange={(event) => setHarness(event.target.value as NonNullable<Agent['harness']>)}>
+          <div className="agent-settings-field"><span>Harness</span><select aria-label="Harness" value={harness} onChange={(event) => {
+            const nextHarness = event.target.value as NonNullable<Agent['harness']>
+            setHarness(nextHarness)
+            if (!modelOptions(nextHarness).includes(model)) {
+              setModel(modelOptions(nextHarness)[0])
+            }
+            event.currentTarget.blur()
+          }}>
             <option value="codex">Codex</option><option value="opencode">OpenCode</option>
-          </select></label>
-          <label>Model<select value={model} onChange={(event) => setModel(event.target.value)}>
-            {[...new Set([model, 'gpt-5.6-codex', 'deepseek-v4.1-flash'])].map((value) => <option key={value} value={value}>{value}</option>)}
-          </select></label>
-          <label>Effort<select value={effort} onChange={(event) => setEffort(event.target.value as NonNullable<Agent['effort']>)}>
-            <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option>
-          </select></label>
+          </select></div>
+          <div className="agent-settings-field"><span>Model</span><select aria-label="Model" value={model} onChange={(event) => {
+            const nextModel = event.target.value
+            setModel(nextModel)
+            if (!effortOptions(nextModel).includes(effort)) setEffort('max')
+            event.currentTarget.blur()
+          }}>
+            {modelOptions(harness).map((value) => <option key={value} value={value}>{value}</option>)}
+          </select></div>
+          <div className="agent-settings-field"><span>Effort</span><select aria-label="Effort" value={effort} onChange={(event) => {
+            setEffort(event.target.value as NonNullable<Agent['effort']>)
+            event.currentTarget.blur()
+          }}>
+            {effortOptions(model).map((value) => (
+              <option key={value} value={value}>{effortLabels[value]}</option>
+            ))}
+          </select></div>
           {showBlockers ? (
           <div className="agent-removal-blocked" role="alert">
             <p>{agent.name} is already in use in:</p>
@@ -178,7 +228,7 @@ function AgentCard({
           </div>
           ) : null}
           <div className="agent-settings-actions">
-            <button type="button" onClick={save} disabled={!dirty}>Save</button>
+            <button type="button" className="agent-settings-save" aria-label="Save" title="Save" onClick={save} disabled={!dirty}><Check aria-hidden="true" size={16} /></button>
           </div>
         </>}
       </div>

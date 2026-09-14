@@ -157,9 +157,28 @@ describe('AgentsDirectoryContent', () => {
     const settings = screen.getByRole('dialog', { name: 'Researcher actions' })
     expect(within(settings).getByRole('textbox', { name: 'Name' })).toHaveValue('Researcher')
     expect(within(settings).getByRole('combobox', { name: 'Harness' })).toHaveValue('codex')
-    expect(within(settings).getByRole('combobox', { name: 'Model' })).toBeVisible()
+    const modelSelect = within(settings).getByRole('combobox', { name: 'Model' })
+    expect(within(modelSelect).getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'gpt-5.6-luna',
+      'gpt-5.6-terra',
+      'gpt-5.6-sol',
+      'gpt-6-astra',
+    ])
     expect(within(settings).getByRole('combobox', { name: 'Effort' })).toHaveValue('medium')
+    expect(within(settings).getByRole('option', { name: 'Max' })).toBeVisible()
     expect(within(settings).getByRole('checkbox', { name: 'Fast mode' })).toBeVisible()
+
+    await user.selectOptions(modelSelect, 'gpt-6-astra')
+    expect(within(settings).getByRole('option', { name: 'Ultra' })).toBeVisible()
+    await user.selectOptions(within(settings).getByRole('combobox', { name: 'Effort' }), 'ultra')
+    await user.selectOptions(modelSelect, 'gpt-5.6-luna')
+    expect(within(settings).getByRole('combobox', { name: 'Effort' })).toHaveValue('max')
+    expect(within(settings).queryByRole('option', { name: 'Ultra' })).not.toBeInTheDocument()
+
+    await user.selectOptions(within(settings).getByRole('combobox', { name: 'Harness' }), 'opencode')
+    expect(modelSelect).toHaveValue('deepseek-v4.1-flash')
+    expect(within(settings).queryByRole('checkbox', { name: 'Fast mode' })).not.toBeInTheDocument()
+    expect(within(settings).getByRole('combobox', { name: 'Harness' })).not.toHaveFocus()
 
     await user.clear(within(settings).getByRole('textbox', { name: 'Name' }))
     await user.type(within(settings).getByRole('textbox', { name: 'Name' }), 'Lead Researcher')

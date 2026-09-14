@@ -299,19 +299,37 @@
 
 .agent-settings-actions {
   align-self: end;
+  justify-content: flex-start;
 }
 
 .agent-settings-actions button {
-  width: 100%;
-  text-align: center;
+  display: grid;
+  width: 2rem;
+  min-width: 2rem;
+  place-items: center;
+  padding: 0;
+  border-color: transparent;
+  color: var(--color-text-muted);
+  background: transparent;
 }
 
-.agent-directory-card-actions > label {
+.agent-settings-actions button:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+  color: var(--color-text-strong);
+  background: var(--color-surface-subtle);
+}
+
+.agent-directory-card-actions > label,
+.agent-settings-field {
   display: grid;
   gap: 0.25rem;
   color: var(--color-text-muted);
   font-size: 0.6875rem;
   font-weight: 700;
+}
+
+.agent-settings-field > span {
+  pointer-events: none;
 }
 
 .agent-directory-card-actions input,
@@ -330,6 +348,10 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  color: var(--color-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .agent-settings-fast input {
