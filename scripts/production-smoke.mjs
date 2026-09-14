@@ -1,0 +1,105 @@
+import assert from 'node:assert/strict'
+import { execFile, spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { readFile } from 'node:fs/promises'
+import { createServer } from 'node:net'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
+import { setTimeout as delay } from 'node:timers/promises'
+
+const root = fileURLToPath(new URL('../', import.meta.url))
+const apiDirectory = fileURLToPath(new URL('../apps/api/', import.meta.url))
+const run = promisify(execFile)
+const restartPostgres = process.argv.includes('--restart-postgres')
+const probe = createServer()
+probe.listen(0, '127.0.0.1')
+await once(probe, 'listening')
+const port = probe.address().port
+await new Promise((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()))
+
+const manifest = JSON.parse(await readFile(new URL('../apps/api/package.json', import.meta.url), 'utf8'))
+const [runtime, ...args] = manifest.scripts.start.split(' ')
+assert.equal(runtime, 'node')
+assert.deepEqual(args, ['dist/server.js'], 'Production must run compiled JavaScript without a TS loader')
+const child = spawn(process.execPath, args, {
+  cwd: apiDirectory,
+  env: {
+    ...process.env,
+    NODE_OPTIONS: '',
+    HOST: '127.0.0.1',
+    PORT: String(port),
+    DATABASE_URL: process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL
+      ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql',
+    DATABASE_CONNECTION_TIMEOUT_MS: '250',
+    DATABASE_QUERY_TIMEOUT_MS: '1000',
+    READINESS_TIMEOUT_MS: '1000',
+    LANGGRAPH_CHECKPOINT_SCHEMA: 'langgraph_production_smoke',
+  },
+  stdio: ['ignore', 'pipe', 'pipe'],
+})
+let output = ''
+child.stdout.on('data', (chunk) => { output += chunk })
+child.stderr.on('data', (chunk) => { output += chunk })
+const exited = new Promise((resolve) => {
+  child.once('exit', (code, signal) => resolve({ code, signal }))
+  child.once('error', (error) => resolve({ error }))
+})
+
+async function request(path) {
+  const response = await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(2000) })
+  return { status: response.status, body: await response.json() }
+}
+
+async function waitForReady() {
+  const deadline = Date.now() + 20000
+  while (Date.now() < deadline) {
+    assert.equal(child.exitCode, null, `API exited before readiness:\n${output}`)
+    assert.equal(child.signalCode, null, `API was terminated:\n${output}`)
+    try {
+      const response = await request('/health/ready')
+      if (response.status === 200) {
+        assert.deepEqual(response.body.checks, { database: 'ok', checkpoints: 'ok' })
+        return
+      }
+    } catch {
+      // A new process or restarting dependency may not accept connections yet.
+    }
+    await delay(50)
+  }
+  throw new Error(`API never became ready:\n${output}`)
+}
+
+let postgresStopped = false
+try {
+  await waitForReady()
+  assert.equal((await request('/health/live')).status, 200)
+  if (restartPostgres) {
+    // Explicit opt-in: this operates only on this repository's Compose service.
+    await delay(50)
+    postgresStopped = true
+    await run('docker', ['compose', 'stop', 'postgres'], { cwd: root, timeout: 30000 })
+    assert.equal((await request('/health/live')).status, 200)
+    const started = Date.now()
+    const readiness = await request('/health/ready')
+    assert.equal(readiness.status, 503)
+    assert.deepEqual(readiness.body.checks, { database: 'unavailable', checkpoints: 'unavailable' })
+    assert.ok(Date.now() - started < 2000, 'Readiness must have a deadline')
+    assert.equal(child.exitCode, null, `API crashed during database restart:\n${output}`)
+    await run('docker', ['compose', 'up', '-d', '--wait', 'postgres'], { cwd: root, timeout: 60000 })
+    postgresStopped = false
+    await waitForReady()
+  }
+  console.log(`Production start passed on ${process.version}${restartPostgres ? ' with PostgreSQL restart/recovery' : ''}`)
+} catch (error) {
+  console.error(output)
+  throw error
+} finally {
+  if (postgresStopped) {
+    await run('docker', ['compose', 'up', '-d', '--wait', 'postgres'], { cwd: root, timeout: 60000 })
+      .catch((error) => console.error('Could not restart test PostgreSQL:', error.message))
+  }
+  child.kill('SIGTERM')
+  const timer = setTimeout(() => child.kill('SIGKILL'), 5000)
+  await exited
+  clearTimeout(timer)
+}

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AgentSchema,
+  AgentConfigurationVersionSchema,
   AgentStatusSchema,
   ApiErrorResponseSchema,
   BrowserWaitSchema,
@@ -8,12 +9,15 @@ import {
   CreateMessageRequestSchema,
   ExecutionConditionSchema,
   HarnessSummarySchema,
+  HarnessExecutionRequestSchema,
   MessageSchema,
   ResourceSummarySchema,
   RunSummarySchema,
   SaveWorkflowRequestSchema,
   ScenarioSelectionSchema,
+  WorkflowRunSchema,
   WorkflowDefinitionSchema,
+  WorkflowVersionSchema,
   WorkspaceDetailsResponseSchema,
 } from "../src/index.js";
 
@@ -167,5 +171,134 @@ describe("neutral product contracts", () => {
       scenarioId: "workflow-editor",
       workflowId: "workflow-1",
     });
+  });
+
+  it("pins immutable workflow and agent configuration versions", () => {
+    const agentConfiguration = AgentConfigurationVersionSchema.parse({
+      id: "agent-config-1-v3",
+      workspaceId: "workspace-1",
+      agentId: "agent-1",
+      version: 3,
+      prompt: { system: "Research the requested subject." },
+      assignedSkills: [{ skillId: "skill-web-research", version: "2.1.0" }],
+      harness: { harness: "codex", model: "gpt-5", effort: "high", fastMode: false },
+      contentHash: "sha256:agent-config",
+      createdAt: "2026-09-14T00:00:00.000Z",
+    });
+
+    const versionedWorkflow = {
+      ...workflow,
+      version: 4,
+      executionPolicy: { maxParallelism: 3, maxNodeExecutions: 12 },
+      nodes: [{ ...workflow.nodes[0], join: { mode: "all" as const } }],
+      edges: [],
+    };
+    expect(
+      WorkflowVersionSchema.parse({
+        id: "workflow-1-v4",
+        workspaceId: "workspace-1",
+        workflowId: "workflow-1",
+        version: 4,
+        definition: versionedWorkflow,
+        agentConfigurationVersionIds: { "agent-1": agentConfiguration.id },
+        contentHash: "sha256:workflow",
+        createdAt: "2026-09-14T00:00:00.000Z",
+      }).agentConfigurationVersionIds,
+    ).toEqual({ "agent-1": "agent-config-1-v3" });
+
+    expect(
+      WorkflowVersionSchema.safeParse({
+        id: "workflow-1-v4",
+        workspaceId: "workspace-1",
+        workflowId: "workflow-1",
+        version: 4,
+        definition: versionedWorkflow,
+        agentConfigurationVersionIds: {},
+        contentHash: "sha256:workflow",
+        createdAt: "2026-09-14T00:00:00.000Z",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("models explicit routing, bounded repeats, parallel attempts and native session input", () => {
+    const routedWorkflow = WorkflowDefinitionSchema.parse({
+      ...workflow,
+      version: 2,
+      executionPolicy: { maxParallelism: 2, maxNodeExecutions: 8 },
+      nodes: [
+        workflow.nodes[0],
+        { id: "node-2", agentId: "agent-2", name: "Review", join: { mode: "any" } },
+      ],
+      edges: [
+        {
+          id: "edge-1",
+          source: "node-1",
+          target: "node-2",
+          route: {
+            outcomes: ["succeeded"],
+            result: { path: ["approved"], operator: "equals", value: true },
+            maxTraversals: 2,
+          },
+        },
+      ],
+    });
+    expect(routedWorkflow.edges[0]?.route?.maxTraversals).toBe(2);
+
+    expect(
+      WorkflowDefinitionSchema.safeParse({
+        ...routedWorkflow,
+        edges: [
+          {
+            ...routedWorkflow.edges[0],
+            route: { outcomes: ["succeeded"], result: { path: ["approved"], operator: "equals" } },
+          },
+        ],
+      }).success,
+    ).toBe(false);
+
+    const run = WorkflowRunSchema.parse({
+      id: "run-2",
+      workspaceId: "workspace-1",
+      workflowId: "workflow-1",
+      workflowVersionId: "workflow-1-v2",
+      agentConfigurationVersionIds: {
+        "agent-1": "agent-config-1-v3",
+        "agent-2": "agent-config-2-v1",
+      },
+      executionCondition: condition,
+      executionState: "running",
+      outcome: "pending",
+      input: { request: "Research this" },
+      createdAt: "2026-09-14T00:00:00.000Z",
+    });
+    expect(run.workflowVersionId).toBe("workflow-1-v2");
+    expect(
+      WorkflowRunSchema.safeParse({
+        ...run,
+        executionState: "completed",
+        outcome: "succeeded",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      HarnessExecutionRequestSchema.parse({
+        executionId: "execution-1",
+        runId: run.id,
+        workspaceId: run.workspaceId,
+        workflowNodeId: "node-1",
+        configuration: {
+          id: "agent-config-1-v3",
+          workspaceId: "workspace-1",
+          agentId: "agent-1",
+          version: 3,
+          prompt: { system: "Research the requested subject." },
+          assignedSkills: [{ skillId: "skill-web-research", version: "2.1.0" }],
+          harness: { harness: "codex", model: "gpt-5", effort: "high", fastMode: false },
+          contentHash: "sha256:agent-config",
+          createdAt: "2026-09-14T00:00:00.000Z",
+        },
+        input: run.input,
+      }).configuration.assignedSkills,
+    ).toEqual([{ skillId: "skill-web-research", version: "2.1.0" }]);
   });
 });

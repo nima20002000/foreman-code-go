@@ -2,11 +2,12 @@
 
 ## Scope
 
-This repository currently contains only the React web shell in `apps/web` and
-the shared contracts package in `packages/contracts`. The initial product is a
-wireframe and interaction foundation: do not add a backend, task execution,
-GraphQL transport, persistence, or real external integrations as part of the
-shell work.
+This repository contains the React web shell in `apps/web`, the shared
+contracts package in `packages/contracts`, and the ENG-01 Fastify/PostgreSQL
+foundation in `apps/api`. The frontend product flow is still a wireframe and
+interaction foundation: do not add task execution, GraphQL transport, product
+persistence, or real external integrations unless the current workstream
+explicitly authorizes them.
 
 Keep feature work behind the shared contracts package. The web app should not
 redefine API/domain shapes locally or import server-only code.
@@ -31,6 +32,9 @@ pnpm typecheck
 pnpm lint
 pnpm test
 pnpm build
+pnpm db:up
+pnpm test:integration
+pnpm db:down
 ```
 
 Keep generated output, local environment files, caches, and credentials out of

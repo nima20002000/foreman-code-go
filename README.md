@@ -1,14 +1,16 @@
 # graphql
 
-`graphql` is a small pnpm TypeScript monorepo for a wireframe-first agent
-workspace shell. The project name is `graphql`; it is not a GraphQL protocol,
-server, query engine, or external integration. The first milestone establishes
-the web shell and shared contracts and intentionally does not include a
-backend, execution engine, or persistence.
+`graphql` is a pnpm TypeScript monorepo for an agent workspace. The project
+name is `graphql`; it is not a GraphQL protocol or query-engine implementation.
+The frontend remains a wireframe-first product surface backed by MSW. ENG-01
+adds the first real backend foundation without yet replacing those product
+mocks.
 
 ## Workspace
 
 - `apps/web` — React/Vite shell, providers, test harness, and browser smoke test
+- `apps/api` — Fastify process, PostgreSQL connectivity, LangGraph PostgreSQL
+  checkpoint storage, and backend extension ports
 - `packages/contracts` — shared, runtime-validated domain and API contracts
 
 See [`AGENTS.md`](./AGENTS.md) for state ownership and scope rules.
@@ -22,11 +24,24 @@ semantics, UX decisions, backend handoff boundary, and verification record, see
 ```sh
 pnpm install
 pnpm dev
+pnpm db:up
+cp apps/api/.env.example apps/api/.env
+pnpm dev:api
 pnpm typecheck
 pnpm lint
 pnpm test
+pnpm test:integration
 pnpm build
 ```
+
+`GET /health/live` reports process liveness. `GET /health/ready` checks both
+the application PostgreSQL pool and the LangGraph checkpoint saver. The API
+fails startup if either dependency cannot initialize.
+
+`pnpm test:integration` requires the PostgreSQL service. It writes a real
+LangGraph checkpoint, closes the saver, reopens it, and proves the checkpoint
+is durable. `pnpm db:down` stops the local service without deleting its named
+volume.
 
 The checked-in browser mock starts by default during development so the
 wireframe shell always has deterministic data. It runs only together with
@@ -39,6 +54,12 @@ real API:
 ```sh
 VITE_ENABLE_MSW=false pnpm dev
 ```
+
+The ENG-01 API intentionally does not implement the frontend's workspace,
+workflow, conversation, or resource routes. Those remain MSW-backed until the
+corresponding persistence/API workstream lands. See
+[`docs/ENG-01-backend-foundation.md`](./docs/ENG-01-backend-foundation.md) for
+the real/mocked boundary and the extension interfaces.
 
 The interface starts in dark mode. Use the workspace-header theme button to
 switch to light mode; the explicit choice is stored locally and restored before
