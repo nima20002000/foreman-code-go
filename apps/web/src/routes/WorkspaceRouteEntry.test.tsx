@@ -10,6 +10,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { routeTree } from '../app/router'
 import { setMockScenario } from '../shared/mocks/scenarios'
+import { useSessionWorkflowStore } from '../features/workflows'
+import { useWorkspaceSessionStore } from '../features/workspaces'
 
 function renderWorkspace(initialEntry: string) {
   const queryClient = new QueryClient({
@@ -43,6 +45,9 @@ describe('WorkspaceRouteEntry integration', () => {
 
   afterEach(() => {
     setMockScenario('normal')
+    useWorkspaceSessionStore.getState().reset()
+    useSessionWorkflowStore.getState().clearSessionWorkflows()
+    sessionStorage.clear()
     vi.unstubAllEnvs()
   })
 
@@ -52,6 +57,7 @@ describe('WorkspaceRouteEntry integration', () => {
     expect(await screen.findByTestId('agent-node-agent-researcher')).toBeInTheDocument()
     expect(document.querySelector('.shell-header')).not.toBeInTheDocument()
     expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('separator', { name: 'Resize workspace context panel' })).not.toBeInTheDocument()
 
     const nodeButton = screen.getByTestId('agent-node-agent-researcher').querySelector('button')
     if (!nodeButton) throw new Error('Researcher node button missing')
@@ -63,7 +69,7 @@ describe('WorkspaceRouteEntry integration', () => {
     expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
   })
 
-  it('keeps an URL-selected agent in the graph without restoring removed shell panels', async () => {
+  it('keeps an URL-selected agent in the graph without mounting a context panel', async () => {
     const { router } = renderWorkspace('/workspaces/workspace-1?agentId=agent-researcher')
 
     const node = await screen.findByTestId('agent-node-agent-researcher')
@@ -71,13 +77,14 @@ describe('WorkspaceRouteEntry integration', () => {
     expect(router.state.location.search.agentId).toBe('agent-researcher')
     expect(document.querySelector('.shell-header')).not.toBeInTheDocument()
     expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agent-context-panel')).not.toBeInTheDocument()
   })
 
-  it('shows a stale selection without exposing unrelated conversation history', async () => {
+  it('keeps a stale URL selection in the graph without exposing an operator surface', async () => {
     renderWorkspace('/workspaces/workspace-1?agentId=agent-old')
 
-    expect(await screen.findByTestId('selection-stale')).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'History' })).not.toBeInTheDocument()
+    expect(await screen.findByTestId('workflow-graph')).toBeInTheDocument()
+    expect(screen.queryByTestId('agent-context-stale')).not.toBeInTheDocument()
     expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
   })
 
@@ -111,5 +118,66 @@ describe('WorkspaceRouteEntry integration', () => {
 
     expect(await screen.findByTestId('workspace-empty')).toBeVisible()
     expect(screen.queryByTestId('workflow-graph')).not.toBeInTheDocument()
+  })
+
+  it('enables mock data controls by default in development and honors an explicit opt-out', async () => {
+    const enabled = renderWorkspace('/workspaces/workspace-1')
+    expect(await screen.findByTestId('mock-data-control')).toBeInTheDocument()
+    enabled.unmount()
+
+    vi.stubEnv('VITE_ENABLE_MSW', 'false')
+    renderWorkspace('/workspaces/workspace-1')
+
+    expect(await screen.findByTestId('workflow-graph')).toBeVisible()
+    expect(screen.queryByTestId('mock-data-control')).not.toBeInTheDocument()
+  })
+
+  it('keeps independently created workspace names isolated across rapid URL switches', async () => {
+    const user = userEvent.setup()
+    const { router } = renderWorkspace('/workspaces/workspace-1')
+
+    await screen.findByTestId('workspace-entry-workspace-1')
+    await user.click(screen.getByRole('button', { name: 'New workspace' }))
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Scratch')
+    await user.click(screen.getByRole('button', { name: 'Create workspace' }))
+
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/workspaces\/session-/))
+    const scratchId = router.state.location.pathname.split('/').at(-1)
+    expect(scratchId).toMatch(/^session-/)
+    expect(await screen.findByTestId(`workspace-entry-${scratchId}`)).toHaveTextContent('Scratch')
+    expect(screen.getByTestId('workspace-entry-workspace-1')).toHaveTextContent('Website')
+
+    await user.click(screen.getByRole('button', { name: 'New workspace' }))
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Beta')
+    await user.click(screen.getByRole('button', { name: 'Create workspace' }))
+    await waitFor(() => expect(router.state.location.pathname).not.toContain(scratchId as string))
+    expect(screen.getByTestId('workspace-entry-workspace-1')).toHaveTextContent('Website')
+    expect(screen.getByTestId(`workspace-entry-${scratchId}`)).toHaveTextContent('Scratch')
+    expect(screen.getByRole('button', { name: 'Beta' })).toBeVisible()
+
+    await router.navigate({ to: '/workspaces/$workspaceId', params: { workspaceId: 'workspace-1' } })
+    expect(await screen.findByTestId('workspace-entry-workspace-1')).toHaveTextContent('Website')
+
+    await router.navigate({
+      to: '/workspaces/$workspaceId',
+      params: { workspaceId: scratchId as string },
+    })
+    expect(await screen.findByTestId(`workspace-entry-${scratchId}`)).toHaveTextContent('Scratch')
+    expect(screen.getByTestId('workspace-entry-workspace-1')).toHaveTextContent('Website')
+    expect(screen.getByRole('button', { name: 'Beta' })).toBeVisible()
+  })
+
+  it('canonically selects a session workflow when its workspace URL has no workflow id', async () => {
+    const sessionWorkspace = useWorkspaceSessionStore.getState().createWorkspace('Scratch')
+    const workflow = useSessionWorkflowStore.getState().createSessionWorkflow({
+      workspaceId: sessionWorkspace.id,
+      name: 'Scratch flow',
+    })
+
+    const { router } = renderWorkspace(`/workspaces/${sessionWorkspace.id}`)
+
+    expect(await screen.findByRole('link', { name: /Scratch flow/ })).toHaveAttribute('aria-current', 'page')
+    expect(await screen.findByTestId('workflow-graph')).toBeVisible()
+    await waitFor(() => expect(router.state.location.search.workflowId).toBe(workflow.id))
   })
 })

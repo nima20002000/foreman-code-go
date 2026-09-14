@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { routeTree } from '../app/router'
 import { setMockScenario } from '../shared/mocks/scenarios'
@@ -26,6 +26,17 @@ afterEach(() => {
 })
 
 describe('workspace section routes', () => {
+  beforeAll(() => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    )
+  })
+
   it('deep-links to the agents directory and marks its navigation active', async () => {
     const { router } = renderRoute('/workspaces/workspace-1/agents?agentId=agent-researcher')
 
@@ -68,6 +79,27 @@ describe('workspace section routes', () => {
     expect(await screen.findByRole('heading', { name: 'Terminal' })).toBeVisible()
     expect(screen.getByTestId('coming-soon')).toHaveTextContent('Coming soon')
     expect(screen.getByRole('link', { name: 'Terminal' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('navigates between nested workspace destinations through router links', async () => {
+    const { router } = renderRoute('/workspaces/workspace-1/agents')
+
+    expect(await screen.findByRole('heading', { name: 'Agents', level: 1 })).toBeVisible()
+    await userEvent.setup().click(screen.getByRole('link', { name: 'Workflows' }))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1'))
+    expect(await screen.findByTestId('workflow-graph')).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Workflows' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: 'Agents' })).not.toHaveAttribute('aria-current')
+  })
+
+  it('deep-links the Files placeholder under the workspaces menu', async () => {
+    renderRoute('/workspaces/workspace-1/files')
+
+    expect(await screen.findByRole('heading', { name: 'Files', level: 1 })).toBeVisible()
+    expect(screen.getByTestId('coming-soon')).toHaveTextContent('Coming soon')
+    expect(screen.getByRole('link', { name: 'Files' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('button', { name: 'Workspaces' })).toHaveClass('nav-item-active')
   })
 
   it('places Browsers under Settings and preserves its deep link', async () => {

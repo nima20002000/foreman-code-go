@@ -12,6 +12,8 @@ import {
   AgentsRouteEntry,
   BrowsersSettingsRouteEntry,
   ComingSoonRouteEntry,
+  GlobalComingSoonRouteEntry,
+  GlobalSettingsRouteEntry,
   SettingsRouteEntry,
 } from '../routes/WorkspaceSectionRoutes'
 
@@ -40,8 +42,12 @@ const agentsRoute = createRoute({
 })
 
 function comingSoonRoute(
-  path: '/workspaces/$workspaceId/tasks' | '/workspaces/$workspaceId/runs' | '/workspaces/$workspaceId/terminal',
-  section: 'tasks' | 'runs' | 'terminal',
+  path:
+    | '/workspaces/$workspaceId/tasks'
+    | '/workspaces/$workspaceId/runs'
+    | '/workspaces/$workspaceId/terminal'
+    | '/workspaces/$workspaceId/files',
+  section: 'tasks' | 'runs' | 'terminal' | 'files',
   label: string,
 ) {
   return createRoute({
@@ -54,6 +60,7 @@ function comingSoonRoute(
 const tasksRoute = comingSoonRoute('/workspaces/$workspaceId/tasks', 'tasks', 'Tasks')
 const runsRoute = comingSoonRoute('/workspaces/$workspaceId/runs', 'runs', 'Runs')
 const terminalRoute = comingSoonRoute('/workspaces/$workspaceId/terminal', 'terminal', 'Terminal')
+const filesRoute = comingSoonRoute('/workspaces/$workspaceId/files', 'files', 'Files')
 const browsersRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workspaces/$workspaceId/browsers',
@@ -64,6 +71,16 @@ const settingsRoute = createRoute({
   path: '/workspaces/$workspaceId/settings',
   component: SettingsRouteEntry,
 })
+const globalTerminalRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/terminal',
+  component: () => <GlobalComingSoonRouteEntry section="terminal" label="Terminal" />,
+})
+const globalSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings',
+  component: GlobalSettingsRouteEntry,
+})
 
 export const routeTree = rootRoute.addChildren([
   indexRoute,
@@ -73,7 +90,10 @@ export const routeTree = rootRoute.addChildren([
   tasksRoute,
   runsRoute,
   terminalRoute,
+  filesRoute,
   settingsRoute,
+  globalTerminalRoute,
+  globalSettingsRoute,
 ])
 
 export const router = createRouter({ routeTree })

@@ -1,16 +1,15 @@
 import { useState, type ReactNode } from 'react'
-import {
-  Bot,
-  ChevronLeft,
-  ChevronRight,
-  History,
-  ListTodo,
-  PanelsTopLeft,
-  Settings,
-  SquareTerminal,
-} from 'lucide-react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 
 import { ThemeToggle } from '../../features/theme'
+import {
+  WorkspaceNavigation,
+  type GlobalNavigationSection,
+  type WorkspaceNavigationEntry,
+  type WorkspaceSection,
+} from '../../features/workspaces'
+
+export type { WorkspaceSection } from '../../features/workspaces'
 
 export interface WorkspaceShellSlots {
   /** Content for the workspace slot in the header. */
@@ -19,29 +18,25 @@ export interface WorkspaceShellSlots {
   runner?: ReactNode
   /** Center graph surface. */
   graph?: ReactNode
-  /** Right-hand context surface. */
-  context?: ReactNode
   /** Bottom terminal surface. */
   terminal?: ReactNode
   /** Non-graph workspace content, such as a directory page. */
   main?: ReactNode
 }
 
-export type WorkspaceSection = 'workspaces' | 'agents' | 'tasks' | 'runs' | 'terminal' | 'settings'
-
 export interface WorkspaceShellProps {
   workspaceId: string
   slots?: WorkspaceShellSlots
   activeSection?: WorkspaceSection
+  /** URL-owned workflow selection handed to the nested Workflows submenu. */
+  activeWorkflowId?: string
+  /** URL-owned agent selection handed to the nested Agents submenu. */
+  activeAgentId?: string
+  /** Top-level destination outside the workspace tree. */
+  activeGlobalSection?: GlobalNavigationSection
+  /** Server-shaped workspace list; defaults to the active workspace projection. */
+  workspaces?: readonly WorkspaceNavigationEntry[]
 }
-
-const navigationItems = [
-  { section: 'workspaces', label: 'Workspaces', path: '', icon: PanelsTopLeft },
-  { section: 'agents', label: 'Agents', path: '/agents', icon: Bot },
-  { section: 'tasks', label: 'Tasks', path: '/tasks', icon: ListTodo },
-  { section: 'runs', label: 'Runs', path: '/runs', icon: History },
-  { section: 'terminal', label: 'Terminal', path: '/terminal', icon: SquareTerminal },
-] as const
 
 function DefaultGraph({ workspaceId }: { workspaceId: string }) {
   return (
@@ -53,7 +48,15 @@ function DefaultGraph({ workspaceId }: { workspaceId: string }) {
   )
 }
 
-export function WorkspaceShell({ workspaceId, slots = {}, activeSection = 'workspaces' }: WorkspaceShellProps) {
+export function WorkspaceShell({
+  workspaceId,
+  slots = {},
+  activeSection = 'workflows',
+  activeWorkflowId,
+  activeAgentId,
+  activeGlobalSection,
+  workspaces,
+}: WorkspaceShellProps) {
   const [navigationCollapsed, setNavigationCollapsed] = useState(
     () => globalThis.sessionStorage?.getItem('graphql-navigation-collapsed') === 'true',
   )
@@ -90,40 +93,28 @@ export function WorkspaceShell({ workspaceId, slots = {}, activeSection = 'works
         </button>
 
         <nav className="shell-navigation" id="workspace-primary-navigation">
-          <p className="nav-label">Workspace</p>
-          <ul>
-            {navigationItems.map((item) => (
-              <li key={item.label}>
-                <a
-                  className={`nav-item${activeSection === item.section ? ' nav-item-active' : ''}`}
-                  href={`/workspaces/${encodeURIComponent(workspaceId)}${item.path}`}
-                  aria-current={activeSection === item.section ? 'page' : undefined}
-                  aria-label={navigationCollapsed ? item.label : undefined}
-                  title={item.label}
-                >
-                  <item.icon aria-hidden="true" className="nav-item-icon" size={16} />
-                  <span className="nav-item-label">{item.label}</span>
-                </a>
-              </li>
-            ))}
-          </ul>
+          <p className="sidebar-brand" data-testid="sidebar-brand">
+            <span aria-hidden="true" className="sidebar-brand-mark">
+              G
+            </span>
+            <span className="sidebar-brand-name">GraphQL</span>
+            <span className="visually-hidden">graphql</span>
+          </p>
+
+          <WorkspaceNavigation
+            workspaceId={workspaceId}
+            activeSection={activeSection}
+            activeWorkflowId={activeWorkflowId}
+            activeAgentId={activeAgentId}
+            activeGlobalSection={activeGlobalSection}
+            workspaces={workspaces}
+            navigationCollapsed={navigationCollapsed}
+          />
         </nav>
 
         <div className="sidebar-footer">
           <p className="sidebar-note">Phase 1 · Mock data</p>
           <ThemeToggle />
-          <a
-            className={`nav-item sidebar-settings${activeSection === 'settings' ? ' nav-item-active' : ''}`}
-            href={`/workspaces/${encodeURIComponent(workspaceId)}/settings`}
-            aria-current={activeSection === 'settings' ? 'page' : undefined}
-            aria-label={navigationCollapsed ? 'Settings' : undefined}
-            title="Settings"
-          >
-            <span className="nav-item-primary">
-              <Settings aria-hidden="true" className="nav-item-icon" size={16} />
-              <span className="nav-item-label">Settings</span>
-            </span>
-          </a>
         </div>
       </aside>
 
@@ -133,9 +124,11 @@ export function WorkspaceShell({ workspaceId, slots = {}, activeSection = 'works
             {slots.main}
           </section>
         ) : (
-          <section className="graph-surface" data-slot="graph" aria-label="Workflow graph">
-            {slots.graph ?? <DefaultGraph workspaceId={workspaceId} />}
-          </section>
+          <>
+            <section className="graph-surface" data-slot="graph" aria-label="Workflow graph">
+              {slots.graph ?? <DefaultGraph workspaceId={workspaceId} />}
+            </section>
+          </>
         )}
       </main>
     </div>

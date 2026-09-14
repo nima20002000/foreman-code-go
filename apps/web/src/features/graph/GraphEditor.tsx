@@ -1,17 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { MoreHorizontal, Plus, X } from 'lucide-react'
 
 import {
   addEdge,
   Background,
+  BaseEdge,
+  ConnectionMode,
   Handle,
   MiniMap,
   NodeResizer,
   Position,
   ReactFlow,
   applyNodeChanges,
+  getSmoothStepPath,
   type Connection,
+  type EdgeProps,
   type IsValidConnection,
+  type MiniMapNodeProps,
   type NodeChange,
   type NodePositionChange,
   type NodeProps,
@@ -34,15 +39,19 @@ import {
   useWorkflowQuery,
   queryKeys,
 } from '../../shared/api/query'
+import { motionEnabled, usePresence } from '../../shared/ui/usePresence'
+import { useDismissableSurface, type SurfaceDismissReason } from '../../shared/ui/useDismissableSurface'
 import { useTheme } from '../theme'
+import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
 import {
-  deleteAgentForSession,
   readDeletedAgentIds,
   readLocalAgents,
 } from '../agents/localAgents'
 
 import {
+  AGENT_HANDOFF_EDGE_TYPE,
   graphToWorkflow,
+  findOpenNodePosition,
   hasConnection,
   makeSequentialHandoffEdge,
   GRAPH_NODE_MAX_HEIGHT,
@@ -59,7 +68,7 @@ import {
   useGraphDraftStore,
   workflowDraftKey,
 } from './store'
-import type { GraphEdge, GraphNode } from './types'
+import type { GraphEdge, GraphHandleSide, GraphNode } from './types'
 import './graph.css'
 
 export interface WorkflowGraphProps {
@@ -78,42 +87,89 @@ export interface GraphEditorProps {
   selectedAgentId?: string
   onSelectAgent?: (agentId: string) => void
   onClearAgent?: () => void
+  /**
+   * When provided, saving writes the graph into the caller's session-local
+   * store instead of the workspace backend. Used by session-created drafts.
+   */
+  onSaveSession?: (workflow: WorkflowDefinition) => void
 }
 
+const DEPARTURE_MOTION_MS = 200
+const NODE_ENTRY_MOTION_MS = 420
+const CONNECT_MOTION_MS = 480
+const NOTICE_DISMISS_MS = 4_000
+const ERROR_NOTICE_DISMISS_MS = 8_000
+const EDGE_CONTROL_SIZE = 26
+const MINIMAP_DOT_COLOR = { light: '#2563eb', dark: '#60a5fa' }
+const MINIMAP_DOT_SELECTED_COLOR = { light: '#1d4ed8', dark: '#bfdbfe' }
+
+const HANDLE_SIDES: GraphHandleSide[] = ['top', 'right', 'bottom', 'left']
+
+const HANDLE_POSITIONS: Record<GraphHandleSide, Position> = {
+  top: Position.Top,
+  right: Position.Right,
+  bottom: Position.Bottom,
+  left: Position.Left,
+}
+
+type NodeMenuContextValue = {
+  openMenuNodeId?: string
+  setOpenMenuNodeId: (nodeId?: string) => void
+}
+
+/**
+ * Coordinates the per-node three-dots menus so only one anchored menu can be
+ * open at a time, no matter which node owns it.
+ */
+const NodeMenuContext = createContext<NodeMenuContextValue | undefined>(undefined)
+
 function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
-  const [menuOpen, setMenuOpen] = useState(false)
+  const nodeMenu = useContext(NodeMenuContext)
+  const [localMenuOpen, setLocalMenuOpen] = useState(false)
+  const menuOpen = nodeMenu ? nodeMenu.openMenuNodeId === data.workflowNodeId : localMenuOpen
   const menuRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
+
+  const setMenuOpen = useCallback((nextOpen: boolean) => {
+    if (nodeMenu) nodeMenu.setOpenMenuNodeId(nextOpen ? data.workflowNodeId : undefined)
+    else setLocalMenuOpen(nextOpen)
+  }, [data.workflowNodeId, nodeMenu])
+
+  const closeMenu = useCallback((reason: SurfaceDismissReason) => {
+    setMenuOpen(false)
+    if (reason === 'escape') triggerRef.current?.focus()
+  }, [setMenuOpen])
+
+  useDismissableSurface({
+    open: menuOpen,
+    onDismiss: closeMenu,
+    surfaceRef: menuRef,
+    triggerRef,
+  })
 
   useEffect(() => {
     if (!menuOpen) return
     menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
-    const closeFromOutside = (event: MouseEvent) => {
-      if (menuRef.current?.contains(event.target as Node) || triggerRef.current?.contains(event.target as Node)) return
-      setMenuOpen(false)
-      window.setTimeout(() => triggerRef.current?.focus(), 0)
-    }
-    const closeFromEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      setMenuOpen(false)
-      triggerRef.current?.focus()
-    }
-    document.addEventListener('mousedown', closeFromOutside)
-    window.addEventListener('keydown', closeFromEscape)
-    return () => {
-      document.removeEventListener('mousedown', closeFromOutside)
-      window.removeEventListener('keydown', closeFromEscape)
-    }
   }, [menuOpen])
+
+  if (data.departing) {
+    return (
+      <div className="workflow-agent-node-departing" aria-hidden="true">
+        <span className="workflow-agent-node-meta">
+          <span>Agent</span>
+          <span>{data.stepLabel}</span>
+        </span>
+        <span className="workflow-agent-node-label">{data.label}</span>
+      </div>
+    )
+  }
 
   return (
     <article
-      className={`workflow-agent-node${selected ? ' workflow-agent-node-selected' : ''}`}
+      className={`workflow-agent-node${selected ? ' workflow-agent-node-selected' : ''}${data.entering ? ' workflow-agent-node-entering' : ''}`}
       data-testid={`agent-node-${data.agentId}`}
       data-agent-id={data.agentId}
       data-execution-state={data.executionState ?? 'unknown'}
-      data-connection-armed={data.connectionArmed || undefined}
     >
       <NodeResizer
         isVisible={selected}
@@ -126,13 +182,21 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
         onResizeEnd={(_event, size) => data.onResize?.(data.workflowNodeId, size.width, size.height)}
       />
       {selected ? <span className="visually-hidden">Resize handles are available around this selected node.</span> : null}
-      <Handle type="target" position={Position.Left} isConnectable={isConnectable} />
+      {HANDLE_SIDES.map((side) => (
+        <Handle
+          key={side}
+          id={side}
+          type="source"
+          position={HANDLE_POSITIONS[side]}
+          isConnectable={isConnectable}
+          className="workflow-agent-node-handle"
+        />
+      ))}
       <button
         type="button"
         className="workflow-agent-node-button"
         aria-label={`${data.label} agent, ${data.stepLabel}`}
         aria-pressed={selected}
-        aria-describedby={data.connectionArmed ? `connection-source-${data.workflowNodeId}` : undefined}
         onClick={() => data.onSelect?.(data.agentId, data.workflowNodeId)}
       >
         <span className="workflow-agent-node-meta">
@@ -140,11 +204,6 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
           <span>{data.stepLabel}</span>
         </span>
         <span className="workflow-agent-node-label">{data.label}</span>
-        {data.connectionArmed ? (
-          <span className="visually-hidden" id={`connection-source-${data.workflowNodeId}`}>
-            Connection source armed. Choose another agent node to create a connection.
-          </span>
-        ) : null}
       </button>
       <button
         ref={triggerRef}
@@ -156,7 +215,7 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
         aria-expanded={menuOpen}
         onClick={(event) => {
           event.stopPropagation()
-          setMenuOpen((open) => !open)
+          setMenuOpen(!menuOpen)
         }}
       >
         <MoreHorizontal aria-hidden="true" size={17} />
@@ -186,12 +245,127 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
           </button>
         </div>
       ) : null}
-      <Handle type="source" position={Position.Right} isConnectable={isConnectable} />
     </article>
   )
 }
 
 const nodeTypes = { agent: AgentNode }
+
+/**
+ * Removes the connection that owns this edge. The control rides inside the
+ * edge group so hover and keyboard focus on the edge itself reveal it, and it
+ * is rendered in a foreignObject so screen readers get a real button.
+ */
+function HandoffEdge({
+  id,
+  source,
+  target,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  label,
+  labelStyle,
+  labelShowBg,
+  labelBgStyle,
+  labelBgPadding,
+  labelBgBorderRadius,
+  style,
+  markerStart,
+  markerEnd,
+  interactionWidth,
+  data,
+}: EdgeProps<GraphEdge>) {
+  const [edgePath, labelX, labelY] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+    borderRadius: 10,
+  })
+
+  return (
+    <>
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        label={label}
+        labelX={labelX}
+        labelY={labelY}
+        labelStyle={labelStyle}
+        labelShowBg={labelShowBg}
+        labelBgStyle={labelBgStyle}
+        labelBgPadding={labelBgPadding}
+        labelBgBorderRadius={labelBgBorderRadius}
+        style={style}
+        markerStart={markerStart}
+        markerEnd={markerEnd}
+        interactionWidth={interactionWidth}
+      />
+      <foreignObject
+        className="workflow-graph-edge-control"
+        x={labelX - EDGE_CONTROL_SIZE / 2}
+        y={labelY - EDGE_CONTROL_SIZE - 12}
+        width={EDGE_CONTROL_SIZE}
+        height={EDGE_CONTROL_SIZE}
+      >
+        <button
+          type="button"
+          className="workflow-graph-edge-remove"
+          aria-label={`Remove connection from ${source} to ${target}`}
+          title="Remove connection"
+          onClick={(event) => {
+            event.stopPropagation()
+            data?.onRemove?.(id)
+          }}
+        >
+          <X aria-hidden="true" size={13} />
+        </button>
+      </foreignObject>
+    </>
+  )
+}
+
+const edgeTypes = { [AGENT_HANDOFF_EDGE_TYPE]: HandoffEdge }
+
+/** Minimap agents read as small blue dots instead of full node rectangles. */
+function AgentMinimapDot({
+  id,
+  x,
+  y,
+  width,
+  height,
+  color,
+  className,
+  selected,
+  strokeColor,
+  strokeWidth,
+  shapeRendering,
+  onClick,
+}: MiniMapNodeProps) {
+  const classes = ['react-flow__minimap-node']
+  if (selected) classes.push('selected')
+  if (className) classes.push(className)
+  const radius = Math.max(6, Math.round(Math.min(36, Math.min(width, height) / 3)))
+  return (
+    <circle
+      className={classes.join(' ')}
+      cx={x + width / 2}
+      cy={y + height / 2}
+      r={radius}
+      fill={color}
+      stroke={strokeColor}
+      strokeWidth={strokeWidth}
+      style={{ fill: color, stroke: strokeColor, strokeWidth }}
+      shapeRendering={shapeRendering}
+      onClick={onClick ? (event) => onClick(event, id) : undefined}
+    />
+  )
+}
 
 function graphErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
@@ -234,6 +408,7 @@ export function GraphEditor({
   selectedAgentId,
   onSelectAgent,
   onClearAgent,
+  onSaveSession,
 }: GraphEditorProps) {
   const theme = useTheme()
   const queryClient = useQueryClient()
@@ -244,26 +419,55 @@ export function GraphEditor({
   const [notice, setNotice] = useState<{ kind: 'success' | 'error' | 'info'; text: string }>()
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<{ agentId: string; label: string }>()
-  const [armedNodeId, setArmedNodeId] = useState<string>()
-  const [localAgents, setLocalAgents] = useState<Agent[]>(() => readLocalAgents(workspaceId))
-  const [deletedAgentIds, setDeletedAgentIds] = useState<string[]>(() => readDeletedAgentIds(workspaceId))
+  const [openMenuNodeId, setOpenMenuNodeId] = useState<string>()
+  const [enteringEdgeId, setEnteringEdgeId] = useState<string>()
+  const [enteringNodeIds, setEnteringNodeIds] = useState<Set<string>>(() => new Set())
+  const [departing, setDeparting] = useState<{ nodes: GraphNode[]; edges: GraphEdge[] }>({ nodes: [], edges: [] })
+  const agentCatalog = useAgentDirectoryStore((state) => state.catalogs[workspaceId])
+  const hydrateAgentWorkspace = useAgentDirectoryStore((state) => state.hydrateWorkspace)
+  const deleteSessionAgent = useAgentDirectoryStore((state) => state.deleteAgent)
+  const localAgents = agentCatalog?.localAgents ?? readLocalAgents(workspaceId)
+  const deletedAgentIds = agentCatalog?.deletedAgentIds ?? readDeletedAgentIds(workspaceId)
   const addAgentButtonRef = useRef<HTMLButtonElement>(null)
   const agentPickerRef = useRef<HTMLDivElement>(null)
   const deleteDialogRef = useRef<HTMLDivElement>(null)
   const deleteCancelRef = useRef<HTMLButtonElement>(null)
   const deleteReturnFocusRef = useRef<HTMLButtonElement>(null)
+  const deleteLabelRef = useRef<string | undefined>(undefined)
   const canvasRef = useRef<HTMLDivElement>(null)
   const flowInstanceRef = useRef<ReactFlowInstance<GraphNode, GraphEdge>>(null)
+  const departureTimerRef = useRef<number | undefined>(undefined)
+  const enteringNodeTimersRef = useRef<Map<string, number>>(new Map())
+  const agentPickerPresence = usePresence(agentPickerOpen)
+  const deletePresence = usePresence(pendingDelete !== undefined)
+  const nodeMenuValue = useMemo(
+    () => ({ openMenuNodeId, setOpenMenuNodeId }),
+    [openMenuNodeId],
+  )
   const saveMutation = useSaveGraphMutation()
 
   useEffect(() => {
-    setLocalAgents(readLocalAgents(workspaceId))
-    setDeletedAgentIds(readDeletedAgentIds(workspaceId))
-  }, [workspaceId])
+    if (!enteringEdgeId) return
+    const timeout = window.setTimeout(() => setEnteringEdgeId(undefined), CONNECT_MOTION_MS)
+    return () => window.clearTimeout(timeout)
+  }, [enteringEdgeId])
+
+  useEffect(() => () => {
+    if (departureTimerRef.current !== undefined) window.clearTimeout(departureTimerRef.current)
+    for (const timer of enteringNodeTimersRef.current.values()) window.clearTimeout(timer)
+    enteringNodeTimersRef.current.clear()
+  }, [])
+
+  useEffect(() => {
+    hydrateAgentWorkspace(workspaceId)
+  }, [hydrateAgentWorkspace, workspaceId])
 
   useEffect(() => {
     if (!notice) return
-    const timeout = window.setTimeout(() => setNotice(undefined), 4_000)
+    const timeout = window.setTimeout(
+      () => setNotice(undefined),
+      notice.kind === 'error' ? ERROR_NOTICE_DISMISS_MS : NOTICE_DISMISS_MS,
+    )
     return () => window.clearTimeout(timeout)
   }, [notice])
 
@@ -272,14 +476,6 @@ export function GraphEditor({
     const firstControl = agentPickerRef.current?.querySelector<HTMLElement>('[data-agent-picker-option]')
       ?? agentPickerRef.current?.querySelector<HTMLElement>('button, a[href]')
     firstControl?.focus()
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      setAgentPickerOpen(false)
-      addAgentButtonRef.current?.focus()
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
   }, [agentPickerOpen])
 
   const closeDeleteConfirmation = useCallback(() => {
@@ -290,28 +486,28 @@ export function GraphEditor({
   useEffect(() => {
     if (!pendingDelete) return
     deleteCancelRef.current?.focus()
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      closeDeleteConfirmation()
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [closeDeleteConfirmation, pendingDelete])
+  }, [pendingDelete])
+
+  useDismissableSurface({
+    open: pendingDelete !== undefined,
+    onDismiss: closeDeleteConfirmation,
+    surfaceRef: deleteDialogRef,
+    triggerRef: deleteReturnFocusRef,
+  })
 
   // Query owns the saved definition. The feature store is consulted only
   // while an unsaved draft exists, so refetches remain visible when clean.
   const currentWorkflow = draft?.dirty ? draft.workflow : workflow
   const deletedAgentIdSet = useMemo(() => new Set(deletedAgentIds), [deletedAgentIds])
+  const sessionCleanedWorkflow = useMemo(
+    () => withoutAgentReferences(workflow, deletedAgentIdSet),
+    [deletedAgentIdSet, workflow],
+  )
   const displayedWorkflow = useMemo(
     () => withoutAgentReferences(currentWorkflow, deletedAgentIdSet),
     [currentWorkflow, deletedAgentIdSet],
   )
   const hasSessionCleanup = displayedWorkflow !== currentWorkflow
-  const savedWorkflowHasSessionCleanup = useMemo(
-    () => withoutAgentReferences(workflow, deletedAgentIdSet) !== workflow,
-    [deletedAgentIdSet, workflow],
-  )
   const isDirty = draft?.dirty === true || hasSessionCleanup
   const catalogAgents = useMemo(() => {
     const catalogById = new Map(agents
@@ -327,113 +523,146 @@ export function GraphEditor({
     if (selectedAgentId && deletedAgentIdSet.has(selectedAgentId)) onClearAgent?.()
   }, [deletedAgentIdSet, onClearAgent, selectedAgentId])
 
-  const armedNode = displayedWorkflow.nodes.find((node) => node.id === armedNodeId)
-  const selectAgent = useCallback((agentId: string, workflowNodeId: string) => {
-    onSelectAgent?.(agentId)
-    if (!armedNodeId) {
-      setArmedNodeId(workflowNodeId)
-      return
-    }
-    if (armedNodeId === workflowNodeId) {
-      setArmedNodeId(undefined)
-      setNotice({ kind: 'info', text: 'Connection canceled. Choose a node to start again.' })
-      return
-    }
-    if (!displayedWorkflow.nodes.some((node) => node.id === armedNodeId)
-      || !displayedWorkflow.nodes.some((node) => node.id === workflowNodeId)) {
-      setArmedNodeId(undefined)
-      return
-    }
-    if (hasConnection(displayedWorkflow.edges, armedNodeId, workflowNodeId)) {
-      setArmedNodeId(undefined)
-      setNotice({ kind: 'info', text: 'Those agent steps are already connected.' })
-      return
-    }
-    const nextEdge = makeSequentialHandoffEdge(armedNodeId, workflowNodeId)
-    updateDraft(workflowKey, displayedWorkflow, (saved) => ({
-      ...saved,
-      edges: [...saved.edges, {
-        id: nextEdge.id,
-        source: nextEdge.source,
-        target: nextEdge.target,
-        ...(typeof nextEdge.label === 'string' ? { label: nextEdge.label } : {}),
-      }],
-    }))
-    setArmedNodeId(undefined)
-    setNotice({ kind: 'success', text: 'Agent steps connected. Save the graph to keep this connection.' })
-  }, [armedNodeId, displayedWorkflow, onSelectAgent, updateDraft, workflowKey])
+  // Keep removed nodes and edges on the canvas briefly so removal reads as a
+  // state change instead of an instant disappear. State sources update right
+  // away; the departing copies are display-only.
+  const startDeparture = useCallback((nodes: readonly GraphNode[], edges: readonly GraphEdge[]) => {
+    if (!motionEnabled() || (nodes.length === 0 && edges.length === 0)) return
+    if (departureTimerRef.current !== undefined) window.clearTimeout(departureTimerRef.current)
+    setDeparting({
+      nodes: nodes.map((node) => ({
+        ...node,
+        draggable: false,
+        selectable: false,
+        connectable: false,
+        focusable: false,
+        data: {
+          ...node.data,
+          departing: true,
+          onSelect: undefined,
+          onUnlink: undefined,
+          onDelete: undefined,
+          onResize: undefined,
+        },
+      })),
+      edges: edges.map((edge) => ({
+        ...edge,
+        className: 'workflow-graph-edge-departing',
+        selectable: false,
+        focusable: false,
+      })),
+    })
+    departureTimerRef.current = window.setTimeout(
+      () => setDeparting({ nodes: [], edges: [] }),
+      DEPARTURE_MOTION_MS,
+    )
+  }, [])
 
-  useEffect(() => {
-    if (!armedNodeId || agentPickerOpen || pendingDelete) return
-    const cancelConnection = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      setArmedNodeId(undefined)
-      setNotice({ kind: 'info', text: 'Connection canceled.' })
-    }
-    window.addEventListener('keydown', cancelConnection)
-    return () => window.removeEventListener('keydown', cancelConnection)
-  }, [agentPickerOpen, armedNodeId, pendingDelete])
+  // Selecting a node is intentionally independent from connecting nodes.
+  // Connections begin through React Flow's explicit handles, so an ordinary
+  // click never arms a hidden connection mode or changes the graph.
+  const selectAgent = useCallback((agentId: string) => {
+    onSelectAgent?.(agentId)
+  }, [onSelectAgent])
 
   const unlinkGraphNode = useCallback((workflowNodeId: string) => {
-    updateDraft(workflowKey, displayedWorkflow, (saved) => ({
+    const removedEdges = workflowToGraph({ workflow: displayedWorkflow, agents: catalogAgents })
+      .edges
+      .filter((edge) => edge.source === workflowNodeId || edge.target === workflowNodeId)
+    startDeparture([], removedEdges)
+    updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => ({
       ...saved,
       edges: saved.edges.filter((edge) => edge.source !== workflowNodeId && edge.target !== workflowNodeId),
     }))
-  }, [displayedWorkflow, updateDraft, workflowKey])
+  }, [catalogAgents, displayedWorkflow, sessionCleanedWorkflow, startDeparture, updateDraft, workflowKey])
+
+  /** Removes one connection edge and keeps its projected copy for the exit animation. */
+  const removeGraphEdge = useCallback((edgeId: string) => {
+    const removedEdge = workflowToGraph({ workflow: displayedWorkflow, agents: catalogAgents })
+      .edges
+      .find((edge) => edge.id === edgeId)
+    if (removedEdge) startDeparture([], [removedEdge])
+    updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => ({
+      ...saved,
+      edges: saved.edges.filter((edge) => edge.id !== edgeId),
+    }))
+  }, [catalogAgents, displayedWorkflow, sessionCleanedWorkflow, startDeparture, updateDraft, workflowKey])
 
   const resizeGraphNode = useCallback((workflowNodeId: string, width: number, height: number) => {
     updateDraft(
       workflowKey,
-      displayedWorkflow,
+      sessionCleanedWorkflow,
       (saved) => resizeWorkflowNode(saved, workflowNodeId, width, height),
     )
-  }, [displayedWorkflow, updateDraft, workflowKey])
+  }, [sessionCleanedWorkflow, updateDraft, workflowKey])
 
   const requestDeleteAgent = useCallback((agentId: string, label: string) => {
     deleteReturnFocusRef.current = document.activeElement
       ?.closest('.workflow-agent-node')
       ?.querySelector<HTMLButtonElement>('.workflow-agent-node-menu-trigger') ?? null
+    deleteLabelRef.current = label
+    setOpenMenuNodeId(undefined)
     setPendingDelete({ agentId, label })
   }, [])
 
   const confirmDeleteAgent = useCallback(() => {
     if (!pendingDelete) return
     const { agentId, label } = pendingDelete
-    const sessionCatalog = deleteAgentForSession(workspaceId, agentId)
-    setLocalAgents(sessionCatalog.localAgents)
-    setDeletedAgentIds(sessionCatalog.deletedAgentIds)
-    updateDraft(workflowKey, displayedWorkflow, (saved) => withoutAgentReferences(saved, new Set([agentId])))
-    if (armedNode?.agentId === agentId) setArmedNodeId(undefined)
+    const removedNodeIds = new Set(
+      displayedWorkflow.nodes.filter((node) => node.agentId === agentId).map((node) => node.id),
+    )
+    const projection = workflowToGraph({ workflow: displayedWorkflow, agents: catalogAgents })
+    const departedNodes = projection.nodes.filter((node) => removedNodeIds.has(node.id))
+    const departedEdges = projection.edges
+      .filter((edge) => removedNodeIds.has(edge.source) || removedNodeIds.has(edge.target))
+    deleteSessionAgent(workspaceId, agentId)
+    startDeparture(departedNodes, departedEdges)
+    updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => withoutAgentReferences(saved, new Set([agentId])))
     setPendingDelete(undefined)
     setNotice({
       kind: 'info',
       text: `${label} was removed for this browser session and unlinked from every graph step. Save the graph to persist reference cleanup.`,
     })
     window.setTimeout(() => addAgentButtonRef.current?.focus(), 0)
-  }, [armedNode?.agentId, displayedWorkflow, pendingDelete, updateDraft, workspaceId, workflowKey])
+  }, [catalogAgents, deleteSessionAgent, displayedWorkflow, pendingDelete, sessionCleanedWorkflow, startDeparture, updateDraft, workspaceId, workflowKey])
 
   const graph = useMemo(
     () => workflowToGraph(
       { workflow: displayedWorkflow, agents: catalogAgents },
       {
         selectedAgentId,
-        armedNodeId,
-        onSelectAgent: selectAgent,
+      onSelectAgent: selectAgent,
         onUnlinkNode: unlinkGraphNode,
+        onRemoveEdge: removeGraphEdge,
         onDeleteAgent: requestDeleteAgent,
         onResizeNode: resizeGraphNode,
         runFacts,
+        enteringNodeIds,
       },
     ),
-    [armedNodeId, catalogAgents, displayedWorkflow, requestDeleteAgent, resizeGraphNode, runFacts, selectAgent, selectedAgentId, unlinkGraphNode],
+    [catalogAgents, displayedWorkflow, enteringNodeIds, removeGraphEdge, requestDeleteAgent, resizeGraphNode, runFacts, selectAgent, selectedAgentId, unlinkGraphNode],
   )
+
+  const visibleNodes = useMemo(() => {
+    const currentIds = new Set(graph.nodes.map((node) => node.id))
+    return [...graph.nodes, ...departing.nodes.filter((node) => !currentIds.has(node.id))]
+  }, [departing.nodes, graph.nodes])
+
+  const visibleEdges = useMemo(() => {
+    const currentIds = new Set(graph.edges.map((edge) => edge.id))
+    return [
+      ...graph.edges.map((edge) => edge.id === enteringEdgeId
+        ? { ...edge, className: 'workflow-graph-edge-new' }
+        : edge),
+      ...departing.edges.filter((edge) => !currentIds.has(edge.id)),
+    ]
+  }, [departing.edges, enteringEdgeId, graph.edges])
 
   const updateFromGraph = useCallback(
     (nextNodes: GraphNode[], nextEdges: GraphEdge[]) => {
-      updateDraft(workflowKey, displayedWorkflow, (savedDraft) => graphToWorkflow(savedDraft, nextNodes, nextEdges))
+      updateDraft(workflowKey, sessionCleanedWorkflow, (savedDraft) => graphToWorkflow(savedDraft, nextNodes, nextEdges))
     },
-    [displayedWorkflow, updateDraft, workflowKey],
+    [sessionCleanedWorkflow, updateDraft, workflowKey],
   )
 
   const onNodesChange = useCallback(
@@ -455,6 +684,7 @@ export function GraphEditor({
       if (hasConnection(graph.edges, connection.source, connection.target)) return
       const nextEdge = makeSequentialHandoffEdge(connection.source, connection.target)
       updateFromGraph(graph.nodes, addEdge(nextEdge, graph.edges))
+      setEnteringEdgeId(nextEdge.id)
     },
     [graph.edges, graph.nodes, updateFromGraph],
   )
@@ -470,19 +700,32 @@ export function GraphEditor({
 
   const handleDiscard = useCallback(() => {
     discardDraft(workflowKey)
-    setArmedNodeId(undefined)
-    setNotice({
-      kind: 'info',
-      text: savedWorkflowHasSessionCleanup
-        ? 'Other local graph changes were discarded. Session-deleted agents and their references stay removed.'
-        : 'Local graph changes discarded.',
-    })
-  }, [discardDraft, savedWorkflowHasSessionCleanup, workflowKey])
+    setNotice(undefined)
+  }, [discardDraft, workflowKey])
 
   const handleSave = useCallback(() => {
-    if (!isDirty || saveMutation.isPending) return
+    if (!isDirty) return
     const submittedWorkflow = displayedWorkflow
     setNotice(undefined)
+
+    // Session-created drafts have no server resource to save to. Keep the
+    // graph in the caller's Zustand store and report the session boundary.
+    if (onSaveSession) {
+      onSaveSession(submittedWorkflow)
+      const remainingDraft = getGraphDraft(workflowKey)
+      if (!remainingDraft?.dirty || sameWorkflow(remainingDraft.workflow, submittedWorkflow)) {
+        discardDraft(workflowKey)
+        setNotice({ kind: 'success', text: 'Workflow saved to this browser session.' })
+      } else {
+        setNotice({
+          kind: 'success',
+          text: 'Saved to this browser session. Newer local changes remain unsaved.',
+        })
+      }
+      return
+    }
+
+    if (saveMutation.isPending) return
     saveMutation.mutate(
       { workspaceId, workflow: submittedWorkflow },
       {
@@ -510,12 +753,39 @@ export function GraphEditor({
         },
       },
     )
-  }, [discardDraft, displayedWorkflow, isDirty, queryClient, saveMutation, workspaceId, workflowKey])
+  }, [discardDraft, displayedWorkflow, isDirty, onSaveSession, queryClient, saveMutation, workspaceId, workflowKey])
 
   const closeAgentPicker = useCallback(() => {
     setAgentPickerOpen(false)
     addAgentButtonRef.current?.focus()
   }, [])
+
+  useDismissableSurface({
+    open: agentPickerOpen,
+    onDismiss: closeAgentPicker,
+    surfaceRef: agentPickerRef,
+    triggerRef: addAgentButtonRef,
+  })
+
+  // React Flow stops mousedown propagation from the canvas pane, so the shared
+  // document listener never sees outside presses over the graph. Capture the
+  // press before React Flow to close the anchored picker there as well.
+  useEffect(() => {
+    if (!agentPickerOpen) return
+    const closeOnOutsidePress = (event: MouseEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (agentPickerRef.current?.contains(target) || addAgentButtonRef.current?.contains(target)) return
+      setAgentPickerOpen(false)
+      window.setTimeout(() => {
+        const active = document.activeElement
+        if (active && active !== document.body && active !== document.documentElement) return
+        addAgentButtonRef.current?.focus()
+      }, 0)
+    }
+    document.addEventListener('mousedown', closeOnOutsidePress, true)
+    return () => document.removeEventListener('mousedown', closeOnOutsidePress, true)
+  }, [agentPickerOpen])
 
   const addAgentToGraph = useCallback((agent: Agent) => {
     const existingIds = new Set(displayedWorkflow.nodes.map((node) => node.id))
@@ -528,14 +798,15 @@ export function GraphEditor({
     }
 
     const canvasBox = canvasRef.current?.getBoundingClientRect()
-    const position = canvasBox && flowInstanceRef.current
+    const anchor = canvasBox && flowInstanceRef.current
       ? flowInstanceRef.current.screenToFlowPosition({
           x: canvasBox.left + canvasBox.width / 2 - 119,
           y: canvasBox.top + canvasBox.height / 2 - 83,
         })
       : { x: 64 + displayedWorkflow.nodes.length * 330, y: 120 }
+    const position = findOpenNodePosition(displayedWorkflow.nodes, anchor)
 
-    updateDraft(workflowKey, displayedWorkflow, (saved) => ({
+    updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => ({
       ...saved,
       nodes: [...saved.nodes, {
         id: nodeId,
@@ -545,22 +816,39 @@ export function GraphEditor({
         position,
       }],
     }))
-    setArmedNodeId(undefined)
+    if (motionEnabled()) {
+      setEnteringNodeIds((current) => new Set(current).add(nodeId))
+      const existingTimer = enteringNodeTimersRef.current.get(nodeId)
+      if (existingTimer !== undefined) window.clearTimeout(existingTimer)
+      const timer = window.setTimeout(() => {
+        enteringNodeTimersRef.current.delete(nodeId)
+        setEnteringNodeIds((current) => {
+          if (!current.has(nodeId)) return current
+          const next = new Set(current)
+          next.delete(nodeId)
+          return next
+        })
+      }, NODE_ENTRY_MOTION_MS)
+      enteringNodeTimersRef.current.set(nodeId, timer)
+    }
+    setOpenMenuNodeId(undefined)
     closeAgentPicker()
-  }, [closeAgentPicker, displayedWorkflow, updateDraft, workflowKey])
+  }, [closeAgentPicker, displayedWorkflow, sessionCleanedWorkflow, updateDraft, workflowKey])
 
   const handlePaneClick = useCallback(() => {
-    setArmedNodeId(undefined)
     onClearAgent?.()
   }, [onClearAgent])
 
   return (
     <section className="workflow-graph" data-testid="workflow-graph" aria-label={`${displayedWorkflow.name} workflow graph`}>
       <div className="workflow-graph-canvas" data-testid="workflow-graph-canvas" ref={canvasRef}>
+        <NodeMenuContext.Provider value={nodeMenuValue}>
         <ReactFlow
-          nodes={graph.nodes}
-          edges={graph.edges}
+          nodes={visibleNodes}
+          edges={visibleEdges}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          connectionMode={ConnectionMode.Loose}
           onNodesChange={onNodesChange}
           onConnect={onConnect}
           onPaneClick={handlePaneClick}
@@ -573,7 +861,7 @@ export function GraphEditor({
           deleteKeyCode={null}
           fitView
           fitViewOptions={{ padding: 0.2, minZoom: 0.7, maxZoom: 1.1 }}
-          defaultEdgeOptions={{ type: 'smoothstep', selectable: false }}
+          defaultEdgeOptions={{ type: AGENT_HANDOFF_EDGE_TYPE, selectable: false }}
           proOptions={{ hideAttribution: true }}
           aria-label="Workflow editor canvas"
           onInit={(instance) => { flowInstanceRef.current = instance }}
@@ -584,20 +872,20 @@ export function GraphEditor({
             pannable
             zoomable
             ariaLabel="Workflow overview"
+            nodeComponent={AgentMinimapDot}
             nodeClassName={(node) => node.selected
               ? 'workflow-graph-minimap-node-selected'
               : 'workflow-graph-minimap-node'}
             nodeColor={(node) => (node.selected
-              ? theme === 'dark' ? '#e1e6e8' : '#3f3f3b'
-              : theme === 'dark' ? '#79858b' : '#a8a8a1')}
-            nodeStrokeColor={(node) => (node.selected
-              ? theme === 'dark' ? '#7db7ff' : '#1e5d99'
-              : theme === 'dark' ? '#3e474c' : '#deded9')}
-            nodeStrokeWidth={3}
+              ? theme === 'dark' ? MINIMAP_DOT_SELECTED_COLOR.dark : MINIMAP_DOT_SELECTED_COLOR.light
+              : theme === 'dark' ? MINIMAP_DOT_COLOR.dark : MINIMAP_DOT_COLOR.light)}
+            nodeStrokeColor={() => (theme === 'dark' ? '#22272a' : '#f2f2ef')}
+            nodeStrokeWidth={2}
             bgColor={theme === 'dark' ? '#22272a' : '#f2f2ef'}
             maskColor={theme === 'dark' ? 'rgba(17, 20, 22, 0.78)' : 'rgba(255, 255, 255, 0.72)'}
           />
         </ReactFlow>
+        </NodeMenuContext.Provider>
 
         <button
           ref={addAgentButtonRef}
@@ -608,95 +896,98 @@ export function GraphEditor({
           aria-haspopup="dialog"
           aria-expanded={agentPickerOpen}
           onClick={() => {
-            setArmedNodeId(undefined)
+            setOpenMenuNodeId(undefined)
             setAgentPickerOpen(true)
           }}
         >
           <Plus aria-hidden="true" size={17} />
         </button>
 
-        <div className="workflow-graph-actions" aria-label="Graph actions">
-          <button type="button" className="workflow-graph-action workflow-graph-action-quiet" onClick={handleDiscard} disabled={!isDirty || saveMutation.isPending}>
-            Discard
-          </button>
-          <button type="button" className="workflow-graph-action workflow-graph-action-primary" onClick={handleSave} disabled={!isDirty || saveMutation.isPending}>
-            {saveMutation.isPending ? 'Saving…' : 'Save graph'}
-          </button>
-        </div>
-
-        {notice ? (
-          <p
-            className={`workflow-graph-toast workflow-graph-toast-${notice.kind}`}
-            role={notice.kind === 'error' ? 'alert' : 'status'}
-            aria-live={notice.kind === 'error' ? 'assertive' : 'polite'}
-          >
-            {notice.text}
-          </p>
-        ) : null}
-
-        {armedNode ? (
-          <p className="workflow-graph-connection-status" role="status" aria-live="polite">
-            {armedNode.name ?? armedNode.label ?? 'Agent'} is the connection source. Choose another agent node, or press Escape to cancel.
-          </p>
-        ) : null}
-
-        {agentPickerOpen ? (
-          <div
-            className="agent-picker-backdrop"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget) closeAgentPicker()
-            }}
-          >
-            <div
-              ref={agentPickerRef}
-              className="agent-picker-dialog"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="agent-picker-title"
-              aria-describedby="agent-picker-description"
-              onKeyDown={trapDialogFocus}
-            >
-              <div className="agent-picker-heading">
-                <div>
-                  <h2 id="agent-picker-title">Add agent to graph</h2>
-                  <p id="agent-picker-description">Choose a workspace agent. An agent may be used in more than one workflow step.</p>
-                </div>
-                <button type="button" aria-label="Close agent picker" title="Close" onClick={closeAgentPicker}>
-                  <X aria-hidden="true" size={17} />
-                </button>
-              </div>
-
-              {catalogAgents.length > 0 ? (
-                <div className="agent-picker-list">
-                  {catalogAgents.map((agent, index) => (
-                    <button
-                      key={agent.id}
-                      type="button"
-                      data-agent-picker-option
-                      autoFocus={index === 0}
-                      onClick={() => addAgentToGraph(agent)}
-                    >
-                      <strong>{agent.name}</strong>
-                      <span>{agent.role ?? 'Agent'}{agent.description ? ` · ${agent.description}` : ''}</span>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="agent-picker-empty">
-                  <p>No agents are available in this workspace.</p>
-                  <a href={`/workspaces/${encodeURIComponent(workspaceId)}/agents`}>Open Agents directory</a>
-                </div>
-              )}
-            </div>
+        {isDirty ? (
+          <div className="workflow-graph-actions" aria-label="Graph actions">
+            <button type="button" className="workflow-graph-action workflow-graph-action-quiet" onClick={handleDiscard} disabled={!onSaveSession && saveMutation.isPending}>
+              Discard
+            </button>
+            <button type="button" className="workflow-graph-action workflow-graph-action-primary" onClick={handleSave} disabled={!onSaveSession && saveMutation.isPending}>
+              {!onSaveSession && saveMutation.isPending ? 'Saving…' : 'Save graph'}
+            </button>
           </div>
         ) : null}
 
-        {pendingDelete ? (
+        <div className="workflow-graph-notifications" data-testid="workflow-graph-notifications">
+          {onSaveSession ? (
+            <p
+              className="workflow-graph-session-notice"
+              data-testid="workflow-graph-session-notice"
+              role="note"
+            >
+              Session-only workflow: this draft and its graph live in this browser tab until you
+              refresh or close it. Saving keeps changes in the session, not on the workspace
+              backend.
+            </p>
+          ) : null}
+
+          {notice ? (
+            <p
+              className={`workflow-graph-toast workflow-graph-toast-${notice.kind}`}
+              role={notice.kind === 'error' ? 'alert' : 'status'}
+              aria-live={notice.kind === 'error' ? 'assertive' : 'polite'}
+            >
+              {notice.text}
+            </p>
+          ) : null}
+
+        </div>
+
+        {agentPickerPresence.mounted ? (
+          <div
+            ref={agentPickerRef}
+            className="agent-picker-popover"
+            role="dialog"
+            aria-labelledby="agent-picker-title"
+            aria-describedby="agent-picker-description"
+            data-presence={agentPickerPresence.exiting ? 'exiting' : 'entering'}
+            inert={agentPickerPresence.exiting || undefined}
+          >
+            <div className="agent-picker-heading">
+              <div>
+                <h2 id="agent-picker-title">Add agent to graph</h2>
+                <p id="agent-picker-description">Choose a workspace agent. An agent may be used in more than one workflow step.</p>
+              </div>
+              <button type="button" aria-label="Close agent picker" title="Close" onClick={closeAgentPicker}>
+                <X aria-hidden="true" size={17} />
+              </button>
+            </div>
+
+            {catalogAgents.length > 0 ? (
+              <div className="agent-picker-list">
+                {catalogAgents.map((agent, index) => (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    data-agent-picker-option
+                    autoFocus={index === 0}
+                    onClick={() => addAgentToGraph(agent)}
+                  >
+                    <strong>{agent.name}</strong>
+                    <span>{agent.role ?? 'Agent'}{agent.description ? ` · ${agent.description}` : ''}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="agent-picker-empty">
+                <p>No agents are available in this workspace.</p>
+                <a href={`/workspaces/${encodeURIComponent(workspaceId)}/agents`}>Open Agents directory</a>
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        {deletePresence.mounted ? (
           <div
             className="agent-picker-backdrop"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget) closeDeleteConfirmation()
-            }}
+            data-presence={deletePresence.exiting ? 'exiting' : 'entering'}
+            inert={deletePresence.exiting || undefined}
           >
             <div
               ref={deleteDialogRef}
@@ -709,7 +1000,7 @@ export function GraphEditor({
             >
               <div className="agent-picker-heading">
                 <div>
-                  <h2 id="agent-delete-title">Delete {pendingDelete.label} from this session?</h2>
+                  <h2 id="agent-delete-title">Delete {pendingDelete?.label ?? deleteLabelRef.current} from this session?</h2>
                   <p id="agent-delete-description">
                     This removes the agent from this browser session and unlinks every reference to it in the graph draft. It does not delete backend data, and the graph cleanup remains unsaved until you choose Save graph.
                   </p>
@@ -775,4 +1066,4 @@ export function WorkflowGraph({ workspaceId, workflowId, selectedAgentId, onSele
   )
 }
 
-export { AgentNode }
+export { AgentMinimapDot, AgentNode, HandoffEdge }

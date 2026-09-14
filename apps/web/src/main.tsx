@@ -18,7 +18,7 @@ if (!rootElement) {
 initializeTheme()
 
 async function enableDevelopmentMocks() {
-  if (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW !== 'true') return
+  if (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false') return
 
   const { startMockWorker } = await import('./mocks/browser')
   await startMockWorker()

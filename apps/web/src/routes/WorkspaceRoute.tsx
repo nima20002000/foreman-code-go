@@ -10,63 +10,11 @@ export type WorkspaceRouteState = 'ready' | 'loading' | 'error' | 'not-found' | 
 export interface WorkspaceRouteViewProps {
   workspaceId: string
   selectedAgentId?: string
+  activeWorkflowId?: string
+  activeAgentId?: string
   state?: WorkspaceRouteState
   stateMessage?: string
   slots?: WorkspaceShellSlots
-}
-
-function SelectionSummary({
-  selectedAgentId,
-  state,
-}: {
-  selectedAgentId?: string
-  state: WorkspaceRouteState
-}) {
-  const label = selectedAgentId ? `Agent ${selectedAgentId}` : 'Operator'
-
-  if (state === 'loading') {
-    return (
-      <div className="selection-summary" data-testid="selection-loading" role="status">
-        <span className="slot-label">Selection</span>
-        <strong>Loading agent selection…</strong>
-      </div>
-    )
-  }
-
-  if (state === 'error') {
-    return (
-      <div className="selection-summary selection-summary-error" data-testid="selection-error" role="alert">
-        <span className="slot-label">Selection</span>
-        <strong>Selection unavailable</strong>
-      </div>
-    )
-  }
-
-  if (state === 'not-found') {
-    return (
-      <div className="selection-summary selection-summary-error" data-testid="selection-not-found" role="status">
-        <span className="slot-label">Selection</span>
-        <strong>Workspace not found</strong>
-      </div>
-    )
-  }
-
-  if (state === 'stale') {
-    return (
-      <div className="selection-summary selection-summary-stale" data-testid="selection-stale" role="status">
-        <span className="slot-label">Selection</span>
-        <strong>{label}</strong>
-        <span>Selection is stale; choose an available agent.</span>
-      </div>
-    )
-  }
-
-  return (
-    <div className="selection-summary" data-testid="selection-ready">
-      <span className="slot-label">Selection</span>
-      <strong>{label}</strong>
-    </div>
-  )
 }
 
 function DefaultWorkspaceSlot({ workspaceId }: { workspaceId: string }) {
@@ -135,7 +83,7 @@ function DefaultGraphSlot({
       <h2>Workflow graph</h2>
       <p>
         The graph surface is ready for workspace {workspaceId}.
-        {selectedAgentId ? ` Agent ${selectedAgentId} is selected.` : ' Operator is active.'}
+        {selectedAgentId ? ` Agent ${selectedAgentId} is selected.` : ' No agent is selected.'}
       </p>
     </div>
   )
@@ -144,6 +92,8 @@ function DefaultGraphSlot({
 export function WorkspaceRouteView({
   workspaceId,
   selectedAgentId,
+  activeWorkflowId,
+  activeAgentId,
   state = 'ready',
   stateMessage,
   slots,
@@ -162,13 +112,20 @@ export function WorkspaceRouteView({
   }
 
   return (
-    <WorkspaceShell workspaceId={workspaceId} slots={resolvedSlots} />
+    <WorkspaceShell
+      workspaceId={workspaceId}
+      activeWorkflowId={activeWorkflowId}
+      activeAgentId={activeAgentId}
+      slots={resolvedSlots}
+    />
   )
 }
 
 export interface WorkspaceSelectionProps {
   workspaceId: string
   selectedAgentId?: string
+  activeWorkflowId?: string
+  activeAgentId?: string
   state?: WorkspaceRouteState
   stateMessage?: string
   slots?: WorkspaceShellSlots
@@ -184,9 +141,6 @@ export function WorkspaceSelection({
 
   return (
     <div className="workspace-route" data-testid="workspace-route">
-      <div className="workspace-route-selection">
-        <SelectionSummary selectedAgentId={props.selectedAgentId} state={state} />
-      </div>
       <WorkspaceRouteView {...props} state={state} />
       {children}
     </div>

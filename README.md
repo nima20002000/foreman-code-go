@@ -29,16 +29,17 @@ pnpm build
 pnpm test:e2e
 ```
 
-The checked-in browser mock is opt-in during development. Start Vite with
-`VITE_ENABLE_MSW=true`:
+The checked-in browser mock starts by default during development so the
+wireframe shell always has deterministic data. It runs only together with
+Vite's development flag and is never a production fallback; a real backend must
+provide the HTTP boundary when the app is built or deployed.
+
+Set `VITE_ENABLE_MSW=false` to disable the mocks when running Vite against a
+real API:
 
 ```sh
-VITE_ENABLE_MSW=true pnpm dev
+VITE_ENABLE_MSW=false pnpm dev
 ```
-
-`VITE_ENABLE_MSW=true` is checked together with Vite's development flag. It is
-not a production fallback; a real backend must provide the HTTP boundary when
-the app is built or deployed.
 
 The interface starts in dark mode. Use the workspace-header theme button to
 switch to light mode; the explicit choice is stored locally and restored before

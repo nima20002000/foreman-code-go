@@ -4,7 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Agent } from '@graphql/contracts'
 
+import { renderWithRouter } from '../../test/renderWithRouter'
 import { AgentsDirectoryContent } from './AgentsDirectory'
+import { AgentNavigation } from './AgentNavigation'
+import { useAgentDirectoryStore } from './agentDirectoryStore'
 import { deleteAgentForSession, writeLocalAgents } from './localAgents'
 
 const agents: Agent[] = [
@@ -18,7 +21,28 @@ const agents: Agent[] = [
   },
 ]
 
-afterEach(() => sessionStorage.clear())
+const reorderAgents: Agent[] = [
+  ...agents,
+  {
+    id: 'agent-builder',
+    name: 'Builder',
+    role: 'builder',
+    executionState: 'available',
+    model: 'gpt-test',
+  },
+  {
+    id: 'agent-reviewer',
+    name: 'Reviewer',
+    role: 'reviewer',
+    executionState: 'available',
+    model: 'gpt-test',
+  },
+]
+
+afterEach(() => {
+  sessionStorage.clear()
+  useAgentDirectoryStore.getState().reset()
+})
 
 describe('AgentsDirectoryContent', () => {
   it('renders existing contract-shaped agents as directory cards', () => {
@@ -53,6 +77,29 @@ describe('AgentsDirectoryContent', () => {
     expect(screen.getByRole('button', { name: 'Planner, planning, Local session' })).toBeVisible()
     expect(screen.getByText('planning · Local session')).toBeVisible()
     expect(sessionStorage.getItem('graphql-local-agents:workspace-1')).toContain('Planner')
+  })
+
+  it('updates the workspace agent submenu reactively after local add and delete', async () => {
+    const user = userEvent.setup()
+    renderWithRouter(
+      <>
+        <AgentNavigation workspaceId="session-reactive" />
+        <AgentsDirectoryContent workspaceId="session-reactive" agents={[]} />
+      </>,
+    )
+
+    expect(await screen.findByTestId('agent-navigation-empty')).toHaveTextContent('No agents yet')
+    await user.click(screen.getByRole('button', { name: 'Add agent' }))
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Gamma Agent')
+    await user.click(screen.getByRole('button', { name: 'Add local agent' }))
+
+    const submenuAgent = await screen.findByRole('link', { name: 'Gamma Agent' })
+    expect(submenuAgent).toBeVisible()
+    const createdAgent = useAgentDirectoryStore.getState().catalogs['session-reactive']?.localAgents[0]
+    if (!createdAgent) throw new Error('Reactive local agent missing from store')
+    useAgentDirectoryStore.getState().deleteAgent('session-reactive', createdAgent.id)
+    await waitFor(() => expect(screen.queryByRole('link', { name: 'Gamma Agent' })).not.toBeInTheDocument())
+    expect(screen.getByTestId('agent-navigation-empty')).toHaveTextContent('No agents yet')
   })
 
   it('exposes single selection through an accessible card button for mouse and keyboard', async () => {
@@ -113,6 +160,26 @@ describe('AgentsDirectoryContent', () => {
     expect(onClearAgent).toHaveBeenCalledOnce()
   })
 
+  it('closes the add modal when the agent detail surface takes over', async () => {
+    const user = userEvent.setup()
+    const view = render(<AgentsDirectoryContent workspaceId="workspace-1" agents={agents} />)
+    await user.click(screen.getByRole('button', { name: 'Add agent' }))
+    expect(screen.getByRole('dialog', { name: 'Add a local agent' })).toBeVisible()
+
+    view.rerender(
+      <AgentsDirectoryContent
+        workspaceId="workspace-1"
+        agents={agents}
+        selectedAgentId="agent-researcher"
+        onClearAgent={() => {}}
+      />,
+    )
+
+    expect(screen.queryByRole('dialog', { name: 'Add a local agent' })).not.toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Researcher' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Close agent details' })).toHaveFocus()
+  })
+
   it('dismisses the add modal from its backdrop, close control, or Escape and restores focus', async () => {
     const user = userEvent.setup()
     const { container } = render(<AgentsDirectoryContent workspaceId="workspace-1" agents={agents} />)
@@ -161,5 +228,104 @@ describe('AgentsDirectoryContent', () => {
     render(<AgentsDirectoryContent workspaceId="workspace-1" agents={agents} />)
     expect(screen.queryByRole('heading', { name: 'Researcher' })).not.toBeInTheDocument()
     expect(sessionStorage.getItem('graphql-local-agents:workspace-1')).not.toContain('Planner')
+  })
+
+  it('reorders cards with the accessible keyboard path and keeps order per workspace', async () => {
+    const user = userEvent.setup()
+    const view = render(<AgentsDirectoryContent workspaceId="workspace-1" agents={reorderAgents} />)
+    const researcher = screen.getByRole('button', { name: 'Researcher, researcher, Available' })
+
+    researcher.focus()
+    await user.keyboard('{Alt>}{ArrowDown}{/Alt}')
+
+    const cards = [...document.querySelectorAll<HTMLElement>('[data-agent-id]')]
+    expect(cards.map((card) => card.dataset.agentId)).toEqual([
+      'agent-builder',
+      'agent-researcher',
+      'agent-reviewer',
+    ])
+    expect(screen.getByTestId('agent-reorder-announcement')).toHaveTextContent(
+      'Moved Researcher to position 2 of 3',
+    )
+
+    view.unmount()
+    render(<AgentsDirectoryContent workspaceId="workspace-1" agents={reorderAgents} />)
+    expect([...document.querySelectorAll<HTMLElement>('[data-agent-id]')].map((card) => card.dataset.agentId)).toEqual([
+      'agent-builder',
+      'agent-researcher',
+      'agent-reviewer',
+    ])
+  })
+
+  it('distinguishes a pointer drag from a click and announces the committed order', () => {
+    const rects = new Map<Element, DOMRect>()
+    const cardRects = [
+      ['agent-researcher', 100],
+      ['agent-builder', 160],
+      ['agent-reviewer', 220],
+    ] as const
+    const makeRect = (top: number, height = 50) => ({
+      x: 0,
+      y: top,
+      top,
+      left: 0,
+      width: 260,
+      height,
+      right: 260,
+      bottom: top + height,
+      toJSON: () => ({}),
+    }) as DOMRect
+    const onSelect = vi.fn()
+    render(<AgentsDirectoryContent workspaceId="workspace-1" agents={reorderAgents} onSelectAgent={onSelect} />)
+    const list = document.querySelector('.agent-directory-grid')
+    if (!list) throw new Error('Agent grid missing')
+    rects.set(list, makeRect(100, 170))
+    for (const [id, top] of cardRects) {
+      const card = document.querySelector(`[data-agent-id="${id}"]`)
+      if (card) rects.set(card, makeRect(top))
+    }
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      return rects.get(this) ?? makeRect(0, 0)
+    })
+    const source = document.querySelector<HTMLButtonElement>('[data-agent-id="agent-reviewer"]')
+    if (!source) throw new Error('Reviewer card missing')
+
+    fireEvent.pointerDown(source, {
+      button: 0,
+      pointerId: 1,
+      pointerType: 'mouse',
+      clientX: 20,
+      clientY: 240,
+    })
+    fireEvent.pointerMove(window, {
+      pointerId: 1,
+      pointerType: 'mouse',
+      clientX: 20,
+      clientY: 180,
+      buttons: 1,
+    })
+    fireEvent.pointerMove(window, {
+      pointerId: 1,
+      pointerType: 'mouse',
+      clientX: 20,
+      clientY: 110,
+      buttons: 1,
+    })
+    fireEvent.pointerUp(window, {
+      pointerId: 1,
+      pointerType: 'mouse',
+      clientX: 20,
+      clientY: 110,
+    })
+
+    expect([...document.querySelectorAll<HTMLElement>('[data-agent-id]')].map((card) => card.dataset.agentId)).toEqual([
+      'agent-reviewer',
+      'agent-researcher',
+      'agent-builder',
+    ])
+    expect(onSelect).not.toHaveBeenCalled()
+    expect(screen.getByTestId('agent-reorder-announcement')).toHaveTextContent(
+      'Moved Reviewer to position 1 of 3',
+    )
   })
 })

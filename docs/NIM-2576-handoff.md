@@ -51,20 +51,27 @@ pnpm --filter @graphql/web test:e2e
 
 ### Development MSW
 
-MSW is opt-in in the browser and is not a production fallback. The checked-in
-browser bootstrap and `apps/web/public/mockServiceWorker.js` only run when both
-`import.meta.env.DEV` and `VITE_ENABLE_MSW === 'true'` are true. Run:
+MSW starts by default in the browser during development and is not a production
+fallback. The checked-in browser bootstrap and
+`apps/web/public/mockServiceWorker.js` run when `import.meta.env.DEV` is true
+and `VITE_ENABLE_MSW` is not `'false'`. Run:
 
 ```sh
-VITE_ENABLE_MSW=true pnpm dev
+pnpm dev
 ```
 
-Do not set the flag for a production build or deployment: without MSW, the
-browser must reach a real API at the same client boundary. Vitest uses the Node
-MSW server from `apps/web/src/test/setup.ts` automatically; it does not require
-the browser worker or the environment flag. With MSW disabled and no backend,
-the landing route still renders, but the Website workspace request is expected
-to show its unavailable/error state.
+Set `VITE_ENABLE_MSW=false` to run the shell against a real API instead:
+
+```sh
+VITE_ENABLE_MSW=false pnpm dev
+```
+
+Production builds never start MSW: without it, the browser must reach a real API
+at the same client boundary. Vitest uses the Node MSW server from
+`apps/web/src/test/setup.ts` automatically; it does not require the browser
+worker or the environment flag. With MSW disabled and no backend, the landing
+route still renders, but the Website workspace request is expected to show its
+unavailable/error state.
 
 ## Routes and visible shell
 
@@ -96,8 +103,8 @@ selection state and does not leak unrelated conversation history.
 ## Owner walkthrough
 
 This is the repeatable owner walkthrough for the Website workspace. It assumes
-the development MSW worker was generated and the app was started with
-`VITE_ENABLE_MSW=true`.
+the development MSW worker was generated and the browser mocks are enabled (the
+development default).
 
 1. Open `http://127.0.0.1:5173/`, then open **Website** at
    `/workspaces/workspace-1`. Confirm the header says `Website`, the runner is
@@ -337,8 +344,9 @@ behaviors only through an explicit backend contract and server authority.
   browser control, runner connection, terminal input, or external integration.
 - There is no persistence. Mock fixture mutations are in-memory and reload
   back to `normal`/`none`; local drafts disappear on reload.
-- Browser MSW uses the checked-in worker asset and only runs in development
-  when explicitly enabled; production never silently falls back to mocks.
+- Browser MSW uses the checked-in worker asset and runs by default in
+  development (`VITE_ENABLE_MSW=false` disables it); production never silently
+  falls back to mocks.
 - The graph currently supports moving nodes and connecting distinct existing
   nodes. Node creation/deletion and execution are intentionally absent.
 - The visible resources endpoint and query hook exist for the boundary, but a

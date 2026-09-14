@@ -3,7 +3,12 @@ import { AgentSchema, type Agent } from '@graphql/contracts'
 import { Plus, X } from 'lucide-react'
 
 import { useAgentsQuery } from '../../shared/api/query'
-import { readDeletedAgentIds, readLocalAgents, writeLocalAgents } from './localAgents'
+import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
+import { usePresence } from '../../shared/ui/usePresence'
+import { isSessionWorkspaceId } from '../workspaces/workspaceSessionStore'
+import { useAgentDirectoryStore } from './agentDirectoryStore'
+import { readDeletedAgentIds, readLocalAgents } from './localAgents'
+import { useReorderableAgents, type AgentReorderCardProps } from './useReorderableAgents'
 import './agents.css'
 
 function executionLabel(agent: Agent): string {
@@ -33,24 +38,31 @@ function AgentCard({
   selected,
   onSelect,
   buttonRef,
+  reorderProps,
 }: {
   agent: Agent
   local: boolean
   selected: boolean
   onSelect?: (agentId: string) => void
   buttonRef?: (button: HTMLButtonElement | null) => void
+  reorderProps?: AgentReorderCardProps
 }) {
   const role = agent.role ?? 'Agent'
   const status = local ? 'Local session' : executionLabel(agent)
+  const { ref: reorderRef, ...reorderAttributes } = reorderProps ?? {}
   return (
     <button
       type="button"
-      ref={buttonRef}
+      ref={(button) => {
+        buttonRef?.(button)
+        reorderRef?.(button)
+      }}
       className="agent-directory-card"
       data-local-agent={local || undefined}
       data-selected={selected || undefined}
       aria-label={`${agent.name}, ${role}, ${status}`}
       aria-pressed={selected}
+      {...reorderAttributes}
       onClick={() => onSelect?.(agent.id)}
     >
       <h2>{agent.name}</h2>
@@ -72,10 +84,16 @@ export function AgentsDirectoryContent({
   onSelectAgent?: (agentId: string) => void
   onClearAgent?: () => void
 }) {
-  const [localAgents, setLocalAgents] = useState<Agent[]>(() => readLocalAgents(workspaceId))
-  const [deletedAgentIds, setDeletedAgentIds] = useState<string[]>(() => readDeletedAgentIds(workspaceId))
+  const catalog = useAgentDirectoryStore((state) => state.catalogs[workspaceId])
+  const hydrateWorkspace = useAgentDirectoryStore((state) => state.hydrateWorkspace)
+  const setStoredLocalAgents = useAgentDirectoryStore((state) => state.setLocalAgents)
+  const localAgents = catalog?.localAgents ?? readLocalAgents(workspaceId)
+  const deletedAgentIds = catalog?.deletedAgentIds ?? readDeletedAgentIds(workspaceId)
+  const announcement = useAgentDirectoryStore((state) => state.announcement)
   const [adding, setAdding] = useState(false)
   const [error, setError] = useState<string>()
+  const addPresence = usePresence(adding)
+  const detailPresence = usePresence(Boolean(selectedAgentId))
   const addButtonRef = useRef<HTMLButtonElement>(null)
   const dialogRef = useRef<HTMLFormElement>(null)
   const detailDialogRef = useRef<HTMLDivElement>(null)
@@ -84,9 +102,8 @@ export function AgentsDirectoryContent({
   const detailReturnFocusIdRef = useRef<string | undefined>(undefined)
 
   useEffect(() => {
-    setLocalAgents(readLocalAgents(workspaceId))
-    setDeletedAgentIds(readDeletedAgentIds(workspaceId))
-  }, [workspaceId])
+    hydrateWorkspace(workspaceId)
+  }, [hydrateWorkspace, workspaceId])
 
   const closeAddAgent = useCallback(() => {
     setAdding(false)
@@ -102,30 +119,29 @@ export function AgentsDirectoryContent({
     }, 0)
   }, [onClearAgent, selectedAgentId])
 
+  useDismissableSurface({
+    open: adding,
+    onDismiss: closeAddAgent,
+    surfaceRef: dialogRef,
+    triggerRef: addButtonRef,
+  })
+
   useEffect(() => {
     if (!adding) return
     dialogRef.current?.querySelector<HTMLInputElement>('input[name="name"]')?.focus()
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      closeAddAgent()
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [adding, closeAddAgent])
+  }, [adding])
+
+  useDismissableSurface({
+    open: Boolean(selectedAgentId),
+    onDismiss: closeAgentDetails,
+    surfaceRef: detailDialogRef,
+  })
 
   useEffect(() => {
     if (!selectedAgentId) return
     setAdding(false)
     detailCloseRef.current?.focus()
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      closeAgentDetails()
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [closeAgentDetails, selectedAgentId])
+  }, [selectedAgentId])
 
   const addAgent = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -150,15 +166,26 @@ export function AgentsDirectoryContent({
     }
 
     const next = [...localAgents, parsed.data]
-    setLocalAgents(next)
-    writeLocalAgents(workspaceId, next)
+    setStoredLocalAgents(workspaceId, next)
     setError(undefined)
     closeAddAgent()
   }
 
   const deletedAgentIdSet = new Set(deletedAgentIds)
   const visibleAgents = [...agents, ...localAgents].filter((agent) => !deletedAgentIdSet.has(agent.id))
-  const selectedAgent = visibleAgents.find((agent) => agent.id === selectedAgentId)
+  const reorder = useReorderableAgents(
+    workspaceId,
+    visibleAgents.map((agent) => ({ id: agent.id, label: agent.name })),
+  )
+  const agentById = new Map(visibleAgents.map((agent) => [agent.id, agent]))
+  const orderedAgents = reorder.orderedIds
+    .map((agentId) => agentById.get(agentId))
+    .filter((agent): agent is Agent => Boolean(agent))
+  const localAgentIds = new Set(localAgents.map((agent) => agent.id))
+  const liveAgent = visibleAgents.find((agent) => agent.id === selectedAgentId)
+  const detailAgentSnapshotRef = useRef<Agent | undefined>(liveAgent)
+  if (liveAgent) detailAgentSnapshotRef.current = liveAgent
+  const selectedAgent = liveAgent ?? (detailPresence.exiting ? detailAgentSnapshotRef.current : undefined)
   const selectedAgentIsLocal = Boolean(selectedAgent && localAgents.some((agent) => agent.id === selectedAgent.id))
   const openAgentDetails = (agentId: string) => {
     detailReturnFocusIdRef.current = agentId
@@ -200,12 +227,11 @@ export function AgentsDirectoryContent({
         </button>
       </header>
 
-      {adding ? (
+      {addPresence.mounted ? (
         <div
           className="agent-add-backdrop"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) closeAddAgent()
-          }}
+          data-presence={addPresence.exiting ? 'exiting' : 'entering'}
+          inert={addPresence.exiting || undefined}
         >
           <form
             ref={dialogRef}
@@ -250,27 +276,15 @@ export function AgentsDirectoryContent({
       ) : null}
 
       {visibleAgents.length > 0 ? (
-        <div className="agent-directory-grid" aria-label="Agents">
-          {agents.filter((agent) => !deletedAgentIdSet.has(agent.id)).map((agent) => (
+        <div className="agent-directory-grid" aria-label="Agents" {...reorder.containerProps}>
+          {orderedAgents.map((agent) => (
             <AgentCard
               key={agent.id}
               agent={agent}
-              local={false}
+              local={localAgentIds.has(agent.id)}
               selected={selectedAgentId === agent.id}
               onSelect={openAgentDetails}
-              buttonRef={(button) => {
-                if (button) agentCardRefs.current.set(agent.id, button)
-                else agentCardRefs.current.delete(agent.id)
-              }}
-            />
-          ))}
-          {localAgents.filter((agent) => !deletedAgentIdSet.has(agent.id)).map((agent) => (
-            <AgentCard
-              key={agent.id}
-              agent={agent}
-              local
-              selected={selectedAgentId === agent.id}
-              onSelect={openAgentDetails}
+              reorderProps={reorder.getCardProps(agent.id)}
               buttonRef={(button) => {
                 if (button) agentCardRefs.current.set(agent.id, button)
                 else agentCardRefs.current.delete(agent.id)
@@ -285,12 +299,21 @@ export function AgentsDirectoryContent({
         </div>
       )}
 
-      {selectedAgentId ? (
+      <p
+        key={announcement?.nonce ?? 0}
+        className="visually-hidden"
+        data-testid="agent-reorder-announcement"
+        role="status"
+        aria-live="polite"
+      >
+        {announcement?.message ?? ''}
+      </p>
+
+      {detailPresence.mounted ? (
         <div
           className="agent-detail-backdrop"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) closeAgentDetails()
-          }}
+          data-presence={detailPresence.exiting ? 'exiting' : 'entering'}
+          inert={detailPresence.exiting || undefined}
         >
           <div
             ref={detailDialogRef}
@@ -345,7 +368,21 @@ export function AgentsDirectory({
   onSelectAgent?: (agentId: string) => void
   onClearAgent?: () => void
 }) {
-  const agentsQuery = useAgentsQuery(workspaceId)
+  const sessionWorkspace = isSessionWorkspaceId(workspaceId)
+  const agentsQuery = useAgentsQuery(workspaceId, { enabled: !sessionWorkspace })
+
+  if (sessionWorkspace) {
+    return (
+      <AgentsDirectoryContent
+        key={workspaceId}
+        workspaceId={workspaceId}
+        agents={[]}
+        selectedAgentId={selectedAgentId}
+        onSelectAgent={onSelectAgent}
+        onClearAgent={onClearAgent}
+      />
+    )
+  }
 
   if (agentsQuery.isPending) {
     return <div className="agents-directory-state" data-testid="agents-loading" role="status">Loading agents…</div>
@@ -363,6 +400,7 @@ export function AgentsDirectory({
 
   return (
     <AgentsDirectoryContent
+      key={workspaceId}
       workspaceId={workspaceId}
       agents={agentsQuery.data.agents}
       selectedAgentId={selectedAgentId}

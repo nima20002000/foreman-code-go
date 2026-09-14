@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
 
 import { AgentsDirectory } from '../features/agents'
 import { WorkspaceShell, type WorkspaceSection } from '../shared/ui/WorkspaceShell'
+import type { GlobalNavigationSection } from '../features/workspaces'
 
 export function AgentsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/agents' })
@@ -25,6 +26,7 @@ export function AgentsRouteEntry() {
     <WorkspaceShell
       workspaceId={workspaceId}
       activeSection="agents"
+      activeAgentId={agentId}
       slots={{
         main: (
           <AgentsDirectory
@@ -48,7 +50,8 @@ export function ComingSoonRouteEntry({ section, label }: { section: WorkspaceSec
   return (
     <WorkspaceShell
       workspaceId={workspaceId}
-      activeSection={section}
+      activeSection={section === 'terminal' || section === 'settings' ? 'workflows' : section}
+      activeGlobalSection={section === 'terminal' || section === 'settings' ? section : undefined}
       slots={{
         main: (
           <div className="coming-soon-page" data-testid="coming-soon">
@@ -56,6 +59,31 @@ export function ComingSoonRouteEntry({ section, label }: { section: WorkspaceSec
             <h1>{label}</h1>
             <p>Coming soon</p>
             <span>This destination is part of the workspace plan, but it is not implemented yet.</span>
+          </div>
+        ),
+      }}
+    />
+  )
+}
+
+export function GlobalComingSoonRouteEntry({
+  section,
+  label,
+}: {
+  section: GlobalNavigationSection
+  label: string
+}) {
+  return (
+    <WorkspaceShell
+      workspaceId="workspace-1"
+      activeGlobalSection={section}
+      slots={{
+        main: (
+          <div className="coming-soon-page" data-testid="coming-soon">
+            <p className="panel-kicker">GraphQL</p>
+            <h1>{label}</h1>
+            <p>Coming soon</p>
+            <span>This destination is available globally and is not connected in Phase 1.</span>
           </div>
         ),
       }}
@@ -72,7 +100,8 @@ function SettingsPage({ browsersSelected = false }: { browsersSelected?: boolean
   return (
     <WorkspaceShell
       workspaceId={workspaceId}
-      activeSection="settings"
+      activeSection="workflows"
+      activeGlobalSection="settings"
       slots={{
         main: (
           <div className="settings-page">
@@ -106,6 +135,26 @@ function SettingsPage({ browsersSelected = false }: { browsersSelected?: boolean
 
 export function SettingsRouteEntry() {
   return <SettingsPage />
+}
+
+export function GlobalSettingsRouteEntry() {
+  return (
+    <WorkspaceShell
+      workspaceId="workspace-1"
+      activeGlobalSection="settings"
+      slots={{
+        main: (
+          <div className="settings-page">
+            <header>
+              <p className="panel-kicker">GraphQL</p>
+              <h1>Settings</h1>
+              <p>Configure application preferences and connected capabilities.</p>
+            </header>
+          </div>
+        ),
+      }}
+    />
+  )
 }
 
 export function BrowsersSettingsRouteEntry() {

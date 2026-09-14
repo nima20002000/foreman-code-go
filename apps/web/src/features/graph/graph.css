@@ -38,7 +38,7 @@
 }
 
 .workflow-graph-state h2 {
-  margin: 0;
+  margin: 0.25rem 0 0;
   color: var(--graph-ink);
   font-size: clamp(1.1rem, 1.8vw, 1.4rem);
   letter-spacing: -0.025em;
@@ -75,7 +75,7 @@
   position: absolute;
   z-index: 4;
   top: 1.25rem;
-  left: 1.25rem;
+  left: 2rem;
   display: grid;
   width: 2.25rem;
   height: 2.25rem;
@@ -103,7 +103,7 @@
   color: var(--graph-ink);
   cursor: pointer;
   font: inherit;
-  font-size: 0.78rem;
+  font-size: 0.8125rem;
   font-weight: 700;
 }
 
@@ -128,38 +128,59 @@
   background: var(--color-accent-strong);
 }
 
-.workflow-graph-toast {
+.workflow-graph-notifications {
   position: absolute;
-  z-index: 4;
+  z-index: 6;
   top: 4.25rem;
-  left: 1.25rem;
-  max-width: min(26rem, calc(100% - 2rem));
+  left: 50%;
+  display: flex;
+  width: min(30rem, calc(100% - 2rem));
+  max-height: calc(100% - 5.5rem);
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  overflow: hidden;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.workflow-graph-toast {
+  max-width: 100%;
   margin: 0;
   padding: 0.75rem 0.875rem;
   border: 1px solid var(--graph-line-strong);
   border-radius: 3px;
   background: var(--graph-panel);
   color: var(--graph-ink);
-  font-size: 0.8rem;
-  line-height: 1.4;
+  font-size: 0.8125rem;
+  line-height: 1.45;
   box-shadow: 0 0.375rem 1.25rem rgb(0 0 0 / 22%);
 }
 
+.workflow-graph-session-notice {
+  max-width: 100%;
+  margin: 0;
+  padding: 0.625rem 0.75rem;
+  border: 1px dashed var(--graph-line-strong);
+  border-radius: 3px;
+  color: var(--graph-muted);
+  background: color-mix(in srgb, var(--graph-panel) 94%, transparent);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  pointer-events: auto;
+}
+
 .workflow-graph-connection-status {
-  position: absolute;
-  z-index: 4;
-  top: 4.25rem;
-  right: 1.25rem;
-  max-width: min(30rem, calc(100% - 2rem));
+  max-width: 100%;
   margin: 0;
   padding: 0.625rem 0.75rem;
   border: 1px solid var(--graph-focus);
   border-radius: 3px;
   color: var(--graph-ink);
   background: var(--graph-panel);
-  font-size: 0.78rem;
+  font-size: 0.8125rem;
   font-weight: 650;
-  line-height: 1.4;
+  line-height: 1.45;
   box-shadow: 0 0.375rem 1.25rem rgb(0 0 0 / 18%);
 }
 
@@ -171,6 +192,12 @@
   place-items: center;
   padding: 1.25rem;
   background: rgb(8 10 11 / 62%);
+  animation: workspace-overlay-in var(--motion-duration-fast) ease-out both;
+}
+
+.agent-picker-backdrop[data-presence='exiting'] {
+  animation: workspace-overlay-out var(--motion-duration-fast) ease-in both;
+  pointer-events: none;
 }
 
 .agent-picker-dialog {
@@ -185,6 +212,11 @@
   color: var(--graph-ink);
   background: var(--graph-panel);
   box-shadow: 0 1.25rem 4rem rgb(0 0 0 / 38%);
+  animation: workspace-dialog-in var(--motion-duration) var(--motion-ease-out) both;
+}
+
+.agent-picker-backdrop[data-presence='exiting'] .agent-picker-dialog {
+  animation: workspace-dialog-out var(--motion-duration-fast) ease-in both;
 }
 
 .agent-picker-heading {
@@ -201,10 +233,10 @@
 
 .agent-picker-heading p,
 .agent-picker-empty p {
-  margin: 0.375rem 0 0;
+  margin: 0.5rem 0 0;
   color: var(--graph-muted);
   font-size: 0.8125rem;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 
 .agent-picker-heading > button {
@@ -235,7 +267,7 @@
 .agent-picker-list > button {
   display: grid;
   min-height: 3.75rem;
-  gap: 0.25rem;
+  gap: 0.375rem;
   padding: 0.75rem 0.875rem;
   border: 1px solid var(--graph-line);
   border-radius: 2px;
@@ -253,21 +285,83 @@
 
 .agent-picker-list > button span {
   color: var(--graph-muted);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   line-height: 1.4;
 }
 
 .agent-picker-empty {
   padding: 1.25rem;
   border: 1px dashed var(--graph-line-strong);
+  border-radius: 2px;
 }
 
 .agent-picker-empty a {
   display: inline-block;
-  margin-top: 0.875rem;
+  margin-top: 0.75rem;
   color: var(--graph-ink);
   font-size: 0.8125rem;
   font-weight: 700;
+}
+
+.agent-picker-popover {
+  position: absolute;
+  z-index: 10;
+  top: 4.25rem;
+  left: 1.25rem;
+  display: grid;
+  width: min(21rem, calc(100% - 2.5rem));
+  max-height: min(24rem, calc(100% - 6rem));
+  gap: 0.875rem;
+  padding: 0.875rem;
+  border: 1px solid var(--graph-line-strong);
+  border-radius: 3px;
+  overflow: auto;
+  color: var(--graph-ink);
+  background: var(--graph-panel);
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 32%);
+  animation: agent-picker-popover-in var(--motion-duration) var(--motion-ease-out) both;
+}
+
+.agent-picker-popover[data-presence='exiting'] {
+  animation: agent-picker-popover-out var(--motion-duration-fast) ease-in both;
+  pointer-events: none;
+}
+
+.agent-picker-popover .agent-picker-heading h2 {
+  font-size: 0.95rem;
+}
+
+.agent-picker-popover .agent-picker-heading p {
+  font-size: 0.75rem;
+}
+
+.agent-picker-popover .agent-picker-list > button {
+  min-height: 3rem;
+  padding: 0.5rem 0.625rem;
+}
+
+@keyframes agent-picker-popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes agent-picker-popover-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
 }
 
 .agent-delete-dialog {
@@ -368,9 +462,120 @@
   fill: var(--graph-minimap-mask);
 }
 
+.workflow-graph-canvas .react-flow__minimap .react-flow__minimap-node {
+  shape-rendering: geometricPrecision;
+}
+
 .workflow-graph-canvas .react-flow__edge-path {
   stroke: var(--graph-edge);
   stroke-width: 1.6;
+}
+
+/* Inactive edges still need a hover target so the remove control can appear,
+   but departing edges must stay inert while they animate out. */
+.workflow-graph-canvas .react-flow__edge:not(.workflow-graph-edge-departing) {
+  pointer-events: visibleStroke;
+}
+
+.workflow-graph-canvas .react-flow__edge:focus .react-flow__edge-path,
+.workflow-graph-canvas .react-flow__edge:focus-visible .react-flow__edge-path {
+  stroke: var(--graph-focus);
+}
+
+.workflow-graph-edge-control {
+  overflow: visible;
+}
+
+.workflow-graph-edge-remove {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--graph-line-strong);
+  border-radius: 50%;
+  color: var(--graph-ink);
+  background: var(--graph-panel);
+  box-shadow: 0 0.25rem 0.75rem rgb(0 0 0 / 26%);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity var(--motion-duration-fast) ease,
+    border-color var(--motion-duration-fast) ease;
+}
+
+.workflow-graph-canvas .react-flow__edge:hover .workflow-graph-edge-remove,
+.workflow-graph-canvas .react-flow__edge:focus-within .workflow-graph-edge-remove,
+.workflow-graph-edge-remove:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.workflow-graph-edge-remove:hover,
+.workflow-graph-edge-remove:focus-visible {
+  border-color: var(--graph-focus);
+}
+
+.workflow-graph-edge-new .react-flow__edge-path {
+  animation: workflow-edge-connect var(--motion-duration-enter) ease-out both;
+}
+
+.workflow-graph-edge-departing {
+  pointer-events: none;
+}
+
+.workflow-graph-edge-departing .workflow-graph-edge-control {
+  display: none;
+}
+
+.workflow-graph-edge-departing .react-flow__edge-path,
+.workflow-graph-edge-departing .react-flow__edge-text,
+.workflow-graph-edge-departing .react-flow__edge-textbg {
+  animation: workflow-edge-depart var(--motion-duration-fast) ease-in both;
+}
+
+@keyframes workflow-edge-connect {
+  0% {
+    opacity: 0;
+    stroke: var(--graph-focus);
+    stroke-width: 5;
+  }
+
+  45% {
+    opacity: 1;
+    stroke: var(--graph-focus);
+    stroke-width: 3.6;
+  }
+
+  100% {
+    opacity: 1;
+    stroke: var(--graph-edge);
+    stroke-width: 1.6;
+  }
+}
+
+@keyframes workflow-edge-depart {
+  to {
+    opacity: 0;
+  }
+}
+
+.workflow-graph-toast,
+.workflow-graph-connection-status {
+  animation: workflow-graph-pop-in var(--motion-duration) var(--motion-ease-out) both;
+}
+
+@keyframes workflow-graph-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .workflow-graph-canvas .react-flow__edge-text {
@@ -391,6 +596,49 @@
   border: 1px solid var(--graph-line-strong);
   border-radius: 2px;
   background: var(--graph-panel);
+  transition:
+    border-color var(--motion-duration-fast) ease,
+    box-shadow var(--motion-duration-fast) ease;
+}
+
+.workflow-agent-node-entering {
+  animation: workflow-node-enter var(--motion-duration-enter) var(--motion-ease-out) both;
+}
+
+@keyframes workflow-node-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.workflow-agent-node-departing {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-width: 214px;
+  min-height: 92px;
+  align-content: center;
+  gap: 0.75rem;
+  padding: 0.875rem 3rem 0.875rem 1rem;
+  border: 1px solid var(--graph-line-strong);
+  border-radius: 2px;
+  color: var(--graph-ink);
+  background: var(--graph-panel);
+  pointer-events: none;
+  animation: workflow-node-depart var(--motion-duration-fast) ease-in both;
+}
+
+@keyframes workflow-node-depart {
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
 }
 
 .workflow-agent-node:hover,
@@ -525,7 +773,7 @@
 }
 
 .workflow-agent-node-label {
-  font-size: 1.03rem;
+  font-size: 1rem;
   font-weight: 760;
   letter-spacing: -0.018em;
   line-height: 1.2;
@@ -539,6 +787,18 @@
   background: var(--graph-handle);
 }
 
+/* One handle per side serves every connection on that side. */
+.workflow-agent-node .workflow-agent-node-handle {
+  transition:
+    background var(--motion-duration-fast) ease,
+    border-color var(--motion-duration-fast) ease;
+}
+
+.workflow-agent-node:hover .workflow-agent-node-handle,
+.workflow-agent-node .workflow-agent-node-handle.connectionindicator {
+  background: var(--graph-focus);
+}
+
 .workflow-graph-state {
   display: grid;
   align-content: center;
@@ -549,8 +809,13 @@
   background: var(--graph-panel);
 }
 
+.workflow-graph-state .workflow-graph-kicker {
+  margin-bottom: 0;
+}
+
 .workflow-graph-state p:last-child {
   max-width: 480px;
+  margin-top: 0.5rem;
   color: var(--graph-muted);
   line-height: 1.55;
 }
@@ -565,11 +830,15 @@
     justify-content: flex-end;
   }
 
-  .workflow-graph-toast {
+  .workflow-graph-notifications {
     top: 8rem;
   }
 
   .workflow-graph-add-agent {
     top: 5rem;
+  }
+
+  .agent-picker-popover {
+    top: 7.75rem;
   }
 }

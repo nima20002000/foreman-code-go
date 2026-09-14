@@ -22,6 +22,11 @@
   --color-status-dot: #c1c9cc;
   --color-dashed: #515a5f;
   --color-minimap-mask: rgba(17, 20, 22, 0.78);
+  --motion-duration-fast: 140ms;
+  --motion-duration: 200ms;
+  --motion-duration-enter: 420ms;
+  --motion-ease: cubic-bezier(0.22, 0, 0, 1);
+  --motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   color: var(--color-text);
   background: var(--color-canvas);
   font-family: 'Inter Variable', Inter, ui-sans-serif, system-ui, sans-serif;
@@ -51,6 +56,14 @@
   --color-status-dot: #555555;
   --color-dashed: #bdbdbd;
   --color-minimap-mask: rgba(255, 255, 255, 0.72);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-duration-fast: 0s;
+    --motion-duration: 0s;
+    --motion-duration-enter: 0s;
+  }
 }
 
 * {
@@ -177,18 +190,18 @@ h1 {
   background: var(--color-surface-raised);
 }
 
-.workspace-route {
-  min-height: 100vh;
+.shell-card > p:last-child {
+  margin-top: 0.75rem;
 }
 
-.workspace-route-selection {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  clip-path: inset(50%);
-  white-space: nowrap;
+.shell-card a {
+  color: var(--color-text-strong);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.workspace-route {
+  min-height: 100vh;
 }
 
 .workspace-shell {
@@ -199,6 +212,7 @@ h1 {
   grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
   background: var(--color-canvas);
+  transition: grid-template-columns var(--motion-duration) var(--motion-ease);
 }
 
 .workspace-shell-navigation-collapsed {
@@ -208,6 +222,8 @@ h1 {
 .shell-sidebar {
   position: relative;
   display: flex;
+  height: 100vh;
+  max-height: 100vh;
   min-height: 100vh;
   grid-row: 1 / -1;
   flex-direction: column;
@@ -215,6 +231,9 @@ h1 {
   padding: 1.25rem 0.875rem;
   border-right: 1px solid var(--color-border);
   background: var(--color-sidebar);
+  transition:
+    padding var(--motion-duration) var(--motion-ease),
+    gap var(--motion-duration) var(--motion-ease);
 }
 
 .sidebar-collapse-button {
@@ -247,11 +266,55 @@ h1 {
 
 .shell-navigation {
   display: grid;
+  grid-template-rows: auto 1fr;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
   gap: 0.625rem;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .nav-label {
   padding: 0 0.625rem;
+}
+
+.sidebar-brand {
+  display: flex;
+  min-height: 1.75rem;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0 0.625rem;
+  transition: gap var(--motion-duration) var(--motion-ease);
+  color: var(--color-text-strong);
+}
+
+.sidebar-brand-mark {
+  display: none;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 2px;
+  font-size: 0.8125rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.sidebar-brand-name {
+  max-width: 14rem;
+  overflow: hidden;
+  font-size: 0.875rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition:
+    max-width var(--motion-duration) var(--motion-ease),
+    opacity var(--motion-duration-fast) ease;
 }
 
 .shell-navigation ul {
@@ -262,6 +325,22 @@ h1 {
   list-style: none;
 }
 
+/* Nested navigation is bounded by the sidebar column. Without the minmax
+   tracks and min-width resets, long labels in deeply indented submenus force
+   horizontal overflow and clip the controls on the right edge. */
+.shell-navigation ul,
+.workspace-navigation-panel,
+.workflow-navigation,
+.agent-navigation,
+.sidebar-footer {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.sidebar-footer > * {
+  min-width: 0;
+}
+
 .nav-item {
   display: flex;
   width: 100%;
@@ -269,10 +348,12 @@ h1 {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+  transition: gap var(--motion-duration) var(--motion-ease);
   padding: 0.5rem 0.625rem;
   border: 1px solid transparent;
   border-radius: 2px;
   color: var(--color-text-muted);
+  background: transparent;
   font-size: 0.8125rem;
   font-weight: 600;
   line-height: 1.3;
@@ -280,11 +361,42 @@ h1 {
   text-decoration: none;
 }
 
+.nav-item-parent {
+  cursor: pointer;
+}
+
+.shell-navigation .nav-submenu {
+  position: relative;
+  margin-top: 0.25rem;
+  padding-left: 1.375rem;
+  transition: padding-left var(--motion-duration) var(--motion-ease);
+}
+
+.shell-navigation .nav-submenu::before {
+  content: '';
+  position: absolute;
+  top: 0.125rem;
+  bottom: 0.125rem;
+  left: 0.9375rem;
+  width: 1px;
+  background: var(--color-border);
+}
+
+.nav-item-chevron {
+  flex: 0 0 auto;
+  transition: transform var(--motion-duration-fast) ease;
+}
+
+.nav-item[aria-expanded='false'] .nav-item-chevron {
+  transform: rotate(-90deg);
+}
+
 .nav-item-primary {
   display: inline-flex;
   min-width: 0;
   align-items: center;
   gap: 0.625rem;
+  transition: gap var(--motion-duration) var(--motion-ease);
 }
 
 .nav-item-icon {
@@ -292,9 +404,14 @@ h1 {
 }
 
 .nav-item-label {
+  max-width: 14rem;
   overflow: hidden;
+  opacity: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
+  transition:
+    max-width var(--motion-duration) var(--motion-ease),
+    opacity var(--motion-duration-fast) ease;
 }
 
 .nav-item:hover:not(:disabled) {
@@ -335,15 +452,12 @@ h1 {
 }
 
 .sidebar-footer .theme-toggle {
-  width: 100%;
-  min-height: 2.25rem;
-  justify-content: flex-start;
-  padding: 0.5rem 0.625rem;
+  width: 2.75rem;
+  height: 2.75rem;
+  justify-self: start;
   border-color: transparent;
   color: var(--color-text-muted);
   background: transparent;
-  font-size: 0.8125rem;
-  font-weight: 600;
 }
 
 .workspace-shell-navigation-collapsed .shell-sidebar {
@@ -353,11 +467,29 @@ h1 {
 }
 
 .workspace-shell-navigation-collapsed .nav-label,
-.workspace-shell-navigation-collapsed .nav-item-label,
 .workspace-shell-navigation-collapsed .availability-note,
-.workspace-shell-navigation-collapsed .sidebar-note,
-.workspace-shell-navigation-collapsed .theme-toggle span {
+.workspace-shell-navigation-collapsed .sidebar-note {
   display: none;
+}
+
+.workspace-shell-navigation-collapsed .nav-item-label {
+  max-width: 0;
+  opacity: 0;
+}
+
+.workspace-shell-navigation-collapsed .sidebar-brand {
+  justify-content: center;
+  gap: 0;
+  padding-inline: 0;
+}
+
+.workspace-shell-navigation-collapsed .sidebar-brand-mark {
+  display: grid;
+}
+
+.workspace-shell-navigation-collapsed .sidebar-brand-name {
+  max-width: 0;
+  opacity: 0;
 }
 
 .workspace-shell-navigation-collapsed .shell-navigation,
@@ -370,18 +502,28 @@ h1 {
   padding-top: 1.25rem;
 }
 
+.workspace-shell-navigation-collapsed .shell-navigation .nav-submenu {
+  padding-left: 0;
+}
+
+.workspace-shell-navigation-collapsed .shell-navigation .nav-submenu::before,
+.workspace-shell-navigation-collapsed .nav-item-chevron {
+  display: none;
+}
+
 .workspace-shell-navigation-collapsed .nav-item {
   justify-content: center;
+  gap: 0;
   padding-inline: 0;
 }
 
 .workspace-shell-navigation-collapsed .nav-item-primary {
   justify-content: center;
+  gap: 0;
 }
 
 .workspace-shell-navigation-collapsed .theme-toggle {
-  justify-content: center;
-  padding-inline: 0;
+  justify-self: center;
 }
 
 .shell-header {
@@ -425,20 +567,16 @@ h1 {
 
 .theme-toggle {
   display: inline-flex;
-  min-height: 2.25rem;
+  width: 2.75rem;
+  height: 2.75rem;
   align-items: center;
   justify-content: center;
-  gap: 0.45rem;
-  padding: 0.4rem 0.65rem;
+  padding: 0;
   border: 1px solid var(--color-border-strong);
   border-radius: 2px;
   color: var(--color-text);
   background: var(--color-surface-raised);
   cursor: pointer;
-  font-size: 0.72rem;
-  font-weight: 700;
-  line-height: 1.2;
-  white-space: nowrap;
 }
 
 .theme-toggle:hover {
@@ -460,6 +598,80 @@ h1 {
   min-height: 0;
   overflow: auto;
   background: var(--color-surface);
+}
+
+/* Development-only MSW controls live outside the shell route so they cannot
+   affect workspace sizing. Keep them readable without leaking unstyled text
+   into the document flow. */
+.mock-data-control {
+  position: fixed;
+  z-index: 8;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  min-height: 2.25rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.375rem 0.75rem;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  background: color-mix(in srgb, var(--color-surface-raised) 96%, transparent);
+  font-size: 0.6875rem;
+}
+
+.mock-data-control > div,
+.mock-data-control > label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.mock-data-control .slot-label {
+  color: var(--color-text-faint);
+  font-size: 0.625rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mock-data-control strong {
+  color: var(--color-text-strong);
+  font-size: 0.6875rem;
+}
+
+.mock-data-control select {
+  min-height: 1.75rem;
+  padding: 0.2rem 1.5rem 0.2rem 0.5rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 2px;
+  color: var(--color-text-strong);
+  background: var(--color-surface);
+  font: inherit;
+}
+
+.workspace-route:has(.mock-data-control) .workflow-graph-canvas .react-flow__minimap {
+  bottom: 3.75rem !important;
+}
+
+@media (max-width: 640px) {
+  .mock-data-control {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding-block: 0.3rem;
+  }
+
+  .mock-data-control > label {
+    align-self: stretch;
+    justify-content: space-between;
+  }
+
+  .workspace-route:has(.mock-data-control) .workflow-graph-canvas .react-flow__minimap {
+    bottom: 5.5rem !important;
+  }
 }
 
 .coming-soon-page {
@@ -484,7 +696,7 @@ h1 {
 
 .coming-soon-page > span {
   max-width: 34rem;
-  margin-top: 0.375rem;
+  margin-top: 0.5rem;
   color: var(--color-text-muted);
   font-size: 0.875rem;
   line-height: 1.55;
@@ -499,10 +711,18 @@ h1 {
   padding: clamp(1.25rem, 3vw, 2.5rem);
 }
 
-.settings-page header h1,
+.settings-page header h1 {
+  margin: 0.25rem 0 0;
+  color: var(--color-text-strong);
+  font-size: 1.5rem;
+}
+
 .settings-section h2 {
   margin: 0.25rem 0 0;
   color: var(--color-text-strong);
+  font-size: 1.125rem;
+  letter-spacing: -0.015em;
+  line-height: 1.3;
 }
 
 .settings-page header > p:last-child,
@@ -556,13 +776,12 @@ h1 {
 }
 
 .settings-section > p {
-  margin: 0.75rem 0 0;
+  margin: 0.5rem 0 0;
   color: var(--color-text-strong);
   font-weight: 700;
 }
 
 .graph-surface,
-.context-surface,
 .terminal-surface {
   min-width: 0;
   background: var(--color-surface);
@@ -577,18 +796,10 @@ h1 {
   padding: 0;
 }
 
-.context-surface {
-  min-height: 28rem;
-  padding: 1.25rem;
-  border-left: 1px solid var(--color-border);
-  overflow: auto;
-}
-
 .surface-placeholder {
   display: grid;
   align-content: center;
   min-height: 100%;
-  gap: 0.75rem;
   padding: 2rem;
   border: 1px dashed var(--color-dashed);
   border-radius: 2px;
@@ -603,12 +814,20 @@ h1 {
   letter-spacing: -0.01em;
 }
 
+.surface-placeholder h2 {
+  margin-top: 0.25rem;
+}
+
 .surface-placeholder p:last-child,
 .terminal-content p {
   margin: 0;
   color: var(--color-text-muted);
   font-size: 0.8125rem;
   line-height: 1.55;
+}
+
+.surface-placeholder p:last-child {
+  margin-top: 0.5rem;
 }
 
 .surface-placeholder-error,
@@ -646,8 +865,7 @@ h1 {
   gap: 0.25rem;
 }
 
-.disclosure-button,
-.context-surface button {
+.disclosure-button {
   min-height: 2rem;
   padding: 0.375rem 0.625rem;
   border: 1px solid var(--color-border-strong);
@@ -659,192 +877,90 @@ h1 {
   font-weight: 650;
 }
 
-.disclosure-button:hover,
-.context-surface button:hover:not(:disabled) {
+.disclosure-button:hover {
   border-color: var(--color-text-strong);
   background: var(--color-surface-subtle);
-}
-
-.context-surface button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
 }
 
 .terminal-content {
   padding: 0 1.25rem 1rem;
 }
 
-/* Existing operator and conversation markup intentionally stays behavior-only.
-   These selectors give it the same restrained workspace treatment as the shell. */
-.context-surface > [aria-label='Agent context'] {
-  display: grid;
-  gap: 1.25rem;
-  color: var(--color-text);
+/* Shared overlay motion. Feature stylesheets apply these to their dialogs and
+   backdrops; the duration tokens collapse to 0s under reduced motion. */
+.workspace-create-dialog,
+.agent-add-backdrop .agent-add-form,
+.agent-detail-dialog,
+.workflow-create-dialog,
+.agent-picker-dialog,
+.agent-picker-popover {
+  /* Keep long forms scrollable without exposing platform scrollbar chrome. */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
-.context-surface > [aria-label='Agent context'] > header {
-  padding-bottom: 1rem;
-  border-bottom: 1px solid var(--color-border);
+.workspace-create-dialog::-webkit-scrollbar,
+.agent-add-backdrop .agent-add-form::-webkit-scrollbar,
+.agent-detail-dialog::-webkit-scrollbar,
+.workflow-create-dialog::-webkit-scrollbar,
+.agent-picker-dialog::-webkit-scrollbar,
+.agent-picker-popover::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
-.context-surface [aria-label='Agent context'] h2,
-.context-surface [aria-label='Agent context'] h3 {
-  margin-bottom: 0.5rem;
-  color: var(--color-text-strong);
-  font-size: 1rem;
-  letter-spacing: -0.015em;
+@keyframes workspace-overlay-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
-.context-surface [aria-label='Agent context'] h3 {
-  font-size: 0.8rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+@keyframes workspace-overlay-out {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
 }
 
-.context-surface [aria-label='Agent context'] p {
-  margin-bottom: 0;
-  color: var(--color-text-muted);
-  font-size: 0.78rem;
-  line-height: 1.5;
+@keyframes workspace-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
-.context-surface [aria-label='Agent context'] header > p:not(.panel-kicker) {
-  margin-top: 0.5rem;
-}
+@keyframes workspace-dialog-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 
-.context-surface [aria-label='Agent context'] dl {
-  display: grid;
-  gap: 0.5rem;
-  margin: 1rem 0 0;
-}
-
-.context-surface [aria-label='Agent context'] dl > div {
-  display: grid;
-  grid-template-columns: 4.5rem minmax(0, 1fr);
-  gap: 0.75rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--color-border);
-}
-
-.context-surface [aria-label='Agent context'] dt {
-  color: var(--color-text-faint);
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.context-surface [aria-label='Agent context'] dd {
-  margin: 0;
-  color: var(--color-text);
-  font-size: 0.76rem;
-  line-height: 1.4;
-}
-
-.context-surface [aria-label='Agent context'] > section {
-  display: grid;
-  gap: 0.55rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--color-border);
-}
-
-.context-surface [aria-label='Agent context'] > section > p[data-testid='agent-condition-label'] {
-  color: var(--color-text-strong);
-  font-weight: 700;
-}
-
-.context-surface [aria-label='Agent context'] ol {
-  display: grid;
-  gap: 0.65rem;
-  max-height: 15rem;
-  overflow: auto;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.context-surface [aria-label='Agent context'] ol li {
-  padding: 0.65rem 0.7rem;
-  border: 1px solid var(--color-border);
-  border-radius: 2px;
-  background: var(--color-surface-raised);
-}
-
-.context-surface [aria-label='Agent context'] ol strong {
-  display: block;
-  margin-bottom: 0.3rem;
-  color: var(--color-text-strong);
-  font-size: 0.7rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.context-surface [aria-label='Agent context'] ol p {
-  color: var(--color-text-muted);
-}
-
-.context-surface form[aria-label='Conversation composer'] {
-  display: grid;
-  gap: 0.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--color-border);
-}
-
-.context-surface form[aria-label='Conversation composer'] label {
-  color: var(--color-text-strong);
-  font-size: 0.75rem;
-  font-weight: 700;
-}
-
-.context-surface form[aria-label='Conversation composer'] textarea {
-  width: 100%;
-  min-height: 5rem;
-  resize: vertical;
-  padding: 0.65rem 0.7rem;
-  border: 1px solid var(--color-border-strong);
-  border-radius: 2px;
-  color: var(--color-text);
-  background: var(--color-surface-raised);
-  font-size: 0.78rem;
-  line-height: 1.45;
-}
-
-.context-surface form[aria-label='Conversation composer'] textarea::placeholder {
-  color: var(--color-text-faint);
-}
-
-.context-surface form[aria-label='Conversation composer'] button[type='submit'] {
-  justify-self: start;
-  border-color: var(--color-accent);
-  color: var(--color-accent-contrast);
-  background: var(--color-accent);
-}
-
-.context-surface form[aria-label='Conversation composer'] button[type='submit']:hover:not(:disabled) {
-  border-color: var(--color-accent-strong);
-  background: var(--color-accent-strong);
-}
-
-.context-surface [aria-label='Phase 1 unavailable actions'] {
-  display: grid;
-  gap: 0.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--color-border);
-}
-
-.context-surface [aria-label='Phase 1 unavailable actions'] p:first-child {
-  color: var(--color-text-strong);
-  font-size: 0.75rem;
-  font-weight: 700;
-}
-
-.context-surface [aria-label='Phase 1 unavailable actions'] p:last-child {
-  font-size: 0.7rem;
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
 }
 
 @media (max-width: 860px) {
   .workspace-shell {
     grid-template-columns: 11rem minmax(0, 1fr);
+  }
+
+  .workspace-shell.workspace-shell-navigation-collapsed {
+    grid-template-columns: 3.75rem minmax(0, 1fr);
   }
 
   .shell-header {
@@ -856,7 +972,10 @@ h1 {
 
 @media (max-width: 640px) {
   .workspace-shell {
-    grid-template-columns: min(10rem, 42vw) minmax(0, 1fr);
+    /* Keep the navigation controls legible on phone widths. The graph still
+       owns the remaining column, but nested labels and action buttons never
+       collapse into clipped text. */
+    grid-template-columns: min(13rem, 55vw) minmax(0, 1fr);
   }
 
   .workspace-shell-navigation-collapsed {
@@ -886,12 +1005,6 @@ h1 {
 
   .graph-surface {
     min-height: 100vh;
-  }
-
-  .context-surface {
-    min-height: 15rem;
-    border-top: 1px solid var(--color-border);
-    border-left: 0;
   }
 
   .terminal-surface {

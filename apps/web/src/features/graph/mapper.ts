@@ -11,10 +11,13 @@ import type { XYPosition } from '@xyflow/react'
 
 import type {
   GraphEdge,
+  GraphHandleSide,
   GraphMapperOptions,
   GraphNode,
   GraphProjection,
 } from './types'
+
+export const AGENT_HANDOFF_EDGE_TYPE = 'agentHandoff'
 
 export const GRAPH_NODE_MIN_WIDTH = 214
 export const GRAPH_NODE_MAX_WIDTH = 520
@@ -24,6 +27,7 @@ const DEFAULT_NODE_WIDTH = 238
 const DEFAULT_NODE_HEIGHT = GRAPH_NODE_MIN_HEIGHT
 const DEFAULT_NODE_GAP = 92
 const DEFAULT_NODE_Y = 120
+const PLACEMENT_GAP = 24
 
 const executionStateLabels: Record<AgentExecutionState, string> = {
   available: 'Available',
@@ -49,6 +53,70 @@ function workflowNodePosition(node: WorkflowNode, index: number): XYPosition {
   return node.position ? { x: node.position.x, y: node.position.y } : fallbackPosition(index)
 }
 
+function rectanglesOverlap(
+  left: { position: XYPosition; width: number; height: number },
+  right: { position: XYPosition; width: number; height: number },
+): boolean {
+  return left.position.x < right.position.x + right.width
+    && left.position.x + left.width > right.position.x
+    && left.position.y < right.position.y + right.height
+    && left.position.y + left.height > right.position.y
+}
+
+/**
+ * Finds the first free slot around an insertion anchor. Newly added steps stay
+ * close to the add control while avoiding every existing node, including nodes
+ * that were moved or resized by the user.
+ */
+export function findOpenNodePosition(
+  nodes: readonly WorkflowNode[],
+  anchor: XYPosition,
+  width = DEFAULT_NODE_WIDTH,
+  height = DEFAULT_NODE_HEIGHT,
+): XYPosition {
+  const occupied = nodes.map((node, index) => ({
+    position: workflowNodePosition(node, index),
+    ...clampNodeSize(node.width ?? DEFAULT_NODE_WIDTH, node.height ?? DEFAULT_NODE_HEIGHT),
+  }))
+  const stepX = width + PLACEMENT_GAP
+  const stepY = height + PLACEMENT_GAP
+  const offsets: XYPosition[] = [
+    { x: 0, y: 0 },
+    { x: stepX, y: 0 },
+    { x: -stepX, y: 0 },
+    { x: 0, y: stepY },
+    { x: 0, y: -stepY },
+    { x: stepX, y: stepY },
+    { x: -stepX, y: stepY },
+    { x: stepX, y: -stepY },
+    { x: -stepX, y: -stepY },
+  ]
+
+  for (const offset of offsets) {
+    const candidate = { x: anchor.x + offset.x, y: anchor.y + offset.y }
+    const box = { position: candidate, width, height }
+    if (!occupied.some((existing) => rectanglesOverlap(box, existing))) return candidate
+  }
+
+  // A large, irregularly arranged canvas can consume the compact ring. Keep
+  // searching in expanding rings instead of falling back to a colliding node.
+  for (let ring = 2; ring < 50; ring += 1) {
+    const candidates = [
+      { x: ring * stepX, y: 0 },
+      { x: -ring * stepX, y: 0 },
+      { x: 0, y: ring * stepY },
+      { x: 0, y: -ring * stepY },
+    ]
+    for (const offset of candidates) {
+      const candidate = { x: anchor.x + offset.x, y: anchor.y + offset.y }
+      const box = { position: candidate, width, height }
+      if (!occupied.some((existing) => rectanglesOverlap(box, existing))) return candidate
+    }
+  }
+
+  return { x: anchor.x, y: anchor.y }
+}
+
 function clampNodeSize(width: number, height: number) {
   return {
     width: Math.min(GRAPH_NODE_MAX_WIDTH, Math.max(GRAPH_NODE_MIN_WIDTH, width)),
@@ -58,6 +126,37 @@ function clampNodeSize(width: number, height: number) {
 
 function agentState(agent: Agent | undefined): AgentExecutionState | undefined {
   return agent?.executionState ?? agent?.status
+}
+
+type NodeBox = {
+  position: XYPosition
+  width: number
+  height: number
+}
+
+/**
+ * Routes a connection from the side of the source that faces the target and
+ * into the side of the target that faces the source. Ties prefer the
+ * horizontal axis so left/right handoffs stay predictable.
+ */
+export function closestHandleSides(
+  source: NodeBox,
+  target: NodeBox,
+): { sourceHandle: GraphHandleSide; targetHandle: GraphHandleSide } {
+  const sourceCenterX = source.position.x + source.width / 2
+  const sourceCenterY = source.position.y + source.height / 2
+  const targetCenterX = target.position.x + target.width / 2
+  const targetCenterY = target.position.y + target.height / 2
+  const dx = targetCenterX - sourceCenterX
+  const dy = targetCenterY - sourceCenterY
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return dx >= 0
+      ? { sourceHandle: 'right', targetHandle: 'left' }
+      : { sourceHandle: 'left', targetHandle: 'right' }
+  }
+  return dy >= 0
+    ? { sourceHandle: 'bottom', targetHandle: 'top' }
+    : { sourceHandle: 'top', targetHandle: 'bottom' }
 }
 
 function activeRunId(agent: Agent | undefined): string | undefined {
@@ -128,7 +227,7 @@ export function workflowToGraph(
         executionStateLabel: executionStateLabel(state),
         stepLabel: `Step ${index + 1}`,
         waitLabel: waitLabel(agent, state, options.runFacts),
-        connectionArmed: options.armedNodeId === workflowNode.id,
+        entering: options.enteringNodeIds?.has(workflowNode.id),
         onSelect: options.onSelectAgent,
         onUnlink: options.onUnlinkNode,
         onDelete: options.onDeleteAgent,
@@ -137,14 +236,29 @@ export function workflowToGraph(
     }
   })
 
-  const edges: GraphEdge[] = workflow.edges.map((workflowEdge) => ({
-    id: workflowEdge.id,
-    source: workflowEdge.source,
-    target: workflowEdge.target,
-    label: workflowEdge.label,
-    type: 'smoothstep',
-    data: { explanation: edgeExplanation() },
-  }))
+  const nodeBoxes = new Map<string, NodeBox>(nodes.map((node) => [node.id, {
+    position: node.position,
+    width: node.width ?? DEFAULT_NODE_WIDTH,
+    height: node.height ?? DEFAULT_NODE_HEIGHT,
+  }]))
+
+  const edges: GraphEdge[] = workflow.edges.map((workflowEdge) => {
+    const source = nodeBoxes.get(workflowEdge.source)
+    const target = nodeBoxes.get(workflowEdge.target)
+    const sides = source && target
+      ? closestHandleSides(source, target)
+      : { sourceHandle: 'right' as const, targetHandle: 'left' as const }
+    return {
+      id: workflowEdge.id,
+      source: workflowEdge.source,
+      target: workflowEdge.target,
+      label: workflowEdge.label,
+      type: AGENT_HANDOFF_EDGE_TYPE,
+      sourceHandle: sides.sourceHandle,
+      targetHandle: sides.targetHandle,
+      data: { explanation: edgeExplanation(), onRemove: options.onRemoveEdge },
+    }
+  })
 
   return { nodes, edges }
 }
@@ -201,7 +315,7 @@ export function makeSequentialHandoffEdge(source: string, target: string): Graph
     id: `edge-${source}-${target}`,
     source,
     target,
-    type: 'smoothstep',
+    type: AGENT_HANDOFF_EDGE_TYPE,
     label: 'Sequential output handoff',
     data: { explanation: edgeExplanation() },
   }
@@ -215,8 +329,46 @@ export function hasConnection(
   return edges.some((edge) => edge.source === source && edge.target === target)
 }
 
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, entry]) => entry !== undefined)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, entry]) => [key, stableValue(entry)]),
+    )
+  }
+  return value
+}
+
+/**
+ * Materializes the position and size the canvas derives for each node. A draft
+ * that only carries those derived values still compares equal to the saved
+ * definition it was projected from.
+ */
+export function normalizeWorkflow(workflow: WorkflowDefinition): WorkflowDefinition {
+  return {
+    ...workflow,
+    nodes: workflow.nodes.map((node, index) => ({
+      ...node,
+      position: workflowNodePosition(node, index),
+      ...clampNodeSize(
+        node.width ?? DEFAULT_NODE_WIDTH,
+        node.height ?? DEFAULT_NODE_HEIGHT,
+      ),
+    })),
+  }
+}
+
+/**
+ * Structural equality for dirty-state checks. Definitions are normalized and
+ * serialized with stable key order so an untouched draft never counts as a
+ * persisted change.
+ */
 export function sameWorkflow(left: WorkflowDefinition, right: WorkflowDefinition): boolean {
-  return JSON.stringify(left) === JSON.stringify(right)
+  return JSON.stringify(stableValue(normalizeWorkflow(left)))
+    === JSON.stringify(stableValue(normalizeWorkflow(right)))
 }
 
 export function withoutAgentReferences(

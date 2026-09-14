@@ -7,7 +7,13 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { WorkspaceDetailsResponse } from '@graphql/contracts'
 
-import { WorkflowGraph } from '../features/graph'
+import { GraphEditor, WorkflowGraph } from '../features/graph'
+import { useSessionWorkflowStore } from '../features/workflows'
+import {
+  isSessionWorkspaceId,
+  sessionWorkspaceDetails,
+  useWorkspaceSessionStore,
+} from '../features/workspaces'
 import { ApiError } from '../shared/api/client'
 import {
   queryKeys,
@@ -24,7 +30,7 @@ import { WorkspaceSelection } from './WorkspaceRoute'
 const mockScenarioQueryKey = ['workbench', 'mock-scenario'] as const
 
 function isMockControlsEnabled(): boolean {
-  return import.meta.env.DEV && import.meta.env.VITE_ENABLE_MSW === 'true'
+  return import.meta.env.DEV && import.meta.env.VITE_ENABLE_MSW !== 'false'
 }
 
 function readableError(error: unknown, fallback: string): string {
@@ -150,10 +156,18 @@ function routeChildren(workspaceId: string) {
 /** Router adapter: URL state stays in TanStack Router and is handed to the shell as props. */
 export function WorkspaceRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId' })
-  const { agentId } = useSearch({ from: '/workspaces/$workspaceId' })
+  const { agentId, workflowId } = useSearch({ from: '/workspaces/$workspaceId' })
   const navigate = useNavigate({ from: '/workspaces/$workspaceId' })
   const queryClient = useQueryClient()
-  const workspaceQuery = useWorkspaceDetailsQuery(workspaceId)
+  const sessionWorkspace = useWorkspaceSessionStore((state) =>
+    state.workspaces.find((workspace) => workspace.id === workspaceId),
+  )
+  const sessionWorkspaceRoute = isSessionWorkspaceId(workspaceId)
+  const workspaceQuery = useWorkspaceDetailsQuery(workspaceId, {
+    enabled: !sessionWorkspaceRoute,
+  })
+  const sessionWorkflows = useSessionWorkflowStore((state) => state.workflows)
+  const saveSessionWorkflow = useSessionWorkflowStore((state) => state.saveSessionWorkflow)
 
   const selectAgent = useCallback(
     (nextAgentId: string) => {
@@ -175,18 +189,62 @@ export function WorkspaceRouteEntry() {
   }, [navigate])
 
   useEffect(() => {
-    if (!workspaceQuery.data) return
-    cacheWorkspaceProjection(queryClient, workspaceId, workspaceQuery.data)
-  }, [queryClient, workspaceId, workspaceQuery.data])
+    const details = sessionWorkspace
+      ? sessionWorkspaceDetails(sessionWorkspace)
+      : workspaceQuery.data
+    if (!details) return
+    cacheWorkspaceProjection(queryClient, workspaceId, details)
+  }, [queryClient, sessionWorkspace, workspaceId, workspaceQuery.data])
 
   const children = routeChildren(workspaceId)
+  const resolvedDetails = sessionWorkspace
+    ? sessionWorkspaceDetails(sessionWorkspace)
+    : workspaceQuery.data
+  const workspaceSessionWorkflows = Object.values(sessionWorkflows).filter(
+    (workflow) => workflow.workspaceId === workspaceId,
+  )
+  const sessionWorkflowCandidate = workflowId ? sessionWorkflows[workflowId] : undefined
+  const sessionWorkflow =
+    sessionWorkflowCandidate?.workspaceId === workspaceId ? sessionWorkflowCandidate : undefined
+  const workflow = resolvedDetails
+    ? sessionWorkflow ??
+      resolvedDetails.workflows.find((item) => item.id === workflowId) ??
+      resolvedDetails.workflows[0] ??
+      workspaceSessionWorkflows[0]
+    : undefined
 
-  if (workspaceQuery.isPending) {
+  useEffect(() => {
+    if (!resolvedDetails) return
+    if (workflow && workflowId !== workflow.id) {
+      void navigate({
+        replace: true,
+        search: (previous) => {
+          const next = { ...previous, workflowId: workflow.id }
+          if (workflowId) delete next.agentId
+          return next
+        },
+      })
+      return
+    }
+    if (!workflow && workflowId) {
+      void navigate({
+        replace: true,
+        search: (previous) => {
+          const next = { ...previous }
+          delete next.workflowId
+          delete next.agentId
+          return next
+        },
+      })
+    }
+  }, [navigate, resolvedDetails, workflow, workflowId])
+
+  if (!sessionWorkspaceRoute && workspaceQuery.isPending) {
     return <WorkspaceSelection workspaceId={workspaceId} state="loading" children={children} />
   }
 
-  if (workspaceQuery.isError || !workspaceQuery.data) {
-    const notFound = isNotFound(workspaceQuery.error)
+  if ((!sessionWorkspaceRoute && workspaceQuery.isError) || !resolvedDetails) {
+    const notFound = sessionWorkspaceRoute || isNotFound(workspaceQuery.error)
     return (
       <WorkspaceSelection
         workspaceId={workspaceId}
@@ -209,20 +267,33 @@ export function WorkspaceRouteEntry() {
     )
   }
 
-  const details = workspaceQuery.data
+  const details = resolvedDetails
   const selectedAgentIsStale = Boolean(agentId && !details.agents.some((agent) => agent.id === agentId))
-  const workflow = details.workflows[0]
   const state = selectedAgentIsStale ? 'stale' : workflow ? 'ready' : 'empty'
 
   return (
     <WorkspaceSelection
       workspaceId={workspaceId}
       selectedAgentId={agentId}
+      activeWorkflowId={workflow?.id}
       state={state}
       slots={{
         workspace: <WorkspaceHeader details={details} />,
-        graph: workflow ? (
+        graph: sessionWorkflow ? (
+          <GraphEditor
+            key={`${workspaceId}:${sessionWorkflow.id}`}
+            workspaceId={workspaceId}
+            workflow={sessionWorkflow}
+            agents={details.agents}
+            runFacts={details.runs}
+            selectedAgentId={agentId}
+            onSelectAgent={selectAgent}
+            onClearAgent={clearAgent}
+            onSaveSession={saveSessionWorkflow}
+          />
+        ) : workflow ? (
           <WorkflowGraph
+            key={`${workspaceId}:${workflow.id}`}
             workspaceId={workspaceId}
             workflowId={workflow.id}
             selectedAgentId={agentId}

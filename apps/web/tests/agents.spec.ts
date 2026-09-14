@@ -132,7 +132,7 @@ test('keeps Unlink graph-only and makes Delete an honest session removal', async
   await expect(page.getByRole('button', { name: 'Save graph' })).toBeEnabled()
 })
 
-test('connects agent nodes sequentially and cancels or rejects invalid click connections', async ({ page }) => {
+test('selecting agent nodes never arms a connection or changes the graph', async ({ page }) => {
   await page.goto('/workspaces/workspace-1')
   const researcher = page.getByRole('button', { name: 'Researcher agent, Step 1' })
   const developer = page.getByRole('button', { name: 'Developer agent, Step 2' })
@@ -140,30 +140,15 @@ test('connects agent nodes sequentially and cancels or rejects invalid click con
   const initialEdges = await page.locator('.react-flow__edge').count()
 
   await developer.click()
-  await expect(page.getByText(/Developer is the connection source/)).toBeVisible()
-  await researcher.click()
-  await expect(page.locator('.react-flow__edge')).toHaveCount(initialEdges + 1)
-  await expect(page).toHaveURL(/agentId=agent-researcher/)
-  await expect(page.getByRole('button', { name: 'Save graph' })).toBeEnabled()
-
-  await developer.click()
-  await researcher.click()
-  await expect(page.locator('.react-flow__edge')).toHaveCount(initialEdges + 1)
-  await expect(page.getByText('Those agent steps are already connected.')).toBeVisible()
-
-  await developer.click()
-  await developer.click()
-  await expect(page.locator('.react-flow__edge')).toHaveCount(initialEdges + 1)
-  await expect(page.getByText(/Connection canceled/)).toBeVisible()
-
-  await developer.click()
-  await page.keyboard.press('Escape')
   await expect(page.getByText(/is the connection source/)).toHaveCount(0)
+  await researcher.click()
+  await expect(page.locator('.react-flow__edge')).toHaveCount(initialEdges)
+  await expect(page).toHaveURL(/agentId=agent-researcher/)
+  await expect(page.getByRole('button', { name: 'Save graph' })).toHaveCount(0)
 
-  await developer.click()
   await page.locator('.react-flow__pane').click({ position: { x: 80, y: 80 } })
   await expect(page.getByText(/is the connection source/)).toHaveCount(0)
-  await expect(page).toHaveURL(/\/workspaces\/workspace-1$/)
+  await expect(page).toHaveURL(/\/workspaces\/workspace-1\?workflowId=workflow-content-pipeline$/)
 })
 
 test('resizes a selected graph node within bounds and supports discard and save', async ({ page }) => {
