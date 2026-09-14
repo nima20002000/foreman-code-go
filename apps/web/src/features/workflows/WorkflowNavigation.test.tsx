@@ -129,7 +129,9 @@ describe('WorkflowNavigation', () => {
     await user.click(screen.getByRole('button', { name: 'Create workflow' }))
 
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(screen.getByRole('link', { name: /Draft workflow/ })).toBeVisible()
+    const draftLink = screen.getByRole('link', { name: /Draft workflow/ })
+    expect(draftLink).toBeVisible()
+    expect(draftLink).not.toHaveTextContent('Session')
   })
 
   it('resolves an empty session workspace without a workflow request', async () => {

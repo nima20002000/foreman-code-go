@@ -89,6 +89,16 @@ afterEach(() => {
 })
 
 describe('GraphEditor persistence boundary', () => {
+  it('shows a play control without pretending the frontend can execute a workflow', async () => {
+    renderEditor()
+
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Start workflow' }))
+
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Workflow execution is not connected in Phase 1.',
+    )
+  })
+
   it('adds a catalog agent through an accessible picker and makes it discardable', async () => {
     const user = userEvent.setup()
     const key = workflowDraftKey(workflow.workspaceId, workflow.id)
@@ -103,21 +113,41 @@ describe('GraphEditor persistence boundary', () => {
     expect(dialog.querySelector('[data-agent-picker-option]')).toHaveFocus()
 
     await user.keyboard('{Escape}')
-    expect(screen.queryByRole('dialog', { name: 'Add agent to graph' })).not.toBeInTheDocument()
-    expect(add).toHaveFocus()
-
-    await user.click(add)
+    expect(screen.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
     fireEvent.mouseDown(document.body)
-    expect(screen.queryByRole('dialog', { name: 'Add agent to graph' })).not.toBeInTheDocument()
-    await waitFor(() => expect(add).toHaveFocus())
+    expect(screen.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
 
-    await user.click(add)
     await user.click(screen.getByRole('dialog', { name: 'Add agent to graph' }).querySelector('[data-agent-picker-option]') as HTMLElement)
     expect(getGraphDraft(key)?.workflow.nodes).toHaveLength(3)
+    expect(screen.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Discard' })).toBeEnabled()
 
+    await user.click(screen.getByRole('button', { name: 'Close agent picker' }))
+    expect(screen.queryByRole('dialog', { name: 'Add agent to graph' })).not.toBeInTheDocument()
+    expect(add).toHaveFocus()
     await user.click(screen.getByRole('button', { name: 'Discard' }))
     expect(getGraphDraft(key)).toBeUndefined()
+  })
+
+  it('keeps the picker open and connects consecutively added agents', async () => {
+    const user = userEvent.setup()
+    const emptyWorkflow = { ...workflow, nodes: [], edges: [] }
+    const key = workflowDraftKey(emptyWorkflow.workspaceId, emptyWorkflow.id)
+    renderEditor({ workflow: emptyWorkflow })
+
+    await user.click(screen.getByRole('button', { name: 'Add agent to graph' }))
+    const dialog = screen.getByRole('dialog', { name: 'Add agent to graph' })
+    await user.click(within(dialog).getByRole('button', { name: /Researcher/ }))
+    expect(dialog).toBeVisible()
+    expect(getGraphDraft(key)?.workflow.nodes).toHaveLength(1)
+    expect(getGraphDraft(key)?.workflow.edges).toEqual([])
+
+    await user.click(within(dialog).getByRole('button', { name: /Developer/ }))
+    expect(dialog).toBeVisible()
+    expect(getGraphDraft(key)?.workflow.nodes).toHaveLength(2)
+    expect(getGraphDraft(key)?.workflow.edges).toEqual([
+      expect.objectContaining({ source: 'node-agent-one', target: 'node-agent-two' }),
+    ])
   })
 
   it('shows an honest directory link when the agent catalog is empty', async () => {
@@ -155,7 +185,7 @@ describe('GraphEditor persistence boundary', () => {
     expect(within(screen.getByRole('dialog', { name: 'Add agent to graph' })).getByRole('button', { name: /Researcher/ })).toBeVisible()
   })
 
-  it('selects nodes without arming a connection or changing the graph', async () => {
+  it('connects consecutively selected nodes without showing a source toast', async () => {
     const disconnectedWorkflow = { ...workflow, edges: [] }
     const key = workflowDraftKey(workflow.workspaceId, workflow.id)
     const onSelectAgent = vi.fn()
@@ -164,12 +194,26 @@ describe('GraphEditor persistence boundary', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Researcher agent, Step 1' }))
     fireEvent.click(screen.getByRole('button', { name: 'Developer agent, Step 2' }))
 
-    expect(getGraphDraft(key)).toBeUndefined()
+    expect(getGraphDraft(key)?.workflow.edges).toEqual([
+      expect.objectContaining({ source: 'step-one', target: 'step-two' }),
+    ])
     expect(screen.queryByText(/is the connection source/)).not.toBeInTheDocument()
     expect(screen.getByTestId('workflow-graph-notifications')).toBeEmptyDOMElement()
-    expect(screen.queryByRole('button', { name: 'Save graph' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save graph' })).toBeEnabled()
     expect(onSelectAgent).toHaveBeenNthCalledWith(1, 'agent-one')
     expect(onSelectAgent).toHaveBeenNthCalledWith(2, 'agent-two')
+  })
+
+  it('cancels a pending click connection when the empty canvas is selected', () => {
+    const disconnectedWorkflow = { ...workflow, edges: [] }
+    const key = workflowDraftKey(workflow.workspaceId, workflow.id)
+    renderEditor({ workflow: disconnectedWorkflow })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Researcher agent, Step 1' }))
+    fireEvent.click(document.querySelector('.react-flow__pane') as HTMLElement)
+    fireEvent.click(screen.getByRole('button', { name: 'Developer agent, Step 2' }))
+
+    expect(getGraphDraft(key)).toBeUndefined()
   })
 
   it('uses exactly one shared handle per node side for every connection', () => {
@@ -182,7 +226,7 @@ describe('GraphEditor persistence boundary', () => {
     }
   })
 
-  it('keeps explicit handle connections separate from node selection', async () => {
+  it('does not duplicate an existing click connection and keeps explicit handles available', async () => {
     const onClearAgent = vi.fn()
     renderEditor({ onClearAgent })
     const researcher = screen.getByRole('button', { name: 'Researcher agent, Step 1' })
@@ -218,6 +262,10 @@ describe('GraphEditor persistence boundary', () => {
     fireEvent.mouseDown(document.body)
     expect(screen.queryByRole('menu', { name: 'Researcher node actions' })).not.toBeInTheDocument()
     await waitFor(() => expect(trigger).toHaveFocus())
+
+    await user.click(trigger)
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Start workflow' }))
+    expect(screen.queryByRole('menu', { name: 'Researcher node actions' })).not.toBeInTheDocument()
   })
 
   it('keeps a single node menu open and moves focus into the menu opened last', async () => {
@@ -259,7 +307,7 @@ describe('GraphEditor persistence boundary', () => {
     expect(screen.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
   })
 
-  it('dismisses the agent picker from an outside press and returns focus to its trigger', async () => {
+  it('keeps the agent picker open until its close control is used', async () => {
     const user = userEvent.setup()
     renderEditor()
     const add = screen.getByRole('button', { name: 'Add agent to graph' })
@@ -267,8 +315,12 @@ describe('GraphEditor persistence boundary', () => {
     expect(screen.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
 
     fireEvent.mouseDown(document.body)
+    await user.keyboard('{Escape}')
+    expect(screen.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Close agent picker' }))
     expect(screen.queryByRole('dialog', { name: 'Add agent to graph' })).not.toBeInTheDocument()
-    await waitFor(() => expect(add).toHaveFocus())
+    expect(add).toHaveFocus()
   })
 
   it('keeps an exiting dialog backdrop inert until its exit animation finishes', () => {
@@ -284,7 +336,7 @@ describe('GraphEditor persistence boundary', () => {
       renderEditor()
       fireEvent.click(screen.getByRole('button', { name: 'Add agent to graph' }))
       const dialog = screen.getByRole('dialog', { name: 'Add agent to graph' })
-      fireEvent.keyDown(window, { key: 'Escape' })
+      fireEvent.click(screen.getByRole('button', { name: 'Close agent picker' }))
 
       const popover = dialog.closest('.agent-picker-popover')
       expect(popover).toHaveAttribute('data-presence', 'exiting')
@@ -465,7 +517,7 @@ describe('GraphEditor motion', () => {
     delete (Element.prototype as { animate?: unknown }).animate
   })
 
-  it('keeps a closing dialog mounted until its exit motion completes', () => {
+  it('keeps a picker closed by X mounted until its exit motion completes', () => {
     vi.useFakeTimers()
     enableMotion()
     renderEditor()
@@ -473,7 +525,7 @@ describe('GraphEditor motion', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add agent to graph' }))
     expect(screen.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
 
-    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.click(screen.getByRole('button', { name: 'Close agent picker' }))
     expect(document.querySelector('.agent-picker-popover')).toHaveAttribute('data-presence', 'exiting')
 
     act(() => vi.advanceTimersByTime(200))
@@ -578,6 +630,8 @@ describe('GraphEditor dirty-state gating', () => {
     expect(screen.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Save graph' })).not.toBeInTheDocument()
     await user.keyboard('{Escape}')
+    expect(screen.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Close agent picker' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
     expect(screen.queryByRole('button', { name: 'Save graph' })).not.toBeInTheDocument()

@@ -95,6 +95,10 @@ test('keeps Unlink graph-only and makes Delete an honest session removal', async
   const menu = page.getByRole('menu', { name: 'Researcher node actions' })
   await expect(menu.getByRole('menuitem', { name: 'Unlink' })).toBeFocused()
   await expect(menu.getByRole('menuitem', { name: 'Copy' })).toHaveCount(0)
+  await page.locator('.react-flow__pane').click({ position: { x: 80, y: 80 } })
+  await expect(menu).toHaveCount(0)
+
+  await researcherActions.click()
   await menu.getByRole('menuitem', { name: 'Unlink' }).click()
   await expect(menu).toHaveCount(0)
   await expect(researcherActions).toBeFocused()
@@ -132,7 +136,7 @@ test('keeps Unlink graph-only and makes Delete an honest session removal', async
   await expect(page.getByRole('button', { name: 'Save graph' })).toBeEnabled()
 })
 
-test('selecting agent nodes never arms a connection or changes the graph', async ({ page }) => {
+test('connects consecutively selected agent nodes without a source toast', async ({ page }) => {
   await page.goto('/workspaces/workspace-1')
   const researcher = page.getByRole('button', { name: 'Researcher agent, Step 1' })
   const developer = page.getByRole('button', { name: 'Developer agent, Step 2' })
@@ -142,13 +146,41 @@ test('selecting agent nodes never arms a connection or changes the graph', async
   await developer.click()
   await expect(page.getByText(/is the connection source/)).toHaveCount(0)
   await researcher.click()
-  await expect(page.locator('.react-flow__edge')).toHaveCount(initialEdges)
+  await expect(page.locator('.react-flow__edge')).toHaveCount(initialEdges + 1)
   await expect(page).toHaveURL(/agentId=agent-researcher/)
-  await expect(page.getByRole('button', { name: 'Save graph' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Save graph' })).toBeEnabled()
 
+  await page.getByRole('button', { name: 'Discard' }).click()
+  await expect(page.locator('.react-flow__edge')).toHaveCount(initialEdges)
   await page.locator('.react-flow__pane').click({ position: { x: 80, y: 80 } })
   await expect(page.getByText(/is the connection source/)).toHaveCount(0)
   await expect(page).toHaveURL(/\/workspaces\/workspace-1\?workflowId=workflow-content-pipeline$/)
+})
+
+test('keeps the agent picker open while building a connected new workflow', async ({ page }) => {
+  await page.goto('/workspaces/workspace-1')
+  await page.getByRole('button', { name: 'New workflow' }).click()
+  await page.getByRole('textbox', { name: 'Name' }).fill('Connected draft')
+  await page.getByRole('button', { name: 'Create workflow' }).click()
+
+  await expect(page.getByTestId('workflow-graph')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Start workflow' })).toBeVisible()
+  await page.getByRole('button', { name: 'Add agent to graph' }).click()
+  const picker = page.getByRole('dialog', { name: 'Add agent to graph' })
+  await picker.getByRole('button', { name: /Researcher/ }).click()
+  await expect(picker).toBeVisible()
+  await picker.getByRole('button', { name: /Developer/ }).click()
+
+  await expect(picker).toBeVisible()
+  await expect(page.locator('.react-flow__node')).toHaveCount(2)
+  await expect(page.locator('.react-flow__edge')).toHaveCount(1)
+  await page.keyboard.press('Escape')
+  await expect(picker).toBeVisible()
+  await picker.getByRole('button', { name: 'Close agent picker' }).click()
+  await expect(picker).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Start workflow' }).click()
+  await expect(page.getByText('Workflow execution is not connected in Phase 1.')).toBeVisible()
 })
 
 test('resizes a selected graph node within bounds and supports discard and save', async ({ page }) => {

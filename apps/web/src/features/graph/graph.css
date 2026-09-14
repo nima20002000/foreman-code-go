@@ -71,11 +71,17 @@
   box-shadow: 0 0.375rem 1.25rem rgb(0 0 0 / 18%);
 }
 
-.workflow-graph-add-agent {
+.workflow-graph-primary-actions {
   position: absolute;
   z-index: 4;
   top: 1.25rem;
   left: 2rem;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.workflow-graph-add-agent,
+.workflow-graph-run {
   display: grid;
   width: 2.25rem;
   height: 2.25rem;
@@ -89,7 +95,8 @@
   cursor: pointer;
 }
 
-.workflow-graph-add-agent:hover {
+.workflow-graph-add-agent:hover,
+.workflow-graph-run:hover {
   border-color: var(--graph-ink);
   background: var(--graph-subtle);
 }
@@ -834,7 +841,7 @@
     top: 8rem;
   }
 
-  .workflow-graph-add-agent {
+  .workflow-graph-primary-actions {
     top: 5rem;
   }
 

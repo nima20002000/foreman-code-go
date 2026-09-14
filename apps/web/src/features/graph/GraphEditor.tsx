@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { MoreHorizontal, Plus, X } from 'lucide-react'
+import { MoreHorizontal, Play, Plus, X } from 'lucide-react'
 
 import {
   addEdge,
@@ -28,6 +28,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import type {
   Agent,
   WorkflowDefinition,
+  WorkflowEdge,
   WorkflowRunSummary,
   WorkspaceDetailsResponse,
 } from '@graphql/contracts'
@@ -104,6 +105,15 @@ const MINIMAP_DOT_COLOR = { light: '#2563eb', dark: '#60a5fa' }
 const MINIMAP_DOT_SELECTED_COLOR = { light: '#1d4ed8', dark: '#bfdbfe' }
 
 const HANDLE_SIDES: GraphHandleSide[] = ['top', 'right', 'bottom', 'left']
+
+function makeWorkflowHandoffEdge(source: string, target: string): WorkflowEdge {
+  return {
+    id: `edge-${source}-${target}`,
+    source,
+    target,
+    label: 'Sequential output handoff',
+  }
+}
 
 const HANDLE_POSITIONS: Record<GraphHandleSide, Position> = {
   top: Position.Top,
@@ -429,6 +439,7 @@ export function GraphEditor({
   const localAgents = agentCatalog?.localAgents ?? readLocalAgents(workspaceId)
   const deletedAgentIds = agentCatalog?.deletedAgentIds ?? readDeletedAgentIds(workspaceId)
   const addAgentButtonRef = useRef<HTMLButtonElement>(null)
+  const connectionSourceNodeRef = useRef<string | undefined>(undefined)
   const agentPickerRef = useRef<HTMLDivElement>(null)
   const deleteDialogRef = useRef<HTMLDivElement>(null)
   const deleteCancelRef = useRef<HTMLButtonElement>(null)
@@ -558,12 +569,25 @@ export function GraphEditor({
     )
   }, [])
 
-  // Selecting a node is intentionally independent from connecting nodes.
-  // Connections begin through React Flow's explicit handles, so an ordinary
-  // click never arms a hidden connection mode or changes the graph.
-  const selectAgent = useCallback((agentId: string) => {
+  const selectAgent = useCallback((agentId: string, workflowNodeId: string) => {
     onSelectAgent?.(agentId)
-  }, [onSelectAgent])
+    const sourceNodeId = connectionSourceNodeRef.current
+    connectionSourceNodeRef.current = workflowNodeId
+    if (!sourceNodeId || sourceNodeId === workflowNodeId) return
+
+    const nextEdge = makeWorkflowHandoffEdge(sourceNodeId, workflowNodeId)
+    let edgeAdded = false
+    updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => {
+      const sourceExists = saved.nodes.some((node) => node.id === sourceNodeId)
+      const targetExists = saved.nodes.some((node) => node.id === workflowNodeId)
+      if (!sourceExists || !targetExists || hasConnection(saved.edges, sourceNodeId, workflowNodeId)) {
+        return saved
+      }
+      edgeAdded = true
+      return { ...saved, edges: [...saved.edges, nextEdge] }
+    })
+    if (edgeAdded) setEnteringEdgeId(nextEdge.id)
+  }, [onSelectAgent, sessionCleanedWorkflow, updateDraft, workflowKey])
 
   const unlinkGraphNode = useCallback((workflowNodeId: string) => {
     const removedEdges = workflowToGraph({ workflow: displayedWorkflow, agents: catalogAgents })
@@ -699,6 +723,7 @@ export function GraphEditor({
   )
 
   const handleDiscard = useCallback(() => {
+    connectionSourceNodeRef.current = undefined
     discardDraft(workflowKey)
     setNotice(undefined)
   }, [discardDraft, workflowKey])
@@ -760,33 +785,6 @@ export function GraphEditor({
     addAgentButtonRef.current?.focus()
   }, [])
 
-  useDismissableSurface({
-    open: agentPickerOpen,
-    onDismiss: closeAgentPicker,
-    surfaceRef: agentPickerRef,
-    triggerRef: addAgentButtonRef,
-  })
-
-  // React Flow stops mousedown propagation from the canvas pane, so the shared
-  // document listener never sees outside presses over the graph. Capture the
-  // press before React Flow to close the anchored picker there as well.
-  useEffect(() => {
-    if (!agentPickerOpen) return
-    const closeOnOutsidePress = (event: MouseEvent) => {
-      const target = event.target
-      if (!(target instanceof Node)) return
-      if (agentPickerRef.current?.contains(target) || addAgentButtonRef.current?.contains(target)) return
-      setAgentPickerOpen(false)
-      window.setTimeout(() => {
-        const active = document.activeElement
-        if (active && active !== document.body && active !== document.documentElement) return
-        addAgentButtonRef.current?.focus()
-      }, 0)
-    }
-    document.addEventListener('mousedown', closeOnOutsidePress, true)
-    return () => document.removeEventListener('mousedown', closeOnOutsidePress, true)
-  }, [agentPickerOpen])
-
   const addAgentToGraph = useCallback((agent: Agent) => {
     const existingIds = new Set(displayedWorkflow.nodes.map((node) => node.id))
     const baseId = `node-${agent.id}`
@@ -806,16 +804,27 @@ export function GraphEditor({
       : { x: 64 + displayedWorkflow.nodes.length * 330, y: 120 }
     const position = findOpenNodePosition(displayedWorkflow.nodes, anchor)
 
-    updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => ({
-      ...saved,
-      nodes: [...saved.nodes, {
+    let nextEdgeId: string | undefined
+    updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => {
+      const nextNode = {
         id: nodeId,
         agentId: agent.id,
         name: agent.name,
         ...(agent.description ? { description: agent.description } : {}),
         position,
-      }],
-    }))
+      }
+      const previousNode = saved.nodes.at(-1)
+      const nextEdge = previousNode && !hasConnection(saved.edges, previousNode.id, nodeId)
+        ? makeWorkflowHandoffEdge(previousNode.id, nodeId)
+        : undefined
+      nextEdgeId = nextEdge?.id
+      return {
+        ...saved,
+        nodes: [...saved.nodes, nextNode],
+        edges: nextEdge ? [...saved.edges, nextEdge] : saved.edges,
+      }
+    })
+    if (nextEdgeId) setEnteringEdgeId(nextEdgeId)
     if (motionEnabled()) {
       setEnteringNodeIds((current) => new Set(current).add(nodeId))
       const existingTimer = enteringNodeTimersRef.current.get(nodeId)
@@ -832,10 +841,10 @@ export function GraphEditor({
       enteringNodeTimersRef.current.set(nodeId, timer)
     }
     setOpenMenuNodeId(undefined)
-    closeAgentPicker()
-  }, [closeAgentPicker, displayedWorkflow, sessionCleanedWorkflow, updateDraft, workflowKey])
+  }, [displayedWorkflow, sessionCleanedWorkflow, updateDraft, workflowKey])
 
   const handlePaneClick = useCallback(() => {
+    connectionSourceNodeRef.current = undefined
     onClearAgent?.()
   }, [onClearAgent])
 
@@ -887,21 +896,35 @@ export function GraphEditor({
         </ReactFlow>
         </NodeMenuContext.Provider>
 
-        <button
-          ref={addAgentButtonRef}
-          type="button"
-          className="workflow-graph-add-agent"
-          aria-label="Add agent to graph"
-          title="Add agent to graph"
-          aria-haspopup="dialog"
-          aria-expanded={agentPickerOpen}
-          onClick={() => {
-            setOpenMenuNodeId(undefined)
-            setAgentPickerOpen(true)
-          }}
-        >
-          <Plus aria-hidden="true" size={17} />
-        </button>
+        <div className="workflow-graph-primary-actions" aria-label="Workflow controls">
+          <button
+            type="button"
+            className="workflow-graph-run"
+            aria-label="Start workflow"
+            title="Start workflow"
+            onClick={() => setNotice({
+              kind: 'info',
+              text: 'Workflow execution is not connected in Phase 1.',
+            })}
+          >
+            <Play aria-hidden="true" size={16} />
+          </button>
+          <button
+            ref={addAgentButtonRef}
+            type="button"
+            className="workflow-graph-add-agent"
+            aria-label="Add agent to graph"
+            title="Add agent to graph"
+            aria-haspopup="dialog"
+            aria-expanded={agentPickerOpen}
+            onClick={() => {
+              setOpenMenuNodeId(undefined)
+              setAgentPickerOpen(true)
+            }}
+          >
+            <Plus aria-hidden="true" size={17} />
+          </button>
+        </div>
 
         {isDirty ? (
           <div className="workflow-graph-actions" aria-label="Graph actions">

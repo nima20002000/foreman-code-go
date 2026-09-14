@@ -20,6 +20,8 @@ test('keeps Save graph and Discard absent until a meaningful graph change exists
   await expect(page.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Save graph' })).toHaveCount(0)
   await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog', { name: 'Add agent to graph' })).toBeVisible()
+  await page.getByRole('button', { name: 'Close agent picker' }).click()
 
   await expect(page.getByRole('button', { name: 'Save graph' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Discard' })).toHaveCount(0)

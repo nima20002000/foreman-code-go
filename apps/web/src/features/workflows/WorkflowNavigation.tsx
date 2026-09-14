@@ -88,7 +88,6 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
                   }
                 >
                   <span className="nav-item-label">{workflow.name}</span>
-                  {session ? <span className="workflow-navigation-badge">Session</span> : null}
                 </Link>
               </li>
             )

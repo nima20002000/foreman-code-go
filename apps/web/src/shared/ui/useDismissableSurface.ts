@@ -76,10 +76,12 @@ export function useDismissableSurface({
     }
 
     window.addEventListener('keydown', closeOnEscape)
-    document.addEventListener('mousedown', closeOnOutsidePress)
+    // Capture is required for surfaces anchored inside canvases such as React
+    // Flow, which may stop bubbling pointer events before they reach document.
+    document.addEventListener('mousedown', closeOnOutsidePress, true)
     return () => {
       window.removeEventListener('keydown', closeOnEscape)
-      document.removeEventListener('mousedown', closeOnOutsidePress)
+      document.removeEventListener('mousedown', closeOnOutsidePress, true)
     }
   }, [open, surfaceRef, triggerRef])
 }

@@ -51,7 +51,7 @@ export type GraphProjection = {
 
 export type GraphMapperOptions = {
   selectedAgentId?: string
-  onSelectAgent?: (agentId: string) => void
+  onSelectAgent?: (agentId: string, workflowNodeId: string) => void
   onUnlinkNode?: (workflowNodeId: string) => void
   onDeleteAgent?: (agentId: string, agentLabel: string) => void
   onResizeNode?: (workflowNodeId: string, width: number, height: number) => void
