@@ -141,6 +141,18 @@ describe('WorkflowNavigation', () => {
     expect(screen.getByRole('button', { name: 'New workflow' })).toBeVisible()
   })
 
+  it('names the session workspace in its workflow creation dialog', async () => {
+    const user = userEvent.setup()
+    const sessionWorkspace = useWorkspaceSessionStore.getState().createWorkspace('Scratch')
+    renderNavigation(undefined, sessionWorkspace.id)
+
+    await user.click(await screen.findByRole('button', { name: 'New workflow' }))
+
+    expect(await screen.findByRole('dialog', { name: 'New workflow' })).toHaveTextContent(
+      'Start an empty workflow in Scratch',
+    )
+  })
+
   it('keeps inside presses open and dismisses the creation dialog from its backdrop', async () => {
     const user = userEvent.setup()
     const { container } = renderNavigation()

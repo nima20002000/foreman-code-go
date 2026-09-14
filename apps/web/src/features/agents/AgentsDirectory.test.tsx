@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Agent } from '@graphql/contracts'
 
 import { renderWithRouter } from '../../test/renderWithRouter'
+import { setMockScenario } from '../../shared/mocks/scenarios'
 import { AgentsDirectoryContent } from './AgentsDirectory'
 import { AgentNavigation } from './AgentNavigation'
 import { useAgentDirectoryStore } from './agentDirectoryStore'
@@ -40,6 +41,7 @@ const reorderAgents: Agent[] = [
 ]
 
 afterEach(() => {
+  setMockScenario('normal')
   sessionStorage.clear()
   useAgentDirectoryStore.getState().reset()
 })
@@ -100,6 +102,18 @@ describe('AgentsDirectoryContent', () => {
     useAgentDirectoryStore.getState().deleteAgent('session-reactive', createdAgent.id)
     await waitFor(() => expect(screen.queryByRole('link', { name: 'Gamma Agent' })).not.toBeInTheDocument())
     expect(screen.getByTestId('agent-navigation-empty')).toHaveTextContent('No agents yet')
+  })
+
+  it('keeps local agents usable when the workspace agent request fails', async () => {
+    setMockScenario('error')
+    writeLocalAgents('workspace-1', [{ id: 'agent-local-planner', name: 'Planner' }])
+
+    renderWithRouter(<AgentNavigation workspaceId="workspace-1" />)
+
+    expect(await screen.findByRole('link', { name: 'Planner' })).toBeVisible()
+    expect(await screen.findByTestId('agent-navigation-error')).toHaveTextContent(
+      'Workspace agents unavailable',
+    )
   })
 
   it('exposes single selection through an accessible card button for mouse and keyboard', async () => {

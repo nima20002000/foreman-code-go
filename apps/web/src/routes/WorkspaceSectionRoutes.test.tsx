@@ -93,6 +93,22 @@ describe('workspace section routes', () => {
     expect(screen.getByRole('link', { name: 'Agents' })).not.toHaveAttribute('aria-current')
   })
 
+  it('keeps submenu expansion state while workspace routes replace the shell', async () => {
+    const user = userEvent.setup()
+    const { router } = renderRoute('/workspaces/workspace-1/agents')
+
+    await screen.findByRole('heading', { name: 'Agents', level: 1 })
+    await user.click(screen.getByRole('button', { name: 'Collapse agents in Website' }))
+    await user.click(screen.getByRole('link', { name: 'Files' }))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/files'))
+    expect(await screen.findByRole('button', { name: 'Expand agents in Website' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    expect(screen.queryByTestId('agent-navigation')).not.toBeInTheDocument()
+  })
+
   it('deep-links the Files placeholder under the workspaces menu', async () => {
     renderRoute('/workspaces/workspace-1/files')
 

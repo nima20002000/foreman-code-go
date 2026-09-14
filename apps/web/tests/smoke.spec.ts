@@ -175,7 +175,9 @@ test('nests workspace destinations under an expandable workspaces menu', async (
   await expect(workspaces).toHaveClass(/nav-item-active/)
 
   const workspaceEntry = page.getByTestId('workspace-entry-workspace-1')
-  await expect(workspaceEntry).toHaveAttribute('aria-expanded', 'true')
+  const workspaceToggle = page.getByRole('button', { name: 'Collapse Website' })
+  await expect(workspaceEntry).toHaveAttribute('aria-current', 'page')
+  await expect(workspaceToggle).toHaveAttribute('aria-expanded', 'true')
   await expect(workspaceEntry).toHaveClass(/nav-item-active/)
   await expect(page.getByRole('button', { name: 'Collapse agents in Website' })).toHaveAttribute('aria-expanded', 'true')
   await expect(page.getByRole('button', { name: 'Collapse workflows in Website' })).toHaveAttribute('aria-expanded', 'true')
@@ -188,10 +190,11 @@ test('nests workspace destinations under an expandable workspaces menu', async (
   await expect(page.getByRole('button', { name: 'New workflow' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'New workspace' })).toBeVisible()
 
-  await workspaceEntry.click()
-  await expect(workspaceEntry).toHaveAttribute('aria-expanded', 'false')
+  await workspaceToggle.click()
+  const expandWorkspace = page.getByRole('button', { name: 'Expand Website' })
+  await expect(expandWorkspace).toHaveAttribute('aria-expanded', 'false')
   await expect(page.getByRole('link', { name: 'Files' })).toHaveCount(0)
-  await workspaceEntry.click()
+  await expandWorkspace.click()
   await expect(page.getByRole('link', { name: 'Files' })).toBeVisible()
 
   await workspaces.click()

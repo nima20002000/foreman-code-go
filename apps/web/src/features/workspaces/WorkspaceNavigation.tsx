@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -29,6 +30,7 @@ import { usePresence } from '../../shared/ui/usePresence'
 import { AgentNavigation } from '../agents'
 import { WorkflowNavigation } from '../workflows'
 import { isSessionWorkspaceId, useWorkspaceSessionStore } from './workspaceSessionStore'
+import { useNavigationUiStore } from './navigationUiStore'
 import {
   WORKSPACES_ORDER_KEY,
   GLOBAL_NAVIGATION_ORDER_KEY,
@@ -266,6 +268,7 @@ interface WorkspaceTreeItemProps {
   entry: WorkspaceNavigationEntry
   active: boolean
   expanded: boolean
+  onActivate: () => void
   onToggle: () => void
   activeSection: WorkspaceSection
   activeWorkflowId?: string
@@ -281,6 +284,7 @@ function WorkspaceTreeItem({
   entry,
   active,
   expanded,
+  onActivate,
   onToggle,
   activeSection,
   activeWorkflowId,
@@ -291,14 +295,21 @@ function WorkspaceTreeItem({
   reorderItemProps,
   reorderKeyboardProps,
 }: WorkspaceTreeItemProps) {
-  const [agentsExpanded, setAgentsExpanded] = useState(true)
-  const [workflowsExpanded, setWorkflowsExpanded] = useState(true)
+  const agentsExpanded = useNavigationUiStore(
+    (state) => state.expandedSections[entry.id]?.agents ?? true,
+  )
+  const workflowsExpanded = useNavigationUiStore(
+    (state) => state.expandedSections[entry.id]?.workflows ?? true,
+  )
+  const setSectionExpanded = useNavigationUiStore((state) => state.setSectionExpanded)
+  const sectionsPresence = usePresence(expanded)
   const agentsPresence = usePresence(agentsExpanded)
   const workflowsPresence = usePresence(workflowsExpanded)
 
-  const sectionsId = `workspace-${entry.id}-sections`
-  const agentsPanelId = `workspace-${entry.id}-agents`
-  const workflowsPanelId = `workspace-${entry.id}-workflows`
+  const idPrefix = useId().replaceAll(':', '')
+  const sectionsId = `${idPrefix}-sections`
+  const agentsPanelId = `${idPrefix}-agents`
+  const workflowsPanelId = `${idPrefix}-workflows`
 
   const agentsActive = active && activeSection === 'agents'
   const workflowsActive = active && activeSection === 'workflows'
@@ -332,10 +343,10 @@ function WorkspaceTreeItem({
               type="button"
               className="nav-item-toggle"
               aria-expanded={agentsExpanded}
-              aria-controls={agentsExpanded ? agentsPanelId : undefined}
+              aria-controls={agentsPanelId}
               aria-label={`${agentsExpanded ? 'Collapse' : 'Expand'} agents in ${entry.name}`}
               title="Agents"
-              onClick={() => setAgentsExpanded((value) => !value)}
+              onClick={() => setSectionExpanded(entry.id, 'agents', !agentsExpanded)}
               {...sections.getKeyboardProps(section)}
             >
               <ChevronDown aria-hidden="true" className="nav-item-chevron" size={14} />
@@ -346,6 +357,7 @@ function WorkspaceTreeItem({
               className={`workspace-navigation-panel nav-submenu-motion${agentsPresence.exiting ? ' is-exiting' : ''}`}
               id={agentsPanelId}
               aria-hidden={!agentsExpanded}
+              inert={!agentsExpanded ? true : undefined}
             >
               {(active ? agentsContent : undefined) ?? (
                 <AgentNavigation
@@ -381,10 +393,10 @@ function WorkspaceTreeItem({
               type="button"
               className="nav-item-toggle"
               aria-expanded={workflowsExpanded}
-              aria-controls={workflowsExpanded ? workflowsPanelId : undefined}
+              aria-controls={workflowsPanelId}
               aria-label={`${workflowsExpanded ? 'Collapse' : 'Expand'} workflows in ${entry.name}`}
               title="Workflows"
-              onClick={() => setWorkflowsExpanded((value) => !value)}
+              onClick={() => setSectionExpanded(entry.id, 'workflows', !workflowsExpanded)}
               {...sections.getKeyboardProps(section)}
             >
               <ChevronDown aria-hidden="true" className="nav-item-chevron" size={14} />
@@ -395,6 +407,7 @@ function WorkspaceTreeItem({
               className={`workspace-navigation-panel nav-submenu-motion${workflowsPresence.exiting ? ' is-exiting' : ''}`}
               id={workflowsPanelId}
               aria-hidden={!workflowsExpanded}
+              inert={!workflowsExpanded ? true : undefined}
             >
               {(active ? workflowsContent : undefined) ?? (
                 <WorkflowNavigation
@@ -432,29 +445,46 @@ function WorkspaceTreeItem({
   }
 
   return (
-    <li {...reorderItemProps}>
-      <button
-        type="button"
-        className={`nav-item nav-item-parent${active ? ' nav-item-active' : ''}`}
-        aria-expanded={expanded}
-        aria-controls={expanded ? sectionsId : undefined}
-        aria-label={navigationCollapsed ? entry.name : undefined}
-        title={entry.name}
-        data-testid={`workspace-entry-${entry.id}`}
-        onClick={onToggle}
-        {...reorderKeyboardProps}
-      >
-        <span className="nav-item-primary">
-          <PanelsTopLeft aria-hidden="true" className="nav-item-icon" size={16} />
-          <span className="nav-item-label">{entry.name}</span>
-        </span>
-        <ChevronDown aria-hidden="true" className="nav-item-chevron" size={14} />
-      </button>
+    <li>
+      <div className="nav-item-row" {...reorderItemProps}>
+        <Link
+          to="/workspaces/$workspaceId"
+          params={{ workspaceId: entry.id }}
+          search={{}}
+          activeOptions={{ exact: true, includeSearch: false }}
+          className={`nav-item nav-item-parent${active ? ' nav-item-active' : ''}`}
+          aria-current={active ? 'location' : undefined}
+          aria-label={navigationCollapsed ? entry.name : undefined}
+          title={entry.name}
+          data-testid={`workspace-entry-${entry.id}`}
+          onClick={onActivate}
+          {...reorderKeyboardProps}
+        >
+          <span className="nav-item-primary">
+            <PanelsTopLeft aria-hidden="true" className="nav-item-icon" size={16} />
+            <span className="nav-item-label">{entry.name}</span>
+          </span>
+        </Link>
+        <button
+          type="button"
+          className="nav-item-toggle"
+          aria-expanded={expanded}
+          aria-controls={sectionsId}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${entry.name}`}
+          title={entry.name}
+          onClick={onToggle}
+          {...reorderKeyboardProps}
+        >
+          <ChevronDown aria-hidden="true" className="nav-item-chevron" size={14} />
+        </button>
+      </div>
 
-      {expanded ? (
+      {sectionsPresence.mounted ? (
         <ul
-          className="nav-submenu workspace-entry-sections"
+          className={`nav-submenu workspace-entry-sections nav-submenu-motion${sectionsPresence.exiting ? ' is-exiting' : ''}`}
           id={sectionsId}
+          aria-hidden={!expanded}
+          inert={!expanded ? true : undefined}
           {...sections.containerProps}
         >
           {sections.orderedIds.map((section) => {
@@ -496,19 +526,29 @@ export function WorkspaceNavigation({
   const sessionWorkspaces = useWorkspaceSessionStore((state) => state.workspaces)
   const knownWorkspaces = useWorkspaceSessionStore((state) => state.knownWorkspaces)
   const registerWorkspace = useWorkspaceSessionStore((state) => state.registerWorkspace)
-  const [workspacesExpanded, setWorkspacesExpanded] = useState(true)
+  const rememberWorkspace = useNavigationUiStore((state) => state.rememberWorkspace)
+  const workspacesExpanded = useNavigationUiStore((state) => state.workspacesExpanded)
+  const setWorkspacesExpanded = useNavigationUiStore((state) => state.setWorkspacesExpanded)
+  const expandedWorkspaceIds = useNavigationUiStore((state) => state.expandedWorkspaceIds)
+  const setWorkspaceExpanded = useNavigationUiStore((state) => state.setWorkspaceExpanded)
   const workspacesPresence = usePresence(workspacesExpanded)
-  const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<readonly string[]>(() => [workspaceId])
 
   useEffect(() => {
-    setExpandedWorkspaceIds((current) => current.includes(workspaceId) ? current : [...current, workspaceId])
-  }, [workspaceId])
+    if (!activeGlobalSection) setWorkspaceExpanded(workspaceId, true)
+  }, [activeGlobalSection, setWorkspaceExpanded, workspaceId])
 
   useEffect(() => {
     for (const workspace of workspaces ?? []) registerWorkspace(workspace)
     const activeWorkspace = detailsQuery.data?.workspace
     if (activeWorkspace) registerWorkspace({ id: activeWorkspace.id, name: activeWorkspace.name })
   }, [detailsQuery.data?.workspace, registerWorkspace, workspaces])
+
+  useEffect(() => {
+    const sessionWorkspaceExists = sessionWorkspaces.some((workspace) => workspace.id === workspaceId)
+    if (!activeGlobalSection && (detailsQuery.data?.workspace || sessionWorkspaceExists)) {
+      rememberWorkspace(workspaceId)
+    }
+  }, [activeGlobalSection, detailsQuery.data?.workspace, rememberWorkspace, sessionWorkspaces, workspaceId])
 
   const entries = useMemo<readonly WorkspaceNavigationEntry[]>(
     () => {
@@ -548,9 +588,7 @@ export function WorkspaceNavigation({
   const announcement = useNavigationOrderStore((state) => state.announcement)
 
   const toggleWorkspace = (id: string) => {
-    setExpandedWorkspaceIds((current) =>
-      current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
-    )
+    setWorkspaceExpanded(id, !(expandedWorkspaceIds[id] ?? id === workspaceId))
   }
 
   const workspacesActive = !activeGlobalSection && workspaceSections.includes(activeSection)
@@ -563,10 +601,10 @@ export function WorkspaceNavigation({
             type="button"
             className={`nav-item nav-item-parent${workspacesActive ? ' nav-item-active' : ''}`}
             aria-expanded={workspacesExpanded}
-            aria-controls={workspacesExpanded ? 'workspace-entries' : undefined}
+            aria-controls="workspace-entries"
             aria-label={navigationCollapsed ? 'Workspaces' : undefined}
             title="Workspaces"
-            onClick={() => setWorkspacesExpanded((value) => !value)}
+            onClick={() => setWorkspacesExpanded(!workspacesExpanded)}
           >
             <span className="nav-item-primary">
               <PanelsTopLeft aria-hidden="true" className="nav-item-icon" size={16} />
@@ -580,6 +618,7 @@ export function WorkspaceNavigation({
               className={`nav-submenu workspace-navigation-list nav-submenu-motion${workspacesPresence.exiting ? ' is-exiting' : ''}`}
               id="workspace-entries"
               aria-hidden={!workspacesExpanded}
+              inert={!workspacesExpanded ? true : undefined}
               {...entriesReorder.containerProps}
             >
               {entriesReorder.orderedIds.map((entryId) => {
@@ -590,7 +629,8 @@ export function WorkspaceNavigation({
                     key={entry.id}
                     entry={entry}
                     active={entry.id === workspaceId && !activeGlobalSection}
-                    expanded={expandedWorkspaceIds.includes(entry.id)}
+                    expanded={expandedWorkspaceIds[entry.id] ?? entry.id === workspaceId}
+                    onActivate={() => setWorkspaceExpanded(entry.id, true)}
                     onToggle={() => toggleWorkspace(entry.id)}
                     activeSection={activeSection}
                     activeWorkflowId={activeWorkflowId}

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   DragEvent as ReactDragEvent,
   KeyboardEvent as ReactKeyboardEvent,
@@ -94,8 +94,17 @@ export function useReorderableNavigation(
 
   const listRef = useRef<HTMLUListElement | null>(null)
   const dragRef = useRef<DragSession | null>(null)
+  const cancelDragRef = useRef<(() => void) | null>(null)
   const suppressClickRef = useRef(false)
+  const suppressClickTimerRef = useRef<number | null>(null)
   const [previewIds, setPreviewIds] = useState<readonly string[] | null>(null)
+
+  useEffect(() => () => {
+    cancelDragRef.current?.()
+    if (suppressClickTimerRef.current !== null) {
+      window.clearTimeout(suppressClickTimerRef.current)
+    }
+  }, [])
 
   const containerRef = useCallback<RefCallback<HTMLUListElement>>((element) => {
     listRef.current = element
@@ -105,6 +114,10 @@ export function useReorderableNavigation(
     // Pointer drags end on pointerup; the click that follows must not navigate.
     if (!suppressClickRef.current || event.detail === 0) return
     suppressClickRef.current = false
+    if (suppressClickTimerRef.current !== null) {
+      window.clearTimeout(suppressClickTimerRef.current)
+      suppressClickTimerRef.current = null
+    }
     event.preventDefault()
     event.stopPropagation()
   }, [])
@@ -180,11 +193,16 @@ export function useReorderableNavigation(
         if (dragRef.current !== session) return
         detach()
         dragRef.current = null
+        cancelDragRef.current = null
         const moved = session.active && session.moved
         const finalIds = session.previewIds
         setPreviewIds(null)
         if (!moved) return
         suppressClickRef.current = true
+        suppressClickTimerRef.current = window.setTimeout(() => {
+          suppressClickRef.current = false
+          suppressClickTimerRef.current = null
+        }, 0)
         if (!commit || !finalIds) return
         setOrder(parentKey, finalIds)
         announce(`Moved ${label} to position ${finalIds.indexOf(id) + 1} of ${finalIds.length}`)
@@ -297,6 +315,12 @@ export function useReorderableNavigation(
       window.addEventListener('pointerup', onPointerUp)
       window.addEventListener('pointercancel', onPointerCancel)
       window.addEventListener('keydown', onKeyDown)
+      cancelDragRef.current = () => {
+        session.cancelled = true
+        detach()
+        if (dragRef.current === session) dragRef.current = null
+        cancelDragRef.current = null
+      }
       if (session.pointerType === 'touch') {
         session.holdTimer = window.setTimeout(activate, TOUCH_HOLD_MS)
       }

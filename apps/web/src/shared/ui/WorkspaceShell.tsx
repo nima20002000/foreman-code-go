@@ -1,12 +1,24 @@
-import { useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  type CSSProperties,
+  type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 
 import { ThemeToggle } from '../../features/theme'
 import {
+  DEFAULT_NAVIGATION_WIDTH,
+  MAX_NAVIGATION_WIDTH,
+  MIN_NAVIGATION_WIDTH,
   WorkspaceNavigation,
   type GlobalNavigationSection,
   type WorkspaceNavigationEntry,
   type WorkspaceSection,
+  useNavigationUiStore,
 } from '../../features/workspaces'
 
 export type { WorkspaceSection } from '../../features/workspaces'
@@ -57,19 +69,65 @@ export function WorkspaceShell({
   activeGlobalSection,
   workspaces,
 }: WorkspaceShellProps) {
-  const [navigationCollapsed, setNavigationCollapsed] = useState(
-    () => globalThis.sessionStorage?.getItem('graphql-navigation-collapsed') === 'true',
-  )
+  const navigationCollapsed = useNavigationUiStore((state) => state.collapsed)
+  const navigationWidth = useNavigationUiStore((state) => state.width)
+  const rememberedWorkspaceId = useNavigationUiStore((state) => state.activeWorkspaceId)
+  const setCollapsed = useNavigationUiStore((state) => state.setCollapsed)
+  const setNavigationWidth = useNavigationUiStore((state) => state.setWidth)
+  const stopResizeRef = useRef<(() => void) | null>(null)
 
-  const setCollapsed = (collapsed: boolean) => {
-    setNavigationCollapsed(collapsed)
-    globalThis.sessionStorage?.setItem('graphql-navigation-collapsed', String(collapsed))
+  const navigationWorkspaceId = activeGlobalSection
+    ? rememberedWorkspaceId ?? workspaceId
+    : workspaceId
+
+  useEffect(() => () => stopResizeRef.current?.(), [])
+
+  const startResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || navigationCollapsed) return
+    event.preventDefault()
+    stopResizeRef.current?.()
+
+    const pointerId = event.pointerId
+    const startX = event.clientX
+    const startWidth = navigationWidth
+
+    const stop = () => {
+      window.removeEventListener('pointermove', resize)
+      window.removeEventListener('pointerup', finish)
+      window.removeEventListener('pointercancel', finish)
+      stopResizeRef.current = null
+    }
+    const resize = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return
+      setNavigationWidth(startWidth + moveEvent.clientX - startX)
+    }
+    const finish = (endEvent: PointerEvent) => {
+      if (endEvent.pointerId === pointerId) stop()
+    }
+
+    stopResizeRef.current = stop
+    window.addEventListener('pointermove', resize)
+    window.addEventListener('pointerup', finish)
+    window.addEventListener('pointercancel', finish)
+  }, [navigationCollapsed, navigationWidth, setNavigationWidth])
+
+  const resizeWithKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
+    const step = event.shiftKey ? 32 : 8
+    let nextWidth: number | undefined
+    if (event.key === 'ArrowLeft') nextWidth = navigationWidth - step
+    if (event.key === 'ArrowRight') nextWidth = navigationWidth + step
+    if (event.key === 'Home') nextWidth = MIN_NAVIGATION_WIDTH
+    if (event.key === 'End') nextWidth = MAX_NAVIGATION_WIDTH
+    if (nextWidth === undefined) return
+    event.preventDefault()
+    setNavigationWidth(nextWidth)
   }
 
   return (
     <div
       className={`workspace-shell${navigationCollapsed ? ' workspace-shell-navigation-collapsed' : ''}`}
       data-testid="workspace-shell"
+      style={{ '--navigation-width': `${navigationWidth}px` } as CSSProperties}
     >
       <aside
         className="shell-sidebar"
@@ -92,6 +150,21 @@ export function WorkspaceShell({
           )}
         </button>
 
+        <div
+          className="sidebar-resize-handle"
+          role="separator"
+          aria-label="Resize navigation"
+          aria-orientation="vertical"
+          aria-valuemin={MIN_NAVIGATION_WIDTH}
+          aria-valuemax={MAX_NAVIGATION_WIDTH}
+          aria-valuenow={navigationWidth}
+          tabIndex={navigationCollapsed ? -1 : 0}
+          title="Drag to resize navigation"
+          onPointerDown={startResize}
+          onKeyDown={resizeWithKeyboard}
+          onDoubleClick={() => setNavigationWidth(DEFAULT_NAVIGATION_WIDTH)}
+        />
+
         <nav className="shell-navigation" id="workspace-primary-navigation">
           <p className="sidebar-brand" data-testid="sidebar-brand">
             <span aria-hidden="true" className="sidebar-brand-mark">
@@ -102,7 +175,7 @@ export function WorkspaceShell({
           </p>
 
           <WorkspaceNavigation
-            workspaceId={workspaceId}
+            workspaceId={navigationWorkspaceId}
             activeSection={activeSection}
             activeWorkflowId={activeWorkflowId}
             activeAgentId={activeAgentId}

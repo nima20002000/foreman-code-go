@@ -1,8 +1,12 @@
-import { screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { renderWithRouter } from '../../test/renderWithRouter'
-import { useWorkspaceSessionStore } from '../../features/workspaces'
+import {
+  DEFAULT_NAVIGATION_WIDTH,
+  MAX_NAVIGATION_WIDTH,
+  useWorkspaceSessionStore,
+} from '../../features/workspaces'
 import { WorkspaceShell } from './WorkspaceShell'
 
 describe('WorkspaceShell', () => {
@@ -122,20 +126,21 @@ describe('WorkspaceShell', () => {
     const user = userEvent.setup()
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
 
-    const entry = await screen.findByRole('button', { name: 'Website' })
+    const entry = await screen.findByRole('link', { name: 'Website' })
+    const toggle = screen.getByRole('button', { name: 'Collapse Website' })
     expect(entry).toHaveAttribute('data-testid', 'workspace-entry-workspace-1')
-    expect(entry).toHaveAttribute('aria-expanded', 'true')
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('link', { name: 'Files' })).toBeVisible()
 
-    await user.click(entry)
+    await user.click(toggle)
 
-    expect(entry).toHaveAttribute('aria-expanded', 'false')
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByRole('link', { name: 'Files' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /agents in Website/ })).not.toBeInTheDocument()
 
-    await user.click(entry)
+    await user.click(toggle)
 
-    expect(entry).toHaveAttribute('aria-expanded', 'true')
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
     expect(await screen.findByRole('link', { name: 'Files' })).toBeVisible()
   })
 
@@ -189,12 +194,13 @@ describe('WorkspaceShell', () => {
     )
 
     const docs = await screen.findByTestId('workspace-entry-workspace-2')
+    const docsToggle = screen.getByRole('button', { name: 'Expand Docs' })
     expect(docs).toHaveAccessibleName('Docs')
-    expect(docs).toHaveAttribute('aria-expanded', 'false')
+    expect(docsToggle).toHaveAttribute('aria-expanded', 'false')
 
-    await user.click(docs)
+    await user.click(docsToggle)
 
-    expect(docs).toHaveAttribute('aria-expanded', 'true')
+    expect(docsToggle).toHaveAttribute('aria-expanded', 'true')
     const filesLinks = screen.getAllByRole('link', { name: 'Files' })
     expect(filesLinks.some((link) => link.getAttribute('href') === '/workspaces/workspace-2/files')).toBe(true)
     const workflowsLinks = screen.getAllByRole('link', { name: 'Workflows' })
@@ -218,6 +224,42 @@ describe('WorkspaceShell', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/workspaces\/session-/))
     expect(useWorkspaceSessionStore.getState().workspaces[0]?.name).toBe('Scratch')
+  })
+
+  it('resizes the navigation by pointer and keyboard within safe bounds', async () => {
+    const user = userEvent.setup()
+    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
+
+    const resize = await screen.findByRole('separator', { name: 'Resize navigation' })
+    expect(resize).toHaveAttribute('aria-valuenow', String(DEFAULT_NAVIGATION_WIDTH))
+
+    fireEvent.pointerDown(resize, { button: 0, pointerId: 7, clientX: DEFAULT_NAVIGATION_WIDTH })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 300 })
+    fireEvent.pointerUp(window, { pointerId: 7, clientX: 300 })
+    expect(resize).toHaveAttribute('aria-valuenow', '300')
+    expect(screen.getByTestId('workspace-shell')).toHaveStyle('--navigation-width: 300px')
+
+    resize.focus()
+    await user.keyboard('{End}{ArrowRight}')
+    expect(resize).toHaveAttribute('aria-valuenow', String(MAX_NAVIGATION_WIDTH))
+
+    await user.dblClick(resize)
+    expect(resize).toHaveAttribute('aria-valuenow', String(DEFAULT_NAVIGATION_WIDTH))
+  })
+
+  it('keeps submenu state across shell remounts', async () => {
+    const user = userEvent.setup()
+    const first = renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
+
+    await user.click(await screen.findByRole('button', { name: 'Collapse agents in Website' }))
+    first.unmount()
+    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
+
+    expect(await screen.findByRole('button', { name: 'Expand agents in Website' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    expect(screen.queryByTestId('agent-navigation')).not.toBeInTheDocument()
   })
 
   it('renders the graph surface without mounted operator or context surfaces', async () => {

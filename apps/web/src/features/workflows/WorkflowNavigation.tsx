@@ -4,7 +4,7 @@ import { Plus } from 'lucide-react'
 
 import { useWorkspaceDetailsQuery } from '../../shared/api/query'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
-import { isSessionWorkspaceId } from '../workspaces/workspaceSessionStore'
+import { isSessionWorkspaceId, useWorkspaceSessionStore } from '../workspaces/workspaceSessionStore'
 import { NewWorkflowDialog } from './NewWorkflowDialog'
 import { useSessionWorkflowStore } from './sessionWorkflowStore'
 import './workflows.css'
@@ -24,6 +24,9 @@ export interface WorkflowNavigationProps {
 export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNavigationProps) {
   const sessionWorkspace = isSessionWorkspaceId(workspaceId)
   const workflowsQuery = useWorkspaceDetailsQuery(workspaceId, { enabled: !sessionWorkspace })
+  const sessionWorkspaceName = useWorkspaceSessionStore((state) =>
+    state.workspaces.find((workspace) => workspace.id === workspaceId)?.name,
+  )
   const sessionWorkflows = useSessionWorkflowStore((state) => state.workflows)
   const navigate = useNavigate()
   const [creating, setCreating] = useState(false)
@@ -144,7 +147,7 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
           >
             <NewWorkflowDialog
               workspaceId={workspaceId}
-              workspaceName={workflowsQuery.data?.workspace.name}
+              workspaceName={sessionWorkspaceName ?? workflowsQuery.data?.workspace.name}
               onCancel={closeCreateDialog}
               onCreated={(workflowId) => {
                 closeCreateDialog()

@@ -38,23 +38,7 @@ export function AgentNavigation({ workspaceId, activeAgentId }: AgentNavigationP
 
   return (
     <section className="agent-navigation" data-testid="agent-navigation" aria-label="Workspace agents">
-      {!sessionWorkspace && agentsQuery.isPending ? (
-        <p className="agent-navigation-state" role="status">
-          Loading agents…
-        </p>
-      ) : !sessionWorkspace && agentsQuery.isError ? (
-        <p
-          className="agent-navigation-state agent-navigation-state-error"
-          data-testid="agent-navigation-error"
-          role="alert"
-        >
-          Agents unavailable
-        </p>
-      ) : agents.length === 0 ? (
-        <p className="agent-navigation-state" data-testid="agent-navigation-empty">
-          No agents yet
-        </p>
-      ) : (
+      {agents.length > 0 ? (
         <ul className="nav-submenu agent-navigation-list">
           {agents.map((agent) => {
             const active = agent.id === activeAgentId
@@ -74,7 +58,36 @@ export function AgentNavigation({ workspaceId, activeAgentId }: AgentNavigationP
             )
           })}
         </ul>
-      )}
+      ) : !sessionWorkspace && agentsQuery.isPending ? (
+        <p className="agent-navigation-state" role="status">
+          Loading agents…
+        </p>
+      ) : !sessionWorkspace && agentsQuery.isError ? (
+        <p
+          className="agent-navigation-state agent-navigation-state-error"
+          data-testid="agent-navigation-error"
+          role="alert"
+        >
+          Agents unavailable
+        </p>
+      ) : agents.length === 0 ? (
+        <p className="agent-navigation-state" data-testid="agent-navigation-empty">
+          No agents yet
+        </p>
+      ) : null}
+
+      {agents.length > 0 && !sessionWorkspace && agentsQuery.isPending ? (
+        <p className="agent-navigation-state" role="status">Loading workspace agents…</p>
+      ) : null}
+      {agents.length > 0 && !sessionWorkspace && agentsQuery.isError ? (
+        <p
+          className="agent-navigation-state agent-navigation-state-error"
+          data-testid="agent-navigation-error"
+          role="alert"
+        >
+          Workspace agents unavailable
+        </p>
+      ) : null}
     </section>
   )
 }

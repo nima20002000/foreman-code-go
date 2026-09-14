@@ -153,7 +153,7 @@ describe('WorkspaceRouteEntry integration', () => {
     await waitFor(() => expect(router.state.location.pathname).not.toContain(scratchId as string))
     expect(screen.getByTestId('workspace-entry-workspace-1')).toHaveTextContent('Website')
     expect(screen.getByTestId(`workspace-entry-${scratchId}`)).toHaveTextContent('Scratch')
-    expect(screen.getByRole('button', { name: 'Beta' })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Beta' })).toBeVisible()
 
     await router.navigate({ to: '/workspaces/$workspaceId', params: { workspaceId: 'workspace-1' } })
     expect(await screen.findByTestId('workspace-entry-workspace-1')).toHaveTextContent('Website')
@@ -164,7 +164,7 @@ describe('WorkspaceRouteEntry integration', () => {
     })
     expect(await screen.findByTestId(`workspace-entry-${scratchId}`)).toHaveTextContent('Scratch')
     expect(screen.getByTestId('workspace-entry-workspace-1')).toHaveTextContent('Website')
-    expect(screen.getByRole('button', { name: 'Beta' })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Beta' })).toBeVisible()
   })
 
   it('canonically selects a session workflow when its workspace URL has no workflow id', async () => {
@@ -179,5 +179,23 @@ describe('WorkspaceRouteEntry integration', () => {
     expect(await screen.findByRole('link', { name: /Scratch flow/ })).toHaveAttribute('aria-current', 'page')
     expect(await screen.findByTestId('workflow-graph')).toBeVisible()
     await waitFor(() => expect(router.state.location.search.workflowId).toBe(workflow.id))
+  })
+
+  it('keeps the last workspace available through global navigation and switches from its name', async () => {
+    const sessionWorkspace = useWorkspaceSessionStore.getState().createWorkspace('Scratch')
+    const user = userEvent.setup()
+    const { router } = renderWorkspace(`/workspaces/${sessionWorkspace.id}`)
+
+    expect(await screen.findByTestId('workspace-empty')).toBeVisible()
+    await user.click(screen.getByRole('link', { name: 'Settings' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
+
+    const workspaceLink = await screen.findByRole('link', { name: 'Scratch' })
+    expect(workspaceLink).toBeVisible()
+    await user.click(workspaceLink)
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe(`/workspaces/${sessionWorkspace.id}`)
+      expect(router.state.location.search).toEqual({})
+    })
   })
 })

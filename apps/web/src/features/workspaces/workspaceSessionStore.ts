@@ -71,13 +71,16 @@ export const useWorkspaceSessionStore = create<WorkspaceSessionState>((set, get)
   },
   registerWorkspace: (workspace) =>
     set((state) => {
-      const existing = state.knownWorkspaces.find((entry) => entry.id === workspace.id)
+      const existingIndex = state.knownWorkspaces.findIndex((entry) => entry.id === workspace.id)
+      const existing = state.knownWorkspaces[existingIndex]
       if (existing?.name === workspace.name) return state
+      if (existingIndex >= 0) {
+        const next = [...state.knownWorkspaces]
+        next[existingIndex] = workspace
+        return { knownWorkspaces: next }
+      }
       return {
-        knownWorkspaces: [
-          ...state.knownWorkspaces.filter((entry) => entry.id !== workspace.id),
-          workspace,
-        ],
+        knownWorkspaces: [...state.knownWorkspaces, workspace],
       }
     }),
   reset: () => set({ workspaces: [], knownWorkspaces: [] }),

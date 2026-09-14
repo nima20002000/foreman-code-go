@@ -68,3 +68,23 @@ for (const viewport of viewports) {
     expect(gap).toBeGreaterThanOrEqual(12)
   })
 }
+
+test('resizes the desktop navigation and preserves the chosen width across routes', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/workspaces/workspace-1')
+
+  const resize = page.getByRole('separator', { name: 'Resize navigation' })
+  const handle = await resize.boundingBox()
+  if (!handle) throw new Error('Navigation resize handle missing')
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + 300)
+  await page.mouse.down()
+  await page.mouse.move(300, handle.y + 300, { steps: 8 })
+  await page.mouse.up()
+
+  await expect.poll(async () => Number(await resize.getAttribute('aria-valuenow'))).toBeGreaterThanOrEqual(290)
+  await expect.poll(async () => Number(await resize.getAttribute('aria-valuenow'))).toBeLessThanOrEqual(310)
+  await page.getByRole('link', { name: 'Files' }).click()
+  await expect(page).toHaveURL('/workspaces/workspace-1/files')
+  await expect.poll(async () => (await page.locator('aside.shell-sidebar').boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(290)
+  await expect.poll(async () => (await page.locator('aside.shell-sidebar').boundingBox())?.width ?? 0).toBeLessThanOrEqual(310)
+})

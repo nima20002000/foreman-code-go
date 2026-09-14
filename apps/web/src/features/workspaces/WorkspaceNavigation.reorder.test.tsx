@@ -192,7 +192,7 @@ describe('sidebar menu reordering', () => {
       />,
     )
 
-    await user.click(await screen.findByTestId('workspace-entry-workspace-2'))
+    await user.click(await screen.findByRole('button', { name: 'Expand Docs' }))
 
     const rects = new Map([
       ...layoutList(sectionsGroup, 100),
@@ -210,6 +210,40 @@ describe('sidebar menu reordering', () => {
       'runs',
     ])
     expect(reorderIds(sectionsGroupTwo)).toEqual([
+      'agents',
+      'workflows',
+      'files',
+      'tasks',
+      'runs',
+    ])
+  })
+
+  it('does not arm workspace reordering when a nested section is dragged', async () => {
+    const user = userEvent.setup()
+    renderWithRouter(
+      <WorkspaceShell
+        workspaceId="workspace-1"
+        workspaces={[
+          { id: 'workspace-1', name: 'Website' },
+          { id: 'workspace-2', name: 'Docs' },
+        ]}
+      />,
+    )
+    await user.click(await screen.findByRole('button', { name: 'Expand Docs' }))
+
+    const nestedFile = item(sectionsGroup, 'files')
+    expect(nestedFile.closest('[data-reorder-id="workspace-1"]')).toBeNull()
+    const rects = new Map([
+      ...layoutList(workspacesGroup, 50, 200),
+      ...layoutList(sectionsGroup, 100),
+      ...layoutList(sectionsGroupTwo, 400),
+    ])
+    stubLayout(rects)
+
+    pointerDrag(nestedFile, { x: 50, y: 350 }, 'mouse', { x: 50, y: 175 })
+
+    expect(reorderIds(workspacesGroup)).toEqual(['workspace-1', 'workspace-2'])
+    expect(reorderIds(sectionsGroup)).toEqual([
       'agents',
       'workflows',
       'files',
