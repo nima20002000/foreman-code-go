@@ -59,6 +59,32 @@ export type AgentHarness = z.infer<typeof AgentHarnessSchema>;
 export const AgentEffortSchema = z.enum(["low", "medium", "high", "xhigh"]);
 export type AgentEffort = z.infer<typeof AgentEffortSchema>;
 
+/** A Skill Hub reference pinned when an agent configuration version is created. */
+export const AssignedSkillSchema = z
+  .object({
+    skillId: IdSchema,
+    version: z.string().trim().min(1),
+  })
+  .strict();
+export type AssignedSkill = z.infer<typeof AssignedSkillSchema>;
+
+export const AgentPromptSchema = z
+  .object({
+    system: z.string().trim().min(1),
+  })
+  .strict();
+export type AgentPrompt = z.infer<typeof AgentPromptSchema>;
+
+export const HarnessConfigurationSchema = z
+  .object({
+    harness: AgentHarnessSchema,
+    model: z.string().trim().min(1),
+    effort: AgentEffortSchema,
+    fastMode: z.boolean(),
+  })
+  .strict();
+export type HarnessConfiguration = z.infer<typeof HarnessConfigurationSchema>;
+
 /** An Agent is a separately addressable worker; workflow nodes reference it by agentId. */
 export const AgentSchema = z
   .object({
@@ -75,6 +101,9 @@ export const AgentSchema = z
     model: z.string().trim().min(1).optional(),
     effort: AgentEffortSchema.optional(),
     fastMode: z.boolean().optional(),
+    configurationVersionId: IdSchema.optional(),
+    prompt: AgentPromptSchema.optional(),
+    assignedSkills: z.array(AssignedSkillSchema).optional(),
     ...OptionalTimestampFields,
   })
   .strict();
@@ -97,6 +126,59 @@ export const ExecutionConditionSchema = z
   .strict();
 export type ExecutionCondition = z.infer<typeof ExecutionConditionSchema>;
 
+export const WorkflowJoinSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("all") }).strict(),
+  z.object({ mode: z.literal("any") }).strict(),
+  z
+    .object({
+      mode: z.literal("threshold"),
+      required: z.number().int().positive(),
+    })
+    .strict(),
+]);
+export type WorkflowJoin = z.infer<typeof WorkflowJoinSchema>;
+
+export const ResultConditionOperatorSchema = z.enum(["exists", "equals", "not_equals"]);
+export type ResultConditionOperator = z.infer<typeof ResultConditionOperatorSchema>;
+
+export const ResultConditionSchema = z
+  .object({
+    path: z.array(z.string().trim().min(1)).min(1),
+    operator: ResultConditionOperatorSchema,
+    value: z.json().optional(),
+  })
+  .strict()
+  .superRefine((condition, context) => {
+    if (condition.operator !== "exists" && condition.value === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["value"],
+        message: "equals and not_equals conditions require a value",
+      });
+    }
+  });
+export type ResultCondition = z.infer<typeof ResultConditionSchema>;
+
+/** Explicit routing facts evaluated after a source node reaches a terminal outcome. */
+export const WorkflowRouteSchema = z
+  .object({
+    outcomes: z.array(z.enum(["succeeded", "failed", "canceled"])).min(1),
+    result: ResultConditionSchema.optional(),
+    /** Bounds loop edges. Omit for a one-time dependency. */
+    maxTraversals: z.number().int().positive().optional(),
+  })
+  .strict();
+export type WorkflowRoute = z.infer<typeof WorkflowRouteSchema>;
+
+export const WorkflowExecutionPolicySchema = z
+  .object({
+    maxParallelism: z.number().int().positive(),
+    /** Global safety bound across first attempts and repeats. */
+    maxNodeExecutions: z.number().int().positive(),
+  })
+  .strict();
+export type WorkflowExecutionPolicy = z.infer<typeof WorkflowExecutionPolicySchema>;
+
 export const WorkflowNodeSchema = z
   .object({
     id: IdSchema,
@@ -113,6 +195,7 @@ export const WorkflowNodeSchema = z
       .optional(),
     width: z.number().finite().positive().optional(),
     height: z.number().finite().positive().optional(),
+    join: WorkflowJoinSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -132,6 +215,7 @@ export const WorkflowEdgeSchema = z
     source: IdSchema,
     target: IdSchema,
     label: z.string().optional(),
+    route: WorkflowRouteSchema.optional(),
   })
   .strict();
 export type WorkflowEdge = z.infer<typeof WorkflowEdgeSchema>;
@@ -146,10 +230,96 @@ export const WorkflowDefinitionSchema = z
     nodes: z.array(WorkflowNodeSchema),
     edges: z.array(WorkflowEdgeSchema),
     version: z.number().int().positive().optional(),
+    executionPolicy: WorkflowExecutionPolicySchema.optional(),
     ...OptionalTimestampFields,
   })
   .strict();
 export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;
+
+/** Immutable workflow snapshot pinned by every run. */
+export const WorkflowVersionSchema = z
+  .object({
+    id: IdSchema,
+    workspaceId: IdSchema,
+    workflowId: IdSchema,
+    version: z.number().int().positive(),
+    definition: WorkflowDefinitionSchema,
+    agentConfigurationVersionIds: z.record(IdSchema, IdSchema),
+    contentHash: z.string().trim().min(1),
+    createdAt: TimestampSchema,
+  })
+  .strict()
+  .superRefine((snapshot, context) => {
+    if (snapshot.definition.id !== snapshot.workflowId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["definition", "id"],
+        message: "definition.id must match workflowId",
+      });
+    }
+    if (snapshot.definition.workspaceId !== snapshot.workspaceId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["definition", "workspaceId"],
+        message: "definition.workspaceId must match workspaceId",
+      });
+    }
+    if (snapshot.definition.version !== snapshot.version) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["definition", "version"],
+        message: "definition.version must match version",
+      });
+    }
+    if (!snapshot.definition.executionPolicy) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["definition", "executionPolicy"],
+        message: "an executable workflow version requires an execution policy",
+      });
+    } else if (snapshot.definition.executionPolicy.maxNodeExecutions < snapshot.definition.nodes.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["definition", "executionPolicy", "maxNodeExecutions"],
+        message: "maxNodeExecutions must allow every workflow node to run once",
+      });
+    }
+    snapshot.definition.edges.forEach((edge, index) => {
+      if (!edge.route) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["definition", "edges", index, "route"],
+          message: "an executable workflow edge requires explicit routing",
+        });
+      }
+    });
+    for (const node of snapshot.definition.nodes) {
+      if (!snapshot.agentConfigurationVersionIds[node.agentId]) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["agentConfigurationVersionIds", node.agentId],
+          message: "every workflow agent must have a pinned configuration version",
+        });
+      }
+    }
+  });
+export type WorkflowVersion = z.infer<typeof WorkflowVersionSchema>;
+
+/** Immutable prompt, skill, model and harness settings used to start a native session. */
+export const AgentConfigurationVersionSchema = z
+  .object({
+    id: IdSchema,
+    workspaceId: IdSchema,
+    agentId: IdSchema,
+    version: z.number().int().positive(),
+    prompt: AgentPromptSchema,
+    assignedSkills: z.array(AssignedSkillSchema),
+    harness: HarnessConfigurationSchema,
+    contentHash: z.string().trim().min(1),
+    createdAt: TimestampSchema,
+  })
+  .strict();
+export type AgentConfigurationVersion = z.infer<typeof AgentConfigurationVersionSchema>;
 
 export const ConversationStatusSchema = z.enum(["open", "archived"]);
 export type ConversationStatus = z.infer<typeof ConversationStatusSchema>;
@@ -192,6 +362,165 @@ export type RunExecutionState = z.infer<typeof RunExecutionStateSchema>;
 /** A terminal task result. An interrupted run has no successful/failed outcome by implication. */
 export const RunOutcomeSchema = z.enum(["pending", "succeeded", "failed", "canceled"]);
 export type RunOutcome = z.infer<typeof RunOutcomeSchema>;
+
+export const RunInputSchema = z.record(z.string(), z.json());
+export type RunInput = z.infer<typeof RunInputSchema>;
+
+export const ExecutionResultSchema = z
+  .object({
+    outcome: z.enum(["succeeded", "failed", "canceled"]),
+    output: z.json().optional(),
+    error: z
+      .object({
+        code: z.string().trim().min(1),
+        message: z.string().trim().min(1),
+        retryable: z.boolean(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .superRefine((result, context) => {
+    if (result.outcome === "failed" && !result.error) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["error"],
+        message: "a failed result requires an error",
+      });
+    }
+    if (result.outcome !== "failed" && result.error) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["error"],
+        message: "only a failed result may include an error",
+      });
+    }
+  });
+export type ExecutionResult = z.infer<typeof ExecutionResultSchema>;
+
+export const HarnessExecutionStateSchema = z.enum([
+  "queued",
+  "starting",
+  "running",
+  "waiting",
+  "completed",
+]);
+export type HarnessExecutionState = z.infer<typeof HarnessExecutionStateSchema>;
+
+/** One native harness attempt for a workflow node. Attempts may share a parallelGroupId. */
+export const HarnessExecutionSchema = z
+  .object({
+    id: IdSchema,
+    runId: IdSchema,
+    workflowNodeId: IdSchema,
+    agentId: IdSchema,
+    agentConfigurationVersionId: IdSchema,
+    attempt: z.number().int().positive(),
+    parallelGroupId: IdSchema.optional(),
+    nativeSessionId: IdSchema.optional(),
+    state: HarnessExecutionStateSchema,
+    result: ExecutionResultSchema.optional(),
+    createdAt: TimestampSchema,
+    startedAt: TimestampSchema.optional(),
+    finishedAt: TimestampSchema.optional(),
+  })
+  .strict()
+  .superRefine((execution, context) => {
+    if (execution.state === "completed" && (!execution.result || !execution.finishedAt)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["result"],
+        message: "a completed harness execution requires a result and finishedAt",
+      });
+    }
+  });
+export type HarnessExecution = z.infer<typeof HarnessExecutionSchema>;
+
+/** Durable run identity; workflow/configuration pins never change after creation. */
+export const WorkflowRunSchema = z
+  .object({
+    id: IdSchema,
+    workspaceId: IdSchema,
+    workflowId: IdSchema,
+    workflowVersionId: IdSchema,
+    agentConfigurationVersionIds: z.record(IdSchema, IdSchema),
+    executionCondition: ExecutionConditionSchema,
+    executionState: RunExecutionStateSchema,
+    outcome: RunOutcomeSchema,
+    input: RunInputSchema,
+    result: ExecutionResultSchema.optional(),
+    createdAt: TimestampSchema,
+    startedAt: TimestampSchema.optional(),
+    finishedAt: TimestampSchema.optional(),
+  })
+  .strict()
+  .superRefine((run, context) => {
+    const terminal = run.executionState === "completed";
+    if (terminal && (run.outcome === "pending" || !run.result || !run.finishedAt)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["result"],
+        message: "a completed run requires a terminal outcome, result, and finishedAt",
+      });
+    }
+    if (!terminal && (run.outcome !== "pending" || run.result || run.finishedAt)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["outcome"],
+        message: "a non-completed run must retain a pending outcome without a result or finishedAt",
+      });
+    }
+    if (run.result && run.result.outcome !== run.outcome) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["result", "outcome"],
+        message: "result.outcome must match outcome",
+      });
+    }
+  });
+export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
+
+export const ActivitySourceSchema = z.enum(["backend", "langgraph", "harness", "operator"]);
+export type ActivitySource = z.infer<typeof ActivitySourceSchema>;
+
+export const ActivityKindSchema = z.enum([
+  "run_state_changed",
+  "node_scheduled",
+  "node_state_changed",
+  "harness_session_started",
+  "harness_output",
+  "harness_session_finished",
+  "result_recorded",
+]);
+export type ActivityKind = z.infer<typeof ActivityKindSchema>;
+
+/** Ordered native/backend activity. payload remains source-specific but JSON-safe. */
+export const RunActivitySchema = z
+  .object({
+    id: IdSchema,
+    runId: IdSchema,
+    sequence: z.number().int().nonnegative(),
+    source: ActivitySourceSchema,
+    kind: ActivityKindSchema,
+    harnessExecutionId: IdSchema.optional(),
+    occurredAt: TimestampSchema,
+    payload: z.record(z.string(), z.json()),
+  })
+  .strict();
+export type RunActivity = z.infer<typeof RunActivitySchema>;
+
+/** Command handed to a harness adapter when initializing a new native session. */
+export const HarnessExecutionRequestSchema = z
+  .object({
+    executionId: IdSchema,
+    runId: IdSchema,
+    workspaceId: IdSchema,
+    workflowNodeId: IdSchema,
+    configuration: AgentConfigurationVersionSchema,
+    input: z.json(),
+  })
+  .strict();
+export type HarnessExecutionRequest = z.infer<typeof HarnessExecutionRequestSchema>;
 
 export const BrowserWaitReasonSchema = z.enum([
   "auth_required",
@@ -337,6 +666,53 @@ export const ApiErrorResponseSchema = z
 export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;
 export const ErrorResponseSchema = ApiErrorResponseSchema;
 export type ErrorResponse = ApiErrorResponse;
+
+export const ServiceHealthSchema = z
+  .object({
+    status: z.enum(["ok", "unavailable"]),
+    service: z.literal("graphql-api"),
+    checks: z
+      .object({
+        database: z.enum(["ok", "unavailable"]).optional(),
+        checkpoints: z.enum(["ok", "unavailable"]).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type ServiceHealth = z.infer<typeof ServiceHealthSchema>;
+
+export const CreateRunRequestSchema = z
+  .object({
+    workspaceId: IdSchema,
+    workflowId: IdSchema,
+    input: RunInputSchema,
+  })
+  .strict();
+export type CreateRunRequest = z.infer<typeof CreateRunRequestSchema>;
+export const CreateRunResponseSchema = z.object({ run: WorkflowRunSchema }).strict();
+export type CreateRunResponse = z.infer<typeof CreateRunResponseSchema>;
+
+export const GetRunRequestSchema = z
+  .object({ workspaceId: IdSchema, runId: IdSchema })
+  .strict();
+export type GetRunRequest = z.infer<typeof GetRunRequestSchema>;
+export const GetRunResponseSchema = z.object({ run: WorkflowRunSchema }).strict();
+export type GetRunResponse = z.infer<typeof GetRunResponseSchema>;
+
+export const ListRunActivityRequestSchema = z
+  .object({
+    workspaceId: IdSchema,
+    runId: IdSchema,
+    afterSequence: z.number().int().nonnegative().optional(),
+    limit: z.number().int().positive().max(500).optional(),
+  })
+  .strict();
+export type ListRunActivityRequest = z.infer<typeof ListRunActivityRequestSchema>;
+export const ListRunActivityResponseSchema = z
+  .object({ activity: z.array(RunActivitySchema) })
+  .strict();
+export type ListRunActivityResponse = z.infer<typeof ListRunActivityResponseSchema>;
 
 export const WorkspaceDetailsSchema = z
   .object({

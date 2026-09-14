@@ -1,9 +1,10 @@
 # `@graphql/contracts`
 
-The contracts package is the neutral Phase 1 boundary shared by the UI and API.
-It contains Zod schemas and inferred TypeScript types for workspace details,
-agents, workflow definitions, conversations, messages, run/resource summaries,
-API errors, endpoint payloads, and URL scenario selection.
+The contracts package is the neutral boundary shared by the UI, API,
+orchestrator, and harness adapters. It contains Zod schemas and inferred
+TypeScript types for workspace details, agents, workflow definitions and
+versions, conversations, messages, runs, harness execution, activity,
+resources, API errors, endpoint payloads, and URL scenario selection.
 
 The package deliberately keeps three concepts separate:
 
@@ -14,6 +15,12 @@ The package deliberately keeps three concepts separate:
 - browser wait reason, resource identity/name, holder identity/label, and optional
   execution identity are explicit fields rather than only a holder-kind enum;
 - `authRequired` and runner health are explicit fields rather than overloaded outcome/status values.
+- every durable run pins one immutable workflow version and the agent
+  configuration versions used by its nodes;
+- routing uses explicit outcomes and optional result predicates, while join,
+  repeat, and parallelism bounds remain first-class facts;
+- native harness sessions receive their prompt, assigned skill versions,
+  model, and effort through a pinned `HarnessExecutionRequest`.
 
 Agent projections can independently expose `executionState` (and the matching
 `status` vocabulary) as `available`, `working`, `waiting_browser`,
@@ -23,6 +30,6 @@ neutral link from that logical Agent projection to its current `RunSummary`;
 browser wait, resource, and runner facts stay on the run projection and are
 not encoded in harness metadata.
 
-Import the public surface from `@graphql/contracts` (or `src/index.ts` in local
-workspace tooling). No React, persistence, transport, or runner implementation
-belongs here.
+Import the public surface from `@graphql/contracts`. No React, persistence,
+transport, LangGraph implementation, or native runner implementation belongs
+here.
