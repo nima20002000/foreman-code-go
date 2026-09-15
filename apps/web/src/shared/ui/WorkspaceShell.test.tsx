@@ -25,7 +25,7 @@ describe('WorkspaceShell', () => {
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
 
     const workflows = screen.getByRole('link', { name: 'Workflows' })
-    expect(workflows).toHaveAttribute('href', '/workspaces/workspace-1')
+    expect(workflows).toHaveAttribute('href', '/workspaces/workspace-1/workflows')
     expect(workflows).toHaveAttribute('aria-current', 'page')
 
     expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
@@ -73,6 +73,8 @@ describe('WorkspaceShell', () => {
     expect(screen.getByRole('complementary', { name: 'Primary navigation' })).toHaveAttribute('data-collapsed', 'true')
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveAttribute('title', 'Workspaces')
     expect(screen.getByRole('link', { name: 'Workflows' })).toHaveAttribute('title', 'Workflows')
+    expect(screen.queryByRole('button', { name: 'New workspace' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New workflow' })).not.toBeInTheDocument()
 
     const expand = screen.getByRole('button', { name: 'Expand navigation' })
     expect(expand).toHaveAttribute('aria-expanded', 'false')
@@ -80,6 +82,8 @@ describe('WorkspaceShell', () => {
 
     expect(screen.getByTestId('workspace-shell')).not.toHaveClass('workspace-shell-navigation-collapsed')
     expect(screen.getByRole('button', { name: 'Collapse navigation' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: 'New workspace' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'New workflow' })).toBeVisible()
   })
 
   it('renders the product brand above the workspace tree and keeps its name readable when collapsed', async () => {
@@ -189,7 +193,7 @@ describe('WorkspaceShell', () => {
     const filesLinks = screen.getAllByRole('link', { name: 'Files' })
     expect(filesLinks.some((link) => link.getAttribute('href') === '/workspaces/workspace-2/files')).toBe(true)
     const workflowsLinks = screen.getAllByRole('link', { name: 'Workflows' })
-    expect(workflowsLinks.some((link) => link.getAttribute('href') === '/workspaces/workspace-2')).toBe(true)
+    expect(workflowsLinks.some((link) => link.getAttribute('href') === '/workspaces/workspace-2/workflows')).toBe(true)
   })
 
   it('creates a session workspace from the modal', async () => {

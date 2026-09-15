@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { MoreHorizontal, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import type { WorkflowDefinition } from '@graphql/contracts'
 
 import { useWorkspaceDetailsQuery } from '../../shared/api/query'
@@ -21,25 +21,12 @@ function WorkflowNavigationItem({
   workspaceId,
   active,
   session,
-  onRename,
-  onRemove,
 }: {
   workflow: WorkflowDefinition
   workspaceId: string
   active: boolean
   session: boolean
-  onRename: (name: string) => void
-  onRemove: () => void
 }) {
-  const [open, setOpen] = useState(false)
-  const [name, setName] = useState(workflow.name)
-  const triggerRef = useRef<HTMLButtonElement>(null)
-  const surfaceRef = useRef<HTMLDivElement>(null)
-  const close = useCallback(() => setOpen(false), [])
-
-  useEffect(() => setName(workflow.name), [workflow.name])
-  useDismissableSurface({ open, onDismiss: close, surfaceRef, triggerRef })
-
   return (
     <li className="workflow-navigation-row">
       <Link
@@ -57,35 +44,6 @@ function WorkflowNavigationItem({
       >
         <span className="nav-item-label">{workflow.name}</span>
       </Link>
-      <button
-        ref={triggerRef}
-        type="button"
-        className="workflow-navigation-more"
-        aria-label={`Open actions for ${workflow.name}`}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <MoreHorizontal aria-hidden="true" size={15} />
-      </button>
-      {open ? (
-        <div ref={surfaceRef} className="workflow-navigation-actions" role="dialog" aria-label={`${workflow.name} actions`}>
-          <label>
-            Name
-            <input value={name} onChange={(event) => setName(event.target.value)} />
-          </label>
-          <button type="button" onClick={() => {
-            const nextName = name.trim()
-            if (!nextName) return
-            onRename(nextName)
-            close()
-          }}>Rename</button>
-          <button type="button" onClick={() => {
-            onRemove()
-            close()
-          }}>Remove workflow</button>
-        </div>
-      ) : null}
     </li>
   )
 }
@@ -105,8 +63,6 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
   const sessionWorkflows = useSessionWorkflowStore((state) => state.workflows)
   const workflowNameOverrides = useSessionWorkflowStore((state) => state.workflowNameOverrides)
   const hiddenWorkflowIds = useSessionWorkflowStore((state) => state.hiddenWorkflowIds)
-  const renameWorkflow = useSessionWorkflowStore((state) => state.renameWorkflow)
-  const removeWorkflow = useSessionWorkflowStore((state) => state.removeWorkflow)
   const navigate = useNavigate()
   const [creating, setCreating] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -159,8 +115,6 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
               workspaceId={workspaceId}
               active={active}
               session={session}
-              onRename={(name) => renameWorkflow(workflow.id, name)}
-              onRemove={() => removeWorkflow(workflow.id)}
             />
           })}
         </ul>

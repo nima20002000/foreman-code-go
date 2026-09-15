@@ -254,8 +254,7 @@
 }
 
 .workspace-shell-navigation-collapsed .workspace-navigation-add {
-  justify-content: center;
-  padding-inline: 0;
+  display: none;
 }
 
 .shell-navigation .workspace-navigation .nav-submenu {

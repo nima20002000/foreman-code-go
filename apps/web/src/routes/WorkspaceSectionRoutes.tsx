@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 
 import { AgentsDirectory } from '../features/agents'
 import { HarnessDefaultsSettings } from '../features/settings'
+import { WorkflowDirectory } from '../features/workflows'
 import { WorkspaceShell, type WorkspaceSection } from '../shared/ui/WorkspaceShell'
 import {
   WorkspaceDirectory,
@@ -49,6 +50,18 @@ export function AgentsRouteEntry() {
           />
         ),
       }}
+    />
+  )
+}
+
+export function WorkflowsRouteEntry() {
+  const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/workflows' })
+
+  return (
+    <WorkspaceShell
+      workspaceId={workspaceId}
+      activeSection="workflows"
+      slots={{ main: <WorkflowDirectory workspaceId={workspaceId} /> }}
     />
   )
 }

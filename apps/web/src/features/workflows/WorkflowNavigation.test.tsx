@@ -83,19 +83,11 @@ describe('WorkflowNavigation', () => {
     )
   })
 
-  it('renames and removes a workflow from its three-dot actions', async () => {
-    const user = userEvent.setup()
+  it('keeps workflow management actions out of the navigation', async () => {
     renderNavigation('workflow-content-pipeline')
 
-    await user.click(await screen.findByRole('button', { name: 'Open actions for Research to review' }))
-    await user.clear(screen.getByRole('textbox', { name: 'Name' }))
-    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Review flow')
-    await user.click(screen.getByRole('button', { name: 'Rename' }))
-    expect(await screen.findByRole('link', { name: 'Review flow' })).toBeVisible()
-
-    await user.click(screen.getByRole('button', { name: 'Open actions for Review flow' }))
-    await user.click(screen.getByRole('button', { name: 'Remove workflow' }))
-    expect(screen.queryByRole('link', { name: 'Review flow' })).not.toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'Research to review' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: /Open actions for/ })).not.toBeInTheDocument()
   })
 
   it('clears an agent selection when workflow identity changes', async () => {

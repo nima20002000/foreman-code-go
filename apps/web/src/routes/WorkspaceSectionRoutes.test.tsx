@@ -91,8 +91,9 @@ describe('workspace section routes', () => {
     expect(await screen.findByRole('heading', { name: 'Agents', level: 1 })).toBeVisible()
     await userEvent.setup().click(screen.getByRole('link', { name: 'Workflows' }))
 
-    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1'))
-    expect(await screen.findByTestId('workflow-graph')).toBeVisible()
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/workflows'))
+    expect(await screen.findByRole('heading', { name: 'Workflows', level: 1 })).toBeVisible()
+    expect(await screen.findByTestId('workflow-card-workflow-content-pipeline')).toHaveTextContent('Research to review')
     expect(screen.getByRole('link', { name: 'Workflows' })).toHaveAttribute('aria-current', 'page')
     expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
   })

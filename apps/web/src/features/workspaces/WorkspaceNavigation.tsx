@@ -312,7 +312,7 @@ function WorkspaceTreeItem({
         <>
           <div className="nav-item-row" {...reorderProps}>
             <Link
-              to="/workspaces/$workspaceId"
+              to="/workspaces/$workspaceId/workflows"
               params={{ workspaceId: entry.id }}
               className={`nav-item${workflowsActive ? ' nav-item-active' : ''}`}
               aria-current={workflowsActive ? 'page' : undefined}

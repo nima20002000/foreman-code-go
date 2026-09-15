@@ -16,6 +16,7 @@ import {
   GlobalSettingsRouteEntry,
   HarnessSettingsRouteEntry,
   SettingsRouteEntry,
+  WorkflowsRouteEntry,
   WorkspacesRouteEntry,
 } from '../routes/WorkspaceSectionRoutes'
 
@@ -42,6 +43,12 @@ const workspaceRoute = createRoute({
   path: '/workspaces/$workspaceId',
   validateSearch: UrlSearchSelectionSchema,
   component: WorkspaceRouteEntry,
+})
+
+const workflowsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/workspaces/$workspaceId/workflows',
+  component: WorkflowsRouteEntry,
 })
 
 const agentsRoute = createRoute({
@@ -101,6 +108,7 @@ export const routeTree = rootRoute.addChildren([
   indexRoute,
   workspacesRoute,
   workspaceRoute,
+  workflowsRoute,
   agentsRoute,
   browsersRoute,
   tasksRoute,
