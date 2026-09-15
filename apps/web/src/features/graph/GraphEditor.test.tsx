@@ -10,7 +10,7 @@ import { getMockFixture, setMockScenario } from '../../shared/mocks/scenarios'
 import { queryKeys } from '../../shared/api/query'
 import { AgentMinimapDot, GraphEditor, HandoffEdge } from './GraphEditor'
 import { getGraphDraft, useGraphDraftStore, workflowDraftKey } from './store'
-import { deleteAgentForSession, readDeletedAgentIds } from '../agents/localAgents'
+import { deleteAgentForSession, readDeletedAgentIds, readLocalAgents, writeLocalAgents } from '../agents/localAgents'
 import { Position } from '@xyflow/react'
 
 vi.mock('@xyflow/react', async () => {
@@ -170,6 +170,36 @@ describe('GraphEditor persistence boundary', () => {
     expect(screen.getByRole('button', { name: 'Start workflow' })).toBeEnabled()
   })
 
+  it('includes a restored local Agent when saving the workflow and clears its persisted shadow', async () => {
+    const localAgent: Agent = {
+      id: 'local-restored-agent',
+      name: 'codex-001',
+      harness: 'codex',
+      model: 'gpt-5.6-luna',
+      effort: 'medium',
+      fastMode: false,
+    }
+    writeLocalAgents(workflow.workspaceId, [localAgent])
+    renderEditor({
+      agents: [],
+      workflow: {
+        ...workflow,
+        nodes: [{ id: 'local-step', agentId: localAgent.id, name: localAgent.name }],
+        edges: [],
+      },
+    })
+
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Save agent settings' }))
+
+    await waitFor(() => expect(screen.getByText('Graph saved.')).toBeVisible())
+    expect(getMockFixture(workflow.workspaceId)?.agents).toContainEqual(expect.objectContaining({
+      id: localAgent.id,
+      name: localAgent.name,
+    }))
+    expect(readLocalAgents(workflow.workspaceId)).toEqual([])
+    expect(screen.getByRole('button', { name: 'Start workflow' })).toBeEnabled()
+  })
+
   it('offers the supported harnesses without requiring the Agents directory', async () => {
     renderEditor({ agents: [] })
     await userEvent.setup().click(screen.getByRole('button', { name: 'Add agent to graph' }))
@@ -223,6 +253,59 @@ describe('GraphEditor persistence boundary', () => {
     expect(screen.getByRole('button', { name: 'Save graph' })).toBeEnabled()
     expect(onSelectAgent).toHaveBeenNthCalledWith(1, 'agent-one')
     expect(onSelectAgent).toHaveBeenNthCalledWith(2, 'agent-two')
+  })
+
+  it('uses Ctrl selection and Delete to remove multiple agents without creating a connection', () => {
+    const disconnectedWorkflow = { ...workflow, edges: [] }
+    const key = workflowDraftKey(workflow.workspaceId, workflow.id)
+    renderEditor({ workflow: disconnectedWorkflow })
+    const researcher = screen.getByRole('button', { name: 'Researcher agent, Step 1' })
+    const developer = screen.getByRole('button', { name: 'Developer agent, Step 2' })
+
+    fireEvent.click(researcher, { ctrlKey: true })
+    fireEvent.click(developer, { ctrlKey: true })
+
+    expect(researcher).toHaveAttribute('aria-pressed', 'true')
+    expect(developer).toHaveAttribute('aria-pressed', 'true')
+    expect(getGraphDraft(key)).toBeUndefined()
+
+    fireEvent.keyDown(developer, { key: 'Delete' })
+    expect(getGraphDraft(key)?.workflow.nodes).toEqual([])
+    expect(getGraphDraft(key)?.workflow.edges).toEqual([])
+  })
+
+  it('copies and pastes selected agents with their internal connection and independent identities', () => {
+    const key = workflowDraftKey(workflow.workspaceId, workflow.id)
+    renderEditor()
+    const researcher = screen.getByRole('button', { name: 'Researcher agent, Step 1' })
+    const developer = screen.getByRole('button', { name: 'Developer agent, Step 2' })
+
+    fireEvent.click(researcher, { ctrlKey: true })
+    fireEvent.click(developer, { ctrlKey: true })
+    fireEvent.keyDown(developer, { key: 'c', ctrlKey: true })
+    fireEvent.keyDown(developer, { key: 'v', ctrlKey: true })
+
+    const pasted = getGraphDraft(key)?.workflow
+    expect(pasted?.nodes).toHaveLength(4)
+    expect(pasted?.edges).toHaveLength(2)
+    expect(new Set(pasted?.nodes.map((node) => node.agentId)).size).toBe(4)
+    expect(pasted?.nodes.slice(-2).map((node) => node.name)).toEqual(['Researcher copy', 'Developer copy'])
+    expect(pasted?.edges.at(-1)).toMatchObject({
+      source: pasted?.nodes[2]?.id,
+      target: pasted?.nodes[3]?.id,
+    })
+  })
+
+  it('does not remove a selected agent while Delete is used inside its settings fields', async () => {
+    const user = userEvent.setup()
+    renderEditor()
+    const researcher = screen.getByRole('button', { name: 'Researcher agent, Step 1' })
+    await user.click(researcher)
+    await user.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
+    const name = screen.getByRole('textbox', { name: 'Name' })
+
+    fireEvent.keyDown(name, { key: 'Delete' })
+    expect(screen.getByRole('button', { name: 'Researcher agent, Step 1' })).toBeVisible()
   })
 
   it('cancels a pending click connection when the empty canvas is selected', () => {

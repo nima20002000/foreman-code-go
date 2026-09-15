@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Bot, BotMessageSquare, Check, MoreHorizontal, Play, Plus, Trash2, X } from 'lucide-react'
 
 import {
@@ -30,6 +30,7 @@ import type {
   HarnessDefaults,
   WorkflowDefinition,
   WorkflowEdge,
+  WorkflowNode,
   WorkflowRunSummary,
   WorkspaceDetailsResponse,
 } from '@graphql/contracts'
@@ -332,7 +333,11 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
         className="workflow-agent-node-button"
         aria-label={`${data.label} agent, ${data.stepLabel}`}
         aria-pressed={selected}
-        onClick={() => data.onSelect?.(data.agentId, data.workflowNodeId)}
+        onClick={(event) => data.onSelect?.(
+          data.agentId,
+          data.workflowNodeId,
+          event.ctrlKey || event.metaKey,
+        )}
       >
         <span className="workflow-agent-node-meta">
           <span>Agent</span>
@@ -528,6 +533,19 @@ function nextBoardAgentId(harness: NonNullable<Agent['harness']>): string {
   return `agent-${harness}-${suffix}`
 }
 
+function nextCopiedAgentId(agent: Agent): string {
+  const harness = agent.harness ?? agent.harnessConfiguration?.harness
+  if (harness) return nextBoardAgentId(harness)
+  const suffix = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  return `agent-copy-${suffix}`
+}
+
+function isEditableKeyboardTarget(target: EventTarget | null): boolean {
+  return target instanceof Element
+    && Boolean(target.closest('input, textarea, select, [contenteditable="true"]'))
+}
+
 export function GraphEditor({
   workspaceId,
   workflow,
@@ -553,6 +571,7 @@ export function GraphEditor({
   )?.id)
   const startLock = useRef(Boolean(activeRunId))
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
+  const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => new Set())
   const [openMenuNodeId, setOpenMenuNodeId] = useState<string>()
   const [enteringEdgeId, setEnteringEdgeId] = useState<string>()
   const [enteringNodeIds, setEnteringNodeIds] = useState<Set<string>>(() => new Set())
@@ -568,6 +587,10 @@ export function GraphEditor({
   const flowInstanceRef = useRef<ReactFlowInstance<GraphNode, GraphEdge>>(null)
   const departureTimerRef = useRef<number | undefined>(undefined)
   const enteringNodeTimersRef = useRef<Map<string, number>>(new Map())
+  const copiedGraphRef = useRef<{
+    nodes: Array<{ node: WorkflowNode; agent: Agent }>
+    edges: WorkflowEdge[]
+  } | undefined>(undefined)
   const agentPickerPresence = usePresence(agentPickerOpen)
   const nodeMenuValue = useMemo(
     () => ({ openMenuNodeId, setOpenMenuNodeId }),
@@ -717,7 +740,20 @@ export function GraphEditor({
     )
   }, [])
 
-  const selectAgent = useCallback((agentId: string, workflowNodeId: string) => {
+  const selectAgent = useCallback((agentId: string, workflowNodeId: string, additive: boolean) => {
+    if (additive) {
+      connectionSourceNodeRef.current = undefined
+      const next = new Set(selectedNodeIds)
+      if (next.has(workflowNodeId)) next.delete(workflowNodeId)
+      else next.add(workflowNodeId)
+      setSelectedNodeIds(next)
+      const lastSelectedNodeId = [...next].at(-1)
+      const lastSelectedAgentId = displayedWorkflow.nodes.find((node) => node.id === lastSelectedNodeId)?.agentId
+      if (lastSelectedAgentId) onSelectAgent?.(lastSelectedAgentId)
+      else onClearAgent?.()
+      return
+    }
+    setSelectedNodeIds(new Set([workflowNodeId]))
     onSelectAgent?.(agentId)
     const sourceNodeId = connectionSourceNodeRef.current
     connectionSourceNodeRef.current = workflowNodeId
@@ -735,10 +771,11 @@ export function GraphEditor({
       return { ...saved, edges: [...saved.edges, nextEdge] }
     })
     if (edgeAdded) setEnteringEdgeId(nextEdge.id)
-  }, [onSelectAgent, sessionCleanedWorkflow, updateDraft, workflowKey])
+  }, [displayedWorkflow.nodes, onClearAgent, onSelectAgent, selectedNodeIds, sessionCleanedWorkflow, updateDraft, workflowKey])
 
-  const openNodeSettings = useCallback((agentId: string) => {
+  const openNodeSettings = useCallback((agentId: string, workflowNodeId: string) => {
     connectionSourceNodeRef.current = undefined
+    setSelectedNodeIds(new Set([workflowNodeId]))
     onSelectAgent?.(agentId)
   }, [onSelectAgent])
 
@@ -762,25 +799,32 @@ export function GraphEditor({
     )
   }, [sessionCleanedWorkflow, updateDraft, workflowKey])
 
-  const removeGraphNode = useCallback((workflowNodeId: string) => {
+  const removeGraphNodes = useCallback((workflowNodeIds: ReadonlySet<string>) => {
+    if (workflowNodeIds.size === 0) return
     const projection = workflowToGraph({ workflow: displayedWorkflow, agents: catalogAgents })
-    const removedNodes = projection.nodes.filter((node) => node.id === workflowNodeId)
+    const removedNodes = projection.nodes.filter((node) => workflowNodeIds.has(node.id))
     const removedEdges = projection.edges.filter(
-      (edge) => edge.source === workflowNodeId || edge.target === workflowNodeId,
+      (edge) => workflowNodeIds.has(edge.source) || workflowNodeIds.has(edge.target),
     )
     startDeparture(removedNodes, removedEdges)
     updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => ({
       ...saved,
-      nodes: saved.nodes.filter((node) => node.id !== workflowNodeId),
+      nodes: saved.nodes.filter((node) => !workflowNodeIds.has(node.id)),
       edges: saved.edges.filter(
-        (edge) => edge.source !== workflowNodeId && edge.target !== workflowNodeId,
+        (edge) => !workflowNodeIds.has(edge.source) && !workflowNodeIds.has(edge.target),
       ),
     }))
-    if (connectionSourceNodeRef.current === workflowNodeId) {
+    if (connectionSourceNodeRef.current && workflowNodeIds.has(connectionSourceNodeRef.current)) {
       connectionSourceNodeRef.current = undefined
     }
+    setSelectedNodeIds(new Set())
     setOpenMenuNodeId(undefined)
-  }, [catalogAgents, displayedWorkflow, sessionCleanedWorkflow, startDeparture, updateDraft, workflowKey])
+    onClearAgent?.()
+  }, [catalogAgents, displayedWorkflow, onClearAgent, sessionCleanedWorkflow, startDeparture, updateDraft, workflowKey])
+
+  const removeGraphNode = useCallback((workflowNodeId: string) => {
+    removeGraphNodes(new Set([workflowNodeId]))
+  }, [removeGraphNodes])
 
   const saveNodeSettings = useCallback((workflowNodeId: string, agent: Agent, initialPrompt?: string) => {
     updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => ({
@@ -801,6 +845,7 @@ export function GraphEditor({
       { workflow: displayedWorkflow, agents: catalogAgents },
       {
         selectedAgentId,
+        selectedNodeIds,
         onSelectAgent: selectAgent,
         onOpenNodeSettings: openNodeSettings,
         onRemoveEdge: removeGraphEdge,
@@ -811,7 +856,7 @@ export function GraphEditor({
         enteringNodeIds,
       },
     ),
-    [catalogAgents, displayedWorkflow, enteringNodeIds, openNodeSettings, removeGraphEdge, removeGraphNode, resizeGraphNode, runFacts, saveNodeSettings, selectAgent, selectedAgentId],
+    [catalogAgents, displayedWorkflow, enteringNodeIds, openNodeSettings, removeGraphEdge, removeGraphNode, resizeGraphNode, runFacts, saveNodeSettings, selectAgent, selectedAgentId, selectedNodeIds],
   )
 
   const visibleNodes = useMemo(() => {
@@ -872,8 +917,10 @@ export function GraphEditor({
   const handleDiscard = useCallback(() => {
     connectionSourceNodeRef.current = undefined
     discardDraft(workflowKey)
+    setSelectedNodeIds(new Set())
+    onClearAgent?.()
     setNotice(undefined)
-  }, [discardDraft, workflowKey])
+  }, [discardDraft, onClearAgent, workflowKey])
 
   const handleSave = useCallback(async () => {
     if (!isDirty && onSaveSession) return
@@ -1030,16 +1077,139 @@ export function GraphEditor({
       enteringNodeTimersRef.current.set(nodeId, timer)
     }
     setOpenMenuNodeId(undefined)
+    setSelectedNodeIds(new Set([nodeId]))
+    onSelectAgent?.(agent.id)
     closeAgentPicker()
-  }, [closeAgentPicker, displayedWorkflow, sessionCleanedWorkflow, updateDraft, workflowKey])
+  }, [closeAgentPicker, displayedWorkflow, onSelectAgent, sessionCleanedWorkflow, updateDraft, workflowKey])
+
+  const copySelectedGraph = useCallback(() => {
+    if (selectedNodeIds.size === 0) return
+    const selectedNodes = displayedWorkflow.nodes.filter((node) => selectedNodeIds.has(node.id))
+    if (selectedNodes.length === 0) return
+    const agentsById = new Map(catalogAgents.map((agent) => [agent.id, agent]))
+    copiedGraphRef.current = {
+      nodes: selectedNodes.map((node) => ({
+        node,
+        agent: agentsById.get(node.agentId) ?? { id: node.agentId, name: node.name ?? node.label ?? node.agentId },
+      })),
+      edges: displayedWorkflow.edges.filter(
+        (edge) => selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target),
+      ),
+    }
+    setNotice({
+      kind: 'info',
+      text: `Copied ${selectedNodes.length} agent${selectedNodes.length === 1 ? '' : 's'}.`,
+    })
+  }, [catalogAgents, displayedWorkflow.edges, displayedWorkflow.nodes, selectedNodeIds])
+
+  const pasteCopiedGraph = useCallback(() => {
+    const copied = copiedGraphRef.current
+    if (!copied || copied.nodes.length === 0) return
+    const nodeIdMap = new Map<string, string>()
+    const workingNodes = [...displayedWorkflow.nodes]
+    const namingAgents = [...catalogAgents]
+    const pastedAgents: Agent[] = []
+    const pastedNodes: WorkflowNode[] = []
+
+    for (const { node, agent } of copied.nodes) {
+      const harness = agent.harness ?? agent.harnessConfiguration?.harness
+      const agentId = nextCopiedAgentId(agent)
+      const name = harness
+        ? nextHarnessAgentName(harness, namingAgents)
+        : `${agent.name} copy`
+      const pastedAgent: Agent = {
+        ...agent,
+        id: agentId,
+        name,
+        configurationVersionId: undefined,
+        activeRunId: undefined,
+        executionState: undefined,
+        status: undefined,
+        harnessSummary: undefined,
+        createdAt: undefined,
+        updatedAt: undefined,
+      }
+      const nodeId = `node-${agentId}`
+      const position = findOpenNodePosition(
+        workingNodes,
+        {
+          x: (node.position?.x ?? 64) + 32,
+          y: (node.position?.y ?? 120) + 32,
+        },
+        node.width,
+        node.height,
+      )
+      const pastedNode: WorkflowNode = {
+        ...node,
+        id: nodeId,
+        agentId,
+        name,
+        position,
+      }
+      nodeIdMap.set(node.id, nodeId)
+      pastedAgents.push(pastedAgent)
+      namingAgents.push(pastedAgent)
+      pastedNodes.push(pastedNode)
+      workingNodes.push(pastedNode)
+    }
+
+    const pastedEdges = copied.edges.map((edge) => {
+      const source = nodeIdMap.get(edge.source)!
+      const target = nodeIdMap.get(edge.target)!
+      return {
+        ...edge,
+        id: `edge-${source}-${target}`,
+        source,
+        target,
+      }
+    })
+    updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => ({
+      ...saved,
+      nodes: [...saved.nodes, ...pastedNodes],
+      edges: [...saved.edges, ...pastedEdges],
+    }), pastedAgents)
+    setSelectedNodeIds(new Set(pastedNodes.map((node) => node.id)))
+    const lastAgent = pastedAgents.at(-1)
+    if (lastAgent) onSelectAgent?.(lastAgent.id)
+    setNotice({
+      kind: 'info',
+      text: `Pasted ${pastedNodes.length} agent${pastedNodes.length === 1 ? '' : 's'}.`,
+    })
+  }, [catalogAgents, displayedWorkflow.nodes, onSelectAgent, sessionCleanedWorkflow, updateDraft, workflowKey])
+
+  const handleGraphKeyDown = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
+    if (isEditableKeyboardTarget(event.target)) return
+    const key = event.key.toLowerCase()
+    const command = event.ctrlKey || event.metaKey
+    if (command && key === 'c' && selectedNodeIds.size > 0) {
+      event.preventDefault()
+      copySelectedGraph()
+      return
+    }
+    if (command && key === 'v' && copiedGraphRef.current) {
+      event.preventDefault()
+      pasteCopiedGraph()
+      return
+    }
+    if (!command && (event.key === 'Delete' || event.key === 'Backspace') && selectedNodeIds.size > 0) {
+      event.preventDefault()
+      removeGraphNodes(selectedNodeIds)
+    }
+  }, [copySelectedGraph, pasteCopiedGraph, removeGraphNodes, selectedNodeIds])
 
   const handlePaneClick = useCallback(() => {
     connectionSourceNodeRef.current = undefined
+    setSelectedNodeIds(new Set())
     onClearAgent?.()
   }, [onClearAgent])
 
   return (
-    <section className="workflow-graph" data-testid="workflow-graph" aria-label={`${displayedWorkflow.name} workflow graph`}>
+    <section
+      className="workflow-graph"
+      data-testid="workflow-graph"
+      aria-label={`${displayedWorkflow.name} workflow graph`}
+      onKeyDown={handleGraphKeyDown}
+    >
       <div className="workflow-graph-canvas" data-testid="workflow-graph-canvas" ref={canvasRef}>
         <NodeMenuContext.Provider value={nodeMenuValue}>
         <ReactFlow

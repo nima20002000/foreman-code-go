@@ -27,7 +27,7 @@ export type GraphNodeData = {
   departing?: boolean
   /** Renderer-only marker for a newly added node entering the canvas. */
   entering?: boolean
-  onSelect?: (agentId: string, workflowNodeId: string) => void
+  onSelect?: (agentId: string, workflowNodeId: string, additive: boolean) => void
   onOpenSettings?: (agentId: string, workflowNodeId: string) => void
   onRemove?: (workflowNodeId: string) => void
   onSaveSettings?: (workflowNodeId: string, agent: Agent, initialPrompt?: string) => void
@@ -54,7 +54,8 @@ export type GraphProjection = {
 
 export type GraphMapperOptions = {
   selectedAgentId?: string
-  onSelectAgent?: (agentId: string, workflowNodeId: string) => void
+  selectedNodeIds?: ReadonlySet<string>
+  onSelectAgent?: (agentId: string, workflowNodeId: string, additive: boolean) => void
   onOpenNodeSettings?: (agentId: string, workflowNodeId: string) => void
   onRemoveNode?: (workflowNodeId: string) => void
   onSaveNodeSettings?: (workflowNodeId: string, agent: Agent, initialPrompt?: string) => void

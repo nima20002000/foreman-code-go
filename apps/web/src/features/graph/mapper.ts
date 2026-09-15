@@ -213,7 +213,8 @@ export function workflowToGraph(
       width: size.width,
       height: size.height,
       style: size,
-      selected: options.selectedAgentId === workflowNode.agentId,
+      selected: options.selectedNodeIds?.has(workflowNode.id)
+        || (options.selectedNodeIds?.size === 0 && options.selectedAgentId === workflowNode.agentId),
       data: {
         workflowNodeId: workflowNode.id,
         agentId: workflowNode.agentId,
