@@ -94,9 +94,8 @@ describe('GraphEditor persistence boundary', () => {
 
     await userEvent.setup().click(screen.getByRole('button', { name: 'Start workflow' }))
 
-    expect(await screen.findByTestId('workflow-run-status')).toHaveTextContent('run-mock-started')
-    await waitFor(() => expect(screen.getByTestId('workflow-run-status')).toHaveTextContent('Run completed'))
-    expect(screen.getByTestId('workflow-run-status')).toHaveTextContent('Mock test result')
+    await waitFor(() => expect(screen.getByText('Workflow completed with a durable result.')).toBeVisible())
+    expect(screen.queryByTestId('workflow-run-status')).not.toBeInTheDocument()
   })
 
   it('adds the default Codex profile through one picker action and makes it discardable', async () => {

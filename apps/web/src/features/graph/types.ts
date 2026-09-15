@@ -3,6 +3,7 @@ import type {
   AgentExecutionState,
   HarnessExecutionState,
   WorkflowDefinition,
+  WorkflowExecutionPolicy,
   WorkflowRunSummary,
 } from '@graphql/contracts'
 
@@ -25,6 +26,8 @@ export type GraphNodeData = {
   waitLabel?: string
   initialPrompt?: string
   runState?: HarnessExecutionState
+  executionPolicy: WorkflowExecutionPolicy
+  workflowNodeCount: number
   /** Renderer-only marker for a node that is animating out after removal. */
   departing?: boolean
   /** Renderer-only marker for a newly added node entering the canvas. */
@@ -32,7 +35,12 @@ export type GraphNodeData = {
   onSelect?: (agentId: string, workflowNodeId: string, additive: boolean) => void
   onOpenSettings?: (agentId: string, workflowNodeId: string) => void
   onRemove?: (workflowNodeId: string) => void
-  onSaveSettings?: (workflowNodeId: string, agent: Agent, initialPrompt?: string) => void
+  onSaveSettings?: (
+    workflowNodeId: string,
+    agent: Agent,
+    initialPrompt: string | undefined,
+    executionPolicy: WorkflowExecutionPolicy,
+  ) => void
   onResize?: (workflowNodeId: string, width: number, height: number) => void
 }
 
@@ -61,7 +69,12 @@ export type GraphMapperOptions = {
   onSelectAgent?: (agentId: string, workflowNodeId: string, additive: boolean) => void
   onOpenNodeSettings?: (agentId: string, workflowNodeId: string) => void
   onRemoveNode?: (workflowNodeId: string) => void
-  onSaveNodeSettings?: (workflowNodeId: string, agent: Agent, initialPrompt?: string) => void
+  onSaveNodeSettings?: (
+    workflowNodeId: string,
+    agent: Agent,
+    initialPrompt: string | undefined,
+    executionPolicy: WorkflowExecutionPolicy,
+  ) => void
   onResizeNode?: (workflowNodeId: string, width: number, height: number) => void
   /** Removes a single connection edge without touching its nodes. */
   onRemoveEdge?: (edgeId: string) => void

@@ -178,6 +178,10 @@ describe('PR #3 editor lifecycle regressions', () => {
     const user = userEvent.setup()
     await user.selectOptions(screen.getByRole('combobox', { name: 'Harness' }), target)
     await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ harnessConfiguration: defaults[target] }), undefined)
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ harnessConfiguration: defaults[target] }),
+      undefined,
+      { maxNodeExecutions: 1, maxParallelism: 1 },
+    )
   })
 })

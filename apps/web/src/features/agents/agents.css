@@ -266,9 +266,36 @@
 .agent-settings-heading,
 .agent-settings-name,
 .agent-settings-prompt,
+.agent-settings-limits,
 .agent-settings-confirm,
 .agent-removal-blocked {
   grid-column: 1 / -1;
+}
+
+.agent-settings-limits {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0.625rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 2px;
+}
+
+.agent-settings-limits legend {
+  padding: 0 0.25rem;
+  color: var(--color-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+
+.agent-settings-limits label {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--color-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 700;
 }
 
 .agent-settings-heading button,

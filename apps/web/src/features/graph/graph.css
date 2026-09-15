@@ -169,37 +169,6 @@
   box-shadow: 0 0.375rem 1.25rem rgb(0 0 0 / 22%);
 }
 
-.workflow-run-status {
-  display: grid;
-  width: 100%;
-  gap: 0.35rem;
-  padding: 0.75rem 0.875rem;
-  border: 1px solid var(--graph-line-strong);
-  border-radius: 3px;
-  background: var(--graph-panel);
-  color: var(--graph-ink);
-  box-shadow: 0 0.375rem 1.25rem rgb(0 0 0 / 22%);
-  font-size: 0.75rem;
-  pointer-events: auto;
-}
-
-.workflow-run-status > span {
-  color: var(--graph-muted);
-  overflow-wrap: anywhere;
-}
-
-.workflow-run-status pre {
-  max-height: 12rem;
-  margin: 0.25rem 0 0;
-  padding: 0.625rem;
-  overflow: auto;
-  border: 1px solid var(--graph-line);
-  background: var(--graph-canvas);
-  color: var(--graph-ink);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
 .workflow-graph-connection-status {
   max-width: 100%;
   margin: 0;

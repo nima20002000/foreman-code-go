@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { Bot, BotMessageSquare, Check, MoreHorizontal, Play, Plus, Trash2, X } from 'lucide-react'
+import { Bot, BotMessageSquare, Check, MoreHorizontal, Play, Plus, Square, Trash2, X } from 'lucide-react'
 
 import {
   addEdge,
@@ -30,6 +30,7 @@ import type {
   HarnessDefaults,
   WorkflowDefinition,
   WorkflowEdge,
+  WorkflowExecutionPolicy,
   WorkflowNode,
   WorkflowRunSummary,
   WorkspaceDetailsResponse,
@@ -85,7 +86,6 @@ import {
 } from './store'
 import type { GraphEdge, GraphHandleSide, GraphNode } from './types'
 import './graph.css'
-import './execution-controls.css'
 
 export interface WorkflowGraphProps {
   workspaceId: string
@@ -157,13 +157,17 @@ function AgentSettingsForm({
   onClose,
   onRemove,
   onSave,
+  executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 },
+  workflowNodeCount = 1,
 }: {
   agent: Agent
   initialPrompt?: string
   creationDefaults?: HarnessDefaults
   onClose: () => void
   onRemove?: () => void
-  onSave: (agent: Agent, initialPrompt?: string) => void
+  onSave: (agent: Agent, initialPrompt: string | undefined, executionPolicy: WorkflowExecutionPolicy) => void
+  executionPolicy?: WorkflowExecutionPolicy
+  workflowNodeCount?: number
 }) {
   const [name, setName] = useState(agent.name)
   const [harness, setHarness] = useState<NonNullable<Agent['harness']>>(agent.harness ?? 'codex')
@@ -176,7 +180,13 @@ function AgentSettingsForm({
       : 'read-only',
   )
   const [prompt, setPrompt] = useState(initialPrompt ?? '')
+  const [maxNodeExecutions, setMaxNodeExecutions] = useState(executionPolicy.maxNodeExecutions)
+  const [maxParallelism, setMaxParallelism] = useState(executionPolicy.maxParallelism)
   const trimmedName = name.trim()
+  const limitsValid = Number.isInteger(maxNodeExecutions)
+    && maxNodeExecutions >= workflowNodeCount
+    && Number.isInteger(maxParallelism)
+    && maxParallelism >= 1
 
   return (
     <>
@@ -248,13 +258,37 @@ function AgentSettingsForm({
           placeholder="Tell this model what to do when the workflow reaches it."
         />
       </div>
+      <fieldset className="agent-settings-limits">
+        <legend>Workflow limits</legend>
+        <label>
+          Maximum node executions
+          <input
+            type="number"
+            min={workflowNodeCount}
+            step={1}
+            value={maxNodeExecutions}
+            aria-invalid={maxNodeExecutions < workflowNodeCount}
+            onChange={(event) => setMaxNodeExecutions(event.target.valueAsNumber)}
+          />
+        </label>
+        <label>
+          Maximum parallel agents
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={maxParallelism}
+            onChange={(event) => setMaxParallelism(event.target.valueAsNumber)}
+          />
+        </label>
+      </fieldset>
       <div className="agent-settings-actions">
         <button
           type="button"
           className="agent-settings-save"
           aria-label="Save agent settings"
           title="Save"
-          disabled={!trimmedName}
+          disabled={!trimmedName || !limitsValid}
           onClick={() => onSave({
             ...agent,
             name: trimmedName,
@@ -271,7 +305,7 @@ function AgentSettingsForm({
               codexSandbox,
               creationDefaults,
             ),
-          }, prompt.trim() || undefined)}
+          }, prompt.trim() || undefined, { maxNodeExecutions, maxParallelism })}
         >
           <Check aria-hidden="true" size={16} />
         </button>
@@ -391,6 +425,8 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
           <AgentSettingsForm
             agent={data.agent}
             initialPrompt={data.initialPrompt}
+            executionPolicy={data.executionPolicy}
+            workflowNodeCount={data.workflowNodeCount}
             onClose={() => {
               setMenuOpen(false)
               window.setTimeout(() => triggerRef.current?.focus(), 0)
@@ -399,8 +435,8 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
               data.onRemove?.(data.workflowNodeId)
               setMenuOpen(false)
             }}
-            onSave={(agent, initialPrompt) => {
-              data.onSaveSettings?.(data.workflowNodeId, agent, initialPrompt)
+            onSave={(agent, initialPrompt, executionPolicy) => {
+              data.onSaveSettings?.(data.workflowNodeId, agent, initialPrompt, executionPolicy)
               setMenuOpen(false)
               window.setTimeout(() => triggerRef.current?.focus(), 0)
             }}
@@ -719,6 +755,7 @@ export function GraphEditor({
   const executionLimitExceeded = !onSaveSession && executionPolicy.maxNodeExecutions < displayedWorkflow.nodes.length
   const startDisabled = startRunMutation.isPending
     || Boolean(activeRunId && runQuery.data?.run.executionState !== 'completed')
+  const runActive = Boolean(activeRunId && runQuery.data?.run.executionState !== 'completed')
   const hasUnsavedAgentSettings = displayedWorkflow.nodes.some((node) => {
     const local = localAgents.find((agent) => agent.id === node.agentId)
     const persisted = agents.find((agent) => agent.id === node.agentId)
@@ -740,14 +777,6 @@ export function GraphEditor({
     recordUndo()
     updateDraft(workflowKey, sessionCleanedWorkflow, change, changedAgents)
   }, [recordUndo, sessionCleanedWorkflow, updateDraft, workflowKey])
-  const updateExecutionLimit = (key: 'maxNodeExecutions' | 'maxParallelism', value: number) => {
-    if (!Number.isInteger(value) || value < 1) return
-    applyBoardChange((saved) => ({
-      ...saved,
-      executionPolicy: { ...executionPolicy, [key]: value },
-    }))
-  }
-
   useEffect(() => {
     if (selectedAgentId && deletedAgentIdSet.has(selectedAgentId)) onClearAgent?.()
   }, [deletedAgentIdSet, onClearAgent, selectedAgentId])
@@ -864,9 +893,15 @@ export function GraphEditor({
     removeGraphNodes(new Set([workflowNodeId]))
   }, [removeGraphNodes])
 
-  const saveNodeSettings = useCallback((workflowNodeId: string, agent: Agent, initialPrompt?: string) => {
+  const saveNodeSettings = useCallback((
+    workflowNodeId: string,
+    agent: Agent,
+    initialPrompt: string | undefined,
+    executionPolicy: WorkflowExecutionPolicy,
+  ) => {
     applyBoardChange((saved) => ({
       ...saved,
+      executionPolicy,
       nodes: saved.nodes.map((node) => node.id === workflowNodeId
         ? {
             ...node,
@@ -1335,12 +1370,16 @@ export function GraphEditor({
           <button
             type="button"
             className="workflow-graph-run"
-            aria-label="Start workflow"
-            title="Start workflow"
-            disabled={startDisabled}
-            onClick={handleStart}
+            aria-label={runActive ? 'Cancel workflow' : 'Start workflow'}
+            title={runActive ? 'Cancel workflow' : 'Start workflow'}
+            disabled={runActive ? cancelRunMutation.isPending : startDisabled}
+            onClick={runActive && activeRunId
+              ? () => cancelRunMutation.mutate({ workspaceId, runId: activeRunId }, {
+                  onError: (error) => setNotice({ kind: 'error', text: graphErrorMessage(error, 'The run could not be canceled.') }),
+                })
+              : handleStart}
           >
-            <Play aria-hidden="true" size={16} />
+            {runActive ? <Square aria-hidden="true" size={14} /> : <Play aria-hidden="true" size={16} />}
           </button>
           <button
             ref={addAgentButtonRef}
@@ -1370,54 +1409,7 @@ export function GraphEditor({
           </div>
         ) : null}
 
-        <details className="workflow-execution-limits" open={executionLimitExceeded || undefined}>
-          <summary>Execution limits</summary>
-          <label>
-            Maximum node executions
-            <input type="number" min={1} step={1} value={executionPolicy.maxNodeExecutions}
-              aria-invalid={executionLimitExceeded}
-              onChange={(event) => updateExecutionLimit('maxNodeExecutions', event.target.valueAsNumber)} />
-          </label>
-          <label>
-            Maximum parallel agents
-            <input type="number" min={1} step={1} value={executionPolicy.maxParallelism}
-              onChange={(event) => updateExecutionLimit('maxParallelism', event.target.valueAsNumber)} />
-          </label>
-          {executionLimitExceeded ? (
-            <p role="alert">This graph has {displayedWorkflow.nodes.length} steps, but its execution limit is {executionPolicy.maxNodeExecutions}. Raise the limit explicitly or remove a step before saving.</p>
-          ) : <p>These safety limits are saved with each workflow version.</p>}
-        </details>
-
         <div className="workflow-graph-notifications" data-testid="workflow-graph-notifications">
-          {activeRunId ? (
-            <section className="workflow-run-status" data-testid="workflow-run-status" aria-live="polite">
-              <strong>Run {runQuery.data?.run.executionState ?? (runQuery.isError ? 'unavailable' : 'loading')}</strong>
-              <span>{activeRunId}</span>
-              {runQuery.data?.run.executionState === 'interrupted' ? (
-                <p>Execution ownership was lost. Inspect native work before starting again. Cancel closes this run record without replaying the interrupted attempt.</p>
-              ) : null}
-              {runQuery.data?.run.executionState !== 'completed' ? (
-                <button type="button" disabled={cancelRunMutation.isPending}
-                  onClick={() => cancelRunMutation.mutate({ workspaceId, runId: activeRunId }, {
-                    onError: (error) => setNotice({ kind: 'error', text: graphErrorMessage(error, 'The run could not be canceled.') }),
-                  })}>
-                  {cancelRunMutation.isPending ? 'Canceling…' : 'Cancel run'}
-                </button>
-              ) : null}
-              {runQuery.isError ? <button type="button" onClick={() => void runQuery.refetch()}>Retry run status</button> : null}
-              {runQuery.data?.executions.map((execution) => (
-                <span key={execution.id}>
-                  {execution.agentId}: {execution.state}
-                  {execution.nativeSessionId ? ` · ${execution.nativeSessionId}` : ''}
-                </span>
-              ))}
-              {runQuery.data?.run.result?.output !== undefined ? (
-                <pre>{typeof runQuery.data.run.result.output === 'string'
-                  ? runQuery.data.run.result.output
-                  : JSON.stringify(runQuery.data.run.result.output, null, 2)}</pre>
-              ) : null}
-            </section>
-          ) : null}
           {notice ? (
             <p
               className={`workflow-graph-toast workflow-graph-toast-${notice.kind}`}

@@ -195,6 +195,10 @@ export function workflowToGraph(
   options: GraphMapperOptions = {},
 ): GraphProjection {
   const agentsById = new Map(agents.map((agent) => [agent.id, agent]))
+  const executionPolicy = workflow.executionPolicy ?? {
+    maxParallelism: Math.max(1, workflow.nodes.length),
+    maxNodeExecutions: Math.max(1, workflow.nodes.length),
+  }
 
   const nodes: GraphNode[] = workflow.nodes.map((workflowNode, index) => {
     const agent = agentsById.get(workflowNode.agentId)
@@ -229,6 +233,8 @@ export function workflowToGraph(
         waitLabel: waitLabel(agent, state, options.runFacts),
         initialPrompt: workflowNode.initialPrompt,
         runState,
+        executionPolicy,
+        workflowNodeCount: workflow.nodes.length,
         entering: options.enteringNodeIds?.has(workflowNode.id),
         onSelect: options.onSelectAgent,
         onOpenSettings: options.onOpenNodeSettings,
