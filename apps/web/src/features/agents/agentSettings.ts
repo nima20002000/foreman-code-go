@@ -50,6 +50,7 @@ export function configuredHarness(
   model: string,
   effort: NonNullable<Agent['effort']>,
   fastMode: boolean,
+  sandbox: 'read-only' | 'workspace-write' | 'danger-full-access',
   creationDefaults?: HarnessDefaults,
 ): HarnessConfiguration {
   // New agents use the selected global template; existing agents keep their
@@ -71,6 +72,7 @@ export function configuredHarness(
     ...codex,
     model,
     reasoningEffort: effort,
+    sandbox,
     serviceTier: fastMode ? 'priority' : 'standard',
   }
 }

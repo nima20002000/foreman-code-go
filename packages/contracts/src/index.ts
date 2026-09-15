@@ -80,7 +80,7 @@ export const CodexHarnessConfigurationSchema = z
     harness: z.literal("codex"),
     model: z.string().trim().min(1),
     reasoningEffort: AgentEffortSchema,
-    sandbox: z.enum(["read-only", "workspace-write"]),
+    sandbox: z.enum(["read-only", "workspace-write", "danger-full-access"]),
     serviceTier: z.enum(["standard", "priority"]),
   })
   .strict();

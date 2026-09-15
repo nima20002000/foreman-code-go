@@ -701,6 +701,11 @@
   outline-offset: 2px;
 }
 
+.workflow-agent-node-active {
+  border-color: var(--graph-focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--graph-focus) 20%, transparent);
+}
+
 .workflow-agent-node[data-connection-armed='true'] {
   border-color: var(--graph-focus);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--graph-focus) 24%, transparent);
@@ -830,6 +835,14 @@
   font-weight: 760;
   letter-spacing: -0.018em;
   line-height: 1.2;
+}
+
+.workflow-agent-node-run-state {
+  color: var(--graph-focus);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1.2;
+  text-transform: capitalize;
 }
 
 .workflow-agent-node .react-flow__handle {

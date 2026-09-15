@@ -272,6 +272,11 @@ describe('GraphEditor persistence boundary', () => {
     fireEvent.keyDown(developer, { key: 'Delete' })
     expect(getGraphDraft(key)?.workflow.nodes).toEqual([])
     expect(getGraphDraft(key)?.workflow.edges).toEqual([])
+
+    fireEvent.keyDown(screen.getByTestId('workflow-graph'), { key: 'z', ctrlKey: true })
+    expect(getGraphDraft(key)).toBeUndefined()
+    expect(screen.getByRole('button', { name: 'Researcher agent, Step 1' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Developer agent, Step 2' })).toBeVisible()
   })
 
   it('copies and pastes selected agents with their internal connection and independent identities', () => {
@@ -306,6 +311,19 @@ describe('GraphEditor persistence boundary', () => {
 
     fireEvent.keyDown(name, { key: 'Delete' })
     expect(screen.getByRole('button', { name: 'Researcher agent, Step 1' })).toBeVisible()
+  })
+
+  it('persists the explicit Codex sandbox selected for one board agent', async () => {
+    const user = userEvent.setup()
+    renderEditor()
+    await user.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'danger-full-access')
+    await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    await user.click(screen.getByRole('button', { name: 'Save graph' }))
+
+    await waitFor(() => expect(screen.getByText('Graph saved.')).toBeVisible())
+    expect(getMockFixture(workflow.workspaceId)?.agents.find((agent) => agent.id === 'agent-one')?.harnessConfiguration)
+      .toMatchObject({ harness: 'codex', sandbox: 'danger-full-access' })
   })
 
   it('cancels a pending click connection when the empty canvas is selected', () => {

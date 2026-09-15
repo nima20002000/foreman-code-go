@@ -96,6 +96,7 @@ export function HarnessDefaultsSettings() {
           })}>
             <option value="read-only">Read only</option>
             <option value="workspace-write">Workspace write</option>
+            <option value="danger-full-access">Danger: full access</option>
           </select></div>
           <label className="settings-switch">
             <input type="checkbox" checked={draft.codex.serviceTier === 'priority'} onChange={(event) => setDraft({

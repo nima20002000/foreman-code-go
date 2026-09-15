@@ -119,6 +119,15 @@ describe('workflow graph mapper', () => {
     expect(projection.nodes.find((node) => node.data.agentId === 'agent-build')?.data.onSelect).toBe(onSelectAgent)
   })
 
+  it('projects live harness execution state onto its workflow node', () => {
+    const projection = workflowToGraph(
+      { workflow, agents },
+      { runStatesByNodeId: new Map([['step-build', 'running']]) },
+    )
+
+    expect(projection.nodes.find((node) => node.id === 'step-build')?.data.runState).toBe('running')
+  })
+
   it('creates a sequential handoff edge and keeps it domain-shaped', () => {
     const projection = workflowToGraph({ workflow, agents })
     const edge = makeSequentialHandoffEdge('step-build', 'step-research')

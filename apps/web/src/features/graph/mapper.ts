@@ -200,6 +200,7 @@ export function workflowToGraph(
     const agent = agentsById.get(workflowNode.agentId)
       ?? { id: workflowNode.agentId, name: workflowNode.name ?? workflowNode.label ?? workflowNode.agentId }
     const state = agentState(agent)
+    const runState = options.runStatesByNodeId?.get(workflowNode.id)
     const size = clampNodeSize(
       workflowNode.width ?? DEFAULT_NODE_WIDTH,
       workflowNode.height ?? DEFAULT_NODE_HEIGHT,
@@ -227,6 +228,7 @@ export function workflowToGraph(
         stepLabel: `Step ${index + 1}`,
         waitLabel: waitLabel(agent, state, options.runFacts),
         initialPrompt: workflowNode.initialPrompt,
+        runState,
         entering: options.enteringNodeIds?.has(workflowNode.id),
         onSelect: options.onSelectAgent,
         onOpenSettings: options.onOpenNodeSettings,

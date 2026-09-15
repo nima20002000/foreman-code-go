@@ -1,6 +1,7 @@
 import type {
   Agent,
   AgentExecutionState,
+  HarnessExecutionState,
   WorkflowDefinition,
   WorkflowRunSummary,
 } from '@graphql/contracts'
@@ -23,6 +24,7 @@ export type GraphNodeData = {
   stepLabel: string
   waitLabel?: string
   initialPrompt?: string
+  runState?: HarnessExecutionState
   /** Renderer-only marker for a node that is animating out after removal. */
   departing?: boolean
   /** Renderer-only marker for a newly added node entering the canvas. */
@@ -55,6 +57,7 @@ export type GraphProjection = {
 export type GraphMapperOptions = {
   selectedAgentId?: string
   selectedNodeIds?: ReadonlySet<string>
+  runStatesByNodeId?: ReadonlyMap<string, HarnessExecutionState>
   onSelectAgent?: (agentId: string, workflowNodeId: string, additive: boolean) => void
   onOpenNodeSettings?: (agentId: string, workflowNodeId: string) => void
   onRemoveNode?: (workflowNodeId: string) => void
