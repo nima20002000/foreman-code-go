@@ -190,7 +190,11 @@ export function WorkspaceShell({
         </nav>
 
         <div className="sidebar-footer">
-          <p className="sidebar-note">Phase 1 · Mock data</p>
+          <p className="sidebar-note">
+            {import.meta.env.DEV && import.meta.env.VITE_ENABLE_MSW !== 'false'
+              ? 'Phase 1 · Mock data'
+              : 'Local backend'}
+          </p>
           <ThemeToggle />
         </div>
       </aside>

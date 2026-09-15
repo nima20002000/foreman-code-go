@@ -25,9 +25,6 @@ export function AgentsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/agents' })
   const { agentId } = useSearch({ from: '/workspaces/$workspaceId/agents' })
   const navigate = useNavigate({ from: '/workspaces/$workspaceId/agents' })
-  const selectAgent = useCallback((nextAgentId: string) => {
-    void navigate({ search: (previous) => ({ ...previous, agentId: nextAgentId }) })
-  }, [navigate])
   const clearAgent = useCallback(() => {
     void navigate({
       replace: true,
@@ -48,7 +45,6 @@ export function AgentsRouteEntry() {
           <AgentsDirectory
             workspaceId={workspaceId}
             selectedAgentId={agentId}
-            onSelectAgent={selectAgent}
             onClearAgent={clearAgent}
           />
         ),

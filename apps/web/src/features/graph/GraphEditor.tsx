@@ -35,11 +35,14 @@ import type {
 
 import {
   useAgentsQuery,
+  useRunQuery,
   useSaveGraphMutation,
+  useStartWorkflowRunMutation,
   useWorkspaceDetailsQuery,
   useWorkflowQuery,
   queryKeys,
 } from '../../shared/api/query'
+import { useCancelRunMutation } from '../../shared/api/runActions'
 import { motionEnabled, usePresence } from '../../shared/ui/usePresence'
 import { useDismissableSurface, type SurfaceDismissReason } from '../../shared/ui/useDismissableSurface'
 import { useTheme } from '../theme'
@@ -71,6 +74,7 @@ import {
 } from './store'
 import type { GraphEdge, GraphHandleSide, GraphNode } from './types'
 import './graph.css'
+import './execution-controls.css'
 
 export interface WorkflowGraphProps {
   workspaceId: string
@@ -216,8 +220,8 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
         <span className="workflow-agent-node-label">{data.label}</span>
       </button>
       <button
-        ref={triggerRef}
         type="button"
+        ref={triggerRef}
         className="workflow-agent-node-menu-trigger nodrag"
         aria-label={`Open actions for ${data.label}`}
         title="Node actions"
@@ -412,6 +416,10 @@ export function GraphEditor({
   const updateDraft = useGraphDraftStore((state) => state.updateDraft)
   const discardDraft = useGraphDraftStore((state) => state.discardDraft)
   const [notice, setNotice] = useState<{ kind: 'success' | 'error' | 'info'; text: string }>()
+  const [activeRunId, setActiveRunId] = useState<string | undefined>(() => runFacts?.find((run) =>
+    run.workflowId === workflow.id && run.executionState !== 'completed',
+  )?.id)
+  const startLock = useRef(Boolean(activeRunId))
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
   const [openMenuNodeId, setOpenMenuNodeId] = useState<string>()
   const [enteringEdgeId, setEnteringEdgeId] = useState<string>()
@@ -434,6 +442,27 @@ export function GraphEditor({
     [openMenuNodeId],
   )
   const saveMutation = useSaveGraphMutation()
+  const startRunMutation = useStartWorkflowRunMutation()
+  const cancelRunMutation = useCancelRunMutation()
+  const runQuery = useRunQuery(workspaceId, activeRunId ?? '', {
+    enabled: Boolean(activeRunId),
+    refetchInterval: (query) => query.state.data?.run.executionState === 'completed' ? false : 1_000,
+  })
+
+  useEffect(() => {
+    const run = runQuery.data?.run
+    if (!run || run.id !== activeRunId || run.executionState !== 'completed') return
+    startLock.current = false
+    void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) })
+    if (run.outcome === 'succeeded') {
+      setNotice({ kind: 'success', text: 'Workflow completed with a durable result.' })
+    } else {
+      setNotice({
+        kind: 'error',
+        text: run.result?.error?.message ?? `Workflow finished with outcome ${run.outcome}.`,
+      })
+    }
+  }, [activeRunId, queryClient, runQuery.data, workspaceId])
 
   useEffect(() => {
     if (!enteringEdgeId) return
@@ -490,6 +519,27 @@ export function GraphEditor({
     }
     return [...catalogById.values()]
   }, [agents, deletedAgentIdSet, localAgents])
+
+  const executionPolicy = displayedWorkflow.executionPolicy ?? {
+    maxParallelism: Math.max(1, displayedWorkflow.nodes.length),
+    maxNodeExecutions: Math.max(1, displayedWorkflow.nodes.length),
+  }
+  const executionLimitExceeded = !onSaveSession && executionPolicy.maxNodeExecutions < displayedWorkflow.nodes.length
+  const startDisabled = startRunMutation.isPending
+    || Boolean(activeRunId && runQuery.data?.run.executionState !== 'completed')
+  const hasUnsavedAgentSettings = displayedWorkflow.nodes.some((node) => {
+    const local = localAgents.find((agent) => agent.id === node.agentId)
+    const persisted = agents.find((agent) => agent.id === node.agentId)
+    return local && (!persisted || (['harness', 'model', 'effort', 'fastMode', 'configurationVersionId'] as const)
+      .some((key) => local[key] !== persisted[key]))
+  })
+  const updateExecutionLimit = (key: 'maxNodeExecutions' | 'maxParallelism', value: number) => {
+    if (!Number.isInteger(value) || value < 1) return
+    updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => ({
+      ...saved,
+      executionPolicy: { ...executionPolicy, [key]: value },
+    }))
+  }
 
   useEffect(() => {
     if (selectedAgentId && deletedAgentIdSet.has(selectedAgentId)) onClearAgent?.()
@@ -680,7 +730,11 @@ export function GraphEditor({
   }, [discardDraft, workflowKey])
 
   const handleSave = useCallback(() => {
-    if (!isDirty) return
+    if (!isDirty && onSaveSession) return
+    if (executionLimitExceeded) {
+      setNotice({ kind: 'error', text: 'Review the execution limit below before saving this graph.' })
+      return
+    }
     const submittedWorkflow = displayedWorkflow
     setNotice(undefined)
 
@@ -729,7 +783,42 @@ export function GraphEditor({
         },
       },
     )
-  }, [discardDraft, displayedWorkflow, isDirty, onSaveSession, queryClient, saveMutation, workspaceId, workflowKey])
+  }, [discardDraft, displayedWorkflow, executionLimitExceeded, isDirty, onSaveSession, queryClient, saveMutation, workspaceId, workflowKey])
+
+  const handleStart = useCallback(() => {
+    if (onSaveSession) {
+      setNotice({ kind: 'info', text: 'Save this workflow to the backend before starting it.' })
+      return
+    }
+    if (isDirty) {
+      setNotice({ kind: 'info', text: 'Save the current graph before starting the workflow.' })
+      return
+    }
+    if (hasUnsavedAgentSettings) {
+      setNotice({ kind: 'error', text: 'This graph uses local agent settings. Save those settings in the Agents directory, then save the graph before starting.' })
+      return
+    }
+    if (startLock.current || startDisabled) return
+    startLock.current = true
+    setNotice(undefined)
+    startRunMutation.mutate(
+      { workspaceId, workflowId: displayedWorkflow.id, input: {} },
+      {
+        onSuccess: ({ run }) => {
+          setActiveRunId(run.id)
+          void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) })
+          setNotice({ kind: 'info', text: `Run ${run.id} was queued.` })
+        },
+        onError: (error) => {
+          startLock.current = false
+          setNotice({
+            kind: 'error',
+            text: `Workflow could not start: ${graphErrorMessage(error, 'The backend rejected the run.')}`,
+          })
+        },
+      },
+    )
+  }, [displayedWorkflow.id, hasUnsavedAgentSettings, isDirty, onSaveSession, queryClient, startDisabled, startRunMutation, workspaceId])
 
   const closeAgentPicker = useCallback(() => {
     setAgentPickerOpen(false)
@@ -850,10 +939,8 @@ export function GraphEditor({
             className="workflow-graph-run"
             aria-label="Start workflow"
             title="Start workflow"
-            onClick={() => setNotice({
-              kind: 'info',
-              text: 'Workflow execution is not connected in Phase 1.',
-            })}
+            disabled={startDisabled}
+            onClick={handleStart}
           >
             <Play aria-hidden="true" size={16} />
           </button>
@@ -876,16 +963,73 @@ export function GraphEditor({
 
         {isDirty ? (
           <div className="workflow-graph-actions" aria-label="Graph actions">
-            <button type="button" className="workflow-graph-action workflow-graph-action-quiet" onClick={handleDiscard} disabled={!onSaveSession && saveMutation.isPending}>
+            <button type="button" className="workflow-graph-action workflow-graph-action-quiet" onClick={handleDiscard} disabled={!isDirty || (!onSaveSession && saveMutation.isPending)}>
               Discard
             </button>
-            <button type="button" className="workflow-graph-action workflow-graph-action-primary" onClick={handleSave} disabled={!onSaveSession && saveMutation.isPending}>
+            <button type="button" className="workflow-graph-action workflow-graph-action-primary" onClick={handleSave} disabled={executionLimitExceeded || (!onSaveSession && saveMutation.isPending)}>
               {!onSaveSession && saveMutation.isPending ? 'Saving…' : 'Save graph'}
             </button>
           </div>
         ) : null}
 
+        {!isDirty && !onSaveSession ? (
+          <div className="workflow-graph-actions" aria-label="Workflow settings">
+            <button type="button" className="workflow-graph-action" onClick={handleSave}
+              disabled={saveMutation.isPending || executionLimitExceeded}
+              title="Create a workflow version pinned to the current saved agent configurations">
+              {saveMutation.isPending ? 'Saving…' : 'Save agent settings'}
+            </button>
+          </div>
+        ) : null}
+
+        <details className="workflow-execution-limits" open={executionLimitExceeded || undefined}>
+          <summary>Execution limits</summary>
+          <label>
+            Maximum node executions
+            <input type="number" min={1} step={1} value={executionPolicy.maxNodeExecutions}
+              aria-invalid={executionLimitExceeded}
+              onChange={(event) => updateExecutionLimit('maxNodeExecutions', event.target.valueAsNumber)} />
+          </label>
+          <label>
+            Maximum parallel agents
+            <input type="number" min={1} step={1} value={executionPolicy.maxParallelism}
+              onChange={(event) => updateExecutionLimit('maxParallelism', event.target.valueAsNumber)} />
+          </label>
+          {executionLimitExceeded ? (
+            <p role="alert">This graph has {displayedWorkflow.nodes.length} steps, but its execution limit is {executionPolicy.maxNodeExecutions}. Raise the limit explicitly or remove a step before saving.</p>
+          ) : <p>These safety limits are saved with each workflow version.</p>}
+        </details>
+
         <div className="workflow-graph-notifications" data-testid="workflow-graph-notifications">
+          {activeRunId ? (
+            <section className="workflow-run-status" data-testid="workflow-run-status" aria-live="polite">
+              <strong>Run {runQuery.data?.run.executionState ?? (runQuery.isError ? 'unavailable' : 'loading')}</strong>
+              <span>{activeRunId}</span>
+              {runQuery.data?.run.executionState === 'interrupted' ? (
+                <p>Execution ownership was lost. Inspect native work before starting again. Cancel closes this run record without replaying the interrupted attempt.</p>
+              ) : null}
+              {runQuery.data?.run.executionState !== 'completed' ? (
+                <button type="button" disabled={cancelRunMutation.isPending}
+                  onClick={() => cancelRunMutation.mutate({ workspaceId, runId: activeRunId }, {
+                    onError: (error) => setNotice({ kind: 'error', text: graphErrorMessage(error, 'The run could not be canceled.') }),
+                  })}>
+                  {cancelRunMutation.isPending ? 'Canceling…' : 'Cancel run'}
+                </button>
+              ) : null}
+              {runQuery.isError ? <button type="button" onClick={() => void runQuery.refetch()}>Retry run status</button> : null}
+              {runQuery.data?.executions.map((execution) => (
+                <span key={execution.id}>
+                  {execution.agentId}: {execution.state}
+                  {execution.nativeSessionId ? ` · ${execution.nativeSessionId}` : ''}
+                </span>
+              ))}
+              {runQuery.data?.run.result?.output !== undefined ? (
+                <pre>{typeof runQuery.data.run.result.output === 'string'
+                  ? runQuery.data.run.result.output
+                  : JSON.stringify(runQuery.data.run.result.output, null, 2)}</pre>
+              ) : null}
+            </section>
+          ) : null}
           {onSaveSession ? (
             <p
               className="workflow-graph-session-notice"
@@ -993,6 +1137,7 @@ export function WorkflowGraph({ workspaceId, workflowId, selectedAgentId, onSele
 
   return (
     <GraphEditor
+      key={`${workspaceId}:${workflowId}`}
       workspaceId={workspaceId}
       workflow={workflowQuery.data.workflow}
       agents={agentsQuery.data.agents}

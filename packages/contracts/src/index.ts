@@ -56,7 +56,7 @@ export type HarnessSummary = z.infer<typeof HarnessSummarySchema>;
 
 export const AgentHarnessSchema = z.enum(["codex", "opencode"]);
 export type AgentHarness = z.infer<typeof AgentHarnessSchema>;
-export const AgentEffortSchema = z.enum(["low", "medium", "high", "xhigh"]);
+export const AgentEffortSchema = z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]);
 export type AgentEffort = z.infer<typeof AgentEffortSchema>;
 
 /** A Skill Hub reference pinned when an agent configuration version is created. */
@@ -75,15 +75,53 @@ export const AgentPromptSchema = z
   .strict();
 export type AgentPrompt = z.infer<typeof AgentPromptSchema>;
 
-export const HarnessConfigurationSchema = z
+export const CodexHarnessConfigurationSchema = z
   .object({
-    harness: AgentHarnessSchema,
+    harness: z.literal("codex"),
     model: z.string().trim().min(1),
-    effort: AgentEffortSchema,
-    fastMode: z.boolean(),
+    reasoningEffort: AgentEffortSchema,
+    sandbox: z.enum(["read-only", "workspace-write"]),
+    serviceTier: z.enum(["standard", "priority"]),
   })
   .strict();
+export type CodexHarnessConfiguration = z.infer<typeof CodexHarnessConfigurationSchema>;
+
+export const OpenCodeHarnessConfigurationSchema = z
+  .object({
+    harness: z.literal("opencode"),
+    model: z.string().trim().min(1),
+    variant: z.enum(["low", "high", "max"]),
+    nativeAgent: z.string().trim().min(1),
+    thinking: z.boolean(),
+    autoApprove: z.boolean(),
+  })
+  .strict();
+export type OpenCodeHarnessConfiguration = z.infer<typeof OpenCodeHarnessConfigurationSchema>;
+
+/** Harness settings stay discriminated because native CLIs expose different capabilities. */
+export const HarnessConfigurationSchema = z.discriminatedUnion("harness", [
+  CodexHarnessConfigurationSchema,
+  OpenCodeHarnessConfigurationSchema,
+]);
 export type HarnessConfiguration = z.infer<typeof HarnessConfigurationSchema>;
+
+export const HarnessQualificationSchema = z
+  .object({
+    harness: AgentHarnessSchema,
+    version: z.string().trim().min(1),
+    authenticated: z.boolean(),
+    ready: z.boolean(),
+    structuredEvents: z.boolean(),
+    supportsResume: z.boolean(),
+    supportsCancellation: z.boolean(),
+    supportsWorkingDirectory: z.boolean(),
+    supportsStartupPrompt: z.boolean(),
+    supportedNativeTools: z.array(z.string().trim().min(1)),
+    supportedSettings: z.array(z.string().trim().min(1)),
+    unsupportedCapabilities: z.array(z.string().trim().min(1)),
+  })
+  .strict();
+export type HarnessQualification = z.infer<typeof HarnessQualificationSchema>;
 
 /** An Agent is a separately addressable worker; workflow nodes reference it by agentId. */
 export const AgentSchema = z
@@ -243,6 +281,7 @@ export const WorkflowVersionSchema = z
     workspaceId: IdSchema,
     workflowId: IdSchema,
     version: z.number().int().positive(),
+    entryNodeId: IdSchema,
     definition: WorkflowDefinitionSchema,
     agentConfigurationVersionIds: z.record(IdSchema, IdSchema),
     contentHash: z.string().trim().min(1),
@@ -269,6 +308,13 @@ export const WorkflowVersionSchema = z
         code: z.ZodIssueCode.custom,
         path: ["definition", "version"],
         message: "definition.version must match version",
+      });
+    }
+    if (!snapshot.definition.nodes.some((node) => node.id === snapshot.entryNodeId)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["entryNodeId"],
+        message: "entryNodeId must reference a node in the workflow version",
       });
     }
     if (!snapshot.definition.executionPolicy) {
@@ -447,6 +493,7 @@ export const HarnessExecutionSchema = z
     attempt: z.number().int().positive(),
     parallelGroupId: IdSchema.optional(),
     nativeSessionId: IdSchema.optional(),
+    input: z.json(),
     state: HarnessExecutionStateSchema,
     result: ExecutionResultSchema.optional(),
     createdAt: TimestampSchema,
@@ -549,6 +596,18 @@ export const RunActivitySchema = z
   .strict();
 export type RunActivity = z.infer<typeof RunActivitySchema>;
 
+/** One unmodified machine-readable event emitted by a native harness process. */
+export const HarnessNativeEventSchema = z
+  .object({
+    executionId: IdSchema,
+    sequence: z.number().int().nonnegative(),
+    type: z.string().trim().min(1),
+    occurredAt: TimestampSchema,
+    payload: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+export type HarnessNativeEvent = z.infer<typeof HarnessNativeEventSchema>;
+
 /** Command handed to a harness adapter when initializing a new native session. */
 export const HarnessExecutionRequestSchema = z
   .object({
@@ -556,6 +615,7 @@ export const HarnessExecutionRequestSchema = z
     runId: IdSchema,
     workspaceId: IdSchema,
     workflowNodeId: IdSchema,
+    workingDirectory: z.string().trim().min(1),
     configuration: AgentConfigurationVersionSchema,
     input: z.json(),
   })
@@ -737,7 +797,13 @@ export const GetRunRequestSchema = z
   .object({ workspaceId: IdSchema, runId: IdSchema })
   .strict();
 export type GetRunRequest = z.infer<typeof GetRunRequestSchema>;
-export const GetRunResponseSchema = z.object({ run: WorkflowRunSchema }).strict();
+export const GetRunResponseSchema = z
+  .object({
+    run: WorkflowRunSchema,
+    executions: z.array(HarnessExecutionSchema),
+    activity: z.array(RunActivitySchema),
+  })
+  .strict();
 export type GetRunResponse = z.infer<typeof GetRunResponseSchema>;
 
 export const ListRunActivityRequestSchema = z

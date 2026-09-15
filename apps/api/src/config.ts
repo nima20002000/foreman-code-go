@@ -15,6 +15,10 @@ const EnvironmentSchema = z.object({
   DATABASE_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().max(2147483647).default(1000),
   READINESS_TIMEOUT_MS: z.coerce.number().int().positive().max(2147483647).default(2000),
   LANGGRAPH_CHECKPOINT_SCHEMA: databaseSchemaName.default('langgraph'),
+  HARNESS_WORKSPACE_ROOT: z.string().trim().min(1).default('/tmp/graphql-harness-runs'),
+  HARNESS_TIMEOUT_MS: z.coerce.number().int().positive().default(300000),
+  CODEX_BINARY: z.string().trim().min(1).default('codex'),
+  OPENCODE_BINARY: z.string().trim().min(1).default('opencode'),
 })
 
 export interface ApiConfig {
@@ -29,6 +33,12 @@ export interface ApiConfig {
   }
   checkpoints: {
     schema: string
+  }
+  harnesses: {
+    workspaceRoot: string
+    timeoutMs: number
+    codexBinary: string
+    openCodeBinary: string
   }
 }
 
@@ -45,5 +55,11 @@ export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
       queryTimeoutMs: parsed.DATABASE_QUERY_TIMEOUT_MS,
     },
     checkpoints: { schema: parsed.LANGGRAPH_CHECKPOINT_SCHEMA },
+    harnesses: {
+      workspaceRoot: parsed.HARNESS_WORKSPACE_ROOT,
+      timeoutMs: parsed.HARNESS_TIMEOUT_MS,
+      codexBinary: parsed.CODEX_BINARY,
+      openCodeBinary: parsed.OPENCODE_BINARY,
+    },
   }
 }

@@ -1,3 +1,13 @@
 packages:
   - apps/*
   - packages/*
+
+autoInstallPeers: false
+sharedWorkspaceLockfile: true
+minimumReleaseAge: 2880
+minimumReleaseAgeStrict: true
+minimumReleaseAgeIgnoreMissingTime: false
+
+allowBuilds:
+  esbuild: true
+  msw: true

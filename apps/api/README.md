@@ -1,8 +1,7 @@
 # `@graphql/api`
 
-This package is the ENG-01 backend foundation. It owns process composition and
-real infrastructure but does not yet implement product persistence or agent
-execution.
+This package owns the real local API, product persistence, LangGraph workflow
+mapping, and native Codex/OpenCode process adapters.
 
 ## Runtime boundaries
 
@@ -13,31 +12,38 @@ execution.
 - `src/infrastructure/database.ts` owns the application `pg` pool.
 - `src/infrastructure/checkpoints.ts` owns `PostgresSaver`; its `saver`
   property is the checkpointer ENG-04 passes to compiled LangGraph workflows.
-- `src/modules/workflows/port.ts` is the ENG-02 workflow-version persistence
-  boundary.
-- `src/modules/harnesses/port.ts` is the ENG-03 native-session adapter
-  boundary.
-- `src/modules/runs/port.ts` is the run persistence and ENG-04 orchestration
-  boundary.
-- `src/modules/activity/port.ts` is the ENG-05 activity persistence/streaming
-  boundary.
+- `src/modules/workflows/postgres.ts` persists definitions and immutable
+  versions, including the explicit first-added entry node.
+- `src/modules/harnesses` qualifies and runs the installed Codex/OpenCode CLIs
+  behind a shared process-lifecycle interface.
+- `src/modules/runs/engine.ts` compiles saved DAGs into LangGraph and supplies
+  only accepted PostgreSQL results to downstream nodes.
+- `src/modules/runs/postgres.ts` persists runs, occurrences, accepted results,
+  raw native events, and normalized activity.
 
-Only `/health/live` and `/health/ready` are registered today. Returning 404 for
-the frontend product routes is intentional; MSW remains the product data source
-until ENG-02 adds real repositories and handlers.
+The real product slice implements workspace/agent/workflow reads, workflow
+saves, run starts, run detail reads, and cancellation. Conversation, resource,
+and later product surfaces remain outside this milestone.
 
 ## Local run
 
 From the repository root:
 
 ```sh
-pnpm db:up
+corepack pnpm db:up
 cp apps/api/.env.example apps/api/.env
-pnpm dev:api
+corepack pnpm dev:api
 curl http://127.0.0.1:3000/health/ready
+VITE_ENABLE_MSW=false corepack pnpm dev
 ```
 
-Stop PostgreSQL with `pnpm db:down`. Add `-v` manually only when you explicitly
+Run the destructive-free real harness acceptance gate while PostgreSQL is up:
+
+```sh
+corepack pnpm test:acceptance
+```
+
+Stop PostgreSQL with `corepack pnpm db:down`. Add `-v` manually only when you explicitly
 want to delete the local database volume.
 
 ## Production build and regression checks

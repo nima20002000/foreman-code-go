@@ -2,9 +2,9 @@
 
 `graphql` is a pnpm TypeScript monorepo for an agent workspace. The project
 name is `graphql`; it is not a GraphQL protocol or query-engine implementation.
-The frontend remains a wireframe-first product surface backed by MSW. ENG-01
-adds the first real backend foundation without yet replacing those product
-mocks.
+The frontend can run either against deterministic MSW fixtures or the real
+local backend. The real path persists saved workflow versions and runs, then
+uses LangGraph to coordinate native Codex and OpenCode headless sessions.
 
 ## Workspace
 
@@ -22,25 +22,30 @@ semantics, UX decisions, backend handoff boundary, and verification record, see
 ## Commands
 
 ```sh
-pnpm install
-pnpm dev
-pnpm db:up
+corepack pnpm install
+corepack pnpm dev
+corepack pnpm db:up
 cp apps/api/.env.example apps/api/.env
-pnpm dev:api
-pnpm typecheck
-pnpm lint
-pnpm test
-pnpm test:integration
-pnpm build
+corepack pnpm dev:api
+corepack pnpm typecheck
+corepack pnpm lint
+corepack pnpm test
+corepack pnpm test:integration
+corepack pnpm test:acceptance
+corepack pnpm build
 ```
+
+The repository pins pnpm 11.27.0 and rejects plain `npm install`. pnpm enforces
+a strict 2,880-minute (48-hour) minimum release age for direct and transitive
+registry packages, with no exclusions and no missing-publish-time fallback.
 
 `GET /health/live` reports process liveness. `GET /health/ready` checks both
 the application PostgreSQL pool and the LangGraph checkpoint saver. The API
 fails startup if either dependency cannot initialize.
 
-`pnpm test:integration` requires the PostgreSQL service. It writes a real
+`corepack pnpm test:integration` requires the PostgreSQL service. It writes a real
 LangGraph checkpoint, closes the saver, reopens it, and proves the checkpoint
-is durable. `pnpm db:down` stops the local service without deleting its named
+is durable. `corepack pnpm db:down` stops the local service without deleting its named
 volume.
 
 The checked-in browser mock starts by default during development so the
@@ -52,14 +57,13 @@ Set `VITE_ENABLE_MSW=false` to disable the mocks when running Vite against a
 real API:
 
 ```sh
-VITE_ENABLE_MSW=false pnpm dev
+VITE_ENABLE_MSW=false corepack pnpm dev
 ```
 
-The ENG-01 API intentionally does not implement the frontend's workspace,
-workflow, conversation, or resource routes. Those remain MSW-backed until the
-corresponding persistence/API workstream lands. See
-[`docs/ENG-01-backend-foundation.md`](./docs/ENG-01-backend-foundation.md) for
-the real/mocked boundary and the extension interfaces.
+With MSW disabled, the Website workspace, saved workflow graph, Start action,
+and run status/result reads use the real backend through Vite's `/api` proxy.
+See [`docs/ENG-02-real-workflow-engine.md`](./docs/ENG-02-real-workflow-engine.md)
+for the qualified harness contract and acceptance workflow.
 
 The interface starts in dark mode. Use the workspace-header theme button to
 switch to light mode; the explicit choice is stored locally and restored before

@@ -13,6 +13,7 @@ const version: WorkflowVersion = {
   workspaceId: "workspace-1",
   workflowId: "workflow-1",
   version: 1,
+  entryNodeId: "node-1",
   definition: {
     id: "workflow-1",
     workspaceId: "workspace-1",
@@ -85,7 +86,7 @@ describe("executable workflow graph integrity", () => {
 const attempt = {
   id: "attempt-1", runId: "run-1", workflowNodeId: "node-1",
   agentId: "agent-1", agentConfigurationVersionId: "config-1",
-  attempt: 1, createdAt: timestamp,
+  attempt: 1, input: {}, createdAt: timestamp,
 };
 const terminalFields = [
   { result: { outcome: "succeeded" } },

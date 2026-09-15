@@ -1,9 +1,11 @@
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import {
   ApiErrorResponseSchema,
+  CreateRunRequestSchema,
   CreateMessageRequestSchema,
   SaveWorkflowRequestSchema,
   type WorkflowDefinition,
+  type WorkflowRun,
 } from '@graphql/contracts'
 
 import {
@@ -76,6 +78,22 @@ function scenarioResponse() {
   })
 }
 
+const mockStartedRun: WorkflowRun = {
+  id: 'run-mock-started',
+  workspaceId: 'workspace-1',
+  workflowId: 'workflow-editor-test',
+  workflowVersionId: 'workflow-editor-test-v1',
+  agentConfigurationVersionIds: {},
+  executionCondition: { kind: 'manual' },
+  executionState: 'completed',
+  outcome: 'succeeded',
+  input: {},
+  result: { outcome: 'succeeded', output: { text: 'Mock test result' } },
+  createdAt: '2026-01-01T00:00:00.000Z',
+  startedAt: '2026-01-01T00:00:00.000Z',
+  finishedAt: '2026-01-01T00:00:01.000Z',
+}
+
 export const handlers: RequestHandler[] = [
   // Mock controls are intentionally separate from product resource endpoints.
   http.get('/api/mock/scenario', () => scenarioResponse()),
@@ -118,6 +136,33 @@ export const handlers: RequestHandler[] = [
     setMockFailureMode(value)
     return scenarioResponse()
   }),
+
+  http.post('/api/workspaces/:workspaceId/workflows/:workflowId/runs', async ({ request, params }) => {
+    const body = await readJson(request)
+    const parsed = CreateRunRequestSchema.safeParse(body)
+    if (!parsed.success) return apiError('INVALID_RUN', 'The run request is invalid.', 400)
+    return HttpResponse.json({
+      run: {
+        ...mockStartedRun,
+        workspaceId: String(params.workspaceId),
+        workflowId: String(params.workflowId),
+        executionState: 'queued',
+        outcome: 'pending',
+        result: undefined,
+        startedAt: undefined,
+        finishedAt: undefined,
+      },
+    }, { status: 202 })
+  }),
+  http.get('/api/workspaces/:workspaceId/runs/:runId', ({ params }) => HttpResponse.json({
+    run: {
+      ...mockStartedRun,
+      id: String(params.runId),
+      workspaceId: String(params.workspaceId),
+    },
+    executions: [],
+    activity: [],
+  })),
 
   http.get('/api/workspaces/:workspaceId', ({ params }) => {
     const failure = readFailure()

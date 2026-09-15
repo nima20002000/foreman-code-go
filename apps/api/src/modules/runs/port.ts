@@ -25,4 +25,6 @@ export interface RunRepository {
 export interface WorkflowOrchestrator {
   start(runId: string): Promise<void>
   resume(runId: string): Promise<void>
+  cancel(runId: string): Promise<boolean>
+  shutdown(): Promise<void>
 }

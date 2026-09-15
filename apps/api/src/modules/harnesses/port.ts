@@ -2,16 +2,33 @@ import type {
   AgentHarness,
   ExecutionResult,
   HarnessExecutionRequest,
+  HarnessQualification,
 } from '@graphql/contracts'
 
-export interface HarnessSession {
-  nativeSessionId: string
+export interface NativeEventInput {
+  type: string
+  payload: Record<string, unknown>
 }
 
-/** ENG-03 owns native process/session details; orchestration depends only on this port. */
+export interface HarnessExecutionCallbacks {
+  signal: AbortSignal
+  onSession(nativeSessionId: string): Promise<void>
+  onEvent(event: NativeEventInput): Promise<void>
+}
+
+/** Product Agent execution boundary; native Agent/session concepts stay inside adapters. */
 export interface HarnessAdapter {
   readonly harness: AgentHarness
-  start(request: HarnessExecutionRequest): Promise<HarnessSession>
-  cancel(nativeSessionId: string): Promise<void>
-  result(nativeSessionId: string): Promise<ExecutionResult | undefined>
+  qualify(request: HarnessExecutionRequest, signal?: AbortSignal): Promise<HarnessQualification>
+  execute(request: HarnessExecutionRequest, callbacks: HarnessExecutionCallbacks): Promise<ExecutionResult>
+  resume(
+    request: HarnessExecutionRequest,
+    nativeSessionId: string,
+    callbacks: HarnessExecutionCallbacks,
+  ): Promise<ExecutionResult>
+  cancel(executionId: string): Promise<boolean>
+}
+
+export interface HarnessResolver {
+  resolve(harness: AgentHarness): HarnessAdapter
 }

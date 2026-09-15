@@ -56,7 +56,7 @@ describe('AgentsDirectoryContent', () => {
 
     expect(screen.getByRole('heading', { name: 'Agents', level: 1 })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'Researcher' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Researcher, researcher, Available' })).toBeVisible()
+    expect(screen.getByLabelText('Researcher, researcher, Available')).toBeVisible()
     expect(screen.getByText('researcher · Available')).toBeVisible()
     expect(screen.queryByText('Finds and summarizes source material.')).not.toBeInTheDocument()
     expect(screen.queryByText('Workspace data')).not.toBeInTheDocument()
@@ -80,7 +80,7 @@ describe('AgentsDirectoryContent', () => {
     await user.click(screen.getByRole('button', { name: 'Add local agent' }))
 
     expect(screen.getByRole('heading', { name: 'Planner' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Planner, planning, Local session' })).toBeVisible()
+    expect(screen.getByLabelText('Planner, planning, Local session')).toBeVisible()
     expect(screen.getByText('planning · Local session')).toBeVisible()
     expect(sessionStorage.getItem('graphql-local-agents:workspace-1')).toContain('Planner')
   })
@@ -146,7 +146,7 @@ describe('AgentsDirectoryContent', () => {
     await user.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
     await user.click(screen.getByRole('button', { name: 'Remove Researcher' }))
 
-    expect(screen.queryByRole('button', { name: /Researcher, researcher/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Researcher' })).not.toBeInTheDocument()
   })
 
   it('edits agent settings and confirms before closing dirty changes', async () => {
@@ -157,9 +157,28 @@ describe('AgentsDirectoryContent', () => {
     const settings = screen.getByRole('dialog', { name: 'Researcher actions' })
     expect(within(settings).getByRole('textbox', { name: 'Name' })).toHaveValue('Researcher')
     expect(within(settings).getByRole('combobox', { name: 'Harness' })).toHaveValue('codex')
-    expect(within(settings).getByRole('combobox', { name: 'Model' })).toBeVisible()
+    const modelSelect = within(settings).getByRole('combobox', { name: 'Model' })
+    expect(within(modelSelect).getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'gpt-5.6-luna',
+      'gpt-5.6-terra',
+      'gpt-5.6-sol',
+      'gpt-6-astra',
+    ])
     expect(within(settings).getByRole('combobox', { name: 'Effort' })).toHaveValue('medium')
+    expect(within(settings).getByRole('option', { name: 'Max' })).toBeVisible()
     expect(within(settings).getByRole('checkbox', { name: 'Fast mode' })).toBeVisible()
+
+    await user.selectOptions(modelSelect, 'gpt-6-astra')
+    expect(within(settings).getByRole('option', { name: 'Ultra' })).toBeVisible()
+    await user.selectOptions(within(settings).getByRole('combobox', { name: 'Effort' }), 'ultra')
+    await user.selectOptions(modelSelect, 'gpt-5.6-luna')
+    expect(within(settings).getByRole('combobox', { name: 'Effort' })).toHaveValue('max')
+    expect(within(settings).queryByRole('option', { name: 'Ultra' })).not.toBeInTheDocument()
+
+    await user.selectOptions(within(settings).getByRole('combobox', { name: 'Harness' }), 'opencode')
+    expect(modelSelect).toHaveValue('opencode-go/deepseek-v4.1-flash')
+    expect(within(settings).queryByRole('checkbox', { name: 'Fast mode' })).not.toBeInTheDocument()
+    expect(within(settings).getByRole('combobox', { name: 'Harness' })).not.toHaveFocus()
 
     await user.clear(within(settings).getByRole('textbox', { name: 'Name' }))
     await user.type(within(settings).getByRole('textbox', { name: 'Name' }), 'Lead Researcher')
@@ -182,82 +201,13 @@ describe('AgentsDirectoryContent', () => {
     )
   })
 
-  it('exposes single selection through an accessible card button for mouse and keyboard', async () => {
-    const onSelectAgent = vi.fn()
-    const onClearAgent = vi.fn()
-    const user = userEvent.setup()
-    const view = render(
-      <AgentsDirectoryContent
-        workspaceId="workspace-1"
-        agents={agents}
-        onSelectAgent={onSelectAgent}
-        onClearAgent={onClearAgent}
-      />,
-    )
-    const card = screen.getByRole('button', { name: 'Researcher, researcher, Available' })
+  it('renders agent cards as non-selectable content with only an actions control', () => {
+    render(<AgentsDirectoryContent workspaceId="workspace-1" agents={agents} />)
 
-    await user.click(card)
-    expect(onSelectAgent).toHaveBeenLastCalledWith('agent-researcher')
-    card.focus()
-    await user.keyboard('{Enter}')
-    expect(onSelectAgent).toHaveBeenCalledTimes(2)
-
-    view.rerender(
-      <AgentsDirectoryContent
-        workspaceId="workspace-1"
-        agents={agents}
-        selectedAgentId="agent-researcher"
-        onSelectAgent={onSelectAgent}
-        onClearAgent={onClearAgent}
-      />,
-    )
-    expect(card).toHaveAttribute('aria-pressed', 'true')
-    expect(card).toHaveAttribute('data-selected', 'true')
-    expect(screen.getByRole('dialog', { name: 'Researcher' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Close agent details' })).toHaveFocus()
-
-    await user.keyboard('{Escape}')
-    expect(onClearAgent).toHaveBeenCalledOnce()
-  })
-
-  it('keeps detail-dialog inside clicks open and dismisses from its backdrop', () => {
-    const onClearAgent = vi.fn()
-    const { container } = render(
-      <AgentsDirectoryContent
-        workspaceId="workspace-1"
-        agents={agents}
-        selectedAgentId="agent-researcher"
-        onClearAgent={onClearAgent}
-      />,
-    )
-    const dialog = screen.getByRole('dialog', { name: 'Researcher' })
-    fireEvent.mouseDown(dialog)
-    expect(onClearAgent).not.toHaveBeenCalled()
-
-    const backdrop = container.querySelector('.agent-detail-backdrop')
-    if (!backdrop) throw new Error('Agent detail backdrop missing')
-    fireEvent.mouseDown(backdrop)
-    expect(onClearAgent).toHaveBeenCalledOnce()
-  })
-
-  it('closes the add modal when the agent detail surface takes over', async () => {
-    const user = userEvent.setup()
-    const view = render(<AgentsDirectoryContent workspaceId="workspace-1" agents={agents} />)
-    await user.click(screen.getByRole('button', { name: 'Add agent' }))
-    expect(screen.getByRole('dialog', { name: 'Add a local agent' })).toBeVisible()
-
-    view.rerender(
-      <AgentsDirectoryContent
-        workspaceId="workspace-1"
-        agents={agents}
-        selectedAgentId="agent-researcher"
-        onClearAgent={() => {}}
-      />,
-    )
-
-    expect(screen.queryByRole('dialog', { name: 'Add a local agent' })).not.toBeInTheDocument()
-    expect(screen.getByRole('dialog', { name: 'Researcher' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Close agent details' })).toHaveFocus()
+    expect(screen.queryByRole('button', { name: 'Researcher, researcher, Available' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Researcher' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open actions for Researcher' })).toBeVisible()
+    expect(screen.queryByRole('dialog', { name: 'Researcher' })).not.toBeInTheDocument()
   })
 
   it('dismisses the add modal from its backdrop, close control, or Escape and restores focus', async () => {
@@ -313,7 +263,7 @@ describe('AgentsDirectoryContent', () => {
   it('reorders cards with the accessible keyboard path and keeps order per workspace', async () => {
     const user = userEvent.setup()
     const view = render(<AgentsDirectoryContent workspaceId="workspace-1" agents={reorderAgents} />)
-    const researcher = screen.getByRole('button', { name: 'Researcher, researcher, Available' })
+    const researcher = screen.getByLabelText('Researcher, researcher, Available')
 
     researcher.focus()
     await user.keyboard('{Alt>}{ArrowDown}{/Alt}')
@@ -355,8 +305,7 @@ describe('AgentsDirectoryContent', () => {
       bottom: top + height,
       toJSON: () => ({}),
     }) as DOMRect
-    const onSelect = vi.fn()
-    render(<AgentsDirectoryContent workspaceId="workspace-1" agents={reorderAgents} onSelectAgent={onSelect} />)
+    render(<AgentsDirectoryContent workspaceId="workspace-1" agents={reorderAgents} />)
     const list = document.querySelector('.agent-directory-grid')
     if (!list) throw new Error('Agent grid missing')
     rects.set(list, makeRect(100, 170))
@@ -367,7 +316,7 @@ describe('AgentsDirectoryContent', () => {
     vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
       return rects.get(this) ?? makeRect(0, 0)
     })
-    const source = document.querySelector<HTMLButtonElement>('[data-agent-id="agent-reviewer"]')
+    const source = document.querySelector<HTMLDivElement>('[data-agent-id="agent-reviewer"]')
     if (!source) throw new Error('Reviewer card missing')
 
     fireEvent.pointerDown(source, {
@@ -403,7 +352,6 @@ describe('AgentsDirectoryContent', () => {
       'agent-researcher',
       'agent-builder',
     ])
-    expect(onSelect).not.toHaveBeenCalled()
     expect(screen.getByTestId('agent-reorder-announcement')).toHaveTextContent(
       'Moved Reviewer to position 1 of 3',
     )
