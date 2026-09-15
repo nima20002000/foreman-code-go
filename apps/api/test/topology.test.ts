@@ -17,6 +17,7 @@ function workflowVersion(): WorkflowVersion {
       workspaceId: 'workspace-1',
       name: 'Test',
       executionCondition: { kind: 'manual' },
+      requiredAgentCount: 3,
       version: 1,
       executionPolicy: { maxParallelism: 2, maxNodeExecutions: 3 },
       nodes: [
@@ -56,5 +57,13 @@ describe('LangGraph topology validation', () => {
     }
     expect(() => validateExecutableTopology(version)).toThrowError(DomainError)
     expect(() => validateExecutableTopology(version)).toThrow('uses routing not supported')
+  })
+
+  it('rejects a graph that no longer matches its declared agent count', () => {
+    const version = workflowVersion()
+    version.definition.nodes[2] = { ...version.definition.nodes[2]!, agentId: 'agent-b' }
+
+    expect(() => validateExecutableTopology(version)).toThrowError(DomainError)
+    expect(() => validateExecutableTopology(version)).toThrow('requires exactly 3 agents but references 2')
   })
 })

@@ -313,6 +313,8 @@ export const WorkflowDefinitionSchema = z
     name: z.string().trim().min(1),
     description: z.string().optional(),
     executionCondition: ExecutionConditionSchema,
+    /** Optional explicit cardinality invariant for workflows with a fixed agent topology. */
+    requiredAgentCount: z.number().int().positive().max(10_000).optional(),
     nodes: z.array(WorkflowNodeSchema),
     edges: z.array(WorkflowEdgeSchema),
     version: z.number().int().positive().optional(),

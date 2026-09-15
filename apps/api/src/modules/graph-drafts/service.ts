@@ -303,6 +303,9 @@ export class GraphDraftService {
       case 'workflow.reset_execution_limits':
         delete graph.executionPolicy
         return GraphDraftSchema.parse({ ...draft, graph })
+      case 'workflow.reset_required_agent_count':
+        delete graph.requiredAgentCount
+        return GraphDraftSchema.parse({ ...draft, graph })
       case 'node.rename': {
         const index = nodeIndex(graph, operation.nodeId)
         graph.nodes[index] = { ...graph.nodes[index]!, name: operation.name }
@@ -345,6 +348,9 @@ export class GraphDraftService {
       }
       case 'workflow.set_execution_limits':
         graph.executionPolicy = { maxParallelism: operation.maxParallelism, maxNodeExecutions: operation.maxNodeExecutions }
+        return GraphDraftSchema.parse({ ...draft, graph })
+      case 'workflow.set_required_agent_count':
+        graph.requiredAgentCount = operation.requiredAgentCount
         return GraphDraftSchema.parse({ ...draft, graph })
     }
   }

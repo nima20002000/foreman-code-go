@@ -144,6 +144,7 @@ const workflow = WorkflowDefinitionSchema.parse({
   name: 'Real three-agent handoff',
   description: 'Codex produces facts, OpenCode summarizes them, and Codex reviews the stored summary.',
   executionCondition: { kind: 'manual', description: 'Started by the operator.' },
+  requiredAgentCount: 3,
   nodes: [
     { id: 'node-researcher', agentId: 'agent-researcher', name: 'Researcher', position: { x: 120, y: 160 } },
     { id: 'node-developer', agentId: 'agent-developer', name: 'Summarizer', position: { x: 400, y: 160 } },

@@ -96,7 +96,7 @@ The selected project directory is the harness `workingDirectory`. GraphQL scratc
 
 This establishes where native agents start; it is not a filesystem sandbox. Codex/OpenCode native permissions and future runner isolation remain separate controls. The Settings copy states this explicitly.
 
-`graph_draft_apply` accepts only `agent.add`, `agent.rename`, `agent.configure`, `agent.clone`, `node.rename`, `node.set_initial_prompt`, `node.move`, `node.remove`, `edge.connect`, `edge.disconnect`, and `workflow.set_execution_limits`. Batches and Save require the expected revision. Save creates an immutable workflow version but does not Start. Start requires that exact current saved version and the expected workspace location revision, and returns a durable Run ID before asynchronous execution.
+`graph_draft_apply` accepts strict typed agent, node, edge, execution-limit, and required-agent-count operations. A workflow may declare `requiredAgentCount`; validation, Save, and Start then reject any graph whose number of distinct referenced agents differs. Batches and Save require the expected revision. Save creates an immutable workflow version but does not Start. Start requires that exact current saved version and the expected workspace location revision, and returns a durable Run ID before asynchronous execution.
 
 Archive retains versions, configurations, runs, results, and activity. Active work blocks archive; archive never silently cancels work. Stop reports `accepted`, `already_terminal`, or `not_owner`; an accepted request does not claim that the child process has already exited.
 

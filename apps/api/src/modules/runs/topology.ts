@@ -10,6 +10,14 @@ export interface ExecutableTopology {
 
 export function validateExecutableTopology(version: WorkflowVersion): ExecutableTopology {
   const nodeIds = new Set(version.definition.nodes.map((node) => node.id))
+  const agentCount = new Set(version.definition.nodes.map((node) => node.agentId)).size
+  if (version.definition.requiredAgentCount !== undefined && agentCount !== version.definition.requiredAgentCount) {
+    throw new DomainError(
+      'WORKFLOW_AGENT_COUNT_MISMATCH',
+      `Workflow requires exactly ${version.definition.requiredAgentCount} agents but references ${agentCount}.`,
+      409,
+    )
+  }
   const incoming = new Map([...nodeIds].map((nodeId) => [nodeId, [] as string[]]))
   const outgoing = new Map([...nodeIds].map((nodeId) => [nodeId, [] as string[]]))
 

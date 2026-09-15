@@ -32,4 +32,22 @@ describe('management graph diff', () => {
       'nodes.reorder',
     ])
   })
+
+  it('transmits an explicit required-agent-count change', () => {
+    expect(managementGraphOperations({
+      base,
+      next: { ...base, requiredAgentCount: 1 },
+      baseAgents: [agent],
+      nextAgents: [agent],
+      metadataRevisions: { 'agent-1': 2 },
+    })).toContainEqual({ type: 'workflow.set_required_agent_count', requiredAgentCount: 1 })
+
+    expect(managementGraphOperations({
+      base: { ...base, requiredAgentCount: 1 },
+      next: base,
+      baseAgents: [agent],
+      nextAgents: [agent],
+      metadataRevisions: { 'agent-1': 2 },
+    })).toContainEqual({ type: 'workflow.reset_required_agent_count' })
+  })
 })

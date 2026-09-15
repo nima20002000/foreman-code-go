@@ -345,6 +345,36 @@ describe('Operator MCP with PostgreSQL', () => {
       },
     }))
     changedDraft = (reconnected.value as { draft: { id: string; revision: number } }).draft
+    const mismatchedCount = structured(await client.callTool({
+      name: 'graph_draft_apply', arguments: {
+        workspaceId: workspace.id, workflowId: workflow.id, draftId: draft.id,
+        commandId: `required-count-mismatch-${randomUUID()}`, expectedRevision: changedDraft.revision,
+        operations: [{ type: 'workflow.set_required_agent_count', requiredAgentCount: 3 }],
+      },
+    }))
+    changedDraft = (mismatchedCount.value as { draft: { id: string; revision: number } }).draft
+    const rejectedCount = structured(await client.callTool({
+      name: 'graph_validate', arguments: { workspaceId: workspace.id, workflowId: workflow.id, draftId: draft.id },
+    })) as unknown as { valid: boolean; issues: Array<{ code: string }> }
+    expect(rejectedCount).toMatchObject({ valid: false, issues: [{ code: 'WORKFLOW_AGENT_COUNT_MISMATCH' }] })
+    const rejectedSave = await client.callTool({
+      name: 'graph_save', arguments: {
+        workspaceId: workspace.id, workflowId: workflow.id, draftId: draft.id,
+        commandId: `required-count-save-rejected-${randomUUID()}`, expectedRevision: changedDraft.revision,
+      },
+    })
+    expect(rejectedSave.isError).toBe(true)
+    expect(rejectedSave.structuredContent).toMatchObject({
+      error: { code: 'GRAPH_INVALID', details: { issues: [{ code: 'WORKFLOW_AGENT_COUNT_MISMATCH' }] } },
+    })
+    const correctedCount = structured(await client.callTool({
+      name: 'graph_draft_apply', arguments: {
+        workspaceId: workspace.id, workflowId: workflow.id, draftId: draft.id,
+        commandId: `required-count-corrected-${randomUUID()}`, expectedRevision: changedDraft.revision,
+        operations: [{ type: 'workflow.set_required_agent_count', requiredAgentCount: 2 }],
+      },
+    }))
+    changedDraft = (correctedCount.value as { draft: { id: string; revision: number } }).draft
     const validation = structured(await client.callTool({
       name: 'graph_validate', arguments: { workspaceId: workspace.id, workflowId: workflow.id, draftId: draft.id },
     }))

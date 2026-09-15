@@ -286,6 +286,10 @@ const ExecutionLimitsOperationSchema = z.object({
   maxParallelism: z.number().int().positive().max(100),
   maxNodeExecutions: z.number().int().positive().max(10_000),
 }).strict();
+const RequiredAgentCountOperationSchema = z.object({
+  type: z.literal("workflow.set_required_agent_count"),
+  requiredAgentCount: z.number().int().positive().max(10_000),
+}).strict();
 
 const NodeReplaceOperationSchema = z.object({
   type: z.literal("node.replace"), node: WorkflowNodeSchema,
@@ -300,6 +304,7 @@ const EdgePutOperationSchema = z.object({
   type: z.literal("edge.put"), edge: WorkflowEdgeSchema,
 }).strict();
 const ResetExecutionLimitsOperationSchema = z.object({ type: z.literal("workflow.reset_execution_limits") }).strict();
+const ResetRequiredAgentCountOperationSchema = z.object({ type: z.literal("workflow.reset_required_agent_count") }).strict();
 
 export const GraphDraftOperationSchema = z.discriminatedUnion("type", [
   NodeReplaceOperationSchema,
@@ -307,6 +312,8 @@ export const GraphDraftOperationSchema = z.discriminatedUnion("type", [
   EdgePutOperationSchema,
   EdgeOrderOperationSchema,
   ResetExecutionLimitsOperationSchema,
+  RequiredAgentCountOperationSchema,
+  ResetRequiredAgentCountOperationSchema,
   AgentAddOperationSchema,
   AgentRenameOperationSchema,
   AgentConfigureOperationSchema,

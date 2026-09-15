@@ -121,5 +121,10 @@ export function managementGraphOperations(input: {
   if (!same(input.base.executionPolicy, input.next.executionPolicy)) operations.push(input.next.executionPolicy
     ? { type: 'workflow.set_execution_limits', ...input.next.executionPolicy }
     : { type: 'workflow.reset_execution_limits' })
+  if (input.base.requiredAgentCount !== input.next.requiredAgentCount) operations.push(
+    input.next.requiredAgentCount === undefined
+      ? { type: 'workflow.reset_required_agent_count' }
+      : { type: 'workflow.set_required_agent_count', requiredAgentCount: input.next.requiredAgentCount },
+  )
   return operations
 }

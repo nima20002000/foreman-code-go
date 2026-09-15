@@ -96,6 +96,7 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
       ]
       const workflow = WorkflowDefinitionSchema.parse({
         id: workflowId, workspaceId, name: 'Real three-agent handoff', executionCondition: { kind: 'manual' },
+        requiredAgentCount: 3,
         nodes: [
           { id: nodeIds[0], agentId: agentIds[0], name: 'Researcher' },
           { id: nodeIds[1], agentId: agentIds[1], name: 'Summarizer' },
