@@ -35,18 +35,30 @@ import type {
   WorkflowRunSummary,
   WorkspaceDetailsResponse,
 } from '@graphql/contracts'
+import type { GraphDraft as ManagedGraphDraft } from '@graphql/contracts/management'
 
 import {
   useAgentsQuery,
   useHarnessDefaultsQuery,
   useRunQuery,
   useSaveGraphMutation,
+  useManagedGraphContextQuery,
+  useStartManagedRunMutation,
+  useStopManagedRunMutation,
   useStartWorkflowRunMutation,
   useWorkspaceDetailsQuery,
   useWorkflowQuery,
   queryKeys,
 } from '../../shared/api/query'
 import { useCancelRunMutation } from '../../shared/api/runActions'
+import { applyManagedGraphDraft, saveManagedGraphDraft } from '../../shared/api/client'
+import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
+import { managedSaveQueue } from './managedSave'
+import {
+  assertManagedBase, captureManagedBase, managedDraftIsPublished,
+  type AgentRevisions, type CloneSources, type ManagedEditBase,
+} from './managedGraphState'
+import type { GraphSaveSnapshot } from './store'
 import { motionEnabled, usePresence } from '../../shared/ui/usePresence'
 import { useDismissableSurface, type SurfaceDismissReason } from '../../shared/ui/useDismissableSurface'
 import { useTheme } from '../theme'
@@ -85,6 +97,7 @@ import {
   workflowDraftKey,
 } from './store'
 import type { GraphEdge, GraphHandleSide, GraphNode } from './types'
+import { managementGraphOperations } from './managementDiff'
 import './graph.css'
 
 export interface WorkflowGraphProps {
@@ -110,6 +123,8 @@ export interface GraphEditorProps {
   onSaveSession?: (workflow: WorkflowDefinition) => void
   /** Called after a browser-created workflow is first persisted by a real workspace backend. */
   onPersisted?: (workflow: WorkflowDefinition) => void
+  managedDraft?: ManagedGraphDraft
+  managedAgentRevisions?: AgentRevisions
 }
 
 const DEPARTURE_MOTION_MS = 200
@@ -569,6 +584,16 @@ function graphErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
 }
 
+function cacheManagedBase(queryClient: ReturnType<typeof useQueryClient>, base: ManagedEditBase) {
+  const items = base.agents.flatMap((agent) => {
+    const metadataRevision = base.metadataRevisions[agent.id]
+    return typeof metadataRevision === 'number' ? [{ agent, metadataRevision }] : []
+  })
+  const next = { draft: base.draft, agents: { items, pageInfo: { nextCursor: null as string | null } } }
+  queryClient.setQueryData<typeof next>(queryKeys.managedGraphContext(base.draft.workspaceId, base.draft.workflowId),
+    (current) => current?.draft.id === next.draft.id && current.draft.revision > next.draft.revision ? current : next)
+}
+
 function updateWorkspaceDetailsCache(
   queryClient: ReturnType<typeof useQueryClient>,
   workspaceId: string,
@@ -617,6 +642,8 @@ export function GraphEditor({
   onClearAgent,
   onSaveSession,
   onPersisted,
+  managedDraft,
+  managedAgentRevisions = {},
 }: GraphEditorProps) {
   const theme = useTheme()
   const queryClient = useQueryClient()
@@ -625,6 +652,9 @@ export function GraphEditor({
   const updateDraft = useGraphDraftStore((state) => state.updateDraft)
   const discardDraft = useGraphDraftStore((state) => state.discardDraft)
   const completeSave = useGraphDraftStore((state) => state.completeSave)
+  const restoreDraft = useGraphDraftStore((state) => state.restoreDraft)
+  const managedSaving = useGraphDraftStore((state) => Boolean(state.managedSaving[workflowKey]))
+  const saveLock = useRef(false)
   const agentOverrides = draft?.agentOverrides ?? EMPTY_AGENT_OVERRIDES
   const [notice, setNotice] = useState<{ kind: 'success' | 'error' | 'info'; text: string }>()
   const [activeRunId, setActiveRunId] = useState<string | undefined>(() => runFacts?.find((run) =>
@@ -652,10 +682,7 @@ export function GraphEditor({
     nodes: Array<{ node: WorkflowNode; agent: Agent }>
     edges: WorkflowEdge[]
   } | undefined>(undefined)
-  const undoStackRef = useRef<Array<{
-    workflow: WorkflowDefinition
-    agentOverrides: Record<string, Agent>
-  }>>([])
+  const undoStackRef = useRef<GraphSaveSnapshot[]>([])
   const positionUndoActiveRef = useRef(false)
   const agentPickerPresence = usePresence(agentPickerOpen)
   const nodeMenuValue = useMemo(
@@ -663,8 +690,14 @@ export function GraphEditor({
     [openMenuNodeId],
   )
   const saveMutation = useSaveGraphMutation()
+  const isSaving = managedSaving || saveMutation.isPending
+  const managedBase = useMemo(() => managedDraft
+    ? draft?.managedBase ?? captureManagedBase(managedDraft, agents, managedAgentRevisions)
+    : undefined, [agents, draft?.managedBase, managedAgentRevisions, managedDraft])
   const harnessDefaultsQuery = useHarnessDefaultsQuery()
   const startRunMutation = useStartWorkflowRunMutation()
+  const startManagedRun = useStartManagedRunMutation()
+  const stopManagedRun = useStopManagedRunMutation()
   const cancelRunMutation = useCancelRunMutation()
   const runQuery = useRunQuery(workspaceId, activeRunId ?? '', {
     enabled: Boolean(activeRunId),
@@ -736,7 +769,7 @@ export function GraphEditor({
   )
   const hasSessionCleanup = displayedWorkflow !== currentWorkflow
   const catalogAgents = useMemo(() => {
-    const catalogById = new Map(agents
+    const catalogById = new Map((draft?.managedBase?.agents ?? agents)
       .filter((agent) => !deletedAgentIdSet.has(agent.id))
       .map((agent) => [agent.id, agent]))
     for (const agent of localAgents) {
@@ -746,14 +779,14 @@ export function GraphEditor({
       if (!deletedAgentIdSet.has(agent.id)) catalogById.set(agent.id, agent)
     }
     return [...catalogById.values()]
-  }, [agentOverrides, agents, deletedAgentIdSet, localAgents])
+  }, [agentOverrides, agents, deletedAgentIdSet, draft?.managedBase?.agents, localAgents])
 
   const executionPolicy = displayedWorkflow.executionPolicy ?? {
     maxParallelism: Math.max(1, displayedWorkflow.nodes.length),
     maxNodeExecutions: Math.max(1, displayedWorkflow.nodes.length),
   }
   const executionLimitExceeded = !onSaveSession && executionPolicy.maxNodeExecutions < displayedWorkflow.nodes.length
-  const startDisabled = startRunMutation.isPending
+  const startDisabled = startRunMutation.isPending || startManagedRun.isPending
     || Boolean(activeRunId && runQuery.data?.run.executionState !== 'completed')
   const runActive = Boolean(activeRunId && runQuery.data?.run.executionState !== 'completed')
   const hasUnsavedAgentSettings = displayedWorkflow.nodes.some((node) => {
@@ -762,21 +795,29 @@ export function GraphEditor({
     return local && (!persisted || (['harness', 'model', 'effort', 'fastMode', 'configurationVersionId'] as const)
       .some((key) => local[key] !== persisted[key]))
   })
-  const isDirty = draft?.dirty === true
-    || hasSessionCleanup
-    || Object.keys(agentOverrides).length > 0
-    || hasUnsavedAgentSettings
+  const hasLocalChanges = draft?.dirty === true || hasSessionCleanup
+    || Object.keys(agentOverrides).length > 0 || hasUnsavedAgentSettings
+  const hasUnpublishedChanges = Boolean(managedDraft && !managedDraftIsPublished(managedDraft))
+  const isDirty = hasLocalChanges || hasUnpublishedChanges || managedSaveQueue.hasPending(workflowKey)
   const recordUndo = useCallback(() => {
-    undoStackRef.current.push({ workflow: displayedWorkflow, agentOverrides })
+    undoStackRef.current.push({ workflow: displayedWorkflow, agentOverrides, managedBase, cloneSources: draft?.cloneSources })
     if (undoStackRef.current.length > 100) undoStackRef.current.shift()
-  }, [agentOverrides, displayedWorkflow])
+  }, [agentOverrides, displayedWorkflow, draft?.cloneSources, managedBase])
   const applyBoardChange = useCallback((
     change: (saved: WorkflowDefinition) => WorkflowDefinition,
     changedAgents: readonly Agent[] = [],
+    cloneSources: CloneSources = {},
   ) => {
     recordUndo()
-    updateDraft(workflowKey, sessionCleanedWorkflow, change, changedAgents)
-  }, [recordUndo, sessionCleanedWorkflow, updateDraft, workflowKey])
+    updateDraft(workflowKey, sessionCleanedWorkflow, change, changedAgents, managedBase, cloneSources)
+  }, [managedBase, recordUndo, sessionCleanedWorkflow, updateDraft, workflowKey])
+  useEffect(() => {
+    const base = draft?.managedBase
+    if (!managedDraft || !base || managedSaving) return
+    if (base.draft.id !== managedDraft.id || base.draft.revision !== managedDraft.revision) {
+      setNotice({ kind: 'error', text: 'This shared draft changed elsewhere. Your unsent edits are preserved. Discard local edits to load the latest draft, or keep them for comparison.' })
+    }
+  }, [draft?.managedBase, managedDraft, managedSaving])
   useEffect(() => {
     if (selectedAgentId && deletedAgentIdSet.has(selectedAgentId)) onClearAgent?.()
   }, [deletedAgentIdSet, onClearAgent, selectedAgentId])
@@ -950,9 +991,9 @@ export function GraphEditor({
 
   const updateFromGraph = useCallback(
     (nextNodes: GraphNode[], nextEdges: GraphEdge[]) => {
-      updateDraft(workflowKey, sessionCleanedWorkflow, (savedDraft) => graphToWorkflow(savedDraft, nextNodes, nextEdges))
+      updateDraft(workflowKey, sessionCleanedWorkflow, (savedDraft) => graphToWorkflow(savedDraft, nextNodes, nextEdges), [], managedBase)
     },
-    [sessionCleanedWorkflow, updateDraft, workflowKey],
+    [managedBase, sessionCleanedWorkflow, updateDraft, workflowKey],
   )
 
   const onNodesChange = useCallback(
@@ -979,7 +1020,10 @@ export function GraphEditor({
       if (!connection.source || !connection.target || connection.source === connection.target) return
       if (!graph.nodes.some((node) => node.id === connection.source) || !graph.nodes.some((node) => node.id === connection.target)) return
       if (hasConnection(graph.edges, connection.source, connection.target)) return
-      const nextEdge = makeSequentialHandoffEdge(connection.source, connection.target)
+      const nextEdge = {
+        ...makeSequentialHandoffEdge(connection.source, connection.target),
+        sourceHandle: connection.sourceHandle, targetHandle: connection.targetHandle,
+      }
       applyBoardChange((saved) => graphToWorkflow(saved, graph.nodes, addEdge(nextEdge, graph.edges)))
       setEnteringEdgeId(nextEdge.id)
     },
@@ -996,6 +1040,11 @@ export function GraphEditor({
   )
 
   const handleDiscard = useCallback(() => {
+    if (saveLock.current || managedSaveQueue.isRunning(workflowKey)) return
+    try { managedSaveQueue.discard(workflowKey) } catch (error) {
+      setNotice({ kind: 'error', text: graphErrorMessage(error, 'Resolve the pending save before discarding.') })
+      return
+    }
     connectionSourceNodeRef.current = undefined
     discardDraft(workflowKey)
     undoStackRef.current = []
@@ -1006,120 +1055,171 @@ export function GraphEditor({
   }, [discardDraft, onClearAgent, workflowKey])
 
   const handleSave = useCallback(async () => {
-    if (!isDirty && onSaveSession) return
-    if (!onSaveSession && saveMutation.isPending) return
-    if (executionLimitExceeded) {
-      setNotice({ kind: 'error', text: 'Review the execution limit below before saving this graph.' })
+    if ((!isDirty && onSaveSession) || saveLock.current || managedSaveQueue.isRunning(workflowKey)) return
+    if (executionLimitExceeded && !managedSaveQueue.hasPending(workflowKey)) {
+      setNotice({ kind: 'error', text: 'Review the execution limit before saving this graph.' })
       return
     }
+    saveLock.current = true
+    const generation = sessionGeneration()
     const submittedWorkflow = displayedWorkflow
-    const submitted = { workflow: submittedWorkflow, agentOverrides }
+    const submitted: GraphSaveSnapshot = {
+      workflow: submittedWorkflow, agentOverrides, managedBase, cloneSources: draft?.cloneSources,
+    }
     const referencedAgentIds = new Set(submittedWorkflow.nodes.map((node) => node.agentId))
     const persistedAgentIds = new Set(agents.map((agent) => agent.id))
-    const submittedLocalAgents = localAgents.filter(
-      (agent) => referencedAgentIds.has(agent.id) && !persistedAgentIds.has(agent.id),
-    )
+    const submittedLocalAgents = localAgents.filter((agent) => referencedAgentIds.has(agent.id) && !persistedAgentIds.has(agent.id))
     const submittedAgents = [...new Map([
       ...submittedLocalAgents,
       ...Object.values(agentOverrides).filter((agent) => referencedAgentIds.has(agent.id)),
     ].map((agent) => [agent.id, agent])).values()]
     setNotice(undefined)
-
-    // Session saves persist both halves to their session-owned stores.
-    if (onSaveSession) {
-      const directory = useAgentDirectoryStore.getState()
-      const localById = new Map((directory.catalogs[workspaceId]?.localAgents ?? readLocalAgents(workspaceId))
-        .map((agent) => [agent.id, agent]))
-      for (const agent of submittedAgents) localById.set(agent.id, agent)
-      directory.setLocalAgents(workspaceId, [...localById.values()])
-      onSaveSession(submittedWorkflow)
-      completeSave(workflowKey, submitted, submittedWorkflow, submittedAgents)
-      if (!getGraphDraft(workflowKey)) {
-        undoStackRef.current = []
-        positionUndoActiveRef.current = false
-      }
-      setNotice({
-        kind: 'success',
-        text: getGraphDraft(workflowKey)
-          ? 'Saved to this browser session. Newer local changes remain unsaved.'
-          : 'Workflow saved to this browser session.',
-      })
-      return
-    }
-
     try {
-      // Await the promise rather than observer callbacks, which are dropped
-      // when navigation or first-save promotion unmounts this editor.
+      if (onSaveSession) {
+        const directory = useAgentDirectoryStore.getState()
+        const localById = new Map((directory.catalogs[workspaceId]?.localAgents ?? readLocalAgents(workspaceId)).map((agent) => [agent.id, agent]))
+        for (const agent of submittedAgents) localById.set(agent.id, agent)
+        directory.setLocalAgents(workspaceId, [...localById.values()])
+        onSaveSession(submittedWorkflow)
+        completeSave(workflowKey, submitted, submittedWorkflow, submittedAgents)
+        if (!getGraphDraft(workflowKey)) { undoStackRef.current = []; positionUndoActiveRef.current = false }
+        setNotice({ kind: 'success', text: getGraphDraft(workflowKey)
+          ? 'Saved to this browser session. Newer local changes remain unsaved.' : 'Workflow saved to this browser session.' })
+        return
+      }
+      if (managedDraft && managedBase) {
+        await managedSaveQueue.run(workflowKey, () => {
+          // Retrying an uncertain response skips preparation and reuses its
+          // exact command ID, payload and acknowledged batch revision.
+          assertManagedBase(managedBase, managedDraft)
+          const nextAgents = [...new Map([...catalogAgents, ...submittedAgents].map((agent) => [agent.id, agent])).values()]
+          return {
+            submitted: { ...submitted, agentOverrides: { ...agentOverrides, ...Object.fromEntries(submittedAgents.map((agent) => [agent.id, agent])) } },
+            base: managedBase,
+            operations: managementGraphOperations({
+              base: managedBase.draft.graph, next: submittedWorkflow,
+              baseAgents: managedBase.agents, nextAgents,
+              metadataRevisions: managedBase.metadataRevisions, cloneSources: draft?.cloneSources,
+            }),
+          }
+        }, {
+          apply: applyManagedGraphDraft,
+          save: saveManagedGraphDraft,
+          assertSession: () => assertSession(generation),
+          setSaving: (saving) => useGraphDraftStore.getState().setManagedSaving(workflowKey, saving),
+          onApplied: (base) => {
+            useGraphDraftStore.getState().acknowledgeManagedBase(workflowKey, base)
+            // Keep only the draft cache here. The atomic context read will
+            // refresh persisted agents; staged agents are in base itself.
+            queryClient.setQueryData(queryKeys.managedDraft(workspaceId, submittedWorkflow.id), base.draft)
+            cacheManagedBase(queryClient, base)
+          },
+          onSaved: (plan, saved, base) => {
+            const savedWorkflow = saved.value.version.definition
+            const savedAgents = saved.value.agents.map((item) => item.agent)
+            // Publication is acknowledged before optional cache refreshes.
+            completeSave(workflowKey, plan.submitted, savedWorkflow, savedAgents, base)
+            queryClient.setQueryData(queryKeys.managedDraft(workspaceId, savedWorkflow.id), saved.value.draft)
+            queryClient.setQueryData(queryKeys.workflow(workspaceId, savedWorkflow.id), { workflow: savedWorkflow })
+            cacheManagedBase(queryClient, base)
+            updateWorkspaceDetailsCache(queryClient, workspaceId, savedWorkflow, base.agents)
+            // Clear pre-publication Undo snapshots, including after navigation.
+            // Newer edits remain in the workflow-scoped buffer with the new base.
+            undoStackRef.current = []
+            positionUndoActiveRef.current = false
+            const localIds = new Set(savedAgents.map((agent) => agent.id))
+            const directory = useAgentDirectoryStore.getState()
+            const currentLocal = directory.catalogs[workspaceId]?.localAgents ?? readLocalAgents(workspaceId)
+            if (currentLocal.some((agent) => localIds.has(agent.id))) {
+              directory.setLocalAgents(workspaceId, currentLocal.filter((agent) => !localIds.has(agent.id)))
+            }
+            setNotice({ kind: 'success', text: getGraphDraft(workflowKey)
+              ? 'Graph saved. Newer local changes remain unsaved.' : 'Graph saved.' })
+            void Promise.all([
+              queryClient.invalidateQueries({ queryKey: queryKeys.managedAgents(workspaceId) }),
+              queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflows(workspaceId) }),
+              queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) }),
+              queryClient.invalidateQueries({ queryKey: queryKeys.managedGraphContext(workspaceId, savedWorkflow.id) }),
+            ]).catch(() => undefined)
+            try { onPersisted?.(savedWorkflow) } catch {
+              setNotice({ kind: 'info', text: 'Graph saved. Reload to refresh the surrounding view.' })
+            }
+          },
+        })
+        return
+      }
       const { workflow: savedWorkflow, agents: savedAgents } = await saveMutation.mutateAsync({
-        workspaceId,
-        workflow: submittedWorkflow,
-        agents: submittedAgents,
+        workspaceId, workflow: submittedWorkflow, agents: submittedAgents,
       })
+      assertSession(generation)
       queryClient.setQueryData(queryKeys.workflow(workspaceId, savedWorkflow.id), { workflow: savedWorkflow })
       updateWorkspaceDetailsCache(queryClient, workspaceId, savedWorkflow, savedAgents)
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.workspaceDetails(workspaceId),
-        refetchType: 'none',
-      })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId), refetchType: 'none' })
       completeSave(workflowKey, submitted, savedWorkflow, savedAgents ?? [])
       if (submittedLocalAgents.length > 0) {
         const submittedLocalIds = new Set(submittedLocalAgents.map((agent) => agent.id))
         const directory = useAgentDirectoryStore.getState()
         const currentLocalAgents = directory.catalogs[workspaceId]?.localAgents ?? readLocalAgents(workspaceId)
-        directory.setLocalAgents(
-          workspaceId,
-          currentLocalAgents.filter((agent) => !submittedLocalIds.has(agent.id)),
-        )
+        directory.setLocalAgents(workspaceId, currentLocalAgents.filter((agent) => !submittedLocalIds.has(agent.id)))
       }
       if (!getGraphDraft(workflowDraftKey(workspaceId, savedWorkflow.id))) {
-        undoStackRef.current = []
-        positionUndoActiveRef.current = false
+        undoStackRef.current = []; positionUndoActiveRef.current = false
       }
-      setNotice({
-        kind: 'success',
-        text: getGraphDraft(workflowDraftKey(workspaceId, savedWorkflow.id))
-          ? 'Graph saved. Newer local changes remain unsaved.'
-          : 'Graph saved.',
-      })
+      setNotice({ kind: 'success', text: getGraphDraft(workflowDraftKey(workspaceId, savedWorkflow.id))
+        ? 'Graph saved. Newer local changes remain unsaved.' : 'Graph saved.' })
       onPersisted?.(savedWorkflow)
     } catch (error) {
-      setNotice({
-        kind: 'error',
-        text: `Graph could not be saved: ${graphErrorMessage(error, 'The server rejected the graph.')}`,
-      })
-    }
-  }, [agentOverrides, agents, completeSave, displayedWorkflow, executionLimitExceeded, isDirty, localAgents, onPersisted, onSaveSession, queryClient, saveMutation, workspaceId, workflowKey])
+      if (sessionGeneration() !== generation) return
+      const retry = managedSaveQueue.hasPending(workflowKey)
+        ? ' Retry Save graph to resolve the previous request before discarding or starting.' : ''
+      setNotice({ kind: 'error', text: `Graph could not be saved: ${graphErrorMessage(error, 'The server rejected the graph.')}${retry}` })
+    } finally { saveLock.current = false }
+  }, [agentOverrides, agents, catalogAgents, completeSave, displayedWorkflow, draft?.cloneSources,
+    executionLimitExceeded, isDirty, localAgents, managedBase, managedDraft, onPersisted,
+    onSaveSession, queryClient, saveMutation, workspaceId, workflowKey])
 
   const handleStart = useCallback(() => {
     if (onSaveSession) {
       setNotice({ kind: 'info', text: 'Save this workflow to the backend before starting it.' })
       return
     }
-    if (isDirty) {
-      setNotice({ kind: 'info', text: 'Save the current graph before starting the workflow.' })
+    if (isDirty || saveLock.current || managedSaveQueue.isRunning(workflowKey)
+      || (managedDraft && !managedDraftIsPublished(managedDraft))) {
+      setNotice({ kind: 'info', text: 'Save the displayed graph before starting the workflow.' })
       return
     }
     if (startLock.current || startDisabled) return
     startLock.current = true
     setNotice(undefined)
+    const callbacks = {
+      onSuccess: ({ run }: { run: { id: string } }) => {
+        setActiveRunId(run.id)
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) })
+        setNotice({ kind: 'info' as const, text: `Run ${run.id} was queued.` })
+      },
+      onError: (error: Error) => {
+        startLock.current = false
+        setNotice({ kind: 'error' as const, text: `Workflow could not start: ${graphErrorMessage(error, 'The backend rejected the run.')}` })
+      },
+    }
+    if (managedDraft?.baseWorkflowVersionId) {
+      startManagedRun.mutate({
+        workspaceId, workflowId: displayedWorkflow.id, workflowVersionId: managedDraft.baseWorkflowVersionId,
+        commandId: crypto.randomUUID(), input: {},
+        draftId: managedDraft.id, expectedDraftRevision: managedDraft.revision,
+      }, callbacks)
+      return
+    }
+    if (managedDraft) {
+      startLock.current = false
+      setNotice({ kind: 'info', text: 'Save this graph to create its first runnable version.' })
+      return
+    }
     startRunMutation.mutate(
       { workspaceId, workflowId: displayedWorkflow.id, input: {} },
-      {
-        onSuccess: ({ run }) => {
-          setActiveRunId(run.id)
-          void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) })
-          setNotice({ kind: 'info', text: `Run ${run.id} was queued.` })
-        },
-        onError: (error) => {
-          startLock.current = false
-          setNotice({
-            kind: 'error',
-            text: `Workflow could not start: ${graphErrorMessage(error, 'The backend rejected the run.')}`,
-          })
-        },
-      },
+      callbacks,
     )
-  }, [displayedWorkflow.id, isDirty, onSaveSession, queryClient, startDisabled, startRunMutation, workspaceId])
+  }, [displayedWorkflow.id, isDirty, managedDraft, onSaveSession, queryClient, startDisabled, startManagedRun, startRunMutation, workflowKey, workspaceId])
 
   const closeAgentPicker = useCallback(() => {
     setAgentPickerOpen(false)
@@ -1213,6 +1313,7 @@ export function GraphEditor({
     const namingAgents = [...catalogAgents]
     const pastedAgents: Agent[] = []
     const pastedNodes: WorkflowNode[] = []
+    const cloneSources: Record<string, string> = {}
 
     for (const { node, agent } of copied.nodes) {
       const harness = agent.harness ?? agent.harnessConfiguration?.harness
@@ -1250,6 +1351,7 @@ export function GraphEditor({
         position,
       }
       nodeIdMap.set(node.id, nodeId)
+      cloneSources[agentId] = agent.id
       pastedAgents.push(pastedAgent)
       namingAgents.push(pastedAgent)
       pastedNodes.push(pastedNode)
@@ -1270,7 +1372,7 @@ export function GraphEditor({
       ...saved,
       nodes: [...saved.nodes, ...pastedNodes],
       edges: [...saved.edges, ...pastedEdges],
-    }), pastedAgents)
+    }), pastedAgents, cloneSources)
     setSelectedNodeIds(new Set(pastedNodes.map((node) => node.id)))
     const lastAgent = pastedAgents.at(-1)
     if (lastAgent) onSelectAgent?.(lastAgent.id)
@@ -1285,18 +1387,12 @@ export function GraphEditor({
     if (!previous) return
     positionUndoActiveRef.current = false
     connectionSourceNodeRef.current = undefined
-    discardDraft(workflowKey)
-    updateDraft(
-      workflowKey,
-      sessionCleanedWorkflow,
-      () => previous.workflow,
-      Object.values(previous.agentOverrides),
-    )
+    restoreDraft(workflowKey, sessionCleanedWorkflow, previous)
     setSelectedNodeIds(new Set())
     setOpenMenuNodeId(undefined)
     onClearAgent?.()
     setNotice({ kind: 'info', text: 'Undid the previous board change.' })
-  }, [discardDraft, onClearAgent, sessionCleanedWorkflow, updateDraft, workflowKey])
+  }, [onClearAgent, restoreDraft, sessionCleanedWorkflow, workflowKey])
 
   const handleGraphKeyDown = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
     if (isEditableKeyboardTarget(event.target)) return
@@ -1388,11 +1484,22 @@ export function GraphEditor({
             className="workflow-graph-run"
             aria-label={runActive ? 'Cancel workflow' : 'Start workflow'}
             title={runActive ? 'Cancel workflow' : 'Start workflow'}
-            disabled={runActive ? cancelRunMutation.isPending : startDisabled}
+            disabled={runActive ? cancelRunMutation.isPending || stopManagedRun.isPending : startDisabled || (Boolean(managedDraft) && (isDirty || isSaving))}
             onClick={runActive && activeRunId
-              ? () => cancelRunMutation.mutate({ workspaceId, runId: activeRunId }, {
-                  onError: (error) => setNotice({ kind: 'error', text: graphErrorMessage(error, 'The run could not be canceled.') }),
-                })
+              ? () => managedDraft
+                ? stopManagedRun.mutate({ workspaceId, runId: activeRunId, commandId: crypto.randomUUID() }, {
+                    onSuccess: (result) => {
+                      setNotice({ kind: result.status === 'not_owner' ? 'error' : 'info', text:
+                        result.status === 'not_owner' ? 'This API does not own the running process. Stop was not accepted; use its active owner.' :
+                          result.status === 'already_terminal' ? 'The run record is already terminal. Native process exit has not been verified.' :
+                            'Cancellation was requested. Native process exit has not yet been verified.' })
+                      void queryClient.invalidateQueries({ queryKey: queryKeys.run(workspaceId, activeRunId) })
+                    },
+                    onError: (error) => setNotice({ kind: 'error', text: graphErrorMessage(error, 'The run could not be canceled.') }),
+                  })
+                : cancelRunMutation.mutate({ workspaceId, runId: activeRunId }, {
+                    onError: (error) => setNotice({ kind: 'error', text: graphErrorMessage(error, 'The run could not be canceled.') }),
+                  })
               : handleStart}
           >
             {runActive ? <Square aria-hidden="true" size={14} /> : <Play aria-hidden="true" size={16} />}
@@ -1414,18 +1521,24 @@ export function GraphEditor({
           </button>
         </div>
 
-        {isDirty ? (
+        {isDirty || managedDraft ? (
           <div className="workflow-graph-actions" aria-label="Graph actions">
-            <button type="button" className="workflow-graph-action workflow-graph-action-quiet" onClick={handleDiscard} disabled={!isDirty || (!onSaveSession && saveMutation.isPending)}>
-              Discard
+            <button type="button" className="workflow-graph-action workflow-graph-action-quiet" onClick={handleDiscard} disabled={!hasLocalChanges || isSaving}>
+              {managedDraft ? 'Discard local edits' : 'Discard'}
             </button>
-            <button type="button" className="workflow-graph-action workflow-graph-action-primary" onClick={handleSave} disabled={executionLimitExceeded || (!onSaveSession && saveMutation.isPending)}>
-              {!onSaveSession && saveMutation.isPending ? 'Saving…' : 'Save graph'}
+            <button type="button" className="workflow-graph-action workflow-graph-action-primary" onClick={handleSave} disabled={isSaving || (executionLimitExceeded && !managedSaveQueue.hasPending(workflowKey))}>
+              {isSaving ? 'Saving…' : 'Save graph'}
             </button>
           </div>
         ) : null}
 
         <div className="workflow-graph-notifications" data-testid="workflow-graph-notifications">
+          {managedSaveQueue.hasPending(workflowKey) && !managedSaving ? <p className="workflow-graph-toast workflow-graph-toast-info" role="status">
+            The previous save is unresolved. Retry Save graph before discarding local edits or starting.
+          </p> : null}
+          {hasUnpublishedChanges ? <p className="workflow-graph-toast workflow-graph-toast-info" role="status">
+            The shared draft has unpublished changes. Save graph before starting it.
+          </p> : null}
           {notice ? (
             <p
               className={`workflow-graph-toast workflow-graph-toast-${notice.kind}`}
@@ -1502,11 +1615,15 @@ export function GraphEditor({
 }
 
 export function WorkflowGraph({ workspaceId, workflowId, selectedAgentId, onSelectAgent, onClearAgent }: WorkflowGraphProps) {
+  const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false')
   const workflowQuery = useWorkflowQuery(workspaceId, workflowId)
   const agentsQuery = useAgentsQuery(workspaceId)
+  const managedContextQuery = useManagedGraphContextQuery(workspaceId, workflowId, realMode)
+  const managedAgentsQuery = { ...managedContextQuery, data: managedContextQuery.data?.agents }
+  const managedDraftQuery = { ...managedContextQuery, data: managedContextQuery.data?.draft }
   const workspaceQuery = useWorkspaceDetailsQuery(workspaceId)
 
-  if (workflowQuery.isPending || agentsQuery.isPending || workspaceQuery.isPending) {
+  if (workflowQuery.isPending || agentsQuery.isPending || workspaceQuery.isPending || (realMode && (managedAgentsQuery.isPending || managedDraftQuery.isPending))) {
     return (
       <div className="workflow-graph-state" data-testid="workflow-graph-loading" role="status">
         <p className="workflow-graph-kicker">Workflow graph</p>
@@ -1522,13 +1639,14 @@ export function WorkflowGraph({ workspaceId, workflowId, selectedAgentId, onSele
     workspaceQuery.isError ||
     !workflowQuery.data ||
     !agentsQuery.data ||
-    !workspaceQuery.data
+    !workspaceQuery.data ||
+    (realMode && (managedContextQuery.isError || !managedAgentsQuery.data || !managedDraftQuery.data))
   ) {
     return (
       <div className="workflow-graph-state workflow-graph-state-error" data-testid="workflow-graph-error" role="alert">
         <p className="workflow-graph-kicker">Workflow graph</p>
         <h2>Graph unavailable</h2>
-        <p>{graphErrorMessage(workflowQuery.error ?? agentsQuery.error ?? workspaceQuery.error, 'The workflow could not be loaded.')}</p>
+        <p>{graphErrorMessage(workflowQuery.error ?? agentsQuery.error ?? workspaceQuery.error ?? managedAgentsQuery.error ?? managedDraftQuery.error, 'The workflow could not be loaded.')}</p>
       </div>
     )
   }
@@ -1537,12 +1655,20 @@ export function WorkflowGraph({ workspaceId, workflowId, selectedAgentId, onSele
     <GraphEditor
       key={`${workspaceId}:${workflowId}`}
       workspaceId={workspaceId}
-      workflow={workflowQuery.data.workflow}
-      agents={agentsQuery.data.agents}
+      workflow={realMode ? managedDraftQuery.data!.graph : workflowQuery.data.workflow}
+      agents={realMode ? [...new Map([
+        ...managedAgentsQuery.data!.items.map((item) => item.agent),
+        ...managedDraftQuery.data!.stagedAgents.map((item) => item.agent),
+      ].map((agent) => [agent.id, agent])).values()] : agentsQuery.data.agents}
       runFacts={workspaceQuery.data.runs}
       selectedAgentId={selectedAgentId}
       onSelectAgent={onSelectAgent}
       onClearAgent={onClearAgent}
+      managedDraft={realMode ? managedDraftQuery.data : undefined}
+      managedAgentRevisions={realMode ? Object.fromEntries([
+        ...managedAgentsQuery.data!.items.map((item) => [item.agent.id, item.metadataRevision]),
+        ...managedDraftQuery.data!.stagedAgents.map((item) => [item.agent.id, item.baseRevision]),
+      ]) : undefined}
     />
   )
 }

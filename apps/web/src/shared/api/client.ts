@@ -56,6 +56,45 @@ import {
   type WorkspaceDetailsResponse,
 } from '@graphql/contracts'
 import { z } from 'zod'
+import { collectManagementPages, managementPageUrl } from './managementPaging'
+import {
+  assertSession, sessionGeneration, sessionSignal, sessionIsSwitching, SessionChangedError,
+} from './sessionBoundary'
+import {
+  ManagedWorkspaceCommandResultSchema,
+  ManagedWorkspacePageSchema,
+  ManagedWorkflowCommandResultSchema,
+  ManagedWorkflowPageSchema,
+  ManagedAgentPageSchema,
+  GraphDraftSchema,
+  GraphDraftCommandResultSchema,
+  GraphSaveCommandResultSchema,
+  GraphDraftApplyInputSchema,
+  GraphSaveInputSchema,
+  GraphDraftDiscardInputSchema,
+  RunStartInputSchema,
+  RunStartResultSchema,
+  RunStopInputSchema,
+  RunStopResultSchema,
+  HarnessCatalogSchema,
+  HarnessDefaultsUpdateInputSchema,
+  HarnessDefaultsUpdateResultSchema,
+  OperatorEnrollmentRequestSchema,
+  OperatorEnrollmentResponseSchema,
+  WorkspaceArchiveInputSchema,
+  WorkspaceCreateInputSchema,
+  WorkspaceUpdateInputSchema,
+  WorkflowArchiveInputSchema,
+  WorkflowCreateInputSchema,
+  WorkflowUpdateInputSchema,
+  type WorkspaceArchiveInput,
+  type WorkspaceCreateInput,
+  type WorkspaceUpdateInput,
+  type WorkflowArchiveInput,
+  type WorkflowCreateInput,
+  type WorkflowUpdateInput,
+  type GraphDraftOperation,
+} from '@graphql/contracts/management'
 
 export type RequestOptions = Omit<RequestInit, 'body' | 'method'> & {
   /** The client uses this signal for query cancellation and component unmounts. */
@@ -150,6 +189,10 @@ export class ApiClient {
     options: RequestOptions & { method?: string; body?: unknown } = {},
   ): Promise<T> {
     const { body, method = 'GET', headers, signal, ...init } = options
+    const generation = sessionGeneration()
+    const authRequest = path === '/api/auth/enroll' || path === '/api/auth/logout'
+    if (sessionIsSwitching() && !authRequest) throw new SessionChangedError()
+    const requestSignal = signal ? AbortSignal.any([signal, sessionSignal()]) : sessionSignal()
     const requestHeaders = new Headers(headers)
     requestHeaders.set('Accept', 'application/json')
     if (body !== undefined) requestHeaders.set('Content-Type', 'application/json')
@@ -160,7 +203,7 @@ export class ApiClient {
         ...init,
         method,
         headers: requestHeaders,
-        signal,
+        signal: requestSignal,
         body: body === undefined ? undefined : JSON.stringify(body),
       })
     } catch (error) {
@@ -183,6 +226,9 @@ export class ApiClient {
       }
     }
 
+    // Includes late responses from fetch implementations which ignore AbortSignal.
+    assertSession(generation)
+    requestSignal.throwIfAborted()
     if (!response.ok) {
       const parsedError = ApiErrorResponseSchema.safeParse(payload)
       if (parsedError.success) throw new ApiError(parsedError.data.error, response.status)
@@ -207,6 +253,137 @@ export class ApiClient {
       )
     }
     return parsed.data
+  }
+
+  enrollOperator(token: string, options?: RequestOptions) {
+    const input = parseRequest(OperatorEnrollmentRequestSchema, { token })
+    return this.request('/api/auth/enroll', OperatorEnrollmentResponseSchema, { ...options, method: 'POST', body: input })
+  }
+
+  listManagedWorkspaces(options?: RequestOptions) {
+    return collectManagementPages((cursor) => this.request(
+      managementPageUrl('/api/management/workspaces', cursor), ManagedWorkspacePageSchema, options,
+    ), options?.signal)
+  }
+
+  createManagedWorkspace(input: WorkspaceCreateInput, options?: RequestOptions) {
+    const request = parseRequest(WorkspaceCreateInputSchema, input)
+    return this.request('/api/management/workspaces', ManagedWorkspaceCommandResultSchema, { ...options, method: 'POST', body: request })
+  }
+
+  updateManagedWorkspace(input: WorkspaceUpdateInput, options?: RequestOptions) {
+    const request = parseRequest(WorkspaceUpdateInputSchema, input)
+    return this.request(`/api/management/workspaces/${toPath(request.workspaceId)}`, ManagedWorkspaceCommandResultSchema, { ...options, method: 'PATCH', body: request })
+  }
+
+  archiveManagedWorkspace(input: WorkspaceArchiveInput, options?: RequestOptions) {
+    const request = parseRequest(WorkspaceArchiveInputSchema, input)
+    return this.request(`/api/management/workspaces/${toPath(request.workspaceId)}`, ManagedWorkspaceCommandResultSchema, { ...options, method: 'DELETE', body: request })
+  }
+
+  listManagedWorkflows(workspaceId: string, options?: RequestOptions) {
+    return collectManagementPages((cursor) => this.request(
+      managementPageUrl(`/api/management/workspaces/${toPath(workspaceId)}/workflows`, cursor),
+      ManagedWorkflowPageSchema, options,
+    ), options?.signal)
+  }
+
+  createManagedWorkflow(input: WorkflowCreateInput, options?: RequestOptions) {
+    const request = parseRequest(WorkflowCreateInputSchema, input)
+    return this.request(`/api/management/workspaces/${toPath(request.workspaceId)}/workflows`, ManagedWorkflowCommandResultSchema, { ...options, method: 'POST', body: request })
+  }
+
+  updateManagedWorkflow(input: WorkflowUpdateInput, options?: RequestOptions) {
+    const request = parseRequest(WorkflowUpdateInputSchema, input)
+    return this.request(`/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}`, ManagedWorkflowCommandResultSchema, { ...options, method: 'PATCH', body: request })
+  }
+
+  archiveManagedWorkflow(input: WorkflowArchiveInput, options?: RequestOptions) {
+    const request = parseRequest(WorkflowArchiveInputSchema, input)
+    return this.request(`/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}`, ManagedWorkflowCommandResultSchema, { ...options, method: 'DELETE', body: request })
+  }
+
+  listManagedAgents(workspaceId: string, options?: RequestOptions) {
+    return collectManagementPages((cursor) => this.request(
+      managementPageUrl(`/api/management/workspaces/${toPath(workspaceId)}/agents`, cursor), ManagedAgentPageSchema, options,
+    ), options?.signal)
+  }
+
+  async getManagedGraphContext(workspaceId: string, workflowId: string, options?: RequestOptions) {
+    // Read agents between matching draft revisions. MCP publication clears
+    // stagedAgents; never pair that newer draft with an older agent catalog.
+    for (let attempt = 0; attempt < 3; ++attempt) {
+      const before = await this.openManagedGraphDraft(workspaceId, workflowId, options)
+      const agents = await this.listManagedAgents(workspaceId, options)
+      const draft = await this.openManagedGraphDraft(workspaceId, workflowId, options)
+      if (before.id === draft.id && before.revision === draft.revision) return { draft, agents }
+    }
+    throw new ApiError({ code: 'GRAPH_CHANGING', message: 'The shared graph is changing. Retry when the current edit finishes.' }, 409)
+  }
+
+  openManagedGraphDraft(workspaceId: string, workflowId: string, options?: RequestOptions) {
+    return this.request(
+      `/api/management/workspaces/${toPath(workspaceId)}/workflows/${toPath(workflowId)}/drafts`,
+      GraphDraftSchema,
+      { ...options, method: 'POST' },
+    )
+  }
+
+  applyManagedGraphDraft(input: {
+    workspaceId: string; workflowId: string; draftId: string; commandId: string;
+    expectedRevision: number; operations: GraphDraftOperation[]
+  }, options?: RequestOptions) {
+    const request = parseRequest(GraphDraftApplyInputSchema, input)
+    return this.request(
+      `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/drafts/${toPath(request.draftId)}/operations`,
+      GraphDraftCommandResultSchema,
+      { ...options, method: 'POST', body: request },
+    )
+  }
+
+  saveManagedGraphDraft(input: { workspaceId: string; workflowId: string; draftId: string; commandId: string; expectedRevision: number }, options?: RequestOptions) {
+    const request = parseRequest(GraphSaveInputSchema, input)
+    return this.request(
+      `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/drafts/${toPath(request.draftId)}/save`,
+      GraphSaveCommandResultSchema,
+      { ...options, method: 'POST', body: request },
+    )
+  }
+
+  discardManagedGraphDraft(input: { workspaceId: string; workflowId: string; draftId: string; commandId: string; expectedRevision: number }, options?: RequestOptions) {
+    const request = parseRequest(GraphDraftDiscardInputSchema, input)
+    return this.request(
+      `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/drafts/${toPath(request.draftId)}`,
+      z.object({ value: z.object({ discarded: z.literal(true), draftId: z.string(), revision: z.number() }).strict(), replayed: z.boolean() }).strict(),
+      { ...options, method: 'DELETE', body: request },
+    )
+  }
+
+  startManagedRun(input: z.input<typeof RunStartInputSchema>, options?: RequestOptions) {
+    const request = parseRequest(RunStartInputSchema, input)
+    return this.request(
+      `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/runs`,
+      RunStartResultSchema,
+      { ...options, method: 'POST', body: request },
+    )
+  }
+
+  stopManagedRun(input: z.input<typeof RunStopInputSchema>, options?: RequestOptions) {
+    const request = parseRequest(RunStopInputSchema, input)
+    return this.request(
+      `/api/management/workspaces/${toPath(request.workspaceId)}/runs/${toPath(request.runId)}/stop`,
+      RunStopResultSchema,
+      { ...options, method: 'POST', body: request },
+    )
+  }
+
+  getManagedHarnessCatalog(options?: RequestOptions) {
+    return this.request('/api/management/harnesses', HarnessCatalogSchema, options)
+  }
+
+  updateManagedHarnessDefaults(input: z.input<typeof HarnessDefaultsUpdateInputSchema>, options?: RequestOptions) {
+    const request = parseRequest(HarnessDefaultsUpdateInputSchema, input)
+    return this.request('/api/management/harnesses/defaults', HarnessDefaultsUpdateResultSchema, { ...options, method: 'PUT', body: request })
   }
 
   getWorkspaceDetails(input: WorkspaceDetailsRequest, options?: RequestOptions) {
@@ -384,3 +561,22 @@ export const createMessage = apiClient.createMessage.bind(apiClient)
 export const sendUserMessage = apiClient.sendUserMessage.bind(apiClient)
 export const createUserMessage = apiClient.createUserMessage.bind(apiClient)
 export const listVisibleResources = apiClient.listVisibleResources.bind(apiClient)
+export const enrollOperator = apiClient.enrollOperator.bind(apiClient)
+export const listManagedWorkspaces = apiClient.listManagedWorkspaces.bind(apiClient)
+export const createManagedWorkspace = apiClient.createManagedWorkspace.bind(apiClient)
+export const updateManagedWorkspace = apiClient.updateManagedWorkspace.bind(apiClient)
+export const archiveManagedWorkspace = apiClient.archiveManagedWorkspace.bind(apiClient)
+export const listManagedWorkflows = apiClient.listManagedWorkflows.bind(apiClient)
+export const createManagedWorkflow = apiClient.createManagedWorkflow.bind(apiClient)
+export const updateManagedWorkflow = apiClient.updateManagedWorkflow.bind(apiClient)
+export const archiveManagedWorkflow = apiClient.archiveManagedWorkflow.bind(apiClient)
+export const listManagedAgents = apiClient.listManagedAgents.bind(apiClient)
+export const getManagedGraphContext = apiClient.getManagedGraphContext.bind(apiClient)
+export const openManagedGraphDraft = apiClient.openManagedGraphDraft.bind(apiClient)
+export const applyManagedGraphDraft = apiClient.applyManagedGraphDraft.bind(apiClient)
+export const saveManagedGraphDraft = apiClient.saveManagedGraphDraft.bind(apiClient)
+export const discardManagedGraphDraft = apiClient.discardManagedGraphDraft.bind(apiClient)
+export const startManagedRun = apiClient.startManagedRun.bind(apiClient)
+export const stopManagedRun = apiClient.stopManagedRun.bind(apiClient)
+export const getManagedHarnessCatalog = apiClient.getManagedHarnessCatalog.bind(apiClient)
+export const updateManagedHarnessDefaults = apiClient.updateManagedHarnessDefaults.bind(apiClient)

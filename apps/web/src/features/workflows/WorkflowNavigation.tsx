@@ -3,7 +3,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { Plus } from 'lucide-react'
 import type { WorkflowDefinition } from '@graphql/contracts'
 
-import { useWorkspaceDetailsQuery } from '../../shared/api/query'
+import { useManagedWorkflowsQuery, useWorkspaceDetailsQuery } from '../../shared/api/query'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { isSessionWorkspaceId, useWorkspaceSessionStore } from '../workspaces/workspaceSessionStore'
 import { NewWorkflowDialog } from './NewWorkflowDialog'
@@ -56,7 +56,9 @@ function WorkflowNavigationItem({
  */
 export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNavigationProps) {
   const sessionWorkspace = isSessionWorkspaceId(workspaceId)
-  const workflowsQuery = useWorkspaceDetailsQuery(workspaceId, { enabled: !sessionWorkspace })
+  const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false') && !sessionWorkspace
+  const workflowsQuery = useWorkspaceDetailsQuery(workspaceId, { enabled: !sessionWorkspace && !realMode })
+  const managedQuery = useManagedWorkflowsQuery(workspaceId, realMode)
   const sessionWorkspaceName = useWorkspaceSessionStore((state) =>
     state.workspaces.find((workspace) => workspace.id === workspaceId)?.name,
   )
@@ -90,7 +92,7 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
   )
   const sessionIds = new Set(sessions.map((workflow) => workflow.id))
   const hiddenIds = new Set(hiddenWorkflowIds)
-  const workflows = [...sessions, ...(workflowsQuery.data?.workflows ?? [])]
+  const workflows = realMode ? managedQuery.data?.items.map((item) => item.workflow) ?? [] : [...sessions, ...(workflowsQuery.data?.workflows ?? [])]
     .filter((workflow) => !hiddenIds.has(workflow.id))
     .map((workflow) => ({
       ...workflow,
@@ -118,7 +120,7 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
             />
           })}
         </ul>
-      ) : !sessionWorkspace && workflowsQuery.isPending ? (
+      ) : (realMode ? managedQuery.isPending : !sessionWorkspace && workflowsQuery.isPending) ? (
         <p className="workflow-navigation-state" role="status">
           Loading workflows…
         </p>

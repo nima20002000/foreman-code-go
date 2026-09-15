@@ -37,7 +37,8 @@ describe('Phase 1 API boundary', () => {
   })
 
   it('passes AbortSignal through to fetch', async () => {
-    const signal = new AbortController().signal
+    const controller = new AbortController()
+    const signal = controller.signal
     let receivedSignal: AbortSignal | null | undefined
     const client = new ApiClient({
       fetch: async (_input, init) => {
@@ -50,6 +51,10 @@ describe('Phase 1 API boundary', () => {
     })
 
     await client.listAgents({ workspaceId: 'workspace-1' }, { signal })
-    expect(receivedSignal).toBe(signal)
+    expect(receivedSignal).toBeInstanceOf(AbortSignal)
+    expect(receivedSignal?.aborted).toBe(false)
+    controller.abort('caller cancelled')
+    expect(receivedSignal?.aborted).toBe(true)
+    expect(receivedSignal?.reason).toBe('caller cancelled')
   })
 })

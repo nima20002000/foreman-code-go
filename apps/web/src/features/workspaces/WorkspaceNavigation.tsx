@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   ChevronDown,
   Files,
@@ -22,8 +23,10 @@ import {
   X,
 } from 'lucide-react'
 import type { Workspace } from '@graphql/contracts'
+import { CommandAttempt } from '../../shared/api/commandAttempt'
+import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 
-import { useWorkspaceDetailsQuery } from '../../shared/api/query'
+import { queryKeys, useCreateManagedWorkspaceMutation, useWorkspaceDetailsQuery } from '../../shared/api/query'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { usePresence } from '../../shared/ui/usePresence'
 import { WorkflowNavigation } from '../workflows'
@@ -132,6 +135,7 @@ function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>) {
  * notice instead of inventing persistence.
  */
 function NewWorkspaceControl() {
+  const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false')
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
   const [nameError, setNameError] = useState<string>()
@@ -140,9 +144,15 @@ function NewWorkspaceControl() {
   const dialogRef = useRef<HTMLDivElement>(null)
   const nameInputRef = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const createManagedWorkspace = useCreateManagedWorkspaceMutation()
+  const inFlight = useRef(false)
+  const attempt = useRef(new CommandAttempt<{ name: string }>())
+  const uncertain = attempt.current.unresolved && !createManagedWorkspace.isPending
   const createWorkspace = useWorkspaceSessionStore((state) => state.createWorkspace)
 
   const closeCreateDialog = useCallback(() => {
+    if (inFlight.current || attempt.current.unresolved) return
     setCreating(false)
     setName('')
     setNameError(undefined)
@@ -161,19 +171,27 @@ function NewWorkspaceControl() {
     triggerRef,
   })
 
-  const createNewWorkspace = () => {
+  const createNewWorkspace = async () => {
+    if (inFlight.current) return
     const trimmedName = name.trim()
-    if (!trimmedName) {
-      setNameError('Enter a workspace name.')
-      nameInputRef.current?.focus()
-      return
-    }
-    const workspace = createWorkspace(trimmedName)
-    closeCreateDialog()
-    void navigate({
-      to: '/workspaces/$workspaceId',
-      params: { workspaceId: workspace.id },
-    })
+    if (!trimmedName) { setNameError('Enter a workspace name.'); nameInputRef.current?.focus(); return }
+    inFlight.current = true
+    const generation = sessionGeneration()
+    setNameError(undefined)
+    try {
+      const workspace = realMode
+        ? (await createManagedWorkspace.mutateAsync(attempt.current.input({ name: trimmedName }))).value.workspace
+        : createWorkspace(trimmedName)
+      assertSession(generation)
+      attempt.current.succeeded()
+      if (realMode) void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkspaces }).catch(() => undefined)
+      inFlight.current = false
+      closeCreateDialog()
+      void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId: workspace.id } })
+    } catch (error) {
+      attempt.current.failed(error)
+      if (sessionGeneration() === generation) setNameError(error instanceof Error ? error.message : 'The workspace could not be created.')
+    } finally { inFlight.current = false }
   }
 
   return (
@@ -222,6 +240,7 @@ function NewWorkspaceControl() {
             <input
               ref={nameInputRef}
               id="new-workspace-name"
+              disabled={createManagedWorkspace.isPending || uncertain}
               value={name}
               autoFocus
               onChange={(event) => {
@@ -231,7 +250,7 @@ function NewWorkspaceControl() {
               onKeyDown={(event) => {
                 if (event.key === 'Enter') {
                   event.preventDefault()
-                  createNewWorkspace()
+                  void createNewWorkspace()
                 }
               }}
               aria-invalid={nameError ? true : undefined}
@@ -242,13 +261,15 @@ function NewWorkspaceControl() {
                 {nameError}
               </p>
             ) : null}
+            {uncertain ? <p role="status">The previous request may have succeeded. Retry Create workspace to resolve it without creating a duplicate.</p> : null}
             <div className="workspace-create-actions">
               <button type="button" onClick={closeCreateDialog}>
                 Close
               </button>
               <button
                 type="button"
-                onClick={createNewWorkspace}
+                onClick={() => void createNewWorkspace()}
+                disabled={createManagedWorkspace.isPending}
               >
                 Create workspace
               </button>

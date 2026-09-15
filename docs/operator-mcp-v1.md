@@ -1,0 +1,97 @@
+# Operator MCP v1
+
+Operator MCP is the authenticated local product-management interface delivered by NIM-2579 through NIM-2587. It runs inside the existing API process at `POST /mcp/operator`. The future Worker Tools MCP at `/mcp/tools` is not implemented or mounted.
+
+The transport uses MCP protocol `2026-07-28` with the official TypeScript SDK packages `@modelcontextprotocol/server`, `@modelcontextprotocol/node`, `@modelcontextprotocol/fastify`, and the acceptance-test `@modelcontextprotocol/client`, all pinned at `2.0.0`. The packages require Node 20 or newer; this repository requires Node 22. The published packages use Zod 4-compatible standard schemas. Their July 27, 2026 publication date satisfies the repository's strict 48-hour package-age policy.
+
+## Start and migrate
+
+```sh
+corepack pnpm install
+corepack pnpm db:up
+cp apps/api/.env.example apps/api/.env
+corepack pnpm dev:api
+```
+
+API startup applies the application migrations, including principals, command receipts, management audit, revisions, archive state, and durable graph drafts. Existing workspace, workflow, agent configuration, run, execution, and activity records are retained.
+
+The API remains loopback-bound by default. Operator HTTP and MCP requests validate Host and Origin. Public deployment and OAuth interoperability are out of scope for this local credential mode.
+
+## Issue and revoke credentials
+
+Credential issuance and revocation are trusted local owner commands; neither is an MCP tool. The plaintext token is displayed once and only its SHA-256 digest is stored.
+
+```sh
+corepack pnpm --filter @graphql/api credential issue --name local-owner --days 30
+corepack pnpm --filter @graphql/api credential issue --name workspace-operator --days 7 --workspace workspace-1
+corepack pnpm --filter @graphql/api credential revoke principal-UUID
+```
+
+The optional `--audience worker` flag creates a future Worker-audience credential. Such credentials are deliberately rejected at `/mcp/operator`.
+
+To enroll the browser, open Settings and paste the one-time-visible token into Operator access. The API validates it and sets a SameSite Strict, HttpOnly cookie. The token is not written to Vite configuration or localStorage. Real mode is enabled with:
+
+```sh
+VITE_ENABLE_MSW=false corepack pnpm dev
+```
+
+## Client configuration
+
+Use an environment variable for the token; do not place a literal credential in a checked-in file.
+
+Codex CLI `0.154.0` supports Streamable HTTP and an environment-backed bearer token:
+
+```sh
+export GRAPHQL_OPERATOR_TOKEN='token-shown-by-the-issue-command'
+codex mcp add graphql-operator \
+  --url http://127.0.0.1:3000/mcp/operator \
+  --bearer-token-env-var GRAPHQL_OPERATOR_TOKEN
+```
+
+OpenCode CLI `1.18.31` accepts a remote MCP URL and header. For isolated qualification, create a temporary config and set both `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR`; do not use `opencode mcp add`, which writes the installed v1 CLI's global config. Environment substitution keeps the credential out of the file:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "graphql-operator": {
+      "type": "remote",
+      "url": "http://127.0.0.1:3000/mcp/operator",
+      "enabled": true,
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer {env:GRAPHQL_OPERATOR_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+```sh
+OPENCODE_CONFIG=/path/to/temporary/opencode.json \
+OPENCODE_CONFIG_DIR=/path/to/temporary/config-dir \
+opencode run --pure --model opencode-go/deepseek-v4.1-flash \
+  --variant max --agent build 'Use the Operator MCP capabilities tool.'
+```
+
+## Tool catalog
+
+- Context: `operator_get_capabilities`
+- Harnesses: `harness_list`, `harness_get`, `harness_defaults_update`
+- Workspaces: `workspace_list`, `workspace_get`, `workspace_create`, `workspace_update`, `workspace_archive`
+- Workflows: `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_archive`
+- Agents: `agent_list`, `agent_get`
+- Graph: `graph_draft_open`, `graph_draft_get`, `graph_draft_apply`, `graph_validate`, `graph_save`, `graph_draft_discard`
+- Runs: `run_list`, `run_get`, `run_events_list`, `run_start`, `run_stop`
+
+Tool discovery is caller-specific. Every call rechecks the live credential, audience, action, and resource scope. MCP annotations are descriptive client hints and never authorization.
+
+`graph_draft_apply` accepts only `agent.add`, `agent.rename`, `agent.configure`, `agent.clone`, `node.rename`, `node.set_initial_prompt`, `node.move`, `node.remove`, `edge.connect`, `edge.disconnect`, and `workflow.set_execution_limits`. Batches and Save require the expected revision. Save creates an immutable workflow version but does not Start. Start requires that exact current saved version and returns a durable Run ID before asynchronous execution.
+
+Archive retains versions, configurations, runs, results, and activity. Active work blocks archive; archive never silently cancels work. Stop reports `accepted`, `already_terminal`, or `not_owner`; an accepted request does not claim that the child process has already exited.
+
+## Verification and limitations
+
+`corepack pnpm test:integration` uses the official SDK client against the real Fastify Streamable HTTP endpoint and PostgreSQL. It covers the complete discovered catalog, credential audience and scope isolation, command replay/conflicts, concurrent duplicate Start, batch rollback, explicit Save/Start, archive blocking, bad Origin, revocation, and legacy HTTP mutation-bypass prevention.
+
+The current local credential mechanism is not OAuth. Worker Tools MCP, board-agent credential delivery, remote/public access, a full Operator chat UI, memory, Files, Kanban, browser services, scheduling, and remote runners remain deferred. See [the access ADR](./adr/operator-and-worker-mcp-access.md).

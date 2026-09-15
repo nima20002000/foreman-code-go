@@ -1,0 +1,84 @@
+import { createHash } from 'node:crypto'
+
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type pg from 'pg'
+
+import { DomainError } from '../errors.js'
+
+function canonicalize(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalize).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalize(item)}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+export function commandInputHash(value: unknown): string {
+  return `sha256:${createHash('sha256').update(canonicalize(value)).digest('hex')}`
+}
+
+export class PostgresCommandCoordinator {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async execute<T>(input: {
+    principal: ManagementPrincipal
+    source: 'http' | 'mcp'
+    operation: string
+    commandId: string
+    targetKey: string
+    payload: unknown
+    perform(client: pg.PoolClient): Promise<T>
+  }): Promise<{ value: T; replayed: boolean }> {
+    const client = await this.pool.connect()
+    const inputHash = commandInputHash(input.payload)
+    try {
+      await client.query('begin')
+      await client.query('select pg_advisory_xact_lock(hashtext($1))', [
+        `command:${input.principal.id}:${input.operation}:${input.commandId}`,
+      ])
+      const existing = await client.query<{ input_hash: string; target_key: string; result: T }>(
+        `select input_hash, target_key, result from management_command_receipts
+         where principal_id = $1 and operation = $2 and command_id = $3`,
+        [input.principal.id, input.operation, input.commandId],
+      )
+      const receipt = existing.rows[0]
+      if (receipt) {
+        if (receipt.input_hash !== inputHash || receipt.target_key !== input.targetKey) {
+          throw new DomainError('COMMAND_ID_CONFLICT', 'This command ID was already used with different input.', 409)
+        }
+        await client.query('commit')
+        return { value: receipt.result, replayed: true }
+      }
+
+      const value = await input.perform(client)
+      await client.query(
+        `insert into management_command_receipts
+          (principal_id, operation, command_id, target_key, input_hash, result)
+         values ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [input.principal.id, input.operation, input.commandId, input.targetKey, inputHash, JSON.stringify(value)],
+      )
+      await client.query(
+        `insert into management_audit (principal_id, source, action, target_key, outcome, details)
+         values ($1, $2, $3, $4, 'succeeded', $5::jsonb)`,
+        [input.principal.id, input.source, input.operation, input.targetKey, JSON.stringify({ commandId: input.commandId })],
+      )
+      await client.query('commit')
+      return { value, replayed: false }
+    } catch (error) {
+      await client.query('rollback')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
+  async recordDenied(principalId: string | undefined, source: 'http' | 'mcp', action: string, targetKey: string): Promise<void> {
+    await this.pool.query(
+      `insert into management_audit (principal_id, source, action, target_key, outcome, details)
+       values ($1, $2, $3, $4, 'denied', '{}'::jsonb)`,
+      [principalId ?? null, source, action, targetKey],
+    )
+  }
+}

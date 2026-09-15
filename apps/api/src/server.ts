@@ -6,12 +6,20 @@ import { loadConfig } from './config.js'
 import { createCheckpointStore } from './infrastructure/checkpoints.js'
 import { createDatabase } from './infrastructure/database.js'
 import { ensureAcceptanceSeed } from './infrastructure/seed.js'
+import { PostgresAccessService } from './modules/access/postgres.js'
+import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
+import { GraphDraftService } from './modules/graph-drafts/service.js'
+import { HarnessCatalogService } from './modules/harnesses/catalog.js'
 import { LocalHarnessResolver } from './modules/harnesses/resolver.js'
 import { LangGraphWorkflowEngine } from './modules/runs/engine.js'
 import { PostgresRunRepository } from './modules/runs/postgres.js'
+import { RunManagementService } from './modules/runs/management.js'
 import { PostgresSettingsRepository } from './modules/settings/postgres.js'
 import { PostgresWorkflowRepository } from './modules/workflows/postgres.js'
+import { WorkflowManagementService } from './modules/workflows/management.js'
 import { PostgresWorkspaceRepository } from './modules/workspaces/postgres.js'
+import { WorkspaceManagementService } from './modules/workspaces/management.js'
+import { AgentManagementService } from './modules/workspaces/agents.js'
 
 async function main() {
   // loadEnvFile is available at the declared Node 22.0 runtime baseline, unlike
@@ -43,10 +51,22 @@ async function main() {
     config.harnesses.workspaceRoot,
     config.harnesses.timeoutMs,
   )
+  const access = new PostgresAccessService(database.pool)
+  const commands = new PostgresCommandCoordinator(database.pool)
+  const operatorServices = {
+    workspaces: new WorkspaceManagementService(database.pool, commands),
+    workflows: new WorkflowManagementService(database.pool, commands),
+    agents: new AgentManagementService(database.pool),
+    drafts: new GraphDraftService(database.pool, commands),
+    harnesses: new HarnessCatalogService(harnesses, settings, commands, config.harnesses.workspaceRoot),
+    runs: new RunManagementService(database.pool, commands, runs, engine),
+    commands,
+  }
   const app = buildApp({
     readiness: { database, checkpoints },
     readinessTimeoutMs: config.readinessTimeoutMs,
     product: { workspaces, workflows, runs, settings, engine },
+    operator: { access, services: operatorServices },
     logger: true,
   })
   let reconciliationTimer: NodeJS.Timeout | undefined

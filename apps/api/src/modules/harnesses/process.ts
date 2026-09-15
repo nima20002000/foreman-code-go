@@ -65,9 +65,16 @@ async function runOwnedProcess<T>(
   read: (child: ChildProcessWithoutNullStreams) => Promise<T>,
 ): Promise<T & ProcessExit> {
   options.signal?.throwIfAborted()
+  const childEnvironment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
+  for (const key of Object.keys(childEnvironment)) {
+    if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_')
+      || key === 'DATABASE_URL' || key === 'TEST_DATABASE_URL' || key === 'PGPASSWORD') {
+      delete childEnvironment[key]
+    }
+  }
   const child = spawn(options.binary, options.args, {
     cwd: options.cwd,
-    env: { ...process.env, NO_COLOR: '1' },
+    env: childEnvironment,
     detached: process.platform !== 'win32',
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,

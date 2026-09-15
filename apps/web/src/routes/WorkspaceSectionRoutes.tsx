@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 
 import { AgentsDirectory } from '../features/agents'
-import { HarnessDefaultsSettings } from '../features/settings'
+import { HarnessDefaultsSettings, OperatorAccessSettings } from '../features/settings'
 import { WorkflowDirectory } from '../features/workflows'
 import { WorkspaceShell, type WorkspaceSection } from '../shared/ui/WorkspaceShell'
 import {
@@ -183,6 +183,7 @@ function GlobalSettingsPage({ harnessesSelected = false }: { harnessesSelected?:
                 </span>
               </Link>
             </nav>
+            <OperatorAccessSettings />
             {harnessesSelected ? <HarnessDefaultsSettings /> : null}
           </div>
         ),

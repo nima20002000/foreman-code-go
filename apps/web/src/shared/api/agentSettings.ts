@@ -12,6 +12,8 @@ import { apiClient } from './client'
 import { queryKeys } from './query'
 
 export async function saveAgent(workspaceId: string, agent: Agent) {
+  const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false')
+  if (realMode) throw new Error('Standalone agent editing is read-only in Operator mode. Edit this agent from its workflow board and Save graph.')
   const scope = GetAgentRequestSchema.parse({ workspaceId, agentId: agent.id })
   return apiClient.request(
     `/api/workspaces/${encodeURIComponent(scope.workspaceId)}/agents/${encodeURIComponent(scope.agentId)}`,

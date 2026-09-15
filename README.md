@@ -15,6 +15,11 @@ uses LangGraph to coordinate native Codex and OpenCode headless sessions.
 
 See [`AGENTS.md`](./AGENTS.md) for state ownership and scope rules.
 
+The authenticated local Operator Management MCP is documented in
+[`docs/operator-mcp-v1.md`](./docs/operator-mcp-v1.md), with board-agent and
+future Worker MCP access decisions in
+[`docs/adr/operator-and-worker-mcp-access.md`](./docs/adr/operator-and-worker-mcp-access.md).
+
 For the NIM-2576 owner walkthrough, route/API/schema inventory, mock scenario
 semantics, UX decisions, backend handoff boundary, and verification record, see
 [`docs/NIM-2576-handoff.md`](./docs/NIM-2576-handoff.md).

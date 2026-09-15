@@ -1,0 +1,146 @@
+import { randomUUID } from 'node:crypto'
+
+import {
+  ManagedWorkspaceSchema,
+  type ManagementPrincipal,
+  type ManagedWorkspace,
+} from '@graphql/contracts/management'
+import { WorkspaceSchema } from '@graphql/contracts'
+import type pg from 'pg'
+
+import { hasAction, requireAuthorization } from '../access/policy.js'
+import { PostgresCommandCoordinator } from '../commands/postgres.js'
+import { DomainError } from '../errors.js'
+
+interface WorkspaceRow { record: unknown; revision: string; archived_at: Date | null }
+
+function managed(row: WorkspaceRow): ManagedWorkspace {
+  return ManagedWorkspaceSchema.parse({
+    workspace: WorkspaceSchema.parse(row.record),
+    revision: Number(row.revision),
+    archivedAt: row.archived_at?.toISOString() ?? null,
+  })
+}
+
+export class WorkspaceManagementService {
+  constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator) {}
+
+  async list(principal: ManagementPrincipal, input: { cursor?: string | undefined; limit: number; includeArchived: boolean }) {
+    if (!hasAction(principal, 'workspaces:read')) requireAuthorization(principal, 'workspaces:read')
+    const relevant = principal.grants.filter((grant) => grant.actions.includes('workspaces:read'))
+    const allowedWorkspaceIds = relevant.some((grant) => grant.scope.workspaceIds === undefined)
+      ? undefined
+      : [...new Set(relevant.flatMap((grant) => grant.scope.workspaceIds ?? []))]
+    const rows = await this.pool.query<WorkspaceRow>(
+      `select record, revision, archived_at from workspaces
+       where ($1::text is null or id > $1) and ($2 or archived_at is null)
+       and ($4::text[] is null or id = any($4))
+       order by id limit $3`,
+      [input.cursor ?? null, input.includeArchived, input.limit + 1, allowedWorkspaceIds ?? null],
+    )
+    const visible = rows.rows
+      .map(managed)
+      .filter((item) => {
+        try { requireAuthorization(principal, 'workspaces:read', { workspaceId: item.workspace.id }); return true } catch { return false }
+      })
+    const items = visible.slice(0, input.limit)
+    return { items, pageInfo: { nextCursor: visible.length > input.limit ? items.at(-1)!.workspace.id : null } }
+  }
+
+  async get(principal: ManagementPrincipal, workspaceId: string): Promise<ManagedWorkspace> {
+    requireAuthorization(principal, 'workspaces:read', { workspaceId })
+    const result = await this.pool.query<WorkspaceRow>(
+      'select record, revision, archived_at from workspaces where id = $1', [workspaceId],
+    )
+    if (!result.rows[0]) throw new DomainError('WORKSPACE_NOT_FOUND', `Workspace '${workspaceId}' was not found.`, 404)
+    return managed(result.rows[0])
+  }
+
+  async create(principal: ManagementPrincipal, source: 'http' | 'mcp', input: { commandId: string; name: string; description?: string | undefined }) {
+    requireAuthorization(principal, 'workspaces:create')
+    return this.commands.execute({
+      principal, source, operation: 'workspace.create', commandId: input.commandId,
+      targetKey: 'workspaces:new', payload: input,
+      perform: async (client) => {
+        const now = new Date().toISOString()
+        const workspace = WorkspaceSchema.parse({
+          id: `workspace-${randomUUID()}`, name: input.name,
+          ...(input.description !== undefined ? { description: input.description } : {}),
+          createdAt: now, updatedAt: now,
+        })
+        const result = await client.query<WorkspaceRow>(
+          `insert into workspaces (id, record) values ($1, $2::jsonb)
+           returning record, revision, archived_at`, [workspace.id, JSON.stringify(workspace)],
+        )
+        return managed(result.rows[0]!)
+      },
+    })
+  }
+
+  async update(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
+    workspaceId: string; commandId: string; expectedRevision: number; name?: string | undefined; description?: string | null | undefined
+  }) {
+    requireAuthorization(principal, 'workspaces:update', { workspaceId: input.workspaceId })
+    return this.commands.execute({
+      principal, source, operation: 'workspace.update', commandId: input.commandId,
+      targetKey: `workspace:${input.workspaceId}`, payload: input,
+      perform: async (client) => {
+        const current = await client.query<WorkspaceRow>(
+          'select record, revision, archived_at from workspaces where id = $1 for update', [input.workspaceId],
+        )
+        const row = current.rows[0]
+        if (!row) throw new DomainError('WORKSPACE_NOT_FOUND', `Workspace '${input.workspaceId}' was not found.`, 404)
+        if (row.archived_at) throw new DomainError('WORKSPACE_ARCHIVED', 'Archived workspaces cannot be edited.', 409)
+        if (Number(row.revision) !== input.expectedRevision) {
+          throw new DomainError('REVISION_CONFLICT', 'The workspace changed since it was read.', 409, { currentRevision: Number(row.revision) })
+        }
+        const previous = WorkspaceSchema.parse(row.record)
+        const workspace = WorkspaceSchema.parse({
+          ...previous,
+          ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.description === null ? { description: undefined }
+            : input.description !== undefined ? { description: input.description } : {}),
+          updatedAt: new Date().toISOString(),
+        })
+        const result = await client.query<WorkspaceRow>(
+          `update workspaces set record = $2::jsonb, revision = revision + 1
+           where id = $1 returning record, revision, archived_at`,
+          [input.workspaceId, JSON.stringify(workspace)],
+        )
+        return managed(result.rows[0]!)
+      },
+    })
+  }
+
+  async archive(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
+    workspaceId: string; commandId: string; expectedRevision: number
+  }) {
+    requireAuthorization(principal, 'workspaces:archive', { workspaceId: input.workspaceId })
+    return this.commands.execute({
+      principal, source, operation: 'workspace.archive', commandId: input.commandId,
+      targetKey: `workspace:${input.workspaceId}`, payload: input,
+      perform: async (client) => {
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.workspaceId}`])
+        const current = await client.query<WorkspaceRow>(
+          'select record, revision, archived_at from workspaces where id = $1 for update', [input.workspaceId],
+        )
+        const row = current.rows[0]
+        if (!row) throw new DomainError('WORKSPACE_NOT_FOUND', `Workspace '${input.workspaceId}' was not found.`, 404)
+        if (Number(row.revision) !== input.expectedRevision) {
+          throw new DomainError('REVISION_CONFLICT', 'The workspace changed since it was read.', 409, { currentRevision: Number(row.revision) })
+        }
+        const active = await client.query<{ count: string }>(
+          `select count(*) from runs where workspace_id = $1 and execution_state <> 'completed'`, [input.workspaceId],
+        )
+        if (Number(active.rows[0]?.count ?? 0) > 0) {
+          throw new DomainError('ARCHIVE_BLOCKED_BY_ACTIVE_RUN', 'Settle active work before archiving the workspace.', 409)
+        }
+        const result = await client.query<WorkspaceRow>(
+          `update workspaces set archived_at = coalesce(archived_at, now()), revision = revision + 1
+           where id = $1 returning record, revision, archived_at`, [input.workspaceId],
+        )
+        return managed(result.rows[0]!)
+      },
+    })
+  }
+}

@@ -104,6 +104,62 @@ const migrations = [
       updated_at timestamptz not null default now()
     );
   `,
+  `
+    alter table workspaces add column if not exists revision bigint not null default 1;
+    alter table workspaces add column if not exists archived_at timestamptz;
+    alter table workflows add column if not exists revision bigint not null default 1;
+    alter table workflows add column if not exists archived_at timestamptz;
+    alter table agents add column if not exists metadata_revision bigint not null default 1;
+    alter table application_settings add column if not exists revision bigint not null default 1;
+
+    create table if not exists management_principals (
+      id text primary key,
+      name text not null,
+      audience text not null,
+      token_hash text not null unique,
+      grants jsonb not null,
+      expires_at timestamptz not null,
+      revoked_at timestamptz,
+      created_at timestamptz not null default now(),
+      check (audience in ('operator', 'worker'))
+    );
+
+    create table if not exists management_command_receipts (
+      principal_id text not null references management_principals(id),
+      operation text not null,
+      command_id text not null,
+      target_key text not null,
+      input_hash text not null,
+      result jsonb not null,
+      created_at timestamptz not null default now(),
+      primary key (principal_id, operation, command_id)
+    );
+
+    create table if not exists management_audit (
+      sequence bigint generated always as identity primary key,
+      principal_id text,
+      source text not null,
+      action text not null,
+      target_key text not null,
+      outcome text not null,
+      details jsonb not null default '{}'::jsonb,
+      occurred_at timestamptz not null default now()
+    );
+    create index if not exists management_audit_principal_idx
+      on management_audit (principal_id, sequence desc);
+
+    create table if not exists graph_drafts (
+      id text primary key,
+      workspace_id text not null references workspaces(id),
+      workflow_id text not null references workflows(id),
+      revision bigint not null,
+      base_workflow_version_id text,
+      record jsonb not null,
+      discarded_at timestamptz,
+      updated_at timestamptz not null default now(),
+      unique (workflow_id)
+    );
+  `,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

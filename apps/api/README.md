@@ -20,10 +20,13 @@ mapping, and native Codex/OpenCode process adapters.
   only accepted PostgreSQL results to downstream nodes.
 - `src/modules/runs/postgres.ts` persists runs, occurrences, accepted results,
   raw native events, and normalized activity.
+- `src/mcp/operator` mounts the authenticated, request-scoped Operator MCP
+  server; management services are shared with the browser HTTP boundary.
 
-The real product slice implements workspace/agent/workflow reads, workflow
-saves, run starts, run detail reads, and cancellation. Conversation, resource,
-and later product surfaces remain outside this milestone.
+The real product slice also implements durable management, graph drafts,
+revision-checked Save, exact-version Start, idempotent Stop, scoped local
+credentials, command receipts, and management audit. See
+[`../../docs/operator-mcp-v1.md`](../../docs/operator-mcp-v1.md).
 
 ## Local run
 

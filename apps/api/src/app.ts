@@ -6,10 +6,16 @@ import {
   type ServiceHealth,
 } from '@graphql/contracts'
 import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify'
+import { localhostHostValidation, localhostOriginValidation } from '@modelcontextprotocol/fastify'
 import { z } from 'zod'
 
 import { DomainError } from './modules/errors.js'
+import { registerOperatorHttpSecurity } from './modules/access/http.js'
+import type { PostgresAccessService } from './modules/access/postgres.js'
+import { registerOperatorMcp } from './mcp/operator/transport.js'
+import type { OperatorServices } from './mcp/operator/types.js'
 import { registerProductRoutes, type ProductServices } from './routes/product.js'
+import { registerManagementRoutes } from './routes/management.js'
 
 export interface ReadinessDependencies {
   database: { ping(signal?: AbortSignal): Promise<void> }
@@ -20,6 +26,7 @@ export interface BuildAppOptions {
   readiness: ReadinessDependencies
   readinessTimeoutMs?: number
   product?: ProductServices
+  operator?: { access: PostgresAccessService; services: OperatorServices }
   logger?: boolean | FastifyBaseLogger
 }
 
@@ -68,6 +75,10 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       : { logger: options.logger ?? false }),
     genReqId: () => randomUUID(),
   })
+  if (options.operator) {
+    app.addHook('onRequest', localhostHostValidation())
+    app.addHook('onRequest', localhostOriginValidation())
+  }
   const checkDatabase = createDependencyCheck(
     (signal) => options.readiness.database.ping(signal), timeoutMs,
   )
@@ -88,9 +99,12 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     return response
   })
 
-  if (options.product) registerProductRoutes(app, options.product)
+  if (options.operator) registerOperatorHttpSecurity(app, options.operator.access)
+  if (options.operator) registerManagementRoutes(app, options.operator.services)
+  if (options.product) registerProductRoutes(app, options.product, Boolean(options.operator))
+  if (options.operator) registerOperatorMcp(app, options.operator.access, options.operator.services)
 
-  app.setErrorHandler((error, request, reply) => {
+  app.setErrorHandler(async (error, request, reply) => {
     const domain = error instanceof DomainError
       ? error
       : error instanceof z.ZodError
@@ -99,6 +113,13 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
           })
         : new DomainError('INTERNAL_ERROR', 'The API could not complete the request.', 500)
     if (domain.status >= 500) request.log.error({ err: error }, domain.message)
+    if (options.operator && (domain.status === 401 || domain.status === 403)
+      && (request.url.startsWith('/api/') || request.url.startsWith('/mcp/'))) {
+      await options.operator.services.commands.recordDenied(
+        request.operatorPrincipal?.id, request.url.startsWith('/mcp/') ? 'mcp' : 'http',
+        domain.code, request.url.split('?')[0] ?? request.url,
+      ).catch((auditError: unknown) => request.log.error({ err: auditError }, 'management denial audit failed'))
+    }
     const body = ApiErrorResponseSchema.parse({
       error: {
         code: domain.code,

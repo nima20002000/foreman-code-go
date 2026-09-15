@@ -1,6 +1,7 @@
 import {
   useMutation,
   useQuery,
+  useQueryClient,
   type UseMutationOptions,
   type UseQueryOptions,
 } from '@tanstack/react-query'
@@ -18,6 +19,10 @@ import type {
   SaveHarnessDefaultsResponse,
   WorkspaceDetailsResponse,
 } from '@graphql/contracts'
+import type {
+  WorkspaceArchiveInput, WorkspaceCreateInput, WorkspaceUpdateInput,
+  WorkflowArchiveInput, WorkflowCreateInput, WorkflowUpdateInput,
+} from '@graphql/contracts/management'
 
 import {
   apiClient,
@@ -35,6 +40,11 @@ import {
   saveHarnessDefaults,
   startWorkflowRun,
   sendUserMessage,
+  listManagedWorkspaces, createManagedWorkspace, updateManagedWorkspace, archiveManagedWorkspace,
+  listManagedWorkflows, createManagedWorkflow, updateManagedWorkflow, archiveManagedWorkflow,
+  listManagedAgents, getManagedGraphContext, openManagedGraphDraft, applyManagedGraphDraft, saveManagedGraphDraft, discardManagedGraphDraft,
+  startManagedRun, stopManagedRun,
+  getManagedHarnessCatalog, updateManagedHarnessDefaults,
   type RequestOptions,
 } from './client'
 
@@ -60,6 +70,13 @@ export const queryKeys = {
     ['workbench', 'workspace', workspaceId, 'conversation', conversationId, 'messages'] as const,
   resources: (workspaceId: string) => ['workbench', 'workspace', workspaceId, 'resources'] as const,
   harnessDefaults: ['workbench', 'settings', 'harness-defaults'] as const,
+  managedWorkspaces: ['workbench', 'management', 'workspaces'] as const,
+  managedWorkflows: (workspaceId: string) => ['workbench', 'management', 'workspace', workspaceId, 'workflows'] as const,
+  managedAgents: (workspaceId: string) => ['workbench', 'management', 'workspace', workspaceId, 'agents'] as const,
+  managedDraft: (workspaceId: string, workflowId: string) => ['workbench', 'management', 'workspace', workspaceId, 'workflow', workflowId, 'draft'] as const,
+  managedHarnessCatalog: ['workbench', 'management', 'harnesses'] as const,
+  managedGraphContext: (workspaceId: string, workflowId: string) =>
+    ['workbench', 'management', 'workspace', workspaceId, 'workflow', workflowId, 'context'] as const,
 }
 
 export const workspaceQueryKeys = queryKeys
@@ -77,13 +94,119 @@ export function useWorkspaceDetailsQuery(
   })
 }
 
+export function useManagedWorkspacesQuery(enabled = true) {
+  return useQuery({ enabled, queryKey: queryKeys.managedWorkspaces, queryFn: ({ signal }) => listManagedWorkspaces({ signal }) })
+}
+
+export function useCreateManagedWorkspaceMutation() {
+  return useMutation({ mutationFn: (input: WorkspaceCreateInput) => createManagedWorkspace(input) })
+}
+
+export function useUpdateManagedWorkspaceMutation() {
+  return useMutation({ mutationFn: (input: WorkspaceUpdateInput) => updateManagedWorkspace(input) })
+}
+
+export function useArchiveManagedWorkspaceMutation() {
+  return useMutation({ mutationFn: (input: WorkspaceArchiveInput) => archiveManagedWorkspace(input) })
+}
+
+export function useManagedWorkflowsQuery(workspaceId: string, enabled = true) {
+  return useQuery({
+    enabled, queryKey: queryKeys.managedWorkflows(workspaceId),
+    queryFn: ({ signal }) => listManagedWorkflows(workspaceId, { signal }),
+  })
+}
+
+export function useCreateManagedWorkflowMutation() {
+  return useMutation({ mutationFn: (input: WorkflowCreateInput) => createManagedWorkflow(input) })
+}
+
+export function useUpdateManagedWorkflowMutation() {
+  return useMutation({ mutationFn: (input: WorkflowUpdateInput) => updateManagedWorkflow(input) })
+}
+
+export function useArchiveManagedWorkflowMutation() {
+  return useMutation({ mutationFn: (input: WorkflowArchiveInput) => archiveManagedWorkflow(input) })
+}
+
+export function useManagedAgentsQuery(workspaceId: string, enabled = true) {
+  return useQuery({ enabled, queryKey: queryKeys.managedAgents(workspaceId), queryFn: ({ signal }) => listManagedAgents(workspaceId, { signal }) })
+}
+
+export function useManagedGraphDraftQuery(workspaceId: string, workflowId: string, enabled = true) {
+  return useQuery({
+    enabled, queryKey: queryKeys.managedDraft(workspaceId, workflowId),
+    queryFn: ({ signal }) => openManagedGraphDraft(workspaceId, workflowId, { signal }),
+    refetchInterval: enabled ? 3_000 : false,
+  })
+}
+
+export function useManagedGraphContextQuery(workspaceId: string, workflowId: string, enabled = true) {
+  const client = useQueryClient()
+  return useQuery({
+    enabled, queryKey: queryKeys.managedGraphContext(workspaceId, workflowId),
+    queryFn: async ({ signal }) => {
+      const next = await getManagedGraphContext(workspaceId, workflowId, { signal })
+      const current = client.getQueryData<Awaited<ReturnType<typeof getManagedGraphContext>>>(queryKeys.managedGraphContext(workspaceId, workflowId))
+      // An older poll must not undo an Apply/Save acknowledged while it was in flight.
+      return current?.draft.id === next.draft.id && current.draft.revision > next.draft.revision ? current : next
+    },
+    refetchInterval: enabled ? 3_000 : false,
+  })
+}
+
+export function useApplyManagedGraphDraftMutation() {
+  return useMutation({ mutationFn: (input: Parameters<typeof applyManagedGraphDraft>[0]) => applyManagedGraphDraft(input) })
+}
+
+export function useSaveManagedGraphDraftMutation() {
+  return useMutation({ mutationFn: (input: Parameters<typeof saveManagedGraphDraft>[0]) => saveManagedGraphDraft(input) })
+}
+
+export function useDiscardManagedGraphDraftMutation() {
+  return useMutation({ mutationFn: (input: Parameters<typeof discardManagedGraphDraft>[0]) => discardManagedGraphDraft(input) })
+}
+
+export function useStartManagedRunMutation() {
+  return useMutation({ mutationFn: (input: Parameters<typeof startManagedRun>[0]) => startManagedRun(input) })
+}
+
+export function useStopManagedRunMutation() {
+  return useMutation({ mutationFn: (input: Parameters<typeof stopManagedRun>[0]) => stopManagedRun(input) })
+}
+
+export function useManagedHarnessCatalogQuery(enabled = true) {
+  return useQuery({ enabled, queryKey: queryKeys.managedHarnessCatalog,
+    queryFn: ({ signal }) => getManagedHarnessCatalog({ signal }), refetchInterval: enabled ? 3_000 : false })
+}
+
+export function useUpdateManagedHarnessDefaultsMutation() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (input: Parameters<typeof updateManagedHarnessDefaults>[0]) => updateManagedHarnessDefaults(input),
+    onSuccess: (response) => {
+      client.setQueryData(queryKeys.harnessDefaults, { defaults: response.value.defaults })
+      void client.invalidateQueries({ queryKey: queryKeys.managedHarnessCatalog }).catch(() => undefined)
+    },
+  })
+}
+
 export const useWorkspaceQuery = useWorkspaceDetailsQuery
 
 export function useHarnessDefaultsQuery(options?: QueryOptions<GetHarnessDefaultsResponse>) {
+  const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false')
   return useQuery({
+    refetchInterval: realMode ? 3_000 : false,
     ...options,
     queryKey: queryKeys.harnessDefaults,
-    queryFn: ({ signal }) => getHarnessDefaults({ signal }),
+    queryFn: async ({ signal }) => {
+      if (!realMode) return getHarnessDefaults({ signal })
+      const catalog = await getManagedHarnessCatalog({ signal })
+      const codex = catalog.find((entry) => entry.harness === 'codex')?.defaults
+      const opencode = catalog.find((entry) => entry.harness === 'opencode')?.defaults
+      if (codex?.harness !== 'codex' || opencode?.harness !== 'opencode') throw new Error('Harness defaults are unavailable.')
+      return { defaults: { codex, opencode } }
+    },
   })
 }
 

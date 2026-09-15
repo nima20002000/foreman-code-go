@@ -58,6 +58,8 @@ function AgentCard({
   saving: boolean
   saveError?: string
 }) {
+  const managedReadOnly = !local && import.meta.env.MODE !== 'test'
+    && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false')
   const [menuOpen, setMenuOpen] = useState(false)
   const [showBlockers, setShowBlockers] = useState(false)
   const [confirmClose, setConfirmClose] = useState(false)
@@ -87,7 +89,7 @@ function AgentCard({
   }, [closeMenu, dirty])
   const save = useCallback(async () => {
     const nextName = name.trim()
-    if (!nextName || saveInFlight.current || saving) return
+    if (!nextName || saveInFlight.current || saving || managedReadOnly) return
     saveInFlight.current = true
     setLocalSaveError(undefined)
     try {
@@ -105,7 +107,7 @@ function AgentCard({
     } finally {
       saveInFlight.current = false
     }
-  }, [agent, closeMenu, effort, fastMode, harness, model, name, onSave, saving])
+  }, [agent, closeMenu, effort, fastMode, harness, managedReadOnly, model, name, onSave, saving])
   useDismissableSurface({ open: menuOpen, onDismiss: requestClose, surfaceRef: menuRef, triggerRef })
   const role = agent.role ?? 'Agent'
   const status = local ? 'Local session' : executionLabel(agent)
@@ -149,7 +151,12 @@ function AgentCard({
       <div ref={menuRef} className="agent-directory-card-actions" role="dialog" aria-label={`${agent.name} actions`} onPointerDown={(event) => event.stopPropagation()}>
         {localSaveError || saveError ? <p role="alert">{localSaveError ?? saveError}</p> : null}
         {local ? <p role="note">Local preview: these settings are not executable until saved to the workspace.</p> : null}
-        {confirmClose ? (
+        {managedReadOnly ? <div role="note">
+          <p>Standalone agent editing is read-only in Operator mode. Open a workflow board to change this agent and Save graph.</p>
+          {blockers.map((workflow) => <Link key={workflow.id} to="/workspaces/$workspaceId"
+            params={{ workspaceId }} search={{ workflowId: workflow.id }}>{workflow.name}</Link>)}
+          <button type="button" onClick={closeMenu}>Close</button>
+        </div> : confirmClose ? (
           <div className="agent-settings-confirm">
             <p>You made changes. Save or discard?</p>
             <button type="button" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>

@@ -265,8 +265,9 @@ export function workflowToGraph(
       source: workflowEdge.source,
       target: workflowEdge.target,
       type: AGENT_HANDOFF_EDGE_TYPE,
-      sourceHandle: sides.sourceHandle,
-      targetHandle: sides.targetHandle,
+      sourceHandle: workflowEdge.sourceHandle ?? sides.sourceHandle,
+      targetHandle: workflowEdge.targetHandle ?? sides.targetHandle,
+      label: workflowEdge.label,
       data: { explanation: 'Sequential handoff', onRemove: options.onRemoveEdge },
     }
   })
@@ -281,6 +282,8 @@ function asDomainEdge(edge: GraphEdge, existing?: WorkflowEdge): WorkflowEdge {
     id: edge.id,
     source: edge.source,
     target: edge.target,
+    ...(edge.sourceHandle === undefined || (existing && existing.sourceHandle == null) ? {} : { sourceHandle: edge.sourceHandle as WorkflowEdge['sourceHandle'] }),
+    ...(edge.targetHandle === undefined || (existing && existing.targetHandle == null) ? {} : { targetHandle: edge.targetHandle as WorkflowEdge['targetHandle'] }),
     ...(label === undefined ? {} : { label }),
   }
 }
@@ -293,7 +296,7 @@ function asDomainEdge(edge: GraphEdge, existing?: WorkflowEdge): WorkflowEdge {
 export function graphToWorkflow(
   workflow: WorkflowDefinition,
   nodes: readonly Pick<GraphNode, 'id' | 'position' | 'width' | 'height' | 'measured'>[],
-  edges: readonly Pick<GraphEdge, 'id' | 'source' | 'target' | 'label'>[],
+  edges: readonly Pick<GraphEdge, 'id' | 'source' | 'target' | 'label' | 'sourceHandle' | 'targetHandle'>[],
 ): WorkflowDefinition {
   const positions = new Map(nodes.map((node) => [node.id, node.position]))
   const sizes = new Map(nodes.map((node) => [

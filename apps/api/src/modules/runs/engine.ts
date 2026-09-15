@@ -1,5 +1,5 @@
 import { mkdir } from 'node:fs/promises'
-import { resolve, sep } from 'node:path'
+import { resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph'
@@ -22,6 +22,7 @@ import type { PostgresRunRepository } from './postgres.js'
 import type { RunOwnership } from './ownership.js'
 import { ExecutionLimiter } from './limiter.js'
 import { validateExecutableTopology } from './topology.js'
+import { resolveExecutionDirectory } from './executionDirectory.js'
 
 const EngineState = Annotation.Root({
   runId: Annotation<string>(),
@@ -371,10 +372,6 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   }
 
   private executionDirectory(runId: string, nodeId: string, attempt: number): string {
-    const directory = resolve(this.workspaceRoot, runId, nodeId, `attempt-${attempt}`)
-    if (!directory.startsWith(`${this.workspaceRoot}${sep}`)) {
-      throw new DomainError('HARNESS_WORKSPACE_INVALID', 'Harness workspace escaped its configured root.', 500)
-    }
-    return directory
+    return resolveExecutionDirectory(this.workspaceRoot, runId, nodeId, attempt)
   }
 }

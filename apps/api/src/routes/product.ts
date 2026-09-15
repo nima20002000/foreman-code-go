@@ -39,12 +39,13 @@ function notFound(kind: string, id: string): never {
   throw new DomainError(`${kind.toUpperCase()}_NOT_FOUND`, `${kind} '${id}' was not found.`, 404)
 }
 
-export function registerProductRoutes(app: FastifyInstance, services: ProductServices): void {
+export function registerProductRoutes(app: FastifyInstance, services: ProductServices, managementOnlyMutations = false): void {
   app.get('/api/settings/harnesses', async () => GetHarnessDefaultsResponseSchema.parse({
     defaults: await services.settings.getHarnessDefaults(),
   }))
 
   app.put<{ Body: unknown }>('/api/settings/harnesses', async (request) => {
+    if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the revision-checked management defaults command.', 409)
     const input = SaveHarnessDefaultsRequestSchema.parse(request.body)
     return SaveHarnessDefaultsResponseSchema.parse({
       defaults: await services.settings.saveHarnessDefaults(input.defaults),
@@ -65,6 +66,7 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
   })
 
   app.put<{ Params: AgentParams; Body: unknown }>('/api/workspaces/:workspaceId/agents/:agentId', async (request) => {
+    if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the shared graph draft commands to edit Agents.', 409)
     const agent = await services.workspaces.saveAgent(request.params.workspaceId, request.params.agentId, AgentSchema.parse(request.body))
     return GetAgentResponseSchema.parse({ agent })
   })
@@ -78,6 +80,7 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
     params: WorkspaceParams
     body: unknown
   }) => {
+    if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the shared graph draft Save command.', 409)
     const input = SaveWorkflowRequestSchema.parse(request.body)
     if (input.workspaceId !== request.params.workspaceId) {
       throw new DomainError('INVALID_WORKFLOW', 'The workflow payload does not match the requested workspace.', 400)
@@ -104,6 +107,7 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
   app.post<{ Params: WorkflowParams; Body: unknown }>(
     '/api/workspaces/:workspaceId/workflows/:workflowId/runs',
     async (request, reply) => {
+      if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the exact-version management Start command.', 409)
       const input = CreateRunRequestSchema.parse(request.body)
       if (input.workspaceId !== request.params.workspaceId || input.workflowId !== request.params.workflowId) {
         throw new DomainError('INVALID_RUN', 'The run payload does not match the requested workflow.', 400)
@@ -123,6 +127,7 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
   })
 
   app.post<{ Params: RunParams }>('/api/workspaces/:workspaceId/runs/:runId/cancel', async (request) => {
+    if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the idempotent management Stop command.', 409)
     const run = await services.runs.getForWorkspace(request.params.workspaceId, request.params.runId)
     if (!run) return notFound('run', request.params.runId)
     if (!await services.engine.cancel(run.id)) {

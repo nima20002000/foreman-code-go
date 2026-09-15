@@ -281,6 +281,8 @@ export const WorkflowEdgeSchema = z
     id: IdSchema,
     source: IdSchema,
     target: IdSchema,
+    sourceHandle: z.enum(["top", "right", "bottom", "left"]).nullable().optional(),
+    targetHandle: z.enum(["top", "right", "bottom", "left"]).nullable().optional(),
     label: z.string().optional(),
     route: WorkflowRouteSchema.optional(),
   })

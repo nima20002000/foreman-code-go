@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
+import { useQueryClient } from '@tanstack/react-query'
 import { MoreHorizontal, Workflow } from 'lucide-react'
 
-import { useWorkspaceDetailsQuery } from '../../shared/api/query'
+import {
+  queryKeys, useArchiveManagedWorkflowMutation, useManagedWorkflowsQuery,
+  useUpdateManagedWorkflowMutation, useWorkspaceDetailsQuery,
+} from '../../shared/api/query'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { isSessionWorkspaceId, useWorkspaceSessionStore } from '../workspaces/workspaceSessionStore'
 import { useSessionWorkflowStore } from './sessionWorkflowStore'
@@ -53,7 +57,12 @@ function WorkflowCardActions({ name, onRename, onRemove }: {
 
 export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
   const sessionWorkspace = isSessionWorkspaceId(workspaceId)
-  const workflowsQuery = useWorkspaceDetailsQuery(workspaceId, { enabled: !sessionWorkspace })
+  const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false') && !sessionWorkspace
+  const queryClient = useQueryClient()
+  const workflowsQuery = useWorkspaceDetailsQuery(workspaceId, { enabled: !sessionWorkspace && !realMode })
+  const managedQuery = useManagedWorkflowsQuery(workspaceId, realMode)
+  const updateWorkflow = useUpdateManagedWorkflowMutation()
+  const archiveWorkflow = useArchiveManagedWorkflowMutation()
   const sessionWorkflows = useSessionWorkflowStore((state) => state.workflows)
   const workflowNameOverrides = useSessionWorkflowStore((state) => state.workflowNameOverrides)
   const hiddenWorkflowIds = useSessionWorkflowStore((state) => state.hiddenWorkflowIds)
@@ -68,7 +77,9 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
   )
   const sessionIds = new Set(sessions.map((workflow) => workflow.id))
   const hiddenIds = new Set(hiddenWorkflowIds)
-  const workflows = [...sessions, ...(workflowsQuery.data?.workflows ?? [])]
+  const managed = managedQuery.data?.items ?? []
+  const managedById = new Map(managed.map((item) => [item.workflow.id, item]))
+  const workflows = realMode ? managed.map((item) => item.workflow) : [...sessions, ...(workflowsQuery.data?.workflows ?? [])]
     .filter((workflow) => !hiddenIds.has(workflow.id))
     .map((workflow) => ({
       ...workflow,
@@ -80,7 +91,7 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
       <header>
         <p className="panel-kicker">{workspaceName ?? workflowsQuery.data?.workspace.name ?? 'Workspace'}</p>
         <h1 id="workflow-directory-title">Workflows</h1>
-        <p>Open a workflow or remove it from this frontend session.</p>
+        <p>{realMode ? 'Open, rename or archive a durable workflow.' : 'Open a workflow or remove it from this frontend session.'}</p>
       </header>
 
       {workflows.length > 0 ? (
@@ -103,20 +114,34 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
               </Link>
               <WorkflowCardActions
                 name={workflow.name}
-                onRename={(name) => renameWorkflow(workflow.id, name)}
-                onRemove={() => removeWorkflow(workflow.id)}
+                onRename={(name) => {
+                  if (!realMode) return renameWorkflow(workflow.id, name)
+                  const item = managedById.get(workflow.id)
+                  if (!item) return
+                  updateWorkflow.mutate({ workspaceId, workflowId: workflow.id, expectedRevision: item.revision, commandId: crypto.randomUUID(), name }, {
+                    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflows(workspaceId) }),
+                  })
+                }}
+                onRemove={() => {
+                  if (!realMode) return removeWorkflow(workflow.id)
+                  const item = managedById.get(workflow.id)
+                  if (!item) return
+                  archiveWorkflow.mutate({ workspaceId, workflowId: workflow.id, expectedRevision: item.revision, commandId: crypto.randomUUID() }, {
+                    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflows(workspaceId) }),
+                  })
+                }}
               />
             </li>
           ))}
         </ul>
-      ) : !sessionWorkspace && workflowsQuery.isPending ? (
+      ) : (realMode ? managedQuery.isPending : !sessionWorkspace && workflowsQuery.isPending) ? (
         <p className="workspace-directory-state" role="status">Loading workflows…</p>
-      ) : !sessionWorkspace && workflowsQuery.isError ? (
+      ) : (realMode ? managedQuery.isError : !sessionWorkspace && workflowsQuery.isError) ? (
         <p className="workspace-directory-state" role="alert">Workflows unavailable</p>
       ) : (
         <div className="workspace-directory-empty" data-testid="workflow-directory-empty">
           <h2>No workflows yet</h2>
-          <p>Use New workflow in the navigation to create one for this session.</p>
+          <p>Use New workflow in the navigation to create one.</p>
         </div>
       )}
     </section>
