@@ -3,6 +3,7 @@ import {
   ApiErrorResponseSchema,
   CreateRunRequestSchema,
   CreateMessageRequestSchema,
+  SaveHarnessDefaultsRequestSchema,
   SaveWorkflowRequestSchema,
   type WorkflowDefinition,
   type WorkflowRun,
@@ -11,6 +12,7 @@ import {
 import {
   MOCK_SCENARIOS,
   getMockFixture,
+  getMockHarnessDefaults,
   getMockMessages,
   getMockScenarioState,
   isMockScenario,
@@ -21,6 +23,8 @@ import {
   serializeConversation,
   shouldFailMutation,
   updateMockWorkflow,
+  updateMockAgents,
+  updateMockHarnessDefaults,
   appendMockMessage,
   type MockFailureMode,
 } from './scenarios'
@@ -95,6 +99,15 @@ const mockStartedRun: WorkflowRun = {
 }
 
 export const handlers: RequestHandler[] = [
+  http.get('/api/settings/harnesses', () => HttpResponse.json({
+    defaults: getMockHarnessDefaults(),
+  })),
+  http.put('/api/settings/harnesses', async ({ request }) => {
+    const parsed = SaveHarnessDefaultsRequestSchema.safeParse(await readJson(request))
+    if (!parsed.success) return apiError('INVALID_HARNESS_DEFAULTS', 'Review the harness defaults.', 400)
+    return HttpResponse.json({ defaults: updateMockHarnessDefaults(parsed.data.defaults) })
+  }),
+
   // Mock controls are intentionally separate from product resource endpoints.
   http.get('/api/mock/scenario', () => scenarioResponse()),
   http.post('/api/mock/scenario', async ({ request }) => {
@@ -222,7 +235,10 @@ export const handlers: RequestHandler[] = [
       return apiError('MOCK_GRAPH_SAVE_FAILED', 'The selected mock mode rejects graph saves.', 503)
     }
     const workflow = updateMockWorkflow(parsed.data.workspaceId, parsed.data.workflow)
-    return HttpResponse.json({ workflow })
+    const agents = parsed.data.agents
+      ? updateMockAgents(parsed.data.workspaceId, parsed.data.agents)
+      : getMockFixture(workspaceId)!.agents
+    return HttpResponse.json({ workflow, agents })
   }),
   http.put('/api/workspaces/:workspaceId/graph', async ({ request, params }) => {
     const failure = readFailure()
@@ -238,7 +254,10 @@ export const handlers: RequestHandler[] = [
       return apiError('MOCK_GRAPH_SAVE_FAILED', 'The selected mock mode rejects graph saves.', 503)
     }
     const workflow = updateMockWorkflow(parsed.data.workspaceId, parsed.data.workflow)
-    return HttpResponse.json({ workflow })
+    const agents = parsed.data.agents
+      ? updateMockAgents(parsed.data.workspaceId, parsed.data.agents)
+      : getMockFixture(workspaceId)!.agents
+    return HttpResponse.json({ workflow, agents })
   }),
   http.get('/api/workspaces/:workspaceId/conversations', ({ params }) => {
     const failure = readFailure()

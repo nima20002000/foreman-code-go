@@ -52,17 +52,14 @@ describe('workspace section routes', () => {
     expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
   })
 
-  it('deep-links to the agents directory and marks its navigation active', async () => {
-    const { router } = renderRoute('/workspaces/workspace-1/agents?agentId=agent-researcher')
+  it('keeps the temporarily hidden agents directory available by deep link', async () => {
+    renderRoute('/workspaces/workspace-1/agents?agentId=agent-researcher')
 
     expect(await screen.findByRole('heading', { name: 'Agents', level: 1 })).toBeVisible()
-    expect(screen.getByRole('link', { name: 'Agents' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Researcher, researcher, Available/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('dialog', { name: 'Researcher' })).not.toBeInTheDocument()
 
-    await userEvent.setup().click(screen.getByRole('link', { name: 'Developer' }))
-    await waitFor(() => expect(router.state.location.search).toMatchObject({ agentId: 'agent-developer' }))
-    expect(screen.queryByRole('dialog', { name: 'Developer' })).not.toBeInTheDocument()
   })
 
   it('does not open a centered modal for an unknown agent deep link', async () => {
@@ -97,23 +94,23 @@ describe('workspace section routes', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1'))
     expect(await screen.findByTestId('workflow-graph')).toBeVisible()
     expect(screen.getByRole('link', { name: 'Workflows' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByRole('link', { name: 'Agents' })).not.toHaveAttribute('aria-current')
+    expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
   })
 
-  it('keeps submenu expansion state while workspace routes replace the shell', async () => {
+  it('keeps workflow submenu expansion state while workspace routes replace the shell', async () => {
     const user = userEvent.setup()
     const { router } = renderRoute('/workspaces/workspace-1/agents')
 
     await screen.findByRole('heading', { name: 'Agents', level: 1 })
-    await user.click(screen.getByRole('button', { name: 'Collapse agents in Website' }))
+    await user.click(screen.getByRole('button', { name: 'Collapse workflows in Website' }))
     await user.click(screen.getByRole('link', { name: 'Files' }))
 
     await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/files'))
-    expect(await screen.findByRole('button', { name: 'Expand agents in Website' })).toHaveAttribute(
+    expect(await screen.findByRole('button', { name: 'Expand workflows in Website' })).toHaveAttribute(
       'aria-expanded',
       'false',
     )
-    expect(screen.queryByTestId('agent-navigation')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New workflow' })).not.toBeInTheDocument()
   })
 
   it('deep-links the Files placeholder under the workspaces menu', async () => {

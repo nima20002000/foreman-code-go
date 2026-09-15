@@ -128,7 +128,6 @@ describe('workflow graph mapper', () => {
       id: 'edge-step-build-step-research',
       source: 'step-build',
       target: 'step-research',
-      label: 'Sequential output handoff',
     })
     expect(roundTrip.edges.at(-1)).not.toHaveProperty('data')
   })

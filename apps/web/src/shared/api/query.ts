@@ -10,15 +10,19 @@ import type {
   CreateRunRequest,
   CreateRunResponse,
   GetConversationResponse,
+  GetHarnessDefaultsResponse,
   GetRunResponse,
   SaveWorkflowRequest,
   SaveWorkflowResponse,
+  SaveHarnessDefaultsRequest,
+  SaveHarnessDefaultsResponse,
   WorkspaceDetailsResponse,
 } from '@graphql/contracts'
 
 import {
   apiClient,
   getConversation,
+  getHarnessDefaults,
   getRun,
   getAgent,
   getWorkflow,
@@ -28,6 +32,7 @@ import {
   listMessages,
   listVisibleResources,
   saveGraph,
+  saveHarnessDefaults,
   startWorkflowRun,
   sendUserMessage,
   type RequestOptions,
@@ -54,6 +59,7 @@ export const queryKeys = {
   messages: (workspaceId: string, conversationId: string) =>
     ['workbench', 'workspace', workspaceId, 'conversation', conversationId, 'messages'] as const,
   resources: (workspaceId: string) => ['workbench', 'workspace', workspaceId, 'resources'] as const,
+  harnessDefaults: ['workbench', 'settings', 'harness-defaults'] as const,
 }
 
 export const workspaceQueryKeys = queryKeys
@@ -72,6 +78,26 @@ export function useWorkspaceDetailsQuery(
 }
 
 export const useWorkspaceQuery = useWorkspaceDetailsQuery
+
+export function useHarnessDefaultsQuery(options?: QueryOptions<GetHarnessDefaultsResponse>) {
+  return useQuery({
+    ...options,
+    queryKey: queryKeys.harnessDefaults,
+    queryFn: ({ signal }) => getHarnessDefaults({ signal }),
+  })
+}
+
+type SaveHarnessDefaultsMutationOptions = Omit<
+  UseMutationOptions<SaveHarnessDefaultsResponse, Error, SaveHarnessDefaultsRequest>,
+  'mutationFn'
+>
+
+export function useSaveHarnessDefaultsMutation(options?: SaveHarnessDefaultsMutationOptions) {
+  return useMutation({
+    ...options,
+    mutationFn: (input) => saveHarnessDefaults(input),
+  })
+}
 
 export function useAgentsQuery(workspaceId: string, options?: QueryOptions<Awaited<ReturnType<typeof listAgents>>>) {
   return useQuery({

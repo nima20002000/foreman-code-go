@@ -179,7 +179,7 @@
 
 .agent-directory-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+  grid-template-columns: repeat(auto-fill, 17rem);
   gap: 1rem;
 }
 
@@ -265,6 +265,7 @@
 
 .agent-settings-heading,
 .agent-settings-name,
+.agent-settings-prompt,
 .agent-settings-confirm,
 .agent-removal-blocked {
   grid-column: 1 / -1;
@@ -320,6 +321,7 @@
 }
 
 .agent-directory-card-actions > label,
+.agent-settings-control,
 .agent-settings-field {
   display: grid;
   gap: 0.25rem;
@@ -333,7 +335,8 @@
 }
 
 .agent-directory-card-actions input,
-.agent-directory-card-actions select {
+.agent-directory-card-actions select,
+.agent-directory-card-actions textarea {
   width: 100%;
   min-height: 2rem;
   padding: 0.375rem 0.5rem;
@@ -342,6 +345,11 @@
   color: var(--color-text-strong);
   background: var(--color-surface);
   font: inherit;
+}
+
+.agent-directory-card-actions textarea {
+  min-height: 5rem;
+  resize: vertical;
 }
 
 .agent-directory-card-actions .agent-settings-fast {
@@ -452,6 +460,10 @@
 
   .agent-add-form {
     grid-template-columns: 1fr;
+  }
+
+  .agent-directory-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

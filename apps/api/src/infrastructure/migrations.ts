@@ -97,6 +97,13 @@ const migrations = [
     create index if not exists run_activity_run_idx
       on run_activity (run_id, sequence);
   `,
+  `
+    create table if not exists application_settings (
+      key text primary key,
+      record jsonb not null,
+      updated_at timestamptz not null default now()
+    );
+  `,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

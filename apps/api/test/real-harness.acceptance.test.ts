@@ -12,6 +12,7 @@ import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
 import { LocalHarnessResolver } from '../src/modules/harnesses/resolver.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
+import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
 
@@ -33,6 +34,7 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
       const workflows = new PostgresWorkflowRepository(database.pool)
       const runs = new PostgresRunRepository(database.pool, workflows)
       const workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
+      const settings = new PostgresSettingsRepository(database.pool)
       const engine = new LangGraphWorkflowEngine(
         runs,
         workflows,
@@ -43,7 +45,7 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
       )
       const app = buildApp({
         readiness: { database, checkpoints },
-        product: { workflows, runs, workspaces, engine },
+        product: { workflows, runs, workspaces, settings, engine },
       })
 
       const workspaceResponse = await app.inject({ method: 'GET', url: '/api/workspaces/workspace-1' })

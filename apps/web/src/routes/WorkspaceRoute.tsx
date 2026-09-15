@@ -11,7 +11,6 @@ export interface WorkspaceRouteViewProps {
   workspaceId: string
   selectedAgentId?: string
   activeWorkflowId?: string
-  activeAgentId?: string
   state?: WorkspaceRouteState
   stateMessage?: string
   slots?: WorkspaceShellSlots
@@ -93,7 +92,6 @@ export function WorkspaceRouteView({
   workspaceId,
   selectedAgentId,
   activeWorkflowId,
-  activeAgentId,
   state = 'ready',
   stateMessage,
   slots,
@@ -115,7 +113,6 @@ export function WorkspaceRouteView({
     <WorkspaceShell
       workspaceId={workspaceId}
       activeWorkflowId={activeWorkflowId}
-      activeAgentId={activeAgentId}
       slots={resolvedSlots}
     />
   )
@@ -125,7 +122,6 @@ export interface WorkspaceSelectionProps {
   workspaceId: string
   selectedAgentId?: string
   activeWorkflowId?: string
-  activeAgentId?: string
   state?: WorkspaceRouteState
   stateMessage?: string
   slots?: WorkspaceShellSlots

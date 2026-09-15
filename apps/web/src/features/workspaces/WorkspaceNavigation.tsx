@@ -10,7 +10,6 @@ import {
 } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import {
-  Bot,
   ChevronDown,
   Files,
   History,
@@ -27,7 +26,6 @@ import type { Workspace } from '@graphql/contracts'
 import { useWorkspaceDetailsQuery } from '../../shared/api/query'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { usePresence } from '../../shared/ui/usePresence'
-import { AgentNavigation } from '../agents'
 import { WorkflowNavigation } from '../workflows'
 import { isSessionWorkspaceId, useWorkspaceSessionStore } from './workspaceSessionStore'
 import { useNavigationUiStore } from './navigationUiStore'
@@ -62,8 +60,6 @@ export interface WorkspaceNavigationProps {
   activeSection?: WorkspaceSection
   /** URL-owned workflow selection for the active workspace. */
   activeWorkflowId?: string
-  /** URL-owned agent selection for the active workspace. */
-  activeAgentId?: string
   /** Active top-level destination outside the workspace tree. */
   activeGlobalSection?: GlobalNavigationSection
   /**
@@ -74,13 +70,11 @@ export interface WorkspaceNavigationProps {
   navigationCollapsed?: boolean
   /** The workspace directory is selected instead of a specific workspace. */
   workspaceOverviewActive?: boolean
-  /** Route-supplied submenu content overrides for the active workspace. */
-  agentsContent?: ReactNode
+  /** Route-supplied submenu content override for the active workspace. */
   workflowsContent?: ReactNode
 }
 
 const workspaceSections: readonly WorkspaceSection[] = [
-  'agents',
   'workflows',
   'files',
   'tasks',
@@ -274,9 +268,7 @@ interface WorkspaceTreeItemProps {
   onToggle: () => void
   activeSection: WorkspaceSection
   activeWorkflowId?: string
-  activeAgentId?: string
   navigationCollapsed: boolean
-  agentsContent?: ReactNode
   workflowsContent?: ReactNode
   reorderItemProps?: ReorderItemProps
   reorderKeyboardProps?: ReorderKeyboardProps
@@ -290,30 +282,22 @@ function WorkspaceTreeItem({
   onToggle,
   activeSection,
   activeWorkflowId,
-  activeAgentId,
   navigationCollapsed,
-  agentsContent,
   workflowsContent,
   reorderItemProps,
   reorderKeyboardProps,
 }: WorkspaceTreeItemProps) {
-  const agentsExpanded = useNavigationUiStore(
-    (state) => state.expandedSections[entry.id]?.agents ?? true,
-  )
   const workflowsExpanded = useNavigationUiStore(
     (state) => state.expandedSections[entry.id]?.workflows ?? true,
   )
   const setSectionExpanded = useNavigationUiStore((state) => state.setSectionExpanded)
   const sectionsPresence = usePresence(expanded)
-  const agentsPresence = usePresence(agentsExpanded)
   const workflowsPresence = usePresence(workflowsExpanded)
 
   const idPrefix = useId().replaceAll(':', '')
   const sectionsId = `${idPrefix}-sections`
-  const agentsPanelId = `${idPrefix}-agents`
   const workflowsPanelId = `${idPrefix}-workflows`
 
-  const agentsActive = active && activeSection === 'agents'
   const workflowsActive = active && activeSection === 'workflows'
 
   const sections = useReorderableNavigation(
@@ -323,56 +307,6 @@ function WorkspaceTreeItem({
 
   const renderSection = (section: WorkspaceSection) => {
     const reorderProps = sections.getItemProps(section)
-    if (section === 'agents') {
-      return (
-        <>
-          <div className="nav-item-row" {...reorderProps}>
-            <Link
-              to="/workspaces/$workspaceId/agents"
-              params={{ workspaceId: entry.id }}
-              className={`nav-item${agentsActive ? ' nav-item-active' : ''}`}
-              aria-current={agentsActive ? 'page' : undefined}
-              aria-label={navigationCollapsed ? 'Agents' : undefined}
-              title="Agents"
-              {...sections.getKeyboardProps(section)}
-            >
-              <span className="nav-item-primary">
-                <Bot aria-hidden="true" className="nav-item-icon" size={16} />
-                <span className="nav-item-label">Agents</span>
-              </span>
-            </Link>
-            <button
-              type="button"
-              className="nav-item-toggle"
-              aria-expanded={agentsExpanded}
-              aria-controls={agentsPanelId}
-              aria-label={`${agentsExpanded ? 'Collapse' : 'Expand'} agents in ${entry.name}`}
-              title="Agents"
-              onClick={() => setSectionExpanded(entry.id, 'agents', !agentsExpanded)}
-              {...sections.getKeyboardProps(section)}
-            >
-              <ChevronDown aria-hidden="true" className="nav-item-chevron" size={14} />
-            </button>
-          </div>
-          {agentsPresence.mounted ? (
-            <div
-              className={`workspace-navigation-panel nav-submenu-motion${agentsPresence.exiting ? ' is-exiting' : ''}`}
-              id={agentsPanelId}
-              aria-hidden={!agentsExpanded}
-              inert={!agentsExpanded ? true : undefined}
-            >
-              {(active ? agentsContent : undefined) ?? (
-                <AgentNavigation
-                  workspaceId={entry.id}
-                  activeAgentId={active ? activeAgentId : undefined}
-                />
-              )}
-            </div>
-          ) : null}
-        </>
-      )
-    }
-
     if (section === 'workflows') {
       return (
         <>
@@ -505,22 +439,20 @@ function WorkspaceTreeItem({
 
 /**
  * The workspace-first sidebar hierarchy. Workspaces is the collapsible parent,
- * every workspace entry expands into its own Agents, Workflows, Files, Tasks,
- * and Runs destinations. Terminal and Settings are global links below the
- * workspace tree. Agents and Workflows are collapsible submenus. Workspace and
- * workflow lists are server-shaped query projections; selection stays in the
- * URL through router links.
+ * every workspace entry expands into its own Workflows, Files, Tasks, and Runs
+ * destinations. Terminal and Settings are global links below the workspace
+ * tree. The Agents destination remains routed but is temporarily hidden here.
+ * Workspace and workflow lists are server-shaped query projections; selection
+ * stays in the URL through router links.
  */
 export function WorkspaceNavigation({
   workspaceId,
   activeSection = 'workflows',
   activeWorkflowId,
-  activeAgentId,
   activeGlobalSection,
   workspaces,
   navigationCollapsed = false,
   workspaceOverviewActive = false,
-  agentsContent,
   workflowsContent,
 }: WorkspaceNavigationProps) {
   const detailsQuery = useWorkspaceDetailsQuery(workspaceId, {
@@ -649,9 +581,7 @@ export function WorkspaceNavigation({
                     onToggle={() => toggleWorkspace(entry.id)}
                     activeSection={activeSection}
                     activeWorkflowId={activeWorkflowId}
-                    activeAgentId={activeAgentId}
                     navigationCollapsed={navigationCollapsed}
-                    agentsContent={agentsContent}
                     workflowsContent={workflowsContent}
                     reorderItemProps={entriesReorder.getItemProps(entry.id)}
                     reorderKeyboardProps={entriesReorder.getKeyboardProps(entry.id)}

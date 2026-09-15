@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { MoreHorizontal, Play, Plus, X } from 'lucide-react'
+import { Bot, BotMessageSquare, Check, MoreHorizontal, Play, Plus, Trash2, X } from 'lucide-react'
 
 import {
   addEdge,
@@ -27,6 +27,7 @@ import { useQueryClient } from '@tanstack/react-query'
 
 import type {
   Agent,
+  HarnessDefaults,
   WorkflowDefinition,
   WorkflowEdge,
   WorkflowRunSummary,
@@ -35,6 +36,7 @@ import type {
 
 import {
   useAgentsQuery,
+  useHarnessDefaultsQuery,
   useRunQuery,
   useSaveGraphMutation,
   useStartWorkflowRunMutation,
@@ -47,6 +49,15 @@ import { motionEnabled, usePresence } from '../../shared/ui/usePresence'
 import { useDismissableSurface, type SurfaceDismissReason } from '../../shared/ui/useDismissableSurface'
 import { useTheme } from '../theme'
 import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
+import {
+  configuredHarness,
+  defaultAgentForHarness,
+  effortLabels,
+  effortOptions,
+  initialModel,
+  modelOptions,
+  nextHarnessAgentName,
+} from '../agents/agentSettings'
 import {
   readDeletedAgentIds,
   readLocalAgents,
@@ -63,7 +74,6 @@ import {
   GRAPH_NODE_MIN_HEIGHT,
   GRAPH_NODE_MIN_WIDTH,
   resizeWorkflowNode,
-  sameWorkflow,
   withoutAgentReferences,
   workflowToGraph,
 } from './mapper'
@@ -97,6 +107,8 @@ export interface GraphEditorProps {
    * store instead of the workspace backend. Used by session-created drafts.
    */
   onSaveSession?: (workflow: WorkflowDefinition) => void
+  /** Called after a browser-created workflow is first persisted by a real workspace backend. */
+  onPersisted?: (workflow: WorkflowDefinition) => void
 }
 
 const DEPARTURE_MOTION_MS = 200
@@ -107,6 +119,7 @@ const ERROR_NOTICE_DISMISS_MS = 8_000
 const EDGE_CONTROL_SIZE = 26
 const MINIMAP_DOT_COLOR = { light: '#2563eb', dark: '#60a5fa' }
 const MINIMAP_DOT_SELECTED_COLOR = { light: '#1d4ed8', dark: '#bfdbfe' }
+const EMPTY_AGENT_OVERRIDES: Record<string, Agent> = {}
 
 const HANDLE_SIDES: GraphHandleSide[] = ['top', 'right', 'bottom', 'left']
 
@@ -115,7 +128,6 @@ function makeWorkflowHandoffEdge(source: string, target: string): WorkflowEdge {
     id: `edge-${source}-${target}`,
     source,
     target,
-    label: 'Sequential output handoff',
   }
 }
 
@@ -136,6 +148,115 @@ type NodeMenuContextValue = {
  * open at a time, no matter which node owns it.
  */
 const NodeMenuContext = createContext<NodeMenuContextValue | undefined>(undefined)
+
+function AgentSettingsForm({
+  agent,
+  initialPrompt,
+  creationDefaults,
+  onClose,
+  onRemove,
+  onSave,
+}: {
+  agent: Agent
+  initialPrompt?: string
+  creationDefaults?: HarnessDefaults
+  onClose: () => void
+  onRemove?: () => void
+  onSave: (agent: Agent, initialPrompt?: string) => void
+}) {
+  const [name, setName] = useState(agent.name)
+  const [harness, setHarness] = useState<NonNullable<Agent['harness']>>(agent.harness ?? 'codex')
+  const [model, setModel] = useState(() => initialModel(agent, agent.harness ?? 'codex'))
+  const [effort, setEffort] = useState<NonNullable<Agent['effort']>>(agent.effort ?? 'medium')
+  const [fastMode, setFastMode] = useState(agent.fastMode ?? false)
+  const [prompt, setPrompt] = useState(initialPrompt ?? '')
+  const trimmedName = name.trim()
+
+  return (
+    <>
+      <div className="agent-settings-heading">
+        <strong>Agent settings</strong>
+        <div>
+          {harness === 'codex' ? (
+            <label className="agent-settings-fast">
+              <input type="checkbox" checked={fastMode} onChange={(event) => setFastMode(event.target.checked)} />
+              Fast mode
+            </label>
+          ) : null}
+          {onRemove ? (
+            <button type="button" className="agent-settings-trash" aria-label={`Remove ${agent.name} from workflow`} onClick={onRemove}>
+              <Trash2 aria-hidden="true" size={16} />
+            </button>
+          ) : null}
+          <button type="button" aria-label="Close agent settings" onClick={onClose}>
+            <X aria-hidden="true" size={15} />
+          </button>
+        </div>
+      </div>
+      <div className="agent-settings-name agent-settings-control">
+        <span>Name</span>
+        <input aria-label="Name" value={name} onChange={(event) => setName(event.target.value)} />
+      </div>
+      <div className="agent-settings-field"><span>Harness</span><select aria-label="Harness" value={harness} onChange={(event) => {
+        const nextHarness = event.target.value as NonNullable<Agent['harness']>
+        setHarness(nextHarness)
+        if (creationDefaults) {
+          const configuration = creationDefaults[nextHarness]
+          setModel(configuration.model)
+          setEffort(configuration.harness === 'codex' ? configuration.reasoningEffort : configuration.variant)
+          setFastMode(configuration.harness === 'codex' && configuration.serviceTier === 'priority')
+          return
+        }
+        const nextModel = modelOptions(nextHarness).includes(model) ? model : modelOptions(nextHarness)[0]!
+        setModel(nextModel)
+        if (!effortOptions(nextHarness, nextModel).includes(effort)) setEffort(nextHarness === 'codex' ? 'medium' : 'max')
+      }}>
+        <option value="codex">Codex</option>
+        <option value="opencode">OpenCode</option>
+      </select></div>
+      <div className="agent-settings-field"><span>Model</span><select aria-label="Model" value={model} onChange={(event) => {
+        const nextModel = event.target.value
+        setModel(nextModel)
+        if (!effortOptions(harness, nextModel).includes(effort)) setEffort(harness === 'codex' ? 'medium' : 'max')
+      }}>
+        {modelOptions(harness).map((value) => <option key={value} value={value}>{value}</option>)}
+      </select></div>
+      <div className="agent-settings-field"><span>Effort</span><select aria-label="Effort" value={effort} onChange={(event) => setEffort(event.target.value as NonNullable<Agent['effort']>)}>
+        {effortOptions(harness, model).map((value) => <option key={value} value={value}>{effortLabels[value]}</option>)}
+      </select></div>
+      <div className="agent-settings-prompt agent-settings-control">
+        <span>Initial prompt</span>
+        <textarea
+          aria-label="Initial prompt"
+          rows={4}
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          placeholder="Tell this model what to do when the workflow reaches it."
+        />
+      </div>
+      <div className="agent-settings-actions">
+        <button
+          type="button"
+          className="agent-settings-save"
+          aria-label="Save agent settings"
+          title="Save"
+          disabled={!trimmedName}
+          onClick={() => onSave({
+            ...agent,
+            name: trimmedName,
+            harness,
+            model,
+            effort,
+            ...(harness === 'codex' ? { fastMode } : { fastMode: undefined }),
+            harnessConfiguration: configuredHarness(agent, harness, model, effort, fastMode, creationDefaults),
+          }, prompt.trim() || undefined)}
+        >
+          <Check aria-hidden="true" size={16} />
+        </button>
+      </div>
+    </>
+  )
+}
 
 function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
   const nodeMenu = useContext(NodeMenuContext)
@@ -163,7 +284,7 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
 
   useEffect(() => {
     if (!menuOpen) return
-    menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
+    menuRef.current?.querySelector<HTMLInputElement>('input:not([type="checkbox"])')?.focus()
   }, [menuOpen])
 
   if (data.departing) {
@@ -225,38 +346,35 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
         className="workflow-agent-node-menu-trigger nodrag"
         aria-label={`Open actions for ${data.label}`}
         title="Node actions"
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
         aria-expanded={menuOpen}
         onClick={(event) => {
           event.stopPropagation()
+          if (!menuOpen) data.onOpenSettings?.(data.agentId, data.workflowNodeId)
           setMenuOpen(!menuOpen)
         }}
       >
         <MoreHorizontal aria-hidden="true" size={17} />
       </button>
       {menuOpen ? (
-        <div ref={menuRef} className="workflow-agent-node-menu nodrag" role="menu" aria-label={`${data.label} node actions`}>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              data.onUnlink?.(data.workflowNodeId)
+        <div ref={menuRef} className="workflow-agent-node-menu agent-directory-card-actions nodrag" role="dialog" aria-label={`${data.label} settings`}>
+          <AgentSettingsForm
+            agent={data.agent}
+            initialPrompt={data.initialPrompt}
+            onClose={() => {
               setMenuOpen(false)
               window.setTimeout(() => triggerRef.current?.focus(), 0)
             }}
-          >
-            Unlink
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
+            onRemove={() => {
               data.onRemove?.(data.workflowNodeId)
               setMenuOpen(false)
             }}
-          >
-            Remove from workflow
-          </button>
+            onSave={(agent, initialPrompt) => {
+              data.onSaveSettings?.(data.workflowNodeId, agent, initialPrompt)
+              setMenuOpen(false)
+              window.setTimeout(() => triggerRef.current?.focus(), 0)
+            }}
+          />
         </div>
       ) : null}
     </article>
@@ -389,14 +507,25 @@ function updateWorkspaceDetailsCache(
   queryClient: ReturnType<typeof useQueryClient>,
   workspaceId: string,
   saved: WorkflowDefinition,
+  savedAgents?: readonly Agent[],
 ) {
   queryClient.setQueryData<WorkspaceDetailsResponse>(queryKeys.workspaceDetails(workspaceId), (current) => {
     if (!current) return current
     return {
       ...current,
-      workflows: current.workflows.map((workflow) => (workflow.id === saved.id ? saved : workflow)),
+      workflows: current.workflows.some((workflow) => workflow.id === saved.id)
+        ? current.workflows.map((workflow) => (workflow.id === saved.id ? saved : workflow))
+        : [...current.workflows, saved],
+      agents: savedAgents ? [...savedAgents] : current.agents,
     }
   })
+  if (savedAgents) queryClient.setQueryData(queryKeys.agents(workspaceId), { agents: [...savedAgents] })
+}
+
+function nextBoardAgentId(harness: NonNullable<Agent['harness']>): string {
+  const suffix = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  return `agent-${harness}-${suffix}`
 }
 
 export function GraphEditor({
@@ -408,6 +537,7 @@ export function GraphEditor({
   onSelectAgent,
   onClearAgent,
   onSaveSession,
+  onPersisted,
 }: GraphEditorProps) {
   const theme = useTheme()
   const queryClient = useQueryClient()
@@ -415,12 +545,15 @@ export function GraphEditor({
   const draft = useGraphDraftStore((state) => state.drafts[workflowKey])
   const updateDraft = useGraphDraftStore((state) => state.updateDraft)
   const discardDraft = useGraphDraftStore((state) => state.discardDraft)
+  const completeSave = useGraphDraftStore((state) => state.completeSave)
+  const agentOverrides = draft?.agentOverrides ?? EMPTY_AGENT_OVERRIDES
   const [notice, setNotice] = useState<{ kind: 'success' | 'error' | 'info'; text: string }>()
   const [activeRunId, setActiveRunId] = useState<string | undefined>(() => runFacts?.find((run) =>
     run.workflowId === workflow.id && run.executionState !== 'completed',
   )?.id)
   const startLock = useRef(Boolean(activeRunId))
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
+  const [pendingAgent, setPendingAgent] = useState<Agent>()
   const [openMenuNodeId, setOpenMenuNodeId] = useState<string>()
   const [enteringEdgeId, setEnteringEdgeId] = useState<string>()
   const [enteringNodeIds, setEnteringNodeIds] = useState<Set<string>>(() => new Set())
@@ -442,6 +575,7 @@ export function GraphEditor({
     [openMenuNodeId],
   )
   const saveMutation = useSaveGraphMutation()
+  const harnessDefaultsQuery = useHarnessDefaultsQuery()
   const startRunMutation = useStartWorkflowRunMutation()
   const cancelRunMutation = useCancelRunMutation()
   const runQuery = useRunQuery(workspaceId, activeRunId ?? '', {
@@ -509,7 +643,7 @@ export function GraphEditor({
     [currentWorkflow, deletedAgentIdSet],
   )
   const hasSessionCleanup = displayedWorkflow !== currentWorkflow
-  const isDirty = draft?.dirty === true || hasSessionCleanup
+  const isDirty = draft?.dirty === true || hasSessionCleanup || Object.keys(agentOverrides).length > 0
   const catalogAgents = useMemo(() => {
     const catalogById = new Map(agents
       .filter((agent) => !deletedAgentIdSet.has(agent.id))
@@ -517,8 +651,11 @@ export function GraphEditor({
     for (const agent of localAgents) {
       if (!deletedAgentIdSet.has(agent.id)) catalogById.set(agent.id, agent)
     }
+    for (const agent of Object.values(agentOverrides)) {
+      if (!deletedAgentIdSet.has(agent.id)) catalogById.set(agent.id, agent)
+    }
     return [...catalogById.values()]
-  }, [agents, deletedAgentIdSet, localAgents])
+  }, [agentOverrides, agents, deletedAgentIdSet, localAgents])
 
   const executionPolicy = displayedWorkflow.executionPolicy ?? {
     maxParallelism: Math.max(1, displayedWorkflow.nodes.length),
@@ -562,8 +699,9 @@ export function GraphEditor({
           ...node.data,
           departing: true,
           onSelect: undefined,
-          onUnlink: undefined,
+          onOpenSettings: undefined,
           onRemove: undefined,
+          onSaveSettings: undefined,
           onResize: undefined,
         },
       })),
@@ -600,16 +738,10 @@ export function GraphEditor({
     if (edgeAdded) setEnteringEdgeId(nextEdge.id)
   }, [onSelectAgent, sessionCleanedWorkflow, updateDraft, workflowKey])
 
-  const unlinkGraphNode = useCallback((workflowNodeId: string) => {
-    const removedEdges = workflowToGraph({ workflow: displayedWorkflow, agents: catalogAgents })
-      .edges
-      .filter((edge) => edge.source === workflowNodeId || edge.target === workflowNodeId)
-    startDeparture([], removedEdges)
-    updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => ({
-      ...saved,
-      edges: saved.edges.filter((edge) => edge.source !== workflowNodeId && edge.target !== workflowNodeId),
-    }))
-  }, [catalogAgents, displayedWorkflow, sessionCleanedWorkflow, startDeparture, updateDraft, workflowKey])
+  const openNodeSettings = useCallback((agentId: string) => {
+    connectionSourceNodeRef.current = undefined
+    onSelectAgent?.(agentId)
+  }, [onSelectAgent])
 
   /** Removes one connection edge and keeps its projected copy for the exit animation. */
   const removeGraphEdge = useCallback((edgeId: string) => {
@@ -651,21 +783,36 @@ export function GraphEditor({
     setOpenMenuNodeId(undefined)
   }, [catalogAgents, displayedWorkflow, sessionCleanedWorkflow, startDeparture, updateDraft, workflowKey])
 
+  const saveNodeSettings = useCallback((workflowNodeId: string, agent: Agent, initialPrompt?: string) => {
+    updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => ({
+      ...saved,
+      nodes: saved.nodes.map((node) => node.id === workflowNodeId
+        ? {
+            ...node,
+            agentId: agent.id,
+            name: agent.name,
+            initialPrompt,
+          }
+        : node),
+    }), [agent])
+  }, [sessionCleanedWorkflow, updateDraft, workflowKey])
+
   const graph = useMemo(
     () => workflowToGraph(
       { workflow: displayedWorkflow, agents: catalogAgents },
       {
         selectedAgentId,
-      onSelectAgent: selectAgent,
-        onUnlinkNode: unlinkGraphNode,
+        onSelectAgent: selectAgent,
+        onOpenNodeSettings: openNodeSettings,
         onRemoveEdge: removeGraphEdge,
         onRemoveNode: removeGraphNode,
+        onSaveNodeSettings: saveNodeSettings,
         onResizeNode: resizeGraphNode,
         runFacts,
         enteringNodeIds,
       },
     ),
-    [catalogAgents, displayedWorkflow, enteringNodeIds, removeGraphEdge, removeGraphNode, resizeGraphNode, runFacts, selectAgent, selectedAgentId, unlinkGraphNode],
+    [catalogAgents, displayedWorkflow, enteringNodeIds, openNodeSettings, removeGraphEdge, removeGraphNode, resizeGraphNode, runFacts, saveNodeSettings, selectAgent, selectedAgentId],
   )
 
   const visibleNodes = useMemo(() => {
@@ -729,61 +876,66 @@ export function GraphEditor({
     setNotice(undefined)
   }, [discardDraft, workflowKey])
 
-  const handleSave = useCallback(() => {
+  const handleSave = useCallback(async () => {
     if (!isDirty && onSaveSession) return
+    if (!onSaveSession && saveMutation.isPending) return
     if (executionLimitExceeded) {
       setNotice({ kind: 'error', text: 'Review the execution limit below before saving this graph.' })
       return
     }
     const submittedWorkflow = displayedWorkflow
+    const submitted = { workflow: submittedWorkflow, agentOverrides }
+    const referencedAgentIds = new Set(submittedWorkflow.nodes.map((node) => node.agentId))
+    const submittedAgents = Object.values(agentOverrides).filter((agent) => referencedAgentIds.has(agent.id))
     setNotice(undefined)
 
-    // Session-created drafts have no server resource to save to. Keep the
-    // graph in the caller's Zustand store and report the session boundary.
+    // Session saves persist both halves to their session-owned stores.
     if (onSaveSession) {
+      const directory = useAgentDirectoryStore.getState()
+      const localById = new Map((directory.catalogs[workspaceId]?.localAgents ?? readLocalAgents(workspaceId))
+        .map((agent) => [agent.id, agent]))
+      for (const agent of submittedAgents) localById.set(agent.id, agent)
+      directory.setLocalAgents(workspaceId, [...localById.values()])
       onSaveSession(submittedWorkflow)
-      const remainingDraft = getGraphDraft(workflowKey)
-      if (!remainingDraft?.dirty || sameWorkflow(remainingDraft.workflow, submittedWorkflow)) {
-        discardDraft(workflowKey)
-        setNotice({ kind: 'success', text: 'Workflow saved to this browser session.' })
-      } else {
-        setNotice({
-          kind: 'success',
-          text: 'Saved to this browser session. Newer local changes remain unsaved.',
-        })
-      }
+      completeSave(workflowKey, submitted, submittedWorkflow, submittedAgents)
+      setNotice({
+        kind: 'success',
+        text: getGraphDraft(workflowKey)
+          ? 'Saved to this browser session. Newer local changes remain unsaved.'
+          : 'Workflow saved to this browser session.',
+      })
       return
     }
 
-    if (saveMutation.isPending) return
-    saveMutation.mutate(
-      { workspaceId, workflow: submittedWorkflow },
-      {
-        onSuccess: ({ workflow: savedWorkflow }) => {
-          queryClient.setQueryData(queryKeys.workflow(workspaceId, savedWorkflow.id), { workflow: savedWorkflow })
-          updateWorkspaceDetailsCache(queryClient, workspaceId, savedWorkflow)
-          void queryClient.invalidateQueries({
-            queryKey: queryKeys.workspaceDetails(workspaceId),
-            refetchType: 'none',
-          })
-
-          const remainingDraft = getGraphDraft(workflowKey)
-          if (!remainingDraft?.dirty || sameWorkflow(remainingDraft.workflow, submittedWorkflow)) {
-            discardDraft(workflowKey)
-            setNotice({ kind: 'success', text: 'Graph saved.' })
-          } else {
-            setNotice({ kind: 'success', text: 'Graph saved. Newer local changes remain unsaved.' })
-          }
-        },
-        onError: (error) => {
-          setNotice({
-            kind: 'error',
-            text: `Graph could not be saved: ${graphErrorMessage(error, 'The server rejected the graph.')}`,
-          })
-        },
-      },
-    )
-  }, [discardDraft, displayedWorkflow, executionLimitExceeded, isDirty, onSaveSession, queryClient, saveMutation, workspaceId, workflowKey])
+    try {
+      // Await the promise rather than observer callbacks, which are dropped
+      // when navigation or first-save promotion unmounts this editor.
+      const { workflow: savedWorkflow, agents: savedAgents } = await saveMutation.mutateAsync({
+        workspaceId,
+        workflow: submittedWorkflow,
+        agents: submittedAgents,
+      })
+      queryClient.setQueryData(queryKeys.workflow(workspaceId, savedWorkflow.id), { workflow: savedWorkflow })
+      updateWorkspaceDetailsCache(queryClient, workspaceId, savedWorkflow, savedAgents)
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.workspaceDetails(workspaceId),
+        refetchType: 'none',
+      })
+      completeSave(workflowKey, submitted, savedWorkflow, savedAgents ?? [])
+      setNotice({
+        kind: 'success',
+        text: getGraphDraft(workflowDraftKey(workspaceId, savedWorkflow.id))
+          ? 'Graph saved. Newer local changes remain unsaved.'
+          : 'Graph saved.',
+      })
+      onPersisted?.(savedWorkflow)
+    } catch (error) {
+      setNotice({
+        kind: 'error',
+        text: `Graph could not be saved: ${graphErrorMessage(error, 'The server rejected the graph.')}`,
+      })
+    }
+  }, [agentOverrides, completeSave, displayedWorkflow, executionLimitExceeded, isDirty, onPersisted, onSaveSession, queryClient, saveMutation, workspaceId, workflowKey])
 
   const handleStart = useCallback(() => {
     if (onSaveSession) {
@@ -822,6 +974,7 @@ export function GraphEditor({
 
   const closeAgentPicker = useCallback(() => {
     setAgentPickerOpen(false)
+    setPendingAgent(undefined)
     addAgentButtonRef.current?.focus()
   }, [])
 
@@ -833,7 +986,7 @@ export function GraphEditor({
     dismissOnEscape: false,
   })
 
-  const addAgentToGraph = useCallback((agent: Agent) => {
+  const addAgentToGraph = useCallback((agent: Agent, initialPrompt?: string) => {
     const existingIds = new Set(displayedWorkflow.nodes.map((node) => node.id))
     const baseId = `node-${agent.id}`
     let nodeId = baseId
@@ -860,8 +1013,9 @@ export function GraphEditor({
         name: agent.name,
         ...(agent.description ? { description: agent.description } : {}),
         position,
+        ...(initialPrompt ? { initialPrompt } : {}),
       }],
-    }))
+    }), [agent])
     if (motionEnabled()) {
       setEnteringNodeIds((current) => new Set(current).add(nodeId))
       const existingTimer = enteringNodeTimersRef.current.get(nodeId)
@@ -878,7 +1032,8 @@ export function GraphEditor({
       enteringNodeTimersRef.current.set(nodeId, timer)
     }
     setOpenMenuNodeId(undefined)
-  }, [displayedWorkflow, sessionCleanedWorkflow, updateDraft, workflowKey])
+    closeAgentPicker()
+  }, [closeAgentPicker, displayedWorkflow, sessionCleanedWorkflow, updateDraft, workflowKey])
 
   const handlePaneClick = useCallback(() => {
     connectionSourceNodeRef.current = undefined
@@ -1030,18 +1185,6 @@ export function GraphEditor({
               ) : null}
             </section>
           ) : null}
-          {onSaveSession ? (
-            <p
-              className="workflow-graph-session-notice"
-              data-testid="workflow-graph-session-notice"
-              role="note"
-            >
-              Session-only workflow: this draft and its graph live in this browser tab until you
-              refresh or close it. Saving keeps changes in the session, not on the workspace
-              backend.
-            </p>
-          ) : null}
-
           {notice ? (
             <p
               className={`workflow-graph-toast workflow-graph-toast-${notice.kind}`}
@@ -1059,40 +1202,67 @@ export function GraphEditor({
             ref={agentPickerRef}
             className="agent-picker-popover"
             role="dialog"
-            aria-labelledby="agent-picker-title"
-            aria-describedby="agent-picker-description"
+            aria-labelledby={pendingAgent ? undefined : 'agent-picker-title'}
+            aria-label={pendingAgent ? 'Configure agent' : undefined}
             data-presence={agentPickerPresence.exiting ? 'exiting' : 'entering'}
             inert={agentPickerPresence.exiting || undefined}
           >
-            <div className="agent-picker-heading">
-              <div>
-                <h2 id="agent-picker-title">Add agent to graph</h2>
-                <p id="agent-picker-description">Choose a workspace agent. An agent may be used in more than one workflow step.</p>
+            {!pendingAgent ? (
+              <div className="agent-picker-heading">
+                <div>
+                  <h2 id="agent-picker-title">Add harness</h2>
+                </div>
+                <button type="button" aria-label="Close agent picker" title="Close" onClick={closeAgentPicker}>
+                  <X aria-hidden="true" size={17} />
+                </button>
               </div>
-              <button type="button" aria-label="Close agent picker" title="Close" onClick={closeAgentPicker}>
-                <X aria-hidden="true" size={17} />
-              </button>
-            </div>
+            ) : null}
 
-            {catalogAgents.length > 0 ? (
-              <div className="agent-picker-list">
-                {catalogAgents.map((agent, index) => (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    data-agent-picker-option
-                    autoFocus={index === 0}
-                    onClick={() => addAgentToGraph(agent)}
-                  >
-                    <strong>{agent.name}</strong>
-                    <span>{agent.role ?? 'Agent'}{agent.description ? ` · ${agent.description}` : ''}</span>
-                  </button>
-                ))}
+            {pendingAgent ? (
+              <div className="agent-picker-settings agent-directory-card-actions">
+                <AgentSettingsForm
+                  key={pendingAgent.id}
+                  agent={pendingAgent}
+                  creationDefaults={harnessDefaultsQuery.data?.defaults}
+                  onClose={closeAgentPicker}
+                  onSave={addAgentToGraph}
+                />
+              </div>
+            ) : harnessDefaultsQuery.isPending ? (
+              <p className="agent-picker-state" role="status">Loading harness defaults…</p>
+            ) : harnessDefaultsQuery.isError || !harnessDefaultsQuery.data ? (
+              <div className="agent-picker-state" role="alert">
+                <p>Harness defaults are unavailable.</p>
+                <button type="button" onClick={() => void harnessDefaultsQuery.refetch()}>Retry</button>
               </div>
             ) : (
-              <div className="agent-picker-empty">
-                <p>No agents are available in this workspace.</p>
-                <a href={`/workspaces/${encodeURIComponent(workspaceId)}/agents`}>Open Agents directory</a>
+              <div className="harness-picker-grid">
+                <button
+                  type="button"
+                  data-agent-picker-option
+                  onClick={() => setPendingAgent(defaultAgentForHarness(
+                    'codex',
+                    nextBoardAgentId('codex'),
+                    nextHarnessAgentName('codex', catalogAgents),
+                    harnessDefaultsQuery.data.defaults.codex,
+                  ))}
+                >
+                  <Bot aria-hidden="true" size={28} />
+                  <span>Codex</span>
+                </button>
+                <button
+                  type="button"
+                  data-agent-picker-option
+                  onClick={() => setPendingAgent(defaultAgentForHarness(
+                    'opencode',
+                    nextBoardAgentId('opencode'),
+                    nextHarnessAgentName('opencode', catalogAgents),
+                    harnessDefaultsQuery.data.defaults.opencode,
+                  ))}
+                >
+                  <BotMessageSquare aria-hidden="true" size={28} />
+                  <span>OpenCode</span>
+                </button>
               </div>
             )}
           </div>
@@ -1149,4 +1319,4 @@ export function WorkflowGraph({ workspaceId, workflowId, selectedAgentId, onSele
   )
 }
 
-export { AgentMinimapDot, AgentNode, HandoffEdge }
+export { AgentMinimapDot, AgentNode, AgentSettingsForm, HandoffEdge }

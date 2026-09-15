@@ -8,6 +8,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { createDatabase } from '../src/infrastructure/database.js'
+import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
+import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 
 const connectionString =
   process.env.TEST_DATABASE_URL ??
@@ -198,6 +200,63 @@ describe('PostgreSQL infrastructure', () => {
     } finally {
       if (!released) blocker.release()
       await app.close()
+      await database.close()
+    }
+  })
+})
+
+describe('workflow persistence', () => {
+  it('persists a new board Agent configuration and the step initial prompt together', async () => {
+    const database = createDatabase({ connectionString, maxConnections: 2, connectionTimeoutMs: 5000 })
+    const suffix = randomUUID()
+    const agentId = `agent-integration-${suffix}`
+    const workflowId = `workflow-integration-${suffix}`
+    try {
+      await database.migrate()
+      await ensureAcceptanceSeed(database.pool)
+      const workflows = new PostgresWorkflowRepository(database.pool)
+      const saved = await workflows.save('workspace-1', {
+        id: workflowId,
+        workspaceId: 'workspace-1',
+        name: 'Prompt persistence probe',
+        executionCondition: { kind: 'manual' },
+        nodes: [{
+          id: `node-${suffix}`,
+          agentId,
+          name: 'Codex agent',
+          initialPrompt: 'Return the accepted input in one concise sentence.',
+        }],
+        edges: [],
+      }, [{
+        id: agentId,
+        name: 'Codex agent',
+        harness: 'codex',
+        model: 'gpt-5.6-luna',
+        effort: 'medium',
+        fastMode: true,
+        prompt: {},
+        assignedSkills: [],
+      }])
+
+      expect(saved.nodes[0]?.initialPrompt).toBe('Return the accepted input in one concise sentence.')
+      const version = await workflows.getCurrentVersion('workspace-1', workflowId)
+      const configurationId = version?.agentConfigurationVersionIds[agentId]
+      expect(configurationId).toBeTruthy()
+      await expect(workflows.getAgentConfiguration(configurationId!)).resolves.toMatchObject({
+        agentId,
+        prompt: {},
+        harness: {
+          harness: 'codex',
+          model: 'gpt-5.6-luna',
+          reasoningEffort: 'medium',
+          serviceTier: 'priority',
+        },
+      })
+    } finally {
+      await database.pool.query('delete from workflow_versions where workflow_id = $1', [workflowId])
+      await database.pool.query('delete from workflows where id = $1', [workflowId])
+      await database.pool.query('delete from agent_configuration_versions where agent_id = $1', [agentId])
+      await database.pool.query('delete from agents where id = $1', [agentId])
       await database.close()
     }
   })

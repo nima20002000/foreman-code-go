@@ -112,14 +112,13 @@ describe('sidebar menu reordering', () => {
     await user.keyboard('{Alt>}{ArrowUp}{/Alt}')
 
     expect(reorderIds(sectionsGroup)).toEqual([
-      'agents',
       'files',
       'workflows',
       'tasks',
       'runs',
     ])
     expect(screen.getByTestId('navigation-reorder-announcement')).toHaveTextContent(
-      'Moved Files to position 2 of 5',
+      'Moved Files to position 1 of 4',
     )
   })
 
@@ -127,17 +126,13 @@ describe('sidebar menu reordering', () => {
     const user = userEvent.setup()
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
 
-    const agents = await screen.findByRole('link', { name: 'Agents' })
-    agents.focus()
+    const workflows = await screen.findByRole('link', { name: 'Workflows' })
+    workflows.focus()
     await user.keyboard('{Alt>}{ArrowDown}{/Alt}')
 
-    expect(reorderIds(sectionsGroup).slice(0, 2)).toEqual(['workflows', 'agents'])
-    expect(await screen.findByTestId('agent-navigation')).toBeVisible()
+    expect(reorderIds(sectionsGroup).slice(0, 2)).toEqual(['files', 'workflows'])
     expect(screen.getByRole('button', { name: 'New workflow' })).toBeVisible()
     expect(screen.getByRole('link', { name: 'Workflows' })).toHaveAttribute('aria-current', 'page')
-
-    await user.click(screen.getByRole('button', { name: 'Collapse agents in Website' }))
-    expect(screen.queryByTestId('agent-navigation')).not.toBeInTheDocument()
   })
 
   it('reorders sibling workspace entries with Alt+Arrow keys', async () => {
@@ -166,17 +161,16 @@ describe('sidebar menu reordering', () => {
 
     stubLayout(layoutList(sectionsGroup, 100))
 
-    pointerDrag(item(sectionsGroup, 'files'), { x: 50, y: 125 }, 'mouse', { x: 50, y: 175 })
+    pointerDrag(item(sectionsGroup, 'files'), { x: 50, y: 105 }, 'mouse', { x: 50, y: 145 })
 
     expect(reorderIds(sectionsGroup)).toEqual([
-      'agents',
       'files',
       'workflows',
       'tasks',
       'runs',
     ])
     expect(screen.getByTestId('navigation-reorder-announcement')).toHaveTextContent(
-      'Moved Files to position 2 of 5',
+      'Moved Files to position 1 of 4',
     )
   })
 
@@ -203,14 +197,12 @@ describe('sidebar menu reordering', () => {
     pointerDrag(item(sectionsGroup, 'files'), { x: 50, y: 415 }, 'mouse', { x: 50, y: 175 })
 
     expect(reorderIds(sectionsGroup)).toEqual([
-      'agents',
       'workflows',
       'files',
       'tasks',
       'runs',
     ])
     expect(reorderIds(sectionsGroupTwo)).toEqual([
-      'agents',
       'workflows',
       'files',
       'tasks',
@@ -244,7 +236,6 @@ describe('sidebar menu reordering', () => {
 
     expect(reorderIds(workspacesGroup)).toEqual(['workspace-1', 'workspace-2'])
     expect(reorderIds(sectionsGroup)).toEqual([
-      'agents',
       'workflows',
       'files',
       'tasks',
@@ -261,7 +252,6 @@ describe('sidebar menu reordering', () => {
     pointerDrag(item(sectionsGroup, 'files'), { x: 50, y: 140 }, 'touch', { x: 50, y: 175 })
 
     expect(reorderIds(sectionsGroup)).toEqual([
-      'agents',
       'workflows',
       'files',
       'tasks',
@@ -283,7 +273,7 @@ describe('sidebar menu reordering', () => {
         pointerId: 1,
         pointerType: 'touch',
         clientX: 50,
-        clientY: 175,
+        clientY: 145,
       })
       act(() => {
         vi.advanceTimersByTime(400)
@@ -292,20 +282,20 @@ describe('sidebar menu reordering', () => {
         pointerId: 1,
         pointerType: 'touch',
         clientX: 50,
-        clientY: 125,
+        clientY: 105,
         buttons: 1,
       })
       fireEvent.pointerUp(window, {
         pointerId: 1,
         pointerType: 'touch',
         clientX: 50,
-        clientY: 125,
+        clientY: 105,
       })
     } finally {
       vi.useRealTimers()
     }
 
-    expect(reorderIds(sectionsGroup).slice(0, 2)).toEqual(['agents', 'files'])
+    expect(reorderIds(sectionsGroup).slice(0, 2)).toEqual(['files', 'workflows'])
   })
 
   it('keeps the session-local order across shell remounts without touching the URL', async () => {
@@ -320,6 +310,6 @@ describe('sidebar menu reordering', () => {
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
 
     expect(await screen.findByRole('link', { name: 'Files' })).toBeVisible()
-    expect(reorderIds(sectionsGroup).slice(0, 3)).toEqual(['agents', 'files', 'workflows'])
+    expect(reorderIds(sectionsGroup).slice(0, 3)).toEqual(['files', 'workflows', 'tasks'])
   })
 })

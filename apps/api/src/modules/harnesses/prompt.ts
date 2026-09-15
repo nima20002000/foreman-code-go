@@ -9,12 +9,17 @@ export function buildHarnessPrompt(request: HarnessExecutionRequest): string {
   const skills = request.configuration.assignedSkills.length > 0
     ? request.configuration.assignedSkills.map((skill) => `${skill.skillId}@${skill.version}`).join(', ')
     : 'None'
+  const systemPrompt = request.configuration.prompt.system
+    ? ['PRODUCT AGENT SYSTEM PROMPT', request.configuration.prompt.system, '']
+    : []
+  const initialPrompt = request.initialPrompt
+    ? ['INITIAL USER PROMPT', request.initialPrompt, '']
+    : []
   const prompt = [
-    'PRODUCT AGENT SYSTEM PROMPT',
-    request.configuration.prompt.system,
-    '',
+    ...systemPrompt,
     `ASSIGNED SKILLS: ${skills}`,
     '',
+    ...initialPrompt,
     'ACCEPTED INPUT FROM THE WORKFLOW',
     JSON.stringify(request.input),
     '',

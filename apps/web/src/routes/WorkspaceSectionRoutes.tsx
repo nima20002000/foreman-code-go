@@ -1,7 +1,8 @@
 import { useCallback } from 'react'
-import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
+import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 
 import { AgentsDirectory } from '../features/agents'
+import { HarnessDefaultsSettings } from '../features/settings'
 import { WorkspaceShell, type WorkspaceSection } from '../shared/ui/WorkspaceShell'
 import {
   WorkspaceDirectory,
@@ -39,7 +40,6 @@ export function AgentsRouteEntry() {
     <WorkspaceShell
       workspaceId={workspaceId}
       activeSection="agents"
-      activeAgentId={agentId}
       slots={{
         main: (
           <AgentsDirectory
@@ -149,7 +149,7 @@ export function SettingsRouteEntry() {
   return <SettingsPage />
 }
 
-export function GlobalSettingsRouteEntry() {
+function GlobalSettingsPage({ harnessesSelected = false }: { harnessesSelected?: boolean }) {
   return (
     <WorkspaceShell
       workspaceId="workspace-1"
@@ -162,11 +162,28 @@ export function GlobalSettingsRouteEntry() {
               <h1>Settings</h1>
               <p>Configure application preferences and connected capabilities.</p>
             </header>
+            <nav aria-label="Settings sections">
+              <Link to="/settings/harnesses" aria-current={harnessesSelected ? 'page' : undefined}>
+                <span>
+                  <strong>Harnesses</strong>
+                  <small>Defaults for new board agents</small>
+                </span>
+              </Link>
+            </nav>
+            {harnessesSelected ? <HarnessDefaultsSettings /> : null}
           </div>
         ),
       }}
     />
   )
+}
+
+export function GlobalSettingsRouteEntry() {
+  return <GlobalSettingsPage />
+}
+
+export function HarnessSettingsRouteEntry() {
+  return <GlobalSettingsPage harnessesSelected />
 }
 
 export function BrowsersSettingsRouteEntry() {

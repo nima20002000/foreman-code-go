@@ -63,14 +63,29 @@ describe('deterministic mock scenarios', () => {
 
     const saved = await saveGraph({
       workspaceId: 'workspace-1',
+      agents: [{
+        id: 'agent-board-codex',
+        name: 'Codex agent',
+        harness: 'codex',
+        model: 'gpt-5.6-luna',
+        effort: 'medium',
+        prompt: {},
+        assignedSkills: [],
+      }],
       workflow: {
         ...current,
         name: 'Saved graph',
-        nodes: current.nodes.map((node, index) => index === 0 ? { ...node, width: 306, height: 132 } : node),
+        nodes: [
+          ...current.nodes.map((node, index) => index === 0
+            ? { ...node, width: 306, height: 132, initialPrompt: 'Start with the supplied topic.' }
+            : node),
+          { id: 'node-board-codex', agentId: 'agent-board-codex', name: 'Codex agent' },
+        ],
       },
     })
     expect(saved.workflow.name).toBe('Saved graph')
-    expect(saved.workflow.nodes[0]).toMatchObject({ width: 306, height: 132 })
+    expect(saved.workflow.nodes[0]).toMatchObject({ width: 306, height: 132, initialPrompt: 'Start with the supplied topic.' })
+    expect(saved.agents).toContainEqual(expect.objectContaining({ id: 'agent-board-codex', harness: 'codex' }))
     const readBack = await apiClient.getWorkflow({ workspaceId: 'workspace-1', workflowId: current.id })
     expect(readBack.workflow.nodes[0]).toMatchObject({ width: 306, height: 132 })
 

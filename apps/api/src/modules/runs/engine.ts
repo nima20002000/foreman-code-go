@@ -305,6 +305,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       workspaceId: run.workspaceId,
       workflowNodeId: nodeId,
       workingDirectory,
+      initialPrompt: node.initialPrompt,
       configuration,
       input,
     })

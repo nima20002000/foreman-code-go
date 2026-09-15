@@ -12,6 +12,7 @@ import { useSessionWorkflowStore } from '../workflows/sessionWorkflowStore'
 import { useGraphDraftStore, workflowDraftKey } from '../graph/store'
 import { useAgentDirectoryStore } from './agentDirectoryStore'
 import { readDeletedAgentIds, readLocalAgents } from './localAgents'
+import { effortLabels, effortOptions, initialModel, modelOptions } from './agentSettings'
 import { useReorderableAgents, type AgentReorderCardProps } from './useReorderableAgents'
 import './agents.css'
 
@@ -19,43 +20,6 @@ function executionLabel(agent: Agent): string {
   const value = agent.executionState ?? agent.status
   if (!value) return 'No execution state'
   return value.replaceAll('_', ' ').replace(/^./, (letter) => letter.toUpperCase())
-}
-
-const CODEX_MODELS: readonly string[] = [
-  'gpt-5.6-luna',
-  'gpt-5.6-terra',
-  'gpt-5.6-sol',
-  'gpt-6-astra',
-]
-const OPENCODE_MODELS: readonly string[] = ['opencode-go/deepseek-v4.1-flash']
-const STANDARD_EFFORTS: readonly NonNullable<Agent['effort']>[] = [
-  'low', 'medium', 'high', 'xhigh', 'max',
-]
-
-function modelOptions(harness: NonNullable<Agent['harness']>): readonly string[] {
-  return harness === 'codex' ? CODEX_MODELS : OPENCODE_MODELS
-}
-
-function initialModel(agent: Agent, harness: NonNullable<Agent['harness']>): string {
-  const options = modelOptions(harness)
-  return agent.model && options.includes(agent.model) ? agent.model : options[0]
-}
-
-function effortOptions(
-  harness: NonNullable<Agent['harness']>,
-  model: string,
-): readonly NonNullable<Agent['effort']>[] {
-  if (harness === 'opencode') return ['low', 'high', 'max']
-  return model === 'gpt-6-astra' ? [...STANDARD_EFFORTS, 'ultra'] : STANDARD_EFFORTS
-}
-
-const effortLabels: Record<NonNullable<Agent['effort']>, string> = {
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  xhigh: 'Extra high',
-  max: 'Max',
-  ultra: 'Ultra',
 }
 
 function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>) {

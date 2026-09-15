@@ -42,8 +42,6 @@ export interface WorkspaceShellProps {
   activeSection?: WorkspaceSection
   /** URL-owned workflow selection handed to the nested Workflows submenu. */
   activeWorkflowId?: string
-  /** URL-owned agent selection handed to the nested Agents submenu. */
-  activeAgentId?: string
   /** Top-level destination outside the workspace tree. */
   activeGlobalSection?: GlobalNavigationSection
   /** Workspace directory is selected instead of an individual workspace. */
@@ -67,7 +65,6 @@ export function WorkspaceShell({
   slots = {},
   activeSection = 'workflows',
   activeWorkflowId,
-  activeAgentId,
   activeGlobalSection,
   workspaceOverviewActive = false,
   workspaces,
@@ -181,7 +178,6 @@ export function WorkspaceShell({
             workspaceId={navigationWorkspaceId}
             activeSection={activeSection}
             activeWorkflowId={activeWorkflowId}
-            activeAgentId={activeAgentId}
             activeGlobalSection={activeGlobalSection}
             workspaceOverviewActive={workspaceOverviewActive}
             workspaces={workspaces}

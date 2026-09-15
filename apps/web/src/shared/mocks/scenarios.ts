@@ -1,9 +1,11 @@
 import {
+  DEFAULT_HARNESS_DEFAULTS,
   AgentStatusSchema,
   ApiErrorResponseSchema,
   ScenarioIdSchema,
   type AgentStatus,
   type Agent,
+  type HarnessDefaults,
   type BrowserProfileSummary,
   type Conversation,
   type Message,
@@ -234,6 +236,7 @@ const baseFixture: MockFixture = {
 
 let state: MockScenarioState = { scenarioId: 'normal', failureMode: 'none' }
 let fixture: MockFixture = clone(baseFixture)
+let harnessDefaults: HarnessDefaults = clone(DEFAULT_HARNESS_DEFAULTS)
 let messageSequence = 0
 
 function clone<T>(value: T): T {
@@ -432,6 +435,24 @@ export function updateMockWorkflow(workspaceId: string, next: WorkflowDefinition
   else fixture.workflows[index] = normalized
   fixture.workspace.workflowIds = fixture.workflows.map((item) => item.id)
   return clone(normalized)
+}
+
+export function updateMockAgents(workspaceId: string, next: readonly Agent[]): Agent[] {
+  if (!isKnownWorkspaceId(workspaceId)) throw new Error(`Unknown mock workspace: ${workspaceId}`)
+  const agentsById = new Map(fixture.agents.map((agent) => [agent.id, agent]))
+  for (const agent of next) agentsById.set(agent.id, clone(agent))
+  fixture.agents = [...agentsById.values()]
+  fixture.workspace.agentIds = fixture.agents.map((agent) => agent.id)
+  return clone(fixture.agents)
+}
+
+export function getMockHarnessDefaults(): HarnessDefaults {
+  return clone(harnessDefaults)
+}
+
+export function updateMockHarnessDefaults(next: HarnessDefaults): HarnessDefaults {
+  harnessDefaults = clone(next)
+  return getMockHarnessDefaults()
 }
 
 export function appendMockMessage(workspaceId: string, next: Omit<Message, 'id'>): Message {

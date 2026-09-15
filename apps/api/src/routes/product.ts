@@ -5,9 +5,12 @@ import {
   GetAgentResponseSchema,
   GetRunResponseSchema,
   GetWorkflowResponseSchema,
+  GetHarnessDefaultsResponseSchema,
   ListAgentsResponseSchema,
   SaveWorkflowRequestSchema,
   SaveWorkflowResponseSchema,
+  SaveHarnessDefaultsRequestSchema,
+  SaveHarnessDefaultsResponseSchema,
   WorkspaceDetailsResponseSchema,
 } from '@graphql/contracts'
 import type { FastifyInstance } from 'fastify'
@@ -15,6 +18,7 @@ import type { FastifyInstance } from 'fastify'
 import { DomainError } from '../modules/errors.js'
 import type { LangGraphWorkflowEngine } from '../modules/runs/engine.js'
 import type { PostgresRunRepository } from '../modules/runs/postgres.js'
+import type { PostgresSettingsRepository } from '../modules/settings/postgres.js'
 import type { PostgresWorkflowRepository } from '../modules/workflows/postgres.js'
 import type { PostgresWorkspaceRepository } from '../modules/workspaces/postgres.js'
 
@@ -22,6 +26,7 @@ export interface ProductServices {
   workspaces: PostgresWorkspaceRepository
   workflows: PostgresWorkflowRepository
   runs: PostgresRunRepository
+  settings: PostgresSettingsRepository
   engine: LangGraphWorkflowEngine
 }
 
@@ -35,6 +40,17 @@ function notFound(kind: string, id: string): never {
 }
 
 export function registerProductRoutes(app: FastifyInstance, services: ProductServices): void {
+  app.get('/api/settings/harnesses', async () => GetHarnessDefaultsResponseSchema.parse({
+    defaults: await services.settings.getHarnessDefaults(),
+  }))
+
+  app.put<{ Body: unknown }>('/api/settings/harnesses', async (request) => {
+    const input = SaveHarnessDefaultsRequestSchema.parse(request.body)
+    return SaveHarnessDefaultsResponseSchema.parse({
+      defaults: await services.settings.saveHarnessDefaults(input.defaults),
+    })
+  })
+
   app.get<{ Params: WorkspaceParams }>('/api/workspaces/:workspaceId', async (request) => {
     const details = await services.workspaces.getDetails(request.params.workspaceId)
     return details ? WorkspaceDetailsResponseSchema.parse(details) : notFound('workspace', request.params.workspaceId)
@@ -66,8 +82,10 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
     if (input.workspaceId !== request.params.workspaceId) {
       throw new DomainError('INVALID_WORKFLOW', 'The workflow payload does not match the requested workspace.', 400)
     }
+    const workflow = await services.workflows.save(input.workspaceId, input.workflow, input.agents)
     return SaveWorkflowResponseSchema.parse({
-      workflow: await services.workflows.save(input.workspaceId, input.workflow),
+      workflow,
+      agents: await services.workspaces.listAgents(input.workspaceId),
     })
   }
 

@@ -14,6 +14,7 @@ import type { Edge, Node } from '@xyflow/react'
 export type GraphNodeData = {
   workflowNodeId: string
   agentId: string
+  agent: Agent
   label: string
   role?: string
   description?: string
@@ -21,13 +22,15 @@ export type GraphNodeData = {
   executionStateLabel: string
   stepLabel: string
   waitLabel?: string
+  initialPrompt?: string
   /** Renderer-only marker for a node that is animating out after removal. */
   departing?: boolean
   /** Renderer-only marker for a newly added node entering the canvas. */
   entering?: boolean
   onSelect?: (agentId: string, workflowNodeId: string) => void
-  onUnlink?: (workflowNodeId: string) => void
+  onOpenSettings?: (agentId: string, workflowNodeId: string) => void
   onRemove?: (workflowNodeId: string) => void
+  onSaveSettings?: (workflowNodeId: string, agent: Agent, initialPrompt?: string) => void
   onResize?: (workflowNodeId: string, width: number, height: number) => void
 }
 
@@ -52,8 +55,9 @@ export type GraphProjection = {
 export type GraphMapperOptions = {
   selectedAgentId?: string
   onSelectAgent?: (agentId: string, workflowNodeId: string) => void
-  onUnlinkNode?: (workflowNodeId: string) => void
+  onOpenNodeSettings?: (agentId: string, workflowNodeId: string) => void
   onRemoveNode?: (workflowNodeId: string) => void
+  onSaveNodeSettings?: (workflowNodeId: string, agent: Agent, initialPrompt?: string) => void
   onResizeNode?: (workflowNodeId: string, width: number, height: number) => void
   /** Removes a single connection edge without touching its nodes. */
   onRemoveEdge?: (edgeId: string) => void

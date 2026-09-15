@@ -70,7 +70,7 @@ export type AssignedSkill = z.infer<typeof AssignedSkillSchema>;
 
 export const AgentPromptSchema = z
   .object({
-    system: z.string().trim().min(1),
+    system: z.string().trim().min(1).optional(),
   })
   .strict();
 export type AgentPrompt = z.infer<typeof AgentPromptSchema>;
@@ -104,6 +104,32 @@ export const HarnessConfigurationSchema = z.discriminatedUnion("harness", [
   OpenCodeHarnessConfigurationSchema,
 ]);
 export type HarnessConfiguration = z.infer<typeof HarnessConfigurationSchema>;
+
+/** Global templates copied into new board Agents. Prompts and skills never belong here. */
+export const HarnessDefaultsSchema = z
+  .object({
+    codex: CodexHarnessConfigurationSchema,
+    opencode: OpenCodeHarnessConfigurationSchema,
+  })
+  .strict();
+export type HarnessDefaults = z.infer<typeof HarnessDefaultsSchema>;
+export const DEFAULT_HARNESS_DEFAULTS: HarnessDefaults = HarnessDefaultsSchema.parse({
+  codex: {
+    harness: "codex",
+    model: "gpt-5.6-luna",
+    reasoningEffort: "medium",
+    sandbox: "read-only",
+    serviceTier: "standard",
+  },
+  opencode: {
+    harness: "opencode",
+    model: "opencode-go/deepseek-v4.1-flash",
+    variant: "max",
+    nativeAgent: "build",
+    thinking: false,
+    autoApprove: false,
+  },
+});
 
 export const HarnessQualificationSchema = z
   .object({
@@ -139,6 +165,7 @@ export const AgentSchema = z
     model: z.string().trim().min(1).optional(),
     effort: AgentEffortSchema.optional(),
     fastMode: z.boolean().optional(),
+    harnessConfiguration: HarnessConfigurationSchema.optional(),
     configurationVersionId: IdSchema.optional(),
     prompt: AgentPromptSchema.optional(),
     assignedSkills: z.array(AssignedSkillSchema).optional(),
@@ -224,6 +251,8 @@ export const WorkflowNodeSchema = z
     name: z.string().trim().min(1).optional(),
     label: z.string().trim().min(1).optional(),
     description: z.string().optional(),
+    /** User instruction sent to this workflow step, separate from the Agent system prompt. */
+    initialPrompt: z.string().trim().min(1).optional(),
     position: z
       .object({
         x: z.number().finite(),
@@ -616,6 +645,7 @@ export const HarnessExecutionRequestSchema = z
     workspaceId: IdSchema,
     workflowNodeId: IdSchema,
     workingDirectory: z.string().trim().min(1),
+    initialPrompt: z.string().trim().min(1).optional(),
     configuration: AgentConfigurationVersionSchema,
     input: z.json(),
   })
@@ -877,6 +907,7 @@ export const SaveWorkflowRequestSchema = z
   .object({
     workspaceId: IdSchema,
     workflow: WorkflowDefinitionSchema,
+    agents: z.array(AgentSchema).optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -890,9 +921,23 @@ export const SaveWorkflowRequestSchema = z
   });
 export type SaveWorkflowRequest = z.infer<typeof SaveWorkflowRequestSchema>;
 export const SaveWorkflowResponseSchema = z
-  .object({ workflow: WorkflowDefinitionSchema })
+  .object({
+    workflow: WorkflowDefinitionSchema,
+    agents: z.array(AgentSchema).optional(),
+  })
   .strict();
 export type SaveWorkflowResponse = z.infer<typeof SaveWorkflowResponseSchema>;
+
+export const GetHarnessDefaultsResponseSchema = z
+  .object({ defaults: HarnessDefaultsSchema })
+  .strict();
+export type GetHarnessDefaultsResponse = z.infer<typeof GetHarnessDefaultsResponseSchema>;
+export const SaveHarnessDefaultsRequestSchema = z
+  .object({ defaults: HarnessDefaultsSchema })
+  .strict();
+export type SaveHarnessDefaultsRequest = z.infer<typeof SaveHarnessDefaultsRequestSchema>;
+export const SaveHarnessDefaultsResponseSchema = GetHarnessDefaultsResponseSchema;
+export type SaveHarnessDefaultsResponse = GetHarnessDefaultsResponse;
 export const ReadWorkflowDefinitionRequestSchema = GetWorkflowRequestSchema;
 export const ReadWorkflowDefinitionResponseSchema = GetWorkflowResponseSchema;
 export const SaveWorkflowDefinitionRequestSchema = SaveWorkflowRequestSchema;

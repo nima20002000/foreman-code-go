@@ -28,10 +28,7 @@ describe('WorkspaceShell', () => {
     expect(workflows).toHaveAttribute('href', '/workspaces/workspace-1')
     expect(workflows).toHaveAttribute('aria-current', 'page')
 
-    const agents = screen.getByRole('link', { name: 'Agents' })
-    expect(agents).toHaveAttribute('href', '/workspaces/workspace-1/agents')
-    expect(agents.querySelector('svg')).toBeInTheDocument()
-    expect(agents).not.toHaveAttribute('aria-current')
+    expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
 
     const files = screen.getByRole('link', { name: 'Files' })
     expect(files).toHaveAttribute('href', '/workspaces/workspace-1/files')
@@ -75,7 +72,7 @@ describe('WorkspaceShell', () => {
     expect(screen.getByTestId('workspace-shell')).toHaveClass('workspace-shell-navigation-collapsed')
     expect(screen.getByRole('complementary', { name: 'Primary navigation' })).toHaveAttribute('data-collapsed', 'true')
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveAttribute('title', 'Workspaces')
-    expect(screen.getByRole('link', { name: 'Agents' })).toHaveAttribute('title', 'Agents')
+    expect(screen.getByRole('link', { name: 'Workflows' })).toHaveAttribute('title', 'Workflows')
 
     const expand = screen.getByRole('button', { name: 'Expand navigation' })
     expect(expand).toHaveAttribute('aria-expanded', 'false')
@@ -103,15 +100,15 @@ describe('WorkspaceShell', () => {
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveAttribute('title', 'Workspaces')
   })
 
-  it('marks the current directory route and its parent menu active', async () => {
+  it('keeps the temporarily hidden Agents route content available by deep link', async () => {
     renderWithRouter(
       <WorkspaceShell workspaceId="workspace-1" activeSection="agents" slots={{ main: <div>Directory</div> }} />,
     )
 
-    expect(await screen.findByRole('link', { name: 'Agents' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
+    expect(await screen.findByRole('region', { name: 'Workspace content' })).toHaveTextContent('Directory')
+    expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Workspaces' })).not.toHaveClass('nav-item-active')
     expect(screen.getByRole('link', { name: 'Workflows' })).not.toHaveAttribute('aria-current')
-    expect(screen.getByRole('region', { name: 'Workspace content' })).toHaveTextContent('Directory')
   })
 
   it('keeps Terminal top-level and active outside the workspace tree', async () => {
@@ -144,22 +141,14 @@ describe('WorkspaceShell', () => {
     expect(await screen.findByRole('link', { name: 'Files' })).toBeVisible()
   })
 
-  it('collapses and expands the nested Agents and Workflows submenus', async () => {
+  it('collapses and expands the nested Workflows submenu while Agents stays hidden', async () => {
     const user = userEvent.setup()
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
 
-    const agentsToggle = await screen.findByRole('button', { name: 'Collapse agents in Website' })
-    const workflowsToggle = screen.getByRole('button', { name: 'Collapse workflows in Website' })
-    expect(agentsToggle).toHaveAttribute('aria-expanded', 'true')
+    const workflowsToggle = await screen.findByRole('button', { name: 'Collapse workflows in Website' })
     expect(workflowsToggle).toHaveAttribute('aria-expanded', 'true')
-    expect(await screen.findByTestId('agent-navigation')).toBeVisible()
-    expect(await screen.findByRole('button', { name: 'New workflow' })).toBeVisible()
-
-    await user.click(agentsToggle)
-
-    expect(agentsToggle).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByTestId('agent-navigation')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'New workflow' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'New workflow' })).toBeVisible()
 
     await user.click(workflowsToggle)
 
@@ -167,17 +156,13 @@ describe('WorkspaceShell', () => {
     expect(screen.queryByRole('button', { name: 'New workflow' })).not.toBeInTheDocument()
   })
 
-  it('starts section reordering only from the direct section row, not submenu links', async () => {
+  it('starts section reordering only from the direct workflow row, not submenu links', async () => {
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
 
-    const agentsRow = (await screen.findByRole('link', { name: 'Agents' })).closest('.nav-item-row')
-    const workflowsRow = screen.getByRole('link', { name: 'Workflows' }).closest('.nav-item-row')
-    expect(agentsRow).toHaveAttribute('data-reorder-id', 'agents')
+    const workflowsRow = (await screen.findByRole('link', { name: 'Workflows' })).closest('.nav-item-row')
     expect(workflowsRow).toHaveAttribute('data-reorder-id', 'workflows')
 
-    const nestedAgent = await screen.findByRole('link', { name: 'Researcher' })
     const nestedWorkflow = await screen.findByRole('link', { name: 'Research to review' })
-    expect(nestedAgent.closest('[data-reorder-id="agents"]')).toBeNull()
     expect(nestedWorkflow.closest('[data-reorder-id="workflows"]')).toBeNull()
   })
 
@@ -247,19 +232,19 @@ describe('WorkspaceShell', () => {
     expect(resize).toHaveAttribute('aria-valuenow', String(DEFAULT_NAVIGATION_WIDTH))
   })
 
-  it('keeps submenu state across shell remounts', async () => {
+  it('keeps workflow submenu state across shell remounts', async () => {
     const user = userEvent.setup()
     const first = renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
 
-    await user.click(await screen.findByRole('button', { name: 'Collapse agents in Website' }))
+    await user.click(await screen.findByRole('button', { name: 'Collapse workflows in Website' }))
     first.unmount()
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
 
-    expect(await screen.findByRole('button', { name: 'Expand agents in Website' })).toHaveAttribute(
+    expect(await screen.findByRole('button', { name: 'Expand workflows in Website' })).toHaveAttribute(
       'aria-expanded',
       'false',
     )
-    expect(screen.queryByTestId('agent-navigation')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New workflow' })).not.toBeInTheDocument()
   })
 
   it('renders the graph surface without mounted operator or context surfaces', async () => {

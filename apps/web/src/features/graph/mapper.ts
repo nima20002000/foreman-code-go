@@ -190,10 +190,6 @@ function nodeLabel(workflowNode: WorkflowNode, agent: Agent | undefined): string
   return workflowNode.name ?? workflowNode.label ?? agent?.name ?? workflowNode.agentId
 }
 
-function edgeExplanation(): string {
-  return 'Proposed sequential output handoff'
-}
-
 export function workflowToGraph(
   { workflow, agents }: { workflow: WorkflowDefinition; agents: readonly Agent[] },
   options: GraphMapperOptions = {},
@@ -202,6 +198,7 @@ export function workflowToGraph(
 
   const nodes: GraphNode[] = workflow.nodes.map((workflowNode, index) => {
     const agent = agentsById.get(workflowNode.agentId)
+      ?? { id: workflowNode.agentId, name: workflowNode.name ?? workflowNode.label ?? workflowNode.agentId }
     const state = agentState(agent)
     const size = clampNodeSize(
       workflowNode.width ?? DEFAULT_NODE_WIDTH,
@@ -220,6 +217,7 @@ export function workflowToGraph(
       data: {
         workflowNodeId: workflowNode.id,
         agentId: workflowNode.agentId,
+        agent,
         label: nodeLabel(workflowNode, agent),
         role: agent?.role,
         description: workflowNode.description ?? agent?.description,
@@ -227,10 +225,12 @@ export function workflowToGraph(
         executionStateLabel: executionStateLabel(state),
         stepLabel: `Step ${index + 1}`,
         waitLabel: waitLabel(agent, state, options.runFacts),
+        initialPrompt: workflowNode.initialPrompt,
         entering: options.enteringNodeIds?.has(workflowNode.id),
         onSelect: options.onSelectAgent,
-        onUnlink: options.onUnlinkNode,
+        onOpenSettings: options.onOpenNodeSettings,
         onRemove: options.onRemoveNode,
+        onSaveSettings: options.onSaveNodeSettings,
         onResize: options.onResizeNode,
       },
     }
@@ -252,11 +252,10 @@ export function workflowToGraph(
       id: workflowEdge.id,
       source: workflowEdge.source,
       target: workflowEdge.target,
-      label: workflowEdge.label,
       type: AGENT_HANDOFF_EDGE_TYPE,
       sourceHandle: sides.sourceHandle,
       targetHandle: sides.targetHandle,
-      data: { explanation: edgeExplanation(), onRemove: options.onRemoveEdge },
+      data: { explanation: 'Sequential handoff', onRemove: options.onRemoveEdge },
     }
   })
 
@@ -317,8 +316,7 @@ export function makeSequentialHandoffEdge(source: string, target: string): Graph
     source,
     target,
     type: AGENT_HANDOFF_EDGE_TYPE,
-    label: 'Sequential output handoff',
-    data: { explanation: edgeExplanation() },
+    data: { explanation: 'Sequential handoff' },
   }
 }
 

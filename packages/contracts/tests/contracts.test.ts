@@ -65,8 +65,18 @@ describe("neutral product contracts", () => {
     }
     expect(WorkflowDefinitionSchema.parse({
       ...workflow,
-      nodes: [{ ...workflow.nodes[0], width: 280, height: 140 }],
-    }).nodes[0]).toMatchObject({ agentId: "agent-1", width: 280, height: 140 });
+      nodes: [{
+        ...workflow.nodes[0],
+        width: 280,
+        height: 140,
+        initialPrompt: "Summarize the accepted input.",
+      }],
+    }).nodes[0]).toMatchObject({
+      agentId: "agent-1",
+      width: 280,
+      height: 140,
+      initialPrompt: "Summarize the accepted input.",
+    });
     expect(WorkflowDefinitionSchema.safeParse({
       ...workflow,
       nodes: [{ ...workflow.nodes[0], width: 0 }],

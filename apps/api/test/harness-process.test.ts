@@ -29,6 +29,7 @@ describe('native harness process boundary', () => {
       workspaceId: 'workspace-1',
       workflowNodeId: 'node-b',
       workingDirectory: '/tmp/graphql-run',
+      initialPrompt: 'Write a direct answer for the operator.',
       configuration: {
         id: 'config-b',
         workspaceId: 'workspace-1',
@@ -50,6 +51,7 @@ describe('native harness process boundary', () => {
       input: { previous: { result: { text: 'Exact stored result' } } },
     })
     expect(prompt).toContain('Summarize only the supplied facts.')
+    expect(prompt).toContain('INITIAL USER PROMPT\nWrite a direct answer for the operator.')
     expect(prompt).toContain('"text":"Exact stored result"')
     expect(prompt).toContain('Treat the accepted input above as authoritative.')
   })

@@ -9,6 +9,7 @@ import { ensureAcceptanceSeed } from './infrastructure/seed.js'
 import { LocalHarnessResolver } from './modules/harnesses/resolver.js'
 import { LangGraphWorkflowEngine } from './modules/runs/engine.js'
 import { PostgresRunRepository } from './modules/runs/postgres.js'
+import { PostgresSettingsRepository } from './modules/settings/postgres.js'
 import { PostgresWorkflowRepository } from './modules/workflows/postgres.js'
 import { PostgresWorkspaceRepository } from './modules/workspaces/postgres.js'
 
@@ -32,6 +33,7 @@ async function main() {
   const workflows = new PostgresWorkflowRepository(database.pool)
   const runs = new PostgresRunRepository(database.pool, workflows)
   const workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
+  const settings = new PostgresSettingsRepository(database.pool)
   const harnesses = new LocalHarnessResolver(config.harnesses.codexBinary, config.harnesses.openCodeBinary)
   const engine = new LangGraphWorkflowEngine(
     runs,
@@ -44,7 +46,7 @@ async function main() {
   const app = buildApp({
     readiness: { database, checkpoints },
     readinessTimeoutMs: config.readinessTimeoutMs,
-    product: { workspaces, workflows, runs, engine },
+    product: { workspaces, workflows, runs, settings, engine },
     logger: true,
   })
   let reconciliationTimer: NodeJS.Timeout | undefined

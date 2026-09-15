@@ -2,8 +2,10 @@ import { createHash, randomUUID } from 'node:crypto'
 
 import {
   AgentConfigurationVersionSchema,
+  AgentSchema,
   WorkflowDefinitionSchema,
   WorkflowVersionSchema,
+  type Agent,
   type AgentConfigurationVersion,
   type WorkflowDefinition,
   type WorkflowVersion,
@@ -12,6 +14,7 @@ import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
 import { validateExecutableTopology } from '../runs/topology.js'
+import { lockAgentConfigurations, saveAgentConfiguration } from '../workspaces/agentConfiguration.js'
 import type { WorkflowRepository } from './port.js'
 
 function contentHash(value: unknown): string {
@@ -84,7 +87,11 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     )
   }
 
-  async save(workspaceId: string, input: WorkflowDefinition): Promise<WorkflowDefinition> {
+  async save(
+    workspaceId: string,
+    input: WorkflowDefinition,
+    suppliedAgents: readonly Agent[] = [],
+  ): Promise<WorkflowDefinition> {
     if (input.workspaceId !== workspaceId) {
       throw new DomainError('INVALID_WORKFLOW', 'The workflow does not belong to this workspace.', 400)
     }
@@ -116,7 +123,15 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         throw new DomainError('WORKSPACE_NOT_FOUND', `Workspace '${workspaceId}' was not found.`, 404)
       }
 
-      const uniqueAgentIds = [...new Set(input.nodes.map((node) => node.agentId))]
+      const uniqueAgentIds = [...new Set(input.nodes.map((node) => node.agentId))].sort()
+      const suppliedById = new Map(suppliedAgents.map((agent) => [agent.id, AgentSchema.parse(agent)]))
+      // Lock reads as well as writes in a stable order: two boards may update
+      // different agents while pinning both of their configurations.
+      await lockAgentConfigurations(client, uniqueAgentIds)
+      for (const agentId of uniqueAgentIds) {
+        const supplied = suppliedById.get(agentId)
+        if (supplied) await saveAgentConfiguration(client, workspaceId, supplied)
+      }
       const agentRows = await client.query<{ id: string; current_configuration_version_id: string | null }>(
         `select id, current_configuration_version_id
          from agents where workspace_id = $1 and id = any($2::text[]) for share`,

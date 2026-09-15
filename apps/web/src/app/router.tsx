@@ -14,6 +14,7 @@ import {
   ComingSoonRouteEntry,
   GlobalComingSoonRouteEntry,
   GlobalSettingsRouteEntry,
+  HarnessSettingsRouteEntry,
   SettingsRouteEntry,
   WorkspacesRouteEntry,
 } from '../routes/WorkspaceSectionRoutes'
@@ -90,6 +91,11 @@ const globalSettingsRoute = createRoute({
   path: '/settings',
   component: GlobalSettingsRouteEntry,
 })
+const harnessSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/harnesses',
+  component: HarnessSettingsRouteEntry,
+})
 
 export const routeTree = rootRoute.addChildren([
   indexRoute,
@@ -104,6 +110,7 @@ export const routeTree = rootRoute.addChildren([
   settingsRoute,
   globalTerminalRoute,
   globalSettingsRoute,
+  harnessSettingsRoute,
 ])
 
 export const router = createRouter({ routeTree })

@@ -15,6 +15,7 @@ interface SessionWorkflowState {
   hiddenWorkflowIds: readonly string[]
   createSessionWorkflow: (input: SessionWorkflowInput) => WorkflowDefinition
   saveSessionWorkflow: (workflow: WorkflowDefinition) => void
+  promoteSessionWorkflow: (workflowId: string) => void
   removeWorkspaceWorkflows: (workspaceId: string) => void
   renameWorkflow: (workflowId: string, name: string) => void
   removeWorkflow: (workflowId: string) => void
@@ -56,6 +57,12 @@ export const useSessionWorkflowStore = create<SessionWorkflowState>((set) => ({
     set((state) => {
       if (!state.workflows[workflow.id]) return state
       return { workflows: { ...state.workflows, [workflow.id]: workflow } }
+    }),
+  promoteSessionWorkflow: (workflowId) =>
+    set((state) => {
+      const workflows = { ...state.workflows }
+      delete workflows[workflowId]
+      return { workflows }
     }),
   removeWorkspaceWorkflows: (workspaceId) =>
     set((state) => ({

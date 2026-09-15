@@ -170,6 +170,7 @@ export function WorkspaceRouteEntry() {
   const workflowNameOverrides = useSessionWorkflowStore((state) => state.workflowNameOverrides)
   const hiddenWorkflowIds = useSessionWorkflowStore((state) => state.hiddenWorkflowIds)
   const saveSessionWorkflow = useSessionWorkflowStore((state) => state.saveSessionWorkflow)
+  const promoteSessionWorkflow = useSessionWorkflowStore((state) => state.promoteSessionWorkflow)
 
   const selectAgent = useCallback(
     (nextAgentId: string) => {
@@ -296,7 +297,10 @@ export function WorkspaceRouteEntry() {
             selectedAgentId={agentId}
             onSelectAgent={selectAgent}
             onClearAgent={clearAgent}
-            onSaveSession={saveSessionWorkflow}
+            onSaveSession={sessionWorkspaceRoute ? saveSessionWorkflow : undefined}
+            onPersisted={sessionWorkspaceRoute ? undefined : (savedWorkflow) => {
+              promoteSessionWorkflow(savedWorkflow.id)
+            }}
           />
         ) : workflow ? (
           <WorkflowGraph
