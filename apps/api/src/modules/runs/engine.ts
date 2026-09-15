@@ -19,6 +19,8 @@ import type { HarnessResolver, NativeEventInput } from '../harnesses/port.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import type { WorkflowOrchestrator } from './port.js'
 import type { PostgresRunRepository } from './postgres.js'
+import type { RunOwnership } from './ownership.js'
+import { ExecutionLimiter } from './limiter.js'
 import { validateExecutableTopology } from './topology.js'
 
 const EngineState = Annotation.Root({
@@ -60,6 +62,8 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   private readonly activeRuns = new Map<string, AbortController>()
   private readonly activeTasks = new Map<string, Promise<void>>()
   private readonly workspaceRoot: string
+  private closing = false
+  private reconciliation: Promise<void> | undefined
 
   constructor(
     private readonly runs: PostgresRunRepository,
@@ -75,7 +79,11 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   start(runId: string): Promise<void> {
     const existing = this.activeTasks.get(runId)
     if (existing) return existing
-    const task = this.startRun(runId).finally(() => {
+    if (this.closing) return Promise.reject(new DomainError('ENGINE_CLOSING', 'The workflow engine is shutting down.', 503))
+    // Register cancellation before the first database await, including queued work.
+    const controller = new AbortController()
+    this.activeRuns.set(runId, controller)
+    const task = this.startRun(runId, controller).finally(() => {
       this.activeRuns.delete(runId)
       this.activeTasks.delete(runId)
     })
@@ -83,51 +91,113 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     return task
   }
 
-  private async startRun(runId: string): Promise<void> {
-    const run = await this.runs.get(runId)
-    if (!run) throw new DomainError('RUN_NOT_FOUND', `Run '${runId}' was not found.`, 404)
-    if (run.executionState !== 'queued') {
-      throw new DomainError('RUN_NOT_STARTABLE', `Run '${runId}' is not queued.`, 409)
-    }
-    const controller = new AbortController()
-    this.activeRuns.set(runId, controller)
+  private async startRun(runId: string, controller: AbortController): Promise<void> {
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs)
     timeout.unref()
-
+    let owner: RunOwnership | undefined
     try {
-      await this.executeRun(run, controller.signal)
+      owner = await this.runs.acquireOwnership(runId, () => controller.abort(
+        new DomainError('RUN_OWNERSHIP_LOST', 'The database execution owner disconnected.', 409),
+      ))
+      if (!owner) throw new DomainError('RUN_ALREADY_OWNED', `Run '${runId}' is owned by another engine.`, 409)
+      const run = await this.runs.get(runId, owner)
+      if (!run) throw new DomainError('RUN_NOT_FOUND', `Run '${runId}' was not found.`, 404)
+      if (run.executionState !== 'queued') {
+        throw new DomainError('RUN_NOT_STARTABLE', `Run '${runId}' is not queued.`, 409)
+      }
+      if (controller.signal.aborted) {
+        await this.runs.settleOrphan(runId, owner, true)
+        return
+      }
+      await this.executeRun(run, controller.signal, owner)
     } finally {
       clearTimeout(timeout)
+      await owner?.release()
     }
   }
 
+  /** Recover queued work; do not replay interrupted native side effects. */
+  reconcile(onError: (error: unknown) => void = console.error): Promise<void> {
+    if (this.reconciliation) return this.reconciliation
+    if (this.closing) return Promise.resolve()
+    const task = (async () => {
+      for (const candidate of await this.runs.reconciliationCandidates()) {
+        if (this.closing) break
+        if (this.activeTasks.has(candidate.id)) continue
+        if (candidate.executionState === 'queued') {
+          void this.start(candidate.id).catch(onError)
+          continue
+        }
+        const owner = await this.runs.acquireOwnership(candidate.id, () => undefined)
+        if (!owner) continue
+        try {
+          await this.runs.settleOrphan(candidate.id, owner, false)
+        } finally {
+          await owner.release()
+        }
+      }
+    })().finally(() => { this.reconciliation = undefined })
+    this.reconciliation = task
+    return task
+  }
+
   async resume(runId: string): Promise<void> {
-    throw new DomainError('RUN_RESUME_NOT_IMPLEMENTED', `Run '${runId}' cannot yet be resumed through the product API.`, 501)
+    throw new DomainError('RUN_RESUME_NOT_IMPLEMENTED', `Run '${runId}' cannot be replayed safely. Inspect the interrupted attempt, cancel its record, and start a new run when safe.`, 501)
   }
 
   async cancel(runId: string): Promise<boolean> {
     const controller = this.activeRuns.get(runId)
-    if (!controller) return false
-    controller.abort()
-    return true
+    if (controller) {
+      controller.abort()
+      return true
+    }
+    const owner = await this.runs.acquireOwnership(runId, () => undefined)
+    if (!owner) return false
+    try {
+      return await this.runs.settleOrphan(runId, owner, true)
+    } finally {
+      await owner.release()
+    }
   }
 
   async shutdown(): Promise<void> {
+    this.closing = true
     for (const controller of this.activeRuns.values()) controller.abort()
+    await this.reconciliation?.catch(() => undefined)
     await Promise.allSettled(this.activeTasks.values())
   }
 
-  private async executeRun(run: WorkflowRun, signal: AbortSignal): Promise<void> {
+  private async executeRun(run: WorkflowRun, signal: AbortSignal, owner: RunOwnership): Promise<void> {
     const startedAt = new Date().toISOString()
-    await this.runs.updateState(run.id, { executionState: 'running', outcome: 'pending', startedAt })
+    const failedNodes = new AbortController()
+    const nodeSignal = AbortSignal.any([signal, failedNodes.signal])
+    const activeNodes = new Set<Promise<Partial<EngineStateValue>>>()
+    let firstFailure: { error: unknown } | undefined
+    const drain = async () => {
+      while (activeNodes.size) await Promise.allSettled([...activeNodes])
+    }
 
     try {
+      await this.runs.updateState(run.id, { executionState: 'running', outcome: 'pending', startedAt }, owner)
       const version = await this.workflows.getVersion(run.workflowVersionId)
       if (!version) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', `Workflow version '${run.workflowVersionId}' was not found.`, 409)
       const topology = validateExecutableTopology(version)
+      const limiter = new ExecutionLimiter(version.definition.executionPolicy!.maxParallelism)
       const builder = new StateGraph(EngineState) as unknown as DynamicGraphBuilder
       for (const node of version.definition.nodes) {
-        builder.addNode(node.id, async (state) => this.executeNode(run, version, node.id, topology.incoming.get(node.id) ?? [], state, signal))
+        builder.addNode(node.id, (state) => {
+          const task = limiter.run(nodeSignal, () => this.executeNode(run, version, node.id, topology.incoming.get(node.id) ?? [], state, nodeSignal, owner))
+          activeNodes.add(task)
+          void task.then(
+            () => { activeNodes.delete(task) },
+            (error: unknown) => {
+              firstFailure ??= { error }
+              failedNodes.abort(error)
+              activeNodes.delete(task)
+            },
+          )
+          return task
+        })
       }
       builder.addEdge(START, version.entryNodeId)
       for (const node of version.definition.nodes) {
@@ -142,10 +212,11 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         { runId: run.id, executionIds: {} },
         { configurable: { thread_id: run.id } },
       )
+      signal.throwIfAborted()
       const finalOutputs = await Promise.all(topology.sinks.map(async (nodeId) => {
         const executionId = state.executionIds[nodeId]
         if (!executionId) throw new DomainError('FINAL_EXECUTION_MISSING', `Final node '${nodeId}' did not produce an execution.`, 500)
-        const result = await this.runs.getAcceptedResult(executionId)
+        const result = await this.runs.getAcceptedResult(executionId, owner)
         if (!result) throw new DomainError('FINAL_RESULT_MISSING', `Final node '${nodeId}' has no accepted result.`, 500)
         return { nodeId, executionId, result: result.output ?? null }
       }))
@@ -153,22 +224,31 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         outcome: 'succeeded',
         output: finalOutputs.length === 1 ? finalOutputs[0]?.result ?? null : { outputs: finalOutputs },
       }
+      signal.throwIfAborted()
       await this.runs.updateState(run.id, {
         executionState: 'completed',
         outcome: 'succeeded',
         result,
         startedAt,
         finishedAt: new Date().toISOString(),
-      })
+      }, owner)
     } catch (error) {
-      const result = failedResult(error, signal.aborted)
+      failedNodes.abort(error)
+      // LangGraph can reject before sibling harnesses finish. Retain both local
+      // tracking and database ownership until every launched task cleans up.
+      await drain()
+      owner.assertOwned()
+      const result = failedResult(firstFailure?.error ?? error, signal.aborted)
       await this.runs.updateState(run.id, {
         executionState: 'completed',
         outcome: result.outcome,
         result,
         startedAt,
         finishedAt: new Date().toISOString(),
-      })
+      }, owner)
+    } finally {
+      failedNodes.abort()
+      await drain()
     }
   }
 
@@ -179,8 +259,10 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     predecessorNodeIds: string[],
     state: EngineStateValue,
     signal: AbortSignal,
+    owner: RunOwnership,
   ): Promise<Partial<EngineStateValue>> {
-    if (signal.aborted) throw new HarnessExecutionError('EXECUTION_CANCELED', 'The workflow run was canceled.')
+    signal.throwIfAborted()
+    owner.assertOwned()
     const node = version.definition.nodes.find((candidate) => candidate.id === nodeId)
     if (!node) throw new DomainError('WORKFLOW_NODE_NOT_FOUND', `Node '${nodeId}' was not found.`, 500)
     const configurationVersionId = run.agentConfigurationVersionIds[node.agentId]
@@ -191,7 +273,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     const predecessorResults = await Promise.all(predecessorNodeIds.map(async (predecessorNodeId) => {
       const executionId = state.executionIds[predecessorNodeId]
       if (!executionId) throw new DomainError('HANDOFF_EXECUTION_MISSING', `Dependency '${predecessorNodeId}' has no execution.`, 500)
-      const accepted = await this.runs.getAcceptedResult(executionId)
+      const accepted = await this.runs.getAcceptedResult(executionId, owner)
       if (!accepted) throw new DomainError('HANDOFF_RESULT_MISSING', `Dependency execution '${executionId}' has no accepted result.`, 500)
       return { predecessorNodeId, executionId, result: accepted.output ?? null }
     }))
@@ -216,7 +298,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       createdAt: now,
       startedAt: now,
     })
-    await this.runs.createExecution(execution)
+    await this.runs.createExecution(execution, owner)
     const request = HarnessExecutionRequestSchema.parse({
       executionId,
       runId: run.id,
@@ -230,17 +312,19 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     let eventSequence = 0
 
     try {
+      signal.throwIfAborted()
+      owner.assertOwned()
       const result = await adapter.execute(request, {
         signal,
         onSession: async (nativeSessionId) => {
           execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId, state: 'running' })
-          await this.runs.updateExecution(execution)
+          await this.runs.updateExecution(execution, owner)
           await this.runs.recordActivity(run.id, 'harness', 'harness_session_started', {
             workflowNodeId: nodeId,
             agentId: node.agentId,
             nativeSessionId,
             harness: configuration.harness.harness,
-          }, executionId)
+          }, executionId, owner.client)
         },
         onEvent: async (event: NativeEventInput) => {
           const nativeEvent = HarnessNativeEventSchema.parse({
@@ -251,20 +335,21 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
             payload: event.payload,
           })
           eventSequence += 1
-          await this.runs.appendNativeEvent(nativeEvent)
+          await this.runs.appendNativeEvent(nativeEvent, owner)
         },
       })
+      signal.throwIfAborted()
       execution = HarnessExecutionSchema.parse({
         ...execution,
         state: 'completed',
         result,
         finishedAt: new Date().toISOString(),
       })
-      await this.runs.acceptExecutionResult(execution)
+      await this.runs.acceptExecutionResult(execution, owner)
       await this.runs.recordActivity(run.id, 'harness', 'harness_session_finished', {
         workflowNodeId: nodeId,
         outcome: result.outcome,
-      }, executionId)
+      }, executionId, owner.client)
       return { executionIds: { [nodeId]: executionId } }
     } catch (error) {
       const result = failedResult(error, signal.aborted)
@@ -274,12 +359,12 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         result,
         finishedAt: new Date().toISOString(),
       })
-      await this.runs.updateExecution(execution)
+      await this.runs.updateExecution(execution, owner)
       await this.runs.recordActivity(run.id, 'harness', 'harness_session_finished', {
         workflowNodeId: nodeId,
         outcome: result.outcome,
         error: result.error ?? null,
-      }, executionId)
+      }, executionId, owner.client)
       throw error
     }
   }

@@ -11,6 +11,7 @@ import {
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
+import { validateExecutableTopology } from '../runs/topology.js'
 import type { WorkflowRepository } from './port.js'
 
 function contentHash(value: unknown): string {
@@ -63,6 +64,17 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     return result.rows[0] ? AgentConfigurationVersionSchema.parse(result.rows[0].record) : undefined
   }
 
+  async assertCurrentConfigurations(version: WorkflowVersion): Promise<void> {
+    const result = await this.pool.query<{ id: string; current_configuration_version_id: string | null }>(
+      'select id, current_configuration_version_id from agents where workspace_id = $1 and id = any($2::text[])',
+      [version.workspaceId, Object.keys(version.agentConfigurationVersionIds)],
+    )
+    if (result.rows.length !== Object.keys(version.agentConfigurationVersionIds).length
+      || result.rows.some((row) => row.current_configuration_version_id !== version.agentConfigurationVersionIds[row.id])) {
+      throw new DomainError('WORKFLOW_CONFIGURATION_STALE', 'Agent settings changed. Save the workflow again before starting it.', 409)
+    }
+  }
+
   async insertVersion(workflowVersion: WorkflowVersion): Promise<void> {
     const parsed = WorkflowVersionSchema.parse(workflowVersion)
     await this.pool.query(
@@ -84,11 +96,20 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         400,
       )
     }
+    if (input.executionPolicy && input.executionPolicy.maxNodeExecutions < input.nodes.length) {
+      throw new DomainError('WORKFLOW_EXECUTION_LIMIT', `This graph has ${input.nodes.length} steps but its execution limit is ${input.executionPolicy.maxNodeExecutions}. Review the execution limit before saving.`, 409)
+    }
 
     const client = await this.pool.connect()
     try {
       await client.query('begin')
       await client.query('select pg_advisory_xact_lock(hashtext($1))', [`workflow:${input.id}`])
+      const existing = await client.query<{ workspace_id: string }>(
+        'select workspace_id from workflows where id = $1 for update', [input.id],
+      )
+      if (existing.rows[0] && existing.rows[0].workspace_id !== workspaceId) {
+        throw new DomainError('WORKFLOW_WORKSPACE_MISMATCH', 'This workflow ID belongs to another workspace.', 409)
+      }
 
       const workspace = await client.query('select id from workspaces where id = $1', [workspaceId])
       if (!workspace.rows[0]) {
@@ -98,7 +119,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       const uniqueAgentIds = [...new Set(input.nodes.map((node) => node.agentId))]
       const agentRows = await client.query<{ id: string; current_configuration_version_id: string | null }>(
         `select id, current_configuration_version_id
-         from agents where workspace_id = $1 and id = any($2::text[])`,
+         from agents where workspace_id = $1 and id = any($2::text[]) for share`,
         [workspaceId, uniqueAgentIds],
       )
       const configurations = Object.fromEntries(
@@ -125,6 +146,13 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       const definition = WorkflowDefinitionSchema.parse({
         ...input,
         version,
+        // Ordinary editor connections mean an all-input dependency, not an
+        // implicit threshold/any join. Explicit unsupported modes remain errors.
+        nodes: input.nodes.map((node) => ({
+          ...node,
+          ...(input.edges.filter((edge) => edge.target === node.id).length > 1 && !node.join
+            ? { join: { mode: 'all' } } : {}),
+        })),
         edges: input.edges.map((edge) => ({
           ...edge,
           route: edge.route ?? { outcomes: ['succeeded'] },
@@ -147,15 +175,21 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         contentHash: contentHash({ definition, configurations, entryNodeId: entryNode.id }),
         createdAt: now,
       })
+      validateExecutableTopology(workflowVersion)
 
-      await client.query(
+      const saved = await client.query(
         `insert into workflows (id, workspace_id, current_version_id, record)
          values ($1, $2, $3, $4::jsonb)
          on conflict (id) do update set
            current_version_id = excluded.current_version_id,
-           record = excluded.record`,
+           record = excluded.record
+         where workflows.workspace_id = excluded.workspace_id
+         returning id`,
         [input.id, workspaceId, workflowVersion.id, JSON.stringify(definition)],
       )
+      if (saved.rowCount !== 1) {
+        throw new DomainError('WORKFLOW_WORKSPACE_MISMATCH', 'The scoped workflow could not be updated.', 409)
+      }
       await client.query(
         `insert into workflow_versions (id, workspace_id, workflow_id, version, entry_node_id, record)
          values ($1, $2, $3, $4, $5, $6::jsonb)`,

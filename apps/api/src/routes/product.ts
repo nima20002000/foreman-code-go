@@ -1,4 +1,5 @@
 import {
+  AgentSchema,
   CreateRunRequestSchema,
   CreateRunResponseSchema,
   GetAgentResponseSchema,
@@ -45,6 +46,11 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
   app.get<{ Params: AgentParams }>('/api/workspaces/:workspaceId/agents/:agentId', async (request) => {
     const agent = await services.workspaces.getAgent(request.params.workspaceId, request.params.agentId)
     return agent ? GetAgentResponseSchema.parse({ agent }) : notFound('agent', request.params.agentId)
+  })
+
+  app.put<{ Params: AgentParams; Body: unknown }>('/api/workspaces/:workspaceId/agents/:agentId', async (request) => {
+    const agent = await services.workspaces.saveAgent(request.params.workspaceId, request.params.agentId, AgentSchema.parse(request.body))
+    return GetAgentResponseSchema.parse({ agent })
   })
 
   app.get<{ Params: WorkflowParams }>('/api/workspaces/:workspaceId/workflows/:workflowId', async (request) => {
@@ -102,7 +108,7 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
     const run = await services.runs.getForWorkspace(request.params.workspaceId, request.params.runId)
     if (!run) return notFound('run', request.params.runId)
     if (!await services.engine.cancel(run.id)) {
-      throw new DomainError('RUN_NOT_CANCELABLE', `Run '${run.id}' has no active local process.`, 409)
+      throw new DomainError('RUN_NOT_CANCELABLE', `Run '${run.id}' is terminal or owned by another live engine.`, 409)
     }
     return { accepted: true, runId: run.id }
   })

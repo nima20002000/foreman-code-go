@@ -36,10 +36,10 @@ export function validateExecutableTopology(version: WorkflowVersion): Executable
 
   for (const node of version.definition.nodes) {
     const sources = incoming.get(node.id) ?? []
-    if (sources.length > 1 && node.join?.mode !== 'all') {
+    if ((node.join && node.join.mode !== 'all') || (sources.length > 1 && !node.join)) {
       throw new DomainError(
         'WORKFLOW_JOIN_UNSUPPORTED',
-        `Node '${node.id}' must use an all join when it has multiple dependencies.`,
+        `Node '${node.id}' must use an all join; other join modes are not supported.`,
         409,
       )
     }

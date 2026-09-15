@@ -47,8 +47,11 @@ async function main() {
     product: { workspaces, workflows, runs, engine },
     logger: true,
   })
+  let reconciliationTimer: NodeJS.Timeout | undefined
+  const reportReconciliationError = (error: unknown) => app.log.error({ err: error }, 'run reconciliation failed')
 
   app.addHook('onClose', async () => {
+    if (reconciliationTimer) clearInterval(reconciliationTimer)
     await engine.shutdown()
     await Promise.allSettled([checkpoints.close(), database.close()])
   })
@@ -60,6 +63,11 @@ async function main() {
     await checkpoints.setup()
     await checkpoints.ping()
     await mkdir(config.harnesses.workspaceRoot, { recursive: true })
+    await engine.reconcile(reportReconciliationError)
+    reconciliationTimer = setInterval(() => {
+      void engine.reconcile(reportReconciliationError).catch(reportReconciliationError)
+    }, 5_000)
+    reconciliationTimer.unref()
     await app.listen({ host: config.host, port: config.port })
   } catch (error) {
     await app.close()
