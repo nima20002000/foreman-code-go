@@ -553,7 +553,6 @@ export function GraphEditor({
   )?.id)
   const startLock = useRef(Boolean(activeRunId))
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
-  const [pendingAgent, setPendingAgent] = useState<Agent>()
   const [openMenuNodeId, setOpenMenuNodeId] = useState<string>()
   const [enteringEdgeId, setEnteringEdgeId] = useState<string>()
   const [enteringNodeIds, setEnteringNodeIds] = useState<Set<string>>(() => new Set())
@@ -628,7 +627,7 @@ export function GraphEditor({
     const firstControl = agentPickerRef.current?.querySelector<HTMLElement>('[data-agent-picker-option]')
       ?? agentPickerRef.current?.querySelector<HTMLElement>('button, a[href]')
     firstControl?.focus()
-  }, [agentPickerOpen])
+  }, [agentPickerOpen, harnessDefaultsQuery.data])
 
   // Query owns the saved definition. The feature store is consulted only
   // while an unsaved draft exists, so refetches remain visible when clean.
@@ -974,7 +973,6 @@ export function GraphEditor({
 
   const closeAgentPicker = useCallback(() => {
     setAgentPickerOpen(false)
-    setPendingAgent(undefined)
     addAgentButtonRef.current?.focus()
   }, [])
 
@@ -1202,33 +1200,20 @@ export function GraphEditor({
             ref={agentPickerRef}
             className="agent-picker-popover"
             role="dialog"
-            aria-labelledby={pendingAgent ? undefined : 'agent-picker-title'}
-            aria-label={pendingAgent ? 'Configure agent' : undefined}
+            aria-labelledby="agent-picker-title"
             data-presence={agentPickerPresence.exiting ? 'exiting' : 'entering'}
             inert={agentPickerPresence.exiting || undefined}
           >
-            {!pendingAgent ? (
-              <div className="agent-picker-heading">
-                <div>
-                  <h2 id="agent-picker-title">Add harness</h2>
-                </div>
-                <button type="button" aria-label="Close agent picker" title="Close" onClick={closeAgentPicker}>
-                  <X aria-hidden="true" size={17} />
-                </button>
+            <div className="agent-picker-heading">
+              <div>
+                <h2 id="agent-picker-title">Add harness</h2>
               </div>
-            ) : null}
+              <button type="button" aria-label="Close agent picker" title="Close" onClick={closeAgentPicker}>
+                <X aria-hidden="true" size={17} />
+              </button>
+            </div>
 
-            {pendingAgent ? (
-              <div className="agent-picker-settings agent-directory-card-actions">
-                <AgentSettingsForm
-                  key={pendingAgent.id}
-                  agent={pendingAgent}
-                  creationDefaults={harnessDefaultsQuery.data?.defaults}
-                  onClose={closeAgentPicker}
-                  onSave={addAgentToGraph}
-                />
-              </div>
-            ) : harnessDefaultsQuery.isPending ? (
+            {harnessDefaultsQuery.isPending ? (
               <p className="agent-picker-state" role="status">Loading harness defaults…</p>
             ) : harnessDefaultsQuery.isError || !harnessDefaultsQuery.data ? (
               <div className="agent-picker-state" role="alert">
@@ -1240,7 +1225,7 @@ export function GraphEditor({
                 <button
                   type="button"
                   data-agent-picker-option
-                  onClick={() => setPendingAgent(defaultAgentForHarness(
+                  onClick={() => addAgentToGraph(defaultAgentForHarness(
                     'codex',
                     nextBoardAgentId('codex'),
                     nextHarnessAgentName('codex', catalogAgents),
@@ -1253,7 +1238,7 @@ export function GraphEditor({
                 <button
                   type="button"
                   data-agent-picker-option
-                  onClick={() => setPendingAgent(defaultAgentForHarness(
+                  onClick={() => addAgentToGraph(defaultAgentForHarness(
                     'opencode',
                     nextBoardAgentId('opencode'),
                     nextHarnessAgentName('opencode', catalogAgents),

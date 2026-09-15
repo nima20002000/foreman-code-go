@@ -424,12 +424,6 @@
   background: var(--graph-subtle);
 }
 
-.agent-picker-settings.agent-directory-card-actions {
-  position: static;
-  width: 100%;
-  box-shadow: none;
-}
-
 @keyframes agent-picker-popover-in {
   from {
     opacity: 0;

@@ -99,7 +99,7 @@ describe('GraphEditor persistence boundary', () => {
     expect(screen.getByTestId('workflow-run-status')).toHaveTextContent('Mock test result')
   })
 
-  it('adds a configured Codex harness through an accessible picker and makes it discardable', async () => {
+  it('adds the default Codex profile through one picker action and makes it discardable', async () => {
     const user = userEvent.setup()
     const key = workflowDraftKey(workflow.workspaceId, workflow.id)
     renderEditor()
@@ -110,7 +110,7 @@ describe('GraphEditor persistence boundary', () => {
     expect(dialog).toBeVisible()
     expect(dialog).toHaveClass('agent-picker-popover')
     expect(document.querySelector('.agent-picker-backdrop')).not.toBeInTheDocument()
-    expect(dialog.querySelector('[data-agent-picker-option]')).toHaveFocus()
+    expect(await within(dialog).findByRole('button', { name: 'Codex' })).toHaveFocus()
 
     await user.keyboard('{Escape}')
     expect(screen.getByRole('dialog', { name: 'Add harness' })).toBeVisible()
@@ -119,11 +119,10 @@ describe('GraphEditor persistence boundary', () => {
     expect(add).toHaveFocus()
 
     await user.click(add)
-    await user.click(screen.getByRole('button', { name: 'Codex' }))
-    await user.type(screen.getByRole('textbox', { name: 'Initial prompt' }), 'Research the requested subject.')
-    await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    await user.click(await screen.findByRole('button', { name: 'Codex' }))
     expect(getGraphDraft(key)?.workflow.nodes).toHaveLength(3)
-    expect(getGraphDraft(key)?.workflow.nodes.at(-1)?.initialPrompt).toBe('Research the requested subject.')
+    expect(getGraphDraft(key)?.workflow.nodes.at(-1)).toMatchObject({ name: 'codex-001' })
+    expect(getGraphDraft(key)?.workflow.nodes.at(-1)).not.toHaveProperty('initialPrompt')
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Discard' })).toBeEnabled()
 
@@ -138,34 +137,31 @@ describe('GraphEditor persistence boundary', () => {
     renderEditor({ workflow: emptyWorkflow })
 
     await user.click(screen.getByRole('button', { name: 'Add agent to graph' }))
-    await user.click(screen.getByRole('button', { name: 'Codex' }))
-    await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    await user.click(await screen.findByRole('button', { name: 'Codex' }))
     expect(getGraphDraft(key)?.workflow.nodes).toHaveLength(1)
     expect(getGraphDraft(key)?.workflow.edges).toEqual([])
 
     await user.click(screen.getByRole('button', { name: 'Add agent to graph' }))
-    await user.click(screen.getByRole('button', { name: 'OpenCode' }))
-    await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    await user.click(await screen.findByRole('button', { name: 'OpenCode' }))
     expect(getGraphDraft(key)?.workflow.nodes).toHaveLength(2)
     expect(getGraphDraft(key)?.workflow.edges).toEqual([])
   })
 
-  it('persists a newly configured board Agent and its initial prompt before Start', async () => {
+  it('persists a newly added default OpenCode Agent before Start', async () => {
     const user = userEvent.setup()
     const emptyWorkflow = { ...workflow, nodes: [], edges: [] }
     renderEditor({ workflow: emptyWorkflow })
 
     await user.click(screen.getByRole('button', { name: 'Add agent to graph' }))
-    await user.click(screen.getByRole('button', { name: 'OpenCode' }))
-    await user.type(screen.getByRole('textbox', { name: 'Initial prompt' }), 'Continue from the accepted handoff.')
-    await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    await user.click(await screen.findByRole('button', { name: 'OpenCode' }))
     await user.click(screen.getByRole('button', { name: 'Save graph' }))
 
     await waitFor(() => expect(screen.getByText('Graph saved.')).toBeVisible())
     const saved = getMockFixture(workflow.workspaceId)
     const savedWorkflow = saved?.workflows.find((item) => item.id === workflow.id)
     const savedNode = savedWorkflow?.nodes[0]
-    expect(savedNode?.initialPrompt).toBe('Continue from the accepted handoff.')
+    expect(savedNode).toMatchObject({ name: 'opencode-001' })
+    expect(savedNode).not.toHaveProperty('initialPrompt')
     expect(saved?.agents.find((agent) => agent.id === savedNode?.agentId)).toMatchObject({
       harness: 'opencode',
       model: 'opencode-go/deepseek-v4.1-flash',
@@ -178,7 +174,7 @@ describe('GraphEditor persistence boundary', () => {
     renderEditor({ agents: [] })
     await userEvent.setup().click(screen.getByRole('button', { name: 'Add agent to graph' }))
 
-    expect(screen.getByRole('button', { name: 'Codex' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Codex' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'OpenCode' })).toBeVisible()
     expect(screen.queryByText('Choose a workspace agent.')).not.toBeInTheDocument()
   })
