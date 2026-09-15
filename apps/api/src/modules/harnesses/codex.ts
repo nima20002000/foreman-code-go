@@ -9,7 +9,7 @@ import {
 
 import { HarnessExecutionError } from './errors.js'
 import type { HarnessAdapter, HarnessExecutionCallbacks } from './port.js'
-import { runCommand, runJsonlProcess } from './process.js'
+import { runCommand, runCommands, runJsonlProcess, stopProcess } from './process.js'
 import { buildHarnessPrompt } from './prompt.js'
 
 interface CodexModelCatalog {
@@ -32,11 +32,11 @@ export class CodexAdapter implements HarnessAdapter {
     }
     let checks: Awaited<ReturnType<typeof runCommand>>[]
     try {
-      checks = await Promise.all([
-        runCommand(this.binary, ['--version'], request.workingDirectory, signal),
-        runCommand(this.binary, ['login', 'status'], request.workingDirectory, signal),
-        runCommand(this.binary, ['debug', 'models'], request.workingDirectory, signal),
-      ])
+      checks = await runCommands(this.binary, [
+        ['--version'],
+        ['login', 'status'],
+        ['debug', 'models'],
+      ], request.workingDirectory, signal)
     } catch (error) {
       throw new HarnessExecutionError('CODEX_UNAVAILABLE', error instanceof Error ? error.message : 'Codex is unavailable.')
     }
@@ -105,7 +105,8 @@ export class CodexAdapter implements HarnessAdapter {
   }
 
   async cancel(executionId: string): Promise<boolean> {
-    return this.processes.get(executionId)?.kill('SIGTERM') ?? false
+    const child = this.processes.get(executionId)
+    return child ? stopProcess(child) : false
   }
 
   private async run(
@@ -128,12 +129,13 @@ export class CodexAdapter implements HarnessAdapter {
     ]
     const prompt = buildHarnessPrompt(request)
     const args = resumeSessionId
-      ? ['exec', 'resume', ...common, resumeSessionId, prompt]
-      : ['exec', ...common, '-C', request.workingDirectory, '-s', configuration.sandbox, prompt]
+      ? ['exec', 'resume', ...common, resumeSessionId, '-']
+      : ['exec', ...common, '-C', request.workingDirectory, '-s', configuration.sandbox, '-']
 
     const result = await runJsonlProcess({
       binary: this.binary,
       args,
+      stdin: prompt,
       cwd: request.workingDirectory,
       signal: callbacks.signal,
       onSpawn: (process) => this.processes.set(request.executionId, process),

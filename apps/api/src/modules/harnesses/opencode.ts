@@ -9,7 +9,7 @@ import {
 
 import { HarnessExecutionError } from './errors.js'
 import type { HarnessAdapter, HarnessExecutionCallbacks } from './port.js'
-import { runCommand, runJsonlProcess } from './process.js'
+import { runCommand, runCommands, runJsonlProcess, stopProcess } from './process.js'
 import { buildHarnessPrompt } from './prompt.js'
 
 export class OpenCodeAdapter implements HarnessAdapter {
@@ -30,12 +30,12 @@ export class OpenCodeAdapter implements HarnessAdapter {
     }
     let checks: Awaited<ReturnType<typeof runCommand>>[]
     try {
-      checks = await Promise.all([
-        runCommand(this.binary, ['--version'], request.workingDirectory, signal),
-        runCommand(this.binary, ['auth', 'list'], request.workingDirectory, signal),
-        runCommand(this.binary, ['models', provider, '--verbose'], request.workingDirectory, signal),
-        runCommand(this.binary, ['debug', 'agent', configuration.nativeAgent], request.workingDirectory, signal),
-      ])
+      checks = await runCommands(this.binary, [
+        ['--version'],
+        ['auth', 'list'],
+        ['models', provider, '--verbose'],
+        ['debug', 'agent', configuration.nativeAgent],
+      ], request.workingDirectory, signal)
     } catch (error) {
       throw new HarnessExecutionError('OPENCODE_UNAVAILABLE', error instanceof Error ? error.message : 'OpenCode is unavailable.')
     }
@@ -100,7 +100,8 @@ export class OpenCodeAdapter implements HarnessAdapter {
   }
 
   async cancel(executionId: string): Promise<boolean> {
-    return this.processes.get(executionId)?.kill('SIGTERM') ?? false
+    const child = this.processes.get(executionId)
+    return child ? stopProcess(child) : false
   }
 
   private async run(
@@ -114,6 +115,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
     }
     let finalText: string | undefined
     let sessionReported = false
+    const prompt = buildHarnessPrompt(request)
     const args = [
       'run',
       '--format', 'json',
@@ -123,11 +125,11 @@ export class OpenCodeAdapter implements HarnessAdapter {
       '--agent', configuration.nativeAgent,
       ...(configuration.thinking ? ['--thinking'] : []),
       ...(resumeSessionId ? ['--session', resumeSessionId] : []),
-      buildHarnessPrompt(request),
     ]
     const result = await runJsonlProcess({
       binary: this.binary,
       args,
+      stdin: prompt,
       cwd: request.workingDirectory,
       signal: callbacks.signal,
       onSpawn: (process) => this.processes.set(request.executionId, process),
