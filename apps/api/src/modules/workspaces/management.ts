@@ -8,9 +8,11 @@ import {
 import { WorkspaceSchema } from '@graphql/contracts'
 import type pg from 'pg'
 
-import { hasAction, requireAuthorization } from '../access/policy.js'
+import { hasAction, isAuthorized, requireAuthorization } from '../access/policy.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
+import { WorkspaceLocationService } from './location.js'
+import { replayWorkspaceResult } from './receipts.js'
 
 interface WorkspaceRow { record: unknown; revision: string; archived_at: Date | null }
 
@@ -19,11 +21,18 @@ function managed(row: WorkspaceRow): ManagedWorkspace {
     workspace: WorkspaceSchema.parse(row.record),
     revision: Number(row.revision),
     archivedAt: row.archived_at?.toISOString() ?? null,
+    executionLocation: null,
+    locationRevision: 0,
+    locationValidation: { status: 'restricted' },
   })
 }
 
 export class WorkspaceManagementService {
-  constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator) {}
+  constructor(
+    private readonly pool: pg.Pool,
+    private readonly commands: PostgresCommandCoordinator,
+    private readonly locations: WorkspaceLocationService,
+  ) {}
 
   async list(principal: ManagementPrincipal, input: { cursor?: string | undefined; limit: number; includeArchived: boolean }) {
     if (!hasAction(principal, 'workspaces:read')) requireAuthorization(principal, 'workspaces:read')
@@ -53,12 +62,15 @@ export class WorkspaceManagementService {
       'select record, revision, archived_at from workspaces where id = $1', [workspaceId],
     )
     if (!result.rows[0]) throw new DomainError('WORKSPACE_NOT_FOUND', `Workspace '${workspaceId}' was not found.`, 404)
-    return managed(result.rows[0])
+    const base = managed(result.rows[0])
+    if (!isAuthorized(principal, 'workspace_locations:read', { workspaceId })) return base
+    return ManagedWorkspaceSchema.parse({ ...base, ...await this.locations.inspect(principal, workspaceId) })
   }
 
   async create(principal: ManagementPrincipal, source: 'http' | 'mcp', input: { commandId: string; name: string; description?: string | undefined }) {
     requireAuthorization(principal, 'workspaces:create')
     return this.commands.execute({
+      replayResult: replayWorkspaceResult,
       principal, source, operation: 'workspace.create', commandId: input.commandId,
       targetKey: 'workspaces:new', payload: input,
       perform: async (client) => {
@@ -82,6 +94,7 @@ export class WorkspaceManagementService {
   }) {
     requireAuthorization(principal, 'workspaces:update', { workspaceId: input.workspaceId })
     return this.commands.execute({
+      replayResult: replayWorkspaceResult,
       principal, source, operation: 'workspace.update', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}`, payload: input,
       perform: async (client) => {
@@ -117,6 +130,7 @@ export class WorkspaceManagementService {
   }) {
     requireAuthorization(principal, 'workspaces:archive', { workspaceId: input.workspaceId })
     return this.commands.execute({
+      replayResult: replayWorkspaceResult,
       principal, source, operation: 'workspace.archive', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}`, payload: input,
       perform: async (client) => {

@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Agent, WorkflowDefinition, WorkflowRun } from '@graphql/contracts'
+import type { GraphDraft } from '@graphql/contracts/management'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { queryKeys } from '../../shared/api/query'
@@ -27,7 +28,7 @@ let client: QueryClient
 
 beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
-  client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } })
 })
 afterEach(() => {
   client.clear()
@@ -37,11 +38,34 @@ afterEach(() => {
   sessionStorage.clear()
 })
 
-function editor() {
+function editor(managedDraft?: GraphDraft) {
   return render(<QueryClientProvider client={client}>
-    <GraphEditor workspaceId={workflow.workspaceId} workflow={workflow} agents={agents} />
+    <GraphEditor workspaceId={workflow.workspaceId} workflow={workflow} agents={agents} managedDraft={managedDraft} />
   </QueryClientProvider>)
 }
+
+it('disables managed Start until the backend reports a ready execution location', async () => {
+  const managedDraft: GraphDraft = {
+    id: 'draft-controls', workspaceId: workflow.workspaceId, workflowId: workflow.id,
+    revision: 1, publishedRevision: 1, baseWorkflowVersionId: 'workflow-controls-v1', graph: workflow,
+    stagedAgents: [], updatedByPrincipalId: 'principal-1', updatedAt: '2026-09-15T00:00:00.000Z',
+  }
+  client.setQueryData(queryKeys.managedWorkspace(workflow.workspaceId), {
+    workspace: { id: workflow.workspaceId, name: 'Workspace' }, revision: 1, archivedAt: null,
+    executionLocation: null, locationRevision: 0, locationValidation: { status: 'unconfigured' },
+  })
+  editor(managedDraft)
+  const start = screen.getByRole('button', { name: 'Start workflow' })
+  expect(start).toBeDisabled()
+  expect(start).toHaveAttribute('title', 'Set a valid workspace execution location first')
+
+  act(() => client.setQueryData(queryKeys.managedWorkspace(workflow.workspaceId), {
+    workspace: { id: workflow.workspaceId, name: 'Workspace' }, revision: 1, archivedAt: null,
+    executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' }, locationRevision: 1,
+    locationValidation: { status: 'ready', checkedAt: '2026-09-15T00:00:00.000Z' },
+  }))
+  await waitFor(() => expect(start).toBeEnabled())
+})
 
 it('locks Start after 202 while details are delayed or queued; unlocks only at completion', async () => {
   let resolveDetails!: (response: Response) => void

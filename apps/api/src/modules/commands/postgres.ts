@@ -30,15 +30,18 @@ export class PostgresCommandCoordinator {
     targetKey: string
     payload: unknown
     perform(client: pg.PoolClient): Promise<T>
+    /** Explicit compatibility boundary for historical receipts, never new commands. */
+    replayResult?(result: unknown): T
   }): Promise<{ value: T; replayed: boolean }> {
-    const client = await this.pool.connect()
     const inputHash = commandInputHash(input.payload)
+    const client = await this.pool.connect()
+    let releaseError: Error | undefined
     try {
       await client.query('begin')
       await client.query('select pg_advisory_xact_lock(hashtext($1))', [
         `command:${input.principal.id}:${input.operation}:${input.commandId}`,
       ])
-      const existing = await client.query<{ input_hash: string; target_key: string; result: T }>(
+      const existing = await client.query<{ input_hash: string; target_key: string; result: unknown }>(
         `select input_hash, target_key, result from management_command_receipts
          where principal_id = $1 and operation = $2 and command_id = $3`,
         [input.principal.id, input.operation, input.commandId],
@@ -48,8 +51,9 @@ export class PostgresCommandCoordinator {
         if (receipt.input_hash !== inputHash || receipt.target_key !== input.targetKey) {
           throw new DomainError('COMMAND_ID_CONFLICT', 'This command ID was already used with different input.', 409)
         }
+        const value = input.replayResult ? input.replayResult(receipt.result) : receipt.result as T
         await client.query('commit')
-        return { value: receipt.result, replayed: true }
+        return { value, replayed: true }
       }
 
       const value = await input.perform(client)
@@ -67,10 +71,28 @@ export class PostgresCommandCoordinator {
       await client.query('commit')
       return { value, replayed: false }
     } catch (error) {
-      await client.query('rollback')
+      try {
+        await client.query('rollback')
+      } catch (rollbackError) {
+        // A failed rollback leaves connection state unknown. Evict it, and
+        // preserve the command error rather than replacing it with cleanup.
+        releaseError = rollbackError instanceof Error ? rollbackError : new Error('Command rollback failed.')
+      }
+      if (!releaseError) {
+        // Reuse this now-idle client. Asking the pool for a second connection
+        // while retaining the first deadlocks a saturated pool.
+        await client.query(
+          `insert into management_audit (principal_id, source, action, target_key, outcome, details)
+           values ($1, $2, $3, $4, 'failed', $5::jsonb)`,
+          [input.principal.id, input.source, input.operation, input.targetKey, JSON.stringify({
+            commandId: input.commandId,
+            code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR',
+          })],
+        ).catch(() => undefined)
+      }
       throw error
     } finally {
-      client.release()
+      client.release(releaseError)
     }
   }
 
@@ -79,6 +101,21 @@ export class PostgresCommandCoordinator {
       `insert into management_audit (principal_id, source, action, target_key, outcome, details)
        values ($1, $2, $3, $4, 'denied', '{}'::jsonb)`,
       [principalId ?? null, source, action, targetKey],
+    )
+  }
+
+  async recordAudit(
+    principalId: string | undefined,
+    source: 'http' | 'mcp',
+    action: string,
+    targetKey: string,
+    outcome: 'succeeded' | 'failed',
+    details: Record<string, unknown> = {},
+  ): Promise<void> {
+    await this.pool.query(
+      `insert into management_audit (principal_id, source, action, target_key, outcome, details)
+       values ($1, $2, $3, $4, $5, $6::jsonb)`,
+      [principalId ?? null, source, action, targetKey, outcome, JSON.stringify(details)],
     )
   }
 }

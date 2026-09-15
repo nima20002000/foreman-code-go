@@ -7,6 +7,23 @@ export type Id = z.infer<typeof IdSchema>;
 export const TimestampSchema = z.string().datetime({ offset: true });
 export type Timestamp = z.infer<typeof TimestampSchema>;
 
+/** Runner-owned directory inherited by every workflow and Agent in a workspace. */
+export const ExecutionLocationSchema = z
+  .object({
+    runnerId: IdSchema,
+    rootPath: z.string().min(1).refine((value) => !value.includes("\0"), "rootPath cannot contain NUL"),
+  })
+  .strict();
+export type ExecutionLocation = z.infer<typeof ExecutionLocationSchema>;
+
+/** Immutable location accepted together with a new Run. */
+export const RunExecutionLocationSchema = ExecutionLocationSchema.extend({
+  locationRevision: z.number().int().nonnegative(),
+  /** Opaque runner-side identity used to detect replacement of the accepted directory. */
+  identityHash: z.string().startsWith("sha256:"),
+}).strict();
+export type RunExecutionLocation = z.infer<typeof RunExecutionLocationSchema>;
+
 const OptionalTimestampFields = {
   createdAt: TimestampSchema.optional(),
   updatedAt: TimestampSchema.optional(),
@@ -524,6 +541,10 @@ export const HarnessExecutionSchema = z
     attempt: z.number().int().positive(),
     parallelGroupId: IdSchema.optional(),
     nativeSessionId: IdSchema.optional(),
+    /** User project directory selected on the Run. Optional only for legacy history. */
+    workingDirectory: z.string().min(1).optional(),
+    /** GraphQL-owned attempt storage, always separate from workingDirectory. */
+    runtimeDirectory: z.string().min(1).optional(),
     input: z.json(),
     state: HarnessExecutionStateSchema,
     result: ExecutionResultSchema.optional(),
@@ -561,6 +582,10 @@ export const WorkflowRunSchema = z
     workspaceId: IdSchema,
     workflowId: IdSchema,
     workflowVersionId: IdSchema,
+    /** Accepted workspace location snapshot. Absent only on legacy history. */
+    executionLocation: RunExecutionLocationSchema.optional(),
+    /** Operator authority rechecked before queued and later node execution. */
+    authorizationPrincipalId: IdSchema.optional(),
     agentConfigurationVersionIds: z.record(IdSchema, IdSchema),
     executionCondition: ExecutionConditionSchema,
     executionState: RunExecutionStateSchema,
@@ -646,7 +671,9 @@ export const HarnessExecutionRequestSchema = z
     runId: IdSchema,
     workspaceId: IdSchema,
     workflowNodeId: IdSchema,
-    workingDirectory: z.string().trim().min(1),
+    // Validated filesystem paths must cross this boundary without trimming.
+    workingDirectory: ExecutionLocationSchema.shape.rootPath,
+    runtimeDirectory: ExecutionLocationSchema.shape.rootPath,
     initialPrompt: z.string().trim().min(1).optional(),
     configuration: AgentConfigurationVersionSchema,
     input: z.json(),
@@ -818,6 +845,7 @@ export const CreateRunRequestSchema = z
   .object({
     workspaceId: IdSchema,
     workflowId: IdSchema,
+    expectedLocationRevision: z.number().int().nonnegative(),
     input: RunInputSchema,
   })
   .strict();

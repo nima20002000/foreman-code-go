@@ -29,6 +29,7 @@ describe('native harness process boundary', () => {
       workspaceId: 'workspace-1',
       workflowNodeId: 'node-b',
       workingDirectory: '/tmp/graphql-run',
+      runtimeDirectory: '/tmp/graphql-runtime',
       initialPrompt: 'Write a direct answer for the operator.',
       configuration: {
         id: 'config-b',

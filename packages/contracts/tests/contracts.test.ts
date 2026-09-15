@@ -279,6 +279,12 @@ describe("neutral product contracts", () => {
       workspaceId: "workspace-1",
       workflowId: "workflow-1",
       workflowVersionId: "workflow-1-v2",
+      executionLocation: {
+        runnerId: "runner-local",
+        rootPath: "/srv/project",
+        locationRevision: 4,
+        identityHash: `sha256:${"a".repeat(64)}`,
+      },
       agentConfigurationVersionIds: {
         "agent-1": "agent-config-1-v3",
         "agent-2": "agent-config-2-v1",
@@ -305,6 +311,7 @@ describe("neutral product contracts", () => {
         workspaceId: run.workspaceId,
         workflowNodeId: "node-1",
         workingDirectory: "/tmp/graphql-run",
+        runtimeDirectory: "/tmp/graphql-runtime/run-1/node-1/attempt-1",
         configuration: {
           id: "agent-config-1-v3",
           workspaceId: "workspace-1",

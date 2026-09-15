@@ -26,6 +26,8 @@ import {
   WorkspaceGetInputSchema,
   WorkspaceListInputSchema,
   WorkspaceUpdateInputSchema,
+  WorkspaceLocationSetInputSchema,
+  WorkspaceLocationValidateInputSchema,
 } from '@graphql/contracts/management'
 import { requirePrincipal } from '../modules/access/http.js'
 import type { OperatorServices } from '../mcp/operator/types.js'
@@ -71,6 +73,10 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
     services.workspaces.update(requirePrincipal(request), 'http', WorkspaceUpdateInputSchema.parse(routeInput(request.params, request.body))))
   app.delete<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId', async (request) =>
     services.workspaces.archive(requirePrincipal(request), 'http', WorkspaceArchiveInputSchema.parse(routeInput(request.params, request.body))))
+  app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/location/validate', async (request) =>
+    services.locations.validate(requirePrincipal(request), 'http', WorkspaceLocationValidateInputSchema.parse(routeInput(request.params, request.body))))
+  app.put<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/location', async (request) =>
+    services.locations.set(requirePrincipal(request), 'http', WorkspaceLocationSetInputSchema.parse(routeInput(request.params, request.body))))
 
   app.get<{ Params: Params; Querystring: Query }>('/api/management/workspaces/:workspaceId/workflows', async (request) =>
     services.workflows.list(requirePrincipal(request), WorkflowListInputSchema.parse({ ...request.params, ...page(request.query) })))

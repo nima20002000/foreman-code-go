@@ -24,11 +24,13 @@ import type { RunRepository, RunStateUpdate } from './port.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { RunOwnership } from './ownership.js'
 import { validateExecutableTopology } from './topology.js'
+import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
 
 export class PostgresRunRepository implements RunRepository {
   constructor(
     private readonly pool: pg.Pool,
     private readonly workflows: PostgresWorkflowRepository,
+    private readonly locations: WorkspaceLocationService,
   ) {}
 
   acquireOwnership(runId: string, onLost: () => void): Promise<RunOwnership | undefined> {
@@ -77,40 +79,48 @@ export class PostgresRunRepository implements RunRepository {
     }
   }
 
-  async createForWorkflow(workspaceId: string, workflowId: string, input: RunInput): Promise<WorkflowRun> {
+  async createForWorkflow(
+    workspaceId: string,
+    workflowId: string,
+    input: RunInput,
+    expectedLocationRevision: number,
+  ): Promise<WorkflowRun> {
     const version = await this.workflows.getCurrentVersion(workspaceId, workflowId)
     if (!version) {
       throw new DomainError('WORKFLOW_NOT_FOUND', `Workflow '${workflowId}' was not found.`, 404)
     }
     validateExecutableTopology(version)
     await this.workflows.assertCurrentConfigurations(version)
-    const now = new Date().toISOString()
-    const run = WorkflowRunSchema.parse({
-      id: `run-${randomUUID()}`,
-      workspaceId,
-      workflowId,
-      workflowVersionId: version.id,
-      agentConfigurationVersionIds: version.agentConfigurationVersionIds,
-      executionCondition: version.definition.executionCondition,
-      executionState: 'queued',
-      outcome: 'pending',
-      input,
-      createdAt: now,
-    })
     // Recovery must not launch a run whose creation transaction failed.
     const client = await this.pool.connect()
     try {
       await client.query('begin')
+      await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${workspaceId}`])
+      const configurations = await Promise.all(Object.values(version.agentConfigurationVersionIds).map(async (id) => {
+        const configuration = await this.workflows.getAgentConfiguration(id)
+        if (!configuration) throw new DomainError('AGENT_CONFIGURATION_NOT_FOUND', `Configuration '${id}' was not found.`, 409)
+        return configuration
+      }))
+      const executionLocation = await this.locations.snapshot(
+        client, workspaceId, expectedLocationRevision, requiredLocationAccess(configurations),
+      )
+      const run = WorkflowRunSchema.parse({
+        id: `run-${randomUUID()}`, workspaceId, workflowId, workflowVersionId: version.id,
+        agentConfigurationVersionIds: version.agentConfigurationVersionIds,
+        executionLocation,
+        executionCondition: version.definition.executionCondition, executionState: 'queued', outcome: 'pending',
+        input, createdAt: new Date().toISOString(),
+      })
       await this.create(run, client)
       await this.recordActivity(run.id, 'backend', 'run_state_changed', { executionState: 'queued' }, undefined, client)
       await client.query('commit')
+      return run
     } catch (error) {
       await client.query('rollback')
       throw error
     } finally {
       client.release()
     }
-    return run
   }
 
   async get(runId: string, owner?: RunOwnership): Promise<WorkflowRun | undefined> {
@@ -130,9 +140,12 @@ export class PostgresRunRepository implements RunRepository {
   async create(run: WorkflowRun, client?: pg.ClientBase): Promise<void> {
     const parsed = WorkflowRunSchema.parse(run)
     await (client ?? this.pool).query(
-      `insert into runs (id, workspace_id, workflow_id, workflow_version_id, execution_state, record)
-       values ($1, $2, $3, $4, $5, $6::jsonb)`,
-      [parsed.id, parsed.workspaceId, parsed.workflowId, parsed.workflowVersionId, parsed.executionState, JSON.stringify(parsed)],
+      `insert into runs (id, workspace_id, workflow_id, workflow_version_id, execution_state, record,
+         runner_id, working_directory, location_revision)
+       values ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)`,
+      [parsed.id, parsed.workspaceId, parsed.workflowId, parsed.workflowVersionId, parsed.executionState, JSON.stringify(parsed),
+        parsed.executionLocation?.runnerId ?? null, parsed.executionLocation?.rootPath ?? null,
+        parsed.executionLocation?.locationRevision ?? null],
     )
   }
 

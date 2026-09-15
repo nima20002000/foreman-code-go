@@ -9,6 +9,8 @@ import { buildApp } from '../src/app.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { createDatabase } from '../src/infrastructure/database.js'
 import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
+import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
+import { WorkflowRunSchema, WorkspaceSchema } from '@graphql/contracts'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 
 const connectionString =
@@ -25,6 +27,58 @@ function adminPool() {
 }
 
 describe('PostgreSQL infrastructure', () => {
+  it('migrates legacy workspaces and run history without inventing execution locations', async () => {
+    const schema = testSchema()
+    const admin = adminPool()
+    await admin.query(`create schema "${schema}"`)
+    const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}`, connectionTimeoutMillis: 5000 })
+    const workspace = WorkspaceSchema.parse({ id: 'legacy-workspace', name: 'Legacy' })
+    const run = WorkflowRunSchema.parse({
+      id: 'legacy-run', workspaceId: workspace.id, workflowId: 'legacy-workflow', workflowVersionId: 'legacy-version',
+      agentConfigurationVersionIds: {}, executionCondition: { kind: 'manual' }, executionState: 'interrupted',
+      outcome: 'pending', input: {}, createdAt: '2026-01-01T00:00:00.000Z',
+    })
+    try {
+      await pool.query(`
+        create table application_migrations (version integer primary key, applied_at timestamptz not null default now());
+        insert into application_migrations (version) values (1), (2), (3);
+        create table workspaces (
+          id text primary key, record jsonb not null, created_at timestamptz not null default now(),
+          revision bigint not null default 1, archived_at timestamptz
+        );
+        create table runs (
+          id text primary key, workspace_id text not null, workflow_id text not null, workflow_version_id text not null,
+          execution_state text not null, record jsonb not null, created_at timestamptz not null default now()
+        );
+      `)
+      await pool.query('insert into workspaces (id, record) values ($1, $2::jsonb)', [workspace.id, JSON.stringify(workspace)])
+      await pool.query(
+        `insert into runs (id, workspace_id, workflow_id, workflow_version_id, execution_state, record)
+         values ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [run.id, run.workspaceId, run.workflowId, run.workflowVersionId, run.executionState, JSON.stringify(run)],
+      )
+
+      await applyApplicationMigrations(pool)
+
+      const migratedWorkspace = await pool.query<{
+        execution_location: unknown | null; execution_location_identity: unknown | null; location_revision: string; record: unknown
+      }>('select execution_location, execution_location_identity, location_revision, record from workspaces where id = $1', [workspace.id])
+      expect(migratedWorkspace.rows[0]).toMatchObject({
+        execution_location: null, execution_location_identity: null, location_revision: '0',
+      })
+      expect(WorkspaceSchema.parse(migratedWorkspace.rows[0]!.record)).toEqual(workspace)
+      const migratedRun = await pool.query<{ runner_id: string | null; working_directory: string | null; location_revision: string | null; record: unknown }>(
+        'select runner_id, working_directory, location_revision, record from runs where id = $1', [run.id],
+      )
+      expect(migratedRun.rows[0]).toMatchObject({ runner_id: null, working_directory: null, location_revision: null })
+      expect(WorkflowRunSchema.parse(migratedRun.rows[0]!.record)).toEqual(run)
+    } finally {
+      await pool.end()
+      await admin.query(`drop schema if exists "${schema}" cascade`)
+      await admin.end()
+    }
+  })
+
   it('connects and keeps a LangGraph checkpoint after the saver is reopened', async () => {
     const database = createDatabase({
       connectionString,

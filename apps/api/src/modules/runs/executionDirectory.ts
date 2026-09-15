@@ -19,14 +19,23 @@ function isStrictDescendant(parent: string, child: string): boolean {
 }
 
 /** Lexical run-directory isolation; this is not a native-process sandbox. */
-export function resolveExecutionDirectory(workspaceRoot: string, runId: string, nodeId: string, attempt: number): string {
+export function resolveExecutionDirectory(
+  workspaceRoot: string,
+  runId: string,
+  nodeId: string,
+  attempt: number,
+  workspaceId?: string,
+): string {
   if (!Number.isSafeInteger(attempt) || attempt < 1) {
     throw new DomainError('HARNESS_WORKSPACE_INVALID', 'The execution attempt must be a positive safe integer.', 400)
   }
   const root = resolve(workspaceRoot)
-  const runDirectory = resolve(root, segment(runId))
+  const workspaceDirectory = workspaceId ? resolve(root, segment(workspaceId)) : root
+  const runDirectory = resolve(workspaceDirectory, segment(runId))
   const directory = resolve(runDirectory, segment(nodeId), `attempt-${attempt}`)
-  if (!isStrictDescendant(root, runDirectory) || !isStrictDescendant(runDirectory, directory)) {
+  if ((workspaceId && !isStrictDescendant(root, workspaceDirectory))
+    || !isStrictDescendant(workspaceDirectory, runDirectory)
+    || !isStrictDescendant(runDirectory, directory)) {
     throw new DomainError('HARNESS_WORKSPACE_INVALID', 'Harness workspace escaped its run directory.', 500)
   }
   return directory

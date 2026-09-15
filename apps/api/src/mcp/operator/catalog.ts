@@ -10,6 +10,8 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'workspace_create', action: 'workspaces:create' },
   { name: 'workspace_update', action: 'workspaces:update' },
   { name: 'workspace_archive', action: 'workspaces:archive' },
+  { name: 'workspace_location_validate', action: 'workspace_locations:validate' },
+  { name: 'workspace_location_set', action: 'workspace_locations:update' },
   { name: 'workflow_list', action: 'workflows:read' },
   { name: 'workflow_get', action: 'workflows:read' },
   { name: 'workflow_create', action: 'workflows:create' },

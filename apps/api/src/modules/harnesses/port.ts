@@ -12,6 +12,8 @@ export interface NativeEventInput {
 
 export interface HarnessExecutionCallbacks {
   signal: AbortSignal
+  /** Runner consistency check after qualification, immediately before agent spawn. */
+  beforeSpawn?(): Promise<void>
   onSession(nativeSessionId: string): Promise<void>
   onEvent(event: NativeEventInput): Promise<void>
 }

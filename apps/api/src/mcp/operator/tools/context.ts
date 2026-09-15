@@ -16,7 +16,8 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'operator_get_capabilities', async () => ({
     endpoint: '/mcp/operator', audience: 'operator', protocol: '2026-07-28',
-    tools: OPERATOR_TOOL_ACTIONS.filter((item) => hasAction(context.principal, item.action)).map((item) => item.name),
+    tools: OPERATOR_TOOL_ACTIONS.filter((item) => hasAction(context.principal, item.action)
+      && (item.name !== 'run_start' || hasAction(context.principal, 'workspace_locations:read'))).map((item) => item.name),
     workerToolsMcp: { implemented: false, endpoint: '/mcp/tools' },
   })))
 }

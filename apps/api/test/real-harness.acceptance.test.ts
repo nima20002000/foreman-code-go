@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
+import { mkdtemp, realpath, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   AgentSchema,
   GetRunResponseSchema,
@@ -17,6 +20,8 @@ import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 
 const connectionString =
   process.env.TEST_DATABASE_URL
@@ -36,11 +41,17 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
     const nodeIds = [`acceptance-node-researcher-${suffix}`, `acceptance-node-developer-${suffix}`, `acceptance-node-reviewer-${suffix}`]
     let app: ReturnType<typeof buildApp> | undefined
     let runId: string | undefined
+    let projectDirectory: string | undefined
+    let runtimeDirectory: string | undefined
     try {
       await database.migrate()
       await checkpoints.setup()
+      projectDirectory = await mkdtemp(join(tmpdir(), 'graphql-acceptance-project-'))
+      runtimeDirectory = await mkdtemp(join(tmpdir(), 'graphql-acceptance-runtime-'))
+      const commands = new PostgresCommandCoordinator(database.pool)
+      const locations = new WorkspaceLocationService(database.pool, commands, runtimeDirectory)
       const workflows = new PostgresWorkflowRepository(database.pool)
-      const runs = new PostgresRunRepository(database.pool, workflows)
+      const runs = new PostgresRunRepository(database.pool, workflows, locations)
       const workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
       const settings = new PostgresSettingsRepository(database.pool)
       const engine = new LangGraphWorkflowEngine(
@@ -48,8 +59,9 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
         workflows,
         new LocalHarnessResolver('codex', 'opencode'),
         checkpoints.saver,
-        '/tmp/graphql-harness-acceptance',
+        runtimeDirectory,
         300_000,
+        locations,
       )
       app = buildApp({
         readiness: { database, checkpoints },
@@ -58,6 +70,13 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
 
       const workspace = WorkspaceSchema.parse({ id: workspaceId, name: 'Real harness acceptance' })
       await database.pool.query('insert into workspaces (id, record) values ($1, $2::jsonb)', [workspaceId, JSON.stringify(workspace)])
+      const projectDetails = await stat(projectDirectory)
+      await database.pool.query(
+        `update workspaces set execution_location = $2::jsonb, execution_location_identity = $3::jsonb,
+           location_revision = 1 where id = $1`,
+        [workspaceId, JSON.stringify({ runnerId: 'runner-local', rootPath: await realpath(projectDirectory) }),
+          JSON.stringify({ device: String(projectDetails.dev), inode: String(projectDetails.ino) })],
+      )
       const agents = [
         AgentSchema.parse({
           id: agentIds[0], name: 'Researcher', harness: 'codex', model: 'gpt-5.6-luna', effort: 'low',
@@ -100,7 +119,7 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
       const startResponse = await app.inject({
         method: 'POST',
         url: `/api/workspaces/${workspaceId}/workflows/${workflow.id}/runs`,
-        payload: { workspaceId, workflowId: workflow.id, input: {} },
+        payload: { workspaceId, workflowId: workflow.id, expectedLocationRevision: 1, input: {} },
       })
       expect(startResponse.statusCode).toBe(202)
       runId = startResponse.json().run.id as string
@@ -164,6 +183,8 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
       await database.pool.query('delete from agents where workspace_id = $1', [workspaceId]).catch(() => undefined)
       await database.pool.query('delete from workspaces where id = $1', [workspaceId]).catch(() => undefined)
       await Promise.allSettled([checkpoints.close(), database.close()])
+      if (runtimeDirectory) await rm(runtimeDirectory, { recursive: true, force: true })
+      if (projectDirectory) await rm(projectDirectory, { recursive: true, force: true })
     }
   }, 360_000)
 })

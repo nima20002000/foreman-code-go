@@ -5,6 +5,8 @@ import {
   ManagementPrincipalSchema,
   RunStartInputSchema,
   WorkspaceUpdateInputSchema,
+  WorkspaceLocationSetInputSchema,
+  WorkspaceLocationValidateInputSchema,
 } from "../src/management/index.js";
 
 describe("management contracts", () => {
@@ -39,6 +41,24 @@ describe("management contracts", () => {
   it("requires an explicit saved workflow version when starting", () => {
     expect(() => RunStartInputSchema.parse({
       workspaceId: "workspace-1", workflowId: "workflow-1", commandId: "command-123", input: {},
+    })).toThrow();
+  });
+
+  it("keeps workspace metadata writes separate from privileged location commands", () => {
+    expect(() => WorkspaceUpdateInputSchema.parse({
+      workspaceId: "workspace-1", commandId: "command-123", expectedRevision: 1,
+      rootPath: "/tmp/project",
+    })).toThrow();
+    expect(WorkspaceLocationValidateInputSchema.parse({
+      workspaceId: "workspace-1", runnerId: "runner-local", rootPath: "/tmp/project",
+    })).toMatchObject({ accessMode: "read-only" });
+    expect(WorkspaceLocationSetInputSchema.parse({
+      workspaceId: "workspace-1", runnerId: "runner-local", rootPath: "/tmp/project",
+      expectedLocationRevision: 2, commandId: "command-123",
+    })).toMatchObject({ expectedLocationRevision: 2 });
+    expect(() => WorkspaceLocationSetInputSchema.parse({
+      workspaceId: "workspace-1", runnerId: "runner-local", rootPath: "/tmp/project",
+      expectedRevision: 2, commandId: "command-123",
     })).toThrow();
   });
 

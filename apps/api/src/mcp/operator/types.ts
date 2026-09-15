@@ -7,9 +7,11 @@ import type { RunManagementService } from '../../modules/runs/management.js'
 import type { WorkflowManagementService } from '../../modules/workflows/management.js'
 import type { WorkspaceManagementService } from '../../modules/workspaces/management.js'
 import type { PostgresCommandCoordinator } from '../../modules/commands/postgres.js'
+import type { WorkspaceLocationService } from '../../modules/workspaces/location.js'
 
 export interface OperatorServices {
   workspaces: WorkspaceManagementService
+  locations: WorkspaceLocationService
   workflows: WorkflowManagementService
   agents: AgentManagementService
   drafts: GraphDraftService

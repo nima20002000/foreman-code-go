@@ -20,7 +20,7 @@ import type {
   WorkspaceDetailsResponse,
 } from '@graphql/contracts'
 import type {
-  WorkspaceArchiveInput, WorkspaceCreateInput, WorkspaceUpdateInput,
+  ManagedWorkspace, WorkspaceArchiveInput, WorkspaceCreateInput, WorkspaceUpdateInput,
   WorkflowArchiveInput, WorkflowCreateInput, WorkflowUpdateInput,
 } from '@graphql/contracts/management'
 
@@ -41,12 +41,14 @@ import {
   startWorkflowRun,
   sendUserMessage,
   listManagedWorkspaces, createManagedWorkspace, updateManagedWorkspace, archiveManagedWorkspace,
+  getManagedWorkspace, validateWorkspaceLocation, setWorkspaceLocation,
   listManagedWorkflows, createManagedWorkflow, updateManagedWorkflow, archiveManagedWorkflow,
   listManagedAgents, getManagedGraphContext, openManagedGraphDraft, applyManagedGraphDraft, saveManagedGraphDraft, discardManagedGraphDraft,
   startManagedRun, stopManagedRun,
   getManagedHarnessCatalog, updateManagedHarnessDefaults,
   type RequestOptions,
 } from './client'
+import { keepLatestWorkspaceLocation, locationMutationKey, shareManagedWorkspace } from './workspaceLocationCache'
 
 /**
  * Query keys deliberately carry every scope identity used by the endpoint.
@@ -71,6 +73,7 @@ export const queryKeys = {
   resources: (workspaceId: string) => ['workbench', 'workspace', workspaceId, 'resources'] as const,
   harnessDefaults: ['workbench', 'settings', 'harness-defaults'] as const,
   managedWorkspaces: ['workbench', 'management', 'workspaces'] as const,
+  managedWorkspace: (workspaceId: string) => ['workbench', 'management', 'workspace', workspaceId] as const,
   managedWorkflows: (workspaceId: string) => ['workbench', 'management', 'workspace', workspaceId, 'workflows'] as const,
   managedAgents: (workspaceId: string) => ['workbench', 'management', 'workspace', workspaceId, 'agents'] as const,
   managedDraft: (workspaceId: string, workflowId: string) => ['workbench', 'management', 'workspace', workspaceId, 'workflow', workflowId, 'draft'] as const,
@@ -96,6 +99,65 @@ export function useWorkspaceDetailsQuery(
 
 export function useManagedWorkspacesQuery(enabled = true) {
   return useQuery({ enabled, queryKey: queryKeys.managedWorkspaces, queryFn: ({ signal }) => listManagedWorkspaces({ signal }) })
+}
+
+export function useManagedWorkspaceQuery(workspaceId: string, enabled = true) {
+  return useQuery({
+    enabled,
+    queryKey: queryKeys.managedWorkspace(workspaceId),
+    queryFn: ({ signal }) => getManagedWorkspace(workspaceId, { signal }),
+    structuralSharing: shareManagedWorkspace,
+    refetchInterval: enabled ? 3_000 : false,
+  })
+}
+
+export function useValidateWorkspaceLocationMutation(workspaceId = 'unscoped') {
+  return useMutation({
+    mutationKey: [...locationMutationKey(workspaceId), 'validate'],
+    mutationFn: (input: Parameters<typeof validateWorkspaceLocation>[0]) => validateWorkspaceLocation(input),
+  })
+}
+
+export function useSetWorkspaceLocationMutation(workspaceId = 'unscoped') {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationKey: [...locationMutationKey(workspaceId), 'save'],
+    mutationFn: (input: Parameters<typeof setWorkspaceLocation>[0]) => setWorkspaceLocation(input),
+    onMutate: async (input) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.managedWorkspace(input.workspaceId), exact: true })
+    },
+    onSuccess: async (result, input) => {
+      if (result.value.workspaceId !== input.workspaceId) throw new Error('The saved location belongs to another workspace.')
+      const queryKey = queryKeys.managedWorkspace(input.workspaceId)
+      // A new poll may have started while the mutation was pending.
+      await queryClient.cancelQueries({ queryKey, exact: true })
+      queryClient.setQueryData<ManagedWorkspace>(queryKey, (current) => current
+        && current.workspace.id === input.workspaceId
+        && current.locationValidation.status !== 'restricted' ? keepLatestWorkspaceLocation(current, {
+          ...current,
+          executionLocation: result.value.executionLocation,
+          locationRevision: result.value.locationRevision,
+          locationValidation: { status: 'ready', checkedAt: result.value.validation.checkedAt },
+        }) : current)
+    },
+  })
+}
+
+export function useReloadWorkspaceLocationMutation(workspaceId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationKey: [...locationMutationKey(workspaceId), 'reload'],
+    mutationFn: async (input: { workspaceId: string }) => {
+      const queryKey = queryKeys.managedWorkspace(input.workspaceId)
+      await queryClient.cancelQueries({ queryKey, exact: true })
+      return queryClient.fetchQuery({
+        queryKey,
+        queryFn: ({ signal }) => getManagedWorkspace(input.workspaceId, { signal }),
+        staleTime: 0,
+        structuralSharing: shareManagedWorkspace,
+      })
+    },
+  })
 }
 
 export function useCreateManagedWorkspaceMutation() {

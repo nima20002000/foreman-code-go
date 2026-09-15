@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react'
 
+import { WorkspaceExecutionLocationSetup } from '../features/settings/WorkspaceExecutionLocationSetup'
+
 import {
   WorkspaceShell,
   type WorkspaceShellSlots,
@@ -96,6 +98,7 @@ export function WorkspaceRouteView({
   stateMessage,
   slots,
 }: WorkspaceRouteViewProps) {
+  const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false')
   const resolvedSlots: WorkspaceShellSlots = {
     workspace: slots?.workspace ?? <DefaultWorkspaceSlot workspaceId={workspaceId} />,
     graph:
@@ -107,6 +110,14 @@ export function WorkspaceRouteView({
           stateMessage={stateMessage}
         />
       ),
+  }
+
+  if (realMode) {
+    resolvedSlots.graph = (
+      <WorkspaceExecutionLocationSetup workspaceId={workspaceId} enabled>
+        {resolvedSlots.graph}
+      </WorkspaceExecutionLocationSetup>
+    )
   }
 
   return (

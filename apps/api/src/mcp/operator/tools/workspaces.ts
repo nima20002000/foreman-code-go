@@ -4,6 +4,8 @@ import {
   WorkspaceArchiveInputSchema, WorkspaceCreateInputSchema, WorkspaceGetInputSchema,
   WorkspaceListInputSchema, WorkspaceUpdateInputSchema,
   ManagedWorkspaceCommandResultSchema, ManagedWorkspacePageSchema, ManagedWorkspaceSchema,
+  WorkspaceLocationSetInputSchema, WorkspaceLocationSetResultSchema,
+  WorkspaceLocationValidateInputSchema, WorkspaceLocationValidationSchema,
 } from '@graphql/contracts/management'
 import { hasAction } from '../../../modules/access/policy.js'
 import { invokeOperatorTool } from '../invoke.js'
@@ -37,4 +39,16 @@ export function registerWorkspaceTools(server: McpServer, context: OperatorReque
     outputSchema: ManagedWorkspaceCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workspace_archive', () => context.services.workspaces.archive(context.principal, 'mcp', input)))
+  if (hasAction(context.principal, 'workspace_locations:validate')) server.registerTool('workspace_location_validate', {
+    description: 'Validate an existing runner-owned directory without changing it or starting a harness.',
+    inputSchema: WorkspaceLocationValidateInputSchema,
+    outputSchema: WorkspaceLocationValidationSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async (input) => invokeOperatorTool(context, 'workspace_location_validate', () => context.services.locations.validate(context.principal, 'mcp', input)))
+  if (hasAction(context.principal, 'workspace_locations:update')) server.registerTool('workspace_location_set', {
+    description: 'Revision-check and save a validated canonical workspace execution location.',
+    inputSchema: WorkspaceLocationSetInputSchema,
+    outputSchema: WorkspaceLocationSetResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async (input) => invokeOperatorTool(context, 'workspace_location_set', () => context.services.locations.set(context.principal, 'mcp', input)))
 }

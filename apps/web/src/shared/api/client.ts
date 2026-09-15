@@ -62,6 +62,7 @@ import {
 } from './sessionBoundary'
 import {
   ManagedWorkspaceCommandResultSchema,
+  ManagedWorkspaceSchema,
   ManagedWorkspacePageSchema,
   ManagedWorkflowCommandResultSchema,
   ManagedWorkflowPageSchema,
@@ -84,12 +85,19 @@ import {
   WorkspaceArchiveInputSchema,
   WorkspaceCreateInputSchema,
   WorkspaceUpdateInputSchema,
+  WorkspaceGetInputSchema,
+  WorkspaceLocationSetInputSchema,
+  WorkspaceLocationSetResultSchema,
+  WorkspaceLocationValidateInputSchema,
+  WorkspaceLocationValidationSchema,
   WorkflowArchiveInputSchema,
   WorkflowCreateInputSchema,
   WorkflowUpdateInputSchema,
   type WorkspaceArchiveInput,
   type WorkspaceCreateInput,
   type WorkspaceUpdateInput,
+  type WorkspaceLocationSetInput,
+  type WorkspaceLocationValidateInput,
   type WorkflowArchiveInput,
   type WorkflowCreateInput,
   type WorkflowUpdateInput,
@@ -264,6 +272,29 @@ export class ApiClient {
     return collectManagementPages((cursor) => this.request(
       managementPageUrl('/api/management/workspaces', cursor), ManagedWorkspacePageSchema, options,
     ), options?.signal)
+  }
+
+  getManagedWorkspace(workspaceId: string, options?: RequestOptions) {
+    const request = parseRequest(WorkspaceGetInputSchema, { workspaceId })
+    return this.request(`/api/management/workspaces/${toPath(request.workspaceId)}`, ManagedWorkspaceSchema, options)
+  }
+
+  validateWorkspaceLocation(input: WorkspaceLocationValidateInput, options?: RequestOptions) {
+    const request = parseRequest(WorkspaceLocationValidateInputSchema, input)
+    return this.request(
+      `/api/management/workspaces/${toPath(request.workspaceId)}/location/validate`,
+      WorkspaceLocationValidationSchema,
+      { ...options, method: 'POST', body: request },
+    )
+  }
+
+  setWorkspaceLocation(input: WorkspaceLocationSetInput, options?: RequestOptions) {
+    const request = parseRequest(WorkspaceLocationSetInputSchema, input)
+    return this.request(
+      `/api/management/workspaces/${toPath(request.workspaceId)}/location`,
+      WorkspaceLocationSetResultSchema,
+      { ...options, method: 'PUT', body: request },
+    )
   }
 
   createManagedWorkspace(input: WorkspaceCreateInput, options?: RequestOptions) {
@@ -563,6 +594,9 @@ export const createUserMessage = apiClient.createUserMessage.bind(apiClient)
 export const listVisibleResources = apiClient.listVisibleResources.bind(apiClient)
 export const enrollOperator = apiClient.enrollOperator.bind(apiClient)
 export const listManagedWorkspaces = apiClient.listManagedWorkspaces.bind(apiClient)
+export const getManagedWorkspace = apiClient.getManagedWorkspace.bind(apiClient)
+export const validateWorkspaceLocation = apiClient.validateWorkspaceLocation.bind(apiClient)
+export const setWorkspaceLocation = apiClient.setWorkspaceLocation.bind(apiClient)
 export const createManagedWorkspace = apiClient.createManagedWorkspace.bind(apiClient)
 export const updateManagedWorkspace = apiClient.updateManagedWorkspace.bind(apiClient)
 export const archiveManagedWorkspace = apiClient.archiveManagedWorkspace.bind(apiClient)

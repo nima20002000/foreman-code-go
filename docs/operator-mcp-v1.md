@@ -13,7 +13,7 @@ cp apps/api/.env.example apps/api/.env
 corepack pnpm dev:api
 ```
 
-API startup applies the application migrations, including principals, command receipts, management audit, revisions, archive state, and durable graph drafts. Existing workspace, workflow, agent configuration, run, execution, and activity records are retained.
+API startup applies the application migrations, including principals, command receipts, management audit, revisions, archive state, durable graph drafts, and workspace execution locations. Existing workspace, workflow, agent configuration, run, execution, and activity records are retained. Existing workspaces migrate with no configured execution location, and historical runs do not receive invented paths.
 
 The API remains loopback-bound by default. Operator HTTP and MCP requests validate Host and Origin. Public deployment and OAuth interoperability are out of scope for this local credential mode.
 
@@ -78,20 +78,30 @@ opencode run --pure --model opencode-go/deepseek-v4.1-flash \
 
 - Context: `operator_get_capabilities`
 - Harnesses: `harness_list`, `harness_get`, `harness_defaults_update`
-- Workspaces: `workspace_list`, `workspace_get`, `workspace_create`, `workspace_update`, `workspace_archive`
+- Workspaces: `workspace_list`, `workspace_get`, `workspace_create`, `workspace_update`, `workspace_archive`, `workspace_location_validate`, `workspace_location_set`
 - Workflows: `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_archive`
 - Agents: `agent_list`, `agent_get`
 - Graph: `graph_draft_open`, `graph_draft_get`, `graph_draft_apply`, `graph_validate`, `graph_save`, `graph_draft_discard`
 - Runs: `run_list`, `run_get`, `run_events_list`, `run_start`, `run_stop`
 
-Tool discovery is caller-specific. Every call rechecks the live credential, audience, action, and resource scope. MCP annotations are descriptive client hints and never authorization.
+Tool discovery is caller-specific. Every call rechecks the live credential, audience, action, and resource scope. MCP annotations are descriptive client hints and never authorization. Host-path inspection and updates use the separate `workspace_locations:read`, `workspace_locations:validate`, and `workspace_locations:update` grants; ordinary workspace read/rename authority does not grant them.
 
-`graph_draft_apply` accepts only `agent.add`, `agent.rename`, `agent.configure`, `agent.clone`, `node.rename`, `node.set_initial_prompt`, `node.move`, `node.remove`, `edge.connect`, `edge.disconnect`, and `workflow.set_execution_limits`. Batches and Save require the expected revision. Save creates an immutable workflow version but does not Start. Start requires that exact current saved version and returns a durable Run ID before asynchronous execution.
+## Workspace execution locations
+
+Each executable workspace owns `{ runnerId, rootPath }` plus a location revision. Only the stable local runner ID `runner-local` is supported in this release. Validate and save an existing directory in Workspace Settings or with `workspace_location_validate` followed by `workspace_location_set`. Validation runs in the API process on the runner machine, resolves symlinks, stores the canonical destination, checks directory access, and never creates, moves, deletes, changes permissions on, or runs hooks inside the selected folder.
+
+New runs require the current location revision. Start atomically stores the exact saved workflow version, canonical runner directory, location revision, directory identity, and accepting authority with the Run. A settings change affects future runs only. Every node in an accepted run—including nodes launched later—uses that snapshot; a missing, replaced, inaccessible, or no-longer-authorized location fails explicitly without falling back to the API directory, home, or temporary storage.
+
+The selected project directory is the harness `workingDirectory`. GraphQL scratch data remains under `HARNESS_WORKSPACE_ROOT` as a distinct `runtimeDirectory` keyed by workspace, run, node, and attempt. Project and runtime roots may not contain one another. Cleanup and cancellation never delete the selected project directory.
+
+This establishes where native agents start; it is not a filesystem sandbox. Codex/OpenCode native permissions and future runner isolation remain separate controls. The Settings copy states this explicitly.
+
+`graph_draft_apply` accepts only `agent.add`, `agent.rename`, `agent.configure`, `agent.clone`, `node.rename`, `node.set_initial_prompt`, `node.move`, `node.remove`, `edge.connect`, `edge.disconnect`, and `workflow.set_execution_limits`. Batches and Save require the expected revision. Save creates an immutable workflow version but does not Start. Start requires that exact current saved version and the expected workspace location revision, and returns a durable Run ID before asynchronous execution.
 
 Archive retains versions, configurations, runs, results, and activity. Active work blocks archive; archive never silently cancels work. Stop reports `accepted`, `already_terminal`, or `not_owner`; an accepted request does not claim that the child process has already exited.
 
 ## Verification and limitations
 
-`corepack pnpm test:integration` uses the official SDK client against the real Fastify Streamable HTTP endpoint and PostgreSQL. It covers the complete discovered catalog, credential audience and scope isolation, command replay/conflicts, concurrent duplicate Start, batch rollback, explicit Save/Start, archive blocking, bad Origin, revocation, and legacy HTTP mutation-bypass prevention.
+`corepack pnpm test:integration` uses the official SDK client against the real Fastify Streamable HTTP endpoint and PostgreSQL. It covers the complete discovered catalog, credential audience and scope isolation, command replay/conflicts, concurrent duplicate Start, location validation and canonical persistence, stale location writes, HTTP/MCP parity, immutable Run locations, migration, batch rollback, explicit Save/Start, archive blocking, bad Origin, revocation, and legacy HTTP mutation-bypass prevention. Process fixtures—not model output—prove both adapters receive the accepted project CWD and separate runtime storage. `corepack pnpm test:acceptance` is the separately reported live Codex/OpenCode gate.
 
 The current local credential mechanism is not OAuth. Worker Tools MCP, board-agent credential delivery, remote/public access, a full Operator chat UI, memory, Files, Kanban, browser services, scheduling, and remote runners remain deferred. See [the access ADR](./adr/operator-and-worker-mcp-access.md).

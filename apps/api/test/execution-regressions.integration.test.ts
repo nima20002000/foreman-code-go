@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rename, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import type { HarnessExecutionRequest, WorkflowDefinition } from '@graphql/contracts'
+import { WorkflowRunSchema, type HarnessExecutionRequest, type WorkflowDefinition } from '@graphql/contracts'
 import pg from 'pg'
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
@@ -16,6 +16,8 @@ import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL
   ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
@@ -23,6 +25,7 @@ const workspaceId = 'workspace-1'
 const workflowId = 'workflow-content-pipeline'
 let schema: string
 let root: string
+let projectRoot: string
 let admin: pg.Pool
 let pool: pg.Pool
 let checkpoints: ReturnType<typeof createCheckpointStore>
@@ -30,11 +33,13 @@ let workflows: PostgresWorkflowRepository
 let runs: PostgresRunRepository
 let workspaces: PostgresWorkspaceRepository
 let definition: WorkflowDefinition
+let locations: WorkspaceLocationService
 const engines: LangGraphWorkflowEngine[] = []
 
 beforeEach(async () => {
   schema = `regression_${randomUUID().replaceAll('-', '')}`
   root = await mkdtemp(join(tmpdir(), 'graphql-engine-'))
+  projectRoot = await mkdtemp(join(tmpdir(), 'graphql-project-'))
   admin = new pg.Pool({ connectionString, connectionTimeoutMillis: 5_000 })
   await admin.query(`create schema "${schema}"`)
   pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}`, connectionTimeoutMillis: 5_000 })
@@ -43,11 +48,19 @@ beforeEach(async () => {
   checkpoints = createCheckpointStore(connectionString, `${schema}_checkpoints`)
   await checkpoints.setup()
   workflows = new PostgresWorkflowRepository(pool)
-  runs = new PostgresRunRepository(pool, workflows)
+  locations = new WorkspaceLocationService(pool, new PostgresCommandCoordinator(pool), root)
+  runs = new PostgresRunRepository(pool, workflows, locations)
   workspaces = new PostgresWorkspaceRepository(pool, workflows, runs)
   const saved = await workflows.get(workspaceId, workflowId)
   if (!saved) throw new Error('Missing seeded workflow')
   definition = saved
+  const rootDetails = await stat(projectRoot)
+  await pool.query(
+    `update workspaces set execution_location = $2::jsonb, execution_location_identity = $3::jsonb,
+       location_revision = 1 where id = $1`,
+    [workspaceId, JSON.stringify({ runnerId: 'runner-local', rootPath: await realpath(projectRoot) }),
+      JSON.stringify({ device: String(rootDetails.dev), inode: String(rootDetails.ino) })],
+  )
 }, 15_000)
 
 afterEach(async () => {
@@ -60,6 +73,7 @@ afterEach(async () => {
     await admin.end()
   }
   if (root) await rm(root, { recursive: true, force: true })
+  if (projectRoot) await rm(projectRoot, { recursive: true, force: true })
 })
 
 function engine(onExecute: (request: HarnessExecutionRequest) => Promise<void> = async () => undefined) {
@@ -76,13 +90,13 @@ function engine(onExecute: (request: HarnessExecutionRequest) => Promise<void> =
       return { outcome: 'succeeded', output: { text: request.workflowNodeId } }
     },
   }
-  const instance = new LangGraphWorkflowEngine(runs, workflows, { resolve: () => adapter }, checkpoints.saver, root, 10_000)
+  const instance = new LangGraphWorkflowEngine(runs, workflows, { resolve: () => adapter }, checkpoints.saver, root, 10_000, locations)
   engines.push(instance)
   return instance
 }
 
 it('recovers work persisted as queued before a previous API could dispatch it', async () => {
-  const run = await runs.createForWorkflow(workspaceId, workflowId, { marker: 'persisted' })
+  const run = await runs.createForWorkflow(workspaceId, workflowId, { marker: 'persisted' }, 1)
   const requests: HarnessExecutionRequest[] = []
   const restarted = engine(async (request) => { requests.push(request) })
   await restarted.reconcile()
@@ -90,10 +104,82 @@ it('recovers work persisted as queued before a previous API could dispatch it', 
   expect((await runs.get(run.id))?.outcome).toBe('succeeded')
   expect(requests).toHaveLength(3)
   expect(requests[0]?.input).toEqual({ marker: 'persisted' })
+  expect(requests.every((request) => request.workingDirectory === projectRoot)).toBe(true)
+  expect(new Set(requests.map((request) => request.runtimeDirectory)).size).toBe(3)
+  expect(requests.every((request) => request.runtimeDirectory.startsWith(`${root}/`))).toBe(true)
+  expect(requests.every((request) => request.runtimeDirectory !== request.workingDirectory)).toBe(true)
+})
+
+it('keeps one accepted project directory across later nodes after workspace settings change', async () => {
+  const replacement = await mkdtemp(join(tmpdir(), 'graphql-project-replacement-'))
+  try {
+    const run = await runs.createForWorkflow(workspaceId, workflowId, {}, 1)
+    const requests: HarnessExecutionRequest[] = []
+    const worker = engine(async (request) => {
+      requests.push(request)
+      if (requests.length !== 1) return
+      const replacementDetails = await stat(replacement)
+      await pool.query(
+        `update workspaces set execution_location = $2::jsonb, execution_location_identity = $3::jsonb,
+           location_revision = 2 where id = $1`,
+        [workspaceId, JSON.stringify({ runnerId: 'runner-local', rootPath: await realpath(replacement) }),
+          JSON.stringify({ device: String(replacementDetails.dev), inode: String(replacementDetails.ino) })],
+      )
+    })
+
+    await worker.start(run.id)
+
+    expect(requests).toHaveLength(3)
+    expect(requests.every((request) => request.workingDirectory === projectRoot)).toBe(true)
+    expect((await runs.get(run.id))?.executionLocation).toMatchObject({ rootPath: projectRoot, locationRevision: 1 })
+  } finally {
+    await rm(replacement, { recursive: true, force: true })
+  }
+})
+
+it('fails clearly when the accepted path is replaced before launch instead of retargeting', async () => {
+  const run = await runs.createForWorkflow(workspaceId, workflowId, {}, 1)
+  const original = `${projectRoot}-accepted`
+  await rename(projectRoot, original)
+  await mkdir(projectRoot)
+  const execute = vi.fn(async () => undefined)
+  try {
+    await engine(execute).start(run.id)
+    expect(execute).not.toHaveBeenCalled()
+    expect(await runs.get(run.id)).toMatchObject({
+      executionState: 'completed', outcome: 'failed',
+      result: { error: { code: 'WORKSPACE_LOCATION_CHANGED' } },
+    })
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true })
+    await rename(original, projectRoot)
+  }
+})
+
+it('rechecks revoked Operator authority before a queued Run launches', async () => {
+  const run = await runs.createForWorkflow(workspaceId, workflowId, {}, 1)
+  await pool.query(
+    `insert into management_principals (id, name, audience, token_hash, grants, expires_at, revoked_at)
+     values ($1, 'Revoked run owner', 'operator', $2, $3::jsonb, now() + interval '1 hour', now())`,
+    ['revoked-run-owner', `hash-${randomUUID()}`, JSON.stringify([{
+      actions: ['runs:start', 'workspace_locations:read'], scope: { workspaceIds: [workspaceId] },
+    }])],
+  )
+  const authorized = WorkflowRunSchema.parse({ ...run, authorizationPrincipalId: 'revoked-run-owner' })
+  await pool.query('update runs set record = $2::jsonb where id = $1', [run.id, JSON.stringify(authorized)])
+  const execute = vi.fn(async () => undefined)
+
+  await engine(execute).start(run.id)
+
+  expect(execute).not.toHaveBeenCalled()
+  expect(await runs.get(run.id)).toMatchObject({
+    executionState: 'completed', outcome: 'failed',
+    result: { error: { code: 'RUN_AUTHORIZATION_REVOKED' } },
+  })
 })
 
 it('does not steal live ownership; a disconnected owner becomes interrupted and cancelable', async () => {
-  const run = await runs.createForWorkflow(workspaceId, workflowId, {})
+  const run = await runs.createForWorkflow(workspaceId, workflowId, {}, 1)
   const owner = await runs.acquireOwnership(run.id, () => undefined)
   if (!owner) throw new Error('Ownership acquisition failed')
   try {
@@ -121,6 +207,7 @@ it('does not steal live ownership; a disconnected owner becomes interrupted and 
     expect(attempts[0]?.nativeSessionId).toBe('existing-native-session')
     expect(await restarted.cancel(run.id)).toBe(true)
     expect((await runs.get(run.id))?.outcome).toBe('canceled')
+    await expect(stat(projectRoot)).resolves.toMatchObject({})
   } finally {
     await owner.release()
   }
@@ -135,9 +222,9 @@ it('persists edited agent settings immutably and launches the newly pinned confi
   })
   expect(saved.configurationVersionId).not.toBe(agent.configurationVersionId)
   expect(await workflows.getAgentConfiguration(agent.configurationVersionId)).toEqual(original)
-  await expect(runs.createForWorkflow(workspaceId, workflowId, {})).rejects.toMatchObject({ code: 'WORKFLOW_CONFIGURATION_STALE' })
+  await expect(runs.createForWorkflow(workspaceId, workflowId, {}, 1)).rejects.toMatchObject({ code: 'WORKFLOW_CONFIGURATION_STALE' })
   await workflows.save(workspaceId, definition)
-  const run = await runs.createForWorkflow(workspaceId, workflowId, {})
+  const run = await runs.createForWorkflow(workspaceId, workflowId, {}, 1)
   expect(run.agentConfigurationVersionIds[agent.id]).toBe(saved.configurationVersionId)
   const requests: HarnessExecutionRequest[] = []
   await engine(async (request) => { requests.push(request) }).start(run.id)
@@ -198,7 +285,7 @@ for (const maximum of [1, 2]) {
       peak = Math.max(peak, active)
       try { await delay(50) } finally { active -= 1 }
     })
-    const run = await runs.createForWorkflow(workspaceId, workflowId, {})
+    const run = await runs.createForWorkflow(workspaceId, workflowId, {}, 1)
     await worker.start(run.id)
     expect((await runs.get(run.id))?.outcome).toBe('succeeded')
     expect(peak).toBe(maximum)
@@ -217,7 +304,7 @@ it('persists editor-style fan-in as all-join and executes C once after both A an
     if (request.workflowNodeId === c.id) expect(completed).toEqual([a.id, b.id])
     completed.push(request.workflowNodeId)
   })
-  const run = await runs.createForWorkflow(workspaceId, workflowId, {})
+  const run = await runs.createForWorkflow(workspaceId, workflowId, {}, 1)
   await worker.start(run.id)
   expect(completed).toEqual([a.id, b.id, c.id])
   expect((await runs.get(run.id))?.outcome).toBe('succeeded')

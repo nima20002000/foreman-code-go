@@ -20,6 +20,7 @@ import { WorkflowManagementService } from './modules/workflows/management.js'
 import { PostgresWorkspaceRepository } from './modules/workspaces/postgres.js'
 import { WorkspaceManagementService } from './modules/workspaces/management.js'
 import { AgentManagementService } from './modules/workspaces/agents.js'
+import { WorkspaceLocationService } from './modules/workspaces/location.js'
 
 async function main() {
   // loadEnvFile is available at the declared Node 22.0 runtime baseline, unlike
@@ -33,13 +34,16 @@ async function main() {
   }
   const config = loadConfig(process.env)
   const database = createDatabase(config.database)
+  const access = new PostgresAccessService(database.pool)
+  const commands = new PostgresCommandCoordinator(database.pool)
+  const locations = new WorkspaceLocationService(database.pool, commands, config.harnesses.workspaceRoot)
   const checkpoints = createCheckpointStore(
     config.database.connectionString,
     config.checkpoints.schema,
     config.database,
   )
   const workflows = new PostgresWorkflowRepository(database.pool)
-  const runs = new PostgresRunRepository(database.pool, workflows)
+  const runs = new PostgresRunRepository(database.pool, workflows, locations)
   const workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
   const settings = new PostgresSettingsRepository(database.pool)
   const harnesses = new LocalHarnessResolver(config.harnesses.codexBinary, config.harnesses.openCodeBinary)
@@ -50,16 +54,16 @@ async function main() {
     checkpoints.saver,
     config.harnesses.workspaceRoot,
     config.harnesses.timeoutMs,
+    locations,
   )
-  const access = new PostgresAccessService(database.pool)
-  const commands = new PostgresCommandCoordinator(database.pool)
   const operatorServices = {
-    workspaces: new WorkspaceManagementService(database.pool, commands),
+    workspaces: new WorkspaceManagementService(database.pool, commands, locations),
+    locations,
     workflows: new WorkflowManagementService(database.pool, commands),
     agents: new AgentManagementService(database.pool),
     drafts: new GraphDraftService(database.pool, commands),
     harnesses: new HarnessCatalogService(harnesses, settings, commands, config.harnesses.workspaceRoot),
-    runs: new RunManagementService(database.pool, commands, runs, engine),
+    runs: new RunManagementService(database.pool, commands, runs, engine, locations),
     commands,
   }
   const app = buildApp({

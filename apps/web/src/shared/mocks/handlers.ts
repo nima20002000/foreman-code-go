@@ -8,6 +8,10 @@ import {
   type WorkflowDefinition,
   type WorkflowRun,
 } from '@graphql/contracts'
+import {
+  WorkspaceLocationSetInputSchema,
+  WorkspaceLocationValidateInputSchema,
+} from '@graphql/contracts/management'
 
 import {
   MOCK_SCENARIOS,
@@ -98,7 +102,72 @@ const mockStartedRun: WorkflowRun = {
   finishedAt: '2026-01-01T00:00:01.000Z',
 }
 
+const mockLocations = new Map<string, { rootPath: string; revision: number }>()
+
+function managedWorkspace(workspaceId: string) {
+  const fixture = getMockFixture(workspaceId)
+  if (!fixture) return undefined
+  const location = mockLocations.get(workspaceId)
+  return {
+    workspace: fixture.workspace,
+    revision: 1,
+    archivedAt: null,
+    executionLocation: location ? { runnerId: 'runner-local', rootPath: location.rootPath } : null,
+    locationRevision: location?.revision ?? 0,
+    locationValidation: location
+      ? { status: 'ready' as const, checkedAt: new Date().toISOString() }
+      : { status: 'unconfigured' as const },
+  }
+}
+
 export const handlers: RequestHandler[] = [
+  http.get('/api/management/workspaces/:workspaceId', ({ params }) => {
+    const result = managedWorkspace(String(params.workspaceId))
+    return result ? HttpResponse.json(result) : fixtureNotFound('workspace', String(params.workspaceId))
+  }),
+  http.post('/api/management/workspaces/:workspaceId/location/validate', async ({ request, params }) => {
+    const parsed = WorkspaceLocationValidateInputSchema.safeParse({
+      workspaceId: String(params.workspaceId), ...await readJson(request) as object,
+    })
+    if (!parsed.success || !parsed.data.rootPath.startsWith('/')) {
+      return apiError('WORKSPACE_LOCATION_NOT_ABSOLUTE', 'The workspace location must be an absolute runner path.', 400)
+    }
+    return HttpResponse.json({
+      workspaceId: parsed.data.workspaceId,
+      location: { runnerId: parsed.data.runnerId, rootPath: parsed.data.rootPath },
+      accessMode: parsed.data.accessMode,
+      checkedAt: new Date().toISOString(),
+    })
+  }),
+  http.put('/api/management/workspaces/:workspaceId/location', async ({ request, params }) => {
+    const parsed = WorkspaceLocationSetInputSchema.safeParse({
+      workspaceId: String(params.workspaceId), ...await readJson(request) as object,
+    })
+    if (!parsed.success) return apiError('INVALID_REQUEST', 'The location request is invalid.', 400)
+    const current = mockLocations.get(parsed.data.workspaceId)
+    if ((current?.revision ?? 0) !== parsed.data.expectedLocationRevision) {
+      return apiError('LOCATION_REVISION_CONFLICT', 'The workspace location changed since it was read.', 409, {
+        currentLocationRevision: current?.revision ?? 0,
+      })
+    }
+    const next = { rootPath: parsed.data.rootPath, revision: (current?.revision ?? 0) + 1 }
+    mockLocations.set(parsed.data.workspaceId, next)
+    const validation = {
+      workspaceId: parsed.data.workspaceId,
+      location: { runnerId: parsed.data.runnerId, rootPath: parsed.data.rootPath },
+      accessMode: 'read-only' as const,
+      checkedAt: new Date().toISOString(),
+    }
+    return HttpResponse.json({
+      value: {
+        workspaceId: parsed.data.workspaceId,
+        executionLocation: validation.location,
+        locationRevision: next.revision,
+        validation,
+      },
+      replayed: false,
+    })
+  }),
   http.get('/api/settings/harnesses', () => HttpResponse.json({
     defaults: getMockHarnessDefaults(),
   })),
@@ -138,6 +207,7 @@ export const handlers: RequestHandler[] = [
   }),
   http.post('/api/mock/reset', () => {
     resetMockFixtures()
+    mockLocations.clear()
     return scenarioResponse()
   }),
   http.post('/api/mock/failures', async ({ request }) => {

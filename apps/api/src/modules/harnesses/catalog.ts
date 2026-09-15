@@ -41,6 +41,7 @@ export class HarnessCatalogService {
       const capability = await this.resolver.resolve(harness).qualify({
         executionId: `qualification-${randomUUID()}`, runId: 'qualification', workspaceId: 'qualification',
         workflowNodeId: 'qualification', workingDirectory: this.qualificationDirectory,
+        runtimeDirectory: this.qualificationDirectory,
         configuration, input: {},
       })
       return { harness, defaults: defaults[harness], defaultsRevision: revision, capability, discoveryError: null }

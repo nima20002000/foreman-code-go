@@ -132,6 +132,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
       stdin: prompt,
       cwd: request.workingDirectory,
       signal: callbacks.signal,
+      ...(callbacks.beforeSpawn ? { beforeSpawn: callbacks.beforeSpawn } : {}),
       onSpawn: (process) => this.processes.set(request.executionId, process),
       onEvent: async (event) => {
         if (typeof event.payload.sessionID === 'string' && !sessionReported) {

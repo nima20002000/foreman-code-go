@@ -19,6 +19,9 @@ The authenticated local Operator Management MCP is documented in
 [`docs/operator-mcp-v1.md`](./docs/operator-mcp-v1.md), with board-agent and
 future Worker MCP access decisions in
 [`docs/adr/operator-and-worker-mcp-access.md`](./docs/adr/operator-and-worker-mcp-access.md).
+Workspace execution directories, immutable Run snapshots, and the boundary
+between start location and isolation are documented in
+[`docs/adr/workspace-execution-locations.md`](./docs/adr/workspace-execution-locations.md).
 
 For the NIM-2576 owner walkthrough, route/API/schema inventory, mock scenario
 semantics, UX decisions, backend handoff boundary, and verification record, see
@@ -65,7 +68,8 @@ real API:
 VITE_ENABLE_MSW=false corepack pnpm dev
 ```
 
-With MSW disabled, the Website workspace, saved workflow graph, Start action,
+With MSW disabled, configure an existing runner directory in Workspace
+Settings before Start. The Website workspace, saved workflow graph, Start action,
 and run status/result reads use the real backend through Vite's `/api` proxy.
 See [`docs/ENG-02-real-workflow-engine.md`](./docs/ENG-02-real-workflow-engine.md)
 for the qualified harness contract and acceptance workflow.

@@ -6,6 +6,7 @@ import {
   OpenCodeHarnessConfigurationSchema,
   HarnessQualificationSchema,
   GetRunResponseSchema,
+  ExecutionLocationSchema,
   RunActivitySchema,
   IdSchema,
   RunInputSchema,
@@ -29,6 +30,9 @@ export const ManagementActionSchema = z.enum([
   "workspaces:create",
   "workspaces:update",
   "workspaces:archive",
+  "workspace_locations:read",
+  "workspace_locations:validate",
+  "workspace_locations:update",
   "workflows:read",
   "workflows:create",
   "workflows:update",
@@ -107,6 +111,17 @@ export const ManagedWorkspaceSchema = z
     workspace: WorkspaceSchema,
     revision: ExpectedRevisionSchema,
     archivedAt: TimestampSchema.nullable(),
+    executionLocation: ExecutionLocationSchema.nullable(),
+    locationRevision: ExpectedRevisionSchema,
+    locationValidation: z.discriminatedUnion("status", [
+      z.object({ status: z.literal("unconfigured") }).strict(),
+      z.object({ status: z.literal("restricted") }).strict(),
+      z.object({ status: z.literal("ready"), checkedAt: TimestampSchema }).strict(),
+      z.object({
+        status: z.literal("unavailable"), checkedAt: TimestampSchema,
+        error: z.object({ code: z.string().trim().min(1), message: z.string().trim().min(1) }).strict(),
+      }).strict(),
+    ]),
   })
   .strict();
 export type ManagedWorkspace = z.infer<typeof ManagedWorkspaceSchema>;
@@ -152,6 +167,38 @@ export const WorkspaceArchiveInputSchema = z.object({
   ...WorkspaceScopeSchema.shape,
   ...RevisionMutationFields,
 }).strict();
+export const WorkspaceLocationAccessModeSchema = z.enum(["read-only", "read-write"]);
+export type WorkspaceLocationAccessMode = z.infer<typeof WorkspaceLocationAccessModeSchema>;
+export const WorkspaceLocationValidateInputSchema = z.object({
+  ...WorkspaceScopeSchema.shape,
+  runnerId: IdSchema,
+  rootPath: z.string().min(1).refine((value) => !value.includes("\0"), "rootPath cannot contain NUL"),
+  accessMode: WorkspaceLocationAccessModeSchema.default("read-only"),
+}).strict();
+export const WorkspaceLocationSetInputSchema = z.object({
+  ...WorkspaceScopeSchema.shape,
+  ...MutationFields,
+  expectedLocationRevision: ExpectedRevisionSchema,
+  runnerId: IdSchema,
+  rootPath: z.string().min(1).refine((value) => !value.includes("\0"), "rootPath cannot contain NUL"),
+}).strict();
+export const WorkspaceLocationValidationSchema = z.object({
+  workspaceId: IdSchema,
+  location: ExecutionLocationSchema,
+  accessMode: WorkspaceLocationAccessModeSchema,
+  checkedAt: TimestampSchema,
+}).strict();
+export const WorkspaceLocationSetResultSchema = z.object({
+  value: z.object({
+    workspaceId: IdSchema,
+    executionLocation: ExecutionLocationSchema,
+    locationRevision: ExpectedRevisionSchema,
+    validation: WorkspaceLocationValidationSchema,
+  }).strict(),
+  replayed: z.boolean(),
+}).strict();
+export type WorkspaceLocationValidateInput = z.infer<typeof WorkspaceLocationValidateInputSchema>;
+export type WorkspaceLocationSetInput = z.infer<typeof WorkspaceLocationSetInputSchema>;
 export type WorkspaceCreateInput = z.infer<typeof WorkspaceCreateInputSchema>;
 export type WorkspaceUpdateInput = z.infer<typeof WorkspaceUpdateInputSchema>;
 export type WorkspaceArchiveInput = z.infer<typeof WorkspaceArchiveInputSchema>;
@@ -356,6 +403,7 @@ export const RunStartInputSchema = z.object({
   workflowVersionId: IdSchema,
   draftId: IdSchema.optional(),
   expectedDraftRevision: ExpectedRevisionSchema.optional(),
+  expectedLocationRevision: ExpectedRevisionSchema,
   input: RunInputSchema,
 }).strict().refine((value) => (value.draftId === undefined) === (value.expectedDraftRevision === undefined),
   "draftId and expectedDraftRevision must be supplied together");
@@ -368,6 +416,7 @@ export const RunStopInputSchema = z.object({
 export const OperatorToolNameSchema = z.enum([
   "operator_get_capabilities", "harness_list", "harness_get", "harness_defaults_update",
   "workspace_list", "workspace_get", "workspace_create", "workspace_update", "workspace_archive",
+  "workspace_location_validate", "workspace_location_set",
   "workflow_list", "workflow_get", "workflow_create", "workflow_update", "workflow_archive",
   "agent_list", "agent_get", "graph_draft_open", "graph_draft_get", "graph_draft_apply",
   "graph_validate", "graph_save", "graph_draft_discard", "run_list", "run_get",

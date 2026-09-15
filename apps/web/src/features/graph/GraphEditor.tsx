@@ -43,6 +43,7 @@ import {
   useRunQuery,
   useSaveGraphMutation,
   useManagedGraphContextQuery,
+  useManagedWorkspaceQuery,
   useStartManagedRunMutation,
   useStopManagedRunMutation,
   useStartWorkflowRunMutation,
@@ -694,6 +695,7 @@ export function GraphEditor({
   const managedBase = useMemo(() => managedDraft
     ? draft?.managedBase ?? captureManagedBase(managedDraft, agents, managedAgentRevisions)
     : undefined, [agents, draft?.managedBase, managedAgentRevisions, managedDraft])
+  const managedWorkspace = useManagedWorkspaceQuery(workspaceId, Boolean(managedDraft))
   const harnessDefaultsQuery = useHarnessDefaultsQuery()
   const startRunMutation = useStartWorkflowRunMutation()
   const startManagedRun = useStartManagedRunMutation()
@@ -786,7 +788,8 @@ export function GraphEditor({
     maxNodeExecutions: Math.max(1, displayedWorkflow.nodes.length),
   }
   const executionLimitExceeded = !onSaveSession && executionPolicy.maxNodeExecutions < displayedWorkflow.nodes.length
-  const startDisabled = startRunMutation.isPending || startManagedRun.isPending
+  const managedLocationReady = !managedDraft || managedWorkspace.data?.locationValidation.status === 'ready'
+  const startDisabled = startRunMutation.isPending || startManagedRun.isPending || !managedLocationReady
     || Boolean(activeRunId && runQuery.data?.run.executionState !== 'completed')
   const runActive = Boolean(activeRunId && runQuery.data?.run.executionState !== 'completed')
   const hasUnsavedAgentSettings = displayedWorkflow.nodes.some((node) => {
@@ -1203,9 +1206,15 @@ export function GraphEditor({
       },
     }
     if (managedDraft?.baseWorkflowVersionId) {
+      const expectedLocationRevision = managedWorkspace.data?.locationRevision
+      if (expectedLocationRevision === undefined || managedWorkspace.data?.locationValidation.status !== 'ready') {
+        startLock.current = false
+        setNotice({ kind: 'info', text: 'Set a valid workspace execution location before starting this workflow.' })
+        return
+      }
       startManagedRun.mutate({
         workspaceId, workflowId: displayedWorkflow.id, workflowVersionId: managedDraft.baseWorkflowVersionId,
-        commandId: crypto.randomUUID(), input: {},
+        expectedLocationRevision, commandId: crypto.randomUUID(), input: {},
         draftId: managedDraft.id, expectedDraftRevision: managedDraft.revision,
       }, callbacks)
       return
@@ -1216,10 +1225,10 @@ export function GraphEditor({
       return
     }
     startRunMutation.mutate(
-      { workspaceId, workflowId: displayedWorkflow.id, input: {} },
+      { workspaceId, workflowId: displayedWorkflow.id, expectedLocationRevision: 0, input: {} },
       callbacks,
     )
-  }, [displayedWorkflow.id, isDirty, managedDraft, onSaveSession, queryClient, startDisabled, startManagedRun, startRunMutation, workflowKey, workspaceId])
+  }, [displayedWorkflow.id, isDirty, managedDraft, managedWorkspace.data, onSaveSession, queryClient, startDisabled, startManagedRun, startRunMutation, workflowKey, workspaceId])
 
   const closeAgentPicker = useCallback(() => {
     setAgentPickerOpen(false)
@@ -1483,7 +1492,7 @@ export function GraphEditor({
             type="button"
             className="workflow-graph-run"
             aria-label={runActive ? 'Cancel workflow' : 'Start workflow'}
-            title={runActive ? 'Cancel workflow' : 'Start workflow'}
+            title={runActive ? 'Cancel workflow' : managedLocationReady ? 'Start workflow' : 'Set a valid workspace execution location first'}
             disabled={runActive ? cancelRunMutation.isPending || stopManagedRun.isPending : startDisabled || (Boolean(managedDraft) && (isDirty || isSaving))}
             onClick={runActive && activeRunId
               ? () => managedDraft
@@ -1539,6 +1548,11 @@ export function GraphEditor({
           {hasUnpublishedChanges ? <p className="workflow-graph-toast workflow-graph-toast-info" role="status">
             The shared draft has unpublished changes. Save graph before starting it.
           </p> : null}
+          {runQuery.data?.run.executionLocation ? (
+            <p className="workflow-graph-toast workflow-graph-toast-info" role="status">
+              Run location: {runQuery.data.run.executionLocation.rootPath}
+            </p>
+          ) : null}
           {notice ? (
             <p
               className={`workflow-graph-toast workflow-graph-toast-${notice.kind}`}

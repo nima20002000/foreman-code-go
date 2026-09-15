@@ -14,6 +14,7 @@ export interface JsonlProcessOptions {
   signal: AbortSignal
   stdin?: string
   onSpawn(process: ChildProcess): void
+  beforeSpawn?(): Promise<void>
   onEvent(event: NativeEventInput): Promise<void>
 }
 
@@ -23,7 +24,7 @@ export interface JsonlProcessResult {
   stderr: string
 }
 
-type ProcessOptions = Pick<JsonlProcessOptions, 'binary' | 'args' | 'cwd' | 'stdin'> & {
+type ProcessOptions = Pick<JsonlProcessOptions, 'binary' | 'args' | 'cwd' | 'stdin' | 'beforeSpawn'> & {
   signal?: AbortSignal
   onSpawn?(process: ChildProcess): void
 }
@@ -72,6 +73,10 @@ async function runOwnedProcess<T>(
       delete childEnvironment[key]
     }
   }
+  // No asynchronous work may separate the launch check from process creation.
+  // This detects qualification-time replacement; it is not an atomic cwd pin.
+  if (options.beforeSpawn) await options.beforeSpawn()
+  options.signal?.throwIfAborted()
   const child = spawn(options.binary, options.args, {
     cwd: options.cwd,
     env: childEnvironment,

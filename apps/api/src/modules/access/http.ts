@@ -84,6 +84,9 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
         ...(params.runId ? { runId: params.runId } : {}),
       }
       requireAuthorization(principal, actionFor(request), resource)
+      if (request.method === 'GET' && /^\/api\/workspaces\/[^/]+\/runs\/[^/]+(?:\?.*)?$/.test(request.url)) {
+        requireAuthorization(principal, 'workspace_locations:read', resource)
+      }
       if (request.method === 'GET' && /^\/api\/workspaces\/[^/]+(?:\?.*)?$/.test(request.url)) {
         for (const action of ['workflows:read', 'agents:read', 'runs:read'] as const) {
           requireAuthorization(principal, action, resource)

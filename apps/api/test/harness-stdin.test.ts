@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import type { HarnessExecutionRequest, HarnessConfiguration } from '@graphql/contracts'
-import { it } from 'vitest'
+import { expect, it } from 'vitest'
 
 import { CodexAdapter } from '../src/modules/harnesses/codex.js'
 import { OpenCodeAdapter } from '../src/modules/harnesses/opencode.js'
@@ -18,7 +18,7 @@ const configurations: HarnessConfiguration[] = [
 function request(harness: HarnessConfiguration, input: HarnessExecutionRequest['input'], directory: string): HarnessExecutionRequest {
   return {
     executionId: 'execution-stdin', runId: 'run-stdin', workspaceId: 'workspace-stdin',
-    workflowNodeId: 'node-stdin', workingDirectory: directory, input,
+    workflowNodeId: 'node-stdin', workingDirectory: directory, runtimeDirectory: directory, input,
     configuration: {
       id: 'configuration-stdin', workspaceId: 'workspace-stdin', agentId: 'agent-stdin', version: 1,
       prompt: { system: 'Use the supplied input.' }, assignedSkills: [], harness,
@@ -77,6 +77,50 @@ for (const harness of configurations) {
       }
     })
   }
+}
+
+for (const harness of configurations) {
+  it.skipIf(process.platform === 'win32')(`${harness.harness} qualifies and executes in the accepted project directory`, async () => {
+    const toolDirectory = await mkdtemp(join(tmpdir(), 'graphql-cwd-tool-'))
+    const projectDirectory = await mkdtemp(join(tmpdir(), 'graphql-cwd-project-'))
+    const runtimeDirectory = await mkdtemp(join(tmpdir(), 'graphql-cwd-runtime-'))
+    try {
+      const binary = join(toolDirectory, 'harness.cjs')
+      await writeFile(binary, `#!${process.execPath}
+const expected=${JSON.stringify(projectDirectory)}
+if(process.cwd()!==expected){console.error('wrong cwd:'+process.cwd());process.exit(42)}
+const args=process.argv.slice(2)
+if(args.includes('--version')) console.log('1.0.0')
+else if(args[0]==='login') console.log('Logged in')
+else if(args[0]==='auth') console.log('OpenCode Go')
+else if(args[0]==='debug'&&args[1]==='models') console.log(JSON.stringify({models:[{slug:'test-model',supported_reasoning_levels:[{effort:'high'}]}]}))
+else if(args[0]==='models') console.log('opencode-go/test-model\\n{"max":{}}')
+else if(args[0]==='debug') console.log('{}')
+else { process.stdin.resume(); process.stdin.on('end',()=>{
+  if(args[0]==='exec') { console.log(JSON.stringify({type:'thread.started',thread_id:'cwd-session'})); console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:process.cwd()}})) }
+  else console.log(JSON.stringify({type:'text',sessionID:'cwd-session',part:{text:process.cwd()}}))
+}) }
+`)
+      await chmod(binary, 0o700)
+      const execution = { ...request(harness, {}, projectDirectory), runtimeDirectory }
+      const adapter = harness.harness === 'codex' ? new CodexAdapter(binary) : new OpenCodeAdapter(binary)
+
+      const result = await adapter.execute(execution, {
+        signal: new AbortController().signal,
+        onSession: async () => undefined,
+        onEvent: async () => undefined,
+      })
+
+      expect(result).toEqual({ outcome: 'succeeded', output: { text: projectDirectory } })
+      expect(runtimeDirectory).not.toBe(projectDirectory)
+    } finally {
+      await Promise.all([
+        rm(toolDirectory, { recursive: true, force: true }),
+        rm(projectDirectory, { recursive: true, force: true }),
+        rm(runtimeDirectory, { recursive: true, force: true }),
+      ])
+    }
+  })
 }
 
 it('rejects an oversized prompt with an explicit policy error', () => {

@@ -82,12 +82,14 @@ const workspaceSections: readonly WorkspaceSection[] = [
   'files',
   'tasks',
   'runs',
+  'settings',
 ]
 
 const sectionLinks = [
   { section: 'files', label: 'Files', to: '/workspaces/$workspaceId/files', icon: Files },
   { section: 'tasks', label: 'Tasks', to: '/workspaces/$workspaceId/tasks', icon: ListTodo },
   { section: 'runs', label: 'Runs', to: '/workspaces/$workspaceId/runs', icon: History },
+  { section: 'settings', label: 'Workspace settings', to: '/workspaces/$workspaceId/settings', icon: Settings },
 ] as const
 
 const globalLinks = [
@@ -460,8 +462,8 @@ function WorkspaceTreeItem({
 
 /**
  * The workspace-first sidebar hierarchy. Workspaces is the collapsible parent,
- * every workspace entry expands into its own Workflows, Files, Tasks, and Runs
- * destinations. Terminal and Settings are global links below the workspace
+ * every workspace entry expands into its own Workflows, Files, Tasks, Runs,
+ * and workspace Settings. Terminal and app Settings remain below the workspace
  * tree. The Agents destination remains routed but is temporarily hidden here.
  * Workspace and workflow lists are server-shaped query projections; selection
  * stays in the URL through router links.

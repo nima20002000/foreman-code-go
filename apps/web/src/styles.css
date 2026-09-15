@@ -866,6 +866,27 @@ h1 {
   font-size: 0.8125rem;
 }
 
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.settings-actions button {
+  min-height: 2.25rem;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 0.55rem;
+  background: var(--color-surface-raised);
+  color: inherit;
+  cursor: pointer;
+}
+
+.settings-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .settings-state-error {
   color: var(--color-danger, #c65f5f);
 }

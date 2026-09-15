@@ -20,6 +20,8 @@ mapping, and native Codex/OpenCode process adapters.
   only accepted PostgreSQL results to downstream nodes.
 - `src/modules/runs/postgres.ts` persists runs, occurrences, accepted results,
   raw native events, and normalized activity.
+- `src/modules/workspaces/location.ts` validates canonical local-runner paths,
+  persists revisioned workspace locations, and rechecks immutable Run snapshots.
 - `src/mcp/operator` mounts the authenticated, request-scoped Operator MCP
   server; management services are shared with the browser HTTP boundary.
 
@@ -27,6 +29,12 @@ The real product slice also implements durable management, graph drafts,
 revision-checked Save, exact-version Start, idempotent Stop, scoped local
 credentials, command receipts, and management audit. See
 [`../../docs/operator-mcp-v1.md`](../../docs/operator-mcp-v1.md).
+
+Before a real Start, Workspace Settings must contain an existing local-runner
+directory. `HARNESS_WORKSPACE_ROOT` remains GraphQL-owned scratch storage and
+must not overlap a selected project directory. A configured CWD is not a
+filesystem sandbox; native harness policies and stronger isolation remain
+separate work.
 
 ## Local run
 

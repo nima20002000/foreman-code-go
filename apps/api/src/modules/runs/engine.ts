@@ -17,6 +17,8 @@ import { DomainError } from '../errors.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
 import type { HarnessResolver, NativeEventInput } from '../harnesses/port.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
+import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
+import { withFilesystemDeadline } from '../workspaces/filesystem.js'
 import type { WorkflowOrchestrator } from './port.js'
 import type { PostgresRunRepository } from './postgres.js'
 import type { RunOwnership } from './ownership.js'
@@ -73,6 +75,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     private readonly checkpointer: BaseCheckpointSaver,
     workspaceRoot: string,
     private readonly timeoutMs: number,
+    private readonly locations: WorkspaceLocationService,
   ) {
     this.workspaceRoot = resolve(workspaceRoot)
   }
@@ -179,9 +182,21 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     }
 
     try {
-      await this.runs.updateState(run.id, { executionState: 'running', outcome: 'pending', startedAt }, owner)
       const version = await this.workflows.getVersion(run.workflowVersionId)
       if (!version) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', `Workflow version '${run.workflowVersionId}' was not found.`, 409)
+      if (!run.executionLocation) {
+        throw new DomainError('RUN_LOCATION_MISSING', 'This legacy Run has no accepted execution location and cannot be launched.', 409)
+      }
+      if (run.authorizationPrincipalId) {
+        await this.locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId, owner.client)
+      }
+      const configurations = await Promise.all(Object.values(run.agentConfigurationVersionIds).map(async (configurationVersionId) => {
+        const configuration = await this.workflows.getAgentConfiguration(configurationVersionId)
+        if (!configuration) throw new DomainError('AGENT_CONFIGURATION_NOT_FOUND', `Configuration '${configurationVersionId}' was not found.`, 500)
+        return configuration
+      }))
+      await this.locations.revalidateSnapshot(run.workspaceId, run.executionLocation, requiredLocationAccess(configurations), signal)
+      await this.runs.updateState(run.id, { executionState: 'running', outcome: 'pending', startedAt }, owner)
       const topology = validateExecutableTopology(version)
       const limiter = new ExecutionLimiter(version.definition.executionPolicy!.maxParallelism)
       const builder = new StateGraph(EngineState) as unknown as DynamicGraphBuilder
@@ -284,8 +299,18 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         ? { previous: predecessorResults[0] }
         : { predecessors: predecessorResults }
     const executionId = `execution-${randomUUID()}`
-    const workingDirectory = this.executionDirectory(run.id, nodeId, 1)
-    await mkdir(workingDirectory, { recursive: true })
+    if (!run.executionLocation) throw new DomainError('RUN_LOCATION_MISSING', 'This Run has no accepted execution location.', 409)
+    if (run.authorizationPrincipalId) {
+      await this.locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId, owner.client)
+    }
+    await this.locations.revalidateSnapshot(
+      run.workspaceId, run.executionLocation, requiredLocationAccess([configuration]), signal,
+    )
+    const workingDirectory = run.executionLocation.rootPath
+    const runtimeDirectory = this.executionDirectory(run.workspaceId, run.id, nodeId, 1)
+    await withFilesystemDeadline((check) => check(() => mkdir(runtimeDirectory, { recursive: true })), signal)
+    signal.throwIfAborted()
+    owner.assertOwned()
     const now = new Date().toISOString()
     let execution = HarnessExecutionSchema.parse({
       id: executionId,
@@ -293,6 +318,8 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       workflowNodeId: nodeId,
       agentId: node.agentId,
       agentConfigurationVersionId: configurationVersionId,
+      workingDirectory,
+      runtimeDirectory,
       attempt: 1,
       input,
       state: 'starting',
@@ -306,6 +333,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       workspaceId: run.workspaceId,
       workflowNodeId: nodeId,
       workingDirectory,
+      runtimeDirectory,
       initialPrompt: node.initialPrompt,
       configuration,
       input,
@@ -318,6 +346,18 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       owner.assertOwned()
       const result = await adapter.execute(request, {
         signal,
+        beforeSpawn: async () => {
+          signal.throwIfAborted()
+          owner.assertOwned()
+          if (run.authorizationPrincipalId) {
+            await this.locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId, owner.client)
+          }
+          await this.locations.revalidateSnapshot(
+            run.workspaceId, run.executionLocation!, requiredLocationAccess([configuration]), signal,
+          )
+          signal.throwIfAborted()
+          owner.assertOwned()
+        },
         onSession: async (nativeSessionId) => {
           execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId, state: 'running' })
           await this.runs.updateExecution(execution, owner)
@@ -371,7 +411,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     }
   }
 
-  private executionDirectory(runId: string, nodeId: string, attempt: number): string {
-    return resolveExecutionDirectory(this.workspaceRoot, runId, nodeId, attempt)
+  private executionDirectory(workspaceId: string, runId: string, nodeId: string, attempt: number): string {
+    return resolveExecutionDirectory(this.workspaceRoot, runId, nodeId, attempt, workspaceId)
   }
 }

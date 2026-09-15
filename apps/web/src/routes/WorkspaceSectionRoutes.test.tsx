@@ -130,6 +130,7 @@ describe('workspace section routes', () => {
     expect(screen.getByRole('link', { name: /Browsers/ })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('heading', { name: 'Browsers' })).toBeVisible()
     expect(screen.getAllByText('Coming soon')).toHaveLength(2)
-    expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: 'Workspace settings' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
   })
 })

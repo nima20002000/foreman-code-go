@@ -112,7 +112,9 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
       if (input.workspaceId !== request.params.workspaceId || input.workflowId !== request.params.workflowId) {
         throw new DomainError('INVALID_RUN', 'The run payload does not match the requested workflow.', 400)
       }
-      const run = await services.runs.createForWorkflow(input.workspaceId, input.workflowId, input.input)
+      const run = await services.runs.createForWorkflow(
+        input.workspaceId, input.workflowId, input.input, input.expectedLocationRevision,
+      )
       setImmediate(() => {
         void services.engine.start(run.id).catch((error: unknown) => request.log.error({ err: error, runId: run.id }, 'run failed before terminal state'))
       })

@@ -26,7 +26,7 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, async (input) => invokeOperatorTool(context, 'run_events_list', () => context.services.runs.events(context.principal, input)))
   }
-  if (hasAction(context.principal, 'runs:start')) server.registerTool('run_start', {
+  if (hasAction(context.principal, 'runs:start') && hasAction(context.principal, 'workspace_locations:read')) server.registerTool('run_start', {
     description: 'Durably accept one run of an explicit current saved workflow version.', inputSchema: RunStartInputSchema,
     outputSchema: RunStartResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },

@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 
 import { AgentsDirectory } from '../features/agents'
-import { HarnessDefaultsSettings, OperatorAccessSettings } from '../features/settings'
+import { HarnessDefaultsSettings, OperatorAccessSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
 import { WorkflowDirectory } from '../features/workflows'
 import { WorkspaceShell, type WorkspaceSection } from '../shared/ui/WorkspaceShell'
 import {
@@ -125,25 +125,25 @@ function SettingsPage({ browsersSelected = false }: { browsersSelected?: boolean
   return (
     <WorkspaceShell
       workspaceId={workspaceId}
-      activeSection="workflows"
-      activeGlobalSection="settings"
+      activeSection="settings"
       slots={{
         main: (
           <div className="settings-page">
             <header>
-              <p className="panel-kicker">Workspace</p>
+              <p className="panel-kicker">Workspace · {workspaceId}</p>
               <h1>Settings</h1>
               <p>Configure workspace-level preferences and connected capabilities.</p>
             </header>
             <nav aria-label="Settings sections">
-              <a href={`/workspaces/${encodeURIComponent(workspaceId)}/browsers`} aria-current={browsersSelected ? 'page' : undefined}>
+              <Link to="/workspaces/$workspaceId/browsers" params={{ workspaceId }} aria-current={browsersSelected ? 'page' : undefined}>
                 <span>
                   <strong>Browsers</strong>
                   <small>Browser profiles and access</small>
                 </span>
                 <span className="settings-coming-soon">Coming soon</span>
-              </a>
+              </Link>
             </nav>
+            {!browsersSelected ? <WorkspaceExecutionLocationSettings key={workspaceId} workspaceId={workspaceId} /> : null}
             {browsersSelected ? (
               <section className="settings-section" aria-labelledby="browsers-settings-title">
                 <h2 id="browsers-settings-title">Browsers</h2>

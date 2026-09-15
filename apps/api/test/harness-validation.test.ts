@@ -11,6 +11,7 @@ const baseRequest = {
   workspaceId: 'workspace-1',
   workflowNodeId: 'node-1',
   workingDirectory: process.cwd(),
+  runtimeDirectory: process.cwd(),
   input: {},
 } as const
 

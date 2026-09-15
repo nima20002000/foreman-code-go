@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { ManagementActionSchema, OperatorToolNameSchema, type ManagementGrant } from '@graphql/contracts/management'
@@ -20,6 +23,7 @@ import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js
 import { AgentManagementService } from '../src/modules/workspaces/agents.js'
 import { WorkspaceManagementService } from '../src/modules/workspaces/management.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
+import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL
   ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
@@ -80,14 +84,15 @@ describe('Operator MCP with PostgreSQL', () => {
     const worker = await access.issue({ name: 'Worker', audience: 'worker', grants: [grant], expiresAt: new Date(Date.now() + 60_000) })
     const restricted = await access.issue({
       name: 'Restricted operator', audience: 'operator',
-      grants: [{ actions: ['capabilities:read', 'workspaces:read'], scope: { workspaceIds: ['not-this-workspace'] } }],
+      grants: [{ actions: ['capabilities:read', 'workspaces:read', 'workspace_locations:validate'], scope: { workspaceIds: ['not-this-workspace'] } }],
       expiresAt: new Date(Date.now() + 60_000),
     })
     const expired = await access.issue({ name: 'Expiring operator', audience: 'operator', grants: [grant], expiresAt: new Date(Date.now() + 60_000) })
     await database.pool.query("update management_principals set expires_at = now() - interval '1 second' where id = $1", [expired.principal.id])
     const commands = new PostgresCommandCoordinator(database.pool)
+    const locations = new WorkspaceLocationService(database.pool, commands, process.cwd())
     const workflowsRepository = new PostgresWorkflowRepository(database.pool)
-    const runsRepository = new PostgresRunRepository(database.pool, workflowsRepository)
+    const runsRepository = new PostgresRunRepository(database.pool, workflowsRepository, locations)
     const engine = {
       start: vi.fn(async () => undefined),
       cancel: vi.fn(async (runId: string) => {
@@ -100,12 +105,13 @@ describe('Operator MCP with PostgreSQL', () => {
     } as unknown as LangGraphWorkflowEngine
     const settings = new PostgresSettingsRepository(database.pool)
     const services = {
-      workspaces: new WorkspaceManagementService(database.pool, commands),
+      workspaces: new WorkspaceManagementService(database.pool, commands, locations),
+      locations,
       workflows: new WorkflowManagementService(database.pool, commands),
       agents: new AgentManagementService(database.pool),
       drafts: new GraphDraftService(database.pool, commands),
       harnesses: new HarnessCatalogService(deterministicHarnesses(), settings, commands, process.cwd()),
-      runs: new RunManagementService(database.pool, commands, runsRepository, engine),
+      runs: new RunManagementService(database.pool, commands, runsRepository, engine, locations),
       commands,
     }
     const app = buildApp({
@@ -156,7 +162,7 @@ describe('Operator MCP with PostgreSQL', () => {
     }))
     cleanup.push(async () => restrictedClient.close())
     expect((await restrictedClient.listTools()).tools.map((tool) => tool.name).sort()).toEqual([
-      'operator_get_capabilities', 'workspace_get', 'workspace_list',
+      'operator_get_capabilities', 'workspace_get', 'workspace_list', 'workspace_location_validate',
     ])
 
     const workspaceCommand = `workspace-${randomUUID()}`
@@ -164,6 +170,8 @@ describe('Operator MCP with PostgreSQL', () => {
       name: 'workspace_create', arguments: { commandId: workspaceCommand, name: 'MCP Integration' },
     }))
     const workspace = (createdWorkspace.value as { workspace: { id: string }; revision: number }).workspace
+    const projectDirectory = await mkdtemp(join(tmpdir(), 'graphql-mcp-location-'))
+    cleanup.push(() => rm(projectDirectory, { recursive: true, force: true }))
     const replay = structured(await client.callTool({
       name: 'workspace_create', arguments: { commandId: workspaceCommand, name: 'MCP Integration' },
     }))
@@ -175,6 +183,62 @@ describe('Operator MCP with PostgreSQL', () => {
       },
     }))
     expect((workspaceUpdated.value as { workspace: { name: string } }).workspace.name).toBe('MCP Integration Renamed')
+    const unconfiguredWorkspace = structured(await client.callTool({
+      name: 'workspace_get', arguments: { workspaceId: workspace.id },
+    })) as unknown as { locationRevision: number; locationValidation: { status: string } }
+    expect(unconfiguredWorkspace).toMatchObject({ locationRevision: 0, locationValidation: { status: 'unconfigured' } })
+    const locationValidation = structured(await client.callTool({
+      name: 'workspace_location_validate', arguments: {
+        workspaceId: workspace.id, runnerId: 'runner-local', rootPath: projectDirectory, accessMode: 'read-write',
+      },
+    })) as unknown as { location: { rootPath: string } }
+    expect(locationValidation.location.rootPath).toBe(projectDirectory)
+    const locationCommand = `location-${randomUUID()}`
+    const locationSet = structured(await client.callTool({
+      name: 'workspace_location_set', arguments: {
+        workspaceId: workspace.id, runnerId: 'runner-local', rootPath: projectDirectory,
+        expectedLocationRevision: 0, commandId: locationCommand,
+      },
+    })) as unknown as { value: { locationRevision: number; executionLocation: { rootPath: string } } }
+    expect(locationSet.value).toMatchObject({ locationRevision: 1, executionLocation: { rootPath: projectDirectory } })
+    const httpWorkspace = await fetch(new URL(`/api/management/workspaces/${workspace.id}`, address), {
+      headers: { authorization: `Bearer ${issued.token}` },
+    })
+    expect(httpWorkspace.status).toBe(200)
+    await expect(httpWorkspace.json()).resolves.toMatchObject({
+      executionLocation: { rootPath: projectDirectory }, locationRevision: 1,
+    })
+    const locationReplay = structured(await client.callTool({ name: 'workspace_location_set', arguments: {
+      workspaceId: workspace.id, runnerId: 'runner-local', rootPath: projectDirectory,
+      expectedLocationRevision: 0, commandId: locationCommand,
+    } })) as unknown as { replayed: boolean; value: { locationRevision: number } }
+    expect(locationReplay).toMatchObject({ replayed: true, value: { locationRevision: 1 } })
+    const staleLocation = await client.callTool({ name: 'workspace_location_set', arguments: {
+      workspaceId: workspace.id, runnerId: 'runner-local', rootPath: projectDirectory,
+      expectedLocationRevision: 0, commandId: `stale-location-${randomUUID()}`,
+    } })
+    expect(staleLocation.isError).toBe(true)
+    expect(JSON.stringify(staleLocation.structuredContent)).toContain('LOCATION_REVISION_CONFLICT')
+    const missingLocation = await client.callTool({ name: 'workspace_location_validate', arguments: {
+      workspaceId: workspace.id, runnerId: 'runner-local', rootPath: join(projectDirectory, 'missing'), accessMode: 'read-only',
+    } })
+    expect(missingLocation.isError).toBe(true)
+    expect(JSON.stringify(missingLocation.structuredContent)).toContain('WORKSPACE_LOCATION_NOT_FOUND')
+    const secondProjectDirectory = await mkdtemp(join(tmpdir(), 'graphql-mcp-location-second-'))
+    cleanup.push(() => rm(secondProjectDirectory, { recursive: true, force: true }))
+    const secondWorkspaceResult = structured(await client.callTool({ name: 'workspace_create', arguments: {
+      commandId: `workspace-second-${randomUUID()}`, name: 'Second MCP workspace',
+    } }))
+    const secondWorkspaceId = (secondWorkspaceResult.value as { workspace: { id: string } }).workspace.id
+    cleanup.push(async () => { await database.pool.query('delete from workspaces where id = $1', [secondWorkspaceId]) })
+    await client.callTool({ name: 'workspace_location_set', arguments: {
+      workspaceId: secondWorkspaceId, runnerId: 'runner-local', rootPath: secondProjectDirectory,
+      expectedLocationRevision: 0, commandId: `location-second-${randomUUID()}`,
+    } })
+    const secondWorkspace = structured(await client.callTool({ name: 'workspace_get', arguments: { workspaceId: secondWorkspaceId } }))
+    expect((secondWorkspace.executionLocation as { rootPath: string }).rootPath).toBe(secondProjectDirectory)
+    expect((structured(await client.callTool({ name: 'workspace_get', arguments: { workspaceId: workspace.id } })).executionLocation as { rootPath: string }).rootPath)
+      .toBe(projectDirectory)
     const workspaceList = structured(await client.callTool({ name: 'workspace_list', arguments: { limit: 100 } }))
     expect((workspaceList.items as Array<{ workspace: { id: string } }>).some((item) => item.workspace.id === workspace.id)).toBe(true)
     cleanup.push(async () => {
@@ -303,7 +367,7 @@ describe('Operator MCP with PostgreSQL', () => {
     const runCommand = `run-${randomUUID()}`
     const startArguments = {
       workspaceId: workspace.id, workflowId: workflow.id, workflowVersionId: savedValue.version.id,
-      commandId: runCommand, input: { message: 'bounded integration' },
+      expectedLocationRevision: 1, commandId: runCommand, input: { message: 'bounded integration' },
     }
     const [startedResult, duplicateResult] = await Promise.all([
       client.callTool({ name: 'run_start', arguments: startArguments }),
@@ -314,11 +378,25 @@ describe('Operator MCP with PostgreSQL', () => {
     const duplicate = structured(duplicateResult)
     expect((duplicate as unknown as { run: { id: string } }).run.id).toBe(run.id)
     await vi.waitFor(() => expect(engine.start).toHaveBeenCalledOnce())
+    const replacementDirectory = await mkdtemp(join(tmpdir(), 'graphql-mcp-location-next-'))
+    cleanup.push(() => rm(replacementDirectory, { recursive: true, force: true }))
+    const changedLocation = await fetch(new URL(`/api/management/workspaces/${workspace.id}/location`, address), {
+      method: 'PUT', headers: { authorization: `Bearer ${issued.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ runnerId: 'runner-local', rootPath: replacementDirectory,
+        expectedLocationRevision: 1, commandId: `location-next-${randomUUID()}` }),
+    })
+    expect(changedLocation.status).toBe(200)
+    await expect(changedLocation.json()).resolves.toMatchObject({ value: { locationRevision: 2 } })
+    expect(structured(await client.callTool({ name: 'workspace_get', arguments: { workspaceId: workspace.id } })))
+      .toMatchObject({ executionLocation: { rootPath: replacementDirectory }, locationRevision: 2 })
+    const duplicateAfterLocationChange = structured(await client.callTool({ name: 'run_start', arguments: startArguments }))
+    expect((duplicateAfterLocationChange as unknown as { run: { id: string; executionLocation: { rootPath: string; locationRevision: number } } }).run)
+      .toMatchObject({ id: run.id, executionLocation: { rootPath: projectDirectory, locationRevision: 1 } })
 
     const conflict = await client.callTool({
       name: 'run_start', arguments: {
         workspaceId: workspace.id, workflowId: workflow.id, workflowVersionId: savedValue.version.id,
-        commandId: runCommand, input: { message: 'different' },
+        expectedLocationRevision: 1, commandId: runCommand, input: { message: 'different' },
       },
     })
     expect(conflict.isError).toBe(true)
@@ -367,6 +445,14 @@ describe('Operator MCP with PostgreSQL', () => {
       name: 'run_get', arguments: { workspaceId: workspace.id, runId: run.id },
     }))
     expect((retainedRun.run as { id: string }).id).toBe(run.id)
+    await rm(replacementDirectory, { recursive: true, force: true })
+    const unavailableWorkspace = structured(await client.callTool({
+      name: 'workspace_get', arguments: { workspaceId: workspace.id },
+    }))
+    expect(unavailableWorkspace).toMatchObject({
+      executionLocation: { rootPath: replacementDirectory },
+      locationValidation: { status: 'unavailable', error: { code: 'WORKSPACE_LOCATION_NOT_FOUND' } },
+    })
     const currentWorkspace = structured(await client.callTool({
       name: 'workspace_get', arguments: { workspaceId: workspace.id },
     })) as unknown as { revision: number }
@@ -382,11 +468,21 @@ describe('Operator MCP with PostgreSQL', () => {
       name: 'workspace_get', arguments: { workspaceId: workspace.id },
     })
     expect(crossWorkspace.isError).toBe(true)
+    const deniedLocationProbe = await restrictedClient.callTool({ name: 'workspace_location_validate', arguments: {
+      workspaceId: workspace.id, runnerId: 'runner-local', rootPath: projectDirectory, accessMode: 'read-only',
+    } })
+    expect(deniedLocationProbe.isError).toBe(true)
+    expect(JSON.stringify(deniedLocationProbe.structuredContent)).toContain('ACCESS_DENIED')
 
     const unauthenticated = await fetch(new URL('/mcp/operator', address), {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
     })
     expect(unauthenticated.status).toBe(401)
+    const unauthenticatedLocation = await fetch(new URL(`/api/management/workspaces/${workspace.id}/location/validate`, address), {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ runnerId: 'runner-local', rootPath: projectDirectory, accessMode: 'read-only' }),
+    })
+    expect(unauthenticatedLocation.status).toBe(401)
     const workerResponse = await fetch(new URL('/mcp/operator', address), {
       method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${worker.token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
     })

@@ -160,6 +160,18 @@ const migrations = [
       unique (workflow_id)
     );
   `,
+  `
+    alter table workspaces add column if not exists execution_location jsonb;
+    alter table workspaces add column if not exists execution_location_identity jsonb;
+    alter table workspaces add column if not exists location_revision bigint not null default 0;
+
+    alter table runs add column if not exists runner_id text;
+    alter table runs add column if not exists working_directory text;
+    alter table runs add column if not exists location_revision bigint;
+
+    create index if not exists runs_workspace_location_idx
+      on runs (workspace_id, location_revision) where location_revision is not null;
+  `,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

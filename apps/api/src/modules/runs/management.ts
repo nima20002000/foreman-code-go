@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import {
+  AgentConfigurationVersionSchema,
   RunActivitySchema,
   WorkflowRunSchema,
   WorkflowVersionSchema,
@@ -9,13 +10,14 @@ import {
 import { GraphDraftSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
 
-import { requireAuthorization } from '../access/policy.js'
+import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { authorizedPage } from '../access/authorizedPage.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import type { LangGraphWorkflowEngine } from './engine.js'
 import type { PostgresRunRepository } from './postgres.js'
 import { validateExecutableTopology } from './topology.js'
+import { requiredLocationAccess, WorkspaceLocationService } from '../workspaces/location.js'
 
 export class RunManagementService {
   constructor(
@@ -23,10 +25,20 @@ export class RunManagementService {
     private readonly commands: PostgresCommandCoordinator,
     private readonly runs: PostgresRunRepository,
     private readonly engine: LangGraphWorkflowEngine,
+    private readonly locations: WorkspaceLocationService,
   ) {}
 
+  private visibleRun(principal: ManagementPrincipal, run: ReturnType<typeof WorkflowRunSchema.parse>) {
+    const visible = { ...run }
+    delete visible.authorizationPrincipalId
+    if (!isAuthorized(principal, 'workspace_locations:read', { workspaceId: run.workspaceId })) {
+      delete visible.executionLocation
+    }
+    return visible
+  }
+
   async list(principal: ManagementPrincipal, input: { workspaceId: string; workflowId?: string | undefined; cursor?: string | undefined; limit: number }) {
-    return authorizedPage({
+    const page = await authorizedPage({
       principal, action: 'runs:read', cursor: input.cursor, limit: input.limit,
       read: async (cursor, limit) => (await this.pool.query<{ record: unknown }>(
         `select record from runs where workspace_id = $1
@@ -37,13 +49,25 @@ export class RunManagementService {
       id: (item) => item.id,
       resource: (item) => ({ workspaceId: item.workspaceId, workflowId: item.workflowId, runId: item.id }),
     })
+    return { ...page, items: page.items.map((item) => this.visibleRun(principal, item)) }
   }
 
   async get(principal: ManagementPrincipal, workspaceId: string, runId: string) {
     const run = await this.runs.getForWorkspace(workspaceId, runId)
     if (!run) throw new DomainError('RUN_NOT_FOUND', `Run '${runId}' was not found.`, 404)
     requireAuthorization(principal, 'runs:read', { workspaceId, workflowId: run.workflowId, runId })
-    return this.runs.getDetails(workspaceId, runId)
+    const details = await this.runs.getDetails(workspaceId, runId)
+    if (!details) return undefined
+    const canReadLocation = isAuthorized(principal, 'workspace_locations:read', { workspaceId })
+    const executions = details.executions.map((execution) => {
+      const visible = { ...execution }
+      if (!canReadLocation) {
+        delete visible.workingDirectory
+        delete visible.runtimeDirectory
+      }
+      return visible
+    })
+    return { ...details, run: this.visibleRun(principal, details.run), executions }
   }
 
   async events(principal: ManagementPrincipal, input: { workspaceId: string; runId: string; afterSequence?: number | undefined; limit: number }) {
@@ -68,10 +92,12 @@ export class RunManagementService {
   }
 
   async start(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
-    workspaceId: string; workflowId: string; workflowVersionId: string; commandId: string; input: RunInput;
+    workspaceId: string; workflowId: string; workflowVersionId: string; expectedLocationRevision: number;
+    commandId: string; input: RunInput;
     draftId?: string | undefined; expectedDraftRevision?: number | undefined
   }) {
     requireAuthorization(principal, 'runs:start', { workspaceId: input.workspaceId, workflowId: input.workflowId })
+    requireAuthorization(principal, 'workspace_locations:read', { workspaceId: input.workspaceId })
     const execution = await this.commands.execute({
       principal, source, operation: 'run.start', commandId: input.commandId,
       targetKey: `workflow:${input.workflowId}:version:${input.workflowVersionId}`, payload: input,
@@ -111,17 +137,25 @@ export class RunManagementService {
         if (!versionRow.rows[0]) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', `Workflow version '${input.workflowVersionId}' was not found.`, 404)
         const version = WorkflowVersionSchema.parse(versionRow.rows[0].record)
         validateExecutableTopology(version)
-        const currentConfigurations = await client.query<{ id: string; current_configuration_version_id: string | null }>(
-          'select id, current_configuration_version_id from agents where workspace_id = $1 and id = any($2::text[])',
+        const currentConfigurations = await client.query<{ id: string; current_configuration_version_id: string | null; configuration_record: unknown }>(
+          `select agents.id, agents.current_configuration_version_id, versions.record as configuration_record
+           from agents join agent_configuration_versions versions on versions.id = agents.current_configuration_version_id
+           where agents.workspace_id = $1 and agents.id = any($2::text[])`,
           [input.workspaceId, Object.keys(version.agentConfigurationVersionIds)],
         )
         if (currentConfigurations.rows.length !== Object.keys(version.agentConfigurationVersionIds).length
           || currentConfigurations.rows.some((row) => row.current_configuration_version_id !== version.agentConfigurationVersionIds[row.id])) {
           throw new DomainError('WORKFLOW_CONFIGURATION_STALE', 'Agent settings changed. Save the graph again before starting it.', 409)
         }
+        const configurations = currentConfigurations.rows.map((row) => AgentConfigurationVersionSchema.parse(row.configuration_record))
+        const executionLocation = await this.locations.snapshot(
+          client, input.workspaceId, input.expectedLocationRevision, requiredLocationAccess(configurations),
+        )
         const run = WorkflowRunSchema.parse({
           id: `run-${randomUUID()}`, workspaceId: input.workspaceId, workflowId: input.workflowId,
           workflowVersionId: version.id, agentConfigurationVersionIds: version.agentConfigurationVersionIds,
+          executionLocation,
+          authorizationPrincipalId: principal.id,
           executionCondition: version.definition.executionCondition, executionState: 'queued', outcome: 'pending',
           input: input.input, createdAt: new Date().toISOString(),
         })
@@ -131,7 +165,7 @@ export class RunManagementService {
       },
     })
     if (!execution.replayed) setImmediate(() => { void this.engine.start(execution.value.id).catch(() => undefined) })
-    return { run: execution.value, accepted: true as const, replayed: execution.replayed }
+    return { run: this.visibleRun(principal, execution.value), accepted: true as const, replayed: execution.replayed }
   }
 
   async stop(principal: ManagementPrincipal, source: 'http' | 'mcp', input: { workspaceId: string; runId: string; commandId: string }) {
