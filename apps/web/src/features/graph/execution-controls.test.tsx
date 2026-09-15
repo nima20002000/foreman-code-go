@@ -86,8 +86,10 @@ it('explains the fourth-step safety limit and requires an explicit operator chan
   expect(getGraphDraft(workflowDraftKey(workflow.workspaceId, workflow.id))?.workflow.executionPolicy?.maxNodeExecutions).toBe(4)
 })
 
-it('makes repinning saved agent configurations available without fabricating a graph edit', () => {
+it('does not show board save controls without a meaningful graph or agent change', () => {
   editor()
-  expect(screen.getByRole('button', { name: 'Save agent settings' })).toBeEnabled()
+  expect(screen.queryByRole('button', { name: 'Save agent settings' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Save graph' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument()
   expect(getGraphDraft(workflowDraftKey(workflow.workspaceId, workflow.id))).toBeUndefined()
 })

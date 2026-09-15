@@ -189,7 +189,7 @@ describe('GraphEditor persistence boundary', () => {
       },
     })
 
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Save agent settings' }))
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Save graph' }))
 
     await waitFor(() => expect(screen.getByText('Graph saved.')).toBeVisible())
     expect(getMockFixture(workflow.workspaceId)?.agents).toContainEqual(expect.objectContaining({

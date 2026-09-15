@@ -665,7 +665,6 @@ export function GraphEditor({
     [currentWorkflow, deletedAgentIdSet],
   )
   const hasSessionCleanup = displayedWorkflow !== currentWorkflow
-  const isDirty = draft?.dirty === true || hasSessionCleanup || Object.keys(agentOverrides).length > 0
   const catalogAgents = useMemo(() => {
     const catalogById = new Map(agents
       .filter((agent) => !deletedAgentIdSet.has(agent.id))
@@ -692,6 +691,10 @@ export function GraphEditor({
     return local && (!persisted || (['harness', 'model', 'effort', 'fastMode', 'configurationVersionId'] as const)
       .some((key) => local[key] !== persisted[key]))
   })
+  const isDirty = draft?.dirty === true
+    || hasSessionCleanup
+    || Object.keys(agentOverrides).length > 0
+    || hasUnsavedAgentSettings
   const updateExecutionLimit = (key: 'maxNodeExecutions' | 'maxParallelism', value: number) => {
     if (!Number.isInteger(value) || value < 1) return
     updateDraft(workflowKey, sessionCleanedWorkflow, (saved) => ({
@@ -992,10 +995,6 @@ export function GraphEditor({
       setNotice({ kind: 'info', text: 'Save the current graph before starting the workflow.' })
       return
     }
-    if (hasUnsavedAgentSettings) {
-      setNotice({ kind: 'error', text: 'This graph uses local agent settings. Save those settings in the Agents directory, then save the graph before starting.' })
-      return
-    }
     if (startLock.current || startDisabled) return
     startLock.current = true
     setNotice(undefined)
@@ -1016,7 +1015,7 @@ export function GraphEditor({
         },
       },
     )
-  }, [displayedWorkflow.id, hasUnsavedAgentSettings, isDirty, onSaveSession, queryClient, startDisabled, startRunMutation, workspaceId])
+  }, [displayedWorkflow.id, isDirty, onSaveSession, queryClient, startDisabled, startRunMutation, workspaceId])
 
   const closeAgentPicker = useCallback(() => {
     setAgentPickerOpen(false)
@@ -1291,16 +1290,6 @@ export function GraphEditor({
             </button>
             <button type="button" className="workflow-graph-action workflow-graph-action-primary" onClick={handleSave} disabled={executionLimitExceeded || (!onSaveSession && saveMutation.isPending)}>
               {!onSaveSession && saveMutation.isPending ? 'Saving…' : 'Save graph'}
-            </button>
-          </div>
-        ) : null}
-
-        {!isDirty && !onSaveSession ? (
-          <div className="workflow-graph-actions" aria-label="Workflow settings">
-            <button type="button" className="workflow-graph-action" onClick={handleSave}
-              disabled={saveMutation.isPending || executionLimitExceeded}
-              title="Create a workflow version pinned to the current saved agent configurations">
-              {saveMutation.isPending ? 'Saving…' : 'Save agent settings'}
             </button>
           </div>
         ) : null}
