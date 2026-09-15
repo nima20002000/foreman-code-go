@@ -1015,7 +1015,14 @@ export function GraphEditor({
     const submittedWorkflow = displayedWorkflow
     const submitted = { workflow: submittedWorkflow, agentOverrides }
     const referencedAgentIds = new Set(submittedWorkflow.nodes.map((node) => node.agentId))
-    const submittedAgents = Object.values(agentOverrides).filter((agent) => referencedAgentIds.has(agent.id))
+    const persistedAgentIds = new Set(agents.map((agent) => agent.id))
+    const submittedLocalAgents = localAgents.filter(
+      (agent) => referencedAgentIds.has(agent.id) && !persistedAgentIds.has(agent.id),
+    )
+    const submittedAgents = [...new Map([
+      ...submittedLocalAgents,
+      ...Object.values(agentOverrides).filter((agent) => referencedAgentIds.has(agent.id)),
+    ].map((agent) => [agent.id, agent])).values()]
     setNotice(undefined)
 
     // Session saves persist both halves to their session-owned stores.
@@ -1055,6 +1062,15 @@ export function GraphEditor({
         refetchType: 'none',
       })
       completeSave(workflowKey, submitted, savedWorkflow, savedAgents ?? [])
+      if (submittedLocalAgents.length > 0) {
+        const submittedLocalIds = new Set(submittedLocalAgents.map((agent) => agent.id))
+        const directory = useAgentDirectoryStore.getState()
+        const currentLocalAgents = directory.catalogs[workspaceId]?.localAgents ?? readLocalAgents(workspaceId)
+        directory.setLocalAgents(
+          workspaceId,
+          currentLocalAgents.filter((agent) => !submittedLocalIds.has(agent.id)),
+        )
+      }
       if (!getGraphDraft(workflowDraftKey(workspaceId, savedWorkflow.id))) {
         undoStackRef.current = []
         positionUndoActiveRef.current = false
@@ -1072,7 +1088,7 @@ export function GraphEditor({
         text: `Graph could not be saved: ${graphErrorMessage(error, 'The server rejected the graph.')}`,
       })
     }
-  }, [agentOverrides, completeSave, displayedWorkflow, executionLimitExceeded, isDirty, onPersisted, onSaveSession, queryClient, saveMutation, workspaceId, workflowKey])
+  }, [agentOverrides, agents, completeSave, displayedWorkflow, executionLimitExceeded, isDirty, localAgents, onPersisted, onSaveSession, queryClient, saveMutation, workspaceId, workflowKey])
 
   const handleStart = useCallback(() => {
     if (onSaveSession) {

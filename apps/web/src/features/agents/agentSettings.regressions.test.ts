@@ -21,13 +21,19 @@ describe('PR #3 harness defaults and names', () => {
     const direct = defaultAgentForHarness(target, 'agent-new', 'New agent', defaults[target])
     expect(direct.harnessConfiguration).toEqual(defaults[target])
     expect(configuredHarness(
-      original, target, direct.model!, direct.effort!, direct.fastMode ?? false, defaults,
+      original,
+      target,
+      direct.model!,
+      direct.effort!,
+      direct.fastMode ?? false,
+      direct.harnessConfiguration?.harness === 'codex' ? direct.harnessConfiguration.sandbox : 'read-only',
+      defaults,
     )).toEqual(direct.harnessConfiguration)
   })
 
   it('does not apply later global defaults to an existing agent', () => {
     const existing = defaultAgentForHarness('codex', 'existing', 'Existing agent')
-    expect(configuredHarness(existing, 'codex', existing.model!, existing.effort!, false))
+    expect(configuredHarness(existing, 'codex', existing.model!, existing.effort!, false, 'read-only'))
       .toEqual(DEFAULT_HARNESS_DEFAULTS.codex)
     expect(defaults.codex.sandbox).toBe('workspace-write')
   })

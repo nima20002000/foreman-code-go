@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type HarnessDefaults, type WorkflowDefinition } from '@graphql/contracts'
@@ -81,10 +81,15 @@ function editor(queryClient: QueryClient, props: Partial<GraphEditorProps> = {},
 
 async function addAgent(user: ReturnType<typeof userEvent.setup>, harness: 'Codex' | 'OpenCode') {
   await user.click(screen.getByRole('button', { name: 'Add agent to graph' }))
-  await user.click(await screen.findByRole('button', { name: harness, exact: true }))
-  const form = within(screen.getByRole('dialog', { name: 'Configure agent' }))
-  await user.type(form.getByRole('textbox', { name: 'Initial prompt' }), 'Keep this instruction.')
-  await user.click(form.getByRole('button', { name: 'Save agent settings' }))
+  await user.click(await screen.findByRole('button', { name: harness }))
+  const agent = Object.values(getGraphDraft(key)!.agentOverrides)[0]!
+  const node = canvas.nodes[0]!
+  act(() => node.data.onSaveSettings?.(
+    node.data.workflowNodeId,
+    agent,
+    'Keep this instruction.',
+    node.data.executionPolicy,
+  ))
   return Object.values(getGraphDraft(key)!.agentOverrides)[0]!
 }
 
@@ -132,7 +137,12 @@ describe('PR #3 editor lifecycle regressions', () => {
       ...agent, model: 'gpt-5.6-terra',
       harnessConfiguration: { ...defaults.codex, model: 'gpt-5.6-terra' },
     }
-    act(() => node.data.onSaveSettings?.(node.data.workflowNodeId, edited, node.data.initialPrompt))
+    act(() => node.data.onSaveSettings?.(
+      node.data.workflowNodeId,
+      edited,
+      node.data.initialPrompt,
+      node.data.executionPolicy,
+    ))
     const saved = response(saveGraph.mock.calls[0]![0])
     await act(async () => { pending.resolve(saved); await pending.promise })
     await waitFor(() => expect(getGraphDraft(key)?.agentOverrides[agent.id]).toMatchObject({

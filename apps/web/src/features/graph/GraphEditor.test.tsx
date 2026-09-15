@@ -300,12 +300,11 @@ describe('GraphEditor persistence boundary', () => {
     })
   })
 
-  it('does not remove a selected agent while Delete is used inside its settings fields', async () => {
-    const user = userEvent.setup()
+  it('does not remove a selected agent while Delete is used inside its settings fields', () => {
     renderEditor()
     const researcher = screen.getByRole('button', { name: 'Researcher agent, Step 1' })
-    await user.click(researcher)
-    await user.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
+    fireEvent.click(researcher)
+    fireEvent.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
     const name = screen.getByRole('textbox', { name: 'Name' })
 
     fireEvent.keyDown(name, { key: 'Delete' })
