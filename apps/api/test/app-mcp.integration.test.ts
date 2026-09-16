@@ -39,7 +39,18 @@ describe('App MCP real transport and PostgreSQL policy', () => {
     const access = new PostgresAccessService(database.pool)
     const commands = new PostgresCommandCoordinator(database.pool)
     const interactions = new PostgresInteractionRepository(database.pool)
-    const appInteractions = new PostgresAppInteractionService(database.pool, interactions, commands)
+    const appInteractions = new PostgresAppInteractionService(database.pool, interactions, commands, {
+      respond: async (_responder: unknown, input: { interactionId: string; optionId: string; expectedRevision: number }) => {
+        const current = await interactions.get(input.interactionId)
+        if (!current) throw new Error('interaction missing')
+        const option = current.responseOptions.find((candidate) => candidate.optionId === input.optionId)
+        if (!option) throw new Error('option missing')
+        return interactions.decide({
+          id: current.id, optionId: option.optionId, expectedRevision: input.expectedRevision,
+          nativeResponse: { optionId: option.optionId, semantic: option.semantic },
+        })
+      },
+    })
     const credentials = new WorkerCredentialService(database.pool, access)
     const runId = `run-app-${suffix}`
     const run = WorkflowRunSchema.parse({

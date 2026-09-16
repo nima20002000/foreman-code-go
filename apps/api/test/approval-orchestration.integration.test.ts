@@ -5,6 +5,7 @@ import { join } from 'node:path'
 
 import {
   CODEX_APPROVAL_OPTIONS_FIXTURE,
+  AgentSchema,
   NATIVE_INTERACTION_FIXTURES,
   NativeHarnessEventSchema,
   type HarnessExecutionRequest,
@@ -29,6 +30,7 @@ import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execut
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { InteractionService } from '../src/modules/interactions/service.js'
 import { OperatorInteractionService } from '../src/modules/interactions/operator.js'
+import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
 import { ReviewerDispatcher } from '../src/modules/interactions/reviewer.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -347,6 +349,97 @@ it('targets two parallel interrupt ids without respawning either branch or its p
   expect(restarted).toHaveLength(2)
   expect(managersByAgent.get(restarted[0]!.agentId)!.attachEnvironments).toContain(restarted[1]!.token)
   expect(await runs.listExecutions(run.id)).toHaveLength(3)
+})
+
+it('delivers an Orchestrator App MCP response to native execution, resumes the run and revokes credentials', async () => {
+  const workflows = new PostgresWorkflowRepository(pool)
+  for (const [agentId, productRole] of [['agent-reviewer', 'orchestrator'], ['agent-developer', 'coder']] as const) {
+    const row = await pool.query<{ record: unknown }>('select record from agents where id=$1', [agentId])
+    const agent = AgentSchema.parse({ ...AgentSchema.parse(row.rows[0]!.record), productRole })
+    await pool.query('update agents set record=$2::jsonb where id=$1', [agentId, JSON.stringify(agent)])
+  }
+  const saved = await workflows.get('workspace-1', 'workflow-content-pipeline')
+  if (!saved) throw new Error('seed missing')
+  await workflows.save('workspace-1', {
+    ...saved, requiredAgentCount: 2,
+    nodes: [
+      { id: 'orchestrator-predecessor', agentId: 'agent-reviewer', name: 'Orchestrator' },
+      { id: 'orchestrated-target', agentId: 'agent-developer', name: 'Worker approval' },
+    ],
+    edges: [{ id: 'orchestrated-edge', source: 'orchestrator-predecessor', target: 'orchestrated-target' }],
+    approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'agent-reviewer' },
+    executionPolicy: { maxParallelism: 1, maxNodeExecutions: 2 },
+  })
+  const locations = new WorkspaceLocationService(pool, new PostgresCommandCoordinator(pool), root)
+  const runs = new PostgresRunRepository(pool, workflows, locations)
+  const run = await runs.createForWorkflow('workspace-1', 'workflow-content-pipeline', {}, 1)
+  const interactions = new PostgresInteractionRepository(pool)
+  const budgets = new PostgresApprovalBudgetRepository(pool)
+  const managers = new Map<string, SelectiveNativeManager>()
+  const ownerByExecution = new Map<string, string>()
+  const resolver = { resolve: (context: { executionId: string; agentId: string; harness: 'codex' | 'opencode' }) => {
+    ownerByExecution.set(context.executionId, context.agentId)
+    const existing = managers.get(context.executionId)
+    const manager = existing ?? new SelectiveNativeManager(new Set(['orchestrated-target']), context.harness)
+    managers.set(context.executionId, manager)
+    return { manager, processState: existing ? 'resident' as const : 'needs_start' as const }
+  } }
+  const revoked: string[] = []
+  const credentials = {
+    prepare: async (input: { executionId: string; harness: 'codex' | 'opencode'; workingDirectory: string }) => ({
+      credential: {
+        principalId: `principal-${input.executionId}`,
+        environment: { agentId: ownerByExecution.get(input.executionId)!, variables: { GRAPHQL_APP_MCP_TOKEN: `token-${input.executionId}` } },
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+      detection: {
+        detection: { harness: input.harness, serverName: 'graphql-app', state: 'connected' as const, endpointMatches: true, credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN', checkedAt: new Date().toISOString() },
+        runnerId: 'runner-local', workingDirectory: input.workingDirectory,
+        providerVersion: input.harness === 'codex' ? '0.154.0' : '1.18.31', nativeFilters: {},
+      },
+    }),
+    revoke: async () => undefined,
+    revokeForExecution: async (executionId: string) => { revoked.push(executionId); return 1 },
+  }
+  const runtime = new ApprovalExecutionCoordinator(runs, interactions, budgets, resolver, 10_000, credentials)
+  engine = new LangGraphWorkflowEngine(
+    runs, workflows, { resolve: () => { throw new Error('legacy adapter must not run') } }, checkpoints.saver,
+    root, 10_000, locations, undefined, runtime, interactions,
+  )
+  const service = new InteractionService(interactions, budgets, runtime, (interaction) => engine.resumeInteraction(interaction))
+  const access = new PostgresAccessService(pool)
+  const issued = await access.issue({
+    name: 'Designated orchestrator', audience: 'worker', agentId: 'agent-reviewer',
+    expiresAt: new Date(Date.now() + 60_000),
+    grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: {
+      workspaceIds: [run.workspaceId], workflowIds: [run.workflowId], runIds: [run.id],
+    } }],
+  })
+  const commands = new PostgresCommandCoordinator(pool)
+  app = buildApp({
+    readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
+    appMcp: { access, interactions: new PostgresAppInteractionService(pool, interactions, commands, service) },
+  })
+  const address = await app.listen({ host: '127.0.0.1', port: 0 })
+  const client = new Client({ name: 'orchestrator-app-proof', version: '1.0.0' })
+  await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/tools', address), {
+    authProvider: { token: async () => issued.token },
+  }))
+  try {
+    await engine.start(run.id)
+    const pending = (await interactions.list({ runId: run.id, limit: 10 }))[0]!
+    expect(revoked).toHaveLength(1)
+    const response = await client.callTool({ name: 'interaction_respond', arguments: {
+      interactionId: pending.id,
+      optionId: pending.responseOptions.find((option) => option.semantic === 'approve_once')!.optionId,
+      expectedRevision: pending.revision,
+    } })
+    expect(response.isError).not.toBe(true)
+    expect((response.structuredContent as { interaction: { deliveryState: string } }).interaction.deliveryState).toBe('delivered')
+    expect(await runs.get(run.id)).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
+    expect([...managers.values()].reduce((count, manager) => count + manager.counters.deliveries, 0)).toBe(1)
+    expect(revoked).toHaveLength(2)
+  } finally { await client.close() }
 })
 
 it('keeps a busy designated reviewer pending and fences one idle-session dispatch across workers', async () => {
