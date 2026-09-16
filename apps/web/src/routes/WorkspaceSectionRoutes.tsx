@@ -2,7 +2,8 @@ import { useCallback } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 
 import { AgentsDirectory } from '../features/agents'
-import { HarnessDefaultsSettings, OperatorAccessSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
+import { AgentDefaultsSettings, HarnessDefaultsSettings, OperatorAccessSettings, WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
+import { ApprovalInbox } from '../features/approvals'
 import { WorkflowDirectory } from '../features/workflows'
 import { WorkspaceShell, type WorkspaceSection } from '../shared/ui/WorkspaceShell'
 import {
@@ -162,7 +163,7 @@ export function SettingsRouteEntry() {
   return <SettingsPage />
 }
 
-function GlobalSettingsPage({ harnessesSelected = false }: { harnessesSelected?: boolean }) {
+function GlobalSettingsPage({ selected }: { selected?: 'harnesses' | 'agents' | 'workflows' }) {
   return (
     <WorkspaceShell
       workspaceId="workspace-1"
@@ -176,15 +177,24 @@ function GlobalSettingsPage({ harnessesSelected = false }: { harnessesSelected?:
               <p>Configure application preferences and connected capabilities.</p>
             </header>
             <nav aria-label="Settings sections">
-              <Link to="/settings/harnesses" aria-current={harnessesSelected ? 'page' : undefined}>
+              <Link to="/settings/harnesses" aria-current={selected === 'harnesses' ? 'page' : undefined}>
                 <span>
                   <strong>Harnesses</strong>
                   <small>Defaults for new board agents</small>
                 </span>
               </Link>
+              <Link to="/settings/agents" aria-current={selected === 'agents' ? 'page' : undefined}>
+                <span><strong>Agents</strong><small>Orchestrator, Coder and Operator templates</small></span>
+              </Link>
+              <Link to="/settings/workflows" aria-current={selected === 'workflows' ? 'page' : undefined}>
+                <span><strong>Workflows</strong><small>Defaults for new workflows</small></span>
+              </Link>
+              <Link to="/approvals"><span><strong>Approval Inbox</strong><small>Global review queue and delivery history</small></span></Link>
             </nav>
             <OperatorAccessSettings />
-            {harnessesSelected ? <HarnessDefaultsSettings /> : null}
+            {selected === 'harnesses' ? <HarnessDefaultsSettings /> : null}
+            {selected === 'agents' ? <AgentDefaultsSettings /> : null}
+            {selected === 'workflows' ? <WorkflowDefaultsSettings /> : null}
           </div>
         ),
       }}
@@ -197,7 +207,23 @@ export function GlobalSettingsRouteEntry() {
 }
 
 export function HarnessSettingsRouteEntry() {
-  return <GlobalSettingsPage harnessesSelected />
+  return <GlobalSettingsPage selected="harnesses" />
+}
+
+export function AgentSettingsRouteEntry() { return <GlobalSettingsPage selected="agents" /> }
+export function WorkflowSettingsRouteEntry() { return <GlobalSettingsPage selected="workflows" /> }
+
+export function GlobalApprovalsRouteEntry() {
+  const { interactionId } = useSearch({ from: '/approvals' })
+  const navigate = useNavigate({ from: '/approvals' })
+  return <WorkspaceShell workspaceId="workspace-1" slots={{ main: <ApprovalInbox selectedInteractionId={interactionId} onSelectInteraction={(next) => void navigate({ search: (previous) => ({ ...previous, interactionId: next }) })} /> }} />
+}
+
+export function WorkspaceApprovalsRouteEntry() {
+  const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/approvals' })
+  const { workflowId, interactionId } = useSearch({ from: '/workspaces/$workspaceId/approvals' })
+  const navigate = useNavigate({ from: '/workspaces/$workspaceId/approvals' })
+  return <WorkspaceShell workspaceId={workspaceId} activeSection="workflows" slots={{ main: <ApprovalInbox workspaceId={workspaceId} workflowId={workflowId} selectedInteractionId={interactionId} onSelectInteraction={(next) => void navigate({ search: (previous) => ({ ...previous, interactionId: next }) })} /> }} />
 }
 
 export function BrowsersSettingsRouteEntry() {

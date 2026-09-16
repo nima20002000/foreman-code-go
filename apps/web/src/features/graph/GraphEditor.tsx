@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { Bot, BotMessageSquare, Check, MoreHorizontal, Play, Plus, Square, Trash2, X } from 'lucide-react'
+import { Bot, BotMessageSquare, Check, Inbox, MoreHorizontal, Play, Plus, Settings, Square, Trash2, X } from 'lucide-react'
 
 import {
   addEdge,
@@ -25,7 +25,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useQueryClient } from '@tanstack/react-query'
 
-import { AgentEffortSchema } from '@graphql/contracts'
+import { AgentEffortSchema, DEFAULT_AGENT_DEFAULTS, type AgentDefaults } from '@graphql/contracts'
 import type {
   Agent,
   HarnessDefaults,
@@ -40,7 +40,7 @@ import type { GraphDraft as ManagedGraphDraft } from '@graphql/contracts/managem
 
 import {
   useAgentsQuery,
-  useHarnessDefaultsQuery,
+  useAgentDefaultsQuery,
   useRunQuery,
   useSaveGraphMutation,
   useManagedGraphContextQuery,
@@ -666,6 +666,7 @@ export function GraphEditor({
   )?.id)
   const startLock = useRef(Boolean(activeRunId))
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
+  const [workflowSettingsOpen, setWorkflowSettingsOpen] = useState(false)
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => new Set())
   const [openMenuNodeId, setOpenMenuNodeId] = useState<string>()
   const [enteringEdgeId, setEnteringEdgeId] = useState<string>()
@@ -699,7 +700,8 @@ export function GraphEditor({
     ? draft?.managedBase ?? captureManagedBase(managedDraft, agents, managedAgentRevisions)
     : undefined, [agents, draft?.managedBase, managedAgentRevisions, managedDraft])
   const managedWorkspace = useManagedWorkspaceQuery(workspaceId, Boolean(managedDraft))
-  const harnessDefaultsQuery = useHarnessDefaultsQuery()
+  const agentDefaultsQuery = useAgentDefaultsQuery(import.meta.env.MODE !== 'test')
+  const agentDefaults: AgentDefaults = agentDefaultsQuery.data?.value ?? DEFAULT_AGENT_DEFAULTS
   const startRunMutation = useStartWorkflowRunMutation()
   const startManagedRun = useStartManagedRunMutation()
   const stopManagedRun = useStopManagedRunMutation()
@@ -758,7 +760,7 @@ export function GraphEditor({
     const firstControl = agentPickerRef.current?.querySelector<HTMLElement>('[data-agent-picker-option]')
       ?? agentPickerRef.current?.querySelector<HTMLElement>('button, a[href]')
     firstControl?.focus()
-  }, [agentPickerOpen, harnessDefaultsQuery.data])
+  }, [agentPickerOpen, agentDefaults])
 
   // Query owns the saved definition. The feature store is consulted only
   // while an unsaved draft exists, so refetches remain visible when clean.
@@ -785,6 +787,9 @@ export function GraphEditor({
     }
     return [...catalogById.values()]
   }, [agentOverrides, agents, deletedAgentIdSet, draft?.managedBase?.agents, localAgents])
+  const workflowAgentIds = useMemo(() => new Set(displayedWorkflow.nodes.map((node) => node.agentId)), [displayedWorkflow.nodes])
+  const workflowOrchestrators = catalogAgents.filter((agent) => workflowAgentIds.has(agent.id) && agent.productRole === 'orchestrator')
+  const hasDistinctCoder = catalogAgents.some((agent) => workflowAgentIds.has(agent.id) && agent.productRole === 'coder')
 
   const executionPolicy = displayedWorkflow.executionPolicy ?? {
     maxParallelism: Math.max(1, displayedWorkflow.nodes.length),
@@ -1491,6 +1496,8 @@ export function GraphEditor({
         </NodeMenuContext.Provider>
 
         <div className="workflow-graph-primary-actions" aria-label="Workflow controls">
+          <button type="button" className="workflow-graph-add-agent" aria-label="Workflow settings" title="Workflow settings" onClick={() => setWorkflowSettingsOpen((open) => !open)}><Settings aria-hidden="true" size={16} /></button>
+          <a href={`/workspaces/${encodeURIComponent(workspaceId)}/approvals?workflowId=${encodeURIComponent(displayedWorkflow.id)}`} className="workflow-graph-add-agent" aria-label="Workflow Approval Inbox" title="Workflow Approval Inbox"><Inbox aria-hidden="true" size={16} /></a>
           <button
             type="button"
             className="workflow-graph-run"
@@ -1532,6 +1539,19 @@ export function GraphEditor({
             <Plus aria-hidden="true" size={17} />
           </button>
         </div>
+
+        {workflowSettingsOpen ? <div className="workflow-settings-popover" role="dialog" aria-labelledby="workflow-settings-title">
+          <header><div><p className="panel-kicker">Local override</p><h2 id="workflow-settings-title">Workflow settings</h2></div><button type="button" aria-label="Close workflow settings" onClick={() => setWorkflowSettingsOpen(false)}><X size={16} /></button></header>
+          <label>Approval handler<select value={displayedWorkflow.approval?.handler ?? ''} onChange={(event) => {
+            const handler = event.target.value as 'user' | 'orchestrator' | 'operator'
+            applyBoardChange((saved) => ({ ...saved, approval: handler === 'orchestrator'
+              ? { handler, designatedOrchestratorAgentId: displayedWorkflow.approval?.designatedOrchestratorAgentId ?? workflowOrchestrators[0]?.id ?? 'select-an-orchestrator' }
+              : { handler } }))
+          }}><option value="" disabled>Select handler</option><option value="user">User</option><option value="orchestrator" disabled={!hasDistinctCoder || workflowOrchestrators.length === 0}>Orchestrator</option><option value="operator">Operator</option></select></label>
+          {displayedWorkflow.approval?.handler === 'orchestrator' ? <label>Designated Orchestrator<select value={displayedWorkflow.approval.designatedOrchestratorAgentId} onChange={(event) => applyBoardChange((saved) => ({ ...saved, approval: { handler: 'orchestrator', designatedOrchestratorAgentId: event.target.value } }))}>{workflowOrchestrators.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label> : null}
+          {!hasDistinctCoder || workflowOrchestrators.length === 0 ? <p role="status">Orchestrator handling requires one Orchestrator and a distinct Coder on this board.</p> : null}
+          <p>Normal graph edges do not grant approval authority. This setting is pinned when you Save graph.</p>
+        </div> : null}
 
         {isDirty || managedDraft ? (
           <div className="workflow-graph-actions" aria-label="Graph actions">
@@ -1579,19 +1599,19 @@ export function GraphEditor({
           >
             <div className="agent-picker-heading">
               <div>
-                <h2 id="agent-picker-title">Add harness</h2>
+                <h2 id="agent-picker-title">Add Agent</h2>
               </div>
               <button type="button" aria-label="Close agent picker" title="Close" onClick={closeAgentPicker}>
                 <X aria-hidden="true" size={17} />
               </button>
             </div>
 
-            {harnessDefaultsQuery.isPending ? (
-              <p className="agent-picker-state" role="status">Loading harness defaults…</p>
-            ) : harnessDefaultsQuery.isError || !harnessDefaultsQuery.data ? (
+            {agentDefaultsQuery.isPending && agentDefaultsQuery.fetchStatus !== 'idle' ? (
+              <p className="agent-picker-state" role="status">Loading Agent templates…</p>
+            ) : agentDefaultsQuery.isError ? (
               <div className="agent-picker-state" role="alert">
-                <p>Harness defaults are unavailable.</p>
-                <button type="button" onClick={() => void harnessDefaultsQuery.refetch()}>Retry</button>
+                <p>Agent templates are unavailable.</p>
+                <button type="button" onClick={() => void agentDefaultsQuery.refetch()}>Retry</button>
               </div>
             ) : (
               <div className="harness-picker-grid">
@@ -1599,27 +1619,29 @@ export function GraphEditor({
                   type="button"
                   data-agent-picker-option
                   onClick={() => addAgentToGraph(defaultAgentForHarness(
-                    'codex',
-                    nextBoardAgentId('codex'),
-                    nextHarnessAgentName('codex', catalogAgents),
-                    harnessDefaultsQuery.data.defaults.codex,
+                    agentDefaults.orchestrator.harness.harness,
+                    nextBoardAgentId(agentDefaults.orchestrator.harness.harness),
+                    'Orchestrator',
+                    agentDefaults.orchestrator.harness,
+                    'orchestrator',
                   ))}
                 >
                   <Bot aria-hidden="true" size={28} />
-                  <span>Codex</span>
+                  <span>Orchestrator</span>
                 </button>
                 <button
                   type="button"
                   data-agent-picker-option
                   onClick={() => addAgentToGraph(defaultAgentForHarness(
-                    'opencode',
-                    nextBoardAgentId('opencode'),
-                    nextHarnessAgentName('opencode', catalogAgents),
-                    harnessDefaultsQuery.data.defaults.opencode,
+                    agentDefaults.coder.harness.harness,
+                    nextBoardAgentId(agentDefaults.coder.harness.harness),
+                    nextHarnessAgentName(agentDefaults.coder.harness.harness, catalogAgents).replace(/^(codex|opencode)/i, 'coder'),
+                    agentDefaults.coder.harness,
+                    'coder',
                   ))}
                 >
                   <BotMessageSquare aria-hidden="true" size={28} />
-                  <span>OpenCode</span>
+                  <span>Coder</span>
                 </button>
               </div>
             )}

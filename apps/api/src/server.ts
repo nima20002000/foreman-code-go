@@ -15,6 +15,9 @@ import { LangGraphWorkflowEngine } from './modules/runs/engine.js'
 import { PostgresRunRepository } from './modules/runs/postgres.js'
 import { RunManagementService } from './modules/runs/management.js'
 import { PostgresSettingsRepository } from './modules/settings/postgres.js'
+import { PostgresFoundationSettingsRepository } from './modules/settings/foundation.js'
+import { FoundationSettingsManagementService } from './modules/settings/management.js'
+import { PostgresInteractionRepository } from './modules/interactions/postgres.js'
 import { PostgresWorkflowRepository } from './modules/workflows/postgres.js'
 import { WorkflowManagementService } from './modules/workflows/management.js'
 import { PostgresWorkspaceRepository } from './modules/workspaces/postgres.js'
@@ -46,6 +49,8 @@ async function main() {
   const runs = new PostgresRunRepository(database.pool, workflows, locations)
   const workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
   const settings = new PostgresSettingsRepository(database.pool)
+  const foundationSettings = new PostgresFoundationSettingsRepository(database.pool)
+  const interactions = new PostgresInteractionRepository(database.pool)
   const harnesses = new LocalHarnessResolver(config.harnesses.codexBinary, config.harnesses.openCodeBinary)
   const engine = new LangGraphWorkflowEngine(
     runs,
@@ -63,13 +68,14 @@ async function main() {
     agents: new AgentManagementService(database.pool),
     drafts: new GraphDraftService(database.pool, commands),
     harnesses: new HarnessCatalogService(harnesses, settings, commands, config.harnesses.workspaceRoot),
+    settings: new FoundationSettingsManagementService(foundationSettings, commands),
     runs: new RunManagementService(database.pool, commands, runs, engine, locations),
     commands,
   }
   const app = buildApp({
     readiness: { database, checkpoints },
     readinessTimeoutMs: config.readinessTimeoutMs,
-    product: { workspaces, workflows, runs, settings, engine },
+    product: { workspaces, workflows, runs, settings, foundationSettings, interactions, engine },
     operator: { access, services: operatorServices },
     logger: true,
   })

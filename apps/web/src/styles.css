@@ -763,6 +763,22 @@ h1 {
   border-top: 1px solid var(--color-border);
 }
 
+.settings-form { margin-top:22px; padding:22px; border:1px solid var(--color-border); border-radius:18px; background:var(--color-surface); }
+.settings-form-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:22px; margin-bottom:18px; }
+.settings-form-heading h2 { margin:3px 0 6px; letter-spacing:-.025em; }.settings-form-heading p { margin:0; color:var(--color-text-muted); }
+.settings-form-heading>button,.settings-conflict button { border:0; border-radius:10px; padding:10px 14px; color:var(--color-accent-contrast); background:var(--color-accent); font-weight:750; cursor:pointer; white-space:nowrap; }.settings-form-heading>button:disabled { opacity:.45; cursor:not-allowed; }
+.agent-template-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:13px; }
+.agent-template-card { padding:17px; border:1px solid var(--color-border); border-radius:14px; background:var(--color-surface-subtle); min-width:0; }
+.agent-template-title { display:flex; gap:11px; align-items:flex-start; margin-bottom:16px; }.agent-template-title>span { width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--color-status-bg);color:var(--color-text-strong); }.agent-template-title h3 { margin:0 0 4px; }.agent-template-title p { margin:0; color:var(--color-text-muted); font-size:.78rem; line-height:1.45; }
+.settings-field-grid { display:grid; gap:10px; }.settings-field-grid label,.settings-prominent-field { display:grid; gap:5px; color:var(--color-text-muted); font-size:.75rem; font-weight:700; }.settings-field-grid input,.settings-field-grid select,.settings-prominent-field select { min-width:0; width:100%; border:1px solid var(--color-border); border-radius:9px; background:var(--color-surface); color:var(--color-text-strong); padding:9px 10px; font:inherit; }.settings-help { margin:0; font-size:.72rem; line-height:1.45; color:var(--color-text-muted); }
+.settings-field-grid textarea { width:100%; resize:vertical; border:1px solid var(--color-border); border-radius:9px; background:var(--color-surface); color:var(--color-text-strong); padding:9px 10px; font:inherit; }
+.settings-switch { display:flex; gap:10px; align-items:flex-start; margin-top:15px; color:var(--color-text-strong); }.settings-switch input { margin-top:3px; }.settings-switch span { display:flex; flex-direction:column; gap:3px; }.settings-switch small,.settings-prominent-field small { color:var(--color-text-muted); font-weight:500; line-height:1.4; }
+.settings-switch-inline { margin-top:0; display:flex !important; }.advanced-settings { margin-top:14px; padding-top:12px; border-top:1px solid var(--color-border); }.advanced-settings summary { cursor:pointer; color:var(--color-text-strong); font-size:.78rem; font-weight:800; }.advanced-settings>div { margin-top:13px; }.permission-rules { display:grid; gap:8px; margin:0; padding:11px; border:1px solid var(--color-border); border-radius:9px; }.permission-rules legend { color:var(--color-text-strong); }.permission-rules>div { display:grid; grid-template-columns:1fr 1.4fr .8fr auto; gap:6px; }.permission-rules button { border:1px solid var(--color-border); border-radius:7px; padding:7px 9px; color:var(--color-text-strong); background:var(--color-surface-raised); cursor:pointer; }.permission-rules p,.permission-rules small { margin:0; color:var(--color-text-muted); font-size:.72rem; }
+.settings-capability { margin:14px 0 0; padding-top:12px; border-top:1px solid var(--color-border); color:var(--color-text-muted); font-size:.72rem; }.settings-conflict { display:flex; justify-content:space-between; gap:14px; align-items:center; margin:0 0 16px; padding:11px 13px; background:var(--color-status-bg); border-radius:10px; font-size:.8rem; }.settings-conflict button { padding:7px 9px; background:transparent; color:var(--color-text-strong); border:1px solid var(--color-border); }.settings-form-compact { max-width:760px; }.settings-prominent-field { max-width:430px; }
+@media (max-width:1000px) { .agent-template-grid { grid-template-columns:1fr; } }
+@media (max-width:620px) { .settings-form { padding:16px; }.settings-form-heading { flex-direction:column; }.settings-form-heading>button { width:100%; }.settings-conflict { flex-direction:column; align-items:stretch; } }
+@media (max-width:620px) { .permission-rules>div { grid-template-columns:1fr; } }
+
 .harness-defaults-heading {
   display: flex;
   align-items: flex-start;

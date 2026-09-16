@@ -8,6 +8,7 @@ import type { WorkflowManagementService } from '../../modules/workflows/manageme
 import type { WorkspaceManagementService } from '../../modules/workspaces/management.js'
 import type { PostgresCommandCoordinator } from '../../modules/commands/postgres.js'
 import type { WorkspaceLocationService } from '../../modules/workspaces/location.js'
+import type { FoundationSettingsManagementService } from '../../modules/settings/management.js'
 
 export interface OperatorServices {
   workspaces: WorkspaceManagementService
@@ -16,6 +17,7 @@ export interface OperatorServices {
   agents: AgentManagementService
   drafts: GraphDraftService
   harnesses: HarnessCatalogService
+  settings?: FoundationSettingsManagementService
   runs: RunManagementService
   commands: PostgresCommandCoordinator
 }

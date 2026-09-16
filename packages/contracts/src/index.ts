@@ -1531,6 +1531,7 @@ export const UrlSearchSelectionSchema = z
     agentId: IdSchema.optional(),
     workflowId: IdSchema.optional(),
     conversationId: IdSchema.optional(),
+    interactionId: IdSchema.optional(),
   })
   .strict();
 export type UrlSearchSelection = z.infer<typeof UrlSearchSelectionSchema>;

@@ -81,8 +81,9 @@ function editor(queryClient: QueryClient, props: Partial<GraphEditorProps> = {},
 
 async function addAgent(user: ReturnType<typeof userEvent.setup>, harness: 'Codex' | 'OpenCode') {
   await user.click(screen.getByRole('button', { name: 'Add agent to graph' }))
-  await user.click(await screen.findByRole('button', { name: harness }))
-  const agent = Object.values(getGraphDraft(key)!.agentOverrides)[0]!
+  await user.click(await screen.findByRole('button', { name: harness === 'Codex' ? 'Orchestrator' : 'Coder' }))
+  let agent = Object.values(getGraphDraft(key)!.agentOverrides)[0]!
+  if (harness === 'OpenCode') agent = defaultAgentForHarness('opencode', agent.id, agent.name, defaults.opencode, agent.productRole)
   const node = canvas.nodes[0]!
   act(() => node.data.onSaveSettings?.(
     node.data.workflowNodeId,

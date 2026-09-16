@@ -42,14 +42,19 @@ export class PostgresInteractionRepository {
     return result.rows[0] ? DurableInteractionSchema.parse(result.rows[0].record) : undefined
   }
 
-  async listPending(input: { workspaceId?: string; workflowId?: string; afterId?: string; limit: number }): Promise<DurableInteraction[]> {
+  async list(input: { workspaceId?: string; workflowId?: string; status?: DurableInteraction['status']; afterId?: string; limit: number }): Promise<DurableInteraction[]> {
     const result = await this.pool.query<{ record: unknown }>(
       `select record from durable_interactions
-       where status='pending' and ($1::text is null or workspace_id=$1)
-         and ($2::text is null or workflow_id=$2) and ($3::text is null or id>$3)
-       order by id limit $4`, [input.workspaceId ?? null, input.workflowId ?? null, input.afterId ?? null, input.limit],
+       where ($1::text is null or workspace_id=$1)
+         and ($2::text is null or workflow_id=$2) and ($3::text is null or status=$3)
+         and ($4::text is null or id>$4)
+       order by id limit $5`, [input.workspaceId ?? null, input.workflowId ?? null, input.status ?? null, input.afterId ?? null, input.limit],
     )
     return result.rows.map((row) => DurableInteractionSchema.parse(row.record))
+  }
+
+  listPending(input: { workspaceId?: string; workflowId?: string; afterId?: string; limit: number }) {
+    return this.list({ ...input, status: 'pending' })
   }
 
   async decide(input: { id: string; optionId: string; expectedRevision: number; nativeResponse: unknown; auditReference?: string }): Promise<{ interaction: DurableInteraction; replayed: boolean }> {

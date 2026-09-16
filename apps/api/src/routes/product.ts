@@ -6,6 +6,17 @@ import {
   GetRunResponseSchema,
   GetWorkflowResponseSchema,
   GetHarnessDefaultsResponseSchema,
+  GetAgentDefaultsResponseSchema,
+  UpdateAgentDefaultsResponseSchema,
+  GetWorkflowDefaultsResponseSchema,
+  UpdateWorkflowDefaultsResponseSchema,
+  UpdateAgentDefaultsRequestSchema,
+  UpdateWorkflowDefaultsRequestSchema,
+  GetInteractionResponseSchema,
+  ListInteractionsRequestSchema,
+  ListInteractionsResponseSchema,
+  RespondToInteractionRequestSchema,
+  RespondToInteractionResponseSchema,
   ListAgentsResponseSchema,
   SaveWorkflowRequestSchema,
   SaveWorkflowResponseSchema,
@@ -19,6 +30,9 @@ import { DomainError } from '../modules/errors.js'
 import type { LangGraphWorkflowEngine } from '../modules/runs/engine.js'
 import type { PostgresRunRepository } from '../modules/runs/postgres.js'
 import type { PostgresSettingsRepository } from '../modules/settings/postgres.js'
+import type { PostgresFoundationSettingsRepository } from '../modules/settings/foundation.js'
+import type { PostgresInteractionRepository } from '../modules/interactions/postgres.js'
+import type { DurableInteraction } from '@graphql/contracts'
 import type { PostgresWorkflowRepository } from '../modules/workflows/postgres.js'
 import type { PostgresWorkspaceRepository } from '../modules/workspaces/postgres.js'
 
@@ -27,6 +41,11 @@ export interface ProductServices {
   workflows: PostgresWorkflowRepository
   runs: PostgresRunRepository
   settings: PostgresSettingsRepository
+  foundationSettings?: PostgresFoundationSettingsRepository
+  interactions?: PostgresInteractionRepository
+  interactionResponder?: {
+    respond(input: { interactionId: string; optionId: string; expectedRevision: number }): Promise<{ interaction: DurableInteraction; replayed: boolean }>
+  }
   engine: LangGraphWorkflowEngine
 }
 
@@ -40,6 +59,56 @@ function notFound(kind: string, id: string): never {
 }
 
 export function registerProductRoutes(app: FastifyInstance, services: ProductServices, managementOnlyMutations = false): void {
+  if (services.foundationSettings) {
+    app.get('/api/settings/agents', async () => GetAgentDefaultsResponseSchema.parse(
+      await services.foundationSettings!.getAgentDefaults(),
+    ))
+    app.put<{ Body: unknown }>('/api/settings/agents', async (request) => {
+      if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the revision-checked management settings command.', 409)
+      const input = UpdateAgentDefaultsRequestSchema.parse(request.body)
+      return UpdateAgentDefaultsResponseSchema.parse(await services.foundationSettings!.updateAgentDefaults(input.value, input.expectedRevision))
+    })
+    app.get('/api/settings/workflows', async () => GetWorkflowDefaultsResponseSchema.parse(
+      await services.foundationSettings!.getWorkflowDefaults(),
+    ))
+    app.put<{ Body: unknown }>('/api/settings/workflows', async (request) => {
+      if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the revision-checked management settings command.', 409)
+      const input = UpdateWorkflowDefaultsRequestSchema.parse(request.body)
+      return UpdateWorkflowDefaultsResponseSchema.parse(await services.foundationSettings!.updateWorkflowDefaults(input.value, input.expectedRevision))
+    })
+  }
+
+  if (services.interactions) {
+    app.get<{ Querystring: Record<string, string | undefined> }>('/api/interactions', async (request) => {
+      const input = ListInteractionsRequestSchema.parse({
+        ...(request.query.cursor ? { cursor: request.query.cursor } : {}),
+        ...(request.query.limit ? { limit: Number(request.query.limit) } : {}),
+        ...(request.query.workspaceId ? { workspaceId: request.query.workspaceId } : {}),
+        ...(request.query.workflowId ? { workflowId: request.query.workflowId } : {}),
+        ...(request.query.status ? { status: request.query.status } : {}),
+      })
+      const items = await services.interactions!.list({
+        ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+        ...(input.workflowId ? { workflowId: input.workflowId } : {}),
+        ...(input.status ? { status: input.status } : {}),
+        ...(input.cursor ? { afterId: input.cursor } : {}),
+        limit: input.limit + 1,
+      })
+      return ListInteractionsResponseSchema.parse({
+        items: items.slice(0, input.limit),
+        nextCursor: items.length > input.limit ? items[input.limit - 1]?.id ?? null : null,
+      })
+    })
+    app.get<{ Params: { interactionId: string } }>('/api/interactions/:interactionId', async (request) => {
+      const interaction = await services.interactions!.get(request.params.interactionId)
+      return interaction ? GetInteractionResponseSchema.parse({ interaction }) : notFound('interaction', request.params.interactionId)
+    })
+    app.post<{ Params: { interactionId: string }; Body: unknown }>('/api/interactions/:interactionId/respond', async (request) => {
+      if (!services.interactionResponder) throw new DomainError('INTERACTION_RESPONSE_UNAVAILABLE', 'Approval delivery is not available.', 503)
+      const input = RespondToInteractionRequestSchema.parse({ ...(request.body as object), interactionId: request.params.interactionId })
+      return RespondToInteractionResponseSchema.parse(await services.interactionResponder.respond(input))
+    })
+  }
   app.get('/api/settings/harnesses', async () => GetHarnessDefaultsResponseSchema.parse({
     defaults: await services.settings.getHarnessDefaults(),
   }))
