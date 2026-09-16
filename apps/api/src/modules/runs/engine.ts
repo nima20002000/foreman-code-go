@@ -26,6 +26,7 @@ import type { RunOwnership } from './ownership.js'
 import { ExecutionLimiter } from './limiter.js'
 import { validateExecutableTopology } from './topology.js'
 import { resolveExecutionDirectory } from './executionDirectory.js'
+import { withCleanupDeadline } from '../interactions/cleanup.js'
 import type { ApprovalExecutionCoordinator } from '../interactions/execution.js'
 import type { PostgresInteractionRepository } from '../interactions/postgres.js'
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
@@ -75,6 +76,30 @@ function failedResult(error: unknown, canceled: boolean): ExecutionResult {
       message: error instanceof Error ? error.message : 'Unknown workflow execution failure.',
       retryable: false,
     },
+  }
+}
+
+function cleanupFailedResult(): ExecutionResult {
+  return {
+    outcome: 'failed',
+    error: { code: 'RUN_CLEANUP_FAILED', message: 'Run cleanup was incomplete. Native work may remain active; retry Stop to finish cleanup.', retryable: false },
+  }
+}
+
+/** Observe graph cancellation even when a native iterator ignores its signal. */
+async function withExecutionSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  let onAbort: (() => void) | undefined
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        onAbort = () => reject(signal.reason)
+        signal.addEventListener('abort', onAbort, { once: true })
+        if (signal.aborted) onAbort()
+      }),
+    ])
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort)
   }
 }
 
@@ -135,7 +160,8 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         throw new DomainError('RUN_NOT_STARTABLE', `Run '${runId}' is not queued.`, 409)
       }
       if (controller.signal.aborted) {
-        await this.runs.settleOrphan(runId, owner, true)
+        const cleanupFailure = await this.cleanupApprovals(runId)
+        await this.settleCanceled(runId, owner, cleanupFailure)
         return
       }
       await this.executeRun(run, controller.signal, owner)
@@ -316,9 +342,13 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     if (!this.interactions) throw new DomainError('APPROVAL_RUNTIME_MISSING', 'The graph interrupted without an interaction repository.', 500)
     const current: DurableInteraction[] = []
     for (const pending of snapshot.tasks.flatMap((task) => task.interrupts ?? [])) {
-      const value = pending.value as { interactionId?: unknown }
+      const value = pending.value as { interactionId?: unknown; interactionIds?: unknown }
       if (!pending.id || typeof value?.interactionId !== 'string') throw new DomainError('GRAPH_INTERRUPT_INVALID', 'The graph interrupt has no interaction identity.', 500)
-      const item = await this.interactions.get(value.interactionId)
+      const ids = value.interactionIds ?? [value.interactionId]
+      if (!Array.isArray(ids) || !ids.includes(value.interactionId) || ids.some((id) => typeof id !== 'string')
+        || new Set(ids).size !== ids.length) throw new DomainError('GRAPH_INTERRUPT_INVALID', 'The graph interrupt has invalid interaction identities.', 500)
+      for (const id of ids) {
+      const item = await this.interactions.get(id)
       if (!item || item.runId !== run.id || item.graphThreadId !== run.id
         || item.workspaceId !== run.workspaceId || item.workflowId !== run.workflowId) {
         throw new DomainError('INTERACTION_RUN_MISMATCH', 'The graph interrupt does not belong to this Run.', 409)
@@ -329,12 +359,14 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         throw new DomainError('INTERACTION_IDENTITY_CONFLICT', 'The graph interrupt does not match its durable native execution.', 409)
       }
       if ((item.graphInterruptId && item.graphInterruptId !== pending.id)
-        || current.some((other) => other.id === item.id || other.graphInterruptId === pending.id)) {
+        || current.some((other) => other.id === item.id || (other.graphInterruptId === pending.id
+          && (other.executionId !== item.executionId || other.nativeSessionId !== item.nativeSessionId)))) {
         throw new DomainError('INTERACTION_INTERRUPT_CONFLICT', 'The interaction has a conflicting graph interrupt identity.', 409)
       }
       // Repair only an absent binding after a checkpoint-write/process crash.
       // Never replace a durable/native identity or redeliver a native response.
       current.push(item.graphInterruptId ? item : await this.interactions.bindGraphInterrupt(item.id, pending.id))
+      }
     }
     return current
   }
@@ -342,23 +374,66 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   private async settleCanceledRun(runId: string, owner: RunOwnership): Promise<void> {
     const run = await this.runs.get(runId, owner)
     if (!run || run.executionState === 'completed') return
-    await this.approvals?.cancelRun(runId)
-    await this.runs.settleOrphan(runId, owner, true)
+    const cleanupFailure = await this.cleanupApprovals(runId)
+    await this.settleCanceled(runId, owner, cleanupFailure)
+    if (cleanupFailure) throw cleanupFailure.error
+  }
+
+  private async cleanupApprovals(runId: string): Promise<{ error: unknown } | undefined> {
+    try {
+      await this.approvals?.cancelRun(runId)
+      return undefined
+    } catch (error) {
+      return { error }
+    }
+  }
+
+  private async settleCanceled(runId: string, owner: RunOwnership, cleanupFailure?: { error: unknown }): Promise<boolean> {
+    // Terminalize only after native cleanup. A failed closure is not a successful Stop.
+    const settled = await this.runs.settleOrphan(runId, owner, !cleanupFailure)
+    if (settled && cleanupFailure) {
+      const result = cleanupFailedResult()
+      await this.runs.updateState(runId, {
+        executionState: 'completed', outcome: result.outcome, result, finishedAt: new Date().toISOString(),
+      }, owner)
+    }
+    return settled
   }
 
   async cancel(runId: string): Promise<boolean> {
     const controller = this.activeRuns.get(runId)
+    const activeTask = this.activeTasks.get(runId)
+    controller?.abort()
+    // Local native ownership outlives graph tasks and database execution state.
+    // Begin its cancellation even if acquiring database ownership later fails.
+    const localCleanup = controller || this.approvals?.residentRunIds().includes(runId)
+      ? this.cleanupApprovals(runId) : undefined
+    let drainFailure: { error: unknown } | undefined
     if (controller) {
-      controller.abort()
-      await this.approvals?.cancelRun(runId)
-      return true
+      await localCleanup
+      if (activeTask) {
+        try { await withCleanupDeadline(() => activeTask) } catch (error) { drainFailure = { error } }
+      }
+      // Stop can race the transition to waiting after graph invocation returns.
+      // Re-check durable settlement instead of treating a drained task as Stop.
     }
-    const owner = await this.runs.acquireOwnership(runId, () => undefined)
-    if (!owner) return false
+    let owner: RunOwnership | undefined
     try {
-      const settled = await this.runs.settleOrphan(runId, owner, true)
-      if (settled) await this.approvals?.cancelRun(runId)
-      return settled
+      owner = await this.runs.acquireOwnership(runId, () => undefined)
+    } catch (error) {
+      const cleanupFailure = await localCleanup
+      throw new AggregateError([error, ...(cleanupFailure ? [cleanupFailure.error] : [])], 'Stop could not acquire Run ownership.')
+    }
+    if (!owner) {
+      const cleanupFailure = (await localCleanup) ?? drainFailure
+      if (cleanupFailure) throw cleanupFailure.error
+      return false
+    }
+    try {
+      const cleanupFailure = (await (localCleanup ?? this.cleanupApprovals(runId))) ?? drainFailure
+      const settled = await this.settleCanceled(runId, owner, cleanupFailure)
+      if (cleanupFailure) throw cleanupFailure.error
+      return settled || Boolean(controller)
     } finally {
       await owner.release()
     }
@@ -366,10 +441,19 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
   async shutdown(): Promise<void> {
     this.closing = true
+    const runIds = new Set([...this.activeRuns.keys(), ...(this.approvals?.residentRunIds() ?? [])])
     for (const controller of this.activeRuns.values()) controller.abort()
-    await this.reconciliation?.catch(() => undefined)
-    await this.approvals?.reviewers.shutdown()
-    await Promise.allSettled([...this.activeTasks.values(), ...this.resumeTasks.values()])
+    // Waiting sessions are deliberately included; all cancellations start before
+    // any task drain, and a failed sibling must not short-circuit shutdown.
+    const reviewerCleanup = this.approvals?.reviewers.shutdown()
+    const outcomes = await Promise.allSettled([...runIds].map((runId) => this.cancel(runId)))
+    const drains = await Promise.allSettled([
+      withCleanupDeadline(() => this.reconciliation ?? Promise.resolve()),
+      withCleanupDeadline(async () => { await Promise.allSettled([...this.activeTasks.values(), ...this.resumeTasks.values()]) }),
+      withCleanupDeadline(async () => { await reviewerCleanup }),
+    ])
+    const errors = [...outcomes, ...drains].flatMap((item) => item.status === 'rejected' ? [item.reason] : [])
+    if (errors.length) throw new AggregateError(errors, 'Workflow shutdown cleanup was incomplete.')
   }
 
   private async executeRun(run: WorkflowRun, signal: AbortSignal, owner: RunOwnership, resumeCommand?: Command): Promise<void> {
@@ -379,9 +463,13 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     const activeNodes = new Set<Promise<Partial<EngineStateValue>>>()
     let firstFailure: { error: unknown } | undefined
     let graph: DynamicCompiledGraph | undefined
-    const drain = async () => {
+    let cleanup: Promise<{ error: unknown } | undefined> | undefined
+    const cancelNative = () => { cleanup ??= this.cleanupApprovals(run.id) }
+    nodeSignal.addEventListener('abort', cancelNative, { once: true })
+    if (nodeSignal.aborted) cancelNative()
+    const drain = () => withCleanupDeadline(async () => {
       while (activeNodes.size) await Promise.allSettled([...activeNodes])
-    }
+    })
 
     try {
       signal.throwIfAborted()
@@ -428,26 +516,21 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       if (await this.persistApprovalWait({ ...run, startedAt }, await graph.getState(graphConfig), signal, owner)) return
       await this.completeRun({ ...run, startedAt }, version, state, signal, owner)
     } catch (error) {
-      // A graph interrupt is a checkpoint boundary, not sibling failure.
-      if (!isGraphInterrupt(error)) failedNodes.abort(error)
-      // Abort is cooperative. Start native cancellation before draining so a
-      // resumed observation can unwind even when it awaits provider I/O.
-      if (signal.aborted || firstFailure) owner.assertOwned()
-      const canceling = signal.aborted || firstFailure ? this.approvals?.cancelRun(run.id) : undefined
-      void canceling?.catch(() => undefined)
-      // Retain local tracking and database ownership until all launched tasks clean up.
-      await drain()
-      await canceling
-      owner.assertOwned()
+      // A healthy interrupt and recoverable checkpoint I/O retain native work.
       if (!signal.aborted && !firstFailure) {
+        await drain()
+        owner.assertOwned()
         if (isGraphInterrupt(error) && graph
           && await this.persistApprovalWait({ ...run, startedAt }, await graph.getState({ configurable: { thread_id: run.id } }), signal, owner)) return
-        // Failed resume/checkpoint I/O is not an acknowledgment. The durable
-        // delivered interaction and checkpoint remain available to reconciliation.
         if (resumeCommand) throw error
       }
-      if (!canceling) await this.approvals?.cancelRun(run.id, owner)
-      const result = failedResult(firstFailure?.error ?? error, signal.aborted)
+      failedNodes.abort(error)
+      cancelNative()
+      const cleanupFailure = await cleanup
+      let drainFailed = false
+      try { await drain() } catch { drainFailed = true }
+      owner.assertOwned()
+      const result = cleanupFailure || drainFailed ? cleanupFailedResult() : failedResult(firstFailure?.error ?? error, signal.aborted)
       await this.runs.updateState(run.id, {
         executionState: 'completed',
         outcome: result.outcome,
@@ -456,8 +539,9 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         finishedAt: new Date().toISOString(),
       }, owner)
     } finally {
-      failedNodes.abort()
-      await drain()
+      nodeSignal.removeEventListener('abort', cancelNative)
+      // Do not abort a successful waiting graph's resident session. Its lifetime
+      // is owned by the coordinator until resume, Stop, or shutdown.
     }
   }
 
@@ -467,6 +551,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     signal.throwIfAborted()
     await this.runs.updateState(run.id, { executionState: 'waiting', outcome: 'pending', startedAt: run.startedAt ?? new Date().toISOString() }, owner)
     signal.throwIfAborted()
+    await this.approvals?.reconcileReviews(console.error).catch(console.error)
     return true
   }
 

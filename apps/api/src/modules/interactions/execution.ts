@@ -20,6 +20,7 @@ import { DomainError } from '../errors.js'
 import { ReviewerDispatcher } from './reviewer.js'
 import { coordinateSessionManager, isLeaseLost, type SingleWriterSessionManager } from './sessionWriter.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
+import { attemptCleanup } from './cleanup.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { RunOwnership } from '../runs/ownership.js'
@@ -38,6 +39,18 @@ export type ApprovalExecutionObservation =
   | { state: 'waiting'; execution: HarnessExecution; interaction: DurableInteraction; interactions: DurableInteraction[] }
   | { state: 'completed'; execution: HarnessExecution; result: ExecutionResult }
 
+interface OwnedNativeSession {
+  execution: HarnessExecution
+  context: NativeManagerResolutionContext
+  manager: NativeHarnessSessionManager
+  controller: AbortController
+  generation: number
+  session?: NativeSessionReference
+  opening?: Promise<NativeSessionReference>
+  openingFailed?: boolean
+  cleanup?: Promise<Error[]>
+}
+
 /** Idempotent ensure/observe boundary called first on every LangGraph node entry. */
 export class ApprovalExecutionCoordinator {
   private readonly managerCredentials = new WeakMap<NativeHarnessSessionManager, IssuedWorkerCredential>()
@@ -45,6 +58,93 @@ export class ApprovalExecutionCoordinator {
   readonly reviewers: ReviewerDispatcher
   private readonly writers = new WeakMap<NativeHarnessSessionManager, SingleWriterSessionManager>()
   private readonly rawManagers = new WeakMap<NativeHarnessSessionManager, NativeHarnessSessionManager>()
+  // A waiting graph has no active task, but still owns its native process.
+  private readonly ownedSessions = new Map<string, OwnedNativeSession>()
+  private readonly closedExecutions = new Set<string>()
+  private readonly stoppingRuns = new Set<string>()
+  private readonly pendingCleanupRuns = new Set<string>()
+  private readonly cancellations = new Map<string, Promise<void>>()
+
+  residentRunIds(): string[] {
+    return [...new Set([...this.pendingCleanupRuns, ...[...this.ownedSessions.values()].map((owned) => owned.execution.runId)])]
+  }
+
+  private ownSession(execution: HarnessExecution, context: NativeManagerResolutionContext, manager: NativeHarnessSessionManager): OwnedNativeSession {
+    if (this.stoppingRuns.has(execution.runId)) throw new Error('The Run is stopping; native work cannot be restarted.')
+    let owned = this.ownedSessions.get(execution.id)
+    if (!owned) {
+      this.closedExecutions.delete(execution.id)
+      owned = { execution, context, manager, controller: new AbortController(), generation: 0 }
+      this.ownedSessions.set(execution.id, owned)
+    }
+    return owned
+  }
+
+  private openingSession(owned: OwnedNativeSession, operation: Promise<NativeSessionReference>): Promise<NativeSessionReference> {
+    const opening = operation.then(
+      (session) => {
+        owned.session = session
+        owned.generation += 1
+        // A late create/attach completion invalidates earlier closure evidence.
+        this.closedExecutions.delete(owned.execution.id)
+        delete owned.openingFailed
+        return session
+      },
+      (error: unknown) => { owned.openingFailed = true; throw error },
+    ).finally(() => { if (owned.opening === opening) delete owned.opening })
+    owned.opening = opening
+    return opening
+  }
+
+  private cleanupSession(owned: OwnedNativeSession, cancel = true): Promise<Error[]> {
+    if (cancel) owned.controller.abort()
+    if (owned.cleanup) return owned.cleanup
+    const task = (async () => {
+      const failures: Error[] = []
+      const attempt = <T>(label: string, operation: (signal: AbortSignal) => Promise<T>) =>
+        attemptCleanup(failures, `${owned.execution.id}: ${label}`, operation)
+      // Create/attach can be in flight when Stop arrives. Never invent an identity
+      // or replay a turn to obtain a session that can be canceled.
+      if (owned.opening) await attempt('await native session', async () => { await owned.opening })
+      if (!owned.session && owned.execution.nativeSessionId) {
+        const interaction = await attempt('read native identity', () => this.interactions.getForExecution(owned.execution.id))
+        const providerVersion = interaction?.nativeSessionId === owned.execution.nativeSessionId
+          && interaction.harness === owned.context.harness ? interaction.providerVersion
+          : (await attempt('read capabilities', (signal) => owned.manager.capabilities(signal)))?.providerVersion
+        if (providerVersion) owned.session = {
+          harness: owned.context.harness, providerVersion, nativeSessionId: owned.execution.nativeSessionId,
+        }
+      }
+      let closed = this.closedExecutions.has(owned.execution.id)
+        || (!owned.session && !owned.opening && !owned.openingFailed && !owned.execution.nativeSessionId)
+      if (owned.session && !closed) {
+        const session = owned.session
+        if (cancel) await attempt('cancel native session', (signal) => owned.manager.cancel(session, signal))
+        const generation = owned.generation
+        closed = await attempt('close native session', async () => {
+          await owned.manager.close(session)
+          // A close of an older connection cannot confirm a late attach is closed.
+          if (owned.generation !== generation) return false
+          // Remember a late successful close even when the cleanup deadline won.
+          this.closedExecutions.add(owned.execution.id)
+          return true
+        }) === true
+      }
+      if (closed) this.closedExecutions.add(owned.execution.id)
+      const revoked = await attempt('revoke execution credential', async () => {
+        await this.credentials?.revokeForExecution(owned.execution.id)
+        return true
+      })
+      if (closed && revoked && !owned.opening) {
+        const released = await attempt('release native manager', async () => { this.managerCredentials.delete(owned.manager); this.managers.release?.(owned.context, this.rawManagers.get(owned.manager) ?? owned.manager); return true })
+        if (released && this.ownedSessions.get(owned.execution.id) === owned) this.ownedSessions.delete(owned.execution.id)
+      }
+      if ((!closed || owned.opening) && !failures.length) failures.push(new Error(`${owned.execution.id}: native session closure is unconfirmed.`))
+      return failures
+    })().finally(() => { delete owned.cleanup })
+    owned.cleanup = task
+    return task
+  }
   constructor(
     private readonly runs: PostgresRunRepository,
     private readonly interactions: PostgresInteractionRepository,
@@ -157,22 +257,6 @@ export class ApprovalExecutionCoordinator {
     return prepared.credential.environment
   }
 
-  private async releaseFailedManager(
-    context: NativeManagerResolutionContext,
-    resolved: ResolvedNativeSessionManager,
-    session?: AttachedInteractionSession['session'],
-  ): Promise<void> {
-    resolved.markFailed?.()
-    try {
-      if (session) await resolved.manager.close(session).catch(() => undefined)
-      // This includes credentials issued by an earlier call to a resident manager.
-      await this.credentials?.revokeForExecution(context.executionId)
-    } finally {
-      this.managerCredentials.delete(resolved.manager)
-      this.managers.release?.(context, this.rawManagers.get(resolved.manager) ?? resolved.manager, 'failed')
-    }
-  }
-
   async attachInteraction(interaction: DurableInteraction, signal?: AbortSignal): Promise<AttachedInteractionSession> {
     const execution = await this.runs.getExecution(interaction.executionId)
     if (!execution?.workingDirectory || !execution.runtimeDirectory) throw new Error('The durable execution cannot reconstruct its native session start input.')
@@ -201,6 +285,7 @@ export class ApprovalExecutionCoordinator {
     }
     const run = await this.runs.get(execution.runId)
     if (!run) throw new Error('The durable execution Run is unavailable.')
+    if (run.executionState === 'completed') throw new Error('A completed Run cannot restart native work.')
     const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
     if (!configuration || configuration.harness.harness !== context.harness) throw new Error('The durable execution configuration is unavailable or mismatched.')
     const resolutionContext = this.managerContext(execution, configuration)
@@ -209,25 +294,30 @@ export class ApprovalExecutionCoordinator {
       workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
       runtimeDirectory: execution.runtimeDirectory, configuration, input: execution.input,
     })
+    if (this.stoppingRuns.has(execution.runId)) throw new Error('The Run is stopping.')
     const resolved = this.resolveManager(resolutionContext)
     // Claim outside cleanup: losing a concurrent startup race does not own its credentials.
     if (resolved.processState === 'needs_start') resolved.beginStart?.()
+    const owned = this.ownSession(execution, resolutionContext, resolved.manager)
+    owned.session = sessionReference
+    signal = signal ? AbortSignal.any([signal, owned.controller.signal]) : owned.controller.signal
     try {
       const environment = await this.prepareEnvironment(resolutionContext, resolved, signal)
       if (resolved.processState === 'resident') {
         await resolved.manager.history(sessionReference, signal)
         return { manager: resolved.manager, session: sessionReference }
       }
-      const session = await resolved.manager.attachSession(sessionReference, {
+      const session = await this.openingSession(owned, resolved.manager.attachSession(sessionReference, {
         kind: 'workflow', correlationId: `execution:${execution.id}`, request,
         ...(environment ? { environment } : {}),
-      }, signal)
+      }, signal))
       this.assertSessionIdentity(sessionReference, session)
       resolved.markResident?.()
       return { manager: resolved.manager, session }
     } catch (error) {
       if (isLeaseLost(error) || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw error
-      await this.releaseFailedManager(resolutionContext, resolved, sessionReference).catch(() => undefined)
+      resolved.markFailed?.()
+      await this.cleanupSession(owned)
       throw error
     }
   }
@@ -253,45 +343,66 @@ export class ApprovalExecutionCoordinator {
     }
   }
 
-  async cancelRun(runId: string, owner?: RunOwnership): Promise<void> {
-    owner?.assertOwned()
-    const failures: unknown[] = []
-    for (const execution of await this.runs.listExecutions(runId)) {
-      let context: NativeManagerResolutionContext | undefined
-      try { await this.budgets.stop(execution.id) } catch (error) { failures.push(error) }
-      try {
-        if (execution.nativeSessionId) {
-          const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
-          if (configuration) {
-            context = this.managerContext(execution, configuration)
+  cancelRun(runId: string, owner?: RunOwnership): Promise<void> {
+    this.stoppingRuns.add(runId)
+    this.pendingCleanupRuns.add(runId)
+    const local = [...this.ownedSessions.values()].filter((owned) => owned.execution.runId === runId)
+    for (const owned of local) owned.controller.abort()
+    const existing = this.cancellations.get(runId)
+    if (existing) return existing
+    const task = (async () => {
+      const failures: Error[] = []
+      // Start local native cleanup before any database wait. Process every sibling,
+      // and keep failed closures registered for a later Stop/shutdown retry.
+      const cleanups = local.map(async (owned) => {
+        failures.push(...await this.cleanupSession(owned))
+        await attemptCleanup(failures, `${owned.execution.id}: stop active budget`, () => this.budgets.stop(owned.execution.id))
+      })
+      const executions = await attemptCleanup(failures, `${runId}: list executions`, () => this.runs.listExecutions(runId))
+      const known = new Set(local.map((owned) => owned.execution.id))
+      for (const execution of executions ?? []) {
+        cleanups.push((async () => {
+          if (known.has(execution.id)) return
+          const owned = await attemptCleanup(failures, `${execution.id}: resolve native session`, async (signal) => {
+            if (!execution.nativeSessionId || this.closedExecutions.has(execution.id)) return undefined
+            const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+            signal.throwIfAborted()
+            if (!configuration) throw new Error('The durable execution configuration is unavailable.')
+            const context = this.managerContext(execution, configuration)
             const resolved = this.resolveManager(context)
-            if (resolved.processState === 'resident') {
-              const session = {
-                harness: configuration.harness.harness,
-                providerVersion: (await resolved.manager.capabilities()).providerVersion,
-                nativeSessionId: execution.nativeSessionId,
-              }
-              await resolved.manager.cancel(session).catch(() => false)
-              await resolved.manager.close(session).catch(() => undefined)
+            if (resolved.processState === 'needs_start') {
+              // Stop must never start/attach a replacement native process, nor
+              // mistake lack of a local manager for proof of native closure.
+              this.managers.release?.(context)
+              throw new Error('The native session is not resident; closure cannot be confirmed.')
             }
-          }
-        }
-      } catch (error) { failures.push(error) } finally {
-        if (context) this.managers.release?.(context)
+            const owned: OwnedNativeSession = { execution, context, manager: resolved.manager, controller: new AbortController(), generation: 0 }
+            this.ownedSessions.set(execution.id, owned)
+            return owned
+          })
+          if (owned) failures.push(...await this.cleanupSession(owned))
+          else await attemptCleanup(failures, `${execution.id}: revoke execution credential`, async () => {
+            await this.credentials?.revokeForExecution(execution.id)
+          })
+          await attemptCleanup(failures, `${execution.id}: stop active budget`, () => this.budgets.stop(execution.id))
+        })())
       }
-      // Only the execution owner may settle a live attempt. The active node
-      // handles its own abort when cancellation is requested without ownership.
-      try {
-        if (owner && execution.state !== 'completed') {
-          await this.runs.updateExecution(HarnessExecutionSchema.parse({
-            ...execution, state: 'completed', result: { outcome: 'canceled' }, finishedAt: new Date().toISOString(),
-          }), owner)
-        }
-      } catch (error) { failures.push(error) }
-      try { await this.credentials?.revokeForExecution(execution.id) } catch (error) { failures.push(error) }
-    }
-    try { await this.interactions.cancelPendingForRun(runId) } catch (error) { failures.push(error) }
-    if (failures.length) throw new AggregateError(failures, 'Some native execution cleanup failed.')
+      cleanups.push(attemptCleanup(failures, `${runId}: cancel unresolved interactions`, () => this.interactions.cancelPendingForRun(runId)).then(() => undefined))
+      const outcomes = await Promise.allSettled(cleanups)
+      for (const outcome of outcomes) {
+        if (outcome.status === 'rejected') failures.push(new Error('Unexpected execution cleanup failure.', { cause: outcome.reason }))
+      }
+      if (owner) for (const execution of executions ?? []) {
+        if (execution.state === 'completed') continue
+        await attemptCleanup(failures, `${execution.id}: settle execution`, () => this.runs.updateExecution(HarnessExecutionSchema.parse({
+          ...execution, state: 'completed', result: { outcome: 'canceled' }, finishedAt: new Date().toISOString(),
+        }), owner))
+      }
+      if (failures.length) throw new AggregateError(failures, 'Run cleanup was incomplete; native closure must not be assumed.')
+      this.pendingCleanupRuns.delete(runId)
+    })().finally(() => { this.cancellations.delete(runId) })
+    this.cancellations.set(runId, task)
+    return task
   }
 
   async ensureObserve(input: {
@@ -303,14 +414,17 @@ export class ApprovalExecutionCoordinator {
     owner: RunOwnership
     signal: AbortSignal
   }): Promise<ApprovalExecutionObservation> {
+    let signal = input.signal
+    signal.throwIfAborted()
     const ensured = await this.runs.ensureExecution(input.candidate, input.owner)
     let execution = ensured.execution
     let context: NativeManagerResolutionContext | undefined
     let manager: NativeHarnessSessionManager | undefined
     let resolved: ResolvedNativeSessionManager | undefined
+    let ownedSession: OwnedNativeSession | undefined
     let session: NativeSessionReference | undefined
     try {
-      input.signal.throwIfAborted()
+      signal.throwIfAborted()
       input.owner.assertOwned()
       if (execution.state === 'completed') {
         if (!execution.result) throw new Error('The completed execution has no durable result.')
@@ -332,9 +446,11 @@ export class ApprovalExecutionCoordinator {
       resolved = this.resolveManager(context)
       if (resolved.processState === 'needs_start') resolved.beginStart?.()
       manager = resolved.manager
+      ownedSession = this.ownSession(execution, context, manager)
+      signal = AbortSignal.any([signal, ownedSession.controller.signal])
 
       const observePending = async (history: NativeHistory): Promise<ApprovalExecutionObservation | undefined> => {
-        input.signal.throwIfAborted()
+        signal.throwIfAborted()
         input.owner.assertOwned()
         const waiting: DurableInteraction[] = []
         for (const pending of history.pendingInteractions) {
@@ -364,7 +480,7 @@ export class ApprovalExecutionCoordinator {
           }
         }
         if (!waiting.length) return undefined
-        input.signal.throwIfAborted()
+        signal.throwIfAborted()
         execution = HarnessExecutionSchema.parse({ ...execution, state: 'waiting' })
         await this.runs.updateExecution(execution, input.owner)
         await this.budgets.beginWait(execution.id)
@@ -375,34 +491,35 @@ export class ApprovalExecutionCoordinator {
         if (!ensured.created) {
           throw new DomainError('NATIVE_SESSION_START_UNCERTAIN', 'The existing execution has no recorded native session. Native side effects will not be replayed.', 409)
         }
-        const environment = await this.prepareEnvironment(context, resolved, input.signal)
-        session = await manager.createSession({ request, ...(environment ? { environment } : {}) }, input.signal)
+        const environment = await this.prepareEnvironment(context, resolved, signal)
+        session = await this.openingSession(ownedSession, manager.createSession({ request, ...(environment ? { environment } : {}) }, signal))
         if (session.harness !== context.harness) throw new Error('The created native session has the wrong harness.')
         resolved.markResident?.()
         execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: session.nativeSessionId, state: 'running' })
         await this.runs.updateExecution(execution, input.owner)
         for await (const event of manager.startTurn(session, {
           prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
-        }, input.signal)) {
-          input.signal.throwIfAborted()
+        }, signal)) {
+          signal.throwIfAborted()
           await this.budgets.assertActive(execution.id)
           await this.runs.appendNativeEvent({ ...event, executionId: execution.id }, input.owner)
-          const waiting = await observePending(await manager.history(session, input.signal))
+          const waiting = await observePending(await manager.history(session, signal))
           if (waiting) return waiting
         }
       } else {
         session = {
           harness: context.harness,
-          providerVersion: existing?.providerVersion ?? (await manager.capabilities(input.signal)).providerVersion,
+          providerVersion: existing?.providerVersion ?? (await manager.capabilities(signal)).providerVersion,
           nativeSessionId: execution.nativeSessionId,
         }
+        ownedSession.session = session
         if (existing) this.assertSessionIdentity(session, existing)
-        const environment = await this.prepareEnvironment(context, resolved, input.signal)
+        const environment = await this.prepareEnvironment(context, resolved, signal)
         if (resolved.processState === 'needs_start') {
-          const attached = await manager.attachSession(session, {
+          const attached = await this.openingSession(ownedSession, manager.attachSession(session, {
             kind: 'workflow', correlationId: `execution:${execution.id}`, request,
             ...(environment ? { environment } : {}),
-          }, input.signal)
+          }, signal))
           this.assertSessionIdentity(session, attached)
           resolved.markResident?.()
         }
@@ -412,10 +529,10 @@ export class ApprovalExecutionCoordinator {
       }
 
       for (;;) {
-        input.signal.throwIfAborted()
+        signal.throwIfAborted()
         input.owner.assertOwned()
         await this.budgets.assertActive(execution.id)
-        const history = await manager.history(session, input.signal)
+        const history = await manager.history(session, signal)
         for (const event of history.events) await this.runs.appendNativeEvent({ ...event, executionId: execution.id }, input.owner)
         const waiting = await observePending(history)
         if (waiting) return waiting
@@ -426,12 +543,9 @@ export class ApprovalExecutionCoordinator {
           await this.runs.updateExecution(execution, input.owner)
           try { await this.budgets.finish(execution.id, execution.finishedAt) }
           finally {
-            try { await this.credentials?.revokeForExecution(execution.id) }
-            finally {
-              await manager.close(session).catch(() => undefined)
-              this.managerCredentials.delete(manager)
-              this.managers.release?.(context, this.rawManagers.get(manager) ?? manager)
-            }
+            ownedSession.execution = execution
+            const failures = await this.cleanupSession(ownedSession, false)
+            if (failures.length) throw new AggregateError(failures, 'Terminal execution cleanup was incomplete.')
           }
           return { state: 'completed', execution, result: history.terminalResult }
         }
@@ -442,7 +556,7 @@ export class ApprovalExecutionCoordinator {
           await this.runs.updateExecution(execution, input.owner)
           await this.budgets.resume(execution.id)
         }
-        await delay(100, undefined, { signal: input.signal })
+        await delay(100, undefined, { signal: signal })
       }
     } catch (error) {
       if ((resolved && !manager) || isLeaseLost(error)
@@ -450,7 +564,7 @@ export class ApprovalExecutionCoordinator {
       try {
         input.owner.assertOwned()
         if (execution.state !== 'completed') {
-          const result: ExecutionResult = input.signal.aborted ? { outcome: 'canceled' }
+          const result: ExecutionResult = signal.aborted ? { outcome: 'canceled' }
             : error instanceof HarnessExecutionError ? error.result : {
               outcome: 'failed', error: {
                 code: error instanceof DomainError ? error.code : 'WORKFLOW_EXECUTION_FAILED',
@@ -471,16 +585,14 @@ export class ApprovalExecutionCoordinator {
         // Losing ownership must not stop a replacement owner's budget or revoke
         // its newly issued credentials. Only close our local transport in that case.
         if (owned) await this.budgets.finish(execution.id, execution.finishedAt).catch(() => undefined)
-        if (manager && session) {
-          if (owned) await manager.cancel(session).catch(() => false)
-          await manager.close(session).catch(() => undefined)
-        }
-        if (manager) this.managerCredentials.delete(manager)
-        if (context && manager) {
+        if (owned && ownedSession) {
           resolved?.markFailed?.()
-          this.managers.release?.(context, this.rawManagers.get(manager) ?? manager, 'failed')
+          ownedSession.execution = execution
+          await this.cleanupSession(ownedSession)
+        } else if (manager && session) {
+          // Ownership loss cannot revoke a replacement owner's credential.
+          await attemptCleanup([], 'close lost-owner transport', () => manager!.close(session!))
         }
-        if (owned) await this.credentials?.revokeForExecution(execution.id).catch(() => undefined)
       }
       throw error
     }
