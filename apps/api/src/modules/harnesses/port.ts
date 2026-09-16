@@ -72,6 +72,8 @@ export interface NativeTurnInput {
 }
 
 export interface NativeHistory {
+  /** Opaque native cursor for older authoritative history; never interpreted as a message ID. */
+  nextCursor?: string
   /** This is a bounded live window; callers persist streamed events at the durable boundary. */
   firstRetainedSequence?: number
   nextSequence?: number
@@ -99,6 +101,7 @@ export interface NativeHarnessSessionManager {
   respond(session: NativeSessionReference, nativeRequestId: string, option: ApprovalResponseOption, signal?: AbortSignal): Promise<void>
   cancel(session: NativeSessionReference, signal?: AbortSignal): Promise<boolean>
   history(session: NativeSessionReference, signal?: AbortSignal): Promise<NativeHistory>
+  historyPage?(session: NativeSessionReference, before?: string, signal?: AbortSignal): Promise<NativeHistory>
   reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory>
   close(session: NativeSessionReference): Promise<void>
 }

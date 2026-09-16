@@ -143,7 +143,9 @@ describe('PR8 fallback settings and exact variants', () => {
     })
     const adapter = provider === 'codex' ? new CodexAdapter('/must-not-spawn') : new OpenCodeAdapter('/must-not-spawn')
     const callbacks = { signal: new AbortController().signal, onEvent: vi.fn(async () => undefined), onSession: vi.fn(async () => undefined) }
-    const expected = { result: { error: { code: 'HARNESS_ADVANCED_UNSUPPORTED' } } }
+    const expected = { result: { error: { code: provider === 'codex'
+      ? 'HARNESS_ADVANCED_UNSUPPORTED'
+      : 'OPENCODE_FALLBACK_APPROVAL_UNSUPPORTED' } } }
     await expect(adapter.qualify(request)).rejects.toMatchObject(expected)
     await expect(adapter.execute(request, callbacks)).rejects.toMatchObject(expected)
     await expect(adapter.resume(request, 'session', callbacks)).rejects.toMatchObject(expected)

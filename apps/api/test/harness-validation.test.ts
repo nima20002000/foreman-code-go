@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { HarnessExecutionRequest } from '@graphql/contracts'
+import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type HarnessExecutionRequest } from '@graphql/contracts'
 
 import { CodexAdapter } from '../src/modules/harnesses/codex.js'
 import { OpenCodeAdapter } from '../src/modules/harnesses/opencode.js'
@@ -58,7 +58,8 @@ describe('harness-specific validation', () => {
           variant: 'max',
           nativeAgent: 'build',
           thinking: false,
-          autoApprove: false,
+          autoApprove: true,
+          advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionHandling: 'native_auto' },
         },
         contentHash: 'sha256:test',
         createdAt: '2026-09-14T00:00:00.000Z',

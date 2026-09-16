@@ -31,7 +31,7 @@ type ProcessOptions = Pick<JsonlProcessOptions, 'binary' | 'args' | 'cwd' | 'std
 }
 type ProcessExit = Pick<JsonlProcessResult, 'exitCode' | 'exitSignal'>
 
-async function signalTree(child: ChildProcess, signal: NodeJS.Signals): Promise<void> {
+export async function signalTree(child: ChildProcess, signal: NodeJS.Signals): Promise<void> {
   if (!child.pid) return
   if (process.platform === 'win32') {
     // Windows has no POSIX process groups. Kill the tree, not just its root.
@@ -70,7 +70,8 @@ async function runOwnedProcess<T>(
   const childEnvironment: NodeJS.ProcessEnv = { ...(options.environment ?? process.env), NO_COLOR: '1' }
   for (const key of Object.keys(childEnvironment)) {
     if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_')
-      || key === 'DATABASE_URL' || key === 'TEST_DATABASE_URL' || key === 'PGPASSWORD') {
+      || key === 'DATABASE_URL' || key === 'TEST_DATABASE_URL' || key === 'PGPASSWORD'
+      || key === 'GRAPHQL_APP_MCP_TOKEN') {
       delete childEnvironment[key]
     }
   }

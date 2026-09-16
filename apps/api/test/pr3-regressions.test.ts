@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_HARNESS_DEFAULTS,
+  DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
   type Agent,
   type HarnessExecutionRequest,
   type WorkflowDefinition,
@@ -126,7 +127,11 @@ describe('PR #3 agent persistence regressions', () => {
           { stdout: `${harnessConfiguration.model}\n{"variants":["low","high","max"]}`, stderr: '', exitCode: 0 },
           { stdout: '{}', stderr: '', exitCode: 0 },
         ])
-        const request = { configuration, workingDirectory: '/tmp' } as HarnessExecutionRequest
+        const request = { configuration: { ...configuration, harness: {
+          ...configuration.harness,
+          autoApprove: true,
+          advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionHandling: 'native_auto' },
+        } }, workingDirectory: '/tmp' } as HarnessExecutionRequest
         await expect(new OpenCodeAdapter('opencode').qualify(request)).resolves.toMatchObject({ ready: true })
         expect(runCommands).toHaveBeenLastCalledWith('opencode', expect.arrayContaining([
           ['debug', 'agent', nativeAgent],

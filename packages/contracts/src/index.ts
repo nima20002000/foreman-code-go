@@ -196,7 +196,8 @@ export const OpenCodeHarnessConfigurationSchema = z
   .object({
     harness: z.literal("opencode"),
     model: z.string().trim().min(1),
-    variant: z.string().trim().min(1),
+    /** Empty string delegates to the native default; named variants require provider evidence. */
+    variant: z.string().trim(),
     nativeAgent: z.string().trim().min(1),
     thinking: z.boolean(),
     autoApprove: z.boolean(),
@@ -235,9 +236,17 @@ export const HarnessWorkflowCompatibilitySchema = z.object({
   if (value.configuration.harness === "codex" && value.configuration.advanced?.approvalsReviewer === "auto_review") {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "approvalsReviewer"], message: "native auto review conflicts with GraphQL-routed approval" });
   }
+  // Legacy records can omit Advanced settings. Both representations must obey
+  // the same workflow approval boundary before the fallback can enable --auto.
   if (value.configuration.harness === "opencode"
     && (value.configuration.autoApprove || value.configuration.advanced?.permissionHandling === "native_auto")) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "permissionHandling"], message: "native auto approval conflicts with GraphQL-routed approval" });
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: value.configuration.advanced
+        ? ["configuration", "advanced", "permissionHandling"]
+        : ["configuration", "autoApprove"],
+      message: "native auto approval conflicts with GraphQL-routed approval",
+    });
   }
 });
 export function validateHarnessWorkflowCompatibility(
