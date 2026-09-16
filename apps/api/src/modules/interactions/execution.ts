@@ -103,6 +103,8 @@ export class ApprovalExecutionCoordinator {
       }, signal)
       return { manager: resolved.manager, session }
     } catch (error) {
+      await resolved.manager.close(sessionReference).catch(() => undefined)
+      this.managers.release?.(context)
       if (environment) await this.credentials?.revokeForExecution(execution.id).catch(() => undefined)
       throw error
     }
@@ -196,6 +198,8 @@ export class ApprovalExecutionCoordinator {
           return { state: 'waiting', execution, interaction: created.interaction }
         }
       } catch (error) {
+        if (session) await manager.close(session).catch(() => undefined)
+        this.managers.release?.(context)
         if (environment) await this.credentials?.revokeForExecution(execution.id).catch(() => undefined)
         throw error
       }
@@ -215,6 +219,8 @@ export class ApprovalExecutionCoordinator {
           ...(environment ? { environment } : {}),
         }, input.signal)
       } catch (error) {
+        await manager.close(session).catch(() => undefined)
+        this.managers.release?.(context)
         if (environment) await this.credentials?.revokeForExecution(execution.id).catch(() => undefined)
         if (existing) return { state: 'waiting', execution, interaction: existing }
         throw error
@@ -224,6 +230,8 @@ export class ApprovalExecutionCoordinator {
     try {
       history = await manager.history(session)
     } catch (error) {
+      await manager.close(session).catch(() => undefined)
+      this.managers.release?.(context)
       await this.credentials?.revokeForExecution(execution.id).catch(() => undefined)
       throw error
     }
