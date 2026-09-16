@@ -67,7 +67,10 @@ class FakeServer implements OpenCodeServerController {
     if (route === '/permission/per_one/reply' || route === '/permission/per_two/reply') {
       const reply = JSON.parse(String(init?.body)).reply
       const requestID = route.split('/')[2]
-      this.permissions = reply === 'reject' ? [] : this.permissions.filter((item) => (item as { id?: string }).id !== requestID)
+      const selected = this.permissions.find((item) => (item as { id?: string }).id === requestID) as { sessionID?: string } | undefined
+      this.permissions = reply === 'reject'
+        ? this.permissions.filter((item) => (item as { sessionID?: string }).sessionID !== selected?.sessionID)
+        : this.permissions.filter((item) => (item as { id?: string }).id !== requestID)
       return json(true)
     }
     if (route === '/session/ses_test/prompt_async') return new Response(null, { status: 204 })
@@ -191,6 +194,20 @@ describe('OpenCode native server manager', () => {
     expect(before.map((item) => item.turn.nativeRequestId)).toEqual(['per_one', 'per_two'])
     await native.respond(session, 'per_one', before[0]!.responseOptions.find((item) => item.semantic === 'reject')!)
     expect(await native.pendingAll(session)).toEqual([])
+  })
+
+  it('aborts then clears stale approval waits only in the target session', async () => {
+    const server = new FakeServer()
+    const native = manager(server)
+    const session = await sessionFor(native)
+    server.permissions = [
+      { id: 'per_one', sessionID: 'ses_test', permission: 'bash', patterns: ['a'], metadata: {}, always: ['a'] },
+      { id: 'per_other', sessionID: 'ses_other', permission: 'bash', patterns: ['b'], metadata: {}, always: ['b'] },
+    ]
+    expect(await native.cancel(session)).toBe(true)
+    expect(await native.pendingAll(session)).toEqual([])
+    expect(server.calls.some((call) => call.path.startsWith('/session/ses_test/abort'))).toBe(true)
+    expect(server.calls.some((call) => call.path.startsWith('/permission/per_one/reply'))).toBe(true)
   })
 
   it('uses native abort and exposes precise resolved MCP evidence without secrets', async () => {

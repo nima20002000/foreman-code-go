@@ -466,7 +466,15 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   async cancel(session: NativeSessionReference, signal?: AbortSignal): Promise<boolean> {
     const state = await this.requireSession(session, signal)
     const result = await this.mutate(withDirectory(`/session/${encodeURIComponent(session.nativeSessionId)}/abort`, state.directory), { method: 'POST' }, signal)
-    return result === true
+    if (result !== true) return false
+    const pending = (await this.pendingRequests(state.directory, signal)).filter((item) => item.sessionID === session.nativeSessionId)
+    if (pending[0]) {
+      // V1 reject is the native operation that clears every pending ask in this target session.
+      await this.mutate(withDirectory(`/permission/${encodeURIComponent(pending[0].id)}/reply`, state.directory), {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reply: 'reject' }),
+      }, signal)
+    }
+    return true
   }
 
   async history(session: NativeSessionReference, signal?: AbortSignal): Promise<NativeHistory> {
