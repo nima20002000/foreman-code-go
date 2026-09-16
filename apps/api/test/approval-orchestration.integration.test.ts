@@ -631,7 +631,7 @@ it('lists, reads and responds to an Operator-assigned request through authentica
     expect(await interactions.get(stopped.interaction.id)).toMatchObject({ status: 'canceled' })
     await expect(service.respond({ kind: 'operator', principal: issued.principal }, {
       interactionId: stopped.interaction.id, optionId: 'codex-approve-once', expectedRevision: 0,
-    })).rejects.toMatchObject({ code: 'INTERACTION_NOT_RESPONDABLE' })
+    })).rejects.toMatchObject({ code: 'INTERACTION_CANCELED' })
     expect(manager.counters.cancellations).toBe(1)
   } finally { await client.close() }
 })

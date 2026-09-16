@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto'
 import type { OpenCodeAdvancedConfiguration } from '@graphql/contracts'
 
 import { HarnessExecutionError } from './errors.js'
-import { endpointMatches, type NativeMcpEntryEvidence } from './mcpDetection.js'
+import type { NativeMcpEntryEvidence } from './mcpDetection.js'
 import { inspectOpenCodeMcpConfiguration } from './opencodeMcpConfiguration.js'
 import type { ChildProcessEnvironment } from './port.js'
 import { PROCESS_SHUTDOWN_GRACE_MS, runCommand, signalTree } from './process.js'

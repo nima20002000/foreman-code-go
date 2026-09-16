@@ -27,6 +27,8 @@ import { LangGraphWorkflowEngine } from './modules/runs/engine.js'
 import { RunManagementService } from './modules/runs/management.js'
 import { PostgresRunRepository } from './modules/runs/postgres.js'
 import { PostgresSettingsRepository } from './modules/settings/postgres.js'
+import { PostgresFoundationSettingsRepository } from './modules/settings/foundation.js'
+import { FoundationSettingsManagementService } from './modules/settings/management.js'
 import { WorkflowManagementService } from './modules/workflows/management.js'
 import { PostgresWorkflowRepository } from './modules/workflows/postgres.js'
 import { AgentManagementService } from './modules/workspaces/agents.js'
@@ -56,7 +58,9 @@ export function buildProductionApp(
   const runs = new PostgresRunRepository(database.pool, workflows, locations)
   const workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
   const settings = new PostgresSettingsRepository(database.pool)
+  const foundationSettings = new PostgresFoundationSettingsRepository(database.pool)
   const harnesses = new LocalHarnessResolver(config.harnesses.codexBinary, config.harnesses.openCodeBinary)
+  const harnessCatalog = new HarnessCatalogService(harnesses, settings, commands, config.harnesses.workspaceRoot)
   const endpointHost = config.host === '0.0.0.0' ? '127.0.0.1'
     : config.host === '::' || config.host === '::1' ? '[::1]' : config.host
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/tools`
@@ -132,7 +136,8 @@ export function buildProductionApp(
     workflows: new WorkflowManagementService(database.pool, commands),
     agents: new AgentManagementService(database.pool),
     drafts: new GraphDraftService(database.pool, commands),
-    harnesses: new HarnessCatalogService(harnesses, settings, commands, config.harnesses.workspaceRoot),
+    harnesses: harnessCatalog,
+    settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog),
     runs: new RunManagementService(database.pool, commands, runs, engine, locations),
     commands,
     interactions: new OperatorInteractionService(interactions, repository),
@@ -164,7 +169,7 @@ export function buildProductionApp(
   const app = buildApp({
     readiness: { database, checkpoints },
     readinessTimeoutMs: config.readinessTimeoutMs,
-    product: { workspaces, workflows, runs, settings, engine, interactions },
+    product: { workspaces, workflows, runs, settings, foundationSettings, engine, interactions },
     operator: { access, services: operatorServices },
     appMcp: { access, interactions: new PostgresAppInteractionService(database.pool, repository, commands, interactions) },
     mcpDetection: { pool: database.pool, service: detection },

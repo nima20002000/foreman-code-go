@@ -1,43 +1,153 @@
-import { useEffect, useState, type SetStateAction } from 'react'
+import { useEffect, useId, type SetStateAction } from 'react'
+import { create } from 'zustand'
 
-interface Snapshot<T> { value: T; revision: number }
-interface Form<T> { value: T; base: Snapshot<T> }
+import { CommandAttempt } from '../../shared/api/commandAttempt'
+import { sessionGeneration } from '../../shared/api/sessionBoundary'
+
+export interface Snapshot<T> { value: T; revision: number }
+interface Request<T> { value: T; expectedRevision: number; commandId: string }
+interface Pending<T> {
+  submitted: T
+  request: Request<T>
+  attempt: CommandAttempt<{ value: T; expectedRevision: number }>
+  state: 'sending' | 'uncertain'
+}
+export interface Form<T> {
+  value: T
+  base: Snapshot<T>
+  latest?: Snapshot<T>
+  pending?: Pending<T>
+  error?: string
+}
+const useForms = create<{ forms: Record<string, Form<unknown>> }>(() => ({ forms: {} }))
+let epoch = 0
 function same(left: unknown, right: unknown): boolean { return JSON.stringify(left) === JSON.stringify(right) }
 
-export function refreshRevisionedForm<T>(current: Form<T> | undefined, incoming: Snapshot<T>): Form<T> {
-  if (current && incoming.revision < current.base.revision) return current
-  if (!current || same(current.value, current.base.value)) return { value: incoming.value, base: incoming }
-  return current
+export function clearRevisionedFormPersistence(): void {
+  ++epoch
+  useForms.setState({ forms: {} })
 }
 
-/** Values and their optimistic-concurrency revision always travel together. */
-export function useRevisionedForm<T>(incoming: Snapshot<T> | undefined) {
-  const [form, setForm] = useState<Form<T>>()
+export function refreshRevisionedForm<T>(current: Form<T> | undefined, incoming: Snapshot<T>): Form<T> {
+  if (current && incoming.revision < Math.max(current.base.revision, current.latest?.revision ?? 0)) return current
+  if (!current || (!current.pending && same(current.value, current.base.value))) {
+    return { value: incoming.value, base: incoming, latest: incoming }
+  }
+  return { ...current, latest: incoming }
+}
+
+function update<T>(key: string, change: (current: Form<T> | undefined) => Form<T> | undefined): void {
+  useForms.setState((state) => {
+    const current = state.forms[key] as Form<T> | undefined
+    const next = change(current)
+    if (next === current) return state
+    const forms = { ...state.forms }
+    if (next) forms[key] = next as Form<unknown>
+    else delete forms[key]
+    return { forms }
+  })
+}
+
+function acknowledged<T>(current: Form<T> | undefined, submitted: T, value: T, revision: number): Form<T> {
+  if (current && current.base.revision > revision) return { ...current, pending: undefined, error: undefined }
+  const base = { value, revision }
+  return {
+    value: !current || same(current.value, submitted) ? value : current.value,
+    base,
+    latest: current?.latest && current.latest.revision > revision ? current.latest : base,
+  }
+}
+
+/** A command and its exact payload outlive the initiating component, but never its access session. */
+export async function saveRevisionedForm<T>(
+  key: string,
+  perform: (request: Request<T>) => Promise<Snapshot<T>>,
+  prepare: (value: T) => T = (value) => value,
+): Promise<boolean> {
+  const generation = sessionGeneration()
+  const startedEpoch = epoch
+  const current = useForms.getState().forms[key] as Form<T> | undefined
+  if (!current || current.pending?.state === 'sending') return false
+  if (!current.pending && current.latest && current.base.revision !== current.latest.revision) {
+    update<T>(key, (form) => form && ({ ...form, error: 'These settings changed elsewhere. Load the current settings before saving.' }))
+    return false
+  }
+  let pending: Pending<T> | undefined
+  try {
+    if (current.pending) pending = { ...current.pending, state: 'sending' }
+    else {
+      const attempt = new CommandAttempt<{ value: T; expectedRevision: number }>()
+      const submitted = structuredClone(current.value)
+      const request = attempt.input({ value: prepare(structuredClone(submitted)), expectedRevision: current.base.revision })
+      pending = { submitted, request, attempt, state: 'sending' }
+    }
+    const active = pending
+    update<T>(key, (form) => form && ({ ...form, pending: active, error: undefined }))
+    const response = await perform(active.request)
+    if (generation !== sessionGeneration() || startedEpoch !== epoch) return false
+    active.attempt.succeeded()
+    update<T>(key, (form) => acknowledged(form, active.submitted, response.value, response.revision))
+    return true
+  } catch (error) {
+    if (generation !== sessionGeneration() || startedEpoch !== epoch) return false
+    pending?.attempt.failed(error)
+    const retained = pending?.attempt.unresolved ? { ...pending, state: 'uncertain' as const } : undefined
+    update<T>(key, (form) => form && ({
+      ...form, pending: retained,
+      error: error instanceof Error ? error.message : 'Settings could not be saved.',
+    }))
+    return false
+  }
+}
+
+/** Zustand owns both the editable snapshot and the outstanding command across route mounts. */
+export function useRevisionedForm<T>(incoming: Snapshot<T> | undefined, persistenceKey?: string) {
+  const localId = useId()
+  const generation = sessionGeneration()
+  const key = `${generation}:${persistenceKey ?? localId}`
+  const form = useForms((state) => state.forms[key]) as Form<T> | undefined
   const incomingKey = JSON.stringify(incoming)
-  const dirty = Boolean(form && !same(form.value, form.base.value))
+  const isDirty = Boolean(form && !same(form.value, form.base.value))
+  const hasPending = Boolean(form?.pending)
   useEffect(() => {
-    if (!incoming) return
-    setForm((current) => {
+    if (!incoming || generation !== sessionGeneration()) return
+    update<T>(key, (current) => {
       const next = refreshRevisionedForm(current, incoming)
-      return same(next, current) ? current : next
+      // Do not serialize the command tracker; it carries behavior, not form data.
+      return current && same(current.value, next.value) && same(current.base, next.base)
+        && same(current.latest, next.latest) ? current : next
     })
-    // The serialized key tracks snapshot content rather than wrapper identity.
+    // The serialized key tracks server content, not a newly allocated wrapper.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [incomingKey, dirty])
+  }, [key, incomingKey, generation, isDirty, hasPending])
   return {
     draft: form?.value,
     baseRevision: form?.base.revision,
-    isDirty: Boolean(form && !same(form.value, form.base.value)),
-    conflicted: Boolean(form && incoming && form.base.revision !== incoming.revision && !same(form.value, form.base.value)),
-    setDraft: (next: SetStateAction<T | undefined>) => setForm((current) => {
-      if (!current) return current
-      const value = typeof next === 'function' ? (next as (value: T) => T | undefined)(current.value) : next
-      return value === undefined ? current : { ...current, value }
-    }),
-    acknowledge: (submitted: T, value: T, revision: number) => setForm((current) => ({
-      value: !current || same(current.value, submitted) ? value : current.value,
-      base: { value, revision },
-    })),
-    reset: () => { if (incoming) setForm({ value: incoming.value, base: incoming }) },
+    isDirty,
+    conflicted: Boolean(form?.latest && form.base.revision !== form.latest.revision && !same(form.value, form.base.value)),
+    isSaving: form?.pending?.state === 'sending',
+    uncertain: form?.pending?.state === 'uncertain',
+    error: form?.error,
+    setDraft: (next: SetStateAction<T | undefined>) => {
+      if (generation !== sessionGeneration()) return
+      update<T>(key, (current) => {
+        if (!current) return current
+        const value = typeof next === 'function' ? (next as (value: T) => T | undefined)(current.value) : next
+        return value === undefined ? current : { ...current, value }
+      })
+    },
+    acknowledge: (submitted: T, value: T, revision: number) => {
+      if (generation === sessionGeneration()) update<T>(key, (current) => acknowledged(current, submitted, value, revision))
+    },
+    save: (perform: (request: Request<T>) => Promise<Snapshot<T>>, prepare?: (value: T) => T) =>
+      generation === sessionGeneration() ? saveRevisionedForm(key, perform, prepare) : Promise.resolve(false),
+    reset: () => {
+      if (generation !== sessionGeneration()) return
+      update<T>(key, (current) => {
+        if (current?.pending) return current
+        const latest = current?.latest ?? incoming
+        return latest ? { value: latest.value, base: latest, latest } : current
+      })
+    },
   }
 }

@@ -200,17 +200,23 @@ export class GraphDraftService {
           throw new DomainError('AGENT_ID_CONFLICT', 'The agent ID already exists.', 409)
         }
         const defaults = await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults(client)
-        const template = defaults.value[operation.type === 'agent.add_from_template' ? operation.template : 'coder']
-        let selected = template.harness
-        if (operation.type === 'agent.add' && (defaults.versionId === null || operation.harness !== selected.harness)) {
+        const role = operation.type === 'agent.add_from_template' ? operation.template : operation.productRole ?? 'coder'
+        const template = defaults.value[role]
+        let selected = operation.type === 'agent.add' && operation.configuration
+          ? operation.configuration : template.harness
+        if (operation.type === 'agent.add' && !operation.configuration && operation.harness
+          && defaults.versionId === null && operation.harness !== selected.harness) {
           // Legacy clients explicitly choose a provider. Preserve that choice and their
           // old defaults until a matching role template is persisted. Do not mix providers.
           const legacy = await client.query<{ record: unknown }>('select record from application_settings where key = $1', ['harness-defaults'])
           selected = normalizeHarnessDefaults(legacy.rows[0]?.record)[operation.harness]
         }
+        if (operation.type === 'agent.add' && operation.harness && operation.harness !== selected.harness) {
+          throw new DomainError('AGENT_TEMPLATE_HARNESS_MISMATCH', 'The requested harness differs from the role template. Supply an explicit matching configuration.', 409)
+        }
         const configuration = ManagementHarnessConfigurationSchema.parse(selected)
         const agent = AgentSchema.parse({
-          id: operation.agentId, name: operation.name, productRole: template.role, harness: configuration.harness,
+          id: operation.agentId, name: operation.name, productRole: role, harness: configuration.harness,
           model: configuration.model,
           effort: projectHarnessEffort(configuration),
           fastMode: configuration.harness === 'codex' ? configuration.serviceTier === 'priority' : undefined,

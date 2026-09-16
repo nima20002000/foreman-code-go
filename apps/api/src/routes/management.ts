@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 
 import {
   AgentGetInputSchema,
+  AgentDefaultsUpdateInputSchema,
   AgentListInputSchema,
   GraphDraftApplyInputSchema,
   GraphDraftDiscardInputSchema,
@@ -11,6 +12,8 @@ import {
   GraphValidateInputSchema,
   HarnessDefaultsUpdateInputSchema,
   HarnessGetInputSchema,
+  HarnessConfigurationCheckInputSchema,
+  HarnessConfigurationCheckResultSchema,
   RunEventsListInputSchema,
   RunGetInputSchema,
   RunListInputSchema,
@@ -28,6 +31,7 @@ import {
   WorkspaceUpdateInputSchema,
   WorkspaceLocationSetInputSchema,
   WorkspaceLocationValidateInputSchema,
+  WorkflowDefaultsUpdateInputSchema,
 } from '@graphql/contracts/management'
 import { requirePrincipal } from '../modules/access/http.js'
 import type { OperatorServices } from '../mcp/operator/types.js'
@@ -120,6 +124,11 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
   app.delete<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/drafts/:draftId', async (request) =>
     services.drafts.discard(requirePrincipal(request), 'http', GraphDraftDiscardInputSchema.parse(routeInput(request.params, request.body))))
 
+  app.post<{ Body: unknown }>('/api/management/harnesses/validate', async (request) => {
+    const input = HarnessConfigurationCheckInputSchema.parse(request.body)
+    return HarnessConfigurationCheckResultSchema.parse(await services.harnesses.checkConfiguration(requirePrincipal(request), input.configuration))
+  })
+
   app.get('/api/management/harnesses', async (request) => services.harnesses.list(requirePrincipal(request)))
   app.get<{ Params: Params }>('/api/management/harnesses/:harness', async (request) => {
     const input = HarnessGetInputSchema.parse(request.params)
@@ -127,6 +136,17 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
   })
   app.put<{ Body: unknown }>('/api/management/harnesses/defaults', async (request) =>
     services.harnesses.updateDefaults(requirePrincipal(request), 'http', HarnessDefaultsUpdateInputSchema.parse(request.body)))
+
+  if (services.settings) {
+    app.get('/api/management/settings/agents', async (request) =>
+      services.settings!.getAgentDefaults(requirePrincipal(request)))
+    app.put<{ Body: unknown }>('/api/management/settings/agents', async (request) =>
+      services.settings!.updateAgentDefaults(requirePrincipal(request), 'http', AgentDefaultsUpdateInputSchema.parse(request.body)))
+    app.get('/api/management/settings/workflows', async (request) =>
+      services.settings!.getWorkflowDefaults(requirePrincipal(request)))
+    app.put<{ Body: unknown }>('/api/management/settings/workflows', async (request) =>
+      services.settings!.updateWorkflowDefaults(requirePrincipal(request), 'http', WorkflowDefaultsUpdateInputSchema.parse(request.body)))
+  }
 
   app.get<{ Params: Params; Querystring: Query }>('/api/management/workspaces/:workspaceId/runs', async (request) =>
     services.runs.list(requirePrincipal(request), RunListInputSchema.parse({ ...page(request.query), ...(request.query.workflowId !== undefined ? { workflowId: request.query.workflowId } : {}), ...request.params })))

@@ -5,7 +5,7 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { ManagementAction } from '@graphql/contracts/management'
 
 import { canUserInteract } from '../access/userPolicy.js'
-import { requireAuthorization } from '../access/policy.js'
+import { hasAction, requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { assertOrchestratorInteractionAuthority, type WorkerInteractionAuthority } from './authorization.js'
 import type { PostgresApprovalBudgetRepository } from './budget.js'
@@ -166,16 +166,40 @@ export class InteractionService {
     return { items, nextCursor: rows.length > input.limit ? items.at(-1)!.id : null }
   }
 
+  async getVisible(principal: ManagementPrincipal, id: string): Promise<DurableInteraction> {
+    const interaction = await this.get(id)
+    requireAuthorization(principal, 'interactions:read', {
+      workspaceId: interaction.workspaceId, workflowId: interaction.workflowId, runId: interaction.runId,
+    })
+    return interaction
+  }
+
+  async listVisible(principal: ManagementPrincipal, input: {
+    workspaceId?: string | undefined; workflowId?: string | undefined; runId?: string | undefined;
+    handler?: DurableInteraction['approval']['handler'] | undefined;
+    status?: DurableInteraction['status'] | undefined; cursor?: string | undefined; limit: number;
+  }) {
+    if (!hasAction(principal, 'interactions:read')) {
+      throw new DomainError('ACCESS_DENIED', 'The caller is not authorized to read interactions.', 403)
+    }
+    const scopes = principal.grants.filter((grant) => grant.actions.includes('interactions:read')).map((grant) => grant.scope)
+    const filters = { workspaceId: input.workspaceId, workflowId: input.workflowId, runId: input.runId, handler: input.handler, scopes }
+    const rows = await this.interactions.list({ ...filters, status: input.status, afterId: input.cursor, limit: input.limit + 1 })
+    const items = rows.slice(0, input.limit)
+    const counts = await this.interactions.pendingCounts(filters)
+    return { items, nextCursor: rows.length > input.limit ? items.at(-1)!.id : null, ...counts }
+  }
+
   async respond(responder: InteractionResponder, input: { interactionId: string; optionId: string; expectedRevision: number; commandId?: string }) {
     const current = await this.get(input.interactionId)
     assertResponder(current, responder)
+    if (current.status === 'canceled') throw new DomainError('INTERACTION_CANCELED', 'This interaction was canceled and cannot be retried.', 409)
     const option = current.responseOptions.find((candidate) => candidate.optionId === input.optionId)
     if (!option) throw new DomainError('INTERACTION_OPTION_INVALID', 'The response option is not valid for this interaction.', 409)
     if (current.selectedOptionId && current.selectedOptionId !== input.optionId) {
       throw new DomainError('INTERACTION_ALREADY_DECIDED', 'The interaction already has a different decision.', 409)
     }
-    if (current.selectedOptionId === input.optionId && current.status !== 'canceled'
-      && responder.kind === 'operator' && input.commandId) {
+    if (current.selectedOptionId === input.optionId && responder.kind === 'operator' && input.commandId) {
       // Even a harmless delivery replay must validate this command identity in
       // the authorized decision transaction before touching the graph handoff.
       await this.interactions.decide({ id: current.id, optionId: input.optionId, expectedRevision: input.expectedRevision,
@@ -186,9 +210,6 @@ export class InteractionService {
       // active-time budget or reattach/mutate the provider.
       await this.resumeDelivered(current)
       return { interaction: await this.get(current.id), replayed: true }
-    }
-    if (['canceled', 'expired'].includes(current.status)) {
-      throw new DomainError('INTERACTION_NOT_RESPONDABLE', 'This interaction no longer accepts responses.', 409)
     }
     if (current.selectedOptionId === input.optionId
       && (current.deliveryState === 'submitted' || current.deliveryState === 'uncertain')) {

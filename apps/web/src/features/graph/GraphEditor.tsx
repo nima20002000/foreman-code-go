@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { Bot, BotMessageSquare, Check, MoreHorizontal, Play, Plus, Square, Trash2, X } from 'lucide-react'
+import { Bot, BotMessageSquare, Inbox, MoreHorizontal, Play, Plus, Settings, Square, X } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { AgentSettingsForm } from './AgentSettingsForm'
 
 import {
   addEdge,
@@ -25,10 +27,11 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useQueryClient } from '@tanstack/react-query'
 
-import { projectHarnessEffort } from '@graphql/contracts'
+import {
+  DEFAULT_AGENT_DEFAULTS, type AgentDefaults, type ApprovalHandler,
+} from '@graphql/contracts'
 import type {
   Agent,
-  HarnessDefaults,
   WorkflowDefinition,
   WorkflowEdge,
   WorkflowExecutionPolicy,
@@ -40,7 +43,7 @@ import type { GraphDraft as ManagedGraphDraft } from '@graphql/contracts/managem
 
 import {
   useAgentsQuery,
-  useHarnessDefaultsQuery,
+  useAgentDefaultsQuery,
   useRunQuery,
   useSaveGraphMutation,
   useManagedGraphContextQuery,
@@ -66,15 +69,8 @@ import { useDismissableSurface, type SurfaceDismissReason } from '../../shared/u
 import { useTheme } from '../theme'
 import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
 import {
-  configuredHarness,
   defaultAgentForHarness,
-  dropsWorkspaceWriteSettings,
-  effortOptionLabel,
-  effortOptions,
-  exactEffortOptions,
-  initialEffort,
-  initialModel,
-  modelOptions,
+  nextCoderAgentName,
   nextHarnessAgentName,
 } from '../agents/agentSettings'
 import {
@@ -160,6 +156,8 @@ const HANDLE_POSITIONS: Record<GraphHandleSide, Position> = {
 }
 
 type NodeMenuContextValue = {
+  workspaceId?: string
+  workflowApprovalHandler?: ApprovalHandler
   openMenuNodeId?: string
   setOpenMenuNodeId: (nodeId?: string) => void
 }
@@ -170,172 +168,6 @@ type NodeMenuContextValue = {
  */
 const NodeMenuContext = createContext<NodeMenuContextValue | undefined>(undefined)
 
-function AgentSettingsForm({
-  agent,
-  initialPrompt,
-  creationDefaults,
-  onClose,
-  onRemove,
-  onSave,
-  executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 },
-  workflowNodeCount = 1,
-}: {
-  agent: Agent
-  initialPrompt?: string
-  creationDefaults?: HarnessDefaults
-  onClose: () => void
-  onRemove?: () => void
-  onSave: (agent: Agent, initialPrompt: string | undefined, executionPolicy: WorkflowExecutionPolicy) => void
-  executionPolicy?: WorkflowExecutionPolicy
-  workflowNodeCount?: number
-}) {
-  const [name, setName] = useState(agent.name)
-  const [harness, setHarness] = useState<NonNullable<Agent['harness']>>(agent.harness ?? 'codex')
-  const [model, setModel] = useState(() => initialModel(agent, agent.harness ?? 'codex'))
-  const [effort, setEffort] = useState(() => initialEffort(agent, agent.harness ?? 'codex'))
-  const [fastMode, setFastMode] = useState(agent.fastMode ?? false)
-  const [codexSandbox, setCodexSandbox] = useState<'read-only' | 'workspace-write' | 'danger-full-access'>(
-    agent.harnessConfiguration?.harness === 'codex'
-      ? agent.harnessConfiguration.sandbox
-      : 'read-only',
-  )
-  const [prompt, setPrompt] = useState(initialPrompt ?? '')
-  const [maxNodeExecutions, setMaxNodeExecutions] = useState(executionPolicy.maxNodeExecutions)
-  const [maxParallelism, setMaxParallelism] = useState(executionPolicy.maxParallelism)
-  const trimmedName = name.trim()
-  const limitsValid = Number.isInteger(maxNodeExecutions)
-    && maxNodeExecutions >= workflowNodeCount
-    && Number.isInteger(maxParallelism)
-    && maxParallelism >= 1
-
-  return (
-    <>
-      <div className="agent-settings-heading">
-        <strong>Agent settings</strong>
-        <div>
-          {harness === 'codex' ? (
-            <label className="agent-settings-fast">
-              <input type="checkbox" checked={fastMode} onChange={(event) => setFastMode(event.target.checked)} />
-              Fast mode
-            </label>
-          ) : null}
-          {onRemove ? (
-            <button type="button" className="agent-settings-trash" aria-label={`Remove ${agent.name} from workflow`} onClick={onRemove}>
-              <Trash2 aria-hidden="true" size={16} />
-            </button>
-          ) : null}
-          <button type="button" aria-label="Close agent settings" onClick={onClose}>
-            <X aria-hidden="true" size={15} />
-          </button>
-        </div>
-      </div>
-      <div className="agent-settings-name agent-settings-control">
-        <span>Name</span>
-        <input aria-label="Name" value={name} onChange={(event) => setName(event.target.value)} />
-      </div>
-      <div className="agent-settings-field"><span>Harness</span><select aria-label="Harness" value={harness} onChange={(event) => {
-        const nextHarness = event.target.value as NonNullable<Agent['harness']>
-        setHarness(nextHarness)
-        const configuration = creationDefaults?.[nextHarness]
-          ?? (agent.harnessConfiguration?.harness === nextHarness ? agent.harnessConfiguration : undefined)
-        if (configuration) {
-          setModel(configuration.model)
-          setEffort(configuration.harness === 'codex'
-            ? configuration.reasoningEffort
-            : configuration.variant)
-          setFastMode(configuration.harness === 'codex' && configuration.serviceTier === 'priority')
-          if (configuration.harness === 'codex') setCodexSandbox(configuration.sandbox)
-          return
-        }
-        const nextModel = modelOptions(nextHarness).includes(model) ? model : modelOptions(nextHarness)[0]!
-        setModel(nextModel)
-        if (!effortOptions(nextHarness, nextModel).some((value) => value === effort)) setEffort(nextHarness === 'codex' ? 'medium' : 'max')
-      }}>
-        <option value="codex">Codex</option>
-        <option value="opencode">OpenCode</option>
-      </select></div>
-      <div className="agent-settings-field"><span>Model</span><select aria-label="Model" value={model} onChange={(event) => {
-        const nextModel = event.target.value
-        setModel(nextModel)
-        if (harness === 'codex' && !effortOptions(harness, nextModel).some((value) => value === effort)) setEffort('medium')
-      }}>
-        {modelOptions(harness, model).map((value) => <option key={value} value={value}>{value}</option>)}
-      </select></div>
-      <div className="agent-settings-field"><span>Effort</span><select aria-label="Effort" value={effort} onChange={(event) => setEffort(event.target.value)}>
-        {exactEffortOptions(harness, model, effort).map((value) => <option key={value} value={value}>{effortOptionLabel(value)}</option>)}
-      </select></div>
-      {harness === 'codex' ? (
-        <div className="agent-settings-field"><span>Sandbox</span><select aria-label="Sandbox" value={codexSandbox} onChange={(event) => setCodexSandbox(event.target.value as typeof codexSandbox)}>
-          <option value="read-only">Read only</option>
-          <option value="workspace-write">Workspace write</option>
-          <option value="danger-full-access">Danger: full access</option>
-        </select></div>
-      ) : null}
-      {harness === 'codex' && dropsWorkspaceWriteSettings(creationDefaults?.codex ?? agent.harnessConfiguration, codexSandbox) ? (
-        <p role="note">Saving this sandbox change removes additional writable directories and workspace-write network and temporary-directory controls.</p>
-      ) : null}
-      <div className="agent-settings-prompt agent-settings-control">
-        <span>Initial prompt</span>
-        <textarea
-          aria-label="Initial prompt"
-          rows={4}
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          placeholder="Tell this model what to do when the workflow reaches it."
-        />
-      </div>
-      <fieldset className="agent-settings-limits">
-        <legend>Workflow limits</legend>
-        <label>
-          Maximum node executions
-          <input
-            type="number"
-            min={workflowNodeCount}
-            step={1}
-            value={maxNodeExecutions}
-            aria-invalid={maxNodeExecutions < workflowNodeCount}
-            onChange={(event) => setMaxNodeExecutions(event.target.valueAsNumber)}
-          />
-        </label>
-        <label>
-          Maximum parallel agents
-          <input
-            type="number"
-            min={1}
-            step={1}
-            value={maxParallelism}
-            onChange={(event) => setMaxParallelism(event.target.valueAsNumber)}
-          />
-        </label>
-      </fieldset>
-      <div className="agent-settings-actions">
-        <button
-          type="button"
-          className="agent-settings-save"
-          aria-label="Save agent settings"
-          title="Save"
-          disabled={!trimmedName || !limitsValid}
-          onClick={() => {
-            const configuration = configuredHarness(
-              agent, harness, model, effort, fastMode, codexSandbox, creationDefaults,
-            )
-            onSave({
-              ...agent,
-              name: trimmedName,
-              harness,
-              model,
-              effort: projectHarnessEffort(configuration),
-              ...(harness === 'codex' ? { fastMode } : { fastMode: undefined }),
-              harnessConfiguration: configuration,
-            }, prompt.trim() || undefined, { maxNodeExecutions, maxParallelism })
-          }}
-        >
-          <Check aria-hidden="true" size={16} />
-        </button>
-      </div>
-    </>
-  )
-}
 
 function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
   const nodeMenu = useContext(NodeMenuContext)
@@ -446,6 +278,8 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
       {menuOpen ? (
         <div ref={menuRef} className="workflow-agent-node-menu agent-directory-card-actions nodrag" role="dialog" aria-label={`${data.label} settings`}>
           <AgentSettingsForm
+            workspaceId={nodeMenu?.workspaceId}
+            workflowApprovalHandler={nodeMenu?.workflowApprovalHandler}
             agent={data.agent}
             initialPrompt={data.initialPrompt}
             executionPolicy={data.executionPolicy}
@@ -670,6 +504,7 @@ export function GraphEditor({
   )?.id)
   const startLock = useRef(Boolean(activeRunId))
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
+  const [workflowSettingsOpen, setWorkflowSettingsOpen] = useState(false)
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => new Set())
   const [openMenuNodeId, setOpenMenuNodeId] = useState<string>()
   const [enteringEdgeId, setEnteringEdgeId] = useState<string>()
@@ -694,8 +529,9 @@ export function GraphEditor({
   const positionUndoActiveRef = useRef(false)
   const agentPickerPresence = usePresence(agentPickerOpen)
   const nodeMenuValue = useMemo(
-    () => ({ openMenuNodeId, setOpenMenuNodeId }),
-    [openMenuNodeId],
+    () => ({ openMenuNodeId, setOpenMenuNodeId, workspaceId,
+      workflowApprovalHandler: (draft?.workflow ?? workflow).approval?.handler }),
+    [openMenuNodeId, workspaceId, draft?.workflow, workflow],
   )
   const saveMutation = useSaveGraphMutation()
   const isSaving = managedSaving || saveMutation.isPending
@@ -703,7 +539,8 @@ export function GraphEditor({
     ? draft?.managedBase ?? captureManagedBase(managedDraft, agents, managedAgentRevisions)
     : undefined, [agents, draft?.managedBase, managedAgentRevisions, managedDraft])
   const managedWorkspace = useManagedWorkspaceQuery(workspaceId, Boolean(managedDraft))
-  const harnessDefaultsQuery = useHarnessDefaultsQuery()
+  const agentDefaultsQuery = useAgentDefaultsQuery(import.meta.env.MODE !== 'test')
+  const agentDefaults: AgentDefaults = agentDefaultsQuery.data?.value ?? DEFAULT_AGENT_DEFAULTS
   const startRunMutation = useStartWorkflowRunMutation()
   const startManagedRun = useStartManagedRunMutation()
   const stopManagedRun = useStopManagedRunMutation()
@@ -762,7 +599,7 @@ export function GraphEditor({
     const firstControl = agentPickerRef.current?.querySelector<HTMLElement>('[data-agent-picker-option]')
       ?? agentPickerRef.current?.querySelector<HTMLElement>('button, a[href]')
     firstControl?.focus()
-  }, [agentPickerOpen, harnessDefaultsQuery.data])
+  }, [agentPickerOpen, agentDefaults])
 
   // Query owns the saved definition. The feature store is consulted only
   // while an unsaved draft exists, so refetches remain visible when clean.
@@ -789,6 +626,9 @@ export function GraphEditor({
     }
     return [...catalogById.values()]
   }, [agentOverrides, agents, deletedAgentIdSet, draft?.managedBase?.agents, localAgents])
+  const workflowAgentIds = useMemo(() => new Set(displayedWorkflow.nodes.map((node) => node.agentId)), [displayedWorkflow.nodes])
+  const workflowOrchestrators = catalogAgents.filter((agent) => workflowAgentIds.has(agent.id) && agent.productRole === 'orchestrator')
+  const hasDistinctCoder = catalogAgents.some((agent) => workflowAgentIds.has(agent.id) && agent.productRole === 'coder')
 
   const executionPolicy = displayedWorkflow.executionPolicy ?? {
     maxParallelism: Math.max(1, displayedWorkflow.nodes.length),
@@ -1495,6 +1335,8 @@ export function GraphEditor({
         </NodeMenuContext.Provider>
 
         <div className="workflow-graph-primary-actions" aria-label="Workflow controls">
+          <button type="button" className="workflow-graph-add-agent" aria-label="Workflow settings" title="Workflow settings" onClick={() => setWorkflowSettingsOpen((open) => !open)}><Settings aria-hidden="true" size={16} /></button>
+          <Link to="/workspaces/$workspaceId/approvals" params={{ workspaceId }} search={{ workflowId: displayedWorkflow.id }} className="workflow-graph-add-agent" aria-label="Workflow Approval Inbox" title="Workflow Approval Inbox"><Inbox aria-hidden="true" size={16} /></Link>
           <button
             type="button"
             className="workflow-graph-run"
@@ -1536,6 +1378,19 @@ export function GraphEditor({
             <Plus aria-hidden="true" size={17} />
           </button>
         </div>
+
+        {workflowSettingsOpen ? <div className="workflow-settings-popover" role="dialog" aria-labelledby="workflow-settings-title">
+          <header><div><p className="panel-kicker">Local override</p><h2 id="workflow-settings-title">Workflow settings</h2></div><button type="button" aria-label="Close workflow settings" onClick={() => setWorkflowSettingsOpen(false)}><X size={16} /></button></header>
+          <label>Approval handler<select value={displayedWorkflow.approval?.handler ?? ''} onChange={(event) => {
+            const handler = event.target.value as 'user' | 'orchestrator' | 'operator'
+            applyBoardChange((saved) => ({ ...saved, approval: handler === 'orchestrator'
+              ? { handler, ...(saved.approval?.handler === 'orchestrator' && saved.approval.designatedOrchestratorAgentId ? { designatedOrchestratorAgentId: saved.approval.designatedOrchestratorAgentId } : {}) }
+              : { handler } }))
+          }}><option value="" disabled>Select handler</option><option value="user">User</option><option value="orchestrator" disabled={!hasDistinctCoder || workflowOrchestrators.length === 0}>Orchestrator</option><option value="operator">Operator</option></select></label>
+          {displayedWorkflow.approval?.handler === 'orchestrator' ? <label>Designated Orchestrator<select value={displayedWorkflow.approval.designatedOrchestratorAgentId ?? ''} aria-label="Designated Orchestrator" onChange={(event) => applyBoardChange((saved) => ({ ...saved, approval: { handler: 'orchestrator', designatedOrchestratorAgentId: event.target.value || undefined } }))}><option value="">Choose an Orchestrator</option>{displayedWorkflow.approval.designatedOrchestratorAgentId && !workflowOrchestrators.some((agent) => agent.id === displayedWorkflow.approval?.designatedOrchestratorAgentId) ? <option disabled value={displayedWorkflow.approval.designatedOrchestratorAgentId}>Previously designated Agent is unavailable</option> : null}{workflowOrchestrators.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label> : null}
+          {!hasDistinctCoder || workflowOrchestrators.length === 0 ? <p role="status">Orchestrator handling requires one Orchestrator and a distinct Coder on this board.</p> : null}
+          <p>Normal graph edges do not grant approval authority. This setting is pinned when you Save graph.</p>
+        </div> : null}
 
         {isDirty || managedDraft ? (
           <div className="workflow-graph-actions" aria-label="Graph actions">
@@ -1583,19 +1438,19 @@ export function GraphEditor({
           >
             <div className="agent-picker-heading">
               <div>
-                <h2 id="agent-picker-title">Add harness</h2>
+                <h2 id="agent-picker-title">Add Agent</h2>
               </div>
               <button type="button" aria-label="Close agent picker" title="Close" onClick={closeAgentPicker}>
                 <X aria-hidden="true" size={17} />
               </button>
             </div>
 
-            {harnessDefaultsQuery.isPending ? (
-              <p className="agent-picker-state" role="status">Loading harness defaults…</p>
-            ) : harnessDefaultsQuery.isError || !harnessDefaultsQuery.data ? (
+            {agentDefaultsQuery.isPending && agentDefaultsQuery.fetchStatus !== 'idle' ? (
+              <p className="agent-picker-state" role="status">Loading Agent templates…</p>
+            ) : agentDefaultsQuery.isError ? (
               <div className="agent-picker-state" role="alert">
-                <p>Harness defaults are unavailable.</p>
-                <button type="button" onClick={() => void harnessDefaultsQuery.refetch()}>Retry</button>
+                <p>Agent templates are unavailable.</p>
+                <button type="button" onClick={() => void agentDefaultsQuery.refetch()}>Retry</button>
               </div>
             ) : (
               <div className="harness-picker-grid">
@@ -1603,27 +1458,29 @@ export function GraphEditor({
                   type="button"
                   data-agent-picker-option
                   onClick={() => addAgentToGraph(defaultAgentForHarness(
-                    'codex',
-                    nextBoardAgentId('codex'),
-                    nextHarnessAgentName('codex', catalogAgents),
-                    harnessDefaultsQuery.data.defaults.codex,
+                    agentDefaults.orchestrator.harness.harness,
+                    nextBoardAgentId(agentDefaults.orchestrator.harness.harness),
+                    'Orchestrator',
+                    agentDefaults.orchestrator.harness,
+                    'orchestrator',
                   ))}
                 >
                   <Bot aria-hidden="true" size={28} />
-                  <span>Codex</span>
+                  <span>Orchestrator</span>
                 </button>
                 <button
                   type="button"
                   data-agent-picker-option
                   onClick={() => addAgentToGraph(defaultAgentForHarness(
-                    'opencode',
-                    nextBoardAgentId('opencode'),
-                    nextHarnessAgentName('opencode', catalogAgents),
-                    harnessDefaultsQuery.data.defaults.opencode,
+                    agentDefaults.coder.harness.harness,
+                    nextBoardAgentId(agentDefaults.coder.harness.harness),
+                    nextCoderAgentName(catalogAgents),
+                    agentDefaults.coder.harness,
+                    'coder',
                   ))}
                 >
                   <BotMessageSquare aria-hidden="true" size={28} />
-                  <span>OpenCode</span>
+                  <span>Coder</span>
                 </button>
               </div>
             )}

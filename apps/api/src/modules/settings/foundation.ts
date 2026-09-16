@@ -4,6 +4,7 @@ import {
   AgentDefaultsSchema,
   DEFAULT_AGENT_DEFAULTS,
   WorkflowDefaultsSchema,
+  withAdvancedDefaults,
   type AgentDefaults,
   type WorkflowDefaults,
 } from '@graphql/contracts'
@@ -26,7 +27,14 @@ export class PostgresFoundationSettingsRepository {
   constructor(private readonly pool: pg.Pool) {}
 
   getAgentDefaults(client?: pg.ClientBase): Promise<VersionedSetting<AgentDefaults>> {
-    return this.read(KEYS.agents, AgentDefaultsSchema, DEFAULT_AGENT_DEFAULTS, client)
+    return this.read(KEYS.agents, AgentDefaultsSchema, DEFAULT_AGENT_DEFAULTS, client).then((snapshot) => ({
+      ...snapshot,
+      value: {
+        orchestrator: { ...snapshot.value.orchestrator, harness: withAdvancedDefaults(snapshot.value.orchestrator.harness) },
+        coder: { ...snapshot.value.coder, harness: withAdvancedDefaults(snapshot.value.coder.harness) },
+        operator: { ...snapshot.value.operator, harness: withAdvancedDefaults(snapshot.value.operator.harness) },
+      },
+    }))
   }
 
   getWorkflowDefaults(client?: pg.ClientBase): Promise<VersionedSetting<WorkflowDefaults>> {
@@ -39,6 +47,14 @@ export class PostgresFoundationSettingsRepository {
 
   updateWorkflowDefaults(value: WorkflowDefaults, expectedRevision: number, client?: pg.ClientBase) {
     return this.write(KEYS.workflows, WorkflowDefaultsSchema.parse(value), expectedRevision, client)
+  }
+
+  updateManagedAgentDefaults(client: pg.PoolClient, value: AgentDefaults, expectedRevision: number) {
+    return this.updateAgentDefaults(value, expectedRevision, client)
+  }
+
+  updateManagedWorkflowDefaults(client: pg.PoolClient, value: WorkflowDefaults, expectedRevision: number) {
+    return this.updateWorkflowDefaults(value, expectedRevision, client)
   }
 
   private async read<T>(key: string, schema: { parse(value: unknown): T }, fallback: T, client?: pg.ClientBase): Promise<VersionedSetting<T>> {

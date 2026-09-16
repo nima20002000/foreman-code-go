@@ -69,7 +69,7 @@ export const useGraphDraftStore = create<GraphDraftStore>((set) => ({
     const agentOverrides = retainReferences({ ...previous?.agentOverrides, ...Object.fromEntries(agents.map((agent) => [agent.id, agent])) }, workflow)
     const cloneSources = retainReferences({ ...previous?.cloneSources, ...sources }, workflow)
     const changed = managedBase ? !sameEditableGraph(workflow, comparison) : !sameWorkflow(workflow, comparison)
-    if (changed || Object.keys(agentOverrides).length > 0) return { drafts: { ...state.drafts, [workflowKey]: {
+    if (changed || Object.keys(agentOverrides).length > 0 || (previous && state.managedSaving[workflowKey])) return { drafts: { ...state.drafts, [workflowKey]: {
       workflow, agentOverrides, dirty: true, ...(managedBase ? { managedBase } : {}), cloneSources,
     } } }
     if (!previous) return state
@@ -98,7 +98,7 @@ export const useGraphDraftStore = create<GraphDraftStore>((set) => ({
             createdAt: saved.createdAt ?? agent.createdAt, updatedAt: saved.updatedAt }
         : agent
     }
-    const workflow = sameWorkflow(draft.workflow, submitted.workflow) ? savedWorkflow : {
+    const workflow = (managedBase ? sameEditableGraph(draft.workflow, submitted.workflow) : sameWorkflow(draft.workflow, submitted.workflow)) ? savedWorkflow : {
       ...draft.workflow,
       id: savedWorkflow.id, workspaceId: savedWorkflow.workspaceId,
       name: savedWorkflow.name, description: savedWorkflow.description,
@@ -106,6 +106,10 @@ export const useGraphDraftStore = create<GraphDraftStore>((set) => ({
       ...(managedBase ? {
         nodes: rebaseEntities(draft.workflow.nodes, submitted.workflow.nodes, savedWorkflow.nodes),
         edges: rebaseEntities(draft.workflow.edges, submitted.workflow.edges, savedWorkflow.edges),
+        approval: sameManagedValue(draft.workflow.approval, submitted.workflow.approval)
+          ? savedWorkflow.approval : draft.workflow.approval,
+        requiredAgentCount: sameManagedValue(draft.workflow.requiredAgentCount, submitted.workflow.requiredAgentCount)
+          ? savedWorkflow.requiredAgentCount : draft.workflow.requiredAgentCount,
         executionPolicy: sameManagedValue(draft.workflow.executionPolicy, submitted.workflow.executionPolicy)
           ? savedWorkflow.executionPolicy : draft.workflow.executionPolicy,
       } : {}),

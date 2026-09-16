@@ -82,6 +82,17 @@ export function WorkspaceShell({
 
   useEffect(() => () => stopResizeRef.current?.(), [])
 
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const phone = window.matchMedia('(max-width: 640px)')
+    const collapseForPhone = (event: MediaQueryListEvent | MediaQueryList) => {
+      if (event.matches) setCollapsed(true)
+    }
+    collapseForPhone(phone)
+    phone.addEventListener('change', collapseForPhone)
+    return () => phone.removeEventListener('change', collapseForPhone)
+  }, [setCollapsed])
+
   const startResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || navigationCollapsed) return
     event.preventDefault()

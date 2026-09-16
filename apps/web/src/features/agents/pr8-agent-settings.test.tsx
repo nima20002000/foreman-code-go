@@ -1,12 +1,19 @@
 // @vitest-environment jsdom
 import { AgentSchema, DEFAULT_HARNESS_DEFAULTS, HarnessConfigurationSchema, type Agent } from '@graphql/contracts'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import type { ReactElement } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AgentSettingsForm } from '../graph/GraphEditor'
 import { configuredHarness, defaultAgentForHarness } from './agentSettings'
 
 afterEach(cleanup)
+
+function renderWithQueryClient(ui: ReactElement) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>)
+}
 
 describe('PR8 exact native settings in the actual form', () => {
   it.each([false, true])('preserves a custom variant on a name-only save; creation=%s', (creating) => {
@@ -16,8 +23,8 @@ describe('PR8 exact native settings in the actual form', () => {
     const agent = defaultAgentForHarness('opencode', 'agent', 'Before', defaults.opencode)
     expect(agent.effort).toBeUndefined()
     const onSave = vi.fn()
-    render(<AgentSettingsForm agent={agent} {...(creating ? { creationDefaults: defaults } : {})} onClose={() => undefined} onSave={onSave} />)
-    expect((screen.getByLabelText('Effort') as HTMLSelectElement).value).toBe('provider-custom-effort')
+    renderWithQueryClient(<AgentSettingsForm agent={agent} {...(creating ? { creationDefaults: defaults } : {})} onClose={() => undefined} onSave={onSave} />)
+    expect((screen.getByLabelText('Provider variant') as HTMLInputElement).value).toBe('provider-custom-effort')
     expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe('provider/custom-model')
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'After' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
@@ -31,8 +38,8 @@ describe('PR8 exact native settings in the actual form', () => {
     const configuration = { ...DEFAULT_HARNESS_DEFAULTS.opencode, variant: 'provider-custom-effort' }
     const agent = defaultAgentForHarness('opencode', 'agent', 'Agent', configuration)
     const onSave = vi.fn()
-    render(<AgentSettingsForm agent={agent} onClose={() => undefined} onSave={onSave} />)
-    fireEvent.change(screen.getByLabelText('Effort'), { target: { value: 'high' } })
+    renderWithQueryClient(<AgentSettingsForm agent={agent} onClose={() => undefined} onSave={onSave} />)
+    fireEvent.change(screen.getByLabelText('Provider variant'), { target: { value: 'high' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
     expect(onSave.mock.calls[0]![0]).toMatchObject({ effort: 'high', harnessConfiguration: { variant: 'high' } })
   })
@@ -45,9 +52,9 @@ describe('PR8 exact native settings in the actual form', () => {
     const agent = defaultAgentForHarness('codex', 'agent', 'Agent', configuration)
     const original = structuredClone(agent)
     const onSave = vi.fn()
-    render(<AgentSettingsForm agent={agent} onClose={() => undefined} onSave={onSave} />)
+    renderWithQueryClient(<AgentSettingsForm agent={agent} onClose={() => undefined} onSave={onSave} />)
     fireEvent.change(screen.getByLabelText('Sandbox'), { target: { value: sandbox } })
-    expect(screen.getByRole('note').textContent).toContain('removes additional writable directories')
+    expect(screen.getByText(/Leaving workspace-write removes additional writable directories/)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
     const saved = onSave.mock.calls[0]![0] as Agent
     expect(HarnessConfigurationSchema.safeParse(saved.harnessConfiguration).success).toBe(true)
