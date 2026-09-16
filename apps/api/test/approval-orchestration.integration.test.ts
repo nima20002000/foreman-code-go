@@ -86,7 +86,7 @@ class SelectiveNativeManager implements NativeHarnessSessionManager {
   async history(session: NativeSessionReference): Promise<NativeHistory> {
     const pendingInteraction = this.pendingRequests.get(session.nativeSessionId)
     const terminalResult = this.terminal.get(session.nativeSessionId)
-    return { events: [], ...(pendingInteraction ? { pendingInteraction } : {}), ...(terminalResult ? { terminalResult } : {}) }
+    return { events: [], pendingInteractions: pendingInteraction ? [pendingInteraction] : [], ...(pendingInteraction ? { pendingInteraction } : {}), ...(terminalResult ? { terminalResult } : {}) }
   }
   async reconcile(session: NativeSessionReference) { return this.history(session) }
   async close() {}

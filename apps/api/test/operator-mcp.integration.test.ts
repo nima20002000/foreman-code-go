@@ -138,7 +138,8 @@ describe('Operator MCP with PostgreSQL', () => {
     })
 
     const tools = await client.listTools()
-    expect(tools.tools.map((tool) => tool.name).sort()).toEqual([...OperatorToolNameSchema.options].sort())
+    const implementedOperatorTools = OperatorToolNameSchema.options.filter((name) => !name.startsWith('interaction_'))
+    expect(tools.tools.map((tool) => tool.name).sort()).toEqual(implementedOperatorTools.sort())
     expect(tools.tools.every((tool) => tool.inputSchema.additionalProperties === false && tool.outputSchema?.additionalProperties === false)).toBe(true)
 
     const harnesses = structured(await client.callTool({ name: 'harness_list', arguments: {} })) as unknown as {

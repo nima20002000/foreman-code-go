@@ -79,6 +79,7 @@ export class DeterministicNativeSessionManager implements NativeHarnessSessionMa
   async history(): Promise<NativeHistory> {
     return {
       events: [...this.events],
+      pendingInteractions: this.waiting ? [this.waiting] : [],
       ...(this.waiting ? { pendingInteraction: this.waiting } : {}),
       ...(this.terminalResult ? { terminalResult: this.terminalResult } : {}),
     }

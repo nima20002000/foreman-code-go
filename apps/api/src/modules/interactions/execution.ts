@@ -106,7 +106,7 @@ export class ApprovalExecutionCoordinator {
       nativeSessionId: execution.nativeSessionId!,
     }
     const history = await manager.history(session)
-    if (history.pendingInteraction) {
+    if (history.pendingInteractions.length) {
       const interaction = await this.interactions.getForExecution(execution.id)
       if (!interaction) throw new Error('Native pending request has no durable interaction.')
       return { state: 'waiting', execution, interaction }

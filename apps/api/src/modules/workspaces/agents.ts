@@ -4,6 +4,10 @@ import type pg from 'pg'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 
+function legacyOpenCodeEffort(variant: string) {
+  return variant === 'low' || variant === 'high' || variant === 'max' ? variant : undefined
+}
+
 interface AgentRow {
   record: unknown; metadata_revision: string
   current_configuration_version_id: string | null; configuration_record: unknown | null
@@ -16,7 +20,7 @@ function managedAgent(row: AgentRow) {
     const harness = configuration.harness
     agent = AgentSchema.parse({ ...agent, productRole: configuration.productRole, configurationVersionId: configuration.id,
       harness: harness.harness, harnessConfiguration: harness, model: harness.model,
-      effort: harness.harness === 'codex' ? harness.reasoningEffort : harness.variant,
+      effort: harness.harness === 'codex' ? harness.reasoningEffort : legacyOpenCodeEffort(harness.variant),
       fastMode: harness.harness === 'codex' ? harness.serviceTier === 'priority' : undefined,
       prompt: configuration.prompt, assignedSkills: configuration.assignedSkills })
   }

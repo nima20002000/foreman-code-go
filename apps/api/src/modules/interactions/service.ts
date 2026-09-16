@@ -137,7 +137,7 @@ export class InteractionService {
         harness: interaction.harness, providerVersion: interaction.providerVersion,
         nativeSessionId: interaction.nativeSessionId,
       }, `approval:${interaction.id}`)
-      const stillPending = history.pendingInteraction?.turn.nativeRequestId === interaction.nativeRequestId
+      const stillPending = history.pendingInteractions.some((item) => item.turn.nativeRequestId === interaction.nativeRequestId)
       return this.interactions.updateDelivery(interaction.id, interaction.revision, stillPending ? 'failed' : 'delivered')
     } catch {
       if (interaction.deliveryState === 'uncertain') return interaction
