@@ -64,7 +64,17 @@ export class InteractionService {
     private readonly budgets: PostgresApprovalBudgetRepository,
     private readonly managers: NativeSessionManagerResolver,
     private readonly resumeGraph: (interaction: DurableInteraction) => Promise<void>,
+    private readonly attachSession?: (interaction: DurableInteraction) => Promise<unknown>,
   ) {}
+
+  private async resumeDelivered(interaction: DurableInteraction): Promise<void> {
+    await this.budgets.resume(interaction.executionId)
+    try {
+      await this.resumeGraph(interaction)
+    } catch (error) {
+      if (!(error instanceof DomainError && error.code === 'RUN_NOT_RESUMABLE')) throw error
+    }
+  }
 
   async get(id: string): Promise<DurableInteraction> {
     const interaction = await this.interactions.get(id)
@@ -94,7 +104,9 @@ export class InteractionService {
 
     if (current.selectedOptionId === input.optionId
       && (current.deliveryState === 'submitted' || current.deliveryState === 'uncertain')) {
-      return { interaction: await this.reconcile(current), replayed: true }
+      const reconciled = await this.reconcile(current)
+      if (reconciled.deliveryState === 'delivered') await this.resumeDelivered(reconciled)
+      return { interaction: reconciled, replayed: true }
     }
     const nativeResponse = { optionId: option.optionId, semantic: option.semantic }
     const auditReference = responder.kind === 'operator' ? responder.principal.id
@@ -104,6 +116,17 @@ export class InteractionService {
       nativeResponse, ...(auditReference ? { auditReference } : {}),
     })
     if (decision.interaction.deliveryState === 'delivered') return decision
+
+    try {
+      await this.attachSession?.(decision.interaction)
+    } catch {
+      return {
+        interaction: await this.interactions.updateDelivery(
+          decision.interaction.id, decision.interaction.revision, 'failed',
+        ),
+        replayed: decision.replayed,
+      }
+    }
 
     const submitted = await this.interactions.updateDelivery(
       decision.interaction.id, decision.interaction.revision, 'submitted',
@@ -118,8 +141,7 @@ export class InteractionService {
       }, submitted.nativeRequestId, option)
       await this.interactions.finishDeliveryAttempt(submitted.id, attempt, 'delivered')
       const delivered = await this.interactions.updateDelivery(submitted.id, submitted.revision, 'delivered')
-      await this.budgets.resume(delivered.executionId)
-      await this.resumeGraph(delivered)
+      await this.resumeDelivered(delivered)
       return { interaction: delivered, replayed: decision.replayed }
     } catch (error) {
       const certainty = deliveryCertainty(error)
@@ -133,6 +155,7 @@ export class InteractionService {
   async reconcile(interaction: DurableInteraction): Promise<DurableInteraction> {
     const manager = this.managers.resolve(interaction.harness)
     try {
+      await this.attachSession?.(interaction)
       const history = await manager.reconcile({
         harness: interaction.harness, providerVersion: interaction.providerVersion,
         nativeSessionId: interaction.nativeSessionId,

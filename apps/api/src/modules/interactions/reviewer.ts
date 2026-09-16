@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import { ReviewJobSchema, type DurableInteraction, type NativeSessionLane, type NativeSessionReference, type ReviewJob } from '@graphql/contracts'
+import { ReviewJobSchema, type DurableInteraction, type NativeSessionReference, type ReviewJob } from '@graphql/contracts'
 
 import type { NativeSessionManagerResolver } from './service.js'
 import { PostgresInteractionCoordinationRepository } from './coordination.js'

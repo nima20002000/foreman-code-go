@@ -8,6 +8,8 @@ import {
   type HarnessExecution,
   type HarnessExecutionRequest,
   type WorkflowApprovalConfiguration,
+  HarnessExecutionRequestSchema,
+  type NativeSessionReference,
 } from '@graphql/contracts'
 
 import type { NativeSessionManagerResolver } from './service.js'
@@ -30,6 +32,22 @@ export class ApprovalExecutionCoordinator {
     private readonly managers: NativeSessionManagerResolver,
     private readonly activeTimeoutMs: number,
   ) {}
+
+  async attachInteraction(interaction: DurableInteraction): Promise<NativeSessionReference> {
+    const execution = await this.runs.getExecution(interaction.executionId)
+    if (!execution?.workingDirectory || !execution.runtimeDirectory) throw new Error('The durable execution cannot reconstruct its native session start input.')
+    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+    if (!configuration) throw new Error('The durable execution configuration is unavailable.')
+    const request = HarnessExecutionRequestSchema.parse({
+      executionId: execution.id, runId: execution.runId, workspaceId: interaction.workspaceId,
+      workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
+      runtimeDirectory: execution.runtimeDirectory, configuration, input: execution.input,
+    })
+    return this.managers.resolve(interaction.harness).attachSession({
+      harness: interaction.harness, providerVersion: interaction.providerVersion,
+      nativeSessionId: interaction.nativeSessionId,
+    }, { kind: 'workflow', correlationId: `execution:${execution.id}`, request })
+  }
 
   async cancelRun(runId: string): Promise<void> {
     for (const execution of await this.runs.listExecutions(runId)) {
@@ -65,8 +83,10 @@ export class ApprovalExecutionCoordinator {
     if (existing && existing.deliveryState !== 'delivered') return { state: 'waiting', execution, interaction: existing }
 
     const manager = this.managers.resolve(input.request.configuration.harness.harness)
+    let createdSession = false
     if (!execution.nativeSessionId) {
       const session = await manager.createSession({ request: input.request })
+      createdSession = true
       execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: session.nativeSessionId, state: 'running' })
       await this.runs.updateExecution(execution, input.owner)
       for await (const event of manager.startTurn(session, {
@@ -104,6 +124,16 @@ export class ApprovalExecutionCoordinator {
       harness: input.request.configuration.harness.harness,
       providerVersion: existing?.providerVersion ?? (await manager.capabilities()).providerVersion,
       nativeSessionId: execution.nativeSessionId!,
+    }
+    if (!createdSession) {
+      try {
+        await manager.attachSession(session, {
+          kind: 'workflow', correlationId: `execution:${execution.id}`, request: input.request,
+        })
+      } catch (error) {
+        if (existing) return { state: 'waiting', execution, interaction: existing }
+        throw error
+      }
     }
     const history = await manager.history(session)
     if (history.pendingInteractions.length) {

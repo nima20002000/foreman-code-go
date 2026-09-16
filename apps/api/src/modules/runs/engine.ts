@@ -169,7 +169,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     const runId = interactions[0]?.runId
     if (!runId || interactions.some((item) => item.runId !== runId)) throw new DomainError('INTERACTION_RUN_MISMATCH', 'Resume interactions must belong to one Run.', 409)
     const existing = this.activeTasks.get(runId)
-    if (existing) { await existing; return }
+    if (existing) await existing
     if (this.closing) throw new DomainError('ENGINE_CLOSING', 'The workflow engine is shutting down.', 503)
     const controller = new AbortController()
     this.activeRuns.set(runId, controller)

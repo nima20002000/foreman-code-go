@@ -260,7 +260,7 @@ const migrations = [
   ` },
   { version: 500, sql: `
     create table if not exists approval_execution_state (
-      execution_id text primary key references harness_executions(id) on delete cascade,
+      execution_id text primary key,
       graph_thread_id text not null,
       active_timeout_ms bigint not null check (active_timeout_ms > 0),
       active_elapsed_ms bigint not null default 0 check (active_elapsed_ms >= 0),

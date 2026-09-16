@@ -11,6 +11,7 @@ import {
   type NativeHarnessEvent,
   type NativeSessionReference,
   type PendingNativeInteraction,
+  type ApprovalResponseOption,
 } from '@graphql/contracts'
 import pg from 'pg'
 import { afterEach, beforeEach, expect, it } from 'vitest'
@@ -51,10 +52,12 @@ let app: FastifyInstance
 
 class SelectiveNativeManager implements NativeHarnessSessionManager {
   readonly harness = 'codex' as const
-  readonly counters = { nodeEntries: 0, sessions: 0, sideEffects: 0, deliveries: 0 }
+  readonly counters = { nodeEntries: 0, sessions: 0, attaches: 0, sideEffects: 0, deliveries: 0 }
   private readonly requests = new Map<string, HarnessExecutionRequest>()
   private readonly pendingRequests = new Map<string, PendingNativeInteraction>()
   private readonly terminal = new Map<string, NativeHistory['terminalResult']>()
+
+  constructor(private readonly pendingNodeIds = new Set(['approval-target'])) {}
 
   async capabilities() { return { provider: this.harness, providerVersion: '0.154.0', persistentSessions: true, reconnect: true, sameRequestResponses: true, cancellation: true, history: true, configurationInspection: true, mcpDetection: true, supportedInteractionKinds: ['approval'] } }
   async inspectMcp() { return { harness: this.harness, serverName: 'graphql', state: 'connected' as const, endpointMatches: true, credentialEnvironmentVariable: null, checkedAt: new Date().toISOString() } }
@@ -64,13 +67,18 @@ class SelectiveNativeManager implements NativeHarnessSessionManager {
     this.requests.set(session.nativeSessionId, input.request)
     return session
   }
+  async attachSession(session: NativeSessionReference, input: { request: HarnessExecutionRequest }) {
+    this.counters.attaches += 1
+    this.requests.set(session.nativeSessionId, input.request)
+    return session
+  }
   async *startTurn(session: NativeSessionReference): AsyncIterable<NativeHarnessEvent> {
     this.counters.nodeEntries += 1
     this.counters.sideEffects += 1
     const request = this.requests.get(session.nativeSessionId)!
-    if (request.workflowNodeId === 'approval-target') {
+    if (this.pendingNodeIds.has(request.workflowNodeId)) {
       const pending: PendingNativeInteraction = {
-        session, turn: { nativeTurnId: 'turn-target', nativeRequestId: 'request-target' },
+        session, turn: { nativeTurnId: `turn-${request.workflowNodeId}`, nativeRequestId: `request-${request.workflowNodeId}` },
         nativeRequestType: 'item/commandExecution/requestApproval', request: { command: ['touch', 'proof'] },
         responseOptions: CODEX_APPROVAL_OPTIONS_FIXTURE,
       }
@@ -102,10 +110,20 @@ class SelectiveNativeManager implements NativeHarnessSessionManager {
 class ReviewNativeManager extends SelectiveNativeManager {
   reviewTurns = 0
   override async *startTurn(_session: NativeSessionReference): AsyncIterable<NativeHarnessEvent> {
+    void _session
     this.reviewTurns += 1
     yield NativeHarnessEventSchema.parse({
       sequence: 0, type: 'turn.started', occurredAt: new Date().toISOString(), payload: { turnId: `review-turn-${this.reviewTurns}` },
     })
+  }
+}
+
+class UncertainOnceNativeManager extends DeterministicNativeSessionManager {
+  responseAttempts = 0
+  override async respond(session: NativeSessionReference, nativeRequestId: string, option: ApprovalResponseOption) {
+    this.responseAttempts += 1
+    if (this.responseAttempts === 1) throw Object.assign(new Error('transport lost after write'), { certainty: 'uncertain' as const })
+    return super.respond(session, nativeRequestId, option)
   }
 }
 
@@ -179,14 +197,19 @@ it('interrupts and resumes the same durable native execution without repeating p
   const waitingRun = await runs.get(run.id)
   if (waitingRun?.executionState !== 'waiting') throw new Error(JSON.stringify(waitingRun))
   const pending = (await interactions.list({ runId: run.id, limit: 10 }))[0]!
-  expect(pending).toMatchObject({ nativeSessionId: 'session-approval-target', nativeRequestId: 'request-target', status: 'pending' })
-  expect(manager.counters).toEqual({ nodeEntries: 2, sessions: 2, sideEffects: 2, deliveries: 0 })
+  expect(pending).toMatchObject({ nativeSessionId: 'session-approval-target', nativeRequestId: 'request-approval-target', status: 'pending' })
+  expect(manager.counters).toEqual({ nodeEntries: 2, sessions: 2, attaches: 0, sideEffects: 2, deliveries: 0 })
 
   const listed = await app.inject({
     method: 'GET', url: '/api/interactions?limit=10',
   })
   expect(listed.statusCode).toBe(200)
   expect(listed.json().items).toHaveLength(1)
+  const unsupported = await app.inject({
+    method: 'POST', url: `/api/interactions/${pending.id}/respond`,
+    payload: { interactionId: pending.id, optionId: 'caller-forged-option', expectedRevision: pending.revision },
+  })
+  expect(unsupported.statusCode).toBe(409)
   const response = await app.inject({
     method: 'POST', url: `/api/interactions/${pending.id}/respond`,
     payload: { interactionId: pending.id, optionId: 'codex-approve-once', expectedRevision: pending.revision },
@@ -194,11 +217,61 @@ it('interrupts and resumes the same durable native execution without repeating p
   expect(response.statusCode).toBe(200)
   expect(response.json().interaction.deliveryState).toBe('delivered')
   expect((await runs.get(run.id))?.outcome).toBe('succeeded')
-  expect(manager.counters).toEqual({ nodeEntries: 2, sessions: 2, sideEffects: 2, deliveries: 1 })
+  expect(manager.counters).toEqual({ nodeEntries: 2, sessions: 2, attaches: 1, sideEffects: 2, deliveries: 1 })
   const executions = await runs.listExecutions(run.id)
   expect(executions).toHaveLength(2)
   expect(executions.find((item) => item.workflowNodeId === 'predecessor')?.nativeSessionId).toBe('session-predecessor')
   expect(executions.find((item) => item.workflowNodeId === 'approval-target')?.nativeSessionId).toBe('session-approval-target')
+  const replay = await app.inject({
+    method: 'POST', url: `/api/interactions/${pending.id}/respond`,
+    payload: { interactionId: pending.id, optionId: 'codex-approve-once', expectedRevision: pending.revision },
+  })
+  expect(replay.statusCode).toBe(200)
+  expect(replay.json().replayed).toBe(true)
+  expect(manager.counters.deliveries).toBe(1)
+})
+
+it('targets two parallel interrupt ids without respawning either branch or its predecessor', async () => {
+  const workflows = new PostgresWorkflowRepository(pool)
+  const saved = await workflows.get('workspace-1', 'workflow-content-pipeline')
+  if (!saved) throw new Error('seed missing')
+  await workflows.save('workspace-1', {
+    ...saved, requiredAgentCount: 3,
+    nodes: [
+      { id: 'parallel-predecessor', agentId: 'agent-researcher', name: 'Predecessor' },
+      { id: 'parallel-left', agentId: 'agent-developer', name: 'Left approval' },
+      { id: 'parallel-right', agentId: 'agent-reviewer', name: 'Right approval' },
+    ],
+    edges: [
+      { id: 'edge-left', source: 'parallel-predecessor', target: 'parallel-left' },
+      { id: 'edge-right', source: 'parallel-predecessor', target: 'parallel-right' },
+    ],
+    approval: { handler: 'user' }, executionPolicy: { maxParallelism: 2, maxNodeExecutions: 3 },
+  })
+  const locations = new WorkspaceLocationService(pool, new PostgresCommandCoordinator(pool), root)
+  const runs = new PostgresRunRepository(pool, workflows, locations)
+  const run = await runs.createForWorkflow('workspace-1', 'workflow-content-pipeline', {}, 1)
+  const interactions = new PostgresInteractionRepository(pool)
+  const budgets = new PostgresApprovalBudgetRepository(pool)
+  const manager = new SelectiveNativeManager(new Set(['parallel-left', 'parallel-right']))
+  const managerResolver = { resolve: () => manager }
+  const approvalRuntime = new ApprovalExecutionCoordinator(runs, interactions, budgets, managerResolver, 10_000)
+  engine = new LangGraphWorkflowEngine(
+    runs, workflows, { resolve: () => { throw new Error('legacy adapter must not run') } },
+    checkpoints.saver, root, 10_000, locations, approvalRuntime, interactions,
+  )
+  const service = new InteractionService(interactions, budgets, managerResolver, (interaction) => engine.resumeInteraction(interaction))
+
+  await engine.start(run.id)
+  const pending = await interactions.list({ runId: run.id, limit: 10 })
+  expect(pending).toHaveLength(2)
+  expect(pending.every((item) => Boolean(item.graphInterruptId))).toBe(true)
+  await Promise.all(pending.map((item, index) => service.respond({ kind: 'user' }, {
+    interactionId: item.id, optionId: index === 0 ? 'codex-approve-once' : 'codex-reject', expectedRevision: item.revision,
+  })))
+  expect(await runs.get(run.id)).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
+  expect(manager.counters).toMatchObject({ nodeEntries: 3, sessions: 3, sideEffects: 3, deliveries: 2 })
+  expect(await runs.listExecutions(run.id)).toHaveLength(3)
 })
 
 it('keeps a busy designated reviewer pending and fences one idle-session dispatch across workers', async () => {
@@ -266,7 +339,7 @@ it('lists, reads and responds to an Operator-assigned request through authentica
     executionId: execution.id, runId: run.id, workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId,
     workingDirectory: projectRoot, runtimeDirectory: root, configuration, input: {},
   } })
-  for await (const _event of manager.startTurn(session, { prompt: 'fixture', clientCorrelationId: 'operator-proof' })) { break }
+  for await (const event of manager.startTurn(session, { prompt: 'fixture', clientCorrelationId: 'operator-proof' })) { void event; break }
   const managerResolver = { resolve: () => manager }
   const service = new InteractionService(interactions, budgets, managerResolver, async () => undefined)
   const operatorInteractions = new OperatorInteractionService(service, interactions)
@@ -291,6 +364,10 @@ it('lists, reads and responds to an Operator-assigned request through authentica
     ])
     const listed = await client.callTool({ name: 'interaction_list', arguments: { runId: run.id, limit: 10 } })
     expect((listed.structuredContent as { items: unknown[] }).items).toHaveLength(1)
+    await pool.query(
+      "update approval_execution_state set approval_wait_started_at=now()-interval '7 days' where execution_id=$1",
+      [execution.id],
+    )
     const responded = await client.callTool({ name: 'interaction_respond', arguments: {
       interactionId: created.interaction.id, optionId: 'codex-approve-once', expectedRevision: 0,
       commandId: `respond-${randomUUID()}`,
@@ -298,5 +375,56 @@ it('lists, reads and responds to an Operator-assigned request through authentica
     expect(responded.isError).not.toBe(true)
     expect((responded.structuredContent as { value: { deliveryState: string } }).value.deliveryState).toBe('delivered')
     expect(manager.counters.deliveries).toBe(1)
+    const missing = await interactions.create({
+      ...NATIVE_INTERACTION_FIXTURES.codex, id: 'operator-interaction-missing-session', runId: run.id,
+      executionId: execution.id, nativeRequestId: 'missing-native-request', approval: { handler: 'operator' },
+    })
+    const missingService = new InteractionService(
+      interactions, budgets, managerResolver, async () => undefined,
+      async () => { throw new Error('persisted native session is unavailable') },
+    )
+    const blocked = await missingService.respond({ kind: 'operator', principal: issued.principal }, {
+      interactionId: missing.interaction.id, optionId: 'codex-approve-once', expectedRevision: 0,
+    })
+    expect(blocked.interaction).toMatchObject({ status: 'delivery_failed', deliveryState: 'failed' })
+    expect(manager.counters).toMatchObject({ sessions: 1, deliveries: 1 })
+    const uncertainManager = new UncertainOnceNativeManager('opencode')
+    const uncertainSession = await uncertainManager.createSession({ request: {
+      executionId: execution.id, runId: run.id, workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId,
+      workingDirectory: projectRoot, runtimeDirectory: root, configuration, input: {},
+    } })
+    for await (const event of uncertainManager.startTurn(uncertainSession, { prompt: 'fixture', clientCorrelationId: 'uncertain-proof' })) { void event; break }
+    const uncertain = await interactions.create({
+      ...NATIVE_INTERACTION_FIXTURES.opencode, id: 'operator-interaction-uncertain', runId: run.id,
+      executionId: execution.id, approval: { handler: 'operator' },
+    })
+    const uncertainService = new InteractionService(
+      interactions, budgets, { resolve: () => uncertainManager }, async () => undefined,
+    )
+    const firstAttempt = await uncertainService.respond({ kind: 'operator', principal: issued.principal }, {
+      interactionId: uncertain.interaction.id, optionId: 'opencode-approve-once', expectedRevision: 0,
+    })
+    expect(firstAttempt.interaction.deliveryState).toBe('uncertain')
+    const reconciled = await uncertainService.respond({ kind: 'operator', principal: issued.principal }, {
+      interactionId: uncertain.interaction.id, optionId: 'opencode-approve-once', expectedRevision: 0,
+    })
+    expect(reconciled.interaction.deliveryState).toBe('failed')
+    expect(uncertainManager.responseAttempts).toBe(1)
+    const retried = await uncertainService.respond({ kind: 'operator', principal: issued.principal }, {
+      interactionId: uncertain.interaction.id, optionId: 'opencode-approve-once', expectedRevision: 0,
+    })
+    expect(retried.interaction.deliveryState).toBe('delivered')
+    expect(uncertainManager.responseAttempts).toBe(2)
+    const stopped = await interactions.create({
+      ...NATIVE_INTERACTION_FIXTURES.codex, id: 'operator-interaction-stopped', runId: run.id,
+      executionId: execution.id, nativeRequestId: 'stopped-native-request', approval: { handler: 'operator' },
+    })
+    const runtime = new ApprovalExecutionCoordinator(runs, interactions, budgets, managerResolver, 10_000)
+    await runtime.cancelRun(run.id)
+    expect(await interactions.get(stopped.interaction.id)).toMatchObject({ status: 'canceled' })
+    await expect(service.respond({ kind: 'operator', principal: issued.principal }, {
+      interactionId: stopped.interaction.id, optionId: 'codex-approve-once', expectedRevision: 0,
+    })).rejects.toMatchObject({ code: 'EXECUTION_STOPPED' })
+    expect(manager.counters.cancellations).toBe(1)
   } finally { await client.close() }
 })
