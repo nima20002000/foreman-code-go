@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import { AgentConfigurationVersionSchema, type AgentHarness, type HarnessDefaults } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema, HarnessQualificationSchema, type HarnessConfiguration, type AgentHarness, type HarnessDefaults } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
 import { requireAuthorization } from '../access/policy.js'
@@ -29,21 +29,35 @@ export class HarnessCatalogService {
     return this.describe(principal, harness, managed.defaults, managed.revision)
   }
 
+  /** Native model/variant/Agent qualification shared by every defaults writer. No turn is started. */
+  async qualifyConfiguration(value: HarnessConfiguration) {
+    const id = `qualification-${randomUUID()}`
+    const configuration = AgentConfigurationVersionSchema.parse({
+      id, workspaceId: 'qualification', agentId: 'qualification', version: 1,
+      prompt: {}, assignedSkills: [], harness: value,
+      contentHash: 'qualification', createdAt: new Date().toISOString(),
+    })
+    const result = HarnessQualificationSchema.parse(await this.resolver.resolve(value.harness).qualify({
+      executionId: id, runId: 'qualification', workspaceId: 'qualification', workflowNodeId: 'qualification',
+      workingDirectory: this.qualificationDirectory, runtimeDirectory: this.qualificationDirectory,
+      configuration, input: {},
+    }))
+    if (!result.ready || !result.authenticated || result.harness !== value.harness) {
+      throw new DomainError('HARNESS_DEFAULTS_UNQUALIFIED', 'The native provider did not qualify this configuration as ready and authenticated.', 409)
+    }
+    return result
+  }
+
+  async checkConfiguration(principal: ManagementPrincipal, configuration: HarnessConfiguration) {
+    requireAuthorization(principal, 'harnesses:read')
+    const qualification = await this.qualifyConfiguration(configuration)
+    return { configuration, qualification, checkedAt: new Date().toISOString() }
+  }
+
   private async describe(principal: ManagementPrincipal, harness: AgentHarness, defaults: HarnessDefaults, revision: number) {
     requireAuthorization(principal, 'harnesses:read')
-    const now = new Date().toISOString()
-    const configuration = AgentConfigurationVersionSchema.parse({
-      id: `qualification-${randomUUID()}`, workspaceId: 'qualification', agentId: 'qualification',
-      version: 1, prompt: {}, assignedSkills: [], harness: defaults[harness],
-      contentHash: 'qualification', createdAt: now,
-    })
     try {
-      const capability = await this.resolver.resolve(harness).qualify({
-        executionId: `qualification-${randomUUID()}`, runId: 'qualification', workspaceId: 'qualification',
-        workflowNodeId: 'qualification', workingDirectory: this.qualificationDirectory,
-        runtimeDirectory: this.qualificationDirectory,
-        configuration, input: {},
-      })
+      const capability = await this.qualifyConfiguration(defaults[harness])
       return { harness, defaults: defaults[harness], defaultsRevision: revision, capability, discoveryError: null }
     } catch (error) {
       return {

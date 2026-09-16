@@ -113,14 +113,15 @@ describe('Operator MCP with PostgreSQL', () => {
     } as unknown as LangGraphWorkflowEngine
     const settings = new PostgresSettingsRepository(database.pool)
     const foundationSettings = new PostgresFoundationSettingsRepository(database.pool)
+    const harnessCatalog = new HarnessCatalogService(deterministicHarnesses(), settings, commands, process.cwd())
     const services = {
       workspaces: new WorkspaceManagementService(database.pool, commands, locations),
       locations,
       workflows: new WorkflowManagementService(database.pool, commands),
       agents: new AgentManagementService(database.pool),
       drafts: new GraphDraftService(database.pool, commands),
-      harnesses: new HarnessCatalogService(deterministicHarnesses(), settings, commands, process.cwd()),
-      settings: new FoundationSettingsManagementService(foundationSettings, commands),
+      harnesses: harnessCatalog,
+      settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog),
       runs: new RunManagementService(database.pool, commands, runsRepository, engine, locations),
       commands,
     }
@@ -356,7 +357,9 @@ describe('Operator MCP with PostgreSQL', () => {
           { type: 'agent.configure', agentId: codexAgentId, expectedAgentRevision: 0, configuration: {
             harness: 'codex', model: 'gpt-5.6-luna', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard',
           } },
-          { type: 'agent.add', agentId: openCodeAgentId, nodeId: openCodeNodeId, name: 'OpenCode', harness: 'opencode' },
+          { type: 'agent.add', agentId: openCodeAgentId, nodeId: openCodeNodeId, name: 'OpenCode', harness: 'opencode', configuration: {
+            harness: 'opencode', model: 'opencode-go/deepseek-v4.1-flash', variant: 'max', nativeAgent: 'build', thinking: false, autoApprove: false,
+          } },
           { type: 'agent.rename', agentId: openCodeAgentId, expectedAgentRevision: 0, name: 'OpenCode renamed' },
           { type: 'agent.configure', agentId: openCodeAgentId, expectedAgentRevision: 0, configuration: {
             harness: 'opencode', model: 'opencode-go/deepseek-v4.1-flash', variant: 'max', nativeAgent: 'build', thinking: false, autoApprove: false,
@@ -368,6 +371,7 @@ describe('Operator MCP with PostgreSQL', () => {
           { type: 'agent.clone', sourceAgentId: codexAgentId, agentId: cloneAgentId, nodeId: cloneNodeId, name: 'Codex clone' },
           { type: 'node.remove', nodeId: cloneNodeId },
           { type: 'workflow.set_execution_limits', maxParallelism: 2, maxNodeExecutions: 2 },
+          { type: 'workflow.set_approval', approval: { handler: 'user' } },
         ],
       },
     }))

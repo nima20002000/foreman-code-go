@@ -34,6 +34,7 @@ function cookieToken(value: string | undefined): string | undefined {
 
 function actionFor(request: FastifyRequest) {
   const url = request.url.split('?')[0] ?? request.url
+  if (url === '/api/settings/agents' || url === '/api/settings/workflows') return request.method === 'GET' ? 'settings:read' as const : 'settings:update' as const
   if (url === '/api/settings/harnesses') return request.method === 'GET' ? 'harnesses:read' as const : 'harnesses:update' as const
   if (url.includes('/agents')) return request.method === 'GET' ? 'agents:read' as const : 'graph:edit' as const
   if (url.includes('/runs/') && url.endsWith('/cancel')) return 'runs:stop' as const
@@ -76,6 +77,8 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
     const token = headerToken ?? browserToken
     const principal = await access.authenticate(token, 'operator')
     request.operatorPrincipal = principal
+    // Interaction routes authorize the persisted workspace/workflow/run, not an unscoped URL id.
+    if (path === '/api/interactions' || path.startsWith('/api/interactions/')) return
     if (!request.url.startsWith('/api/management/') && !request.url.startsWith('/api/auth/')) {
       const params = request.params as Record<string, string | undefined>
       const resource = {

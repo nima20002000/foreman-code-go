@@ -62,14 +62,15 @@ async function main() {
     config.harnesses.timeoutMs,
     locations,
   )
+  const harnessCatalog = new HarnessCatalogService(harnesses, settings, commands, config.harnesses.workspaceRoot)
   const operatorServices = {
     workspaces: new WorkspaceManagementService(database.pool, commands, locations),
     locations,
     workflows: new WorkflowManagementService(database.pool, commands),
     agents: new AgentManagementService(database.pool),
     drafts: new GraphDraftService(database.pool, commands),
-    harnesses: new HarnessCatalogService(harnesses, settings, commands, config.harnesses.workspaceRoot),
-    settings: new FoundationSettingsManagementService(foundationSettings, commands),
+    harnesses: harnessCatalog,
+    settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog),
     runs: new RunManagementService(database.pool, commands, runs, engine, locations),
     commands,
   }

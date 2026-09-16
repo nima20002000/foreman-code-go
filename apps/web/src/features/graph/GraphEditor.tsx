@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { Bot, BotMessageSquare, Check, Inbox, MoreHorizontal, Play, Plus, Settings, Square, Trash2, X } from 'lucide-react'
+import { Bot, BotMessageSquare, Inbox, MoreHorizontal, Play, Plus, Settings, Square, X } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { AgentSettingsForm } from './AgentSettingsForm'
 
 import {
   addEdge,
@@ -26,12 +28,10 @@ import '@xyflow/react/dist/style.css'
 import { useQueryClient } from '@tanstack/react-query'
 
 import {
-  AgentEffortSchema, DEFAULT_AGENT_DEFAULTS, DEFAULT_CODEX_ADVANCED_CONFIGURATION,
-  DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type AgentDefaults, type HarnessConfiguration,
+  DEFAULT_AGENT_DEFAULTS, type AgentDefaults, type ApprovalHandler,
 } from '@graphql/contracts'
 import type {
   Agent,
-  HarnessDefaults,
   WorkflowDefinition,
   WorkflowEdge,
   WorkflowExecutionPolicy,
@@ -69,12 +69,8 @@ import { useDismissableSurface, type SurfaceDismissReason } from '../../shared/u
 import { useTheme } from '../theme'
 import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
 import {
-  configuredHarness,
   defaultAgentForHarness,
-  effortLabels,
-  effortOptions,
-  initialModel,
-  modelOptions,
+  nextCoderAgentName,
   nextHarnessAgentName,
 } from '../agents/agentSettings'
 import {
@@ -160,6 +156,8 @@ const HANDLE_POSITIONS: Record<GraphHandleSide, Position> = {
 }
 
 type NodeMenuContextValue = {
+  workspaceId?: string
+  workflowApprovalHandler?: ApprovalHandler
   openMenuNodeId?: string
   setOpenMenuNodeId: (nodeId?: string) => void
 }
@@ -170,247 +168,6 @@ type NodeMenuContextValue = {
  */
 const NodeMenuContext = createContext<NodeMenuContextValue | undefined>(undefined)
 
-function AgentSettingsForm({
-  agent,
-  initialPrompt,
-  creationDefaults,
-  onClose,
-  onRemove,
-  onSave,
-  executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 },
-  workflowNodeCount = 1,
-}: {
-  agent: Agent
-  initialPrompt?: string
-  creationDefaults?: HarnessDefaults
-  onClose: () => void
-  onRemove?: () => void
-  onSave: (agent: Agent, initialPrompt: string | undefined, executionPolicy: WorkflowExecutionPolicy) => void
-  executionPolicy?: WorkflowExecutionPolicy
-  workflowNodeCount?: number
-}) {
-  const [name, setName] = useState(agent.name)
-  const [harness, setHarness] = useState<NonNullable<Agent['harness']>>(agent.harness ?? 'codex')
-  const [model, setModel] = useState(() => initialModel(agent, agent.harness ?? 'codex'))
-  const [effort, setEffort] = useState<NonNullable<Agent['effort']>>(agent.effort ?? 'medium')
-  const [fastMode, setFastMode] = useState(agent.fastMode ?? false)
-  const [codexSandbox, setCodexSandbox] = useState<'read-only' | 'workspace-write' | 'danger-full-access'>(
-    agent.harnessConfiguration?.harness === 'codex'
-      ? agent.harnessConfiguration.sandbox
-      : 'read-only',
-  )
-  const [advancedConfiguration, setAdvancedConfiguration] = useState<HarnessConfiguration>(() =>
-    agent.harnessConfiguration ?? configuredHarness(
-      agent, agent.harness ?? 'codex', initialModel(agent, agent.harness ?? 'codex'),
-      agent.effort ?? 'medium', agent.fastMode ?? false,
-      codexSandbox,
-      creationDefaults,
-    ))
-  const [prompt, setPrompt] = useState(initialPrompt ?? '')
-  const [maxNodeExecutions, setMaxNodeExecutions] = useState(executionPolicy.maxNodeExecutions)
-  const [maxParallelism, setMaxParallelism] = useState(executionPolicy.maxParallelism)
-  const trimmedName = name.trim()
-  const limitsValid = Number.isInteger(maxNodeExecutions)
-    && maxNodeExecutions >= workflowNodeCount
-    && Number.isInteger(maxParallelism)
-    && maxParallelism >= 1
-  const codexAdvancedBase = () => {
-    const configuration = advancedConfiguration.harness === 'codex'
-      ? advancedConfiguration
-      : configuredHarness(agent, 'codex', model, effort, fastMode, codexSandbox, creationDefaults)
-    if (configuration.harness !== 'codex') throw new Error('Codex configuration is unavailable.')
-    return configuration
-  }
-
-  return (
-    <>
-      <div className="agent-settings-heading">
-        <strong>Agent settings</strong>
-        <div>
-          {harness === 'codex' ? (
-            <label className="agent-settings-fast">
-              <input type="checkbox" checked={fastMode} onChange={(event) => setFastMode(event.target.checked)} />
-              Fast mode
-            </label>
-          ) : null}
-          {onRemove ? (
-            <button type="button" className="agent-settings-trash" aria-label={`Remove ${agent.name} from workflow`} onClick={onRemove}>
-              <Trash2 aria-hidden="true" size={16} />
-            </button>
-          ) : null}
-          <button type="button" aria-label="Close agent settings" onClick={onClose}>
-            <X aria-hidden="true" size={15} />
-          </button>
-        </div>
-      </div>
-      <div className="agent-settings-name agent-settings-control">
-        <span>Name</span>
-        <input aria-label="Name" value={name} onChange={(event) => setName(event.target.value)} />
-      </div>
-      <div className="agent-settings-field"><span>Harness</span><select aria-label="Harness" value={harness} onChange={(event) => {
-        const nextHarness = event.target.value as NonNullable<Agent['harness']>
-        setHarness(nextHarness)
-        if (creationDefaults) {
-          const configuration = creationDefaults[nextHarness]
-          setAdvancedConfiguration(configuration)
-          setModel(configuration.model)
-          setEffort(configuration.harness === 'codex'
-            ? configuration.reasoningEffort
-            : AgentEffortSchema.safeParse(configuration.variant).data ?? 'max')
-          setFastMode(configuration.harness === 'codex' && configuration.serviceTier === 'priority')
-          if (configuration.harness === 'codex') setCodexSandbox(configuration.sandbox)
-          return
-        }
-        const nextModel = modelOptions(nextHarness).includes(model) ? model : modelOptions(nextHarness)[0]!
-        setAdvancedConfiguration(configuredHarness(agent, nextHarness, nextModel, nextHarness === 'codex' ? 'medium' : 'max', false, 'read-only', creationDefaults))
-        setModel(nextModel)
-        if (!effortOptions(nextHarness, nextModel).includes(effort)) setEffort(nextHarness === 'codex' ? 'medium' : 'max')
-      }}>
-        <option value="codex">Codex</option>
-        <option value="opencode">OpenCode</option>
-      </select></div>
-      <div className="agent-settings-field"><span>Model</span><select aria-label="Model" value={model} onChange={(event) => {
-        const nextModel = event.target.value
-        setModel(nextModel)
-        if (!effortOptions(harness, nextModel).includes(effort)) setEffort(harness === 'codex' ? 'medium' : 'max')
-      }}>
-        {modelOptions(harness).map((value) => <option key={value} value={value}>{value}</option>)}
-      </select></div>
-      <div className="agent-settings-field"><span>Effort</span><select aria-label="Effort" value={effort} onChange={(event) => setEffort(event.target.value as NonNullable<Agent['effort']>)}>
-        {effortOptions(harness, model).map((value) => <option key={value} value={value}>{effortLabels[value]}</option>)}
-      </select></div>
-      {harness === 'codex' ? (
-        <div className="agent-settings-field"><span>Sandbox</span><select aria-label="Sandbox" value={codexSandbox} onChange={(event) => setCodexSandbox(event.target.value as typeof codexSandbox)}>
-          <option value="read-only">Read only</option>
-          <option value="workspace-write">Workspace write</option>
-          <option value="danger-full-access">Danger: full access</option>
-        </select></div>
-      ) : null}
-      <details className="agent-settings-advanced">
-        <summary>Advanced</summary>
-        {harness === 'codex' ? (() => {
-          const advanced = advancedConfiguration.harness === 'codex'
-            ? advancedConfiguration.advanced ?? DEFAULT_CODEX_ADVANCED_CONFIGURATION
-            : DEFAULT_CODEX_ADVANCED_CONFIGURATION
-          return <div className="agent-settings-advanced-fields">
-            <label>Approval reviewer<select aria-label="Approval reviewer" value={advanced.approvalsReviewer} onChange={(event) => setAdvancedConfiguration({
-              ...codexAdvancedBase(),
-              advanced: { ...advanced, approvalsReviewer: event.target.value as typeof advanced.approvalsReviewer },
-            })}><option value="user">GraphQL routed</option><option value="auto_review">Native AI reviewer</option></select></label>
-            <small>Native AI reviewer: Codex uses its own reviewer to evaluate eligible approval requests.</small>
-            <label>Additional writable directories<textarea aria-label="Additional writable directories" rows={2} value={advanced.additionalWritableDirectories.join('\n')} onChange={(event) => setAdvancedConfiguration({
-              ...codexAdvancedBase(),
-              advanced: { ...advanced, additionalWritableDirectories: event.target.value.split('\n').map((item) => item.trim()).filter(Boolean) },
-            })} /></label>
-            <label>Session<select aria-label="Session persistence" value={advanced.sessionPersistence} onChange={(event) => setAdvancedConfiguration({
-              ...codexAdvancedBase(),
-              advanced: { ...advanced, sessionPersistence: event.target.value as typeof advanced.sessionPersistence },
-            })}><option value="persistent">Persistent</option><option value="ephemeral">Ephemeral</option></select></label>
-          </div>
-        })() : (() => {
-          const advanced = advancedConfiguration.harness === 'opencode'
-            ? advancedConfiguration.advanced ?? DEFAULT_OPENCODE_ADVANCED_CONFIGURATION
-            : DEFAULT_OPENCODE_ADVANCED_CONFIGURATION
-          return <div className="agent-settings-advanced-fields">
-            <label>Permission handling<select aria-label="Permission handling" value={advanced.permissionHandling} onChange={(event) => {
-              const permissionHandling = event.target.value as typeof advanced.permissionHandling
-              const base = advancedConfiguration.harness === 'opencode'
-                ? advancedConfiguration
-                : configuredHarness(agent, 'opencode', model, effort, false, codexSandbox, creationDefaults)
-              if (base.harness === 'opencode') setAdvancedConfiguration({ ...base, autoApprove: permissionHandling === 'native_auto', advanced: { ...advanced, permissionHandling } })
-            }}><option value="graphql_routed">GraphQL routed review</option><option value="native_auto">Native auto approve</option></select></label>
-            <small>Auto approve handles eligible OpenCode requests natively; it does not use a reviewer Agent.</small>
-            <fieldset className="agent-settings-rules"><legend>Ordered permission rules</legend>
-              {advanced.permissionRules.length === 0 ? <p>Native default permission policy</p> : advanced.permissionRules.map((rule, index) => <div key={`${index}-${rule.permission}`}>
-                <input aria-label={`Agent permission ${index + 1}`} value={rule.permission} onChange={(event) => {
-                  const base = advancedConfiguration.harness === 'opencode' ? advancedConfiguration : configuredHarness(agent, 'opencode', model, effort, false, codexSandbox, creationDefaults)
-                  if (base.harness === 'opencode') setAdvancedConfiguration({ ...base, advanced: { ...advanced, permissionRules: advanced.permissionRules.map((item, itemIndex) => itemIndex === index ? { ...item, permission: event.target.value } : item) } })
-                }} />
-                <input aria-label={`Agent pattern ${index + 1}`} value={rule.pattern} onChange={(event) => {
-                  const base = advancedConfiguration.harness === 'opencode' ? advancedConfiguration : configuredHarness(agent, 'opencode', model, effort, false, codexSandbox, creationDefaults)
-                  if (base.harness === 'opencode') setAdvancedConfiguration({ ...base, advanced: { ...advanced, permissionRules: advanced.permissionRules.map((item, itemIndex) => itemIndex === index ? { ...item, pattern: event.target.value } : item) } })
-                }} />
-                <select aria-label={`Agent effect ${index + 1}`} value={rule.effect} onChange={(event) => {
-                  const base = advancedConfiguration.harness === 'opencode' ? advancedConfiguration : configuredHarness(agent, 'opencode', model, effort, false, codexSandbox, creationDefaults)
-                  if (base.harness === 'opencode') setAdvancedConfiguration({ ...base, advanced: { ...advanced, permissionRules: advanced.permissionRules.map((item, itemIndex) => itemIndex === index ? { ...item, effect: event.target.value as typeof item.effect } : item) } })
-                }}><option value="allow">Allow</option><option value="ask">Ask</option><option value="deny">Deny</option></select>
-              </div>)}
-              <button type="button" onClick={() => {
-                const base = advancedConfiguration.harness === 'opencode' ? advancedConfiguration : configuredHarness(agent, 'opencode', model, effort, false, codexSandbox, creationDefaults)
-                if (base.harness === 'opencode') setAdvancedConfiguration({ ...base, advanced: { ...advanced, permissionRules: [...advanced.permissionRules, { permission: 'shell', pattern: '*', effect: 'ask' }] } })
-              }}>Add custom rule</button>
-              <small>Rules retain their native order and patterns; complex policies remain Custom.</small>
-            </fieldset>
-          </div>
-        })()}
-      </details>
-      <div className="agent-settings-prompt agent-settings-control">
-        <span>Initial prompt</span>
-        <textarea
-          aria-label="Initial prompt"
-          rows={4}
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          placeholder="Tell this model what to do when the workflow reaches it."
-        />
-      </div>
-      <fieldset className="agent-settings-limits">
-        <legend>Workflow limits</legend>
-        <label>
-          Maximum node executions
-          <input
-            type="number"
-            min={workflowNodeCount}
-            step={1}
-            value={maxNodeExecutions}
-            aria-invalid={maxNodeExecutions < workflowNodeCount}
-            onChange={(event) => setMaxNodeExecutions(event.target.valueAsNumber)}
-          />
-        </label>
-        <label>
-          Maximum parallel agents
-          <input
-            type="number"
-            min={1}
-            step={1}
-            value={maxParallelism}
-            onChange={(event) => setMaxParallelism(event.target.valueAsNumber)}
-          />
-        </label>
-      </fieldset>
-      <div className="agent-settings-actions">
-        <button
-          type="button"
-          className="agent-settings-save"
-          aria-label="Save agent settings"
-          title="Save"
-          disabled={!trimmedName || !limitsValid}
-          onClick={() => {
-            const basic = configuredHarness(
-              agent,
-              harness,
-              model,
-              effort,
-              fastMode,
-              codexSandbox,
-              creationDefaults,
-            )
-            const harnessConfiguration = advancedConfiguration.harness === harness
-              ? { ...basic, advanced: advancedConfiguration.advanced } as HarnessConfiguration
-              : basic
-            onSave({
-              ...agent, name: trimmedName, harness, model, effort,
-              ...(harness === 'codex' ? { fastMode } : { fastMode: undefined }),
-              harnessConfiguration,
-            }, prompt.trim() || undefined, { maxNodeExecutions, maxParallelism })
-          }}
-        >
-          <Check aria-hidden="true" size={16} />
-        </button>
-      </div>
-    </>
-  )
-}
 
 function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
   const nodeMenu = useContext(NodeMenuContext)
@@ -521,6 +278,8 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
       {menuOpen ? (
         <div ref={menuRef} className="workflow-agent-node-menu agent-directory-card-actions nodrag" role="dialog" aria-label={`${data.label} settings`}>
           <AgentSettingsForm
+            workspaceId={nodeMenu?.workspaceId}
+            workflowApprovalHandler={nodeMenu?.workflowApprovalHandler}
             agent={data.agent}
             initialPrompt={data.initialPrompt}
             executionPolicy={data.executionPolicy}
@@ -770,8 +529,9 @@ export function GraphEditor({
   const positionUndoActiveRef = useRef(false)
   const agentPickerPresence = usePresence(agentPickerOpen)
   const nodeMenuValue = useMemo(
-    () => ({ openMenuNodeId, setOpenMenuNodeId }),
-    [openMenuNodeId],
+    () => ({ openMenuNodeId, setOpenMenuNodeId, workspaceId,
+      workflowApprovalHandler: (draft?.workflow ?? workflow).approval?.handler }),
+    [openMenuNodeId, workspaceId, draft?.workflow, workflow],
   )
   const saveMutation = useSaveGraphMutation()
   const isSaving = managedSaving || saveMutation.isPending
@@ -1576,7 +1336,7 @@ export function GraphEditor({
 
         <div className="workflow-graph-primary-actions" aria-label="Workflow controls">
           <button type="button" className="workflow-graph-add-agent" aria-label="Workflow settings" title="Workflow settings" onClick={() => setWorkflowSettingsOpen((open) => !open)}><Settings aria-hidden="true" size={16} /></button>
-          <a href={`/workspaces/${encodeURIComponent(workspaceId)}/approvals?workflowId=${encodeURIComponent(displayedWorkflow.id)}`} className="workflow-graph-add-agent" aria-label="Workflow Approval Inbox" title="Workflow Approval Inbox"><Inbox aria-hidden="true" size={16} /></a>
+          <Link to="/workspaces/$workspaceId/approvals" params={{ workspaceId }} search={{ workflowId: displayedWorkflow.id }} className="workflow-graph-add-agent" aria-label="Workflow Approval Inbox" title="Workflow Approval Inbox"><Inbox aria-hidden="true" size={16} /></Link>
           <button
             type="button"
             className="workflow-graph-run"
@@ -1624,10 +1384,10 @@ export function GraphEditor({
           <label>Approval handler<select value={displayedWorkflow.approval?.handler ?? ''} onChange={(event) => {
             const handler = event.target.value as 'user' | 'orchestrator' | 'operator'
             applyBoardChange((saved) => ({ ...saved, approval: handler === 'orchestrator'
-              ? { handler, designatedOrchestratorAgentId: displayedWorkflow.approval?.designatedOrchestratorAgentId ?? workflowOrchestrators[0]?.id ?? 'select-an-orchestrator' }
+              ? { handler, ...(saved.approval?.handler === 'orchestrator' && saved.approval.designatedOrchestratorAgentId ? { designatedOrchestratorAgentId: saved.approval.designatedOrchestratorAgentId } : {}) }
               : { handler } }))
           }}><option value="" disabled>Select handler</option><option value="user">User</option><option value="orchestrator" disabled={!hasDistinctCoder || workflowOrchestrators.length === 0}>Orchestrator</option><option value="operator">Operator</option></select></label>
-          {displayedWorkflow.approval?.handler === 'orchestrator' ? <label>Designated Orchestrator<select value={displayedWorkflow.approval.designatedOrchestratorAgentId} onChange={(event) => applyBoardChange((saved) => ({ ...saved, approval: { handler: 'orchestrator', designatedOrchestratorAgentId: event.target.value } }))}>{workflowOrchestrators.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label> : null}
+          {displayedWorkflow.approval?.handler === 'orchestrator' ? <label>Designated Orchestrator<select value={displayedWorkflow.approval.designatedOrchestratorAgentId ?? ''} aria-label="Designated Orchestrator" onChange={(event) => applyBoardChange((saved) => ({ ...saved, approval: { handler: 'orchestrator', designatedOrchestratorAgentId: event.target.value || undefined } }))}><option value="">Choose an Orchestrator</option>{displayedWorkflow.approval.designatedOrchestratorAgentId && !workflowOrchestrators.some((agent) => agent.id === displayedWorkflow.approval?.designatedOrchestratorAgentId) ? <option disabled value={displayedWorkflow.approval.designatedOrchestratorAgentId}>Previously designated Agent is unavailable</option> : null}{workflowOrchestrators.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label> : null}
           {!hasDistinctCoder || workflowOrchestrators.length === 0 ? <p role="status">Orchestrator handling requires one Orchestrator and a distinct Coder on this board.</p> : null}
           <p>Normal graph edges do not grant approval authority. This setting is pinned when you Save graph.</p>
         </div> : null}
@@ -1714,7 +1474,7 @@ export function GraphEditor({
                   onClick={() => addAgentToGraph(defaultAgentForHarness(
                     agentDefaults.coder.harness.harness,
                     nextBoardAgentId(agentDefaults.coder.harness.harness),
-                    nextHarnessAgentName(agentDefaults.coder.harness.harness, catalogAgents).replace(/^(codex|opencode)/i, 'coder'),
+                    nextCoderAgentName(catalogAgents),
                     agentDefaults.coder.harness,
                     'coder',
                   ))}

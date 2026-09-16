@@ -4,6 +4,7 @@ import {
   AgentDefaultsSchema,
   DEFAULT_AGENT_DEFAULTS,
   WorkflowDefaultsSchema,
+  withAdvancedDefaults,
   type AgentDefaults,
   type WorkflowDefaults,
 } from '@graphql/contracts'
@@ -24,7 +25,14 @@ export class PostgresFoundationSettingsRepository {
   constructor(private readonly pool: pg.Pool) {}
 
   getAgentDefaults(): Promise<VersionedSetting<AgentDefaults>> {
-    return this.read(KEYS.agents, AgentDefaultsSchema, DEFAULT_AGENT_DEFAULTS)
+    return this.read(KEYS.agents, AgentDefaultsSchema, DEFAULT_AGENT_DEFAULTS).then((snapshot) => ({
+      ...snapshot,
+      value: {
+        orchestrator: { ...snapshot.value.orchestrator, harness: withAdvancedDefaults(snapshot.value.orchestrator.harness) },
+        coder: { ...snapshot.value.coder, harness: withAdvancedDefaults(snapshot.value.coder.harness) },
+        operator: { ...snapshot.value.operator, harness: withAdvancedDefaults(snapshot.value.operator.harness) },
+      },
+    }))
   }
 
   getWorkflowDefaults(): Promise<VersionedSetting<WorkflowDefaults>> {

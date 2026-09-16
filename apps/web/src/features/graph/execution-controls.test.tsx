@@ -10,6 +10,15 @@ import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
 import { GraphEditor } from './GraphEditor'
 import { getGraphDraft, useGraphDraftStore, workflowDraftKey } from './store'
 
+// These existing tests isolate editor behavior; pr12-navigation.test.tsx covers the real router Link.
+vi.mock('@tanstack/react-router', async () => {
+  const actual = await vi.importActual<typeof import('@tanstack/react-router')>('@tanstack/react-router')
+  const React = await vi.importActual<typeof import('react')>('react')
+  return { ...actual, Link: ({ children, className, ...props }: {
+    children?: import('react').ReactNode; className?: string; 'aria-label'?: string; title?: string
+  }) => React.createElement('a', { href: '#', className, 'aria-label': props['aria-label'], title: props.title }, children) }
+})
+
 const agents: Agent[] = [{ id: 'agent-one', name: 'Researcher', configurationVersionId: 'config-one' }]
 const workflow: WorkflowDefinition = {
   id: 'workflow-controls', workspaceId: 'workspace-1', name: 'Execution controls',

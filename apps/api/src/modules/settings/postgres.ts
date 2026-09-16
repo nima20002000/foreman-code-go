@@ -1,6 +1,7 @@
 import {
   DEFAULT_HARNESS_DEFAULTS,
   HarnessDefaultsSchema,
+  withAdvancedDefaults,
   type HarnessDefaults,
 } from '@graphql/contracts'
 import type pg from 'pg'
@@ -11,9 +12,9 @@ const SETTINGS_KEY = 'harness-defaults'
 
 /** Normalize legacy templates on read, never when validating an explicit write. */
 export function normalizeHarnessDefaults(record: unknown): HarnessDefaults {
-  if (record === undefined) return DEFAULT_HARNESS_DEFAULTS
-  const candidate = record as HarnessDefaults
-  return HarnessDefaultsSchema.parse({
+  const candidate = (record === undefined ? DEFAULT_HARNESS_DEFAULTS : record) as HarnessDefaults
+  // Retain the existing conservative migration of legacy auto-approval.
+  const defaults = HarnessDefaultsSchema.parse({
     ...candidate,
     opencode: {
       ...candidate.opencode,
@@ -23,6 +24,7 @@ export function normalizeHarnessDefaults(record: unknown): HarnessDefaults {
         : {}),
     },
   })
+  return { codex: withAdvancedDefaults(defaults.codex), opencode: withAdvancedDefaults(defaults.opencode) }
 }
 
 function rejectUnsupportedAutoApproval(input: unknown): void {

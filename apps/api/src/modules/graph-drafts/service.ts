@@ -2,6 +2,11 @@ import { createHash, randomUUID } from 'node:crypto'
 
 import {
   AgentSchema,
+  AgentDefaultsSchema,
+  DEFAULT_AGENT_DEFAULTS,
+  CodexSessionCompatibilitySchema,
+  legacyEffortForHarness,
+  validateHarnessWorkflowCompatibility,
   AgentConfigurationVersionSchema,
   WorkflowDefinitionSchema,
   WorkflowVersionSchema,
@@ -11,6 +16,7 @@ import {
 } from '@graphql/contracts'
 import {
   GraphDraftSchema,
+  ManagementHarnessConfigurationSchema,
   GraphValidationResultSchema,
   type GraphDraft,
   type GraphDraftOperation,
@@ -25,7 +31,7 @@ import { DomainError } from '../errors.js'
 import { validateExecutableTopology } from '../runs/topology.js'
 import { lockAgentConfigurations, saveAgentConfiguration } from '../workspaces/agentConfiguration.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
-import { normalizeHarnessDefaults } from '../settings/postgres.js'
+import { validateWorkflowApproval } from '../workflows/approval.js'
 
 interface DraftRow { id: string; record: unknown; discarded_at: Date | null }
 interface AgentRow { record: unknown; metadata_revision: string; current_configuration_version_id: string | null }
@@ -174,7 +180,7 @@ export class GraphDraftService {
       agent = AgentSchema.parse({
         ...agent, configurationVersionId: configuration.id, harness: harness.harness,
         harnessConfiguration: harness, model: harness.model,
-        effort: harness.harness === 'codex' ? harness.reasoningEffort : harness.variant,
+        effort: legacyEffortForHarness(harness),
         fastMode: harness.harness === 'codex' ? harness.serviceTier === 'priority' : undefined,
         prompt: configuration.prompt, assignedSkills: configuration.assignedSkills,
       })
@@ -200,13 +206,17 @@ export class GraphDraftService {
         if (existing.rows[0] || draft.stagedAgents.some((item) => item.agent.id === operation.agentId)) {
           throw new DomainError('AGENT_ID_CONFLICT', 'The agent ID already exists.', 409)
         }
-        const settings = await client.query<{ record: unknown }>('select record from application_settings where key = $1', ['harness-defaults'])
-        const defaults = normalizeHarnessDefaults(settings.rows[0]?.record)
-        const configuration = defaults[operation.harness]
+        const settings = await client.query<{ record: unknown }>('select record from application_settings where key = $1', ['agent-defaults-v1'])
+        const defaults = AgentDefaultsSchema.parse(settings.rows[0]?.record ?? DEFAULT_AGENT_DEFAULTS)
+        const template = defaults[operation.productRole ?? 'coder']
+        const configuration = ManagementHarnessConfigurationSchema.parse(operation.configuration ?? template.harness)
+        if (operation.harness && operation.harness !== configuration.harness) {
+          throw new DomainError('AGENT_TEMPLATE_HARNESS_MISMATCH', 'The requested harness differs from the role template. Supply an explicit matching configuration.', 409)
+        }
         const agent = AgentSchema.parse({
-          id: operation.agentId, name: operation.name, productRole: operation.productRole ?? 'coder', harness: operation.harness,
+          id: operation.agentId, name: operation.name, productRole: operation.productRole ?? 'coder', harness: configuration.harness,
           model: configuration.model,
-          effort: configuration.harness === 'codex' ? configuration.reasoningEffort : configuration.variant,
+          effort: legacyEffortForHarness(configuration),
           fastMode: configuration.harness === 'codex' ? configuration.serviceTier === 'priority' : undefined,
           harnessConfiguration: configuration, prompt: {}, assignedSkills: [],
         })
@@ -229,7 +239,7 @@ export class GraphDraftService {
         const configuration = operation.configuration
         const agent = AgentSchema.parse({
           ...staged.agent, harness: configuration.harness, model: configuration.model,
-          effort: configuration.harness === 'codex' ? configuration.reasoningEffort : configuration.variant,
+          effort: legacyEffortForHarness(configuration),
           fastMode: configuration.harness === 'codex' ? configuration.serviceTier === 'priority' : undefined,
           harnessConfiguration: configuration,
           ...(operation.prompt !== undefined ? { prompt: operation.prompt } : {}),
@@ -300,6 +310,9 @@ export class GraphDraftService {
         else graph.edges[index] = edge
         return GraphDraftSchema.parse({ ...draft, graph })
       }
+      case 'workflow.set_approval':
+        graph.approval = operation.approval
+        return GraphDraftSchema.parse({ ...draft, graph })
       case 'workflow.reset_execution_limits':
         delete graph.executionPolicy
         return GraphDraftSchema.parse({ ...draft, graph })
@@ -439,7 +452,18 @@ export class GraphDraftService {
           maxParallelism: Math.max(1, draft.graph.nodes.length), maxNodeExecutions: draft.graph.nodes.length,
         },
       })
+      const approvalAgents = [...draft.stagedAgents.map((item) => item.agent)]
+      for (const agentId of existingIds) approvalAgents.push((await this.loadAgent(client, draft.workspaceId, agentId)).agent)
+      const approval = definition.approval ? validateWorkflowApproval(definition, definition.approval, approvalAgents) : undefined
+      for (const agent of approvalAgents) {
+        if (!agent.harnessConfiguration) continue
+        validateHarnessWorkflowCompatibility(agent.harnessConfiguration, approval?.handler)
+        if (approval && agent.harnessConfiguration.harness === 'codex') {
+          CodexSessionCompatibilitySchema.parse({ configuration: agent.harnessConfiguration, requiresResume: true })
+        }
+      }
       const version = WorkflowVersionSchema.parse({
+        ...(approval ? { approval } : {}),
         id: 'validation-version', workspaceId: draft.workspaceId, workflowId: draft.workflowId,
         version: 1, entryNodeId: definition.nodes[0]!.id, definition,
         agentConfigurationVersionIds: configurations, contentHash: 'validation', createdAt: new Date().toISOString(),
@@ -523,6 +547,7 @@ export class GraphDraftService {
           id: `${input.workflowId}-v${versionNumber}-${randomUUID()}`, workspaceId: input.workspaceId,
           workflowId: input.workflowId, version: versionNumber, entryNodeId: definition.nodes[0]!.id,
           definition, agentConfigurationVersionIds: configurations,
+          ...(validation.version!.approval ? { approval: validation.version!.approval } : {}),
           contentHash: contentHash({ definition, configurations, entryNodeId: definition.nodes[0]!.id }), createdAt: now,
         })
         validateExecutableTopology(version)

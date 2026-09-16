@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export * from "./harnessEditing.js";
+
 /** A non-empty identifier. IDs are intentionally unbranded at the API boundary. */
 export const IdSchema = z.string().trim().min(1);
 export type Id = z.infer<typeof IdSchema>;
@@ -228,7 +230,7 @@ export const HarnessWorkflowCompatibilitySchema = z.object({
   if (value.configuration.harness === "codex" && value.configuration.advanced?.approvalsReviewer === "auto_review") {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "approvalsReviewer"], message: "native auto review conflicts with GraphQL-routed approval" });
   }
-  if (value.configuration.harness === "opencode" && value.configuration.advanced?.permissionHandling === "native_auto") {
+  if (value.configuration.harness === "opencode" && (value.configuration.autoApprove || value.configuration.advanced?.permissionHandling === "native_auto")) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "permissionHandling"], message: "native auto approval conflicts with GraphQL-routed approval" });
   }
 });
@@ -1482,13 +1484,20 @@ export type CreateConversationRequest = z.infer<typeof CreateConversationRequest
 export const CreateConversationResponseSchema = z.object({ conversation: ConversationSchema }).strict();
 export type CreateConversationResponse = z.infer<typeof CreateConversationResponseSchema>;
 
-export const GetInteractionResponseSchema = z.object({ interaction: DurableInteractionSchema }).strict();
+export const GetInteractionResponseSchema = z.object({
+  interaction: DurableInteractionSchema,
+  /** Monitoring permission, independent of the interaction's assigned handler. */
+  canRespond: z.boolean().optional(),
+}).strict();
 export const ListInteractionsRequestSchema = z.object({
   workspaceId: IdSchema.optional(), workflowId: IdSchema.optional(), status: InteractionStatusSchema.optional(),
   cursor: IdSchema.optional(), limit: z.number().int().min(1).max(100).default(50),
 }).strict();
 export const ListInteractionsResponseSchema = z.object({
   items: z.array(DurableInteractionSchema), nextCursor: IdSchema.nullable(),
+  /** Authorized scope counts, independent of the current history page/status filter. */
+  pendingCount: z.number().int().nonnegative().optional(),
+  pendingByWorkflow: z.record(IdSchema, z.number().int().nonnegative()).optional(),
 }).strict();
 export const RespondToInteractionRequestSchema = z.object({
   interactionId: IdSchema, optionId: IdSchema, expectedRevision: z.number().int().nonnegative(),

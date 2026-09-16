@@ -3,8 +3,27 @@ import {
   type DurableInteraction,
 } from '@graphql/contracts'
 import type pg from 'pg'
+import type { ManagementScope } from '@graphql/contracts/management'
 
 import { DomainError } from '../errors.js'
+
+interface InteractionQuery {
+  workspaceId?: string | undefined
+  workflowId?: string | undefined
+  runId?: string | undefined
+  handler?: DurableInteraction['approval']['handler'] | undefined
+  status?: DurableInteraction['status'] | undefined
+  afterId?: string | undefined
+  scopes?: ManagementScope[] | undefined
+  limit: number
+}
+// Bound JSON scopes enforce authorization BEFORE LIMIT, including run-only grants.
+const VISIBLE_SCOPE = `($8::jsonb is null or exists (
+  select 1 from jsonb_array_elements($8::jsonb) allowed
+  where (not (allowed ? 'workspaceIds') or (allowed->'workspaceIds') ? workspace_id)
+    and (not (allowed ? 'workflowIds') or (allowed->'workflowIds') ? workflow_id)
+    and (not (allowed ? 'runIds') or (allowed->'runIds') ? run_id)
+))`
 
 /** Transactional durable interaction primitives; routing/dispatch intentionally lives elsewhere. */
 export class PostgresInteractionRepository {
@@ -73,17 +92,33 @@ export class PostgresInteractionRepository {
     } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
   }
 
-  async list(input: { workspaceId?: string; workflowId?: string; runId?: string; handler?: DurableInteraction['approval']['handler']; status?: DurableInteraction['status']; afterId?: string; limit: number }): Promise<DurableInteraction[]> {
+  async list(input: InteractionQuery): Promise<DurableInteraction[]> {
     const result = await this.pool.query<{ record: unknown }>(
       `select record from durable_interactions
        where ($1::text is null or workspace_id=$1) and ($2::text is null or workflow_id=$2)
          and ($3::text is null or run_id=$3) and ($4::text is null or record->'approval'->>'handler'=$4)
          and ($5::text is null or status=$5) and ($6::text is null or id>$6)
+         and ${VISIBLE_SCOPE}
        order by id limit $7`,
       [input.workspaceId ?? null, input.workflowId ?? null, input.runId ?? null, input.handler ?? null,
-        input.status ?? null, input.afterId ?? null, input.limit],
+        input.status ?? null, input.afterId ?? null, input.limit, input.scopes ? JSON.stringify(input.scopes) : null],
     )
     return result.rows.map((row) => DurableInteractionSchema.parse(row.record))
+  }
+
+  async pendingCounts(input: Omit<InteractionQuery, 'limit'>): Promise<{ pendingCount: number; pendingByWorkflow: Record<string, number> }> {
+    const result = await this.pool.query<{ workflow_id: string; pending_count: string }>(
+      `select workflow_id, count(*)::text as pending_count from durable_interactions
+       where status='pending' and ($1::text is null or workspace_id=$1)
+         and ($2::text is null or workflow_id=$2) and ($3::text is null or run_id=$3)
+         and ($4::text is null or record->'approval'->>'handler'=$4)
+         and ${VISIBLE_SCOPE.replaceAll('$8', '$5')}
+       group by workflow_id`,
+      [input.workspaceId ?? null, input.workflowId ?? null, input.runId ?? null, input.handler ?? null,
+        input.scopes ? JSON.stringify(input.scopes) : null],
+    )
+    const pendingByWorkflow = Object.fromEntries(result.rows.map((row) => [row.workflow_id, Number(row.pending_count)]))
+    return { pendingByWorkflow, pendingCount: Object.values(pendingByWorkflow).reduce((sum, count) => sum + count, 0) }
   }
 
   async listPending(input: { workspaceId?: string; workflowId?: string; afterId?: string; limit: number }): Promise<DurableInteraction[]> {
