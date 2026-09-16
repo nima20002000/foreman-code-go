@@ -41,7 +41,7 @@ export function assertManagedBase(base: ManagedEditBase, current: GraphDraft): v
 /** Strip server-owned workflow metadata when comparing an acknowledged graph. */
 export function sameEditableGraph(left: WorkflowDefinition, right: WorkflowDefinition): boolean {
   return sameManagedValue(
-    { nodes: left.nodes, edges: left.edges, executionPolicy: left.executionPolicy, executionCondition: left.executionCondition },
-    { nodes: right.nodes, edges: right.edges, executionPolicy: right.executionPolicy, executionCondition: right.executionCondition },
+    { nodes: left.nodes, edges: left.edges, executionPolicy: left.executionPolicy, executionCondition: left.executionCondition, approval: left.approval, requiredAgentCount: left.requiredAgentCount },
+    { nodes: right.nodes, edges: right.edges, executionPolicy: right.executionPolicy, executionCondition: right.executionCondition, approval: right.approval, requiredAgentCount: right.requiredAgentCount },
   )
 }

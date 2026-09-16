@@ -27,7 +27,7 @@ function WorkflowNavigationItem({
   workspaceId: string
   active: boolean
   session: boolean
-  pendingCount: number
+  pendingCount: number | undefined
 }) {
   return (
     <li className="workflow-navigation-row">
@@ -45,7 +45,8 @@ function WorkflowNavigationItem({
         title={workflow.name}
       >
         <span className="nav-item-label">{workflow.name}</span>
-        {pendingCount > 0 ? <span className="workflow-approval-badge" aria-label={`${pendingCount} pending approvals`}>{pendingCount}</span> : null}
+        {pendingCount === undefined && !session ? <span className="visually-hidden">Approval count unavailable</span> : null}
+        {pendingCount !== undefined && pendingCount > 0 ? <span className="workflow-approval-badge" aria-label={`${pendingCount} pending approvals`}>{pendingCount}</span> : null}
       </Link>
     </li>
   )
@@ -62,7 +63,7 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
   const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false') && !sessionWorkspace
   const workflowsQuery = useWorkspaceDetailsQuery(workspaceId, { enabled: !sessionWorkspace && !realMode })
   const managedQuery = useManagedWorkflowsQuery(workspaceId, realMode)
-  const interactionsQuery = useInteractionsQuery({ limit: 100 }, realMode)
+  const interactionsQuery = useInteractionsQuery({ workspaceId, status: 'pending', limit: 1 }, !sessionWorkspace)
   const sessionWorkspaceName = useWorkspaceSessionStore((state) =>
     state.workspaces.find((workspace) => workspace.id === workspaceId)?.name,
   )
@@ -115,8 +116,8 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
           {workflows.map((workflow) => {
             const active = workflow.id === activeWorkflowId
             const session = sessionIds.has(workflow.id)
-            const pendingCount = (interactionsQuery.data?.items ?? []).filter((interaction) =>
-              interaction.workspaceId === workspaceId && interaction.workflowId === workflow.id && interaction.status === 'pending').length
+            const pendingCount = interactionsQuery.isError ? undefined : interactionsQuery.data?.pendingByWorkflow?.[workflow.id]
+              ?? (interactionsQuery.data?.pendingByWorkflow ? 0 : undefined)
             return <WorkflowNavigationItem
               key={workflow.id}
               workflow={workflow}

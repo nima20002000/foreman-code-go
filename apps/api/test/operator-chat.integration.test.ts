@@ -126,7 +126,12 @@ describe('Operator chat persistence and native binding', () => {
   it('pins existing conversations while defaults advance the shared Operator configuration', async () => {
     const before = await chat.create(owner, 'Before defaults change')
     const settings = new PostgresFoundationSettingsRepository(pool)
-    const service = new FoundationSettingsManagementService(settings, new PostgresCommandCoordinator(pool), operators)
+    const service = new FoundationSettingsManagementService(
+      settings,
+      new PostgresCommandCoordinator(pool),
+      { qualifyConfiguration: async () => ({} as never) },
+      operators,
+    )
     const current = await settings.getAgentDefaults()
     await service.updateAgentDefaults(owner, 'http', {
       commandId: 'change-operator-harness', expectedRevision: current.revision,

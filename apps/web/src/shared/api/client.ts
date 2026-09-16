@@ -473,11 +473,11 @@ export class ApiClient {
     if (request.workspaceId) query.set('workspaceId', request.workspaceId)
     if (request.workflowId) query.set('workflowId', request.workflowId)
     if (request.status) query.set('status', request.status)
-    return this.request(`/api/interactions?${query.toString()}`, ListInteractionsResponseSchema, options)
+    return this.request(`/api/management/interactions?${query.toString()}`, ListInteractionsResponseSchema, options)
   }
 
   getInteraction(interactionId: string, options?: RequestOptions) {
-    return this.request(`/api/interactions/${toPath(interactionId)}`, GetInteractionResponseSchema, options)
+    return this.request(`/api/management/interactions/${toPath(interactionId)}`, GetInteractionResponseSchema, options)
   }
 
   respondToInteraction(input: z.input<typeof RespondToInteractionRequestSchema>, options?: RequestOptions) {

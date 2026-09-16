@@ -6,6 +6,7 @@ import {
   CodexHarnessConfigurationSchema,
   OpenCodeHarnessConfigurationSchema,
   HarnessQualificationSchema,
+  HarnessConfigurationSchema,
   GetRunResponseSchema,
   ExecutionLocationSchema,
   RunActivitySchema,
@@ -13,6 +14,7 @@ import {
   RunInputSchema,
   TimestampSchema,
   WorkflowDefinitionSchema,
+  WorkflowApprovalConfigurationSchema,
   WorkflowNodeSchema,
   WorkflowEdgeSchema,
   WorkflowRunSchema,
@@ -267,7 +269,9 @@ const AgentAddOperationSchema = z.object({
   name: z.string().trim().min(1).max(200),
   nodeName: z.string().trim().min(1).max(200).optional(),
   productRole: z.enum(["orchestrator", "coder"]).optional(),
-  harness: z.enum(["codex", "opencode"]),
+  /** Omit to copy the role template. A different harness requires an explicit configuration. */
+  harness: z.enum(["codex", "opencode"]).optional(),
+  configuration: ManagementHarnessConfigurationSchema.optional(),
   position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict().optional(),
 }).strict();
 const AgentRenameOperationSchema = z.object({
@@ -329,7 +333,12 @@ const EdgePutOperationSchema = z.object({
 const ResetExecutionLimitsOperationSchema = z.object({ type: z.literal("workflow.reset_execution_limits") }).strict();
 const ResetRequiredAgentCountOperationSchema = z.object({ type: z.literal("workflow.reset_required_agent_count") }).strict();
 
+const WorkflowApprovalOperationSchema = z.object({
+  type: z.literal("workflow.set_approval"), approval: WorkflowApprovalConfigurationSchema,
+}).strict();
+
 export const GraphDraftOperationSchema = z.discriminatedUnion("type", [
+  WorkflowApprovalOperationSchema,
   NodeReplaceOperationSchema,
   NodeOrderOperationSchema,
   EdgePutOperationSchema,
@@ -400,6 +409,15 @@ export const HarnessDefaultsUpdateInputSchema = z.object({
   ...RevisionMutationFields,
   defaults: ManagementHarnessDefaultsSchema,
 }).strict();
+export const HarnessConfigurationCheckInputSchema = z.object({
+  configuration: HarnessConfigurationSchema,
+}).strict();
+export const HarnessConfigurationCheckResultSchema = z.object({
+  configuration: HarnessConfigurationSchema,
+  qualification: HarnessQualificationSchema,
+  checkedAt: TimestampSchema,
+}).strict();
+
 export const HarnessGetInputSchema = z.object({ harness: z.enum(["codex", "opencode"]) }).strict();
 export const HarnessCatalogEntrySchema = z.object({
   harness: z.enum(["codex", "opencode"]),

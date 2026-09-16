@@ -107,6 +107,7 @@ async function main() {
   const detection = new McpDetectionService(nativeInspector, appMcpEndpoint)
   const workerCredentialStore = new WorkerCredentialService(database.pool, access)
   const workerCredentials = new WorkerLaunchCredentialService(detection, workerCredentialStore, locations.runnerId)
+  const harnessCatalog = new HarnessCatalogService(legacyHarnesses, settings, commands, config.harnesses.workspaceRoot)
   const nativeManagers = new ExecutionScopedNativeSessionManagerResolver((context) => {
     if (!rollout.enabled(context.harness)) throw new Error('This rich native provider has not passed its rollout gate.')
     if (context.harness === 'codex') return new CodexAppServerSessionManager(config.harnesses.codexBinary)
@@ -190,8 +191,8 @@ async function main() {
       workflows: new WorkflowManagementService(database.pool, commands),
       agents: new AgentManagementService(database.pool),
       drafts: new GraphDraftService(database.pool, commands),
-      harnesses: new HarnessCatalogService(legacyHarnesses, settings, commands, config.harnesses.workspaceRoot),
-      settings: new FoundationSettingsManagementService(foundationSettings, commands, operators),
+      harnesses: harnessCatalog,
+      settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators),
       runs: new RunManagementService(database.pool, commands, runs, engine, locations),
       interactions: new OperatorInteractionService(interactionService, interactions),
       commands,

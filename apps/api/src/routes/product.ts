@@ -27,6 +27,8 @@ import {
 import type { FastifyInstance } from 'fastify'
 
 import { DomainError } from '../modules/errors.js'
+import { requirePrincipal } from '../modules/access/http.js'
+import { isAuthorized } from '../modules/access/policy.js'
 import type { LangGraphWorkflowEngine } from '../modules/runs/engine.js'
 import type { PostgresRunRepository } from '../modules/runs/postgres.js'
 import type { PostgresSettingsRepository } from '../modules/settings/postgres.js'
@@ -166,30 +168,49 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
   })
 
   if (services.interactions) {
+    const parseList = (query: unknown) => {
+      const value = query as Record<string, unknown>
+      return ListInteractionsRequestSchema.parse({ ...value, ...(value.limit === undefined ? {} : { limit: Number(value.limit) }) })
+    }
+    // Monitoring is read-only across handlers; human decisions remain on the User-only route.
+    if (managementOnlyMutations) {
+      app.get<{ Querystring: unknown }>('/api/management/interactions', async (request) =>
+        ListInteractionsResponseSchema.parse(await services.interactions!.listVisible(requirePrincipal(request), parseList(request.query))))
+      app.get<{ Params: { interactionId: string } }>('/api/management/interactions/:interactionId', async (request) => {
+        const principal = requirePrincipal(request)
+        const interaction = await services.interactions!.getVisible(principal, request.params.interactionId)
+        return GetInteractionResponseSchema.parse({ interaction, canRespond: interaction.approval.handler === 'user'
+          && isAuthorized(principal, 'interactions:respond', { workspaceId: interaction.workspaceId, workflowId: interaction.workflowId, runId: interaction.runId }) })
+      })
+    }
     app.get<{ Querystring: unknown }>('/api/interactions', async (request) => {
-        const query = request.query as { cursor?: unknown; limit?: unknown }
-        const input = ListInteractionsRequestSchema.parse({
-          ...(typeof query.cursor === 'string' ? { cursor: query.cursor } : {}),
-          ...(query.limit !== undefined ? { limit: Number(query.limit) } : {}),
-        })
-        return ListInteractionsResponseSchema.parse(await services.interactions!.list({
-          handler: 'user', ...(input.cursor ? { cursor: input.cursor } : {}), limit: input.limit,
-        }))
-      })
+      const input = parseList(request.query)
+      const userInput = {
+        limit: input.limit,
+        handler: 'user' as const,
+        ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
+        ...(input.workflowId === undefined ? {} : { workflowId: input.workflowId }),
+        ...(input.status === undefined ? {} : { status: input.status }),
+        ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+      }
+      return ListInteractionsResponseSchema.parse(managementOnlyMutations
+        ? await services.interactions!.listVisible(requirePrincipal(request), userInput)
+        : await services.interactions!.list(userInput))
+    })
     app.get<{ Params: { interactionId: string } }>('/api/interactions/:interactionId', async (request) => {
-        const interaction = await services.interactions!.get(request.params.interactionId)
-        if (interaction.approval.handler !== 'user') return notFound('interaction', request.params.interactionId)
-        return GetInteractionResponseSchema.parse({ interaction })
-      })
+      const interaction = managementOnlyMutations
+        ? await services.interactions!.getVisible(requirePrincipal(request), request.params.interactionId)
+        : await services.interactions!.get(request.params.interactionId)
+      if (interaction.approval.handler !== 'user') return notFound('interaction', request.params.interactionId)
+      return GetInteractionResponseSchema.parse({ interaction })
+    })
     app.post<{ Params: { interactionId: string }; Body: unknown }>('/api/interactions/:interactionId/respond', async (request) => {
-        const input = RespondToInteractionRequestSchema.parse(request.body)
-        if (input.interactionId !== request.params.interactionId) {
-          throw new DomainError('INVALID_INTERACTION', 'The response does not match the requested interaction.', 400)
-        }
-        return RespondToInteractionResponseSchema.parse(await services.interactions!.respond({
-          kind: 'user',
-        }, input))
-      })
+      const input = RespondToInteractionRequestSchema.parse(request.body)
+      if (input.interactionId !== request.params.interactionId) throw new DomainError('INVALID_INTERACTION', 'The response does not match the requested interaction.', 400)
+      const principal = managementOnlyMutations ? requirePrincipal(request) : undefined
+      if (principal) await services.interactions!.getVisible(principal, input.interactionId)
+      return RespondToInteractionResponseSchema.parse(await services.interactions!.respond({ kind: 'user', ...(principal ? { principal } : {}) }, input))
+    })
   }
 
   app.post<{ Params: RunParams }>('/api/workspaces/:workspaceId/runs/:runId/cancel', async (request) => {

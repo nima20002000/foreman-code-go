@@ -154,6 +154,27 @@ export const handlers: RequestHandler[] = [
     operatorMessages.set(id, messages)
     return HttpResponse.json({ state: { conversation, messages, turnState: 'idle' }, replayed: false }, { status: 202 })
   }),
+  http.get('/api/management/interactions', () => HttpResponse.json({
+    items: [], nextCursor: null, pendingCount: 0, pendingByWorkflow: {},
+  })),
+  http.get('/api/management/workspaces/:workspaceId/harnesses/:harness/mcp-detection', ({ params }) => {
+    const harness = String(params.harness)
+    if (harness !== 'codex' && harness !== 'opencode') return fixtureNotFound('harness', harness)
+    return HttpResponse.json({
+      runnerId: 'runner-local',
+      workingDirectory: '/workspace',
+      providerVersion: 'mock',
+      nativeFilters: {},
+      detection: {
+        harness,
+        serverName: 'graphql-app',
+        state: 'not_detected',
+        endpointMatches: null,
+        credentialEnvironmentVariable: null,
+        checkedAt: '2026-09-16T00:00:00.000Z',
+      },
+    })
+  }),
   http.get('/api/management/workspaces/:workspaceId', ({ params }) => {
     const result = managedWorkspace(String(params.workspaceId))
     return result ? HttpResponse.json(result) : fixtureNotFound('workspace', String(params.workspaceId))

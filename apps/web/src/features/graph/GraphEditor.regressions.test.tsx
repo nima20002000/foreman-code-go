@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-q
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, type HarnessDefaults, type WorkflowDefinition } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, withAdvancedDefaults, type HarnessDefaults, type WorkflowDefinition } from '@graphql/contracts'
 
 import { queryKeys } from '../../shared/api/query'
 import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
@@ -19,6 +19,15 @@ const { saveGraph, canvas } = vi.hoisted(() => ({
   saveGraph: vi.fn<SaveGraph>(),
   canvas: { nodes: [] as GraphNode[] },
 }))
+
+// These existing tests isolate editor behavior; pr12-navigation.test.tsx covers the real router Link.
+vi.mock('@tanstack/react-router', async () => {
+  const actual = await vi.importActual<typeof import('@tanstack/react-router')>('@tanstack/react-router')
+  const React = await vi.importActual<typeof import('react')>('react')
+  return { ...actual, Link: ({ children, className, ...props }: {
+    children?: import('react').ReactNode; className?: string; 'aria-label'?: string; title?: string
+  }) => React.createElement('a', { href: '#', className, 'aria-label': props['aria-label'], title: props.title }, children) }
+})
 
 vi.mock('../../shared/api/query', async () => {
   const actual = await vi.importActual<typeof import('../../shared/api/query')>('../../shared/api/query')
@@ -180,17 +189,17 @@ describe('PR #3 editor lifecycle regressions', () => {
   it.each(['codex', 'opencode'] as const)('copies every saved %s setting when switching harnesses in the creation form', async (target) => {
     const source = target === 'codex' ? 'opencode' : 'codex'
     const onSave = vi.fn()
-    render(<AgentSettingsForm
+    render(<QueryClientProvider client={client()}><AgentSettingsForm
       agent={defaultAgentForHarness(source, 'agent-new', 'New agent', defaults[source])}
       creationDefaults={defaults}
       onClose={() => undefined}
       onSave={onSave}
-    />)
+    /></QueryClientProvider>)
     const user = userEvent.setup()
     await user.selectOptions(screen.getByRole('combobox', { name: 'Harness' }), target)
     await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
     expect(onSave).toHaveBeenCalledWith(
-      expect.objectContaining({ harnessConfiguration: defaults[target] }),
+      expect.objectContaining({ harnessConfiguration: withAdvancedDefaults(defaults[target]) }),
       undefined,
       { maxNodeExecutions: 1, maxParallelism: 1 },
     )
@@ -198,11 +207,11 @@ describe('PR #3 editor lifecycle regressions', () => {
 
   it('round-trips a provider-specific Agent Advanced override', async () => {
     const onSave = vi.fn()
-    render(<AgentSettingsForm
+    render(<QueryClientProvider client={client()}><AgentSettingsForm
       agent={defaultAgentForHarness('codex', 'agent-advanced', 'Advanced', defaults.codex)}
       onClose={() => undefined}
       onSave={onSave}
-    />)
+    /></QueryClientProvider>)
     const user = userEvent.setup()
     await user.click(screen.getByText('Advanced'))
     await user.selectOptions(screen.getByRole('combobox', { name: 'Approval reviewer' }), 'auto_review')

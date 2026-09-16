@@ -164,6 +164,7 @@ export function SettingsRouteEntry() {
 }
 
 function GlobalSettingsPage({ selected }: { selected?: 'harnesses' | 'agents' | 'workflows' }) {
+  const detectionWorkspaceId = useNavigationUiStore((state) => state.activeWorkspaceId)
   return (
     <WorkspaceShell
       workspaceId="workspace-1"
@@ -195,6 +196,9 @@ function GlobalSettingsPage({ selected }: { selected?: 'harnesses' | 'agents' | 
             {selected === 'harnesses' ? <HarnessDefaultsSettings /> : null}
             {selected === 'agents' ? <AgentDefaultsSettings /> : null}
             {selected === 'workflows' ? <WorkflowDefaultsSettings /> : null}
+            {selected === 'harnesses' || selected === 'agents' ? detectionWorkspaceId
+              ? <McpDetectionSettings workspaceId={detectionWorkspaceId} />
+              : <p>Select a workspace from navigation to inspect its runner-scoped App MCP evidence.</p> : null}
           </div>
         ),
       }}

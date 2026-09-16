@@ -13,6 +13,15 @@ import { getGraphDraft, useGraphDraftStore, workflowDraftKey } from './store'
 import { deleteAgentForSession, readDeletedAgentIds, readLocalAgents, writeLocalAgents } from '../agents/localAgents'
 import { Position } from '@xyflow/react'
 
+// These existing tests isolate editor behavior; pr12-navigation.test.tsx covers the real router Link.
+vi.mock('@tanstack/react-router', async () => {
+  const actual = await vi.importActual<typeof import('@tanstack/react-router')>('@tanstack/react-router')
+  const React = await vi.importActual<typeof import('react')>('react')
+  return { ...actual, Link: ({ children, className, ...props }: {
+    children?: import('react').ReactNode; className?: string; 'aria-label'?: string; title?: string
+  }) => React.createElement('a', { href: '#', className, 'aria-label': props['aria-label'], title: props.title }, children) }
+})
+
 vi.mock('@xyflow/react', async () => {
   const actual = await vi.importActual<typeof import('@xyflow/react')>('@xyflow/react')
   type ResizeTestProps = {

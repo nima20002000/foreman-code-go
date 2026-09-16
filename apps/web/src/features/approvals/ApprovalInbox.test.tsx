@@ -20,7 +20,7 @@ describe('Approval Inbox', () => {
     const interaction = { ...NATIVE_INTERACTION_FIXTURES.opencode, approval: { handler: 'user' as const } }
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
     client.setQueryData(queryKeys.interactions(undefined, undefined, undefined), { items: [interaction], nextCursor: null })
-    client.setQueryData(queryKeys.interaction(interaction.id), { interaction })
+    client.setQueryData(queryKeys.interaction(interaction.id), { interaction, canRespond: true })
     respond.mockResolvedValue({ interaction: { ...interaction, status: 'delivery_pending' }, replayed: false })
     render(<QueryClientProvider client={client}><ApprovalInbox selectedInteractionId={interaction.id} /></QueryClientProvider>)
     expect(await screen.findByRole('button', { name: /Approve once/ })).toBeVisible()
@@ -35,9 +35,9 @@ describe('Approval Inbox', () => {
     const interaction = NATIVE_INTERACTION_FIXTURES.codex
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
     client.setQueryData(queryKeys.interactions(undefined, undefined, undefined), { items: [interaction], nextCursor: null })
-    client.setQueryData(queryKeys.interaction(interaction.id), { interaction })
+    client.setQueryData(queryKeys.interaction(interaction.id), { interaction, canRespond: false })
     render(<QueryClientProvider client={client}><ApprovalInbox selectedInteractionId={interaction.id} /></QueryClientProvider>)
-    expect(await screen.findByText(/assigned to the configured orchestrator/i)).toBeVisible()
+    expect(await screen.findByText(/assigned to orchestrator; no human override is available/i)).toBeVisible()
     expect(screen.queryByRole('button', { name: /^Approve once/ })).not.toBeInTheDocument()
   })
 })

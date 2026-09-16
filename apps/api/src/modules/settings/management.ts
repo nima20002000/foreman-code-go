@@ -1,8 +1,10 @@
-import type { AgentDefaults, WorkflowDefaults } from '@graphql/contracts'
+import { AgentDefaultsSchema, CodexSessionCompatibilitySchema, validateHarnessWorkflowCompatibility, type AgentDefaults, type WorkflowDefaults } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { isDeepStrictEqual } from 'node:util'
 
 import { requireAuthorization } from '../access/policy.js'
+import { DomainError } from '../errors.js'
+import type { HarnessCatalogService } from '../harnesses/catalog.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { PostgresFoundationSettingsRepository } from './foundation.js'
 import type { PostgresOperatorRepository } from '../operators/postgres.js'
@@ -11,7 +13,8 @@ export class FoundationSettingsManagementService {
   constructor(
     private readonly settings: PostgresFoundationSettingsRepository,
     private readonly commands: PostgresCommandCoordinator,
-    private readonly operators: PostgresOperatorRepository,
+    private readonly harnesses?: Pick<HarnessCatalogService, 'qualifyConfiguration'>,
+    private readonly operators?: PostgresOperatorRepository,
   ) {}
 
   getAgentDefaults(principal: ManagementPrincipal) {
@@ -32,11 +35,27 @@ export class FoundationSettingsManagementService {
       principal, source, operation: 'agent.defaults.update', commandId: input.commandId,
       targetKey: 'agent-defaults-v1', payload: input,
       perform: async (client) => {
-        const current = await this.operators.ensureWithClient(client)
-        const result = await this.settings.updateManagedAgentDefaults(client, input.value, input.expectedRevision)
-        if (!isDeepStrictEqual(current.configuration.harness, input.value.operator.harness)) {
-          await this.operators.updateWithClient(
-            client, input.value.operator.harness, current.operator.currentConfigurationVersionId,
+        const value = AgentDefaultsSchema.parse(input.value)
+        if (!this.harnesses) throw new DomainError('HARNESS_QUALIFICATION_UNAVAILABLE', 'Native provider qualification is not configured; these defaults were not saved.', 503)
+        for (const role of ['orchestrator', 'coder', 'operator'] as const) {
+          const configuration = value[role].harness
+          if (role !== 'operator') {
+            validateHarnessWorkflowCompatibility(configuration, 'user')
+            if (configuration.harness === 'codex') CodexSessionCompatibilitySchema.parse({ configuration, requiresResume: true })
+          }
+          if (configuration.harness === 'opencode' && configuration.autoApprove) {
+            throw new DomainError('OPENCODE_SERVER_AUTO_CONFLICT', 'Native auto approval is not supported by the managed OpenCode server; choose routed review.', 409)
+          }
+          try { await this.harnesses.qualifyConfiguration(configuration) } catch (error) {
+            throw new DomainError('AGENT_DEFAULTS_UNQUALIFIED', `The ${role} template was not saved: ${error instanceof Error ? error.message : 'Native qualification failed.'}`, 409)
+          }
+        }
+        const operators = this.operators
+        const current = await operators?.ensureWithClient(client)
+        const result = await this.settings.updateManagedAgentDefaults(client, value, input.expectedRevision)
+        if (operators && current && !isDeepStrictEqual(current.configuration.harness, value.operator.harness)) {
+          await operators.updateWithClient(
+            client, value.operator.harness, current.operator.currentConfigurationVersionId,
           )
         }
         return result

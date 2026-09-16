@@ -4,7 +4,7 @@ import type { DurableInteraction } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { ManagementAction } from '@graphql/contracts/management'
 
-import { requireAuthorization } from '../access/policy.js'
+import { hasAction, requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { assertOrchestratorInteractionAuthority, type WorkerInteractionAuthority } from './authorization.js'
 import { PostgresApprovalBudgetRepository } from './budget.js'
@@ -12,12 +12,15 @@ import { PostgresInteractionRepository } from './postgres.js'
 import type { InteractionNativeRuntime } from './runtimePorts.js'
 
 export type InteractionResponder =
-  | { kind: 'user' }
+  | { kind: 'user'; principal?: ManagementPrincipal }
   | { kind: 'operator'; principal: ManagementPrincipal }
   | { kind: 'orchestrator'; authority: WorkerInteractionAuthority }
 
 function assertResponder(interaction: DurableInteraction, responder: InteractionResponder): void {
   if (responder.kind === 'user') {
+    if (responder.principal) requireAuthorization(responder.principal, 'interactions:respond', {
+      workspaceId: interaction.workspaceId, workflowId: interaction.workflowId, runId: interaction.runId,
+    })
     if (interaction.approval.handler !== 'user') {
       throw new DomainError('INTERACTION_ACCESS_DENIED', 'The caller is not authorized for this interaction.', 403)
     }
@@ -87,9 +90,34 @@ export class InteractionService {
     return { items, nextCursor: rows.length > input.limit ? items.at(-1)!.id : null }
   }
 
+  async getVisible(principal: ManagementPrincipal, id: string): Promise<DurableInteraction> {
+    const interaction = await this.get(id)
+    requireAuthorization(principal, 'interactions:read', {
+      workspaceId: interaction.workspaceId, workflowId: interaction.workflowId, runId: interaction.runId,
+    })
+    return interaction
+  }
+
+  async listVisible(principal: ManagementPrincipal, input: {
+    workspaceId?: string | undefined; workflowId?: string | undefined; runId?: string | undefined;
+    handler?: DurableInteraction['approval']['handler'] | undefined;
+    status?: DurableInteraction['status'] | undefined; cursor?: string | undefined; limit: number;
+  }) {
+    if (!hasAction(principal, 'interactions:read')) {
+      throw new DomainError('ACCESS_DENIED', 'The caller is not authorized to read interactions.', 403)
+    }
+    const scopes = principal.grants.filter((grant) => grant.actions.includes('interactions:read')).map((grant) => grant.scope)
+    const filters = { workspaceId: input.workspaceId, workflowId: input.workflowId, runId: input.runId, handler: input.handler, scopes }
+    const rows = await this.interactions.list({ ...filters, status: input.status, afterId: input.cursor, limit: input.limit + 1 })
+    const items = rows.slice(0, input.limit)
+    const counts = await this.interactions.pendingCounts(filters)
+    return { items, nextCursor: rows.length > input.limit ? items.at(-1)!.id : null, ...counts }
+  }
+
   async respond(responder: InteractionResponder, input: { interactionId: string; optionId: string; expectedRevision: number }) {
     const current = await this.get(input.interactionId)
     assertResponder(current, responder)
+    if (current.status === 'canceled') throw new DomainError('INTERACTION_CANCELED', 'This interaction was canceled and cannot be retried.', 409)
     await this.budgets.assertActive(current.executionId)
     const option = current.responseOptions.find((candidate) => candidate.optionId === input.optionId)
     if (!option) throw new DomainError('INTERACTION_OPTION_INVALID', 'The response option is not valid for this interaction.', 409)

@@ -12,6 +12,8 @@ import {
   GraphValidateInputSchema,
   HarnessDefaultsUpdateInputSchema,
   HarnessGetInputSchema,
+  HarnessConfigurationCheckInputSchema,
+  HarnessConfigurationCheckResultSchema,
   RunEventsListInputSchema,
   RunGetInputSchema,
   RunListInputSchema,
@@ -121,6 +123,11 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
     services.drafts.save(requirePrincipal(request), 'http', GraphSaveInputSchema.parse(routeInput(request.params, request.body))))
   app.delete<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/drafts/:draftId', async (request) =>
     services.drafts.discard(requirePrincipal(request), 'http', GraphDraftDiscardInputSchema.parse(routeInput(request.params, request.body))))
+
+  app.post<{ Body: unknown }>('/api/management/harnesses/validate', async (request) => {
+    const input = HarnessConfigurationCheckInputSchema.parse(request.body)
+    return HarnessConfigurationCheckResultSchema.parse(await services.harnesses.checkConfiguration(requirePrincipal(request), input.configuration))
+  })
 
   app.get('/api/management/harnesses', async (request) => services.harnesses.list(requirePrincipal(request)))
   app.get<{ Params: Params }>('/api/management/harnesses/:harness', async (request) => {
