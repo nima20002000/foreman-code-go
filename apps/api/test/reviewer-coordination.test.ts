@@ -54,13 +54,13 @@ test('claiming a native lane records actual busy ownership, not an advisory idle
 
 test('review state changes fence both job and lane again at the final database write', async () => {
   const owned = { ...job, leaseToken: 'token', leaseOwner: 'worker', leaseExpiresAt: new Date(Date.now() + 60_000).toISOString() }
-  const f = database((sql) => ({ rows: sql.startsWith('select record') ? [{ record: owned }] : [], rowCount: 1 }))
+  const f = database((sql) => ({ rows: sql.startsWith('select record') ? [{ record: owned, revision: '2', lease_fence: '1', lease_active: true }] : [], rowCount: 1 }))
   await f.repository.transitionReviewJob(job.id, 'token', 'acknowledged', { writerFence: { id: 'lane', token: 'lane-token' } })
   const update = f.calls.find(({ sql }) => sql.startsWith('update review_jobs'))!
-  assert.match(update.sql, /record->>'leaseToken'=\$4/)
-  assert.match(update.sql, /exists.*native_session_lanes.*record->>'leaseToken'=\$6/s)
+  assert.match(update.sql, /lease_token=\$5 and lease_fence=\$6/)
+  assert.match(update.sql, /exists.*native_session_lanes.*record->>'leaseToken'=\$8/s)
   assert.equal(update.sql.match(/> clock_timestamp\(\)/g)?.length, 2)
-  assert.deepEqual(update.values.slice(3), ['token', 'lane', 'lane-token'])
+  assert.deepEqual(update.values.slice(3), ['2', 'token', '1', 'lane', 'lane-token'])
 })
 
 test('expired job transition rolls back and never overwrites a successor', async () => {
@@ -82,8 +82,8 @@ test('releasing an expired lane cannot clear a successor lease', async () => {
 test('durable acknowledgement refuses native turn identity replacement', async () => {
   const owned = { ...job, providerTurnOrMessageId: 'original', leaseToken: 'token',
     leaseExpiresAt: new Date(Date.now() + 60_000).toISOString() }
-  const f = database((sql) => ({ rows: sql.startsWith('select record') ? [{ record: owned }] : [], rowCount: 1 }))
+  const f = database((sql) => ({ rows: sql.startsWith('select record') ? [{ record: owned, revision: '2', lease_fence: '1', lease_active: true }] : [], rowCount: 1 }))
   await assert.rejects(f.repository.transitionReviewJob(job.id, 'token', 'acknowledged', { providerTurnOrMessageId: 'replacement' }),
-    { code: 'REVIEW_TURN_IDENTITY_CONFLICT' })
+    { code: 'REVIEW_JOB_IDENTITY_CONFLICT' })
   assert.ok(!f.calls.some(({ sql }) => sql.startsWith('update')))
 })
