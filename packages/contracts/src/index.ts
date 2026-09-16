@@ -239,6 +239,7 @@ export function validateHarnessWorkflowCompatibility(
   return HarnessWorkflowCompatibilitySchema.parse({ configuration, workflowApprovalHandler }).configuration;
 }
 
+/** Editable selection. Orchestrator designation may remain incomplete until executable save. */
 export const WorkflowApprovalConfigurationSchema = z
   .object({
     handler: ApprovalHandlerSchema,
@@ -246,14 +247,28 @@ export const WorkflowApprovalConfigurationSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    if (value.handler === "orchestrator" && !value.designatedOrchestratorAgentId) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["designatedOrchestratorAgentId"], message: "orchestrator handling requires a designated Orchestrator" });
-    }
     if (value.handler !== "orchestrator" && value.designatedOrchestratorAgentId) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["designatedOrchestratorAgentId"], message: "only orchestrator handling may designate an Orchestrator" });
     }
   });
 export type WorkflowApprovalConfiguration = z.infer<typeof WorkflowApprovalConfigurationSchema>;
+
+/** Complete immutable assignment accepted into workflow and Run snapshots. */
+export const AcceptedWorkflowApprovalConfigurationSchema = z
+  .object({
+    handler: ApprovalHandlerSchema,
+    designatedOrchestratorAgentId: IdSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.handler === "orchestrator" && !value.designatedOrchestratorAgentId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["designatedOrchestratorAgentId"], message: "accepted orchestrator handling requires a designated Orchestrator" });
+    }
+    if (value.handler !== "orchestrator" && value.designatedOrchestratorAgentId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["designatedOrchestratorAgentId"], message: "only orchestrator handling may designate an Orchestrator" });
+    }
+  });
+export type AcceptedWorkflowApprovalConfiguration = z.infer<typeof AcceptedWorkflowApprovalConfigurationSchema>;
 
 export const AgentTemplateSchema = z.object({
   role: AgentProductRoleSchema,
@@ -442,7 +457,7 @@ export const DurableInteractionSchema = z.object({
   graphThreadId: IdSchema,
   graphInterruptId: IdSchema.optional(),
   request: z.json(),
-  approval: WorkflowApprovalConfigurationSchema,
+  approval: AcceptedWorkflowApprovalConfigurationSchema,
   responseOptions: z.array(ApprovalResponseOptionSchema).min(1),
   status: InteractionStatusSchema,
   selectedOptionId: IdSchema.optional(),
@@ -684,7 +699,7 @@ export const WorkflowDefinitionSchema = z
     name: z.string().trim().min(1),
     description: z.string().optional(),
     executionCondition: ExecutionConditionSchema,
-    /** Missing only for legacy/unconfigured records and incomplete drafts. */
+    /** Missing or incomplete only for legacy/unconfigured records and editable drafts. */
     approval: WorkflowApprovalConfigurationSchema.optional(),
     /** Optional explicit cardinality invariant for workflows with a fixed agent topology. */
     requiredAgentCount: z.number().int().positive().max(10_000).optional(),
@@ -708,7 +723,7 @@ export const WorkflowVersionSchema = z
     definition: WorkflowDefinitionSchema,
     agentConfigurationVersionIds: z.record(IdSchema, IdSchema),
     /** Accepted immutable approval assignment; missing only on legacy versions. */
-    approval: WorkflowApprovalConfigurationSchema.optional(),
+    approval: AcceptedWorkflowApprovalConfigurationSchema.optional(),
     contentHash: z.string().trim().min(1),
     createdAt: TimestampSchema,
   })
@@ -1001,7 +1016,7 @@ export const WorkflowRunSchema = z
     authorizationPrincipalId: IdSchema.optional(),
     agentConfigurationVersionIds: z.record(IdSchema, IdSchema),
     /** Immutable accepted approval assignment; absent only for legacy Runs. */
-    approval: WorkflowApprovalConfigurationSchema.optional(),
+    approval: AcceptedWorkflowApprovalConfigurationSchema.optional(),
     executionCondition: ExecutionConditionSchema,
     executionState: RunExecutionStateSchema,
     outcome: RunOutcomeSchema,

@@ -1,4 +1,10 @@
-import type { Agent, WorkflowApprovalConfiguration, WorkflowDefinition } from '@graphql/contracts'
+import {
+  AcceptedWorkflowApprovalConfigurationSchema,
+  type AcceptedWorkflowApprovalConfiguration,
+  type Agent,
+  type WorkflowApprovalConfiguration,
+  type WorkflowDefinition,
+} from '@graphql/contracts'
 
 import { DomainError } from '../errors.js'
 
@@ -7,11 +13,15 @@ export function validateWorkflowApproval(
   definition: WorkflowDefinition,
   approval: WorkflowApprovalConfiguration,
   agents: readonly Agent[],
-): void {
+): AcceptedWorkflowApprovalConfiguration {
+  const accepted = AcceptedWorkflowApprovalConfigurationSchema.safeParse(approval)
+  if (!accepted.success) {
+    throw new DomainError('WORKFLOW_APPROVAL_INCOMPLETE', 'Executable workflow approval settings are incomplete or invalid.', 409)
+  }
   const referenced = new Set(definition.nodes.map((node) => node.agentId))
   const durable = new Map(agents.map((agent) => [agent.id, agent]))
-  if (approval.handler !== 'orchestrator') return
-  const designatedId = approval.designatedOrchestratorAgentId!
+  if (accepted.data.handler !== 'orchestrator') return accepted.data
+  const designatedId = accepted.data.designatedOrchestratorAgentId!
   if (!referenced.has(designatedId)) {
     throw new DomainError('APPROVAL_ORCHESTRATOR_WRONG_WORKFLOW', 'The designated Orchestrator must belong to this workflow.', 409)
   }
@@ -22,4 +32,5 @@ export function validateWorkflowApproval(
   if (!distinctCoder) {
     throw new DomainError('APPROVAL_DISTINCT_CODER_REQUIRED', 'Orchestrator-handled workflows require a distinct Coder.', 409)
   }
+  return accepted.data
 }
