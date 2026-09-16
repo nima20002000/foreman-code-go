@@ -320,7 +320,27 @@ function AgentSettingsForm({
               if (base.harness === 'opencode') setAdvancedConfiguration({ ...base, autoApprove: permissionHandling === 'native_auto', advanced: { ...advanced, permissionHandling } })
             }}><option value="graphql_routed">GraphQL routed review</option><option value="native_auto">Native auto approve</option></select></label>
             <small>Auto approve handles eligible OpenCode requests natively; it does not use a reviewer Agent.</small>
-            <p>{advanced.permissionRules.length === 0 ? 'Native default permission policy' : `Custom · ${advanced.permissionRules.length} ordered rules preserved`}</p>
+            <fieldset className="agent-settings-rules"><legend>Ordered permission rules</legend>
+              {advanced.permissionRules.length === 0 ? <p>Native default permission policy</p> : advanced.permissionRules.map((rule, index) => <div key={`${index}-${rule.permission}`}>
+                <input aria-label={`Agent permission ${index + 1}`} value={rule.permission} onChange={(event) => {
+                  const base = advancedConfiguration.harness === 'opencode' ? advancedConfiguration : configuredHarness(agent, 'opencode', model, effort, false, codexSandbox, creationDefaults)
+                  if (base.harness === 'opencode') setAdvancedConfiguration({ ...base, advanced: { ...advanced, permissionRules: advanced.permissionRules.map((item, itemIndex) => itemIndex === index ? { ...item, permission: event.target.value } : item) } })
+                }} />
+                <input aria-label={`Agent pattern ${index + 1}`} value={rule.pattern} onChange={(event) => {
+                  const base = advancedConfiguration.harness === 'opencode' ? advancedConfiguration : configuredHarness(agent, 'opencode', model, effort, false, codexSandbox, creationDefaults)
+                  if (base.harness === 'opencode') setAdvancedConfiguration({ ...base, advanced: { ...advanced, permissionRules: advanced.permissionRules.map((item, itemIndex) => itemIndex === index ? { ...item, pattern: event.target.value } : item) } })
+                }} />
+                <select aria-label={`Agent effect ${index + 1}`} value={rule.effect} onChange={(event) => {
+                  const base = advancedConfiguration.harness === 'opencode' ? advancedConfiguration : configuredHarness(agent, 'opencode', model, effort, false, codexSandbox, creationDefaults)
+                  if (base.harness === 'opencode') setAdvancedConfiguration({ ...base, advanced: { ...advanced, permissionRules: advanced.permissionRules.map((item, itemIndex) => itemIndex === index ? { ...item, effect: event.target.value as typeof item.effect } : item) } })
+                }}><option value="allow">Allow</option><option value="ask">Ask</option><option value="deny">Deny</option></select>
+              </div>)}
+              <button type="button" onClick={() => {
+                const base = advancedConfiguration.harness === 'opencode' ? advancedConfiguration : configuredHarness(agent, 'opencode', model, effort, false, codexSandbox, creationDefaults)
+                if (base.harness === 'opencode') setAdvancedConfiguration({ ...base, advanced: { ...advanced, permissionRules: [...advanced.permissionRules, { permission: 'shell', pattern: '*', effect: 'ask' }] } })
+              }}>Add custom rule</button>
+              <small>Rules retain their native order and patterns; complex policies remain Custom.</small>
+            </fieldset>
           </div>
         })()}
       </details>
