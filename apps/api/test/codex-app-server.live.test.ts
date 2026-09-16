@@ -1,7 +1,7 @@
-import { rm } from 'node:fs/promises'
+import { readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import type { HarnessExecutionRequest } from '@graphql/contracts'
+import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, type HarnessExecutionRequest } from '@graphql/contracts'
 import { describe, expect, it } from 'vitest'
 
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
@@ -15,13 +15,17 @@ describe.skipIf(!enabled)('authenticated Codex app-server 0.154.0', () => {
     const manager = new CodexAppServerSessionManager(process.env.CODEX_BINARY ?? '/home/nima/.local/bin/codex')
     const configuration: HarnessExecutionRequest['configuration']['harness'] = {
       harness: 'codex', model: 'gpt-5.6-luna', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard',
+      advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION },
     }
     const request: HarnessExecutionRequest = {
       executionId: 'nim2598-live-execution', runId: 'nim2598-live-run', workspaceId: 'nim2598-live-workspace',
       workflowNodeId: 'nim2598-live-node', workingDirectory: directory, runtimeDirectory: directory, input: {},
       configuration: {
         id: 'nim2598-live-configuration', workspaceId: 'nim2598-live-workspace', agentId: 'nim2598-live-agent', version: 1,
-        prompt: {}, assignedSkills: [], harness: configuration,
+        prompt: {
+          system: 'When explicitly instructed to run a shell command, you must invoke the shell tool exactly as requested and wait for its result.',
+        },
+        assignedSkills: [], harness: configuration,
         contentHash: 'sha256:nim2598-live', createdAt: new Date().toISOString(),
       },
     }
@@ -31,7 +35,7 @@ describe.skipIf(!enabled)('authenticated Codex app-server 0.154.0', () => {
     try {
       const approvalEvents = (async () => {
         for await (const event of manager.startTurn(session, {
-          prompt: `Use the shell to run exactly: printf NIM2598_NATIVE_APPROVAL > ${marker}. Then reply exactly NIM2598_APPROVED.`,
+          prompt: `Run this exact shell command until it succeeds: set -e; stamp=$(date +%s%N); printf "$stamp" > ${marker}; printf "$stamp". The read-only sandbox will block the first attempt. You must then request native command approval and retry the exact command; do not answer or simulate success before the approved command completes. Return its stdout verbatim.`,
           clientCorrelationId: 'nim2598-live-approval',
         })) void event
       })()
@@ -43,13 +47,18 @@ describe.skipIf(!enabled)('authenticated Codex app-server 0.154.0', () => {
         if (pending) break
         await new Promise((resolve) => setTimeout(resolve, 250))
       }
-      expect(pending?.nativeRequestType).toBe('item/commandExecution/requestApproval')
+      expect(
+        pending?.nativeRequestType,
+        JSON.stringify(await manager.history(session)),
+      ).toBe('item/commandExecution/requestApproval')
       const approve = pending?.responseOptions.find((option) => option.semantic === 'approve_once')
       expect(approve).toBeDefined()
       await manager.respond(session, pending!.turn.nativeRequestId!, approve!)
       await approvalEvents
+      const markerValue = await readFile(marker, 'utf8')
+      expect(markerValue).toMatch(/^\d{16,}$/)
       expect((await manager.history(session)).terminalResult).toMatchObject({
-        outcome: 'succeeded', output: { text: expect.stringContaining('NIM2598_APPROVED') },
+        outcome: 'succeeded', output: { text: expect.stringContaining(markerValue) },
       })
 
       for await (const event of manager.startTurn(session, {
