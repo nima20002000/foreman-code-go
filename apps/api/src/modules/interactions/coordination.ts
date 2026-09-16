@@ -127,7 +127,8 @@ export class PostgresInteractionCoordinationRepository {
   async renewReviewJob(id: string, token: string, leaseMs: number): Promise<string> {
     const result = await this.pool.query<{ expires_at: string }>(
       `update review_jobs set revision=revision+1, updated_at=clock_timestamp(),
-       record=jsonb_set(record, '{leaseExpiresAt}', to_jsonb(clock_timestamp()+($3 * interval '1 millisecond')))
+       record=jsonb_set(record, '{leaseExpiresAt}', to_jsonb(to_char(
+         (clock_timestamp()+($3 * interval '1 millisecond')) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')))
        where id=$1 and record->>'leaseToken'=$2
        and (record->>'leaseExpiresAt')::timestamptz > clock_timestamp()
        returning record->>'leaseExpiresAt' as expires_at`, [id, token, leaseMs],
@@ -250,7 +251,8 @@ export class PostgresInteractionCoordinationRepository {
     const result = await this.pool.query<{ expires_at: string }>(
       `update native_session_lanes set revision=revision+1, updated_at=clock_timestamp(),
        record=jsonb_set(jsonb_set(record, '{revision}', to_jsonb((revision+1)::bigint)),
-         '{leaseExpiresAt}', to_jsonb(clock_timestamp()+($3 * interval '1 millisecond')))
+         '{leaseExpiresAt}', to_jsonb(to_char(
+           (clock_timestamp()+($3 * interval '1 millisecond')) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')))
        where id=$1 and record->>'leaseToken'=$2
        and (record->>'leaseExpiresAt')::timestamptz > clock_timestamp()
        returning record->>'leaseExpiresAt' as expires_at`, [id, token, leaseMs],
