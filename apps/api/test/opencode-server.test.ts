@@ -144,6 +144,18 @@ describe('OpenCode native server manager', () => {
     expect(server.calls.filter((call) => call.path.startsWith('/session/ses_test/prompt_async'))).toHaveLength(1)
   })
 
+  it('enforces a single GraphQL-owned writer per native session', async () => {
+    const server = new FakeServer()
+    const native = manager(server)
+    const session = await sessionFor(native)
+    server.events.push(`data: ${JSON.stringify({ id: 'evt_busy', type: 'session.status', properties: { sessionID: 'ses_test', status: { type: 'busy' } } })}\n\n`)
+    const first = native.startTurn(session, { prompt: 'first', clientCorrelationId: 'first' })[Symbol.asyncIterator]()
+    await expect(first.next()).resolves.toMatchObject({ value: { type: 'session.status' }, done: false })
+    const second = native.startTurn(session, { prompt: 'second', clientCorrelationId: 'second' })[Symbol.asyncIterator]()
+    await expect(second.next()).rejects.toMatchObject({ result: { error: { code: 'OPENCODE_SESSION_BUSY' } } })
+    await first.return?.()
+  })
+
   it('captures exact permission payloads and maps opaque options to once, always, and reject', async () => {
     for (const [semantic, reply] of [['approve_once', 'once'], ['provider_scoped_allow', 'always'], ['reject', 'reject']] as const) {
       const server = new FakeServer()
