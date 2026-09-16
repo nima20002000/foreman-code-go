@@ -10,10 +10,13 @@ describe('Codex HAP-02 MCP inspection adapter', () => {
         calls.push(cwd)
         return {
           providerVersion: '0.154.0', cwd, serverName: 'graphql-app',
+          binary: 'codex', inspectionScope: 'effective_config' as const,
           configured: {
             enabled: true, transport: 'streamable_http', url: 'http://127.0.0.1:3000/mcp/tools',
+            required: false,
             bearerTokenEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN',
             enabledTools: ['context_get'], disabledTools: ['interaction_respond'],
+            defaultToolsApprovalMode: null, tools: {},
           },
         }
       },

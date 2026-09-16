@@ -1,22 +1,7 @@
 import type { NativeMcpInspectionEvidence, NativeMcpInspector } from './mcpDetection.js'
+import type { CodexAppServerSessionManager } from './codexAppServer.js'
 
-export interface CodexMcpConfigurationInspectionLike {
-  providerVersion: string
-  cwd: string
-  serverName: string
-  configured: {
-    enabled: boolean
-    transport: 'stdio' | 'streamable_http' | 'unknown'
-    url: string | null
-    bearerTokenEnvironmentVariable: string | null
-    enabledTools: string[] | null
-    disabledTools: string[]
-  }
-}
-
-export interface CodexMcpConfigurationInspector {
-  inspectMcpConfiguration(cwd: string, signal?: AbortSignal): Promise<CodexMcpConfigurationInspectionLike>
-}
+export type CodexMcpConfigurationInspector = Pick<CodexAppServerSessionManager, 'inspectMcpConfiguration'>
 
 function errorCode(error: unknown): string | undefined {
   if (!error || typeof error !== 'object') return undefined

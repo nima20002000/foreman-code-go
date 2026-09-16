@@ -1,21 +1,9 @@
 import type { NativeMcpInspectionEvidence, NativeMcpInspector, NativeMcpStatus } from './mcpDetection.js'
+import type { OpenCodeNativeSessionManager } from './opencodeServer.js'
 
-export interface OpenCodeMcpInspectionLike {
-  cwd: string
-  providerVersion: string
-  serverName: string
-  nativeStatus: 'connected' | 'disabled' | 'failed' | 'needs_auth' | 'needs_client_registration' | 'not_detected'
-  endpoint: string | null
-  credentialEnvironmentVariable: string | null
-  effectiveFilters: readonly { permission: string; pattern: string; effect: string }[]
-  detail?: string
-}
+export type OpenCodeMcpConfigurationInspector = Pick<OpenCodeNativeSessionManager, 'inspectNativeMcp'>
 
-export interface OpenCodeMcpConfigurationInspector {
-  inspectNativeMcp(directory: string, signal?: AbortSignal): Promise<OpenCodeMcpInspectionLike>
-}
-
-function status(value: OpenCodeMcpInspectionLike['nativeStatus']): NativeMcpStatus {
+function status(value: Awaited<ReturnType<OpenCodeNativeSessionManager['inspectNativeMcp']>>['nativeStatus']): NativeMcpStatus {
   if (value === 'failed') return 'broken'
   if (value === 'needs_auth' || value === 'needs_client_registration') return 'authentication_required'
   if (value === 'not_detected') return 'status_unavailable'
