@@ -26,6 +26,15 @@ import {
   NATIVE_INTERACTION_FIXTURES,
   OPENCODE_APPROVAL_OPTIONS_FIXTURE,
   WorkflowApprovalConfigurationSchema,
+  CodexHarnessConfigurationSchema,
+  CodexSessionCompatibilitySchema,
+  OpenCodeHarnessConfigurationSchema,
+  UpdateAgentDefaultsRequestSchema,
+  UpdateWorkflowDefaultsRequestSchema,
+  VersionedAgentDefaultsSchema,
+  VersionedWorkflowDefaultsSchema,
+  DEFAULT_AGENT_DEFAULTS,
+  validateHarnessWorkflowCompatibility,
 } from "../src/index.js";
 
 const condition = { kind: "manual" as const };
@@ -44,13 +53,55 @@ describe("neutral product contracts", () => {
     expect(AgentDefaultsSchema.safeParse({
       orchestrator: { role: "orchestrator", boardAddable: true, harness: { harness: "codex", model: "m", reasoningEffort: "medium", sandbox: "read-only", serviceTier: "standard" } },
       coder: { role: "coder", boardAddable: true, harness: { harness: "codex", model: "m", reasoningEffort: "medium", sandbox: "read-only", serviceTier: "standard" } },
-      operator: { role: "operator", boardAddable: false, harness: { harness: "codex", model: "m", reasoningEffort: "medium", sandbox: "read-only", serviceTier: "standard" } },
+      operator: { role: "operator", boardAddable: false, uiEnabled: true, harness: { harness: "codex", model: "m", reasoningEffort: "medium", sandbox: "read-only", serviceTier: "standard" } },
     }).success).toBe(true);
     expect(WorkflowApprovalConfigurationSchema.safeParse({ handler: "orchestrator" }).success).toBe(false);
     expect(CODEX_APPROVAL_OPTIONS_FIXTURE.some((option) => option.semantic === "allow_session")).toBe(true);
     expect(OPENCODE_APPROVAL_OPTIONS_FIXTURE.some((option) => option.semantic === "allow_session")).toBe(false);
     expect(OPENCODE_APPROVAL_OPTIONS_FIXTURE.find((option) => option.semantic === "reject")?.affectsOtherPendingRequests).toBe(true);
     expect(DurableInteractionSchema.parse(NATIVE_INTERACTION_FIXTURES.codex).nativeRequestId).toBe("codex-request-fixture");
+  });
+
+  it("round-trips exact provider Advanced settings while preserving legacy omission", () => {
+    const codex = CodexHarnessConfigurationSchema.parse({
+      harness: "codex", model: "gpt-5.6-luna", reasoningEffort: "medium", sandbox: "workspace-write", serviceTier: "standard",
+      advanced: {
+        approvalPolicy: "on-request", approvalsReviewer: "user", additionalWritableDirectories: ["/tmp/project"],
+        workspaceWrite: { networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+        sessionPersistence: "persistent", shellEnvironment: { inherit: "all", ignoreDefaultExcludes: false, filters: { "AWS_*": "exclude" }, set: {} },
+        webSearch: "cached", mcpServers: { app: { enabled: true, required: true, enabledTools: ["context_get"], disabledTools: ["interaction_respond"], tools: { context_get: { enabled: true, approvalMode: "auto" } } } },
+      },
+    });
+    expect(CodexHarnessConfigurationSchema.parse(codex)).toEqual(codex);
+    expect(CodexHarnessConfigurationSchema.safeParse({ ...codex, advanced: { ...codex.advanced, mcpServers: { app: { enabled: false, required: true } } } }).success).toBe(false);
+    expect(CodexHarnessConfigurationSchema.safeParse({ ...codex, sandbox: "read-only" }).success).toBe(false);
+
+    const opencode = OpenCodeHarnessConfigurationSchema.parse({
+      harness: "opencode", model: "provider/model", variant: "provider-defined-effort", nativeAgent: "build", thinking: false, autoApprove: true,
+      advanced: { apiVersion: "v1", permissionRules: [
+        { permission: "shell", pattern: "git *", effect: "ask" },
+        { permission: "shell", pattern: "git status", effect: "allow" },
+      ], permissionHandling: "native_auto", subagentDepth: 0, plugins: { mode: "inherit" },
+      compaction: { auto: true, prune: false, reservedTokens: 0 }, configLoading: { mode: "native" }, mcp: { serverEnabled: { app: true } } },
+    });
+    expect(OpenCodeHarnessConfigurationSchema.parse(opencode).advanced?.permissionRules).toEqual(opencode.advanced?.permissionRules);
+    expect(OpenCodeHarnessConfigurationSchema.safeParse({ ...opencode, autoApprove: false }).success).toBe(false);
+    expect(OpenCodeHarnessConfigurationSchema.safeParse({ harness: "opencode", model: "m", variant: "custom", nativeAgent: "build", thinking: false, autoApprove: false }).success).toBe(true);
+    expect(() => validateHarnessWorkflowCompatibility(opencode, "orchestrator")).toThrow();
+    expect(() => validateHarnessWorkflowCompatibility(codex, "user")).not.toThrow();
+  });
+
+  it("validates versioned Settings DTOs and ephemeral Codex limitations", () => {
+    const agents = VersionedAgentDefaultsSchema.parse({ value: DEFAULT_AGENT_DEFAULTS, versionId: "agent-defaults-v1", revision: 1 });
+    expect(UpdateAgentDefaultsRequestSchema.parse({ value: agents.value, expectedRevision: agents.revision }).value.operator.uiEnabled).toBe(true);
+    const workflows = VersionedWorkflowDefaultsSchema.parse({ value: { approvalHandler: "orchestrator" }, versionId: null, revision: 0 });
+    expect(UpdateWorkflowDefaultsRequestSchema.parse({ value: workflows.value, expectedRevision: 0 })).toEqual({ value: workflows.value, expectedRevision: 0 });
+    const ephemeral = CodexHarnessConfigurationSchema.parse({
+      harness: "codex", model: "m", reasoningEffort: "medium", sandbox: "read-only", serviceTier: "standard",
+      advanced: { approvalPolicy: "on-request", approvalsReviewer: "user", additionalWritableDirectories: [], sessionPersistence: "ephemeral", shellEnvironment: { inherit: "all", ignoreDefaultExcludes: false, filters: {}, set: {} }, webSearch: "cached", mcpServers: {} },
+    });
+    expect(CodexSessionCompatibilitySchema.safeParse({ configuration: ephemeral, requiresResume: true, responseOptions: [] }).success).toBe(false);
+    expect(CodexSessionCompatibilitySchema.safeParse({ configuration: ephemeral, requiresResume: false, responseOptions: CODEX_APPROVAL_OPTIONS_FIXTURE }).success).toBe(false);
   });
 
   it("supports application-global Operator conversations without a fake workspace", () => {

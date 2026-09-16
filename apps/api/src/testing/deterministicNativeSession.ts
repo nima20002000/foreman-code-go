@@ -74,7 +74,9 @@ export class DeterministicNativeSessionManager implements NativeHarnessSessionMa
   }
 
   async cancel(): Promise<boolean> { this.counters.cancellations += 1; this.waiting = undefined; return true }
-  async history(): Promise<NativeHistory> { return { events: [...this.events], ...(this.waiting ? { pendingInteraction: this.waiting } : {}) } }
+  async history(): Promise<NativeHistory> {
+    return { events: [...this.events], pendingInteractions: this.waiting ? [this.waiting] : [], ...(this.waiting ? { pendingInteraction: this.waiting } : {}) }
+  }
   async reconcile(session: NativeSessionReference, correlationId: string): Promise<NativeHistory> {
     void session
     void correlationId
