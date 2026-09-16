@@ -72,6 +72,14 @@ export interface NativeTurnInput {
 }
 
 export interface NativeHistory {
+  /** This is a bounded live window; callers persist streamed events at the durable boundary. */
+  firstRetainedSequence?: number
+  nextSequence?: number
+  interactionDeliveries?: readonly {
+    nativeRequestId: string
+    state: 'pending' | 'submitting' | 'submitted' | 'uncertain'
+    selectedOptionId?: string
+  }[]
   events: readonly NativeHarnessEvent[]
   pendingInteractions: readonly PendingNativeInteraction[]
   pendingInteraction?: PendingNativeInteraction

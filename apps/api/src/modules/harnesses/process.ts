@@ -27,6 +27,7 @@ export interface JsonlProcessResult {
 type ProcessOptions = Pick<JsonlProcessOptions, 'binary' | 'args' | 'cwd' | 'stdin' | 'beforeSpawn'> & {
   signal?: AbortSignal
   onSpawn?(process: ChildProcess): void
+  environment?: NodeJS.ProcessEnv
 }
 type ProcessExit = Pick<JsonlProcessResult, 'exitCode' | 'exitSignal'>
 
@@ -66,7 +67,7 @@ async function runOwnedProcess<T>(
   read: (child: ChildProcessWithoutNullStreams) => Promise<T>,
 ): Promise<T & ProcessExit> {
   options.signal?.throwIfAborted()
-  const childEnvironment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
+  const childEnvironment: NodeJS.ProcessEnv = { ...(options.environment ?? process.env), NO_COLOR: '1' }
   for (const key of Object.keys(childEnvironment)) {
     if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_')
       || key === 'DATABASE_URL' || key === 'TEST_DATABASE_URL' || key === 'PGPASSWORD') {
@@ -213,12 +214,12 @@ export async function runJsonlProcess(options: JsonlProcessOptions): Promise<Jso
   })
 }
 
-export async function runCommand(binary: string, args: string[], cwd: string, signal?: AbortSignal): Promise<{
+export async function runCommand(binary: string, args: string[], cwd: string, signal?: AbortSignal, environment?: NodeJS.ProcessEnv): Promise<{
   exitCode: number | null
   stdout: string
   stderr: string
 }> {
-  return runOwnedProcess({ binary, args, cwd, ...(signal ? { signal } : {}) }, async (child) => {
+  return runOwnedProcess({ binary, args, cwd, ...(signal ? { signal } : {}), ...(environment ? { environment } : {}) }, async (child) => {
     const collect = async (stream: Readable) => {
       stream.setEncoding('utf8')
       let text = ''
@@ -242,4 +243,80 @@ export async function runCommands(binary: string, commands: string[][], cwd: str
     await Promise.allSettled(tasks)
     throw error
   }
+}
+
+/** Bidirectional providers use the same tree ownership as one-shot harnesses. */
+export function spawnOwnedStdioProcess(options: {
+  binary: string
+  args: string[]
+  cwd: string
+  environment: NodeJS.ProcessEnv
+  onError(error: Error): void
+}): {
+  child: ChildProcessWithoutNullStreams
+  closed: Promise<ProcessExit>
+  close(): Promise<void>
+} {
+  const child = spawn(options.binary, options.args, {
+    cwd: options.cwd, env: options.environment,
+    detached: process.platform !== 'win32',
+    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+  })
+  let didClose = false
+  const closed = new Promise<ProcessExit>((resolve) => {
+    child.once('close', (exitCode, exitSignal) => {
+      didClose = true
+      resolve({ exitCode, exitSignal })
+    })
+  })
+  let shutdown: Promise<void> | undefined
+  const within = async (operation: Promise<unknown>, milliseconds: number): Promise<boolean> => {
+    let timer: NodeJS.Timeout | undefined
+    try {
+      return await Promise.race([
+        operation.then(() => true),
+        new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), milliseconds) }),
+      ])
+    } finally { clearTimeout(timer) }
+  }
+  const close = (): Promise<void> => {
+    if (shutdown) return shutdown
+    shutdown = (async () => {
+      let failure: unknown
+      const send = async (signal: NodeJS.Signals) => {
+        try {
+          if (!await within(signalTree(child, signal), PROCESS_SHUTDOWN_GRACE_MS)) {
+            failure ??= new Error('Timed out signaling the owned provider process tree.')
+          }
+        } catch (error) { failure ??= error }
+      }
+      try {
+        // Signal the group even after its leader exited: descendants may own pipes.
+        await send('SIGTERM')
+        if (!didClose) await within(closed, PROCESS_SHUTDOWN_GRACE_MS)
+        await send('SIGKILL')
+        if (!didClose && !await within(closed, PROCESS_SHUTDOWN_GRACE_MS)) {
+          failure ??= new Error('Provider process did not close after forced tree shutdown.')
+        }
+      } finally {
+        child.stdin.destroy()
+        child.stdout.destroy()
+        child.stderr.destroy()
+        ownedProcesses.delete(child)
+      }
+      if (failure) throw failure
+    })()
+    // Event-driven cleanup must never create an unhandled rejection.
+    void shutdown.catch(() => undefined)
+    return shutdown
+  }
+  ownedProcesses.set(child, close)
+  const failed = (error: Error) => {
+    try { options.onError(error) } catch { /* A lifecycle observer cannot crash the API. */ }
+    finally { void close().catch(() => undefined) }
+  }
+  child.on('error', failed)
+  for (const stream of [child.stdin, child.stdout, child.stderr]) stream.on('error', failed)
+  child.once('exit', () => { void close().catch(() => undefined) })
+  return { child, closed, close }
 }
