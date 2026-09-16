@@ -332,6 +332,35 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     return session
   }
 
+  async attachSession(session: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
+    if (session.harness !== 'opencode' || session.providerVersion !== QUALIFIED_VERSION) {
+      throw new HarnessExecutionError('OPENCODE_SESSION_UNQUALIFIED', 'The persisted session is not qualified for this OpenCode manager.')
+    }
+    if (input.environment && input.environment.agentId !== this.options.ownerAgentId) {
+      throw new HarnessExecutionError('OPENCODE_SESSION_OWNER_MISMATCH', 'The session credential belongs to another Agent.')
+    }
+    const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+    const configuration = this.configuration(input)
+    await this.qualifyServer(signal)
+    await this.qualifyConfiguration(configuration, directory, signal)
+    const response = await this.options.server.request(
+      withDirectory(`/session/${encodeURIComponent(session.nativeSessionId)}`, directory),
+      { method: 'GET' }, signal,
+    )
+    if (response.status === 404) {
+      throw new HarnessExecutionError('OPENCODE_SESSION_NOT_FOUND', 'The persisted OpenCode session no longer exists; a replacement was not created.')
+    }
+    if (!response.ok) throw await responseError(response, 'OPENCODE_SESSION_ATTACH_FAILED', 'definite')
+    const native = asObject(await response.json())
+    this.verifyAttachedSession(native, session.nativeSessionId, directory, configuration)
+    await this.applyMcpControls(configuration, directory, signal)
+    this.sessions.set(session.nativeSessionId, {
+      directory, configuration,
+      events: [], seenEventIds: new Set(), seenPendingRequestIds: new Set(), correlationMessages: new Map(), sequence: 0,
+    })
+    return session
+  }
+
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
     const state = await this.requireSession(session, signal)
     if (this.activeTurns.has(session.nativeSessionId)) {
@@ -588,6 +617,30 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         throw new HarnessExecutionError('OPENCODE_MCP_SERVER_NOT_CONFIGURED', `OpenCode MCP server '${name}' is not present in resolved config.`)
       }
       await this.mutate(withDirectory(`/mcp/${encodeURIComponent(name)}/${enabled ? 'connect' : 'disconnect'}`, directory), { method: 'POST' }, signal)
+    }
+  }
+
+  private verifyAttachedSession(
+    native: JsonObject,
+    sessionID: string,
+    directory: string,
+    configuration: OpenCodeHarnessConfiguration,
+  ): void {
+    if (native.id !== sessionID) {
+      throw new HarnessExecutionError('OPENCODE_SESSION_ID_MISMATCH', 'OpenCode returned a different persisted session identity.')
+    }
+    if (native.directory !== directory) {
+      throw new HarnessExecutionError('OPENCODE_SESSION_DIRECTORY_MISMATCH', 'The persisted OpenCode session belongs to a different working directory.')
+    }
+    if (typeof native.agent === 'string' && native.agent !== configuration.nativeAgent) {
+      throw new HarnessExecutionError('OPENCODE_SESSION_CONFIGURATION_MISMATCH', 'The persisted OpenCode session native Agent differs from its pinned configuration.')
+    }
+    const model = objectField(native, 'model')
+    if (Object.keys(model).length === 0) return
+    const [providerID, ...modelParts] = configuration.model.split('/')
+    if (model.providerID !== providerID || model.id !== modelParts.join('/')
+      || (typeof model.variant === 'string' && model.variant !== configuration.variant)) {
+      throw new HarnessExecutionError('OPENCODE_SESSION_CONFIGURATION_MISMATCH', 'The persisted OpenCode session model differs from its pinned configuration.')
     }
   }
 

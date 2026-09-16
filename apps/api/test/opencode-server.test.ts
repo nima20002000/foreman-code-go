@@ -41,6 +41,7 @@ class FakeServer implements OpenCodeServerController {
   mcp: Record<string, unknown> = {}
   messagesAfterEventStreams = 0
   eventStreams = 0
+  sessionExists = true
 
   async ensure() {}
   async dispose() {}
@@ -57,6 +58,9 @@ class FakeServer implements OpenCodeServerController {
     if (route === '/provider') return json({ all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: { max: {} } } } }] })
     if (route === '/agent') return json([{ name: 'build' }, { name: 'plan' }])
     if (route === '/session' && method === 'POST') return json({ id: 'ses_test' })
+    if (route === '/session/ses_test' && method === 'GET') return this.sessionExists
+      ? json({ id: 'ses_test', directory: '/workspace/project', agent: 'build', model: { providerID: 'opencode-go', id: 'deepseek-v4.1-flash', variant: 'max' } })
+      : new Response('missing', { status: 404 })
     if (route === '/event') { this.eventStreams += 1; return sse(this.events.shift() ?? '') }
     if (route === '/permission') return json(this.permissions)
     if (route === '/session/ses_test/message') return json(this.eventStreams >= this.messagesAfterEventStreams ? this.messages : [])
@@ -259,6 +263,26 @@ describe('OpenCode native server manager', () => {
     })
     expect(server.calls.some((call) => call.path === '/session?directory=%2Fruntime%2Foperator')).toBe(true)
     expect(server.calls.some((call) => call.path.includes(encodeURIComponent(process.cwd())))).toBe(false)
+  })
+
+  it('reattaches exact persisted identity after manager restart and never creates a replacement', async () => {
+    const server = new FakeServer()
+    const first = manager(server)
+    const executionRequest = request()
+    const session = await sessionFor(first, executionRequest)
+    const createsBefore = server.calls.filter((call) => call.path.startsWith('/session?') && call.init?.method === 'POST').length
+
+    const restarted = manager(server)
+    await expect(restarted.attachSession(session, { request: executionRequest })).resolves.toEqual(session)
+    expect(server.calls.filter((call) => call.path.startsWith('/session?') && call.init?.method === 'POST')).toHaveLength(createsBefore)
+    expect(server.calls.some((call) => call.path === '/session/ses_test?directory=%2Fworkspace%2Fproject')).toBe(true)
+
+    const missing = manager(server)
+    server.sessionExists = false
+    await expect(missing.attachSession(session, { request: executionRequest })).rejects.toMatchObject({
+      result: { error: { code: 'OPENCODE_SESSION_NOT_FOUND' } },
+    })
+    expect(server.calls.filter((call) => call.path.startsWith('/session?') && call.init?.method === 'POST')).toHaveLength(createsBefore)
   })
 })
 
