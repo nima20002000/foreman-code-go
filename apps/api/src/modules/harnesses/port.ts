@@ -9,6 +9,7 @@ import type {
   NativeHarnessEvent,
   NativeSessionReference,
   PendingNativeInteraction,
+  OperatorConfigurationVersion,
 } from '@graphql/contracts'
 
 export interface NativeEventInput {
@@ -47,10 +48,21 @@ export interface ChildProcessEnvironment {
   readonly variables: Readonly<Record<string, string>>
 }
 
-export interface NativeSessionStart {
+export interface WorkflowNativeSessionStart {
+  kind?: 'workflow'
+  correlationId?: string
   request: HarnessExecutionRequest
   environment?: ChildProcessEnvironment
 }
+
+export interface OperatorNativeSessionStart {
+  kind: 'operator'
+  correlationId: string
+  configuration: OperatorConfigurationVersion
+  environment?: ChildProcessEnvironment
+}
+
+export type NativeSessionStart = WorkflowNativeSessionStart | OperatorNativeSessionStart
 
 export interface NativeTurnInput {
   prompt: string
@@ -59,6 +71,7 @@ export interface NativeTurnInput {
 
 export interface NativeHistory {
   events: readonly NativeHarnessEvent[]
+  pendingInteractions: readonly PendingNativeInteraction[]
   pendingInteraction?: PendingNativeInteraction
   terminalResult?: ExecutionResult
 }

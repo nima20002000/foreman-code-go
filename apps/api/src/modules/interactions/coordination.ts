@@ -29,7 +29,7 @@ export class PostgresInteractionCoordinationRepository {
          record=jsonb_set(jsonb_set(jsonb_set(jsonb_set(record, '{state}', '"leased"'),
            '{leaseOwner}', to_jsonb($2::text)), '{leaseToken}', to_jsonb($3::text)),
            '{leaseExpiresAt}', to_jsonb($4::text))
-       where id=$1 and state in ('pending','blocked')
+       where id=$1 and state in ('pending','blocked_busy','blocked_disconnected')
        returning record`, [id, owner, token, leaseExpiresAt],
     )
     if (!result.rows[0]) throw new DomainError('REVIEW_JOB_NOT_CLAIMABLE', 'The review job is already owned or completed.', 409)

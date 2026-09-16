@@ -10,6 +10,10 @@ import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
 
+function legacyOpenCodeEffort(variant: string) {
+  return variant === 'low' || variant === 'high' || variant === 'max' ? variant : undefined
+}
+
 export function configurationInput(
   workspaceId: string,
   agent: Agent,
@@ -47,6 +51,7 @@ export function configurationInput(
         nativeAgent: currentHarness?.nativeAgent ?? 'build',
         thinking: currentHarness?.thinking ?? false,
         autoApprove: false,
+        ...(currentHarness?.advanced ? { advanced: currentHarness.advanced } : {}),
       },
     } as const
   }
@@ -68,6 +73,7 @@ export function configurationInput(
       reasoningEffort: agent.effort ?? currentHarness?.reasoningEffort ?? 'medium',
       sandbox: currentHarness?.sandbox ?? 'read-only',
       serviceTier: (agent.fastMode ?? (currentHarness?.serviceTier === 'priority')) ? 'priority' : 'standard',
+      ...(currentHarness?.advanced ? { advanced: currentHarness.advanced } : {}),
     },
   } as const
 }
@@ -163,7 +169,7 @@ export async function saveAgentConfiguration(
     productRole: configuration.productRole,
     harness: harness.harness,
     model: harness.model,
-    effort: harness.harness === 'codex' ? harness.reasoningEffort : harness.variant,
+    effort: harness.harness === 'codex' ? harness.reasoningEffort : legacyOpenCodeEffort(harness.variant),
     fastMode: harness.harness === 'codex' ? harness.serviceTier === 'priority' : undefined,
     harnessConfiguration: harness,
     configurationVersionId: configuration.id,
