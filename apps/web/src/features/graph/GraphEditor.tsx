@@ -25,6 +25,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useQueryClient } from '@tanstack/react-query'
 
+import { AgentEffortSchema } from '@graphql/contracts'
 import type {
   Agent,
   HarnessDefaults,
@@ -235,7 +236,9 @@ function AgentSettingsForm({
         if (creationDefaults) {
           const configuration = creationDefaults[nextHarness]
           setModel(configuration.model)
-          setEffort(configuration.harness === 'codex' ? configuration.reasoningEffort : configuration.variant)
+          setEffort(configuration.harness === 'codex'
+            ? configuration.reasoningEffort
+            : AgentEffortSchema.safeParse(configuration.variant).data ?? 'max')
           setFastMode(configuration.harness === 'codex' && configuration.serviceTier === 'priority')
           if (configuration.harness === 'codex') setCodexSandbox(configuration.sandbox)
           return
