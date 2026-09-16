@@ -145,7 +145,12 @@ export class InteractionService {
   async reconcile(interaction: DurableInteraction): Promise<DurableInteraction> {
     try {
       const { manager, session } = await this.nativeRuntime.attachInteraction(interaction)
-      const history = await manager.reconcile(session, `approval:${interaction.id}`)
+      const correlationId = `execution:${interaction.executionId}`
+      const history = await manager.reconcile(session, correlationId)
+      if (history.correlationId !== correlationId) {
+        return interaction.deliveryState === 'uncertain' ? interaction
+          : this.interactions.updateDelivery(interaction.id, interaction.revision, 'uncertain')
+      }
       const stillPending = history.pendingInteractions.some((item) => item.turn.nativeRequestId === interaction.nativeRequestId)
       return this.interactions.updateDelivery(interaction.id, interaction.revision, stillPending ? 'failed' : 'delivered')
     } catch {

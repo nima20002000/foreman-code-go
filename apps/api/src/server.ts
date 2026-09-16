@@ -7,6 +7,11 @@ import { buildApp } from './app.js'
 import { loadConfig } from './config.js'
 import { createCheckpointStore } from './infrastructure/checkpoints.js'
 import { createDatabase } from './infrastructure/database.js'
+import { OperatorRuntimeOwner } from './infrastructure/operatorRuntimeOwner.js'
+import { NativeRollout } from './modules/harnesses/nativeRollout.js'
+import { PostgresOperatorChatAuthority, OPERATOR_MCP_ENVIRONMENT_VARIABLE } from './modules/conversations/operatorChatAuthority.js'
+import { AutomaticReviewService } from './modules/interactions/automaticReview.js'
+import type { NativeManagerResolver } from './modules/conversations/operatorChat.js'
 import { ensureAcceptanceSeed } from './infrastructure/seed.js'
 import { PostgresAccessService } from './modules/access/postgres.js'
 import { WorkerCredentialService } from './modules/access/workerCredentials.js'
@@ -58,6 +63,7 @@ async function main() {
     }
   }
   const config = loadConfig(process.env)
+  const rollout = new NativeRollout(process.env)
   const database = createDatabase(config.database)
   const access = new PostgresAccessService(database.pool)
   const commands = new PostgresCommandCoordinator(database.pool)
@@ -102,6 +108,7 @@ async function main() {
   const workerCredentialStore = new WorkerCredentialService(database.pool, access)
   const workerCredentials = new WorkerLaunchCredentialService(detection, workerCredentialStore, locations.runnerId)
   const nativeManagers = new ExecutionScopedNativeSessionManagerResolver((context) => {
+    if (!rollout.enabled(context.harness)) throw new Error('This rich native provider has not passed its rollout gate.')
     if (context.harness === 'codex') return new CodexAppServerSessionManager(config.harnesses.codexBinary)
     const harness = context.configuration.harness
     if (harness.harness !== 'opencode') throw new Error('OpenCode manager received a non-OpenCode pinned configuration.')
@@ -125,14 +132,20 @@ async function main() {
   )
   const engine = new LangGraphWorkflowEngine(
     runs, workflows, legacyHarnesses, checkpoints.saver, config.harnesses.workspaceRoot,
-    config.harnesses.timeoutMs, locations, workerCredentials, approvals, interactions,
+    config.harnesses.timeoutMs, locations, workerCredentials, approvals, interactions, (harness) => rollout.enabled(harness),
   )
 
   let app: FastifyInstance | undefined
   let chat: OperatorChatService | undefined
+  let reviews: AutomaticReviewService | undefined
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
   let reconciliationTimer: NodeJS.Timeout | undefined
+  const nativeOwner = new OperatorRuntimeOwner(config.database.connectionString, (error) => {
+    app?.log.error({ err: error }, 'native runtime ownership lost; stopping execution')
+    void Promise.allSettled([chat?.shutdown(), reviews?.shutdown(), engine.shutdown(), app?.close()])
+  })
   try {
+    await nativeOwner.acquire()
     await database.ping()
     await database.migrate()
     await ensureAcceptanceSeed(database.pool)
@@ -145,33 +158,32 @@ async function main() {
       await operators.update(agentDefaults.value.operator.harness, operator.operator.currentConfigurationVersionId)
     }
     const operatorWorkingDirectory = await ensureOperatorRuntimeDirectory(config.harnesses.workspaceRoot)
-    chat = new OperatorChatService(
-      new PostgresOperatorConversationRepository(database.pool),
-      operators,
-      (configuration) => {
-        const existing = operatorManagers.get(configuration.id)
-        if (existing) return existing
-        let manager: NativeHarnessSessionManager
-        if (configuration.harness.harness === 'codex') {
-          manager = new CodexAppServerSessionManager(config.harnesses.codexBinary)
-        } else {
-          const server = new ManagedOpenCodeServer({
-            binary: config.harnesses.openCodeBinary,
-            workingDirectory: operatorWorkingDirectory,
-            ownerAgentId: configuration.operatorId,
-            ...(configuration.harness.advanced ? { advancedConfiguration: configuration.harness.advanced } : {}),
-          })
-          manager = new OpenCodeNativeSessionManager({
-            server,
-            ownerAgentId: configuration.operatorId,
-            expectedAppMcpEndpoint: appMcpEndpoint,
-          })
-        }
-        operatorManagers.set(configuration.id, manager)
-        return manager
-      },
-      operatorWorkingDirectory,
-    )
+    const operatorMcpEndpoint = `http://127.0.0.1:${config.port}/mcp/operator`
+    const chatAuthority = new PostgresOperatorChatAuthority(database.pool, access, rollout, operatorWorkingDirectory, operatorMcpEndpoint)
+    await chatAuthority.revokeOrphanedCredentials()
+    const resolveOperatorManager: NativeManagerResolver = (configuration, conversationId) => {
+      const existing = operatorManagers.get(conversationId)
+      if (existing) return existing
+      let manager: NativeHarnessSessionManager
+      if (configuration.harness.harness === 'codex') {
+        manager = new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined,
+          'graphql-operator', operatorMcpEndpoint, OPERATOR_MCP_ENVIRONMENT_VARIABLE)
+      } else {
+        const server = new ManagedOpenCodeServer({
+          binary: config.harnesses.openCodeBinary, workingDirectory: operatorWorkingDirectory,
+          ownerAgentId: configuration.operatorId, audience: 'operator',
+          ...(configuration.harness.advanced ? { advancedConfiguration: configuration.harness.advanced } : {}),
+        })
+        manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: configuration.operatorId,
+          appMcpServerName: 'graphql-operator', expectedAppMcpEndpoint: operatorMcpEndpoint })
+      }
+      operatorManagers.set(conversationId, manager)
+      return manager
+    }
+    resolveOperatorManager.release = (id) => { operatorManagers.delete(id) }
+    chat = new OperatorChatService(new PostgresOperatorConversationRepository(database.pool), operators,
+      resolveOperatorManager, operatorWorkingDirectory, chatAuthority)
+    reviews = new AutomaticReviewService(database.pool, runs, approvals, chat, access, locations, rollout)
     const operatorServices = {
       workspaces: new WorkspaceManagementService(database.pool, commands, locations),
       locations,
@@ -198,8 +210,8 @@ async function main() {
     })
     app.addHook('onClose', async () => {
       if (reconciliationTimer) clearInterval(reconciliationTimer)
-      await Promise.allSettled([chat?.shutdown(), engine.shutdown()])
       await Promise.allSettled([
+        chat?.shutdown(), reviews?.shutdown(), engine.shutdown(),
         nativeManagers.dispose(),
         detectionCodex.dispose(),
         ...[...operatorManagers.values()].map(async (manager) => {
@@ -208,21 +220,24 @@ async function main() {
         }),
       ])
       operatorManagers.clear()
-      await Promise.allSettled([checkpoints.close(), database.close()])
+      await Promise.allSettled([checkpoints.close(), database.close(), nativeOwner.close()])
     })
     const reportReconciliationError = (error: unknown) => app?.log.error({ err: error }, 'run reconciliation failed')
+    // Listen before native recovery so the verified local MCP endpoints are reachable.
+    await app.listen({ host: config.host, port: config.port })
     await engine.reconcile(reportReconciliationError)
     await chat.reconcileActive()
     reconciliationTimer = setInterval(() => {
       void engine.reconcile(reportReconciliationError).catch(reportReconciliationError)
+      void chat?.reconcileActive().catch(reportReconciliationError)
+      void reviews?.tick().catch(reportReconciliationError)
     }, 5_000)
     reconciliationTimer.unref()
-    await app.listen({ host: config.host, port: config.port })
   } catch (error) {
     if (app) await app.close()
     else {
-      await Promise.allSettled([chat?.shutdown(), engine.shutdown(), nativeManagers.dispose(), detectionCodex.dispose()])
-      await Promise.allSettled([checkpoints.close(), database.close()])
+      await Promise.allSettled([chat?.shutdown(), reviews?.shutdown(), engine.shutdown(), nativeManagers.dispose(), detectionCodex.dispose()])
+      await Promise.allSettled([checkpoints.close(), database.close(), nativeOwner.close()])
     }
     throw error
   }

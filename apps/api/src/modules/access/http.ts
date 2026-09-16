@@ -7,7 +7,10 @@ import { bearerToken, type PostgresAccessService } from './postgres.js'
 import { DomainError } from '../errors.js'
 
 declare module 'fastify' {
-  interface FastifyRequest { operatorPrincipal?: ManagementPrincipal }
+  interface FastifyRequest {
+    operatorPrincipal?: ManagementPrincipal
+    reauthorizeOperator?: () => Promise<ManagementPrincipal>
+  }
 }
 
 const COOKIE_NAME = 'graphql_operator'
@@ -34,6 +37,12 @@ function cookieToken(value: string | undefined): string | undefined {
 
 function actionFor(request: FastifyRequest) {
   const url = request.url.split('?')[0] ?? request.url
+  if (url.startsWith('/api/operator/conversations')) {
+    if (['GET', 'HEAD'].includes(request.method)) return 'operator_chat:read' as const
+    if (url.endsWith('/cancel')) return 'operator_chat:cancel' as const
+    if (url.endsWith('/responses')) return 'operator_chat:respond' as const
+    return 'operator_chat:write' as const
+  }
   if (url === '/api/settings/harnesses') return request.method === 'GET' ? 'harnesses:read' as const : 'harnesses:update' as const
   if (url.includes('/agents')) return request.method === 'GET' ? 'agents:read' as const : 'graph:edit' as const
   if (url.includes('/runs/') && url.endsWith('/cancel')) return 'runs:stop' as const
@@ -76,6 +85,11 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
     const token = headerToken ?? browserToken
     const principal = await access.authenticate(token, 'operator')
     request.operatorPrincipal = principal
+    request.reauthorizeOperator = async () => {
+      const current = await access.authenticate(token, 'operator')
+      requireAuthorization(current, actionFor(request))
+      return current
+    }
     if (!request.url.startsWith('/api/management/') && !request.url.startsWith('/api/auth/')) {
       const params = request.params as Record<string, string | undefined>
       const resource = {

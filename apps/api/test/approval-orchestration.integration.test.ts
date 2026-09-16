@@ -26,7 +26,7 @@ import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
 import type { NativeHarnessSessionManager, NativeHistory } from '../src/modules/harnesses/port.js'
-import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
+import type { NativeSessionStart, NativeTurnInput } from '../src/modules/harnesses/port.js'
 import { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
@@ -60,6 +60,7 @@ class SelectiveNativeManager implements NativeHarnessSessionManager {
   readonly harness: 'codex' | 'opencode'
   readonly counters = { nodeEntries: 0, sessions: 0, attaches: 0, sideEffects: 0, deliveries: 0 }
   private readonly requests = new Map<string, HarnessExecutionRequest>()
+  private readonly correlations = new Map<string, string>()
   private readonly pendingRequests = new Map<string, PendingNativeInteraction>()
   private readonly terminal = new Map<string, NativeHistory['terminalResult']>()
   readonly startEnvironments = new Map<string, string | undefined>()
@@ -86,10 +87,12 @@ class SelectiveNativeManager implements NativeHarnessSessionManager {
     this.attachEnvironments.push(input.environment?.variables.GRAPHQL_APP_MCP_TOKEN)
     return session
   }
-  async *startTurn(session: NativeSessionReference): AsyncIterable<NativeHarnessEvent> {
+  async *startTurn(session: NativeSessionReference, input?: NativeTurnInput): AsyncIterable<NativeHarnessEvent> {
     this.counters.nodeEntries += 1
     this.counters.sideEffects += 1
     const request = this.requests.get(session.nativeSessionId)!
+    this.correlations.set(session.nativeSessionId, input?.clientCorrelationId ?? `execution:${request.executionId}`)
+    await input?.onSubmitted?.(`turn-${request.workflowNodeId}`)
     if (this.pendingNodeIds.has(request.workflowNodeId)) {
       const pending: PendingNativeInteraction = {
         session, turn: { nativeTurnId: `turn-${request.workflowNodeId}`, nativeRequestId: `request-${request.workflowNodeId}` },
@@ -115,20 +118,34 @@ class SelectiveNativeManager implements NativeHarnessSessionManager {
   async history(session: NativeSessionReference): Promise<NativeHistory> {
     const pendingInteraction = this.pendingRequests.get(session.nativeSessionId)
     const terminalResult = this.terminal.get(session.nativeSessionId)
-    return { events: [], pendingInteractions: pendingInteraction ? [pendingInteraction] : [], ...(pendingInteraction ? { pendingInteraction } : {}), ...(terminalResult ? { terminalResult } : {}) }
+    const correlationId = this.correlations.get(session.nativeSessionId)
+    return { ...(correlationId ? { correlationId, nativeTurnId: `turn-${this.requests.get(session.nativeSessionId)!.workflowNodeId}` } : {}), events: [], pendingInteractions: pendingInteraction ? [pendingInteraction] : [], ...(pendingInteraction ? { pendingInteraction } : {}), ...(terminalResult ? { terminalResult } : {}) }
   }
-  async reconcile(session: NativeSessionReference) { return this.history(session) }
+  async reconcile(session: NativeSessionReference, correlationId?: string): Promise<NativeHistory> {
+    if (correlationId && this.correlations.get(session.nativeSessionId) !== correlationId) return { events: [], pendingInteractions: [] }
+    return this.history(session)
+  }
   async close() {}
 }
 
 class ReviewNativeManager extends SelectiveNativeManager {
   reviewTurns = 0
-  override async *startTurn(_session: NativeSessionReference): AsyncIterable<NativeHarnessEvent> {
+  private reviewCorrelation: string | undefined
+  override async *startTurn(_session: NativeSessionReference, input?: NativeTurnInput): AsyncIterable<NativeHarnessEvent> {
     void _session
     this.reviewTurns += 1
+    this.reviewCorrelation = input?.clientCorrelationId
+    await input?.onSubmitted?.(`review-turn-${this.reviewTurns}`)
     yield NativeHarnessEventSchema.parse({
       sequence: 0, type: 'turn.started', occurredAt: new Date().toISOString(), payload: { turnId: `review-turn-${this.reviewTurns}` },
     })
+  }
+  override async reconcile(session: NativeSessionReference, correlationId?: string): Promise<NativeHistory> {
+    if (correlationId && correlationId === this.reviewCorrelation) return {
+      correlationId, nativeTurnId: `review-turn-${this.reviewTurns}`, events: [], pendingInteractions: [],
+      terminalResult: { outcome: 'succeeded', output: { text: 'review complete' } },
+    }
+    return super.reconcile(session, correlationId)
   }
 }
 
@@ -594,7 +611,9 @@ it('lists, reads and responds to an Operator-assigned request through authentica
       executionId: execution.id, runId: run.id, workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId,
       workingDirectory: projectRoot, runtimeDirectory: root, configuration, input: {},
     } })
-    for await (const event of uncertainManager.startTurn(uncertainSession, { prompt: 'fixture', clientCorrelationId: 'uncertain-proof' })) { void event; break }
+    for await (const event of uncertainManager.startTurn(uncertainSession, {
+      prompt: 'fixture', clientCorrelationId: `execution:${execution.id}`,
+    })) { void event; break }
     const uncertain = await interactions.create({
       ...NATIVE_INTERACTION_FIXTURES.opencode, id: 'operator-interaction-uncertain', runId: run.id,
       executionId: execution.id, requestingAgentId: execution.agentId, approval: { handler: 'operator' },

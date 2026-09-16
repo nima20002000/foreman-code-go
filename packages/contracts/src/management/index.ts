@@ -28,6 +28,10 @@ export type ManagementAudience = z.infer<typeof ManagementAudienceSchema>;
 
 export const ManagementActionSchema = z.enum([
   "capabilities:read",
+  "operator_chat:read",
+  "operator_chat:write",
+  "operator_chat:cancel",
+  "operator_chat:respond",
   "harnesses:read",
   "harnesses:update",
   "settings:read",

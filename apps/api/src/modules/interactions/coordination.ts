@@ -7,6 +7,38 @@ import { DomainError } from '../errors.js'
 export class PostgresInteractionCoordinationRepository {
   constructor(private readonly pool: pg.Pool) {}
 
+  async recoveryJobs(): Promise<ReviewJob[]> {
+    const result = await this.pool.query<{ record: unknown }>(
+      "select record from review_jobs where state in ('submitted','acknowledged','uncertain') order by created_at,id")
+    return result.rows.map((row) => ReviewJobSchema.parse(row.record))
+  }
+
+  async renewReviewLease(jobId: string, jobToken: string, laneId: string, laneToken: string, expiresAt: string): Promise<void> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      const job = await client.query("update review_jobs set record=jsonb_set(record,'{leaseExpiresAt}',to_jsonb($3::text)) where id=$1 and record->>'leaseToken'=$2", [jobId, jobToken, expiresAt])
+      const lane = await client.query("update native_session_lanes set record=jsonb_set(record,'{leaseExpiresAt}',to_jsonb($3::text)) where id=$1 and record->>'leaseToken'=$2", [laneId, laneToken, expiresAt])
+      if (job.rowCount !== 1 || lane.rowCount !== 1) throw new DomainError('REVIEW_JOB_LEASE_LOST', 'The reviewer lease was lost.', 409)
+      await client.query('commit')
+    } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
+  }
+
+  /** Observation only. The process-wide database owner excludes a second dispatcher. */
+  async recoverReviewJob(job: ReviewJob, state: 'completed' | 'failed', error?: ReviewJob['error']): Promise<void> {
+    const next = ReviewJobSchema.parse({ ...job, state, leaseOwner: undefined, leaseToken: undefined, leaseExpiresAt: undefined,
+      ...(error ? { error } : {}), ...(state === 'completed' ? { completedAt: new Date().toISOString() } : {}), updatedAt: new Date().toISOString() })
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      const changed = await client.query("update review_jobs set state=$2,record=$3::jsonb,revision=revision+1,updated_at=now() where id=$1 and record->>'correlationId'=$4 and state in ('submitted','acknowledged','uncertain')",
+        [job.id, state, JSON.stringify(next), job.correlationId])
+      if (changed.rowCount) await client.query("update native_session_lanes set record=(record-'leaseOwner'-'leaseToken'-'leaseExpiresAt'-'correlationId') || jsonb_build_object('observedStatus','idle','revision',revision+1),revision=revision+1,updated_at=now() where harness=$1 and native_session_id=$2 and record->>'correlationId'=$3",
+        [job.provider, job.nativeSessionId, job.correlationId])
+      await client.query('commit')
+    } catch (failure) { await client.query('rollback'); throw failure } finally { client.release() }
+  }
+
   async ensureReviewJob(job: ReviewJob, context?: { executionId: string; workingDirectory: string; providerVersion: string }): Promise<{ job: ReviewJob; created: boolean }> {
     const parsed = ReviewJobSchema.parse(job)
     const inserted = await this.pool.query<{ record: unknown }>(

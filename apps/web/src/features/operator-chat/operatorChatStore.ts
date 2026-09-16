@@ -1,6 +1,7 @@
 import { create } from 'zustand'
+import { identityChangedEvent, parseChatPreferences, protectedKey } from '../../shared/api/protectedChatStorage'
+import { sessionIsSwitching } from '../../shared/api/sessionBoundary'
 
-const storageKey = 'graphql.operator-chat.ui'
 interface OperatorChatUiState {
   open: boolean
   historyOpen: boolean
@@ -8,24 +9,21 @@ interface OperatorChatUiState {
   setOpen(open: boolean): void
   setHistoryOpen(open: boolean): void
   select(id: string): void
+  reset(): void
 }
-
-function savedState(): Partial<Pick<OperatorChatUiState, 'open' | 'historyOpen' | 'selectedConversationId'>> {
-  try { return JSON.parse(window.localStorage.getItem(storageKey) ?? '{}') as Partial<OperatorChatUiState> } catch { return {} }
+function savedState() {
+  try { return parseChatPreferences(JSON.parse(window.localStorage.getItem(protectedKey('ui')) ?? '{}')) } catch { return {} }
 }
-
 const initial = typeof window === 'undefined' ? {} : savedState()
 function persist(state: Pick<OperatorChatUiState, 'open' | 'historyOpen' | 'selectedConversationId'>) {
-  try { window.localStorage.setItem(storageKey, JSON.stringify(state)) } catch { /* storage is optional */ }
+  if (sessionIsSwitching()) return
+  try { window.localStorage.setItem(protectedKey('ui'), JSON.stringify(state)) } catch { /* Preferences are optional. */ }
 }
-
 export const useOperatorChatStore = create<OperatorChatUiState>((set) => ({
-  open: initial.open ?? false,
-  historyOpen: initial.historyOpen ?? true,
-  selectedConversationId: initial.selectedConversationId,
-  setOpen: (open) => set((state) => { const next = { ...state, open }; persist(next); return { open } }),
-  setHistoryOpen: (historyOpen) => set((state) => { const next = { ...state, historyOpen }; persist(next); return { historyOpen } }),
-  select: (selectedConversationId) => {
-    set((state) => { const next = { ...state, selectedConversationId }; persist(next); return { selectedConversationId } })
-  },
+  open: initial.open ?? false, historyOpen: initial.historyOpen ?? true, selectedConversationId: initial.selectedConversationId,
+  setOpen: (open) => { if (!sessionIsSwitching()) set((state) => { persist({ ...state, open }); return { open } }) },
+  setHistoryOpen: (historyOpen) => { if (!sessionIsSwitching()) set((state) => { persist({ ...state, historyOpen }); return { historyOpen } }) },
+  select: (selectedConversationId) => { if (!sessionIsSwitching()) set((state) => { persist({ ...state, selectedConversationId }); return { selectedConversationId } }) },
+  reset: () => set({ open: false, historyOpen: true, selectedConversationId: undefined }),
 }))
+if (typeof window !== 'undefined') window.addEventListener(identityChangedEvent, () => useOperatorChatStore.getState().reset())

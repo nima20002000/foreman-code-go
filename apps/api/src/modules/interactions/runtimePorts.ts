@@ -5,6 +5,8 @@ import type { AgentConfigurationVersion, AgentHarness, DurableInteraction, Nativ
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 
 export interface NativeManagerOwnershipContext {
+  correlationId?: string
+  nativeTurnId?: string
   harness: AgentHarness
   executionId: string
   agentId: string
@@ -29,6 +31,7 @@ export interface NativeSessionManagerResolver {
 }
 
 export class ExecutionScopedNativeSessionManagerResolver implements NativeSessionManagerResolver {
+  private disposed = false
   private readonly entries = new Map<string, {
     context: NativeManagerResolutionContext
     manager: NativeHarnessSessionManager
@@ -37,6 +40,7 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
   constructor(private readonly create: (context: NativeManagerResolutionContext) => NativeHarnessSessionManager) {}
 
   resolve(context: NativeManagerResolutionContext): ResolvedNativeSessionManager {
+    if (this.disposed) throw new Error('Native managers are shutting down.')
     const existing = this.entries.get(context.executionId)
     if (existing) {
       if (existing.context.agentId !== context.agentId || existing.context.harness !== context.harness
@@ -58,6 +62,7 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true
     const managers = [...this.entries.values()].map((entry) => entry.manager)
     this.entries.clear()
     await Promise.allSettled(managers.map(async (manager) => {
@@ -73,6 +78,7 @@ export interface AttachedInteractionSession {
 }
 
 export interface InteractionNativeRuntime {
+  releaseOwnedSession?(context: NativeManagerOwnershipContext, session: NativeSessionReference): Promise<void>
   attachInteraction(interaction: DurableInteraction, signal?: AbortSignal): Promise<AttachedInteractionSession>
   attachOwnedSession(
     context: NativeManagerOwnershipContext,

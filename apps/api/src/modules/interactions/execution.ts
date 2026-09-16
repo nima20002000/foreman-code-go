@@ -13,6 +13,7 @@ import {
 } from '@graphql/contracts'
 
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
+import { observeNativeExecution } from './observeNativeExecution.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import { PostgresApprovalBudgetRepository } from './budget.js'
@@ -109,7 +110,8 @@ export class ApprovalExecutionCoordinator {
       ? await this.prepareEnvironment(resolutionContext, signal) : undefined
     try {
       const session = await resolved.manager.attachSession(sessionReference, {
-        kind: 'workflow', correlationId: `execution:${execution.id}`, request,
+        kind: 'workflow', correlationId: context.correlationId ?? `execution:${execution.id}`, request,
+        ...(context.nativeTurnId ? { nativeTurnId: context.nativeTurnId } : {}),
         ...(environment ? { environment } : {}),
       }, signal)
       return { manager: resolved.manager, session }
@@ -118,6 +120,19 @@ export class ApprovalExecutionCoordinator {
       this.managers.release?.(resolutionContext)
       if (environment) await this.credentials?.revokeForExecution(execution.id).catch(() => undefined)
       throw error
+    }
+  }
+
+  async releaseOwnedSession(context: NativeManagerOwnershipContext, session: { harness: NativeManagerResolutionContext['harness']; providerVersion: string; nativeSessionId: string }): Promise<void> {
+    const execution = await this.runs.getExecution(context.executionId)
+    if (!execution || execution.agentId !== context.agentId) throw new Error('Native session release ownership mismatch.')
+    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+    if (!configuration) throw new Error('Pinned reviewer configuration is unavailable.')
+    const resolution = this.managerContext(execution, configuration)
+    const { manager } = this.resolveManager(resolution)
+    try { await manager.close(session) } finally {
+      this.managers.release?.(resolution)
+      await this.credentials?.revokeForExecution(execution.id)
     }
   }
 
@@ -182,7 +197,7 @@ export class ApprovalExecutionCoordinator {
         await this.runs.updateExecution(execution, input.owner)
         for await (const event of manager.startTurn(session, {
           prompt: buildHarnessPrompt(input.request), clientCorrelationId: `execution:${execution.id}`,
-        })) {
+        }, input.signal)) {
           await this.runs.recordActivity(execution.runId, 'harness', 'harness_output', {
             nativeEventType: event.type, ...event.payload,
           }, execution.id, input.owner.client)
@@ -210,7 +225,10 @@ export class ApprovalExecutionCoordinator {
           return { state: 'waiting', execution, interaction: created.interaction }
         }
       } catch (error) {
-        if (session) await manager.close(session).catch(() => undefined)
+        if (session) {
+          await manager.cancel(session, AbortSignal.timeout(2_000)).catch(() => false)
+          await manager.close(session).catch(() => undefined)
+        }
         this.managers.release?.(context)
         if (environment) await this.credentials?.revokeForExecution(execution.id).catch(() => undefined)
         throw error
@@ -240,7 +258,7 @@ export class ApprovalExecutionCoordinator {
     }
     let history
     try {
-      history = await manager.history(session)
+      history = await observeNativeExecution(manager, session, `execution:${execution.id}`, input.signal, () => this.budgets.assertActive(execution.id))
     } catch (error) {
       await manager.close(session).catch(() => undefined)
       this.managers.release?.(context)
@@ -248,9 +266,26 @@ export class ApprovalExecutionCoordinator {
       throw error
     }
     if (history.pendingInteractions.length) {
-      const interaction = await this.interactions.getForExecution(execution.id)
-      if (!interaction) throw new Error('Native pending request has no durable interaction.')
-      return { state: 'waiting', execution, interaction }
+      const pending = history.pendingInteractions[0]!
+      if (!pending.turn.nativeRequestId) throw new Error('Native approval request is missing its stable identity.')
+      const now = new Date().toISOString()
+      const created = await this.interactions.create(DurableInteractionSchema.parse({
+        id: `interaction-${randomUUID()}`, revision: 0,
+        workspaceId: input.request.workspaceId, workflowId: input.workflowId,
+        runId: execution.runId, executionId: execution.id, requestingAgentId: execution.agentId,
+        harness: session.harness, providerVersion: session.providerVersion,
+        nativeSessionId: session.nativeSessionId, nativeRequestId: pending.turn.nativeRequestId,
+        nativeRequestType: pending.nativeRequestType, graphThreadId: input.graphThreadId,
+        request: pending.request, approval: input.approval, responseOptions: pending.responseOptions,
+        status: 'pending', deliveryState: 'not_started', createdAt: now, updatedAt: now,
+      }))
+      execution = HarnessExecutionSchema.parse({ ...execution, state: 'waiting' })
+      await this.runs.updateExecution(execution, input.owner)
+      await this.budgets.beginWait(execution.id)
+      await this.runs.recordActivity(execution.runId, 'harness', 'harness_output', {
+        nativeEventType: 'interaction_pending', interactionId: created.interaction.id, handler: created.interaction.approval.handler,
+      }, execution.id, input.owner.client)
+      return { state: 'waiting', execution, interaction: created.interaction }
     }
     if (!history.terminalResult) {
       await this.credentials?.revokeForExecution(execution.id)

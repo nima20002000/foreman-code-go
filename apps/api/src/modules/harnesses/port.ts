@@ -51,6 +51,7 @@ export interface ChildProcessEnvironment {
 export interface WorkflowNativeSessionStart {
   kind?: 'workflow'
   correlationId?: string
+  nativeTurnId?: string
   request: HarnessExecutionRequest
   environment?: ChildProcessEnvironment
 }
@@ -59,6 +60,8 @@ export interface OperatorNativeSessionStart {
   kind: 'operator'
   correlationId: string
   configuration: OperatorConfigurationVersion
+  /** Durable identity of the addressed turn, not the latest turn in the session. */
+  nativeTurnId?: string
   /** Dedicated validated application-global runtime directory; never inferred from process.cwd(). */
   workingDirectory: string
   environment?: ChildProcessEnvironment
@@ -69,9 +72,15 @@ export type NativeSessionStart = WorkflowNativeSessionStart | OperatorNativeSess
 export interface NativeTurnInput {
   prompt: string
   clientCorrelationId: string
+  /** Await persistence of the provider identity immediately after submission acknowledgement. */
+  onSubmitted?(nativeTurnId: string): Promise<void>
 }
 
 export interface NativeHistory {
+  /** Set only when the provider result was matched to this exact request. */
+  correlationId?: string
+  nativeTurnId?: string
+  nativeMessageId?: string
   events: readonly NativeHarnessEvent[]
   pendingInteractions: readonly PendingNativeInteraction[]
   pendingInteraction?: PendingNativeInteraction
@@ -89,7 +98,7 @@ export interface NativeHarnessSessionManager {
   startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent>
   pending(session: NativeSessionReference, signal?: AbortSignal): Promise<PendingNativeInteraction | undefined>
   respond(session: NativeSessionReference, nativeRequestId: string, option: ApprovalResponseOption, signal?: AbortSignal): Promise<void>
-  cancel(session: NativeSessionReference, signal?: AbortSignal): Promise<boolean>
+  cancel(session: NativeSessionReference, signal?: AbortSignal, nativeTurnId?: string): Promise<boolean>
   history(session: NativeSessionReference, signal?: AbortSignal): Promise<NativeHistory>
   reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory>
   close(session: NativeSessionReference): Promise<void>

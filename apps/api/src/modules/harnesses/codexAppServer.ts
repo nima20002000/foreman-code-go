@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createInterface } from 'node:readline'
+import { isDeepStrictEqual } from 'node:util'
+import { addressedCodexTurn } from './nativeTurnHistory.js'
 
 import {
   ApprovalResponseOptionSchema,
@@ -62,6 +64,8 @@ interface Runtime {
   events: NativeHarnessEvent[]
   waiting: WaitingRequest | undefined
   activeTurnId: string | undefined
+  correlationTurns: Map<string, string>
+  addressedHistory: Pick<NativeHistory, 'correlationId' | 'nativeTurnId' | 'nativeMessageId'>
   terminalResult: ExecutionResult | undefined
   finalAnswer: string | undefined
   lastAgentMessage: string | undefined
@@ -210,12 +214,13 @@ function validateEnvironmentOwner(input: NativeSessionStart, requiredVariable?: 
 }
 
 class CodexStdioTransport {
-  private child?: ChildProcessWithoutNullStreams
+  private child: ChildProcessWithoutNullStreams | undefined
   private readonly pending = new Map<RequestId, {
     resolve(value: unknown): void
     reject(error: Error): void
     timer: NodeJS.Timeout
     wrote: boolean
+    cleanup(): void
   }>()
   private nextId = 1
   private stderr = ''
@@ -234,6 +239,7 @@ class CodexStdioTransport {
     signal?.throwIfAborted()
     const child = spawn(this.binary, ['app-server', '--stdio'], {
       cwd: this.cwd,
+      detached: process.platform !== 'win32',
       env: this.environment,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
@@ -244,7 +250,7 @@ class CodexStdioTransport {
       this.stderr = (this.stderr + String(chunk)).slice(-MAX_STDERR_LENGTH)
     })
     const lines = createInterface({ input: child.stdout, crlfDelay: Infinity })
-    lines.on('line', (line) => { void this.receive(line) })
+    lines.on('line', (line) => { void this.receive(line).catch((error: unknown) => { this.disconnect(error instanceof Error ? error : new Error('Codex stream failed.')); void this.close() }) })
     child.once('error', (error) => this.disconnect(error))
     child.once('close', (code, exitSignal) => {
       if (!this.stopped) {
@@ -280,22 +286,24 @@ class CodexStdioTransport {
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)
-        reject(new HarnessExecutionError('CODEX_APP_SERVER_TIMEOUT', `Codex app-server did not answer ${method}.`))
+        cleanup()
+        reject(new HarnessExecutionError('CODEX_APP_SERVER_REQUEST_UNCERTAIN', `Codex app-server did not answer ${method}; reconcile before retrying.`))
       }, REQUEST_TIMEOUT_MS)
-      const operation = { resolve, reject, timer, wrote: false }
+      const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort) }
+      const operation = { resolve, reject, timer, wrote: false, cleanup }
       this.pending.set(id, operation)
       const abort = () => {
         if (!this.pending.delete(id)) return
-        clearTimeout(timer)
-        reject(signal?.reason instanceof Error ? signal.reason : new Error('Aborted'))
+        cleanup()
+        reject(new HarnessExecutionError(operation.wrote ? 'CODEX_APP_SERVER_REQUEST_UNCERTAIN' : 'CODEX_APP_SERVER_DISCONNECTED', 'Codex request was interrupted; reconcile delivered mutations.'))
       }
       signal?.addEventListener('abort', abort, { once: true })
       const payload = JSON.stringify({ method, id, params }) + '\n'
+      operation.wrote = true
       child.stdin.write(payload, (error) => {
-        operation.wrote = !error
         if (error && this.pending.delete(id)) {
-          clearTimeout(timer)
-          reject(error)
+          cleanup()
+          reject(new HarnessExecutionError('CODEX_APP_SERVER_REQUEST_UNCERTAIN', 'Codex request delivery could not be confirmed.'))
         }
       })
     })
@@ -330,16 +338,27 @@ class CodexStdioTransport {
   }
 
   async close(): Promise<void> {
-    if (this.stopped) return
-    this.stopped = true
+    this.disconnect(new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Codex transport is closing.'))
     const child = this.child
+    this.child = undefined
     if (!child) return
     child.stdin.end()
-    if (child.exitCode === null) child.kill('SIGTERM')
-    await new Promise<void>((resolve) => {
-      if (child.exitCode !== null) resolve()
-      else child.once('close', () => resolve())
+    const kill = (signal: NodeJS.Signals) => {
+      if (child.exitCode !== null || child.signalCode !== null) return
+      if (child.pid && process.platform !== 'win32') {
+        try { process.kill(-child.pid, signal) } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+        }
+      } else child.kill(signal)
+    }
+    const wait = () => new Promise<void>((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) { resolve(); return }
+      const done = () => { clearTimeout(timer); child.removeListener('close', done); resolve() }
+      const timer = setTimeout(done, 1_000)
+      child.once('close', done)
     })
+    kill('SIGTERM'); await wait()
+    kill('SIGKILL'); await wait()
   }
 
   private async receive(line: string): Promise<void> {
@@ -362,7 +381,7 @@ class CodexStdioTransport {
       const operation = this.pending.get(id)
       if (!operation) return
       this.pending.delete(id)
-      clearTimeout(operation.timer)
+      operation.cleanup()
       if (isObject(message.error)) {
         operation.reject(new HarnessExecutionError(
           'CODEX_APP_SERVER_REQUEST_FAILED',
@@ -379,7 +398,7 @@ class CodexStdioTransport {
     if (this.stopped) return
     this.stopped = true
     for (const operation of this.pending.values()) {
-      clearTimeout(operation.timer)
+      operation.cleanup()
       operation.reject(new HarnessExecutionError(
         operation.wrote ? 'CODEX_APP_SERVER_REQUEST_UNCERTAIN' : 'CODEX_APP_SERVER_DISCONNECTED',
         operation.wrote
@@ -401,6 +420,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     private readonly binary: string,
     private readonly expectedVersion = QUALIFIED_CODEX_VERSION,
     private readonly appMcpServerName = 'graphql-app',
+    private readonly expectedMcpEndpoint?: string,
+    private readonly expectedCredentialVariable?: string,
   ) {}
 
   async capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities> {
@@ -541,6 +562,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         input, workingDirectory, configuration: harnessConfiguration,
         scopedCredentialVariable,
         transport, session, events: [], waiting: undefined, activeTurnId: undefined,
+        correlationTurns: new Map(), addressedHistory: {},
         terminalResult: undefined, finalAnswer: undefined, lastAgentMessage: undefined,
         seenNotifications: new Set(), wake: new Set(), closed: false,
       }
@@ -564,17 +586,21 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (session.harness !== 'codex' || session.providerVersion !== this.expectedVersion) {
       throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The persisted session does not match the qualified Codex version.')
     }
-    const prepared = await this.prepareInput(input, signal)
     const loaded = this.runtimes.get(session.nativeSessionId)
-    if (loaded) {
-      if (loaded.workingDirectory !== prepared.workingDirectory
-        || loaded.configuration.model !== prepared.harnessConfiguration.model
-        || loaded.configuration.reasoningEffort !== prepared.harnessConfiguration.reasoningEffort) {
-        throw new HarnessExecutionError('CODEX_SESSION_CONFIGURATION_MISMATCH', 'The loaded Codex session has a different accepted configuration.')
+    if (loaded && !loaded.closed) {
+      const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+      const owner = input.kind === 'operator' ? input.configuration.operatorId : input.request.configuration.agentId
+      const loadedOwner = loaded.input.kind === 'operator' ? loaded.input.configuration.operatorId : loaded.input.request.configuration.agentId
+      if (owner !== loadedOwner || loaded.workingDirectory !== directory || !isDeepStrictEqual(loaded.configuration, configuration(input))
+        || (input.environment && !isDeepStrictEqual(input.environment, loaded.input.environment))) {
+        throw new HarnessExecutionError('CODEX_SESSION_CONFIGURATION_MISMATCH', 'The resident Codex ownership or pinned configuration differs.')
       }
+      validateEnvironmentOwner(loaded.input, loaded.scopedCredentialVariable)
       await loaded.transport.request('thread/read', { threadId: session.nativeSessionId, includeTurns: false }, signal)
       return loaded.session
     }
+    if (loaded) await this.close(session)
+    const prepared = await this.prepareInput(input, signal)
     const holder: { runtime?: Runtime } = {}
     const transport = new CodexStdioTransport(
       this.binary,
@@ -595,6 +621,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       events: [],
       waiting: undefined,
       activeTurnId: undefined,
+      correlationTurns: new Map(), addressedHistory: {},
       terminalResult: undefined,
       finalAnswer: undefined,
       lastAgentMessage: undefined,
@@ -622,7 +649,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       if (text(thread.id) !== session.nativeSessionId) {
         throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Codex resumed a different native thread identity.')
       }
-      this.hydrateThread(runtime, thread)
+      this.hydrateThread(runtime, thread, input.correlationId,
+        input.nativeTurnId)
       this.runtimes.set(session.nativeSessionId, runtime)
       this.record(runtime, 'thread.attached', {
         threadId: session.nativeSessionId, thread, diagnostics: threadDiagnostics(response),
@@ -654,12 +682,22 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const turnId = text(turn.id)
     if (!turnId) throw new HarnessExecutionError('CODEX_TURN_ID_MISSING', 'Codex did not return a native turn ID.')
     runtime.activeTurnId = turnId
+    runtime.correlationTurns.set(input.clientCorrelationId, turnId)
+    runtime.addressedHistory = { correlationId: input.clientCorrelationId, nativeTurnId: turnId }
+    await input.onSubmitted?.(turnId)
     this.record(runtime, 'turn.started', { threadId: session.nativeSessionId, turnId, clientCorrelationId: input.clientCorrelationId })
     let index = offset
-    while (!signal?.aborted) {
-      while (index < runtime.events.length) yield runtime.events[index++]!
-      if (runtime.terminalResult || runtime.closed) return
-      await this.wait(runtime, signal)
+    try {
+      while (!signal?.aborted) {
+        while (index < runtime.events.length) yield runtime.events[index++]!
+        if (runtime.terminalResult || runtime.closed) return
+        await this.wait(runtime, signal)
+      }
+    } finally {
+      if (signal?.aborted) {
+        await this.cancel(session, AbortSignal.timeout(2_000), turnId).catch(() => false)
+        await this.close(session)
+      }
     }
   }
 
@@ -686,9 +724,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
   }
 
-  async cancel(session: NativeSessionReference, signal?: AbortSignal): Promise<boolean> {
+  async cancel(session: NativeSessionReference, signal?: AbortSignal, nativeTurnId?: string): Promise<boolean> {
     const runtime = this.requireRuntime(session)
-    if (!runtime.activeTurnId || runtime.terminalResult) return false
+    if (!runtime.activeTurnId || runtime.terminalResult || (nativeTurnId && runtime.activeTurnId !== nativeTurnId)) return false
     await runtime.transport.request('turn/interrupt', {
       threadId: session.nativeSessionId,
       turnId: runtime.activeTurnId,
@@ -699,6 +737,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   async history(session: NativeSessionReference): Promise<NativeHistory> {
     const runtime = this.requireRuntime(session)
     return {
+      ...runtime.addressedHistory,
       events: [...runtime.events],
       pendingInteractions: runtime.waiting ? [runtime.waiting.pending] : [],
       ...(runtime.waiting ? { pendingInteraction: runtime.waiting.pending } : {}),
@@ -708,19 +747,15 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   async reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory> {
     const runtime = this.requireRuntime(session)
-    try {
-      const response = assertObject(await runtime.transport.request('thread/read', {
-        threadId: session.nativeSessionId, includeTurns: true,
-      }, signal), 'CODEX_THREAD_READ_INVALID')
-      this.record(runtime, 'thread.reconciled', { correlationId, thread: response.thread })
-    } catch (error) {
-      if (!runtime.closed) throw error
-      await this.restart(runtime, signal)
-      const response = assertObject(await runtime.transport.request('thread/read', {
-        threadId: session.nativeSessionId, includeTurns: true,
-      }, signal), 'CODEX_THREAD_READ_INVALID')
-      this.record(runtime, 'thread.reconciled', { correlationId, restarted: true, thread: response.thread })
-    }
+    const restarted = runtime.closed
+    if (restarted) await this.restart(runtime, signal)
+    const response = assertObject(await runtime.transport.request('thread/read', {
+      threadId: session.nativeSessionId, includeTurns: true,
+    }, signal), 'CODEX_THREAD_READ_INVALID')
+    const pinnedTurn = runtime.correlationTurns.get(correlationId)
+      ?? (runtime.input.correlationId === correlationId ? runtime.input.nativeTurnId : undefined)
+    this.hydrateThread(runtime, assertObject(response.thread, 'CODEX_THREAD_READ_INVALID'), correlationId, pinnedTurn)
+    this.record(runtime, 'thread.reconciled', { correlationId, ...(restarted ? { restarted: true } : {}) })
     return this.history(session)
   }
 
@@ -821,6 +856,16 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     } catch (error) {
       if (!(error instanceof HarnessExecutionError) || error.result.error?.code !== 'CODEX_MCP_NOT_CONFIGURED') throw error
     }
+    if (input.kind === 'operator' && this.appMcpServerName !== 'graphql-operator') {
+      throw new HarnessExecutionError('CODEX_OPERATOR_MCP_CONFIGURATION_INVALID', 'Operator sessions require the role-specific Operator MCP manager.')
+    }
+    if (input.kind === 'operator') {
+      const mcp = await this.inspectMcpConfiguration(workingDirectory, signal)
+      if (!mcp.configured.enabled || mcp.configured.transport !== 'streamable_http'
+        || mcp.configured.url !== this.expectedMcpEndpoint || scopedCredentialVariable !== this.expectedCredentialVariable) {
+        throw new HarnessExecutionError('CODEX_OPERATOR_MCP_CONFIGURATION_INVALID', 'Operator MCP endpoint or environment reference does not match the verified launch context.')
+      }
+    }
     validateEnvironmentOwner(input, scopedCredentialVariable)
     return { harnessConfiguration, workingDirectory, scopedCredentialVariable }
   }
@@ -862,23 +907,20 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
   }
 
-  private hydrateThread(runtime: Runtime, thread: JsonObject): void {
-    if (!Array.isArray(thread.turns) || thread.turns.length === 0) return
-    const last = [...thread.turns].reverse().find(isObject)
-    if (!last) return
-    runtime.activeTurnId = text(last.id)
-    if (!Array.isArray(last.items)) return
-    for (const value of last.items) {
-      if (!isObject(value) || value.type !== 'agentMessage' || typeof value.text !== 'string') continue
-      runtime.lastAgentMessage = value.text
-      if (value.phase === 'final_answer') runtime.finalAnswer = value.text
-    }
-    const status = text(last.status)
-    if (status === 'completed') runtime.terminalResult = { outcome: 'succeeded', output: { text: runtime.finalAnswer ?? runtime.lastAgentMessage ?? '' } }
-    else if (status === 'interrupted') runtime.terminalResult = { outcome: 'canceled' }
-    else if (status === 'failed') runtime.terminalResult = {
-      outcome: 'failed', error: { code: 'CODEX_TURN_FAILED', message: this.turnError(last), retryable: false },
-    }
+  private hydrateThread(runtime: Runtime, thread: JsonObject, correlationId?: string, nativeTurnId?: string): void {
+    runtime.terminalResult = undefined
+    runtime.finalAnswer = undefined
+    runtime.lastAgentMessage = undefined
+    runtime.addressedHistory = {}
+    if (!correlationId) return
+    const addressed = addressedCodexTurn(thread, correlationId, nativeTurnId)
+    if (!addressed) return
+    runtime.activeTurnId = addressed.nativeTurnId
+    runtime.correlationTurns.set(correlationId, addressed.nativeTurnId)
+    runtime.addressedHistory = { correlationId, nativeTurnId: addressed.nativeTurnId,
+      ...(addressed.nativeMessageId ? { nativeMessageId: addressed.nativeMessageId } : {}) }
+    runtime.terminalResult = addressed.terminalResult
+    if (addressed.terminalResult) runtime.waiting = undefined
   }
 
   private async restart(runtime: Runtime, signal?: AbortSignal): Promise<void> {
@@ -898,7 +940,17 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       () => this.handleDisconnect(runtime),
     )
     await transport.start(signal)
-    await transport.request('thread/resume', { threadId: runtime.session.nativeSessionId, excludeTurns: true }, signal)
+    const draft = advanced(runtime.configuration)
+    try {
+      await transport.request('thread/resume', {
+        threadId: runtime.session.nativeSessionId, excludeTurns: true,
+        model: runtime.configuration.model, serviceTier: runtime.configuration.serviceTier === 'priority' ? 'fast' : null,
+        cwd: runtime.workingDirectory, runtimeWorkspaceRoots: [runtime.workingDirectory, ...draft.additionalWritableDirectories],
+        approvalPolicy: draft.approvalPolicy, approvalsReviewer: draft.approvalsReviewer,
+        sandbox: runtime.configuration.sandbox, config: appServerConfig(runtime.configuration),
+        developerInstructions: developerInstructions(runtime.input),
+      }, signal)
+    } catch (error) { await transport.close(); throw error }
     runtime.transport = transport
     runtime.closed = false
   }

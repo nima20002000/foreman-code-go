@@ -1493,6 +1493,11 @@ export const OperatorConversationStateSchema = z.object({
   conversation: ConversationSchema,
   messages: z.array(MessageSchema),
   turnState: z.enum(["idle", "starting", "active", "canceling", "uncertain", "error"]),
+  revision: z.number().int().nonnegative().default(0),
+  activeRequestId: IdSchema.nullable().default(null),
+  pendingInteraction: PendingNativeInteractionSchema.optional(),
+  responseDelivery: z.enum(["offered", "submitted", "uncertain"]).optional(),
+  lastResult: ExecutionResultSchema.optional(),
   error: z.string().optional(),
 }).strict();
 export type OperatorConversationState = z.infer<typeof OperatorConversationStateSchema>;
@@ -1506,6 +1511,12 @@ export const SendOperatorMessageRequestSchema = z.object({
   context: OperatorConversationContextSchema.optional(),
 }).strict();
 export const SendOperatorMessageResponseSchema = z.object({ state: OperatorConversationStateSchema, replayed: z.boolean() }).strict();
+export const CancelOperatorTurnRequestSchema = z.object({ requestId: IdSchema }).strict();
+export const RespondOperatorInteractionRequestSchema = z.object({
+  requestId: IdSchema, nativeRequestId: IdSchema, optionId: IdSchema,
+}).strict();
+export type SendOperatorMessageRequest = z.infer<typeof SendOperatorMessageRequestSchema>;
+export type RespondOperatorInteractionRequest = z.infer<typeof RespondOperatorInteractionRequestSchema>;
 export const CancelOperatorTurnResponseSchema = z.object({ state: OperatorConversationStateSchema }).strict();
 export const OperatorConversationStreamEventSchema = z.object({
   id: z.number().int().nonnegative(),

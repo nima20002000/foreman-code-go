@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { isDeepStrictEqual } from 'node:util'
+import { addressedOpenCodeTurn, openCodeMessageId } from './nativeTurnHistory.js'
 
 import {
   NativeHarnessCapabilitiesSchema,
@@ -64,6 +65,7 @@ interface SessionState {
   seenEventIds: Set<string>
   seenPendingRequestIds: Set<string>
   correlationMessages: Map<string, string>
+  currentCorrelationId: string | undefined
   sequence: number
 }
 
@@ -96,6 +98,7 @@ export interface ManagedOpenCodeServerOptions {
   binary: string
   workingDirectory: string
   ownerAgentId: string
+  audience?: 'operator' | 'worker'
   environment?: ChildProcessEnvironment
   pure?: boolean
   advancedConfiguration?: OpenCodeAdvancedConfiguration
@@ -110,6 +113,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   private password: string | undefined
   private stderr = ''
   private starting: Promise<void> | undefined
+  private startupAbort = new AbortController()
   private environment: ChildProcessEnvironment | undefined
 
   get credentialEnvironmentFingerprint(): string | undefined {
@@ -129,9 +133,10 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
     if (environment && environment.agentId !== this.options.ownerAgentId) {
       throw new HarnessExecutionError('OPENCODE_CREDENTIAL_OWNER_MISMATCH', 'The OpenCode server credential does not belong to its owning Agent.')
     }
-    const unsupported = Object.keys(environment?.variables ?? {}).filter((key) => key !== APP_CREDENTIAL_ENV)
+    const variable = this.options.audience === 'operator' ? 'GRAPHQL_OPERATOR_MCP_TOKEN' : APP_CREDENTIAL_ENV
+    const unsupported = Object.keys(environment?.variables ?? {}).filter((key) => key !== variable)
     if (unsupported.length > 0) {
-      throw new HarnessExecutionError('OPENCODE_CREDENTIAL_ENV_UNSUPPORTED', 'The OpenCode server only accepts the scoped App credential environment variable.')
+      throw new HarnessExecutionError('OPENCODE_CREDENTIAL_ENV_UNSUPPORTED', 'The OpenCode server only accepts the credential variable for its explicit audience.')
     }
     return environment ? { agentId: environment.agentId, variables: { ...environment.variables } } : undefined
   }
@@ -150,7 +155,9 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       this.environment = environment
     }
     if (!this.starting) {
-      this.starting = this.start(signal).finally(() => { this.starting = undefined })
+      if (this.startupAbort.signal.aborted) this.startupAbort = new AbortController()
+      const startSignal = signal ? AbortSignal.any([signal, this.startupAbort.signal]) : this.startupAbort.signal
+      this.starting = this.start(startSignal).finally(() => { this.starting = undefined })
     }
     return this.starting
   }
@@ -161,6 +168,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   }
 
   async dispose(): Promise<void> {
+    this.startupAbort.abort(new Error('OpenCode server is closing.'))
     const child = this.child
     this.child = undefined
     this.baseUrl = undefined
@@ -208,10 +216,12 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       )
     }
 
+    signal?.throwIfAborted()
     this.password = randomBytes(32).toString('hex')
     const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1', OPENCODE_SERVER_PASSWORD: this.password }
     for (const key of Object.keys(environment)) {
       if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_')
+        || key.startsWith('GRAPHQL_APP_')
         || key === 'DATABASE_URL' || key === 'TEST_DATABASE_URL' || key === 'PGPASSWORD') delete environment[key]
     }
     Object.assign(environment, this.environment?.variables ?? {})
@@ -236,6 +246,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
     child.stderr.on('data', (chunk) => { this.stderr = (this.stderr + String(chunk)).slice(-MAX_STDERR_LENGTH) })
     try {
       const baseUrl = await this.waitForUrl(child, signal)
+      signal?.throwIfAborted()
       this.baseUrl = baseUrl
       const health = await this.rawRequest('/global/health', { method: 'GET' }, signal)
       if (!health.ok) throw new HarnessExecutionError('OPENCODE_SERVER_UNHEALTHY', `OpenCode health returned HTTP ${health.status}.`)
@@ -307,6 +318,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   readonly harness = 'opencode' as const
   private readonly sessions = new Map<string, SessionState>()
   private readonly activeTurns = new Set<string>()
+  private readonly turnControllers = new Map<string, AbortController>()
   private boundEnvironmentFingerprint: string | undefined
 
   constructor(private readonly options: OpenCodeNativeSessionManagerOptions) {
@@ -336,20 +348,21 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       const permission = configuration.advanced?.permissionRules.map((rule) => ({
         permission: nativePermissionName(rule.permission), pattern: rule.pattern, action: rule.effect,
       }))
-      const response = await this.json('/session', {
-        method: 'POST', directory: workingDirectory,
-        body: {
+      const response = await this.mutate(withDirectory('/session', workingDirectory), {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
           title,
           agent: configuration.nativeAgent,
           model: { providerID, id: modelParts.join('/'), variant: configuration.variant },
           ...(permission ? { permission } : {}),
-        },
+        }),
       }, signal)
       const sessionId = stringField(response, 'id', 'OPENCODE_SESSION_ID_MISSING')
       const session = NativeSessionReferenceSchema.parse({ harness: 'opencode', providerVersion: QUALIFIED_VERSION, nativeSessionId: sessionId })
       this.sessions.set(sessionId, {
         directory: workingDirectory, configuration,
         events: [], seenEventIds: new Set(), seenPendingRequestIds: new Set(), correlationMessages: new Map(), sequence: 0,
+        currentCorrelationId: input.correlationId ?? (input.kind === 'operator' ? undefined : `execution:${input.request.executionId}`),
       })
       return session
     } catch (error) {
@@ -378,9 +391,14 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       const native = asObject(await response.json())
       this.verifyAttachedSession(native, session.nativeSessionId, directory, configuration)
       await this.applyMcpControls(configuration, directory, signal)
-      this.sessions.set(session.nativeSessionId, {
+      const existing = this.sessions.get(session.nativeSessionId)
+      if (existing && (existing.directory !== directory || !isDeepStrictEqual(existing.configuration, configuration))) {
+        throw new HarnessExecutionError('OPENCODE_SESSION_CONFIGURATION_MISMATCH', 'The resident session has a different pinned configuration.')
+      }
+      if (!existing) this.sessions.set(session.nativeSessionId, {
         directory, configuration,
         events: [], seenEventIds: new Set(), seenPendingRequestIds: new Set(), correlationMessages: new Map(), sequence: 0,
+        currentCorrelationId: input.correlationId ?? (input.kind === 'operator' ? undefined : `execution:${input.request.executionId}`),
       })
       return session
     } catch (error) {
@@ -394,15 +412,21 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'This OpenCode session already has an active GraphQL-owned turn.')
     }
     this.activeTurns.add(session.nativeSessionId)
+    const controller = new AbortController()
+    this.turnControllers.set(session.nativeSessionId, controller)
+    signal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+    state.currentCorrelationId = input.clientCorrelationId
     const messageID = messageId(input.clientCorrelationId)
     state.correlationMessages.set(input.clientCorrelationId, messageID)
     let submitted = false
+    let currentStream: ReadableStream<Uint8Array> | undefined
     try { while (true) {
       signal?.throwIfAborted()
       const response = await this.options.server.request(withDirectory('/event', state.directory), {
         method: 'GET', headers: { accept: 'text/event-stream' },
       }, signal)
       if (!response.ok || !response.body) throw await responseError(response, 'OPENCODE_SSE_UNAVAILABLE', 'definite')
+      currentStream = response.body
       if (!submitted) {
         const [providerID, ...modelParts] = state.configuration.model.split('/')
         await this.mutate(withDirectory(`/session/${encodeURIComponent(session.nativeSessionId)}/prompt_async`, state.directory), {
@@ -416,6 +440,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
           }),
         }, signal)
         submitted = true
+        await input.onSubmitted?.(messageID)
       }
 
       let terminal = false
@@ -453,6 +478,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       await abortableDelay(50, signal)
     } } finally {
       this.activeTurns.delete(session.nativeSessionId)
+      this.turnControllers.delete(session.nativeSessionId)
+      if (currentStream && !currentStream.locked) await currentStream.cancel().catch(() => undefined)
+      if (signal?.aborted && submitted) {
+        await this.cancel(session, AbortSignal.timeout(2_000), messageID).catch(() => false)
+      }
     }
   }
 
@@ -490,8 +520,13 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     }, signal)
   }
 
-  async cancel(session: NativeSessionReference, signal?: AbortSignal): Promise<boolean> {
+  async cancel(session: NativeSessionReference, signal?: AbortSignal, nativeTurnId?: string): Promise<boolean> {
     const state = await this.requireSession(session, signal)
+    if (nativeTurnId) {
+      const messages = await this.messages(session.nativeSessionId, state.directory, signal)
+      const latestUser = [...messages].reverse().find((message) => message.info.role === 'user')
+      if (latestUser?.info.id !== nativeTurnId) return false
+    }
     const result = await this.mutate(withDirectory(`/session/${encodeURIComponent(session.nativeSessionId)}/abort`, state.directory), { method: 'POST' }, signal)
     if (result !== true) return false
     const pending = (await this.pendingRequests(state.directory, signal)).filter((item) => item.sessionID === session.nativeSessionId)
@@ -507,28 +542,29 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   async history(session: NativeSessionReference, signal?: AbortSignal): Promise<NativeHistory> {
     const state = await this.requireSession(session, signal)
     const messages = await this.messages(session.nativeSessionId, state.directory, signal)
-    const terminalResult = finalResult(messages)
+    const addressed = state.currentCorrelationId ? addressedOpenCodeTurn(messages, state.currentCorrelationId) : undefined
     const pendingInteractions = await this.pendingAll(session, signal)
     const pendingInteraction = pendingInteractions[0]
-    return { events: [...state.events], pendingInteractions, ...(pendingInteraction ? { pendingInteraction } : {}), ...(terminalResult ? { terminalResult } : {}) }
+    return { ...addressed, events: [...state.events], pendingInteractions, ...(pendingInteraction ? { pendingInteraction } : {}) }
   }
 
   async reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory> {
     const state = await this.requireSession(session, signal)
     const messages = await this.messages(session.nativeSessionId, state.directory, signal)
-    const parentID = state.correlationMessages.get(correlationId)
-    const terminalResult = finalResult(messages, parentID)
+    const addressed = addressedOpenCodeTurn(messages, correlationId)
     const pendingInteractions = await this.pendingAll(session, signal)
     const pendingInteraction = pendingInteractions[0]
-    return { events: [...state.events], pendingInteractions, ...(pendingInteraction ? { pendingInteraction } : {}), ...(terminalResult ? { terminalResult } : {}) }
+    return { ...addressed, events: [...state.events], pendingInteractions, ...(pendingInteraction ? { pendingInteraction } : {}) }
   }
 
   async close(session: NativeSessionReference): Promise<void> {
+    this.turnControllers.get(session.nativeSessionId)?.abort(new Error('OpenCode session is closing.'))
     this.sessions.delete(session.nativeSessionId)
     if (this.sessions.size === 0) await this.disposeUnusedServer()
   }
 
   async dispose(): Promise<void> {
+    for (const controller of this.turnControllers.values()) controller.abort(new Error('OpenCode manager is closing.'))
     this.sessions.clear()
     await this.disposeUnusedServer()
   }
@@ -843,7 +879,7 @@ function isReasoningEvent(type: string): boolean {
 }
 
 function messageId(correlationId: string): string {
-  return `msg_${createHash('sha256').update(correlationId).digest('hex').slice(0, 24)}`
+  return openCodeMessageId(correlationId)
 }
 
 function childEnvironmentFingerprint(environment: ChildProcessEnvironment): string {
@@ -890,33 +926,12 @@ function isNativeMessage(value: unknown): value is NativeMessage {
   return !!item.info && typeof item.info === 'object' && Array.isArray(item.parts)
 }
 
-function finalResult(messages: NativeMessage[], parentID?: string): NativeHistory['terminalResult'] | undefined {
-  const assistant = [...messages].reverse().find((message) => {
-    const info = message.info
-    return info.role === 'assistant' && typeof objectField(info, 'time').completed === 'number'
-      && (!parentID || info.parentID === parentID)
-  })
-  if (!assistant) return undefined
-  if (assistant.info.error) {
-    const error = asObject(assistant.info.error)
-    const data = objectField(error, 'data')
-    return { outcome: 'failed', error: {
-      code: typeof error.name === 'string' ? error.name : 'OPENCODE_TURN_FAILED',
-      message: typeof data.message === 'string' ? data.message : typeof error.message === 'string' ? error.message : 'OpenCode turn failed.',
-      retryable: data.isRetryable === true,
-    } }
-  }
-  const text = assistant.parts
-    .filter((part) => part.type === 'text' && typeof part.text === 'string' && part.ignored !== true)
-    .map((part) => part.text as string).join('')
-  if (!text) return undefined
-  return { outcome: 'succeeded', output: { text } }
-}
-
 async function* parseSse(stream: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncIterable<NativeEvent> {
   const decoder = new TextDecoder()
   const reader = stream.getReader()
   let pending = ''
+  const abort = () => { void reader.cancel(signal?.reason).catch(() => undefined) }
+  signal?.addEventListener('abort', abort, { once: true })
   try {
     while (true) {
       signal?.throwIfAborted()
@@ -938,6 +953,8 @@ async function* parseSse(stream: ReadableStream<Uint8Array>, signal?: AbortSigna
       }
     }
   } finally {
+    signal?.removeEventListener('abort', abort)
+    await reader.cancel().catch(() => undefined)
     reader.releaseLock()
   }
 }
@@ -1000,7 +1017,8 @@ function credentialEnvironmentReference(config: JsonObject): string | null {
   const headers = objectField(config, 'headers')
   for (const value of Object.values(headers)) {
     if (typeof value !== 'string') continue
-    const match = value.match(/^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/) ?? value.match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/)
+    const reference = value.replace(/^Bearer\s+/i, '')
+    const match = reference.match(/^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/) ?? reference.match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/)
     if (match?.[1]) return match[1]
   }
   return null

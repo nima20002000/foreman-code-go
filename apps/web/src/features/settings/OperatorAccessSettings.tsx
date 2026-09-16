@@ -2,6 +2,9 @@ import { useRef, useState, type FormEvent } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { enrollOperator } from '../../shared/api/client'
+import { rotateProtectedSession } from '../../shared/api/protectedChatStorage'
+import { useConversationDraftStore } from '../conversations/conversationDraftStore'
+import { useOperatorChatStore } from '../operator-chat/operatorChatStore'
 import { beginSessionChange, clearProtectedStorage } from '../../shared/api/sessionBoundary'
 import { useGraphDraftStore } from '../graph/store'
 import { managedSaveQueue } from '../graph/managedSave'
@@ -30,6 +33,9 @@ export function OperatorAccessSettings() {
       useAgentDirectoryStore.getState().reset()
       useWorkspaceSessionStore.getState().reset()
       useSessionWorkflowStore.getState().clearSessionWorkflows()
+      useConversationDraftStore.getState().clearAllDrafts()
+      useOperatorChatStore.getState().reset()
+      try { clearProtectedStorage(localStorage) } catch { /* Inaccessible storage has no readable chat state. */ }
       try { clearProtectedStorage(sessionStorage) } catch { /* Restricted storage holds no accessible snapshots. */ }
     }
     let enrolled = false
@@ -43,6 +49,7 @@ export function OperatorAccessSettings() {
     } finally {
       setToken('')
       clear()
+      rotateProtectedSession() // Notify other tabs after the cookie may have changed, including lost responses.
       // Even a failed/lost enrollment response may have changed the cookie.
       // Replace the document on either outcome: closures, mutation observers,
       // session stores and old routes cannot survive an identity transition.

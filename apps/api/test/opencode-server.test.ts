@@ -109,7 +109,7 @@ describe('OpenCode native server manager', () => {
     const session = await sessionFor(native)
     const messageID = 'msg_974cad2dd603827b06e9e6af'
     server.messages = [{
-      info: { id: 'msg_assistant', sessionID: 'ses_test', role: 'assistant', parentID: messageID, time: { created: 1, completed: 2 } },
+      info: { id: 'msg_assistant', sessionID: 'ses_test', role: 'assistant', parentID: messageID, time: { created: 1, completed: 2 }, finish: 'stop' },
       parts: [{ id: 'prt_1', sessionID: 'ses_test', messageID: 'msg_assistant', type: 'text', text: 'done' }],
     }]
     server.events.push([
@@ -258,7 +258,7 @@ server.listen(0, '127.0.0.1', () => {
       ].join('\n'),
     )
     server.messages = [{
-      info: { id: 'msg_assistant', sessionID: 'ses_test', role: 'assistant', parentID: 'msg_91669c43679f43422efee576', time: { created: 1, completed: 2 } },
+      info: { id: 'msg_assistant', sessionID: 'ses_test', role: 'assistant', parentID: 'msg_91669c43679f43422efee576', time: { created: 1, completed: 2 }, finish: 'stop' },
       parts: [{ type: 'text', text: 'recovered' }],
     }]
     const events = []

@@ -22,6 +22,7 @@ export class DeterministicNativeSessionManager implements NativeHarnessSessionMa
   private readonly events: NativeHarnessEvent[] = []
   private waiting: PendingNativeInteraction | undefined
   private terminalResult: NativeHistory['terminalResult']
+  private correlationId: string | undefined
 
   constructor(readonly harness: AgentHarness) {}
 
@@ -55,7 +56,9 @@ export class DeterministicNativeSessionManager implements NativeHarnessSessionMa
   }
 
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput): AsyncIterable<NativeHarnessEvent> {
-    void input
+    this.correlationId = input.clientCorrelationId
+    this.terminalResult = undefined
+    await input.onSubmitted?.(`${this.harness}-fixture-turn`)
     this.counters.turns += 1
     this.counters.sideEffects += 1
     const source = NATIVE_INTERACTION_FIXTURES[this.harness]
@@ -86,6 +89,7 @@ export class DeterministicNativeSessionManager implements NativeHarnessSessionMa
   async cancel(): Promise<boolean> { this.counters.cancellations += 1; this.waiting = undefined; return true }
   async history(): Promise<NativeHistory> {
     return {
+      ...(this.correlationId ? { correlationId: this.correlationId, nativeTurnId: `${this.harness}-fixture-turn`, nativeMessageId: `${this.harness}-fixture-answer` } : {}),
       events: [...this.events],
       pendingInteractions: this.waiting ? [this.waiting] : [],
       ...(this.waiting ? { pendingInteraction: this.waiting } : {}),
@@ -94,7 +98,7 @@ export class DeterministicNativeSessionManager implements NativeHarnessSessionMa
   }
   async reconcile(session: NativeSessionReference, correlationId: string): Promise<NativeHistory> {
     void session
-    void correlationId
+    if (correlationId !== this.correlationId) return { events: [], pendingInteractions: [] }
     return this.history()
   }
   async close(): Promise<void> {}

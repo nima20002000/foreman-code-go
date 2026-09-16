@@ -87,6 +87,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     private readonly workerCredentials?: ExecutionCredentialProvider,
     private readonly approvals?: ApprovalExecutionCoordinator,
     private readonly interactions?: PostgresInteractionRepository,
+    private readonly nativeEnabled: (harness: 'codex' | 'opencode') => boolean = () => true,
   ) {
     this.workspaceRoot = resolve(workspaceRoot)
   }
@@ -397,7 +398,8 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       createdAt: now,
       startedAt: now,
     })
-    if (!this.approvals) await this.runs.createExecution(execution, owner)
+    const useNative = Boolean(this.approvals && run.approval && this.nativeEnabled(configuration.harness.harness))
+    if (!useNative) await this.runs.createExecution(execution, owner)
     const request = HarnessExecutionRequestSchema.parse({
       executionId,
       runId: run.id,
@@ -412,7 +414,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     let eventSequence = 0
     let workerCredential: IssuedWorkerCredential | undefined
 
-    if (this.approvals && run.approval) {
+    if (useNative && this.approvals && run.approval) {
       const observation = await this.approvals.ensureObserve({
           candidate: execution, request, approval: run.approval, workflowId: run.workflowId,
           graphThreadId: run.id, owner, signal,

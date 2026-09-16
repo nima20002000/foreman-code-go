@@ -34,6 +34,8 @@ import {
   SendOperatorMessageRequestSchema,
   SendOperatorMessageResponseSchema,
   CancelOperatorTurnResponseSchema,
+  CancelOperatorTurnRequestSchema,
+  RespondOperatorInteractionRequestSchema,
   SaveWorkflowRequestSchema,
   SaveWorkflowResponseSchema,
   SaveHarnessDefaultsRequestSchema,
@@ -597,8 +599,14 @@ export class ApiClient {
     return this.request(`/api/operator/conversations/${toPath(conversationId)}/messages`, SendOperatorMessageResponseSchema, { ...options, method: 'POST', body: request })
   }
 
-  cancelOperatorTurn(conversationId: string, options?: RequestOptions) {
-    return this.request(`/api/operator/conversations/${toPath(conversationId)}/cancel`, CancelOperatorTurnResponseSchema, { ...options, method: 'POST' })
+  cancelOperatorTurn(conversationId: string, requestId: string, options?: RequestOptions) {
+    const request = parseRequest(CancelOperatorTurnRequestSchema, { requestId })
+    return this.request(`/api/operator/conversations/${toPath(conversationId)}/cancel`, CancelOperatorTurnResponseSchema, { ...options, method: 'POST', body: request })
+  }
+
+  respondOperatorInteraction(conversationId: string, input: z.infer<typeof RespondOperatorInteractionRequestSchema>, options?: RequestOptions) {
+    const request = parseRequest(RespondOperatorInteractionRequestSchema, input)
+    return this.request(`/api/operator/conversations/${toPath(conversationId)}/responses`, CancelOperatorTurnResponseSchema, { ...options, method: 'POST', body: request })
   }
 
   listConversations(input: ListConversationsRequest, options?: RequestOptions) {
@@ -680,6 +688,7 @@ export const createOperatorConversation = apiClient.createOperatorConversation.b
 export const getOperatorConversation = apiClient.getOperatorConversation.bind(apiClient)
 export const sendOperatorMessage = apiClient.sendOperatorMessage.bind(apiClient)
 export const cancelOperatorTurn = apiClient.cancelOperatorTurn.bind(apiClient)
+export const respondOperatorInteraction = apiClient.respondOperatorInteraction.bind(apiClient)
 export const listConversations = apiClient.listConversations.bind(apiClient)
 export const getConversation = apiClient.getConversation.bind(apiClient)
 export const listMessages = apiClient.listMessages.bind(apiClient)
