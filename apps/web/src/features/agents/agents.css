@@ -267,10 +267,24 @@
 .agent-settings-name,
 .agent-settings-prompt,
 .agent-settings-limits,
+.agent-settings-advanced,
 .agent-settings-confirm,
 .agent-removal-blocked {
   grid-column: 1 / -1;
 }
+
+.agent-settings-advanced {
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 0.6875rem;
+}
+
+.agent-settings-advanced summary { cursor: pointer; font-weight: 750; }
+.agent-settings-advanced-fields { display: grid; gap: 0.5rem; margin-top: 0.625rem; }
+.agent-settings-advanced-fields label { display: grid; gap: 0.25rem; font-weight: 700; }
+.agent-settings-advanced-fields small,
+.agent-settings-advanced-fields p { margin: 0; line-height: 1.4; }
 
 .agent-settings-limits {
   display: grid;

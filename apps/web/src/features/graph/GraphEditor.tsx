@@ -25,7 +25,10 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useQueryClient } from '@tanstack/react-query'
 
-import { AgentEffortSchema, DEFAULT_AGENT_DEFAULTS, type AgentDefaults } from '@graphql/contracts'
+import {
+  AgentEffortSchema, DEFAULT_AGENT_DEFAULTS, DEFAULT_CODEX_ADVANCED_CONFIGURATION,
+  DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type AgentDefaults, type HarnessConfiguration,
+} from '@graphql/contracts'
 import type {
   Agent,
   HarnessDefaults,
@@ -196,6 +199,13 @@ function AgentSettingsForm({
       ? agent.harnessConfiguration.sandbox
       : 'read-only',
   )
+  const [advancedConfiguration, setAdvancedConfiguration] = useState<HarnessConfiguration>(() =>
+    agent.harnessConfiguration ?? configuredHarness(
+      agent, agent.harness ?? 'codex', initialModel(agent, agent.harness ?? 'codex'),
+      agent.effort ?? 'medium', agent.fastMode ?? false,
+      codexSandbox,
+      creationDefaults,
+    ))
   const [prompt, setPrompt] = useState(initialPrompt ?? '')
   const [maxNodeExecutions, setMaxNodeExecutions] = useState(executionPolicy.maxNodeExecutions)
   const [maxParallelism, setMaxParallelism] = useState(executionPolicy.maxParallelism)
@@ -204,6 +214,13 @@ function AgentSettingsForm({
     && maxNodeExecutions >= workflowNodeCount
     && Number.isInteger(maxParallelism)
     && maxParallelism >= 1
+  const codexAdvancedBase = () => {
+    const configuration = advancedConfiguration.harness === 'codex'
+      ? advancedConfiguration
+      : configuredHarness(agent, 'codex', model, effort, fastMode, codexSandbox, creationDefaults)
+    if (configuration.harness !== 'codex') throw new Error('Codex configuration is unavailable.')
+    return configuration
+  }
 
   return (
     <>
@@ -235,6 +252,7 @@ function AgentSettingsForm({
         setHarness(nextHarness)
         if (creationDefaults) {
           const configuration = creationDefaults[nextHarness]
+          setAdvancedConfiguration(configuration)
           setModel(configuration.model)
           setEffort(configuration.harness === 'codex'
             ? configuration.reasoningEffort
@@ -244,6 +262,7 @@ function AgentSettingsForm({
           return
         }
         const nextModel = modelOptions(nextHarness).includes(model) ? model : modelOptions(nextHarness)[0]!
+        setAdvancedConfiguration(configuredHarness(agent, nextHarness, nextModel, nextHarness === 'codex' ? 'medium' : 'max', false, 'read-only', creationDefaults))
         setModel(nextModel)
         if (!effortOptions(nextHarness, nextModel).includes(effort)) setEffort(nextHarness === 'codex' ? 'medium' : 'max')
       }}>
@@ -267,6 +286,44 @@ function AgentSettingsForm({
           <option value="danger-full-access">Danger: full access</option>
         </select></div>
       ) : null}
+      <details className="agent-settings-advanced">
+        <summary>Advanced</summary>
+        {harness === 'codex' ? (() => {
+          const advanced = advancedConfiguration.harness === 'codex'
+            ? advancedConfiguration.advanced ?? DEFAULT_CODEX_ADVANCED_CONFIGURATION
+            : DEFAULT_CODEX_ADVANCED_CONFIGURATION
+          return <div className="agent-settings-advanced-fields">
+            <label>Approval reviewer<select aria-label="Approval reviewer" value={advanced.approvalsReviewer} onChange={(event) => setAdvancedConfiguration({
+              ...codexAdvancedBase(),
+              advanced: { ...advanced, approvalsReviewer: event.target.value as typeof advanced.approvalsReviewer },
+            })}><option value="user">GraphQL routed</option><option value="auto_review">Native AI reviewer</option></select></label>
+            <small>Native AI reviewer: Codex uses its own reviewer to evaluate eligible approval requests.</small>
+            <label>Additional writable directories<textarea aria-label="Additional writable directories" rows={2} value={advanced.additionalWritableDirectories.join('\n')} onChange={(event) => setAdvancedConfiguration({
+              ...codexAdvancedBase(),
+              advanced: { ...advanced, additionalWritableDirectories: event.target.value.split('\n').map((item) => item.trim()).filter(Boolean) },
+            })} /></label>
+            <label>Session<select aria-label="Session persistence" value={advanced.sessionPersistence} onChange={(event) => setAdvancedConfiguration({
+              ...codexAdvancedBase(),
+              advanced: { ...advanced, sessionPersistence: event.target.value as typeof advanced.sessionPersistence },
+            })}><option value="persistent">Persistent</option><option value="ephemeral">Ephemeral</option></select></label>
+          </div>
+        })() : (() => {
+          const advanced = advancedConfiguration.harness === 'opencode'
+            ? advancedConfiguration.advanced ?? DEFAULT_OPENCODE_ADVANCED_CONFIGURATION
+            : DEFAULT_OPENCODE_ADVANCED_CONFIGURATION
+          return <div className="agent-settings-advanced-fields">
+            <label>Permission handling<select aria-label="Permission handling" value={advanced.permissionHandling} onChange={(event) => {
+              const permissionHandling = event.target.value as typeof advanced.permissionHandling
+              const base = advancedConfiguration.harness === 'opencode'
+                ? advancedConfiguration
+                : configuredHarness(agent, 'opencode', model, effort, false, codexSandbox, creationDefaults)
+              if (base.harness === 'opencode') setAdvancedConfiguration({ ...base, autoApprove: permissionHandling === 'native_auto', advanced: { ...advanced, permissionHandling } })
+            }}><option value="graphql_routed">GraphQL routed review</option><option value="native_auto">Native auto approve</option></select></label>
+            <small>Auto approve handles eligible OpenCode requests natively; it does not use a reviewer Agent.</small>
+            <p>{advanced.permissionRules.length === 0 ? 'Native default permission policy' : `Custom · ${advanced.permissionRules.length} ordered rules preserved`}</p>
+          </div>
+        })()}
+      </details>
       <div className="agent-settings-prompt agent-settings-control">
         <span>Initial prompt</span>
         <textarea
@@ -308,14 +365,8 @@ function AgentSettingsForm({
           aria-label="Save agent settings"
           title="Save"
           disabled={!trimmedName || !limitsValid}
-          onClick={() => onSave({
-            ...agent,
-            name: trimmedName,
-            harness,
-            model,
-            effort,
-            ...(harness === 'codex' ? { fastMode } : { fastMode: undefined }),
-            harnessConfiguration: configuredHarness(
+          onClick={() => {
+            const basic = configuredHarness(
               agent,
               harness,
               model,
@@ -323,8 +374,16 @@ function AgentSettingsForm({
               fastMode,
               codexSandbox,
               creationDefaults,
-            ),
-          }, prompt.trim() || undefined, { maxNodeExecutions, maxParallelism })}
+            )
+            const harnessConfiguration = advancedConfiguration.harness === harness
+              ? { ...basic, advanced: advancedConfiguration.advanced } as HarnessConfiguration
+              : basic
+            onSave({
+              ...agent, name: trimmedName, harness, model, effort,
+              ...(harness === 'codex' ? { fastMode } : { fastMode: undefined }),
+              harnessConfiguration,
+            }, prompt.trim() || undefined, { maxNodeExecutions, maxParallelism })
+          }}
         >
           <Check aria-hidden="true" size={16} />
         </button>

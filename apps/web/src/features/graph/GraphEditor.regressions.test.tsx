@@ -195,4 +195,18 @@ describe('PR #3 editor lifecycle regressions', () => {
       { maxNodeExecutions: 1, maxParallelism: 1 },
     )
   })
+
+  it('round-trips a provider-specific Agent Advanced override', async () => {
+    const onSave = vi.fn()
+    render(<AgentSettingsForm
+      agent={defaultAgentForHarness('codex', 'agent-advanced', 'Advanced', defaults.codex)}
+      onClose={() => undefined}
+      onSave={onSave}
+    />)
+    const user = userEvent.setup()
+    await user.click(screen.getByText('Advanced'))
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Approval reviewer' }), 'auto_review')
+    await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    expect(onSave.mock.calls[0]![0].harnessConfiguration.advanced.approvalsReviewer).toBe('auto_review')
+  })
 })
