@@ -18,6 +18,7 @@ import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, Na
 /** Deterministic rich-transport fixture shared by HAP-02–07 integration tests. */
 export class DeterministicNativeSessionManager implements NativeHarnessSessionManager {
   readonly counters = { sessions: 0, turns: 0, sideEffects: 0, deliveries: 0, cancellations: 0 }
+  lastStart: NativeSessionStart | undefined
   private readonly events: NativeHarnessEvent[] = []
   private waiting: PendingNativeInteraction | undefined
 
@@ -37,7 +38,7 @@ export class DeterministicNativeSessionManager implements NativeHarnessSessionMa
   }
 
   async createSession(input: NativeSessionStart): Promise<NativeSessionReference> {
-    void input
+    this.lastStart = input
     this.counters.sessions += 1
     return NativeSessionReferenceSchema.parse({
       harness: this.harness, providerVersion: this.harness === 'codex' ? '0.154.0' : '1.18.31',
