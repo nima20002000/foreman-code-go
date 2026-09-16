@@ -258,6 +258,41 @@ const migrations = [
       unique (interaction_id, reviewer_agent_id)
     );
   ` },
+  { version: 400, sql: `
+    create table if not exists worker_credential_bindings (
+      principal_id text primary key,
+      execution_id text not null,
+      run_id text not null,
+      workspace_id text not null,
+      workflow_id text not null,
+      agent_id text not null,
+      environment_variable text not null,
+      issued_at timestamptz not null default now(),
+      revoked_at timestamptz,
+      unique (execution_id, principal_id),
+      check (environment_variable = 'GRAPHQL_APP_MCP_TOKEN')
+    );
+    create index if not exists worker_credential_bindings_execution_idx
+      on worker_credential_bindings (execution_id, revoked_at);
+  ` },
+  { version: 401, sql: `
+    alter table if exists runs add column if not exists worker_credentials_closed_at timestamptz;
+    alter table if exists harness_executions add column if not exists worker_credentials_closed_at timestamptz;
+    create index if not exists worker_credential_bindings_run_idx
+      on worker_credential_bindings (run_id, principal_id);
+    -- Preserve terminal cleanup intent across upgrades/restarts. The binding
+    -- sweep revokes any remaining principals without needing the old plaintext.
+    update runs set worker_credentials_closed_at=now()
+      where execution_state not in ('queued','running','waiting') and worker_credentials_closed_at is null;
+    do $$
+    begin
+      if to_regclass('harness_executions') is not null then
+        update harness_executions set worker_credentials_closed_at=now()
+          where record->>'state' not in ('starting','running','waiting') and worker_credentials_closed_at is null;
+      end if;
+    end
+    $$;
+  ` },
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

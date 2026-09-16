@@ -4,8 +4,11 @@ import { randomBytes } from 'node:crypto'
 import type { OpenCodeAdvancedConfiguration } from '@graphql/contracts'
 
 import { HarnessExecutionError } from './errors.js'
+import { endpointMatches, type NativeMcpEntryEvidence } from './mcpDetection.js'
+import { inspectOpenCodeMcpConfiguration } from './opencodeMcpConfiguration.js'
 import type { ChildProcessEnvironment } from './port.js'
 import { PROCESS_SHUTDOWN_GRACE_MS, runCommand, signalTree } from './process.js'
+import { inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
 import { credentialReferences, digest, object, parseConfigObject } from './opencodeProtocol.js'
 
 export const QUALIFIED_OPENCODE_VERSION = '1.18.31'
@@ -30,6 +33,8 @@ export interface OpenCodeServerController {
   readonly generation?: number
   /** Provenance from unexpanded configuration, never from resolved secret values. */
   readonly mcpCredentialReferences?: Readonly<Record<string, string>>
+  inspectMcpConfiguration?(directory: string, serverName: string, signal?: AbortSignal): Promise<NativeMcpEntryEvidence | undefined>
+  redact?<T>(value: T): T
   ensure(signal?: AbortSignal): Promise<void>
   request(path: string, init?: RequestInit, signal?: AbortSignal, expectedGeneration?: number): Promise<Response>
   dispose(): Promise<void>
@@ -108,10 +113,25 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
     if (environment && environment.agentId !== this.options.ownerAgentId) {
       throw new HarnessExecutionError('OPENCODE_CREDENTIAL_OWNER_MISMATCH', 'The credential does not belong to this OpenCode server owner.')
     }
-    if (Object.keys(environment?.variables ?? {}).some((key) => key !== APP_CREDENTIAL_ENV)) {
+    if (Object.keys(environment?.variables ?? {}).some((key) => key !== APP_CREDENTIAL_ENV)
+      || (environment && APP_CREDENTIAL_ENV in environment.variables && !environment.variables[APP_CREDENTIAL_ENV])) {
       throw new HarnessExecutionError('OPENCODE_CREDENTIAL_ENV_UNSUPPORTED', 'Only the scoped App credential environment variable is accepted.')
     }
     return environment ? { agentId: environment.agentId, variables: { ...environment.variables } } : undefined
+  }
+
+  redact<T>(value: T): T {
+    const secrets = Object.values(this.desiredEnvironment?.variables ?? {})
+    if (this.password) secrets.push(this.password, Buffer.from(`opencode:${this.password}`).toString('base64'))
+    return redactKnownSecrets(value, secrets)
+  }
+
+  inspectMcpConfiguration(directory: string, serverName: string, signal?: AbortSignal): Promise<NativeMcpEntryEvidence | undefined> {
+    return inspectOpenCodeMcpConfiguration({
+      binary: this.options.binary, workingDirectory: directory, serverName,
+      pure: this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true,
+      ...(signal ? { signal } : {}),
+    })
   }
 
   async ensure(signal?: AbortSignal): Promise<void> {
@@ -225,11 +245,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
         throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', `OpenCode server mode requires exactly ${this.expectedVersion}; found ${installed || 'unavailable'}.`)
       }
       this.password = randomBytes(32).toString('hex')
-      const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
-      for (const key of Object.keys(environment)) {
-        if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_')
-          || ['DATABASE_URL', 'TEST_DATABASE_URL', 'PGPASSWORD', APP_CREDENTIAL_ENV].includes(key)) delete environment[key]
-      }
+      const environment: NodeJS.ProcessEnv = inheritedAgentEnvironment()
       Object.assign(environment, this.desiredEnvironment?.variables ?? {})
       environment.OPENCODE_SERVER_USERNAME = 'opencode'
       environment.OPENCODE_SERVER_PASSWORD = this.password
@@ -248,7 +264,11 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       child.stdin.on('error', () => undefined)
       child.stdin.end()
       child.stderr.setEncoding('utf8')
-      child.stderr.on('data', (chunk) => { this.stderr = (this.stderr + String(chunk)).slice(-64_000) })
+      const processSecrets = Object.values(this.desiredEnvironment?.variables ?? {})
+      if (this.password) processSecrets.push(this.password, Buffer.from(`opencode:${this.password}`).toString('base64'))
+      child.stderr.on('data', (chunk) => {
+        this.stderr = redactSecretText(this.stderr + String(chunk), processSecrets).slice(-64_000)
+      })
       child.on('error', () => { void this.stopChild(child).catch(() => undefined) })
       child.once('exit', () => { void this.stopChild(child).catch(() => undefined) })
       this.baseUrl = await this.waitForUrl(child, abort.signal)

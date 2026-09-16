@@ -399,7 +399,7 @@ it('[F22] inspects ordered native config objects and trusted unresolved provenan
   const server = new FixtureServer()
   const native = manager(server)
   await sessionFor(native)
-  server.config = { mcp: { 'graphql-app': { type: 'remote', url: 'http://127.0.0.1:4100/mcp/app', headers: { authorization: 'Bearer RESOLVED_SECRET_CANARY' } } },
+  server.config = { mcp: { 'graphql-app': { type: 'remote', url: 'http://127.0.0.1:4100/mcp/app', oauth: false, headers: { authorization: 'Bearer RESOLVED_SECRET_CANARY' } } },
     permission: { '*': 'ask', bash: { '*': 'deny', 'git status': 'allow' } } }
   server.mcp = { 'graphql-app': { status: 'connected' } }
   server.mcpCredentialReferences = { 'graphql-app': 'GRAPHQL_APP_MCP_TOKEN' }

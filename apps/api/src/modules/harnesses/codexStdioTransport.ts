@@ -1,5 +1,6 @@
 import { HarnessExecutionError } from './errors.js'
 import { spawnOwnedStdioProcess } from './process.js'
+import { redactKnownSecrets, redactSecretText } from './secrets.js'
 
 export type JsonObject = Record<string, unknown>
 export type RequestId = string | number
@@ -79,7 +80,9 @@ export class CodexStdioTransport {
     })
     const { child, closed } = this.owned
     child.stderr.setEncoding('utf8')
-    child.stderr.on('data', (chunk: string) => { this.stderr = (this.stderr + chunk).slice(-128_000) })
+    child.stderr.on('data', (chunk: string) => {
+      this.stderr = redactSecretText(this.stderr + chunk, [this.environment.GRAPHQL_APP_MCP_TOKEN ?? '']).slice(-128_000)
+    })
     void this.readFrames().catch((error: unknown) => this.fail(error instanceof Error ? error : new Error('Codex dispatch failed.')))
     void closed.then(() => this.fail(new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Codex app-server disconnected.')))
     try {
@@ -207,7 +210,7 @@ export class CodexStdioTransport {
 
   private async receive(line: string): Promise<void> {
     let message: unknown
-    try { message = JSON.parse(line) } catch {
+    try { message = redactKnownSecrets(JSON.parse(line), [this.environment.GRAPHQL_APP_MCP_TOKEN ?? '']) } catch {
       this.onNotification('protocol/malformed', { reason: 'invalid_json' }); return
     }
     if (!isObject(message)) { this.onNotification('protocol/malformed', { reason: 'invalid_envelope' }); return }

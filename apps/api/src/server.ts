@@ -7,6 +7,8 @@ import { createCheckpointStore } from './infrastructure/checkpoints.js'
 import { createDatabase } from './infrastructure/database.js'
 import { ensureAcceptanceSeed } from './infrastructure/seed.js'
 import { PostgresAccessService } from './modules/access/postgres.js'
+import { PostgresInteractionRepository } from './modules/interactions/postgres.js'
+import { createAppMcpRuntime } from './modules/app-runtime/composition.js'
 import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
 import { GraphDraftService } from './modules/graph-drafts/service.js'
 import { HarnessCatalogService } from './modules/harnesses/catalog.js'
@@ -36,6 +38,7 @@ async function main() {
   const database = createDatabase(config.database)
   const access = new PostgresAccessService(database.pool)
   const commands = new PostgresCommandCoordinator(database.pool)
+  const interactions = new PostgresInteractionRepository(database.pool)
   const locations = new WorkspaceLocationService(database.pool, commands, config.harnesses.workspaceRoot)
   const checkpoints = createCheckpointStore(
     config.database.connectionString,
@@ -47,6 +50,9 @@ async function main() {
   const workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
   const settings = new PostgresSettingsRepository(database.pool)
   const harnesses = new LocalHarnessResolver(config.harnesses.codexBinary, config.harnesses.openCodeBinary)
+  const appRuntime = createAppMcpRuntime({
+    pool: database.pool, config, access, commands, interactions, runnerId: locations.runnerId,
+  })
   const engine = new LangGraphWorkflowEngine(
     runs,
     workflows,
@@ -55,6 +61,7 @@ async function main() {
     config.harnesses.workspaceRoot,
     config.harnesses.timeoutMs,
     locations,
+    appRuntime.executionCredentials,
   )
   const operatorServices = {
     workspaces: new WorkspaceManagementService(database.pool, commands, locations),
@@ -71,6 +78,8 @@ async function main() {
     readinessTimeoutMs: config.readinessTimeoutMs,
     product: { workspaces, workflows, runs, settings, engine },
     operator: { access, services: operatorServices },
+    appMcp: appRuntime.appMcp,
+    mcpDetection: appRuntime.mcpDetection,
     logger: true,
   })
   let reconciliationTimer: NodeJS.Timeout | undefined

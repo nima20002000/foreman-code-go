@@ -7,10 +7,15 @@ import {
   type DurableInteraction,
   type InteractionRecoveryQuery,
 } from '@graphql/contracts'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
 
 import { inTransaction } from '../../infrastructure/transaction.js'
+import { requireRespondableInteraction } from '../access/appPolicy.js'
+import { lockActiveWorkerPrincipal, requireActiveWorkerBinding } from '../access/workerLifecycle.js'
 import { DomainError } from '../errors.js'
+
+type DecisionResult = { interaction: DurableInteraction; replayed: boolean }
 
 /** Transactional durable interaction primitives; routing/dispatch intentionally lives elsewhere. */
 export class PostgresInteractionRepository {
@@ -107,35 +112,79 @@ export class PostgresInteractionRepository {
     return result.rows.map((row) => DurableInteractionSchema.parse(row.record))
   }
 
-  async decide(input: { id: string; optionId: string; expectedRevision: number; nativeResponse: unknown; auditReference?: string }): Promise<{ interaction: DurableInteraction; replayed: boolean }> {
+  async decide(input: {
+    id: string; optionId: string; expectedRevision: number; nativeResponse: unknown; auditReference?: string
+    principal?: ManagementPrincipal
+    beforeCommit?(client: pg.PoolClient, result: DecisionResult): Promise<void>
+  }): Promise<DecisionResult> {
     // Validate before opening a transaction, including replay calls. Undefined is not JSON.
     const response = DurableInteractionSchema.shape.nativeResponse.unwrap().parse(input.nativeResponse)
-    return inTransaction(this.pool, undefined, async (client) => {
+    const client = await this.pool.connect()
+    let committing = false
+    let releaseError: Error | undefined
+    try {
+      await client.query('begin')
+      let principal: ManagementPrincipal | undefined
+      let targetRunId: string | undefined
+      if (input.principal) {
+        const target = await client.query<{ run_id: string }>('select run_id from durable_interactions where id=$1', [input.id])
+        targetRunId = target.rows[0]?.run_id
+        principal = await lockActiveWorkerPrincipal(client, input.principal, targetRunId)
+        const activeRun = await client.query(
+          `select 1 from runs where id=$1 and execution_state in ('running','waiting')
+           and worker_credentials_closed_at is null and record->>'outcome'='pending'`, [targetRunId ?? null],
+        )
+        if (activeRun.rowCount !== 1) throw new DomainError('INTERACTION_NOT_FOUND', 'The interaction was not found.', 404)
+      }
       const found = await client.query<{ record: unknown }>('select record from durable_interactions where id=$1 for update', [input.id])
       const current = found.rows[0] ? DurableInteractionSchema.parse(found.rows[0].record) : undefined
       if (!current) throw new DomainError('INTERACTION_NOT_FOUND', 'The interaction was not found.', 404)
-      if (current.status !== 'pending') {
-        if (current.status !== 'canceled' && current.selectedOptionId === input.optionId) return { interaction: current, replayed: true }
-        throw new DomainError('INTERACTION_ALREADY_DECIDED', 'The interaction is canceled or already has a different decision.', 409)
+      if (principal) {
+        requireRespondableInteraction(principal, current)
+        if (current.runId !== targetRunId) throw new DomainError('INTERACTION_NOT_FOUND', 'The interaction was not found.', 404)
       }
-      if (current.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'The interaction changed since it was read.', 409, { currentRevision: current.revision })
-      const option = current.responseOptions.find((candidate) => candidate.optionId === input.optionId)
-      if (!option) throw new DomainError('INTERACTION_OPTION_INVALID', 'The response option is not valid for this interaction.', 409)
-      const now = new Date().toISOString()
-      const next = DurableInteractionSchema.parse({
-        ...current, revision: current.revision + 1, status: 'delivery_pending',
-        selectedOptionId: option.optionId, selectedSemantic: option.semantic,
-        nativeResponse: response, deliveryState: 'pending',
-        ...(input.auditReference ? { auditReference: input.auditReference } : {}),
-        decidedAt: now, updatedAt: now,
-      })
-      const updated = await client.query(
-        `update durable_interactions set status=$2, revision=$3, record=$4::jsonb, updated_at=now()
-         where id=$1 and revision=$5 and status='pending'`, [next.id, next.status, next.revision, JSON.stringify(next), current.revision],
-      )
-      if (updated.rowCount !== 1) throw new DomainError('REVISION_CONFLICT', 'The interaction changed during the decision.', 409)
-      return { interaction: next, replayed: false }
-    })
+      let result: DecisionResult
+      if (current.status !== 'pending') {
+        if (current.status === 'canceled' || current.selectedOptionId !== input.optionId) {
+          throw new DomainError('INTERACTION_ALREADY_DECIDED', 'The interaction is canceled or already has a different decision.', 409)
+        }
+        result = { interaction: current, replayed: true }
+      } else {
+        if (current.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'The interaction changed since it was read.', 409, { currentRevision: current.revision })
+        const option = current.responseOptions.find((candidate) => candidate.optionId === input.optionId)
+        if (!option) throw new DomainError('INTERACTION_OPTION_INVALID', 'The response option is not valid for this interaction.', 409)
+        const now = new Date().toISOString()
+        const next = DurableInteractionSchema.parse({
+          ...current, revision: current.revision + 1, status: 'delivery_pending',
+          selectedOptionId: option.optionId, selectedSemantic: option.semantic,
+          nativeResponse: principal ? { optionId: option.optionId, semantic: option.semantic } : response,
+          deliveryState: 'pending',
+          ...(input.auditReference ? { auditReference: input.auditReference } : {}),
+          decidedAt: now, updatedAt: now,
+        })
+        const updated = await client.query(
+          `update durable_interactions set status=$2, revision=$3, record=$4::jsonb, updated_at=now()
+           where id=$1 and revision=$5 and status='pending'`, [next.id, next.status, next.revision, JSON.stringify(next), current.revision],
+        )
+        if (updated.rowCount !== 1) throw new DomainError('REVISION_CONFLICT', 'The interaction changed during the decision.', 409)
+        result = { interaction: next, replayed: false }
+      }
+      await input.beforeCommit?.(client, result)
+      // Recheck wall-clock expiry after any audit/validation wait. Parent and
+      // principal locks prevent Stop/revocation from overtaking this commit.
+      if (principal) await requireActiveWorkerBinding(client, principal.id)
+      committing = true
+      await client.query('commit')
+      return result
+    } catch (error) {
+      try { await client.query('rollback') } catch (rollbackError) {
+        releaseError = rollbackError instanceof Error ? rollbackError : new Error('Decision rollback failed.')
+      }
+      if (committing) {
+        throw new DomainError('INTERACTION_DECISION_STATUS_UNKNOWN', 'Decision commit could not be confirmed. Read the interaction before retrying; the decision may already have committed.', 503)
+      }
+      throw error
+    } finally { client.release(releaseError) }
   }
 
   private async changeDelivery(id: string, expectedRevision: number, transition: (current: DurableInteraction) => DurableInteraction): Promise<DurableInteraction> {

@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { WorkerCredentialService } from '../src/modules/access/workerCredentials.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
@@ -28,7 +29,7 @@ describe('HAP-01 durable foundation', () => {
     try {
       await applyApplicationMigrations(pool)
       await applyApplicationMigrations(pool)
-      expect((await pool.query<{ version: number }>('select version from application_migrations order by version')).rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 100])
+      expect((await pool.query<{ version: number }>('select version from application_migrations order by version')).rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 100, 400, 401])
       await ensureAcceptanceSeed(pool)
 
       const settings = new PostgresFoundationSettingsRepository(pool)
@@ -54,7 +55,7 @@ describe('HAP-01 durable foundation', () => {
       const access = new PostgresAccessService(pool)
       await expect(access.issue({ name: 'invalid worker', audience: 'worker', grants: [], expiresAt: new Date(Date.now() + 60_000) })).rejects.toMatchObject({ code: 'WORKER_AGENT_REQUIRED' })
       const worker = await access.issue({ name: 'coder', audience: 'worker', agentId: 'agent-developer', grants: [], expiresAt: new Date(Date.now() + 60_000) })
-      expect((await access.authenticate(worker.token, 'worker')).agentId).toBe('agent-developer')
+      await expect(access.authenticate(worker.token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
       await expect(access.authenticate(worker.token, 'operator')).rejects.toMatchObject({ code: 'AUTH_WRONG_AUDIENCE' })
 
       const run = WorkflowRunSchema.parse({
@@ -76,6 +77,10 @@ describe('HAP-01 durable foundation', () => {
       expect((await runs.ensureExecution(occurrence)).created).toBe(true)
       const reentry = await runs.ensureExecution({ ...occurrence, id: 'execution-hap01-b' })
       expect(reentry).toMatchObject({ created: false, execution: { id: 'execution-hap01-a' } })
+
+      const boundWorker = await new WorkerCredentialService(pool, access).issueForExecution(occurrence.id)
+      await expect(access.authenticate(boundWorker.environment.variables.GRAPHQL_APP_MCP_TOKEN, 'worker'))
+        .resolves.toMatchObject({ agentId: 'agent-developer' })
 
       const interactions = new PostgresInteractionRepository(pool)
       const base = {

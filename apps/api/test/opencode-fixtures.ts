@@ -4,6 +4,7 @@ import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, 
 
 import { OpenCodeNativeDeliveryError, OpenCodeNativeSessionManager, type OpenCodeServerController } from '../src/modules/harnesses/opencodeServer.js'
 import { childEnvironmentFingerprint } from '../src/modules/harnesses/opencodeTransport.js'
+import type { NativeMcpEntryEvidence } from '../src/modules/harnesses/mcpDetection.js'
 import { nativeMessageId, nativePolicy, object, type JsonObject, type OpenCodeMessage } from '../src/modules/harnesses/opencodeProtocol.js'
 import type { ChildProcessEnvironment } from '../src/modules/harnesses/port.js'
 
@@ -87,6 +88,21 @@ export class FixtureServer implements OpenCodeServerController {
 
   get credentialEnvironmentFingerprint(): string | undefined {
     return this.environment ? childEnvironmentFingerprint(this.environment) : undefined
+  }
+  async inspectMcpConfiguration(_directory: string, serverName: string): Promise<NativeMcpEntryEvidence | undefined> {
+    const entry = object(object(this.config.mcp)[serverName])
+    if (!Object.keys(entry).length) return undefined
+    const status = object(this.mcp[serverName]).status
+    return {
+      name: serverName,
+      transport: entry.type === 'remote' ? 'streamable-http' : entry.type === 'local' ? 'stdio' : 'unknown',
+      ...(typeof entry.url === 'string' ? { endpoint: entry.url } : {}),
+      enabled: entry.enabled !== false,
+      ...(this.mcpCredentialReferences[serverName]
+        ? { credentialEnvironmentVariable: this.mcpCredentialReferences[serverName] } : {}),
+      ...(typeof status === 'string' ? { status: status === 'needs_auth' ? 'authentication_required'
+        : status === 'failed' ? 'broken' : status as NativeMcpEntryEvidence['status'] } : {}),
+    }
   }
   async ensure(signal?: AbortSignal) {
     signal?.throwIfAborted()

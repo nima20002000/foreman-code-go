@@ -579,7 +579,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       return McpDetectionSchema.parse({
         harness: 'codex', serverName: this.appMcpServerName,
         state: value.configured.enabled ? 'status_unavailable' : 'disabled', endpointMatches: null,
-        credentialEnvironmentVariable: value.configured.bearerTokenEnvironmentVariable, checkedAt,
+        credentialEnvironmentVariable: value.configured.bearerTokenEnvironmentVariable === 'GRAPHQL_APP_MCP_TOKEN'
+          ? 'GRAPHQL_APP_MCP_TOKEN' : null,
+        checkedAt,
         detail: 'CLI inspection proves configuration only; inspectNativeMcp reports runtime status.',
       })
     } catch (error) {
@@ -594,8 +596,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   async inspectMcpConfiguration(cwd: string, signal?: AbortSignal): Promise<CodexMcpConfigurationInspection> {
     const environment = safeEnvironment()
-    const qualified = await qualifyCodex(this.binary, this.expectedVersion, cwd, environment, true, signal)
-    return this.mcpConfiguration(qualified.binary, cwd, environment, signal)
+    await this.capabilities(signal)
+    return this.mcpConfiguration(this.binary, cwd, environment, signal)
   }
 
   async inspectConfiguration(session: NativeSessionReference, includeLayers = true, signal?: AbortSignal): Promise<JsonObject> {
@@ -780,7 +782,17 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private async mcpConfiguration(binary: string, cwd: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<CodexMcpConfigurationInspection> {
     const result = await runCommand(binary, ['mcp', 'get', this.appMcpServerName, '--json'], cwd, signal, environment)
-    if (result.exitCode !== 0) throw new HarnessExecutionError('CODEX_MCP_NOT_CONFIGURED', 'The App MCP server is not configured on this runner.')
+    if (result.exitCode !== 0) {
+      const listed = await runCommand(binary, ['mcp', 'list', '--json'], cwd, signal, environment)
+      let entries: unknown
+      try { entries = JSON.parse(listed.stdout) } catch { entries = undefined }
+      if (listed.exitCode === 0 && Array.isArray(entries)
+        && entries.every((entry: unknown) => isObject(entry) && typeof entry.name === 'string')
+        && !entries.some((entry: unknown) => isObject(entry) && entry.name === this.appMcpServerName)) {
+        throw new HarnessExecutionError('CODEX_MCP_NOT_CONFIGURED', 'The named native MCP entry is absent.')
+      }
+      throw new HarnessExecutionError('CODEX_MCP_INSPECTION_FAILED', 'Codex MCP configuration inspection failed; absence was not established.')
+    }
     try {
       const parsed = object(JSON.parse(result.stdout))
       const transport = isObject(parsed.transport) ? parsed.transport : {}

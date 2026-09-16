@@ -24,7 +24,10 @@ if (args[0] === 'debug') {
   }))); process.exit(0)
 }
 if (args[0] === 'mcp') {
-  if (flag('no-mcp')) process.exit(1)
+  if (flag('no-mcp')) {
+    if (args[1] === 'list') { console.log('[]'); process.exit(0) }
+    process.exit(1)
+  }
   console.log(JSON.stringify(read('mcp.json', {
     name: args[2], enabled: true, required: true,
     transport: { type: 'streamable_http', url: 'http://127.0.0.1:3000/mcp/app', bearer_token_env_var: 'GRAPHQL_APP_MCP_TOKEN' },
