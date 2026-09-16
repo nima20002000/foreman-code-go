@@ -200,4 +200,28 @@ describe.skipIf(process.platform === 'win32')('Codex 0.154.0 app-server manager'
       result: { error: { code: 'CODEX_SCOPED_ENVIRONMENT_REQUIRED' } },
     })
   })
+
+  it('attaches only the exact persisted thread and never creates a replacement identity', async () => {
+    const { manager, directory } = await fixture()
+    const input = {
+      request: request(directory, 'agent-a'),
+      environment: {
+        agentId: 'agent-a', variables: { TEST_AGENT_ID: 'agent-a', GRAPHQL_APP_MCP_TOKEN: 'secret-a' },
+      },
+    } as const
+    const session = await manager.createSession(input)
+    await manager.close(session)
+    const restored = new CodexAppServerSessionManager(join(directory, 'codex.cjs'))
+    expect(await restored.attachSession(session, input)).toEqual(session)
+    expect((await restored.history(session)).events.some((event) => event.type === 'thread.attached')).toBe(true)
+    await restored.close(session)
+
+    const missing = { ...session, nativeSessionId: 'missing-thread' }
+    await expect(restored.attachSession(missing, input)).rejects.toMatchObject({
+      result: { error: { code: 'CODEX_SESSION_ID_MISMATCH' } },
+    })
+    await expect(restored.history(missing)).rejects.toMatchObject({
+      result: { error: { code: 'CODEX_SESSION_UNAVAILABLE' } },
+    })
+  })
 })

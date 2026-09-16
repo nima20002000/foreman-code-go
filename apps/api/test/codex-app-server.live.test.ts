@@ -13,10 +13,9 @@ describe.skipIf(!enabled)('authenticated Codex app-server 0.154.0', () => {
     const directory = process.cwd()
     const marker = join('/tmp', `graphql-nim2598-${process.pid}.txt`)
     const manager = new CodexAppServerSessionManager(process.env.CODEX_BINARY ?? '/home/nima/.local/bin/codex')
-    const configuration = {
+    const configuration: HarnessExecutionRequest['configuration']['harness'] = {
       harness: 'codex', model: 'gpt-5.6-luna', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard',
-      advanced: { approvalPolicy: 'on-request', approvalsReviewer: 'user', sessionPersistence: 'persistent' },
-    } as unknown as HarnessExecutionRequest['configuration']['harness']
+    }
     const request: HarnessExecutionRequest = {
       executionId: 'nim2598-live-execution', runId: 'nim2598-live-run', workspaceId: 'nim2598-live-workspace',
       workflowNodeId: 'nim2598-live-node', workingDirectory: directory, runtimeDirectory: directory, input: {},
@@ -26,7 +25,9 @@ describe.skipIf(!enabled)('authenticated Codex app-server 0.154.0', () => {
         contentHash: 'sha256:nim2598-live', createdAt: new Date().toISOString(),
       },
     }
-    const session = await manager.createSession({ request })
+    const input = { request }
+    const session = await manager.createSession(input)
+    let restored: CodexAppServerSessionManager | undefined
     try {
       const approvalEvents = (async () => {
         for await (const event of manager.startTurn(session, {
@@ -68,10 +69,21 @@ describe.skipIf(!enabled)('authenticated Codex app-server 0.154.0', () => {
       await interrupted
       expect((await manager.history(session)).terminalResult?.outcome).toBe('canceled')
 
+      await manager.close(session)
+      restored = new CodexAppServerSessionManager(process.env.CODEX_BINARY ?? '/home/nima/.local/bin/codex')
+      expect(await restored.attachSession(session, input)).toEqual(session)
+      for await (const event of restored.startTurn(session, {
+        prompt: 'Reply exactly NIM2598_REATTACHED. Do not use tools.', clientCorrelationId: 'nim2598-live-reattach',
+      })) void event
+      expect((await restored.history(session)).terminalResult).toMatchObject({
+        outcome: 'succeeded', output: { text: expect.stringContaining('NIM2598_REATTACHED') },
+      })
+
       const fallback = await import('../src/modules/harnesses/codex.js')
       expect(fallback.CodexAdapter).toBeTypeOf('function')
     } finally {
       await manager.close(session)
+      await restored?.close(session)
       await rm(marker, { force: true })
     }
   }, 180_000)

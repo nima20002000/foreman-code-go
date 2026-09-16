@@ -475,18 +475,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   async createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
-    await this.capabilities(signal)
-    const harnessConfiguration = configuration(input)
-    validateConfiguration(harnessConfiguration)
-    const workingDirectory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
-    let scopedCredentialVariable: string | undefined
-    try {
-      const mcp = await this.inspectMcpConfiguration(workingDirectory, signal)
-      scopedCredentialVariable = mcp.configured.enabled ? mcp.configured.bearerTokenEnvironmentVariable ?? undefined : undefined
-    } catch (error) {
-      if (!(error instanceof HarnessExecutionError) || error.result.error?.code !== 'CODEX_MCP_NOT_CONFIGURED') throw error
-    }
-    validateEnvironmentOwner(input, scopedCredentialVariable)
+    const { harnessConfiguration, workingDirectory, scopedCredentialVariable } = await this.prepareInput(input, signal)
     const holder: { runtime?: Runtime } = {}
     const transport = new CodexStdioTransport(
       this.binary,
@@ -524,6 +513,82 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     this.runtimes.set(nativeSessionId, runtime)
     this.record(runtime, 'thread.started', { threadId: nativeSessionId, thread })
     return session
+  }
+
+  async attachSession(
+    session: NativeSessionReference,
+    input: NativeSessionStart,
+    signal?: AbortSignal,
+  ): Promise<NativeSessionReference> {
+    if (session.harness !== 'codex' || session.providerVersion !== this.expectedVersion) {
+      throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The persisted session does not match the qualified Codex version.')
+    }
+    const prepared = await this.prepareInput(input, signal)
+    const loaded = this.runtimes.get(session.nativeSessionId)
+    if (loaded) {
+      if (loaded.workingDirectory !== prepared.workingDirectory
+        || loaded.configuration.model !== prepared.harnessConfiguration.model
+        || loaded.configuration.reasoningEffort !== prepared.harnessConfiguration.reasoningEffort) {
+        throw new HarnessExecutionError('CODEX_SESSION_CONFIGURATION_MISMATCH', 'The loaded Codex session has a different accepted configuration.')
+      }
+      await loaded.transport.request('thread/read', { threadId: session.nativeSessionId, includeTurns: false }, signal)
+      return loaded.session
+    }
+    const holder: { runtime?: Runtime } = {}
+    const transport = new CodexStdioTransport(
+      this.binary,
+      prepared.workingDirectory,
+      safeEnvironment(input.environment, prepared.scopedCredentialVariable ? [prepared.scopedCredentialVariable] : []),
+      async (request) => { if (holder.runtime) await this.handleRequest(holder.runtime, request) },
+      async (method, params) => { if (holder.runtime) this.handleNotification(holder.runtime, method, params) },
+      () => { if (holder.runtime) this.handleDisconnect(holder.runtime) },
+    )
+    await transport.start(signal)
+    const runtime: Runtime = {
+      input,
+      workingDirectory: prepared.workingDirectory,
+      configuration: prepared.harnessConfiguration,
+      scopedCredentialVariable: prepared.scopedCredentialVariable,
+      transport,
+      session,
+      events: [],
+      waiting: undefined,
+      activeTurnId: undefined,
+      terminalResult: undefined,
+      finalAnswer: undefined,
+      lastAgentMessage: undefined,
+      seenNotifications: new Set(),
+      wake: new Set(),
+      closed: false,
+    }
+    holder.runtime = runtime
+    try {
+      const draft = advanced(prepared.harnessConfiguration)
+      const response = assertObject(await transport.request('thread/resume', {
+        threadId: session.nativeSessionId,
+        model: prepared.harnessConfiguration.model,
+        serviceTier: prepared.harnessConfiguration.serviceTier === 'priority' ? 'fast' : null,
+        cwd: prepared.workingDirectory,
+        runtimeWorkspaceRoots: [prepared.workingDirectory, ...draft.additionalWritableDirectories],
+        approvalPolicy: draft.approvalPolicy,
+        approvalsReviewer: draft.approvalsReviewer,
+        sandbox: prepared.harnessConfiguration.sandbox,
+        config: appServerConfig(prepared.harnessConfiguration),
+        excludeTurns: false,
+      }, signal), 'CODEX_THREAD_RESUME_INVALID')
+      const thread = assertObject(response.thread, 'CODEX_THREAD_RESUME_INVALID')
+      if (text(thread.id) !== session.nativeSessionId) {
+        throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Codex resumed a different native thread identity.')
+      }
+      this.hydrateThread(runtime, thread)
+      this.runtimes.set(session.nativeSessionId, runtime)
+      this.record(runtime, 'thread.attached', { threadId: session.nativeSessionId, thread })
+      return session
+    } catch (error) {
+      runtime.closed = true
+      await transport.close()
+      throw error
+    }
   }
 
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
@@ -688,6 +753,45 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const runtime = this.runtimes.get(session.nativeSessionId)
     if (!runtime) throw new HarnessExecutionError('CODEX_SESSION_UNAVAILABLE', 'The Codex native session is not loaded.')
     return runtime
+  }
+
+  private async prepareInput(input: NativeSessionStart, signal?: AbortSignal): Promise<{
+    harnessConfiguration: CodexHarnessConfiguration
+    workingDirectory: string
+    scopedCredentialVariable: string | undefined
+  }> {
+    await this.capabilities(signal)
+    const harnessConfiguration = configuration(input)
+    validateConfiguration(harnessConfiguration)
+    const workingDirectory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+    let scopedCredentialVariable: string | undefined
+    try {
+      const mcp = await this.inspectMcpConfiguration(workingDirectory, signal)
+      scopedCredentialVariable = mcp.configured.enabled ? mcp.configured.bearerTokenEnvironmentVariable ?? undefined : undefined
+    } catch (error) {
+      if (!(error instanceof HarnessExecutionError) || error.result.error?.code !== 'CODEX_MCP_NOT_CONFIGURED') throw error
+    }
+    validateEnvironmentOwner(input, scopedCredentialVariable)
+    return { harnessConfiguration, workingDirectory, scopedCredentialVariable }
+  }
+
+  private hydrateThread(runtime: Runtime, thread: JsonObject): void {
+    if (!Array.isArray(thread.turns) || thread.turns.length === 0) return
+    const last = [...thread.turns].reverse().find(isObject)
+    if (!last) return
+    runtime.activeTurnId = text(last.id)
+    if (!Array.isArray(last.items)) return
+    for (const value of last.items) {
+      if (!isObject(value) || value.type !== 'agentMessage' || typeof value.text !== 'string') continue
+      runtime.lastAgentMessage = value.text
+      if (value.phase === 'final_answer') runtime.finalAnswer = value.text
+    }
+    const status = text(last.status)
+    if (status === 'completed') runtime.terminalResult = { outcome: 'succeeded', output: { text: runtime.finalAnswer ?? runtime.lastAgentMessage ?? '' } }
+    else if (status === 'interrupted') runtime.terminalResult = { outcome: 'canceled' }
+    else if (status === 'failed') runtime.terminalResult = {
+      outcome: 'failed', error: { code: 'CODEX_TURN_FAILED', message: this.turnError(last), retryable: false },
+    }
   }
 
   private async restart(runtime: Runtime, signal?: AbortSignal): Promise<void> {
