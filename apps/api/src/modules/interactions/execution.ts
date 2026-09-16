@@ -45,6 +45,7 @@ interface OwnedNativeSession {
   manager: NativeHarnessSessionManager
   controller: AbortController
   generation: number
+  failed?: boolean
   session?: NativeSessionReference
   opening?: Promise<NativeSessionReference>
   openingFailed?: boolean
@@ -136,7 +137,7 @@ export class ApprovalExecutionCoordinator {
         return true
       })
       if (closed && revoked && !owned.opening) {
-        const released = await attempt('release native manager', async () => { this.managerCredentials.delete(owned.manager); this.managers.release?.(owned.context, this.rawManagers.get(owned.manager) ?? owned.manager); return true })
+        const released = await attempt('release native manager', async () => { this.managerCredentials.delete(owned.manager); this.managers.release?.(owned.context, this.rawManagers.get(owned.manager) ?? owned.manager, owned.failed ? 'failed' : 'released'); return true })
         if (released && this.ownedSessions.get(owned.execution.id) === owned) this.ownedSessions.delete(owned.execution.id)
       }
       if ((!closed || owned.opening) && !failures.length) failures.push(new Error(`${owned.execution.id}: native session closure is unconfirmed.`))
@@ -313,10 +314,12 @@ export class ApprovalExecutionCoordinator {
       }, signal))
       this.assertSessionIdentity(sessionReference, session)
       resolved.markResident?.()
+      signal.throwIfAborted()
       return { manager: resolved.manager, session }
     } catch (error) {
       if (isLeaseLost(error) || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw error
       resolved.markFailed?.()
+      owned.failed = true
       await this.cleanupSession(owned)
       throw error
     }
@@ -561,6 +564,7 @@ export class ApprovalExecutionCoordinator {
     } catch (error) {
       if ((resolved && !manager) || isLeaseLost(error)
         || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw error
+      if (execution.state === 'completed' && (!ownedSession || this.closedExecutions.has(execution.id))) throw error
       try {
         input.owner.assertOwned()
         if (execution.state !== 'completed') {
@@ -587,8 +591,11 @@ export class ApprovalExecutionCoordinator {
         if (owned) await this.budgets.finish(execution.id, execution.finishedAt).catch(() => undefined)
         if (owned && ownedSession) {
           resolved?.markFailed?.()
+          ownedSession.failed = true
           ownedSession.execution = execution
           await this.cleanupSession(ownedSession)
+        } else if (owned) {
+          await this.credentials?.revokeForExecution(execution.id).catch(() => undefined)
         } else if (manager && session) {
           // Ownership loss cannot revoke a replacement owner's credential.
           await attemptCleanup([], 'close lost-owner transport', () => manager!.close(session!))

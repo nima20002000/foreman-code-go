@@ -12,11 +12,12 @@ import {
 import { MemorySaver, interrupt } from '@langchain/langgraph'
 import { it } from 'vitest'
 import type pg from 'pg'
+import { nativeLanes } from './helpers/nativeLanes.js'
 
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import type { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
-import type { NativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
+import { ExecutionScopedNativeSessionManagerResolver, type NativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import type { NativeHarnessSessionManager, NativeHistory } from '../src/modules/harnesses/port.js'
 import type { ExecutionCredentialProvider } from '../src/modules/harnesses/mcpDetection.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
@@ -73,12 +74,13 @@ class Manager implements NativeHarnessSessionManager {
   attachImpl = async (session: NativeSessionReference) => session
   turnImpl: (signal?: AbortSignal) => AsyncIterable<NativeHarnessEvent> = async function* () { yield { sequence: 0, type: 'turn.completed', occurredAt: now, payload: {} } }
   pendingValue: ReturnType<typeof interaction> | undefined
+  started = false
   constructor(readonly id: string, readonly calls: string[]) {}
   async capabilities() { this.calls.push(`capabilities:${this.id}`); return this.capabilitiesImpl() }
   async inspectMcp(): Promise<never> { throw new Error('not used') }
   async createSession() { this.calls.push(`create:${this.id}`); return this.createImpl() }
   async attachSession(session: NativeSessionReference) { this.calls.push(`attach:${this.id}`); return this.attachImpl(session) }
-  startTurn(_session: NativeSessionReference, _input: unknown, signal?: AbortSignal) { return this.turnImpl(signal) }
+  startTurn(_session: NativeSessionReference, _input: unknown, signal?: AbortSignal) { this.started = true; return this.turnImpl(signal) }
   async pending() {
     const pending = this.pendingValue
     return pending ? { session: { harness: this.harness, providerVersion: pending.providerVersion, nativeSessionId: pending.nativeSessionId },
@@ -98,8 +100,12 @@ class Manager implements NativeHarnessSessionManager {
     this.calls.push(`close:${this.id}`)
     return this.closeImpl()
   }
-  async history(): Promise<NativeHistory> { return { events: [], pendingInteractions: [], terminalResult: { outcome: 'succeeded' } } }
-  async reconcile() { return this.history() }
+  async history(): Promise<NativeHistory> {
+    const pending = await this.pending()
+    return pending ? { events: [], pendingInteractions: [pending] }
+      : { events: [], pendingInteractions: [], terminalResult: { outcome: 'succeeded' } }
+  }
+  async reconcile() { return this.started ? this.history() : { events: [], pendingInteractions: [] } }
 }
 
 function fixture(items: HarnessExecution[]) {
@@ -110,24 +116,34 @@ function fixture(items: HarnessExecution[]) {
   const runs = {
     listExecutions: async () => { calls.push('list'); return [...rows.values()] },
     getExecutionConfiguration: async (id: string) => configuration(id.slice('config-'.length)),
-    ensureExecution: async (item: HarnessExecution) => ({ execution: rows.get(item.id) ?? item, created: false }),
+    ensureExecution: async (item: HarnessExecution) => ({ execution: rows.get(item.id) ?? item, created: !rows.get(item.id)?.nativeSessionId }),
     updateExecution: async (item: HarnessExecution) => { rows.set(item.id, item) },
     recordActivity: async () => undefined,
+    appendNativeEvent: async () => undefined,
   }
   const interactions = {
+    coordination: nativeLanes(),
     getForExecution: async (id: string) => pending.get(id),
     create: async (item: DurableInteraction) => { pending.set(item.executionId, item); return { interaction: item, created: true } },
     cancelPendingForRun: async () => { calls.push('interactions'); return 1 },
   }
   const budgets = { ensure: async () => undefined, assertActive: async () => undefined, beginWait: async () => undefined,
+    finish: async () => undefined, resume: async () => undefined,
     stop: async (id: string) => { calls.push(`budget:${id}`) } }
   const credentials = {
-    prepare: async () => ({ credential: { environment: { agentId: 'agent', variables: {} } } }),
+    prepare: async () => ({ credential: { principalId: 'fixture-principal', expiresAt: new Date(Date.now() + 900_000).toISOString(), environment: { agentId: 'agent', variables: {} } } }),
     revokeForExecution: async (id: string) => { calls.push(`revoke:${id}`) },
   }
-  const resolver = {
-    resolve: (context: { executionId: string }) => ({ manager: managers.get(context.executionId)!, processState: 'resident' as const }),
-    release: (context: { executionId: string }) => { calls.push(`release:${context.executionId}`) },
+  const rawResolver = new ExecutionScopedNativeSessionManagerResolver((context) => managers.get(context.executionId)!)
+  const contextFor = (item: HarnessExecution) => ({ executionId: item.id, agentId: item.agentId,
+    harness: 'codex' as const, workingDirectory: '/project', configuration: configuration(item.id) })
+  for (const item of items) if (item.nativeSessionId) {
+    const resolved = rawResolver.resolve(contextFor(item))
+    resolved.beginStart!(); resolved.markResident!()
+  }
+  const resolver: NativeSessionManagerResolver = {
+    resolve: (context) => rawResolver.resolve(context),
+    release: (context, manager, state) => { calls.push(`release:${context.executionId}`); rawResolver.release(context, manager, state) },
   }
   const coordinator = new ApprovalExecutionCoordinator(
     runs as unknown as PostgresRunRepository, interactions as unknown as PostgresInteractionRepository,
@@ -135,12 +151,14 @@ function fixture(items: HarnessExecution[]) {
     credentials as unknown as ExecutionCredentialProvider,
   )
   const observe = (item: HarnessExecution, signal = new AbortController().signal) => coordinator.ensureObserve({
-    candidate: item, owner: { client: {} } as RunOwnership, graphThreadId: item.runId,
+    candidate: item, owner: { client: {}, assertOwned() {} } as RunOwnership, graphThreadId: item.runId,
     workflowId: 'workflow-1', approval: { handler: 'user' }, signal,
     request: { executionId: item.id, runId: item.runId, workspaceId: 'workspace-1', workflowNodeId: item.workflowNodeId,
       workingDirectory: item.workingDirectory!, runtimeDirectory: item.runtimeDirectory!, configuration: configuration(item.id), input: {} } as HarnessExecutionRequest,
   })
-  return { calls, rows, managers, pending, runs, interactions, budgets, credentials, resolver, coordinator, observe }
+  return { calls, rows, managers, pending, runs, interactions, budgets, credentials, resolver, coordinator, observe,
+    cold: (item: HarnessExecution) => rawResolver.release(contextFor(item)),
+  }
 }
 
 it('cancels completed database executions that still have resident native sessions (#13)', async () => {
@@ -299,6 +317,7 @@ it('Stop cancels every unresolved SQL state including delivery_failed without ch
 })
 
 function engineFixture(approvals?: ApprovalExecutionCoordinator) {
+  if (approvals) Object.assign(approvals, { reconcileReviews: async () => undefined, reviewers: { shutdown: async () => undefined } })
   const calls: string[] = []
   let owned = true
   const owner = { client: {}, assertOwned: () => { if (!owned) throw new Error('ownership lost') }, release: async () => { calls.push('release-owner') } } as unknown as RunOwnership
@@ -328,7 +347,13 @@ function engineFixture(approvals?: ApprovalExecutionCoordinator) {
     updateState: async (_id: string, update: Partial<WorkflowRun>) => { calls.push(`state:${update.executionState}:${update.outcome}`); run = { ...run, ...update } },
     getAcceptedResult: async () => ({ outcome: 'succeeded' as const }),
   }
-  const interactions = { bindGraphInterrupt: async () => undefined }
+  const nativeExecution = execution('one')
+  const pendingInteraction = { ...interaction(nativeExecution), id: 'interaction-1', graphInterruptId: undefined }
+  Object.assign(runs, { getExecution: async () => nativeExecution })
+  const interactions = {
+    get: async () => pendingInteraction,
+    bindGraphInterrupt: async (_id: string, graphInterruptId: string) => ({ ...pendingInteraction, graphInterruptId }),
+  }
   const engine = new LangGraphWorkflowEngine(runs as unknown as PostgresRunRepository,
     { getVersion: async () => version } as unknown as PostgresWorkflowRepository,
     { resolve: () => { throw new Error('legacy harness must not run') } }, new MemorySaver(), '/runtime', 60_000,
@@ -471,6 +496,7 @@ it('does not claim native closure when a failed create never returned a session 
 it('closes an exact native attach that finishes after Stop times out, without starting another turn', async () => {
   const item = execution('one')
   const f = fixture([item])
+  f.cold(item)
   const attaching = deferred<void>()
   const opened = deferred<NativeSessionReference>()
   f.managers.get('one')!.attachImpl = async () => { attaching.resolve(); return opened.promise }
@@ -492,6 +518,7 @@ it('closes an exact native attach that finishes after Stop times out, without st
 it('does not accept an older close as evidence that a late native attach is closed', async () => {
   const item = execution('one')
   const f = fixture([item])
+  f.cold(item)
   const attaching = deferred<void>()
   const opened = deferred<NativeSessionReference>()
   const closing = deferred<void>()

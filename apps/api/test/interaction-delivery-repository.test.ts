@@ -34,6 +34,7 @@ function setup() {
         calls.push(sql)
         if (sql.startsWith('select stopped_at')) return { rows: [{ stopped_at: control.stopped ? new Date() : null, exhausted: control.exhausted }] }
         if (sql.startsWith('select record from durable_interactions')) return { rows: [{ record: structuredClone(interaction) }] }
+        if (sql.startsWith('select delivery_token')) return { rows: [{ delivery_token: control.owned ? claim.ownerToken : null }] }
         if (sql.startsWith('select attempt,state')) return { rows: control.owned ? [{ attempt: 1, state: 'submitted', correlation_id: 'original-correlation', lease_owner: 'owner-one', leased: control.leased }] : [] }
         if (sql.startsWith('insert into interaction_graph_resumes') && control.outboxFailure) throw new Error('outbox insert failed')
         return { rows: [], rowCount: 1 }

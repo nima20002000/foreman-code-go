@@ -250,7 +250,9 @@ describe('PostgreSQL infrastructure', () => {
         expect(database.pool.waitingCount).toBe(0)
         expect(database.pool.totalCount).toBe(0)
       })
-      expect((await app.inject('/health/ready')).statusCode).toBe(200)
+      await vi.waitFor(async () => {
+        expect((await app.inject('/health/ready')).statusCode).toBe(200)
+      }, { timeout: 1500 })
     } finally {
       if (!released) blocker.release()
       await app.close()

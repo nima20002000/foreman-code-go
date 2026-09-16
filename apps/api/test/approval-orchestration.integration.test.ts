@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { seedInteractionOwners } from './helpers/interactionOwners.js'
 import { mkdtemp, realpath, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -244,7 +245,7 @@ it('interrupts and resumes the same durable native execution without repeating p
   })
   expect(response.interaction.deliveryState).toBe('delivered')
   expect((await runs.get(run.id))?.outcome).toBe('succeeded')
-  expect(manager.counters).toEqual({ nodeEntries: 2, sessions: 2, attaches: 2, sideEffects: 2, deliveries: 1 })
+  expect(manager.counters).toEqual({ nodeEntries: 2, sessions: 2, attaches: 0, sideEffects: 2, deliveries: 1 })
   const executions = await runs.listExecutions(run.id)
   expect(executions).toHaveLength(2)
   expect(executions.find((item) => item.workflowNodeId === 'predecessor')?.nativeSessionId).toBe('session-predecessor')
@@ -460,13 +461,16 @@ it('delivers an Orchestrator App MCP response to native execution, resumes the r
 it('keeps a busy designated reviewer pending and fences one idle-session dispatch across workers', async () => {
   const interactions = new PostgresInteractionRepository(pool)
   const coordination = new PostgresInteractionCoordinationRepository(pool)
+  await seedInteractionOwners(pool, NATIVE_INTERACTION_FIXTURES.codex)
   const first = await interactions.create({
     ...NATIVE_INTERACTION_FIXTURES.codex, id: 'review-interaction-busy',
     nativeSessionId: 'requester-busy', nativeRequestId: 'request-busy',
+    approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'reviewer-busy' },
   })
   const second = await interactions.create({
     ...NATIVE_INTERACTION_FIXTURES.codex, id: 'review-interaction-idle',
     nativeSessionId: 'requester-idle', nativeRequestId: 'request-idle',
+    approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'reviewer-idle' },
   })
   const now = new Date().toISOString()
   await coordination.ensureLane({
@@ -478,6 +482,7 @@ it('keeps a busy designated reviewer pending and fences one idle-session dispatc
     observedStatus: 'idle', connectionGeneration: 1, observedAt: now, revision: 0,
   })
   const manager = new ReviewNativeManager()
+  await coordination.claimLane('lane-busy', 0, 'active-writer', 'busy-token', new Date(Date.now() + 60_000).toISOString(), 'busy-turn')
   const reviewRuntime = {
     attachInteraction: async () => { throw new Error('not used') },
     attachOwnedSession: async (_context: unknown, session: NativeSessionReference) => ({ manager, session }),
@@ -517,6 +522,7 @@ it('lists, reads and responds to an Operator-assigned request through authentica
   const interactions = new PostgresInteractionRepository(pool)
   const created = await interactions.create({
     ...NATIVE_INTERACTION_FIXTURES.codex, id: 'operator-interaction', runId: run.id,
+    nativeSessionId: execution.nativeSessionId,
     executionId: execution.id, requestingAgentId: execution.agentId, approval: { handler: 'operator' },
   })
   const budgets = new PostgresApprovalBudgetRepository(pool)
@@ -586,6 +592,7 @@ it('lists, reads and responds to an Operator-assigned request through authentica
     for await (const event of uncertainManager.startTurn(uncertainSession, { prompt: 'fixture', clientCorrelationId: 'uncertain-proof' })) { void event; break }
     const uncertain = await interactions.create({
       ...NATIVE_INTERACTION_FIXTURES.opencode, id: 'operator-interaction-uncertain', runId: run.id,
+      nativeSessionId: uncertainSession.nativeSessionId,
       executionId: execution.id, requestingAgentId: execution.agentId, approval: { handler: 'operator' },
     })
     const uncertainService = new InteractionService(interactions, budgets, {
@@ -602,13 +609,13 @@ it('lists, reads and responds to an Operator-assigned request through authentica
     const reconciled = await uncertainService.respond({ kind: 'operator', principal: issued.principal }, {
       interactionId: uncertain.interaction.id, optionId: 'opencode-approve-once', expectedRevision: 0,
     })
-    expect(reconciled.interaction.deliveryState).toBe('failed')
+    expect(reconciled.interaction.deliveryState).toBe('uncertain')
     expect(uncertainManager.responseAttempts).toBe(1)
     const retried = await uncertainService.respond({ kind: 'operator', principal: issued.principal }, {
       interactionId: uncertain.interaction.id, optionId: 'opencode-approve-once', expectedRevision: 0,
     })
-    expect(retried.interaction.deliveryState).toBe('delivered')
-    expect(uncertainManager.responseAttempts).toBe(2)
+    expect(retried.interaction.deliveryState).toBe('uncertain')
+    expect(uncertainManager.responseAttempts).toBe(1)
     const stopped = await interactions.create({
       ...NATIVE_INTERACTION_FIXTURES.codex, id: 'operator-interaction-stopped', runId: run.id,
       executionId: execution.id, requestingAgentId: execution.agentId,
@@ -618,7 +625,7 @@ it('lists, reads and responds to an Operator-assigned request through authentica
     expect(await interactions.get(stopped.interaction.id)).toMatchObject({ status: 'canceled' })
     await expect(service.respond({ kind: 'operator', principal: issued.principal }, {
       interactionId: stopped.interaction.id, optionId: 'codex-approve-once', expectedRevision: 0,
-    })).rejects.toMatchObject({ code: 'EXECUTION_STOPPED' })
+    })).rejects.toMatchObject({ code: 'INTERACTION_NOT_RESPONDABLE' })
     expect(manager.counters.cancellations).toBe(1)
   } finally { await client.close() }
 })

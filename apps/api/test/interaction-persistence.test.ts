@@ -155,6 +155,17 @@ it('rejects reuse of a command for another target and rolls back its decision', 
   assert.equal(store.updates, 0)
 })
 
+it('validates command identity on an already delivered same-option replay before graph recovery', async () => {
+  const store = new DecisionStore()
+  await decide(store)
+  store.record = { ...store.record!, status: 'delivered', deliveryState: 'delivered' }
+  store.receipts.set(`${principal.id}:conflicting-command`, { interaction_id: 'other-interaction', option_id: response.optionId })
+  const service = new InteractionService(new PostgresInteractionRepository(store.pool),
+    {} as PostgresApprovalBudgetRepository, {} as InteractionNativeRuntime,
+    async () => { throw new Error('must not resume an invalid command') })
+  await assert.rejects(service.respond({ kind: 'operator', principal }, { ...response, commandId: 'conflicting-command' }), { code: 'COMMAND_ID_REUSED' })
+})
+
 it('never allows an unfenced, expired, or superseded worker to write a claimed delivery', () => {
   const lease = { owner: 'worker-1', token: 'token-1', fence: 1, expiresAt: '2099-01-01T00:00:00.000Z' }
   const row: LockedInteraction = { interaction: interaction(), fence: 1, owner: lease.owner, token: lease.token, leaseActive: true }
@@ -200,46 +211,54 @@ it('stores native event envelopes and their activity references atomically, with
 })
 
 function deliveryService(attachError?: Error, graphError?: Error) {
-  const base = interaction()
-  const decided = { ...base, revision: 1, status: 'delivery_pending' as const, deliveryState: 'pending' as const, selectedOptionId: response.optionId }
-  const transitions: Array<{ state: string; options: unknown }> = []
-  const attempts: string[] = []
+  let current = interaction()
+  const outcomes: Array<{ state: string; error?: string }> = []
+  const graphErrors: Array<string | undefined> = []
   const repository = {
-    get: async () => base,
-    decide: async () => ({ interaction: decided, replayed: false }),
-    updateDelivery: async (_id: string, revision: number, state: string, options?: unknown) => {
-      transitions.push({ state, options })
-      return { ...decided, revision: revision + 1, deliveryState: state }
+    get: async () => current,
+    decide: async () => {
+      current = { ...current, revision: 1, status: 'delivery_pending', deliveryState: 'pending', selectedOptionId: response.optionId }
+      return { interaction: current, replayed: false }
     },
-    beginDeliveryAttempt: async () => 1,
-    finishDeliveryAttempt: async (_id: string, _attempt: number, state: string) => { attempts.push(state) },
+    delivery: {
+      claim: async () => ({ interaction: current, attempt: 1, ownerToken: 'owner', correlationId: 'delivery', mode: 'submit' }),
+      finish: async (_claim: unknown, input: { state: string; error?: string } | ((item: DurableInteraction, signal: AbortSignal) => Promise<{ state: string; error?: string }>)) => {
+        const outcome = typeof input === 'function' ? await input(current, new AbortController().signal) : input
+        outcomes.push(outcome)
+        current = { ...current, deliveryState: outcome.state as DurableInteraction['deliveryState'],
+          status: outcome.state === 'delivered' ? 'delivered' : 'delivery_failed' }
+        return current
+      },
+      claimGraphResume: async () => ({ interaction: current, ownerToken: 'graph-owner' }),
+      finishGraphResume: async (_claim: unknown, error?: string) => { graphErrors.push(error) },
+    },
   } as unknown as PostgresInteractionRepository
   const budgets = { assertActive: async () => undefined, resume: async () => undefined } as unknown as PostgresApprovalBudgetRepository
   const runtime = { attachInteraction: async () => {
     if (attachError) throw attachError
-    return { manager: { respond: async () => undefined }, session: { nativeSessionId: base.nativeSessionId } }
+    return { manager: { harness: current.harness, respond: async () => undefined },
+      session: { harness: current.harness, providerVersion: current.providerVersion, nativeSessionId: current.nativeSessionId } }
   } } as unknown as InteractionNativeRuntime
   const service = new InteractionService(repository, budgets, runtime, async () => { if (graphError) throw graphError })
-  return { service, transitions, attempts }
+  return { service, outcomes, graphErrors }
 }
 
 it('keeps attachment failure details instead of persisting an unexplained failed flag', async () => {
-  const { service, transitions, attempts } = deliveryService(new Error('native session is unavailable'))
+  const { service, outcomes, graphErrors } = deliveryService(new Error('native session is unavailable'))
   await service.respond({ kind: 'operator', principal }, response)
-  assert.deepEqual(transitions, [{ state: 'failed', options: { error: {
-    code: 'NATIVE_ATTACHMENT_FAILED', message: 'native session is unavailable', phase: 'attach', certainty: 'definite',
-  } } }])
-  assert.deepEqual(attempts, [])
+  assert.deepEqual(outcomes, [{ state: 'failed', error: 'native session is unavailable' }])
+  assert.deepEqual(graphErrors, [])
 })
 
 it('does not relabel delivered native work as failed when graph resume throws', async () => {
-  const { service, transitions, attempts } = deliveryService(undefined, new Error('checkpoint unavailable'))
-  await assert.rejects(service.respond({ kind: 'operator', principal }, response), /checkpoint unavailable/)
-  assert.deepEqual(attempts, ['delivered'])
-  assert.deepEqual(transitions.map((item) => item.state), ['submitted', 'delivered'])
+  const { service, outcomes, graphErrors } = deliveryService(undefined, new Error('checkpoint unavailable'))
+  const result = await service.respond({ kind: 'operator', principal }, response)
+  assert.equal(result.interaction.deliveryState, 'delivered')
+  assert.deepEqual(outcomes, [{ state: 'delivered' }])
+  assert.deepEqual(graphErrors, ['checkpoint unavailable'])
 })
 
-it('keeps every applied migration byte-for-byte and adds only HAP-05 migration 503', async () => {
+it('keeps every applied migration byte-for-byte and adds HAP-05 migrations 503 and 508', async () => {
   // SHA-256 of each SQL string at PR #10 audited head 2f83f40b.
   const expected: Record<number, string> = {
     "1": "51b2b3e95b480d1abd6139242182c4e39e9730ab5f1d1ca10b84500005e81510",
@@ -260,6 +279,6 @@ it('keeps every applied migration byte-for-byte and adds only HAP-05 migration 5
     return { rows: [], rowCount: 0 }
   } }) } as unknown as pg.Pool
   await applyApplicationMigrations(pool)
-  assert.deepEqual([...observed.keys()], [...Object.keys(expected).map(Number), 503])
+  assert.deepEqual([...observed.keys()], [...Object.keys(expected).map(Number), 503, 508])
   for (const [version, hash] of Object.entries(expected)) assert.equal(observed.get(Number(version)), hash, `migration ${version}`)
 })

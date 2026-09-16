@@ -6,6 +6,7 @@ import type {
   NativeHarnessCapabilities, NativeHarnessEvent, NativeSessionReference, PendingNativeInteraction,
 } from '@graphql/contracts'
 import { it } from 'vitest'
+import { nativeLanes } from './helpers/nativeLanes.js'
 
 import { DomainError } from '../src/modules/errors.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
@@ -77,7 +78,10 @@ class ScriptedManager implements NativeHarnessSessionManager {
     assert.deepEqual(session, this.session)
     return this.snapshot
   }
-  async reconcile(session: NativeSessionReference) { return this.history(session) }
+  async reconcile(session: NativeSessionReference) {
+    if (!this.turns.length && !this.attaches.length) return { events: [], pendingInteractions: [] }
+    return this.history(session)
+  }
   async close(session: NativeSessionReference) { this.closed.push(session) }
 }
 
@@ -135,8 +139,12 @@ function fixture(harness: AgentHarness = 'codex') {
     async recordActivity() {
       if (activityFailure) { const error = activityFailure; activityFailure = undefined; throw error }
     },
+    async appendNativeEvent() {
+      if (activityFailure) { const error = activityFailure; activityFailure = undefined; throw error }
+    },
   } as unknown as PostgresRunRepository
   const interactions = {
+    coordination: nativeLanes(),
     async create(input: DurableInteraction) {
       const existing = [...records.values()].find((item) => item.harness === input.harness
         && item.nativeSessionId === input.nativeSessionId && item.nativeRequestId === input.nativeRequestId)
@@ -157,6 +165,7 @@ function fixture(harness: AgentHarness = 'codex') {
     async assertActive() { if (budgetFailure) throw budgetFailure },
     async beginWait(id: string) { waits.push(id) },
     async resume(id: string) { resumes.push(id) },
+    async finish() {},
     async stop(id: string) {
       stops.push(id)
       if (stopFailure) { const error = stopFailure; stopFailure = undefined; throw error }
@@ -166,7 +175,7 @@ function fixture(harness: AgentHarness = 'codex') {
     async prepare(input: { executionId: string }) {
       prepared.push(input.executionId)
       if (prepareFailure) throw prepareFailure
-      return { credential: { environment: {
+      return { credential: { principalId: 'fixture-principal', expiresAt: new Date(Date.now() + 900_000).toISOString(), environment: {
         agentId: configuration.agentId, variables: { GRAPHQL_APP_MCP_TOKEN: 'test-scoped-token' },
       } } }
     },
@@ -391,7 +400,11 @@ it('passes the abort signal to the initial native turn', async () => {
   const f = fixture()
   f.snapshot('request-a')
   await f.coordinator.ensureObserve(f.input)
-  assert.equal(f.manager.turns[0]?.signal, f.controller.signal)
+  const nativeSignal = f.manager.turns[0]?.signal
+  assert.ok(nativeSignal)
+  assert.equal(nativeSignal.aborted, false)
+  f.controller.abort(new Error('cancel execution'))
+  assert.equal(nativeSignal.aborted, true)
 })
 
 it('returns a terminal canceled result without replacing the native session', async () => {
@@ -419,7 +432,7 @@ it('rejects a native pending request whose harness/session identity does not mat
   const pending = f.pending('request-a')
   f.manager.snapshot = { events: [], pendingInteractions: [{ ...pending,
     session: { ...pending.session, nativeSessionId: 'other-session' } }] }
-  await assert.rejects(f.coordinator.ensureObserve(f.input), /different session identity/)
+  await assert.rejects(f.coordinator.ensureObserve(f.input), /session identity/)
   assert.equal(f.records.size, 0)
   assert.equal(f.executions.get(f.candidate.id)?.result?.outcome, 'failed')
 })

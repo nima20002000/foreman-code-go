@@ -100,6 +100,7 @@ export interface SessionWriteLease {
   previous: NativeSessionLane
   observedStatus: NativeSessionLane['observedStatus']
   providerId?: string
+  operation?: 'attach'
   finished: Promise<void>
   finish(): void
 }
@@ -243,9 +244,20 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   }
 
   private control<T>(session: NativeSessionReference, signal: AbortSignal | undefined,
-    action: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    action: (signal: AbortSignal) => Promise<T>, cleanup = false): Promise<T> {
     const work = this.controlTail.catch(() => undefined).then(async () => {
       let active = this.active.get(session.nativeSessionId)
+      if (cleanup && active?.operation === 'attach' && active.guard.signal.aborted
+        && !isLeaseLost(active.guard.signal.reason)) {
+        // The attachment still owns this lane. Stop may close its transport
+        // before that attachment returns, but may not use a successor's lane.
+        await this.coordination.assertLaneLease(active.fence.id, active.fence.token)
+        const cleanupSignal = signal ?? AbortSignal.timeout(this.leaseMs)
+        cleanupSignal.throwIfAborted()
+        const result = await waitForSignal(action(cleanupSignal), cleanupSignal)
+        await this.coordination.assertLaneLease(active.fence.id, active.fence.token)
+        return result
+      }
       if (active?.guard.signal.aborted && !isLeaseLost(active.guard.signal.reason)) {
         // Stop hands the lane back before issuing its separately fenced native cancellation.
         await active.finished
@@ -254,17 +266,18 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       if (active) {
         await active.guard.check()
         signal?.throwIfAborted()
-        const result = await action(signal ? AbortSignal.any([signal, active.guard.signal]) : active.guard.signal)
+        const ownedSignal = signal ? AbortSignal.any([signal, active.guard.signal]) : active.guard.signal
+        const result = await waitForSignal(action(ownedSignal), ownedSignal)
         await active.guard.check()
         return result
       }
       return this.withLane(session, `control-${randomUUID()}`, signal, async (_manager, lease) => {
         lease.observedStatus = 'uncertain'
         await lease.guard.check()
-        const result = await action(lease.guard.signal)
+        const result = await lease.guard.wait(action(lease.guard.signal))
         await lease.guard.check()
         if (lease.previous.correlationId) {
-          const history = await this.manager.reconcile(session, lease.previous.correlationId, lease.guard.signal)
+          const history = await lease.guard.wait(this.manager.reconcile(session, lease.previous.correlationId, lease.guard.signal))
           this.observe(session, history, lease.previous.correlationId, lease)
         }
         return result
@@ -277,20 +290,28 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   respond: NativeHarnessSessionManager['respond'] = (session, requestId, option, signal) =>
     this.control(session, signal, (ownedSignal) => this.manager.respond(session, requestId, option, ownedSignal))
   cancel: NativeHarnessSessionManager['cancel'] = (session, signal) =>
-    this.control(session, signal, (ownedSignal) => this.manager.cancel(session, ownedSignal))
+    this.control(session, signal, (ownedSignal) => this.manager.cancel(session, ownedSignal), true)
 
   attachSession(session: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
     return this.withLane(session, `attach-${randomUUID()}`, signal, async (manager, lease) => {
-      const attached = await lease.guard.wait(manager.attachSession(session, input, lease.guard.signal))
-      await lease.guard.check()
+      lease.operation = 'attach'
+      // Preserve the actual attach lifetime so Stop can observe a late native
+      // connection. A local abort is not evidence that the provider stopped.
+      const attached = await manager.attachSession(session, input, lease.guard.signal)
+      if (!lease.guard.signal.aborted) await lease.guard.check()
       if (attached.nativeSessionId !== session.nativeSessionId || attached.harness !== session.harness
-        || attached.providerVersion !== session.providerVersion) throw new Error('Native attach changed the durable session identity.')
+        || attached.providerVersion !== session.providerVersion) throw new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH', 'The native manager returned a different session identity.', 409)
       return attached
     })
   }
 
   async close(session: NativeSessionReference): Promise<void> {
     let active = this.active.get(session.nativeSessionId)
+    if (active?.operation === 'attach' && active.guard.signal.aborted && !isLeaseLost(active.guard.signal.reason)) {
+      await this.coordination.assertLaneLease(active.fence.id, active.fence.token)
+      active.observedStatus = 'disconnected'
+      return this.manager.close(session)
+    }
     if (active?.guard.signal.aborted && !isLeaseLost(active.guard.signal.reason)) {
       await active.finished
       active = this.active.get(session.nativeSessionId)
@@ -305,6 +326,17 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       await manager.close(session)
     })
   }
+}
+
+async function waitForSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  let abort!: () => void
+  try {
+    return await Promise.race([operation, new Promise<never>((_resolve, reject) => {
+      abort = () => reject(signal.reason)
+      signal.addEventListener('abort', abort, { once: true })
+      if (signal.aborted) abort()
+    })])
+  } finally { signal.removeEventListener('abort', abort) }
 }
 
 export function coordinateSessionManager(manager: NativeHarnessSessionManager,

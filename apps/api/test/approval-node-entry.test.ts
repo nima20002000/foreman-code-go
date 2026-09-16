@@ -53,6 +53,8 @@ async function fixture(approval = true) {
   const runs = {
     async acquireOwnership() { return owner },
     async get() { return run },
+    async getExecution(id: string) { return executions.get(id) },
+    async remainingApprovalTime() { return 60_000 },
     async updateState(_id: string, update: Partial<WorkflowRun>) { run = { ...run, ...update } },
     async createExecution(execution: HarnessExecution) { executions.set(execution.id, execution) },
     async updateExecution(execution: HarnessExecution) {
@@ -67,6 +69,7 @@ async function fixture(approval = true) {
     async recordActivity() {},
   } as unknown as PostgresRunRepository
   const interactions = {
+    async get(id: string) { return records.get(id) },
     async bindGraphInterrupt(id: string, graphInterruptId: string) {
       const current = records.get(id)
       assert.ok(current)
@@ -77,6 +80,9 @@ async function fixture(approval = true) {
     },
   } as unknown as PostgresInteractionRepository
   const approvals = {
+    reconcileReviews: async () => undefined,
+    residentRunIds: () => [] as string[],
+    reviewers: { shutdown: async () => undefined },
     async ensureObserve(input: Parameters<ApprovalExecutionCoordinator['ensureObserve']>[0]): Promise<ApprovalExecutionObservation> {
       const execution: HarnessExecution = { ...input.candidate, id: 'execution-durable', nativeSessionId: 'session-exact',
         state: pendingIds.length ? 'waiting' : 'completed',

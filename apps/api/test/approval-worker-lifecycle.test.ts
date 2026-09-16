@@ -3,6 +3,7 @@ import type {
   NativeHarnessEvent, NativeSessionReference,
 } from '@graphql/contracts'
 import { afterEach, expect, it, vi } from 'vitest'
+import { nativeLanes } from './helpers/nativeLanes.js'
 
 import { DEFAULT_WORKER_CREDENTIAL_TTL_MS, type IssuedWorkerCredential } from '../src/modules/access/workerCredentials.js'
 import { WorkerLaunchCredentialService } from '../src/modules/harnesses/mcpDetection.js'
@@ -51,6 +52,8 @@ function fixture(harness: AgentHarness = 'codex', started = true) {
       }),
       pending: vi.fn(async () => undefined),
       history: vi.fn(async (): Promise<NativeHistory> => ({ events: [], pendingInteractions: [], terminalResult: { outcome: 'succeeded' } })),
+      reconcile: vi.fn(async (): Promise<NativeHistory> => ({ events: [], pendingInteractions: [] })),
+      cancel: vi.fn(async () => true),
       close: vi.fn(async () => undefined),
     }
   }
@@ -80,21 +83,22 @@ function fixture(harness: AgentHarness = 'codex', started = true) {
   }
   const budgets = {
     ensure: vi.fn(async () => undefined), assertActive: vi.fn(async () => undefined),
-    beginWait: vi.fn(async () => undefined), finish: vi.fn(async () => undefined),
+    beginWait: vi.fn(async () => undefined), finish: vi.fn(async () => undefined), stop: vi.fn(async () => undefined),
   }
   const runs = {
     getExecution: vi.fn(async () => execution),
     get: vi.fn(async () => ({ id: execution.runId, workspaceId: configuration.workspaceId })),
     getExecutionConfiguration: vi.fn(async () => configuration),
-    ensureExecution: vi.fn(async () => ({ execution })),
+    ensureExecution: vi.fn(async () => ({ execution, created: !execution.nativeSessionId })),
     updateExecution: vi.fn(async (next: HarnessExecution) => { execution = next }),
     recordActivity: vi.fn(async () => undefined),
+    appendNativeEvent: vi.fn(async () => undefined),
   }
-  const interactions = { getForExecution: vi.fn(async () => undefined) }
+  const interactions = { coordination: nativeLanes(), getForExecution: vi.fn(async () => undefined) }
   const coordinator = new ApprovalExecutionCoordinator(runs as never, interactions as never, budgets as never, resolver, 60_000, credentials)
   const observe = () => coordinator.ensureObserve({
     candidate: execution, request, approval: { handler: 'user' }, workflowId: 'workflow-1', graphThreadId: 'thread-1',
-    owner: { client: {} } as never, signal: new AbortController().signal,
+    owner: { client: {}, assertOwned() {} } as never, signal: new AbortController().signal,
   })
   return { configuration, context, session, resolver, managers, coordinator, credentials, issued, budgets, runs, observe }
 }
@@ -144,9 +148,11 @@ for (const started of [false, true]) {
     const failed = f.managers[0]!
     expect(failed.createSession).not.toHaveBeenCalled()
     expect(failed.attachSession).not.toHaveBeenCalled()
-    await f.observe()
-    expect(f.managers).toHaveLength(2)
-    expect(f.managers[1]!.createSession).toHaveBeenCalledTimes(started ? 0 : 1)
+    const settled = await f.observe()
+    expect(settled.state).toBe('completed')
+    expect(settled.execution.result?.outcome).toBe('failed')
+    expect(f.managers).toHaveLength(1)
+    expect(f.credentials.prepare).toHaveBeenCalledTimes(1)
   })
 }
 
@@ -154,7 +160,7 @@ it('revokes resident credentials after attachment failure without preparing anot
   const f = fixture()
   await f.coordinator.attachOwnedSession(f.context, f.session)
   const resident = f.resolver.resolve(f.context)
-  f.managers[0]!.attachSession.mockRejectedValueOnce(new Error('attachment failed'))
+  f.managers[0]!.history.mockRejectedValueOnce(new Error('attachment failed'))
   await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('attachment failed')
   expect(f.credentials.prepare).toHaveBeenCalledTimes(1)
   expect(f.credentials.revokeForExecution).toHaveBeenCalledWith(f.context.executionId)
@@ -177,8 +183,8 @@ for (const harness of ['codex', 'opencode'] as const) {
     expect(f.managers).toHaveLength(1)
     const manager = f.managers[0]!
     expect(manager.attachSession.mock.calls[0]![1].environment).toBe(credential.environment)
-    expect(manager.attachSession.mock.calls[1]![1].environment).toBeUndefined()
-    expect(manager.attachSession.mock.calls[2]![1].environment).toBeUndefined()
+    expect(manager.attachSession).toHaveBeenCalledTimes(1)
+    expect(manager.history).toHaveBeenCalledTimes(2)
     expect(credential.expiresAt).toBe(originalExpiry)
     for (const [reference] of manager.attachSession.mock.calls) expect(reference).toBe(f.session)
     expect(manager.createSession).not.toHaveBeenCalled()
@@ -267,7 +273,7 @@ it('fences reuse until failed resident cleanup finishes', async () => {
   let announce!: () => void
   const closing = new Promise<void>((resolve) => { announce = resolve })
   const gate = new Promise<void>((resolve) => { unblock = resolve })
-  f.managers[0]!.attachSession.mockRejectedValueOnce(new Error('attachment failed'))
+  f.managers[0]!.history.mockRejectedValueOnce(new Error('attachment failed'))
   f.managers[0]!.close.mockImplementationOnce(async () => { announce(); await gate })
   const failed = expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('attachment failed')
   await closing
@@ -282,11 +288,12 @@ it('finalizes newly terminal work and reuses the persisted finish time before an
   const f = fixture('codex', false)
   const first = await f.observe()
   expect(first.state).toBe('completed')
+  const activeChecks = f.budgets.assertActive.mock.calls.length
   expect(f.budgets.finish).toHaveBeenCalledWith(f.context.executionId, first.execution.finishedAt)
   f.budgets.assertActive.mockRejectedValue(new Error('must not re-check a completed execution'))
   const replay = await f.observe()
   expect(replay).toEqual(first)
-  expect(f.budgets.assertActive).toHaveBeenCalledTimes(1)
+  expect(f.budgets.assertActive).toHaveBeenCalledTimes(activeChecks)
   expect(f.budgets.finish).toHaveBeenLastCalledWith(f.context.executionId, first.execution.finishedAt)
   expect(f.managers).toHaveLength(1)
   expect(f.managers[0]!.createSession).toHaveBeenCalledTimes(1)
@@ -296,7 +303,7 @@ it('finalizes newly terminal work and reuses the persisted finish time before an
 it('still revokes and releases terminal work when budget finalization needs retry', async () => {
   const f = fixture('codex', false)
   f.budgets.finish.mockRejectedValueOnce(new Error('accounting unavailable'))
-  await expect(f.observe()).rejects.toThrow('accounting unavailable')
+  await expect(f.observe()).rejects.toMatchObject({ errors: [expect.objectContaining({ message: 'accounting unavailable' })] })
   expect(f.credentials.revokeForExecution).toHaveBeenCalledWith(f.context.executionId)
   expect(f.managers[0]!.close).toHaveBeenCalledWith(f.session)
   const persisted = await f.runs.getExecution()

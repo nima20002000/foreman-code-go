@@ -172,6 +172,13 @@ export class InteractionService {
     if (current.selectedOptionId && current.selectedOptionId !== input.optionId) {
       throw new DomainError('INTERACTION_ALREADY_DECIDED', 'The interaction already has a different decision.', 409)
     }
+    if (current.selectedOptionId === input.optionId && current.status !== 'canceled'
+      && responder.kind === 'operator' && input.commandId) {
+      // Even a harmless delivery replay must validate this command identity in
+      // the authorized decision transaction before touching the graph handoff.
+      await this.interactions.decide({ id: current.id, optionId: input.optionId, expectedRevision: input.expectedRevision,
+        nativeResponse: current.nativeResponse, command: { principal: responder.principal, commandId: input.commandId } })
+    }
     if (current.selectedOptionId === input.optionId && current.deliveryState === 'delivered') {
       // Authorization still applies, but completed replays do not consult the
       // active-time budget or reattach/mutate the provider.

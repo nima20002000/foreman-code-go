@@ -211,7 +211,7 @@ export class PostgresInteractionCoordinationRepository {
       `update native_session_lanes set revision=revision+1, updated_at=now(),
          record=jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(record,
            '{revision}', to_jsonb((revision+1)::bigint)), '{leaseOwner}', to_jsonb($3::text)),
-           '{leaseToken}', to_jsonb($4::text)), '{leaseExpiresAt}', to_jsonb($5::text)),
+           '{leaseToken}', to_jsonb($4::text)), '{leaseExpiresAt}', to_jsonb(to_char($5::timestamptz at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))),
            '{correlationId}', to_jsonb($6::text)), '{observedStatus}', '"busy"'::jsonb)
        where id=$1 and revision=$2 and $5::timestamptz > clock_timestamp() and (
          record->>'leaseExpiresAt' is null or (record->>'leaseExpiresAt')::timestamptz <= clock_timestamp())

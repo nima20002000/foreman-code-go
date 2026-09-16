@@ -8,6 +8,7 @@ import { afterEach, beforeEach, it } from 'vitest'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
+import { PostgresInteractionRecoveryRepository } from '../src/modules/interactions/recovery.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
 let admin: pg.Pool
@@ -56,6 +57,39 @@ function deferred() {
   return { promise, resolve }
 }
 
+it('shares exclusive delivery ownership with the persistence recovery API', async () => {
+  const interaction = await decision()
+  const recovery = new PostgresInteractionRecoveryRepository(pool)
+  const legacy = await recovery.claimDelivery(interaction.id, interaction.revision, 'legacy', 60_000)
+  assert.equal(await repository.delivery.claim(interaction.id, 'new-dispatcher'), undefined)
+  await recovery.releaseDelivery(interaction.id, legacy.lease)
+  const modern = (await repository.delivery.claim(interaction.id, 'new-dispatcher'))!
+  const current = (await repository.get(interaction.id))!
+  await assert.rejects(recovery.claimDelivery(current.id, current.revision, 'legacy', 60_000), { code: 'DELIVERY_NOT_CLAIMABLE' })
+  await pool.query("update durable_interactions set delivery_lease_expires_at=now()-interval '1 second' where id=$1", [interaction.id])
+  await recovery.claimDelivery(current.id, current.revision, 'replacement', 60_000)
+  let writes = 0
+  await assert.rejects(repository.delivery.finish(modern, async () => { writes++; return { state: 'delivered' } }), { code: 'DELIVERY_OWNER_LOST' })
+  assert.equal(writes, 0)
+})
+
+it('recovers an expired graph resume claimed by the persistence recovery API', async () => {
+  const interaction = await decision()
+  await repository.bindGraphInterrupt(interaction.id, 'shared-interrupt')
+  const claim = (await repository.delivery.claim(interaction.id, 'deliver'))!
+  await repository.delivery.finish(claim, async () => ({ state: 'delivered' }))
+  const recovery = new PostgresInteractionRecoveryRepository(pool)
+  const intent = (await recovery.getGraphResume(interaction.id))!
+  const legacy = await recovery.claimGraphResume(interaction.id, intent.revision, 'legacy', 60_000)
+  assert.equal(await repository.delivery.claimGraphResume(interaction.id, 'modern'), undefined)
+  await pool.query("update interaction_graph_resumes set lease_expires_at=now()-interval '1 second' where interaction_id=$1", [interaction.id])
+  assert.ok((await repository.delivery.recoveryCandidates({ limit: 10 })).some((item) => item.id === interaction.id))
+  const modern = (await repository.delivery.claimGraphResume(interaction.id, 'modern'))!
+  await assert.rejects(recovery.renewGraphResume(interaction.id, legacy.lease!, 60_000), { code: 'GRAPH_RESUME_LEASE_LOST' })
+  await repository.delivery.finishGraphResume(modern)
+  assert.equal((await recovery.getGraphResume(interaction.id))?.state, 'resumed')
+})
+
 it('gives only one of two repositories the durable native submission claim (#11)', async () => {
   const interaction = await decision()
   const other = new PostgresInteractionRepository(pool)
@@ -98,6 +132,7 @@ it('never sends from an expired owner and reconciles the same attempt instead (#
   const interaction = await decision()
   const first = (await repository.delivery.claim(interaction.id, randomUUID()))!
   await pool.query("update interaction_delivery_attempts set lease_expires_at=now()-interval '1 second'")
+  await pool.query("update durable_interactions set delivery_lease_expires_at=now()-interval '1 second'")
   const recovered = (await repository.delivery.claim(interaction.id, randomUUID()))!
   assert.equal(recovered.mode, 'reconcile')
   assert.equal(recovered.attempt, first.attempt)
@@ -158,7 +193,8 @@ it('rolls back all delivery bookkeeping on an outbox failure, then recovers with
   assert.equal((await pool.query('select state from interaction_delivery_attempts')).rows[0].state, 'submitted')
   assert.equal((await pool.query('select * from interaction_graph_resumes')).rowCount, 0)
   await pool.query(`drop trigger reject_resume_intent on interaction_graph_resumes;
-    update interaction_delivery_attempts set lease_expires_at=now()-interval '1 second';`)
+    update interaction_delivery_attempts set lease_expires_at=now()-interval '1 second';
+    update durable_interactions set delivery_lease_expires_at=now()-interval '1 second';`)
   const recovered = (await repository.delivery.claim(interaction.id, randomUUID()))!
   assert.equal(recovered.mode, 'reconcile')
   await repository.delivery.finish(recovered, { state: 'delivered', evidence: {
@@ -174,6 +210,7 @@ it('recovers the pre-fix split-write window without demoting a delivered attempt
   const interaction = await decision()
   const claim = (await repository.delivery.claim(interaction.id, randomUUID()))!
   await pool.query("update interaction_delivery_attempts set state='delivered',lease_expires_at=null")
+  await pool.query("update durable_interactions set delivery_lease_expires_at=null,delivery_token=null,delivery_owner=null")
   assert.equal(await repository.delivery.claim(interaction.id, randomUUID()), undefined)
   assert.equal((await repository.get(interaction.id))?.deliveryState, 'delivered')
   assert.equal((await pool.query('select attempt,state from interaction_delivery_attempts')).rows[0].attempt, claim.attempt)

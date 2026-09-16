@@ -84,6 +84,10 @@ export class PostgresInteractionDeliveryRepository {
     return this.transaction(async (client) => {
       const current = await this.locked(client, id, true)
       if (!current || !current.selectedOptionId || !['delivery_pending', 'delivery_failed', 'decided'].includes(current.status)) return undefined
+      const lease = await client.query<{ active: boolean }>(
+        'select coalesce(delivery_lease_expires_at > clock_timestamp(),false) as active from durable_interactions where id=$1', [id],
+      )
+      if (lease.rows[0]?.active) return undefined
       const budget = await client.query<{ stopped_at: Date | null }>(
         'select stopped_at from approval_execution_state where execution_id=$1', [current.executionId],
       )
@@ -123,6 +127,11 @@ export class PostgresInteractionDeliveryRepository {
           [id, attempt, state, current.nativeSessionId, current.nativeRequestId, correlationId, ownerToken, INTERACTION_DELIVERY_LEASE_MS],
         )
       }
+      await client.query(
+        `update durable_interactions set delivery_owner=$2,delivery_token=$2,delivery_fence=delivery_fence+1,
+           delivery_lease_expires_at=clock_timestamp()+($3::integer * interval '1 millisecond') where id=$1`,
+        [id, ownerToken, INTERACTION_DELIVERY_LEASE_MS],
+      )
       const interaction = await this.write(client, current, state)
       return { interaction, attempt, ownerToken, correlationId, mode }
     })
@@ -155,6 +164,12 @@ export class PostgresInteractionDeliveryRepository {
         || current.selectedOptionId !== claim.interaction.selectedOptionId) {
         throw new DomainError('DELIVERY_ATTEMPT_STALE', 'The interaction no longer accepts this delivery owner.', 409)
       }
+      const lease = await client.query<{ delivery_token: string | null }>(
+        'select delivery_token from durable_interactions where id=$1', [current.id],
+      )
+      if (lease.rows[0]?.delivery_token !== claim.ownerToken) {
+        throw new DomainError('DELIVERY_OWNER_LOST', 'The interaction delivery fence belongs to another owner.', 409)
+      }
       const owned = await client.query<AttemptRow>(
         `select attempt,state,correlation_id,lease_owner,
            coalesce(lease_expires_at > clock_timestamp(),false) as leased
@@ -182,7 +197,11 @@ export class PostgresInteractionDeliveryRepository {
          where interaction_id=$1 and attempt=$2 and lease_owner=$3`,
         [current.id, claim.attempt, claim.ownerToken, result.state, result.error ?? null, JSON.stringify(result.evidence ?? null)],
       )
-      return this.write(client, current, result.state)
+      const delivered = await this.write(client, current, result.state)
+      await client.query(
+        'update durable_interactions set delivery_owner=null,delivery_token=null,delivery_lease_expires_at=null where id=$1', [current.id],
+      )
+      return delivered
     })
   }
 
@@ -199,7 +218,7 @@ export class PostgresInteractionDeliveryRepository {
       if (terminal.rows[0]?.stopped || terminal.rows[0]?.completed) {
         await client.query(
           `update interaction_graph_resumes set state=$2,lease_owner=null,lease_token=null,lease_expires_at=null,revision=revision+1,
-             completed_at=now(),updated_at=now() where interaction_id=$1 and state='pending'`,
+             completed_at=now(),updated_at=now() where interaction_id=$1 and state in ('pending','resuming','blocked')`,
           [id, terminal.rows[0].stopped ? 'canceled' : 'resumed'],
         )
         return undefined
@@ -208,10 +227,10 @@ export class PostgresInteractionDeliveryRepository {
       // pass the stale object originally returned by decide() to the graph.
       if (!current.graphInterruptId) return undefined
       const claimed = await client.query(
-        `update interaction_graph_resumes set lease_owner=$2,lease_token=$2,lease_fence=lease_fence+1,revision=revision+1,
+        `update interaction_graph_resumes set state='resuming',lease_owner=$2,lease_token=$2,lease_fence=lease_fence+1,revision=revision+1,
            lease_expires_at=clock_timestamp()+($3::integer * interval '1 millisecond'),
            attempt=attempt+1,updated_at=now()
-         where interaction_id=$1 and state='pending'
+         where interaction_id=$1 and state in ('pending','resuming','blocked')
            and (lease_expires_at is null or lease_expires_at<=clock_timestamp())`,
         [id, ownerToken, INTERACTION_DELIVERY_LEASE_MS],
       )
@@ -222,7 +241,7 @@ export class PostgresInteractionDeliveryRepository {
   async renewGraphResume(claim: GraphResumeClaim): Promise<void> {
     const result = await this.pool.query(
       `update interaction_graph_resumes set lease_expires_at=clock_timestamp()+($3::integer * interval '1 millisecond'),
-         updated_at=now() where interaction_id=$1 and lease_owner=$2 and lease_token=$2 and state='pending'
+         updated_at=now() where interaction_id=$1 and lease_owner=$2 and lease_token=$2 and state='resuming'
          and lease_expires_at>clock_timestamp()`,
       [claim.interaction.id, claim.ownerToken, INTERACTION_DELIVERY_LEASE_MS],
     )
@@ -233,7 +252,7 @@ export class PostgresInteractionDeliveryRepository {
     const result = await this.pool.query(
       `update interaction_graph_resumes set state=$3,last_error=$4,lease_owner=null,lease_token=null,lease_expires_at=null,revision=revision+1,
          completed_at=case when $3='resumed' then now() else null end,updated_at=now()
-       where interaction_id=$1 and lease_owner=$2 and lease_token=$2 and state='pending' and lease_expires_at>clock_timestamp()`,
+       where interaction_id=$1 and lease_owner=$2 and lease_token=$2 and state='resuming' and lease_expires_at>clock_timestamp()`,
       [claim.interaction.id, claim.ownerToken, error === undefined ? 'resumed' : 'pending', error ?? null],
     )
     if (result.rowCount !== 1) throw new DomainError('GRAPH_RESUME_OWNER_LOST', 'The graph-resume intent is no longer owned.', 409)
@@ -246,7 +265,7 @@ export class PostgresInteractionDeliveryRepository {
     )
     await client.query(
       `update interaction_graph_resumes g set state='canceled',lease_owner=null,lease_token=null,lease_expires_at=null,revision=g.revision+1,updated_at=now()
-       from durable_interactions d where g.interaction_id=d.id and d.run_id=$1 and g.state='pending'`, [runId],
+       from durable_interactions d where g.interaction_id=d.id and d.run_id=$1 and g.state in ('pending','resuming','blocked')`, [runId],
     )
   }
 
@@ -258,7 +277,7 @@ export class PostgresInteractionDeliveryRepository {
          (d.status='delivery_pending' and not exists (
            select 1 from interaction_delivery_attempts a where a.interaction_id=d.id and a.lease_expires_at>clock_timestamp()))
          or (d.record->>'deliveryState'='delivered' and (g.interaction_id is null or
-           (g.state='pending' and (g.lease_expires_at is null or g.lease_expires_at<=clock_timestamp())))))
+           (g.state in ('pending','resuming','blocked') and (g.lease_expires_at is null or g.lease_expires_at<=clock_timestamp())))))
        order by d.id limit $2`, [input.afterId ?? null, input.limit],
     )
     return result.rows.map((row) => DurableInteractionSchema.parse(row.record))
