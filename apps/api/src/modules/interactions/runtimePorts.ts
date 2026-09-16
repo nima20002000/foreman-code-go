@@ -1,12 +1,19 @@
-import type { AgentHarness, DurableInteraction, NativeSessionReference } from '@graphql/contracts'
+import { isDeepStrictEqual } from 'node:util'
+
+import type { AgentConfigurationVersion, AgentHarness, DurableInteraction, NativeSessionReference } from '@graphql/contracts'
 
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 
-export interface NativeManagerResolutionContext {
+export interface NativeManagerOwnershipContext {
   harness: AgentHarness
   executionId: string
   agentId: string
   workingDirectory: string
+}
+
+export interface NativeManagerResolutionContext extends NativeManagerOwnershipContext {
+  /** Immutable configuration version pinned by the durable execution. */
+  configuration: AgentConfigurationVersion
 }
 
 export interface ResolvedNativeSessionManager {
@@ -33,7 +40,8 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
     const existing = this.entries.get(context.executionId)
     if (existing) {
       if (existing.context.agentId !== context.agentId || existing.context.harness !== context.harness
-        || existing.context.workingDirectory !== context.workingDirectory) {
+        || existing.context.workingDirectory !== context.workingDirectory
+        || !isDeepStrictEqual(existing.context.configuration, context.configuration)) {
         throw new Error('A durable execution cannot change native manager ownership context.')
       }
       return { manager: existing.manager, processState: 'resident' }
@@ -58,7 +66,7 @@ export interface AttachedInteractionSession {
 export interface InteractionNativeRuntime {
   attachInteraction(interaction: DurableInteraction, signal?: AbortSignal): Promise<AttachedInteractionSession>
   attachOwnedSession(
-    context: NativeManagerResolutionContext,
+    context: NativeManagerOwnershipContext,
     session: NativeSessionReference,
     signal?: AbortSignal,
   ): Promise<AttachedInteractionSession>
