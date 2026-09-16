@@ -18,6 +18,7 @@ import type { LangGraphWorkflowEngine } from './engine.js'
 import type { PostgresRunRepository } from './postgres.js'
 import { validateExecutableTopology } from './topology.js'
 import { requiredLocationAccess, WorkspaceLocationService } from '../workspaces/location.js'
+import { acceptedRunApproval } from '../workflows/approval.js'
 
 export class RunManagementService {
   constructor(
@@ -137,6 +138,7 @@ export class RunManagementService {
         if (!versionRow.rows[0]) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', `Workflow version '${input.workflowVersionId}' was not found.`, 404)
         const version = WorkflowVersionSchema.parse(versionRow.rows[0].record)
         validateExecutableTopology(version)
+        const approval = acceptedRunApproval(version)
         const currentConfigurations = await client.query<{ id: string; current_configuration_version_id: string | null; configuration_record: unknown }>(
           `select agents.id, agents.current_configuration_version_id, versions.record as configuration_record
            from agents join agent_configuration_versions versions on versions.id = agents.current_configuration_version_id
@@ -155,6 +157,7 @@ export class RunManagementService {
           id: `run-${randomUUID()}`, workspaceId: input.workspaceId, workflowId: input.workflowId,
           workflowVersionId: version.id, agentConfigurationVersionIds: version.agentConfigurationVersionIds,
           executionLocation,
+          ...(approval ? { approval } : {}),
           authorizationPrincipalId: principal.id,
           executionCondition: version.definition.executionCondition, executionState: 'queued', outcome: 'pending',
           input: input.input, createdAt: new Date().toISOString(),

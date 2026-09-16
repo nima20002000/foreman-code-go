@@ -330,6 +330,7 @@ describe('Operator MCP with PostgreSQL', () => {
           { type: 'edge.connect', edgeId, sourceNodeId: codexNodeId, targetNodeId: openCodeNodeId },
           { type: 'agent.clone', sourceAgentId: codexAgentId, agentId: cloneAgentId, nodeId: cloneNodeId, name: 'Codex clone' },
           { type: 'node.remove', nodeId: cloneNodeId },
+          { type: 'workflow.set_approval', approval: { handler: 'user' } },
           { type: 'workflow.set_execution_limits', maxParallelism: 2, maxNodeExecutions: 2 },
         ],
       },

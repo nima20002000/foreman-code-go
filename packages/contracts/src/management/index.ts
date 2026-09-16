@@ -12,6 +12,7 @@ import {
   RunInputSchema,
   TimestampSchema,
   WorkflowDefinitionSchema,
+  WorkflowApprovalConfigurationSchema,
   WorkflowNodeSchema,
   WorkflowEdgeSchema,
   WorkflowRunSchema,
@@ -261,6 +262,13 @@ const AgentAddOperationSchema = z.object({
   harness: z.enum(["codex", "opencode"]),
   position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict().optional(),
 }).strict();
+/** Select a product template; callers cannot fabricate a privileged Agent role. */
+const AgentAddFromTemplateOperationSchema = AgentAddOperationSchema.omit({ harness: true }).extend({
+  type: z.literal("agent.add_from_template"), template: z.enum(["orchestrator", "coder"]),
+}).strict();
+const WorkflowApprovalOperationSchema = z.object({
+  type: z.literal("workflow.set_approval"), approval: WorkflowApprovalConfigurationSchema,
+}).strict();
 const AgentRenameOperationSchema = z.object({
   type: z.literal("agent.rename"), agentId: IdSchema,
   expectedAgentRevision: ExpectedRevisionSchema, name: z.string().trim().min(1).max(200),
@@ -329,6 +337,8 @@ export const GraphDraftOperationSchema = z.discriminatedUnion("type", [
   RequiredAgentCountOperationSchema,
   ResetRequiredAgentCountOperationSchema,
   AgentAddOperationSchema,
+  AgentAddFromTemplateOperationSchema,
+  WorkflowApprovalOperationSchema,
   AgentRenameOperationSchema,
   AgentConfigureOperationSchema,
   AgentCloneOperationSchema,

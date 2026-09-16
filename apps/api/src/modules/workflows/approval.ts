@@ -4,6 +4,7 @@ import {
   type Agent,
   type WorkflowApprovalConfiguration,
   type WorkflowDefinition,
+  type WorkflowVersion,
 } from '@graphql/contracts'
 
 import { DomainError } from '../errors.js'
@@ -12,7 +13,7 @@ import { DomainError } from '../errors.js'
 export function validateWorkflowApproval(
   definition: WorkflowDefinition,
   approval: WorkflowApprovalConfiguration,
-  agents: readonly Agent[],
+  agents: readonly Pick<Agent, 'id' | 'productRole'>[],
 ): AcceptedWorkflowApprovalConfiguration {
   const accepted = AcceptedWorkflowApprovalConfigurationSchema.safeParse(approval)
   if (!accepted.success) {
@@ -33,4 +34,18 @@ export function validateWorkflowApproval(
     throw new DomainError('APPROVAL_DISTINCT_CODER_REQUIRED', 'Orchestrator-handled workflows require a distinct Coder.', 409)
   }
   return accepted.data
+}
+
+/** Missing in both places is legacy; a configured version must never silently lose its authority. */
+export function acceptedRunApproval(version: WorkflowVersion): AcceptedWorkflowApprovalConfiguration | undefined {
+  const selection = version.definition.approval
+  const accepted = version.approval
+  if (!selection && !accepted) return undefined
+  if (!selection || !accepted || selection.handler !== accepted.handler
+    || selection.designatedOrchestratorAgentId !== accepted.designatedOrchestratorAgentId
+    || (accepted.designatedOrchestratorAgentId
+      && !version.definition.nodes.some((node) => node.agentId === accepted.designatedOrchestratorAgentId))) {
+    throw new DomainError('WORKFLOW_APPROVAL_SNAPSHOT_INVALID', 'The saved approval snapshot is inconsistent. Save the workflow again before starting it.', 409)
+  }
+  return AcceptedWorkflowApprovalConfigurationSchema.parse(accepted)
 }

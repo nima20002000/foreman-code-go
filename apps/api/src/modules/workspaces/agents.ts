@@ -1,12 +1,8 @@
-import { AgentSchema, AgentConfigurationVersionSchema } from '@graphql/contracts'
+import { AgentSchema, AgentConfigurationVersionSchema, projectHarnessEffort } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
-
-function legacyOpenCodeEffort(variant: string) {
-  return variant === 'low' || variant === 'high' || variant === 'max' ? variant : undefined
-}
 
 interface AgentRow {
   record: unknown; metadata_revision: string
@@ -20,7 +16,7 @@ function managedAgent(row: AgentRow) {
     const harness = configuration.harness
     agent = AgentSchema.parse({ ...agent, productRole: configuration.productRole, configurationVersionId: configuration.id,
       harness: harness.harness, harnessConfiguration: harness, model: harness.model,
-      effort: harness.harness === 'codex' ? harness.reasoningEffort : legacyOpenCodeEffort(harness.variant),
+      effort: projectHarnessEffort(harness),
       fastMode: harness.harness === 'codex' ? harness.serviceTier === 'priority' : undefined,
       prompt: configuration.prompt, assignedSkills: configuration.assignedSkills })
   }

@@ -217,6 +217,13 @@ export const HarnessConfigurationSchema = z.discriminatedUnion("harness", [
 ]);
 export type HarnessConfiguration = z.infer<typeof HarnessConfigurationSchema>;
 
+/** Preserve native variants in harnessConfiguration; this is only a legacy display projection. */
+export function projectHarnessEffort(configuration: HarnessConfiguration): AgentEffort | undefined {
+  const value = configuration.harness === "codex" ? configuration.reasoningEffort : configuration.variant;
+  const effort = AgentEffortSchema.safeParse(value);
+  return effort.success ? effort.data : undefined;
+}
+
 export const ApprovalHandlerSchema = z.enum(["user", "orchestrator", "operator"]);
 export type ApprovalHandler = z.infer<typeof ApprovalHandlerSchema>;
 
@@ -228,7 +235,8 @@ export const HarnessWorkflowCompatibilitySchema = z.object({
   if (value.configuration.harness === "codex" && value.configuration.advanced?.approvalsReviewer === "auto_review") {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "approvalsReviewer"], message: "native auto review conflicts with GraphQL-routed approval" });
   }
-  if (value.configuration.harness === "opencode" && value.configuration.advanced?.permissionHandling === "native_auto") {
+  if (value.configuration.harness === "opencode"
+    && (value.configuration.autoApprove || value.configuration.advanced?.permissionHandling === "native_auto")) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "permissionHandling"], message: "native auto approval conflicts with GraphQL-routed approval" });
   }
 });
@@ -482,8 +490,47 @@ export const DurableInteractionSchema = z.object({
   decidedAt: TimestampSchema.optional(),
   deliveredAt: TimestampSchema.optional(),
   updatedAt: TimestampSchema,
-}).strict();
+}).strict().superRefine((value, context) => {
+  const decisionFields = ["selectedOptionId", "selectedSemantic", "nativeResponse", "decidedAt"] as const;
+  const hasDecision = decisionFields.every((field) => value[field] !== undefined);
+  const hasAnyDecision = decisionFields.some((field) => value[field] !== undefined);
+  if (hasAnyDecision && !hasDecision) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["selectedOptionId"], message: "a decision requires an option, semantic, native response and decision time" });
+  }
+  if (value.status === "pending" && hasAnyDecision) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["status"], message: "pending interactions cannot contain a decision" });
+  }
+  if (value.status !== "pending" && value.status !== "canceled" && !hasDecision) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["status"], message: "decided and delivery states require a complete decision" });
+  }
+  if (hasDecision) {
+    const option = value.responseOptions.find((item) => item.optionId === value.selectedOptionId);
+    if (!option || option.semantic !== value.selectedSemantic) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["selectedOptionId"], message: "the selected option and semantic must match an offered response" });
+    }
+  }
+  const allowedDeliveryStates: Record<typeof value.status, readonly typeof value.deliveryState[]> = {
+    pending: ["not_started"], decided: ["not_started"],
+    delivery_pending: ["pending", "submitted", "uncertain"],
+    delivered: ["delivered"], delivery_failed: ["failed"], canceled: ["not_started", "failed"],
+  };
+  if (!allowedDeliveryStates[value.status].includes(value.deliveryState)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["deliveryState"], message: "delivery state contradicts the interaction lifecycle" });
+  }
+  if ((value.status === "delivered") !== (value.deliveredAt !== undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["deliveredAt"], message: "only delivered interactions require a delivery time" });
+  }
+});
 export type DurableInteraction = z.infer<typeof DurableInteractionSchema>;
+
+/** Scoped restart recovery: send only unsent work; reconcile all ambiguous attempts. */
+export const InteractionRecoveryQuerySchema = z.object({
+  workspaceId: IdSchema, workflowId: IdSchema.optional(), runId: IdSchema.optional(),
+  afterId: IdSchema.optional(), limit: z.number().int().min(1).max(100),
+  mode: z.enum(["send", "reconcile"]),
+}).strict();
+export type InteractionRecoveryQuery = z.infer<typeof InteractionRecoveryQuerySchema>;
+
 
 export const NativeSessionReferenceSchema = z.object({
   harness: AgentHarnessSchema,

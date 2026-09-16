@@ -33,6 +33,11 @@ interface PrincipalRow {
 }
 
 function fromRow(row: PrincipalRow): ManagementPrincipal {
+  // Migration 100 intentionally cannot infer Agent subjects for old credentials.
+  // Deny them explicitly; an operator must issue a replacement with a real subject.
+  if (row.audience === 'worker' && !row.agent_id?.trim()) {
+    throw new DomainError('AUTH_WORKER_SUBJECT_REQUIRED', 'This legacy worker credential has no Agent subject. Reissue it for the actual Agent.', 401)
+  }
   return ManagementPrincipalSchema.parse({
     id: row.id,
     name: row.name,
@@ -73,23 +78,27 @@ export class PostgresAccessService {
     grants: ManagementGrant[]
     expiresAt: Date
   }): Promise<{ principal: ManagementPrincipal; token: string }> {
-    if (input.expiresAt.getTime() <= Date.now()) throw new DomainError('INVALID_EXPIRY', 'Credential expiry must be in the future.', 400)
+    if (!Number.isFinite(input.expiresAt.getTime()) || input.expiresAt.getTime() <= Date.now()) throw new DomainError('INVALID_EXPIRY', 'Credential expiry must be in the future.', 400)
     const name = input.name.trim()
     if (!name) throw new DomainError('INVALID_PRINCIPAL_NAME', 'Credential name is required.', 400)
     const grants = input.grants.map((grant) => ManagementGrantSchema.parse(grant))
-    if (input.audience === 'worker' && !input.agentId) {
+    if (input.audience === 'worker' && !input.agentId?.trim()) {
       throw new DomainError('WORKER_AGENT_REQUIRED', 'Worker credentials require a backend-issued Agent subject.', 400)
     }
     if (input.audience === 'operator' && input.agentId) {
       throw new DomainError('OPERATOR_AGENT_FORBIDDEN', 'Operator credentials cannot impersonate a board Agent.', 400)
     }
     const id = `principal-${randomUUID()}`
+    const accepted = ManagementPrincipalSchema.parse({
+      id, name, audience: input.audience, ...(input.agentId ? { agentId: input.agentId } : {}),
+      grants, expiresAt: input.expiresAt.toISOString(), revokedAt: null,
+    })
     const token = `opm_${randomBytes(32).toString('base64url')}`
     const result = await this.pool.query<PrincipalRow>(
       `insert into management_principals (id, name, audience, agent_id, token_hash, grants, expires_at)
        values ($1, $2, $3, $4, $5, $6::jsonb, $7)
        returning id, name, audience, agent_id, token_hash, grants, expires_at, revoked_at`,
-      [id, name, input.audience, input.agentId ?? null, digest(token), JSON.stringify(grants), input.expiresAt],
+      [id, accepted.name, accepted.audience, accepted.agentId ?? null, digest(token), JSON.stringify(accepted.grants), input.expiresAt],
     )
     return { principal: fromRow(result.rows[0]!), token }
   }

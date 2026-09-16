@@ -3,16 +3,13 @@ import { createHash, randomUUID } from 'node:crypto'
 import {
   AgentConfigurationVersionSchema,
   AgentSchema,
+  projectHarnessEffort,
   type Agent,
   type AgentConfigurationVersion,
 } from '@graphql/contracts'
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
-
-function legacyOpenCodeEffort(variant: string) {
-  return variant === 'low' || variant === 'high' || variant === 'max' ? variant : undefined
-}
 
 export function configurationInput(
   workspaceId: string,
@@ -35,9 +32,7 @@ export function configurationInput(
     if (currentHarness?.autoApprove) {
       throw new DomainError('OPENCODE_SETTING_UNSUPPORTED', 'Automatic permission approval is disabled for Product Agent runs.', 400)
     }
-    const variant = agent.effort === 'low' || agent.effort === 'high' || agent.effort === 'max'
-      ? agent.effort
-      : currentHarness?.variant ?? 'max'
+    const variant = suppliedHarness?.variant ?? agent.effort ?? currentHarness?.variant ?? 'max'
     return {
       workspaceId,
       agentId: agent.id,
@@ -169,7 +164,7 @@ export async function saveAgentConfiguration(
     productRole: configuration.productRole,
     harness: harness.harness,
     model: harness.model,
-    effort: harness.harness === 'codex' ? harness.reasoningEffort : legacyOpenCodeEffort(harness.variant),
+    effort: projectHarnessEffort(harness),
     fastMode: harness.harness === 'codex' ? harness.serviceTier === 'priority' : undefined,
     harnessConfiguration: harness,
     configurationVersionId: configuration.id,

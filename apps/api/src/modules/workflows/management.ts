@@ -12,6 +12,7 @@ import { requireAuthorization } from '../access/policy.js'
 import { authorizedPage } from '../access/authorizedPage.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
+import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 
 interface WorkflowRow { record: unknown; revision: string; current_version_id: string | null; archived_at: Date | null }
@@ -61,10 +62,12 @@ export class WorkflowManagementService {
       targetKey: `workspace:${input.workspaceId}:workflows:new`, payload: input,
       perform: async (client) => {
         await lockActiveWorkspace(client, input.workspaceId)
+        const defaults = await new PostgresFoundationSettingsRepository(this.pool).getWorkflowDefaults(client)
         const now = new Date().toISOString()
         const workflow = WorkflowDefinitionSchema.parse({
           id: `workflow-${randomUUID()}`, workspaceId: input.workspaceId, name: input.name,
           ...(input.description !== undefined ? { description: input.description } : {}),
+          approval: { handler: defaults.value.approvalHandler },
           executionCondition: { kind: 'manual' }, nodes: [], edges: [], createdAt: now, updatedAt: now,
         })
         const result = await client.query<WorkflowRow>(

@@ -59,7 +59,9 @@ describe('HAP-01 durable foundation', () => {
 
       const run = WorkflowRunSchema.parse({
         id: 'run-hap01', workspaceId: 'workspace-1', workflowId: 'workflow-content-pipeline',
-        workflowVersionId: 'workflow-content-pipeline-v1', agentConfigurationVersionIds: {},
+        workflowVersionId: 'workflow-content-pipeline-v1',
+        agentConfigurationVersionIds: { 'agent-reviewer': 'agent-reviewer-config-v1' },
+        approval: { handler: 'user' },
         executionCondition: { kind: 'manual' }, executionState: 'waiting', outcome: 'pending', input: {},
         createdAt: '2026-09-16T00:00:00.000Z',
       })
@@ -67,8 +69,8 @@ describe('HAP-01 durable foundation', () => {
         values ($1,$2,$3,$4,$5,$6::jsonb)`, [run.id, run.workspaceId, run.workflowId, run.workflowVersionId, run.executionState, JSON.stringify(run)])
       const runs = new PostgresRunRepository(pool, {} as never, {} as never)
       const occurrence = HarnessExecutionSchema.parse({
-        id: 'execution-hap01-a', runId: run.id, workflowNodeId: 'node-developer', agentId: 'agent-developer',
-        agentConfigurationVersionId: 'agent-developer-config-v1', attempt: 1, input: {}, state: 'waiting',
+        id: 'execution-hap01-a', runId: run.id, workflowNodeId: 'node-reviewer', agentId: 'agent-reviewer',
+        agentConfigurationVersionId: 'agent-reviewer-config-v1', attempt: 1, input: {}, state: 'waiting',
         createdAt: '2026-09-16T00:00:00.000Z',
       })
       expect((await runs.ensureExecution(occurrence)).created).toBe(true)
@@ -79,8 +81,8 @@ describe('HAP-01 durable foundation', () => {
       const base = {
         ...NATIVE_INTERACTION_FIXTURES.codex,
         workspaceId: 'workspace-1', workflowId: 'workflow-content-pipeline', runId: run.id,
-        executionId: occurrence.id, requestingAgentId: 'agent-developer',
-        approval: { handler: 'orchestrator' as const, designatedOrchestratorAgentId: 'agent-researcher' },
+        executionId: occurrence.id, requestingAgentId: 'agent-reviewer',
+        approval: { handler: 'user' as const },
       }
       const [left, right] = await Promise.all([
         interactions.create({ ...base, id: 'interaction-hap01-a' }),

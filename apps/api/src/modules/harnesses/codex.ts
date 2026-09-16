@@ -8,6 +8,7 @@ import {
 } from '@graphql/contracts'
 
 import { HarnessExecutionError } from './errors.js'
+import { assertFallbackConfiguration } from './fallbackCapabilities.js'
 import type { HarnessAdapter, HarnessExecutionCallbacks } from './port.js'
 import { runCommand, runCommands, runJsonlProcess, stopProcess } from './process.js'
 import { buildHarnessPrompt } from './prompt.js'
@@ -30,6 +31,7 @@ export class CodexAdapter implements HarnessAdapter {
     if (request.configuration.harness.harness !== 'codex') {
       throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'Codex received a non-Codex configuration.')
     }
+    assertFallbackConfiguration(request.configuration.harness)
     let checks: Awaited<ReturnType<typeof runCommand>>[]
     try {
       checks = await runCommands(this.binary, [
@@ -118,6 +120,7 @@ export class CodexAdapter implements HarnessAdapter {
     if (configuration.harness !== 'codex') {
       throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'Codex received a non-Codex configuration.')
     }
+    assertFallbackConfiguration(request.configuration.harness)
     let finalText: string | undefined
     let sessionReported = false
     const common = [

@@ -1,11 +1,10 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 
 import {
   AgentConfigurationVersionSchema,
   AgentSchema,
   WorkflowDefinitionSchema,
   WorkflowVersionSchema,
-  validateHarnessWorkflowCompatibility,
   type Agent,
   type AgentConfigurationVersion,
   type WorkflowDefinition,
@@ -14,14 +13,9 @@ import {
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
-import { validateExecutableTopology } from '../runs/topology.js'
 import { lockAgentConfigurations, saveAgentConfiguration } from '../workspaces/agentConfiguration.js'
 import type { WorkflowRepository } from './port.js'
-import { validateWorkflowApproval } from './approval.js'
-
-function contentHash(value: unknown): string {
-  return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`
-}
+import { buildExecutableWorkflowVersion } from './executableVersion.js'
 
 export class PostgresWorkflowRepository implements WorkflowRepository {
   constructor(private readonly pool: pg.Pool) {}
@@ -113,8 +107,8 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     try {
       await client.query('begin')
       await client.query('select pg_advisory_xact_lock(hashtext($1))', [`workflow:${input.id}`])
-      const existing = await client.query<{ workspace_id: string }>(
-        'select workspace_id from workflows where id = $1 for update', [input.id],
+      const existing = await client.query<{ workspace_id: string; record: unknown }>(
+        'select workspace_id, record from workflows where id = $1 for update', [input.id],
       )
       if (existing.rows[0] && existing.rows[0].workspace_id !== workspaceId) {
         throw new DomainError('WORKFLOW_WORKSPACE_MISMATCH', 'This workflow ID belongs to another workspace.', 409)
@@ -153,23 +147,12 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
           { agentIds: missingAgentIds },
         )
       }
-      const authorityRows = await client.query<{ record: unknown }>(
-        'select record from agents where workspace_id=$1 and id=any($2::text[])', [workspaceId, uniqueAgentIds],
+      const acceptedRows = await client.query<{ record: unknown }>(
+        'select record from agent_configuration_versions where workspace_id=$1 and id=any($2::text[])',
+        [workspaceId, Object.values(configurations)],
       )
-      const authorityAgents = authorityRows.rows.map((row) => AgentSchema.parse(row.record))
-      const selectedOrchestrator = authorityAgents.find((agent) => agent.productRole === 'orchestrator')
-      const approval = input.approval ?? (!existing.rows[0] && selectedOrchestrator
-        ? { handler: 'orchestrator' as const, designatedOrchestratorAgentId: selectedOrchestrator.id }
-        : undefined)
-      const acceptedApproval = approval ? validateWorkflowApproval(input, approval, authorityAgents) : undefined
-      if (acceptedApproval) {
-        const acceptedConfigurations = await client.query<{ record: unknown }>(
-          'select record from agent_configuration_versions where id=any($1::text[])', [Object.values(configurations)],
-        )
-        for (const row of acceptedConfigurations.rows) {
-          validateHarnessWorkflowCompatibility(AgentConfigurationVersionSchema.parse(row.record).harness, acceptedApproval.handler)
-        }
-      }
+      const acceptedConfigurations = acceptedRows.rows.map((row) => AgentConfigurationVersionSchema.parse(row.record))
+      const selectedOrchestrator = acceptedConfigurations.find((configuration) => configuration.productRole === 'orchestrator')
 
       const versionResult = await client.query<{ next_version: number }>(
         'select coalesce(max(version), 0) + 1 as next_version from workflow_versions where workflow_id = $1',
@@ -177,41 +160,14 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       )
       const version = Number(versionResult.rows[0]?.next_version ?? 1)
       const now = new Date().toISOString()
-      const definition = WorkflowDefinitionSchema.parse({
-        ...input,
-        ...(acceptedApproval ? { approval: acceptedApproval } : {}),
-        version,
-        // Ordinary editor connections mean an all-input dependency, not an
-        // implicit threshold/any join. Explicit unsupported modes remain errors.
-        nodes: input.nodes.map((node) => ({
-          ...node,
-          ...(input.edges.filter((edge) => edge.target === node.id).length > 1 && !node.join
-            ? { join: { mode: 'all' } } : {}),
-        })),
-        edges: input.edges.map((edge) => ({
-          ...edge,
-          route: edge.route ?? { outcomes: ['succeeded'] },
-        })),
-        executionPolicy: input.executionPolicy ?? {
-          maxParallelism: Math.max(1, input.nodes.length),
-          maxNodeExecutions: input.nodes.length,
-        },
-        createdAt: input.createdAt ?? now,
-        updatedAt: now,
-      })
-      const workflowVersion = WorkflowVersionSchema.parse({
+      const workflowVersion = buildExecutableWorkflowVersion({
         id: `${input.id}-v${version}-${randomUUID()}`,
-        workspaceId,
-        workflowId: input.id,
-        version,
-        entryNodeId: entryNode.id,
-        definition,
-        agentConfigurationVersionIds: configurations,
-        ...(acceptedApproval ? { approval: acceptedApproval } : {}),
-        contentHash: contentHash({ definition, configurations, entryNodeId: entryNode.id }),
-        createdAt: now,
+        definition: input, version, configurations: acceptedConfigurations, createdAt: now,
+        previousDefinition: existing.rows[0] ? WorkflowDefinitionSchema.parse(existing.rows[0].record) : undefined,
+        initialApproval: !existing.rows[0] && selectedOrchestrator
+          ? { handler: 'orchestrator', designatedOrchestratorAgentId: selectedOrchestrator.agentId } : undefined,
       })
-      validateExecutableTopology(workflowVersion)
+      const definition = workflowVersion.definition
 
       const saved = await client.query(
         `insert into workflows (id, workspace_id, current_version_id, record)
