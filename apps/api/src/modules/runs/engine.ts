@@ -422,7 +422,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       owner = await this.runs.acquireOwnership(runId, () => undefined)
     } catch (error) {
       const cleanupFailure = await localCleanup
-      throw new AggregateError([error, ...(cleanupFailure ? [cleanupFailure.error] : [])], 'Stop could not acquire Run ownership.')
+      throw new AggregateError([error, ...(cleanupFailure ? [cleanupFailure.error] : [])], 'Stop could not acquire Run ownership.', { cause: error })
     }
     if (!owner) {
       const cleanupFailure = (await localCleanup) ?? drainFailure
@@ -506,10 +506,10 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         return task
       })
       const graphConfig = { configurable: { thread_id: run.id } }
-      const state = await graph.invoke(
+      const state = await withExecutionSignal(graph.invoke(
         resumeCommand ?? { runId: run.id, executionIds: {} },
         { ...graphConfig, signal: nodeSignal },
-      )
+      ), nodeSignal)
       await drain()
       signal.throwIfAborted()
       if (firstFailure) throw firstFailure.error
