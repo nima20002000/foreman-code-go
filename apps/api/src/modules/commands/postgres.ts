@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type pg from 'pg'
+import pg from 'pg'
 
 import { DomainError } from '../errors.js'
 
@@ -30,11 +30,18 @@ export class PostgresCommandCoordinator {
     targetKey: string
     payload: unknown
     perform(client: pg.PoolClient): Promise<T>
+    /** Lifecycle callbacks may await runtime cleanup that needs the application pool. */
+    dedicatedConnection?: true
     /** Explicit compatibility boundary for historical receipts, never new commands. */
     replayResult?(result: unknown): T
   }): Promise<{ value: T; replayed: boolean }> {
     const inputHash = commandInputHash(input.payload)
-    const client = await this.pool.connect()
+    const commandPool = input.dedicatedConnection
+      ? new pg.Pool({ ...this.pool.options, max: 1, application_name: 'graphql-lifecycle-command' }) : this.pool
+    const client = await commandPool.connect().catch(async (error: unknown) => {
+      if (commandPool !== this.pool) await commandPool.end()
+      throw error
+    })
     let releaseError: Error | undefined
     try {
       await client.query('begin')
@@ -93,6 +100,7 @@ export class PostgresCommandCoordinator {
       throw error
     } finally {
       client.release(releaseError)
+      if (commandPool !== this.pool) await commandPool.end()
     }
   }
 

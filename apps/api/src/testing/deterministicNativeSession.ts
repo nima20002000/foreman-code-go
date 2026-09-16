@@ -29,7 +29,6 @@ interface FixtureSession {
   activeCorrelation: string | undefined
   nextTurn: number
 }
-
 /** Deterministic rich-transport fixture shared by HAP-02–07 integration tests. */
 export class DeterministicNativeSessionManager implements NativeHarnessSessionManager {
   readonly counters = { sessions: 0, attaches: 0, turns: 0, sideEffects: 0, deliveries: 0, cancellations: 0 }

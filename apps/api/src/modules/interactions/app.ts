@@ -9,10 +9,11 @@ import {
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
 
-import { workerScope, workerScopesForAction, hasWorkerAction, requireReadableInteraction } from '../access/appPolicy.js'
+import { workerScope, canReadInteraction, hasWorkerAction, requireReadableInteraction, requireRespondableInteraction } from '../access/appPolicy.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import type { PostgresInteractionRepository } from './postgres.js'
+import type { InteractionService } from './service.js'
 
 const CURSOR_PREFIX = 'interaction:'
 export const AppInteractionListInputSchema = ListInteractionsRequestSchema.pick({ cursor: true, limit: true }).strict()
@@ -22,18 +23,14 @@ function encodeCursor(id: string): string {
 }
 
 export function decodeInteractionCursor(cursor: string | undefined): string | undefined {
-  if (cursor === undefined) return undefined
+  if (!cursor) return undefined
   try {
-    if (!/^[A-Za-z0-9_-]+$/.test(cursor)) throw new Error('invalid')
-    const bytes = Buffer.from(cursor, 'base64url')
-    if (bytes.toString('base64url') !== cursor) throw new Error('invalid')
-    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-    if (!decoded.startsWith(CURSOR_PREFIX)) throw new Error('invalid')
-    const id = decoded.slice(CURSOR_PREFIX.length)
-    if (IdSchema.parse(id) !== id || [...id].some((character) => {
-      const code = character.codePointAt(0)!
-      return code < 32 || (code >= 127 && code <= 159)
-    })) throw new Error('invalid')
+    const decoded = Buffer.from(cursor, 'base64url').toString('utf8')
+    if (Buffer.from(decoded, 'utf8').toString('base64url') !== cursor
+      || !decoded.startsWith(CURSOR_PREFIX) || decoded.length === CURSOR_PREFIX.length) throw new Error('invalid')
+    const rawId = decoded.slice(CURSOR_PREFIX.length)
+    const id = IdSchema.parse(rawId)
+    if (id !== rawId || !/^[\x21-\x7e]+$/.test(id)) throw new Error('invalid')
     return id
   } catch {
     throw new DomainError('INVALID_CURSOR', 'The interaction cursor is invalid.', 400)
@@ -54,6 +51,7 @@ export class PostgresAppInteractionService implements AppInteractionService {
     private readonly pool: pg.Pool,
     private readonly interactions: PostgresInteractionRepository,
     private readonly commands: PostgresCommandCoordinator,
+    private readonly orchestration?: Pick<InteractionService, 'respond'>,
   ) {}
 
   async context(principal: ManagementPrincipal) {
@@ -61,9 +59,19 @@ export class PostgresAppInteractionService implements AppInteractionService {
     const readAllowed = await this.canRead(principal)
     const responseAllowed = await this.canRespond(principal)
     return {
-      principal: { id: principal.id, audience: 'worker' as const, agentId: principal.agentId!, expiresAt: principal.expiresAt },
+      principal: {
+        id: principal.id,
+        audience: 'worker' as const,
+        agentId: principal.agentId!,
+        expiresAt: principal.expiresAt,
+      },
       scope,
-      capabilities: { contextGet: true, interactionList: readAllowed, interactionGet: readAllowed, interactionRespond: responseAllowed },
+      capabilities: {
+        contextGet: true,
+        interactionList: readAllowed,
+        interactionGet: readAllowed,
+        interactionRespond: responseAllowed,
+      },
     }
   }
 
@@ -73,70 +81,71 @@ export class PostgresAppInteractionService implements AppInteractionService {
   }
 
   async canRespond(principal: ManagementPrincipal): Promise<boolean> {
-    if (!hasWorkerAction(principal, 'interactions:respond') || !hasWorkerAction(principal, 'interactions:read')) return false
-    const result = await this.pool.query(
-      `select 1 from runs r
-       where r.execution_state in ('running','waiting') and r.worker_credentials_closed_at is null
-         and exists (select 1 from jsonb_array_elements($1::jsonb) g
-           where g->'workspaceIds' ? r.workspace_id and g->'workflowIds' ? r.workflow_id and g->'runIds' ? r.id)
-         and exists (select 1 from jsonb_array_elements($2::jsonb) g
-           where g->'workspaceIds' ? r.workspace_id and g->'workflowIds' ? r.workflow_id and g->'runIds' ? r.id)
-         and r.record->'approval'->>'handler' = 'orchestrator'
-         and r.record->'approval'->>'designatedOrchestratorAgentId' = $3
+    if (!this.orchestration) return false
+    if (!hasWorkerAction(principal, 'interactions:respond')) return false
+    const scope = workerScope(principal)
+    const result = await this.pool.query<{ record: unknown }>(
+      `select record from runs
+       where ($1::text[] is null or workspace_id = any($1))
+         and ($2::text[] is null or workflow_id = any($2))
+         and ($3::text[] is null or id = any($3))
+         and record->'approval'->>'handler' = 'orchestrator'
+         and record->'approval'->>'designatedOrchestratorAgentId' = $4
        limit 1`,
-      [JSON.stringify(workerScopesForAction(principal, 'interactions:respond')),
-        JSON.stringify(workerScopesForAction(principal, 'interactions:read')), principal.agentId],
+      [scope.workspaceIds ?? null, scope.workflowIds ?? null, scope.runIds ?? null, principal.agentId],
     )
     return result.rowCount === 1
   }
 
   async list(principal: ManagementPrincipal, input: unknown) {
     const parsed = AppInteractionListInputSchema.parse(input)
-    workerScope(principal)
+    const scope = workerScope(principal)
     const afterId = decodeInteractionCursor(parsed.cursor)
-    // Apply complete per-grant authorization BEFORE pagination. Filtering a
-    // unioned page afterward can both leak scopes and skip authorized records.
     const rows = await this.pool.query<{ record: unknown }>(
-      `select record from durable_interactions di
+      `select record from durable_interactions
        where status = 'pending'
-         and exists (select 1 from jsonb_array_elements($1::jsonb) g
-           where g->'workspaceIds' ? di.workspace_id and g->'workflowIds' ? di.workflow_id and g->'runIds' ? di.run_id)
-         and ($2::text is null or id > $2)
-       order by id limit $3`,
-      [JSON.stringify(workerScopesForAction(principal, 'interactions:read')), afterId ?? null, parsed.limit + 1],
+         and ($1::text[] is null or workspace_id = any($1))
+         and ($2::text[] is null or workflow_id = any($2))
+         and ($3::text[] is null or run_id = any($3))
+         and ($4::text is null or id > $4)
+       order by id limit $5`,
+      [scope.workspaceIds ?? null, scope.workflowIds ?? null, scope.runIds ?? null, afterId ?? null, parsed.limit + 1],
     )
-    const visible = rows.rows.map((row) => requireReadableInteraction(principal, DurableInteractionSchema.parse(row.record)))
+    const visible = rows.rows
+      .map((row) => requireReadableInteraction(principal, DurableInteractionSchema.parse(row.record)))
+      .filter((interaction) => canReadInteraction(principal, interaction))
     const items = visible.slice(0, parsed.limit)
-    return ListInteractionsResponseSchema.parse({ items, nextCursor: visible.length > parsed.limit ? encodeCursor(items.at(-1)!.id) : null })
+    return ListInteractionsResponseSchema.parse({
+      items,
+      nextCursor: visible.length > parsed.limit ? encodeCursor(items.at(-1)!.id) : null,
+    })
   }
 
   async get(principal: ManagementPrincipal, interactionId: string) {
-    return { interaction: requireReadableInteraction(principal, await this.interactions.get(interactionId)) }
+    const interaction = requireReadableInteraction(principal, await this.interactions.get(interactionId))
+    return { interaction }
   }
 
   async respond(principal: ManagementPrincipal, input: unknown) {
+    const parsed = RespondToInteractionRequestSchema.parse(input)
+    const current = requireRespondableInteraction(principal, await this.interactions.get(parsed.interactionId))
+    if (!this.orchestration) throw new DomainError('INTERACTION_DELIVERY_UNAVAILABLE', 'Native interaction delivery is not configured.', 503)
     try {
-      const parsed = RespondToInteractionRequestSchema.parse(input)
-      return await this.interactions.decide({
-        id: parsed.interactionId, optionId: parsed.optionId, expectedRevision: parsed.expectedRevision,
-        // The repository derives the exact response from the locked option.
-        nativeResponse: null, principal, auditReference: `principal:${principal.id}`,
-        beforeCommit: async (client, result) => {
-          RespondToInteractionResponseSchema.parse(result)
-          await this.commands.recordAudit(principal.id, 'mcp', 'interaction_respond', `interaction:${result.interaction.id}`, 'succeeded', {
-            replayed: result.replayed, optionId: parsed.optionId,
-          }, client)
+      const result = await this.orchestration.respond({
+        kind: 'orchestrator',
+        authority: {
+          agentId: principal.agentId!, workspaceId: current.workspaceId, workflowId: current.workflowId,
         },
+      }, parsed)
+      await this.commands.recordAudit(principal.id, 'mcp', 'interaction_respond', `interaction:${current.id}`, 'succeeded', {
+        replayed: result.replayed,
+        optionId: parsed.optionId,
       })
+      return RespondToInteractionResponseSchema.parse(result)
     } catch (error) {
-      const code = error instanceof DomainError ? error.code : 'INVALID_OR_FAILED_DECISION'
-      // Never persist arbitrary model input or distinguish an out-of-scope ID.
-      if (code === 'INTERACTION_NOT_FOUND' || code.startsWith('AUTH_')) {
-        await this.commands.recordDenied(principal.id, 'mcp', 'interaction_respond', 'interaction:requested').catch(() => undefined)
-      } else {
-        await this.commands.recordAudit(principal.id, 'mcp', 'interaction_respond', 'interaction:requested',
-          code === 'INTERACTION_DECISION_STATUS_UNKNOWN' ? 'uncertain' : 'failed', { code }).catch(() => undefined)
-      }
+      await this.commands.recordAudit(principal.id, 'mcp', 'interaction_respond', `interaction:${current.id}`, 'failed', {
+        code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR',
+      }).catch(() => undefined)
       throw error
     }
   }

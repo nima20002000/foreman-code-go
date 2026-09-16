@@ -156,6 +156,7 @@ export class RunManagementService {
         const run = WorkflowRunSchema.parse({
           id: `run-${randomUUID()}`, workspaceId: input.workspaceId, workflowId: input.workflowId,
           workflowVersionId: version.id, agentConfigurationVersionIds: version.agentConfigurationVersionIds,
+          ...(version.approval ? { approval: version.approval } : {}),
           executionLocation,
           ...(approval ? { approval } : {}),
           authorizationPrincipalId: principal.id,
@@ -177,7 +178,7 @@ export class RunManagementService {
     if (!run) throw new DomainError('RUN_NOT_FOUND', `Run '${input.runId}' was not found.`, 404)
     requireAuthorization(principal, 'runs:stop', { workspaceId: input.workspaceId, workflowId: run.workflowId, runId: input.runId })
     const execution = await this.commands.execute({
-      principal, source, operation: 'run.stop', commandId: input.commandId,
+      principal, source, operation: 'run.stop', commandId: input.commandId, dedicatedConnection: true,
       targetKey: `run:${input.runId}`, payload: input,
       perform: async (client) => {
         // Reuse the coordinator's lease. Ownership uses its dedicated session;

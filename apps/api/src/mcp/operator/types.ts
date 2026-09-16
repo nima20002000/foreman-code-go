@@ -8,6 +8,7 @@ import type { WorkflowManagementService } from '../../modules/workflows/manageme
 import type { WorkspaceManagementService } from '../../modules/workspaces/management.js'
 import type { PostgresCommandCoordinator } from '../../modules/commands/postgres.js'
 import type { WorkspaceLocationService } from '../../modules/workspaces/location.js'
+import type { OperatorInteractionService } from '../../modules/interactions/operator.js'
 
 export interface OperatorServices {
   workspaces: WorkspaceManagementService
@@ -18,6 +19,7 @@ export interface OperatorServices {
   harnesses: HarnessCatalogService
   runs: RunManagementService
   commands: PostgresCommandCoordinator
+  interactions?: OperatorInteractionService
 }
 
 export interface OperatorRequestContext {

@@ -1,6 +1,7 @@
-import { WorkflowRunSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema, WorkflowRunSchema } from '@graphql/contracts'
 import type pg from 'pg'
 
+import { DomainError } from '../errors.js'
 import type { ChildProcessEnvironment } from '../harnesses/port.js'
 import type { PostgresAccessService } from './postgres.js'
 import { lockWorkerExecution, requireActiveWorkerExecution } from './workerLifecycle.js'
@@ -8,6 +9,7 @@ import { lockWorkerExecution, requireActiveWorkerExecution } from './workerLifec
 export const APP_MCP_TOKEN_ENVIRONMENT_VARIABLE = 'GRAPHQL_APP_MCP_TOKEN'
 export const DEFAULT_WORKER_CREDENTIAL_TTL_MS = 15 * 60 * 1000
 export const WORKER_CREDENTIAL_EXPIRY_MARGIN_MS = 30_000
+export const WORKER_CREDENTIAL_RENEWAL_WINDOW_MS = 60_000
 
 export interface IssuedWorkerCredential {
   principalId: string
@@ -48,11 +50,37 @@ export class WorkerCredentialService {
     }
   }
 
-  async issueForExecution(executionId: string): Promise<IssuedWorkerCredential> {
+  issueForExecution(executionId: string): Promise<IssuedWorkerCredential> {
+    return this.issue(executionId, 'workflow')
+  }
+
+  issueForReviewer(executionId: string): Promise<IssuedWorkerCredential> {
+    return this.issue(executionId, 'reviewer')
+  }
+
+  private async issue(executionId: string, purpose: 'workflow' | 'reviewer'): Promise<IssuedWorkerCredential> {
     return this.transaction(async (client) => {
       const identity = await lockWorkerExecution(client, executionId)
-      requireActiveWorkerExecution(identity)
+      const execution = HarnessExecutionSchema.parse(identity.execution_record)
       const run = WorkflowRunSchema.parse(identity.run_record)
+      if (purpose === 'workflow') requireActiveWorkerExecution(identity)
+      else {
+        if (identity.run_closed_at || !['running', 'waiting'].includes(run.executionState) || run.outcome !== 'pending') {
+          throw new DomainError('REVIEWER_EXECUTION_NOT_READY', 'The Run no longer accepts reviewer credentials.', 409)
+        }
+        const ready = await client.query(
+          `select s.execution_id from execution_native_sessions s
+           join harness_executions he on he.id=s.execution_id
+           join agent_configuration_versions c on c.id=he.record->>'agentConfigurationVersionId'
+           where s.execution_id=$1 and s.workflow_finalized_at is not null
+             and s.reference->>'nativeSessionId'=he.record->>'nativeSessionId'
+             and c.record->>'productRole'='orchestrator'`, [executionId],
+        )
+        if (execution.state !== 'completed' || run.approval?.handler !== 'orchestrator'
+          || run.approval.designatedOrchestratorAgentId !== execution.agentId || !ready.rowCount) {
+          throw new DomainError('REVIEWER_EXECUTION_NOT_READY', 'Only the finalized designated Orchestrator session can receive Run-lifetime review credentials.', 409)
+        }
+      }
       const issued = await this.access.issue({
         name: `execution:${identity.execution_id}`,
         audience: 'worker',
@@ -74,10 +102,10 @@ export class WorkerCredentialService {
       }, client)
       await client.query(
         `insert into worker_credential_bindings
-          (principal_id, execution_id, run_id, workspace_id, workflow_id, agent_id, environment_variable)
-         values ($1,$2,$3,$4,$5,$6,$7)`,
+          (principal_id, execution_id, run_id, workspace_id, workflow_id, agent_id, environment_variable, purpose)
+         values ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [issued.principal.id, identity.execution_id, identity.run_id, identity.workspace_id,
-          identity.workflow_id, identity.agent_id, APP_MCP_TOKEN_ENVIRONMENT_VARIABLE],
+          identity.workflow_id, identity.agent_id, APP_MCP_TOKEN_ENVIRONMENT_VARIABLE, purpose],
       )
       return {
         principalId: issued.principal.id,
@@ -88,6 +116,39 @@ export class WorkerCredentialService {
         expiresAt: issued.principal.expiresAt,
       }
     })
+  }
+
+  /** Extend the same principal/token only while its exact execution lease remains valid. */
+  async renewForExecution(executionId: string, credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<string> {
+    const result = await this.pool.query<{ expires_at: Date }>(
+      `update management_principals p
+       set expires_at=greatest(p.expires_at,now()+($3::bigint * interval '1 millisecond'))
+       from worker_credential_bindings b
+       join harness_executions he on he.id=b.execution_id and he.agent_id=b.agent_id and he.run_id=b.run_id
+       join runs r on r.id=b.run_id and r.workspace_id=b.workspace_id and r.workflow_id=b.workflow_id
+       join agents a on a.id=b.agent_id and a.workspace_id=b.workspace_id
+       join approval_execution_state s on s.execution_id=he.id
+       where p.id=$1 and b.principal_id=p.id and b.execution_id=$2
+         and p.audience='worker' and p.agent_id=b.agent_id
+         and b.environment_variable=$4 and p.revoked_at is null and b.revoked_at is null
+         and he.record->>'id'=he.id and he.record->>'runId'=r.id and he.record->>'agentId'=b.agent_id
+         and r.record->>'id'=r.id and r.record->>'workspaceId'=b.workspace_id and r.record->>'workflowId'=b.workflow_id
+         and ((b.purpose='workflow' and he.record->>'state' in ('running','waiting')
+           and s.active_elapsed_ms + coalesce(extract(epoch from (now()-s.active_started_at))*1000,0) < s.active_timeout_ms)
+           or (b.purpose='reviewer' and he.record->>'state'='completed'
+             and r.record->'approval'->>'handler'='orchestrator'
+             and r.record->'approval'->>'designatedOrchestratorAgentId'=b.agent_id
+             and exists (select 1 from execution_native_sessions ns where ns.execution_id=he.id
+               and ns.workflow_finalized_at is not null and ns.reference->>'nativeSessionId'=he.record->>'nativeSessionId')))
+         and r.record->>'executionState' in ('running','waiting') and r.record->>'outcome'='pending'
+         and s.stopped_at is null
+       returning p.expires_at`,
+      [credential.principalId, executionId, this.ttlMs, APP_MCP_TOKEN_ENVIRONMENT_VARIABLE],
+    )
+    if (!result.rows[0]) {
+      throw new DomainError('WORKER_CREDENTIAL_NOT_RENEWABLE', 'The worker credential is revoked, mismatched, or its execution is no longer active.', 409)
+    }
+    return result.rows[0].expires_at.toISOString()
   }
 
   private async lockParents(client: pg.PoolClient, executionId: string): Promise<void> {
@@ -120,6 +181,22 @@ export class WorkerCredentialService {
       )
       if (found.rows[0]) await this.lockParents(client, found.rows[0].execution_id)
       await this.revokeIds(client, [credential.principalId])
+    })
+  }
+
+  /** Revoke replaceable process credentials without terminally closing the execution. */
+  async revokeSupersededForExecution(executionId: string): Promise<number> {
+    return this.transaction(async (client) => {
+      await this.lockParents(client, executionId)
+      const active = await client.query<{ principal_id: string }>(
+        `select b.principal_id from worker_credential_bindings b
+         left join management_principals p on p.id=b.principal_id
+         where b.execution_id=$1 and (b.revoked_at is null or (p.id is not null and p.revoked_at is null))
+         order by b.principal_id`, [executionId],
+      )
+      const principalIds = active.rows.map((row) => row.principal_id)
+      await this.revokeIds(client, principalIds)
+      return principalIds.length
     })
   }
 

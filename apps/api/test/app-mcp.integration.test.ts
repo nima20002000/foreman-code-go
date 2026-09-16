@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import pg from 'pg'
+import { seedInteractionOwners } from './helpers/interactionOwners.js'
 
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import {
@@ -33,13 +35,33 @@ function structured(result: { structuredContent?: unknown }): Record<string, unk
 describe('App MCP real transport and PostgreSQL policy', () => {
   it('isolates identities, catalogs, scopes, responses, replay, revocation, and audience', async () => {
     const suffix = randomUUID()
-    const database = createDatabase({ connectionString, maxConnections: 8, connectionTimeoutMs: 5000, queryTimeoutMs: 5000 })
+    const schema = `app_mcp_${suffix.replaceAll('-', '')}`
+    const admin = new pg.Pool({ connectionString })
+    await admin.query(`create schema "${schema}"`)
+    const scopedConnection = new URL(connectionString)
+    scopedConnection.searchParams.set('options', `-c search_path=${schema}`)
+    const database = createDatabase({ connectionString: scopedConnection.toString(), maxConnections: 8, connectionTimeoutMs: 5000, queryTimeoutMs: 5000 })
+    cleanup.push(async () => {
+      await database.close()
+      try { await admin.query(`drop schema "${schema}" cascade`) } finally { await admin.end() }
+    })
     await database.migrate()
     await ensureAcceptanceSeed(database.pool)
     const access = new PostgresAccessService(database.pool)
     const commands = new PostgresCommandCoordinator(database.pool)
     const interactions = new PostgresInteractionRepository(database.pool)
-    const appInteractions = new PostgresAppInteractionService(database.pool, interactions, commands)
+    const appInteractions = new PostgresAppInteractionService(database.pool, interactions, commands, {
+      respond: async (_responder: unknown, input: { interactionId: string; optionId: string; expectedRevision: number }) => {
+        const current = await interactions.get(input.interactionId)
+        if (!current) throw new Error('interaction missing')
+        const option = current.responseOptions.find((candidate) => candidate.optionId === input.optionId)
+        if (!option) throw new Error('option missing')
+        return interactions.decide({
+          id: current.id, optionId: option.optionId, expectedRevision: input.expectedRevision,
+          nativeResponse: { optionId: option.optionId, semantic: option.semantic },
+        })
+      },
+    })
     const credentials = new WorkerCredentialService(database.pool, access)
     const runId = `run-app-${suffix}`
     const run = WorkflowRunSchema.parse({
@@ -103,10 +125,12 @@ describe('App MCP real transport and PostgreSQL policy', () => {
       ...pending,
       id: `interaction-foreign-${suffix}`,
       workspaceId: 'workspace-foreign', workflowId: 'workflow-foreign', runId: 'run-foreign',
+      executionId: `execution-foreign-${suffix}`, requestingAgentId: 'agent-foreign',
       nativeSessionId: `session-foreign-${suffix}`, nativeRequestId: `request-foreign-${suffix}`,
     }
     await interactions.create(pending)
     await interactions.create(self)
+    await seedInteractionOwners(database.pool, foreign)
     await interactions.create(foreign)
 
     const coderCredential = await credentials.issueForExecution(executionIds.coder)
@@ -123,7 +147,7 @@ describe('App MCP real transport and PostgreSQL policy', () => {
       appMcp: { access, interactions: appInteractions },
     })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
-    cleanup.push(async () => { await app.close(); await database.close() })
+    cleanup.push(async () => { await app.close() })
 
     const connect = async (name: string, bearer: string) => {
       const client = new Client({ name, version: '1.0.0' })

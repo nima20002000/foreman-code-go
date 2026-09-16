@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto'
 import {
   GetRunResponseSchema,
   HarnessExecutionSchema,
-  HarnessNativeEventSchema,
   RunActivitySchema,
   WorkflowRunSchema,
   type ActivityKind,
@@ -24,6 +23,7 @@ import type { RunRepository, RunStateUpdate } from './port.js'
 import { acceptedRunApproval } from '../workflows/approval.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { RunOwnership } from './ownership.js'
+import { appendNativeEvent } from './nativeEvents.js'
 import { validateExecutableTopology } from './topology.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
 
@@ -43,6 +43,25 @@ export class PostgresRunRepository implements RunRepository {
       "select record from runs where execution_state in ('queued', 'running', 'waiting') order by created_at, id",
     )
     return result.rows.map((row) => WorkflowRunSchema.parse(row.record))
+  }
+
+  /** Read persisted active time on the ownership connection, excluding approval waits. */
+  async remainingApprovalTime(runId: string, executionIds: string[], owner: RunOwnership): Promise<number> {
+    owner.assertOwned()
+    const ids = [...new Set(executionIds)]
+    const result = await owner.client.query<{ remaining_ms: string; stopped_at: Date | null }>(
+      `select (budget.active_timeout_ms - budget.active_elapsed_ms -
+         case when budget.approval_wait_started_at is not null then 0
+           else greatest(0, coalesce(extract(epoch from (clock_timestamp()-budget.active_started_at))*1000,0))
+         end)::text as remaining_ms, budget.stopped_at
+       from approval_execution_state budget
+       join harness_executions execution on execution.id=budget.execution_id
+       where execution.run_id=$1 and execution.id=any($2::text[])`, [runId, ids],
+    )
+    if (!ids.length || result.rows.length !== ids.length || result.rows.some((row) => row.stopped_at)) {
+      throw new DomainError('EXECUTION_STOPPED', 'A resumed execution is stopped or has no active-time budget.', 409)
+    }
+    return Math.max(0, Math.min(...result.rows.map((row) => Number(row.remaining_ms))))
   }
 
   /** Called only while holding database ownership; never modifies another live owner. */
@@ -249,19 +268,7 @@ export class PostgresRunRepository implements RunRepository {
 
   async appendNativeEvent(event: HarnessNativeEvent, owner?: RunOwnership): Promise<void> {
     owner?.assertOwned()
-    const parsed = HarnessNativeEventSchema.parse(event)
-    await (owner?.client ?? this.pool).query(
-      `insert into harness_native_events (execution_id, sequence, record)
-       values ($1, $2, $3::jsonb)`,
-      [parsed.executionId, parsed.sequence, JSON.stringify(parsed)],
-    )
-    const execution = await this.getExecution(parsed.executionId, owner)
-    if (execution) {
-      await this.recordActivity(execution.runId, 'harness', 'harness_output', {
-        nativeEventSequence: parsed.sequence,
-        nativeEventType: parsed.type,
-      }, parsed.executionId, owner?.client)
-    }
+    await appendNativeEvent(owner?.client ?? this.pool, event)
   }
 
   async getExecution(executionId: string, owner?: RunOwnership): Promise<HarnessExecution | undefined> {
@@ -271,6 +278,10 @@ export class PostgresRunRepository implements RunRepository {
       [executionId],
     )
     return result.rows[0] ? HarnessExecutionSchema.parse(result.rows[0].record) : undefined
+  }
+
+  async getExecutionConfiguration(configurationVersionId: string) {
+    return this.workflows.getAgentConfiguration(configurationVersionId)
   }
 
   async listExecutions(runId: string): Promise<HarnessExecution[]> {

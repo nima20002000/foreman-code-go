@@ -36,10 +36,10 @@ describe('PR #11 production composition and HTTP detection', () => {
     assert(runtime.mcpDetection.service instanceof McpDetectionService)
     assert.equal(runtime.mcpDetection.pool, pool)
     assert.equal(runtime.appMcp.access, access)
-    const bootstrap = await readFile(new URL('../src/server.ts', import.meta.url), 'utf8')
-    assert(bootstrap.includes('createAppMcpRuntime('))
-    assert(bootstrap.includes('appRuntime.executionCredentials'))
-    assert(bootstrap.includes('mcpDetection: appRuntime.mcpDetection'))
+    const bootstrap = await readFile(new URL('../src/production.ts', import.meta.url), 'utf8')
+    assert(bootstrap.includes('const launchCredentials: ExecutionCredentialProvider'))
+    assert(bootstrap.includes('launchCredentials, approvals, repository'))
+    assert(bootstrap.includes('mcpDetection: { pool: database.pool, service: detection }'))
   })
 
   it('normalizes wildcard listen addresses to usable local endpoints', () => {

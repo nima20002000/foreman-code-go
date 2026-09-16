@@ -202,19 +202,40 @@ export class WorkerLaunchCredentialService implements ExecutionCredentialProvide
       ...(input.signal ? { signal: input.signal } : {}),
     })
     input.signal?.throwIfAborted()
+    const credentials = this.credentials as WorkerCredentialService & {
+      revokeSupersededForExecution?(executionId: string): Promise<number>
+    }
+    if (credentials.revokeSupersededForExecution) await credentials.revokeSupersededForExecution(input.executionId)
+    else await credentials.revokeForExecution(input.executionId)
+    input.signal?.throwIfAborted()
     // The engine retains the returned credential before its final launch check,
     // including an abort that races issuance, and always performs terminal cleanup.
-    const credential = await this.credentials.issueForExecution(input.executionId)
+    const credential = await (input.purpose === 'reviewer'
+      ? credentials.issueForReviewer(input.executionId) : credentials.issueForExecution(input.executionId))
+    if (input.signal?.aborted) {
+      await this.credentials.revoke(credential)
+      input.signal.throwIfAborted()
+    }
     return { credential, detection }
   }
 
-  revoke(credential: IssuedWorkerCredential): Promise<void> { return this.credentials.revoke(credential) }
-  revokeForExecution(executionId: string): Promise<number> { return this.credentials.revokeForExecution(executionId) }
+  renew(executionId: string, credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<string> {
+    return this.credentials.renewForExecution(executionId, credential)
+  }
+
+  revoke(credential: IssuedWorkerCredential): Promise<void> {
+    return this.credentials.revoke(credential)
+  }
+
+  revokeForExecution(executionId: string): Promise<number> {
+    return this.credentials.revokeForExecution(executionId)
+  }
   revokeForRun(runId: string, client?: pg.PoolClient): Promise<number> { return this.credentials.revokeForRun(runId, client) }
   reconcileTerminalCredentials(): Promise<void> { return this.credentials.reconcileTerminalCredentials() }
 }
 
 export interface ExecutionCredentialPrepareInput {
+  purpose?: 'reviewer'
   executionId: string
   harness: AgentHarness
   workingDirectory: string
@@ -228,9 +249,12 @@ export interface PreparedExecutionCredential {
 
 /** Provider-neutral lifecycle seam consumed by legacy and rich session execution paths. */
 export interface ExecutionCredentialProvider {
+  /** New process only; never inject a replacement environment into a resident process. */
   prepare(input: ExecutionCredentialPrepareInput): Promise<PreparedExecutionCredential>
+  /** Same-token server-side lease renewal. Providers without it must not rotate a busy process. */
+  renew?(executionId: string, credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<string>
   revoke(credential: IssuedWorkerCredential): Promise<void>
   revokeForExecution(executionId: string): Promise<number>
-  revokeForRun(runId: string, client?: pg.PoolClient): Promise<number>
-  reconcileTerminalCredentials(): Promise<void>
+  revokeForRun?(runId: string, client?: pg.PoolClient): Promise<number>
+  reconcileTerminalCredentials?(): Promise<void>
 }

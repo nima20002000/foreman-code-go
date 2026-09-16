@@ -93,6 +93,10 @@ export class FixtureServer implements OpenCodeServerController {
     const entry = object(object(this.config.mcp)[serverName])
     if (!Object.keys(entry).length) return undefined
     const status = object(this.mcp[serverName]).status
+    const normalizedStatus: NativeMcpEntryEvidence['status'] = status === 'needs_auth'
+      ? 'authentication_required' : status === 'failed' ? 'broken'
+        : status === 'connected' || status === 'disabled' || status === 'authentication_required'
+          || status === 'broken' || status === 'status_unavailable' ? status : undefined
     return {
       name: serverName,
       transport: entry.type === 'remote' ? 'streamable-http' : entry.type === 'local' ? 'stdio' : 'unknown',
@@ -100,8 +104,7 @@ export class FixtureServer implements OpenCodeServerController {
       enabled: entry.enabled !== false,
       ...(this.mcpCredentialReferences[serverName]
         ? { credentialEnvironmentVariable: this.mcpCredentialReferences[serverName] } : {}),
-      ...(typeof status === 'string' ? { status: status === 'needs_auth' ? 'authentication_required'
-        : status === 'failed' ? 'broken' : status as NativeMcpEntryEvidence['status'] } : {}),
+      ...(normalizedStatus !== undefined ? { status: normalizedStatus } : {}),
     }
   }
   async ensure(signal?: AbortSignal) {

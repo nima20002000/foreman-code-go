@@ -22,7 +22,7 @@ import {
   InteractionStatusSchema,
 } from "../index.js";
 
-export const ManagementAudienceSchema = z.enum(["operator", "worker"]);
+export const ManagementAudienceSchema = z.enum(["operator", "worker", "user"]);
 export type ManagementAudience = z.infer<typeof ManagementAudienceSchema>;
 
 export const ManagementActionSchema = z.enum([
@@ -85,7 +85,7 @@ export const ManagementPrincipalSchema = z
     if (value.audience === "worker" && !value.agentId) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["agentId"], message: "worker principals require an immutable Agent subject" });
     }
-    if (value.audience === "operator" && value.agentId) {
+    if (value.audience !== "worker" && value.agentId) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["agentId"], message: "Operator principals do not impersonate board Agents" });
     }
   });

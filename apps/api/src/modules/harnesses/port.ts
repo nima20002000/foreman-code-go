@@ -12,6 +12,8 @@ import type {
   OperatorConfigurationVersion,
 } from '@graphql/contracts'
 
+import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
+
 export interface NativeEventInput {
   type: string
   payload: Record<string, unknown>
@@ -82,6 +84,12 @@ export interface NativeHistory {
     state: 'pending' | 'submitting' | 'submitted' | 'uncertain'
     selectedOptionId?: string
   }[]
+  /** Explicit provider cancellation evidence, scoped to this exact session. */
+  canceledRequestIds?: readonly string[]
+  /** Result of the exact requested correlation, never the session's latest turn. */
+  terminalTurn?: { correlationId: string; providerId: string; result: ExecutionResult }
+  /** Optional positive evidence; an empty pending list is never a delivery receipt. */
+  responseDeliveries?: readonly NativeResponseDeliveryEvidence[]
   events: readonly NativeHarnessEvent[]
   pendingInteractions: readonly PendingNativeInteraction[]
   pendingInteraction?: PendingNativeInteraction

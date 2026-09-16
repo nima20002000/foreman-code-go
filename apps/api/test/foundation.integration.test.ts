@@ -12,7 +12,6 @@ import { describe, expect, it } from 'vitest'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { WorkerCredentialService } from '../src/modules/access/workerCredentials.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
@@ -29,7 +28,7 @@ describe('HAP-01 durable foundation', () => {
     try {
       await applyApplicationMigrations(pool)
       await applyApplicationMigrations(pool)
-      expect((await pool.query<{ version: number }>('select version from application_migrations order by version')).rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 100, 400, 401])
+      expect((await pool.query<{ version: number }>('select version from application_migrations order by version')).rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 100, 400, 500, 501, 502, 503, 508, 509])
       await ensureAcceptanceSeed(pool)
 
       const settings = new PostgresFoundationSettingsRepository(pool)
@@ -55,14 +54,12 @@ describe('HAP-01 durable foundation', () => {
       const access = new PostgresAccessService(pool)
       await expect(access.issue({ name: 'invalid worker', audience: 'worker', grants: [], expiresAt: new Date(Date.now() + 60_000) })).rejects.toMatchObject({ code: 'WORKER_AGENT_REQUIRED' })
       const worker = await access.issue({ name: 'coder', audience: 'worker', agentId: 'agent-developer', grants: [], expiresAt: new Date(Date.now() + 60_000) })
-      await expect(access.authenticate(worker.token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+      expect((await access.authenticate(worker.token, 'worker')).agentId).toBe('agent-developer')
       await expect(access.authenticate(worker.token, 'operator')).rejects.toMatchObject({ code: 'AUTH_WRONG_AUDIENCE' })
 
       const run = WorkflowRunSchema.parse({
         id: 'run-hap01', workspaceId: 'workspace-1', workflowId: 'workflow-content-pipeline',
-        workflowVersionId: 'workflow-content-pipeline-v1',
-        agentConfigurationVersionIds: { 'agent-reviewer': 'agent-reviewer-config-v1' },
-        approval: { handler: 'user' },
+        workflowVersionId: 'workflow-content-pipeline-v1', agentConfigurationVersionIds: {},
         executionCondition: { kind: 'manual' }, executionState: 'waiting', outcome: 'pending', input: {},
         createdAt: '2026-09-16T00:00:00.000Z',
       })
@@ -70,24 +67,20 @@ describe('HAP-01 durable foundation', () => {
         values ($1,$2,$3,$4,$5,$6::jsonb)`, [run.id, run.workspaceId, run.workflowId, run.workflowVersionId, run.executionState, JSON.stringify(run)])
       const runs = new PostgresRunRepository(pool, {} as never, {} as never)
       const occurrence = HarnessExecutionSchema.parse({
-        id: 'execution-hap01-a', runId: run.id, workflowNodeId: 'node-reviewer', agentId: 'agent-reviewer',
-        agentConfigurationVersionId: 'agent-reviewer-config-v1', attempt: 1, input: {}, state: 'waiting',
+        id: 'execution-hap01-a', runId: run.id, workflowNodeId: 'node-developer', agentId: 'agent-developer',
+        agentConfigurationVersionId: 'agent-developer-config-v1', attempt: 1, input: {}, state: 'waiting',
         createdAt: '2026-09-16T00:00:00.000Z',
       })
       expect((await runs.ensureExecution(occurrence)).created).toBe(true)
       const reentry = await runs.ensureExecution({ ...occurrence, id: 'execution-hap01-b' })
       expect(reentry).toMatchObject({ created: false, execution: { id: 'execution-hap01-a' } })
 
-      const boundWorker = await new WorkerCredentialService(pool, access).issueForExecution(occurrence.id)
-      await expect(access.authenticate(boundWorker.environment.variables.GRAPHQL_APP_MCP_TOKEN, 'worker'))
-        .resolves.toMatchObject({ agentId: 'agent-developer' })
-
       const interactions = new PostgresInteractionRepository(pool)
       const base = {
         ...NATIVE_INTERACTION_FIXTURES.codex,
         workspaceId: 'workspace-1', workflowId: 'workflow-content-pipeline', runId: run.id,
-        executionId: occurrence.id, requestingAgentId: 'agent-reviewer',
-        approval: { handler: 'user' as const },
+        executionId: occurrence.id, requestingAgentId: 'agent-developer',
+        approval: { handler: 'orchestrator' as const, designatedOrchestratorAgentId: 'agent-researcher' },
       }
       const [left, right] = await Promise.all([
         interactions.create({ ...base, id: 'interaction-hap01-a' }),
