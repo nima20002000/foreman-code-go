@@ -8,12 +8,18 @@ import {
   SendOperatorMessageResponseSchema,
 } from '@graphql/contracts'
 import type { FastifyInstance } from 'fastify'
+import type { ServerResponse } from 'node:http'
 
 import type { OperatorChatService } from '../modules/conversations/operatorChat.js'
 
 interface ConversationParams { conversationId: string }
 
 export function registerOperatorChatRoutes(app: FastifyInstance, chat: OperatorChatService): void {
+  const streams = new Set<ServerResponse>()
+  app.addHook('preClose', async () => {
+    for (const stream of streams) stream.end()
+    streams.clear()
+  })
   app.get('/api/operator/conversations', async () =>
     ListOperatorConversationsResponseSchema.parse({ conversations: await chat.list() }))
   app.post<{ Body: unknown }>('/api/operator/conversations', async (request, reply) => {
@@ -41,10 +47,11 @@ export function registerOperatorChatRoutes(app: FastifyInstance, chat: OperatorC
       connection: 'keep-alive', 'x-accel-buffering': 'no',
     })
     reply.raw.write(`event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`)
+    streams.add(reply.raw)
     const unsubscribe = chat.events.subscribe(request.params.conversationId, (event) => {
       reply.raw.write(`id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
     })
     const heartbeat = setInterval(() => reply.raw.write(': heartbeat\n\n'), 15_000)
-    request.raw.once('close', () => { clearInterval(heartbeat); unsubscribe() })
+    request.raw.once('close', () => { clearInterval(heartbeat); unsubscribe(); streams.delete(reply.raw) })
   })
 }

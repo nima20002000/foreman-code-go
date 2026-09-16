@@ -15,6 +15,7 @@ class ChatManager implements NativeHarnessSessionManager {
   readonly harness = 'codex' as const
   sessions = 0; turns = 0; cancels = 0; completed = false
   attachments = 0
+  closes = 0; disposals = 0
   failAttach = false
   blockFirst = false
   private releaseFirst?: () => void
@@ -38,7 +39,8 @@ class ChatManager implements NativeHarnessSessionManager {
   async cancel() { this.cancels++; this.releaseFirst?.(); return true }
   async history(): Promise<NativeHistory> { return this.completed ? { events: [], pendingInteractions: [], terminalResult: { outcome: 'succeeded', output: { text: 'final answer' } } } : { events: [], pendingInteractions: [] } }
   reconcile(): Promise<NativeHistory> { return this.history() }
-  async close() {}
+  async close() { this.closes++ }
+  async dispose() { this.disposals++ }
 }
 
 async function waitFor(check: () => Promise<boolean>) {
@@ -69,6 +71,9 @@ describe('Operator chat persistence and native binding', () => {
       const state = await service.get(conversation.id)
       expect(state.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
       expect(new Set(state.messages.map((message) => message.id)).size).toBe(4)
+      await service.shutdown()
+      expect(manager.closes).toBe(1)
+      expect(manager.disposals).toBe(1)
     } finally { await pool.end(); await admin.query(`drop schema if exists "${schema}" cascade`); await admin.end() }
   }, 30_000)
 

@@ -727,6 +727,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     this.runtimes.delete(session.nativeSessionId)
   }
 
+  async dispose(): Promise<void> {
+    await Promise.allSettled([...this.runtimes.values()].map((runtime) => this.close(runtime.session)))
+  }
+
   async inspectConfiguration(session: NativeSessionReference, includeLayers = true, signal?: AbortSignal): Promise<JsonObject> {
     const runtime = this.requireRuntime(session)
     return assertObject(await runtime.transport.request('config/read', {

@@ -24,6 +24,7 @@ type TurnState = OperatorConversationState['turnState']
 type ConversationRow = {
   record: unknown; turn_state: TurnState; last_error: string | null; harness: 'codex' | 'opencode'
   provider_version: string | null; native_session_id: string | null; active_request_id: string | null
+  operator_configuration_version_id: string
 }
 
 function finalText(history: NativeHistory): string | undefined {
@@ -159,6 +160,11 @@ export class PostgresOperatorConversationRepository {
       "select * from operator_conversations where turn_state in ('starting','active','canceling','uncertain') order by updated_at",
     )).rows
   }
+  async bindings() {
+    return (await this.pool.query<ConversationRow & { id: string }>(
+      'select * from operator_conversations where native_session_id is not null order by id',
+    )).rows
+  }
   async setState(conversationId: string, state: TurnState, error?: string) {
     await this.pool.query('update operator_conversations set turn_state=$2,last_error=$3,updated_at=now() where id=$1', [conversationId, state, error ?? null])
   }
@@ -191,9 +197,11 @@ export class PostgresOperatorConversationRepository {
   }
 }
 
-export type NativeManagerResolver = (harness: 'codex' | 'opencode') => NativeHarnessSessionManager
+export type NativeManagerResolver = (configuration: OperatorConfigurationVersion) => NativeHarnessSessionManager
 
 export class OperatorChatService {
+  private readonly activeTasks = new Set<Promise<void>>()
+  private closing = false
   constructor(
     private readonly repository: PostgresOperatorConversationRepository,
     private readonly operators: PostgresOperatorRepository,
@@ -205,16 +213,20 @@ export class OperatorChatService {
   list() { return this.repository.list() }
   async get(id: string) { const state = await this.repository.get(id); if (!state) throw new DomainError('CONVERSATION_NOT_FOUND', `Conversation '${id}' was not found.`, 404); return state }
   async send(id: string, input: { requestId: string; content: string; context?: Record<string, string | undefined> }) {
+    if (this.closing) throw new DomainError('OPERATOR_CHAT_CLOSING', 'Operator chat is shutting down.', 503)
     const begun = await this.repository.beginTurn(id, input.requestId, input.content)
     if (begun.replayed) return { state: begun.state, replayed: true }
     const configurationId = begun.state.conversation.operatorConfigurationVersionId
     const configuration = configurationId ? await this.repository.configuration(configurationId) : undefined
     if (!configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'The pinned Operator configuration was not found.', 409)
-    void this.runTurn(id, input.requestId, input.content, input.context, configuration).catch(() => {})
+    const task = this.runTurn(id, input.requestId, input.content, input.context, configuration)
+      .finally(() => this.activeTasks.delete(task))
+    this.activeTasks.add(task)
+    void task.catch(() => {})
     return { state: begun.state, replayed: false }
   }
   private async runTurn(id: string, requestId: string, content: string, context: Record<string, string | undefined> | undefined, configuration: OperatorConfigurationVersion) {
-    const manager = this.managers(configuration.harness.harness)
+    const manager = this.managers(configuration)
     try {
       const row = await this.repository.active(id)
       if (!row) return
@@ -255,8 +267,10 @@ export class OperatorChatService {
     const row = await this.repository.active(id)
     if (!row) throw new DomainError('CONVERSATION_NOT_FOUND', `Conversation '${id}' was not found.`, 404)
     if (!row.native_session_id || !['starting','active','uncertain'].includes(row.turn_state)) throw new DomainError('CONVERSATION_NOT_CANCELABLE', 'The conversation has no cancelable turn.', 409)
+    const configuration = await this.repository.configuration(row.operator_configuration_version_id)
+    if (!configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'The pinned Operator configuration was not found.', 409)
     await this.repository.setState(id, 'canceling')
-    await this.managers(row.harness).cancel({ harness: row.harness, providerVersion: row.provider_version ?? 'unknown', nativeSessionId: row.native_session_id })
+    await this.managers(configuration).cancel({ harness: row.harness, providerVersion: row.provider_version ?? 'unknown', nativeSessionId: row.native_session_id })
     await this.repository.clearActive(id)
     this.events.publish(id, 'state', { turnState: 'idle', canceled: true })
     return this.get(id)
@@ -272,7 +286,7 @@ export class OperatorChatService {
         const configurationId = conversation.operatorConfigurationVersionId
         const configuration = configurationId ? await this.repository.configuration(configurationId) : undefined
         if (!configuration) throw new Error('The pinned Operator configuration was not found.')
-        const manager = this.managers(row.harness)
+        const manager = this.managers(configuration)
         const session = await manager.attachSession({
           harness: row.harness, providerVersion: row.provider_version ?? 'unknown', nativeSessionId: row.native_session_id,
         }, { kind: 'operator', correlationId: row.active_request_id, configuration, workingDirectory: this.workingDirectory })
@@ -284,5 +298,23 @@ export class OperatorChatService {
         await this.repository.setState(row.id, 'error', error instanceof Error ? error.message : 'The native session is unavailable.')
       }
     }
+  }
+  async shutdown() {
+    this.closing = true
+    const managers = new Map<string, NativeHarnessSessionManager>()
+    for (const row of await this.repository.bindings()) {
+      const configuration = await this.repository.configuration(row.operator_configuration_version_id)
+      if (!configuration) continue
+      const manager = managers.get(configuration.id) ?? this.managers(configuration)
+      managers.set(configuration.id, manager)
+      await manager.close({
+        harness: row.harness, providerVersion: row.provider_version ?? 'unknown', nativeSessionId: row.native_session_id!,
+      }).catch(() => undefined)
+    }
+    await Promise.allSettled(this.activeTasks)
+    await Promise.allSettled([...managers.values()].map(async (manager) => {
+      const disposable = manager as NativeHarnessSessionManager & { dispose?: () => Promise<void> }
+      await disposable.dispose?.()
+    }))
   }
 }

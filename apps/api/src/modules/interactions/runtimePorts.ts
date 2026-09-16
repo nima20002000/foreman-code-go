@@ -56,6 +56,15 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
     const current = this.entries.get(context.executionId)
     if (current && current.context.agentId === context.agentId) this.entries.delete(context.executionId)
   }
+
+  async dispose(): Promise<void> {
+    const managers = [...this.entries.values()].map((entry) => entry.manager)
+    this.entries.clear()
+    await Promise.allSettled(managers.map(async (manager) => {
+      const disposable = manager as NativeHarnessSessionManager & { dispose?: () => Promise<void> }
+      await disposable.dispose?.()
+    }))
+  }
 }
 
 export interface AttachedInteractionSession {
