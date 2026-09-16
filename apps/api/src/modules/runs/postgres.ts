@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto'
 import {
   GetRunResponseSchema,
   HarnessExecutionSchema,
-  HarnessNativeEventSchema,
   RunActivitySchema,
   WorkflowRunSchema,
   type ActivityKind,
@@ -23,6 +22,7 @@ import { DomainError } from '../errors.js'
 import type { RunRepository, RunStateUpdate } from './port.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { RunOwnership } from './ownership.js'
+import { appendNativeEvent } from './nativeEvents.js'
 import { validateExecutableTopology } from './topology.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
 
@@ -243,19 +243,7 @@ export class PostgresRunRepository implements RunRepository {
 
   async appendNativeEvent(event: HarnessNativeEvent, owner?: RunOwnership): Promise<void> {
     owner?.assertOwned()
-    const parsed = HarnessNativeEventSchema.parse(event)
-    await (owner?.client ?? this.pool).query(
-      `insert into harness_native_events (execution_id, sequence, record)
-       values ($1, $2, $3::jsonb)`,
-      [parsed.executionId, parsed.sequence, JSON.stringify(parsed)],
-    )
-    const execution = await this.getExecution(parsed.executionId, owner)
-    if (execution) {
-      await this.recordActivity(execution.runId, 'harness', 'harness_output', {
-        nativeEventSequence: parsed.sequence,
-        nativeEventType: parsed.type,
-      }, parsed.executionId, owner?.client)
-    }
+    await appendNativeEvent(owner?.client ?? this.pool, event)
   }
 
   async getExecution(executionId: string, owner?: RunOwnership): Promise<HarnessExecution | undefined> {

@@ -1,10 +1,24 @@
 import {
   DurableInteractionSchema,
   type DurableInteraction,
+  type NativeHarnessEvent,
 } from '@graphql/contracts'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
+import { requireAuthorization } from '../access/policy.js'
+import { appendNativeEvent } from '../runs/nativeEvents.js'
+import {
+  assertDeliveryLease, assertInteractionRevision, interactionTransaction, lockInteraction,
+  type DeliveryFailure, type InteractionLease, type LockedInteraction, type ReconciliationEvidence,
+} from './persistence.js'
+
+interface OperatorDecisionCommand { principal: ManagementPrincipal; commandId: string }
+interface DeliveryUpdate {
+  lease?: InteractionLease
+  error?: DeliveryFailure
+}
 
 /** Transactional durable interaction primitives; routing/dispatch intentionally lives elsewhere. */
 export class PostgresInteractionRepository {
@@ -31,7 +45,10 @@ export class PostgresInteractionRepository {
       [interaction.harness, interaction.nativeSessionId, interaction.nativeRequestId],
     )
     const persisted = DurableInteractionSchema.parse(existing.rows[0]?.record)
-    if (persisted.executionId !== interaction.executionId || persisted.requestingAgentId !== interaction.requestingAgentId) {
+    if (persisted.executionId !== interaction.executionId || persisted.requestingAgentId !== interaction.requestingAgentId
+      || persisted.runId !== interaction.runId || persisted.workflowId !== interaction.workflowId
+      || persisted.workspaceId !== interaction.workspaceId || persisted.providerVersion !== interaction.providerVersion
+      || persisted.graphThreadId !== interaction.graphThreadId) {
       throw new DomainError('INTERACTION_IDENTITY_CONFLICT', 'The native request identity is already bound to another execution.', 409)
     }
     return { interaction: persisted, created: false }
@@ -64,10 +81,11 @@ export class PostgresInteractionRepository {
       const next = DurableInteractionSchema.parse({
         ...current, graphInterruptId, revision: current.revision + 1, updatedAt: new Date().toISOString(),
       })
-      await client.query(
-        'update durable_interactions set revision=$2,record=$3::jsonb,updated_at=now() where id=$1',
-        [id, next.revision, JSON.stringify(next)],
+      const updated = await client.query(
+        'update durable_interactions set revision=$2,record=$3::jsonb,updated_at=now() where id=$1 and revision=$4',
+        [id, next.revision, JSON.stringify(next), current.revision],
       )
+      if (updated.rowCount !== 1) throw new DomainError('REVISION_CONFLICT', 'The interaction changed while binding its graph interrupt.', 409)
       await client.query('commit')
       return next
     } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
@@ -96,15 +114,26 @@ export class PostgresInteractionRepository {
     return result.rows.map((row) => DurableInteractionSchema.parse(row.record))
   }
 
-  async decide(input: { id: string; optionId: string; expectedRevision: number; nativeResponse: unknown; auditReference?: string }): Promise<{ interaction: DurableInteraction; replayed: boolean }> {
+  async decide(input: { id: string; optionId: string; expectedRevision: number; nativeResponse: unknown; auditReference?: string; command?: OperatorDecisionCommand }): Promise<{ interaction: DurableInteraction; replayed: boolean }> {
     const client = await this.pool.connect()
     try {
       await client.query('begin')
       const found = await client.query<{ record: unknown }>('select record from durable_interactions where id=$1 for update', [input.id])
       const current = found.rows[0] ? DurableInteractionSchema.parse(found.rows[0].record) : undefined
       if (!current) throw new DomainError('INTERACTION_NOT_FOUND', 'The interaction was not found.', 404)
+      if (input.command) {
+        if (current.approval.handler !== 'operator') throw new DomainError('INTERACTION_ACCESS_DENIED', 'The interaction is assigned to a different handler.', 403)
+        requireAuthorization(input.command.principal, 'interactions:respond', {
+          workspaceId: current.workspaceId, workflowId: current.workflowId, runId: current.runId,
+        })
+      }
+      if (current.status === 'canceled') throw new DomainError('INTERACTION_CANCELED', 'The interaction was canceled.', 409)
       if (current.status !== 'pending') {
-        if (current.selectedOptionId === input.optionId) { await client.query('commit'); return { interaction: current, replayed: true } }
+        if (current.selectedOptionId === input.optionId) {
+          if (input.command) await this.bindCommand(client, input.command, current)
+          await client.query('commit')
+          return { interaction: current, replayed: true }
+        }
         throw new DomainError('INTERACTION_ALREADY_DECIDED', 'The interaction already has a different decision.', 409)
       }
       if (current.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'The interaction changed since it was read.', 409, { currentRevision: current.revision })
@@ -115,31 +144,63 @@ export class PostgresInteractionRepository {
         ...current, revision: current.revision + 1, status: 'delivery_pending',
         selectedOptionId: option.optionId, selectedSemantic: option.semantic,
         nativeResponse: input.nativeResponse, deliveryState: 'pending',
-        ...(input.auditReference ? { auditReference: input.auditReference } : {}),
+        ...(input.command ? { auditReference: input.command.principal.id } : input.auditReference ? { auditReference: input.auditReference } : {}),
         decidedAt: now, updatedAt: now,
       })
-      await client.query(
+      if (input.command) await this.bindCommand(client, input.command, next)
+      const updated = await client.query(
         `update durable_interactions set status=$2, revision=$3, record=$4::jsonb, updated_at=now()
          where id=$1 and revision=$5`, [next.id, next.status, next.revision, JSON.stringify(next), current.revision],
       )
+      if (updated.rowCount !== 1) throw new DomainError('REVISION_CONFLICT', 'The interaction changed during the decision.', 409)
       await client.query('commit')
       return { interaction: next, replayed: false }
     } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
   }
 
-  async updateDelivery(id: string, expectedRevision: number, state: 'submitted' | 'uncertain' | 'delivered' | 'failed'): Promise<DurableInteraction> {
-    const current = await this.get(id)
-    if (!current) throw new DomainError('INTERACTION_NOT_FOUND', 'The interaction was not found.', 404)
-    if (current.revision !== expectedRevision) throw new DomainError('REVISION_CONFLICT', 'The interaction changed since it was read.', 409, { currentRevision: current.revision })
+  async updateDelivery(id: string, expectedRevision: number, state: 'submitted' | 'uncertain' | 'delivered' | 'failed', input: DeliveryUpdate = {}): Promise<DurableInteraction> {
+    return interactionTransaction(this.pool, async (client) => this.writeDelivery(
+      client, await lockInteraction(client, id), expectedRevision, state, input,
+    ))
+  }
+
+  private async writeDelivery(client: pg.ClientBase, row: LockedInteraction, expectedRevision: number, state: 'submitted' | 'uncertain' | 'delivered' | 'failed', input: DeliveryUpdate): Promise<DurableInteraction> {
+    const current = row.interaction
+    assertInteractionRevision(current, expectedRevision)
+    assertDeliveryLease(row, input.lease)
+    if (current.status === 'canceled') throw new DomainError('INTERACTION_CANCELED', 'The interaction was canceled.', 409)
+    const allowed: Record<DurableInteraction['deliveryState'], readonly string[]> = {
+      not_started: [], pending: ['submitted', 'failed'], submitted: ['uncertain', 'delivered', 'failed'],
+      uncertain: ['delivered', 'failed'], delivered: [], failed: [],
+    }
+    if (current.deliveryState === state && !input.error) return current
+    if (!current.selectedOptionId || (current.deliveryState !== state && !allowed[current.deliveryState].includes(state))) {
+      throw new DomainError('DELIVERY_TRANSITION_INVALID', 'This delivery transition would reopen or overwrite a settled native response.', 409)
+    }
     const now = new Date().toISOString()
     const status = state === 'delivered' ? 'delivered' : state === 'failed' ? 'delivery_failed' : 'delivery_pending'
     const next = DurableInteractionSchema.parse({ ...current, revision: current.revision + 1, status, deliveryState: state,
-      ...(state === 'delivered' ? { deliveredAt: now } : {}), updatedAt: now })
-    const result = await this.pool.query(
-      `update durable_interactions set status=$2, revision=$3, record=$4::jsonb, updated_at=now()
-       where id=$1 and revision=$5`, [id, next.status, next.revision, JSON.stringify(next), expectedRevision],
+      ...(state === 'delivered' ? { deliveredAt: current.deliveredAt ?? now } : {}), updatedAt: now })
+    const failure = input.error ?? (state === 'failed' || state === 'uncertain' ? {
+      code: state === 'failed' ? 'NATIVE_DELIVERY_FAILED' : 'NATIVE_DELIVERY_UNCERTAIN',
+      message: 'Native delivery did not complete; the caller supplied no further error evidence.',
+      phase: 'deliver', certainty: 'uncertain',
+    } : undefined)
+    const result = await client.query(
+      `update durable_interactions set status=$2, revision=$3, record=$4::jsonb, updated_at=now(),
+         last_delivery_error=coalesce($6::jsonb,last_delivery_error),
+         reconciliation_status=case when $7='unknown' and reconciliation_status='not_delivered'
+           then reconciliation_status else $7 end
+       where id=$1 and revision=$5 and delivery_fence=$8
+         and ($8::bigint=0 or (delivery_token=$9 and delivery_lease_expires_at > clock_timestamp()))`,
+      [current.id, next.status, next.revision, JSON.stringify(next), expectedRevision,
+        failure ? JSON.stringify(failure) : null,
+        state === 'delivered' ? 'delivered' : state === 'failed'
+          ? (failure?.certainty === 'definite' ? 'not_delivered' : 'unknown')
+          : state === 'uncertain' ? 'unknown' : 'required',
+        row.fence, input.lease?.token ?? null],
     )
-    if (result.rowCount !== 1) throw new DomainError('REVISION_CONFLICT', 'The interaction changed during delivery.', 409)
+    if (result.rowCount !== 1) throw new DomainError('DELIVERY_LEASE_LOST', 'The delivery revision or lease changed during the transition.', 409)
     return next
   }
 
@@ -149,59 +210,169 @@ export class PostgresInteractionRepository {
       await client.query('begin')
       const found = await client.query<{ id: string; record: unknown }>(
         `select id,record from durable_interactions
-         where run_id=$1 and status in ('pending','decided','delivery_pending') for update`, [runId],
+         where run_id=$1 and (status in ('pending','decided','delivery_pending') or
+           (status='delivered' and exists (select 1 from interaction_graph_resumes g
+             where g.interaction_id=durable_interactions.id and g.state not in ('resumed','canceled'))))
+         order by id for update`, [runId],
       )
       for (const row of found.rows) {
         const current = DurableInteractionSchema.parse(row.record)
         const now = new Date().toISOString()
         const next = DurableInteractionSchema.parse({
           ...current, revision: current.revision + 1, status: 'canceled',
-          deliveryState: current.deliveryState === 'delivered' ? 'delivered' : 'failed', updatedAt: now,
+          updatedAt: now,
         })
-        await client.query(
-          'update durable_interactions set status=$2,revision=$3,record=$4::jsonb,updated_at=now() where id=$1',
-          [current.id, next.status, next.revision, JSON.stringify(next)],
+        const updated = await client.query(
+          `update durable_interactions set status=$2,revision=$3,record=$4::jsonb,updated_at=now(),
+             delivery_fence=delivery_fence+1,delivery_owner=null,delivery_token=null,delivery_lease_expires_at=null,
+             last_delivery_error=$5::jsonb where id=$1 and revision=$6`,
+          [current.id, next.status, next.revision, JSON.stringify(next), JSON.stringify({
+            code: 'INTERACTION_CANCELED', message: 'Stop canceled the interaction; any submitted native response still requires evidence.',
+            phase: 'stop', certainty: current.deliveryState === 'submitted' || current.deliveryState === 'uncertain' ? 'uncertain' : 'definite',
+          }), current.revision],
         )
+        if (updated.rowCount !== 1) throw new DomainError('REVISION_CONFLICT', 'The interaction changed during cancellation.', 409)
       }
       await client.query('commit')
       return found.rowCount ?? 0
     } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
   }
 
-  async beginDeliveryAttempt(interaction: DurableInteraction, correlationId: string): Promise<number> {
-    const result = await this.pool.query<{ attempt: number }>(
-      `insert into interaction_delivery_attempts
-       (interaction_id,attempt,state,native_session_id,native_request_id,correlation_id)
-       select $1,coalesce(max(attempt),0)+1,'submitted',$2,$3,$4
-       from interaction_delivery_attempts where interaction_id=$1 returning attempt`,
-      [interaction.id, interaction.nativeSessionId, interaction.nativeRequestId, correlationId],
-    )
-    return result.rows[0]!.attempt
+  async beginDeliveryAttempt(interaction: DurableInteraction, correlationId: string, lease?: InteractionLease): Promise<number> {
+    return interactionTransaction(this.pool, async (client) => {
+      const row = await lockInteraction(client, interaction.id)
+      assertInteractionRevision(row.interaction, interaction.revision)
+      assertDeliveryLease(row, lease)
+      if (row.interaction.nativeSessionId !== interaction.nativeSessionId || row.interaction.nativeRequestId !== interaction.nativeRequestId) {
+        throw new DomainError('INTERACTION_IDENTITY_CONFLICT', 'The attempt must retain the exact native request identity.', 409)
+      }
+      if (row.interaction.status !== 'delivery_pending' || row.interaction.deliveryState !== 'submitted') {
+        throw new DomainError('DELIVERY_TRANSITION_INVALID', 'Only a submitted interaction can open a delivery attempt.', 409)
+      }
+      const active = await client.query(
+        `select attempt from interaction_delivery_attempts where interaction_id=$1 and state in ('submitted','uncertain')`, [interaction.id],
+      )
+      if (active.rowCount) throw new DomainError('DELIVERY_ATTEMPT_ACTIVE', 'An existing attempt must be reconciled, not submitted again.', 409)
+      // The interaction row lock serializes max(attempt)+1, including different workers.
+      const result = await client.query<{ attempt: number }>(
+        `insert into interaction_delivery_attempts
+         (interaction_id,attempt,state,native_session_id,native_request_id,correlation_id,delivery_fence)
+         select $1,coalesce(max(attempt),0)+1,'submitted',$2,$3,$4,$5
+         from interaction_delivery_attempts where interaction_id=$1
+         having exists (select 1 from durable_interactions where id=$1 and delivery_fence=$5
+           and ($5::bigint=0 or (delivery_token=$6 and delivery_lease_expires_at > clock_timestamp())))
+         returning attempt`,
+        [interaction.id, interaction.nativeSessionId, interaction.nativeRequestId, correlationId, row.fence, lease?.token ?? null],
+      )
+      if (!result.rows[0]) throw new DomainError('DELIVERY_LEASE_LOST', 'The delivery lease expired before the attempt was recorded.', 409)
+      return result.rows[0].attempt
+    })
   }
 
-  async finishDeliveryAttempt(interactionId: string, attempt: number, state: 'uncertain' | 'delivered' | 'failed', error?: string): Promise<void> {
-    const result = await this.pool.query(
-      `update interaction_delivery_attempts set state=$3,error=$4
-       where interaction_id=$1 and attempt=$2 and state='submitted'`,
-      [interactionId, attempt, state, error ?? null],
-    )
-    if (result.rowCount !== 1) throw new DomainError('DELIVERY_ATTEMPT_STALE', 'The delivery attempt changed during reconciliation.', 409)
+  async finishDeliveryAttempt(interactionId: string, attempt: number, state: 'uncertain' | 'delivered' | 'failed', error?: string, lease?: InteractionLease): Promise<void> {
+    await interactionTransaction(this.pool, async (client) => this.writeAttempt(
+      client, await lockInteraction(client, interactionId), attempt, state, error, lease,
+    ))
   }
 
-  async bindCommand(input: { principalId: string; commandId: string; interactionId: string; optionId: string }): Promise<boolean> {
-    const inserted = await this.pool.query(
-      `insert into interaction_command_receipts (principal_id,command_id,interaction_id,option_id)
-       values ($1,$2,$3,$4) on conflict do nothing`,
-      [input.principalId, input.commandId, input.interactionId, input.optionId],
+  /** Commit the attempt outcome, interaction state, audit, and resume intent together. */
+  async settleDeliveryAttempt(input: {
+    interactionId: string; expectedRevision: number; attempt: number;
+    state: 'uncertain' | 'delivered' | 'failed'; lease: InteractionLease; error?: DeliveryFailure
+  }): Promise<DurableInteraction> {
+    return interactionTransaction(this.pool, async (client) => {
+      const row = await lockInteraction(client, input.interactionId)
+      assertInteractionRevision(row.interaction, input.expectedRevision)
+      await this.writeAttempt(client, row, input.attempt, input.state, input.error?.message, input.lease)
+      return this.writeDelivery(client, row, input.expectedRevision, input.state, input)
+    })
+  }
+
+  private async writeAttempt(client: pg.ClientBase, row: LockedInteraction, attempt: number, state: 'uncertain' | 'delivered' | 'failed', error?: string, lease?: InteractionLease): Promise<void> {
+    assertDeliveryLease(row, lease)
+    if (row.interaction.status === 'canceled' || (row.interaction.deliveryState === 'delivered' && state !== 'delivered')) {
+      throw new DomainError('DELIVERY_TRANSITION_INVALID', 'The attempt cannot overwrite a canceled or confirmed delivered response.', 409)
+    }
+    const result = await client.query(
+      `update interaction_delivery_attempts a set state=$3,error=coalesce($4,error),updated_at=now()
+       where interaction_id=$1 and attempt=$2 and state in ('submitted','uncertain')
+         and exists (select 1 from durable_interactions i where i.id=a.interaction_id
+           and i.delivery_fence=$5 and ($5::bigint=0 or
+             (i.delivery_token=$6 and i.delivery_lease_expires_at > clock_timestamp())))`,
+      [row.interaction.id, attempt, state, error ?? null, row.fence, lease?.token ?? null],
     )
-    if (inserted.rowCount === 1) return false
-    const current = await this.pool.query<{ interaction_id: string; option_id: string }>(
-      'select interaction_id,option_id from interaction_command_receipts where principal_id=$1 and command_id=$2',
-      [input.principalId, input.commandId],
+    if (result.rowCount !== 1) throw new DomainError('DELIVERY_ATTEMPT_STALE', 'The delivery attempt or its owner changed during reconciliation.', 409)
+  }
+
+  async recordReconciliation(id: string, expectedRevision: number, evidence: ReconciliationEvidence, lease?: InteractionLease): Promise<DurableInteraction> {
+    return interactionTransaction(this.pool, async (client) => {
+      const row = await lockInteraction(client, id)
+      const current = row.interaction
+      assertInteractionRevision(current, expectedRevision)
+      assertDeliveryLease(row, lease)
+      if (current.nativeSessionId !== evidence.nativeSessionId || current.nativeRequestId !== evidence.nativeRequestId) {
+        throw new DomainError('INTERACTION_IDENTITY_CONFLICT', 'Reconciliation evidence belongs to another native request.', 409)
+      }
+      if (evidence.attempt !== undefined) {
+        const attempt = await client.query<{ correlation_id: string }>(
+          'select correlation_id from interaction_delivery_attempts where interaction_id=$1 and attempt=$2', [id, evidence.attempt],
+        )
+        if (!attempt.rows[0] || (evidence.correlationId !== undefined && attempt.rows[0].correlation_id !== evidence.correlationId)) {
+          throw new DomainError('DELIVERY_ATTEMPT_STALE', 'Reconciliation evidence does not match the recorded attempt.', 409)
+        }
+      }
+      await client.query(
+        `insert into interaction_reconciliation_evidence
+         (interaction_id,attempt,delivery_fence,native_session_id,native_request_id,correlation_id,outcome,evidence,error)
+         values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)`,
+        [id, evidence.attempt ?? null, row.fence, current.nativeSessionId, current.nativeRequestId,
+          evidence.correlationId ?? null, evidence.outcome, JSON.stringify({
+            source: evidence.source, harness: current.harness, providerVersion: current.providerVersion, details: evidence.details,
+          }), evidence.error ? JSON.stringify(evidence.error) : null],
+      )
+      const next = DurableInteractionSchema.parse({ ...current, revision: current.revision + 1, updatedAt: new Date().toISOString() })
+      const updated = await client.query(
+        `update durable_interactions set revision=$2,record=$3::jsonb,reconciliation_status=$4,
+           last_delivery_error=coalesce($5::jsonb,last_delivery_error),updated_at=now()
+         where id=$1 and revision=$6 and delivery_fence=$7
+           and ($7::bigint=0 or (delivery_token=$8 and delivery_lease_expires_at > clock_timestamp()))`,
+        [id, next.revision, JSON.stringify(next), evidence.outcome, evidence.error ? JSON.stringify(evidence.error) : null,
+          current.revision, row.fence, lease?.token ?? null],
+      )
+      if (updated.rowCount !== 1) throw new DomainError('DELIVERY_LEASE_LOST', 'The delivery owner changed while recording evidence.', 409)
+      // Evidence is not permission to replay a provider call. The delivery owner
+      // decides whether it proves a terminal outcome; unknown stays unknown.
+      return next
+    })
+  }
+
+  async appendNativeHistory(interaction: DurableInteraction, events: readonly NativeHarnessEvent[]): Promise<void> {
+    const current = await this.get(interaction.id)
+    if (!current || current.executionId !== interaction.executionId || current.nativeSessionId !== interaction.nativeSessionId
+      || current.nativeRequestId !== interaction.nativeRequestId) {
+      throw new DomainError('INTERACTION_IDENTITY_CONFLICT', 'Native history must belong to the persisted interaction.', 409)
+    }
+    for (const event of events) await appendNativeEvent(this.pool, { ...event, executionId: current.executionId })
+  }
+
+  private async bindCommand(client: pg.ClientBase, command: OperatorDecisionCommand, interaction: DurableInteraction): Promise<void> {
+    const input = [command.principal.id, command.commandId, interaction.id, interaction.selectedOptionId, interaction.revision]
+    const inserted = await client.query(
+      `insert into interaction_command_receipts (principal_id,command_id,interaction_id,option_id,decision_revision,authorized_at)
+       values ($1,$2,$3,$4,$5,now()) on conflict do nothing`, input,
     )
-    if (current.rows[0]?.interaction_id !== input.interactionId || current.rows[0]?.option_id !== input.optionId) {
+    if (inserted.rowCount === 1) return
+    const current = await client.query<{ interaction_id: string; option_id: string }>(
+      'select interaction_id,option_id from interaction_command_receipts where principal_id=$1 and command_id=$2 for update',
+      [command.principal.id, command.commandId],
+    )
+    if (current.rows[0]?.interaction_id !== interaction.id || current.rows[0]?.option_id !== interaction.selectedOptionId) {
       throw new DomainError('COMMAND_ID_REUSED', 'The command id is already bound to different input.', 409)
     }
-    return true
+    await client.query(
+      `update interaction_command_receipts set decision_revision=coalesce(decision_revision,$3),
+         authorized_at=coalesce(authorized_at,now()) where principal_id=$1 and command_id=$2`,
+      [command.principal.id, command.commandId, interaction.revision],
+    )
   }
 }

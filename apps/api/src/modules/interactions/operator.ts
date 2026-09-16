@@ -43,11 +43,15 @@ export class OperatorInteractionService {
   async respond(principal: ManagementPrincipal, input: {
     interactionId: string; optionId: string; expectedRevision: number; commandId: string
   }) {
-    const commandReplayed = await this.repository.bindCommand({
-      principalId: principal.id, commandId: input.commandId,
-      interactionId: input.interactionId, optionId: input.optionId,
+    const interaction = await this.repository.get(input.interactionId)
+    if (!interaction) throw new DomainError('INTERACTION_NOT_FOUND', 'The interaction was not found.', 404)
+    if (interaction.approval.handler !== 'operator') throw new DomainError('INTERACTION_ACCESS_DENIED', 'The interaction is assigned to a different handler.', 403)
+    requireAuthorization(principal, 'interactions:respond', {
+      workspaceId: interaction.workspaceId, workflowId: interaction.workflowId, runId: interaction.runId,
     })
+    // The authorized service binds the receipt in the same transaction as the
+    // decision. No receipt exists for an invalid option, stale revision, or denial.
     const result = await this.service.respond({ kind: 'operator', principal }, input)
-    return { value: result.interaction, replayed: commandReplayed || result.replayed }
+    return { value: result.interaction, replayed: result.replayed }
   }
 }

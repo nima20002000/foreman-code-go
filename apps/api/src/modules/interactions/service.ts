@@ -87,35 +87,40 @@ export class InteractionService {
     return { items, nextCursor: rows.length > input.limit ? items.at(-1)!.id : null }
   }
 
-  async respond(responder: InteractionResponder, input: { interactionId: string; optionId: string; expectedRevision: number }) {
+  async respond(responder: InteractionResponder, input: { interactionId: string; optionId: string; expectedRevision: number; commandId?: string }) {
     const current = await this.get(input.interactionId)
     assertResponder(current, responder)
     await this.budgets.assertActive(current.executionId)
     const option = current.responseOptions.find((candidate) => candidate.optionId === input.optionId)
     if (!option) throw new DomainError('INTERACTION_OPTION_INVALID', 'The response option is not valid for this interaction.', 409)
 
-    if (current.selectedOptionId === input.optionId
-      && (current.deliveryState === 'submitted' || current.deliveryState === 'uncertain')) {
-      const reconciled = await this.reconcile(current)
-      if (reconciled.deliveryState === 'delivered') await this.resumeDelivered(reconciled)
-      return { interaction: reconciled, replayed: true }
-    }
     const nativeResponse = { optionId: option.optionId, semantic: option.semantic }
     const auditReference = responder.kind === 'operator' ? responder.principal.id
       : responder.kind === 'orchestrator' ? responder.authority.agentId : undefined
     const decision = await this.interactions.decide({
       id: current.id, optionId: option.optionId, expectedRevision: input.expectedRevision,
       nativeResponse, ...(auditReference ? { auditReference } : {}),
+      ...(responder.kind === 'operator' && input.commandId ? {
+        command: { principal: responder.principal, commandId: input.commandId },
+      } : {}),
     })
+    if (decision.interaction.deliveryState === 'submitted' || decision.interaction.deliveryState === 'uncertain') {
+      const reconciled = await this.reconcile(decision.interaction)
+      if (reconciled.deliveryState === 'delivered') await this.resumeDelivered(reconciled)
+      return { interaction: reconciled, replayed: true }
+    }
     if (decision.interaction.deliveryState === 'delivered') return decision
 
     let attached
     try {
       attached = await this.nativeRuntime.attachInteraction(decision.interaction)
-    } catch {
+    } catch (error) {
       return {
         interaction: await this.interactions.updateDelivery(
-          decision.interaction.id, decision.interaction.revision, 'failed',
+          decision.interaction.id, decision.interaction.revision, 'failed', {
+            error: { code: error instanceof DomainError ? error.code : 'NATIVE_ATTACHMENT_FAILED',
+              message: message(error), phase: 'attach', certainty: 'definite' },
+          },
         ),
         replayed: decision.replayed,
       }
@@ -129,28 +134,35 @@ export class InteractionService {
     const { manager, session } = attached
     try {
       await manager.respond(session, submitted.nativeRequestId, option)
-      await this.interactions.finishDeliveryAttempt(submitted.id, attempt, 'delivered')
-      const delivered = await this.interactions.updateDelivery(submitted.id, submitted.revision, 'delivered')
-      await this.resumeDelivered(delivered)
-      return { interaction: delivered, replayed: decision.replayed }
     } catch (error) {
       const certainty = deliveryCertainty(error)
       const state = certainty === 'uncertain' ? 'uncertain' : 'failed'
       await this.interactions.finishDeliveryAttempt(submitted.id, attempt, state, message(error))
-      const failed = await this.interactions.updateDelivery(submitted.id, submitted.revision, state)
+      const failed = await this.interactions.updateDelivery(submitted.id, submitted.revision, state, {
+        error: { code: error instanceof DomainError ? error.code : 'NATIVE_DELIVERY_FAILED',
+          message: message(error), phase: 'deliver', certainty },
+      })
       return { interaction: failed, replayed: decision.replayed }
     }
+    // Persistence/resume errors are not native response failures.
+    await this.interactions.finishDeliveryAttempt(submitted.id, attempt, 'delivered')
+    const delivered = await this.interactions.updateDelivery(submitted.id, submitted.revision, 'delivered')
+    await this.resumeDelivered(delivered)
+    return { interaction: delivered, replayed: decision.replayed }
   }
 
   async reconcile(interaction: DurableInteraction): Promise<DurableInteraction> {
     try {
       const { manager, session } = await this.nativeRuntime.attachInteraction(interaction)
       const history = await manager.reconcile(session, `approval:${interaction.id}`)
+      await this.interactions.appendNativeHistory(interaction, history.events)
       const stillPending = history.pendingInteractions.some((item) => item.turn.nativeRequestId === interaction.nativeRequestId)
       return this.interactions.updateDelivery(interaction.id, interaction.revision, stillPending ? 'failed' : 'delivered')
-    } catch {
-      if (interaction.deliveryState === 'uncertain') return interaction
-      return this.interactions.updateDelivery(interaction.id, interaction.revision, 'uncertain')
+    } catch (error) {
+      return this.interactions.updateDelivery(interaction.id, interaction.revision, 'uncertain', {
+        error: { code: error instanceof DomainError ? error.code : 'NATIVE_RECONCILIATION_FAILED',
+          message: message(error), phase: 'reconcile', certainty: 'uncertain' },
+      })
     }
   }
 }

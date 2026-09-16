@@ -1,7 +1,8 @@
-import { NativeSessionLaneSchema, ReviewJobSchema, type NativeSessionLane, type ReviewJob } from '@graphql/contracts'
+import { NativeSessionLaneSchema, ReviewJobSchema, type NativeHarnessEvent, type NativeSessionLane, type ReviewJob } from '@graphql/contracts'
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
+import { appendNativeEvent } from '../runs/nativeEvents.js'
 
 /** Durable fencing primitives for HAP-05. They do not dispatch or route work. */
 export class PostgresInteractionCoordinationRepository {
@@ -33,6 +34,20 @@ export class PostgresInteractionCoordinationRepository {
       throw new DomainError('REVIEW_JOB_CONTEXT_MISSING', 'The review job has no durable execution ownership context.', 409)
     }
     return { executionId: row.execution_id, workingDirectory: row.working_directory, providerVersion: row.provider_version }
+  }
+
+  async appendReviewNativeEvent(job: ReviewJob, event: NativeHarnessEvent): Promise<void> {
+    const result = await this.pool.query<{ record: unknown; execution_id: string | null }>(
+      'select record,execution_id from review_jobs where id=$1', [job.id],
+    )
+    const row = result.rows[0]
+    const current = row ? ReviewJobSchema.parse(row.record) : undefined
+    if (!row?.execution_id || !current || current.provider !== job.provider
+      || current.nativeSessionId !== job.nativeSessionId || current.correlationId !== job.correlationId
+      || current.reviewerAgentId !== job.reviewerAgentId || current.interactionId !== job.interactionId) {
+      throw new DomainError('REVIEW_JOB_CONTEXT_MISSING', 'Native review history must match the durable reviewer execution and submission.', 409)
+    }
+    await appendNativeEvent(this.pool, { ...event, executionId: row.execution_id })
   }
 
   async claimReviewJob(id: string, owner: string, token: string, leaseExpiresAt: string): Promise<ReviewJob> {
@@ -71,28 +86,43 @@ export class PostgresInteractionCoordinationRepository {
 
   async transitionReviewJob(id: string, leaseToken: string, state: ReviewJob['state'], fields: {
     providerTurnOrMessageId?: string; error?: ReviewJob['error']
-  } = {}): Promise<ReviewJob> {
+  } = {}, expected?: { revision: number; fence: number }): Promise<ReviewJob> {
     const client = await this.pool.connect()
     try {
       await client.query('begin')
-      const found = await client.query<{ record: unknown }>('select record from review_jobs where id=$1 for update', [id])
-      const current = found.rows[0] ? ReviewJobSchema.parse(found.rows[0].record) : undefined
-      if (!current || current.leaseToken !== leaseToken) throw new DomainError('REVIEW_JOB_LEASE_LOST', 'The review job lease is no longer owned.', 409)
+      const found = await client.query<{ record: unknown; revision: string; lease_fence: string; lease_active: boolean }>(
+        `select record,revision::text,lease_fence::text,
+           coalesce(lease_expires_at > clock_timestamp(),false) as lease_active
+         from review_jobs where id=$1 for update`, [id],
+      )
+      const row = found.rows[0]
+      const current = row ? ReviewJobSchema.parse(row.record) : undefined
+      if (!row?.lease_active || !current || current.leaseToken !== leaseToken
+        || (expected && (Number(row.revision) !== expected.revision || Number(row.lease_fence) !== expected.fence))) {
+        throw new DomainError('REVIEW_JOB_LEASE_LOST', 'The review job revision or lease is no longer owned.', 409)
+      }
+      if (current.providerTurnOrMessageId && fields.providerTurnOrMessageId
+        && current.providerTurnOrMessageId !== fields.providerTurnOrMessageId) {
+        throw new DomainError('REVIEW_JOB_IDENTITY_CONFLICT', 'The review job is already bound to another provider turn or message.', 409)
+      }
       const now = new Date().toISOString()
       const releases = ['completed', 'blocked_busy', 'blocked_disconnected', 'uncertain', 'failed'].includes(state)
       const next = ReviewJobSchema.parse({
         ...current, state, updatedAt: now,
-        ...(state === 'submitted' ? { submittedAt: now } : {}),
-        ...(state === 'acknowledged' ? { acknowledgedAt: now } : {}),
-        ...(state === 'completed' ? { completedAt: now } : {}),
+        ...(state === 'submitted' ? { submittedAt: current.submittedAt ?? now } : {}),
+        ...(state === 'acknowledged' ? { acknowledgedAt: current.acknowledgedAt ?? now } : {}),
+        ...(state === 'completed' ? { completedAt: current.completedAt ?? now } : {}),
         ...(fields.providerTurnOrMessageId ? { providerTurnOrMessageId: fields.providerTurnOrMessageId } : {}),
         ...(fields.error ? { error: fields.error } : {}),
         ...(releases ? { leaseOwner: undefined, leaseToken: undefined, leaseExpiresAt: undefined } : {}),
       })
-      await client.query(
-        'update review_jobs set state=$2,revision=revision+1,record=$3::jsonb,updated_at=now() where id=$1',
-        [id, state, JSON.stringify(next)],
+      const updated = await client.query(
+        `update review_jobs set state=$2,revision=revision+1,record=$3::jsonb,updated_at=now()
+         where id=$1 and revision=$4 and lease_token=$5 and lease_fence=$6
+           and lease_expires_at > clock_timestamp()`,
+        [id, state, JSON.stringify(next), row.revision, leaseToken, row.lease_fence],
       )
+      if (updated.rowCount !== 1) throw new DomainError('REVIEW_JOB_LEASE_LOST', 'The review job lease expired during its transition.', 409)
       await client.query('commit')
       return next
     } catch (error) { await client.query('rollback'); throw error } finally { client.release() }

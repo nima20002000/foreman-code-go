@@ -317,6 +317,195 @@ const migrations = [
     alter table review_jobs add column if not exists working_directory text;
     alter table review_jobs add column if not exists provider_version text;
   ` },
+  { version: 503, sql: `
+    -- Additive HAP-05 recovery state. Native identities and applied SQL stay untouched.
+    alter table durable_interactions
+      add column delivery_owner text,
+      add column delivery_token text,
+      add column delivery_fence bigint not null default 0,
+      add column delivery_lease_expires_at timestamptz,
+      add column last_delivery_error jsonb,
+      add column reconciliation_status text not null default 'not_required'
+        check (reconciliation_status in ('not_required','required','delivered','not_delivered','unknown'));
+    alter table interaction_delivery_attempts
+      add column delivery_fence bigint not null default 0,
+      add column evidence jsonb not null default '{}'::jsonb,
+      add column updated_at timestamptz not null default now();
+    alter table interaction_command_receipts
+      add column decision_revision bigint,
+      add column authorized_at timestamptz;
+    -- Old receipts remain unverified until an authorized decision transaction binds them.
+
+    create table interaction_reconciliation_evidence (
+      sequence bigint generated always as identity primary key,
+      interaction_id text not null references durable_interactions(id) on delete cascade,
+      attempt integer,
+      delivery_fence bigint not null,
+      native_session_id text not null,
+      native_request_id text not null,
+      correlation_id text,
+      outcome text not null check (outcome in ('delivered','not_delivered','unknown')),
+      evidence jsonb not null,
+      error jsonb,
+      occurred_at timestamptz not null default now(),
+      foreign key (interaction_id, attempt) references interaction_delivery_attempts(interaction_id, attempt)
+    );
+
+    create table interaction_graph_resumes (
+      interaction_id text primary key references durable_interactions(id) on delete cascade,
+      run_id text not null,
+      execution_id text not null,
+      graph_thread_id text not null,
+      graph_interrupt_id text,
+      delivery_revision bigint not null,
+      state text not null default 'pending'
+        check (state in ('pending','resuming','resumed','blocked','canceled')),
+      revision bigint not null default 0,
+      lease_owner text,
+      lease_token text,
+      lease_fence bigint not null default 0,
+      lease_expires_at timestamptz,
+      evidence jsonb not null default '{}'::jsonb,
+      error jsonb,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+    -- Backfill intent, not success: the graph owner must inspect the exact checkpoint
+    -- before resuming a pre-migration delivery. This never replays native work.
+    insert into interaction_graph_resumes
+      (interaction_id,run_id,execution_id,graph_thread_id,graph_interrupt_id,delivery_revision,evidence)
+      select id,run_id,execution_id,record->>'graphThreadId',record->>'graphInterruptId',revision,
+        '{"requiresCheckpointReconciliation":true,"migration":503}'::jsonb
+      from durable_interactions where status='delivered';
+
+    alter table review_jobs
+      add column lease_owner text,
+      add column lease_token text,
+      add column lease_expires_at timestamptz,
+      add column lease_fence bigint not null default 0,
+      add column recovery_evidence jsonb not null default '[]'::jsonb;
+    update review_jobs set lease_owner=record->>'leaseOwner',lease_token=record->>'leaseToken',
+      lease_expires_at=(record->>'leaseExpiresAt')::timestamptz,
+      lease_fence=case when record->>'leaseToken' is null then 0 else 1 end;
+
+    create index durable_interactions_execution_latest_idx
+      on durable_interactions (execution_id,created_at desc,id desc);
+    create index durable_interactions_delivery_recovery_idx
+      on durable_interactions (delivery_lease_expires_at,id) where status='delivery_pending';
+    create index interaction_reconciliation_history_idx
+      on interaction_reconciliation_evidence (interaction_id,sequence);
+    create index interaction_delivery_attempts_open_idx
+      on interaction_delivery_attempts (interaction_id,attempt desc) where state in ('submitted','uncertain');
+    create index interaction_graph_resumes_recovery_idx
+      on interaction_graph_resumes (lease_expires_at,interaction_id) where state in ('pending','resuming','blocked');
+    create index interaction_graph_resumes_run_idx on interaction_graph_resumes (run_id,state,interaction_id);
+    create index review_jobs_recovery_idx
+      on review_jobs (reviewer_agent_id,state,lease_expires_at,created_at,id);
+
+    -- Typed lifecycle kinds are from ActivityKindSchema. Triggers keep the audit
+    -- atomic even when another repository/worker performs the state transition.
+    create function audit_interaction_lifecycle() returns trigger language plpgsql as $$
+    declare previous jsonb; activity_payload jsonb; activity_kind text;
+    begin
+      previous := case when TG_OP='INSERT' then '{}'::jsonb else OLD.record end;
+      activity_payload := jsonb_strip_nulls(jsonb_build_object(
+        'interactionId',NEW.id,'revision',NEW.revision,'harness',NEW.harness,
+        'nativeSessionId',NEW.native_session_id,'nativeRequestId',NEW.native_request_id,
+        'handler',NEW.record->'approval'->>'handler','status',NEW.status,
+        'previousStatus',previous->>'status','deliveryState',NEW.record->>'deliveryState',
+        'previousDeliveryState',previous->>'deliveryState','deliveryFence',NEW.delivery_fence,
+        'selectedOptionId',NEW.record->>'selectedOptionId','selectedSemantic',NEW.record->>'selectedSemantic',
+        'auditReference',NEW.record->>'auditReference','error',NEW.last_delivery_error,
+        'reconciliationStatus',NEW.reconciliation_status));
+      foreach activity_kind in array array[
+        case when TG_OP='INSERT' and NEW.status='pending' then 'interaction_pending' end,
+        case when NEW.record->>'selectedOptionId' is not null and previous->>'selectedOptionId' is null
+          then 'interaction_decided' end,
+        case when TG_OP='UPDATE' and (NEW.record->>'deliveryState' is distinct from previous->>'deliveryState'
+          or NEW.last_delivery_error is distinct from OLD.last_delivery_error
+          or NEW.reconciliation_status is distinct from OLD.reconciliation_status) then 'interaction_delivery_state' end,
+        case when NEW.status in ('delivered','delivery_failed','canceled')
+          and NEW.status is distinct from previous->>'status' then 'interaction_resolved' end
+      ] loop
+        if activity_kind is not null then
+          insert into run_activity (run_id,source,kind,harness_execution_id,occurred_at,payload)
+            values (NEW.run_id,'backend',activity_kind,NEW.execution_id,clock_timestamp(),activity_payload);
+        end if;
+      end loop;
+      if NEW.status='delivered' then
+        insert into interaction_graph_resumes
+          (interaction_id,run_id,execution_id,graph_thread_id,graph_interrupt_id,delivery_revision)
+          values (NEW.id,NEW.run_id,NEW.execution_id,NEW.record->>'graphThreadId',
+            NEW.record->>'graphInterruptId',NEW.revision) on conflict do nothing;
+        update interaction_graph_resumes set graph_interrupt_id=NEW.record->>'graphInterruptId',
+          revision=revision+1,updated_at=clock_timestamp()
+          where interaction_id=NEW.id and graph_interrupt_id is null and NEW.record->>'graphInterruptId' is not null;
+      elsif NEW.status='canceled' then
+        update interaction_graph_resumes set state='canceled',revision=revision+1,lease_fence=lease_fence+1,
+          lease_owner=null,lease_token=null,lease_expires_at=null,updated_at=clock_timestamp(),
+          error=jsonb_build_object('code','INTERACTION_CANCELED','message','The interaction was canceled before graph resume completed.')
+          where interaction_id=NEW.id and state not in ('resumed','canceled');
+      end if;
+      return NEW;
+    end $$;
+    create trigger durable_interaction_lifecycle after insert or update on durable_interactions
+      for each row execute function audit_interaction_lifecycle();
+
+    create function audit_interaction_delivery_attempt() returns trigger language plpgsql as $$
+    begin
+      if TG_OP='INSERT' or NEW.state is distinct from OLD.state or NEW.error is distinct from OLD.error
+        or NEW.evidence is distinct from OLD.evidence then
+        insert into run_activity (run_id,source,kind,harness_execution_id,occurred_at,payload)
+          select i.run_id,'backend','interaction_delivery_state',i.execution_id,clock_timestamp(),
+            jsonb_strip_nulls(jsonb_build_object('interactionId',NEW.interaction_id,'stage','attempt',
+              'attempt',NEW.attempt,'deliveryState',NEW.state,'deliveryFence',NEW.delivery_fence,
+              'nativeSessionId',NEW.native_session_id,'nativeRequestId',NEW.native_request_id,
+              'correlationId',NEW.correlation_id,'error',NEW.error,'evidence',NEW.evidence))
+            from durable_interactions i where i.id=NEW.interaction_id;
+      end if;
+      return NEW;
+    end $$;
+    create trigger interaction_delivery_attempt_lifecycle after insert or update on interaction_delivery_attempts
+      for each row execute function audit_interaction_delivery_attempt();
+
+    -- Typed columns mirror the existing ReviewJob contract; indexes never cast
+    -- JSON timestamps, and recovery does not replace provider/session/correlation IDs.
+    create function sync_review_job_lease() returns trigger language plpgsql as $$
+    begin
+      NEW.lease_owner := NEW.record->>'leaseOwner';
+      NEW.lease_token := NEW.record->>'leaseToken';
+      NEW.lease_expires_at := (NEW.record->>'leaseExpiresAt')::timestamptz;
+      if TG_OP='INSERT' then
+        NEW.lease_fence := case when NEW.lease_token is null then 0 else 1 end;
+      else
+        NEW.lease_fence := OLD.lease_fence + case
+          when NEW.lease_token is not null and NEW.lease_token is distinct from OLD.lease_token then 1 else 0 end;
+      end if;
+      return NEW;
+    end $$;
+    create trigger review_job_lease before insert or update on review_jobs
+      for each row execute function sync_review_job_lease();
+
+    create function audit_review_job_lifecycle() returns trigger language plpgsql as $$
+    begin
+      if TG_OP='INSERT' or NEW.state is distinct from OLD.state or NEW.lease_fence is distinct from OLD.lease_fence
+        or NEW.record->'error' is distinct from OLD.record->'error'
+        or NEW.recovery_evidence is distinct from OLD.recovery_evidence then
+        insert into run_activity (run_id,source,kind,harness_execution_id,occurred_at,payload)
+          select i.run_id,'backend','review_job_state',NEW.execution_id,clock_timestamp(),
+            jsonb_strip_nulls(jsonb_build_object('interactionId',NEW.interaction_id,'reviewJobId',NEW.id,
+              'reviewerAgentId',NEW.reviewer_agent_id,'state',NEW.state,'revision',NEW.revision,
+              'attempt',NEW.record->'attempt','harness',NEW.record->>'provider',
+              'nativeSessionId',NEW.record->>'nativeSessionId','correlationId',NEW.record->>'correlationId',
+              'providerTurnOrMessageId',NEW.record->>'providerTurnOrMessageId',
+              'leaseFence',NEW.lease_fence,'error',NEW.record->'error','recoveryEvidence',NEW.recovery_evidence))
+            from durable_interactions i where i.id=NEW.interaction_id;
+      end if;
+      return NEW;
+    end $$;
+    create trigger review_job_lifecycle after insert or update on review_jobs
+      for each row execute function audit_review_job_lifecycle();
+  ` },
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

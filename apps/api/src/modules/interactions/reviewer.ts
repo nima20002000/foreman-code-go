@@ -58,8 +58,10 @@ export class ReviewerDispatcher {
         harness: job.provider, providerVersion,
         nativeSessionId: job.nativeSessionId,
       })
-    } catch {
-      const blocked = await this.coordination.transitionReviewJob(job.id, jobToken, 'blocked_disconnected')
+    } catch (error) {
+      const blocked = await this.coordination.transitionReviewJob(job.id, jobToken, 'blocked_disconnected', {
+        error: { code: 'REVIEW_ATTACHMENT_FAILED', message: error instanceof Error ? error.message : 'The reviewer native session could not be attached.' },
+      })
       await this.coordination.releaseLane(lane.id, laneToken, { observedStatus: 'disconnected' }).catch(() => undefined)
       return blocked
     }
@@ -72,8 +74,10 @@ export class ReviewerDispatcher {
         clientCorrelationId: job.correlationId,
         prompt: `Review pending interaction ${job.interactionId}. Inspect it through App MCP and respond only if authorized.`,
       })) {
-        if (acknowledged) continue
+        const wasAcknowledged = acknowledged
         acknowledged = true
+        await this.coordination.appendReviewNativeEvent(job, event)
+        if (wasAcknowledged) continue
         const providerId = typeof event.payload.turnId === 'string' ? event.payload.turnId
           : typeof event.payload.messageId === 'string' ? event.payload.messageId : undefined
         job = await this.coordination.transitionReviewJob(job.id, jobToken, 'acknowledged', {

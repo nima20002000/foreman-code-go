@@ -183,9 +183,7 @@ export class ApprovalExecutionCoordinator {
         for await (const event of manager.startTurn(session, {
           prompt: buildHarnessPrompt(input.request), clientCorrelationId: `execution:${execution.id}`,
         })) {
-          await this.runs.recordActivity(execution.runId, 'harness', 'harness_output', {
-            nativeEventType: event.type, ...event.payload,
-          }, execution.id, input.owner.client)
+          await this.runs.appendNativeEvent({ ...event, executionId: execution.id }, input.owner)
           const pending = await manager.pending(session)
           if (!pending) continue
           if (!pending.turn.nativeRequestId) throw new Error('Native approval request is missing its stable request identity.')
@@ -203,10 +201,6 @@ export class ApprovalExecutionCoordinator {
           execution = HarnessExecutionSchema.parse({ ...execution, state: 'waiting' })
           await this.runs.updateExecution(execution, input.owner)
           await this.budgets.beginWait(execution.id)
-          await this.runs.recordActivity(execution.runId, 'harness', 'harness_output', {
-            nativeEventType: 'interaction_pending',
-            interactionId: created.interaction.id, handler: created.interaction.approval.handler,
-          }, execution.id, input.owner.client)
           return { state: 'waiting', execution, interaction: created.interaction }
         }
       } catch (error) {
@@ -241,6 +235,7 @@ export class ApprovalExecutionCoordinator {
     let history
     try {
       history = await manager.history(session)
+      for (const event of history.events) await this.runs.appendNativeEvent({ ...event, executionId: execution.id }, input.owner)
     } catch (error) {
       await manager.close(session).catch(() => undefined)
       this.managers.release?.(context)
