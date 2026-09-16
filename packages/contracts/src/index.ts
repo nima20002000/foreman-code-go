@@ -390,6 +390,19 @@ export const McpDetectionSchema = z.object({
 }).strict();
 export type McpDetection = z.infer<typeof McpDetectionSchema>;
 
+export const ScopedMcpDetectionSchema = z.object({
+  detection: McpDetectionSchema,
+  runnerId: IdSchema,
+  workingDirectory: z.string().min(1).refine((value) => !value.includes("\0"), "workingDirectory cannot contain NUL"),
+  providerVersion: z.string().trim().min(1),
+  nativeFilters: z.object({
+    enabledTools: z.array(z.string()).optional(),
+    disabledTools: z.array(z.string()).optional(),
+    diagnostics: z.array(z.string()).optional(),
+  }).strict(),
+}).strict();
+export type ScopedMcpDetection = z.infer<typeof ScopedMcpDetectionSchema>;
+
 export const NativeHarnessCapabilitiesSchema = z.object({
   provider: AgentHarnessSchema,
   providerVersion: z.string().trim().min(1),

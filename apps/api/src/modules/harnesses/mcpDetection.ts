@@ -1,4 +1,10 @@
-import { McpDetectionSchema, type AgentHarness, type McpDetection } from '@graphql/contracts'
+import {
+  McpDetectionSchema,
+  ScopedMcpDetectionSchema,
+  type AgentHarness,
+  type McpDetection,
+  type ScopedMcpDetection,
+} from '@graphql/contracts'
 
 import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE, type IssuedWorkerCredential, type WorkerCredentialService } from '../access/workerCredentials.js'
 import { DomainError } from '../errors.js'
@@ -35,18 +41,6 @@ export interface NativeMcpInspector {
     serverName: string
     signal?: AbortSignal
   }): Promise<NativeMcpInspectionEvidence>
-}
-
-export interface ScopedMcpDetection {
-  detection: McpDetection
-  runnerId: string
-  workingDirectory: string
-  providerVersion: string
-  nativeFilters: {
-    enabledTools?: readonly string[]
-    disabledTools?: readonly string[]
-    diagnostics?: readonly string[]
-  }
 }
 
 function endpointMatches(actual: string | undefined, expected: string): boolean {
@@ -86,7 +80,7 @@ export class McpDetectionService {
     try {
       evidence = await this.inspector.inspect({ ...input, serverName: this.serverName })
     } catch (error) {
-      return {
+      return ScopedMcpDetectionSchema.parse({
         detection: McpDetectionSchema.parse({
           harness: input.harness,
           serverName: this.serverName,
@@ -100,7 +94,7 @@ export class McpDetectionService {
         workingDirectory: input.workingDirectory,
         providerVersion: 'unknown',
         nativeFilters: {},
-      }
+      })
     }
     if (evidence.harness !== input.harness || evidence.runnerId !== input.runnerId
       || evidence.workingDirectory !== input.workingDirectory) {
@@ -116,7 +110,7 @@ export class McpDetectionService {
     else if (!nameMatches || !matches || !credentialMatches || !transportMatches) state = 'misconfigured'
     else if (entry.enabled === false || entry.status === 'disabled') state = 'disabled'
     else state = entry.status ?? 'status_unavailable'
-    return {
+    return ScopedMcpDetectionSchema.parse({
       detection: McpDetectionSchema.parse({
         harness: input.harness,
         serverName: this.serverName,
@@ -134,7 +128,7 @@ export class McpDetectionService {
         ...(entry?.disabledTools ? { disabledTools: entry.disabledTools } : {}),
         ...(entry?.nativeFilterDiagnostics ? { diagnostics: entry.nativeFilterDiagnostics } : {}),
       },
-    }
+    })
   }
 
   async preflight(input: {
