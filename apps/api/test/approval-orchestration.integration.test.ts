@@ -200,11 +200,24 @@ it('interrupts and resumes the same durable native execution without repeating p
   expect(pending).toMatchObject({ nativeSessionId: 'session-approval-target', nativeRequestId: 'request-approval-target', status: 'pending' })
   expect(manager.counters).toEqual({ nodeEntries: 2, sessions: 2, attaches: 0, sideEffects: 2, deliveries: 0 })
 
+  const operatorOnly = await interactions.create({
+    ...NATIVE_INTERACTION_FIXTURES.codex,
+    id: `operator-hidden-${run.id}`,
+    runId: run.id,
+    executionId: `operator-hidden-execution-${run.id}`,
+    nativeSessionId: `operator-hidden-session-${run.id}`,
+    nativeRequestId: `operator-hidden-request-${run.id}`,
+    approval: { handler: 'operator' },
+  })
+
   const listed = await app.inject({
     method: 'GET', url: '/api/interactions?limit=10',
   })
   expect(listed.statusCode).toBe(200)
   expect(listed.json().items).toHaveLength(1)
+  expect((await app.inject({
+    method: 'GET', url: `/api/interactions/${operatorOnly.interaction.id}`,
+  })).statusCode).toBe(404)
   const unsupported = await app.inject({
     method: 'POST', url: `/api/interactions/${pending.id}/respond`,
     payload: { interactionId: pending.id, optionId: 'caller-forged-option', expectedRevision: pending.revision },
