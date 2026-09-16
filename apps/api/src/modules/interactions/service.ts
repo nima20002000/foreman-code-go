@@ -7,9 +7,10 @@ import type { ManagementAction } from '@graphql/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { assertOrchestratorInteractionAuthority, type WorkerInteractionAuthority } from './authorization.js'
-import { PostgresApprovalBudgetRepository } from './budget.js'
-import { PostgresInteractionRepository } from './postgres.js'
+import type { PostgresApprovalBudgetRepository } from './budget.js'
+import type { PostgresInteractionRepository } from './postgres.js'
 import type { InteractionNativeRuntime } from './runtimePorts.js'
+import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence, type NativeDeliveryOutcome } from './delivery.js'
 
 export type InteractionResponder =
   | { kind: 'user' }
@@ -60,11 +61,87 @@ export class InteractionService {
   ) {}
 
   private async resumeDelivered(interaction: DurableInteraction): Promise<void> {
-    await this.budgets.resume(interaction.executionId)
+    if (interaction.deliveryState !== 'delivered') return
+    const claim = await this.interactions.delivery.claimGraphResume(interaction.id, randomUUID())
+    if (!claim) return
+    let resumeError: string | undefined
+    let renewal: Promise<void> | undefined
+    // Graph execution may outlive one lease. Never revive an expired/lost owner
+    // and never acknowledge its callback on behalf of a replacement worker.
+    const heartbeat = setInterval(() => {
+      if (renewal || resumeError !== undefined) return
+      renewal = this.interactions.delivery.renewGraphResume(claim)
+        .catch((error: unknown) => { resumeError = message(error) })
+        .finally(() => { renewal = undefined })
+    }, INTERACTION_DELIVERY_LEASE_MS / 3)
+    heartbeat.unref()
     try {
-      await this.resumeGraph(interaction)
+      await this.budgets.resume(claim.interaction.executionId)
+      await this.resumeGraph(claim.interaction)
     } catch (error) {
-      if (!(error instanceof DomainError && error.code === 'RUN_NOT_RESUMABLE')) throw error
+      // RUN_NOT_RESUMABLE may mean binding/Run state has not caught up yet.
+      // It is not an acknowledgement, and no graph error changes native truth.
+      resumeError = message(error)
+    } finally {
+      clearInterval(heartbeat)
+      await renewal
+    }
+    await this.interactions.delivery.finishGraphResume(claim, resumeError)
+  }
+
+  private async deliver(id: string, reconcileOnly = false): Promise<DurableInteraction> {
+    const claim = await this.interactions.delivery.claim(id, randomUUID(), reconcileOnly)
+    if (!claim) return this.get(id)
+    const signal = AbortSignal.timeout(INTERACTION_DELIVERY_LEASE_MS)
+    try {
+      if (claim.mode === 'reconcile') {
+        let outcome: NativeDeliveryOutcome = { state: 'uncertain' }
+        try {
+          const { manager, session } = await this.nativeRuntime.attachInteraction(claim.interaction, signal)
+          const history = await manager.reconcile(session, claim.correlationId, signal)
+          const evidence = manager.harness === claim.interaction.harness
+            ? matchingDeliveryEvidence(claim.interaction, session, history) : undefined
+          outcome = evidence ? { state: 'delivered', evidence }
+            : { state: 'uncertain', error: 'No qualified receipt proves delivery of this exact native response.' }
+        } catch (error) {
+          outcome = { state: 'uncertain', error: message(error) }
+        }
+        return await this.interactions.delivery.finish(claim, outcome)
+      }
+
+      let attached
+      try {
+        attached = await this.nativeRuntime.attachInteraction(claim.interaction, signal)
+        signal.throwIfAborted()
+        if (attached.manager.harness !== claim.interaction.harness
+          || attached.session.harness !== claim.interaction.harness
+          || attached.session.providerVersion !== claim.interaction.providerVersion
+          || attached.session.nativeSessionId !== claim.interaction.nativeSessionId) {
+          throw new DomainError('INTERACTION_SESSION_MISMATCH', 'The attached session does not match the durable interaction.', 409)
+        }
+      } catch (error) {
+        // No response was attempted. A later explicit retry can acquire a new fence.
+        return await this.interactions.delivery.finish(claim, { state: 'failed', error: message(error) })
+      }
+      const { manager, session } = attached
+      return await this.interactions.delivery.finish(claim, async (current, writeSignal) => {
+        const option = current.responseOptions.find((candidate) => candidate.optionId === current.selectedOptionId)
+        if (!option) throw new DomainError('INTERACTION_OPTION_INVALID', 'The durable response option is unavailable.', 409)
+        // Only this try/catch classifies native errors. Database commit failures
+        // and graph-resume failures must never turn a delivered response into a retry.
+        try {
+          writeSignal.throwIfAborted()
+          await manager.respond(session, current.nativeRequestId, option, writeSignal)
+          return { state: 'delivered' }
+        } catch (error) {
+          return { state: deliveryCertainty(error) === 'uncertain' ? 'uncertain' : 'failed', error: message(error) }
+        }
+      }, signal)
+    } catch (error) {
+      if (error instanceof DomainError && ['EXECUTION_STOPPED', 'DELIVERY_OWNER_LOST', 'DELIVERY_ATTEMPT_STALE'].includes(error.code)) {
+        return this.get(id)
+      }
+      throw error
     }
   }
 
@@ -90,10 +167,26 @@ export class InteractionService {
   async respond(responder: InteractionResponder, input: { interactionId: string; optionId: string; expectedRevision: number; commandId?: string }) {
     const current = await this.get(input.interactionId)
     assertResponder(current, responder)
-    await this.budgets.assertActive(current.executionId)
     const option = current.responseOptions.find((candidate) => candidate.optionId === input.optionId)
     if (!option) throw new DomainError('INTERACTION_OPTION_INVALID', 'The response option is not valid for this interaction.', 409)
-
+    if (current.selectedOptionId && current.selectedOptionId !== input.optionId) {
+      throw new DomainError('INTERACTION_ALREADY_DECIDED', 'The interaction already has a different decision.', 409)
+    }
+    if (current.selectedOptionId === input.optionId && current.deliveryState === 'delivered') {
+      // Authorization still applies, but completed replays do not consult the
+      // active-time budget or reattach/mutate the provider.
+      await this.resumeDelivered(current)
+      return { interaction: await this.get(current.id), replayed: true }
+    }
+    if (['canceled', 'expired'].includes(current.status)) {
+      throw new DomainError('INTERACTION_NOT_RESPONDABLE', 'This interaction no longer accepts responses.', 409)
+    }
+    if (current.selectedOptionId === input.optionId
+      && (current.deliveryState === 'submitted' || current.deliveryState === 'uncertain')) {
+      const reconciled = await this.reconcile(current)
+      return { interaction: reconciled, replayed: true }
+    }
+    await this.budgets.assertActive(current.executionId)
     const nativeResponse = { optionId: option.optionId, semantic: option.semantic }
     const auditReference = responder.kind === 'operator' ? responder.principal.id
       : responder.kind === 'orchestrator' ? responder.authority.agentId : undefined
@@ -104,65 +197,32 @@ export class InteractionService {
         command: { principal: responder.principal, commandId: input.commandId },
       } : {}),
     })
-    if (decision.interaction.deliveryState === 'submitted' || decision.interaction.deliveryState === 'uncertain') {
-      const reconciled = await this.reconcile(decision.interaction)
-      if (reconciled.deliveryState === 'delivered') await this.resumeDelivered(reconciled)
-      return { interaction: reconciled, replayed: true }
-    }
-    if (decision.interaction.deliveryState === 'delivered') return decision
-
-    let attached
-    try {
-      attached = await this.nativeRuntime.attachInteraction(decision.interaction)
-    } catch (error) {
-      return {
-        interaction: await this.interactions.updateDelivery(
-          decision.interaction.id, decision.interaction.revision, 'failed', {
-            error: { code: error instanceof DomainError ? error.code : 'NATIVE_ATTACHMENT_FAILED',
-              message: message(error), phase: 'attach', certainty: 'definite' },
-          },
-        ),
-        replayed: decision.replayed,
-      }
-    }
-
-    const submitted = await this.interactions.updateDelivery(
-      decision.interaction.id, decision.interaction.revision, 'submitted',
-    )
-    const correlationId = `approval-${randomUUID()}`
-    const attempt = await this.interactions.beginDeliveryAttempt(submitted, correlationId)
-    const { manager, session } = attached
-    try {
-      await manager.respond(session, submitted.nativeRequestId, option)
-    } catch (error) {
-      const certainty = deliveryCertainty(error)
-      const state = certainty === 'uncertain' ? 'uncertain' : 'failed'
-      await this.interactions.finishDeliveryAttempt(submitted.id, attempt, state, message(error))
-      const failed = await this.interactions.updateDelivery(submitted.id, submitted.revision, state, {
-        error: { code: error instanceof DomainError ? error.code : 'NATIVE_DELIVERY_FAILED',
-          message: message(error), phase: 'deliver', certainty },
-      })
-      return { interaction: failed, replayed: decision.replayed }
-    }
-    // Persistence/resume errors are not native response failures.
-    await this.interactions.finishDeliveryAttempt(submitted.id, attempt, 'delivered')
-    const delivered = await this.interactions.updateDelivery(submitted.id, submitted.revision, 'delivered')
-    await this.resumeDelivered(delivered)
-    return { interaction: delivered, replayed: decision.replayed }
+    const interaction = await this.deliver(decision.interaction.id)
+    await this.resumeDelivered(interaction)
+    return { interaction: await this.get(interaction.id), replayed: decision.replayed }
   }
 
   async reconcile(interaction: DurableInteraction): Promise<DurableInteraction> {
-    try {
-      const { manager, session } = await this.nativeRuntime.attachInteraction(interaction)
-      const history = await manager.reconcile(session, `approval:${interaction.id}`)
-      await this.interactions.appendNativeHistory(interaction, history.events)
-      const stillPending = history.pendingInteractions.some((item) => item.turn.nativeRequestId === interaction.nativeRequestId)
-      return this.interactions.updateDelivery(interaction.id, interaction.revision, stillPending ? 'failed' : 'delivered')
-    } catch (error) {
-      return this.interactions.updateDelivery(interaction.id, interaction.revision, 'uncertain', {
-        error: { code: error instanceof DomainError ? error.code : 'NATIVE_RECONCILIATION_FAILED',
-          message: message(error), phase: 'reconcile', certainty: 'uncertain' },
-      })
+    const current = await this.deliver(interaction.id, true)
+    await this.resumeDelivered(current)
+    return this.get(current.id)
+  }
+
+  /** Bounded, cursor-based recovery for the application lifecycle worker. No native replay. */
+  async recover(input: { afterId?: string; limit: number }): Promise<{ nextCursor: string | null; errors: Array<{ interactionId: string; error: string }> }> {
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
+      throw new DomainError('RECOVERY_LIMIT_INVALID', 'Recovery batch size must be between 1 and 100.', 400)
     }
+    const rows = await this.interactions.delivery.recoveryCandidates({ ...input, limit: input.limit + 1 })
+    const errors: Array<{ interactionId: string; error: string }> = []
+    for (const candidate of rows.slice(0, input.limit)) {
+      try {
+        const current = candidate.deliveryState === 'delivered' ? candidate : await this.deliver(candidate.id)
+        await this.resumeDelivered(current)
+      } catch (error) {
+        errors.push({ interactionId: candidate.id, error: message(error) })
+      }
+    }
+    return { nextCursor: rows.length > input.limit ? rows[input.limit - 1]!.id : null, errors }
   }
 }

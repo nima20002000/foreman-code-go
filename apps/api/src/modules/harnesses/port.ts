@@ -12,6 +12,8 @@ import type {
   OperatorConfigurationVersion,
 } from '@graphql/contracts'
 
+import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
+
 export interface NativeEventInput {
   type: string
   payload: Record<string, unknown>
@@ -72,6 +74,8 @@ export interface NativeTurnInput {
 }
 
 export interface NativeHistory {
+  /** Optional positive evidence; an empty pending list is never a delivery receipt. */
+  responseDeliveries?: readonly NativeResponseDeliveryEvidence[]
   events: readonly NativeHarnessEvent[]
   pendingInteractions: readonly PendingNativeInteraction[]
   pendingInteraction?: PendingNativeInteraction

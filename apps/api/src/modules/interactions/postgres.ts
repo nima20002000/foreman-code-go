@@ -7,6 +7,7 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
+import { PostgresInteractionDeliveryRepository } from './deliveryPostgres.js'
 import { requireAuthorization } from '../access/policy.js'
 import { appendNativeEvent } from '../runs/nativeEvents.js'
 import {
@@ -23,9 +24,11 @@ import { PostgresInteractionCoordinationRepository } from './coordination.js'
 
 /** Transactional durable interaction primitives; routing/dispatch intentionally lives elsewhere. */
 export class PostgresInteractionRepository {
+  readonly delivery: PostgresInteractionDeliveryRepository
   readonly coordination: PostgresInteractionCoordinationRepository
 
   constructor(private readonly pool: pg.Pool) {
+    this.delivery = new PostgresInteractionDeliveryRepository(pool)
     this.coordination = new PostgresInteractionCoordinationRepository(pool)
   }
 
@@ -215,7 +218,7 @@ export class PostgresInteractionRepository {
       await client.query('begin')
       const found = await client.query<{ id: string; record: unknown }>(
         `select id,record from durable_interactions
-         where run_id=$1 and (status in ('pending','decided','delivery_pending') or
+         where run_id=$1 and (status in ('pending','decided','delivery_pending','delivery_failed') or
            (status='delivered' and exists (select 1 from interaction_graph_resumes g
              where g.interaction_id=durable_interactions.id and g.state not in ('resumed','canceled'))))
          order by id for update`, [runId],
@@ -225,7 +228,7 @@ export class PostgresInteractionRepository {
         const now = new Date().toISOString()
         const next = DurableInteractionSchema.parse({
           ...current, revision: current.revision + 1, status: 'canceled',
-          updatedAt: now,
+          deliveryState: current.deliveryState === 'submitted' ? 'uncertain' : current.deliveryState, updatedAt: now,
         })
         const updated = await client.query(
           `update durable_interactions set status=$2,revision=$3,record=$4::jsonb,updated_at=now(),
@@ -238,6 +241,7 @@ export class PostgresInteractionRepository {
         )
         if (updated.rowCount !== 1) throw new DomainError('REVISION_CONFLICT', 'The interaction changed during cancellation.', 409)
       }
+      await this.delivery.cancelForRun(client, runId)
       await client.query('commit')
       return found.rowCount ?? 0
     } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
