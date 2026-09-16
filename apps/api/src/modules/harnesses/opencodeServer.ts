@@ -12,6 +12,7 @@ import {
   type NativeHarnessCapabilities,
   type NativeHarnessEvent,
   type NativeSessionReference,
+  type OpenCodeAdvancedConfiguration,
   type OpenCodeHarnessConfiguration,
   type PendingNativeInteraction,
 } from '@graphql/contracts'
@@ -82,6 +83,7 @@ export class OpenCodeNativeDeliveryError extends Error {
 
 export interface OpenCodeServerController {
   readonly expectedVersion: string
+  readonly advancedConfiguration?: OpenCodeAdvancedConfiguration | undefined
   ensure(signal?: AbortSignal): Promise<void>
   request(path: string, init?: RequestInit, signal?: AbortSignal): Promise<Response>
   dispose(): Promise<void>
@@ -94,11 +96,13 @@ export interface ManagedOpenCodeServerOptions {
   ownerAgentId: string
   environment?: ChildProcessEnvironment
   pure?: boolean
+  advancedConfiguration?: OpenCodeAdvancedConfiguration
 }
 
 /** One resident process is permanently scoped to one logical Agent credential context. */
 export class ManagedOpenCodeServer implements OpenCodeServerController {
   readonly expectedVersion = QUALIFIED_VERSION
+  readonly advancedConfiguration: OpenCodeAdvancedConfiguration | undefined
   private child: ChildProcessWithoutNullStreams | undefined
   private baseUrl: string | undefined
   private password: string | undefined
@@ -107,7 +111,12 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   private environment: ChildProcessEnvironment | undefined
 
   constructor(private readonly options: ManagedOpenCodeServerOptions) {
+    this.advancedConfiguration = options.advancedConfiguration
     this.environment = this.validateEnvironment(options.environment)
+    const advancedPure = options.advancedConfiguration?.plugins.mode === 'pure'
+    if (options.pure !== undefined && options.advancedConfiguration && options.pure !== advancedPure) {
+      throw new HarnessExecutionError('OPENCODE_PLUGIN_MODE_CONFLICT', 'Managed server pure mode conflicts with the Advanced plugin setting.')
+    }
   }
 
   private validateEnvironment(environment?: ChildProcessEnvironment): ChildProcessEnvironment | undefined {
@@ -188,7 +197,14 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
         || key === 'DATABASE_URL' || key === 'TEST_DATABASE_URL' || key === 'PGPASSWORD') delete environment[key]
     }
     Object.assign(environment, this.environment?.variables ?? {})
-    const args = ['serve', '--hostname', '127.0.0.1', '--port', '0', ...(this.options.pure ? ['--pure'] : [])]
+    if (this.options.advancedConfiguration) {
+      environment.OPENCODE_CONFIG_CONTENT = buildOpenCodeConfigContent(
+        environment.OPENCODE_CONFIG_CONTENT,
+        this.options.advancedConfiguration,
+      )
+    }
+    const pure = this.options.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true
+    const args = ['serve', '--hostname', '127.0.0.1', '--port', '0', ...(pure ? ['--pure'] : [])]
     const child = spawn(this.options.binary, args, {
       cwd: this.options.workingDirectory,
       env: environment,
@@ -285,25 +301,34 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   async createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
+    if (input.kind === 'operator') {
+      throw new HarnessExecutionError('OPENCODE_OPERATOR_DIRECTORY_REQUIRED', 'OpenCode Operator sessions require an explicit shared runner working directory.')
+    }
+    const request = input.request
     const configuration = this.configuration(input)
     if (input.environment && input.environment.agentId !== this.options.ownerAgentId) {
       throw new HarnessExecutionError('OPENCODE_SESSION_OWNER_MISMATCH', 'The session credential belongs to another Agent.')
     }
     await this.qualifyServer(signal)
-    await this.qualifyConfiguration(configuration, input.request.workingDirectory, signal)
+    await this.qualifyConfiguration(configuration, request.workingDirectory, signal)
+    await this.applyMcpControls(configuration, request.workingDirectory, signal)
     const [providerID, ...modelParts] = configuration.model.split('/')
+    const permission = configuration.advanced?.permissionRules.map((rule) => ({
+      permission: nativePermissionName(rule.permission), pattern: rule.pattern, action: rule.effect,
+    }))
     const response = await this.json('/session', {
-      method: 'POST', directory: input.request.workingDirectory,
+      method: 'POST', directory: request.workingDirectory,
       body: {
-        title: `GraphQL ${input.request.executionId}`,
+        title: `GraphQL ${request.executionId}`,
         agent: configuration.nativeAgent,
         model: { providerID, id: modelParts.join('/'), variant: configuration.variant },
+        ...(permission ? { permission } : {}),
       },
     }, signal)
     const sessionId = stringField(response, 'id', 'OPENCODE_SESSION_ID_MISSING')
     const session = NativeSessionReferenceSchema.parse({ harness: 'opencode', providerVersion: QUALIFIED_VERSION, nativeSessionId: sessionId })
     this.sessions.set(sessionId, {
-      directory: input.request.workingDirectory, configuration,
+      directory: request.workingDirectory, configuration,
       events: [], seenEventIds: new Set(), seenPendingRequestIds: new Set(), correlationMessages: new Map(), sequence: 0,
     })
     return session
@@ -345,7 +370,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
           if (!belongsToSession(native, session.nativeSessionId)) continue
           const event = this.record(state, native)
           if (!event) continue
-          yield event
+          if (state.configuration.thinking || !isReasoningEvent(native.type)) yield event
           if (native.type === 'permission.asked' && typeof native.properties?.id === 'string'
             && !state.seenPendingRequestIds.has(native.properties.id)) {
             state.seenPendingRequestIds.add(native.properties.id)
@@ -421,8 +446,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const state = await this.requireSession(session, signal)
     const messages = await this.messages(session.nativeSessionId, state.directory, signal)
     const terminalResult = finalResult(messages)
-    const pendingInteraction = await this.pending(session, signal)
-    return { events: [...state.events], ...(pendingInteraction ? { pendingInteraction } : {}), ...(terminalResult ? { terminalResult } : {}) }
+    const pendingInteractions = await this.pendingAll(session, signal)
+    const pendingInteraction = pendingInteractions[0]
+    return { events: [...state.events], pendingInteractions, ...(pendingInteraction ? { pendingInteraction } : {}), ...(terminalResult ? { terminalResult } : {}) }
   }
 
   async reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory> {
@@ -430,8 +456,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const messages = await this.messages(session.nativeSessionId, state.directory, signal)
     const parentID = state.correlationMessages.get(correlationId)
     const terminalResult = finalResult(messages, parentID)
-    const pendingInteraction = await this.pending(session, signal)
-    return { events: [...state.events], ...(pendingInteraction ? { pendingInteraction } : {}), ...(terminalResult ? { terminalResult } : {}) }
+    const pendingInteractions = await this.pendingAll(session, signal)
+    const pendingInteraction = pendingInteractions[0]
+    return { events: [...state.events], pendingInteractions, ...(pendingInteraction ? { pendingInteraction } : {}), ...(terminalResult ? { terminalResult } : {}) }
   }
 
   async close(session: NativeSessionReference): Promise<void> {
@@ -532,8 +559,12 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private async qualifyConfiguration(configuration: OpenCodeHarnessConfiguration, directory: string, signal?: AbortSignal): Promise<void> {
-    if (configuration.autoApprove) {
+    if (configuration.autoApprove || configuration.advanced?.permissionHandling === 'native_auto') {
       throw new HarnessExecutionError('OPENCODE_SERVER_AUTO_CONFLICT', 'Native automatic permission handling cannot run with GraphQL-routed review.')
+    }
+    if (this.options.server instanceof ManagedOpenCodeServer
+      && JSON.stringify(configuration.advanced) !== JSON.stringify(this.options.server.advancedConfiguration)) {
+      throw new HarnessExecutionError('OPENCODE_SERVER_CONFIGURATION_MISMATCH', 'OpenCode process-level Advanced settings differ from the session configuration.')
     }
     const [providerID, ...modelParts] = configuration.model.split('/')
     if (!providerID || modelParts.length === 0) throw new HarnessExecutionError('OPENCODE_MODEL_INVALID', 'OpenCode models require provider/model format.')
@@ -549,7 +580,25 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     }
   }
 
+  private async applyMcpControls(configuration: OpenCodeHarnessConfiguration, directory: string, signal?: AbortSignal): Promise<void> {
+    const controls = configuration.advanced?.mcp.serverEnabled
+    if (!controls || Object.keys(controls).length === 0) return
+    const config = asObject(await this.json('/config', { method: 'GET', directory }, signal))
+    const configured = objectField(config, 'mcp')
+    for (const [name, enabled] of Object.entries(controls)) {
+      if (!(name in configured)) {
+        throw new HarnessExecutionError('OPENCODE_MCP_SERVER_NOT_CONFIGURED', `OpenCode MCP server '${name}' is not present in resolved config.`)
+      }
+      await this.mutate(withDirectory(`/mcp/${encodeURIComponent(name)}/${enabled ? 'connect' : 'disconnect'}`, directory), { method: 'POST' }, signal)
+    }
+  }
+
   private configuration(input: NativeSessionStart): OpenCodeHarnessConfiguration {
+    if (input.kind === 'operator') {
+      const configuration = input.configuration.harness
+      if (configuration.harness !== 'opencode') throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'OpenCode received a non-OpenCode configuration.')
+      return configuration
+    }
     const configuration = input.request.configuration.harness
     if (configuration.harness !== 'opencode') throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'OpenCode received a non-OpenCode configuration.')
     return configuration
@@ -614,9 +663,49 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 }
 
+/** Merge only GraphQL-owned process settings while preserving every unrelated native config key. */
+export function buildOpenCodeConfigContent(
+  inherited: string | undefined,
+  advanced: OpenCodeAdvancedConfiguration,
+): string {
+  let base: JsonObject = {}
+  if (inherited) {
+    try {
+      const parsed: unknown = JSON.parse(inherited)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
+      base = parsed as JsonObject
+    } catch {
+      throw new HarnessExecutionError('OPENCODE_CONFIG_CONTENT_INVALID', 'Inherited OPENCODE_CONFIG_CONTENT is not a JSON object.')
+    }
+  }
+  const compaction = {
+    ...objectField(base, 'compaction'),
+    auto: advanced.compaction.auto,
+    prune: advanced.compaction.prune,
+    ...(advanced.compaction.reservedTokens === undefined ? {} : { reserved: advanced.compaction.reservedTokens }),
+    ...(advanced.compaction.tailTurns === undefined ? {} : { tail_turns: advanced.compaction.tailTurns }),
+    ...(advanced.compaction.preserveRecentTokens === undefined ? {} : { preserve_recent_tokens: advanced.compaction.preserveRecentTokens }),
+  }
+  return JSON.stringify({
+    ...base,
+    compaction,
+    ...(advanced.subagentDepth === undefined ? {} : { subagent_depth: advanced.subagentDepth }),
+  })
+}
+
 function withDirectory(path: string, directory: string): string {
   const separator = path.includes('?') ? '&' : '?'
   return `${path}${separator}directory=${encodeURIComponent(directory)}`
+}
+
+function nativePermissionName(permission: string): string {
+  if (permission === 'shell') return 'bash'
+  if (permission === 'subagent') return 'task'
+  return permission
+}
+
+function isReasoningEvent(type: string): boolean {
+  return type.includes('reasoning') || type.includes('thinking')
 }
 
 function messageId(correlationId: string): string {

@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import type { HarnessExecutionRequest } from '@graphql/contracts'
+import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type HarnessExecutionRequest } from '@graphql/contracts'
 
 import {
   OpenCodeNativeDeliveryError,
   OpenCodeNativeSessionManager,
+  buildOpenCodeConfigContent,
   type OpenCodeServerController,
 } from '../src/modules/harnesses/opencodeServer.js'
 
@@ -64,6 +65,7 @@ class FakeServer implements OpenCodeServerController {
     if (route === '/session/ses_test/abort') return json(true)
     if (route === '/config') return json(this.config)
     if (route === '/mcp') return json(this.mcp)
+    if (route === '/mcp/graphql-app/connect' || route === '/mcp/disabled-app/disconnect') return json(true)
     return new Response('not found', { status: 404 })
   }
 }
@@ -75,8 +77,8 @@ function manager(server: FakeServer) {
   })
 }
 
-async function sessionFor(native: OpenCodeNativeSessionManager) {
-  return native.createSession({ request: request(), environment: { agentId: 'agent-1', variables: { GRAPHQL_APP_MCP_TOKEN: 'opaque' } } })
+async function sessionFor(native: OpenCodeNativeSessionManager, executionRequest = request()) {
+  return native.createSession({ request: executionRequest, environment: { agentId: 'agent-1', variables: { GRAPHQL_APP_MCP_TOKEN: 'opaque' } } })
 }
 
 describe('OpenCode native server manager', () => {
@@ -183,6 +185,44 @@ describe('OpenCode native server manager', () => {
       effectiveFilters: [{ permission: 'graphql-app_*', pattern: '*', effect: 'ask' }],
     })
     await expect(native.inspectMcp()).resolves.toMatchObject({ state: 'connected', endpointMatches: true })
+  })
+
+  it('preserves ordered Advanced permission rules and applies only preconfigured MCP controls', async () => {
+    const server = new FakeServer()
+    server.config = { mcp: { 'graphql-app': { type: 'remote' }, 'disabled-app': { type: 'remote' } } }
+    const executionRequest = request()
+    if (executionRequest.configuration.harness.harness !== 'opencode') throw new Error('fixture mismatch')
+    executionRequest.configuration.harness.advanced = {
+      ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
+      permissionRules: [
+        { permission: 'shell', pattern: '*', effect: 'ask' },
+        { permission: 'shell', pattern: 'git status', effect: 'allow' },
+        { permission: 'subagent', pattern: 'general', effect: 'deny' },
+      ],
+      mcp: { serverEnabled: { 'graphql-app': true, 'disabled-app': false } },
+    }
+    const native = manager(server)
+    await sessionFor(native, executionRequest)
+    const create = server.calls.find((call) => call.path.startsWith('/session') && call.init?.method === 'POST')
+    expect(JSON.parse(String(create?.init?.body)).permission).toEqual([
+      { permission: 'bash', pattern: '*', action: 'ask' },
+      { permission: 'bash', pattern: 'git status', action: 'allow' },
+      { permission: 'task', pattern: 'general', action: 'deny' },
+    ])
+    expect(server.calls.some((call) => call.path.startsWith('/mcp/graphql-app/connect'))).toBe(true)
+    expect(server.calls.some((call) => call.path.startsWith('/mcp/disabled-app/disconnect'))).toBe(true)
+  })
+
+  it('merges compaction settings without flattening unrelated native config', () => {
+    const content = buildOpenCodeConfigContent(JSON.stringify({ model: 'kept/model', compaction: { custom: true }, plugin: ['kept'] }), {
+      ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
+      subagentDepth: 0,
+      compaction: { auto: false, prune: true, tailTurns: 4, preserveRecentTokens: 2048 },
+    })
+    expect(JSON.parse(content)).toEqual({
+      model: 'kept/model', plugin: ['kept'], subagent_depth: 0,
+      compaction: { custom: true, auto: false, prune: true, tail_turns: 4, preserve_recent_tokens: 2048 },
+    })
   })
 })
 
