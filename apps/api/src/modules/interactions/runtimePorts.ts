@@ -16,22 +16,33 @@ export interface NativeManagerResolutionContext extends NativeManagerOwnershipCo
   configuration: AgentConfigurationVersion
 }
 
+export type NativeManagerLifecycle = 'allocated' | 'starting' | 'resident' | 'released' | 'failed'
+
 export interface ResolvedNativeSessionManager {
   manager: NativeHarnessSessionManager
   /** True only when create/attach must start a new provider process. */
-  processState: 'resident' | 'needs_start'
+  readonly processState: 'resident' | 'needs_start'
+  readonly lifecycle?: NativeManagerLifecycle
+  /** Claim startup before credential preflight; allocation alone is not residency. */
+  beginStart?(): void
+  /** Called only after the provider successfully creates/attaches the exact session. */
+  markResident?(): void
+  /** Fence reuse while failed-process/credential cleanup is still running. */
+  markFailed?(): void
 }
 
 /** Manager ownership is per durable Agent execution, never per harness singleton. */
 export interface NativeSessionManagerResolver {
   resolve(context: NativeManagerResolutionContext): ResolvedNativeSessionManager
-  release?(context: NativeManagerResolutionContext): void
+  release?(context: NativeManagerResolutionContext, manager?: NativeHarnessSessionManager, state?: 'released' | 'failed'): void
 }
 
 export class ExecutionScopedNativeSessionManagerResolver implements NativeSessionManagerResolver {
   private readonly entries = new Map<string, {
     context: NativeManagerResolutionContext
     manager: NativeHarnessSessionManager
+    lifecycle: NativeManagerLifecycle
+    resolved: ResolvedNativeSessionManager
   }>()
 
   constructor(private readonly create: (context: NativeManagerResolutionContext) => NativeHarnessSessionManager) {}
@@ -44,17 +55,50 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
         || !isDeepStrictEqual(existing.context.configuration, context.configuration)) {
         throw new Error('A durable execution cannot change native manager ownership context.')
       }
-      return { manager: existing.manager, processState: 'resident' }
+      if (existing.lifecycle === 'failed') throw new Error('The failed native manager is being released.')
+      return existing.resolved
     }
     const manager = this.create(context)
     if (manager.harness !== context.harness) throw new Error('The native manager factory returned the wrong harness.')
-    this.entries.set(context.executionId, { context, manager })
-    return { manager, processState: 'needs_start' }
+    const entry: {
+      context: NativeManagerResolutionContext
+      manager: NativeHarnessSessionManager
+      lifecycle: NativeManagerLifecycle
+      resolved: ResolvedNativeSessionManager
+    } = {
+      context, manager, lifecycle: 'allocated',
+      resolved: {
+        manager,
+        get processState() { return entry.lifecycle === 'resident' ? 'resident' : 'needs_start' },
+        get lifecycle() { return entry.lifecycle },
+        beginStart: () => {
+          if (this.entries.get(context.executionId) !== entry || entry.lifecycle !== 'allocated') {
+            throw new Error('The native manager is already starting, resident, or released.')
+          }
+          entry.lifecycle = 'starting'
+        },
+        markResident: () => {
+          if (this.entries.get(context.executionId) !== entry
+            || (entry.lifecycle !== 'starting' && entry.lifecycle !== 'resident')) {
+            throw new Error('An unstarted or released native manager cannot become resident.')
+          }
+          entry.lifecycle = 'resident'
+        },
+        markFailed: () => {
+          if (this.entries.get(context.executionId) === entry) entry.lifecycle = 'failed'
+        },
+      },
+    }
+    this.entries.set(context.executionId, entry)
+    return entry.resolved
   }
 
-  release(context: NativeManagerResolutionContext): void {
+  release(context: NativeManagerResolutionContext, manager?: NativeHarnessSessionManager, state: 'released' | 'failed' = 'released'): void {
     const current = this.entries.get(context.executionId)
-    if (current && current.context.agentId === context.agentId) this.entries.delete(context.executionId)
+    if (current && current.context.agentId === context.agentId && (!manager || current.manager === manager)) {
+      current.lifecycle = state
+      this.entries.delete(context.executionId)
+    }
   }
 }
 

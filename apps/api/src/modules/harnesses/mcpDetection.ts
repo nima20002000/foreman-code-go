@@ -174,9 +174,20 @@ export class WorkerLaunchCredentialService implements ExecutionCredentialProvide
       workingDirectory: input.workingDirectory,
       ...(input.signal ? { signal: input.signal } : {}),
     })
-    // Issuance is intentionally after endpoint/auth-reference verification.
+    input.signal?.throwIfAborted()
+    // prepare is a process-start boundary, never a resident-process refresh. Revoke
+    // superseded credentials only after preflight and before the replacement starts.
+    await this.credentials.revokeForExecution(input.executionId)
     const credential = await this.credentials.issueForExecution(input.executionId)
+    if (input.signal?.aborted) {
+      await this.credentials.revoke(credential)
+      input.signal.throwIfAborted()
+    }
     return { credential, detection }
+  }
+
+  renew(executionId: string, credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<string> {
+    return this.credentials.renewForExecution(executionId, credential)
   }
 
   revoke(credential: IssuedWorkerCredential): Promise<void> {
@@ -202,7 +213,10 @@ export interface PreparedExecutionCredential {
 
 /** Provider-neutral lifecycle seam consumed by legacy and rich session execution paths. */
 export interface ExecutionCredentialProvider {
+  /** New process only; never inject a replacement environment into a resident process. */
   prepare(input: ExecutionCredentialPrepareInput): Promise<PreparedExecutionCredential>
+  /** Same-token server-side lease renewal. Providers without it must not rotate a busy process. */
+  renew?(executionId: string, credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<string>
   revoke(credential: IssuedWorkerCredential): Promise<void>
   revokeForExecution(executionId: string): Promise<number>
 }

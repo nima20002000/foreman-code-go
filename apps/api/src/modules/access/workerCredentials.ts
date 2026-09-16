@@ -7,6 +7,7 @@ import type { PostgresAccessService } from './postgres.js'
 
 export const APP_MCP_TOKEN_ENVIRONMENT_VARIABLE = 'GRAPHQL_APP_MCP_TOKEN'
 export const DEFAULT_WORKER_CREDENTIAL_TTL_MS = 15 * 60 * 1000
+export const WORKER_CREDENTIAL_RENEWAL_WINDOW_MS = 60_000
 
 interface ExecutionIdentityRow {
   execution_id: string
@@ -43,7 +44,9 @@ export class WorkerCredentialService {
        from harness_executions he
        join runs r on r.id = he.run_id
        join agents a on a.id = he.agent_id and a.workspace_id = r.workspace_id
-       where he.id = $1`, [executionId],
+       where he.id = $1 and not exists (
+         select 1 from approval_execution_state where execution_id=he.id and stopped_at is not null
+       )`, [executionId],
     )
     const identity = result.rows[0]
     if (!identity) {
@@ -55,6 +58,9 @@ export class WorkerCredentialService {
       || execution.agentId !== identity.agent_id || run.id !== identity.run_id
       || run.workspaceId !== identity.workspace_id || run.workflowId !== identity.workflow_id) {
       throw new DomainError('WORKER_EXECUTION_IDENTITY_INVALID', 'The durable execution identity is inconsistent.', 409)
+    }
+    if (execution.state === 'completed' || run.executionState === 'completed') {
+      throw new DomainError('WORKER_EXECUTION_TERMINAL', 'A terminal execution cannot receive worker credentials.', 409)
     }
     const expiresAt = new Date(Date.now() + this.ttlMs)
     const issued = await this.access.issue({
@@ -99,6 +105,38 @@ export class WorkerCredentialService {
       },
       expiresAt: issued.principal.expiresAt,
     }
+  }
+
+  /**
+   * Control-plane lease renewal, not bearer-token self-renewal. Only expiry changes:
+   * the exact principal, token, Agent and grants stay bound to the same live execution.
+   * An expired lease may be renewed after approval waiting; revocation is irreversible.
+   */
+  async renewForExecution(executionId: string, credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<string> {
+    const result = await this.pool.query<{ expires_at: Date }>(
+      `update management_principals p
+       set expires_at=greatest(p.expires_at,now()+($3::bigint * interval '1 millisecond'))
+       from worker_credential_bindings b
+       join harness_executions he on he.id=b.execution_id and he.agent_id=b.agent_id and he.run_id=b.run_id
+       join runs r on r.id=b.run_id and r.workspace_id=b.workspace_id and r.workflow_id=b.workflow_id
+       join agents a on a.id=b.agent_id and a.workspace_id=b.workspace_id
+       join approval_execution_state s on s.execution_id=he.id
+       where p.id=$1 and b.principal_id=p.id and b.execution_id=$2
+         and p.audience='worker' and p.agent_id=b.agent_id
+         and b.environment_variable=$4 and p.revoked_at is null and b.revoked_at is null
+         and he.record->>'id'=he.id and he.record->>'runId'=r.id and he.record->>'agentId'=b.agent_id
+         and r.record->>'id'=r.id and r.record->>'workspaceId'=b.workspace_id and r.record->>'workflowId'=b.workflow_id
+         and he.record->>'state' in ('running','waiting')
+         and r.record->>'executionState' in ('running','waiting') and r.record->>'outcome'='pending'
+         and s.stopped_at is null
+         and s.active_elapsed_ms + coalesce(extract(epoch from (now()-s.active_started_at))*1000,0) < s.active_timeout_ms
+       returning p.expires_at`,
+      [credential.principalId, executionId, this.ttlMs, APP_MCP_TOKEN_ENVIRONMENT_VARIABLE],
+    )
+    if (!result.rows[0]) {
+      throw new DomainError('WORKER_CREDENTIAL_NOT_RENEWABLE', 'The worker credential is revoked, mismatched, or its execution is no longer active.', 409)
+    }
+    return result.rows[0].expires_at.toISOString()
   }
 
   async revoke(credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<void> {

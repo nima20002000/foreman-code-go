@@ -12,6 +12,8 @@ import {
   HarnessExecutionRequestSchema,
 } from '@graphql/contracts'
 
+import { WORKER_CREDENTIAL_RENEWAL_WINDOW_MS, type IssuedWorkerCredential } from '../access/workerCredentials.js'
+import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { RunOwnership } from '../runs/ownership.js'
@@ -22,6 +24,7 @@ import type {
   NativeManagerResolutionContext,
   NativeManagerOwnershipContext,
   NativeSessionManagerResolver,
+  ResolvedNativeSessionManager,
 } from './runtimePorts.js'
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
 
@@ -31,6 +34,8 @@ export type ApprovalExecutionObservation =
 
 /** Idempotent ensure/observe boundary called first on every LangGraph node entry. */
 export class ApprovalExecutionCoordinator {
+  private readonly managerCredentials = new WeakMap<NativeHarnessSessionManager, IssuedWorkerCredential>()
+
   constructor(
     private readonly runs: PostgresRunRepository,
     private readonly interactions: PostgresInteractionRepository,
@@ -62,13 +67,56 @@ export class ApprovalExecutionCoordinator {
     return resolved
   }
 
-  private async prepareEnvironment(context: NativeManagerResolutionContext, signal?: AbortSignal) {
+  private async prepareEnvironment(
+    context: NativeManagerResolutionContext,
+    resolved: ResolvedNativeSessionManager,
+    signal?: AbortSignal,
+  ) {
     if (!this.credentials) return undefined
+    if (resolved.processState === 'resident') {
+      const credential = this.managerCredentials.get(resolved.manager)
+      if (!credential) throw new Error('The resident native process has no owned worker credential lease.')
+      const expiresAt = Date.parse(credential.expiresAt)
+      if (!Number.isFinite(expiresAt)) throw new Error('The worker credential expiry is invalid.')
+      if (expiresAt <= Date.now() && !this.credentials.renew) {
+        throw new Error('The resident worker credential cannot be renewed without replacing its process.')
+      }
+      if (this.credentials.renew && expiresAt <= Date.now() + WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) {
+        const renewedExpiry = await this.credentials.renew(context.executionId, { principalId: credential.principalId })
+        if (!Number.isFinite(Date.parse(renewedExpiry)) || Date.parse(renewedExpiry) <= Date.now()) {
+          throw new Error('Worker credential renewal did not return a live lease.')
+        }
+        this.managerCredentials.set(resolved.manager, { ...credential, expiresAt: renewedExpiry })
+      }
+      signal?.throwIfAborted()
+      // A resident process keeps its original token/environment, including across long waits.
+      return undefined
+    }
     const prepared = await this.credentials.prepare({
       executionId: context.executionId, harness: context.harness, workingDirectory: context.workingDirectory,
       ...(signal ? { signal } : {}),
     })
+    const expiresAt = Date.parse(prepared.credential.expiresAt)
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error('The prepared worker credential is not live.')
+    this.managerCredentials.set(resolved.manager, prepared.credential)
+    signal?.throwIfAborted()
     return prepared.credential.environment
+  }
+
+  private async releaseFailedManager(
+    context: NativeManagerResolutionContext,
+    resolved: ResolvedNativeSessionManager,
+    session?: AttachedInteractionSession['session'],
+  ): Promise<void> {
+    resolved.markFailed?.()
+    try {
+      if (session) await resolved.manager.close(session).catch(() => undefined)
+      // This includes credentials issued by an earlier call to a resident manager.
+      await this.credentials?.revokeForExecution(context.executionId)
+    } finally {
+      this.managerCredentials.delete(resolved.manager)
+      this.managers.release?.(context, resolved.manager, 'failed')
+    }
   }
 
   async attachInteraction(interaction: DurableInteraction, signal?: AbortSignal): Promise<AttachedInteractionSession> {
@@ -105,18 +153,18 @@ export class ApprovalExecutionCoordinator {
       runtimeDirectory: execution.runtimeDirectory, configuration, input: execution.input,
     })
     const resolved = this.resolveManager(resolutionContext)
-    const environment = resolved.processState === 'needs_start'
-      ? await this.prepareEnvironment(resolutionContext, signal) : undefined
+    // Claim outside cleanup: losing a concurrent startup race does not own its credentials.
+    if (resolved.processState === 'needs_start') resolved.beginStart?.()
     try {
+      const environment = await this.prepareEnvironment(resolutionContext, resolved, signal)
       const session = await resolved.manager.attachSession(sessionReference, {
         kind: 'workflow', correlationId: `execution:${execution.id}`, request,
         ...(environment ? { environment } : {}),
       }, signal)
+      resolved.markResident?.()
       return { manager: resolved.manager, session }
     } catch (error) {
-      await resolved.manager.close(sessionReference).catch(() => undefined)
-      this.managers.release?.(resolutionContext)
-      if (environment) await this.credentials?.revokeForExecution(execution.id).catch(() => undefined)
+      await this.releaseFailedManager(resolutionContext, resolved, sessionReference).catch(() => undefined)
       throw error
     }
   }
@@ -159,11 +207,15 @@ export class ApprovalExecutionCoordinator {
     const ensured = await this.runs.ensureExecution(input.candidate, input.owner)
     let execution = ensured.execution
     await this.budgets.ensure(execution.id, input.graphThreadId, this.activeTimeoutMs)
-    await this.budgets.assertActive(execution.id)
     if (execution.state === 'completed') {
-      await this.credentials?.revokeForExecution(execution.id)
+      try {
+        await this.budgets.finish(execution.id, execution.finishedAt)
+      } finally {
+        await this.credentials?.revokeForExecution(execution.id)
+      }
       return { state: 'completed', execution, result: execution.result! }
     }
+    await this.budgets.assertActive(execution.id)
 
     const existing = await this.interactions.getForExecution(execution.id)
     if (existing && existing.deliveryState !== 'delivered') return { state: 'waiting', execution, interaction: existing }
@@ -173,10 +225,13 @@ export class ApprovalExecutionCoordinator {
     const manager = resolved.manager
     let createdSession = false
     if (!execution.nativeSessionId) {
-      const environment = await this.prepareEnvironment(context, input.signal)
+      if (resolved.lifecycle === 'resident') throw new Error('A resident native process cannot create a replacement session.')
+      resolved.beginStart?.()
       let session
       try {
+        const environment = await this.prepareEnvironment(context, resolved, input.signal)
         session = await manager.createSession({ request: input.request, ...(environment ? { environment } : {}) }, input.signal)
+        resolved.markResident?.()
         createdSession = true
         execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: session.nativeSessionId, state: 'running' })
         await this.runs.updateExecution(execution, input.owner)
@@ -204,9 +259,7 @@ export class ApprovalExecutionCoordinator {
           return { state: 'waiting', execution, interaction: created.interaction }
         }
       } catch (error) {
-        if (session) await manager.close(session).catch(() => undefined)
-        this.managers.release?.(context)
-        if (environment) await this.credentials?.revokeForExecution(execution.id).catch(() => undefined)
+        await this.releaseFailedManager(context, resolved, session).catch(() => undefined)
         throw error
       }
     }
@@ -217,17 +270,16 @@ export class ApprovalExecutionCoordinator {
       nativeSessionId: execution.nativeSessionId!,
     }
     if (!createdSession) {
-      const environment = resolved.processState === 'needs_start'
-        ? await this.prepareEnvironment(context, input.signal) : undefined
+      if (resolved.processState === 'needs_start') resolved.beginStart?.()
       try {
+        const environment = await this.prepareEnvironment(context, resolved, input.signal)
         await manager.attachSession(session, {
           kind: 'workflow', correlationId: `execution:${execution.id}`, request: input.request,
           ...(environment ? { environment } : {}),
         }, input.signal)
+        resolved.markResident?.()
       } catch (error) {
-        await manager.close(session).catch(() => undefined)
-        this.managers.release?.(context)
-        if (environment) await this.credentials?.revokeForExecution(execution.id).catch(() => undefined)
+        await this.releaseFailedManager(context, resolved, session).catch(() => undefined)
         if (existing) return { state: 'waiting', execution, interaction: existing }
         throw error
       }
@@ -237,9 +289,7 @@ export class ApprovalExecutionCoordinator {
       history = await manager.history(session)
       for (const event of history.events) await this.runs.appendNativeEvent({ ...event, executionId: execution.id }, input.owner)
     } catch (error) {
-      await manager.close(session).catch(() => undefined)
-      this.managers.release?.(context)
-      await this.credentials?.revokeForExecution(execution.id).catch(() => undefined)
+      await this.releaseFailedManager(context, resolved, session).catch(() => undefined)
       throw error
     }
     if (history.pendingInteractions.length) {
@@ -255,9 +305,17 @@ export class ApprovalExecutionCoordinator {
       ...execution, state: 'completed', result: history.terminalResult, finishedAt: new Date().toISOString(),
     })
     await this.runs.updateExecution(execution, input.owner)
-    await this.credentials?.revokeForExecution(execution.id)
-    await manager.close(session).catch(() => undefined)
-    this.managers.release?.(context)
+    try {
+      await this.budgets.finish(execution.id, execution.finishedAt)
+    } finally {
+      try {
+        await this.credentials?.revokeForExecution(execution.id)
+      } finally {
+        await manager.close(session).catch(() => undefined)
+        this.managerCredentials.delete(manager)
+        this.managers.release?.(context, manager)
+      }
+    }
     return { state: 'completed', execution, result: history.terminalResult }
   }
 }
