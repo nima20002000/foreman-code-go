@@ -61,8 +61,11 @@ export class OpenCodeAdapter implements HarnessAdapter {
     if (nativeAgent.exitCode !== 0) {
       throw new HarnessExecutionError('OPENCODE_NATIVE_AGENT_UNAVAILABLE', `OpenCode native Agent '${configuration.nativeAgent}' is unavailable.`)
     }
-    if (configuration.autoApprove) {
-      throw new HarnessExecutionError('OPENCODE_SETTING_UNSUPPORTED', 'Automatic permission approval is disabled for Product Agent runs.')
+    if (configuration.advanced?.permissionHandling === 'graphql_routed') {
+      throw new HarnessExecutionError(
+        'OPENCODE_FALLBACK_APPROVAL_UNSUPPORTED',
+        'The opencode run fallback cannot wait for GraphQL-routed approvals; use the qualified native server transport.',
+      )
     }
     return HarnessQualificationSchema.parse({
       harness: 'opencode',
@@ -78,8 +81,8 @@ export class OpenCodeAdapter implements HarnessAdapter {
         'bash', 'read', 'edit', 'glob', 'grep', 'webfetch',
         'task', 'todowrite', 'websearch', 'lsp', 'skill',
       ],
-      supportedSettings: ['model', 'variant', 'nativeAgent', 'thinking'],
-      unsupportedCapabilities: ['sandboxSelection', 'serviceTier', 'autoApprove'],
+      supportedSettings: ['model', 'variant', 'nativeAgent', 'thinking', 'autoApprove'],
+      unsupportedCapabilities: ['sandboxSelection', 'serviceTier', 'interactiveApprovals'],
     })
   }
 
@@ -124,6 +127,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
       '--variant', configuration.variant,
       '--agent', configuration.nativeAgent,
       ...(configuration.thinking ? ['--thinking'] : []),
+      ...(configuration.autoApprove ? ['--auto'] : []),
       ...(resumeSessionId ? ['--session', resumeSessionId] : []),
     ]
     const result = await runJsonlProcess({

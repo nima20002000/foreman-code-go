@@ -3,7 +3,7 @@ import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import type { HarnessExecutionRequest, HarnessConfiguration } from '@graphql/contracts'
+import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, type HarnessConfiguration } from '@graphql/contracts'
 import { expect, it } from 'vitest'
 
 import { CodexAdapter } from '../src/modules/harnesses/codex.js'
@@ -43,6 +43,7 @@ else {
   process.stdin.on('data', chunk => { input += chunk })
   process.stdin.on('end', () => {
     if (!input.includes('ACCEPTED INPUT FROM THE WORKFLOW')) throw new Error('Missing stdin prompt')
+    if (input.includes('EXPECT_NATIVE_AUTO') && !args.includes('--auto')) throw new Error('OpenCode native auto flag missing')
     const text = String(Buffer.byteLength(input))
     if (args[0] === 'exec') {
       console.log(JSON.stringify({type:'thread.started',thread_id:'test-session'}))
@@ -128,4 +129,45 @@ it('rejects an oversized prompt with an explicit policy error', () => {
     () => buildHarnessPrompt(request(configurations[0]!, { text: 'x'.repeat(MAX_HARNESS_PROMPT_BYTES) }, '/tmp')),
     /8 MiB/,
   )
+})
+
+it.skipIf(process.platform === 'win32')('keeps native auto handling on the explicit opencode run fallback', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'graphql-opencode-auto-'))
+  try {
+    const binary = join(directory, 'harness.cjs')
+    await writeFile(binary, fakeCli)
+    await chmod(binary, 0o700)
+    const advanced = { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionHandling: 'native_auto' as const }
+    const execution = request({
+      harness: 'opencode', model: 'opencode-go/test-model', variant: 'max', nativeAgent: 'build',
+      thinking: false, autoApprove: true, advanced,
+    }, { text: 'EXPECT_NATIVE_AUTO' }, directory)
+    await expect(new OpenCodeAdapter(binary).execute(execution, {
+      signal: new AbortController().signal,
+      onSession: async () => undefined,
+      onEvent: async () => undefined,
+    })).resolves.toMatchObject({ outcome: 'succeeded' })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+it.skipIf(process.platform === 'win32')('refuses to route GraphQL approvals through the noninteractive run fallback', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'graphql-opencode-routed-'))
+  try {
+    const binary = join(directory, 'harness.cjs')
+    await writeFile(binary, fakeCli)
+    await chmod(binary, 0o700)
+    const execution = request({
+      harness: 'opencode', model: 'opencode-go/test-model', variant: 'max', nativeAgent: 'build',
+      thinking: false, autoApprove: false, advanced: DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
+    }, {}, directory)
+    await expect(new OpenCodeAdapter(binary).execute(execution, {
+      signal: new AbortController().signal,
+      onSession: async () => undefined,
+      onEvent: async () => undefined,
+    })).rejects.toMatchObject({ result: { error: { code: 'OPENCODE_FALLBACK_APPROVAL_UNSUPPORTED' } } })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
