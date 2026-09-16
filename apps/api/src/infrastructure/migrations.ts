@@ -258,6 +258,23 @@ const migrations = [
       unique (interaction_id, reviewer_agent_id)
     );
   ` },
+  { version: 400, sql: `
+    create table if not exists worker_credential_bindings (
+      principal_id text primary key,
+      execution_id text not null,
+      run_id text not null,
+      workspace_id text not null,
+      workflow_id text not null,
+      agent_id text not null,
+      environment_variable text not null,
+      issued_at timestamptz not null default now(),
+      revoked_at timestamptz,
+      unique (execution_id, principal_id),
+      check (environment_variable = 'GRAPHQL_APP_MCP_TOKEN')
+    );
+    create index if not exists worker_credential_bindings_execution_idx
+      on worker_credential_bindings (execution_id, revoked_at);
+  ` },
   { version: 500, sql: `
     create table if not exists approval_execution_state (
       execution_id text primary key,
@@ -294,6 +311,11 @@ const migrations = [
       created_at timestamptz not null default now(),
       primary key (principal_id,command_id)
     );
+  ` },
+  { version: 502, sql: `
+    alter table review_jobs add column if not exists execution_id text;
+    alter table review_jobs add column if not exists working_directory text;
+    alter table review_jobs add column if not exists provider_version text;
   ` },
 ] as const
 

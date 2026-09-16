@@ -23,6 +23,7 @@ import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
 import type { NativeHarnessSessionManager, NativeHistory } from '../src/modules/harnesses/port.js'
+import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
 import { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
@@ -51,25 +52,33 @@ let engine: LangGraphWorkflowEngine
 let app: FastifyInstance
 
 class SelectiveNativeManager implements NativeHarnessSessionManager {
-  readonly harness = 'codex' as const
+  readonly harness: 'codex' | 'opencode'
   readonly counters = { nodeEntries: 0, sessions: 0, attaches: 0, sideEffects: 0, deliveries: 0 }
   private readonly requests = new Map<string, HarnessExecutionRequest>()
   private readonly pendingRequests = new Map<string, PendingNativeInteraction>()
   private readonly terminal = new Map<string, NativeHistory['terminalResult']>()
+  readonly startEnvironments = new Map<string, string | undefined>()
+  readonly attachEnvironments: Array<string | undefined> = []
 
-  constructor(private readonly pendingNodeIds = new Set(['approval-target'])) {}
+  constructor(private readonly pendingNodeIds = new Set(['approval-target']), harness: 'codex' | 'opencode' = 'codex') {
+    this.harness = harness
+  }
 
-  async capabilities() { return { provider: this.harness, providerVersion: '0.154.0', persistentSessions: true, reconnect: true, sameRequestResponses: true, cancellation: true, history: true, configurationInspection: true, mcpDetection: true, supportedInteractionKinds: ['approval'] } }
+  async capabilities() { return { provider: this.harness, providerVersion: this.harness === 'codex' ? '0.154.0' : '1.18.31', persistentSessions: true, reconnect: true, sameRequestResponses: true, cancellation: true, history: true, configurationInspection: true, mcpDetection: true, supportedInteractionKinds: ['approval'] } }
   async inspectMcp() { return { harness: this.harness, serverName: 'graphql', state: 'connected' as const, endpointMatches: true, credentialEnvironmentVariable: null, checkedAt: new Date().toISOString() } }
-  async createSession(input: { request: HarnessExecutionRequest }): Promise<NativeSessionReference> {
+  async createSession(input: NativeSessionStart): Promise<NativeSessionReference> {
+    if (input.kind === 'operator') throw new Error('workflow fixture expected')
     this.counters.sessions += 1
-    const session = { harness: this.harness, providerVersion: '0.154.0', nativeSessionId: `session-${input.request.workflowNodeId}` }
+    const session = { harness: this.harness, providerVersion: this.harness === 'codex' ? '0.154.0' : '1.18.31', nativeSessionId: `session-${input.request.workflowNodeId}` }
     this.requests.set(session.nativeSessionId, input.request)
+    this.startEnvironments.set(session.nativeSessionId, input.environment?.variables.GRAPHQL_APP_MCP_TOKEN)
     return session
   }
-  async attachSession(session: NativeSessionReference, input: { request: HarnessExecutionRequest }) {
+  async attachSession(session: NativeSessionReference, input: NativeSessionStart) {
+    if (input.kind === 'operator') throw new Error('workflow fixture expected')
     this.counters.attaches += 1
     this.requests.set(session.nativeSessionId, input.request)
+    this.attachEnvironments.push(input.environment?.variables.GRAPHQL_APP_MCP_TOKEN)
     return session
   }
   async *startTurn(session: NativeSessionReference): AsyncIterable<NativeHarnessEvent> {
@@ -80,7 +89,7 @@ class SelectiveNativeManager implements NativeHarnessSessionManager {
       const pending: PendingNativeInteraction = {
         session, turn: { nativeTurnId: `turn-${request.workflowNodeId}`, nativeRequestId: `request-${request.workflowNodeId}` },
         nativeRequestType: 'item/commandExecution/requestApproval', request: { command: ['touch', 'proof'] },
-        responseOptions: CODEX_APPROVAL_OPTIONS_FIXTURE,
+        responseOptions: this.harness === 'codex' ? CODEX_APPROVAL_OPTIONS_FIXTURE : NATIVE_INTERACTION_FIXTURES.opencode.responseOptions,
       }
       this.pendingRequests.set(session.nativeSessionId, pending)
       yield NativeHarnessEventSchema.parse({ sequence: 0, type: 'interaction.pending', occurredAt: new Date().toISOString(), payload: {} })
@@ -166,7 +175,7 @@ it('interrupts and resumes the same durable native execution without repeating p
     requiredAgentCount: 2,
     nodes: [
       { id: 'predecessor', agentId: 'agent-researcher', name: 'Predecessor' },
-      { id: 'approval-target', agentId: 'agent-developer', name: 'Approval target' },
+      { id: 'approval-target', agentId: 'agent-reviewer', name: 'Approval target' },
     ],
     edges: [{ id: 'edge-proof', source: 'predecessor', target: 'approval-target' }],
     approval: { handler: 'user' },
@@ -178,13 +187,13 @@ it('interrupts and resumes the same durable native execution without repeating p
   const interactions = new PostgresInteractionRepository(pool)
   const budgets = new PostgresApprovalBudgetRepository(pool)
   const manager = new SelectiveNativeManager()
-  const managerResolver = { resolve: () => manager }
+  const managerResolver = { resolve: () => ({ manager, processState: 'resident' as const }) }
   const approvalRuntime = new ApprovalExecutionCoordinator(runs, interactions, budgets, managerResolver, 10_000)
   engine = new LangGraphWorkflowEngine(
     runs, workflows, { resolve: () => { throw new Error('legacy adapter must not run') } },
-    checkpoints.saver, root, 10_000, locations, approvalRuntime, interactions,
+    checkpoints.saver, root, 10_000, locations, undefined, approvalRuntime, interactions,
   )
-  const service = new InteractionService(interactions, budgets, managerResolver, (interaction) => engine.resumeInteraction(interaction))
+  const service = new InteractionService(interactions, budgets, approvalRuntime, (interaction) => engine.resumeInteraction(interaction))
   app = buildApp({
     readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
     product: {
@@ -230,7 +239,7 @@ it('interrupts and resumes the same durable native execution without repeating p
   expect(response.statusCode).toBe(200)
   expect(response.json().interaction.deliveryState).toBe('delivered')
   expect((await runs.get(run.id))?.outcome).toBe('succeeded')
-  expect(manager.counters).toEqual({ nodeEntries: 2, sessions: 2, attaches: 1, sideEffects: 2, deliveries: 1 })
+  expect(manager.counters).toEqual({ nodeEntries: 2, sessions: 2, attaches: 2, sideEffects: 2, deliveries: 1 })
   const executions = await runs.listExecutions(run.id)
   expect(executions).toHaveLength(2)
   expect(executions.find((item) => item.workflowNodeId === 'predecessor')?.nativeSessionId).toBe('session-predecessor')
@@ -266,24 +275,77 @@ it('targets two parallel interrupt ids without respawning either branch or its p
   const run = await runs.createForWorkflow('workspace-1', 'workflow-content-pipeline', {}, 1)
   const interactions = new PostgresInteractionRepository(pool)
   const budgets = new PostgresApprovalBudgetRepository(pool)
-  const manager = new SelectiveNativeManager(new Set(['parallel-left', 'parallel-right']))
-  const managerResolver = { resolve: () => manager }
-  const approvalRuntime = new ApprovalExecutionCoordinator(runs, interactions, budgets, managerResolver, 10_000)
+  const contexts = new Map<string, { agentId: string; workingDirectory: string }>()
+  const managersByAgent = new Map<string, SelectiveNativeManager>()
+  const resolutionCount = new Map<string, number>()
+  const restartExecutions = new Set<string>()
+  const managerResolver = { resolve: (context: { executionId: string; agentId: string; workingDirectory: string; harness: 'codex' | 'opencode' }) => {
+    contexts.set(context.executionId, { agentId: context.agentId, workingDirectory: context.workingDirectory })
+    const manager = managersByAgent.get(context.agentId) ?? new SelectiveNativeManager(new Set(['parallel-left', 'parallel-right']), context.harness as 'codex' | 'opencode')
+    managersByAgent.set(context.agentId, manager)
+    const count = resolutionCount.get(context.executionId) ?? 0
+    resolutionCount.set(context.executionId, count + 1)
+    const restarting = restartExecutions.delete(context.executionId)
+    return { manager, processState: count === 0 || restarting ? 'needs_start' as const : 'resident' as const }
+  } }
+  const prepared: Array<{ executionId: string; agentId: string; token: string }> = []
+  const revoked: string[] = []
+  const credentials = {
+    prepare: async (input: { executionId: string; harness: 'codex' | 'opencode'; workingDirectory: string }) => {
+      const owner = contexts.get(input.executionId)
+      if (!owner) throw new Error('resolver context must precede credential issue')
+      const token = `token-${owner.agentId}-${input.executionId}-${prepared.length + 1}`
+      prepared.push({ executionId: input.executionId, agentId: owner.agentId, token })
+      return {
+        credential: { principalId: `principal-${input.executionId}`, environment: { agentId: owner.agentId, variables: { GRAPHQL_APP_MCP_TOKEN: token } }, expiresAt: new Date(Date.now() + 60_000).toISOString() },
+        detection: {
+          detection: { harness: input.harness, serverName: 'graphql-app', state: 'connected' as const, endpointMatches: true, credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN', checkedAt: new Date().toISOString() },
+          runnerId: 'runner-local', workingDirectory: input.workingDirectory,
+          providerVersion: input.harness === 'codex' ? '0.154.0' : '1.18.31', nativeFilters: {},
+        },
+      }
+    },
+    revoke: async () => undefined,
+    revokeForExecution: async (executionId: string) => { revoked.push(executionId); return 1 },
+  }
+  const approvalRuntime = new ApprovalExecutionCoordinator(runs, interactions, budgets, managerResolver, 10_000, credentials)
   engine = new LangGraphWorkflowEngine(
     runs, workflows, { resolve: () => { throw new Error('legacy adapter must not run') } },
-    checkpoints.saver, root, 10_000, locations, approvalRuntime, interactions,
+    checkpoints.saver, root, 10_000, locations, undefined, approvalRuntime, interactions,
   )
-  const service = new InteractionService(interactions, budgets, managerResolver, (interaction) => engine.resumeInteraction(interaction))
+  const service = new InteractionService(interactions, budgets, approvalRuntime, (interaction) => engine.resumeInteraction(interaction))
 
   await engine.start(run.id)
   const pending = await interactions.list({ runId: run.id, limit: 10 })
   expect(pending).toHaveLength(2)
   expect(pending.every((item) => Boolean(item.graphInterruptId))).toBe(true)
+  expect(prepared).toHaveLength(3)
+  expect(new Set(prepared.map((item) => item.agentId))).toEqual(new Set(['agent-researcher', 'agent-developer', 'agent-reviewer']))
+  expect(new Set(prepared.map((item) => item.token)).size).toBe(3)
+  expect(revoked).toHaveLength(1)
+  restartExecutions.add(pending[0]!.executionId)
   await Promise.all(pending.map((item, index) => service.respond({ kind: 'user' }, {
-    interactionId: item.id, optionId: index === 0 ? 'codex-approve-once' : 'codex-reject', expectedRevision: item.revision,
+    interactionId: item.id,
+    optionId: item.responseOptions.find((option) => option.semantic === (index === 0 ? 'approve_once' : 'reject'))!.optionId,
+    expectedRevision: item.revision,
   })))
   expect(await runs.get(run.id)).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
-  expect(manager.counters).toMatchObject({ nodeEntries: 3, sessions: 3, sideEffects: 3, deliveries: 2 })
+  const totals = [...managersByAgent.values()].reduce((sum, manager) => ({
+    nodeEntries: sum.nodeEntries + manager.counters.nodeEntries,
+    sessions: sum.sessions + manager.counters.sessions,
+    sideEffects: sum.sideEffects + manager.counters.sideEffects,
+    deliveries: sum.deliveries + manager.counters.deliveries,
+  }), { nodeEntries: 0, sessions: 0, sideEffects: 0, deliveries: 0 })
+  expect(totals).toEqual({ nodeEntries: 3, sessions: 3, sideEffects: 3, deliveries: 2 })
+  expect(prepared).toHaveLength(4)
+  expect(revoked).toHaveLength(3)
+  for (const item of prepared) {
+    const manager = managersByAgent.get(item.agentId)!
+    expect([...manager.startEnvironments.values(), ...manager.attachEnvironments]).toContain(item.token)
+  }
+  const restarted = prepared.filter((item) => item.executionId === pending[0]!.executionId)
+  expect(restarted).toHaveLength(2)
+  expect(managersByAgent.get(restarted[0]!.agentId)!.attachEnvironments).toContain(restarted[1]!.token)
   expect(await runs.listExecutions(run.id)).toHaveLength(3)
 })
 
@@ -308,13 +370,17 @@ it('keeps a busy designated reviewer pending and fences one idle-session dispatc
     observedStatus: 'idle', connectionGeneration: 1, observedAt: now, revision: 0,
   })
   const manager = new ReviewNativeManager()
-  const dispatcher = new ReviewerDispatcher(coordination, { resolve: () => manager })
+  const reviewRuntime = {
+    attachInteraction: async () => { throw new Error('not used') },
+    attachOwnedSession: async (_context: unknown, session: NativeSessionReference) => ({ manager, session }),
+  }
+  const dispatcher = new ReviewerDispatcher(coordination, reviewRuntime)
   await dispatcher.enqueue(first.interaction, 'reviewer-busy', {
     harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'reviewer-busy-session',
-  })
+  }, { executionId: 'reviewer-busy-execution', workingDirectory: projectRoot })
   const idleJob = await dispatcher.enqueue(second.interaction, 'reviewer-idle', {
     harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'reviewer-idle-session',
-  })
+  }, { executionId: 'reviewer-idle-execution', workingDirectory: projectRoot })
 
   expect(await dispatcher.dispatchNext('reviewer-busy', 'worker-a')).toMatchObject({ state: 'blocked_busy' })
   expect(manager.reviewTurns).toBe(0)
@@ -331,18 +397,19 @@ it('lists, reads and responds to an Operator-assigned request through authentica
   const locations = new WorkspaceLocationService(pool, new PostgresCommandCoordinator(pool), root)
   const runs = new PostgresRunRepository(pool, workflows, locations)
   const run = await runs.createForWorkflow('workspace-1', 'workflow-content-pipeline', {}, 1)
-  const configuration = await workflows.getAgentConfiguration('agent-developer-config-v1')
+  const configuration = await workflows.getAgentConfiguration('agent-reviewer-config-v1')
   if (!configuration) throw new Error('configuration missing')
   const execution = {
-    id: 'operator-execution', runId: run.id, workflowNodeId: 'operator-node', agentId: 'agent-developer',
+    id: 'operator-execution', runId: run.id, workflowNodeId: 'operator-node', agentId: 'agent-reviewer',
     agentConfigurationVersionId: configuration.id, attempt: 1, input: {}, state: 'waiting' as const,
     createdAt: new Date().toISOString(), nativeSessionId: 'codex-fixture-session',
+    workingDirectory: projectRoot, runtimeDirectory: root,
   }
   await runs.ensureExecution(execution)
   const interactions = new PostgresInteractionRepository(pool)
   const created = await interactions.create({
     ...NATIVE_INTERACTION_FIXTURES.codex, id: 'operator-interaction', runId: run.id,
-    executionId: execution.id, approval: { handler: 'operator' },
+    executionId: execution.id, requestingAgentId: execution.agentId, approval: { handler: 'operator' },
   })
   const budgets = new PostgresApprovalBudgetRepository(pool)
   await budgets.ensure(execution.id, run.id, 10_000)
@@ -353,8 +420,9 @@ it('lists, reads and responds to an Operator-assigned request through authentica
     workingDirectory: projectRoot, runtimeDirectory: root, configuration, input: {},
   } })
   for await (const event of manager.startTurn(session, { prompt: 'fixture', clientCorrelationId: 'operator-proof' })) { void event; break }
-  const managerResolver = { resolve: () => manager }
-  const service = new InteractionService(interactions, budgets, managerResolver, async () => undefined)
+  const managerResolver = { resolve: () => ({ manager, processState: 'resident' as const }) }
+  const runtime = new ApprovalExecutionCoordinator(runs, interactions, budgets, managerResolver, 10_000)
+  const service = new InteractionService(interactions, budgets, runtime, async () => undefined)
   const operatorInteractions = new OperatorInteractionService(service, interactions)
   const access = new PostgresAccessService(pool)
   const issued = await access.issue({
@@ -390,12 +458,13 @@ it('lists, reads and responds to an Operator-assigned request through authentica
     expect(manager.counters.deliveries).toBe(1)
     const missing = await interactions.create({
       ...NATIVE_INTERACTION_FIXTURES.codex, id: 'operator-interaction-missing-session', runId: run.id,
-      executionId: execution.id, nativeRequestId: 'missing-native-request', approval: { handler: 'operator' },
+      executionId: execution.id, requestingAgentId: execution.agentId,
+      nativeRequestId: 'missing-native-request', approval: { handler: 'operator' },
     })
-    const missingService = new InteractionService(
-      interactions, budgets, managerResolver, async () => undefined,
-      async () => { throw new Error('persisted native session is unavailable') },
-    )
+    const missingService = new InteractionService(interactions, budgets, {
+      attachInteraction: async () => { throw new Error('persisted native session is unavailable') },
+      attachOwnedSession: async () => { throw new Error('persisted native session is unavailable') },
+    }, async () => undefined)
     const blocked = await missingService.respond({ kind: 'operator', principal: issued.principal }, {
       interactionId: missing.interaction.id, optionId: 'codex-approve-once', expectedRevision: 0,
     })
@@ -409,11 +478,15 @@ it('lists, reads and responds to an Operator-assigned request through authentica
     for await (const event of uncertainManager.startTurn(uncertainSession, { prompt: 'fixture', clientCorrelationId: 'uncertain-proof' })) { void event; break }
     const uncertain = await interactions.create({
       ...NATIVE_INTERACTION_FIXTURES.opencode, id: 'operator-interaction-uncertain', runId: run.id,
-      executionId: execution.id, approval: { handler: 'operator' },
+      executionId: execution.id, requestingAgentId: execution.agentId, approval: { handler: 'operator' },
     })
-    const uncertainService = new InteractionService(
-      interactions, budgets, { resolve: () => uncertainManager }, async () => undefined,
-    )
+    const uncertainService = new InteractionService(interactions, budgets, {
+      attachInteraction: async (interaction) => ({
+        manager: uncertainManager,
+        session: { harness: interaction.harness, providerVersion: interaction.providerVersion, nativeSessionId: interaction.nativeSessionId },
+      }),
+      attachOwnedSession: async (_context, session) => ({ manager: uncertainManager, session }),
+    }, async () => undefined)
     const firstAttempt = await uncertainService.respond({ kind: 'operator', principal: issued.principal }, {
       interactionId: uncertain.interaction.id, optionId: 'opencode-approve-once', expectedRevision: 0,
     })
@@ -430,9 +503,9 @@ it('lists, reads and responds to an Operator-assigned request through authentica
     expect(uncertainManager.responseAttempts).toBe(2)
     const stopped = await interactions.create({
       ...NATIVE_INTERACTION_FIXTURES.codex, id: 'operator-interaction-stopped', runId: run.id,
-      executionId: execution.id, nativeRequestId: 'stopped-native-request', approval: { handler: 'operator' },
+      executionId: execution.id, requestingAgentId: execution.agentId,
+      nativeRequestId: 'stopped-native-request', approval: { handler: 'operator' },
     })
-    const runtime = new ApprovalExecutionCoordinator(runs, interactions, budgets, managerResolver, 10_000)
     await runtime.cancelRun(run.id)
     expect(await interactions.get(stopped.interaction.id)).toMatchObject({ status: 'canceled' })
     await expect(service.respond({ kind: 'operator', principal: issued.principal }, {

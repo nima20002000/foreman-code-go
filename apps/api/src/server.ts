@@ -7,6 +7,8 @@ import { createCheckpointStore } from './infrastructure/checkpoints.js'
 import { createDatabase } from './infrastructure/database.js'
 import { ensureAcceptanceSeed } from './infrastructure/seed.js'
 import { PostgresAccessService } from './modules/access/postgres.js'
+import { PostgresInteractionRepository } from './modules/interactions/postgres.js'
+import { PostgresAppInteractionService } from './modules/interactions/app.js'
 import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
 import { GraphDraftService } from './modules/graph-drafts/service.js'
 import { HarnessCatalogService } from './modules/harnesses/catalog.js'
@@ -38,6 +40,7 @@ async function main() {
   const database = createDatabase(config.database)
   const access = new PostgresAccessService(database.pool)
   const commands = new PostgresCommandCoordinator(database.pool)
+  const interactions = new PostgresInteractionRepository(database.pool)
   const locations = new WorkspaceLocationService(database.pool, commands, config.harnesses.workspaceRoot)
   const checkpoints = createCheckpointStore(
     config.database.connectionString,
@@ -75,6 +78,7 @@ async function main() {
     readinessTimeoutMs: config.readinessTimeoutMs,
     product: { workspaces, workflows, runs, settings, foundationSettings, engine },
     operator: { access, services: operatorServices },
+    appMcp: { access, interactions: new PostgresAppInteractionService(database.pool, interactions, commands) },
     logger: true,
   })
   let reconciliationTimer: NodeJS.Timeout | undefined
