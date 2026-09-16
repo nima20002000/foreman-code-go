@@ -37,6 +37,7 @@ export function configurationInput(
     return {
       workspaceId,
       agentId: agent.id,
+      productRole: agent.productRole ?? current?.productRole,
       prompt,
       assignedSkills,
       harness: {
@@ -58,6 +59,7 @@ export function configurationInput(
   return {
     workspaceId,
     agentId: agent.id,
+    productRole: agent.productRole ?? current?.productRole,
     prompt,
     assignedSkills,
     harness: {
@@ -120,7 +122,7 @@ export async function saveAgentConfiguration(
   const now = new Date().toISOString()
 
   if (!existing) {
-    const placeholder = AgentSchema.parse({ id: parsed.id, name: parsed.name, role: parsed.role })
+    const placeholder = AgentSchema.parse({ id: parsed.id, name: parsed.name, role: parsed.role, productRole: parsed.productRole })
     await client.query(
       `insert into agents (id, workspace_id, current_configuration_version_id, record)
        values ($1, $2, null, $3::jsonb)`,
@@ -158,6 +160,7 @@ export async function saveAgentConfiguration(
     name: parsed.name,
     description: parsed.description,
     role: parsed.role,
+    productRole: configuration.productRole,
     harness: harness.harness,
     model: harness.model,
     effort: harness.harness === 'codex' ? harness.reasoningEffort : harness.variant,

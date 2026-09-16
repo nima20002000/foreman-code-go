@@ -57,6 +57,10 @@ export type AgentExecutionState = z.infer<typeof AgentExecutionStateSchema>;
 export const AgentRoleSchema = z.string().trim().min(1);
 export type AgentRole = z.infer<typeof AgentRoleSchema>;
 
+/** Product authority role. Free-form Agent.role remains display metadata only. */
+export const AgentProductRoleSchema = z.enum(["orchestrator", "coder", "operator"]);
+export type AgentProductRole = z.infer<typeof AgentProductRoleSchema>;
+
 export const HarnessStatusSchema = z.enum(["ready", "running", "disconnected", "unavailable"]);
 export type HarnessStatus = z.infer<typeof HarnessStatusSchema>;
 
@@ -122,6 +126,46 @@ export const HarnessConfigurationSchema = z.discriminatedUnion("harness", [
 ]);
 export type HarnessConfiguration = z.infer<typeof HarnessConfigurationSchema>;
 
+export const ApprovalHandlerSchema = z.enum(["user", "orchestrator", "operator"]);
+export type ApprovalHandler = z.infer<typeof ApprovalHandlerSchema>;
+
+export const WorkflowApprovalConfigurationSchema = z
+  .object({
+    handler: ApprovalHandlerSchema,
+    designatedOrchestratorAgentId: IdSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.handler === "orchestrator" && !value.designatedOrchestratorAgentId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["designatedOrchestratorAgentId"], message: "orchestrator handling requires a designated Orchestrator" });
+    }
+    if (value.handler !== "orchestrator" && value.designatedOrchestratorAgentId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["designatedOrchestratorAgentId"], message: "only orchestrator handling may designate an Orchestrator" });
+    }
+  });
+export type WorkflowApprovalConfiguration = z.infer<typeof WorkflowApprovalConfigurationSchema>;
+
+export const AgentTemplateSchema = z.object({
+  role: AgentProductRoleSchema,
+  boardAddable: z.boolean(),
+  harness: HarnessConfigurationSchema,
+}).strict().superRefine((value, context) => {
+  if (value.role === "operator" && value.boardAddable) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["boardAddable"], message: "Operator is application-level and cannot be added to a workflow board" });
+  }
+});
+export type AgentTemplate = z.infer<typeof AgentTemplateSchema>;
+
+export const AgentDefaultsSchema = z.object({
+  orchestrator: AgentTemplateSchema.safeExtend({ role: z.literal("orchestrator"), boardAddable: z.literal(true) }),
+  coder: AgentTemplateSchema.safeExtend({ role: z.literal("coder"), boardAddable: z.literal(true) }),
+  operator: AgentTemplateSchema.safeExtend({ role: z.literal("operator"), boardAddable: z.literal(false) }),
+}).strict();
+export type AgentDefaults = z.infer<typeof AgentDefaultsSchema>;
+
+export const WorkflowDefaultsSchema = z.object({ approvalHandler: ApprovalHandlerSchema }).strict();
+export type WorkflowDefaults = z.infer<typeof WorkflowDefaultsSchema>;
+
 /** Global templates copied into new board Agents. Prompts and skills never belong here. */
 export const HarnessDefaultsSchema = z
   .object({
@@ -148,6 +192,24 @@ export const DEFAULT_HARNESS_DEFAULTS: HarnessDefaults = HarnessDefaultsSchema.p
   },
 });
 
+export const DEFAULT_AGENT_DEFAULTS: AgentDefaults = AgentDefaultsSchema.parse({
+  orchestrator: {
+    role: "orchestrator", boardAddable: true,
+    harness: { ...DEFAULT_HARNESS_DEFAULTS.codex },
+  },
+  coder: {
+    role: "coder", boardAddable: true,
+    harness: { ...DEFAULT_HARNESS_DEFAULTS.codex },
+  },
+  operator: {
+    role: "operator", boardAddable: false,
+    harness: { ...DEFAULT_HARNESS_DEFAULTS.codex },
+  },
+});
+
+/** A designated Orchestrator is selected when a workflow is created. */
+export const DEFAULT_WORKFLOW_APPROVAL_HANDLER: ApprovalHandler = "orchestrator";
+
 export const HarnessQualificationSchema = z
   .object({
     harness: AgentHarnessSchema,
@@ -166,6 +228,154 @@ export const HarnessQualificationSchema = z
   .strict();
 export type HarnessQualification = z.infer<typeof HarnessQualificationSchema>;
 
+export const McpDetectionStateSchema = z.enum([
+  "not_detected", "misconfigured", "status_unavailable", "connected", "disabled",
+  "authentication_required", "broken", "check_failed",
+]);
+export const McpDetectionSchema = z.object({
+  harness: AgentHarnessSchema,
+  serverName: z.string().trim().min(1),
+  state: McpDetectionStateSchema,
+  endpointMatches: z.boolean().nullable(),
+  credentialEnvironmentVariable: z.string().trim().min(1).nullable(),
+  checkedAt: TimestampSchema,
+  detail: z.string().optional(),
+}).strict();
+export type McpDetection = z.infer<typeof McpDetectionSchema>;
+
+export const NativeHarnessCapabilitiesSchema = z.object({
+  provider: AgentHarnessSchema,
+  providerVersion: z.string().trim().min(1),
+  persistentSessions: z.boolean(),
+  reconnect: z.boolean(),
+  sameRequestResponses: z.boolean(),
+  cancellation: z.boolean(),
+  history: z.boolean(),
+  configurationInspection: z.boolean(),
+  mcpDetection: z.boolean(),
+  supportedInteractionKinds: z.array(z.string().trim().min(1)),
+}).strict();
+export type NativeHarnessCapabilities = z.infer<typeof NativeHarnessCapabilitiesSchema>;
+
+export const ApprovalResponseSemanticSchema = z.enum([
+  "approve_once", "allow_turn", "allow_session", "reject", "cancel",
+  "provider_scoped_allow", "persistent_policy_change",
+]);
+export const ApprovalPersistenceSchema = z.enum([
+  "request", "turn", "session", "provider_instance", "project", "persistent_config",
+]);
+export const ApprovalResponseOptionSchema = z.object({
+  optionId: IdSchema,
+  semantic: ApprovalResponseSemanticSchema,
+  label: z.string().trim().min(1),
+  persistence: ApprovalPersistenceSchema,
+  scopeSummary: z.string().trim().min(1).optional(),
+  affectsOtherPendingRequests: z.boolean(),
+  interruptsCurrentTurn: z.boolean(),
+  mutatesPersistentPolicy: z.boolean(),
+}).strict();
+export type ApprovalResponseOption = z.infer<typeof ApprovalResponseOptionSchema>;
+
+export const InteractionStatusSchema = z.enum(["pending", "decided", "delivery_pending", "delivered", "delivery_failed", "canceled"]);
+export const NativeDeliveryStateSchema = z.enum(["not_started", "pending", "submitted", "uncertain", "delivered", "failed"]);
+export const DurableInteractionSchema = z.object({
+  id: IdSchema,
+  revision: z.number().int().nonnegative(),
+  workspaceId: IdSchema,
+  workflowId: IdSchema,
+  runId: IdSchema,
+  executionId: IdSchema,
+  requestingAgentId: IdSchema,
+  harness: AgentHarnessSchema,
+  providerVersion: z.string().trim().min(1),
+  nativeSessionId: IdSchema,
+  nativeRequestId: IdSchema,
+  nativeRequestType: z.string().trim().min(1),
+  graphThreadId: IdSchema,
+  graphInterruptId: IdSchema.optional(),
+  request: z.json(),
+  approval: WorkflowApprovalConfigurationSchema,
+  responseOptions: z.array(ApprovalResponseOptionSchema).min(1),
+  status: InteractionStatusSchema,
+  selectedOptionId: IdSchema.optional(),
+  selectedSemantic: ApprovalResponseSemanticSchema.optional(),
+  nativeResponse: z.json().optional(),
+  deliveryState: NativeDeliveryStateSchema,
+  auditReference: IdSchema.optional(),
+  createdAt: TimestampSchema,
+  decidedAt: TimestampSchema.optional(),
+  deliveredAt: TimestampSchema.optional(),
+  updatedAt: TimestampSchema,
+}).strict();
+export type DurableInteraction = z.infer<typeof DurableInteractionSchema>;
+
+export const NativeSessionReferenceSchema = z.object({
+  harness: AgentHarnessSchema,
+  providerVersion: z.string().trim().min(1),
+  nativeSessionId: IdSchema,
+}).strict();
+export type NativeSessionReference = z.infer<typeof NativeSessionReferenceSchema>;
+export const NativeTurnReferenceSchema = z.object({
+  nativeTurnId: IdSchema,
+  nativeRequestId: IdSchema.optional(),
+}).strict();
+export type NativeTurnReference = z.infer<typeof NativeTurnReferenceSchema>;
+export const NativeHarnessEventSchema = z.object({
+  sequence: z.number().int().nonnegative(),
+  type: z.string().trim().min(1),
+  occurredAt: TimestampSchema,
+  payload: z.record(z.string(), z.unknown()),
+}).strict();
+export type NativeHarnessEvent = z.infer<typeof NativeHarnessEventSchema>;
+export const PendingNativeInteractionSchema = z.object({
+  session: NativeSessionReferenceSchema,
+  turn: NativeTurnReferenceSchema,
+  nativeRequestType: z.string().trim().min(1),
+  request: z.json(),
+  responseOptions: z.array(ApprovalResponseOptionSchema).min(1),
+}).strict();
+export type PendingNativeInteraction = z.infer<typeof PendingNativeInteractionSchema>;
+
+export const ActiveTimeBudgetSchema = z.object({
+  activeTimeoutMs: z.number().int().positive(),
+  activeElapsedMs: z.number().int().nonnegative(),
+  approvalWaitStartedAt: TimestampSchema.optional(),
+  infrastructureDeadlineAt: TimestampSchema.optional(),
+}).strict();
+export const NativeCancellationSchema = z.object({
+  requestedAt: TimestampSchema,
+  reason: z.string().trim().min(1).optional(),
+  nativeAcknowledgedAt: TimestampSchema.optional(),
+}).strict();
+
+export const NativeSessionLaneSchema = z.object({
+  id: IdSchema,
+  harness: AgentHarnessSchema,
+  nativeSessionId: IdSchema,
+  ownerAgentId: IdSchema,
+  leaseOwner: IdSchema.optional(),
+  leaseToken: IdSchema.optional(),
+  leaseExpiresAt: TimestampSchema.optional(),
+  correlationId: IdSchema.optional(),
+  revision: z.number().int().nonnegative(),
+}).strict();
+export type NativeSessionLane = z.infer<typeof NativeSessionLaneSchema>;
+
+export const ReviewJobSchema = z.object({
+  id: IdSchema,
+  interactionId: IdSchema,
+  reviewerAgentId: IdSchema,
+  attempt: z.number().int().nonnegative(),
+  state: z.enum(["pending", "leased", "submitted", "uncertain", "delivered", "blocked", "failed"]),
+  leaseOwner: IdSchema.optional(),
+  leaseToken: IdSchema.optional(),
+  leaseExpiresAt: TimestampSchema.optional(),
+  correlationId: IdSchema,
+  createdAt: TimestampSchema,
+  updatedAt: TimestampSchema,
+}).strict();
+export type ReviewJob = z.infer<typeof ReviewJobSchema>;
+
 /** An Agent is a separately addressable worker; workflow nodes reference it by agentId. */
 export const AgentSchema = z
   .object({
@@ -173,6 +383,8 @@ export const AgentSchema = z
     name: z.string().trim().min(1),
     description: z.string().optional(),
     role: AgentRoleSchema.optional(),
+    /** Server-owned product role; never derived from role or model output. */
+    productRole: z.enum(["orchestrator", "coder"]).optional(),
     status: AgentStatusSchema.optional(),
     executionState: AgentExecutionStateSchema.optional(),
     /** Links this logical Agent projection to its current run summary, if any. */
@@ -313,6 +525,8 @@ export const WorkflowDefinitionSchema = z
     name: z.string().trim().min(1),
     description: z.string().optional(),
     executionCondition: ExecutionConditionSchema,
+    /** Missing only for legacy/unconfigured records and incomplete drafts. */
+    approval: WorkflowApprovalConfigurationSchema.optional(),
     /** Optional explicit cardinality invariant for workflows with a fixed agent topology. */
     requiredAgentCount: z.number().int().positive().max(10_000).optional(),
     nodes: z.array(WorkflowNodeSchema),
@@ -334,6 +548,8 @@ export const WorkflowVersionSchema = z
     entryNodeId: IdSchema,
     definition: WorkflowDefinitionSchema,
     agentConfigurationVersionIds: z.record(IdSchema, IdSchema),
+    /** Accepted immutable approval assignment; missing only on legacy versions. */
+    approval: WorkflowApprovalConfigurationSchema.optional(),
     contentHash: z.string().trim().min(1),
     createdAt: TimestampSchema,
   })
@@ -436,6 +652,7 @@ export const AgentConfigurationVersionSchema = z
     id: IdSchema,
     workspaceId: IdSchema,
     agentId: IdSchema,
+    productRole: z.enum(["orchestrator", "coder"]).optional(),
     version: z.number().int().positive(),
     prompt: AgentPromptSchema,
     assignedSkills: z.array(AssignedSkillSchema),
@@ -446,19 +663,54 @@ export const AgentConfigurationVersionSchema = z
   .strict();
 export type AgentConfigurationVersion = z.infer<typeof AgentConfigurationVersionSchema>;
 
+export const OperatorConfigurationVersionSchema = z.object({
+  id: IdSchema,
+  operatorId: IdSchema,
+  version: z.number().int().positive(),
+  harness: HarnessConfigurationSchema,
+  contentHash: z.string().startsWith("sha256:"),
+  createdAt: TimestampSchema,
+}).strict();
+export type OperatorConfigurationVersion = z.infer<typeof OperatorConfigurationVersionSchema>;
+
+export const OperatorAgentSchema = z.object({
+  id: IdSchema,
+  role: z.literal("operator"),
+  name: z.string().trim().min(1),
+  currentConfigurationVersionId: IdSchema,
+  createdAt: TimestampSchema,
+  updatedAt: TimestampSchema,
+}).strict();
+export type OperatorAgent = z.infer<typeof OperatorAgentSchema>;
+
 export const ConversationStatusSchema = z.enum(["open", "archived"]);
 export type ConversationStatus = z.infer<typeof ConversationStatusSchema>;
 
 export const ConversationSchema = z
   .object({
     id: IdSchema,
-    workspaceId: IdSchema,
+    /** Omitted for application-global Operator conversations. */
+    workspaceId: IdSchema.optional(),
     agentId: IdSchema,
+    scope: z.enum(["workspace", "application"]).optional(),
+    operatorConfigurationVersionId: IdSchema.optional(),
     title: z.string().optional(),
     status: ConversationStatusSchema.optional(),
     ...OptionalTimestampFields,
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const scope = value.scope ?? "workspace";
+    if (scope === "workspace" && !value.workspaceId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["workspaceId"], message: "workspace conversations require workspaceId" });
+    }
+    if (scope === "application" && value.workspaceId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["workspaceId"], message: "application conversations cannot use a fake workspace" });
+    }
+    if (scope === "application" && !value.operatorConfigurationVersionId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["operatorConfigurationVersionId"], message: "Operator conversations pin a configuration version" });
+    }
+  });
 export type Conversation = z.infer<typeof ConversationSchema>;
 
 export const MessageRoleSchema = z.enum(["user", "assistant", "system", "tool"]);
@@ -589,6 +841,8 @@ export const WorkflowRunSchema = z
     /** Operator authority rechecked before queued and later node execution. */
     authorizationPrincipalId: IdSchema.optional(),
     agentConfigurationVersionIds: z.record(IdSchema, IdSchema),
+    /** Immutable accepted approval assignment; absent only for legacy Runs. */
+    approval: WorkflowApprovalConfigurationSchema.optional(),
     executionCondition: ExecutionConditionSchema,
     executionState: RunExecutionStateSchema,
     outcome: RunOutcomeSchema,
@@ -1020,6 +1274,68 @@ export const CreateMessageResponseSchema = z
   .object({ message: MessageSchema })
   .strict();
 export type CreateMessageResponse = z.infer<typeof CreateMessageResponseSchema>;
+
+export const CreateConversationRequestSchema = z.discriminatedUnion("scope", [
+  z.object({
+    scope: z.literal("workspace"), workspaceId: IdSchema, agentId: IdSchema,
+    title: z.string().trim().min(1).optional(),
+  }).strict(),
+  z.object({
+    scope: z.literal("application"), agentId: IdSchema,
+    operatorConfigurationVersionId: IdSchema,
+    title: z.string().trim().min(1).optional(),
+  }).strict(),
+]);
+export type CreateConversationRequest = z.infer<typeof CreateConversationRequestSchema>;
+export const CreateConversationResponseSchema = z.object({ conversation: ConversationSchema }).strict();
+export type CreateConversationResponse = z.infer<typeof CreateConversationResponseSchema>;
+
+export const GetInteractionResponseSchema = z.object({ interaction: DurableInteractionSchema }).strict();
+export const ListInteractionsRequestSchema = z.object({
+  cursor: IdSchema.optional(), limit: z.number().int().min(1).max(100).default(50),
+}).strict();
+export const ListInteractionsResponseSchema = z.object({
+  items: z.array(DurableInteractionSchema), nextCursor: IdSchema.nullable(),
+}).strict();
+export const RespondToInteractionRequestSchema = z.object({
+  interactionId: IdSchema, optionId: IdSchema, expectedRevision: z.number().int().nonnegative(),
+}).strict();
+export const RespondToInteractionResponseSchema = z.object({ interaction: DurableInteractionSchema, replayed: z.boolean() }).strict();
+
+/** Deterministic cross-provider fixtures for contract consumers; exact native payloads stay server-side. */
+export const CODEX_APPROVAL_OPTIONS_FIXTURE = ApprovalResponseOptionSchema.array().parse([
+  { optionId: "codex-approve-once", semantic: "approve_once", label: "Approve once", persistence: "request", affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false },
+  { optionId: "codex-allow-session", semantic: "allow_session", label: "Allow for this session", persistence: "session", scopeSummary: "Exact command and environment", affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false },
+  { optionId: "codex-reject", semantic: "reject", label: "Reject", persistence: "request", affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false },
+  { optionId: "codex-cancel", semantic: "cancel", label: "Cancel turn", persistence: "request", affectsOtherPendingRequests: false, interruptsCurrentTurn: true, mutatesPersistentPolicy: false },
+]);
+export const OPENCODE_APPROVAL_OPTIONS_FIXTURE = ApprovalResponseOptionSchema.array().parse([
+  { optionId: "opencode-approve-once", semantic: "approve_once", label: "Approve once", persistence: "request", affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false },
+  { optionId: "opencode-allow-instance", semantic: "provider_scoped_allow", label: "Allow matching requests in this OpenCode instance", persistence: "provider_instance", scopeSummary: "Matching permission patterns across sessions in this instance", affectsOtherPendingRequests: true, interruptsCurrentTurn: false, mutatesPersistentPolicy: false },
+  { optionId: "opencode-reject", semantic: "reject", label: "Reject", persistence: "request", scopeSummary: "Also rejects pending requests in the same native session", affectsOtherPendingRequests: true, interruptsCurrentTurn: false, mutatesPersistentPolicy: false },
+]);
+
+const FIXTURE_TIME = "2026-09-16T00:00:00.000Z";
+export const NATIVE_INTERACTION_FIXTURES = {
+  codex: DurableInteractionSchema.parse({
+    id: "interaction-codex", revision: 0, workspaceId: "workspace-fixture", workflowId: "workflow-fixture",
+    runId: "run-fixture", executionId: "execution-codex", requestingAgentId: "agent-coder", harness: "codex",
+    providerVersion: "0.154.0", nativeSessionId: "codex-thread-fixture", nativeRequestId: "codex-request-fixture",
+    nativeRequestType: "item/commandExecution/requestApproval", graphThreadId: "graph-thread-fixture",
+    request: { command: ["pnpm", "test"] }, approval: { handler: "orchestrator", designatedOrchestratorAgentId: "agent-orchestrator" },
+    responseOptions: CODEX_APPROVAL_OPTIONS_FIXTURE, status: "pending", deliveryState: "not_started",
+    createdAt: FIXTURE_TIME, updatedAt: FIXTURE_TIME,
+  }),
+  opencode: DurableInteractionSchema.parse({
+    id: "interaction-opencode", revision: 0, workspaceId: "workspace-fixture", workflowId: "workflow-fixture",
+    runId: "run-fixture", executionId: "execution-opencode", requestingAgentId: "agent-coder", harness: "opencode",
+    providerVersion: "1.18.31", nativeSessionId: "opencode-session-fixture", nativeRequestId: "opencode-request-fixture",
+    nativeRequestType: "permission.asked", graphThreadId: "graph-thread-fixture",
+    request: { permission: "bash", patterns: ["pnpm test"] }, approval: { handler: "orchestrator", designatedOrchestratorAgentId: "agent-orchestrator" },
+    responseOptions: OPENCODE_APPROVAL_OPTIONS_FIXTURE, status: "pending", deliveryState: "not_started",
+    createdAt: FIXTURE_TIME, updatedAt: FIXTURE_TIME,
+  }),
+} as const;
 
 export const ListVisibleResourcesRequestSchema = WorkspaceDetailsRequestSchema;
 export type ListVisibleResourcesRequest = WorkspaceDetailsRequest;

@@ -107,6 +107,7 @@ export class PostgresRunRepository implements RunRepository {
       const run = WorkflowRunSchema.parse({
         id: `run-${randomUUID()}`, workspaceId, workflowId, workflowVersionId: version.id,
         agentConfigurationVersionIds: version.agentConfigurationVersionIds,
+        ...(version.approval ? { approval: version.approval } : {}),
         executionLocation,
         executionCondition: version.definition.executionCondition, executionState: 'queued', outcome: 'pending',
         input, createdAt: new Date().toISOString(),
@@ -177,6 +178,32 @@ export class PostgresRunRepository implements RunRepository {
       agentId: parsed.agentId,
       attempt: parsed.attempt,
     }, parsed.id, owner?.client)
+  }
+
+  async ensureExecution(execution: HarnessExecution, owner?: RunOwnership): Promise<{ execution: HarnessExecution; created: boolean }> {
+    owner?.assertOwned()
+    const parsed = HarnessExecutionSchema.parse(execution)
+    const result = await (owner?.client ?? this.pool).query<{ record: unknown }>(
+      `insert into harness_executions (id, run_id, workflow_node_id, agent_id, attempt, record)
+       values ($1,$2,$3,$4,$5,$6::jsonb)
+       on conflict (run_id, workflow_node_id, attempt) do nothing returning record`,
+      [parsed.id, parsed.runId, parsed.workflowNodeId, parsed.agentId, parsed.attempt, JSON.stringify(parsed)],
+    )
+    if (result.rows[0]) {
+      await this.recordActivity(parsed.runId, 'langgraph', 'node_scheduled', {
+        workflowNodeId: parsed.workflowNodeId, agentId: parsed.agentId, attempt: parsed.attempt,
+      }, parsed.id, owner?.client)
+      return { execution: parsed, created: true }
+    }
+    const found = await (owner?.client ?? this.pool).query<{ record: unknown }>(
+      'select record from harness_executions where run_id=$1 and workflow_node_id=$2 and attempt=$3',
+      [parsed.runId, parsed.workflowNodeId, parsed.attempt],
+    )
+    const current = HarnessExecutionSchema.parse(found.rows[0]?.record)
+    if (current.agentId !== parsed.agentId || current.agentConfigurationVersionId !== parsed.agentConfigurationVersionId) {
+      throw new DomainError('EXECUTION_OCCURRENCE_CONFLICT', 'This execution occurrence is already bound to different accepted configuration.', 409)
+    }
+    return { execution: current, created: false }
   }
 
   async updateExecution(execution: HarnessExecution, owner?: RunOwnership): Promise<void> {

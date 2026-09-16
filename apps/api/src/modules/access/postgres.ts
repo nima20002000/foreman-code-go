@@ -25,6 +25,7 @@ interface PrincipalRow {
   id: string
   name: string
   audience: ManagementAudience
+  agent_id: string | null
   token_hash: string
   grants: unknown
   expires_at: Date
@@ -36,6 +37,7 @@ function fromRow(row: PrincipalRow): ManagementPrincipal {
     id: row.id,
     name: row.name,
     audience: row.audience,
+    ...(row.agent_id ? { agentId: row.agent_id } : {}),
     grants: row.grants,
     expiresAt: row.expires_at.toISOString(),
     revokedAt: row.revoked_at?.toISOString() ?? null,
@@ -49,7 +51,7 @@ export class PostgresAccessService {
     if (!token) throw new DomainError('AUTH_REQUIRED', 'A bearer credential is required.', 401)
     const tokenHash = digest(token)
     const result = await this.pool.query<PrincipalRow>(
-      `select id, name, audience, token_hash, grants, expires_at, revoked_at
+      `select id, name, audience, agent_id, token_hash, grants, expires_at, revoked_at
        from management_principals where token_hash = $1`,
       [tokenHash],
     )
@@ -66,6 +68,8 @@ export class PostgresAccessService {
   async issue(input: {
     name: string
     audience: ManagementAudience
+    /** Backend-derived for worker credentials; never accepted from an MCP request. */
+    agentId?: string
     grants: ManagementGrant[]
     expiresAt: Date
   }): Promise<{ principal: ManagementPrincipal; token: string }> {
@@ -73,13 +77,19 @@ export class PostgresAccessService {
     const name = input.name.trim()
     if (!name) throw new DomainError('INVALID_PRINCIPAL_NAME', 'Credential name is required.', 400)
     const grants = input.grants.map((grant) => ManagementGrantSchema.parse(grant))
+    if (input.audience === 'worker' && !input.agentId) {
+      throw new DomainError('WORKER_AGENT_REQUIRED', 'Worker credentials require a backend-issued Agent subject.', 400)
+    }
+    if (input.audience === 'operator' && input.agentId) {
+      throw new DomainError('OPERATOR_AGENT_FORBIDDEN', 'Operator credentials cannot impersonate a board Agent.', 400)
+    }
     const id = `principal-${randomUUID()}`
     const token = `opm_${randomBytes(32).toString('base64url')}`
     const result = await this.pool.query<PrincipalRow>(
-      `insert into management_principals (id, name, audience, token_hash, grants, expires_at)
-       values ($1, $2, $3, $4, $5::jsonb, $6)
-       returning id, name, audience, token_hash, grants, expires_at, revoked_at`,
-      [id, name, input.audience, digest(token), JSON.stringify(grants), input.expiresAt],
+      `insert into management_principals (id, name, audience, agent_id, token_hash, grants, expires_at)
+       values ($1, $2, $3, $4, $5, $6::jsonb, $7)
+       returning id, name, audience, agent_id, token_hash, grants, expires_at, revoked_at`,
+      [id, name, input.audience, input.agentId ?? null, digest(token), JSON.stringify(grants), input.expiresAt],
     )
     return { principal: fromRow(result.rows[0]!), token }
   }

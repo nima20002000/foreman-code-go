@@ -16,6 +16,7 @@ import { DomainError } from '../errors.js'
 import { validateExecutableTopology } from '../runs/topology.js'
 import { lockAgentConfigurations, saveAgentConfiguration } from '../workspaces/agentConfiguration.js'
 import type { WorkflowRepository } from './port.js'
+import { validateWorkflowApproval } from './approval.js'
 
 function contentHash(value: unknown): string {
   return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`
@@ -151,6 +152,15 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
           { agentIds: missingAgentIds },
         )
       }
+      const authorityRows = await client.query<{ record: unknown }>(
+        'select record from agents where workspace_id=$1 and id=any($2::text[])', [workspaceId, uniqueAgentIds],
+      )
+      const authorityAgents = authorityRows.rows.map((row) => AgentSchema.parse(row.record))
+      const selectedOrchestrator = authorityAgents.find((agent) => agent.productRole === 'orchestrator')
+      const approval = input.approval ?? (!existing.rows[0] && selectedOrchestrator
+        ? { handler: 'orchestrator' as const, designatedOrchestratorAgentId: selectedOrchestrator.id }
+        : undefined)
+      if (approval) validateWorkflowApproval(input, approval, authorityAgents)
 
       const versionResult = await client.query<{ next_version: number }>(
         'select coalesce(max(version), 0) + 1 as next_version from workflow_versions where workflow_id = $1',
@@ -160,6 +170,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       const now = new Date().toISOString()
       const definition = WorkflowDefinitionSchema.parse({
         ...input,
+        ...(approval ? { approval } : {}),
         version,
         // Ordinary editor connections mean an all-input dependency, not an
         // implicit threshold/any join. Explicit unsupported modes remain errors.
@@ -187,6 +198,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         entryNodeId: entryNode.id,
         definition,
         agentConfigurationVersionIds: configurations,
+        ...(approval ? { approval } : {}),
         contentHash: contentHash({ definition, configurations, entryNodeId: entryNode.id }),
         createdAt: now,
       })

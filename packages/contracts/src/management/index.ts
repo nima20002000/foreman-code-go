@@ -69,11 +69,21 @@ export const ManagementPrincipalSchema = z
     id: IdSchema,
     name: z.string().trim().min(1),
     audience: ManagementAudienceSchema,
+    /** Immutable backend-issued logical Agent subject for worker/App principals. */
+    agentId: IdSchema.optional(),
     grants: z.array(ManagementGrantSchema),
     expiresAt: TimestampSchema,
     revokedAt: TimestampSchema.nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.audience === "worker" && !value.agentId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["agentId"], message: "worker principals require an immutable Agent subject" });
+    }
+    if (value.audience === "operator" && value.agentId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["agentId"], message: "Operator principals do not impersonate board Agents" });
+    }
+  });
 export type ManagementPrincipal = z.infer<typeof ManagementPrincipalSchema>;
 
 export const ManagementOpenCodeHarnessConfigurationSchema = OpenCodeHarnessConfigurationSchema.extend({

@@ -19,6 +19,13 @@ import {
   WorkflowDefinitionSchema,
   WorkflowVersionSchema,
   WorkspaceDetailsResponseSchema,
+  AgentDefaultsSchema,
+  CODEX_APPROVAL_OPTIONS_FIXTURE,
+  CreateConversationRequestSchema,
+  DurableInteractionSchema,
+  NATIVE_INTERACTION_FIXTURES,
+  OPENCODE_APPROVAL_OPTIONS_FIXTURE,
+  WorkflowApprovalConfigurationSchema,
 } from "../src/index.js";
 
 const condition = { kind: "manual" as const };
@@ -33,6 +40,28 @@ const workflow = {
 };
 
 describe("neutral product contracts", () => {
+  it("defines server-owned roles, approval assignment and truthful provider options", () => {
+    expect(AgentDefaultsSchema.safeParse({
+      orchestrator: { role: "orchestrator", boardAddable: true, harness: { harness: "codex", model: "m", reasoningEffort: "medium", sandbox: "read-only", serviceTier: "standard" } },
+      coder: { role: "coder", boardAddable: true, harness: { harness: "codex", model: "m", reasoningEffort: "medium", sandbox: "read-only", serviceTier: "standard" } },
+      operator: { role: "operator", boardAddable: false, harness: { harness: "codex", model: "m", reasoningEffort: "medium", sandbox: "read-only", serviceTier: "standard" } },
+    }).success).toBe(true);
+    expect(WorkflowApprovalConfigurationSchema.safeParse({ handler: "orchestrator" }).success).toBe(false);
+    expect(CODEX_APPROVAL_OPTIONS_FIXTURE.some((option) => option.semantic === "allow_session")).toBe(true);
+    expect(OPENCODE_APPROVAL_OPTIONS_FIXTURE.some((option) => option.semantic === "allow_session")).toBe(false);
+    expect(OPENCODE_APPROVAL_OPTIONS_FIXTURE.find((option) => option.semantic === "reject")?.affectsOtherPendingRequests).toBe(true);
+    expect(DurableInteractionSchema.parse(NATIVE_INTERACTION_FIXTURES.codex).nativeRequestId).toBe("codex-request-fixture");
+  });
+
+  it("supports application-global Operator conversations without a fake workspace", () => {
+    expect(CreateConversationRequestSchema.safeParse({
+      scope: "application", agentId: "application-operator", operatorConfigurationVersionId: "operator-config-v1",
+    }).success).toBe(true);
+    expect(ConversationSchema.safeParse({
+      id: "conversation-global", scope: "application", workspaceId: "fake", agentId: "application-operator",
+      operatorConfigurationVersionId: "operator-config-v1",
+    }).success).toBe(false);
+  });
   it("accepts the required workspace, agent, workflow and conversation scenario", () => {
     expect(
       WorkspaceDetailsResponseSchema.parse({

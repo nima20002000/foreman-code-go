@@ -1,7 +1,10 @@
 import type pg from 'pg'
 
+// Reserved migration blocks: HAP-01 100-109, HAP-02 200-209, HAP-03 300-309,
+// HAP-04 400-409, HAP-05 500-509, HAP-06 600-609, HAP-07 700-709.
+// Explicit versions prevent sibling worktrees from colliding when integrated.
 const migrations = [
-  `
+  { version: 1, sql: `
     create table if not exists application_migrations (
       version integer primary key,
       applied_at timestamptz not null default now()
@@ -96,15 +99,15 @@ const migrations = [
       on harness_executions (run_id, created_at);
     create index if not exists run_activity_run_idx
       on run_activity (run_id, sequence);
-  `,
-  `
+  ` },
+  { version: 2, sql: `
     create table if not exists application_settings (
       key text primary key,
       record jsonb not null,
       updated_at timestamptz not null default now()
     );
-  `,
-  `
+  ` },
+  { version: 3, sql: `
     alter table workspaces add column if not exists revision bigint not null default 1;
     alter table workspaces add column if not exists archived_at timestamptz;
     alter table workflows add column if not exists revision bigint not null default 1;
@@ -159,8 +162,8 @@ const migrations = [
       updated_at timestamptz not null default now(),
       unique (workflow_id)
     );
-  `,
-  `
+  ` },
+  { version: 4, sql: `
     alter table workspaces add column if not exists execution_location jsonb;
     alter table workspaces add column if not exists execution_location_identity jsonb;
     alter table workspaces add column if not exists location_revision bigint not null default 0;
@@ -171,7 +174,90 @@ const migrations = [
 
     create index if not exists runs_workspace_location_idx
       on runs (workspace_id, location_revision) where location_revision is not null;
-  `,
+  ` },
+  { version: 100, sql: `
+    create table if not exists management_principals (
+      id text primary key, name text not null, audience text not null,
+      token_hash text not null unique, grants jsonb not null, expires_at timestamptz not null,
+      revoked_at timestamptz, created_at timestamptz not null default now(),
+      check (audience in ('operator', 'worker'))
+    );
+    create table if not exists application_settings (
+      key text primary key, record jsonb not null, updated_at timestamptz not null default now(),
+      revision bigint not null default 1
+    );
+    alter table management_principals add column if not exists agent_id text;
+    create index if not exists management_worker_agent_idx
+      on management_principals (agent_id) where audience = 'worker';
+
+    create table if not exists application_setting_versions (
+      id text primary key,
+      setting_key text not null,
+      version integer not null,
+      record jsonb not null,
+      created_at timestamptz not null default now(),
+      unique (setting_key, version)
+    );
+    alter table application_settings add column if not exists current_version_id text;
+
+    create table if not exists application_operators (
+      id text primary key,
+      current_configuration_version_id text not null,
+      record jsonb not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+    create table if not exists operator_configuration_versions (
+      id text primary key,
+      operator_id text not null references application_operators(id) deferrable initially deferred,
+      version integer not null,
+      record jsonb not null,
+      created_at timestamptz not null default now(),
+      unique (operator_id, version)
+    );
+
+    create table if not exists durable_interactions (
+      id text primary key,
+      workspace_id text not null,
+      workflow_id text not null,
+      run_id text not null,
+      execution_id text not null,
+      requesting_agent_id text not null,
+      harness text not null,
+      native_session_id text not null,
+      native_request_id text not null,
+      status text not null,
+      revision bigint not null default 0,
+      record jsonb not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      unique (harness, native_session_id, native_request_id)
+    );
+    create index if not exists durable_interactions_scope_idx
+      on durable_interactions (workspace_id, workflow_id, status, created_at, id);
+
+    create table if not exists native_session_lanes (
+      id text primary key,
+      harness text not null,
+      native_session_id text not null,
+      owner_agent_id text not null,
+      revision bigint not null default 0,
+      record jsonb not null,
+      updated_at timestamptz not null default now(),
+      unique (harness, native_session_id)
+    );
+    create table if not exists review_jobs (
+      id text primary key,
+      interaction_id text not null references durable_interactions(id) on delete cascade,
+      reviewer_agent_id text not null,
+      state text not null,
+      revision bigint not null default 0,
+      record jsonb not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      unique (interaction_id, reviewer_agent_id)
+    );
+  ` },
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
@@ -187,10 +273,10 @@ export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
     `)
     const applied = await client.query<{ version: number }>('select version from application_migrations')
     const appliedVersions = new Set(applied.rows.map((row) => row.version))
-    for (const [index, migration] of migrations.entries()) {
-      const version = index + 1
+    for (const migration of migrations) {
+      const { version } = migration
       if (appliedVersions.has(version)) continue
-      await client.query(migration)
+      await client.query(migration.sql)
       await client.query('insert into application_migrations (version) values ($1)', [version])
     }
     await client.query('commit')

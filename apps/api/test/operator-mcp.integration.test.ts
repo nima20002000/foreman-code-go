@@ -81,7 +81,7 @@ describe('Operator MCP with PostgreSQL', () => {
     const access = new PostgresAccessService(database.pool)
     const grant: ManagementGrant = { actions: ManagementActionSchema.options, scope: {} }
     const issued = await access.issue({ name: 'Integration owner', audience: 'operator', grants: [grant], expiresAt: new Date(Date.now() + 60_000) })
-    const worker = await access.issue({ name: 'Worker', audience: 'worker', grants: [grant], expiresAt: new Date(Date.now() + 60_000) })
+    const worker = await access.issue({ name: 'Worker', audience: 'worker', agentId: 'agent-developer', grants: [grant], expiresAt: new Date(Date.now() + 60_000) })
     const restricted = await access.issue({
       name: 'Restricted operator', audience: 'operator',
       grants: [{ actions: ['capabilities:read', 'workspaces:read', 'workspace_locations:validate'], scope: { workspaceIds: ['not-this-workspace'] } }],
