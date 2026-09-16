@@ -249,7 +249,7 @@ it('treats contradictory pending state as uncertain even alongside a receipt (#1
   const record = h.get()
   assert.equal(matchingDeliveryEvidence(record, h.session, {
     events: [], responseDeliveries: [h.proof()], pendingInteractions: [{
-      session: h.session, turn: { nativeRequestId: record.nativeRequestId },
+      session: h.session, turn: { nativeTurnId: 'delivery-turn', nativeRequestId: record.nativeRequestId },
       nativeRequestType: record.nativeRequestType, request: record.request, responseOptions: record.responseOptions,
     }],
   }), undefined)
@@ -341,7 +341,7 @@ it('treats the legacy pendingInteraction observation as a conflicting receipt (#
   const current = h.get()
   assert.equal(matchingDeliveryEvidence(current, h.session, {
     events: [], pendingInteractions: [], responseDeliveries: [h.proof()], pendingInteraction: {
-      session: h.session, turn: { nativeRequestId: current.nativeRequestId }, nativeRequestType: current.nativeRequestType,
+      session: h.session, turn: { nativeTurnId: 'delivery-turn', nativeRequestId: current.nativeRequestId }, nativeRequestType: current.nativeRequestType,
       request: current.request, responseOptions: current.responseOptions,
     },
   }), undefined)

@@ -34,6 +34,13 @@ afterEach(async () => {
 
 async function decision() {
   const interaction = DurableInteractionSchema.parse({ ...NATIVE_INTERACTION_FIXTURES.codex, id: randomUUID(), approval: { handler: 'user' } })
+  // Lifecycle auditing requires the real relational owners of the interaction.
+  await pool.query("insert into workspaces (id,record) values ($1,'{}') on conflict do nothing", [interaction.workspaceId])
+  await pool.query("insert into workflows (id,workspace_id,record) values ($1,$2,'{}') on conflict do nothing", [interaction.workflowId, interaction.workspaceId])
+  await pool.query("insert into workflow_versions (id,workspace_id,workflow_id,version,entry_node_id,record) values ('delivery-version',$1,$2,1,'delivery-node','{}') on conflict do nothing", [interaction.workspaceId, interaction.workflowId])
+  await pool.query("insert into runs (id,workspace_id,workflow_id,workflow_version_id,execution_state,record) values ($1,$2,$3,'delivery-version','waiting','{}') on conflict do nothing", [interaction.runId, interaction.workspaceId, interaction.workflowId])
+  await pool.query("insert into agents (id,workspace_id,record) values ($1,$2,'{}') on conflict do nothing", [interaction.requestingAgentId, interaction.workspaceId])
+  await pool.query("insert into harness_executions (id,run_id,workflow_node_id,agent_id,attempt,record) values ($1,$2,'delivery-node',$3,1,'{\"state\":\"waiting\"}') on conflict do nothing", [interaction.executionId, interaction.runId, interaction.requestingAgentId])
   await repository.create(interaction)
   await budgets.ensure(interaction.executionId, interaction.graphThreadId, 60_000)
   await budgets.beginWait(interaction.executionId)
@@ -69,12 +76,12 @@ it('merges a graph binding revision and atomically persists delivered attempt + 
   assert.equal(delivered.deliveryState, 'delivered')
   const row = (await pool.query(`select a.state as delivery,g.state as resume from interaction_delivery_attempts a
     join interaction_graph_resumes g using (interaction_id) where a.interaction_id=$1`, [interaction.id])).rows[0]
-  assert.deepEqual(row, { delivery: 'delivered', resume: 'required' })
+  assert.deepEqual(row, { delivery: 'delivered', resume: 'pending' })
   const resume = (await repository.delivery.claimGraphResume(interaction.id, randomUUID()))!
   assert.equal(resume.interaction.graphInterruptId, 'bound-after-claim')
   await repository.delivery.finishGraphResume(resume, 'checkpoint unavailable')
   assert.equal((await repository.get(interaction.id))?.deliveryState, 'delivered')
-  assert.equal((await pool.query('select state from interaction_graph_resumes')).rows[0].state, 'required')
+  assert.equal((await pool.query('select state from interaction_graph_resumes')).rows[0].state, 'pending')
 })
 
 it('leaves early delivery recoverable until its interrupt is bound (#8)', async () => {
@@ -160,7 +167,7 @@ it('rolls back all delivery bookkeeping on an outbox failure, then recovers with
     nativeRequestType: interaction.nativeRequestType, optionId: interaction.selectedOptionId!, semantic: interaction.selectedSemantic!,
   } })
   assert.equal(sends, 1)
-  assert.equal((await pool.query('select state from interaction_graph_resumes')).rows[0].state, 'required')
+  assert.equal((await pool.query('select state from interaction_graph_resumes')).rows[0].state, 'pending')
 })
 
 it('recovers the pre-fix split-write window without demoting a delivered attempt (#7)', async () => {
@@ -170,7 +177,7 @@ it('recovers the pre-fix split-write window without demoting a delivered attempt
   assert.equal(await repository.delivery.claim(interaction.id, randomUUID()), undefined)
   assert.equal((await repository.get(interaction.id))?.deliveryState, 'delivered')
   assert.equal((await pool.query('select attempt,state from interaction_delivery_attempts')).rows[0].attempt, claim.attempt)
-  assert.equal((await pool.query('select state from interaction_graph_resumes')).rows[0].state, 'required')
+  assert.equal((await pool.query('select state from interaction_graph_resumes')).rows[0].state, 'pending')
 })
 
 
@@ -200,5 +207,5 @@ it('renews only the live graph handoff owner and cannot acknowledge an expired o
   const replacement = (await repository.delivery.claimGraphResume(interaction.id, randomUUID()))!
   await assert.rejects(repository.delivery.finishGraphResume(resume))
   await repository.delivery.finishGraphResume(replacement)
-  assert.equal((await pool.query('select state from interaction_graph_resumes')).rows[0].state, 'completed')
+  assert.equal((await pool.query('select state from interaction_graph_resumes')).rows[0].state, 'resumed')
 })

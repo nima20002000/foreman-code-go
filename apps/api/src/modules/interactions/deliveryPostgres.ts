@@ -245,7 +245,7 @@ export class PostgresInteractionDeliveryRepository {
        from durable_interactions d where a.interaction_id=d.id and d.run_id=$1 and a.state='submitted'`, [runId],
     )
     await client.query(
-      `update interaction_graph_resumes g set state='canceled',lease_owner=null,lease_token=null,lease_expires_at=null,revision=revision+1,updated_at=now()
+      `update interaction_graph_resumes g set state='canceled',lease_owner=null,lease_token=null,lease_expires_at=null,revision=g.revision+1,updated_at=now()
        from durable_interactions d where g.interaction_id=d.id and d.run_id=$1 and g.state='pending'`, [runId],
     )
   }
