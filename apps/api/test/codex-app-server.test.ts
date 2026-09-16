@@ -31,7 +31,7 @@ const args = process.argv.slice(2)
 if (args[0] === '--version') { console.log('codex-cli 0.154.0'); process.exit(0) }
 if (args[0] === 'login') { console.log('Logged in using ChatGPT'); process.exit(0) }
 if (args[0] === 'mcp' && args[1] === 'get') {
-  console.log(JSON.stringify({name:args[2],enabled:true,required:true,url:'http://127.0.0.1:3000/mcp/app',bearer_token_env_var:'GRAPHQL_APP_MCP_TOKEN',enabled_tools:['context_get'],disabled_tools:['interaction_respond']})); process.exit(0)
+  console.log(JSON.stringify({name:args[2],enabled:true,required:true,transport:{type:'streamable_http',url:'http://127.0.0.1:3000/mcp/app',bearer_token_env_var:'GRAPHQL_APP_MCP_TOKEN'},enabled_tools:['context_get'],disabled_tools:['interaction_respond']})); process.exit(0)
 }
 if (args[0] !== 'app-server') process.exit(2)
 const readline = require('node:readline')

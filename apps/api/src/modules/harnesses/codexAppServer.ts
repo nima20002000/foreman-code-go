@@ -414,8 +414,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     try {
       const config = assertObject(JSON.parse(result.stdout), 'CODEX_MCP_CONFIG_INVALID')
+      const transport = isObject(config.transport) ? config.transport : {}
       const enabled = config.enabled !== false
-      const credentialEnvironmentVariable = text(config.bearer_token_env_var) ?? null
+      const credentialEnvironmentVariable = text(transport.bearer_token_env_var) ?? null
       return McpDetectionSchema.parse({
         harness: 'codex', serverName: this.appMcpServerName,
         state: enabled ? 'status_unavailable' : 'disabled', endpointMatches: null,
@@ -453,7 +454,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     const enabledTools = Array.isArray(parsed.enabled_tools) ? parsed.enabled_tools.filter((value): value is string => typeof value === 'string') : null
     const disabledTools = Array.isArray(parsed.disabled_tools) ? parsed.disabled_tools.filter((value): value is string => typeof value === 'string') : []
-    const url = text(parsed.url) ?? null
+    const transport = isObject(parsed.transport) ? parsed.transport : {}
+    const url = text(transport.url) ?? null
     return {
       providerVersion: capability.providerVersion,
       binary: this.binary,
@@ -463,9 +465,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       configured: {
         enabled: parsed.enabled !== false,
         required: parsed.required === true,
-        transport: url ? 'streamable_http' : text(parsed.command) ? 'stdio' : 'unknown',
+        transport: transport.type === 'streamable_http' || transport.type === 'stdio'
+          ? transport.type
+          : url ? 'streamable_http' : text(transport.command) ? 'stdio' : 'unknown',
         url,
-        bearerTokenEnvironmentVariable: text(parsed.bearer_token_env_var) ?? null,
+        bearerTokenEnvironmentVariable: text(transport.bearer_token_env_var) ?? null,
         enabledTools,
         disabledTools,
         defaultToolsApprovalMode: text(parsed.default_tools_approval_mode) ?? null,
