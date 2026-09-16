@@ -105,6 +105,11 @@ function text(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
+function sameStrings(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
+  if (!left || !right) return left === right
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
 function assertObject(value: unknown, code: string): JsonObject {
   if (!isObject(value)) throw new HarnessExecutionError(code, 'Codex app-server returned an invalid response.')
   return value
@@ -771,6 +776,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const harnessConfiguration = configuration(input)
     validateConfiguration(harnessConfiguration)
     const workingDirectory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+    await this.validateMcpPolicies(harnessConfiguration, workingDirectory, signal)
     let scopedCredentialVariable: string | undefined
     try {
       const mcp = await this.inspectMcpConfiguration(workingDirectory, signal)
@@ -780,6 +786,43 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     validateEnvironmentOwner(input, scopedCredentialVariable)
     return { harnessConfiguration, workingDirectory, scopedCredentialVariable }
+  }
+
+  private async validateMcpPolicies(
+    configurationValue: CodexHarnessConfiguration,
+    cwd: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    for (const [serverName, expected] of Object.entries(advanced(configurationValue).mcpServers)) {
+      const result = await runCommand(this.binary, ['mcp', 'get', serverName, '--json'], cwd, signal)
+      if (result.exitCode !== 0) {
+        throw new HarnessExecutionError(
+          expected.required ? 'CODEX_REQUIRED_MCP_UNAVAILABLE' : 'CODEX_MCP_POLICY_MISMATCH',
+          `Codex MCP server '${serverName}' is not configured on this runner.`,
+        )
+      }
+      let actual: JsonObject
+      try { actual = assertObject(JSON.parse(result.stdout), 'CODEX_MCP_CONFIG_INVALID') } catch {
+        throw new HarnessExecutionError('CODEX_MCP_CONFIG_INVALID', `Codex returned invalid configuration for MCP server '${serverName}'.`)
+      }
+      const actualEnabled = actual.enabled !== false
+      const actualRequired = actual.required === true
+      const actualEnabledTools = Array.isArray(actual.enabled_tools) ? actual.enabled_tools.filter((value): value is string => typeof value === 'string') : undefined
+      const actualDisabledTools = Array.isArray(actual.disabled_tools) ? actual.disabled_tools.filter((value): value is string => typeof value === 'string') : undefined
+      const actualTools = isObject(actual.tools) ? actual.tools : undefined
+      const mismatch = actualEnabled !== expected.enabled
+        || actualRequired !== expected.required
+        || !sameStrings(actualEnabledTools, expected.enabledTools)
+        || !sameStrings(actualDisabledTools, expected.disabledTools)
+        || text(actual.default_tools_approval_mode) !== expected.defaultToolsApprovalMode
+        || (expected.tools !== undefined && JSON.stringify(actualTools ?? {}) !== JSON.stringify(expected.tools))
+      if (mismatch) {
+        throw new HarnessExecutionError(
+          expected.required && (!actualEnabled || !actualRequired) ? 'CODEX_REQUIRED_MCP_UNAVAILABLE' : 'CODEX_MCP_POLICY_MISMATCH',
+          `Codex MCP server '${serverName}' does not match the accepted enabled/required/tool policy; no configuration was rewritten.`,
+        )
+      }
+    }
   }
 
   private hydrateThread(runtime: Runtime, thread: JsonObject): void {
