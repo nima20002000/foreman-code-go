@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline'
 
 import {
   ApprovalResponseOptionSchema,
+  DEFAULT_CODEX_ADVANCED_CONFIGURATION,
   McpDetectionSchema,
   NativeHarnessCapabilitiesSchema,
   NativeHarnessEventSchema,
@@ -16,6 +17,8 @@ import {
   type NativeHarnessEvent,
   type NativeSessionReference,
   type PendingNativeInteraction,
+  type CodexAdvancedConfiguration,
+  type CodexHarnessConfiguration,
 } from '@graphql/contracts'
 
 import { HarnessExecutionError } from './errors.js'
@@ -50,6 +53,8 @@ interface WaitingRequest {
 
 interface Runtime {
   input: NativeSessionStart
+  workingDirectory: string
+  configuration: CodexHarnessConfiguration
   transport: CodexStdioTransport
   session: NativeSessionReference
   events: NativeHarnessEvent[]
@@ -61,25 +66,6 @@ interface Runtime {
   seenNotifications: Set<string>
   wake: Set<() => void>
   closed: boolean
-}
-
-interface CodexAdvancedDraft {
-  approvalPolicy?: 'on-request' | 'never'
-  approvalsReviewer?: 'user' | 'auto_review'
-  additionalWritableDirectories?: string[]
-  workspaceWrite?: {
-    networkAccess?: boolean
-    excludeTmpdirEnvVar?: boolean
-    excludeSlashTmp?: boolean
-  }
-  sessionPersistence?: 'persistent' | 'ephemeral'
-  shellEnvironment?: {
-    inherit?: 'all' | 'core' | 'none'
-    ignoreDefaultExcludes?: boolean
-    filters?: Record<string, 'include' | 'exclude'>
-    set?: Record<string, string>
-  }
-  webSearch?: 'disabled' | 'cached' | 'live'
 }
 
 export interface CodexMcpConfigurationInspection {
@@ -134,19 +120,22 @@ function safeEnvironment(input?: NativeSessionStart['environment']): NodeJS.Proc
   return environment
 }
 
-function advanced(input: NativeSessionStart): CodexAdvancedDraft {
-  const configuration = input.request.configuration.harness as unknown as { advanced?: CodexAdvancedDraft }
-  return configuration.advanced ?? {}
-}
-
-function appServerConfig(input: NativeSessionStart): JsonObject {
-  const value = advanced(input)
-  const configuration = input.request.configuration.harness
-  if (configuration.harness !== 'codex') {
+function configuration(input: NativeSessionStart): CodexHarnessConfiguration {
+  const value = input.kind === 'operator' ? input.configuration.harness : input.request.configuration.harness
+  if (value.harness !== 'codex') {
     throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'Codex received a non-Codex configuration.')
   }
-  const config: JsonObject = { model_reasoning_effort: configuration.reasoningEffort }
-  if (configuration.serviceTier === 'priority') config.service_tier = 'fast'
+  return value
+}
+
+function advanced(value: CodexHarnessConfiguration): CodexAdvancedConfiguration {
+  return value.advanced ?? DEFAULT_CODEX_ADVANCED_CONFIGURATION
+}
+
+function appServerConfig(configurationValue: CodexHarnessConfiguration): JsonObject {
+  const value = advanced(configurationValue)
+  const config: JsonObject = { model_reasoning_effort: configurationValue.reasoningEffort }
+  if (configurationValue.serviceTier === 'priority') config.service_tier = 'fast'
   if (value.workspaceWrite) {
     config.sandbox_workspace_write = {
       writable_roots: value.additionalWritableDirectories ?? [],
@@ -167,16 +156,12 @@ function appServerConfig(input: NativeSessionStart): JsonObject {
   return config
 }
 
-function validateConfiguration(input: NativeSessionStart): void {
-  const configuration = input.request.configuration.harness
-  if (configuration.harness !== 'codex') {
-    throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'Codex received a non-Codex configuration.')
-  }
-  const value = advanced(input)
-  if ((value.additionalWritableDirectories?.length || value.workspaceWrite) && configuration.sandbox !== 'workspace-write') {
+function validateConfiguration(configurationValue: CodexHarnessConfiguration): void {
+  const value = advanced(configurationValue)
+  if ((value.additionalWritableDirectories.length || value.workspaceWrite) && configurationValue.sandbox !== 'workspace-write') {
     throw new HarnessExecutionError('CODEX_SETTING_UNSUPPORTED', 'Workspace-write controls require the workspace-write sandbox.')
   }
-  for (const directory of value.additionalWritableDirectories ?? []) {
+  for (const directory of value.additionalWritableDirectories) {
     if (!directory.startsWith('/')) {
       throw new HarnessExecutionError('CODEX_SETTING_INVALID', 'Additional writable directories must be absolute paths.')
     }
@@ -375,6 +360,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     private readonly binary: string,
     private readonly expectedVersion = QUALIFIED_CODEX_VERSION,
     private readonly appMcpServerName = 'graphql-app',
+    private readonly operatorWorkingDirectory = process.cwd(),
   ) {}
 
   async capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities> {
@@ -475,29 +461,29 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   async createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
     await this.capabilities(signal)
-    validateConfiguration(input)
+    const harnessConfiguration = configuration(input)
+    validateConfiguration(harnessConfiguration)
+    const workingDirectory = input.kind === 'operator' ? this.operatorWorkingDirectory : input.request.workingDirectory
     const holder: { runtime?: Runtime } = {}
     const transport = new CodexStdioTransport(
       this.binary,
-      input.request.workingDirectory,
+      workingDirectory,
       safeEnvironment(input.environment),
       async (request) => { if (holder.runtime) await this.handleRequest(holder.runtime, request) },
       async (method, params) => { if (holder.runtime) this.handleNotification(holder.runtime, method, params) },
       () => { if (holder.runtime) this.handleDisconnect(holder.runtime) },
     )
     await transport.start(signal)
-    const configuration = input.request.configuration.harness
-    if (configuration.harness !== 'codex') throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'Codex configuration is required.')
-    const draft = advanced(input)
+    const draft = advanced(harnessConfiguration)
     const response = assertObject(await transport.request('thread/start', {
-      model: configuration.model,
-      serviceTier: configuration.serviceTier === 'priority' ? 'fast' : null,
-      cwd: input.request.workingDirectory,
-      runtimeWorkspaceRoots: [input.request.workingDirectory, ...(draft.additionalWritableDirectories ?? [])],
-      approvalPolicy: draft.approvalPolicy ?? 'on-request',
-      approvalsReviewer: draft.approvalsReviewer ?? 'user',
-      sandbox: configuration.sandbox,
-      config: appServerConfig(input),
+      model: harnessConfiguration.model,
+      serviceTier: harnessConfiguration.serviceTier === 'priority' ? 'fast' : null,
+      cwd: workingDirectory,
+      runtimeWorkspaceRoots: [workingDirectory, ...draft.additionalWritableDirectories],
+      approvalPolicy: draft.approvalPolicy,
+      approvalsReviewer: draft.approvalsReviewer,
+      sandbox: harnessConfiguration.sandbox,
+      config: appServerConfig(harnessConfiguration),
       ephemeral: draft.sessionPersistence === 'ephemeral',
     }, signal), 'CODEX_THREAD_START_INVALID')
     const thread = assertObject(response.thread, 'CODEX_THREAD_START_INVALID')
@@ -505,7 +491,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (!nativeSessionId) throw new HarnessExecutionError('CODEX_SESSION_ID_MISSING', 'Codex did not return a native thread ID.')
     const session = NativeSessionReferenceSchema.parse({ harness: 'codex', providerVersion: this.expectedVersion, nativeSessionId })
     const runtime: Runtime = {
-      input, transport, session, events: [], waiting: undefined, activeTurnId: undefined,
+      input, workingDirectory, configuration: harnessConfiguration,
+      transport, session, events: [], waiting: undefined, activeTurnId: undefined,
       terminalResult: undefined, finalAnswer: undefined, lastAgentMessage: undefined,
       seenNotifications: new Set(), wake: new Set(), closed: false,
     }
@@ -579,6 +566,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const runtime = this.requireRuntime(session)
     return {
       events: [...runtime.events],
+      pendingInteractions: runtime.waiting ? [runtime.waiting.pending] : [],
       ...(runtime.waiting ? { pendingInteraction: runtime.waiting.pending } : {}),
       ...(runtime.terminalResult ? { terminalResult: runtime.terminalResult } : {}),
     }
@@ -614,7 +602,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   async inspectConfiguration(session: NativeSessionReference, includeLayers = true, signal?: AbortSignal): Promise<JsonObject> {
     const runtime = this.requireRuntime(session)
     return assertObject(await runtime.transport.request('config/read', {
-      includeLayers, cwd: runtime.input.request.workingDirectory,
+      includeLayers, cwd: runtime.workingDirectory,
     }, signal), 'CODEX_CONFIG_READ_INVALID')
   }
 
@@ -682,7 +670,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     const transport = new CodexStdioTransport(
       this.binary,
-      runtime.input.request.workingDirectory,
+      runtime.workingDirectory,
       safeEnvironment(runtime.input.environment),
       async (request) => this.handleRequest(runtime, request),
       async (method, params) => this.handleNotification(runtime, method, params),
@@ -740,7 +728,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     } else if (request.method === 'item/permissions/requestApproval') {
       const permissions = isObject(params.permissions) ? params.permissions : {}
       add('turn', simpleOption('allow_turn', 'Allow for this turn', 'turn'), { permissions, scope: 'turn' })
-      if (advanced(runtime.input).sessionPersistence !== 'ephemeral') {
+      if (advanced(runtime.configuration).sessionPersistence !== 'ephemeral') {
         add('session', simpleOption('allow_session', 'Allow for this session', 'session'), { permissions, scope: 'session' })
       }
       add('reject', simpleOption('reject', 'Reject', 'request'), { permissions: {}, scope: 'turn' })
