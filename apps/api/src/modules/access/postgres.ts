@@ -10,6 +10,7 @@ import {
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
+import { requireActiveWorkerBinding } from './workerLifecycle.js'
 
 function digest(token: string): string {
   return createHash('sha256').update(token).digest('hex')
@@ -62,6 +63,7 @@ export class PostgresAccessService {
     if (row.audience !== audience) throw new DomainError('AUTH_WRONG_AUDIENCE', 'The credential cannot access this endpoint.', 403)
     if (row.revoked_at) throw new DomainError('AUTH_REVOKED', 'The credential has been revoked.', 401)
     if (row.expires_at.getTime() <= Date.now()) throw new DomainError('AUTH_EXPIRED', 'The credential has expired.', 401)
+    if (audience === 'worker') await requireActiveWorkerBinding(this.pool, row.id)
     return fromRow(row)
   }
 
@@ -72,7 +74,7 @@ export class PostgresAccessService {
     agentId?: string
     grants: ManagementGrant[]
     expiresAt: Date
-  }): Promise<{ principal: ManagementPrincipal; token: string }> {
+  }, client?: pg.ClientBase): Promise<{ principal: ManagementPrincipal; token: string }> {
     if (input.expiresAt.getTime() <= Date.now()) throw new DomainError('INVALID_EXPIRY', 'Credential expiry must be in the future.', 400)
     const name = input.name.trim()
     if (!name) throw new DomainError('INVALID_PRINCIPAL_NAME', 'Credential name is required.', 400)
@@ -85,7 +87,7 @@ export class PostgresAccessService {
     }
     const id = `principal-${randomUUID()}`
     const token = `opm_${randomBytes(32).toString('base64url')}`
-    const result = await this.pool.query<PrincipalRow>(
+    const result = await (client ?? this.pool).query<PrincipalRow>(
       `insert into management_principals (id, name, audience, agent_id, token_hash, grants, expires_at)
        values ($1, $2, $3, $4, $5, $6::jsonb, $7)
        returning id, name, audience, agent_id, token_hash, grants, expires_at, revoked_at`,

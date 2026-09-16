@@ -24,6 +24,7 @@ import {
 import { HarnessExecutionError } from './errors.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from './port.js'
 import { runCommand } from './process.js'
+import { redactKnownSecrets, redactSecretText } from './secrets.js'
 
 export const QUALIFIED_CODEX_VERSION = 'codex-cli 0.154.0'
 /** SHA-256 of the sorted relative-path/file-SHA manifest from 0.154.0 --experimental JSON schemas. */
@@ -241,7 +242,7 @@ class CodexStdioTransport {
     this.child = child
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string | Buffer) => {
-      this.stderr = (this.stderr + String(chunk)).slice(-MAX_STDERR_LENGTH)
+      this.stderr = redactSecretText(this.stderr + String(chunk), [this.environment.GRAPHQL_APP_MCP_TOKEN ?? '']).slice(-MAX_STDERR_LENGTH)
     })
     const lines = createInterface({ input: child.stdout, crlfDelay: Infinity })
     lines.on('line', (line) => { void this.receive(line) })
@@ -344,7 +345,7 @@ class CodexStdioTransport {
 
   private async receive(line: string): Promise<void> {
     let message: unknown
-    try { message = JSON.parse(line) } catch {
+    try { message = redactKnownSecrets(JSON.parse(line), [this.environment.GRAPHQL_APP_MCP_TOKEN ?? '']) } catch {
       await this.onNotification('protocol/malformed', { redacted: true })
       return
     }
@@ -428,30 +429,23 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   async inspectMcp(signal?: AbortSignal): Promise<McpDetection> {
-    await this.capabilities(signal)
-    const result = await runCommand(this.binary, ['mcp', 'get', this.appMcpServerName, '--json'], process.cwd(), signal)
     const now = new Date().toISOString()
-    if (result.exitCode !== 0) {
-      return McpDetectionSchema.parse({
-        harness: 'codex', serverName: this.appMcpServerName, state: 'not_detected', endpointMatches: null,
-        credentialEnvironmentVariable: null, checkedAt: now,
-      })
-    }
     try {
-      const config = assertObject(JSON.parse(result.stdout), 'CODEX_MCP_CONFIG_INVALID')
-      const transport = isObject(config.transport) ? config.transport : {}
-      const enabled = config.enabled !== false
-      const credentialEnvironmentVariable = text(transport.bearer_token_env_var) ?? null
+      const result = await this.inspectMcpConfiguration(process.cwd(), signal)
       return McpDetectionSchema.parse({
         harness: 'codex', serverName: this.appMcpServerName,
-        state: enabled ? 'status_unavailable' : 'disabled', endpointMatches: null,
-        credentialEnvironmentVariable, checkedAt: now,
+        state: result.configured.enabled ? 'status_unavailable' : 'disabled', endpointMatches: null,
+        credentialEnvironmentVariable: result.configured.bearerTokenEnvironmentVariable === 'GRAPHQL_APP_MCP_TOKEN'
+          ? 'GRAPHQL_APP_MCP_TOKEN' : null,
+        checkedAt: now,
         detail: 'CLI inspection proves configuration only; call inspectNativeMcp for runtime status.',
       })
-    } catch {
+    } catch (error) {
+      const absent = error instanceof HarnessExecutionError && error.result.error?.code === 'CODEX_MCP_NOT_CONFIGURED'
       return McpDetectionSchema.parse({
-        harness: 'codex', serverName: this.appMcpServerName, state: 'check_failed', endpointMatches: null,
-        credentialEnvironmentVariable: null, checkedAt: now, detail: 'Codex returned invalid structured MCP configuration.',
+        harness: 'codex', serverName: this.appMcpServerName, state: absent ? 'not_detected' : 'check_failed',
+        endpointMatches: null, credentialEnvironmentVariable: null, checkedAt: now,
+        detail: absent ? 'The named native MCP entry is absent.' : 'Native MCP configuration inspection failed.',
       })
     }
   }
@@ -471,7 +465,17 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const capability = await this.capabilities(signal)
     const result = await runCommand(this.binary, ['mcp', 'get', this.appMcpServerName, '--json'], cwd, signal)
     if (result.exitCode !== 0) {
-      throw new HarnessExecutionError('CODEX_MCP_NOT_CONFIGURED', `Codex MCP server '${this.appMcpServerName}' is not configured.`)
+      // A nonzero `get` can mean malformed config, permissions, or a provider
+      // error. Only a successful structured list can prove actual absence.
+      const listed = await runCommand(this.binary, ['mcp', 'list', '--json'], cwd, signal)
+      let entries: unknown
+      try { entries = JSON.parse(listed.stdout) } catch { entries = undefined }
+      if (listed.exitCode === 0 && Array.isArray(entries)
+        && entries.every((entry: unknown) => isObject(entry) && typeof entry.name === 'string')
+        && !entries.some((entry: unknown) => isObject(entry) && entry.name === this.appMcpServerName)) {
+        throw new HarnessExecutionError('CODEX_MCP_NOT_CONFIGURED', 'The named native MCP entry is absent.')
+      }
+      throw new HarnessExecutionError('CODEX_MCP_INSPECTION_FAILED', 'Codex MCP configuration inspection failed; absence was not established.')
     }
     let parsed: JsonObject
     try { parsed = assertObject(JSON.parse(result.stdout), 'CODEX_MCP_CONFIG_INVALID') } catch {

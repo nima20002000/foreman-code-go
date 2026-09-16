@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run --exclude '**/*.integration.test.ts' --exclude test/real-harness.acceptance.test.ts",
-    "test:integration": "vitest run test/postgres.integration.test.ts test/execution-regressions.integration.test.ts test/operator-mcp.integration.test.ts test/foundation.integration.test.ts test/app-mcp.integration.test.ts",
+    "test:integration": "vitest run test/postgres.integration.test.ts test/execution-regressions.integration.test.ts test/operator-mcp.integration.test.ts test/foundation.integration.test.ts test/app-mcp.integration.test.ts test/pr11-credentials.integration.test.ts",
     "test:acceptance": "RUN_REAL_HARNESS_TESTS=1 vitest run test/real-harness.acceptance.test.ts",
     "credential": "node --import tsx src/cli/operatorCredentials.ts",
     "build": "tsc -p tsconfig.build.json"

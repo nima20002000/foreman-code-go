@@ -10,51 +10,55 @@ export interface WorkerScope {
   runIds?: readonly string[]
 }
 
-export function hasWorkerAction(principal: ManagementPrincipal, action: Extract<ManagementAction, 'interactions:read' | 'interactions:respond'>): boolean {
+type WorkerAction = Extract<ManagementAction, 'interactions:read' | 'interactions:respond'>
+
+/** Keep action and all three scope dimensions in the same grant. */
+export function workerScopesForAction(principal: ManagementPrincipal, action: WorkerAction): WorkerScope[] {
   const parsed = ManagementPrincipalSchema.parse(principal)
-  return parsed.audience === 'worker' && !parsed.revokedAt && Date.parse(parsed.expiresAt) > Date.now()
-    && parsed.grants.some((grant) => grant.actions.includes(action))
+  if (parsed.audience !== 'worker' || !parsed.agentId || parsed.revokedAt
+    || Date.parse(parsed.expiresAt) <= Date.now()) return []
+  return parsed.grants.filter((grant) => grant.actions.includes(action)
+    && grant.scope.workspaceIds?.length && grant.scope.workflowIds?.length && grant.scope.runIds?.length)
+    .map((grant) => ({
+      workspaceIds: grant.scope.workspaceIds!, workflowIds: grant.scope.workflowIds!, runIds: grant.scope.runIds!,
+    }))
 }
 
-function includes(values: readonly string[] | undefined, value: string): boolean {
-  return values === undefined || values.includes(value)
+export function hasWorkerAction(principal: ManagementPrincipal, action: WorkerAction): boolean {
+  return workerScopesForAction(principal, action).length > 0
 }
 
-/** App policy is intentionally independent from Operator management actions. */
+/** Summary for context display only. Authorization must use the per-grant scopes. */
 export function workerScope(principal: ManagementPrincipal): WorkerScope {
   const parsed = ManagementPrincipalSchema.parse(principal)
   if (parsed.audience !== 'worker' || !parsed.agentId || parsed.revokedAt
     || Date.parse(parsed.expiresAt) <= Date.now()) {
     throw new DomainError('APP_ACCESS_DENIED', 'The App caller is not authorized.', 403)
   }
-  const workspaceIds = new Set<string>()
-  const workflowIds = new Set<string>()
-  const runIds = new Set<string>()
-  for (const grant of parsed.grants) {
-    if (grant.scope.workspaceIds) grant.scope.workspaceIds.forEach((id) => workspaceIds.add(id))
-    if (grant.scope.workflowIds) grant.scope.workflowIds.forEach((id) => workflowIds.add(id))
-    if (grant.scope.runIds) grant.scope.runIds.forEach((id) => runIds.add(id))
-  }
-  if (workspaceIds.size === 0 || workflowIds.size === 0 || runIds.size === 0) {
+  const scopes = [...workerScopesForAction(parsed, 'interactions:read'), ...workerScopesForAction(parsed, 'interactions:respond')]
+  if (scopes.length === 0) {
     throw new DomainError('APP_SCOPE_REQUIRED', 'The App credential does not have an explicit execution scope.', 403)
   }
   return {
-    workspaceIds: [...workspaceIds],
-    workflowIds: [...workflowIds],
-    runIds: [...runIds],
+    workspaceIds: [...new Set(scopes.flatMap((scope) => scope.workspaceIds ?? []))],
+    workflowIds: [...new Set(scopes.flatMap((scope) => scope.workflowIds ?? []))],
+    runIds: [...new Set(scopes.flatMap((scope) => scope.runIds ?? []))],
   }
 }
 
+function scopeMatches(scope: WorkerScope, interaction: DurableInteraction): boolean {
+  return !!scope.workspaceIds?.includes(interaction.workspaceId)
+    && !!scope.workflowIds?.includes(interaction.workflowId)
+    && !!scope.runIds?.includes(interaction.runId)
+}
+
 export function canReadInteraction(principal: ManagementPrincipal, interaction: DurableInteraction): boolean {
-  if (!hasWorkerAction(principal, 'interactions:read')) return false
-  const scope = workerScope(principal)
-  return includes(scope.workspaceIds, interaction.workspaceId)
-    && includes(scope.workflowIds, interaction.workflowId)
-    && includes(scope.runIds, interaction.runId)
+  return workerScopesForAction(principal, 'interactions:read').some((scope) => scopeMatches(scope, interaction))
 }
 
 export function canRespondToInteraction(principal: ManagementPrincipal, interaction: DurableInteraction): boolean {
-  if (!hasWorkerAction(principal, 'interactions:respond') || !canReadInteraction(principal, interaction) || !principal.agentId) return false
+  if (!principal.agentId || !canReadInteraction(principal, interaction)
+    || !workerScopesForAction(principal, 'interactions:respond').some((scope) => scopeMatches(scope, interaction))) return false
   try {
     assertOrchestratorInteractionAuthority(interaction, {
       agentId: principal.agentId,

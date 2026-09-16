@@ -48,7 +48,8 @@ describe('App MCP detection normalization', () => {
       harness: 'codex', runnerId: 'runner-a', workingDirectory: '/workspace',
     })
     expect(failed.detection).toMatchObject({ state: 'check_failed', endpointMatches: null })
-    expect(failed.detection.detail).toContain('unsupported output')
+    expect(failed.detection.detail).not.toContain('unsupported output')
+    expect(failed.detection.detail).toContain('inspection')
     expect(ScopedMcpDetectionSchema.parse(failed)).toEqual(failed)
   })
 
@@ -71,6 +72,7 @@ describe('App MCP detection normalization', () => {
   it('does not issue a credential until preflight succeeds', async () => {
     let issued = 0
     const credentials = {
+      ttlMs: 15 * 60 * 1000,
       issueForExecution: async () => { issued += 1; throw new Error('must not issue') },
       revoke: async () => undefined,
     }

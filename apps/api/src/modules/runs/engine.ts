@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
+import type pg from 'pg'
 import {
   HarnessExecutionRequestSchema,
   HarnessExecutionSchema,
@@ -26,7 +27,8 @@ import { ExecutionLimiter } from './limiter.js'
 import { validateExecutableTopology } from './topology.js'
 import { resolveExecutionDirectory } from './executionDirectory.js'
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
-import type { IssuedWorkerCredential } from '../access/workerCredentials.js'
+import { DEFAULT_WORKER_CREDENTIAL_TTL_MS, WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, type IssuedWorkerCredential } from '../access/workerCredentials.js'
+import { redactKnownSecrets, redactSecretText } from '../harnesses/secrets.js'
 
 const EngineState = Annotation.Root({
   runId: Annotation<string>(),
@@ -81,6 +83,12 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     private readonly workerCredentials?: ExecutionCredentialProvider,
   ) {
     this.workspaceRoot = resolve(workspaceRoot)
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) {
+      throw new RangeError('Harness timeout must be a positive 32-bit integer.')
+    }
+    if (workerCredentials && timeoutMs > DEFAULT_WORKER_CREDENTIAL_TTL_MS - WORKER_CREDENTIAL_EXPIRY_MARGIN_MS) {
+      throw new RangeError('Harness timeout must leave at least 30 seconds before the App credential expires.')
+    }
   }
 
   start(runId: string): Promise<void> {
@@ -114,6 +122,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       }
       if (controller.signal.aborted) {
         await this.runs.settleOrphan(runId, owner, true)
+        await this.cleanupCredentials(runId, owner)
         return
       }
       await this.executeRun(run, controller.signal, owner)
@@ -128,6 +137,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     if (this.reconciliation) return this.reconciliation
     if (this.closing) return Promise.resolve()
     const task = (async () => {
+      await this.workerCredentials?.reconcileTerminalCredentials().catch(onError)
       for (const candidate of await this.runs.reconciliationCandidates()) {
         if (this.closing) break
         if (this.activeTasks.has(candidate.id)) continue
@@ -139,6 +149,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         if (!owner) continue
         try {
           await this.runs.settleOrphan(candidate.id, owner, false)
+          await this.cleanupCredentials(candidate.id, owner)
         } finally {
           await owner.release()
         }
@@ -152,16 +163,20 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     throw new DomainError('RUN_RESUME_NOT_IMPLEMENTED', `Run '${runId}' cannot be replayed safely. Inspect the interrupted attempt, cancel its record, and start a new run when safe.`, 501)
   }
 
-  async cancel(runId: string): Promise<boolean> {
+  async cancel(runId: string, transactionClient?: pg.PoolClient): Promise<boolean> {
     const controller = this.activeRuns.get(runId)
     if (controller) {
       controller.abort()
+      // Stop's receipt and this durable closure barrier share its existing lease.
+      await this.workerCredentials?.revokeForRun(runId, transactionClient)
       return true
     }
     const owner = await this.runs.acquireOwnership(runId, () => undefined)
     if (!owner) return false
     try {
-      return await this.runs.settleOrphan(runId, owner, true)
+      const settled = await this.runs.settleOrphan(runId, owner, true)
+      await this.workerCredentials?.revokeForRun(runId, transactionClient)
+      return settled
     } finally {
       await owner.release()
     }
@@ -268,6 +283,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     } finally {
       failedNodes.abort()
       await drain()
+      await this.cleanupCredentials(run.id, owner)
     }
   }
 
@@ -344,73 +360,91 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     const adapter = this.harnesses.resolve(configuration.harness.harness)
     let eventSequence = 0
     let workerCredential: IssuedWorkerCredential | undefined
+    const knownSecrets: string[] = []
+    const expiry = new AbortController()
+    const executionSignal = AbortSignal.any([signal, expiry.signal])
+    let expiryTimer: NodeJS.Timeout | undefined
+    const validateLaunch = async () => {
+      executionSignal.throwIfAborted()
+      owner.assertOwned()
+      if (run.authorizationPrincipalId) {
+        await this.locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId, owner.client)
+      }
+      await this.locations.revalidateSnapshot(
+        run.workspaceId, run.executionLocation!, requiredLocationAccess([configuration]), executionSignal,
+      )
+      executionSignal.throwIfAborted()
+      owner.assertOwned()
+    }
 
     try {
-      signal.throwIfAborted()
+      executionSignal.throwIfAborted()
       owner.assertOwned()
-      const result = await (async () => {
-        try {
-          return await adapter.execute(request, {
-            signal,
-            beforeSpawn: async () => {
-              signal.throwIfAborted()
-              owner.assertOwned()
-              if (run.authorizationPrincipalId) {
-                await this.locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId, owner.client)
-              }
-              await this.locations.revalidateSnapshot(
-                run.workspaceId, run.executionLocation!, requiredLocationAccess([configuration]), signal,
-              )
-              signal.throwIfAborted()
-              owner.assertOwned()
-              if (this.workerCredentials) {
-                if (workerCredential) throw new DomainError('WORKER_CREDENTIAL_ALREADY_ISSUED', 'This execution already received an App credential.', 500)
-                const prepared = await this.workerCredentials.prepare({
-                  executionId,
-                  harness: configuration.harness.harness,
-                  workingDirectory,
-                  signal,
-                })
-                workerCredential = prepared.credential
-                return prepared.credential.environment
-              }
-            },
-            onSession: async (nativeSessionId) => {
-              execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId, state: 'running' })
-              await this.runs.updateExecution(execution, owner)
-              await this.runs.recordActivity(run.id, 'harness', 'harness_session_started', {
-                workflowNodeId: nodeId,
-                agentId: node.agentId,
-                nativeSessionId,
-                harness: configuration.harness.harness,
-              }, executionId, owner.client)
-            },
-            onEvent: async (event: NativeEventInput) => {
-              const nativeEvent = HarnessNativeEventSchema.parse({
-                executionId,
-                sequence: eventSequence,
-                type: event.type,
-                occurredAt: new Date().toISOString(),
-                payload: event.payload,
-              })
-              eventSequence += 1
-              await this.runs.appendNativeEvent(nativeEvent, owner)
-            },
-          })
-        } finally {
-          if (workerCredential && this.workerCredentials) {
-            await this.workerCredentials.revoke(workerCredential)
-            workerCredential = undefined
+      const nativeResult = await adapter.execute(request, {
+        signal: executionSignal,
+        beforeSpawn: async () => {
+          await validateLaunch()
+          if (this.workerCredentials) {
+            if (workerCredential) throw new DomainError('WORKER_CREDENTIAL_ALREADY_ISSUED', 'This execution already received an App credential.', 500)
+            const prepared = await this.workerCredentials.prepare({
+              executionId,
+              harness: configuration.harness.harness,
+              workingDirectory,
+              signal: executionSignal,
+            })
+            // Retain ownership before any further validation can fail.
+            workerCredential = prepared.credential
+            knownSecrets.push(...Object.values(workerCredential.environment.variables))
+            const remaining = Date.parse(workerCredential.expiresAt) - Date.now() - WORKER_CREDENTIAL_EXPIRY_MARGIN_MS
+            if (!Number.isFinite(remaining) || remaining <= 0 || remaining > 2147483647) {
+              throw new DomainError('WORKER_CREDENTIAL_EXPIRING', 'The prepared App credential cannot cover a safe launch interval.', 409)
+            }
+            expiryTimer = setTimeout(() => expiry.abort(new DomainError(
+              'WORKER_CREDENTIAL_EXPIRING',
+              'Execution stopped before its App credential expired. Active native work was not restarted.',
+              409,
+            )), remaining)
+            expiryTimer.unref()
           }
-        }
-      })()
-      signal.throwIfAborted()
+          // Preparation is asynchronous. Recheck live authority and the accepted
+          // directory identity AFTER it, at the existing final spawn boundary.
+          await validateLaunch()
+          return workerCredential?.environment
+        },
+        onSession: async (nativeSessionId) => {
+          const safeSessionId = redactSecretText(nativeSessionId, knownSecrets)
+          execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: safeSessionId, state: 'running' })
+          await this.runs.updateExecution(execution, owner)
+          await this.runs.recordActivity(run.id, 'harness', 'harness_session_started', {
+            workflowNodeId: nodeId,
+            agentId: node.agentId,
+            nativeSessionId: safeSessionId,
+            harness: configuration.harness.harness,
+          }, executionId, owner.client)
+        },
+        onEvent: async (event: NativeEventInput) => {
+          const safeEvent = redactKnownSecrets(event, knownSecrets)
+          const nativeEvent = HarnessNativeEventSchema.parse({
+            executionId,
+            sequence: eventSequence,
+            type: safeEvent.type,
+            occurredAt: new Date().toISOString(),
+            payload: safeEvent.payload,
+          })
+          eventSequence += 1
+          await this.runs.appendNativeEvent(nativeEvent, owner)
+        },
+      })
+      executionSignal.throwIfAborted()
+      const result = redactKnownSecrets(nativeResult, knownSecrets)
       execution = HarnessExecutionSchema.parse({
         ...execution,
         state: 'completed',
         result,
         finishedAt: new Date().toISOString(),
       })
+      // Native outcome is durable before credential cleanup. A cleanup outage
+      // must not erase successful output or suggest native side effects failed.
       await this.runs.acceptExecutionResult(execution, owner)
       await this.runs.recordActivity(run.id, 'harness', 'harness_session_finished', {
         workflowNodeId: nodeId,
@@ -418,7 +452,8 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       }, executionId, owner.client)
       return { executionIds: { [nodeId]: executionId } }
     } catch (error) {
-      const result = failedResult(error, signal.aborted)
+      const failure = expiry.signal.aborted && !signal.aborted ? expiry.signal.reason : error
+      const result = redactKnownSecrets(failedResult(failure, signal.aborted), knownSecrets)
       execution = HarnessExecutionSchema.parse({
         ...execution,
         state: 'completed',
@@ -431,7 +466,28 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         outcome: result.outcome,
         error: result.error ?? null,
       }, executionId, owner.client)
-      throw error
+      // The outer run failure path also persists this exception. Never pass a
+      // provider exception (or its cause/stack) containing a credential onward.
+      throw new DomainError(result.error?.code ?? 'EXECUTION_CANCELED', result.error?.message ?? 'Execution canceled.', 409)
+    } finally {
+      if (expiryTimer) clearTimeout(expiryTimer)
+      await this.cleanupCredentials(run.id, owner, executionId)
+      workerCredential = undefined
+    }
+  }
+
+  private async cleanupCredentials(runId: string, owner?: RunOwnership, executionId?: string): Promise<void> {
+    if (!this.workerCredentials) return
+    try {
+      if (executionId) await this.workerCredentials.revokeForExecution(executionId)
+      else await this.workerCredentials.revokeForRun(runId)
+    } catch {
+      // Terminal execution/run rows and unrevoked bindings form the durable
+      // retry queue consumed by every reconciliation pass, including startup.
+      // Authentication already rejects terminal owners even during this outage.
+      await this.runs.recordActivity(runId, 'backend', 'run_state_changed', {
+        credentialCleanup: { state: 'retry_pending', code: 'WORKER_CREDENTIAL_CLEANUP_FAILED' },
+      }, executionId, owner?.client).catch(() => undefined)
     }
   }
 

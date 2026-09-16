@@ -109,10 +109,11 @@ export class PostgresCommandCoordinator {
     source: 'http' | 'mcp',
     action: string,
     targetKey: string,
-    outcome: 'succeeded' | 'failed',
+    outcome: 'succeeded' | 'failed' | 'uncertain',
     details: Record<string, unknown> = {},
+    client?: pg.ClientBase,
   ): Promise<void> {
-    await this.pool.query(
+    await (client ?? this.pool).query(
       `insert into management_audit (principal_id, source, action, target_key, outcome, details)
        values ($1, $2, $3, $4, $5, $6::jsonb)`,
       [principalId ?? null, source, action, targetKey, outcome, JSON.stringify(details)],

@@ -156,6 +156,7 @@ export class RunManagementService {
           workflowVersionId: version.id, agentConfigurationVersionIds: version.agentConfigurationVersionIds,
           executionLocation,
           authorizationPrincipalId: principal.id,
+          ...(version.approval ? { approval: version.approval } : {}),
           executionCondition: version.definition.executionCondition, executionState: 'queued', outcome: 'pending',
           input: input.input, createdAt: new Date().toISOString(),
         })
@@ -186,7 +187,7 @@ export class RunManagementService {
         if (latest.executionState === 'completed') {
           return { runId: input.runId, status: 'already_terminal' as const, processStopped: false }
         }
-        const accepted = await this.engine.cancel(input.runId)
+        const accepted = await this.engine.cancel(input.runId, client)
         return accepted
           ? { runId: input.runId, status: 'accepted' as const, processStopped: false }
           : { runId: input.runId, status: 'not_owner' as const, processStopped: false }

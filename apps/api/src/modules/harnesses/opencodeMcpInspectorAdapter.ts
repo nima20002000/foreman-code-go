@@ -10,11 +10,11 @@ function status(value: Awaited<ReturnType<OpenCodeNativeSessionManager['inspectN
   return value
 }
 
-/** Adapts HAP-03's resolved GET /config + GET /mcp evidence; it starts no second server. */
+/** Pre-injection config proof and post-injection native connection status are separate. */
 export function openCodeMcpInspectorAdapter(manager: OpenCodeMcpConfigurationInspector): NativeMcpInspector {
   return {
     async inspect(input): Promise<NativeMcpInspectionEvidence> {
-      const result = await manager.inspectNativeMcp(input.workingDirectory, input.signal)
+      const result = await manager.inspectNativeMcp(input.workingDirectory, input.signal, input.phase ?? 'health')
       const common = {
         harness: 'opencode' as const,
         providerVersion: result.providerVersion,
@@ -27,16 +27,12 @@ export function openCodeMcpInspectorAdapter(manager: OpenCodeMcpConfigurationIns
         ...common,
         entry: {
           name: result.serverName,
-          transport: 'streamable-http',
+          transport: result.transport ?? 'unknown',
           ...(result.endpoint ? { endpoint: result.endpoint } : {}),
           enabled: result.nativeStatus !== 'disabled',
-          ...(result.credentialEnvironmentVariable
-            ? { credentialEnvironmentVariable: result.credentialEnvironmentVariable }
-            : {}),
+          ...(result.credentialEnvironmentVariable ? { credentialEnvironmentVariable: result.credentialEnvironmentVariable } : {}),
           status: status(result.nativeStatus),
-          ...(result.detail ? { detail: result.detail } : {}),
-          nativeFilterDiagnostics: result.effectiveFilters.map((filter) =>
-            `${filter.permission}:${filter.pattern}:${filter.effect}`),
+          ...(result.effectiveFilters.length ? { nativeFilterDiagnostics: ['Native permission filters are configured.'] } : {}),
         },
       }
     },

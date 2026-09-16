@@ -5,11 +5,14 @@ import {
   type McpDetection,
   type ScopedMcpDetection,
 } from '@graphql/contracts'
+import type pg from 'pg'
 
-import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE, type IssuedWorkerCredential, type WorkerCredentialService } from '../access/workerCredentials.js'
+import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE, WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, type IssuedWorkerCredential, type WorkerCredentialService } from '../access/workerCredentials.js'
 import { DomainError } from '../errors.js'
 
+export const MCP_INSPECTION_TIMEOUT_MS = 30_000
 export type NativeMcpStatus = 'connected' | 'disabled' | 'authentication_required' | 'broken' | 'status_unavailable'
+export type McpInspectionPhase = 'configuration' | 'health'
 
 export interface NativeMcpEntryEvidence {
   name: string
@@ -40,27 +43,40 @@ export interface NativeMcpInspector {
     workingDirectory: string
     serverName: string
     signal?: AbortSignal
+    phase?: McpInspectionPhase
   }): Promise<NativeMcpInspectionEvidence>
 }
 
-function endpointMatches(actual: string | undefined, expected: string): boolean {
+export function endpointMatches(actual: string | undefined, expected: string): boolean {
   if (!actual) return false
   try {
     const left = new URL(actual)
     const right = new URL(expected)
-    return left.protocol === right.protocol && left.host === right.host
-      && left.pathname.replace(/\/$/, '') === right.pathname.replace(/\/$/, '')
-      && left.search === right.search && left.hash === right.hash
-  } catch {
-    return false
-  }
+    return !left.username && !left.password && !right.username && !right.password
+      && (left.protocol === 'http:' || left.protocol === 'https:')
+      && left.protocol === right.protocol && left.host === right.host
+      && left.pathname === right.pathname && left.search === right.search && left.hash === right.hash
+  } catch { return false }
 }
 
-function safeDetail(value: string): string {
-  return value
-    .replace(/Bearer\s+[^\s"']+/gi, 'Bearer [REDACTED]')
-    .replace(/(token|secret|password)\s*[=:]\s*[^\s,"']+/gi, '$1=[REDACTED]')
-    .slice(0, 500)
+// Diagnostic text is never a raw provider response. Even perfectly valid JSON
+// config errors can include credentials under unexpected keys or quoted fields.
+const details: Record<McpDetection['state'], string> = {
+  connected: 'The native provider reports an active MCP connection.',
+  not_detected: 'The named native MCP entry is absent.',
+  disabled: 'The native MCP entry is disabled.',
+  misconfigured: 'The native MCP endpoint, transport, or scoped Bearer authentication does not match this application.',
+  authentication_required: 'The native MCP connection requires authentication. Configuration can be checked before scoped credentials are injected.',
+  broken: 'The native provider reports a failed MCP connection.',
+  status_unavailable: 'Native configuration is available; connection health has not been established.',
+  check_failed: 'Native MCP inspection failed. Check provider configuration and command access.',
+}
+const appTools = new Set(['context_get', 'interaction_list', 'interaction_get', 'interaction_respond'])
+function toolFilter(values: readonly string[]): string[] {
+  if (!Array.isArray(values)) throw new Error('Invalid native tool filter.')
+  // Unknown tool names cannot grant access to the current App catalog. Do not
+  // echo arbitrary configuration strings as diagnostic data.
+  return values.filter((value) => typeof value === 'string' && appTools.has(value))
 }
 
 export class McpDetectionService {
@@ -68,67 +84,76 @@ export class McpDetectionService {
     private readonly inspector: NativeMcpInspector,
     private readonly expectedEndpoint: string,
     private readonly serverName = 'graphql-app',
-  ) {}
+    private readonly timeoutMs = MCP_INSPECTION_TIMEOUT_MS,
+  ) {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) throw new RangeError('Invalid MCP inspection timeout.')
+    if (!endpointMatches(expectedEndpoint, expectedEndpoint)) throw new RangeError('Invalid App MCP endpoint.')
+  }
 
   async inspect(input: {
     harness: AgentHarness
     runnerId: string
     workingDirectory: string
     signal?: AbortSignal
+    phase?: McpInspectionPhase
   }): Promise<ScopedMcpDetection> {
-    let evidence: NativeMcpInspectionEvidence
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(new Error('MCP inspection deadline exceeded.')), this.timeoutMs)
+    timeout.unref()
+    const signal = input.signal ? AbortSignal.any([input.signal, controller.signal]) : controller.signal
+    let abort: (() => void) | undefined
     try {
-      evidence = await this.inspector.inspect({ ...input, serverName: this.serverName })
-    } catch (error) {
+      signal.throwIfAborted()
+      const canceled = new Promise<never>((_resolve, reject) => {
+        abort = () => reject(new Error('MCP inspection canceled.'))
+        signal.addEventListener('abort', abort, { once: true })
+      })
+      const evidence = await Promise.race([
+        Promise.resolve().then(() => this.inspector.inspect({ ...input, signal, serverName: this.serverName })),
+        canceled,
+      ])
+      signal.throwIfAborted()
+      if (evidence.harness !== input.harness || evidence.runnerId !== input.runnerId
+        || evidence.workingDirectory !== input.workingDirectory) {
+        throw new DomainError('MCP_INSPECTION_CONTEXT_MISMATCH', 'Native MCP inspection returned evidence for another launch context.', 500)
+      }
+      const entry = evidence.entry
+      const matches = entry ? endpointMatches(entry.endpoint, this.expectedEndpoint) : null
+      const credentialMatches = entry?.credentialEnvironmentVariable === APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
+      let state: McpDetection['state']
+      if (!entry) state = 'not_detected'
+      else if (entry.name !== this.serverName || !matches || !credentialMatches || entry.transport !== 'streamable-http') state = 'misconfigured'
+      else if (entry.enabled === false || entry.status === 'disabled') state = 'disabled'
+      else if (entry.status === 'connected' || entry.status === 'authentication_required' || entry.status === 'broken') state = entry.status
+      else state = 'status_unavailable'
       return ScopedMcpDetectionSchema.parse({
         detection: McpDetectionSchema.parse({
-          harness: input.harness,
-          serverName: this.serverName,
-          state: 'check_failed',
-          endpointMatches: null,
-          credentialEnvironmentVariable: null,
-          checkedAt: new Date().toISOString(),
-          detail: safeDetail(error instanceof Error ? error.message : 'Native MCP inspection failed.'),
+          harness: input.harness, serverName: this.serverName, state, endpointMatches: matches,
+          credentialEnvironmentVariable: credentialMatches ? APP_MCP_TOKEN_ENVIRONMENT_VARIABLE : null,
+          checkedAt: new Date().toISOString(), detail: details[state],
         }),
-        runnerId: input.runnerId,
-        workingDirectory: input.workingDirectory,
-        providerVersion: 'unknown',
-        nativeFilters: {},
+        runnerId: input.runnerId, workingDirectory: input.workingDirectory,
+        providerVersion: /^(?:codex-cli )?\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(evidence.providerVersion) ? evidence.providerVersion : 'unknown',
+        nativeFilters: {
+          ...(entry?.enabledTools !== undefined ? { enabledTools: toolFilter(entry.enabledTools) } : {}),
+          ...(entry?.disabledTools !== undefined ? { disabledTools: toolFilter(entry.disabledTools) } : {}),
+          ...(entry?.nativeFilterDiagnostics?.length ? { diagnostics: ['Native permission filters are configured; inspect their details in the native client.'] } : {}),
+        },
       })
+    } catch (error) {
+      if (error instanceof DomainError && error.code === 'MCP_INSPECTION_CONTEXT_MISMATCH') throw error
+      return ScopedMcpDetectionSchema.parse({
+        detection: McpDetectionSchema.parse({
+          harness: input.harness, serverName: this.serverName, state: 'check_failed',
+          endpointMatches: null, credentialEnvironmentVariable: null, checkedAt: new Date().toISOString(),
+          detail: signal.aborted ? 'Native MCP inspection was canceled or exceeded its deadline.' : details.check_failed,
+        }),
+        runnerId: input.runnerId, workingDirectory: input.workingDirectory, providerVersion: 'unknown', nativeFilters: {},
+      })
+    } finally {
+      clearTimeout(timeout)
+      if (abort) signal.removeEventListener('abort', abort)
     }
-    if (evidence.harness !== input.harness || evidence.runnerId !== input.runnerId
-      || evidence.workingDirectory !== input.workingDirectory) {
-      throw new DomainError('MCP_INSPECTION_CONTEXT_MISMATCH', 'Native MCP inspection returned evidence for another launch context.', 500)
-    }
-    const entry = evidence.entry
-    const matches = entry ? endpointMatches(entry.endpoint, this.expectedEndpoint) : null
-    const nameMatches = entry?.name === this.serverName
-    const credentialMatches = entry?.credentialEnvironmentVariable === APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
-    const transportMatches = entry?.transport === 'streamable-http'
-    let state: McpDetection['state']
-    if (!entry) state = 'not_detected'
-    else if (!nameMatches || !matches || !credentialMatches || !transportMatches) state = 'misconfigured'
-    else if (entry.enabled === false || entry.status === 'disabled') state = 'disabled'
-    else state = entry.status ?? 'status_unavailable'
-    return ScopedMcpDetectionSchema.parse({
-      detection: McpDetectionSchema.parse({
-        harness: input.harness,
-        serverName: this.serverName,
-        state,
-        endpointMatches: matches,
-        credentialEnvironmentVariable: entry?.credentialEnvironmentVariable ?? null,
-        checkedAt: evidence.inspectedAt,
-        ...(entry?.detail ? { detail: safeDetail(entry.detail) } : {}),
-      }),
-      runnerId: evidence.runnerId,
-      workingDirectory: evidence.workingDirectory,
-      providerVersion: evidence.providerVersion,
-      nativeFilters: {
-        ...(entry?.enabledTools ? { enabledTools: entry.enabledTools } : {}),
-        ...(entry?.disabledTools ? { disabledTools: entry.disabledTools } : {}),
-        ...(entry?.nativeFilterDiagnostics ? { diagnostics: entry.nativeFilterDiagnostics } : {}),
-      },
-    })
   }
 
   async preflight(input: {
@@ -137,10 +162,13 @@ export class McpDetectionService {
     workingDirectory: string
     signal?: AbortSignal
   }): Promise<ScopedMcpDetection> {
-    const result = await this.inspect(input)
-    if (result.detection.state !== 'connected' && result.detection.state !== 'status_unavailable') {
+    const result = await this.inspect({ ...input, phase: 'configuration' })
+    // A correctly configured bearer endpoint may require the not-yet-issued
+    // token. This does NOT accept broken connections or relax config checks.
+    if (!['connected', 'status_unavailable', 'authentication_required'].includes(result.detection.state)) {
       throw new DomainError('APP_MCP_PREFLIGHT_FAILED', `App MCP credential injection refused: ${result.detection.state}.`, 409)
     }
+    input.signal?.throwIfAborted()
     return result
   }
 }
@@ -160,32 +188,30 @@ export class WorkerLaunchCredentialService implements ExecutionCredentialProvide
     private readonly detection: McpDetectionService,
     private readonly credentials: WorkerCredentialService,
     private readonly runnerId: string,
-  ) {}
+    maximumExecutionMs = 300_000,
+  ) {
+    if (!Number.isSafeInteger(maximumExecutionMs) || maximumExecutionMs < 1
+      || maximumExecutionMs > credentials.ttlMs - WORKER_CREDENTIAL_EXPIRY_MARGIN_MS) {
+      throw new RangeError('The execution timeout must end at least 30 seconds before the App credential expires.')
+    }
+  }
 
-  async prepare(input: {
-    executionId: string
-    harness: AgentHarness
-    workingDirectory: string
-    signal?: AbortSignal
-  }): Promise<{ credential: IssuedWorkerCredential; detection: ScopedMcpDetection }> {
+  async prepare(input: ExecutionCredentialPrepareInput): Promise<PreparedExecutionCredential> {
     const detection = await this.detection.preflight({
-      harness: input.harness,
-      runnerId: this.runnerId,
-      workingDirectory: input.workingDirectory,
+      harness: input.harness, runnerId: this.runnerId, workingDirectory: input.workingDirectory,
       ...(input.signal ? { signal: input.signal } : {}),
     })
-    // Issuance is intentionally after endpoint/auth-reference verification.
+    input.signal?.throwIfAborted()
+    // The engine retains the returned credential before its final launch check,
+    // including an abort that races issuance, and always performs terminal cleanup.
     const credential = await this.credentials.issueForExecution(input.executionId)
     return { credential, detection }
   }
 
-  revoke(credential: IssuedWorkerCredential): Promise<void> {
-    return this.credentials.revoke(credential)
-  }
-
-  revokeForExecution(executionId: string): Promise<number> {
-    return this.credentials.revokeForExecution(executionId)
-  }
+  revoke(credential: IssuedWorkerCredential): Promise<void> { return this.credentials.revoke(credential) }
+  revokeForExecution(executionId: string): Promise<number> { return this.credentials.revokeForExecution(executionId) }
+  revokeForRun(runId: string, client?: pg.PoolClient): Promise<number> { return this.credentials.revokeForRun(runId, client) }
+  reconcileTerminalCredentials(): Promise<void> { return this.credentials.reconcileTerminalCredentials() }
 }
 
 export interface ExecutionCredentialPrepareInput {
@@ -205,4 +231,6 @@ export interface ExecutionCredentialProvider {
   prepare(input: ExecutionCredentialPrepareInput): Promise<PreparedExecutionCredential>
   revoke(credential: IssuedWorkerCredential): Promise<void>
   revokeForExecution(executionId: string): Promise<number>
+  revokeForRun(runId: string, client?: pg.PoolClient): Promise<number>
+  reconcileTerminalCredentials(): Promise<void>
 }

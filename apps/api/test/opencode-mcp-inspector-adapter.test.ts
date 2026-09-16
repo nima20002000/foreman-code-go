@@ -7,7 +7,7 @@ describe('OpenCode HAP-03 MCP inspection adapter', () => {
     const inspector = openCodeMcpInspectorAdapter({
       inspectNativeMcp: async (cwd) => ({
         cwd, providerVersion: '1.18.31', serverName: 'graphql-app', nativeStatus: 'connected',
-        endpoint: 'http://127.0.0.1:3000/mcp/tools',
+        transport: 'streamable-http', endpoint: 'http://127.0.0.1:3000/mcp/tools',
         endpointMatches: true,
         credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN',
         effectiveFilters: [{ permission: 'tool', pattern: 'graphql-app_*', effect: 'allow' }],
@@ -17,7 +17,7 @@ describe('OpenCode HAP-03 MCP inspection adapter', () => {
       harness: 'opencode', runnerId: 'runner-local', workingDirectory: '/workspace', serverName: 'graphql-app',
     })).resolves.toMatchObject({
       providerVersion: '1.18.31',
-      entry: { status: 'connected', nativeFilterDiagnostics: ['tool:graphql-app_*:allow'] },
+      entry: { status: 'connected', transport: 'streamable-http', nativeFilterDiagnostics: ['Native permission filters are configured.'] },
     })
   })
 
@@ -30,7 +30,7 @@ describe('OpenCode HAP-03 MCP inspection adapter', () => {
     const inspector = openCodeMcpInspectorAdapter({
       inspectNativeMcp: async (cwd) => ({
         cwd, providerVersion: '1.18.31', serverName: 'graphql-app', nativeStatus,
-        endpoint: 'http://127.0.0.1:3000/mcp/tools',
+        transport: 'streamable-http', endpoint: 'http://127.0.0.1:3000/mcp/tools',
         endpointMatches: true,
         credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN', effectiveFilters: [],
       }),

@@ -2,9 +2,11 @@ import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'n
 import type { Readable } from 'node:stream'
 
 import type { ChildProcessEnvironment, NativeEventInput } from './port.js'
+import { inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
 
 const MAX_STDERR_LENGTH = 1_000_000
 export const PROCESS_SHUTDOWN_GRACE_MS = 1_000
+export const NATIVE_COMMAND_TIMEOUT_MS = 30_000
 const ownedProcesses = new WeakMap<ChildProcess, () => Promise<void>>()
 
 export interface JsonlProcessOptions {
@@ -64,19 +66,14 @@ export async function stopProcess(child: ChildProcess): Promise<boolean> {
 
 async function runOwnedProcess<T>(
   options: ProcessOptions,
-  read: (child: ChildProcessWithoutNullStreams) => Promise<T>,
+  read: (child: ChildProcessWithoutNullStreams, secrets: readonly string[]) => Promise<T>,
 ): Promise<T & ProcessExit> {
   options.signal?.throwIfAborted()
-  const childEnvironment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
-  for (const key of Object.keys(childEnvironment)) {
-    if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_')
-      || key === 'DATABASE_URL' || key === 'TEST_DATABASE_URL' || key === 'PGPASSWORD') {
-      delete childEnvironment[key]
-    }
-  }
+  const childEnvironment = inheritedAgentEnvironment()
   // No asynchronous work may separate the launch check from process creation.
   // This detects qualification-time replacement; it is not an atomic cwd pin.
   const scopedEnvironment = options.beforeSpawn ? await options.beforeSpawn() : undefined
+  const secrets: string[] = []
   if (scopedEnvironment) {
     if (!options.expectedAgentId || scopedEnvironment.agentId !== options.expectedAgentId) {
       throw new Error('Child process environment belongs to another Agent.')
@@ -86,6 +83,7 @@ async function runOwnedProcess<T>(
       throw new Error('Only the scoped GraphQL App MCP credential may be injected into an Agent process.')
     }
     childEnvironment.GRAPHQL_APP_MCP_TOKEN = entries[0][1]
+    secrets.push(entries[0][1])
   }
   options.signal?.throwIfAborted()
   const child = spawn(options.binary, options.args, {
@@ -135,7 +133,7 @@ async function runOwnedProcess<T>(
   child.once('exit', abort)
   child.once('error', abort)
 
-  const readers = Promise.resolve().then(() => read(child))
+  const readers = Promise.resolve().then(() => read(child, secrets))
   const input = new Promise<void>((resolve, reject) => {
     child.stdin.on('error', (error: NodeJS.ErrnoException) => {
       // Early CLI exits (including qualification failures) can close stdin.
@@ -206,39 +204,48 @@ function asEvent(line: string): NativeEventInput {
 }
 
 export async function runJsonlProcess(options: JsonlProcessOptions): Promise<JsonlProcessResult> {
-  return runOwnedProcess(options, async (child) => {
+  return runOwnedProcess(options, async (child, secrets) => {
     let eventChain = Promise.resolve()
     const emit = (event: NativeEventInput) => {
-      eventChain = eventChain.then(() => options.onEvent(event))
+      const safe = redactKnownSecrets(event, secrets)
+      eventChain = eventChain.then(() => options.onEvent(safe))
       return eventChain
     }
     let stderr = ''
     await settleReaders(child, [
       readLines(child.stdout, async (line) => { if (line.trim()) await emit(asEvent(line)) }),
       readLines(child.stderr, async (line) => {
-        stderr = (stderr + `${line}\n`).slice(0, MAX_STDERR_LENGTH)
-        await emit({ type: 'stderr', payload: { text: line } })
+        const safe = redactSecretText(line, secrets)
+        stderr = (stderr + `${safe}\n`).slice(0, MAX_STDERR_LENGTH)
+        await emit({ type: 'stderr', payload: { text: safe } })
       }),
     ])
     return { stderr }
   })
 }
 
-export async function runCommand(binary: string, args: string[], cwd: string, signal?: AbortSignal): Promise<{
-  exitCode: number | null
-  stdout: string
-  stderr: string
-}> {
-  return runOwnedProcess({ binary, args, cwd, ...(signal ? { signal } : {}) }, async (child) => {
+/** A model-free native inspection command. Scoped injection remains owner checked. */
+export async function runCommand(
+  binary: string,
+  args: string[],
+  cwd: string,
+  signal?: AbortSignal,
+  scoped?: Pick<JsonlProcessOptions, 'beforeSpawn' | 'expectedAgentId'>,
+): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
+  const deadline = AbortSignal.timeout(NATIVE_COMMAND_TIMEOUT_MS)
+  const combined = signal ? AbortSignal.any([signal, deadline]) : deadline
+  const result = await runOwnedProcess({ binary, args, cwd, signal: combined, ...scoped }, async (child, secrets) => {
     const collect = async (stream: Readable) => {
       stream.setEncoding('utf8')
       let text = ''
       for await (const chunk of stream) text += String(chunk)
-      return text
+      return redactSecretText(text, secrets)
     }
     const [stdout = '', stderr = ''] = await settleReaders(child, [collect(child.stdout), collect(child.stderr)])
     return { stdout, stderr }
   })
+  combined.throwIfAborted()
+  return result
 }
 
 /** Qualification commands share cancellation and are all drained on failure. */

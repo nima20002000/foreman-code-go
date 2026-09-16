@@ -27,6 +27,9 @@ import type {
   NativeTurnInput,
 } from './port.js'
 import { runCommand } from './process.js'
+import { inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
+import { inspectOpenCodeMcpConfiguration } from './opencodeMcpConfiguration.js'
+import { endpointMatches, type NativeMcpEntryEvidence } from './mcpDetection.js'
 
 const QUALIFIED_VERSION = '1.18.31'
 const STARTUP_TIMEOUT_MS = 30_000
@@ -86,6 +89,8 @@ export interface OpenCodeServerController {
   readonly expectedVersion: string
   readonly advancedConfiguration?: OpenCodeAdvancedConfiguration | undefined
   readonly credentialEnvironmentFingerprint?: string | undefined
+  inspectMcpConfiguration?(directory: string, serverName: string, signal?: AbortSignal): Promise<NativeMcpEntryEvidence | undefined>
+  redact?<T>(value: T): T
   ensure(signal?: AbortSignal): Promise<void>
   request(path: string, init?: RequestInit, signal?: AbortSignal): Promise<Response>
   dispose(): Promise<void>
@@ -130,10 +135,26 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       throw new HarnessExecutionError('OPENCODE_CREDENTIAL_OWNER_MISMATCH', 'The OpenCode server credential does not belong to its owning Agent.')
     }
     const unsupported = Object.keys(environment?.variables ?? {}).filter((key) => key !== APP_CREDENTIAL_ENV)
-    if (unsupported.length > 0) {
+    if (unsupported.length > 0 || (environment && APP_CREDENTIAL_ENV in environment.variables && !environment.variables[APP_CREDENTIAL_ENV])) {
       throw new HarnessExecutionError('OPENCODE_CREDENTIAL_ENV_UNSUPPORTED', 'The OpenCode server only accepts the scoped App credential environment variable.')
     }
     return environment ? { agentId: environment.agentId, variables: { ...environment.variables } } : undefined
+  }
+
+  redact<T>(value: T): T {
+    const secrets = Object.values(this.environment?.variables ?? {})
+    if (this.password) {
+      secrets.push(this.password, Buffer.from(`opencode:${this.password}`).toString('base64'))
+    }
+    return redactKnownSecrets(value, secrets)
+  }
+
+  inspectMcpConfiguration(directory: string, serverName: string, signal?: AbortSignal): Promise<NativeMcpEntryEvidence | undefined> {
+    return inspectOpenCodeMcpConfiguration({
+      binary: this.options.binary, workingDirectory: directory, serverName,
+      pure: this.options.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true,
+      ...(signal ? { signal } : {}),
+    })
   }
 
   async ensure(signal?: AbortSignal): Promise<void> {
@@ -209,11 +230,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
     }
 
     this.password = randomBytes(32).toString('hex')
-    const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1', OPENCODE_SERVER_PASSWORD: this.password }
-    for (const key of Object.keys(environment)) {
-      if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_')
-        || key === 'DATABASE_URL' || key === 'TEST_DATABASE_URL' || key === 'PGPASSWORD') delete environment[key]
-    }
+    const environment: NodeJS.ProcessEnv = { ...inheritedAgentEnvironment(), OPENCODE_SERVER_PASSWORD: this.password }
     Object.assign(environment, this.environment?.variables ?? {})
     if (this.options.advancedConfiguration) {
       environment.OPENCODE_CONFIG_CONTENT = buildOpenCodeConfigContent(
@@ -223,6 +240,8 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
     }
     const pure = this.options.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true
     const args = ['serve', '--hostname', '127.0.0.1', '--port', '0', ...(pure ? ['--pure'] : [])]
+    signal?.throwIfAborted()
+    this.stderr = ''
     const child = spawn(this.options.binary, args, {
       cwd: this.options.workingDirectory,
       env: environment,
@@ -233,7 +252,11 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
     child.stdin.end()
     this.child = child
     child.stderr.setEncoding('utf8')
-    child.stderr.on('data', (chunk) => { this.stderr = (this.stderr + String(chunk)).slice(-MAX_STDERR_LENGTH) })
+    // Disposal clears the manager environment before the child finishes. Keep
+    // this process's redaction context until its final stderr bytes are drained.
+    const processSecrets: string[] = Object.values(this.environment?.variables ?? {})
+    if (this.password) processSecrets.push(this.password, Buffer.from(`opencode:${this.password}`).toString('base64'))
+    child.stderr.on('data', (chunk) => { this.stderr = redactSecretText(this.stderr + String(chunk), processSecrets).slice(-MAX_STDERR_LENGTH) })
     try {
       const baseUrl = await this.waitForUrl(child, signal)
       this.baseUrl = baseUrl
@@ -294,7 +317,8 @@ export interface OpenCodeMcpInspection {
   cwd: string
   providerVersion: string
   serverName: string
-  nativeStatus: 'connected' | 'disabled' | 'failed' | 'needs_auth' | 'needs_client_registration' | 'not_detected'
+  nativeStatus: 'connected' | 'disabled' | 'failed' | 'needs_auth' | 'needs_client_registration' | 'not_detected' | 'status_unavailable'
+  transport?: NativeMcpEntryEvidence['transport']
   endpoint: string | null
   credentialEnvironmentVariable: string | null
   endpointMatches: boolean | null
@@ -308,6 +332,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private readonly sessions = new Map<string, SessionState>()
   private readonly activeTurns = new Set<string>()
   private boundEnvironmentFingerprint: string | undefined
+  private readonly knownSecrets = new Set<string>()
 
   constructor(private readonly options: OpenCodeNativeSessionManagerOptions) {
     this.boundEnvironmentFingerprint = options.server.credentialEnvironmentFingerprint
@@ -544,6 +569,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     if (!this.options.server.restart) {
       throw new HarnessExecutionError('OPENCODE_SERVER_RESTART_UNSUPPORTED', 'This OpenCode server controller cannot replace its credential environment.')
     }
+    Object.values(environment.variables).forEach((value) => this.knownSecrets.add(value))
     await this.options.server.restart(environment, signal)
     this.boundEnvironmentFingerprint = childEnvironmentFingerprint(environment)
     await this.qualifyServer(signal)
@@ -554,6 +580,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     if (environment.agentId !== this.options.ownerAgentId) {
       throw new HarnessExecutionError('OPENCODE_SESSION_OWNER_MISMATCH', 'The session credential belongs to another Agent.')
     }
+    Object.values(environment.variables).forEach((value) => this.knownSecrets.add(value))
     const fingerprint = childEnvironmentFingerprint(environment)
     if (fingerprint === this.boundEnvironmentFingerprint) return
     if (this.boundEnvironmentFingerprint) {
@@ -568,6 +595,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         'The OpenCode server cannot bind the scoped App credential environment.',
       )
     }
+    Object.values(environment.variables).forEach((value) => this.knownSecrets.add(value))
     await this.options.server.restart(environment, signal)
     this.boundEnvironmentFingerprint = fingerprint
   }
@@ -577,6 +605,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       await this.options.server.dispose()
     } finally {
       this.boundEnvironmentFingerprint = undefined
+      this.knownSecrets.clear()
     }
   }
 
@@ -595,29 +624,44 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     throw error
   }
 
-  async inspectNativeMcp(directory: string, signal?: AbortSignal): Promise<OpenCodeMcpInspection> {
+  async inspectNativeMcp(directory: string, signal?: AbortSignal, phase: 'configuration' | 'health' = 'health'): Promise<OpenCodeMcpInspection> {
+    const name = this.options.appMcpServerName ?? 'graphql-app'
+    if (!this.options.server.inspectMcpConfiguration) {
+      throw new HarnessExecutionError('OPENCODE_MCP_AUTH_EVIDENCE_UNAVAILABLE', 'This controller cannot prove the App Authorization environment reference.')
+    }
+    const proof = await this.options.server.inspectMcpConfiguration(directory, name, signal)
+    const expected = this.options.expectedAppMcpEndpoint
+    if (phase === 'configuration' || !proof) {
+      return {
+        cwd: directory, providerVersion: QUALIFIED_VERSION, serverName: name,
+        nativeStatus: !proof ? 'not_detected' : proof.enabled === false ? 'disabled' : 'status_unavailable',
+        transport: proof?.transport ?? 'unknown', endpoint: proof?.endpoint ?? null,
+        credentialEnvironmentVariable: proof?.credentialEnvironmentVariable ?? null,
+        endpointMatches: expected && proof ? endpointMatches(proof.endpoint, expected) : null,
+        effectiveFilters: [],
+      }
+    }
     await this.qualifyServer(signal)
     const [configValue, statusesValue] = await Promise.all([
       this.json('/config', { method: 'GET', directory }, signal),
       this.json('/mcp', { method: 'GET', directory }, signal),
     ])
     const config = asObject(configValue)
-    const statuses = asObject(statusesValue)
-    const name = this.options.appMcpServerName ?? 'graphql-app'
     const configured = objectField(config, 'mcp')[name]
-    const status = objectField(statuses, name)
-    const nativeStatus = nativeMcpStatus(configured, status)
-    const endpoint = configured && typeof configured === 'object' && !Array.isArray(configured)
-      ? nullableString((configured as JsonObject).url) : null
-    const environmentReference = configured && typeof configured === 'object' && !Array.isArray(configured)
-      ? credentialEnvironmentReference(configured as JsonObject) : null
-    const expected = this.options.expectedAppMcpEndpoint
+    const entry = asObject(configured)
+    const status = objectField(statusesValue, name)
+    const matchesProof = entry.type === 'remote' && entry.oauth === false
+      && entry.url === proof.endpoint && (entry.enabled !== false) === (proof.enabled !== false)
     return {
       cwd: directory, providerVersion: QUALIFIED_VERSION, serverName: name,
-      nativeStatus, endpoint, credentialEnvironmentVariable: environmentReference,
-      endpointMatches: expected ? endpoint === expected : null,
-      effectiveFilters: permissionRules(config),
-      ...(typeof status.error === 'string' ? { detail: status.error } : {}),
+      nativeStatus: entry.enabled === false ? 'disabled' : nativeMcpStatus(configured, status),
+      transport: entry.type === 'remote' ? 'streamable-http' : 'unknown',
+      endpoint: nullableString(entry.url),
+      credentialEnvironmentVariable: matchesProof ? proof.credentialEnvironmentVariable ?? null : null,
+      endpointMatches: expected ? endpointMatches(nullableString(entry.url) ?? undefined, expected) : null,
+      // Raw provider errors and permission patterns may contain secrets. The
+      // normalized service reports only a controlled diagnostic notice.
+      effectiveFilters: [],
     }
   }
 
@@ -634,16 +678,17 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       const native = await this.inspectNativeMcp(first.directory, signal)
       return {
         harness: 'opencode', serverName: native.serverName,
-        state: detectionState(native.nativeStatus, native.endpointMatches),
+        state: native.nativeStatus !== 'not_detected' && (native.credentialEnvironmentVariable !== APP_CREDENTIAL_ENV
+          || native.transport !== 'streamable-http') ? 'misconfigured' : detectionState(native.nativeStatus, native.endpointMatches),
         endpointMatches: native.endpointMatches,
         credentialEnvironmentVariable: native.credentialEnvironmentVariable,
         checkedAt: new Date().toISOString(), ...(native.detail ? { detail: native.detail } : {}),
       }
-    } catch (error) {
+    } catch {
       return {
         harness: 'opencode', serverName: this.options.appMcpServerName ?? 'graphql-app', state: 'check_failed',
         endpointMatches: null, credentialEnvironmentVariable: null, checkedAt: new Date().toISOString(),
-        detail: error instanceof Error ? error.message : 'OpenCode MCP inspection failed.',
+        detail: 'OpenCode MCP inspection failed; provider details were withheld.',
       }
     }
   }
@@ -761,6 +806,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private record(state: SessionState, native: NativeEvent): NativeHarnessEvent | undefined {
     if (native.id && state.seenEventIds.has(native.id)) return undefined
     if (native.id) state.seenEventIds.add(native.id)
+    native = this.sanitize(native)
     const event = NativeHarnessEventSchema.parse({
       sequence: state.sequence++, type: native.type, occurredAt: new Date().toISOString(),
       payload: { ...(native.properties ?? {}), ...(native.id ? { nativeEventId: native.id } : {}) },
@@ -770,9 +816,14 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private synthetic(state: SessionState, type: string, payload: JsonObject): NativeHarnessEvent {
-    const event = NativeHarnessEventSchema.parse({ sequence: state.sequence++, type, occurredAt: new Date().toISOString(), payload })
+    const event = NativeHarnessEventSchema.parse(this.sanitize({ sequence: state.sequence++, type, occurredAt: new Date().toISOString(), payload }))
     state.events.push(event)
     return event
+  }
+
+  private sanitize<T>(value: T): T {
+    const safe = redactKnownSecrets(value, [...this.knownSecrets])
+    return this.options.server.redact ? this.options.server.redact(safe) : safe
   }
 
   private async json(path: string, input: { method: string; directory?: string; body?: unknown }, signal?: AbortSignal): Promise<unknown> {
@@ -782,7 +833,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       ...(input.body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(input.body) }),
     }, signal)
     if (!response.ok) throw await responseError(response, 'OPENCODE_SERVER_REQUEST_FAILED', 'definite')
-    return response.status === 204 ? undefined : response.json()
+    return response.status === 204 ? undefined : this.sanitize(await response.json())
   }
 
   private async mutate(path: string, init: RequestInit, signal?: AbortSignal): Promise<unknown> {
@@ -793,7 +844,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_DELIVERY_UNCERTAIN', 'The OpenCode mutation outcome is uncertain after a transport failure.', 'uncertain', { cause: error })
     }
     if (!response.ok) throw await responseError(response, 'OPENCODE_NATIVE_DELIVERY_REJECTED', response.status >= 500 ? 'uncertain' : 'definite')
-    return response.status === 204 ? undefined : response.json()
+    return response.status === 204 ? undefined : this.sanitize(await response.json())
   }
 }
 
@@ -953,8 +1004,8 @@ function belongsToSession(event: NativeEvent, sessionID: string): boolean {
 }
 
 async function responseError(response: Response, code: string, certainty: NativeDeliveryCertainty): Promise<OpenCodeNativeDeliveryError> {
-  const detail = (await response.text()).slice(0, 2_000)
-  return new OpenCodeNativeDeliveryError(code, detail || `OpenCode returned HTTP ${response.status}.`, certainty)
+  await response.body?.cancel().catch(() => undefined)
+  return new OpenCodeNativeDeliveryError(code, `OpenCode returned HTTP ${response.status}; provider details were withheld.`, certainty)
 }
 
 function stringField(value: unknown, key: string, code: string): string {
@@ -993,33 +1044,13 @@ function nativeMcpStatus(configured: unknown, status: JsonObject): OpenCodeMcpIn
   if (!configured) return 'not_detected'
   const native = status.status
   return native === 'connected' || native === 'disabled' || native === 'failed' || native === 'needs_auth' || native === 'needs_client_registration'
-    ? native : 'failed'
-}
-
-function credentialEnvironmentReference(config: JsonObject): string | null {
-  const headers = objectField(config, 'headers')
-  for (const value of Object.values(headers)) {
-    if (typeof value !== 'string') continue
-    const match = value.match(/^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/) ?? value.match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/)
-    if (match?.[1]) return match[1]
-  }
-  return null
-}
-
-function permissionRules(config: JsonObject): OpenCodeMcpInspection['effectiveFilters'] {
-  const permission = valueField(config, 'permission')
-  if (Array.isArray(permission)) {
-    return permission.map((rule) => ({
-      permission: String(valueField(rule, 'permission')), pattern: String(valueField(rule, 'pattern')),
-      effect: String(valueField(rule, 'action') || valueField(rule, 'effect')),
-    }))
-  }
-  return []
+    ? native : 'status_unavailable'
 }
 
 function detectionState(status: OpenCodeMcpInspection['nativeStatus'], endpointMatches: boolean | null): McpDetection['state'] {
   if (status === 'not_detected') return 'not_detected'
   if (endpointMatches === false) return 'misconfigured'
+  if (status === 'status_unavailable') return 'status_unavailable'
   if (status === 'connected') return 'connected'
   if (status === 'disabled') return 'disabled'
   if (status === 'needs_auth' || status === 'needs_client_registration') return 'authentication_required'

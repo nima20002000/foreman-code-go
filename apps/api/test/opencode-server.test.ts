@@ -13,6 +13,7 @@ import {
   buildOpenCodeConfigContent,
   type OpenCodeServerController,
 } from '../src/modules/harnesses/opencodeServer.js'
+import type { NativeMcpEntryEvidence } from '../src/modules/harnesses/mcpDetection.js'
 
 const requiredPaths = {
   '/session': {}, '/session/{sessionID}/prompt_async': {}, '/session/{sessionID}/abort': {},
@@ -50,6 +51,9 @@ class FakeServer implements OpenCodeServerController {
   restartEnvironments: unknown[] = []
   sessionIds: string[] = []
   disposals = 0
+  mcpEvidence: NativeMcpEntryEvidence | undefined
+
+  async inspectMcpConfiguration() { return this.mcpEvidence }
 
   async ensure() {}
   async dispose() { this.disposals += 1 }
@@ -188,6 +192,7 @@ const fs = require('node:fs')
 const args = process.argv.slice(2)
 if (args.includes('--version')) { console.log('1.18.31'); process.exit(0) }
 const token = process.env.GRAPHQL_APP_MCP_TOKEN
+process.on('SIGTERM', () => process.stderr.write(String(token || '') + '\\n', () => process.exit(0)))
 const server = http.createServer((request, response) => {
   response.setHeader('content-type', 'application/json')
   if (request.url === '/global/health') response.end(JSON.stringify({healthy:true,version:'1.18.31'}))
@@ -221,6 +226,8 @@ server.listen(0, '127.0.0.1', () => {
       const terminalPid = Number(await readFile(pidFile, 'utf8'))
       await native.close(session)
       await expectProcessExited(terminalPid)
+      expect(String(Reflect.get(server, 'stderr'))).toContain('[REDACTED]')
+      expect(String(Reflect.get(server, 'stderr'))).not.toContain('scoped-token')
 
       const failedCreate = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1' })
       const invalid = request()
@@ -351,17 +358,20 @@ server.listen(0, '127.0.0.1', () => {
     const native = manager(server)
     const session = await sessionFor(native)
     server.config = {
-      mcp: { 'graphql-app': { type: 'remote', url: 'http://127.0.0.1:4100/mcp/app', headers: { authorization: '{env:GRAPHQL_APP_MCP_TOKEN}' } } },
+      mcp: { 'graphql-app': { type: 'remote', url: 'http://127.0.0.1:4100/mcp/app', oauth: false, headers: { authorization: 'Bearer opaque' } } },
       permission: [{ permission: 'graphql-app_*', pattern: '*', action: 'ask' }],
     }
+    server.mcpEvidence = { name: 'graphql-app', enabled: true, transport: 'streamable-http', endpoint: 'http://127.0.0.1:4100/mcp/app', credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN' }
     server.mcp = { 'graphql-app': { status: 'connected' } }
     expect(await native.cancel(session)).toBe(true)
     await expect(native.inspectNativeMcp('/workspace/project')).resolves.toMatchObject({
       cwd: '/workspace/project', providerVersion: '1.18.31', nativeStatus: 'connected', endpointMatches: true,
       credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN',
-      effectiveFilters: [{ permission: 'graphql-app_*', pattern: '*', effect: 'ask' }],
+      effectiveFilters: [],
     })
     await expect(native.inspectMcp()).resolves.toMatchObject({ state: 'connected', endpointMatches: true })
+    server.mcp = {}
+    await expect(native.inspectNativeMcp('/workspace/project')).resolves.toMatchObject({ nativeStatus: 'status_unavailable' })
   })
 
   it('preserves ordered Advanced permission rules and applies only preconfigured MCP controls', async () => {
