@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import {
   CODEX_APPROVAL_OPTIONS_FIXTURE,
   AgentSchema,
+  DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
   NATIVE_INTERACTION_FIXTURES,
   NativeHarnessEventSchema,
   type HarnessExecutionRequest,
@@ -13,6 +14,7 @@ import {
   type NativeSessionReference,
   type PendingNativeInteraction,
   type ApprovalResponseOption,
+  type AgentConfigurationVersion,
 } from '@graphql/contracts'
 import pg from 'pg'
 import { afterEach, beforeEach, expect, it } from 'vitest'
@@ -254,6 +256,15 @@ it('interrupts and resumes the same durable native execution without repeating p
 
 it('targets two parallel interrupt ids without respawning either branch or its predecessor', async () => {
   const workflows = new PostgresWorkflowRepository(pool)
+  const developerConfiguration = await workflows.getAgentConfiguration('agent-developer-config-v1')
+  if (!developerConfiguration || developerConfiguration.harness.harness !== 'opencode') throw new Error('OpenCode configuration missing')
+  await pool.query('update agent_configuration_versions set record=$2::jsonb where id=$1', [
+    developerConfiguration.id,
+    JSON.stringify({
+      ...developerConfiguration,
+      harness: { ...developerConfiguration.harness, advanced: structuredClone(DEFAULT_OPENCODE_ADVANCED_CONFIGURATION) },
+    }),
+  ])
   const saved = await workflows.get('workspace-1', 'workflow-content-pipeline')
   if (!saved) throw new Error('seed missing')
   await workflows.save('workspace-1', {
@@ -278,9 +289,11 @@ it('targets two parallel interrupt ids without respawning either branch or its p
   const managersByAgent = new Map<string, SelectiveNativeManager>()
   const resolutionCount = new Map<string, number>()
   const restartExecutions = new Set<string>()
-  const managerResolver = { resolve: (context: { executionId: string; agentId: string; workingDirectory: string; harness: 'codex' | 'opencode' }) => {
+  const observedConfigurations: AgentConfigurationVersion[] = []
+  const managerResolver = { resolve: (context: { executionId: string; agentId: string; workingDirectory: string; harness: 'codex' | 'opencode'; configuration: AgentConfigurationVersion }) => {
     contexts.set(context.executionId, { agentId: context.agentId, workingDirectory: context.workingDirectory })
     const manager = managersByAgent.get(context.agentId) ?? new SelectiveNativeManager(new Set(['parallel-left', 'parallel-right']), context.harness as 'codex' | 'opencode')
+    if (!managersByAgent.has(context.agentId)) observedConfigurations.push(context.configuration)
     managersByAgent.set(context.agentId, manager)
     const count = resolutionCount.get(context.executionId) ?? 0
     resolutionCount.set(context.executionId, count + 1)
@@ -320,6 +333,9 @@ it('targets two parallel interrupt ids without respawning either branch or its p
   expect(pending.every((item) => Boolean(item.graphInterruptId))).toBe(true)
   expect(prepared).toHaveLength(3)
   expect(new Set(prepared.map((item) => item.agentId))).toEqual(new Set(['agent-researcher', 'agent-developer', 'agent-reviewer']))
+  const pinnedOpenCode = observedConfigurations.find((configuration) => configuration.agentId === 'agent-developer')
+  expect(pinnedOpenCode).toMatchObject({ id: 'agent-developer-config-v1', harness: { harness: 'opencode' } })
+  expect(pinnedOpenCode?.harness.harness === 'opencode' ? pinnedOpenCode.harness.advanced : undefined).toBeDefined()
   expect(new Set(prepared.map((item) => item.token)).size).toBe(3)
   expect(revoked).toHaveLength(1)
   restartExecutions.add(pending[0]!.executionId)
@@ -668,4 +684,8 @@ it('evicts a failed provider so retry preflights a fresh Agent-scoped manager an
   expect(revoked).toContain('retry-reviewer-execution')
   expect(createdManagers[0]!.manager.counters.attaches).toBe(1)
   expect(createdManagers[1]!.manager.counters.attaches).toBe(1)
+  expect(() => resolver.resolve({
+    ...reviewerContext,
+    configuration: { ...reviewerConfig, contentHash: 'sha256:drifted-configuration' },
+  })).toThrow('cannot change native manager ownership context')
 })
