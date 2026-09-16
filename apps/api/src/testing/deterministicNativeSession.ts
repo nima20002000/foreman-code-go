@@ -17,7 +17,7 @@ import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, Na
 
 /** Deterministic rich-transport fixture shared by HAP-02–07 integration tests. */
 export class DeterministicNativeSessionManager implements NativeHarnessSessionManager {
-  readonly counters = { sessions: 0, turns: 0, sideEffects: 0, deliveries: 0, cancellations: 0 }
+  readonly counters = { sessions: 0, attaches: 0, turns: 0, sideEffects: 0, deliveries: 0, cancellations: 0 }
   lastStart: NativeSessionStart | undefined
   private readonly events: NativeHarnessEvent[] = []
   private waiting: PendingNativeInteraction | undefined
@@ -45,6 +45,13 @@ export class DeterministicNativeSessionManager implements NativeHarnessSessionMa
       harness: this.harness, providerVersion: this.harness === 'codex' ? '0.154.0' : '1.18.31',
       nativeSessionId: `${this.harness}-fixture-session`,
     })
+  }
+
+  async attachSession(session: NativeSessionReference, input: NativeSessionStart): Promise<NativeSessionReference> {
+    if (session.harness !== this.harness) throw new Error('FIXTURE_SESSION_PROVIDER_MISMATCH')
+    this.lastStart = input
+    this.counters.attaches += 1
+    return NativeSessionReferenceSchema.parse(session)
   }
 
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput): AsyncIterable<NativeHarnessEvent> {
