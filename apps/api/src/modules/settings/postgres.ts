@@ -11,8 +11,24 @@ const SETTINGS_KEY = 'harness-defaults'
 
 /** Normalize legacy templates on read, never when validating an explicit write. */
 export function normalizeHarnessDefaults(record: unknown): HarnessDefaults {
-  const defaults = record === undefined ? DEFAULT_HARNESS_DEFAULTS : HarnessDefaultsSchema.parse(record)
-  return { ...defaults, opencode: { ...defaults.opencode, autoApprove: false } }
+  if (record === undefined) return DEFAULT_HARNESS_DEFAULTS
+  const candidate = record as HarnessDefaults
+  return HarnessDefaultsSchema.parse({
+    ...candidate,
+    opencode: {
+      ...candidate.opencode,
+      autoApprove: false,
+      ...(candidate.opencode?.advanced
+        ? { advanced: { ...candidate.opencode.advanced, permissionHandling: 'graphql_routed' } }
+        : {}),
+    },
+  })
+}
+
+function rejectUnsupportedAutoApproval(input: unknown): void {
+  if ((input as { opencode?: { autoApprove?: boolean } }).opencode?.autoApprove) {
+    throw new DomainError('OPENCODE_SETTING_UNSUPPORTED', 'Automatic permission approval is disabled for Product Agent runs.', 400)
+  }
 }
 
 export class PostgresSettingsRepository {
@@ -42,6 +58,7 @@ export class PostgresSettingsRepository {
     input: HarnessDefaults,
     expectedRevision: number,
   ): Promise<{ defaults: HarnessDefaults; revision: number }> {
+    rejectUnsupportedAutoApproval(input)
     const defaults = HarnessDefaultsSchema.parse(input)
     if (defaults.opencode.autoApprove) {
       throw new DomainError('OPENCODE_SETTING_UNSUPPORTED', 'Automatic permission approval is disabled for Product Agent runs.', 400)
@@ -74,6 +91,7 @@ export class PostgresSettingsRepository {
   }
 
   async saveHarnessDefaults(input: HarnessDefaults): Promise<HarnessDefaults> {
+    rejectUnsupportedAutoApproval(input)
     const defaults = HarnessDefaultsSchema.parse(input)
     if (defaults.opencode.autoApprove) {
       throw new DomainError('OPENCODE_SETTING_UNSUPPORTED', 'Automatic permission approval is disabled for Product Agent runs.', 400)

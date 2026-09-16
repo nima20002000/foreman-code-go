@@ -7,6 +7,9 @@ import {
   WorkspaceUpdateInputSchema,
   WorkspaceLocationSetInputSchema,
   WorkspaceLocationValidateInputSchema,
+  OperatorCapabilitiesSchema,
+  InteractionListInputSchema,
+  InteractionRespondInputSchema,
 } from "../src/management/index.js";
 
 describe("management contracts", () => {
@@ -74,5 +77,14 @@ describe("management contracts", () => {
         },
       }],
     })).toThrow();
+  });
+
+  it("supports truthful App MCP capability and scoped interaction tools", () => {
+    expect(OperatorCapabilitiesSchema.parse({
+      endpoint: "/mcp/operator", audience: "operator", protocol: "2026-07-28", tools: [],
+      workerToolsMcp: { implemented: true, endpoint: "/mcp/tools" },
+    }).workerToolsMcp.implemented).toBe(true);
+    expect(InteractionListInputSchema.parse({ workspaceId: "workspace-1", workflowId: "workflow-1", status: "pending" })).toMatchObject({ limit: 50 });
+    expect(InteractionRespondInputSchema.parse({ interactionId: "interaction-1", optionId: "option-1", expectedRevision: 0, commandId: "command-123" })).toMatchObject({ expectedRevision: 0 });
   });
 });

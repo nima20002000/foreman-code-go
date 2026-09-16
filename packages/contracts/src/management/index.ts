@@ -17,6 +17,8 @@ import {
   WorkflowRunSchema,
   WorkflowVersionSchema,
   WorkspaceSchema,
+  DurableInteractionSchema,
+  InteractionStatusSchema,
 } from "../index.js";
 
 export const ManagementAudienceSchema = z.enum(["operator", "worker"]);
@@ -44,6 +46,8 @@ export const ManagementActionSchema = z.enum([
   "runs:read",
   "runs:start",
   "runs:stop",
+  "interactions:read",
+  "interactions:respond",
 ]);
 export type ManagementAction = z.infer<typeof ManagementActionSchema>;
 
@@ -86,7 +90,7 @@ export const ManagementPrincipalSchema = z
   });
 export type ManagementPrincipal = z.infer<typeof ManagementPrincipalSchema>;
 
-export const ManagementOpenCodeHarnessConfigurationSchema = OpenCodeHarnessConfigurationSchema.extend({
+export const ManagementOpenCodeHarnessConfigurationSchema = OpenCodeHarnessConfigurationSchema.safeExtend({
   autoApprove: z.literal(false),
 }).strict();
 export const ManagementHarnessConfigurationSchema = z.discriminatedUnion("harness", [
@@ -430,6 +434,23 @@ export const RunStopInputSchema = z.object({
   ...MutationFields,
 }).strict();
 
+export const InteractionListInputSchema = z.object({
+  workspaceId: IdSchema.optional(), workflowId: IdSchema.optional(), runId: IdSchema.optional(),
+  status: InteractionStatusSchema.optional(),
+  ...ManagementPageInputSchema.omit({ includeArchived: true }).shape,
+}).strict();
+export const InteractionGetInputSchema = z.object({ interactionId: IdSchema }).strict();
+export const InteractionRespondInputSchema = z.object({
+  interactionId: IdSchema, optionId: IdSchema, expectedRevision: ExpectedRevisionSchema, ...MutationFields,
+}).strict();
+export const ManagedInteractionPageSchema = z.object({
+  items: z.array(DurableInteractionSchema), pageInfo: ManagementPageInfoSchema,
+}).strict();
+export const ManagedInteractionSchema = z.object({ interaction: DurableInteractionSchema }).strict();
+export const InteractionRespondResultSchema = z.object({
+  value: DurableInteractionSchema, replayed: z.boolean(),
+}).strict();
+
 export const OperatorToolNameSchema = z.enum([
   "operator_get_capabilities", "harness_list", "harness_get", "harness_defaults_update",
   "workspace_list", "workspace_get", "workspace_create", "workspace_update", "workspace_archive",
@@ -438,6 +459,7 @@ export const OperatorToolNameSchema = z.enum([
   "agent_list", "agent_get", "graph_draft_open", "graph_draft_get", "graph_draft_apply",
   "graph_validate", "graph_save", "graph_draft_discard", "run_list", "run_get",
   "run_events_list", "run_start", "run_stop",
+  "interaction_list", "interaction_get", "interaction_respond",
 ]);
 export type OperatorToolName = z.infer<typeof OperatorToolNameSchema>;
 
@@ -469,5 +491,5 @@ export const GraphDraftDiscardResultSchema = z.object({
 export const OperatorCapabilitiesSchema = z.object({
   endpoint: z.literal("/mcp/operator"), audience: z.literal("operator"), protocol: z.literal("2026-07-28"),
   tools: z.array(OperatorToolNameSchema),
-  workerToolsMcp: z.object({ implemented: z.literal(false), endpoint: z.literal("/mcp/tools") }).strict(),
+  workerToolsMcp: z.object({ implemented: z.boolean(), endpoint: z.literal("/mcp/tools") }).strict(),
 }).strict();
