@@ -36,7 +36,9 @@ describe.skipIf(!enabled)('authenticated Codex app-server 0.154.0', () => {
         })) void event
       })()
       let pending
-      for (let attempt = 0; attempt < 120; attempt += 1) {
+      // Provider startup and first approval generation can exceed the 30s RPC deadline;
+      // this outer end-to-end poll is intentionally bounded at 60 seconds.
+      for (let attempt = 0; attempt < 240; attempt += 1) {
         pending = await manager.pending(session)
         if (pending) break
         await new Promise((resolve) => setTimeout(resolve, 250))
