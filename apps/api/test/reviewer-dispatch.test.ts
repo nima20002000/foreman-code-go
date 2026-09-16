@@ -258,6 +258,15 @@ test('two dispatchers cannot double-claim one job', async () => {
   assert.equal(f.counts().started, 1)
 })
 
+test('a proven idle lane starts its first turn without inventing a recovery correlation', async () => {
+  const f = fixture()
+  const owner = new SingleWriterSessionManager(f.manager, f.coordination.asRepository(), 'reviewer')
+  for await (const _event of owner.startTurn(session, { clientCorrelationId: 'first-turn', prompt: 'hello' })) void _event
+  assert.equal(f.counts().started, 1)
+  assert.equal(f.counts().reconciled, 1)
+  assert.equal(f.coordination.lane.observedStatus, 'idle')
+})
+
 test('reviewer and normal workflow turn share active lane; long turns renew both leases', async () => {
   const f = fixture(150); await enqueue(f)
   let started!: () => void

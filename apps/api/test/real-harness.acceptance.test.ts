@@ -14,7 +14,12 @@ import {
 import { buildApp } from '../src/app.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { createDatabase } from '../src/infrastructure/database.js'
-import { LocalHarnessResolver } from '../src/modules/harnesses/resolver.js'
+import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
+import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
+import { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
+import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
+import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
+import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
@@ -54,14 +59,34 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
       const runs = new PostgresRunRepository(database.pool, workflows, locations)
       const workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
       const settings = new PostgresSettingsRepository(database.pool)
+      const interactions = new PostgresInteractionRepository(database.pool)
+      const budgets = new PostgresApprovalBudgetRepository(database.pool)
+      const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
+        const configuration = context.configuration.harness
+        if (configuration.harness !== context.harness) throw new Error('Pinned harness configuration mismatch.')
+        if (configuration.harness === 'codex') return new CodexAppServerSessionManager('codex')
+        return new OpenCodeNativeSessionManager({
+          server: new ManagedOpenCodeServer({
+            binary: 'opencode',
+            workingDirectory: context.workingDirectory,
+            ownerAgentId: context.agentId,
+            ...(configuration.advanced ? { advancedConfiguration: configuration.advanced } : {}),
+          }),
+          ownerAgentId: context.agentId,
+        })
+      })
+      const approvals = new ApprovalExecutionCoordinator(runs, interactions, budgets, managers, 300_000)
       const engine = new LangGraphWorkflowEngine(
         runs,
         workflows,
-        new LocalHarnessResolver('codex', 'opencode'),
+        { resolve: () => { throw new Error('The real acceptance workflow must use qualified native transports.') } },
         checkpoints.saver,
         runtimeDirectory,
         300_000,
         locations,
+        undefined,
+        approvals,
+        interactions,
       )
       app = buildApp({
         readiness: { database, checkpoints },
@@ -97,6 +122,7 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
       const workflow = WorkflowDefinitionSchema.parse({
         id: workflowId, workspaceId, name: 'Real three-agent handoff', executionCondition: { kind: 'manual' },
         requiredAgentCount: 3,
+        approval: { handler: 'user' },
         nodes: [
           { id: nodeIds[0], agentId: agentIds[0], name: 'Researcher' },
           { id: nodeIds[1], agentId: agentIds[1], name: 'Summarizer' },

@@ -123,10 +123,24 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert((await manager.history(session)).events.length > 0)
   })
 
+  it('proves a freshly created owned thread is idle without remote history recovery', async () => {
+    const session = await manager.createSession(source)
+    const history = await manager.reconcile(session, 'prospective-turn')
+    assert.equal(history.terminalResult, undefined)
+    assert.deepEqual(history.pendingInteractions, [])
+    assert.equal((await wire('thread/read')).length, 0)
+    assert.equal((await wire('thread/turns/list')).length, 0)
+  })
+
   it('F03: rejected second start restores the previous completed result and permits another turn', async () => {
     const session = await manager.createSession(source)
     await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'first' }))
     const previous = (await manager.history(session)).terminalResult
+    const reconciled = await manager.reconcile(session, 'first')
+    assert.equal(reconciled.terminalTurn?.correlationId, 'first')
+    assert.deepEqual(reconciled.terminalTurn?.result, previous)
+    assert.equal((await wire('thread/read')).length, 0)
+    assert.equal((await wire('thread/turns/list')).length, 0)
     await assertCode(collect(manager.startTurn(session, { prompt: 'reject', clientCorrelationId: 'rejected' })), 'CODEX_APP_SERVER_REQUEST_FAILED')
     assert.deepEqual((await manager.history(session)).terminalResult, previous)
     await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'third' }))

@@ -547,14 +547,29 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const runtime = this.requireRuntime(session)
       const restarted = runtime.closed
       if (runtime.closed) await this.restart(runtime, signal)
-      await this.synchronize(runtime, correlationId, signal)
+      const locallyIdle = runtime.phase === 'idle' && runtime.activeCorrelationId === undefined
+        && runtime.activeTurnId === undefined && runtime.interactions.size === 0
+      const observedTerminal = runtime.activeCorrelationId === correlationId
+        && runtime.activeTurnId !== undefined && runtime.terminalResult !== undefined
+      if (!locallyIdle && !observedTerminal) await this.synchronize(runtime, correlationId, signal)
       this.record(runtime, 'thread.reconciled', {
         correlationId, restarted, threadId: session.nativeSessionId,
         turnId: runtime.activeTurnId, terminal: runtime.terminalResult?.outcome ?? null,
       })
       const history = await this.history(session)
       return runtime.activeCorrelationId === correlationId && runtime.activeTurnId
-        ? { ...history, correlationId, nativeTurnId: runtime.activeTurnId }
+        ? {
+            ...history,
+            correlationId,
+            nativeTurnId: runtime.activeTurnId,
+            ...(runtime.terminalResult ? {
+              terminalTurn: {
+                correlationId,
+                providerId: runtime.activeTurnId,
+                result: runtime.terminalResult,
+              },
+            } : {}),
+          }
         : history
     })
   }

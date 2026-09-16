@@ -541,6 +541,7 @@ export class ApprovalExecutionCoordinator {
               interactionId: created.interaction.id, handler: created.interaction.approval.handler,
             }, execution.id, input.owner.client)
           }
+          await this.enqueueReview(created.interaction)
         }
         if (!waiting.length) return undefined
         signal.throwIfAborted()

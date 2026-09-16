@@ -21,7 +21,14 @@ it('qualifies the pinned live API and submits one prompt after opening its event
   server.onPrompt = () => { server.complete('turn-1') }
   const events = await collect(native.startTurn(session, { prompt: 'hello', clientCorrelationId: 'turn-1' }))
   assert(events.some((event) => event.type === 'message.part.updated'))
-  assert.deepEqual((await native.reconcile(session, 'turn-1')).terminalResult, { outcome: 'succeeded', output: { text: 'done' } })
+  const reconciled = await native.reconcile(session, 'turn-1')
+  assert.deepEqual(reconciled.terminalResult, { outcome: 'succeeded', output: { text: 'done' } })
+  assert.deepEqual(reconciled.terminalTurn, {
+    correlationId: 'turn-1', providerId: nativeMessageId('turn-1'),
+    result: { outcome: 'succeeded', output: { text: 'done' } },
+  })
+  assert(reconciled.events.every((event) => event.sequence === 0 && event.connectionId?.startsWith('history-')))
+  assert.equal(new Set(reconciled.events.map((event) => event.connectionId)).size, reconciled.events.length)
   const prompt = server.calls.find((call) => call.path.includes('/prompt_async'))!
   assert.deepEqual(prompt.body?.parts, [{ type: 'text', text: 'hello' }])
   assert.equal(prompt.body?.messageID, nativeMessageId('turn-1'))

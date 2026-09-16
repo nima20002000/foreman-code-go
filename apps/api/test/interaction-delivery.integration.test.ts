@@ -97,15 +97,16 @@ it('preserves legacy history and ingests distinct reconnect generations exactly 
   const original = { executionId: interaction.executionId, sequence: 0, type: 'thread.started',
     occurredAt: new Date().toISOString(), payload: { threadId: interaction.nativeSessionId } }
   await appendNativeEvent(pool, original)
-  // Advance the global allocator as an upgrade would, above pre-existing identities.
-  await pool.query("select setval('native_event_ingestion_sequence',10,false)")
+  for (let sequence = 1; sequence <= 3; sequence += 1) {
+    await appendNativeEvent(pool, { ...original, sequence, type: 'native.notification', payload: { sequence } })
+  }
   const attached = { ...original, connectionId: 'new-connection', type: 'thread.attached' }
   await appendNativeEvent(pool, attached)
   await appendNativeEvent(pool, attached)
   await appendNativeEvent(pool, { ...attached, connectionId: 'another-connection' })
   await assert.rejects(appendNativeEvent(pool, { ...attached, payload: { changed: true } }), { code: 'NATIVE_EVENT_IDENTITY_CONFLICT' })
   const rows = await pool.query('select record from harness_native_events where execution_id=$1 order by sequence', [interaction.executionId])
-  assert.equal(rows.rowCount, 3)
+  assert.equal(rows.rowCount, 6)
   assert.deepEqual(rows.rows[0]!.record, original)
 })
 

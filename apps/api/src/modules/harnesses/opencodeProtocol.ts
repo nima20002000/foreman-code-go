@@ -161,12 +161,14 @@ export function normalizedHistory(messages: OpenCodeMessage[], thinking: boolean
     const created = object(message.info.time).created
     const occurredAt = new Date(typeof created === 'number' ? created : 0).toISOString()
     const id = String(message.info.id)
-    result.push({ sequence: result.length, type: 'message.updated', occurredAt,
-      payload: { info: message.info, nativeEventId: `message:${id}:${digest(message.info)}` } })
+    const messageEventId = `message:${id}:${digest(message.info)}`
+    result.push({ connectionId: `history-${digest(messageEventId)}`, sequence: 0, type: 'message.updated', occurredAt,
+      payload: { info: message.info, nativeEventId: messageEventId } })
     for (const part of message.parts) {
       if (!thinking && part.type === 'reasoning') continue
-      result.push({ sequence: result.length, type: 'message.part.updated', occurredAt,
-        payload: { part, nativeEventId: `part:${String(part.id)}:${digest(part)}` } })
+      const partEventId = `part:${String(part.id)}:${digest(part)}`
+      result.push({ connectionId: `history-${digest(partEventId)}`, sequence: 0, type: 'message.part.updated', occurredAt,
+        payload: { part, nativeEventId: partEventId } })
     }
   }
   return result

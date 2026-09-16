@@ -195,6 +195,10 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     correlationId: string, lease: SessionWriteLease): Promise<void> {
     const previous = lease.previous
     await lease.guard.check()
+    if (previous.observedStatus === 'idle' && !previous.correlationId && !previous.currentTurnOrMessageId) {
+      lease.observedStatus = 'idle'
+      return
+    }
     lease.observedStatus = 'disconnected'
     const history = await lease.guard.wait(manager.reconcile(session, previous.correlationId ?? correlationId, lease.guard.signal))
     await lease.guard.check()

@@ -8,7 +8,12 @@ export async function appendNativeEvent(client: pg.Pool | pg.ClientBase, event: 
   const parsed = HarnessNativeEventSchema.parse(event)
   if (parsed.connectionId) {
     const inserted = await client.query(
-      `with identity as (select nextval('native_event_ingestion_sequence')::integer as sequence),
+      `with owner as materialized (
+         select id from harness_executions where id=$1 for update
+       ), identity as (
+         select coalesce(max(e.sequence)+1,0)::integer as sequence
+         from owner left join harness_native_events e on e.execution_id=owner.id
+       ),
        appended as (
          insert into harness_native_events(execution_id,sequence,record,connection_id,source_sequence)
            select $1,sequence,jsonb_set($3::jsonb,'{sequence}',to_jsonb(sequence)),$4,$2 from identity

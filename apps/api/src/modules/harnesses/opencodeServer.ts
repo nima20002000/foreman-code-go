@@ -468,7 +468,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       ...(pendingInteractions[0] ? { pendingInteraction: pendingInteractions[0] } : {}),
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     }
-    if (turn?.terminalResult) return { ...result, terminalResult: turn.terminalResult }
+    if (turn?.terminalResult) return {
+      ...result,
+      terminalResult: turn.terminalResult,
+      terminalTurn: { correlationId, providerId: messageID, result: turn.terminalResult },
+    }
     if (!root) {
       if (!turn?.submitted) throw new HarnessExecutionError('OPENCODE_TURN_IDENTITY_MISSING', 'The requested turn could not be identified in native history; older answers are not substitutes.')
     } else if (root.info.role !== 'user') {
@@ -507,6 +511,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     if (terminalResult) {
       if (turn) turn.terminalResult = terminalResult
       result.terminalResult = terminalResult
+      result.terminalTurn = { correlationId, providerId: messageID, result: terminalResult }
     }
     return result
   }
