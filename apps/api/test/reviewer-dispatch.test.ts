@@ -38,6 +38,12 @@ class CoordinationFake {
   failJobRenewal = false
   failLaneRenewal = false
   pending = true
+  readonly nativeEvents: NativeHarnessEvent[] = []
+
+  async appendReviewNativeEvent(_job: ReviewJob, event: NativeHarnessEvent) {
+    assert.equal(_job.id, this.job?.id)
+    this.nativeEvents.push(clone(event))
+  }
 
   asRepository() { return this as unknown as PostgresInteractionCoordinationRepository }
   async ensureReviewJob(job: ReviewJob, context: typeof this.context) {
