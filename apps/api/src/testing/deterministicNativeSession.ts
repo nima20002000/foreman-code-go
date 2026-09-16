@@ -20,6 +20,7 @@ export class DeterministicNativeSessionManager implements NativeHarnessSessionMa
   readonly counters = { sessions: 0, turns: 0, sideEffects: 0, deliveries: 0, cancellations: 0 }
   private readonly events: NativeHarnessEvent[] = []
   private waiting: PendingNativeInteraction | undefined
+  private terminalResult: NativeHistory['terminalResult']
 
   constructor(readonly harness: AgentHarness) {}
 
@@ -71,10 +72,17 @@ export class DeterministicNativeSessionManager implements NativeHarnessSessionMa
     }
     this.counters.deliveries += 1
     this.waiting = undefined
+    this.terminalResult = { outcome: 'succeeded', output: { approvedOptionId: option.optionId } }
   }
 
   async cancel(): Promise<boolean> { this.counters.cancellations += 1; this.waiting = undefined; return true }
-  async history(): Promise<NativeHistory> { return { events: [...this.events], ...(this.waiting ? { pendingInteraction: this.waiting } : {}) } }
+  async history(): Promise<NativeHistory> {
+    return {
+      events: [...this.events],
+      ...(this.waiting ? { pendingInteraction: this.waiting } : {}),
+      ...(this.terminalResult ? { terminalResult: this.terminalResult } : {}),
+    }
+  }
   async reconcile(session: NativeSessionReference, correlationId: string): Promise<NativeHistory> {
     void session
     void correlationId

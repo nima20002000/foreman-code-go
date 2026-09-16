@@ -42,6 +42,50 @@ export class PostgresInteractionRepository {
     return result.rows[0] ? DurableInteractionSchema.parse(result.rows[0].record) : undefined
   }
 
+  async getForExecution(executionId: string): Promise<DurableInteraction | undefined> {
+    const result = await this.pool.query<{ record: unknown }>(
+      `select record from durable_interactions where execution_id=$1
+       order by created_at desc, id desc limit 1`, [executionId],
+    )
+    return result.rows[0] ? DurableInteractionSchema.parse(result.rows[0].record) : undefined
+  }
+
+  async bindGraphInterrupt(id: string, graphInterruptId: string): Promise<DurableInteraction> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      const found = await client.query<{ record: unknown }>('select record from durable_interactions where id=$1 for update', [id])
+      const current = found.rows[0] ? DurableInteractionSchema.parse(found.rows[0].record) : undefined
+      if (!current) throw new DomainError('INTERACTION_NOT_FOUND', 'The interaction was not found.', 404)
+      if (current.graphInterruptId && current.graphInterruptId !== graphInterruptId) {
+        throw new DomainError('INTERACTION_INTERRUPT_CONFLICT', 'The interaction is already bound to another graph interrupt.', 409)
+      }
+      if (current.graphInterruptId) { await client.query('commit'); return current }
+      const next = DurableInteractionSchema.parse({
+        ...current, graphInterruptId, revision: current.revision + 1, updatedAt: new Date().toISOString(),
+      })
+      await client.query(
+        'update durable_interactions set revision=$2,record=$3::jsonb,updated_at=now() where id=$1',
+        [id, next.revision, JSON.stringify(next)],
+      )
+      await client.query('commit')
+      return next
+    } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
+  }
+
+  async list(input: { workspaceId?: string; workflowId?: string; runId?: string; handler?: DurableInteraction['approval']['handler']; afterId?: string; limit: number }): Promise<DurableInteraction[]> {
+    const result = await this.pool.query<{ record: unknown }>(
+      `select record from durable_interactions
+       where ($1::text is null or workspace_id=$1) and ($2::text is null or workflow_id=$2)
+         and ($3::text is null or run_id=$3) and ($4::text is null or record->'approval'->>'handler'=$4)
+         and ($5::text is null or id>$5)
+       order by id limit $6`,
+      [input.workspaceId ?? null, input.workflowId ?? null, input.runId ?? null, input.handler ?? null,
+        input.afterId ?? null, input.limit],
+    )
+    return result.rows.map((row) => DurableInteractionSchema.parse(row.record))
+  }
+
   async listPending(input: { workspaceId?: string; workflowId?: string; afterId?: string; limit: number }): Promise<DurableInteraction[]> {
     const result = await this.pool.query<{ record: unknown }>(
       `select record from durable_interactions
@@ -97,5 +141,50 @@ export class PostgresInteractionRepository {
     )
     if (result.rowCount !== 1) throw new DomainError('REVISION_CONFLICT', 'The interaction changed during delivery.', 409)
     return next
+  }
+
+  async cancelPendingForRun(runId: string): Promise<number> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      const found = await client.query<{ id: string; record: unknown }>(
+        `select id,record from durable_interactions
+         where run_id=$1 and status in ('pending','decided','delivery_pending') for update`, [runId],
+      )
+      for (const row of found.rows) {
+        const current = DurableInteractionSchema.parse(row.record)
+        const now = new Date().toISOString()
+        const next = DurableInteractionSchema.parse({
+          ...current, revision: current.revision + 1, status: 'canceled',
+          deliveryState: current.deliveryState === 'delivered' ? 'delivered' : 'failed', updatedAt: now,
+        })
+        await client.query(
+          'update durable_interactions set status=$2,revision=$3,record=$4::jsonb,updated_at=now() where id=$1',
+          [current.id, next.status, next.revision, JSON.stringify(next)],
+        )
+      }
+      await client.query('commit')
+      return found.rowCount ?? 0
+    } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
+  }
+
+  async beginDeliveryAttempt(interaction: DurableInteraction, correlationId: string): Promise<number> {
+    const result = await this.pool.query<{ attempt: number }>(
+      `insert into interaction_delivery_attempts
+       (interaction_id,attempt,state,native_session_id,native_request_id,correlation_id)
+       select $1,coalesce(max(attempt),0)+1,'submitted',$2,$3,$4
+       from interaction_delivery_attempts where interaction_id=$1 returning attempt`,
+      [interaction.id, interaction.nativeSessionId, interaction.nativeRequestId, correlationId],
+    )
+    return result.rows[0]!.attempt
+  }
+
+  async finishDeliveryAttempt(interactionId: string, attempt: number, state: 'uncertain' | 'delivered' | 'failed', error?: string): Promise<void> {
+    const result = await this.pool.query(
+      `update interaction_delivery_attempts set state=$3,error=$4
+       where interaction_id=$1 and attempt=$2 and state='submitted'`,
+      [interactionId, attempt, state, error ?? null],
+    )
+    if (result.rowCount !== 1) throw new DomainError('DELIVERY_ATTEMPT_STALE', 'The delivery attempt changed during reconciliation.', 409)
   }
 }

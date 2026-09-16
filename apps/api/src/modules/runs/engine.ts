@@ -2,7 +2,7 @@ import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
-import { Annotation, END, START, StateGraph } from '@langchain/langgraph'
+import { Annotation, Command, END, START, StateGraph, interrupt } from '@langchain/langgraph'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import {
   HarnessExecutionRequestSchema,
@@ -11,6 +11,7 @@ import {
   type ExecutionResult,
   type WorkflowRun,
   type WorkflowVersion,
+  type DurableInteraction,
 } from '@graphql/contracts'
 
 import { DomainError } from '../errors.js'
@@ -25,6 +26,8 @@ import type { RunOwnership } from './ownership.js'
 import { ExecutionLimiter } from './limiter.js'
 import { validateExecutableTopology } from './topology.js'
 import { resolveExecutionDirectory } from './executionDirectory.js'
+import type { ApprovalExecutionCoordinator } from '../interactions/execution.js'
+import type { PostgresInteractionRepository } from '../interactions/postgres.js'
 
 const EngineState = Annotation.Root({
   runId: Annotation<string>(),
@@ -37,9 +40,12 @@ type EngineStateValue = typeof EngineState.State
 
 interface DynamicCompiledGraph {
   invoke(
-    input: EngineStateValue,
+    input: EngineStateValue | Command,
     config: { configurable: { thread_id: string } },
   ): Promise<EngineStateValue>
+  getState(config: { configurable: { thread_id: string } }): Promise<{
+    tasks: Array<{ interrupts?: Array<{ id: string; value: unknown }> }>
+  }>
 }
 
 interface DynamicGraphBuilder {
@@ -76,6 +82,8 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     workspaceRoot: string,
     private readonly timeoutMs: number,
     private readonly locations: WorkspaceLocationService,
+    private readonly approvals?: ApprovalExecutionCoordinator,
+    private readonly interactions?: PostgresInteractionRepository,
   ) {
     this.workspaceRoot = resolve(workspaceRoot)
   }
@@ -146,19 +154,65 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   }
 
   async resume(runId: string): Promise<void> {
-    throw new DomainError('RUN_RESUME_NOT_IMPLEMENTED', `Run '${runId}' cannot be replayed safely. Inspect the interrupted attempt, cancel its record, and start a new run when safe.`, 501)
+    if (!this.interactions) throw new DomainError('RUN_RESUME_NOT_IMPLEMENTED', `Run '${runId}' has no durable approval runtime.`, 501)
+    const pending = (await this.interactions.list({ runId, limit: 100 }))
+      .filter((item) => item.deliveryState === 'delivered' && item.graphInterruptId)
+    if (!pending.length) throw new DomainError('RUN_NOT_RESUMABLE', `Run '${runId}' has no delivered graph interrupt.`, 409)
+    await this.resumeInteractions(pending)
+  }
+
+  async resumeInteraction(interaction: DurableInteraction): Promise<void> {
+    await this.resumeInteractions([interaction])
+  }
+
+  private async resumeInteractions(interactions: DurableInteraction[]): Promise<void> {
+    const runId = interactions[0]?.runId
+    if (!runId || interactions.some((item) => item.runId !== runId)) throw new DomainError('INTERACTION_RUN_MISMATCH', 'Resume interactions must belong to one Run.', 409)
+    const existing = this.activeTasks.get(runId)
+    if (existing) { await existing; return }
+    if (this.closing) throw new DomainError('ENGINE_CLOSING', 'The workflow engine is shutting down.', 503)
+    const controller = new AbortController()
+    this.activeRuns.set(runId, controller)
+    const task = this.resumeRun(runId, interactions, controller).finally(() => {
+      this.activeRuns.delete(runId)
+      this.activeTasks.delete(runId)
+    })
+    this.activeTasks.set(runId, task)
+    await task
+  }
+
+  private async resumeRun(runId: string, interactions: DurableInteraction[], controller: AbortController): Promise<void> {
+    let owner: RunOwnership | undefined
+    try {
+      owner = await this.runs.acquireOwnership(runId, () => controller.abort(
+        new DomainError('RUN_OWNERSHIP_LOST', 'The database execution owner disconnected.', 409),
+      ))
+      if (!owner) throw new DomainError('RUN_ALREADY_OWNED', `Run '${runId}' is owned by another engine.`, 409)
+      const run = await this.runs.get(runId, owner)
+      if (!run) throw new DomainError('RUN_NOT_FOUND', `Run '${runId}' was not found.`, 404)
+      if (run.executionState !== 'waiting') throw new DomainError('RUN_NOT_RESUMABLE', `Run '${runId}' is not waiting.`, 409)
+      const resumeMap: Record<string, unknown> = {}
+      for (const item of interactions) {
+        if (!item.graphInterruptId) throw new DomainError('INTERACTION_INTERRUPT_MISSING', 'The interaction has no durable graph interrupt identity.', 409)
+        resumeMap[item.graphInterruptId] = { interactionId: item.id }
+      }
+      await this.executeRun(run, controller.signal, owner, new Command({ resume: resumeMap }))
+    } finally { await owner?.release() }
   }
 
   async cancel(runId: string): Promise<boolean> {
     const controller = this.activeRuns.get(runId)
     if (controller) {
       controller.abort()
+      await this.approvals?.cancelRun(runId)
       return true
     }
     const owner = await this.runs.acquireOwnership(runId, () => undefined)
     if (!owner) return false
     try {
-      return await this.runs.settleOrphan(runId, owner, true)
+      const settled = await this.runs.settleOrphan(runId, owner, true)
+      if (settled) await this.approvals?.cancelRun(runId)
+      return settled
     } finally {
       await owner.release()
     }
@@ -171,8 +225,8 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     await Promise.allSettled(this.activeTasks.values())
   }
 
-  private async executeRun(run: WorkflowRun, signal: AbortSignal, owner: RunOwnership): Promise<void> {
-    const startedAt = new Date().toISOString()
+  private async executeRun(run: WorkflowRun, signal: AbortSignal, owner: RunOwnership, resumeCommand?: Command): Promise<void> {
+    const startedAt = run.startedAt ?? new Date().toISOString()
     const failedNodes = new AbortController()
     const nodeSignal = AbortSignal.any([signal, failedNodes.signal])
     const activeNodes = new Set<Promise<Partial<EngineStateValue>>>()
@@ -224,10 +278,23 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       for (const sink of topology.sinks) builder.addEdge(sink, END)
 
       const graph = builder.compile({ checkpointer: this.checkpointer })
+      const graphConfig = { configurable: { thread_id: run.id } }
       const state = await graph.invoke(
-        { runId: run.id, executionIds: {} },
-        { configurable: { thread_id: run.id } },
+        resumeCommand ?? { runId: run.id, executionIds: {} },
+        graphConfig,
       )
+      const snapshot = await graph.getState(graphConfig)
+      const pendingInterrupts = snapshot.tasks.flatMap((task) => task.interrupts ?? [])
+      if (pendingInterrupts.length) {
+        if (!this.interactions) throw new DomainError('APPROVAL_RUNTIME_MISSING', 'The graph interrupted without an interaction repository.', 500)
+        for (const pending of pendingInterrupts) {
+          const value = pending.value as { interactionId?: unknown }
+          if (typeof value?.interactionId !== 'string') throw new DomainError('GRAPH_INTERRUPT_INVALID', 'The graph interrupt has no interaction identity.', 500)
+          await this.interactions.bindGraphInterrupt(value.interactionId, pending.id)
+        }
+        await this.runs.updateState(run.id, { executionState: 'waiting', outcome: 'pending', startedAt }, owner)
+        return
+      }
       signal.throwIfAborted()
       const finalOutputs = await Promise.all(topology.sinks.map(async (nodeId) => {
         const executionId = state.executionIds[nodeId]
@@ -326,7 +393,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       createdAt: now,
       startedAt: now,
     })
-    await this.runs.createExecution(execution, owner)
+    if (!this.approvals) await this.runs.createExecution(execution, owner)
     const request = HarnessExecutionRequestSchema.parse({
       executionId,
       runId: run.id,
@@ -338,9 +405,29 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       configuration,
       input,
     })
-    const adapter = this.harnesses.resolve(configuration.harness.harness)
     let eventSequence = 0
 
+    if (this.approvals && run.approval) {
+      const observation = await this.approvals.ensureObserve({
+        candidate: execution, request, approval: run.approval, workflowId: run.workflowId,
+        graphThreadId: run.id, owner,
+      })
+      execution = observation.execution
+      if (observation.state === 'waiting') {
+        interrupt({ interactionId: observation.interaction.id })
+        throw new DomainError('GRAPH_INTERRUPT_RESUME_MISSING', 'LangGraph returned from interrupt without a resume value.', 500)
+      }
+      if (observation.result.outcome !== 'succeeded') {
+        throw new DomainError(
+          observation.result.error?.code ?? 'NATIVE_EXECUTION_FAILED',
+          observation.result.error?.message ?? 'The native execution did not succeed.', 409,
+        )
+      }
+      await this.runs.acceptExecutionResult(execution, owner)
+      return { executionIds: { [nodeId]: execution.id } }
+    }
+
+    const adapter = this.harnesses.resolve(configuration.harness.harness)
     try {
       signal.throwIfAborted()
       owner.assertOwned()
