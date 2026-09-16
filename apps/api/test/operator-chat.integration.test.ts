@@ -14,11 +14,18 @@ const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:
 class ChatManager implements NativeHarnessSessionManager {
   readonly harness = 'codex' as const
   sessions = 0; turns = 0; cancels = 0; completed = false
+  attachments = 0
+  failAttach = false
   blockFirst = false
   private releaseFirst?: () => void
   capabilities(): ReturnType<NativeHarnessSessionManager['capabilities']> { throw new Error('not used') }
   inspectMcp(): ReturnType<NativeHarnessSessionManager['inspectMcp']> { throw new Error('not used') }
   async createSession(input: NativeSessionStart) { void input; this.sessions++; return { harness: this.harness, providerVersion: '0.154.0', nativeSessionId: `native-${this.sessions}` } }
+  async attachSession(session: NativeSessionReference, input: NativeSessionStart) {
+    void input; this.attachments++
+    if (this.failAttach) throw new Error('CODEX_SESSION_UNAVAILABLE')
+    return session
+  }
   async *startTurn(_session: NativeSessionReference, input: NativeTurnInput) {
     this.turns++
     if (this.blockFirst && this.turns === 1) await new Promise<void>((resolve) => { this.releaseFirst = resolve })
@@ -58,7 +65,7 @@ describe('Operator chat persistence and native binding', () => {
       expect(manager.sessions).toBe(1); expect(manager.turns).toBe(1)
       await service.send(conversation.id, { requestId: 'request-two', content: 'continue' })
       await waitFor(async () => (await service.get(conversation.id)).messages.length === 4)
-      expect(manager.sessions).toBe(1); expect(manager.turns).toBe(2)
+      expect(manager.sessions).toBe(1); expect(manager.attachments).toBe(1); expect(manager.turns).toBe(2)
       const state = await service.get(conversation.id)
       expect(state.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
       expect(new Set(state.messages.map((message) => message.id)).size).toBe(4)
@@ -81,6 +88,27 @@ describe('Operator chat persistence and native binding', () => {
       await service.send(conversation.id, { requestId: 'next-turn', content: 'continue' })
       await waitFor(async () => (await service.get(conversation.id)).messages.length === 3)
       expect(manager.sessions).toBe(1); expect(manager.cancels).toBe(1); expect(manager.turns).toBe(2)
+    } finally { await pool.end(); await admin.query(`drop schema if exists "${schema}" cascade`); await admin.end() }
+  }, 30_000)
+
+  it('surfaces a missing persisted native session without creating a replacement', async () => {
+    const schema = `chat_missing_${randomUUID().replaceAll('-', '')}`
+    const admin = new pg.Pool({ connectionString }); await admin.query(`create schema "${schema}"`)
+    const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
+    try {
+      await applyApplicationMigrations(pool)
+      const manager = new ChatManager()
+      const service = new OperatorChatService(new PostgresOperatorConversationRepository(pool), new PostgresOperatorRepository(pool), () => manager, '/tmp/graphql-nim2603-operator')
+      const conversation = await service.create()
+      await service.send(conversation.id, { requestId: 'first', content: 'hello' })
+      await waitFor(async () => (await service.get(conversation.id)).turnState === 'idle')
+      manager.failAttach = true
+      await service.send(conversation.id, { requestId: 'missing', content: 'continue' })
+      await waitFor(async () => (await service.get(conversation.id)).turnState === 'error')
+      const state = await service.get(conversation.id)
+      expect(state.error).toContain('SESSION_UNAVAILABLE')
+      expect(manager.sessions).toBe(1)
+      expect(manager.turns).toBe(1)
     } finally { await pool.end(); await admin.query(`drop schema if exists "${schema}" cascade`); await admin.end() }
   }, 30_000)
 })

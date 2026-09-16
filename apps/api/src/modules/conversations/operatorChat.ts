@@ -219,9 +219,19 @@ export class OperatorChatService {
       const row = await this.repository.active(id)
       if (!row) return
       let session = row.native_session_id ? { harness: row.harness, providerVersion: row.provider_version ?? 'unknown', nativeSessionId: row.native_session_id } : undefined
+      const start = { kind: 'operator' as const, correlationId: requestId, configuration, workingDirectory: this.workingDirectory }
       if (!session) {
-        session = await manager.createSession({ kind: 'operator', correlationId: requestId, configuration, workingDirectory: this.workingDirectory })
+        session = await manager.createSession(start)
         await this.repository.bind(id, requestId, session.providerVersion, session.nativeSessionId)
+      } else {
+        try {
+          session = await manager.attachSession(session, start)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'The native session is unavailable.'
+          await this.repository.failIfActive(id, requestId, 'error', message)
+          this.events.publish(id, 'error', { message, turnState: 'error' })
+          return
+        }
       }
       this.events.publish(id, 'state', { turnState: 'active' })
       const hint = context && Object.values(context).some(Boolean) ? `\n\n[Non-authoritative route context: ${JSON.stringify(context)}]` : ''
@@ -258,9 +268,15 @@ export class OperatorChatService {
         continue
       }
       try {
-        const history = await this.managers(row.harness).reconcile({
+        const conversation = ConversationSchema.parse(row.record)
+        const configurationId = conversation.operatorConfigurationVersionId
+        const configuration = configurationId ? await this.repository.configuration(configurationId) : undefined
+        if (!configuration) throw new Error('The pinned Operator configuration was not found.')
+        const manager = this.managers(row.harness)
+        const session = await manager.attachSession({
           harness: row.harness, providerVersion: row.provider_version ?? 'unknown', nativeSessionId: row.native_session_id,
-        }, row.active_request_id)
+        }, { kind: 'operator', correlationId: row.active_request_id, configuration, workingDirectory: this.workingDirectory })
+        const history = await manager.reconcile(session, row.active_request_id)
         const text = finalText(history)
         if (text) await this.repository.finish(row.id, row.active_request_id, text)
         else await this.repository.setState(row.id, 'uncertain', 'The native turn has no reconciled terminal result yet.')
