@@ -19,10 +19,15 @@ interface DeliveryUpdate {
   lease?: InteractionLease
   error?: DeliveryFailure
 }
+import { PostgresInteractionCoordinationRepository } from './coordination.js'
 
 /** Transactional durable interaction primitives; routing/dispatch intentionally lives elsewhere. */
 export class PostgresInteractionRepository {
-  constructor(private readonly pool: pg.Pool) {}
+  readonly coordination: PostgresInteractionCoordinationRepository
+
+  constructor(private readonly pool: pg.Pool) {
+    this.coordination = new PostgresInteractionCoordinationRepository(pool)
+  }
 
   async create(input: DurableInteraction): Promise<{ interaction: DurableInteraction; created: boolean }> {
     const interaction = DurableInteractionSchema.parse(input)

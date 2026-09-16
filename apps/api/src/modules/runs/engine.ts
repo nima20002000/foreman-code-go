@@ -136,6 +136,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     if (this.reconciliation) return this.reconciliation
     if (this.closing) return Promise.resolve()
     const task = (async () => {
+      await this.approvals?.reconcileReviews(onError)
       for (const candidate of await this.runs.reconciliationCandidates()) {
         if (this.closing) break
         if (this.activeTasks.has(candidate.id)) continue
@@ -225,6 +226,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     this.closing = true
     for (const controller of this.activeRuns.values()) controller.abort()
     await this.reconciliation?.catch(() => undefined)
+    await this.approvals?.reviewers.shutdown()
     await Promise.allSettled(this.activeTasks.values())
   }
 
@@ -296,6 +298,8 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
           await this.interactions.bindGraphInterrupt(value.interactionId, pending.id)
         }
         await this.runs.updateState(run.id, { executionState: 'waiting', outcome: 'pending', startedAt }, owner)
+        // Review failures must not close the requesting native session. Pending interactions are the durable outbox.
+        await this.approvals?.reconcileReviews(console.error).catch(console.error)
         return
       }
       signal.throwIfAborted()

@@ -14,6 +14,9 @@ import {
 
 import { WORKER_CREDENTIAL_RENEWAL_WINDOW_MS, type IssuedWorkerCredential } from '../access/workerCredentials.js'
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
+import { DomainError } from '../errors.js'
+import { ReviewerDispatcher } from './reviewer.js'
+import { coordinateSessionManager, isLeaseLost, type SingleWriterSessionManager } from './sessionWriter.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { RunOwnership } from '../runs/ownership.js'
@@ -36,6 +39,9 @@ export type ApprovalExecutionObservation =
 export class ApprovalExecutionCoordinator {
   private readonly managerCredentials = new WeakMap<NativeHarnessSessionManager, IssuedWorkerCredential>()
 
+  readonly reviewers: ReviewerDispatcher
+  private readonly writers = new WeakMap<NativeHarnessSessionManager, SingleWriterSessionManager>()
+  private readonly rawManagers = new WeakMap<NativeHarnessSessionManager, NativeHarnessSessionManager>()
   constructor(
     private readonly runs: PostgresRunRepository,
     private readonly interactions: PostgresInteractionRepository,
@@ -43,7 +49,43 @@ export class ApprovalExecutionCoordinator {
     private readonly managers: NativeSessionManagerResolver,
     private readonly activeTimeoutMs: number,
     private readonly credentials?: ExecutionCredentialProvider,
-  ) {}
+  ) {
+    this.reviewers = new ReviewerDispatcher(interactions.coordination, this)
+  }
+
+  /** Bind only an existing execution of the designated reviewer in this Run. Never spawn a substitute. */
+  async enqueueReview(interaction: DurableInteraction): Promise<void> {
+    if (interaction.status !== 'pending' || interaction.approval.handler !== 'orchestrator') return
+    const agentId = interaction.approval.designatedOrchestratorAgentId
+    if (!agentId || agentId === interaction.requestingAgentId) return
+    if (await this.interactions.coordination.findReviewJob(interaction.id, agentId)) return
+    const candidates = (await this.runs.listExecutions(interaction.runId))
+      .filter((execution) => execution.agentId === agentId && execution.nativeSessionId
+        && execution.workingDirectory && execution.runtimeDirectory)
+    // No guessing between attempts/sessions. The pending interaction remains the recovery source.
+    if (candidates.length !== 1) return
+    const execution = candidates[0]!
+    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+    if (!configuration || configuration.productRole !== 'orchestrator') return
+    const { manager } = this.resolveManager(this.managerContext(execution, configuration))
+    const capability = await manager.capabilities()
+    await this.reviewers.enqueue(interaction, agentId, {
+      harness: configuration.harness.harness, providerVersion: capability.providerVersion,
+      nativeSessionId: execution.nativeSessionId!,
+    }, { executionId: execution.id, workingDirectory: execution.workingDirectory! })
+  }
+
+  /** Pending interactions repair a crash between creation and enqueue, including sessions bound later. */
+  async reconcileReviews(onError: (error: unknown) => void): Promise<void> {
+    let afterId: string | undefined
+    do {
+      const page = await this.interactions.list({ handler: 'orchestrator', status: 'pending', limit: 100,
+        ...(afterId ? { afterId } : {}) })
+      for (const interaction of page) await this.enqueueReview(interaction).catch(onError)
+      afterId = page.length === 100 ? page.at(-1)!.id : undefined
+    } while (afterId)
+    await this.reviewers.reconcile(onError)
+  }
 
   private managerContext(
     execution: HarnessExecution,
@@ -64,7 +106,16 @@ export class ApprovalExecutionCoordinator {
     if (resolved.manager.harness !== context.harness) {
       throw new Error('The resolved native manager does not match the durable execution harness.')
     }
-    return resolved
+    let manager = this.writers.get(resolved.manager)
+    if (!manager) {
+      manager = coordinateSessionManager(resolved.manager, this.interactions.coordination, context.agentId)
+      this.writers.set(resolved.manager, manager)
+      this.rawManagers.set(manager, resolved.manager)
+    }
+    return {
+      ...resolved, manager,
+      get processState() { return resolved.processState },
+    }
   }
 
   private async prepareEnvironment(
@@ -115,7 +166,7 @@ export class ApprovalExecutionCoordinator {
       await this.credentials?.revokeForExecution(context.executionId)
     } finally {
       this.managerCredentials.delete(resolved.manager)
-      this.managers.release?.(context, resolved.manager, 'failed')
+      this.managers.release?.(context, this.rawManagers.get(resolved.manager) ?? resolved.manager, 'failed')
     }
   }
 
@@ -139,7 +190,8 @@ export class ApprovalExecutionCoordinator {
   ): Promise<AttachedInteractionSession> {
     const execution = await this.runs.getExecution(context.executionId)
     if (!execution?.workingDirectory || !execution.runtimeDirectory || execution.agentId !== context.agentId
-      || execution.workingDirectory !== context.workingDirectory) {
+      || execution.workingDirectory !== context.workingDirectory
+      || execution.nativeSessionId !== sessionReference.nativeSessionId || sessionReference.harness !== context.harness) {
       throw new Error('The native session ownership context does not match its durable execution.')
     }
     const run = await this.runs.get(execution.runId)
@@ -164,6 +216,7 @@ export class ApprovalExecutionCoordinator {
       resolved.markResident?.()
       return { manager: resolved.manager, session }
     } catch (error) {
+      if (isLeaseLost(error) || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw error
       await this.releaseFailedManager(resolutionContext, resolved, sessionReference).catch(() => undefined)
       throw error
     }
@@ -237,7 +290,7 @@ export class ApprovalExecutionCoordinator {
         await this.runs.updateExecution(execution, input.owner)
         for await (const event of manager.startTurn(session, {
           prompt: buildHarnessPrompt(input.request), clientCorrelationId: `execution:${execution.id}`,
-        })) {
+        }, input.signal)) {
           await this.runs.appendNativeEvent({ ...event, executionId: execution.id }, input.owner)
           const pending = await manager.pending(session)
           if (!pending) continue
@@ -259,6 +312,7 @@ export class ApprovalExecutionCoordinator {
           return { state: 'waiting', execution, interaction: created.interaction }
         }
       } catch (error) {
+        if (isLeaseLost(error) || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw error
         await this.releaseFailedManager(context, resolved, session).catch(() => undefined)
         throw error
       }
@@ -279,6 +333,7 @@ export class ApprovalExecutionCoordinator {
         }, input.signal)
         resolved.markResident?.()
       } catch (error) {
+        if (isLeaseLost(error) || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw error
         await this.releaseFailedManager(context, resolved, session).catch(() => undefined)
         if (existing) return { state: 'waiting', execution, interaction: existing }
         throw error
@@ -313,7 +368,7 @@ export class ApprovalExecutionCoordinator {
       } finally {
         await manager.close(session).catch(() => undefined)
         this.managerCredentials.delete(manager)
-        this.managers.release?.(context, manager)
+        this.managers.release?.(context, this.rawManagers.get(manager) ?? manager)
       }
     }
     return { state: 'completed', execution, result: history.terminalResult }
