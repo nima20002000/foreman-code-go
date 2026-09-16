@@ -26,7 +26,8 @@ import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, Na
 import { runCommand } from './process.js'
 
 export const QUALIFIED_CODEX_VERSION = 'codex-cli 0.154.0'
-export const QUALIFIED_CODEX_SCHEMA_SHA256 = 'adbe77c17c415aa296e38eeadaf20a9882001192140f90211c2db107f7c43676'
+/** SHA-256 of the sorted relative-path/file-SHA manifest from 0.154.0 --experimental JSON schemas. */
+export const QUALIFIED_CODEX_SCHEMA_SHA256 = 'b785f87f96c4747e9db6c0492cea2de68e99b48f3462908174a1e8122a620054'
 const REQUEST_TIMEOUT_MS = 30_000
 const MAX_STDERR_LENGTH = 128_000
 
@@ -360,7 +361,6 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     private readonly binary: string,
     private readonly expectedVersion = QUALIFIED_CODEX_VERSION,
     private readonly appMcpServerName = 'graphql-app',
-    private readonly operatorWorkingDirectory = process.cwd(),
   ) {}
 
   async capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities> {
@@ -463,7 +463,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     await this.capabilities(signal)
     const harnessConfiguration = configuration(input)
     validateConfiguration(harnessConfiguration)
-    const workingDirectory = input.kind === 'operator' ? this.operatorWorkingDirectory : input.request.workingDirectory
+    const workingDirectory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
     const holder: { runtime?: Runtime } = {}
     const transport = new CodexStdioTransport(
       this.binary,
