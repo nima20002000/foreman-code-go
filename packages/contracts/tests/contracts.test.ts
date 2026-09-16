@@ -36,6 +36,7 @@ import {
   VersionedWorkflowDefaultsSchema,
   DEFAULT_AGENT_DEFAULTS,
   validateHarnessWorkflowCompatibility,
+  ScopedMcpDetectionSchema,
 } from "../src/index.js";
 
 const condition = { kind: "manual" as const };
@@ -50,6 +51,21 @@ const workflow = {
 };
 
 describe("neutral product contracts", () => {
+  it("round-trips runner-scoped MCP detection without accepting extra authority fields", () => {
+    const scoped = {
+      detection: {
+        harness: "codex" as const, serverName: "graphql-app", state: "connected" as const,
+        endpointMatches: true, credentialEnvironmentVariable: "GRAPHQL_APP_MCP_TOKEN",
+        checkedAt: "2026-09-16T00:00:00.000Z",
+      },
+      runnerId: "runner-local", workingDirectory: "/srv/graphql/workspace", providerVersion: "0.154.0",
+      nativeFilters: { enabledTools: ["context_get"], disabledTools: ["interaction_respond"], diagnostics: [] },
+    };
+    expect(ScopedMcpDetectionSchema.parse(scoped)).toEqual(scoped);
+    expect(ScopedMcpDetectionSchema.safeParse({ ...scoped, workspaceId: "forged" }).success).toBe(false);
+    expect(ScopedMcpDetectionSchema.safeParse({ ...scoped, workingDirectory: "bad\0path" }).success).toBe(false);
+  });
+
   it("defines server-owned roles, approval assignment and truthful provider options", () => {
     expect(AgentDefaultsSchema.safeParse({
       orchestrator: { role: "orchestrator", boardAddable: true, harness: { harness: "codex", model: "m", reasoningEffort: "medium", sandbox: "read-only", serviceTier: "standard" } },
