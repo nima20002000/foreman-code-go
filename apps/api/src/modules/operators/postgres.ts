@@ -10,6 +10,8 @@ import {
 } from '@graphql/contracts'
 import type pg from 'pg'
 
+import { DomainError } from '../errors.js'
+
 const OPERATOR_ID = 'application-operator'
 
 function hash(value: unknown) { return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}` }
@@ -66,7 +68,9 @@ export class PostgresOperatorRepository {
         'select record, current_configuration_version_id from application_operators where id = $1 for update', [OPERATOR_ID],
       )
       const operator = OperatorAgentSchema.parse(row.rows[0]?.record)
-      if (row.rows[0]?.current_configuration_version_id !== expectedConfigurationVersionId) throw new Error('OPERATOR_CONFIGURATION_CONFLICT')
+      if (row.rows[0]?.current_configuration_version_id !== expectedConfigurationVersionId) {
+        throw new DomainError('OPERATOR_CONFIGURATION_CONFLICT', 'Operator settings changed since they were read.', 409)
+      }
       const versionRow = await client.query<{ version: number }>('select coalesce(max(version), 0) + 1 as version from operator_configuration_versions where operator_id = $1', [OPERATOR_ID])
       const version = Number(versionRow.rows[0]?.version ?? 1)
       const createdAt = new Date().toISOString()
