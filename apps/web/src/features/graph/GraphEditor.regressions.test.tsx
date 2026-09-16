@@ -81,8 +81,9 @@ function editor(queryClient: QueryClient, props: Partial<GraphEditorProps> = {},
 
 async function addAgent(user: ReturnType<typeof userEvent.setup>, harness: 'Codex' | 'OpenCode') {
   await user.click(screen.getByRole('button', { name: 'Add agent to graph' }))
-  await user.click(await screen.findByRole('button', { name: harness }))
-  const agent = Object.values(getGraphDraft(key)!.agentOverrides)[0]!
+  await user.click(await screen.findByRole('button', { name: harness === 'Codex' ? 'Orchestrator' : 'Coder' }))
+  let agent = Object.values(getGraphDraft(key)!.agentOverrides)[0]!
+  if (harness === 'OpenCode') agent = defaultAgentForHarness('opencode', agent.id, agent.name, defaults.opencode, agent.productRole)
   const node = canvas.nodes[0]!
   act(() => node.data.onSaveSettings?.(
     node.data.workflowNodeId,
@@ -193,5 +194,19 @@ describe('PR #3 editor lifecycle regressions', () => {
       undefined,
       { maxNodeExecutions: 1, maxParallelism: 1 },
     )
+  })
+
+  it('round-trips a provider-specific Agent Advanced override', async () => {
+    const onSave = vi.fn()
+    render(<AgentSettingsForm
+      agent={defaultAgentForHarness('codex', 'agent-advanced', 'Advanced', defaults.codex)}
+      onClose={() => undefined}
+      onSave={onSave}
+    />)
+    const user = userEvent.setup()
+    await user.click(screen.getByText('Advanced'))
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Approval reviewer' }), 'auto_review')
+    await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    expect(onSave.mock.calls[0]![0].harnessConfiguration.advanced.approvalsReviewer).toBe('auto_review')
   })
 })

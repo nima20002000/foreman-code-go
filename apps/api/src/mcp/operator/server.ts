@@ -8,15 +8,19 @@ import { registerHarnessTools } from './tools/harnesses.js'
 import { registerRunTools } from './tools/runs.js'
 import { registerWorkflowTools } from './tools/workflows.js'
 import { registerWorkspaceTools } from './tools/workspaces.js'
+import { registerInteractionTools } from './tools/interactions.js'
+import { registerSettingsTools } from './tools/settings.js'
 
 export function createOperatorMcpServer(context: OperatorRequestContext): McpServer {
   const server = new McpServer({ name: 'graphql-operator', version: '1.0.0' })
   registerContextTools(server, context)
   registerHarnessTools(server, context)
+  registerSettingsTools(server, context)
   registerWorkspaceTools(server, context)
   registerWorkflowTools(server, context)
   registerAgentTools(server, context)
   registerGraphTools(server, context)
   registerRunTools(server, context)
+  registerInteractionTools(server, context)
   return server
 }

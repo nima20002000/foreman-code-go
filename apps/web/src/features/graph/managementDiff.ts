@@ -79,7 +79,7 @@ export function managementGraphOperations(input: {
       // A copied, unsaved source may have been deleted locally. Its complete
       // local snapshot is safe to create, but an incomplete legacy one is not.
       const harness = configuration(agent)
-      operations.push({ type: 'agent.add', agentId: agent.id, nodeId: node.id, name: agent.name, harness: harness.harness })
+      operations.push({ type: 'agent.add', agentId: agent.id, nodeId: node.id, name: agent.name, productRole: agent.productRole ?? 'coder', harness: harness.harness })
       operations.push({ type: 'agent.configure', agentId: agent.id, expectedAgentRevision: 0,
         configuration: harness, ...content(agent) })
     }

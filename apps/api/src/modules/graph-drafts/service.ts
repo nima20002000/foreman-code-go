@@ -204,7 +204,7 @@ export class GraphDraftService {
         const defaults = normalizeHarnessDefaults(settings.rows[0]?.record)
         const configuration = defaults[operation.harness]
         const agent = AgentSchema.parse({
-          id: operation.agentId, name: operation.name, harness: operation.harness,
+          id: operation.agentId, name: operation.name, productRole: operation.productRole ?? 'coder', harness: operation.harness,
           model: configuration.model,
           effort: configuration.harness === 'codex' ? configuration.reasoningEffort : configuration.variant,
           fastMode: configuration.harness === 'codex' ? configuration.serviceTier === 'priority' : undefined,

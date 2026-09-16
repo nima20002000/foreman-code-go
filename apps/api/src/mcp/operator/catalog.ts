@@ -5,6 +5,10 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'harness_list', action: 'harnesses:read' },
   { name: 'harness_get', action: 'harnesses:read' },
   { name: 'harness_defaults_update', action: 'harnesses:update' },
+  { name: 'agent_defaults_get', action: 'settings:read' },
+  { name: 'agent_defaults_update', action: 'settings:update' },
+  { name: 'workflow_defaults_get', action: 'settings:read' },
+  { name: 'workflow_defaults_update', action: 'settings:update' },
   { name: 'workspace_list', action: 'workspaces:read' },
   { name: 'workspace_get', action: 'workspaces:read' },
   { name: 'workspace_create', action: 'workspaces:create' },
@@ -30,4 +34,7 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'run_events_list', action: 'runs:read' },
   { name: 'run_start', action: 'runs:start' },
   { name: 'run_stop', action: 'runs:stop' },
+  { name: 'interaction_list', action: 'interactions:read' },
+  { name: 'interaction_get', action: 'interactions:read' },
+  { name: 'interaction_respond', action: 'interactions:respond' },
 ]

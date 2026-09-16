@@ -3,7 +3,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { Plus } from 'lucide-react'
 import type { WorkflowDefinition } from '@graphql/contracts'
 
-import { useManagedWorkflowsQuery, useWorkspaceDetailsQuery } from '../../shared/api/query'
+import { useInteractionsQuery, useManagedWorkflowsQuery, useWorkspaceDetailsQuery } from '../../shared/api/query'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { isSessionWorkspaceId, useWorkspaceSessionStore } from '../workspaces/workspaceSessionStore'
 import { NewWorkflowDialog } from './NewWorkflowDialog'
@@ -21,11 +21,13 @@ function WorkflowNavigationItem({
   workspaceId,
   active,
   session,
+  pendingCount,
 }: {
   workflow: WorkflowDefinition
   workspaceId: string
   active: boolean
   session: boolean
+  pendingCount: number
 }) {
   return (
     <li className="workflow-navigation-row">
@@ -43,6 +45,7 @@ function WorkflowNavigationItem({
         title={workflow.name}
       >
         <span className="nav-item-label">{workflow.name}</span>
+        {pendingCount > 0 ? <span className="workflow-approval-badge" aria-label={`${pendingCount} pending approvals`}>{pendingCount}</span> : null}
       </Link>
     </li>
   )
@@ -59,6 +62,7 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
   const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false') && !sessionWorkspace
   const workflowsQuery = useWorkspaceDetailsQuery(workspaceId, { enabled: !sessionWorkspace && !realMode })
   const managedQuery = useManagedWorkflowsQuery(workspaceId, realMode)
+  const interactionsQuery = useInteractionsQuery({ limit: 100 }, realMode)
   const sessionWorkspaceName = useWorkspaceSessionStore((state) =>
     state.workspaces.find((workspace) => workspace.id === workspaceId)?.name,
   )
@@ -111,12 +115,15 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
           {workflows.map((workflow) => {
             const active = workflow.id === activeWorkflowId
             const session = sessionIds.has(workflow.id)
+            const pendingCount = (interactionsQuery.data?.items ?? []).filter((interaction) =>
+              interaction.workspaceId === workspaceId && interaction.workflowId === workflow.id && interaction.status === 'pending').length
             return <WorkflowNavigationItem
               key={workflow.id}
               workflow={workflow}
               workspaceId={workspaceId}
               active={active}
               session={session}
+              pendingCount={pendingCount}
             />
           })}
         </ul>

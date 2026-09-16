@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   AgentSchema,
+  AgentDefaultsSchema,
   CodexHarnessConfigurationSchema,
   OpenCodeHarnessConfigurationSchema,
   HarnessQualificationSchema,
@@ -19,6 +20,7 @@ import {
   WorkspaceSchema,
   DurableInteractionSchema,
   InteractionStatusSchema,
+  WorkflowDefaultsSchema,
 } from "../index.js";
 
 export const ManagementAudienceSchema = z.enum(["operator", "worker"]);
@@ -28,6 +30,8 @@ export const ManagementActionSchema = z.enum([
   "capabilities:read",
   "harnesses:read",
   "harnesses:update",
+  "settings:read",
+  "settings:update",
   "workspaces:read",
   "workspaces:create",
   "workspaces:update",
@@ -258,6 +262,7 @@ const AgentAddOperationSchema = z.object({
   nodeId: IdSchema,
   name: z.string().trim().min(1).max(200),
   nodeName: z.string().trim().min(1).max(200).optional(),
+  productRole: z.enum(["orchestrator", "coder"]).optional(),
   harness: z.enum(["codex", "opencode"]),
   position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict().optional(),
 }).strict();
@@ -406,6 +411,21 @@ export const HarnessDefaultsUpdateResultSchema = z.object({
   replayed: z.boolean(),
 }).strict();
 
+export const ManagedAgentDefaultsSchema = z.object({
+  value: AgentDefaultsSchema, revision: ExpectedRevisionSchema, versionId: IdSchema.nullable(),
+}).strict();
+export const ManagedWorkflowDefaultsSchema = z.object({
+  value: WorkflowDefaultsSchema, revision: ExpectedRevisionSchema, versionId: IdSchema.nullable(),
+}).strict();
+export const AgentDefaultsUpdateInputSchema = z.object({
+  ...RevisionMutationFields, value: AgentDefaultsSchema,
+}).strict();
+export const WorkflowDefaultsUpdateInputSchema = z.object({
+  ...RevisionMutationFields, value: WorkflowDefaultsSchema,
+}).strict();
+export const AgentDefaultsUpdateResultSchema = z.object({ value: ManagedAgentDefaultsSchema, replayed: z.boolean() }).strict();
+export const WorkflowDefaultsUpdateResultSchema = z.object({ value: ManagedWorkflowDefaultsSchema, replayed: z.boolean() }).strict();
+
 export const RunListInputSchema = z.object({
   workspaceId: IdSchema,
   workflowId: IdSchema.optional(),
@@ -453,6 +473,7 @@ export const InteractionRespondResultSchema = z.object({
 
 export const OperatorToolNameSchema = z.enum([
   "operator_get_capabilities", "harness_list", "harness_get", "harness_defaults_update",
+  "agent_defaults_get", "agent_defaults_update", "workflow_defaults_get", "workflow_defaults_update",
   "workspace_list", "workspace_get", "workspace_create", "workspace_update", "workspace_archive",
   "workspace_location_validate", "workspace_location_set",
   "workflow_list", "workflow_get", "workflow_create", "workflow_update", "workflow_archive",

@@ -258,6 +258,65 @@ const migrations = [
       unique (interaction_id, reviewer_agent_id)
     );
   ` },
+  { version: 400, sql: `
+    create table if not exists worker_credential_bindings (
+      principal_id text primary key,
+      execution_id text not null,
+      run_id text not null,
+      workspace_id text not null,
+      workflow_id text not null,
+      agent_id text not null,
+      environment_variable text not null,
+      issued_at timestamptz not null default now(),
+      revoked_at timestamptz,
+      unique (execution_id, principal_id),
+      check (environment_variable = 'GRAPHQL_APP_MCP_TOKEN')
+    );
+    create index if not exists worker_credential_bindings_execution_idx
+      on worker_credential_bindings (execution_id, revoked_at);
+  ` },
+  { version: 500, sql: `
+    create table if not exists approval_execution_state (
+      execution_id text primary key,
+      graph_thread_id text not null,
+      active_timeout_ms bigint not null check (active_timeout_ms > 0),
+      active_elapsed_ms bigint not null default 0 check (active_elapsed_ms >= 0),
+      active_started_at timestamptz,
+      approval_wait_started_at timestamptz,
+      stopped_at timestamptz,
+      revision bigint not null default 0,
+      updated_at timestamptz not null default now()
+    );
+
+    create table if not exists interaction_delivery_attempts (
+      interaction_id text not null references durable_interactions(id) on delete cascade,
+      attempt integer not null check (attempt > 0),
+      state text not null check (state in ('submitted','uncertain','delivered','failed')),
+      native_session_id text not null,
+      native_request_id text not null,
+      correlation_id text not null,
+      error text,
+      created_at timestamptz not null default now(),
+      primary key (interaction_id, attempt)
+    );
+    create index if not exists interaction_delivery_attempts_reconcile_idx
+      on interaction_delivery_attempts (state, created_at, interaction_id);
+  ` },
+  { version: 501, sql: `
+    create table if not exists interaction_command_receipts (
+      principal_id text not null,
+      command_id text not null,
+      interaction_id text not null references durable_interactions(id) on delete cascade,
+      option_id text not null,
+      created_at timestamptz not null default now(),
+      primary key (principal_id,command_id)
+    );
+  ` },
+  { version: 502, sql: `
+    alter table review_jobs add column if not exists execution_id text;
+    alter table review_jobs add column if not exists working_directory text;
+    alter table review_jobs add column if not exists provider_version text;
+  ` },
   { version: 700, sql: `
     create table if not exists operator_conversations (
       id text primary key,
@@ -279,7 +338,6 @@ const migrations = [
       on operator_conversations (harness, native_session_id) where native_session_id is not null;
     create index if not exists operator_conversations_recent_idx
       on operator_conversations (updated_at desc, id);
-
     create table if not exists operator_conversation_messages (
       id text primary key,
       conversation_id text not null references operator_conversations(id) on delete cascade,

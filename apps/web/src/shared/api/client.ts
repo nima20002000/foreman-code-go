@@ -7,6 +7,12 @@ import {
   GetAgentRequestSchema,
   GetAgentResponseSchema,
   GetHarnessDefaultsResponseSchema,
+  GetInteractionResponseSchema,
+  ListInteractionsRequestSchema,
+  ListInteractionsResponseSchema,
+  RespondToInteractionRequestSchema,
+  RespondToInteractionResponseSchema,
+  ScopedMcpDetectionSchema,
   GetConversationRequestSchema,
   GetConversationResponseSchema,
   GetRunRequestSchema,
@@ -88,6 +94,12 @@ import {
   HarnessCatalogSchema,
   HarnessDefaultsUpdateInputSchema,
   HarnessDefaultsUpdateResultSchema,
+  ManagedAgentDefaultsSchema,
+  ManagedWorkflowDefaultsSchema,
+  AgentDefaultsUpdateInputSchema,
+  AgentDefaultsUpdateResultSchema,
+  WorkflowDefaultsUpdateInputSchema,
+  WorkflowDefaultsUpdateResultSchema,
   OperatorEnrollmentRequestSchema,
   OperatorEnrollmentResponseSchema,
   WorkspaceArchiveInputSchema,
@@ -425,6 +437,54 @@ export class ApiClient {
     return this.request('/api/management/harnesses/defaults', HarnessDefaultsUpdateResultSchema, { ...options, method: 'PUT', body: request })
   }
 
+  getManagedAgentDefaults(options?: RequestOptions) {
+    return this.request('/api/management/settings/agents', ManagedAgentDefaultsSchema, options)
+  }
+
+  updateManagedAgentDefaults(input: z.input<typeof AgentDefaultsUpdateInputSchema>, options?: RequestOptions) {
+    const request = parseRequest(AgentDefaultsUpdateInputSchema, input)
+    return this.request('/api/management/settings/agents', AgentDefaultsUpdateResultSchema, { ...options, method: 'PUT', body: request })
+  }
+
+  getManagedWorkflowDefaults(options?: RequestOptions) {
+    return this.request('/api/management/settings/workflows', ManagedWorkflowDefaultsSchema, options)
+  }
+
+  getScopedMcpDetection(workspaceId: string, harness: 'codex' | 'opencode', options?: RequestOptions) {
+    return this.request(
+      `/api/management/workspaces/${toPath(workspaceId)}/harnesses/${harness}/mcp-detection`,
+      ScopedMcpDetectionSchema,
+      options,
+    )
+  }
+
+  updateManagedWorkflowDefaults(input: z.input<typeof WorkflowDefaultsUpdateInputSchema>, options?: RequestOptions) {
+    const request = parseRequest(WorkflowDefaultsUpdateInputSchema, input)
+    return this.request('/api/management/settings/workflows', WorkflowDefaultsUpdateResultSchema, { ...options, method: 'PUT', body: request })
+  }
+
+  listInteractions(input: z.input<typeof ListInteractionsRequestSchema>, options?: RequestOptions) {
+    const request = parseRequest(ListInteractionsRequestSchema, input)
+    const query = new URLSearchParams()
+    if (request.cursor) query.set('cursor', request.cursor)
+    query.set('limit', String(request.limit))
+    if (request.workspaceId) query.set('workspaceId', request.workspaceId)
+    if (request.workflowId) query.set('workflowId', request.workflowId)
+    if (request.status) query.set('status', request.status)
+    return this.request(`/api/interactions?${query.toString()}`, ListInteractionsResponseSchema, options)
+  }
+
+  getInteraction(interactionId: string, options?: RequestOptions) {
+    return this.request(`/api/interactions/${toPath(interactionId)}`, GetInteractionResponseSchema, options)
+  }
+
+  respondToInteraction(input: z.input<typeof RespondToInteractionRequestSchema>, options?: RequestOptions) {
+    const request = parseRequest(RespondToInteractionRequestSchema, input)
+    return this.request(`/api/interactions/${toPath(request.interactionId)}/respond`, RespondToInteractionResponseSchema, {
+      ...options, method: 'POST', body: request,
+    })
+  }
+
   getWorkspaceDetails(input: WorkspaceDetailsRequest, options?: RequestOptions) {
     const request = parseRequest(WorkspaceDetailsRequestSchema, input)
     return this.request<WorkspaceDetailsResponse>(
@@ -649,3 +709,11 @@ export const startManagedRun = apiClient.startManagedRun.bind(apiClient)
 export const stopManagedRun = apiClient.stopManagedRun.bind(apiClient)
 export const getManagedHarnessCatalog = apiClient.getManagedHarnessCatalog.bind(apiClient)
 export const updateManagedHarnessDefaults = apiClient.updateManagedHarnessDefaults.bind(apiClient)
+export const getManagedAgentDefaults = apiClient.getManagedAgentDefaults.bind(apiClient)
+export const updateManagedAgentDefaults = apiClient.updateManagedAgentDefaults.bind(apiClient)
+export const getManagedWorkflowDefaults = apiClient.getManagedWorkflowDefaults.bind(apiClient)
+export const updateManagedWorkflowDefaults = apiClient.updateManagedWorkflowDefaults.bind(apiClient)
+export const getScopedMcpDetection = apiClient.getScopedMcpDetection.bind(apiClient)
+export const listInteractions = apiClient.listInteractions.bind(apiClient)
+export const getInteraction = apiClient.getInteraction.bind(apiClient)
+export const respondToInteraction = apiClient.respondToInteraction.bind(apiClient)

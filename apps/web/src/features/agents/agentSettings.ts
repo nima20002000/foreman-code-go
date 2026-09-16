@@ -4,6 +4,7 @@ import {
   type Agent,
   type HarnessConfiguration,
   type HarnessDefaults,
+  type AgentProductRole,
 } from '@graphql/contracts'
 
 export const CODEX_MODELS: readonly string[] = [
@@ -83,6 +84,7 @@ export function defaultAgentForHarness(
   id: string,
   name: string,
   configuration: HarnessConfiguration = DEFAULT_HARNESS_DEFAULTS[harness],
+  productRole?: Exclude<AgentProductRole, 'operator'>,
 ): Agent {
   const exact = configuration.harness === harness
     ? configuration
@@ -94,6 +96,7 @@ export function defaultAgentForHarness(
     id,
     name,
     role: 'Agent',
+    ...(productRole ? { productRole, role: productRole === 'orchestrator' ? 'Orchestrator' : 'Coder' } : {}),
     harness,
     model: exact.model,
     effort: legacyEffort,

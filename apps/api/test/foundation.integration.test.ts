@@ -16,6 +16,8 @@ import { PostgresInteractionRepository } from '../src/modules/interactions/postg
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
 
@@ -28,7 +30,7 @@ describe('HAP-01 durable foundation', () => {
     try {
       await applyApplicationMigrations(pool)
       await applyApplicationMigrations(pool)
-      expect((await pool.query<{ version: number }>('select version from application_migrations order by version')).rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 100, 700])
+      expect((await pool.query<{ version: number }>('select version from application_migrations order by version')).rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 100, 400, 500, 501, 502, 700])
       await ensureAcceptanceSeed(pool)
 
       const settings = new PostgresFoundationSettingsRepository(pool)
@@ -45,13 +47,28 @@ describe('HAP-01 durable foundation', () => {
       ])
       expect(competingDefaults.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
       expect(competingDefaults.filter((result) => result.status === 'rejected')).toHaveLength(1)
+      const workflowDefaults = await settings.getWorkflowDefaults()
+      await settings.updateWorkflowDefaults({ approvalHandler: 'user' }, workflowDefaults.revision)
+      const workflows = new WorkflowManagementService(pool, new PostgresCommandCoordinator(pool))
+      const access = new PostgresAccessService(pool)
+      const principal = (await access.issue({
+        name: 'Settings copy proof', audience: 'operator',
+        grants: [{ actions: ['workflows:create', 'workflows:read'], scope: { workspaceIds: ['workspace-1'] } }],
+        expiresAt: new Date(Date.now() + 60_000),
+      })).principal
+      const createdWorkflow = await workflows.create(principal, 'http', {
+        workspaceId: 'workspace-1', commandId: 'settings-copy-workflow', name: 'Copied workflow defaults',
+      })
+      expect(createdWorkflow.value.workflow.approval).toEqual({ handler: 'user' })
+      const nextWorkflowDefaults = await settings.getWorkflowDefaults()
+      await settings.updateWorkflowDefaults({ approvalHandler: 'operator' }, nextWorkflowDefaults.revision)
+      expect((await workflows.get(principal, 'workspace-1', createdWorkflow.value.workflow.id)).workflow.approval).toEqual({ handler: 'user' })
 
       const operators = new PostgresOperatorRepository(pool)
       const firstOperator = await operators.ensure()
       const secondOperator = await operators.ensure()
       expect(secondOperator).toEqual(firstOperator)
 
-      const access = new PostgresAccessService(pool)
       await expect(access.issue({ name: 'invalid worker', audience: 'worker', grants: [], expiresAt: new Date(Date.now() + 60_000) })).rejects.toMatchObject({ code: 'WORKER_AGENT_REQUIRED' })
       const worker = await access.issue({ name: 'coder', audience: 'worker', agentId: 'agent-developer', grants: [], expiresAt: new Date(Date.now() + 60_000) })
       expect((await access.authenticate(worker.token, 'worker')).agentId).toBe('agent-developer')

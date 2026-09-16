@@ -6,7 +6,18 @@ import {
   GetRunResponseSchema,
   GetWorkflowResponseSchema,
   GetHarnessDefaultsResponseSchema,
+  GetAgentDefaultsResponseSchema,
+  UpdateAgentDefaultsResponseSchema,
+  GetWorkflowDefaultsResponseSchema,
+  UpdateWorkflowDefaultsResponseSchema,
+  UpdateAgentDefaultsRequestSchema,
+  UpdateWorkflowDefaultsRequestSchema,
   ListAgentsResponseSchema,
+  ListInteractionsRequestSchema,
+  ListInteractionsResponseSchema,
+  GetInteractionResponseSchema,
+  RespondToInteractionRequestSchema,
+  RespondToInteractionResponseSchema,
   SaveWorkflowRequestSchema,
   SaveWorkflowResponseSchema,
   SaveHarnessDefaultsRequestSchema,
@@ -19,18 +30,22 @@ import { DomainError } from '../modules/errors.js'
 import type { LangGraphWorkflowEngine } from '../modules/runs/engine.js'
 import type { PostgresRunRepository } from '../modules/runs/postgres.js'
 import type { PostgresSettingsRepository } from '../modules/settings/postgres.js'
+import type { PostgresFoundationSettingsRepository } from '../modules/settings/foundation.js'
 import type { PostgresWorkflowRepository } from '../modules/workflows/postgres.js'
 import type { PostgresWorkspaceRepository } from '../modules/workspaces/postgres.js'
 import type { OperatorChatService } from '../modules/conversations/operatorChat.js'
 import { registerOperatorChatRoutes } from './operatorChat.js'
+import type { InteractionService } from '../modules/interactions/service.js'
 
 export interface ProductServices {
   workspaces: PostgresWorkspaceRepository
   workflows: PostgresWorkflowRepository
   runs: PostgresRunRepository
   settings: PostgresSettingsRepository
+  foundationSettings?: PostgresFoundationSettingsRepository
   engine: LangGraphWorkflowEngine
   chat?: OperatorChatService
+  interactions?: InteractionService
 }
 
 interface WorkspaceParams { workspaceId: string }
@@ -44,6 +59,24 @@ function notFound(kind: string, id: string): never {
 
 export function registerProductRoutes(app: FastifyInstance, services: ProductServices, managementOnlyMutations = false): void {
   if (services.chat) registerOperatorChatRoutes(app, services.chat)
+  if (services.foundationSettings) {
+    app.get('/api/settings/agents', async () => GetAgentDefaultsResponseSchema.parse(
+      await services.foundationSettings!.getAgentDefaults(),
+    ))
+    app.put<{ Body: unknown }>('/api/settings/agents', async (request) => {
+      if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the revision-checked management settings command.', 409)
+      const input = UpdateAgentDefaultsRequestSchema.parse(request.body)
+      return UpdateAgentDefaultsResponseSchema.parse(await services.foundationSettings!.updateAgentDefaults(input.value, input.expectedRevision))
+    })
+    app.get('/api/settings/workflows', async () => GetWorkflowDefaultsResponseSchema.parse(
+      await services.foundationSettings!.getWorkflowDefaults(),
+    ))
+    app.put<{ Body: unknown }>('/api/settings/workflows', async (request) => {
+      if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the revision-checked management settings command.', 409)
+      const input = UpdateWorkflowDefaultsRequestSchema.parse(request.body)
+      return UpdateWorkflowDefaultsResponseSchema.parse(await services.foundationSettings!.updateWorkflowDefaults(input.value, input.expectedRevision))
+    })
+  }
   app.get('/api/settings/harnesses', async () => GetHarnessDefaultsResponseSchema.parse({
     defaults: await services.settings.getHarnessDefaults(),
   }))
@@ -131,6 +164,33 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
     const details = await services.runs.getDetails(request.params.workspaceId, request.params.runId)
     return details ? GetRunResponseSchema.parse(details) : notFound('run', request.params.runId)
   })
+
+  if (services.interactions) {
+    app.get<{ Querystring: unknown }>('/api/interactions', async (request) => {
+        const query = request.query as { cursor?: unknown; limit?: unknown }
+        const input = ListInteractionsRequestSchema.parse({
+          ...(typeof query.cursor === 'string' ? { cursor: query.cursor } : {}),
+          ...(query.limit !== undefined ? { limit: Number(query.limit) } : {}),
+        })
+        return ListInteractionsResponseSchema.parse(await services.interactions!.list({
+          handler: 'user', ...(input.cursor ? { cursor: input.cursor } : {}), limit: input.limit,
+        }))
+      })
+    app.get<{ Params: { interactionId: string } }>('/api/interactions/:interactionId', async (request) => {
+        const interaction = await services.interactions!.get(request.params.interactionId)
+        if (interaction.approval.handler !== 'user') return notFound('interaction', request.params.interactionId)
+        return GetInteractionResponseSchema.parse({ interaction })
+      })
+    app.post<{ Params: { interactionId: string }; Body: unknown }>('/api/interactions/:interactionId/respond', async (request) => {
+        const input = RespondToInteractionRequestSchema.parse(request.body)
+        if (input.interactionId !== request.params.interactionId) {
+          throw new DomainError('INVALID_INTERACTION', 'The response does not match the requested interaction.', 400)
+        }
+        return RespondToInteractionResponseSchema.parse(await services.interactions!.respond({
+          kind: 'user',
+        }, input))
+      })
+  }
 
   app.post<{ Params: RunParams }>('/api/workspaces/:workspaceId/runs/:runId/cancel', async (request) => {
     if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the idempotent management Stop command.', 409)

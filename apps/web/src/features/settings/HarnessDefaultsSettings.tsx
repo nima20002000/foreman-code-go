@@ -140,6 +140,13 @@ export function HarnessDefaultsSettings() {
             })} />
             Fast mode
           </label>
+          <details className="advanced-settings"><summary>Advanced</summary><div className="settings-field-grid">
+            <label>Approval policy<select value={draft.codex.advanced?.approvalPolicy ?? 'on-request'} onChange={(event) => setDraft({ ...draft, codex: { ...draft.codex, advanced: { ...draft.codex.advanced!, approvalPolicy: event.target.value as 'on-request' | 'never' } } })}><option value="on-request">On request</option><option value="never">Never</option></select></label>
+            <label>Approval reviewer<select value={draft.codex.advanced?.approvalsReviewer ?? 'user'} onChange={(event) => setDraft({ ...draft, codex: { ...draft.codex, advanced: { ...draft.codex.advanced!, approvalsReviewer: event.target.value as 'user' | 'auto_review' } } })}><option value="user">GraphQL routed</option><option value="auto_review">Native AI reviewer</option></select><small>Native AI reviewer: Codex uses its own reviewer to evaluate eligible approval requests.</small></label>
+            <label>Additional writable directories<textarea rows={3} value={(draft.codex.advanced?.additionalWritableDirectories ?? []).join('\n')} onChange={(event) => setDraft({ ...draft, codex: { ...draft.codex, advanced: { ...draft.codex.advanced!, additionalWritableDirectories: event.target.value.split('\n').map((item) => item.trim()).filter(Boolean) } } })} /></label>
+            <label>Session<select value={draft.codex.advanced?.sessionPersistence ?? 'persistent'} onChange={(event) => setDraft({ ...draft, codex: { ...draft.codex, advanced: { ...draft.codex.advanced!, sessionPersistence: event.target.value as 'persistent' | 'ephemeral' } } })}><option value="persistent">Persistent</option><option value="ephemeral">Ephemeral</option></select></label>
+            <label>Web search<select value={draft.codex.advanced?.webSearch ?? 'cached'} onChange={(event) => setDraft({ ...draft, codex: { ...draft.codex, advanced: { ...draft.codex.advanced!, webSearch: event.target.value as 'disabled' | 'cached' | 'live' } } })}><option value="disabled">Disabled</option><option value="cached">Cached</option><option value="live">Live</option></select></label>
+          </div></details>
         </fieldset>
 
         <fieldset disabled={pending || uncertain}>
@@ -171,6 +178,12 @@ export function HarnessDefaultsSettings() {
             <input type="checkbox" checked={false} disabled />
             Auto-approve permissions (not supported)
           </label>
+          <details className="advanced-settings"><summary>Advanced</summary><div className="settings-field-grid">
+            <label>Permission handling<select value={draft.opencode.advanced?.permissionHandling ?? 'graphql_routed'} disabled><option value="graphql_routed">GraphQL routed review</option></select><small>Native auto approval conflicts with routed workflow review.</small></label>
+            <label>Plugin loading<select value={draft.opencode.advanced?.plugins.mode ?? 'inherit'} onChange={(event) => setDraft({ ...draft, opencode: { ...draft.opencode, advanced: { ...draft.opencode.advanced!, plugins: { mode: event.target.value as 'inherit' | 'pure' } } } })}><option value="inherit">Inherit</option><option value="pure">Pure</option></select></label>
+            <label className="settings-switch settings-switch-inline"><input type="checkbox" checked={draft.opencode.advanced?.compaction.auto ?? true} onChange={(event) => setDraft({ ...draft, opencode: { ...draft.opencode, advanced: { ...draft.opencode.advanced!, compaction: { ...draft.opencode.advanced!.compaction, auto: event.target.checked } } } })} />Automatic compaction</label>
+            <p className="settings-help"><strong>Permission policy:</strong> {(draft.opencode.advanced?.permissionRules.length ?? 0) === 0 ? 'Native default' : `Custom · ${draft.opencode.advanced!.permissionRules.length} ordered rules preserved`}</p>
+          </div></details>
         </fieldset>
       </div>
 

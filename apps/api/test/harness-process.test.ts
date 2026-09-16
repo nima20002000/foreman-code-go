@@ -4,6 +4,48 @@ import { buildHarnessPrompt } from '../src/modules/harnesses/prompt.js'
 import { runJsonlProcess } from '../src/modules/harnesses/process.js'
 
 describe('native harness process boundary', () => {
+  it('injects only an Agent-owned App token after preflight without changing parent env or argv', async () => {
+    const previous = process.env.GRAPHQL_APP_MCP_TOKEN
+    delete process.env.GRAPHQL_APP_MCP_TOKEN
+    const events: Array<{ type: string; payload: Record<string, unknown> }> = []
+    const controller = new AbortController()
+    try {
+      const result = await runJsonlProcess({
+        binary: process.execPath,
+        args: ['-e', 'console.log(JSON.stringify({type:"proof", present:Boolean(process.env.GRAPHQL_APP_MCP_TOKEN), argv:process.argv}))'],
+        cwd: process.cwd(),
+        signal: controller.signal,
+        expectedAgentId: 'agent-a',
+        beforeSpawn: async () => ({ agentId: 'agent-a', variables: { GRAPHQL_APP_MCP_TOKEN: 'secret-fixture' } }),
+        onSpawn: () => undefined,
+        onEvent: async (event) => { events.push(event) },
+      })
+      expect(result.exitCode).toBe(0)
+      expect(events).toHaveLength(1)
+      expect(events[0]).toMatchObject({ type: 'proof', payload: { type: 'proof', present: true } })
+      expect((events[0]?.payload.argv as string[]).join(' ')).not.toContain('secret-fixture')
+      expect(JSON.stringify(events)).not.toContain('secret-fixture')
+      expect(process.env.GRAPHQL_APP_MCP_TOKEN).toBeUndefined()
+    } finally {
+      if (previous === undefined) delete process.env.GRAPHQL_APP_MCP_TOKEN
+      else process.env.GRAPHQL_APP_MCP_TOKEN = previous
+    }
+  })
+
+  it('rejects cross-Agent and arbitrary child environment injection', async () => {
+    const controller = new AbortController()
+    const base = {
+      binary: process.execPath, args: ['-e', ''], cwd: process.cwd(), signal: controller.signal,
+      expectedAgentId: 'agent-a', onSpawn: () => undefined, onEvent: async () => undefined,
+    }
+    await expect(runJsonlProcess({ ...base,
+      beforeSpawn: async () => ({ agentId: 'agent-b', variables: { GRAPHQL_APP_MCP_TOKEN: 'secret' } }),
+    })).rejects.toThrow('another Agent')
+    await expect(runJsonlProcess({ ...base,
+      beforeSpawn: async () => ({ agentId: 'agent-a', variables: { DATABASE_URL: 'secret' } }),
+    })).rejects.toThrow('Only the scoped GraphQL App MCP credential')
+  })
+
   it('preserves structured and malformed process output as ordered events', async () => {
     const events: Array<{ type: string; payload: Record<string, unknown> }> = []
     const controller = new AbortController()

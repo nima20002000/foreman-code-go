@@ -161,13 +161,13 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       const approval = input.approval ?? (!existing.rows[0] && selectedOrchestrator
         ? { handler: 'orchestrator' as const, designatedOrchestratorAgentId: selectedOrchestrator.id }
         : undefined)
-      if (approval) validateWorkflowApproval(input, approval, authorityAgents)
-      if (approval) {
+      const acceptedApproval = approval ? validateWorkflowApproval(input, approval, authorityAgents) : undefined
+      if (acceptedApproval) {
         const acceptedConfigurations = await client.query<{ record: unknown }>(
           'select record from agent_configuration_versions where id=any($1::text[])', [Object.values(configurations)],
         )
         for (const row of acceptedConfigurations.rows) {
-          validateHarnessWorkflowCompatibility(AgentConfigurationVersionSchema.parse(row.record).harness, approval.handler)
+          validateHarnessWorkflowCompatibility(AgentConfigurationVersionSchema.parse(row.record).harness, acceptedApproval.handler)
         }
       }
 
@@ -179,7 +179,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       const now = new Date().toISOString()
       const definition = WorkflowDefinitionSchema.parse({
         ...input,
-        ...(approval ? { approval } : {}),
+        ...(acceptedApproval ? { approval: acceptedApproval } : {}),
         version,
         // Ordinary editor connections mean an all-input dependency, not an
         // implicit threshold/any join. Explicit unsupported modes remain errors.
@@ -207,7 +207,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         entryNodeId: entryNode.id,
         definition,
         agentConfigurationVersionIds: configurations,
-        ...(approval ? { approval } : {}),
+        ...(acceptedApproval ? { approval: acceptedApproval } : {}),
         contentHash: contentHash({ definition, configurations, entryNodeId: entryNode.id }),
         createdAt: now,
       })

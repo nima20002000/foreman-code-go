@@ -15,6 +15,10 @@ import {
   GlobalComingSoonRouteEntry,
   GlobalSettingsRouteEntry,
   HarnessSettingsRouteEntry,
+  AgentSettingsRouteEntry,
+  WorkflowSettingsRouteEntry,
+  GlobalApprovalsRouteEntry,
+  WorkspaceApprovalsRouteEntry,
   SettingsRouteEntry,
   WorkflowsRouteEntry,
   WorkspacesRouteEntry,
@@ -101,6 +105,28 @@ const harnessSettingsRoute = createRoute({
   path: '/settings/harnesses',
   component: HarnessSettingsRouteEntry,
 })
+const agentSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/agents',
+  component: AgentSettingsRouteEntry,
+})
+const workflowSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/workflows',
+  component: WorkflowSettingsRouteEntry,
+})
+const globalApprovalsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/approvals',
+  validateSearch: UrlSearchSelectionSchema,
+  component: GlobalApprovalsRouteEntry,
+})
+const workspaceApprovalsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/workspaces/$workspaceId/approvals',
+  validateSearch: UrlSearchSelectionSchema,
+  component: WorkspaceApprovalsRouteEntry,
+})
 
 export const routeTree = rootRoute.addChildren([
   indexRoute,
@@ -117,6 +143,10 @@ export const routeTree = rootRoute.addChildren([
   globalTerminalRoute,
   globalSettingsRoute,
   harnessSettingsRoute,
+  agentSettingsRoute,
+  workflowSettingsRoute,
+  globalApprovalsRoute,
+  workspaceApprovalsRoute,
 ])
 
 export const router = createRouter({ routeTree })
