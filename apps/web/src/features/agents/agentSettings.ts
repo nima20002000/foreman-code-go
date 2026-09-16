@@ -1,5 +1,8 @@
 import {
   DEFAULT_HARNESS_DEFAULTS,
+  AgentEffortSchema,
+  HarnessConfigurationSchema,
+  projectHarnessEffort,
   type Agent,
   type HarnessConfiguration,
   type HarnessDefaults,
@@ -18,13 +21,20 @@ export const STANDARD_EFFORTS: readonly NonNullable<Agent['effort']>[] = [
   'low', 'medium', 'high', 'xhigh', 'max',
 ]
 
-export function modelOptions(harness: NonNullable<Agent['harness']>): readonly string[] {
-  return harness === 'codex' ? CODEX_MODELS : OPENCODE_MODELS
+export function modelOptions(harness: NonNullable<Agent['harness']>, current?: string): readonly string[] {
+  const known = harness === 'codex' ? CODEX_MODELS : OPENCODE_MODELS
+  return current && !known.includes(current) ? [...known, current] : known
 }
 
 export function initialModel(agent: Agent, harness: NonNullable<Agent['harness']>): string {
-  const options = modelOptions(harness)
-  return agent.model && options.includes(agent.model) ? agent.model : options[0]!
+  const exact = agent.harnessConfiguration
+  return (exact?.harness === harness ? exact.model : agent.model) ?? modelOptions(harness)[0]!
+}
+
+export function initialEffort(agent: Agent, harness: NonNullable<Agent['harness']>): string {
+  const exact = agent.harnessConfiguration
+  if (exact?.harness === harness) return exact.harness === 'opencode' ? exact.variant : exact.reasoningEffort
+  return agent.effort ?? (harness === 'opencode' ? 'max' : 'medium')
 }
 
 export function effortOptions(
@@ -44,11 +54,27 @@ export const effortLabels: Record<NonNullable<Agent['effort']>, string> = {
   ultra: 'Ultra',
 }
 
+export function exactEffortOptions(harness: NonNullable<Agent['harness']>, model: string, current: string): readonly string[] {
+  const known: readonly string[] = effortOptions(harness, model)
+  return known.includes(current) ? known : [...known, current]
+}
+
+export function effortOptionLabel(value: string): string {
+  const legacy = AgentEffortSchema.safeParse(value)
+  return legacy.success ? effortLabels[legacy.data] : `${value} (provider variant)`
+}
+
+export function dropsWorkspaceWriteSettings(configuration: HarnessConfiguration | undefined, sandbox: string): boolean {
+  return configuration?.harness === 'codex' && sandbox !== 'workspace-write'
+    && Boolean(configuration.advanced && (configuration.advanced.workspaceWrite
+      || configuration.advanced.additionalWritableDirectories.length > 0))
+}
+
 export function configuredHarness(
   agent: Agent,
   harness: NonNullable<Agent['harness']>,
   model: string,
-  effort: NonNullable<Agent['effort']>,
+  effort: string,
   fastMode: boolean,
   sandbox: 'read-only' | 'workspace-write' | 'danger-full-access',
   creationDefaults?: HarnessDefaults,
@@ -61,20 +87,22 @@ export function configuredHarness(
       : DEFAULT_HARNESS_DEFAULTS[harness])
   if (harness === 'opencode') {
     const opencode = current.harness === 'opencode' ? current : DEFAULT_HARNESS_DEFAULTS.opencode
-    return {
-      ...opencode,
-      model,
-      variant: effort === 'low' || effort === 'high' || effort === 'max' ? effort : 'max',
-    }
+    return HarnessConfigurationSchema.parse({ ...opencode, model, variant: effort })
   }
   const codex = current.harness === 'codex' ? current : DEFAULT_HARNESS_DEFAULTS.codex
-  return {
+  const advanced = codex.advanced ? structuredClone(codex.advanced) : undefined
+  if (advanced && sandbox !== 'workspace-write') {
+    delete advanced.workspaceWrite
+    advanced.additionalWritableDirectories = []
+  }
+  return HarnessConfigurationSchema.parse({
     ...codex,
+    ...(advanced ? { advanced } : {}),
     model,
-    reasoningEffort: effort,
+    reasoningEffort: AgentEffortSchema.parse(effort),
     sandbox,
     serviceTier: fastMode ? 'priority' : 'standard',
-  }
+  })
 }
 
 export function defaultAgentForHarness(
@@ -83,16 +111,17 @@ export function defaultAgentForHarness(
   name: string,
   configuration: HarnessConfiguration = DEFAULT_HARNESS_DEFAULTS[harness],
 ): Agent {
-  const exact = configuration.harness === harness
+  const exact = structuredClone(configuration.harness === harness
     ? configuration
-    : DEFAULT_HARNESS_DEFAULTS[harness]
+    : DEFAULT_HARNESS_DEFAULTS[harness])
+  const legacyEffort = projectHarnessEffort(exact)
   return {
     id,
     name,
     role: 'Agent',
     harness,
     model: exact.model,
-    effort: exact.harness === 'codex' ? exact.reasoningEffort : exact.variant,
+    effort: legacyEffort,
     ...(exact.harness === 'codex' ? { fastMode: exact.serviceTier === 'priority' } : {}),
     harnessConfiguration: exact,
   }

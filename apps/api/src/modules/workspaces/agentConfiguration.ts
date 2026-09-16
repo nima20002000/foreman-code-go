@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import {
   AgentConfigurationVersionSchema,
   AgentSchema,
+  projectHarnessEffort,
   type Agent,
   type AgentConfigurationVersion,
 } from '@graphql/contracts'
@@ -31,12 +32,11 @@ export function configurationInput(
     if (currentHarness?.autoApprove) {
       throw new DomainError('OPENCODE_SETTING_UNSUPPORTED', 'Automatic permission approval is disabled for Product Agent runs.', 400)
     }
-    const variant = agent.effort === 'low' || agent.effort === 'high' || agent.effort === 'max'
-      ? agent.effort
-      : currentHarness?.variant ?? 'max'
+    const variant = suppliedHarness?.variant ?? agent.effort ?? currentHarness?.variant ?? 'max'
     return {
       workspaceId,
       agentId: agent.id,
+      productRole: agent.productRole ?? current?.productRole,
       prompt,
       assignedSkills,
       harness: {
@@ -46,6 +46,7 @@ export function configurationInput(
         nativeAgent: currentHarness?.nativeAgent ?? 'build',
         thinking: currentHarness?.thinking ?? false,
         autoApprove: false,
+        ...(currentHarness?.advanced ? { advanced: currentHarness.advanced } : {}),
       },
     } as const
   }
@@ -58,6 +59,7 @@ export function configurationInput(
   return {
     workspaceId,
     agentId: agent.id,
+    productRole: agent.productRole ?? current?.productRole,
     prompt,
     assignedSkills,
     harness: {
@@ -66,6 +68,7 @@ export function configurationInput(
       reasoningEffort: agent.effort ?? currentHarness?.reasoningEffort ?? 'medium',
       sandbox: currentHarness?.sandbox ?? 'read-only',
       serviceTier: (agent.fastMode ?? (currentHarness?.serviceTier === 'priority')) ? 'priority' : 'standard',
+      ...(currentHarness?.advanced ? { advanced: currentHarness.advanced } : {}),
     },
   } as const
 }
@@ -120,7 +123,7 @@ export async function saveAgentConfiguration(
   const now = new Date().toISOString()
 
   if (!existing) {
-    const placeholder = AgentSchema.parse({ id: parsed.id, name: parsed.name, role: parsed.role })
+    const placeholder = AgentSchema.parse({ id: parsed.id, name: parsed.name, role: parsed.role, productRole: parsed.productRole })
     await client.query(
       `insert into agents (id, workspace_id, current_configuration_version_id, record)
        values ($1, $2, null, $3::jsonb)`,
@@ -158,9 +161,10 @@ export async function saveAgentConfiguration(
     name: parsed.name,
     description: parsed.description,
     role: parsed.role,
+    productRole: configuration.productRole,
     harness: harness.harness,
     model: harness.model,
-    effort: harness.harness === 'codex' ? harness.reasoningEffort : harness.variant,
+    effort: projectHarnessEffort(harness),
     fastMode: harness.harness === 'codex' ? harness.serviceTier === 'priority' : undefined,
     harnessConfiguration: harness,
     configurationVersionId: configuration.id,

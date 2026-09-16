@@ -1,4 +1,4 @@
-import { AgentSchema, AgentConfigurationVersionSchema } from '@graphql/contracts'
+import { AgentSchema, AgentConfigurationVersionSchema, projectHarnessEffort } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
 import { requireAuthorization } from '../access/policy.js'
@@ -14,9 +14,9 @@ function managedAgent(row: AgentRow) {
     if (!row.configuration_record) throw new DomainError('AGENT_CONFIGURATION_UNAVAILABLE', 'The saved agent configuration is unavailable.', 409)
     const configuration = AgentConfigurationVersionSchema.parse(row.configuration_record)
     const harness = configuration.harness
-    agent = AgentSchema.parse({ ...agent, configurationVersionId: configuration.id,
+    agent = AgentSchema.parse({ ...agent, productRole: configuration.productRole, configurationVersionId: configuration.id,
       harness: harness.harness, harnessConfiguration: harness, model: harness.model,
-      effort: harness.harness === 'codex' ? harness.reasoningEffort : harness.variant,
+      effort: projectHarnessEffort(harness),
       fastMode: harness.harness === 'codex' ? harness.serviceTier === 'priority' : undefined,
       prompt: configuration.prompt, assignedSkills: configuration.assignedSkills })
   }

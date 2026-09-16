@@ -81,7 +81,7 @@ describe('Operator MCP with PostgreSQL', () => {
     const access = new PostgresAccessService(database.pool)
     const grant: ManagementGrant = { actions: ManagementActionSchema.options, scope: {} }
     const issued = await access.issue({ name: 'Integration owner', audience: 'operator', grants: [grant], expiresAt: new Date(Date.now() + 60_000) })
-    const worker = await access.issue({ name: 'Worker', audience: 'worker', grants: [grant], expiresAt: new Date(Date.now() + 60_000) })
+    const worker = await access.issue({ name: 'Worker', audience: 'worker', agentId: 'agent-developer', grants: [grant], expiresAt: new Date(Date.now() + 60_000) })
     const restricted = await access.issue({
       name: 'Restricted operator', audience: 'operator',
       grants: [{ actions: ['capabilities:read', 'workspaces:read', 'workspace_locations:validate'], scope: { workspaceIds: ['not-this-workspace'] } }],
@@ -138,7 +138,8 @@ describe('Operator MCP with PostgreSQL', () => {
     })
 
     const tools = await client.listTools()
-    expect(tools.tools.map((tool) => tool.name).sort()).toEqual([...OperatorToolNameSchema.options].sort())
+    const implementedOperatorTools = OperatorToolNameSchema.options.filter((name) => !name.startsWith('interaction_'))
+    expect(tools.tools.map((tool) => tool.name).sort()).toEqual(implementedOperatorTools.sort())
     expect(tools.tools.every((tool) => tool.inputSchema.additionalProperties === false && tool.outputSchema?.additionalProperties === false)).toBe(true)
 
     const harnesses = structured(await client.callTool({ name: 'harness_list', arguments: {} })) as unknown as {
@@ -329,6 +330,7 @@ describe('Operator MCP with PostgreSQL', () => {
           { type: 'edge.connect', edgeId, sourceNodeId: codexNodeId, targetNodeId: openCodeNodeId },
           { type: 'agent.clone', sourceAgentId: codexAgentId, agentId: cloneAgentId, nodeId: cloneNodeId, name: 'Codex clone' },
           { type: 'node.remove', nodeId: cloneNodeId },
+          { type: 'workflow.set_approval', approval: { handler: 'user' } },
           { type: 'workflow.set_execution_limits', maxParallelism: 2, maxNodeExecutions: 2 },
         ],
       },

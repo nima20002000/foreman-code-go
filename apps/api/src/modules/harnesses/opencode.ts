@@ -8,6 +8,7 @@ import {
 } from '@graphql/contracts'
 
 import { HarnessExecutionError } from './errors.js'
+import { assertFallbackConfiguration } from './fallbackCapabilities.js'
 import type { HarnessAdapter, HarnessExecutionCallbacks } from './port.js'
 import { runCommand, runCommands, runJsonlProcess, stopProcess } from './process.js'
 import { buildHarnessPrompt } from './prompt.js'
@@ -22,6 +23,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
     if (request.configuration.harness.harness !== 'opencode') {
       throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'OpenCode received a non-OpenCode configuration.')
     }
+    assertFallbackConfiguration(request.configuration.harness)
     const configuration = request.configuration.harness
     const provider = configuration.model.split('/')[0]
     if (!provider) throw new HarnessExecutionError('OPENCODE_MODEL_INVALID', 'OpenCode models must include a provider prefix.')
@@ -113,6 +115,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
     if (configuration.harness !== 'opencode') {
       throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'OpenCode received a non-OpenCode configuration.')
     }
+    assertFallbackConfiguration(request.configuration.harness)
     let finalText: string | undefined
     let sessionReported = false
     const prompt = buildHarnessPrompt(request)

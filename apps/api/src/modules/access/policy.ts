@@ -23,6 +23,8 @@ export function isAuthorized(
   resource: AuthorizedResource = {},
   now = new Date(),
 ): boolean {
+  // Worker/App principals are intentionally outside the Operator management policy.
+  if (input.audience !== 'operator') return false
   const principal = ManagementPrincipalSchema.parse(input)
   if (principal.audience !== 'operator' || principal.revokedAt || Date.parse(principal.expiresAt) <= now.getTime()) return false
   return principal.grants.some((grant) => grant.actions.includes(action)
@@ -32,6 +34,7 @@ export function isAuthorized(
 }
 
 export function hasAction(principal: ManagementPrincipal, action: ManagementAction): boolean {
+  if (principal.audience !== 'operator') return false
   const parsed = ManagementPrincipalSchema.parse(principal)
   return parsed.audience === 'operator' && !parsed.revokedAt && Date.parse(parsed.expiresAt) > Date.now()
     && parsed.grants.some((grant) => grant.actions.includes(action))

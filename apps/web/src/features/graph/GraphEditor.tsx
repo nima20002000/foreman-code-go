@@ -25,6 +25,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useQueryClient } from '@tanstack/react-query'
 
+import { projectHarnessEffort } from '@graphql/contracts'
 import type {
   Agent,
   HarnessDefaults,
@@ -67,8 +68,11 @@ import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
 import {
   configuredHarness,
   defaultAgentForHarness,
-  effortLabels,
+  dropsWorkspaceWriteSettings,
+  effortOptionLabel,
   effortOptions,
+  exactEffortOptions,
+  initialEffort,
   initialModel,
   modelOptions,
   nextHarnessAgentName,
@@ -188,7 +192,7 @@ function AgentSettingsForm({
   const [name, setName] = useState(agent.name)
   const [harness, setHarness] = useState<NonNullable<Agent['harness']>>(agent.harness ?? 'codex')
   const [model, setModel] = useState(() => initialModel(agent, agent.harness ?? 'codex'))
-  const [effort, setEffort] = useState<NonNullable<Agent['effort']>>(agent.effort ?? 'medium')
+  const [effort, setEffort] = useState(() => initialEffort(agent, agent.harness ?? 'codex'))
   const [fastMode, setFastMode] = useState(agent.fastMode ?? false)
   const [codexSandbox, setCodexSandbox] = useState<'read-only' | 'workspace-write' | 'danger-full-access'>(
     agent.harnessConfiguration?.harness === 'codex'
@@ -232,17 +236,20 @@ function AgentSettingsForm({
       <div className="agent-settings-field"><span>Harness</span><select aria-label="Harness" value={harness} onChange={(event) => {
         const nextHarness = event.target.value as NonNullable<Agent['harness']>
         setHarness(nextHarness)
-        if (creationDefaults) {
-          const configuration = creationDefaults[nextHarness]
+        const configuration = creationDefaults?.[nextHarness]
+          ?? (agent.harnessConfiguration?.harness === nextHarness ? agent.harnessConfiguration : undefined)
+        if (configuration) {
           setModel(configuration.model)
-          setEffort(configuration.harness === 'codex' ? configuration.reasoningEffort : configuration.variant)
+          setEffort(configuration.harness === 'codex'
+            ? configuration.reasoningEffort
+            : configuration.variant)
           setFastMode(configuration.harness === 'codex' && configuration.serviceTier === 'priority')
           if (configuration.harness === 'codex') setCodexSandbox(configuration.sandbox)
           return
         }
         const nextModel = modelOptions(nextHarness).includes(model) ? model : modelOptions(nextHarness)[0]!
         setModel(nextModel)
-        if (!effortOptions(nextHarness, nextModel).includes(effort)) setEffort(nextHarness === 'codex' ? 'medium' : 'max')
+        if (!effortOptions(nextHarness, nextModel).some((value) => value === effort)) setEffort(nextHarness === 'codex' ? 'medium' : 'max')
       }}>
         <option value="codex">Codex</option>
         <option value="opencode">OpenCode</option>
@@ -250,12 +257,12 @@ function AgentSettingsForm({
       <div className="agent-settings-field"><span>Model</span><select aria-label="Model" value={model} onChange={(event) => {
         const nextModel = event.target.value
         setModel(nextModel)
-        if (!effortOptions(harness, nextModel).includes(effort)) setEffort(harness === 'codex' ? 'medium' : 'max')
+        if (harness === 'codex' && !effortOptions(harness, nextModel).some((value) => value === effort)) setEffort('medium')
       }}>
-        {modelOptions(harness).map((value) => <option key={value} value={value}>{value}</option>)}
+        {modelOptions(harness, model).map((value) => <option key={value} value={value}>{value}</option>)}
       </select></div>
-      <div className="agent-settings-field"><span>Effort</span><select aria-label="Effort" value={effort} onChange={(event) => setEffort(event.target.value as NonNullable<Agent['effort']>)}>
-        {effortOptions(harness, model).map((value) => <option key={value} value={value}>{effortLabels[value]}</option>)}
+      <div className="agent-settings-field"><span>Effort</span><select aria-label="Effort" value={effort} onChange={(event) => setEffort(event.target.value)}>
+        {exactEffortOptions(harness, model, effort).map((value) => <option key={value} value={value}>{effortOptionLabel(value)}</option>)}
       </select></div>
       {harness === 'codex' ? (
         <div className="agent-settings-field"><span>Sandbox</span><select aria-label="Sandbox" value={codexSandbox} onChange={(event) => setCodexSandbox(event.target.value as typeof codexSandbox)}>
@@ -263,6 +270,9 @@ function AgentSettingsForm({
           <option value="workspace-write">Workspace write</option>
           <option value="danger-full-access">Danger: full access</option>
         </select></div>
+      ) : null}
+      {harness === 'codex' && dropsWorkspaceWriteSettings(creationDefaults?.codex ?? agent.harnessConfiguration, codexSandbox) ? (
+        <p role="note">Saving this sandbox change removes additional writable directories and workspace-write network and temporary-directory controls.</p>
       ) : null}
       <div className="agent-settings-prompt agent-settings-control">
         <span>Initial prompt</span>
@@ -305,23 +315,20 @@ function AgentSettingsForm({
           aria-label="Save agent settings"
           title="Save"
           disabled={!trimmedName || !limitsValid}
-          onClick={() => onSave({
-            ...agent,
-            name: trimmedName,
-            harness,
-            model,
-            effort,
-            ...(harness === 'codex' ? { fastMode } : { fastMode: undefined }),
-            harnessConfiguration: configuredHarness(
-              agent,
+          onClick={() => {
+            const configuration = configuredHarness(
+              agent, harness, model, effort, fastMode, codexSandbox, creationDefaults,
+            )
+            onSave({
+              ...agent,
+              name: trimmedName,
               harness,
               model,
-              effort,
-              fastMode,
-              codexSandbox,
-              creationDefaults,
-            ),
-          }, prompt.trim() || undefined, { maxNodeExecutions, maxParallelism })}
+              effort: projectHarnessEffort(configuration),
+              ...(harness === 'codex' ? { fastMode } : { fastMode: undefined }),
+              harnessConfiguration: configuration,
+            }, prompt.trim() || undefined, { maxNodeExecutions, maxParallelism })
+          }}
         >
           <Check aria-hidden="true" size={16} />
         </button>

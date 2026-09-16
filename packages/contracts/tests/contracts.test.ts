@@ -19,6 +19,24 @@ import {
   WorkflowDefinitionSchema,
   WorkflowVersionSchema,
   WorkspaceDetailsResponseSchema,
+  AgentDefaultsSchema,
+  CODEX_APPROVAL_OPTIONS_FIXTURE,
+  CreateConversationRequestSchema,
+  DurableInteractionSchema,
+  NATIVE_INTERACTION_FIXTURES,
+  OPENCODE_APPROVAL_OPTIONS_FIXTURE,
+  WorkflowApprovalConfigurationSchema,
+  AcceptedWorkflowApprovalConfigurationSchema,
+  CodexHarnessConfigurationSchema,
+  CodexSessionCompatibilitySchema,
+  OpenCodeHarnessConfigurationSchema,
+  UpdateAgentDefaultsRequestSchema,
+  UpdateWorkflowDefaultsRequestSchema,
+  VersionedAgentDefaultsSchema,
+  VersionedWorkflowDefaultsSchema,
+  DEFAULT_AGENT_DEFAULTS,
+  validateHarnessWorkflowCompatibility,
+  ScopedMcpDetectionSchema,
 } from "../src/index.js";
 
 const condition = { kind: "manual" as const };
@@ -33,6 +51,117 @@ const workflow = {
 };
 
 describe("neutral product contracts", () => {
+  it("round-trips runner-scoped MCP detection without accepting extra authority fields", () => {
+    const scoped = {
+      detection: {
+        harness: "codex" as const, serverName: "graphql-app", state: "connected" as const,
+        endpointMatches: true, credentialEnvironmentVariable: "GRAPHQL_APP_MCP_TOKEN",
+        checkedAt: "2026-09-16T00:00:00.000Z",
+      },
+      runnerId: "runner-local", workingDirectory: "/srv/graphql/workspace", providerVersion: "0.154.0",
+      nativeFilters: { enabledTools: ["context_get"], disabledTools: ["interaction_respond"], diagnostics: [] },
+    };
+    expect(ScopedMcpDetectionSchema.parse(scoped)).toEqual(scoped);
+    expect(ScopedMcpDetectionSchema.safeParse({ ...scoped, workspaceId: "forged" }).success).toBe(false);
+    expect(ScopedMcpDetectionSchema.safeParse({ ...scoped, workingDirectory: "bad\0path" }).success).toBe(false);
+  });
+
+  it("defines server-owned roles, approval assignment and truthful provider options", () => {
+    expect(AgentDefaultsSchema.safeParse({
+      orchestrator: { role: "orchestrator", boardAddable: true, harness: { harness: "codex", model: "m", reasoningEffort: "medium", sandbox: "read-only", serviceTier: "standard" } },
+      coder: { role: "coder", boardAddable: true, harness: { harness: "codex", model: "m", reasoningEffort: "medium", sandbox: "read-only", serviceTier: "standard" } },
+      operator: { role: "operator", boardAddable: false, uiEnabled: true, harness: { harness: "codex", model: "m", reasoningEffort: "medium", sandbox: "read-only", serviceTier: "standard" } },
+    }).success).toBe(true);
+    expect(WorkflowApprovalConfigurationSchema.safeParse({ handler: "orchestrator" }).success).toBe(true);
+    expect(AcceptedWorkflowApprovalConfigurationSchema.safeParse({ handler: "orchestrator" }).success).toBe(false);
+    for (const handler of ["user", "operator"] as const) {
+      expect(WorkflowApprovalConfigurationSchema.safeParse({ handler, designatedOrchestratorAgentId: "agent-1" }).success).toBe(false);
+      expect(AcceptedWorkflowApprovalConfigurationSchema.safeParse({ handler, designatedOrchestratorAgentId: "agent-1" }).success).toBe(false);
+      expect(AcceptedWorkflowApprovalConfigurationSchema.safeParse({ handler }).success).toBe(true);
+    }
+    expect(CODEX_APPROVAL_OPTIONS_FIXTURE.some((option) => option.semantic === "allow_session")).toBe(true);
+    expect(OPENCODE_APPROVAL_OPTIONS_FIXTURE.some((option) => option.semantic === "allow_session")).toBe(false);
+    expect(OPENCODE_APPROVAL_OPTIONS_FIXTURE.find((option) => option.semantic === "reject")?.affectsOtherPendingRequests).toBe(true);
+    expect(DurableInteractionSchema.parse(NATIVE_INTERACTION_FIXTURES.codex).nativeRequestId).toBe("codex-request-fixture");
+  });
+
+  it("keeps approval drafts editable but requires a complete accepted version and Run snapshot", () => {
+    const incompleteApproval = { handler: "orchestrator" as const };
+    const acceptedApproval = { ...incompleteApproval, designatedOrchestratorAgentId: "agent-1" };
+    const executableDefinition = {
+      ...workflow, approval: incompleteApproval, version: 1,
+      executionPolicy: { maxParallelism: 1, maxNodeExecutions: 1 },
+    };
+    const version = {
+      id: "workflow-1-v1", workspaceId: "workspace-1", workflowId: "workflow-1", version: 1,
+      entryNodeId: "node-1", definition: executableDefinition,
+      agentConfigurationVersionIds: { "agent-1": "agent-config-1" },
+      contentHash: "sha256:workflow", createdAt: "2026-09-16T00:00:00.000Z",
+    };
+    expect(WorkflowDefinitionSchema.safeParse({ ...workflow, approval: incompleteApproval }).success).toBe(true);
+    expect(WorkflowVersionSchema.safeParse({ ...version, approval: incompleteApproval }).success).toBe(false);
+    expect(WorkflowVersionSchema.safeParse({ ...version, approval: acceptedApproval }).success).toBe(true);
+
+    const run = {
+      id: "run-1", workspaceId: "workspace-1", workflowId: "workflow-1", workflowVersionId: version.id,
+      agentConfigurationVersionIds: version.agentConfigurationVersionIds, executionCondition: condition,
+      executionState: "queued", outcome: "pending", input: {}, createdAt: "2026-09-16T00:00:00.000Z",
+    };
+    expect(WorkflowRunSchema.safeParse({ ...run, approval: incompleteApproval }).success).toBe(false);
+    expect(WorkflowRunSchema.safeParse({ ...run, approval: acceptedApproval }).success).toBe(true);
+  });
+
+  it("round-trips exact provider Advanced settings while preserving legacy omission", () => {
+    const codex = CodexHarnessConfigurationSchema.parse({
+      harness: "codex", model: "gpt-5.6-luna", reasoningEffort: "medium", sandbox: "workspace-write", serviceTier: "standard",
+      advanced: {
+        approvalPolicy: "on-request", approvalsReviewer: "user", additionalWritableDirectories: ["/tmp/project"],
+        workspaceWrite: { networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+        sessionPersistence: "persistent", shellEnvironment: { inherit: "all", ignoreDefaultExcludes: false, filters: { "AWS_*": "exclude" }, set: {} },
+        webSearch: "cached", mcpServers: { app: { enabled: true, required: true, enabledTools: ["context_get"], disabledTools: ["interaction_respond"], tools: { context_get: { enabled: true, approvalMode: "auto" } } } },
+      },
+    });
+    expect(CodexHarnessConfigurationSchema.parse(codex)).toEqual(codex);
+    expect(CodexHarnessConfigurationSchema.safeParse({ ...codex, advanced: { ...codex.advanced, mcpServers: { app: { enabled: false, required: true } } } }).success).toBe(false);
+    expect(CodexHarnessConfigurationSchema.safeParse({ ...codex, sandbox: "read-only" }).success).toBe(false);
+
+    const opencode = OpenCodeHarnessConfigurationSchema.parse({
+      harness: "opencode", model: "provider/model", variant: "provider-defined-effort", nativeAgent: "build", thinking: false, autoApprove: true,
+      advanced: { apiVersion: "v1", permissionRules: [
+        { permission: "shell", pattern: "git *", effect: "ask" },
+        { permission: "shell", pattern: "git status", effect: "allow" },
+      ], permissionHandling: "native_auto", subagentDepth: 0, plugins: { mode: "inherit" },
+      compaction: { auto: true, prune: false, reservedTokens: 0 }, configLoading: { mode: "native" }, mcp: { serverEnabled: { app: true } } },
+    });
+    expect(OpenCodeHarnessConfigurationSchema.parse(opencode).advanced?.permissionRules).toEqual(opencode.advanced?.permissionRules);
+    expect(OpenCodeHarnessConfigurationSchema.safeParse({ ...opencode, autoApprove: false }).success).toBe(false);
+    expect(OpenCodeHarnessConfigurationSchema.safeParse({ harness: "opencode", model: "m", variant: "custom", nativeAgent: "build", thinking: false, autoApprove: false }).success).toBe(true);
+    expect(() => validateHarnessWorkflowCompatibility(opencode, "orchestrator")).toThrow();
+    expect(() => validateHarnessWorkflowCompatibility(codex, "user")).not.toThrow();
+  });
+
+  it("validates versioned Settings DTOs and ephemeral Codex limitations", () => {
+    const agents = VersionedAgentDefaultsSchema.parse({ value: DEFAULT_AGENT_DEFAULTS, versionId: "agent-defaults-v1", revision: 1 });
+    expect(UpdateAgentDefaultsRequestSchema.parse({ value: agents.value, expectedRevision: agents.revision }).value.operator.uiEnabled).toBe(true);
+    const workflows = VersionedWorkflowDefaultsSchema.parse({ value: { approvalHandler: "orchestrator" }, versionId: null, revision: 0 });
+    expect(UpdateWorkflowDefaultsRequestSchema.parse({ value: workflows.value, expectedRevision: 0 })).toEqual({ value: workflows.value, expectedRevision: 0 });
+    const ephemeral = CodexHarnessConfigurationSchema.parse({
+      harness: "codex", model: "m", reasoningEffort: "medium", sandbox: "read-only", serviceTier: "standard",
+      advanced: { approvalPolicy: "on-request", approvalsReviewer: "user", additionalWritableDirectories: [], sessionPersistence: "ephemeral", shellEnvironment: { inherit: "all", ignoreDefaultExcludes: false, filters: {}, set: {} }, webSearch: "cached", mcpServers: {} },
+    });
+    expect(CodexSessionCompatibilitySchema.safeParse({ configuration: ephemeral, requiresResume: true, responseOptions: [] }).success).toBe(false);
+    expect(CodexSessionCompatibilitySchema.safeParse({ configuration: ephemeral, requiresResume: false, responseOptions: CODEX_APPROVAL_OPTIONS_FIXTURE }).success).toBe(false);
+  });
+
+  it("supports application-global Operator conversations without a fake workspace", () => {
+    expect(CreateConversationRequestSchema.safeParse({
+      scope: "application", agentId: "application-operator", operatorConfigurationVersionId: "operator-config-v1",
+    }).success).toBe(true);
+    expect(ConversationSchema.safeParse({
+      id: "conversation-global", scope: "application", workspaceId: "fake", agentId: "application-operator",
+      operatorConfigurationVersionId: "operator-config-v1",
+    }).success).toBe(false);
+  });
   it("accepts the required workspace, agent, workflow and conversation scenario", () => {
     expect(
       WorkspaceDetailsResponseSchema.parse({

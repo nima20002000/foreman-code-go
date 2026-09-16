@@ -21,6 +21,7 @@ import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
 import type { RunRepository, RunStateUpdate } from './port.js'
+import { acceptedRunApproval } from '../workflows/approval.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { RunOwnership } from './ownership.js'
 import { validateExecutableTopology } from './topology.js'
@@ -90,6 +91,7 @@ export class PostgresRunRepository implements RunRepository {
       throw new DomainError('WORKFLOW_NOT_FOUND', `Workflow '${workflowId}' was not found.`, 404)
     }
     validateExecutableTopology(version)
+    const approval = acceptedRunApproval(version)
     await this.workflows.assertCurrentConfigurations(version)
     // Recovery must not launch a run whose creation transaction failed.
     const client = await this.pool.connect()
@@ -107,6 +109,7 @@ export class PostgresRunRepository implements RunRepository {
       const run = WorkflowRunSchema.parse({
         id: `run-${randomUUID()}`, workspaceId, workflowId, workflowVersionId: version.id,
         agentConfigurationVersionIds: version.agentConfigurationVersionIds,
+        ...(approval ? { approval } : {}),
         executionLocation,
         executionCondition: version.definition.executionCondition, executionState: 'queued', outcome: 'pending',
         input, createdAt: new Date().toISOString(),
@@ -177,6 +180,36 @@ export class PostgresRunRepository implements RunRepository {
       agentId: parsed.agentId,
       attempt: parsed.attempt,
     }, parsed.id, owner?.client)
+  }
+
+  async ensureExecution(execution: HarnessExecution, owner?: RunOwnership): Promise<{ execution: HarnessExecution; created: boolean }> {
+    owner?.assertOwned()
+    const parsed = HarnessExecutionSchema.parse(execution)
+    // One SQL statement is atomic on a pool lease AND on an owner's client.
+    // It never begins/commits a transaction owned by the engine or its caller.
+    const result = await (owner?.client ?? this.pool).query<{ record: unknown }>(
+      `with occurrence as (
+         insert into harness_executions (id, run_id, workflow_node_id, agent_id, attempt, record)
+         values ($1,$2,$3,$4,$5,$6::jsonb)
+         on conflict (run_id, workflow_node_id, attempt) do nothing returning record
+       ), scheduled as (
+         insert into run_activity (run_id, source, kind, harness_execution_id, occurred_at, payload)
+         select $2, 'langgraph', 'node_scheduled', $1, $7::timestamptz, $8::jsonb from occurrence
+         returning sequence
+       ) select occurrence.record from occurrence cross join scheduled`,
+      [parsed.id, parsed.runId, parsed.workflowNodeId, parsed.agentId, parsed.attempt, JSON.stringify(parsed),
+        new Date().toISOString(), JSON.stringify({ workflowNodeId: parsed.workflowNodeId, agentId: parsed.agentId, attempt: parsed.attempt })],
+    )
+    if (result.rows[0]) return { execution: parsed, created: true }
+    const found = await (owner?.client ?? this.pool).query<{ record: unknown }>(
+      'select record from harness_executions where run_id=$1 and workflow_node_id=$2 and attempt=$3',
+      [parsed.runId, parsed.workflowNodeId, parsed.attempt],
+    )
+    const current = HarnessExecutionSchema.parse(found.rows[0]?.record)
+    if (current.agentId !== parsed.agentId || current.agentConfigurationVersionId !== parsed.agentConfigurationVersionId) {
+      throw new DomainError('EXECUTION_OCCURRENCE_CONFLICT', 'This execution occurrence is already bound to different accepted configuration.', 409)
+    }
+    return { execution: current, created: false }
   }
 
   async updateExecution(execution: HarnessExecution, owner?: RunOwnership): Promise<void> {
