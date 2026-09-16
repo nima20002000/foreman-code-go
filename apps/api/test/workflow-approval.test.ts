@@ -17,6 +17,11 @@ const agents = [
 ]
 
 describe('workflow approval authority', () => {
+  it('rejects an incomplete Orchestrator selection at executable validation', () => {
+    expect(() => validateWorkflowApproval(definition, { handler: 'orchestrator' }, agents))
+      .toThrowError(expect.objectContaining({ code: 'WORKFLOW_APPROVAL_INCOMPLETE' }))
+  })
+
   it('uses durable product roles and requires a distinct Coder', () => {
     expect(() => validateWorkflowApproval(definition, { handler: 'orchestrator', designatedOrchestratorAgentId: 'agent-orchestrator' }, agents)).not.toThrow()
     expect(() => validateWorkflowApproval({ ...definition, nodes: [definition.nodes[0]!] }, { handler: 'orchestrator', designatedOrchestratorAgentId: 'agent-orchestrator' }, agents)).toThrowError(expect.objectContaining({ code: 'APPROVAL_DISTINCT_CODER_REQUIRED' }))
