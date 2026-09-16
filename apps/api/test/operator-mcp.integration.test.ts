@@ -18,6 +18,8 @@ import type { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
+import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
+import { FoundationSettingsManagementService } from '../src/modules/settings/management.js'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { AgentManagementService } from '../src/modules/workspaces/agents.js'
@@ -68,6 +70,12 @@ describe('Operator MCP with PostgreSQL', () => {
     const settingsBefore = await database.pool.query<{ record: unknown; revision: string; updated_at: Date }>(
       "select record, revision, updated_at from application_settings where key = 'harness-defaults'",
     )
+    const agentDefaultsBefore = await database.pool.query<{ record: unknown; revision: string; current_version_id: string | null; updated_at: Date }>(
+      "select record, revision, current_version_id, updated_at from application_settings where key = 'agent-defaults-v1'",
+    )
+    const agentDefaultsVersionBefore = Number((await database.pool.query<{ version: string }>(
+      "select coalesce(max(version),0) as version from application_setting_versions where setting_key='agent-defaults-v1'",
+    )).rows[0]!.version)
     const restoreSettings = async () => {
       if (settingsBefore.rows[0]) {
         await database.pool.query(
@@ -104,6 +112,7 @@ describe('Operator MCP with PostgreSQL', () => {
       }),
     } as unknown as LangGraphWorkflowEngine
     const settings = new PostgresSettingsRepository(database.pool)
+    const foundationSettings = new PostgresFoundationSettingsRepository(database.pool)
     const services = {
       workspaces: new WorkspaceManagementService(database.pool, commands, locations),
       locations,
@@ -111,6 +120,7 @@ describe('Operator MCP with PostgreSQL', () => {
       agents: new AgentManagementService(database.pool),
       drafts: new GraphDraftService(database.pool, commands),
       harnesses: new HarnessCatalogService(deterministicHarnesses(), settings, commands, process.cwd()),
+      settings: new FoundationSettingsManagementService(foundationSettings, commands),
       runs: new RunManagementService(database.pool, commands, runsRepository, engine, locations),
       commands,
     }
@@ -130,6 +140,22 @@ describe('Operator MCP with PostgreSQL', () => {
     await client.connect(transport)
     cleanup.push(async () => { await client.close(); await app.close(); await database.close() })
     cleanup.push(restoreSettings)
+    cleanup.push(async () => {
+      if (agentDefaultsBefore.rows[0]) {
+        await database.pool.query(
+          `insert into application_settings (key,record,revision,current_version_id,updated_at)
+           values ('agent-defaults-v1',$1::jsonb,$2,$3,$4)
+           on conflict (key) do update set record=excluded.record,revision=excluded.revision,
+             current_version_id=excluded.current_version_id,updated_at=excluded.updated_at`,
+          [JSON.stringify(agentDefaultsBefore.rows[0].record), agentDefaultsBefore.rows[0].revision,
+            agentDefaultsBefore.rows[0].current_version_id, agentDefaultsBefore.rows[0].updated_at],
+        )
+      } else await database.pool.query("delete from application_settings where key='agent-defaults-v1'")
+      await database.pool.query(
+        "delete from application_setting_versions where setting_key='agent-defaults-v1' and version>$1",
+        [agentDefaultsVersionBefore],
+      )
+    })
     cleanup.push(async () => {
       const ids = [issued.principal.id, worker.principal.id, restricted.principal.id, expired.principal.id]
       await database.pool.query('delete from management_command_receipts where principal_id = any($1::text[])', [ids])
@@ -156,6 +182,17 @@ describe('Operator MCP with PostgreSQL', () => {
       },
     }))
     expect((defaultsUpdate.value as { revision: number }).revision).toBe(harnesses.items[0]!.defaultsRevision + 1)
+    const agentDefaults = structured(await client.callTool({ name: 'agent_defaults_get', arguments: {} })) as {
+      value: { operator: { uiEnabled: boolean } }; revision: number
+    }
+    const agentDefaultsUpdate = structured(await client.callTool({
+      name: 'agent_defaults_update', arguments: {
+        commandId: `agent-defaults-${randomUUID()}`, expectedRevision: agentDefaults.revision,
+        value: { ...agentDefaults.value, operator: { ...agentDefaults.value.operator, uiEnabled: !agentDefaults.value.operator.uiEnabled } },
+      },
+    }))
+    expect((agentDefaultsUpdate.value as { value: { operator: { uiEnabled: boolean } } }).value.operator.uiEnabled)
+      .toBe(!agentDefaults.value.operator.uiEnabled)
 
     const restrictedClient = new Client({ name: 'restricted-operator', version: '1.0.0' })
     await restrictedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), {
