@@ -541,12 +541,12 @@ export class ApprovalExecutionCoordinator {
             ...execution, state: 'completed', result: history.terminalResult, finishedAt: new Date().toISOString(),
           })
           await this.runs.updateExecution(execution, input.owner)
+          const failures: unknown[] = []
           try { await this.budgets.finish(execution.id, execution.finishedAt) }
-          finally {
-            ownedSession.execution = execution
-            const failures = await this.cleanupSession(ownedSession, false)
-            if (failures.length) throw new AggregateError(failures, 'Terminal execution cleanup was incomplete.')
-          }
+          catch (error) { failures.push(error) }
+          ownedSession.execution = execution
+          failures.push(...await this.cleanupSession(ownedSession, false))
+          if (failures.length) throw new AggregateError(failures, 'Terminal execution cleanup was incomplete.')
           return { state: 'completed', execution, result: history.terminalResult }
         }
         // Approval delivery is not turn completion. Keep observing the same
