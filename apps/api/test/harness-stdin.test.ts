@@ -49,6 +49,7 @@ else {
       console.log(JSON.stringify({type:'thread.started',thread_id:'test-session'}))
       console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text}}))
     } else {
+      if (input.includes('EXPECT_ROUTED_APPROVAL')) console.log(JSON.stringify({type:'permission.asked',sessionID:'test-session'}))
       console.log(JSON.stringify({type:'text',sessionID:'test-session',part:{text}}))
     }
   })
@@ -161,7 +162,7 @@ it.skipIf(process.platform === 'win32')('refuses to route GraphQL approvals thro
     const execution = request({
       harness: 'opencode', model: 'opencode-go/test-model', variant: 'max', nativeAgent: 'build',
       thinking: false, autoApprove: false, advanced: DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
-    }, {}, directory)
+    }, { text: 'EXPECT_ROUTED_APPROVAL' }, directory)
     await expect(new OpenCodeAdapter(binary).execute(execution, {
       signal: new AbortController().signal,
       onSession: async () => undefined,
