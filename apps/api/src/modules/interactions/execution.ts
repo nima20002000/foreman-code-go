@@ -8,6 +8,7 @@ import {
   type HarnessExecution,
   type HarnessExecutionRequest,
   type WorkflowApprovalConfiguration,
+  type AgentConfigurationVersion,
   HarnessExecutionRequestSchema,
 } from '@graphql/contracts'
 
@@ -19,6 +20,7 @@ import { PostgresInteractionRepository } from './postgres.js'
 import type {
   AttachedInteractionSession,
   NativeManagerResolutionContext,
+  NativeManagerOwnershipContext,
   NativeSessionManagerResolver,
 } from './runtimePorts.js'
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
@@ -38,11 +40,17 @@ export class ApprovalExecutionCoordinator {
     private readonly credentials?: ExecutionCredentialProvider,
   ) {}
 
-  private managerContext(execution: HarnessExecution, harness: NativeManagerResolutionContext['harness']): NativeManagerResolutionContext {
+  private managerContext(
+    execution: HarnessExecution,
+    configuration: AgentConfigurationVersion,
+  ): NativeManagerResolutionContext {
     if (!execution.workingDirectory) throw new Error('The durable execution has no accepted working directory.')
+    if (configuration.id !== execution.agentConfigurationVersionId || configuration.agentId !== execution.agentId) {
+      throw new Error('The pinned Agent configuration does not match its durable execution.')
+    }
     return {
-      harness, executionId: execution.id, agentId: execution.agentId,
-      workingDirectory: execution.workingDirectory,
+      harness: configuration.harness.harness, executionId: execution.id, agentId: execution.agentId,
+      workingDirectory: execution.workingDirectory, configuration,
     }
   }
 
@@ -67,15 +75,17 @@ export class ApprovalExecutionCoordinator {
     const execution = await this.runs.getExecution(interaction.executionId)
     if (!execution?.workingDirectory || !execution.runtimeDirectory) throw new Error('The durable execution cannot reconstruct its native session start input.')
     if (execution.agentId !== interaction.requestingAgentId) throw new Error('The interaction requester does not own its durable execution.')
-    const context = this.managerContext(execution, interaction.harness)
-    return this.attachOwnedSession(context, {
+    return this.attachOwnedSession({
+      harness: interaction.harness, executionId: execution.id, agentId: execution.agentId,
+      workingDirectory: execution.workingDirectory,
+    }, {
       harness: interaction.harness, providerVersion: interaction.providerVersion,
       nativeSessionId: interaction.nativeSessionId,
     }, signal)
   }
 
   async attachOwnedSession(
-    context: NativeManagerResolutionContext,
+    context: NativeManagerOwnershipContext,
     sessionReference: { harness: NativeManagerResolutionContext['harness']; providerVersion: string; nativeSessionId: string },
     signal?: AbortSignal,
   ): Promise<AttachedInteractionSession> {
@@ -88,14 +98,15 @@ export class ApprovalExecutionCoordinator {
     if (!run) throw new Error('The durable execution Run is unavailable.')
     const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
     if (!configuration || configuration.harness.harness !== context.harness) throw new Error('The durable execution configuration is unavailable or mismatched.')
+    const resolutionContext = this.managerContext(execution, configuration)
     const request = HarnessExecutionRequestSchema.parse({
       executionId: execution.id, runId: execution.runId, workspaceId: run.workspaceId,
       workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
       runtimeDirectory: execution.runtimeDirectory, configuration, input: execution.input,
     })
-    const resolved = this.resolveManager(context)
+    const resolved = this.resolveManager(resolutionContext)
     const environment = resolved.processState === 'needs_start'
-      ? await this.prepareEnvironment(context, signal) : undefined
+      ? await this.prepareEnvironment(resolutionContext, signal) : undefined
     try {
       const session = await resolved.manager.attachSession(sessionReference, {
         kind: 'workflow', correlationId: `execution:${execution.id}`, request,
@@ -104,7 +115,7 @@ export class ApprovalExecutionCoordinator {
       return { manager: resolved.manager, session }
     } catch (error) {
       await resolved.manager.close(sessionReference).catch(() => undefined)
-      this.managers.release?.(context)
+      this.managers.release?.(resolutionContext)
       if (environment) await this.credentials?.revokeForExecution(execution.id).catch(() => undefined)
       throw error
     }
@@ -117,7 +128,8 @@ export class ApprovalExecutionCoordinator {
         if (!execution.nativeSessionId || execution.state === 'completed') continue
         const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
         if (!configuration) continue
-        const resolved = this.resolveManager(this.managerContext(execution, configuration.harness.harness))
+        const context = this.managerContext(execution, configuration)
+        const resolved = this.resolveManager(context)
         if (resolved.processState === 'resident') {
           const session = {
             harness: configuration.harness.harness,
@@ -127,7 +139,7 @@ export class ApprovalExecutionCoordinator {
           await resolved.manager.cancel(session).catch(() => false)
           await resolved.manager.close(session).catch(() => undefined)
         }
-        this.managers.release?.(this.managerContext(execution, configuration.harness.harness))
+        this.managers.release?.(context)
       } finally {
         await this.credentials?.revokeForExecution(execution.id)
       }
@@ -156,7 +168,7 @@ export class ApprovalExecutionCoordinator {
     const existing = await this.interactions.getForExecution(execution.id)
     if (existing && existing.deliveryState !== 'delivered') return { state: 'waiting', execution, interaction: existing }
 
-    const context = this.managerContext(execution, input.request.configuration.harness.harness)
+    const context = this.managerContext(execution, input.request.configuration)
     const resolved = this.resolveManager(context)
     const manager = resolved.manager
     let createdSession = false
