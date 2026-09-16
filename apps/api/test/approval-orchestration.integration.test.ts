@@ -223,34 +223,36 @@ it('interrupts and resumes the same durable native execution without repeating p
   expect(pending).toMatchObject({ nativeSessionId: 'session-approval-target', nativeRequestId: 'request-approval-target', status: 'pending' })
   expect(manager.counters).toEqual({ nodeEntries: 2, sessions: 2, attaches: 0, sideEffects: 2, deliveries: 0 })
 
-  const listed = await app.inject({
-    method: 'GET', url: '/api/interactions?limit=10',
-  })
-  expect(listed.statusCode).toBe(200)
-  expect(listed.json().items).toHaveLength(1)
-  const unsupported = await app.inject({
-    method: 'POST', url: `/api/interactions/${pending.id}/respond`,
-    payload: { interactionId: pending.id, optionId: 'caller-forged-option', expectedRevision: pending.revision },
-  })
-  expect(unsupported.statusCode).toBe(409)
-  const response = await app.inject({
+  const anonymousList = await app.inject({ method: 'GET', url: '/api/interactions?limit=10' })
+  expect(anonymousList.statusCode).toBe(401)
+  const anonymousResponse = await app.inject({
     method: 'POST', url: `/api/interactions/${pending.id}/respond`,
     payload: { interactionId: pending.id, optionId: 'codex-approve-once', expectedRevision: pending.revision },
   })
-  expect(response.statusCode).toBe(200)
-  expect(response.json().interaction.deliveryState).toBe('delivered')
+  expect(anonymousResponse.statusCode).toBe(401)
+  expect(manager.counters.deliveries).toBe(0)
+
+  // User-handler native behavior is tested at the trusted service boundary.
+  // HTTP cannot invent a User identity; authenticated production routes have
+  // their own composition/authorization regression in production-composition.
+  expect((await service.list({ handler: 'user', limit: 10 })).items).toHaveLength(1)
+  await expect(service.respond({ kind: 'user' }, {
+    interactionId: pending.id, optionId: 'caller-forged-option', expectedRevision: pending.revision,
+  })).rejects.toMatchObject({ code: 'INTERACTION_OPTION_INVALID' })
+  const response = await service.respond({ kind: 'user' }, {
+    interactionId: pending.id, optionId: 'codex-approve-once', expectedRevision: pending.revision,
+  })
+  expect(response.interaction.deliveryState).toBe('delivered')
   expect((await runs.get(run.id))?.outcome).toBe('succeeded')
   expect(manager.counters).toEqual({ nodeEntries: 2, sessions: 2, attaches: 2, sideEffects: 2, deliveries: 1 })
   const executions = await runs.listExecutions(run.id)
   expect(executions).toHaveLength(2)
   expect(executions.find((item) => item.workflowNodeId === 'predecessor')?.nativeSessionId).toBe('session-predecessor')
   expect(executions.find((item) => item.workflowNodeId === 'approval-target')?.nativeSessionId).toBe('session-approval-target')
-  const replay = await app.inject({
-    method: 'POST', url: `/api/interactions/${pending.id}/respond`,
-    payload: { interactionId: pending.id, optionId: 'codex-approve-once', expectedRevision: pending.revision },
+  const replay = await service.respond({ kind: 'user' }, {
+    interactionId: pending.id, optionId: 'codex-approve-once', expectedRevision: pending.revision,
   })
-  expect(replay.statusCode).toBe(200)
-  expect(replay.json().replayed).toBe(true)
+  expect(replay.replayed).toBe(true)
   expect(manager.counters.deliveries).toBe(1)
 })
 

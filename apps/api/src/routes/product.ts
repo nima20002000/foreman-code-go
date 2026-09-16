@@ -7,7 +7,6 @@ import {
   GetWorkflowResponseSchema,
   GetHarnessDefaultsResponseSchema,
   ListAgentsResponseSchema,
-  ListInteractionsRequestSchema,
   ListInteractionsResponseSchema,
   GetInteractionResponseSchema,
   RespondToInteractionRequestSchema,
@@ -17,9 +16,13 @@ import {
   SaveHarnessDefaultsRequestSchema,
   SaveHarnessDefaultsResponseSchema,
   WorkspaceDetailsResponseSchema,
+  type DurableInteraction,
 } from '@graphql/contracts'
+import { InteractionListInputSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import type { FastifyInstance } from 'fastify'
 
+import { requirePrincipal } from '../modules/access/http.js'
+import { isAuthorized, requireAuthorization } from '../modules/access/policy.js'
 import { DomainError } from '../modules/errors.js'
 import type { LangGraphWorkflowEngine } from '../modules/runs/engine.js'
 import type { PostgresRunRepository } from '../modules/runs/postgres.js'
@@ -44,6 +47,20 @@ interface RunParams extends WorkspaceParams { runId: string }
 
 function notFound(kind: string, id: string): never {
   throw new DomainError(`${kind.toUpperCase()}_NOT_FOUND`, `${kind} '${id}' was not found.`, 404)
+}
+
+function interactionResource(interaction: DurableInteraction) {
+  return { workspaceId: interaction.workspaceId, workflowId: interaction.workflowId, runId: interaction.runId }
+}
+
+function requireOperatorInteraction(
+  principal: ManagementPrincipal,
+  interaction: DurableInteraction,
+  action: 'interactions:read' | 'interactions:respond',
+): void {
+  if (interaction.approval.handler !== 'operator' || !isAuthorized(principal, action, interactionResource(interaction))) {
+    notFound('interaction', interaction.id)
+  }
 }
 
 export function registerProductRoutes(app: FastifyInstance, services: ProductServices, managementOnlyMutations = false): void {
@@ -135,31 +152,56 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
     return details ? GetRunResponseSchema.parse(details) : notFound('run', request.params.runId)
   })
 
-  if (services.interactions) {
+  const interactions = services.interactions
+  if (interactions) {
     app.get<{ Querystring: unknown }>('/api/interactions', async (request) => {
-        const query = request.query as { cursor?: unknown; limit?: unknown }
-        const input = ListInteractionsRequestSchema.parse({
-          ...(typeof query.cursor === 'string' ? { cursor: query.cursor } : {}),
-          ...(query.limit !== undefined ? { limit: Number(query.limit) } : {}),
-        })
-        return ListInteractionsResponseSchema.parse(await services.interactions!.list({
-          handler: 'user', ...(input.cursor ? { cursor: input.cursor } : {}), limit: input.limit,
-        }))
+      const principal = requirePrincipal(request)
+      const query = request.query as Record<string, unknown>
+      const input = InteractionListInputSchema.parse({
+        ...query, ...(query.limit !== undefined ? { limit: Number(query.limit) } : {}),
       })
-    app.get<{ Params: { interactionId: string } }>('/api/interactions/:interactionId', async (request) => {
-        const interaction = await services.interactions!.get(request.params.interactionId)
-        if (interaction.approval.handler !== 'user') return notFound('interaction', request.params.interactionId)
-        return GetInteractionResponseSchema.parse({ interaction })
-      })
-    app.post<{ Params: { interactionId: string }; Body: unknown }>('/api/interactions/:interactionId/respond', async (request) => {
-        const input = RespondToInteractionRequestSchema.parse(request.body)
-        if (input.interactionId !== request.params.interactionId) {
-          throw new DomainError('INVALID_INTERACTION', 'The response does not match the requested interaction.', 400)
+      const resource = {
+        ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+        ...(input.workflowId ? { workflowId: input.workflowId } : {}),
+        ...(input.runId ? { runId: input.runId } : {}),
+      }
+      requireAuthorization(principal, 'interactions:read', resource)
+      if (input.cursor) {
+        const cursor = await interactions.get(input.cursor)
+        requireOperatorInteraction(principal, cursor, 'interactions:read')
+        if ((input.workspaceId && cursor.workspaceId !== input.workspaceId)
+          || (input.workflowId && cursor.workflowId !== input.workflowId)
+          || (input.runId && cursor.runId !== input.runId)) {
+          return notFound('interaction', input.cursor)
         }
-        return RespondToInteractionResponseSchema.parse(await services.interactions!.respond({
-          kind: 'user',
-        }, input))
+      }
+      const page = await interactions.list({
+        ...resource, handler: 'operator', ...(input.status ? { status: input.status } : {}),
+        ...(input.cursor ? { cursor: input.cursor } : {}), limit: input.limit,
       })
+      const items = page.items.filter((interaction) => interaction.approval.handler === 'operator'
+        && isAuthorized(principal, 'interactions:read', interactionResource(interaction)))
+      return ListInteractionsResponseSchema.parse({
+        items,
+        nextCursor: items.some((interaction) => interaction.id === page.nextCursor) ? page.nextCursor : null,
+      })
+    })
+    app.get<{ Params: { interactionId: string } }>('/api/interactions/:interactionId', async (request) => {
+      const principal = requirePrincipal(request)
+      const interaction = await interactions.get(request.params.interactionId)
+      requireOperatorInteraction(principal, interaction, 'interactions:read')
+      return GetInteractionResponseSchema.parse({ interaction })
+    })
+    app.post<{ Params: { interactionId: string }; Body: unknown }>('/api/interactions/:interactionId/respond', async (request) => {
+      const principal = requirePrincipal(request)
+      const input = RespondToInteractionRequestSchema.parse(request.body)
+      if (input.interactionId !== request.params.interactionId) {
+        throw new DomainError('INVALID_INTERACTION', 'The response does not match the requested interaction.', 400)
+      }
+      const interaction = await interactions.get(input.interactionId)
+      requireOperatorInteraction(principal, interaction, 'interactions:respond')
+      return RespondToInteractionResponseSchema.parse(await interactions.respond({ kind: 'operator', principal }, input))
+    })
   }
 
   app.post<{ Params: RunParams }>('/api/workspaces/:workspaceId/runs/:runId/cancel', async (request) => {
