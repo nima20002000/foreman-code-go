@@ -1,0 +1,114 @@
+import assert from 'node:assert/strict'
+import { getEventListeners } from 'node:events'
+import { readFile, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+
+import { afterEach, beforeEach, describe, it } from 'vitest'
+
+import { CodexRpcError, CodexStdioTransport, type CodexProtocol } from '../src/modules/harnesses/codexStdioTransport.js'
+import { fixture, until, type Fixture } from './fixtures/codex-test-helpers.js'
+
+// Transport fault tests intentionally isolate framing, IO and correlation from
+// schema conversion. codex-protocol.test.ts exercises the qualified schema gate.
+const protocol: CodexProtocol = { request() {}, serverRequest() {}, notification() {}, response() {}, serverResponse() {} }
+let f: Fixture
+const transports: CodexStdioTransport[] = []
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+async function transport(requestHandler = async () => undefined, timeout = 200): Promise<CodexStdioTransport> {
+  const value = new CodexStdioTransport(f.binary, f.directory, { ...process.env }, protocol, requestHandler, () => undefined, () => undefined, timeout)
+  transports.push(value)
+  await value.start()
+  return value
+}
+function observe<T>(value: Promise<T>): Promise<T> { void value.catch(() => undefined); return value }
+
+describe.skipIf(process.platform === 'win32')('Codex owned stdio transport', () => {
+  beforeEach(async () => { f = await fixture() })
+  afterEach(async () => {
+    await Promise.all(transports.splice(0).map((value) => value.close()))
+    await rm(f.directory, { recursive: true, force: true })
+  })
+
+  it('F13: successful and failed RPCs remove every abort listener', async () => {
+    const value = await transport()
+    const controller = new AbortController()
+    for (let index = 0; index < 25; index += 1) {
+      assert.deepEqual(await value.request('test/echo', { index }, controller.signal), { index })
+      assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
+    }
+    await assert.rejects(value.request('test/noresponse', {}, controller.signal))
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
+  })
+
+  it('F11: intentional close immediately settles outstanding submitted calls and clears listeners', async () => {
+    const value = await transport(undefined, 30_000)
+    const controller = new AbortController()
+    const pending = observe(value.request('test/noresponse', {}, controller.signal))
+    await pause(20)
+    const started = Date.now()
+    await value.close()
+    await assert.rejects(pending, (error: unknown) => error instanceof CodexRpcError && error.uncertain)
+    assert(Date.now() - started < 3_000)
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
+  })
+
+  it('F12/F13: timeout and post-submission abort retain uncertain operation identity without listeners', async () => {
+    const value = await transport()
+    const controller = new AbortController()
+    await assert.rejects(value.request('test/noresponse', {}, controller.signal), (error: unknown) =>
+      error instanceof CodexRpcError && error.uncertain && error.method === 'test/noresponse' && typeof error.operationId === 'number')
+    const aborted = observe(value.request('test/noresponse', {}, controller.signal))
+    controller.abort()
+    await assert.rejects(aborted, (error: unknown) => error instanceof CodexRpcError && error.uncertain)
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
+  })
+
+  it('F10: an asynchronous native-request handler exception is caught at dispatch', async () => {
+    let attempted = false
+    const value = await transport(async () => { attempted = true; throw new Error('translation failed') })
+    await value.request('test/request')
+    await until(async () => attempted)
+    assert.deepEqual(await value.request('test/echo', { alive: true }), { alive: true })
+  })
+
+  it('F09: stdin EPIPE cannot become an unhandled stream error', async () => {
+    const value = await transport()
+    await value.request('test/epipe')
+    await pause(50)
+    await value.respond(998, 'test/response', {}).catch(() => undefined)
+    await pause(50)
+    // Running under --unhandled-rejections=strict makes boundary regressions fatal.
+    await value.close()
+  })
+
+  it('F14: an oversized unterminated stdout frame disconnects instead of growing unbounded', async () => {
+    const value = await transport()
+    await assert.rejects(value.request('test/frame'))
+    await assert.rejects(value.request('test/echo', {}))
+    await value.close()
+  })
+
+  it('F08: a SIGTERM-ignoring provider is force-killed within the shutdown bound', async () => {
+    await writeFile(join(f.directory, 'ignore-term'), '')
+    const value = await transport()
+    const started = Date.now()
+    await value.close()
+    assert(Date.now() - started < 4_000)
+  })
+
+  it('F08: descendants inheriting stdout are supervised, not left alive after parent shutdown', async () => {
+    const value = await transport()
+    const result = await value.request('test/descendant') as { pid: number }
+    assert.equal(typeof result.pid, 'number')
+    await pause(50)
+    await value.close()
+    await until(async () => {
+      try { process.kill(result.pid, 0) } catch { return true }
+      // Linux may retain a killed orphan as a zombie until PID 1 reaps it.
+      if (process.platform === 'linux') {
+        try { return /\) Z /.test(await readFile(`/proc/${result.pid}/stat`, 'utf8')) } catch { return true }
+      }
+      return false
+    })
+  })
+})

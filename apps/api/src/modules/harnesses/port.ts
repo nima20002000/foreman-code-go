@@ -74,6 +74,14 @@ export interface NativeTurnInput {
 export interface NativeHistory {
   /** Opaque native cursor for older authoritative history; never interpreted as a message ID. */
   nextCursor?: string
+  /** This is a bounded live window; callers persist streamed events at the durable boundary. */
+  firstRetainedSequence?: number
+  nextSequence?: number
+  interactionDeliveries?: readonly {
+    nativeRequestId: string
+    state: 'pending' | 'submitting' | 'submitted' | 'uncertain'
+    selectedOptionId?: string
+  }[]
   events: readonly NativeHarnessEvent[]
   pendingInteractions: readonly PendingNativeInteraction[]
   pendingInteraction?: PendingNativeInteraction
