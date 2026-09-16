@@ -39,6 +39,12 @@ describe('HAP-01 durable foundation', () => {
       expect(next.versionId).toBeTruthy()
       expect(original.value.coder.harness.model).not.toBe('fixture-next-model')
       await expect(settings.updateAgentDefaults(DEFAULT_AGENT_DEFAULTS, original.revision)).rejects.toMatchObject({ code: 'REVISION_CONFLICT' })
+      const competingDefaults = await Promise.allSettled([
+        settings.updateWorkflowDefaults({ approvalHandler: 'user' }, 0),
+        settings.updateWorkflowDefaults({ approvalHandler: 'operator' }, 0),
+      ])
+      expect(competingDefaults.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+      expect(competingDefaults.filter((result) => result.status === 'rejected')).toHaveLength(1)
 
       const operators = new PostgresOperatorRepository(pool)
       const firstOperator = await operators.ensure()
