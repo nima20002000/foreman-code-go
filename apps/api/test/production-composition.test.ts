@@ -59,6 +59,31 @@ const list = vi.fn<InteractionService['list']>()
 const get = vi.fn<InteractionService['get']>()
 const respond = vi.fn<InteractionService['respond']>()
 
+it('production recovery drains every delivery page and coalesces concurrent ticks', async () => {
+  const recover = vi.spyOn(InteractionService.prototype, 'recover')
+    .mockResolvedValueOnce({ nextCursor: 'next-interaction', errors: [] })
+    .mockResolvedValueOnce({ nextCursor: null, errors: [] })
+  vi.spyOn(production.engine, 'reconcile').mockResolvedValue()
+  const report = vi.fn()
+  await Promise.all([production.reconcile(report), production.reconcile(report)])
+  expect(recover.mock.calls).toEqual([[{ limit: 100 }], [{ limit: 100, afterId: 'next-interaction' }]])
+  expect(report).not.toHaveBeenCalled()
+})
+
+it('production shutdown closes recovery admission and waits for the in-flight pass', async () => {
+  let finish!: () => void
+  const pending = new Promise<void>((resolve) => { finish = resolve })
+  vi.spyOn(production.engine, 'reconcile').mockImplementation(() => pending)
+  vi.spyOn(production.engine, 'shutdown').mockResolvedValue()
+  const recover = vi.spyOn(InteractionService.prototype, 'recover')
+  const running = production.reconcile(vi.fn())
+  const stopping = production.shutdown()
+  finish()
+  await Promise.all([running, stopping])
+  await production.reconcile(vi.fn())
+  expect(recover).not.toHaveBeenCalled()
+})
+
 beforeEach(() => {
   principal = operator()
   current = interaction()
@@ -130,7 +155,7 @@ it('constructs separate OpenCode managers with the pinned configuration, owner, 
   expect(first.manager).toHaveProperty('options.ownerAgentId', context.agentId)
   expect(first.manager).toHaveProperty('options.server.options.workingDirectory', context.workingDirectory)
   expect(first.manager).toHaveProperty('options.server.advancedConfiguration', configuration.harness.advanced)
-  expect(managers.resolve(context)).toMatchObject({ manager: first.manager, processState: 'resident' })
+  expect(managers.resolve(context)).toMatchObject({ manager: first.manager, processState: 'needs_start', lifecycle: 'allocated' })
   const second = managers.resolve({ ...context, executionId: 'execution-2' })
   expect(second.manager).not.toBe(first.manager)
   expect(() => managers.resolve({ ...context, workingDirectory: '/unaccepted' })).toThrow()

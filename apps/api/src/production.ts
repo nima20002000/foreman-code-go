@@ -109,6 +109,7 @@ export function buildProductionApp(
     },
     revoke: (credential) => credentials.revoke(credential),
     revokeForExecution: (executionId) => credentials.revokeForExecution(executionId),
+    renew: (executionId, credential) => credentials.renewForExecution(executionId, credential),
   }
   const approvals = new ApprovalExecutionCoordinator(
     runs, repository, budgets, managers, config.harnesses.timeoutMs, launchCredentials,
@@ -164,5 +165,28 @@ export function buildProductionApp(
     mcpDetection: { pool: database.pool, service: detection },
     logger,
   })
-  return { app, engine }
+  let closing = false
+  let reconciliation: Promise<void> | undefined
+  const reconcile = (report: (error: unknown) => void): Promise<void> => {
+    if (closing) return Promise.resolve()
+    if (reconciliation) return reconciliation
+    reconciliation = (async () => {
+      await engine.reconcile(report)
+      let afterId: string | undefined
+      do {
+        if (closing) return
+        const page = await interactions.recover({ limit: 100, ...(afterId ? { afterId } : {}) })
+        for (const failure of page.errors) report(new Error(`Interaction ${failure.interactionId}: ${failure.error}`))
+        afterId = page.nextCursor ?? undefined
+      } while (afterId)
+    })().finally(() => { reconciliation = undefined })
+    return reconciliation
+  }
+  const shutdown = async (): Promise<void> => {
+    closing = true
+    const results = await Promise.allSettled([engine.shutdown(), reconciliation])
+    const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
+    if (errors.length) throw new AggregateError(errors, 'Production runtime shutdown was incomplete.')
+  }
+  return { app, engine, reconcile, shutdown }
 }
