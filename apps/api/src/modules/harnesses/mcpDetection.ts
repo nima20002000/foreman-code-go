@@ -15,6 +15,7 @@ export interface NativeMcpEntryEvidence {
   detail?: string
   enabledTools?: readonly string[]
   disabledTools?: readonly string[]
+  nativeFilterDiagnostics?: readonly string[]
 }
 
 export interface NativeMcpInspectionEvidence {
@@ -44,6 +45,7 @@ export interface ScopedMcpDetection {
   nativeFilters: {
     enabledTools?: readonly string[]
     disabledTools?: readonly string[]
+    diagnostics?: readonly string[]
   }
 }
 
@@ -130,6 +132,7 @@ export class McpDetectionService {
       nativeFilters: {
         ...(entry?.enabledTools ? { enabledTools: entry.enabledTools } : {}),
         ...(entry?.disabledTools ? { disabledTools: entry.disabledTools } : {}),
+        ...(entry?.nativeFilterDiagnostics ? { diagnostics: entry.nativeFilterDiagnostics } : {}),
       },
     }
   }
