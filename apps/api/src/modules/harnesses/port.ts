@@ -59,6 +59,8 @@ export interface OperatorNativeSessionStart {
   kind: 'operator'
   correlationId: string
   configuration: OperatorConfigurationVersion
+  /** Dedicated validated application-global runtime directory; never inferred from process.cwd(). */
+  workingDirectory: string
   environment?: ChildProcessEnvironment
 }
 
