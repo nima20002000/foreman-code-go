@@ -1,0 +1,38 @@
+import { describe, expect, it } from 'vitest'
+
+import { codexMcpInspectorAdapter } from '../src/modules/harnesses/codexMcpInspectorAdapter.js'
+
+describe('Codex HAP-02 MCP inspection adapter', () => {
+  it('normalizes the structured effective configuration without starting a runtime', async () => {
+    const calls: string[] = []
+    const inspector = codexMcpInspectorAdapter({
+      inspectMcpConfiguration: async (cwd) => {
+        calls.push(cwd)
+        return {
+          providerVersion: '0.154.0', cwd, serverName: 'graphql-app',
+          configured: {
+            enabled: true, transport: 'streamable_http', url: 'http://127.0.0.1:3000/mcp/tools',
+            bearerTokenEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN',
+            enabledTools: ['context_get'], disabledTools: ['interaction_respond'],
+          },
+        }
+      },
+    })
+    await expect(inspector.inspect({
+      harness: 'codex', runnerId: 'runner-local', workingDirectory: '/workspace', serverName: 'graphql-app',
+    })).resolves.toMatchObject({
+      providerVersion: '0.154.0', workingDirectory: '/workspace',
+      entry: { transport: 'streamable-http', status: 'status_unavailable' },
+    })
+    expect(calls).toEqual(['/workspace'])
+  })
+
+  it('distinguishes a successful absent-entry result from inspection failure', async () => {
+    const inspector = codexMcpInspectorAdapter({
+      inspectMcpConfiguration: async () => { throw Object.assign(new Error('missing'), { code: 'CODEX_MCP_NOT_CONFIGURED' }) },
+    })
+    await expect(inspector.inspect({
+      harness: 'codex', runnerId: 'runner-local', workingDirectory: '/workspace', serverName: 'graphql-app',
+    })).resolves.not.toHaveProperty('entry')
+  })
+})

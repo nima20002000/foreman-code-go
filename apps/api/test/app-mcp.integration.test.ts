@@ -1,0 +1,211 @@
+import { randomUUID } from 'node:crypto'
+
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import {
+  HarnessExecutionSchema,
+  NATIVE_INTERACTION_FIXTURES,
+  WorkflowRunSchema,
+} from '@graphql/contracts'
+import { afterEach, describe, expect, it } from 'vitest'
+
+import { buildApp } from '../src/app.js'
+import { createDatabase } from '../src/infrastructure/database.js'
+import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { WorkerCredentialService } from '../src/modules/access/workerCredentials.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
+import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
+
+const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL
+  ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2600'
+
+const cleanup: Array<() => Promise<void>> = []
+afterEach(async () => {
+  while (cleanup.length) await cleanup.pop()!().catch(() => undefined)
+})
+
+function structured(result: { structuredContent?: unknown }): Record<string, unknown> {
+  expect(result.structuredContent).toBeTypeOf('object')
+  return result.structuredContent as Record<string, unknown>
+}
+
+describe('App MCP real transport and PostgreSQL policy', () => {
+  it('isolates identities, catalogs, scopes, responses, replay, revocation, and audience', async () => {
+    const suffix = randomUUID()
+    const database = createDatabase({ connectionString, maxConnections: 8, connectionTimeoutMs: 5000, queryTimeoutMs: 5000 })
+    await database.migrate()
+    await ensureAcceptanceSeed(database.pool)
+    const access = new PostgresAccessService(database.pool)
+    const commands = new PostgresCommandCoordinator(database.pool)
+    const interactions = new PostgresInteractionRepository(database.pool)
+    const appInteractions = new PostgresAppInteractionService(database.pool, interactions, commands)
+    const credentials = new WorkerCredentialService(database.pool, access)
+    const runId = `run-app-${suffix}`
+    const run = WorkflowRunSchema.parse({
+      id: runId,
+      workspaceId: 'workspace-1',
+      workflowId: 'workflow-content-pipeline',
+      workflowVersionId: 'workflow-content-pipeline-v1',
+      agentConfigurationVersionIds: {
+        'agent-developer': 'agent-developer-config-v1',
+        'agent-reviewer': 'agent-reviewer-config-v1',
+        'agent-researcher': 'agent-researcher-config-v1',
+      },
+      approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'agent-reviewer' },
+      executionCondition: { kind: 'manual' },
+      executionState: 'waiting', outcome: 'pending', input: {},
+      createdAt: new Date().toISOString(),
+    })
+    await database.pool.query(
+      `insert into runs (id,workspace_id,workflow_id,workflow_version_id,execution_state,record)
+       values ($1,$2,$3,$4,$5,$6::jsonb)`,
+      [run.id, run.workspaceId, run.workflowId, run.workflowVersionId, run.executionState, JSON.stringify(run)],
+    )
+    const executionIds = {
+      coder: `execution-coder-${suffix}`,
+      orchestrator: `execution-orchestrator-${suffix}`,
+      wrongReviewer: `execution-wrong-${suffix}`,
+    }
+    for (const [key, agentId, configId] of [
+      ['coder', 'agent-developer', 'agent-developer-config-v1'],
+      ['orchestrator', 'agent-reviewer', 'agent-reviewer-config-v1'],
+      ['wrongReviewer', 'agent-researcher', 'agent-researcher-config-v1'],
+    ] as const) {
+      const execution = HarnessExecutionSchema.parse({
+        id: executionIds[key], runId, workflowNodeId: `node-${key}`, agentId,
+        agentConfigurationVersionId: configId, attempt: 1, input: {}, state: 'starting',
+        createdAt: new Date().toISOString(), startedAt: new Date().toISOString(),
+      })
+      await database.pool.query(
+        `insert into harness_executions
+          (id,run_id,workflow_node_id,agent_id,attempt,accepted,record)
+         values ($1,$2,$3,$4,$5,false,$6::jsonb)`,
+        [execution.id, execution.runId, execution.workflowNodeId, execution.agentId, execution.attempt, JSON.stringify(execution)],
+      )
+    }
+
+    const pending = {
+      ...NATIVE_INTERACTION_FIXTURES.codex,
+      id: `interaction-pending-${suffix}`,
+      workspaceId: run.workspaceId, workflowId: run.workflowId, runId,
+      executionId: executionIds.coder, requestingAgentId: 'agent-developer',
+      nativeSessionId: `session-${suffix}`, nativeRequestId: `request-${suffix}`,
+      approval: run.approval!,
+    }
+    const self = {
+      ...pending,
+      id: `interaction-self-${suffix}`,
+      executionId: executionIds.orchestrator, requestingAgentId: 'agent-reviewer',
+      nativeSessionId: `session-self-${suffix}`, nativeRequestId: `request-self-${suffix}`,
+    }
+    const foreign = {
+      ...pending,
+      id: `interaction-foreign-${suffix}`,
+      workspaceId: 'workspace-foreign', workflowId: 'workflow-foreign', runId: 'run-foreign',
+      nativeSessionId: `session-foreign-${suffix}`, nativeRequestId: `request-foreign-${suffix}`,
+    }
+    await interactions.create(pending)
+    await interactions.create(self)
+    await interactions.create(foreign)
+
+    const coderCredential = await credentials.issueForExecution(executionIds.coder)
+    const orchestratorCredential = await credentials.issueForExecution(executionIds.orchestrator)
+    const wrongReviewerCredential = await credentials.issueForExecution(executionIds.wrongReviewer)
+    const operatorCredential = await access.issue({
+      name: 'operator-not-worker', audience: 'operator',
+      grants: [{ actions: ['capabilities:read'], scope: {} }],
+      expiresAt: new Date(Date.now() + 60_000),
+    })
+    const token = (credential: typeof coderCredential) => credential.environment.variables.GRAPHQL_APP_MCP_TOKEN!
+    const app = buildApp({
+      readiness: { database, checkpoints: { ping: async () => undefined } },
+      appMcp: { access, interactions: appInteractions },
+    })
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    cleanup.push(async () => { await app.close(); await database.close() })
+
+    const connect = async (name: string, bearer: string) => {
+      const client = new Client({ name, version: '1.0.0' })
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/tools', address), {
+        authProvider: { token: async () => bearer },
+      }))
+      cleanup.push(async () => client.close())
+      return client
+    }
+    const [coder, orchestrator, wrongReviewer] = await Promise.all([
+      connect('coder', token(coderCredential)),
+      connect('orchestrator', token(orchestratorCredential)),
+      connect('wrong-reviewer', token(wrongReviewerCredential)),
+    ])
+
+    const coderTools = await coder.listTools()
+    const orchestratorTools = await orchestrator.listTools()
+    const wrongTools = await wrongReviewer.listTools()
+    expect(coderTools.tools.map((tool) => tool.name)).toEqual(['context_get', 'interaction_list', 'interaction_get'])
+    expect(orchestratorTools.tools.map((tool) => tool.name)).toEqual([
+      'context_get', 'interaction_list', 'interaction_get', 'interaction_respond',
+    ])
+    expect(wrongTools.tools.map((tool) => tool.name)).toEqual(['context_get', 'interaction_list', 'interaction_get'])
+    expect(orchestratorTools.tools.every((tool) => tool.inputSchema.additionalProperties === false
+      && tool.outputSchema?.additionalProperties === false)).toBe(true)
+
+    const [coderContext, orchestratorContext] = await Promise.all([
+      coder.callTool({ name: 'context_get', arguments: {} }),
+      orchestrator.callTool({ name: 'context_get', arguments: {} }),
+    ])
+    expect(structured(coderContext)).toMatchObject({ principal: { agentId: 'agent-developer' }, capabilities: { interactionRespond: false } })
+    expect(structured(orchestratorContext)).toMatchObject({ principal: { agentId: 'agent-reviewer' }, capabilities: { interactionRespond: true } })
+    expect(token(coderCredential)).not.toBe(token(orchestratorCredential))
+
+    const firstPage = structured(await orchestrator.callTool({
+      name: 'interaction_list', arguments: { limit: 1 },
+    })) as unknown as { items: Array<{ id: string }>; nextCursor: string | null }
+    expect(firstPage.items).toHaveLength(1)
+    expect(firstPage.nextCursor).not.toBeNull()
+    expect(firstPage.nextCursor).not.toBe(firstPage.items[0]!.id)
+    const secondPage = structured(await orchestrator.callTool({
+      name: 'interaction_list', arguments: { limit: 1, cursor: firstPage.nextCursor },
+    })) as unknown as { items: Array<{ id: string }> }
+    expect(secondPage.items[0]?.id).not.toBe(firstPage.items[0]?.id)
+    const invalidCursor = await orchestrator.callTool({ name: 'interaction_list', arguments: { cursor: 'not-a-cursor' } })
+    expect(invalidCursor.isError).toBe(true)
+    expect(JSON.stringify(invalidCursor.structuredContent)).toContain('INVALID_CURSOR')
+
+    const foreignGet = await orchestrator.callTool({ name: 'interaction_get', arguments: { interactionId: foreign.id } })
+    expect(foreignGet.isError).toBe(true)
+    expect(JSON.stringify(foreignGet.structuredContent)).toContain('INTERACTION_NOT_FOUND')
+    const selfResponse = await orchestrator.callTool({ name: 'interaction_respond', arguments: {
+      interactionId: self.id, optionId: self.responseOptions[0]!.optionId, expectedRevision: 0,
+    } })
+    expect(selfResponse.isError).toBe(true)
+    expect(JSON.stringify(selfResponse.structuredContent)).toContain('INTERACTION_NOT_FOUND')
+    await expect(coder.callTool({ name: 'interaction_respond', arguments: {
+      interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: 0,
+    } })).rejects.toThrow()
+
+    const responseInput = {
+      interactionId: pending.id,
+      optionId: pending.responseOptions[0]!.optionId,
+      expectedRevision: 0,
+    }
+    const response = structured(await orchestrator.callTool({ name: 'interaction_respond', arguments: responseInput }))
+    expect(response).toMatchObject({ replayed: false, interaction: {
+      status: 'delivery_pending', selectedOptionId: responseInput.optionId,
+    } })
+    const replay = structured(await orchestrator.callTool({ name: 'interaction_respond', arguments: responseInput }))
+    expect(replay).toMatchObject({ replayed: true })
+    expect((await database.pool.query(
+      "select count(*)::int as count from management_audit where principal_id=$1 and action='interaction_respond' and outcome='succeeded'",
+      [orchestratorCredential.principalId],
+    )).rows[0]?.count).toBe(2)
+
+    await credentials.revoke(orchestratorCredential)
+    await expect(orchestrator.listTools()).rejects.toThrow()
+    await expect(connect('operator-wrong-audience', operatorCredential.token)).rejects.toThrow()
+
+    const expiring = await credentials.issueForExecution(executionIds.wrongReviewer)
+    await database.pool.query("update management_principals set expires_at=now()-interval '1 second' where id=$1", [expiring.principalId])
+    await expect(connect('expired', token(expiring))).rejects.toThrow()
+  }, 30_000)
+})

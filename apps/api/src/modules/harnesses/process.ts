@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import type { Readable } from 'node:stream'
 
-import type { NativeEventInput } from './port.js'
+import type { ChildProcessEnvironment, NativeEventInput } from './port.js'
 
 const MAX_STDERR_LENGTH = 1_000_000
 export const PROCESS_SHUTDOWN_GRACE_MS = 1_000
@@ -14,7 +14,8 @@ export interface JsonlProcessOptions {
   signal: AbortSignal
   stdin?: string
   onSpawn(process: ChildProcess): void
-  beforeSpawn?(): Promise<void>
+  expectedAgentId?: string
+  beforeSpawn?(): Promise<ChildProcessEnvironment | void>
   onEvent(event: NativeEventInput): Promise<void>
 }
 
@@ -24,7 +25,7 @@ export interface JsonlProcessResult {
   stderr: string
 }
 
-type ProcessOptions = Pick<JsonlProcessOptions, 'binary' | 'args' | 'cwd' | 'stdin' | 'beforeSpawn'> & {
+type ProcessOptions = Pick<JsonlProcessOptions, 'binary' | 'args' | 'cwd' | 'stdin' | 'beforeSpawn' | 'expectedAgentId'> & {
   signal?: AbortSignal
   onSpawn?(process: ChildProcess): void
 }
@@ -75,7 +76,17 @@ async function runOwnedProcess<T>(
   }
   // No asynchronous work may separate the launch check from process creation.
   // This detects qualification-time replacement; it is not an atomic cwd pin.
-  if (options.beforeSpawn) await options.beforeSpawn()
+  const scopedEnvironment = options.beforeSpawn ? await options.beforeSpawn() : undefined
+  if (scopedEnvironment) {
+    if (!options.expectedAgentId || scopedEnvironment.agentId !== options.expectedAgentId) {
+      throw new Error('Child process environment belongs to another Agent.')
+    }
+    const entries = Object.entries(scopedEnvironment.variables)
+    if (entries.length !== 1 || entries[0]?.[0] !== 'GRAPHQL_APP_MCP_TOKEN' || !entries[0][1]) {
+      throw new Error('Only the scoped GraphQL App MCP credential may be injected into an Agent process.')
+    }
+    childEnvironment.GRAPHQL_APP_MCP_TOKEN = entries[0][1]
+  }
   options.signal?.throwIfAborted()
   const child = spawn(options.binary, options.args, {
     cwd: options.cwd,

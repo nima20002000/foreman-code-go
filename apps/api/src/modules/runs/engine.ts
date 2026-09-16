@@ -25,6 +25,8 @@ import type { RunOwnership } from './ownership.js'
 import { ExecutionLimiter } from './limiter.js'
 import { validateExecutableTopology } from './topology.js'
 import { resolveExecutionDirectory } from './executionDirectory.js'
+import type { WorkerLaunchCredentialService } from '../harnesses/mcpDetection.js'
+import type { IssuedWorkerCredential } from '../access/workerCredentials.js'
 
 const EngineState = Annotation.Root({
   runId: Annotation<string>(),
@@ -76,6 +78,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     workspaceRoot: string,
     private readonly timeoutMs: number,
     private readonly locations: WorkspaceLocationService,
+    private readonly workerCredentials?: WorkerLaunchCredentialService,
   ) {
     this.workspaceRoot = resolve(workspaceRoot)
   }
@@ -340,46 +343,67 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     })
     const adapter = this.harnesses.resolve(configuration.harness.harness)
     let eventSequence = 0
+    let workerCredential: IssuedWorkerCredential | undefined
 
     try {
       signal.throwIfAborted()
       owner.assertOwned()
-      const result = await adapter.execute(request, {
-        signal,
-        beforeSpawn: async () => {
-          signal.throwIfAborted()
-          owner.assertOwned()
-          if (run.authorizationPrincipalId) {
-            await this.locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId, owner.client)
-          }
-          await this.locations.revalidateSnapshot(
-            run.workspaceId, run.executionLocation!, requiredLocationAccess([configuration]), signal,
-          )
-          signal.throwIfAborted()
-          owner.assertOwned()
-        },
-        onSession: async (nativeSessionId) => {
-          execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId, state: 'running' })
-          await this.runs.updateExecution(execution, owner)
-          await this.runs.recordActivity(run.id, 'harness', 'harness_session_started', {
-            workflowNodeId: nodeId,
-            agentId: node.agentId,
-            nativeSessionId,
-            harness: configuration.harness.harness,
-          }, executionId, owner.client)
-        },
-        onEvent: async (event: NativeEventInput) => {
-          const nativeEvent = HarnessNativeEventSchema.parse({
-            executionId,
-            sequence: eventSequence,
-            type: event.type,
-            occurredAt: new Date().toISOString(),
-            payload: event.payload,
+      const result = await (async () => {
+        try {
+          return await adapter.execute(request, {
+            signal,
+            beforeSpawn: async () => {
+              signal.throwIfAborted()
+              owner.assertOwned()
+              if (run.authorizationPrincipalId) {
+                await this.locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId, owner.client)
+              }
+              await this.locations.revalidateSnapshot(
+                run.workspaceId, run.executionLocation!, requiredLocationAccess([configuration]), signal,
+              )
+              signal.throwIfAborted()
+              owner.assertOwned()
+              if (this.workerCredentials) {
+                if (workerCredential) throw new DomainError('WORKER_CREDENTIAL_ALREADY_ISSUED', 'This execution already received an App credential.', 500)
+                const prepared = await this.workerCredentials.prepare({
+                  executionId,
+                  harness: configuration.harness.harness,
+                  workingDirectory,
+                  signal,
+                })
+                workerCredential = prepared.credential
+                return prepared.credential.environment
+              }
+            },
+            onSession: async (nativeSessionId) => {
+              execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId, state: 'running' })
+              await this.runs.updateExecution(execution, owner)
+              await this.runs.recordActivity(run.id, 'harness', 'harness_session_started', {
+                workflowNodeId: nodeId,
+                agentId: node.agentId,
+                nativeSessionId,
+                harness: configuration.harness.harness,
+              }, executionId, owner.client)
+            },
+            onEvent: async (event: NativeEventInput) => {
+              const nativeEvent = HarnessNativeEventSchema.parse({
+                executionId,
+                sequence: eventSequence,
+                type: event.type,
+                occurredAt: new Date().toISOString(),
+                payload: event.payload,
+              })
+              eventSequence += 1
+              await this.runs.appendNativeEvent(nativeEvent, owner)
+            },
           })
-          eventSequence += 1
-          await this.runs.appendNativeEvent(nativeEvent, owner)
-        },
-      })
+        } finally {
+          if (workerCredential && this.workerCredentials) {
+            await this.workerCredentials.revoke(workerCredential)
+            workerCredential = undefined
+          }
+        }
+      })()
       signal.throwIfAborted()
       execution = HarnessExecutionSchema.parse({
         ...execution,
