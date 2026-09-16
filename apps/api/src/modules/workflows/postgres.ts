@@ -5,6 +5,7 @@ import {
   AgentSchema,
   WorkflowDefinitionSchema,
   WorkflowVersionSchema,
+  validateHarnessWorkflowCompatibility,
   type Agent,
   type AgentConfigurationVersion,
   type WorkflowDefinition,
@@ -161,6 +162,14 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         ? { handler: 'orchestrator' as const, designatedOrchestratorAgentId: selectedOrchestrator.id }
         : undefined)
       if (approval) validateWorkflowApproval(input, approval, authorityAgents)
+      if (approval) {
+        const acceptedConfigurations = await client.query<{ record: unknown }>(
+          'select record from agent_configuration_versions where id=any($1::text[])', [Object.values(configurations)],
+        )
+        for (const row of acceptedConfigurations.rows) {
+          validateHarnessWorkflowCompatibility(AgentConfigurationVersionSchema.parse(row.record).harness, approval.handler)
+        }
+      }
 
       const versionResult = await client.query<{ next_version: number }>(
         'select coalesce(max(version), 0) + 1 as next_version from workflow_versions where workflow_id = $1',

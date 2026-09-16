@@ -1,5 +1,6 @@
 import {
   DEFAULT_HARNESS_DEFAULTS,
+  AgentEffortSchema,
   type Agent,
   type HarnessConfiguration,
   type HarnessDefaults,
@@ -86,13 +87,16 @@ export function defaultAgentForHarness(
   const exact = configuration.harness === harness
     ? configuration
     : DEFAULT_HARNESS_DEFAULTS[harness]
+  const legacyEffort = exact.harness === 'codex'
+    ? exact.reasoningEffort
+    : AgentEffortSchema.safeParse(exact.variant).data ?? 'max'
   return {
     id,
     name,
     role: 'Agent',
     harness,
     model: exact.model,
-    effort: exact.harness === 'codex' ? exact.reasoningEffort : exact.variant,
+    effort: legacyEffort,
     ...(exact.harness === 'codex' ? { fastMode: exact.serviceTier === 'priority' } : {}),
     harnessConfiguration: exact,
   }
