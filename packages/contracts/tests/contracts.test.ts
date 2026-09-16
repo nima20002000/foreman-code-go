@@ -26,6 +26,7 @@ import {
   NATIVE_INTERACTION_FIXTURES,
   OPENCODE_APPROVAL_OPTIONS_FIXTURE,
   WorkflowApprovalConfigurationSchema,
+  AcceptedWorkflowApprovalConfigurationSchema,
   CodexHarnessConfigurationSchema,
   CodexSessionCompatibilitySchema,
   OpenCodeHarnessConfigurationSchema,
@@ -55,11 +56,43 @@ describe("neutral product contracts", () => {
       coder: { role: "coder", boardAddable: true, harness: { harness: "codex", model: "m", reasoningEffort: "medium", sandbox: "read-only", serviceTier: "standard" } },
       operator: { role: "operator", boardAddable: false, uiEnabled: true, harness: { harness: "codex", model: "m", reasoningEffort: "medium", sandbox: "read-only", serviceTier: "standard" } },
     }).success).toBe(true);
-    expect(WorkflowApprovalConfigurationSchema.safeParse({ handler: "orchestrator" }).success).toBe(false);
+    expect(WorkflowApprovalConfigurationSchema.safeParse({ handler: "orchestrator" }).success).toBe(true);
+    expect(AcceptedWorkflowApprovalConfigurationSchema.safeParse({ handler: "orchestrator" }).success).toBe(false);
+    for (const handler of ["user", "operator"] as const) {
+      expect(WorkflowApprovalConfigurationSchema.safeParse({ handler, designatedOrchestratorAgentId: "agent-1" }).success).toBe(false);
+      expect(AcceptedWorkflowApprovalConfigurationSchema.safeParse({ handler, designatedOrchestratorAgentId: "agent-1" }).success).toBe(false);
+      expect(AcceptedWorkflowApprovalConfigurationSchema.safeParse({ handler }).success).toBe(true);
+    }
     expect(CODEX_APPROVAL_OPTIONS_FIXTURE.some((option) => option.semantic === "allow_session")).toBe(true);
     expect(OPENCODE_APPROVAL_OPTIONS_FIXTURE.some((option) => option.semantic === "allow_session")).toBe(false);
     expect(OPENCODE_APPROVAL_OPTIONS_FIXTURE.find((option) => option.semantic === "reject")?.affectsOtherPendingRequests).toBe(true);
     expect(DurableInteractionSchema.parse(NATIVE_INTERACTION_FIXTURES.codex).nativeRequestId).toBe("codex-request-fixture");
+  });
+
+  it("keeps approval drafts editable but requires a complete accepted version and Run snapshot", () => {
+    const incompleteApproval = { handler: "orchestrator" as const };
+    const acceptedApproval = { ...incompleteApproval, designatedOrchestratorAgentId: "agent-1" };
+    const executableDefinition = {
+      ...workflow, approval: incompleteApproval, version: 1,
+      executionPolicy: { maxParallelism: 1, maxNodeExecutions: 1 },
+    };
+    const version = {
+      id: "workflow-1-v1", workspaceId: "workspace-1", workflowId: "workflow-1", version: 1,
+      entryNodeId: "node-1", definition: executableDefinition,
+      agentConfigurationVersionIds: { "agent-1": "agent-config-1" },
+      contentHash: "sha256:workflow", createdAt: "2026-09-16T00:00:00.000Z",
+    };
+    expect(WorkflowDefinitionSchema.safeParse({ ...workflow, approval: incompleteApproval }).success).toBe(true);
+    expect(WorkflowVersionSchema.safeParse({ ...version, approval: incompleteApproval }).success).toBe(false);
+    expect(WorkflowVersionSchema.safeParse({ ...version, approval: acceptedApproval }).success).toBe(true);
+
+    const run = {
+      id: "run-1", workspaceId: "workspace-1", workflowId: "workflow-1", workflowVersionId: version.id,
+      agentConfigurationVersionIds: version.agentConfigurationVersionIds, executionCondition: condition,
+      executionState: "queued", outcome: "pending", input: {}, createdAt: "2026-09-16T00:00:00.000Z",
+    };
+    expect(WorkflowRunSchema.safeParse({ ...run, approval: incompleteApproval }).success).toBe(false);
+    expect(WorkflowRunSchema.safeParse({ ...run, approval: acceptedApproval }).success).toBe(true);
   });
 
   it("round-trips exact provider Advanced settings while preserving legacy omission", () => {
