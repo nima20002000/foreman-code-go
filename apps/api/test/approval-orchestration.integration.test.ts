@@ -33,6 +33,7 @@ import { OperatorInteractionService } from '../src/modules/interactions/operator
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
 import { ReviewerDispatcher } from '../src/modules/interactions/reviewer.js'
+import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
@@ -135,6 +136,15 @@ class UncertainOnceNativeManager extends DeterministicNativeSessionManager {
     this.responseAttempts += 1
     if (this.responseAttempts === 1) throw Object.assign(new Error('transport lost after write'), { certainty: 'uncertain' as const })
     return super.respond(session, nativeRequestId, option)
+  }
+}
+
+class FailingAttachNativeManager extends SelectiveNativeManager {
+  constructor(private readonly failAfterStart: boolean) { super(new Set(), 'codex') }
+  override async attachSession(session: NativeSessionReference, input: NativeSessionStart) {
+    const attached = await super.attachSession(session, input)
+    if (this.failAfterStart) throw new Error('provider failed after process start')
+    return attached
   }
 }
 
@@ -606,4 +616,69 @@ it('lists, reads and responds to an Operator-assigned request through authentica
     })).rejects.toMatchObject({ code: 'EXECUTION_STOPPED' })
     expect(manager.counters.cancellations).toBe(1)
   } finally { await client.close() }
+})
+
+it('evicts a failed provider so retry preflights a fresh Agent-scoped manager and token', async () => {
+  const workflows = new PostgresWorkflowRepository(pool)
+  const locations = new WorkspaceLocationService(pool, new PostgresCommandCoordinator(pool), root)
+  const runs = new PostgresRunRepository(pool, workflows, locations)
+  const run = await runs.createForWorkflow('workspace-1', 'workflow-content-pipeline', {}, 1)
+  const reviewerConfig = await workflows.getAgentConfiguration('agent-reviewer-config-v1')
+  const researcherConfig = await workflows.getAgentConfiguration('agent-researcher-config-v1')
+  if (!reviewerConfig || !researcherConfig) throw new Error('configuration missing')
+  const now = new Date().toISOString()
+  const executions = [
+    { id: 'retry-reviewer-execution', agentId: 'agent-reviewer', configuration: reviewerConfig },
+    { id: 'retry-researcher-execution', agentId: 'agent-researcher', configuration: researcherConfig },
+  ]
+  for (const item of executions) await runs.ensureExecution({
+    id: item.id, runId: run.id, workflowNodeId: `node-${item.agentId}`, agentId: item.agentId,
+    agentConfigurationVersionId: item.configuration.id, attempt: 1, input: {}, state: 'waiting',
+    createdAt: now, nativeSessionId: `session-${item.agentId}`,
+    workingDirectory: projectRoot, runtimeDirectory: root,
+  })
+  const createdManagers: Array<{ agentId: string; manager: FailingAttachNativeManager }> = []
+  let first = true
+  const resolver = new ExecutionScopedNativeSessionManagerResolver((context) => {
+    const manager = new FailingAttachNativeManager(first)
+    first = false
+    createdManagers.push({ agentId: context.agentId, manager })
+    return manager
+  })
+  const tokens: Array<{ executionId: string; agentId: string; token: string }> = []
+  const revoked: string[] = []
+  const credentials = {
+    prepare: async (input: { executionId: string; harness: 'codex' | 'opencode'; workingDirectory: string }) => {
+      const agentId = executions.find((item) => item.id === input.executionId)!.agentId
+      const token = `fresh-${input.executionId}-${tokens.length + 1}`
+      tokens.push({ executionId: input.executionId, agentId, token })
+      return {
+        credential: { principalId: `principal-${token}`, environment: { agentId, variables: { GRAPHQL_APP_MCP_TOKEN: token } }, expiresAt: new Date(Date.now() + 60_000).toISOString() },
+        detection: {
+          detection: { harness: input.harness, serverName: 'graphql-app', state: 'connected' as const, endpointMatches: true, credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN', checkedAt: now },
+          runnerId: 'runner-local', workingDirectory: input.workingDirectory, providerVersion: '0.154.0', nativeFilters: {},
+        },
+      }
+    },
+    revoke: async () => undefined,
+    revokeForExecution: async (executionId: string) => { revoked.push(executionId); return 1 },
+  }
+  const runtime = new ApprovalExecutionCoordinator(
+    runs, new PostgresInteractionRepository(pool), new PostgresApprovalBudgetRepository(pool), resolver, 10_000, credentials,
+  )
+  const reviewerContext = { harness: 'codex' as const, executionId: executions[0]!.id, agentId: executions[0]!.agentId, workingDirectory: projectRoot }
+  const reviewerSession = { harness: 'codex' as const, providerVersion: '0.154.0', nativeSessionId: 'session-agent-reviewer' }
+  await expect(runtime.attachOwnedSession(reviewerContext, reviewerSession)).rejects.toThrow('provider failed after process start')
+  await expect(runtime.attachOwnedSession(reviewerContext, reviewerSession)).resolves.toMatchObject({ session: reviewerSession })
+  const researcherContext = { harness: 'codex' as const, executionId: executions[1]!.id, agentId: executions[1]!.agentId, workingDirectory: projectRoot }
+  await expect(runtime.attachOwnedSession(researcherContext, {
+    harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'session-agent-researcher',
+  })).resolves.toMatchObject({ session: { nativeSessionId: 'session-agent-researcher' } })
+
+  expect(createdManagers.map((item) => item.agentId)).toEqual(['agent-reviewer', 'agent-reviewer', 'agent-researcher'])
+  expect(tokens.map((item) => item.agentId)).toEqual(['agent-reviewer', 'agent-reviewer', 'agent-researcher'])
+  expect(new Set(tokens.map((item) => item.token)).size).toBe(3)
+  expect(revoked).toContain('retry-reviewer-execution')
+  expect(createdManagers[0]!.manager.counters.attaches).toBe(1)
+  expect(createdManagers[1]!.manager.counters.attaches).toBe(1)
 })

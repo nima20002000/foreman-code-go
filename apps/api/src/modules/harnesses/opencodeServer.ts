@@ -145,7 +145,9 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       } catch {
         // Replace an unhealthy owned process; mutations are never retried here.
       }
+      const environment = this.environment
       await this.dispose()
+      this.environment = environment
     }
     if (!this.starting) {
       this.starting = this.start(signal).finally(() => { this.starting = undefined })
@@ -163,6 +165,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
     this.child = undefined
     this.baseUrl = undefined
     this.password = undefined
+    this.environment = undefined
     if (!child || child.exitCode !== null) return
     if (child.pid && process.platform !== 'win32') {
       try { process.kill(-child.pid, 'SIGTERM') } catch (error) {
@@ -324,57 +327,65 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const workingDirectory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
     const title = input.kind === 'operator' ? `GraphQL Operator ${input.correlationId}` : `GraphQL ${input.request.executionId}`
     const configuration = this.configuration(input)
-    await this.bindSessionEnvironment(input.environment, signal)
-    await this.qualifyServer(signal)
-    await this.qualifyConfiguration(configuration, workingDirectory, signal)
-    await this.applyMcpControls(configuration, workingDirectory, signal)
-    const [providerID, ...modelParts] = configuration.model.split('/')
-    const permission = configuration.advanced?.permissionRules.map((rule) => ({
-      permission: nativePermissionName(rule.permission), pattern: rule.pattern, action: rule.effect,
-    }))
-    const response = await this.json('/session', {
-      method: 'POST', directory: workingDirectory,
-      body: {
-        title,
-        agent: configuration.nativeAgent,
-        model: { providerID, id: modelParts.join('/'), variant: configuration.variant },
-        ...(permission ? { permission } : {}),
-      },
-    }, signal)
-    const sessionId = stringField(response, 'id', 'OPENCODE_SESSION_ID_MISSING')
-    const session = NativeSessionReferenceSchema.parse({ harness: 'opencode', providerVersion: QUALIFIED_VERSION, nativeSessionId: sessionId })
-    this.sessions.set(sessionId, {
-      directory: workingDirectory, configuration,
-      events: [], seenEventIds: new Set(), seenPendingRequestIds: new Set(), correlationMessages: new Map(), sequence: 0,
-    })
-    return session
+    try {
+      await this.bindSessionEnvironment(input.environment, signal)
+      await this.qualifyServer(signal)
+      await this.qualifyConfiguration(configuration, workingDirectory, signal)
+      await this.applyMcpControls(configuration, workingDirectory, signal)
+      const [providerID, ...modelParts] = configuration.model.split('/')
+      const permission = configuration.advanced?.permissionRules.map((rule) => ({
+        permission: nativePermissionName(rule.permission), pattern: rule.pattern, action: rule.effect,
+      }))
+      const response = await this.json('/session', {
+        method: 'POST', directory: workingDirectory,
+        body: {
+          title,
+          agent: configuration.nativeAgent,
+          model: { providerID, id: modelParts.join('/'), variant: configuration.variant },
+          ...(permission ? { permission } : {}),
+        },
+      }, signal)
+      const sessionId = stringField(response, 'id', 'OPENCODE_SESSION_ID_MISSING')
+      const session = NativeSessionReferenceSchema.parse({ harness: 'opencode', providerVersion: QUALIFIED_VERSION, nativeSessionId: sessionId })
+      this.sessions.set(sessionId, {
+        directory: workingDirectory, configuration,
+        events: [], seenEventIds: new Set(), seenPendingRequestIds: new Set(), correlationMessages: new Map(), sequence: 0,
+      })
+      return session
+    } catch (error) {
+      return this.cleanupAfterFailedSession(error)
+    }
   }
 
   async attachSession(session: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
     if (session.harness !== 'opencode' || session.providerVersion !== QUALIFIED_VERSION) {
       throw new HarnessExecutionError('OPENCODE_SESSION_UNQUALIFIED', 'The persisted session is not qualified for this OpenCode manager.')
     }
-    await this.bindSessionEnvironment(input.environment, signal)
-    const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
-    const configuration = this.configuration(input)
-    await this.qualifyServer(signal)
-    await this.qualifyConfiguration(configuration, directory, signal)
-    const response = await this.options.server.request(
-      withDirectory(`/session/${encodeURIComponent(session.nativeSessionId)}`, directory),
-      { method: 'GET' }, signal,
-    )
-    if (response.status === 404) {
-      throw new HarnessExecutionError('OPENCODE_SESSION_NOT_FOUND', 'The persisted OpenCode session no longer exists; a replacement was not created.')
+    try {
+      await this.bindSessionEnvironment(input.environment, signal)
+      const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+      const configuration = this.configuration(input)
+      await this.qualifyServer(signal)
+      await this.qualifyConfiguration(configuration, directory, signal)
+      const response = await this.options.server.request(
+        withDirectory(`/session/${encodeURIComponent(session.nativeSessionId)}`, directory),
+        { method: 'GET' }, signal,
+      )
+      if (response.status === 404) {
+        throw new HarnessExecutionError('OPENCODE_SESSION_NOT_FOUND', 'The persisted OpenCode session no longer exists; a replacement was not created.')
+      }
+      if (!response.ok) throw await responseError(response, 'OPENCODE_SESSION_ATTACH_FAILED', 'definite')
+      const native = asObject(await response.json())
+      this.verifyAttachedSession(native, session.nativeSessionId, directory, configuration)
+      await this.applyMcpControls(configuration, directory, signal)
+      this.sessions.set(session.nativeSessionId, {
+        directory, configuration,
+        events: [], seenEventIds: new Set(), seenPendingRequestIds: new Set(), correlationMessages: new Map(), sequence: 0,
+      })
+      return session
+    } catch (error) {
+      return this.cleanupAfterFailedSession(error)
     }
-    if (!response.ok) throw await responseError(response, 'OPENCODE_SESSION_ATTACH_FAILED', 'definite')
-    const native = asObject(await response.json())
-    this.verifyAttachedSession(native, session.nativeSessionId, directory, configuration)
-    await this.applyMcpControls(configuration, directory, signal)
-    this.sessions.set(session.nativeSessionId, {
-      directory, configuration,
-      events: [], seenEventIds: new Set(), seenPendingRequestIds: new Set(), correlationMessages: new Map(), sequence: 0,
-    })
-    return session
   }
 
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
@@ -514,11 +525,12 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   async close(session: NativeSessionReference): Promise<void> {
     this.sessions.delete(session.nativeSessionId)
+    if (this.sessions.size === 0) await this.disposeUnusedServer()
   }
 
   async dispose(): Promise<void> {
     this.sessions.clear()
-    await this.options.server.dispose()
+    await this.disposeUnusedServer()
   }
 
   /** Credential renewal is process replacement only; environment is never changed on a running server. */
@@ -558,6 +570,29 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     }
     await this.options.server.restart(environment, signal)
     this.boundEnvironmentFingerprint = fingerprint
+  }
+
+  private async disposeUnusedServer(): Promise<void> {
+    try {
+      await this.options.server.dispose()
+    } finally {
+      this.boundEnvironmentFingerprint = undefined
+    }
+  }
+
+  private async cleanupAfterFailedSession(error: unknown): Promise<never> {
+    if (this.sessions.size === 0) {
+      try {
+        await this.disposeUnusedServer()
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          'OpenCode session setup failed and its unused server could not be disposed.',
+          { cause: cleanupError },
+        )
+      }
+    }
+    throw error
   }
 
   async inspectNativeMcp(directory: string, signal?: AbortSignal): Promise<OpenCodeMcpInspection> {
@@ -947,9 +982,11 @@ function providerSupports(value: unknown, providerID: string, modelID: string, v
   const providers = Array.isArray(value) ? value : Array.isArray(all) ? all : []
   const provider = providers.find((item: unknown) => valueField(item, 'id') === providerID)
   const models = objectField(provider, 'models')
-  const model = objectField(models, modelID)
+  const nativeModel = models[modelID]
+  if (!nativeModel || typeof nativeModel !== 'object' || Array.isArray(nativeModel)) return false
+  const model = nativeModel as JsonObject
   const variants = objectField(model, 'variants')
-  return !!provider && !!model && (Object.keys(variants).length === 0 || variant in variants)
+  return !!provider && (Object.keys(variants).length === 0 || variant in variants)
 }
 
 function nativeMcpStatus(configured: unknown, status: JsonObject): OpenCodeMcpInspection['nativeStatus'] {

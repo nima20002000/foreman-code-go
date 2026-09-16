@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { access, chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -40,12 +40,21 @@ const agent = process.env.TEST_AGENT_ID || 'missing'
 const threadId = 'thread-' + agent
 let turn = 0
 const send = value => process.stdout.write(JSON.stringify(value)+'\\n')
+if (process.env.TEST_EXIT_MARKER) {
+  const markExit = () => require('node:fs').writeFileSync(process.env.TEST_EXIT_MARKER, 'exited')
+  process.on('exit', markExit)
+  process.on('SIGTERM', () => process.exit(0))
+}
 rl.on('line', line => {
   const message = JSON.parse(line)
   if (message.method === 'initialize') send({id:message.id,result:{userAgent:'codex-cli 0.154.0',codexHome:'/tmp/codex',platformFamily:'unix',platformOs:'linux'}})
   else if (message.method === 'initialized') {}
-  else if (message.method === 'thread/start') send({id:message.id,result:{thread:{id:threadId,ephemeral:false,turns:[]}}})
-  else if (message.method === 'thread/resume') send({id:message.id,result:{thread:{id:threadId,turns:[]}}})
+  else if (message.method === 'thread/start') process.env.TEST_FAIL_THREAD_START
+    ? send({id:message.id,error:{code:-32000,message:'forced start failure'}})
+    : send({id:message.id,result:{thread:{id:threadId,ephemeral:false,turns:[]}}})
+  else if (message.method === 'thread/resume') process.env.TEST_FAIL_THREAD_RESUME
+    ? send({id:message.id,error:{code:-32000,message:'forced resume failure'}})
+    : send({id:message.id,result:{thread:{id:threadId,turns:[]}}})
   else if (message.method === 'thread/read') send({id:message.id,result:{thread:{id:threadId,turns:[]}}})
   else if (message.method === 'config/read') send({id:message.id,result:{config:{approval_policy:'on-request'},origins:{},layers:[]}})
   else if (message.method === 'mcpServerStatus/list') send({id:message.id,result:{data:[{name:'graphql-app',runtimeStatus:'connected',tools:{context_get:{name:'context_get'}},toolsError:null,resources:[],resourceTemplates:[],authStatus:'bearerToken'}],nextCursor:null}})
@@ -96,6 +105,13 @@ async function waitForPending(manager: CodexAppServerSessionManager, session: Na
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
   throw new Error('pending interaction was not observed')
+}
+
+async function waitForFile(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try { await access(path); return } catch { await new Promise((resolve) => setTimeout(resolve, 5)) }
+  }
+  throw new Error(`expected child exit marker at ${path}`)
 }
 
 describe.skipIf(process.platform === 'win32')('Codex 0.154.0 app-server manager', () => {
@@ -221,6 +237,41 @@ describe.skipIf(process.platform === 'win32')('Codex 0.154.0 app-server manager'
       result: { error: { code: 'CODEX_SESSION_ID_MISMATCH' } },
     })
     await expect(restored.history(missing)).rejects.toMatchObject({
+      result: { error: { code: 'CODEX_SESSION_UNAVAILABLE' } },
+    })
+  })
+
+  it('closes fresh transports and registers no runtime when thread start or resume fails', async () => {
+    const { manager, directory } = await fixture()
+    const startMarker = join(directory, 'failed-start-exited')
+    const baseVariables = { TEST_AGENT_ID: 'agent-a', GRAPHQL_APP_MCP_TOKEN: 'secret-a' }
+    await expect(manager.createSession({
+      request: request(directory, 'agent-a'),
+      environment: {
+        agentId: 'agent-a',
+        variables: { ...baseVariables, TEST_FAIL_THREAD_START: '1', TEST_EXIT_MARKER: startMarker },
+      },
+    })).rejects.toMatchObject({ result: { error: { code: 'CODEX_APP_SERVER_REQUEST_FAILED' } } })
+    await waitForFile(startMarker)
+    await expect(manager.history({
+      harness: 'codex', providerVersion: 'codex-cli 0.154.0', nativeSessionId: 'thread-agent-a',
+    })).rejects.toMatchObject({ result: { error: { code: 'CODEX_SESSION_UNAVAILABLE' } } })
+
+    const live = await manager.createSession({
+      request: request(directory, 'agent-a'), environment: { agentId: 'agent-a', variables: baseVariables },
+    })
+    await manager.close(live)
+    const resumeMarker = join(directory, 'failed-resume-exited')
+    const restored = new CodexAppServerSessionManager(join(directory, 'codex.cjs'))
+    await expect(restored.attachSession(live, {
+      request: request(directory, 'agent-a'),
+      environment: {
+        agentId: 'agent-a',
+        variables: { ...baseVariables, TEST_FAIL_THREAD_RESUME: '1', TEST_EXIT_MARKER: resumeMarker },
+      },
+    })).rejects.toMatchObject({ result: { error: { code: 'CODEX_APP_SERVER_REQUEST_FAILED' } } })
+    await waitForFile(resumeMarker)
+    await expect(restored.history(live)).rejects.toMatchObject({
       result: { error: { code: 'CODEX_SESSION_UNAVAILABLE' } },
     })
   })
