@@ -15,6 +15,7 @@ import {
 import pg from 'pg'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 
 import { buildApp } from '../src/app.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
@@ -25,6 +26,7 @@ import { PostgresApprovalBudgetRepository } from '../src/modules/interactions/bu
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { InteractionService } from '../src/modules/interactions/service.js'
+import { OperatorInteractionService } from '../src/modules/interactions/operator.js'
 import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
 import { ReviewerDispatcher } from '../src/modules/interactions/reviewer.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -34,6 +36,8 @@ import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { DeterministicNativeSessionManager } from '../src/testing/deterministicNativeSession.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
 let schema: string
@@ -234,4 +238,65 @@ it('keeps a busy designated reviewer pending and fences one idle-session dispatc
   ])
   expect(claims.filter((item) => item.status === 'fulfilled')).toHaveLength(1)
   expect(claims.filter((item) => item.status === 'rejected')).toHaveLength(1)
+})
+
+it('lists, reads and responds to an Operator-assigned request through authenticated MCP', async () => {
+  const workflows = new PostgresWorkflowRepository(pool)
+  const locations = new WorkspaceLocationService(pool, new PostgresCommandCoordinator(pool), root)
+  const runs = new PostgresRunRepository(pool, workflows, locations)
+  const run = await runs.createForWorkflow('workspace-1', 'workflow-content-pipeline', {}, 1)
+  const configuration = await workflows.getAgentConfiguration('agent-developer-config-v1')
+  if (!configuration) throw new Error('configuration missing')
+  const execution = {
+    id: 'operator-execution', runId: run.id, workflowNodeId: 'operator-node', agentId: 'agent-developer',
+    agentConfigurationVersionId: configuration.id, attempt: 1, input: {}, state: 'waiting' as const,
+    createdAt: new Date().toISOString(), nativeSessionId: 'codex-fixture-session',
+  }
+  await runs.ensureExecution(execution)
+  const interactions = new PostgresInteractionRepository(pool)
+  const created = await interactions.create({
+    ...NATIVE_INTERACTION_FIXTURES.codex, id: 'operator-interaction', runId: run.id,
+    executionId: execution.id, approval: { handler: 'operator' },
+  })
+  const budgets = new PostgresApprovalBudgetRepository(pool)
+  await budgets.ensure(execution.id, run.id, 10_000)
+  await budgets.beginWait(execution.id)
+  const manager = new DeterministicNativeSessionManager('codex')
+  const session = await manager.createSession({ request: {
+    executionId: execution.id, runId: run.id, workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId,
+    workingDirectory: projectRoot, runtimeDirectory: root, configuration, input: {},
+  } })
+  for await (const _event of manager.startTurn(session, { prompt: 'fixture', clientCorrelationId: 'operator-proof' })) { break }
+  const managerResolver = { resolve: () => manager }
+  const service = new InteractionService(interactions, budgets, managerResolver, async () => undefined)
+  const operatorInteractions = new OperatorInteractionService(service, interactions)
+  const access = new PostgresAccessService(pool)
+  const issued = await access.issue({
+    name: 'Approval operator', audience: 'operator', expiresAt: new Date(Date.now() + 60_000),
+    grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: { runIds: [run.id] } }],
+  })
+  const commands = new PostgresCommandCoordinator(pool)
+  app = buildApp({
+    readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
+    operator: { access, services: { interactions: operatorInteractions, commands } as never },
+  })
+  const address = await app.listen({ host: '127.0.0.1', port: 0 })
+  const client = new Client({ name: 'approval-operator-proof', version: '1.0.0' })
+  await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), {
+    authProvider: { token: async () => issued.token },
+  }))
+  try {
+    expect((await client.listTools()).tools.map((tool) => tool.name).sort()).toEqual([
+      'interaction_get', 'interaction_list', 'interaction_respond',
+    ])
+    const listed = await client.callTool({ name: 'interaction_list', arguments: { runId: run.id, limit: 10 } })
+    expect((listed.structuredContent as { items: unknown[] }).items).toHaveLength(1)
+    const responded = await client.callTool({ name: 'interaction_respond', arguments: {
+      interactionId: created.interaction.id, optionId: 'codex-approve-once', expectedRevision: 0,
+      commandId: `respond-${randomUUID()}`,
+    } })
+    expect(responded.isError).not.toBe(true)
+    expect((responded.structuredContent as { value: { deliveryState: string } }).value.deliveryState).toBe('delivered')
+    expect(manager.counters.deliveries).toBe(1)
+  } finally { await client.close() }
 })
