@@ -514,33 +514,41 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       () => { if (holder.runtime) this.handleDisconnect(holder.runtime) },
     )
     await transport.start(signal)
-    const draft = advanced(harnessConfiguration)
-    const response = assertObject(await transport.request('thread/start', {
-      model: harnessConfiguration.model,
-      serviceTier: harnessConfiguration.serviceTier === 'priority' ? 'fast' : null,
-      cwd: workingDirectory,
-      runtimeWorkspaceRoots: [workingDirectory, ...draft.additionalWritableDirectories],
-      approvalPolicy: draft.approvalPolicy,
-      approvalsReviewer: draft.approvalsReviewer,
-      sandbox: harnessConfiguration.sandbox,
-      config: appServerConfig(harnessConfiguration),
-      ephemeral: draft.sessionPersistence === 'ephemeral',
-    }, signal), 'CODEX_THREAD_START_INVALID')
-    const thread = assertObject(response.thread, 'CODEX_THREAD_START_INVALID')
-    const nativeSessionId = text(thread.id)
-    if (!nativeSessionId) throw new HarnessExecutionError('CODEX_SESSION_ID_MISSING', 'Codex did not return a native thread ID.')
-    const session = NativeSessionReferenceSchema.parse({ harness: 'codex', providerVersion: this.expectedVersion, nativeSessionId })
-    const runtime: Runtime = {
-      input, workingDirectory, configuration: harnessConfiguration,
-      scopedCredentialVariable,
-      transport, session, events: [], waiting: undefined, activeTurnId: undefined,
-      terminalResult: undefined, finalAnswer: undefined, lastAgentMessage: undefined,
-      seenNotifications: new Set(), wake: new Set(), closed: false,
+    let registeredSessionId: string | undefined
+    try {
+      const draft = advanced(harnessConfiguration)
+      const response = assertObject(await transport.request('thread/start', {
+        model: harnessConfiguration.model,
+        serviceTier: harnessConfiguration.serviceTier === 'priority' ? 'fast' : null,
+        cwd: workingDirectory,
+        runtimeWorkspaceRoots: [workingDirectory, ...draft.additionalWritableDirectories],
+        approvalPolicy: draft.approvalPolicy,
+        approvalsReviewer: draft.approvalsReviewer,
+        sandbox: harnessConfiguration.sandbox,
+        config: appServerConfig(harnessConfiguration),
+        ephemeral: draft.sessionPersistence === 'ephemeral',
+      }, signal), 'CODEX_THREAD_START_INVALID')
+      const thread = assertObject(response.thread, 'CODEX_THREAD_START_INVALID')
+      const nativeSessionId = text(thread.id)
+      if (!nativeSessionId) throw new HarnessExecutionError('CODEX_SESSION_ID_MISSING', 'Codex did not return a native thread ID.')
+      const session = NativeSessionReferenceSchema.parse({ harness: 'codex', providerVersion: this.expectedVersion, nativeSessionId })
+      const runtime: Runtime = {
+        input, workingDirectory, configuration: harnessConfiguration,
+        scopedCredentialVariable,
+        transport, session, events: [], waiting: undefined, activeTurnId: undefined,
+        terminalResult: undefined, finalAnswer: undefined, lastAgentMessage: undefined,
+        seenNotifications: new Set(), wake: new Set(), closed: false,
+      }
+      holder.runtime = runtime
+      this.runtimes.set(nativeSessionId, runtime)
+      registeredSessionId = nativeSessionId
+      this.record(runtime, 'thread.started', { threadId: nativeSessionId, thread, diagnostics: threadDiagnostics(response) })
+      return session
+    } catch (error) {
+      if (registeredSessionId) this.runtimes.delete(registeredSessionId)
+      await transport.close()
+      throw error
     }
-    holder.runtime = runtime
-    this.runtimes.set(nativeSessionId, runtime)
-    this.record(runtime, 'thread.started', { threadId: nativeSessionId, thread, diagnostics: threadDiagnostics(response) })
-    return session
   }
 
   async attachSession(
@@ -616,6 +624,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       return session
     } catch (error) {
       runtime.closed = true
+      this.runtimes.delete(session.nativeSessionId)
       await transport.close()
       throw error
     }
