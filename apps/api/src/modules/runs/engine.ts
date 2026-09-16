@@ -293,9 +293,14 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       if (pendingInterrupts.length) {
         if (!this.interactions) throw new DomainError('APPROVAL_RUNTIME_MISSING', 'The graph interrupted without an interaction repository.', 500)
         for (const pending of pendingInterrupts) {
-          const value = pending.value as { interactionId?: unknown }
+          const value = pending.value as { interactionId?: unknown; interactionIds?: unknown }
           if (typeof value?.interactionId !== 'string') throw new DomainError('GRAPH_INTERRUPT_INVALID', 'The graph interrupt has no interaction identity.', 500)
-          await this.interactions.bindGraphInterrupt(value.interactionId, pending.id)
+          const interactionIds = value.interactionIds ?? [value.interactionId]
+          if (!Array.isArray(interactionIds) || !interactionIds.includes(value.interactionId)
+            || interactionIds.some((id) => typeof id !== 'string')) {
+            throw new DomainError('GRAPH_INTERRUPT_INVALID', 'The graph interrupt has invalid interaction identities.', 500)
+          }
+          for (const id of interactionIds) await this.interactions.bindGraphInterrupt(id, pending.id)
         }
         await this.runs.updateState(run.id, { executionState: 'waiting', outcome: 'pending', startedAt }, owner)
         // Review failures must not close the requesting native session. Pending interactions are the durable outbox.
@@ -328,7 +333,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       // tracking and database ownership until every launched task cleans up.
       await drain()
       owner.assertOwned()
-      await this.approvals?.cancelRun(run.id)
+      await this.approvals?.cancelRun(run.id, owner)
       const result = failedResult(firstFailure?.error ?? error, signal.aborted)
       await this.runs.updateState(run.id, {
         executionState: 'completed',
@@ -401,7 +406,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       createdAt: now,
       startedAt: now,
     })
-    if (!this.approvals) await this.runs.createExecution(execution, owner)
+    if (!this.approvals || !run.approval) await this.runs.createExecution(execution, owner)
     const request = HarnessExecutionRequestSchema.parse({
       executionId,
       runId: run.id,
@@ -417,23 +422,32 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     let workerCredential: IssuedWorkerCredential | undefined
 
     if (this.approvals && run.approval) {
-      const observation = await this.approvals.ensureObserve({
+      for (;;) {
+        const observation = await this.approvals.ensureObserve({
           candidate: execution, request, approval: run.approval, workflowId: run.workflowId,
           graphThreadId: run.id, owner, signal,
-      })
-      execution = observation.execution
-      if (observation.state === 'waiting') {
-        interrupt({ interactionId: observation.interaction.id })
-        throw new DomainError('GRAPH_INTERRUPT_RESUME_MISSING', 'LangGraph returned from interrupt without a resume value.', 500)
+        })
+        execution = observation.execution
+        if (observation.state === 'waiting') {
+          const resumed: unknown = interrupt({
+            interactionId: observation.interaction.id,
+            interactionIds: observation.interactions.map((item) => item.id),
+          })
+          // On node re-entry LangGraph can return an earlier delivery while a
+          // later native request is already pending. Validate the exact delivered
+          // identity, then observe again; never apply that value to the new ask.
+          await this.approvals.assertResume(execution, resumed)
+          continue
+        }
+        if (observation.result.outcome !== 'succeeded') {
+          throw new DomainError(
+            observation.result.error?.code ?? 'NATIVE_EXECUTION_FAILED',
+            observation.result.error?.message ?? 'The native execution did not succeed.', 409,
+          )
+        }
+        await this.runs.acceptExecutionResult(execution, owner)
+        return { executionIds: { [nodeId]: execution.id } }
       }
-      if (observation.result.outcome !== 'succeeded') {
-        throw new DomainError(
-          observation.result.error?.code ?? 'NATIVE_EXECUTION_FAILED',
-          observation.result.error?.message ?? 'The native execution did not succeed.', 409,
-        )
-      }
-      await this.runs.acceptExecutionResult(execution, owner)
-      return { executionIds: { [nodeId]: execution.id } }
     }
 
     const adapter = this.harnesses.resolve(configuration.harness.harness)

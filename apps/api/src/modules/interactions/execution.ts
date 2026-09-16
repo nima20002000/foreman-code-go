@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import {
   DurableInteractionSchema,
@@ -9,19 +10,21 @@ import {
   type HarnessExecutionRequest,
   type WorkflowApprovalConfiguration,
   type AgentConfigurationVersion,
+  type NativeSessionReference,
   HarnessExecutionRequestSchema,
 } from '@graphql/contracts'
 
 import { WORKER_CREDENTIAL_RENEWAL_WINDOW_MS, type IssuedWorkerCredential } from '../access/workerCredentials.js'
-import type { NativeHarnessSessionManager } from '../harnesses/port.js'
+import type { NativeHarnessSessionManager, NativeHistory } from '../harnesses/port.js'
 import { DomainError } from '../errors.js'
 import { ReviewerDispatcher } from './reviewer.js'
 import { coordinateSessionManager, isLeaseLost, type SingleWriterSessionManager } from './sessionWriter.js'
+import { HarnessExecutionError } from '../harnesses/errors.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { RunOwnership } from '../runs/ownership.js'
-import { PostgresApprovalBudgetRepository } from './budget.js'
-import { PostgresInteractionRepository } from './postgres.js'
+import type { PostgresApprovalBudgetRepository } from './budget.js'
+import type { PostgresInteractionRepository } from './postgres.js'
 import type {
   AttachedInteractionSession,
   NativeManagerResolutionContext,
@@ -32,7 +35,7 @@ import type {
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
 
 export type ApprovalExecutionObservation =
-  | { state: 'waiting'; execution: HarnessExecution; interaction: DurableInteraction }
+  | { state: 'waiting'; execution: HarnessExecution; interaction: DurableInteraction; interactions: DurableInteraction[] }
   | { state: 'completed'; execution: HarnessExecution; result: ExecutionResult }
 
 /** Idempotent ensure/observe boundary called first on every LangGraph node entry. */
@@ -173,7 +176,9 @@ export class ApprovalExecutionCoordinator {
   async attachInteraction(interaction: DurableInteraction, signal?: AbortSignal): Promise<AttachedInteractionSession> {
     const execution = await this.runs.getExecution(interaction.executionId)
     if (!execution?.workingDirectory || !execution.runtimeDirectory) throw new Error('The durable execution cannot reconstruct its native session start input.')
-    if (execution.agentId !== interaction.requestingAgentId) throw new Error('The interaction requester does not own its durable execution.')
+    if (execution.agentId !== interaction.requestingAgentId || execution.runId !== interaction.runId) {
+      throw new Error('The interaction requester does not own its durable execution.')
+    }
     return this.attachOwnedSession({
       harness: interaction.harness, executionId: execution.id, agentId: execution.agentId,
       workingDirectory: execution.workingDirectory,
@@ -209,10 +214,15 @@ export class ApprovalExecutionCoordinator {
     if (resolved.processState === 'needs_start') resolved.beginStart?.()
     try {
       const environment = await this.prepareEnvironment(resolutionContext, resolved, signal)
+      if (resolved.processState === 'resident') {
+        await resolved.manager.history(sessionReference, signal)
+        return { manager: resolved.manager, session: sessionReference }
+      }
       const session = await resolved.manager.attachSession(sessionReference, {
         kind: 'workflow', correlationId: `execution:${execution.id}`, request,
         ...(environment ? { environment } : {}),
       }, signal)
+      this.assertSessionIdentity(sessionReference, session)
       resolved.markResident?.()
       return { manager: resolved.manager, session }
     } catch (error) {
@@ -222,30 +232,66 @@ export class ApprovalExecutionCoordinator {
     }
   }
 
-  async cancelRun(runId: string): Promise<void> {
-    for (const execution of await this.runs.listExecutions(runId)) {
-      await this.budgets.stop(execution.id)
-      try {
-        if (!execution.nativeSessionId || execution.state === 'completed') continue
-        const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
-        if (!configuration) continue
-        const context = this.managerContext(execution, configuration)
-        const resolved = this.resolveManager(context)
-        if (resolved.processState === 'resident') {
-          const session = {
-            harness: configuration.harness.harness,
-            providerVersion: (await resolved.manager.capabilities()).providerVersion,
-            nativeSessionId: execution.nativeSessionId,
-          }
-          await resolved.manager.cancel(session).catch(() => false)
-          await resolved.manager.close(session).catch(() => undefined)
-        }
-        this.managers.release?.(context)
-      } finally {
-        await this.credentials?.revokeForExecution(execution.id)
-      }
+  private assertSessionIdentity(expected: NativeSessionReference, actual: NativeSessionReference): void {
+    if (expected.harness !== actual.harness || expected.providerVersion !== actual.providerVersion
+      || expected.nativeSessionId !== actual.nativeSessionId) {
+      throw new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH', 'The native manager returned a different session identity.', 409)
     }
-    await this.interactions.cancelPendingForRun(runId)
+  }
+
+  /** Resume values are delivery notifications, never decisions for the currently pending request. */
+  async assertResume(execution: HarnessExecution, value: unknown): Promise<void> {
+    const id = value && typeof value === 'object' && 'interactionId' in value ? value.interactionId : undefined
+    const interaction = typeof id === 'string' ? await this.interactions.get(id) : undefined
+    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+    if (!interaction || interaction.deliveryState !== 'delivered'
+      || !configuration || configuration.harness.harness !== interaction.harness
+      || interaction.executionId !== execution.id || interaction.runId !== execution.runId
+      || interaction.requestingAgentId !== execution.agentId
+      || interaction.nativeSessionId !== execution.nativeSessionId) {
+      throw new DomainError('GRAPH_INTERRUPT_RESUME_INVALID', 'The resume value is not a delivered interaction for this execution.', 409)
+    }
+  }
+
+  async cancelRun(runId: string, owner?: RunOwnership): Promise<void> {
+    owner?.assertOwned()
+    const failures: unknown[] = []
+    for (const execution of await this.runs.listExecutions(runId)) {
+      let context: NativeManagerResolutionContext | undefined
+      try { await this.budgets.stop(execution.id) } catch (error) { failures.push(error) }
+      try {
+        if (execution.nativeSessionId) {
+          const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+          if (configuration) {
+            context = this.managerContext(execution, configuration)
+            const resolved = this.resolveManager(context)
+            if (resolved.processState === 'resident') {
+              const session = {
+                harness: configuration.harness.harness,
+                providerVersion: (await resolved.manager.capabilities()).providerVersion,
+                nativeSessionId: execution.nativeSessionId,
+              }
+              await resolved.manager.cancel(session).catch(() => false)
+              await resolved.manager.close(session).catch(() => undefined)
+            }
+          }
+        }
+      } catch (error) { failures.push(error) } finally {
+        if (context) this.managers.release?.(context)
+      }
+      // Only the execution owner may settle a live attempt. The active node
+      // handles its own abort when cancellation is requested without ownership.
+      try {
+        if (owner && execution.state !== 'completed') {
+          await this.runs.updateExecution(HarnessExecutionSchema.parse({
+            ...execution, state: 'completed', result: { outcome: 'canceled' }, finishedAt: new Date().toISOString(),
+          }), owner)
+        }
+      } catch (error) { failures.push(error) }
+      try { await this.credentials?.revokeForExecution(execution.id) } catch (error) { failures.push(error) }
+    }
+    try { await this.interactions.cancelPendingForRun(runId) } catch (error) { failures.push(error) }
+    if (failures.length) throw new AggregateError(failures, 'Some native execution cleanup failed.')
   }
 
   async ensureObserve(input: {
@@ -259,118 +305,184 @@ export class ApprovalExecutionCoordinator {
   }): Promise<ApprovalExecutionObservation> {
     const ensured = await this.runs.ensureExecution(input.candidate, input.owner)
     let execution = ensured.execution
-    await this.budgets.ensure(execution.id, input.graphThreadId, this.activeTimeoutMs)
-    if (execution.state === 'completed') {
-      try {
-        await this.budgets.finish(execution.id, execution.finishedAt)
-      } finally {
-        await this.credentials?.revokeForExecution(execution.id)
+    let context: NativeManagerResolutionContext | undefined
+    let manager: NativeHarnessSessionManager | undefined
+    let resolved: ResolvedNativeSessionManager | undefined
+    let session: NativeSessionReference | undefined
+    try {
+      input.signal.throwIfAborted()
+      input.owner.assertOwned()
+      if (execution.state === 'completed') {
+        if (!execution.result) throw new Error('The completed execution has no durable result.')
+        try { await this.budgets.finish(execution.id, execution.finishedAt) }
+        finally { await this.credentials?.revokeForExecution(execution.id) }
+        return { state: 'completed', execution, result: execution.result }
       }
-      return { state: 'completed', execution, result: execution.result! }
-    }
-    await this.budgets.assertActive(execution.id)
+      await this.budgets.ensure(execution.id, input.graphThreadId, this.activeTimeoutMs)
+      await this.budgets.assertActive(execution.id)
+      // Read the durable reference before resolving a manager: a repository
+      // failure must not evict a resident session still needed by run cleanup.
+      const existing = execution.nativeSessionId ? await this.interactions.getForExecution(execution.id) : undefined
+      context = this.managerContext(execution, input.request.configuration)
+      const request = HarnessExecutionRequestSchema.parse({
+        ...input.request, executionId: execution.id, runId: execution.runId,
+        workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
+        runtimeDirectory: execution.runtimeDirectory, input: execution.input,
+      })
+      resolved = this.resolveManager(context)
+      if (resolved.processState === 'needs_start') resolved.beginStart?.()
+      manager = resolved.manager
 
-    const existing = await this.interactions.getForExecution(execution.id)
-    if (existing && existing.deliveryState !== 'delivered') return { state: 'waiting', execution, interaction: existing }
-
-    const context = this.managerContext(execution, input.request.configuration)
-    const resolved = this.resolveManager(context)
-    const manager = resolved.manager
-    let createdSession = false
-    if (!execution.nativeSessionId) {
-      if (resolved.lifecycle === 'resident') throw new Error('A resident native process cannot create a replacement session.')
-      resolved.beginStart?.()
-      let session
-      try {
-        const environment = await this.prepareEnvironment(context, resolved, input.signal)
-        session = await manager.createSession({ request: input.request, ...(environment ? { environment } : {}) }, input.signal)
-        resolved.markResident?.()
-        createdSession = true
-        execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: session.nativeSessionId, state: 'running' })
-        await this.runs.updateExecution(execution, input.owner)
-        for await (const event of manager.startTurn(session, {
-          prompt: buildHarnessPrompt(input.request), clientCorrelationId: `execution:${execution.id}`,
-        }, input.signal)) {
-          await this.runs.appendNativeEvent({ ...event, executionId: execution.id }, input.owner)
-          const pending = await manager.pending(session)
-          if (!pending) continue
+      const observePending = async (history: NativeHistory): Promise<ApprovalExecutionObservation | undefined> => {
+        input.signal.throwIfAborted()
+        input.owner.assertOwned()
+        const waiting: DurableInteraction[] = []
+        for (const pending of history.pendingInteractions) {
+          this.assertSessionIdentity(session!, pending.session)
           if (!pending.turn.nativeRequestId) throw new Error('Native approval request is missing its stable request identity.')
           const now = new Date().toISOString()
+          // create() deduplicates by (harness, native session, native request),
+          // not by execution. Persist the entire native snapshot before yielding.
           const created = await this.interactions.create(DurableInteractionSchema.parse({
             id: `interaction-${randomUUID()}`, revision: 0,
-            workspaceId: input.request.workspaceId, workflowId: input.workflowId,
+            workspaceId: request.workspaceId, workflowId: input.workflowId,
             runId: execution.runId, executionId: execution.id, requestingAgentId: execution.agentId,
-            harness: session.harness, providerVersion: session.providerVersion,
-            nativeSessionId: session.nativeSessionId, nativeRequestId: pending.turn.nativeRequestId,
+            harness: session!.harness, providerVersion: session!.providerVersion,
+            nativeSessionId: session!.nativeSessionId, nativeRequestId: pending.turn.nativeRequestId,
             nativeRequestType: pending.nativeRequestType, graphThreadId: input.graphThreadId,
             request: pending.request, approval: input.approval, responseOptions: pending.responseOptions,
             status: 'pending', deliveryState: 'not_started', createdAt: now, updatedAt: now,
           }))
-          execution = HarnessExecutionSchema.parse({ ...execution, state: 'waiting' })
-          await this.runs.updateExecution(execution, input.owner)
-          await this.budgets.beginWait(execution.id)
-          return { state: 'waiting', execution, interaction: created.interaction }
+          // A provider may briefly report an already-delivered request. Observe
+          // its continuation; never offer that delivered interaction as a new ask.
+          if (created.interaction.deliveryState !== 'delivered') waiting.push(created.interaction)
+          if (created.created) {
+            await this.runs.recordActivity(execution.runId, 'harness', 'harness_output', {
+              nativeEventType: 'interaction_pending',
+              interactionId: created.interaction.id, handler: created.interaction.approval.handler,
+            }, execution.id, input.owner.client)
+          }
         }
-      } catch (error) {
-        if (isLeaseLost(error) || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw error
-        await this.releaseFailedManager(context, resolved, session).catch(() => undefined)
-        throw error
+        if (!waiting.length) return undefined
+        input.signal.throwIfAborted()
+        execution = HarnessExecutionSchema.parse({ ...execution, state: 'waiting' })
+        await this.runs.updateExecution(execution, input.owner)
+        await this.budgets.beginWait(execution.id)
+        return { state: 'waiting', execution, interaction: waiting[0]!, interactions: waiting }
       }
-    }
 
-    const session = {
-      harness: input.request.configuration.harness.harness,
-      providerVersion: existing?.providerVersion ?? (await manager.capabilities()).providerVersion,
-      nativeSessionId: execution.nativeSessionId!,
-    }
-    if (!createdSession) {
-      if (resolved.processState === 'needs_start') resolved.beginStart?.()
-      try {
+      if (!execution.nativeSessionId) {
+        if (!ensured.created) {
+          throw new DomainError('NATIVE_SESSION_START_UNCERTAIN', 'The existing execution has no recorded native session. Native side effects will not be replayed.', 409)
+        }
         const environment = await this.prepareEnvironment(context, resolved, input.signal)
-        await manager.attachSession(session, {
-          kind: 'workflow', correlationId: `execution:${execution.id}`, request: input.request,
-          ...(environment ? { environment } : {}),
-        }, input.signal)
+        session = await manager.createSession({ request, ...(environment ? { environment } : {}) }, input.signal)
+        if (session.harness !== context.harness) throw new Error('The created native session has the wrong harness.')
         resolved.markResident?.()
-      } catch (error) {
-        if (isLeaseLost(error) || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw error
-        await this.releaseFailedManager(context, resolved, session).catch(() => undefined)
-        if (existing) return { state: 'waiting', execution, interaction: existing }
-        throw error
+        execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: session.nativeSessionId, state: 'running' })
+        await this.runs.updateExecution(execution, input.owner)
+        for await (const event of manager.startTurn(session, {
+          prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
+        }, input.signal)) {
+          input.signal.throwIfAborted()
+          await this.budgets.assertActive(execution.id)
+          await this.runs.appendNativeEvent({ ...event, executionId: execution.id }, input.owner)
+          const waiting = await observePending(await manager.history(session, input.signal))
+          if (waiting) return waiting
+        }
+      } else {
+        session = {
+          harness: context.harness,
+          providerVersion: existing?.providerVersion ?? (await manager.capabilities(input.signal)).providerVersion,
+          nativeSessionId: execution.nativeSessionId,
+        }
+        if (existing) this.assertSessionIdentity(session, existing)
+        const environment = await this.prepareEnvironment(context, resolved, input.signal)
+        if (resolved.processState === 'needs_start') {
+          const attached = await manager.attachSession(session, {
+            kind: 'workflow', correlationId: `execution:${execution.id}`, request,
+            ...(environment ? { environment } : {}),
+          }, input.signal)
+          this.assertSessionIdentity(session, attached)
+          resolved.markResident?.()
+        }
+        // Resident sessions retain their original scoped process credentials.
+        // history() below verifies the already-owned exact session, without a
+        // redundant attachSession() requiring a newly supplied environment.
       }
-    }
-    let history
-    try {
-      history = await manager.history(session)
-      for (const event of history.events) await this.runs.appendNativeEvent({ ...event, executionId: execution.id }, input.owner)
+
+      for (;;) {
+        input.signal.throwIfAborted()
+        input.owner.assertOwned()
+        await this.budgets.assertActive(execution.id)
+        const history = await manager.history(session, input.signal)
+        for (const event of history.events) await this.runs.appendNativeEvent({ ...event, executionId: execution.id }, input.owner)
+        const waiting = await observePending(history)
+        if (waiting) return waiting
+        if (history.terminalResult) {
+          execution = HarnessExecutionSchema.parse({
+            ...execution, state: 'completed', result: history.terminalResult, finishedAt: new Date().toISOString(),
+          })
+          await this.runs.updateExecution(execution, input.owner)
+          try { await this.budgets.finish(execution.id, execution.finishedAt) }
+          finally {
+            try { await this.credentials?.revokeForExecution(execution.id) }
+            finally {
+              await manager.close(session).catch(() => undefined)
+              this.managerCredentials.delete(manager)
+              this.managers.release?.(context, this.rawManagers.get(manager) ?? manager)
+            }
+          }
+          return { state: 'completed', execution, result: history.terminalResult }
+        }
+        // Approval delivery is not turn completion. Keep observing the same
+        // native turn; neither startTurn nor native responses are replayed here.
+        if (execution.state !== 'running') {
+          execution = HarnessExecutionSchema.parse({ ...execution, state: 'running' })
+          await this.runs.updateExecution(execution, input.owner)
+          await this.budgets.resume(execution.id)
+        }
+        await delay(100, undefined, { signal: input.signal })
+      }
     } catch (error) {
-      await this.releaseFailedManager(context, resolved, session).catch(() => undefined)
+      if ((resolved && !manager) || isLeaseLost(error)
+        || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw error
+      try {
+        input.owner.assertOwned()
+        if (execution.state !== 'completed') {
+          const result: ExecutionResult = input.signal.aborted ? { outcome: 'canceled' }
+            : error instanceof HarnessExecutionError ? error.result : {
+              outcome: 'failed', error: {
+                code: error instanceof DomainError ? error.code : 'WORKFLOW_EXECUTION_FAILED',
+                message: error instanceof Error ? error.message : 'Unknown workflow execution failure.', retryable: false,
+              },
+            }
+          execution = HarnessExecutionSchema.parse({
+            ...execution, state: 'completed', result, finishedAt: new Date().toISOString(),
+          })
+          await this.runs.updateExecution(execution, input.owner)
+          await this.runs.recordActivity(execution.runId, 'harness', 'harness_session_finished', {
+            workflowNodeId: execution.workflowNodeId, outcome: result.outcome, error: result.error ?? null,
+          }, execution.id, input.owner.client)
+        }
+      } finally {
+        let owned = true
+        try { input.owner.assertOwned() } catch { owned = false }
+        // Losing ownership must not stop a replacement owner's budget or revoke
+        // its newly issued credentials. Only close our local transport in that case.
+        if (owned) await this.budgets.finish(execution.id, execution.finishedAt).catch(() => undefined)
+        if (manager && session) {
+          if (owned) await manager.cancel(session).catch(() => false)
+          await manager.close(session).catch(() => undefined)
+        }
+        if (manager) this.managerCredentials.delete(manager)
+        if (context && manager) {
+          resolved?.markFailed?.()
+          this.managers.release?.(context, this.rawManagers.get(manager) ?? manager, 'failed')
+        }
+        if (owned) await this.credentials?.revokeForExecution(execution.id).catch(() => undefined)
+      }
       throw error
     }
-    if (history.pendingInteractions.length) {
-      const interaction = await this.interactions.getForExecution(execution.id)
-      if (!interaction) throw new Error('Native pending request has no durable interaction.')
-      return { state: 'waiting', execution, interaction }
-    }
-    if (!history.terminalResult) {
-      await this.credentials?.revokeForExecution(execution.id)
-      throw new Error('Native execution is neither waiting nor terminal.')
-    }
-    execution = HarnessExecutionSchema.parse({
-      ...execution, state: 'completed', result: history.terminalResult, finishedAt: new Date().toISOString(),
-    })
-    await this.runs.updateExecution(execution, input.owner)
-    try {
-      await this.budgets.finish(execution.id, execution.finishedAt)
-    } finally {
-      try {
-        await this.credentials?.revokeForExecution(execution.id)
-      } finally {
-        await manager.close(session).catch(() => undefined)
-        this.managerCredentials.delete(manager)
-        this.managers.release?.(context, this.rawManagers.get(manager) ?? manager)
-      }
-    }
-    return { state: 'completed', execution, result: history.terminalResult }
   }
 }
