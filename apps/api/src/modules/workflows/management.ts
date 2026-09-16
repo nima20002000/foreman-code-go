@@ -71,10 +71,9 @@ export class WorkflowManagementService {
         const workflow = WorkflowDefinitionSchema.parse({
           id: `workflow-${randomUUID()}`, workspaceId: input.workspaceId, name: input.name,
           ...(input.description !== undefined ? { description: input.description } : {}),
-          // An empty workflow cannot designate an Orchestrator yet. Omission
-          // preserves the copied Orchestrator default, which Save resolves
-          // against the first eligible board topology.
-          ...(approvalHandler === 'orchestrator' ? {} : { approval: { handler: approvalHandler } }),
+          // Drafts copy the selected handler immediately. Executable Save
+          // resolves and validates the designated Orchestrator when required.
+          approval: { handler: approvalHandler },
           executionCondition: { kind: 'manual' }, nodes: [], edges: [], createdAt: now, updatedAt: now,
         })
         const result = await client.query<WorkflowRow>(

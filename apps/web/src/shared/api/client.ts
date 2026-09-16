@@ -12,6 +12,7 @@ import {
   ListInteractionsResponseSchema,
   RespondToInteractionRequestSchema,
   RespondToInteractionResponseSchema,
+  ScopedMcpDetectionSchema,
   GetConversationRequestSchema,
   GetConversationResponseSchema,
   GetRunRequestSchema,
@@ -441,6 +442,14 @@ export class ApiClient {
     return this.request('/api/management/settings/workflows', ManagedWorkflowDefaultsSchema, options)
   }
 
+  getScopedMcpDetection(workspaceId: string, harness: 'codex' | 'opencode', options?: RequestOptions) {
+    return this.request(
+      `/api/management/workspaces/${toPath(workspaceId)}/harnesses/${harness}/mcp-detection`,
+      ScopedMcpDetectionSchema,
+      options,
+    )
+  }
+
   updateManagedWorkflowDefaults(input: z.input<typeof WorkflowDefaultsUpdateInputSchema>, options?: RequestOptions) {
     const request = parseRequest(WorkflowDefaultsUpdateInputSchema, input)
     return this.request('/api/management/settings/workflows', WorkflowDefaultsUpdateResultSchema, { ...options, method: 'PUT', body: request })
@@ -669,6 +678,7 @@ export const getManagedAgentDefaults = apiClient.getManagedAgentDefaults.bind(ap
 export const updateManagedAgentDefaults = apiClient.updateManagedAgentDefaults.bind(apiClient)
 export const getManagedWorkflowDefaults = apiClient.getManagedWorkflowDefaults.bind(apiClient)
 export const updateManagedWorkflowDefaults = apiClient.updateManagedWorkflowDefaults.bind(apiClient)
+export const getScopedMcpDetection = apiClient.getScopedMcpDetection.bind(apiClient)
 export const listInteractions = apiClient.listInteractions.bind(apiClient)
 export const getInteraction = apiClient.getInteraction.bind(apiClient)
 export const respondToInteraction = apiClient.respondToInteraction.bind(apiClient)

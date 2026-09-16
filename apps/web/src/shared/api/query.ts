@@ -48,6 +48,7 @@ import {
   getManagedHarnessCatalog, updateManagedHarnessDefaults,
   getManagedAgentDefaults, updateManagedAgentDefaults,
   getManagedWorkflowDefaults, updateManagedWorkflowDefaults,
+  getScopedMcpDetection,
   listInteractions, getInteraction, respondToInteraction,
   type RequestOptions,
 } from './client'
@@ -86,6 +87,7 @@ export const queryKeys = {
   interactions: (workspaceId?: string, workflowId?: string, status?: string) =>
     ['workbench', 'interactions', workspaceId ?? 'all', workflowId ?? 'all', status ?? 'all'] as const,
   interaction: (interactionId: string) => ['workbench', 'interaction', interactionId] as const,
+  mcpDetection: (workspaceId: string, harness: string) => ['workbench', 'management', 'workspace', workspaceId, 'mcp-detection', harness] as const,
   managedGraphContext: (workspaceId: string, workflowId: string) =>
     ['workbench', 'management', 'workspace', workspaceId, 'workflow', workflowId, 'context'] as const,
 }
@@ -292,6 +294,15 @@ export function useUpdateWorkflowDefaultsMutation() {
   return useMutation({
     mutationFn: (input: Parameters<typeof updateManagedWorkflowDefaults>[0]) => updateManagedWorkflowDefaults(input),
     onSuccess: (response) => client.setQueryData(queryKeys.workflowDefaults, response.value),
+  })
+}
+
+export function useMcpDetectionQuery(workspaceId: string, harness: 'codex' | 'opencode', enabled = true) {
+  return useQuery({
+    enabled,
+    queryKey: queryKeys.mcpDetection(workspaceId, harness),
+    queryFn: ({ signal }) => getScopedMcpDetection(workspaceId, harness, { signal }),
+    refetchInterval: enabled ? 10_000 : false,
   })
 }
 

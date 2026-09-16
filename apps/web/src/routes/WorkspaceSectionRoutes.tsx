@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 
 import { AgentsDirectory } from '../features/agents'
-import { AgentDefaultsSettings, HarnessDefaultsSettings, OperatorAccessSettings, WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
+import { AgentDefaultsSettings, HarnessDefaultsSettings, McpDetectionSettings, OperatorAccessSettings, WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
 import { ApprovalInbox } from '../features/approvals'
 import { WorkflowDirectory } from '../features/workflows'
 import { WorkspaceShell, type WorkspaceSection } from '../shared/ui/WorkspaceShell'
@@ -144,7 +144,7 @@ function SettingsPage({ browsersSelected = false }: { browsersSelected?: boolean
                 <span className="settings-coming-soon">Coming soon</span>
               </Link>
             </nav>
-            {!browsersSelected ? <WorkspaceExecutionLocationSettings key={workspaceId} workspaceId={workspaceId} /> : null}
+            {!browsersSelected ? <><WorkspaceExecutionLocationSettings key={workspaceId} workspaceId={workspaceId} /><McpDetectionSettings workspaceId={workspaceId} /></> : null}
             {browsersSelected ? (
               <section className="settings-section" aria-labelledby="browsers-settings-title">
                 <h2 id="browsers-settings-title">Browsers</h2>
