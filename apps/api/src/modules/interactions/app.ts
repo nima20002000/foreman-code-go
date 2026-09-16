@@ -12,6 +12,7 @@ import { workerScope, canReadInteraction, hasWorkerAction, requireReadableIntera
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import type { PostgresInteractionRepository } from './postgres.js'
+import type { InteractionService } from './service.js'
 
 const CURSOR_PREFIX = 'interaction:'
 export const AppInteractionListInputSchema = ListInteractionsRequestSchema.pick({ cursor: true, limit: true }).strict()
@@ -45,6 +46,7 @@ export class PostgresAppInteractionService implements AppInteractionService {
     private readonly pool: pg.Pool,
     private readonly interactions: PostgresInteractionRepository,
     private readonly commands: PostgresCommandCoordinator,
+    private readonly orchestration?: Pick<InteractionService, 'respond'>,
   ) {}
 
   async context(principal: ManagementPrincipal) {
@@ -74,6 +76,7 @@ export class PostgresAppInteractionService implements AppInteractionService {
   }
 
   async canRespond(principal: ManagementPrincipal): Promise<boolean> {
+    if (!this.orchestration) return false
     if (!hasWorkerAction(principal, 'interactions:respond')) return false
     const scope = workerScope(principal)
     const result = await this.pool.query<{ record: unknown }>(
@@ -121,21 +124,17 @@ export class PostgresAppInteractionService implements AppInteractionService {
   async respond(principal: ManagementPrincipal, input: unknown) {
     const parsed = RespondToInteractionRequestSchema.parse(input)
     const current = requireRespondableInteraction(principal, await this.interactions.get(parsed.interactionId))
-    const option = current.responseOptions.find((candidate) => candidate.optionId === parsed.optionId)
-    if (!option) throw new DomainError('INTERACTION_OPTION_INVALID', 'The response option is not valid for this interaction.', 409)
+    if (!this.orchestration) throw new DomainError('INTERACTION_DELIVERY_UNAVAILABLE', 'Native interaction delivery is not configured.', 503)
     try {
-      const result = await this.interactions.decide({
-        id: current.id,
-        optionId: option.optionId,
-        expectedRevision: parsed.expectedRevision,
-        // Provider owners/HAP-05 consume the stored option and perform exact native translation.
-        // The model never supplies a native response payload.
-        nativeResponse: { optionId: option.optionId, semantic: option.semantic },
-        auditReference: `principal:${principal.id}`,
-      })
+      const result = await this.orchestration.respond({
+        kind: 'orchestrator',
+        authority: {
+          agentId: principal.agentId!, workspaceId: current.workspaceId, workflowId: current.workflowId,
+        },
+      }, parsed)
       await this.commands.recordAudit(principal.id, 'mcp', 'interaction_respond', `interaction:${current.id}`, 'succeeded', {
         replayed: result.replayed,
-        optionId: option.optionId,
+        optionId: parsed.optionId,
       })
       return RespondToInteractionResponseSchema.parse(result)
     } catch (error) {
