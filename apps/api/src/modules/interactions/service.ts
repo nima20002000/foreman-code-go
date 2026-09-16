@@ -19,14 +19,13 @@ export interface NativeSessionManagerResolver {
 }
 
 export type InteractionResponder =
-  | { kind: 'user'; workspaceId: string; workflowId: string }
+  | { kind: 'user' }
   | { kind: 'operator'; principal: ManagementPrincipal }
   | { kind: 'orchestrator'; authority: WorkerInteractionAuthority }
 
 function assertResponder(interaction: DurableInteraction, responder: InteractionResponder): void {
   if (responder.kind === 'user') {
-    if (interaction.approval.handler !== 'user'
-      || interaction.workspaceId !== responder.workspaceId || interaction.workflowId !== responder.workflowId) {
+    if (interaction.approval.handler !== 'user') {
       throw new DomainError('INTERACTION_ACCESS_DENIED', 'The caller is not authorized for this interaction.', 403)
     }
     return
@@ -73,12 +72,13 @@ export class InteractionService {
     return interaction
   }
 
-  async list(input: { workspaceId?: string; workflowId?: string; runId?: string; handler?: DurableInteraction['approval']['handler']; cursor?: string; limit: number }): Promise<{ items: DurableInteraction[]; nextCursor: string | null }> {
+  async list(input: { workspaceId?: string; workflowId?: string; runId?: string; handler?: DurableInteraction['approval']['handler']; status?: DurableInteraction['status']; cursor?: string; limit: number }): Promise<{ items: DurableInteraction[]; nextCursor: string | null }> {
     const rows = await this.interactions.list({
       ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
       ...(input.workflowId ? { workflowId: input.workflowId } : {}),
       ...(input.runId ? { runId: input.runId } : {}),
       ...(input.handler ? { handler: input.handler } : {}),
+      ...(input.status ? { status: input.status } : {}),
       ...(input.cursor ? { afterId: input.cursor } : {}), limit: input.limit + 1,
     })
     const items = rows.slice(0, input.limit)

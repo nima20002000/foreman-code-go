@@ -41,7 +41,6 @@ interface WorkspaceParams { workspaceId: string }
 interface AgentParams extends WorkspaceParams { agentId: string }
 interface WorkflowParams extends WorkspaceParams { workflowId: string }
 interface RunParams extends WorkspaceParams { runId: string }
-interface InteractionParams extends WorkflowParams { interactionId: string }
 
 function notFound(kind: string, id: string): never {
   throw new DomainError(`${kind.toUpperCase()}_NOT_FOUND`, `${kind} '${id}' was not found.`, 404)
@@ -137,34 +136,30 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
   })
 
   if (services.interactions) {
-    app.get<{ Params: WorkflowParams; Querystring: unknown }>(
-      '/api/workspaces/:workspaceId/workflows/:workflowId/interactions', async (request) => {
-        const input = ListInteractionsRequestSchema.parse(request.query)
+    app.get<{ Querystring: unknown }>('/api/interactions', async (request) => {
+        const query = request.query as { cursor?: unknown; limit?: unknown }
+        const input = ListInteractionsRequestSchema.parse({
+          ...(typeof query.cursor === 'string' ? { cursor: query.cursor } : {}),
+          ...(query.limit !== undefined ? { limit: Number(query.limit) } : {}),
+        })
         return ListInteractionsResponseSchema.parse(await services.interactions!.list({
-          workspaceId: request.params.workspaceId, workflowId: request.params.workflowId,
           handler: 'user', ...(input.cursor ? { cursor: input.cursor } : {}), limit: input.limit,
         }))
-      },
-    )
-    app.get<{ Params: InteractionParams }>(
-      '/api/workspaces/:workspaceId/workflows/:workflowId/interactions/:interactionId', async (request) => {
+      })
+    app.get<{ Params: { interactionId: string } }>('/api/interactions/:interactionId', async (request) => {
         const interaction = await services.interactions!.get(request.params.interactionId)
-        if (interaction.workspaceId !== request.params.workspaceId || interaction.workflowId !== request.params.workflowId
-          || interaction.approval.handler !== 'user') return notFound('interaction', request.params.interactionId)
+        if (interaction.approval.handler !== 'user') return notFound('interaction', request.params.interactionId)
         return GetInteractionResponseSchema.parse({ interaction })
-      },
-    )
-    app.post<{ Params: InteractionParams; Body: unknown }>(
-      '/api/workspaces/:workspaceId/workflows/:workflowId/interactions/:interactionId/respond', async (request) => {
+      })
+    app.post<{ Params: { interactionId: string }; Body: unknown }>('/api/interactions/:interactionId/respond', async (request) => {
         const input = RespondToInteractionRequestSchema.parse(request.body)
         if (input.interactionId !== request.params.interactionId) {
           throw new DomainError('INVALID_INTERACTION', 'The response does not match the requested interaction.', 400)
         }
         return RespondToInteractionResponseSchema.parse(await services.interactions!.respond({
-          kind: 'user', workspaceId: request.params.workspaceId, workflowId: request.params.workflowId,
+          kind: 'user',
         }, input))
-      },
-    )
+      })
   }
 
   app.post<{ Params: RunParams }>('/api/workspaces/:workspaceId/runs/:runId/cancel', async (request) => {

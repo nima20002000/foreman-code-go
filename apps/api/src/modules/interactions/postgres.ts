@@ -73,15 +73,15 @@ export class PostgresInteractionRepository {
     } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
   }
 
-  async list(input: { workspaceId?: string; workflowId?: string; runId?: string; handler?: DurableInteraction['approval']['handler']; afterId?: string; limit: number }): Promise<DurableInteraction[]> {
+  async list(input: { workspaceId?: string; workflowId?: string; runId?: string; handler?: DurableInteraction['approval']['handler']; status?: DurableInteraction['status']; afterId?: string; limit: number }): Promise<DurableInteraction[]> {
     const result = await this.pool.query<{ record: unknown }>(
       `select record from durable_interactions
        where ($1::text is null or workspace_id=$1) and ($2::text is null or workflow_id=$2)
          and ($3::text is null or run_id=$3) and ($4::text is null or record->'approval'->>'handler'=$4)
-         and ($5::text is null or id>$5)
-       order by id limit $6`,
+         and ($5::text is null or status=$5) and ($6::text is null or id>$6)
+       order by id limit $7`,
       [input.workspaceId ?? null, input.workflowId ?? null, input.runId ?? null, input.handler ?? null,
-        input.afterId ?? null, input.limit],
+        input.status ?? null, input.afterId ?? null, input.limit],
     )
     return result.rows.map((row) => DurableInteractionSchema.parse(row.record))
   }
@@ -186,5 +186,22 @@ export class PostgresInteractionRepository {
       [interactionId, attempt, state, error ?? null],
     )
     if (result.rowCount !== 1) throw new DomainError('DELIVERY_ATTEMPT_STALE', 'The delivery attempt changed during reconciliation.', 409)
+  }
+
+  async bindCommand(input: { principalId: string; commandId: string; interactionId: string; optionId: string }): Promise<boolean> {
+    const inserted = await this.pool.query(
+      `insert into interaction_command_receipts (principal_id,command_id,interaction_id,option_id)
+       values ($1,$2,$3,$4) on conflict do nothing`,
+      [input.principalId, input.commandId, input.interactionId, input.optionId],
+    )
+    if (inserted.rowCount === 1) return false
+    const current = await this.pool.query<{ interaction_id: string; option_id: string }>(
+      'select interaction_id,option_id from interaction_command_receipts where principal_id=$1 and command_id=$2',
+      [input.principalId, input.commandId],
+    )
+    if (current.rows[0]?.interaction_id !== input.interactionId || current.rows[0]?.option_id !== input.optionId) {
+      throw new DomainError('COMMAND_ID_REUSED', 'The command id is already bound to different input.', 409)
+    }
+    return true
   }
 }

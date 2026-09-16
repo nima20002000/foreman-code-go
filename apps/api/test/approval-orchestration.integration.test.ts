@@ -5,6 +5,7 @@ import { join } from 'node:path'
 
 import {
   CODEX_APPROVAL_OPTIONS_FIXTURE,
+  NATIVE_INTERACTION_FIXTURES,
   NativeHarnessEventSchema,
   type HarnessExecutionRequest,
   type NativeHarnessEvent,
@@ -24,6 +25,8 @@ import { PostgresApprovalBudgetRepository } from '../src/modules/interactions/bu
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { InteractionService } from '../src/modules/interactions/service.js'
+import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
+import { ReviewerDispatcher } from '../src/modules/interactions/reviewer.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
@@ -90,6 +93,16 @@ class SelectiveNativeManager implements NativeHarnessSessionManager {
   }
   async reconcile(session: NativeSessionReference) { return this.history(session) }
   async close() {}
+}
+
+class ReviewNativeManager extends SelectiveNativeManager {
+  reviewTurns = 0
+  override async *startTurn(_session: NativeSessionReference): AsyncIterable<NativeHarnessEvent> {
+    this.reviewTurns += 1
+    yield NativeHarnessEventSchema.parse({
+      sequence: 0, type: 'turn.started', occurredAt: new Date().toISOString(), payload: { turnId: `review-turn-${this.reviewTurns}` },
+    })
+  }
 }
 
 beforeEach(async () => {
@@ -166,12 +179,12 @@ it('interrupts and resumes the same durable native execution without repeating p
   expect(manager.counters).toEqual({ nodeEntries: 2, sessions: 2, sideEffects: 2, deliveries: 0 })
 
   const listed = await app.inject({
-    method: 'GET', url: `/api/workspaces/${run.workspaceId}/workflows/${run.workflowId}/interactions?limit=10`,
+    method: 'GET', url: '/api/interactions?limit=10',
   })
   expect(listed.statusCode).toBe(200)
   expect(listed.json().items).toHaveLength(1)
   const response = await app.inject({
-    method: 'POST', url: `/api/workspaces/${run.workspaceId}/workflows/${run.workflowId}/interactions/${pending.id}/respond`,
+    method: 'POST', url: `/api/interactions/${pending.id}/respond`,
     payload: { interactionId: pending.id, optionId: 'codex-approve-once', expectedRevision: pending.revision },
   })
   expect(response.statusCode).toBe(200)
@@ -182,4 +195,43 @@ it('interrupts and resumes the same durable native execution without repeating p
   expect(executions).toHaveLength(2)
   expect(executions.find((item) => item.workflowNodeId === 'predecessor')?.nativeSessionId).toBe('session-predecessor')
   expect(executions.find((item) => item.workflowNodeId === 'approval-target')?.nativeSessionId).toBe('session-approval-target')
+})
+
+it('keeps a busy designated reviewer pending and fences one idle-session dispatch across workers', async () => {
+  const interactions = new PostgresInteractionRepository(pool)
+  const coordination = new PostgresInteractionCoordinationRepository(pool)
+  const first = await interactions.create({
+    ...NATIVE_INTERACTION_FIXTURES.codex, id: 'review-interaction-busy',
+    nativeSessionId: 'requester-busy', nativeRequestId: 'request-busy',
+  })
+  const second = await interactions.create({
+    ...NATIVE_INTERACTION_FIXTURES.codex, id: 'review-interaction-idle',
+    nativeSessionId: 'requester-idle', nativeRequestId: 'request-idle',
+  })
+  const now = new Date().toISOString()
+  await coordination.ensureLane({
+    id: 'lane-busy', harness: 'codex', nativeSessionId: 'reviewer-busy-session', ownerAgentId: 'reviewer-busy',
+    observedStatus: 'busy', connectionGeneration: 1, observedAt: now, revision: 0,
+  })
+  await coordination.ensureLane({
+    id: 'lane-idle', harness: 'codex', nativeSessionId: 'reviewer-idle-session', ownerAgentId: 'reviewer-idle',
+    observedStatus: 'idle', connectionGeneration: 1, observedAt: now, revision: 0,
+  })
+  const manager = new ReviewNativeManager()
+  const dispatcher = new ReviewerDispatcher(coordination, { resolve: () => manager })
+  await dispatcher.enqueue(first.interaction, 'reviewer-busy', {
+    harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'reviewer-busy-session',
+  })
+  const idleJob = await dispatcher.enqueue(second.interaction, 'reviewer-idle', {
+    harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'reviewer-idle-session',
+  })
+
+  expect(await dispatcher.dispatchNext('reviewer-busy', 'worker-a')).toMatchObject({ state: 'blocked_busy' })
+  expect(manager.reviewTurns).toBe(0)
+  const claims = await Promise.allSettled([
+    coordination.claimReviewJob(idleJob.id, 'worker-a', 'token-a', new Date(Date.now() + 30_000).toISOString()),
+    coordination.claimReviewJob(idleJob.id, 'worker-b', 'token-b', new Date(Date.now() + 30_000).toISOString()),
+  ])
+  expect(claims.filter((item) => item.status === 'fulfilled')).toHaveLength(1)
+  expect(claims.filter((item) => item.status === 'rejected')).toHaveLength(1)
 })

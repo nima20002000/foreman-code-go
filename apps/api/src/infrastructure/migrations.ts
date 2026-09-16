@@ -285,6 +285,16 @@ const migrations = [
     create index if not exists interaction_delivery_attempts_reconcile_idx
       on interaction_delivery_attempts (state, created_at, interaction_id);
   ` },
+  { version: 501, sql: `
+    create table if not exists interaction_command_receipts (
+      principal_id text not null,
+      command_id text not null,
+      interaction_id text not null references durable_interactions(id) on delete cascade,
+      option_id text not null,
+      created_at timestamptz not null default now(),
+      primary key (principal_id,command_id)
+    );
+  ` },
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

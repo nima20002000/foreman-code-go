@@ -24,16 +24,66 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async claimReviewJob(id: string, owner: string, token: string, leaseExpiresAt: string): Promise<ReviewJob> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      const found = await client.query<{ record: unknown }>(
+        `select record from review_jobs where id=$1 and
+         (state in ('pending','blocked_busy','blocked_disconnected') or
+          (state='leased' and (record->>'leaseExpiresAt')::timestamptz <= now())) for update`, [id],
+      )
+      const current = found.rows[0] ? ReviewJobSchema.parse(found.rows[0].record) : undefined
+      if (!current) throw new DomainError('REVIEW_JOB_NOT_CLAIMABLE', 'The review job is already owned or completed.', 409)
+      const next = ReviewJobSchema.parse({
+        ...current, state: 'leased', attempt: current.attempt + 1, leaseOwner: owner,
+        leaseToken: token, leaseExpiresAt, updatedAt: new Date().toISOString(), error: undefined,
+      })
+      await client.query(
+        `update review_jobs set state='leased',revision=revision+1,record=$2::jsonb,updated_at=now() where id=$1`,
+        [id, JSON.stringify(next)],
+      )
+      await client.query('commit')
+      return next
+    } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
+  }
+
+  async nextReviewJob(reviewerAgentId: string): Promise<ReviewJob | undefined> {
     const result = await this.pool.query<{ record: unknown }>(
-      `update review_jobs set state='leased', revision=revision+1, updated_at=now(),
-         record=jsonb_set(jsonb_set(jsonb_set(jsonb_set(record, '{state}', '"leased"'),
-           '{leaseOwner}', to_jsonb($2::text)), '{leaseToken}', to_jsonb($3::text)),
-           '{leaseExpiresAt}', to_jsonb($4::text))
-       where id=$1 and state in ('pending','blocked_busy','blocked_disconnected')
-       returning record`, [id, owner, token, leaseExpiresAt],
+      `select record from review_jobs where reviewer_agent_id=$1 and
+       (state in ('pending','blocked_busy','blocked_disconnected') or
+        (state='leased' and (record->>'leaseExpiresAt')::timestamptz <= now()))
+       order by created_at,id limit 1`, [reviewerAgentId],
     )
-    if (!result.rows[0]) throw new DomainError('REVIEW_JOB_NOT_CLAIMABLE', 'The review job is already owned or completed.', 409)
-    return ReviewJobSchema.parse(result.rows[0].record)
+    return result.rows[0] ? ReviewJobSchema.parse(result.rows[0].record) : undefined
+  }
+
+  async transitionReviewJob(id: string, leaseToken: string, state: ReviewJob['state'], fields: {
+    providerTurnOrMessageId?: string; error?: ReviewJob['error']
+  } = {}): Promise<ReviewJob> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      const found = await client.query<{ record: unknown }>('select record from review_jobs where id=$1 for update', [id])
+      const current = found.rows[0] ? ReviewJobSchema.parse(found.rows[0].record) : undefined
+      if (!current || current.leaseToken !== leaseToken) throw new DomainError('REVIEW_JOB_LEASE_LOST', 'The review job lease is no longer owned.', 409)
+      const now = new Date().toISOString()
+      const releases = ['completed', 'blocked_busy', 'blocked_disconnected', 'uncertain', 'failed'].includes(state)
+      const next = ReviewJobSchema.parse({
+        ...current, state, updatedAt: now,
+        ...(state === 'submitted' ? { submittedAt: now } : {}),
+        ...(state === 'acknowledged' ? { acknowledgedAt: now } : {}),
+        ...(state === 'completed' ? { completedAt: now } : {}),
+        ...(fields.providerTurnOrMessageId ? { providerTurnOrMessageId: fields.providerTurnOrMessageId } : {}),
+        ...(fields.error ? { error: fields.error } : {}),
+        ...(releases ? { leaseOwner: undefined, leaseToken: undefined, leaseExpiresAt: undefined } : {}),
+      })
+      await client.query(
+        'update review_jobs set state=$2,revision=revision+1,record=$3::jsonb,updated_at=now() where id=$1',
+        [id, state, JSON.stringify(next)],
+      )
+      await client.query('commit')
+      return next
+    } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
   }
 
   async ensureLane(lane: NativeSessionLane): Promise<NativeSessionLane> {
@@ -63,5 +113,36 @@ export class PostgresInteractionCoordinationRepository {
     )
     if (!result.rows[0]) throw new DomainError('SESSION_LANE_BUSY', 'The native session lane is busy or stale.', 409)
     return NativeSessionLaneSchema.parse(result.rows[0].record)
+  }
+
+  async getLane(harness: NativeSessionLane['harness'], nativeSessionId: string): Promise<NativeSessionLane | undefined> {
+    const result = await this.pool.query<{ record: unknown }>(
+      'select record from native_session_lanes where harness=$1 and native_session_id=$2', [harness, nativeSessionId],
+    )
+    return result.rows[0] ? NativeSessionLaneSchema.parse(result.rows[0].record) : undefined
+  }
+
+  async releaseLane(id: string, leaseToken: string, observed: {
+    observedStatus: NativeSessionLane['observedStatus']; currentTurnOrMessageId?: string; connectionGeneration?: number
+  }): Promise<NativeSessionLane> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      const found = await client.query<{ record: unknown }>('select record from native_session_lanes where id=$1 for update', [id])
+      const current = found.rows[0] ? NativeSessionLaneSchema.parse(found.rows[0].record) : undefined
+      if (!current || current.leaseToken !== leaseToken) throw new DomainError('SESSION_LANE_LEASE_LOST', 'The native session lane lease is no longer owned.', 409)
+      const next = NativeSessionLaneSchema.parse({
+        ...current, revision: current.revision + 1, observedStatus: observed.observedStatus,
+        observedAt: new Date().toISOString(), connectionGeneration: observed.connectionGeneration ?? current.connectionGeneration,
+        ...(observed.currentTurnOrMessageId ? { currentTurnOrMessageId: observed.currentTurnOrMessageId } : { currentTurnOrMessageId: undefined }),
+        leaseOwner: undefined, leaseToken: undefined, leaseExpiresAt: undefined, correlationId: undefined,
+      })
+      await client.query(
+        'update native_session_lanes set revision=$2,record=$3::jsonb,updated_at=now() where id=$1',
+        [id, next.revision, JSON.stringify(next)],
+      )
+      await client.query('commit')
+      return next
+    } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
   }
 }
