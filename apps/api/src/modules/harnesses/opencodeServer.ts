@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { isDeepStrictEqual } from 'node:util'
 
@@ -61,10 +61,16 @@ interface SessionState {
   directory: string
   configuration: OpenCodeHarnessConfiguration
   events: NativeHarnessEvent[]
+  connectionId: string
+  messageSnapshots: Set<string>
+  canceledRequests: Set<string>
+  responseDeliveries: Array<NonNullable<NativeHistory['responseDeliveries']>[number]>
   seenEventIds: Set<string>
   seenPendingRequestIds: Set<string>
-  correlationMessages: Map<string, string>
   sequence: number
+  observation?: Promise<void>
+  observationError?: unknown
+  observerController?: AbortController
 }
 
 export type NativeDeliveryCertainty = 'definite' | 'uncertain'
@@ -349,7 +355,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       const session = NativeSessionReferenceSchema.parse({ harness: 'opencode', providerVersion: QUALIFIED_VERSION, nativeSessionId: sessionId })
       this.sessions.set(sessionId, {
         directory: workingDirectory, configuration,
-        events: [], seenEventIds: new Set(), seenPendingRequestIds: new Set(), correlationMessages: new Map(), sequence: 0,
+        events: [], connectionId: randomUUID(), messageSnapshots: new Set(), canceledRequests: new Set(), responseDeliveries: [], seenEventIds: new Set(), seenPendingRequestIds: new Set(), sequence: 0,
       })
       return session
     } catch (error) {
@@ -380,7 +386,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       await this.applyMcpControls(configuration, directory, signal)
       this.sessions.set(session.nativeSessionId, {
         directory, configuration,
-        events: [], seenEventIds: new Set(), seenPendingRequestIds: new Set(), correlationMessages: new Map(), sequence: 0,
+        events: [], connectionId: randomUUID(), messageSnapshots: new Set(), canceledRequests: new Set(), responseDeliveries: [], seenEventIds: new Set(), seenPendingRequestIds: new Set(), sequence: 0,
       })
       return session
     } catch (error) {
@@ -390,12 +396,39 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
     const state = await this.requireSession(session, signal)
+    if (state.observation) throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'This session already has an active turn.')
+    const offset = state.events.length
+    delete state.observationError
+    state.observerController = new AbortController()
+    const observingSignal = signal ? AbortSignal.any([signal, state.observerController.signal]) : state.observerController.signal
+    // The session owns observation. Returning the consumer at an approval must
+    // not cancel the SSE reader or submit another prompt on continuation.
+    state.observation = (async () => {
+      for await (const event of this.submitAndObserve(session, input, observingSignal)) void event
+    })().catch((error: unknown) => { state.observationError = error })
+      .finally(() => { delete state.observation })
+    let index = offset
+    for (;;) {
+      signal?.throwIfAborted()
+      while (index < state.events.length) {
+        const event = state.events[index++]!
+        if (state.configuration.thinking || !isReasoningEvent(event.type)) yield event
+      }
+      if (!state.observation) {
+        if (state.observationError) throw state.observationError
+        return
+      }
+      await abortableDelay(10, signal)
+    }
+  }
+
+  private async *submitAndObserve(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
+    const state = await this.requireSession(session, signal)
     if (this.activeTurns.has(session.nativeSessionId)) {
       throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'This OpenCode session already has an active GraphQL-owned turn.')
     }
     this.activeTurns.add(session.nativeSessionId)
     const messageID = messageId(input.clientCorrelationId)
-    state.correlationMessages.set(input.clientCorrelationId, messageID)
     let submitted = false
     try { while (true) {
       signal?.throwIfAborted()
@@ -488,6 +521,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     await this.mutate(withDirectory(`/permission/${encodeURIComponent(nativeRequestId)}/reply`, state.directory), {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reply }),
     }, signal)
+    state.responseDeliveries.push({ source: 'provider_acknowledgement', ...session, nativeRequestId,
+      nativeRequestType: pendingInteraction(session, request).nativeRequestType, optionId: option.optionId, semantic: option.semantic })
+    if (reply === 'reject') for (const sibling of before) {
+      if (sibling.sessionID === session.nativeSessionId && sibling.id !== nativeRequestId) state.canceledRequests.add(sibling.id)
+    }
   }
 
   async cancel(session: NativeSessionReference, signal?: AbortSignal): Promise<boolean> {
@@ -507,28 +545,35 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   async history(session: NativeSessionReference, signal?: AbortSignal): Promise<NativeHistory> {
     const state = await this.requireSession(session, signal)
     const messages = await this.messages(session.nativeSessionId, state.directory, signal)
+    this.ingestMessages(state, messages)
     const terminalResult = finalResult(messages)
     const pendingInteractions = await this.pendingAll(session, signal)
     const pendingInteraction = pendingInteractions[0]
-    return { events: [...state.events], pendingInteractions, ...(pendingInteraction ? { pendingInteraction } : {}), ...(terminalResult ? { terminalResult } : {}) }
+    return { responseDeliveries: [...state.responseDeliveries], canceledRequestIds: [...state.canceledRequests], events: [...state.events], pendingInteractions, ...(pendingInteraction ? { pendingInteraction } : {}), ...(terminalResult ? { terminalResult } : {}) }
   }
 
   async reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory> {
     const state = await this.requireSession(session, signal)
     const messages = await this.messages(session.nativeSessionId, state.directory, signal)
-    const parentID = state.correlationMessages.get(correlationId)
+    this.ingestMessages(state, messages)
+    const parentID = messageId(correlationId)
     const terminalResult = finalResult(messages, parentID)
     const pendingInteractions = await this.pendingAll(session, signal)
     const pendingInteraction = pendingInteractions[0]
-    return { events: [...state.events], pendingInteractions, ...(pendingInteraction ? { pendingInteraction } : {}), ...(terminalResult ? { terminalResult } : {}) }
+    return { responseDeliveries: [...state.responseDeliveries], canceledRequestIds: [...state.canceledRequests], events: [...state.events], pendingInteractions, ...(pendingInteraction ? { pendingInteraction } : {}), ...(terminalResult ? { terminalResult, terminalTurn: { correlationId, providerId: parentID, result: terminalResult } } : {}) }
   }
 
   async close(session: NativeSessionReference): Promise<void> {
+    const state = this.sessions.get(session.nativeSessionId)
+    state?.observerController?.abort()
+    await state?.observation
     this.sessions.delete(session.nativeSessionId)
     if (this.sessions.size === 0) await this.disposeUnusedServer()
   }
 
   async dispose(): Promise<void> {
+    for (const state of this.sessions.values()) state.observerController?.abort()
+    await Promise.all([...this.sessions.values()].map((state) => state.observation))
     this.sessions.clear()
     await this.disposeUnusedServer()
   }
@@ -758,11 +803,32 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       .then((value) => Array.isArray(value) ? value.filter(isNativeMessage) : [])
   }
 
+  private ingestMessages(state: SessionState, messages: NativeMessage[]): void {
+    // HTTP history is a read-only continuation path after the prompt generator
+    // yields an approval, and after reconnect. Include output and tool parts.
+    for (const message of messages) {
+      const snapshots = [
+        { type: 'message.updated', properties: { info: message.info } },
+        ...message.parts.map((part) => ({ type: 'message.part.updated', properties: { part } })),
+      ]
+      for (const snapshot of snapshots) {
+        const identity = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex')
+        if (state.messageSnapshots.has(identity)) continue
+        this.record(state, snapshot)
+      }
+    }
+  }
+
   private record(state: SessionState, native: NativeEvent): NativeHarnessEvent | undefined {
+    if (native.type === 'message.updated' || native.type === 'message.part.updated') {
+      const identity = createHash('sha256').update(JSON.stringify({ type: native.type, properties: native.properties })).digest('hex')
+      if (state.messageSnapshots.has(identity)) return undefined
+      state.messageSnapshots.add(identity)
+    }
     if (native.id && state.seenEventIds.has(native.id)) return undefined
     if (native.id) state.seenEventIds.add(native.id)
     const event = NativeHarnessEventSchema.parse({
-      sequence: state.sequence++, type: native.type, occurredAt: new Date().toISOString(),
+      sequence: state.sequence++, connectionId: state.connectionId, type: native.type, occurredAt: new Date().toISOString(),
       payload: { ...(native.properties ?? {}), ...(native.id ? { nativeEventId: native.id } : {}) },
     })
     state.events.push(event)
@@ -770,7 +836,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private synthetic(state: SessionState, type: string, payload: JsonObject): NativeHarnessEvent {
-    const event = NativeHarnessEventSchema.parse({ sequence: state.sequence++, type, occurredAt: new Date().toISOString(), payload })
+    const event = NativeHarnessEventSchema.parse({ sequence: state.sequence++, connectionId: state.connectionId, type, occurredAt: new Date().toISOString(), payload })
     state.events.push(event)
     return event
   }
@@ -894,6 +960,7 @@ function finalResult(messages: NativeMessage[], parentID?: string): NativeHistor
   const assistant = [...messages].reverse().find((message) => {
     const info = message.info
     return info.role === 'assistant' && typeof objectField(info, 'time').completed === 'number'
+      && (['stop', 'length', 'content-filter'].includes(String(info.finish)) || !!info.error)
       && (!parentID || info.parentID === parentID)
   })
   if (!assistant) return undefined

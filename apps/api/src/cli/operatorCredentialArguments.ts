@@ -1,8 +1,8 @@
 export type CredentialArguments =
   | { command: 'revoke'; principalId: string }
-  | { command: 'issue'; name: string; audience: 'operator' | 'worker'; days: number; workspaceId?: string }
+  | { command: 'issue'; name: string; audience: 'operator' | 'worker' | 'user'; days: number; workspaceId?: string }
 
-const USAGE = 'Usage: pnpm credential issue --name <name> [--days 30] [--workspace <id>] [--audience operator|worker], or pnpm credential revoke <principal-id>'
+const USAGE = 'Usage: pnpm credential issue --name <name> [--days 30] [--workspace <id>] [--audience operator|worker|user], or pnpm credential revoke <principal-id>'
 const FLAGS = new Set(['--name', '--days', '--workspace', '--audience'])
 
 /** Parse everything before opening a database or issuing any credential. */
@@ -28,8 +28,8 @@ export function parseCredentialArguments(argv: readonly string[]): CredentialArg
   const name = values.get('--name')
   if (!name) throw new Error('--name is required')
   const audience = values.get('--audience') ?? 'operator'
-  if (audience !== 'operator' && audience !== 'worker') {
-    throw new Error('--audience must be exactly operator or worker')
+  if (audience !== 'operator' && audience !== 'worker' && audience !== 'user') {
+    throw new Error('--audience must be exactly operator, worker, or user')
   }
   const rawDays = values.get('--days') ?? '30'
   const days = Number(rawDays)

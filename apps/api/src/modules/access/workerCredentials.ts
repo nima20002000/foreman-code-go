@@ -37,7 +37,15 @@ export class WorkerCredentialService {
     }
   }
 
-  async issueForExecution(executionId: string): Promise<IssuedWorkerCredential> {
+  issueForExecution(executionId: string): Promise<IssuedWorkerCredential> {
+    return this.issue(executionId, 'workflow')
+  }
+
+  issueForReviewer(executionId: string): Promise<IssuedWorkerCredential> {
+    return this.issue(executionId, 'reviewer')
+  }
+
+  private async issue(executionId: string, purpose: 'workflow' | 'reviewer'): Promise<IssuedWorkerCredential> {
     const result = await this.pool.query<ExecutionIdentityRow>(
       `select he.id as execution_id, he.run_id, he.agent_id,
               r.workspace_id, r.workflow_id, he.record as execution_record, r.record as run_record
@@ -59,8 +67,22 @@ export class WorkerCredentialService {
       || run.workspaceId !== identity.workspace_id || run.workflowId !== identity.workflow_id) {
       throw new DomainError('WORKER_EXECUTION_IDENTITY_INVALID', 'The durable execution identity is inconsistent.', 409)
     }
-    if (execution.state === 'completed' || run.executionState === 'completed') {
+    if (run.executionState === 'completed' || purpose === 'workflow' && execution.state === 'completed') {
       throw new DomainError('WORKER_EXECUTION_TERMINAL', 'A terminal execution cannot receive worker credentials.', 409)
+    }
+    if (purpose === 'reviewer') {
+      const ready = await this.pool.query(
+        `select s.execution_id from execution_native_sessions s
+         join harness_executions he on he.id=s.execution_id
+         join agent_configuration_versions c on c.id=he.record->>'agentConfigurationVersionId'
+         where s.execution_id=$1 and s.workflow_finalized_at is not null
+           and s.reference->>'nativeSessionId'=he.record->>'nativeSessionId'
+           and c.record->>'productRole'='orchestrator'`, [executionId],
+      )
+      if (execution.state !== 'completed' || run.approval?.handler !== 'orchestrator'
+        || run.approval.designatedOrchestratorAgentId !== execution.agentId || !ready.rowCount) {
+        throw new DomainError('REVIEWER_EXECUTION_NOT_READY', 'Only the finalized designated Orchestrator session can receive Run-lifetime review credentials.', 409)
+      }
     }
     const expiresAt = new Date(Date.now() + this.ttlMs)
     const issued = await this.access.issue({
@@ -88,10 +110,10 @@ export class WorkerCredentialService {
     try {
       await this.pool.query(
         `insert into worker_credential_bindings
-          (principal_id, execution_id, run_id, workspace_id, workflow_id, agent_id, environment_variable)
-         values ($1,$2,$3,$4,$5,$6,$7)`,
+          (principal_id, execution_id, run_id, workspace_id, workflow_id, agent_id, environment_variable, purpose)
+         values ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [issued.principal.id, identity.execution_id, identity.run_id, identity.workspace_id,
-          identity.workflow_id, identity.agent_id, APP_MCP_TOKEN_ENVIRONMENT_VARIABLE],
+          identity.workflow_id, identity.agent_id, APP_MCP_TOKEN_ENVIRONMENT_VARIABLE, purpose],
       )
     } catch (error) {
       await this.access.revoke(issued.principal.id).catch(() => undefined)
@@ -126,10 +148,15 @@ export class WorkerCredentialService {
          and b.environment_variable=$4 and p.revoked_at is null and b.revoked_at is null
          and he.record->>'id'=he.id and he.record->>'runId'=r.id and he.record->>'agentId'=b.agent_id
          and r.record->>'id'=r.id and r.record->>'workspaceId'=b.workspace_id and r.record->>'workflowId'=b.workflow_id
-         and he.record->>'state' in ('running','waiting')
+         and ((b.purpose='workflow' and he.record->>'state' in ('running','waiting')
+           and s.active_elapsed_ms + coalesce(extract(epoch from (now()-s.active_started_at))*1000,0) < s.active_timeout_ms)
+           or (b.purpose='reviewer' and he.record->>'state'='completed'
+             and r.record->'approval'->>'handler'='orchestrator'
+             and r.record->'approval'->>'designatedOrchestratorAgentId'=b.agent_id
+             and exists (select 1 from execution_native_sessions ns where ns.execution_id=he.id
+               and ns.workflow_finalized_at is not null and ns.reference->>'nativeSessionId'=he.record->>'nativeSessionId')))
          and r.record->>'executionState' in ('running','waiting') and r.record->>'outcome'='pending'
          and s.stopped_at is null
-         and s.active_elapsed_ms + coalesce(extract(epoch from (now()-s.active_started_at))*1000,0) < s.active_timeout_ms
        returning p.expires_at`,
       [credential.principalId, executionId, this.ttlMs, APP_MCP_TOKEN_ENVIRONMENT_VARIABLE],
     )

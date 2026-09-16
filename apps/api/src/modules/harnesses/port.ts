@@ -74,6 +74,10 @@ export interface NativeTurnInput {
 }
 
 export interface NativeHistory {
+  /** Explicit provider cancellation evidence, scoped to this exact session. */
+  canceledRequestIds?: readonly string[]
+  /** Result of the exact requested correlation, never the session's latest turn. */
+  terminalTurn?: { correlationId: string; providerId: string; result: ExecutionResult }
   /** Optional positive evidence; an empty pending list is never a delivery receipt. */
   responseDeliveries?: readonly NativeResponseDeliveryEvidence[]
   events: readonly NativeHarnessEvent[]

@@ -46,6 +46,10 @@ describe('PostgreSQL infrastructure', () => {
           id text primary key, record jsonb not null, created_at timestamptz not null default now(),
           revision bigint not null default 1, archived_at timestamptz
         );
+        create table agent_configuration_versions (id text primary key, record jsonb not null);
+        create table harness_executions (id text primary key, record jsonb not null);
+        create table harness_native_events (execution_id text not null, sequence integer not null, record jsonb not null,
+          primary key(execution_id,sequence));
         create table runs (
           id text primary key, workspace_id text not null, workflow_id text not null, workflow_version_id text not null,
           execution_state text not null, record jsonb not null, created_at timestamptz not null default now()

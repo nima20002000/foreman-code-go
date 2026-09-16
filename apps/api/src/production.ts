@@ -22,6 +22,7 @@ import { OperatorInteractionService } from './modules/interactions/operator.js'
 import { PostgresInteractionRepository } from './modules/interactions/postgres.js'
 import { ExecutionScopedNativeSessionManagerResolver } from './modules/interactions/runtimePorts.js'
 import { InteractionService } from './modules/interactions/service.js'
+import { continuationValidator } from './modules/runs/continuation.js'
 import { LangGraphWorkflowEngine } from './modules/runs/engine.js'
 import { RunManagementService } from './modules/runs/management.js'
 import { PostgresRunRepository } from './modules/runs/postgres.js'
@@ -76,9 +77,11 @@ export function buildProductionApp(
       expectedAppMcpEndpoint: appMcpEndpoint,
     })
   })
+  const validateContinuation = continuationValidator(database.pool, locations)
   const credentials = new WorkerCredentialService(database.pool, access)
   const launchCredentials: ExecutionCredentialProvider = {
     async prepare(input) {
+      await validateContinuation(input.executionId, input.signal)
       const execution = await runs.getExecution(input.executionId)
       if (!execution || execution.workingDirectory !== input.workingDirectory) {
         throw new DomainError('WORKER_EXECUTION_IDENTITY_INVALID', 'Credential preflight must use the accepted execution directory.', 409)
@@ -112,7 +115,7 @@ export function buildProductionApp(
     renew: (executionId, credential) => credentials.renewForExecution(executionId, credential),
   }
   const approvals = new ApprovalExecutionCoordinator(
-    runs, repository, budgets, managers, config.harnesses.timeoutMs, launchCredentials,
+    runs, repository, budgets, managers, config.harnesses.timeoutMs, launchCredentials, validateContinuation,
   )
   const engine = new LangGraphWorkflowEngine(
     runs, workflows, harnesses, checkpoints.saver, config.harnesses.workspaceRoot,

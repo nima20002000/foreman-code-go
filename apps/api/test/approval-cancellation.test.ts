@@ -105,7 +105,11 @@ class Manager implements NativeHarnessSessionManager {
     return pending ? { events: [], pendingInteractions: [pending] }
       : { events: [], pendingInteractions: [], terminalResult: { outcome: 'succeeded' } }
   }
-  async reconcile() { return this.started ? this.history() : { events: [], pendingInteractions: [] } }
+  async reconcile(_session: NativeSessionReference, correlationId: string) {
+    if (!this.started) return { events: [], pendingInteractions: [] }
+    const history = await this.history()
+    return { ...history, ...(history.terminalResult ? { terminalTurn: { correlationId, providerId: 'turn-1', result: history.terminalResult } } : {}) }
+  }
 }
 
 function fixture(items: HarnessExecution[]) {
@@ -125,9 +129,10 @@ function fixture(items: HarnessExecution[]) {
     coordination: nativeLanes(),
     getForExecution: async (id: string) => pending.get(id),
     create: async (item: DurableInteraction) => { pending.set(item.executionId, item); return { interaction: item, created: true } },
+    cancelPendingForExecution: async () => undefined,
     cancelPendingForRun: async () => { calls.push('interactions'); return 1 },
   }
-  const budgets = { ensure: async () => undefined, assertActive: async () => undefined, beginWait: async () => undefined,
+  const budgets = { remaining: async () => 60_000, ensure: async () => undefined, assertActive: async () => undefined, beginWait: async () => undefined,
     finish: async () => undefined, resume: async () => undefined,
     stop: async (id: string) => { calls.push(`budget:${id}`) } }
   const credentials = {
@@ -317,7 +322,7 @@ it('Stop cancels every unresolved SQL state including delivery_failed without ch
 })
 
 function engineFixture(approvals?: ApprovalExecutionCoordinator) {
-  if (approvals) Object.assign(approvals, { reconcileReviews: async () => undefined, reviewers: { shutdown: async () => undefined } })
+  if (approvals) Object.assign(approvals, { finishRun: async () => undefined, reconcileReviews: async () => undefined, reviewers: { shutdown: async () => undefined } })
   const calls: string[] = []
   let owned = true
   const owner = { client: {}, assertOwned: () => { if (!owned) throw new Error('ownership lost') }, release: async () => { calls.push('release-owner') } } as unknown as RunOwnership

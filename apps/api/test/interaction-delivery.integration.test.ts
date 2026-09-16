@@ -9,6 +9,10 @@ import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { PostgresInteractionRecoveryRepository } from '../src/modules/interactions/recovery.js'
+import { coordinateSessionManager } from '../src/modules/interactions/sessionWriter.js'
+import { InteractionService } from '../src/modules/interactions/service.js'
+import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
+import { appendNativeEvent } from '../src/modules/runs/nativeEvents.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
 let admin: pg.Pool
@@ -33,8 +37,11 @@ afterEach(async () => {
   await admin?.end()
 })
 
-async function decision() {
-  const interaction = DurableInteractionSchema.parse({ ...NATIVE_INTERACTION_FIXTURES.codex, id: randomUUID(), approval: { handler: 'user' } })
+async function decision(suffix = '') {
+  const base = NATIVE_INTERACTION_FIXTURES.codex
+  const interaction = DurableInteractionSchema.parse({ ...base, id: randomUUID(),
+    executionId: base.executionId + suffix, runId: base.runId + suffix, nativeSessionId: base.nativeSessionId + suffix,
+    approval: { handler: 'user' } })
   // Lifecycle auditing requires the real relational owners of the interaction.
   await pool.query("insert into workspaces (id,record) values ($1,'{}') on conflict do nothing", [interaction.workspaceId])
   await pool.query("insert into workflows (id,workspace_id,record) values ($1,$2,'{}') on conflict do nothing", [interaction.workflowId, interaction.workspaceId])
@@ -50,6 +57,57 @@ async function decision() {
     nativeResponse: { optionId: option.optionId, semantic: option.semantic } })
   return decided.interaction
 }
+
+for (const size of [1, 3]) it(`production delivery and Stop progress with all ${size} pool slots occupied`, async () => {
+  const decisions = await Promise.all(Array.from({ length: size }, (_, i) => decision(`-${i}`)))
+  const limited = new pg.Pool({ connectionString, options: `-c search_path=${schema}`, max: size, connectionTimeoutMillis: 500 })
+  const store = new PostgresInteractionRepository(limited)
+  const accounting = new PostgresApprovalBudgetRepository(limited)
+  const entered = deferred()
+  const release = deferred()
+  let writes = 0
+  const manager = {
+    harness: 'codex',
+    respond: async () => { if (++writes === size) entered.resolve(); await release.promise },
+    reconcile: async () => { throw new Error('post-response history unavailable') },
+  } as unknown as NativeHarnessSessionManager
+  // Use distinct native owners so every bounded pool connection is held at once.
+  const services = decisions.map(() => new InteractionService(store, accounting, {
+    attachInteraction: async (item: typeof decisions[number]) => ({
+      manager: coordinateSessionManager({ ...manager }, store.coordination, item.requestingAgentId),
+      session: { harness: item.harness, providerVersion: item.providerVersion, nativeSessionId: item.nativeSessionId },
+    }),
+  } as never, async () => undefined))
+  try {
+    const deliveries = decisions.map((item, i) => services[i]!.respond({ kind: 'user' }, {
+      interactionId: item.id, optionId: item.selectedOptionId!, expectedRevision: item.revision,
+    }))
+    await entered.promise
+    const stopping = new PostgresApprovalBudgetRepository(pool).stop(decisions[0]!.executionId)
+    release.resolve()
+    const results = await Promise.all(deliveries)
+    await stopping
+    assert.equal(writes, size)
+    assert.ok(results.every((item) => item.interaction.deliveryState === 'delivered'))
+  } finally { release.resolve(); await limited.end() }
+})
+
+it('preserves legacy history and ingests distinct reconnect generations exactly once', async () => {
+  const interaction = await decision()
+  const original = { executionId: interaction.executionId, sequence: 0, type: 'thread.started',
+    occurredAt: new Date().toISOString(), payload: { threadId: interaction.nativeSessionId } }
+  await appendNativeEvent(pool, original)
+  // Advance the global allocator as an upgrade would, above pre-existing identities.
+  await pool.query("select setval('native_event_ingestion_sequence',10,false)")
+  const attached = { ...original, connectionId: 'new-connection', type: 'thread.attached' }
+  await appendNativeEvent(pool, attached)
+  await appendNativeEvent(pool, attached)
+  await appendNativeEvent(pool, { ...attached, connectionId: 'another-connection' })
+  await assert.rejects(appendNativeEvent(pool, { ...attached, payload: { changed: true } }), { code: 'NATIVE_EVENT_IDENTITY_CONFLICT' })
+  const rows = await pool.query('select record from harness_native_events where execution_id=$1 order by sequence', [interaction.executionId])
+  assert.equal(rows.rowCount, 3)
+  assert.deepEqual(rows.rows[0]!.record, original)
+})
 
 function deferred() {
   let resolve!: () => void

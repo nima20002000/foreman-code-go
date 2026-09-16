@@ -146,8 +146,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   }
 
   private async startRun(runId: string, controller: AbortController): Promise<void> {
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs)
-    timeout.unref()
+    let timeout: ReturnType<typeof setTimeout> | undefined
     let owner: RunOwnership | undefined
     try {
       owner = await this.runs.acquireOwnership(runId, () => controller.abort(
@@ -156,6 +155,10 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       if (!owner) throw new DomainError('RUN_ALREADY_OWNED', `Run '${runId}' is owned by another engine.`, 409)
       const run = await this.runs.get(runId, owner)
       if (!run) throw new DomainError('RUN_NOT_FOUND', `Run '${runId}' was not found.`, 404)
+      if (!run.approval) {
+        timeout = setTimeout(() => controller.abort(), this.timeoutMs)
+        timeout.unref()
+      }
       if (run.executionState !== 'queued') {
         throw new DomainError('RUN_NOT_STARTABLE', `Run '${runId}' is not queued.`, 409)
       }
@@ -277,6 +280,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       }
       if (!this.isApprovalWait(snapshot)) throw new DomainError('RUN_NOT_RESUMABLE', 'The Run has no healthy approval checkpoint.', 409)
       const current = await this.currentInteractions(run, snapshot, owner)
+      controller.signal.throwIfAborted()
       if (requestedIds && !current.some((item) => requestedIds.includes(item.id))) return
       // Resolve by CURRENT checkpoint IDs, not a page of historical interactions.
       // Include every delivered branch in one map; leave undecided branches alone.
@@ -293,16 +297,9 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   private async resumeCheckpoint(run: WorkflowRun, interactions: DurableInteraction[], controller: AbortController, owner: RunOwnership): Promise<void> {
     if (!this.approvals) throw new DomainError('APPROVAL_RUNTIME_MISSING', 'The Run has no durable approval runtime.', 503)
     const resumeMap = Object.fromEntries(interactions.map((item) => [item.graphInterruptId!, { interactionId: item.id }]))
-    const budgetReadStarted = performance.now()
-    const remainingMs = await this.runs.remainingApprovalTime(run.id, interactions.map((item) => item.executionId), owner)
-    const expire = () => controller.abort(new DomainError('EXECUTION_ACTIVE_TIMEOUT', 'The execution exhausted its active-time budget.', 409))
-    const timeoutMs = Math.max(0, remainingMs - (performance.now() - budgetReadStarted))
-    if (timeoutMs === 0) expire()
-    const timeout = setTimeout(expire, timeoutMs)
-    timeout.unref()
-    try {
-      await this.executeRun(run, controller.signal, owner, new Command({ resume: resumeMap }))
-    } finally { clearTimeout(timeout) }
+    // Approval time is persisted per execution. Each ensure/observe lifetime
+    // owns its deadline; completed branches cannot constrain later graph work.
+    await this.executeRun(run, controller.signal, owner, new Command({ resume: resumeMap }))
   }
 
   private buildGraph(version: WorkflowVersion, action: (nodeId: string, state: EngineStateValue) => Promise<Partial<EngineStateValue>>): DynamicCompiledGraph {
@@ -412,7 +409,11 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     if (controller) {
       await localCleanup
       if (activeTask) {
-        try { await withCleanupDeadline(() => activeTask) } catch (error) { drainFailure = { error } }
+        try { await withCleanupDeadline(() => activeTask) } catch (error) {
+          // The task may observe this Stop between checkpoint reads. Its own
+          // cancellation reason is successful draining, not a cleanup failure.
+          if (error !== controller.signal.reason) drainFailure = { error }
+        }
       }
       // Stop can race the transition to waiting after graph invocation returns.
       // Re-check durable settlement instead of treating a drained task as Stop.
@@ -574,6 +575,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       executionState: 'completed', outcome: 'succeeded', result,
       startedAt: run.startedAt ?? new Date().toISOString(), finishedAt: new Date().toISOString(),
     }, owner)
+    await this.approvals?.finishRun(run.id)
   }
 
   private async executeNode(

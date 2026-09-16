@@ -78,9 +78,10 @@ class ScriptedManager implements NativeHarnessSessionManager {
     assert.deepEqual(session, this.session)
     return this.snapshot
   }
-  async reconcile(session: NativeSessionReference) {
+  async reconcile(session: NativeSessionReference, correlationId: string) {
     if (!this.turns.length && !this.attaches.length) return { events: [], pendingInteractions: [] }
-    return this.history(session)
+    const history = await this.history(session)
+    return { ...history, ...(history.terminalResult ? { terminalTurn: { correlationId, providerId: 'workflow-turn', result: history.terminalResult } } : {}) }
   }
   async close(session: NativeSessionReference) { this.closed.push(session) }
 }
@@ -158,10 +159,15 @@ function fixture(harness: AgentHarness = 'codex') {
     },
     async get(id: string) { return records.get(id) },
     async getForExecution(id: string) { return [...records.values()].filter((item) => item.executionId === id).at(-1) },
+    async cancelPendingForExecution(executionId: string, ids?: readonly string[]) {
+      for (const [id, row] of records) if (row.executionId === executionId && row.status === 'pending'
+        && (!ids || ids.includes(row.nativeRequestId))) records.set(id, { ...row, status: 'canceled' })
+    },
     async cancelPendingForRun() { cancelPendingCalls += 1; return 0 },
   } as unknown as PostgresInteractionRepository
   const budgets = {
     async ensure() {},
+    async remaining() { if (budgetFailure) throw budgetFailure; return 60_000 },
     async assertActive() { if (budgetFailure) throw budgetFailure },
     async beginWait(id: string) { waits.push(id) },
     async resume(id: string) { resumes.push(id) },
@@ -203,7 +209,7 @@ function fixture(harness: AgentHarness = 'codex') {
     return next
   }
   return { candidate, configuration, request, input, executions, records, updates, revoked, prepared, waits, resumes, stops,
-    coordinator, manager, resolver, controller, owner, pending, snapshot, delivered,
+    coordinator, manager, resolver, controller, owner, pending, snapshot, delivered, budgets, interactions, runs,
     failActivity(error: Error) { activityFailure = error },
     failPrepare(error: Error) { prepareFailure = error },
     failBudget(error: Error) { budgetFailure = error },
@@ -539,4 +545,41 @@ it('does not stop the shared budget or revoke replacement credentials after owne
   assert.equal(f.revoked.length, 0)
   assert.equal(f.manager.canceled.length, 0)
   assert.equal(f.manager.closed.length, 1)
+})
+
+
+it('aborts a stalled native iterator at its own remaining execution budget', async () => {
+  const f = fixture()
+  f.budgets.remaining = async () => 20
+  f.manager.startTurn = async function* () { await new Promise(() => undefined); yield {} as NativeHarnessEvent }
+  const started = Date.now()
+  await assert.rejects(f.coordinator.ensureObserve(f.input), { code: 'EXECUTION_ACTIVE_TIMEOUT' })
+  assert.ok(Date.now() - started < 1000)
+  assert.equal(f.manager.canceled.length, 1)
+  assert.equal(f.manager.closed.length, 1)
+  assert.equal(f.executions.get(f.candidate.id)?.result?.outcome, 'failed')
+  assert.equal(f.executions.get(f.candidate.id)?.result?.error?.code, 'EXECUTION_ACTIVE_TIMEOUT')
+})
+
+it('refuses a generic terminal result that belongs to a different native turn', async () => {
+  const f = fixture()
+  f.budgets.remaining = async () => 30
+  f.manager.snapshot = { events: [], pendingInteractions: [], terminalResult: success }
+  f.manager.reconcile = async () => ({ events: [], pendingInteractions: [], terminalResult: success,
+    terminalTurn: { correlationId: 'unrelated-review', providerId: 'review-turn', result: success } })
+  await assert.rejects(f.coordinator.ensureObserve(f.input), (error: unknown) => error instanceof Error && error.cause instanceof DomainError && error.cause.code === 'EXECUTION_ACTIVE_TIMEOUT')
+  assert.notEqual(f.executions.get(f.candidate.id)?.result?.outcome, 'succeeded')
+})
+
+
+it('cancels durable sibling asks after a provider rejection and successful completion', async () => {
+  const f = fixture('opencode')
+  f.snapshot('first', 'sibling')
+  await f.coordinator.ensureObserve(f.input)
+  f.delivered('first')
+  f.manager.snapshot = { events: [], pendingInteractions: [], canceledRequestIds: ['sibling'], terminalResult: success }
+  const completed = await f.coordinator.ensureObserve(f.input)
+  assert.equal(completed.state, 'completed')
+  assert.equal([...f.records.values()].find((row) => row.nativeRequestId === 'sibling')?.status, 'canceled')
+  assert.equal([...f.records.values()].find((row) => row.nativeRequestId === 'first')?.status, 'delivered')
 })

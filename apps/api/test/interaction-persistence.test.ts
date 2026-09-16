@@ -258,7 +258,7 @@ it('does not relabel delivered native work as failed when graph resume throws', 
   assert.deepEqual(graphErrors, ['checkpoint unavailable'])
 })
 
-it('keeps every applied migration byte-for-byte and adds HAP-05 migrations 503 and 508', async () => {
+it('keeps every applied migration byte-for-byte and adds HAP-05 migrations 503, 508 and lifecycle 509', async () => {
   // SHA-256 of each SQL string at PR #10 audited head 2f83f40b.
   const expected: Record<number, string> = {
     "1": "51b2b3e95b480d1abd6139242182c4e39e9730ab5f1d1ca10b84500005e81510",
@@ -279,6 +279,6 @@ it('keeps every applied migration byte-for-byte and adds HAP-05 migrations 503 a
     return { rows: [], rowCount: 0 }
   } }) } as unknown as pg.Pool
   await applyApplicationMigrations(pool)
-  assert.deepEqual([...observed.keys()], [...Object.keys(expected).map(Number), 503, 508])
+  assert.deepEqual([...observed.keys()], [...Object.keys(expected).map(Number), 503, 508, 509])
   for (const [version, hash] of Object.entries(expected)) assert.equal(observed.get(Number(version)), hash, `migration ${version}`)
 })

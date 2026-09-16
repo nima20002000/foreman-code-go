@@ -69,6 +69,10 @@ export class PostgresApprovalBudgetRepository {
   }
 
   async assertActive(executionId: string): Promise<void> {
+    await this.remaining(executionId)
+  }
+
+  async remaining(executionId: string): Promise<number> {
     const result = await this.pool.query<BudgetRow>(
       `select active_timeout_ms::text,active_elapsed_ms::text,active_started_at,
          approval_wait_started_at,stopped_at,revision::text
@@ -77,8 +81,10 @@ export class PostgresApprovalBudgetRepository {
     const row = result.rows[0]
     if (!row || row.stopped_at) throw new DomainError('EXECUTION_STOPPED', 'A stopped execution cannot accept approval delivery.', 409)
     const runningMs = row.active_started_at ? Date.now() - row.active_started_at.getTime() : 0
-    if (Number(row.active_elapsed_ms) + runningMs >= Number(row.active_timeout_ms)) {
+    const remaining = Number(row.active_timeout_ms) - Number(row.active_elapsed_ms) - runningMs
+    if (remaining <= 0) {
       throw new DomainError('EXECUTION_ACTIVE_TIMEOUT', 'The execution exhausted its active-time budget.', 409)
     }
+    return remaining
   }
 }

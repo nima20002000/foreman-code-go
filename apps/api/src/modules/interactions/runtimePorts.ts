@@ -5,6 +5,7 @@ import type { AgentConfigurationVersion, AgentHarness, DurableInteraction, Nativ
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 
 export interface NativeManagerOwnershipContext {
+  purpose?: 'reviewer'
   harness: AgentHarness
   executionId: string
   agentId: string
@@ -103,11 +104,14 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
 }
 
 export interface AttachedInteractionSession {
+  signal?: AbortSignal
   manager: NativeHarnessSessionManager
   session: NativeSessionReference
 }
 
 export interface InteractionNativeRuntime {
+  finishReview?(executionId: string): Promise<void>
+  validateInteraction?(interaction: DurableInteraction, signal?: AbortSignal): Promise<void>
   attachInteraction(interaction: DurableInteraction, signal?: AbortSignal): Promise<AttachedInteractionSession>
   attachOwnedSession(
     context: NativeManagerOwnershipContext,

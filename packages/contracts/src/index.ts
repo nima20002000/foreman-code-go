@@ -497,6 +497,7 @@ export const NativeTurnReferenceSchema = z.object({
 }).strict();
 export type NativeTurnReference = z.infer<typeof NativeTurnReferenceSchema>;
 export const NativeHarnessEventSchema = z.object({
+  connectionId: IdSchema.optional(),
   sequence: z.number().int().nonnegative(),
   type: z.string().trim().min(1),
   occurredAt: TimestampSchema,
@@ -1104,6 +1105,7 @@ export type RunActivity = z.infer<typeof RunActivitySchema>;
 export const HarnessNativeEventSchema = z
   .object({
     executionId: IdSchema,
+    connectionId: IdSchema.optional(),
     sequence: z.number().int().nonnegative(),
     type: z.string().trim().min(1),
     occurredAt: TimestampSchema,

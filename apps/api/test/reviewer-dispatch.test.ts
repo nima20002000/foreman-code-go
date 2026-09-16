@@ -412,13 +412,13 @@ test('known native turn identity cannot be replaced by a second turn with the sa
 
 function queueFixture() {
   const f = fixture()
-  let executions = [{ id: 'reviewer-execution', agentId: 'reviewer', nativeSessionId: session.nativeSessionId,
+  let executions = [{ state: 'completed', id: 'reviewer-execution', agentId: 'reviewer', nativeSessionId: session.nativeSessionId,
     agentConfigurationVersionId: 'pinned-reviewer-config', workingDirectory: '/accepted', runtimeDirectory: '/runtime' }]
   const configuration = { id: 'pinned-reviewer-config', agentId: 'reviewer', productRole: 'orchestrator', harness: { harness: 'codex' } }
   const resolvedContexts: unknown[] = []
   const runs = { listExecutions: async (runId: string) => { assert.equal(runId, interaction.runId); return executions },
     getExecutionConfiguration: async () => configuration }
-  const repository = { coordination: f.coordination.asRepository(), list: async () => [interaction] }
+  const repository = { coordination: Object.assign(f.coordination.asRepository(), { workflowSession: async () => ({ session, finalized: true }) }), list: async () => [interaction] }
   type Args = ConstructorParameters<typeof ApprovalExecutionCoordinator>
   const coordinator = new ApprovalExecutionCoordinator(runs as unknown as Args[0], repository as unknown as Args[1],
     {} as Args[2], { resolve: (context) => { resolvedContexts.push(context); return { manager: f.manager, processState: 'resident' } } }, 30_000)
@@ -431,7 +431,7 @@ test('creation recovery binds the designated Agent real durable execution and na
   f.coordinator.reviewers.reconcile = async () => { scheduled++ }
   await f.coordinator.reconcileReviews((error) => { throw error })
   assert.equal(f.coordination.job?.reviewerAgentId, 'reviewer')
-  assert.equal(f.coordination.job?.nativeSessionId, session.nativeSessionId)
+  assert.equal((await f.coordination.findReviewJob())?.nativeSessionId, session.nativeSessionId)
   assert.equal(f.coordination.context.executionId, 'reviewer-execution')
   assert.equal(f.coordination.context.workingDirectory, '/accepted')
   assert.equal(f.coordination.context.providerVersion, session.providerVersion)
@@ -443,11 +443,11 @@ test('queue recovery reuses an existing durable job without rebinding to a later
   const f = queueFixture()
   await f.coordinator.enqueueReview(interaction)
   const first = clone(f.coordination.job)
-  f.setExecutions([{ id: 'replacement', agentId: 'reviewer', nativeSessionId: 'replacement-session',
+  f.setExecutions([{ state: 'completed', id: 'replacement', agentId: 'reviewer', nativeSessionId: 'replacement-session',
     agentConfigurationVersionId: 'replacement-config', workingDirectory: '/different', runtimeDirectory: '/runtime' }])
   await f.coordinator.enqueueReview(interaction)
   assert.deepEqual(f.coordination.job, first)
-  assert.equal(f.resolvedContexts.length, 1)
+  assert.equal(f.resolvedContexts.length, 0)
 })
 
 test('a missing designated session is deferred, never replaced with the requester session', async () => {
@@ -489,4 +489,25 @@ test('a definite SSE failure after an unknown send is not a rejected prompt', as
     throw Object.assign(new Error('SSE reconnect rejected'), { certainty: 'definite', result: { error: { code: 'OPENCODE_SSE_UNAVAILABLE' } } })
   } }) })
   assert.equal((await f.dispatcher.dispatchNext('reviewer', 'worker'))?.state, 'uncertain')
+})
+
+
+test('does not admit a reviewer in the gap between native turn completion and durable workflow finalization', async () => {
+  const f = queueFixture()
+  f.coordination.asRepository().workflowSession = async () => ({ session, finalized: false, reviewerActive: false })
+  await f.coordinator.enqueueReview(interaction)
+  assert.equal(f.coordination.job, undefined)
+  assert.equal(f.resolvedContexts.length, 0)
+  f.coordination.asRepository().workflowSession = async () => ({ session, finalized: true, reviewerActive: false })
+  await f.coordinator.enqueueReview(interaction)
+  assert.equal((await f.coordination.findReviewJob())?.nativeSessionId, session.nativeSessionId)
+})
+
+test('failed reviewer discovery never allocates or qualifies a provider process', async () => {
+  const f = queueFixture()
+  f.coordination.ensureReviewJob = async () => { throw new Error('job insert failed') }
+  await assert.rejects(f.coordinator.enqueueReview(interaction), /job insert failed/)
+  assert.equal(f.resolvedContexts.length, 0)
+  assert.deepEqual(f.coordinator.residentRunIds(), [])
+  assert.equal(f.counts().started, 0)
 })

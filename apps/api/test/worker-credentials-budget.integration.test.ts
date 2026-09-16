@@ -10,6 +10,7 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { WorkerCredentialService } from '../src/modules/access/workerCredentials.js'
 import { WorkerLaunchCredentialService } from '../src/modules/harnesses/mcpDetection.js'
 import { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
+import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
 let schema: string
@@ -118,6 +119,28 @@ it('cannot issue or renew credentials for a completed execution before cleanup c
   await pool.query('update harness_executions set record=$2::jsonb where id=$1', [execution.id, JSON.stringify(completed)])
   await expect(credentials.renewForExecution(execution.id, issued)).rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_NOT_RENEWABLE' })
   await expect(credentials.issueForExecution(execution.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_TERMINAL' })
+})
+
+it('issues and renews explicit reviewer credentials only after finalization and only for the active Run', async () => {
+  const coordination = new PostgresInteractionCoordinationRepository(pool)
+  await pool.query("update runs set record=jsonb_set(record,'{approval}',$2::jsonb) where id=$1", [execution.runId,
+    JSON.stringify({ handler: 'orchestrator', designatedOrchestratorAgentId: execution.agentId })])
+  await pool.query("update agent_configuration_versions set record=jsonb_set(record,'{productRole}','\"orchestrator\"') where id=$1", [execution.agentConfigurationVersionId])
+  const completed = { ...execution, state: 'completed', result: { outcome: 'succeeded' }, finishedAt: new Date().toISOString() }
+  await pool.query('update harness_executions set record=$2::jsonb where id=$1', [execution.id, JSON.stringify(completed)])
+  await coordination.bindWorkflowSession(execution.id, { harness: 'opencode', providerVersion: '1.18.31', nativeSessionId: execution.nativeSessionId! })
+  await expect(credentials.issueForReviewer(execution.id)).rejects.toMatchObject({ code: 'REVIEWER_EXECUTION_NOT_READY' })
+  await coordination.finalizeWorkflowSession(execution.id)
+  const review = await credentials.issueForReviewer(execution.id)
+  await expect(credentials.issueForExecution(execution.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_TERMINAL' })
+  await pool.query('update approval_execution_state set active_elapsed_ms=active_timeout_ms where execution_id=$1', [execution.id])
+  await expect(credentials.renewForExecution(execution.id, review)).resolves.toEqual(expect.any(String))
+  const principal = await access.authenticate(review.environment.variables.GRAPHQL_APP_MCP_TOKEN!, 'worker')
+  expect(principal.agentId).toBe(execution.agentId)
+  await pool.query("update runs set record=record || $2::jsonb where id=$1", [execution.runId,
+    JSON.stringify({ executionState: 'completed', outcome: 'succeeded', result: { outcome: 'succeeded' }, finishedAt: new Date().toISOString() })])
+  await expect(credentials.renewForExecution(execution.id, review)).rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_NOT_RENEWABLE' })
+  await expect(credentials.issueForReviewer(execution.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_TERMINAL' })
 })
 
 it('revokes a superseded token when a new process credential is prepared', async () => {

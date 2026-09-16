@@ -1,6 +1,8 @@
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { describe, expect, it } from 'vitest'
 
@@ -13,6 +15,9 @@ import {
   buildOpenCodeConfigContent,
   type OpenCodeServerController,
 } from '../src/modules/harnesses/opencodeServer.js'
+import { reviewTurnEvidence } from '../src/modules/interactions/reviewerEvidence.js'
+import { coordinateSessionManager } from '../src/modules/interactions/sessionWriter.js'
+import { nativeLanes } from './helpers/nativeLanes.js'
 
 const requiredPaths = {
   '/session': {}, '/session/{sessionID}/prompt_async': {}, '/session/{sessionID}/abort': {},
@@ -41,6 +46,7 @@ class FakeServer implements OpenCodeServerController {
   events: string[] = []
   permissions: unknown[] = []
   messages: unknown[] = []
+  failHistory = false
   failNextMutation = false
   config: Record<string, unknown> = {}
   mcp: Record<string, unknown> = {}
@@ -72,7 +78,10 @@ class FakeServer implements OpenCodeServerController {
       : new Response('missing', { status: 404 })
     if (route === '/event') { this.eventStreams += 1; return sse(this.events.shift() ?? '') }
     if (route === '/permission') return json(this.permissions)
-    if (route === '/session/ses_test/message') return json(this.eventStreams >= this.messagesAfterEventStreams ? this.messages : [])
+    if (route === '/session/ses_test/message') {
+      if (this.failHistory) throw new Error('history unavailable')
+      return json(this.eventStreams >= this.messagesAfterEventStreams ? this.messages : [])
+    }
     if (route === '/permission/per_one/reply' || route === '/permission/per_two/reply') {
       const reply = JSON.parse(String(init?.body)).reply
       const requestID = route.split('/')[2]
@@ -109,7 +118,7 @@ describe('OpenCode native server manager', () => {
     const session = await sessionFor(native)
     const messageID = 'msg_974cad2dd603827b06e9e6af'
     server.messages = [{
-      info: { id: 'msg_assistant', sessionID: 'ses_test', role: 'assistant', parentID: messageID, time: { created: 1, completed: 2 } },
+      info: { id: 'msg_assistant', sessionID: 'ses_test', role: 'assistant', finish: 'stop', parentID: messageID, time: { created: 1, completed: 2 } },
       parts: [{ id: 'prt_1', sessionID: 'ses_test', messageID: 'msg_assistant', type: 'text', text: 'done' }],
     }]
     server.events.push([
@@ -121,7 +130,7 @@ describe('OpenCode native server manager', () => {
 
     const events = []
     for await (const event of native.startTurn(session, { prompt: 'hello', clientCorrelationId: 'turn-1' })) events.push(event)
-    expect(events.map((event) => event.type)).toEqual(['message.part.updated', 'session.idle'])
+    expect(events.map((event) => event.type)).toEqual(['message.part.updated', 'session.idle', 'message.updated', 'message.part.updated'])
     expect(await native.reconcile(session, 'turn-1')).toMatchObject({ terminalResult: { outcome: 'succeeded', output: { text: 'done' } } })
     const prompt = server.calls.find((call) => call.path.startsWith('/session/ses_test/prompt_async'))
     expect(JSON.parse(String(prompt?.init?.body))).toMatchObject({ messageID, agent: 'build', variant: 'max', parts: [{ type: 'text', text: 'hello' }] })
@@ -258,12 +267,12 @@ server.listen(0, '127.0.0.1', () => {
       ].join('\n'),
     )
     server.messages = [{
-      info: { id: 'msg_assistant', sessionID: 'ses_test', role: 'assistant', parentID: 'msg_91669c43679f43422efee576', time: { created: 1, completed: 2 } },
+      info: { id: 'msg_assistant', sessionID: 'ses_test', role: 'assistant', finish: 'stop', parentID: 'msg_91669c43679f43422efee576', time: { created: 1, completed: 2 } },
       parts: [{ type: 'text', text: 'recovered' }],
     }]
     const events = []
     for await (const event of native.startTurn(session, { prompt: 'go', clientCorrelationId: 'reconnect' })) events.push(event)
-    expect(events.map((event) => event.type)).toEqual(['message.updated', 'session.idle'])
+    expect(events.map((event) => event.type)).toEqual(['message.updated', 'session.idle', 'message.updated', 'message.part.updated'])
     expect(server.calls.filter((call) => call.path.startsWith('/event'))).toHaveLength(2)
     expect(server.calls.filter((call) => call.path.startsWith('/session/ses_test/prompt_async'))).toHaveLength(1)
   })
@@ -278,6 +287,7 @@ server.listen(0, '127.0.0.1', () => {
     const second = native.startTurn(session, { prompt: 'second', clientCorrelationId: 'second' })[Symbol.asyncIterator]()
     await expect(second.next()).rejects.toMatchObject({ result: { error: { code: 'OPENCODE_SESSION_BUSY' } } })
     await first.return?.()
+    await native.close(session)
   })
 
   it('captures exact permission payloads and maps opaque options to once, always, and reject', async () => {
@@ -330,6 +340,7 @@ server.listen(0, '127.0.0.1', () => {
     expect(before.map((item) => item.turn.nativeRequestId)).toEqual(['per_one', 'per_two'])
     await native.respond(session, 'per_one', before[0]!.responseOptions.find((item) => item.semantic === 'reject')!)
     expect(await native.pendingAll(session)).toEqual([])
+    expect((await native.history(session)).canceledRequestIds).toEqual(['per_two'])
   })
 
   it('aborts then clears stale approval waits only in the target session', async () => {
@@ -442,6 +453,74 @@ server.listen(0, '127.0.0.1', () => {
 function json(value: unknown): Response {
   return new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } })
 }
+
+it('recovers exact submitted OpenCode review evidence after replacing the adapter without prompting', async () => {
+  const server = new FakeServer()
+  const first = manager(server)
+  const session = await sessionFor(first)
+  await first.close(session)
+  const correlationId = 'persisted-review'
+  const parentID = `msg_${createHash('sha256').update(correlationId).digest('hex').slice(0, 24)}`
+  server.messages = [
+    { info: { id: parentID, sessionID: session.nativeSessionId, role: 'user' }, parts: [] },
+    { info: { id: 'assistant', sessionID: session.nativeSessionId, role: 'assistant', parentID, finish: 'stop', time: { completed: 1 } }, parts: [{ type: 'text', text: 'reviewed' }] },
+  ]
+  const restored = manager(server)
+  await restored.attachSession(session, { request: request(), environment: { agentId: 'agent-1', variables: { GRAPHQL_APP_MCP_TOKEN: 'opaque' } } })
+  const history = await restored.reconcile(session, correlationId)
+  expect(reviewTurnEvidence(session, history, correlationId)).toMatchObject({ acknowledged: true, terminal: true, nativeIdle: true, providerId: parentID })
+  expect(history.terminalTurn?.result).toEqual({ outcome: 'succeeded', output: { text: 'reviewed' } })
+  expect((await restored.reconcile(session, 'unrelated')).terminalTurn).toBeUndefined()
+  expect(server.calls.filter((call) => call.path.includes('prompt_async'))).toHaveLength(0)
+  await restored.close(session)
+})
+
+it('retains an acknowledged permission reply when the subsequent history GET fails', async () => {
+  const server = new FakeServer()
+  const raw = manager(server)
+  const lanes = nativeLanes()
+  const native = coordinateSessionManager(raw, lanes, 'agent-1')
+  const session = await native.createSession({ request: request(), environment: { agentId: 'agent-1', variables: { GRAPHQL_APP_MCP_TOKEN: 'opaque' } } })
+  server.permissions = [{ id: 'per_one', sessionID: 'ses_test', permission: 'read', patterns: ['*'], metadata: {}, always: ['*'] }]
+  const pending = (await raw.pending(session))!
+  server.failHistory = true
+  await expect(native.respond(session, 'per_one', pending.responseOptions[0]!)).resolves.toBeUndefined()
+  expect(server.calls.filter((call) => call.path.startsWith('/permission/per_one/reply'))).toHaveLength(1)
+  server.failHistory = false
+  expect((await raw.history(session)).responseDeliveries).toMatchObject([{ nativeRequestId: 'per_one', optionId: pending.responseOptions[0]!.optionId }])
+  await native.close(session)
+})
+
+it('keeps collecting SSE tool and output events after returning an approval to the graph', async () => {
+  const server = new FakeServer()
+  const raw = manager(server)
+  const session = await sessionFor(raw)
+  const request = { id: 'per_one', sessionID: 'ses_test', permission: 'read', patterns: ['*'], metadata: {}, always: ['*'] }
+  server.permissions = [request]
+  let stream!: ReadableStreamDefaultController<Uint8Array>
+  const original = server.request.bind(server)
+  server.request = async (path, init) => path.startsWith('/event')
+    ? new Response(new ReadableStream({ start(controller) { stream = controller } }), { headers: { 'content-type': 'text/event-stream' } })
+    : original(path, init)
+  const send = (id: string, type: string, properties: Record<string, unknown>) => stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ id, type, properties })}\n\n`))
+  const iterator = raw.startTurn(session, { prompt: 'work', clientCorrelationId: 'workflow' })[Symbol.asyncIterator]()
+  const first = iterator.next()
+  while (!stream) await delay(1)
+  send('ask', 'permission.asked', request)
+  await first
+  await iterator.return?.()
+  await raw.respond(session, 'per_one', (await raw.pending(session))!.responseOptions[0]!)
+  send('tool', 'message.part.updated', { sessionID: 'ses_test', part: { id: 'tool', type: 'tool', state: { status: 'completed', output: 'done' } } })
+  send('output', 'message.part.updated', { sessionID: 'ses_test', part: { id: 'text', type: 'text', text: 'finished' } })
+  send('end', 'session.idle', { sessionID: 'ses_test' })
+  stream.close()
+  await delay(20)
+  const history = await raw.history(session)
+  expect(history.events.map((event) => event.payload.nativeEventId).filter(Boolean)).toEqual(['ask', 'tool', 'output', 'end'])
+  expect(server.calls.filter((call) => call.path.includes('prompt_async'))).toHaveLength(1)
+  expect((await raw.history(session)).events).toEqual(history.events)
+  await raw.close(session)
+})
 
 function sse(text: string): Response {
   const bytes = new TextEncoder().encode(text)

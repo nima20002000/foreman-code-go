@@ -1,5 +1,7 @@
 import type pg from 'pg'
 
+import { lifecycleMigration } from './lifecycleMigration.js'
+
 import { interactionDeliveryMigration } from './interactionDeliveryMigration.js'
 
 // Reserved migration blocks: HAP-01 100-109, HAP-02 200-209, HAP-03 300-309,
@@ -509,6 +511,7 @@ const migrations = [
       for each row execute function audit_review_job_lifecycle();
   ` },
   interactionDeliveryMigration,
+  lifecycleMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

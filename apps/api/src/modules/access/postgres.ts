@@ -80,7 +80,7 @@ export class PostgresAccessService {
     if (input.audience === 'worker' && !input.agentId) {
       throw new DomainError('WORKER_AGENT_REQUIRED', 'Worker credentials require a backend-issued Agent subject.', 400)
     }
-    if (input.audience === 'operator' && input.agentId) {
+    if (input.audience !== 'worker' && input.agentId) {
       throw new DomainError('OPERATOR_AGENT_FORBIDDEN', 'Operator credentials cannot impersonate a board Agent.', 400)
     }
     const id = `principal-${randomUUID()}`

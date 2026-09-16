@@ -34,33 +34,52 @@ async function main() {
     finally { await Promise.allSettled([checkpoints.close(), database.close()]) }
   })
 
+  let closing: Promise<void> | undefined
+  const close = () => {
+    closing ??= app.close()
+    return closing
+  }
+  const onSignal = () => { void close().catch((error: unknown) => {
+    app.log.error({ err: error }, 'shutdown failed')
+    process.exitCode = 1
+  }) }
+  // Recovery can run native work. Signals must own cleanup before listening or
+  // any initialization await, including partially initialized infrastructure.
+  process.once('SIGINT', onSignal)
+  process.once('SIGTERM', onSignal)
+  app.addHook('onClose', async () => {
+    process.removeListener('SIGINT', onSignal)
+    process.removeListener('SIGTERM', onSignal)
+  })
+  const stopIfClosing = () => { if (closing) throw new Error('Startup canceled by shutdown.') }
+
   try {
     await database.ping()
+    stopIfClosing()
     await database.migrate()
+    stopIfClosing()
     await ensureAcceptanceSeed(database.pool)
+    stopIfClosing()
     await checkpoints.setup()
+    stopIfClosing()
     await checkpoints.ping()
+    stopIfClosing()
     await mkdir(config.harnesses.workspaceRoot, { recursive: true })
+    stopIfClosing()
     // Native recovery may call the scoped MCP endpoint during attachment.
     await app.listen({ host: config.host, port: config.port })
+    stopIfClosing()
     await reconcile(reportReconciliationError)
+    stopIfClosing()
     reconciliationTimer = setInterval(() => {
       void reconcile(reportReconciliationError).catch(reportReconciliationError)
     }, 5_000)
     reconciliationTimer.unref()
   } catch (error) {
-    await app.close()
+    if (closing) { await closing; return }
+    await close()
     throw error
   }
-
-  let closing = false
-  const close = async () => {
-    if (closing) return
-    closing = true
-    await app.close()
-  }
-  process.once('SIGINT', close)
-  process.once('SIGTERM', close)
 }
 
 main().catch((error: unknown) => {

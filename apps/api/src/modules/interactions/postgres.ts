@@ -212,6 +212,18 @@ export class PostgresInteractionRepository {
     return next
   }
 
+  async cancelPendingForExecution(executionId: string, nativeRequestIds?: readonly string[]): Promise<void> {
+    // Terminal execution or explicit provider cancellation evidence makes these
+    // asks non-actionable. Never turn a sibling into an approved/delivered ask.
+    await this.pool.query(
+      `update durable_interactions set status='canceled',revision=revision+1,updated_at=now(),
+         record=record || jsonb_build_object('status','canceled','revision',revision+1,'updatedAt',
+           to_char(now() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+       where execution_id=$1 and status='pending'
+         and ($2::text[] is null or native_request_id=any($2))`, [executionId, nativeRequestIds ?? null],
+    )
+  }
+
   async cancelPendingForRun(runId: string): Promise<number> {
     const client = await this.pool.connect()
     try {

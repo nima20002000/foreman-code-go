@@ -166,6 +166,7 @@ export class WorkerLaunchCredentialService implements ExecutionCredentialProvide
     executionId: string
     harness: AgentHarness
     workingDirectory: string
+    purpose?: 'reviewer'
     signal?: AbortSignal
   }): Promise<{ credential: IssuedWorkerCredential; detection: ScopedMcpDetection }> {
     const detection = await this.detection.preflight({
@@ -178,7 +179,8 @@ export class WorkerLaunchCredentialService implements ExecutionCredentialProvide
     // prepare is a process-start boundary, never a resident-process refresh. Revoke
     // superseded credentials only after preflight and before the replacement starts.
     await this.credentials.revokeForExecution(input.executionId)
-    const credential = await this.credentials.issueForExecution(input.executionId)
+    const credential = await (input.purpose === 'reviewer'
+      ? this.credentials.issueForReviewer(input.executionId) : this.credentials.issueForExecution(input.executionId))
     if (input.signal?.aborted) {
       await this.credentials.revoke(credential)
       input.signal.throwIfAborted()
@@ -200,6 +202,7 @@ export class WorkerLaunchCredentialService implements ExecutionCredentialProvide
 }
 
 export interface ExecutionCredentialPrepareInput {
+  purpose?: 'reviewer'
   executionId: string
   harness: AgentHarness
   workingDirectory: string

@@ -118,7 +118,13 @@ class SelectiveNativeManager implements NativeHarnessSessionManager {
     const terminalResult = this.terminal.get(session.nativeSessionId)
     return { events: [], pendingInteractions: pendingInteraction ? [pendingInteraction] : [], ...(pendingInteraction ? { pendingInteraction } : {}), ...(terminalResult ? { terminalResult } : {}) }
   }
-  async reconcile(session: NativeSessionReference) { return this.history(session) }
+  async reconcile(session: NativeSessionReference, correlationId: string) {
+    const history = await this.history(session)
+    const request = this.requests.get(session.nativeSessionId)
+    return { ...history, ...(request && correlationId === `execution:${request.executionId}` && history.terminalResult ? {
+      terminalTurn: { correlationId, providerId: `turn-${request.workflowNodeId}`, result: history.terminalResult },
+    } : {}) }
+  }
   async close() {}
 }
 

@@ -1,6 +1,7 @@
-import { NativeSessionLaneSchema, ReviewJobSchema, type NativeHarnessEvent, type NativeSessionLane, type ReviewJob } from '@graphql/contracts'
+import { NativeSessionLaneSchema, NativeSessionReferenceSchema, ReviewJobSchema, type NativeHarnessEvent, type NativeSessionReference, type NativeSessionLane, type ReviewJob } from '@graphql/contracts'
 import type pg from 'pg'
 
+import { interactionConnection } from './connection.js'
 import { DomainError } from '../errors.js'
 import { appendNativeEvent } from '../runs/nativeEvents.js'
 
@@ -14,9 +15,38 @@ export interface WriterFence { id: string; token: string }
 export class PostgresInteractionCoordinationRepository {
   constructor(private readonly pool: pg.Pool) {}
 
+  private get queryConnection() { return interactionConnection.getStore() ?? this.pool }
+
+  async bindWorkflowSession(executionId: string, session: NativeSessionReference): Promise<void> {
+    const result = await this.queryConnection.query(
+      `insert into execution_native_sessions(execution_id,reference) values ($1,$2::jsonb)
+       on conflict (execution_id) do update set reference=execution_native_sessions.reference
+       where execution_native_sessions.reference=excluded.reference returning execution_id`,
+      [executionId, JSON.stringify(session)],
+    )
+    if (!result.rowCount) throw new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH', 'The execution already owns another native session.', 409)
+  }
+
+  async finalizeWorkflowSession(executionId: string): Promise<void> {
+    await this.queryConnection.query(
+      'update execution_native_sessions set workflow_finalized_at=coalesce(workflow_finalized_at,now()) where execution_id=$1', [executionId],
+    )
+  }
+
+  async workflowSession(executionId: string): Promise<{ session: NativeSessionReference; finalized: boolean; reviewerActive: boolean } | undefined> {
+    const result = await this.queryConnection.query<{ reference: unknown; finalized: boolean; reviewer_active: boolean }>(
+      `select reference,workflow_finalized_at is not null as finalized,
+         exists (select 1 from worker_credential_bindings b where b.execution_id=s.execution_id
+           and b.purpose='reviewer' and b.revoked_at is null) as reviewer_active
+       from execution_native_sessions s where execution_id=$1`, [executionId],
+    )
+    const row = result.rows[0]
+    return row ? { session: NativeSessionReferenceSchema.parse(row.reference), finalized: row.finalized, reviewerActive: row.reviewer_active } : undefined
+  }
+
   async ensureReviewJob(job: ReviewJob, context?: { executionId: string; workingDirectory: string; providerVersion: string }): Promise<{ job: ReviewJob; created: boolean }> {
     const parsed = ReviewJobSchema.parse(job)
-    const inserted = await this.pool.query<{ record: unknown }>(
+    const inserted = await this.queryConnection.query<{ record: unknown }>(
       `insert into review_jobs (id, interaction_id, reviewer_agent_id, state, record, execution_id, working_directory, provider_version)
        values ($1,$2,$3,$4,$5::jsonb,$6,$7,$8)
        on conflict (interaction_id, reviewer_agent_id) do nothing returning record`,
@@ -24,7 +54,7 @@ export class PostgresInteractionCoordinationRepository {
         context?.executionId ?? null, context?.workingDirectory ?? null, context?.providerVersion ?? null],
     )
     if (inserted.rows[0]) return { job: ReviewJobSchema.parse(inserted.rows[0].record), created: true }
-    const current = await this.pool.query<{ record: unknown }>(
+    const current = await this.queryConnection.query<{ record: unknown }>(
       'select record from review_jobs where interaction_id=$1 and reviewer_agent_id=$2',
       [parsed.interactionId, parsed.reviewerAgentId],
     )
@@ -36,7 +66,7 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async findReviewJob(interactionId: string, reviewerAgentId: string): Promise<ReviewJob | undefined> {
-    const result = await this.pool.query<{ record: unknown }>(
+    const result = await this.queryConnection.query<{ record: unknown }>(
       'select record from review_jobs where interaction_id=$1 and reviewer_agent_id=$2',
       [interactionId, reviewerAgentId],
     )
@@ -44,7 +74,7 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async getReviewJobContext(id: string): Promise<{ executionId: string; workingDirectory: string; providerVersion: string }> {
-    const result = await this.pool.query<{ execution_id: string | null; working_directory: string | null; provider_version: string | null }>(
+    const result = await this.queryConnection.query<{ execution_id: string | null; working_directory: string | null; provider_version: string | null }>(
       'select execution_id,working_directory,provider_version from review_jobs where id=$1', [id],
     )
     const row = result.rows[0]
@@ -55,7 +85,7 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async appendReviewNativeEvent(job: ReviewJob, event: NativeHarnessEvent): Promise<void> {
-    const result = await this.pool.query<{ record: unknown; execution_id: string | null }>(
+    const result = await this.queryConnection.query<{ record: unknown; execution_id: string | null }>(
       'select record,execution_id from review_jobs where id=$1', [job.id],
     )
     const row = result.rows[0]
@@ -92,7 +122,7 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async nextReviewJob(reviewerAgentId: string): Promise<ReviewJob | undefined> {
-    const result = await this.pool.query<{ record: unknown }>(
+    const result = await this.queryConnection.query<{ record: unknown }>(
       `select record from review_jobs where reviewer_agent_id=$1 and
        ${recoverableJob}
        order by updated_at,id limit 1`, [reviewerAgentId],
@@ -101,14 +131,14 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async reviewJobAgents(): Promise<string[]> {
-    const result = await this.pool.query<{ reviewer_agent_id: string }>(
+    const result = await this.queryConnection.query<{ reviewer_agent_id: string }>(
       `select distinct reviewer_agent_id from review_jobs where ${recoverableJob}`,
     )
     return result.rows.map((row) => row.reviewer_agent_id)
   }
 
   async isReviewPending(interactionId: string, reviewerAgentId: string): Promise<boolean> {
-    const result = await this.pool.query(
+    const result = await this.queryConnection.query(
       `select id from durable_interactions where id=$1 and status='pending'
        and record->'approval'->>'handler'='orchestrator'
        and record->'approval'->>'designatedOrchestratorAgentId'=$2`, [interactionId, reviewerAgentId],
@@ -117,7 +147,7 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async assertReviewJobLease(id: string, token: string): Promise<void> {
-    const result = await this.pool.query(
+    const result = await this.queryConnection.query(
       `select id from review_jobs where id=$1 and record->>'leaseToken'=$2
        and (record->>'leaseExpiresAt')::timestamptz > clock_timestamp()`, [id, token],
     )
@@ -125,7 +155,7 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async renewReviewJob(id: string, token: string, leaseMs: number): Promise<string> {
-    const result = await this.pool.query<{ expires_at: string }>(
+    const result = await this.queryConnection.query<{ expires_at: string }>(
       `update review_jobs set revision=revision+1, updated_at=clock_timestamp(),
        record=jsonb_set(record, '{leaseExpiresAt}', to_jsonb(to_char(
          (clock_timestamp()+($3 * interval '1 millisecond')) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')))
@@ -194,7 +224,7 @@ export class PostgresInteractionCoordinationRepository {
 
   async ensureLane(lane: NativeSessionLane): Promise<NativeSessionLane> {
     const parsed = NativeSessionLaneSchema.parse(lane)
-    const result = await this.pool.query<{ record: unknown }>(
+    const result = await this.queryConnection.query<{ record: unknown }>(
       `insert into native_session_lanes (id,harness,native_session_id,owner_agent_id,revision,record)
        values ($1,$2,$3,$4,$5,$6::jsonb)
        on conflict (harness,native_session_id) do update set native_session_id=excluded.native_session_id
@@ -207,7 +237,7 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async claimLane(id: string, expectedRevision: number, owner: string, token: string, leaseExpiresAt: string, correlationId: string): Promise<NativeSessionLane> {
-    const result = await this.pool.query<{ record: unknown }>(
+    const result = await this.queryConnection.query<{ record: unknown }>(
       `update native_session_lanes set revision=revision+1, updated_at=now(),
          record=jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(record,
            '{revision}', to_jsonb((revision+1)::bigint)), '{leaseOwner}', to_jsonb($3::text)),
@@ -222,14 +252,14 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async getLane(harness: NativeSessionLane['harness'], nativeSessionId: string): Promise<NativeSessionLane | undefined> {
-    const result = await this.pool.query<{ record: unknown }>(
+    const result = await this.queryConnection.query<{ record: unknown }>(
       'select record from native_session_lanes where harness=$1 and native_session_id=$2', [harness, nativeSessionId],
     )
     return result.rows[0] ? NativeSessionLaneSchema.parse(result.rows[0].record) : undefined
   }
 
   async bindLaneTurn(fence: WriterFence, correlationId: string): Promise<void> {
-    const result = await this.pool.query(
+    const result = await this.queryConnection.query(
       `update native_session_lanes set revision=revision+1, updated_at=clock_timestamp(),
        record=jsonb_set(jsonb_set(record - 'currentTurnOrMessageId', '{revision}', to_jsonb((revision+1)::bigint)),
          '{correlationId}', to_jsonb($3::text))
@@ -240,7 +270,7 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async assertLaneLease(id: string, token: string): Promise<void> {
-    const result = await this.pool.query(
+    const result = await this.queryConnection.query(
       `select id from native_session_lanes where id=$1 and record->>'leaseToken'=$2
        and (record->>'leaseExpiresAt')::timestamptz > clock_timestamp()`, [id, token],
     )
@@ -248,7 +278,7 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async renewLane(id: string, token: string, leaseMs: number): Promise<string> {
-    const result = await this.pool.query<{ expires_at: string }>(
+    const result = await this.queryConnection.query<{ expires_at: string }>(
       `update native_session_lanes set revision=revision+1, updated_at=clock_timestamp(),
        record=jsonb_set(jsonb_set(record, '{revision}', to_jsonb((revision+1)::bigint)),
          '{leaseExpiresAt}', to_jsonb(to_char(
@@ -264,9 +294,10 @@ export class PostgresInteractionCoordinationRepository {
   async releaseLane(id: string, leaseToken: string, observed: {
     observedStatus: NativeSessionLane['observedStatus']; currentTurnOrMessageId?: string; connectionGeneration?: number
   }): Promise<NativeSessionLane> {
-    const client = await this.pool.connect()
+    const outer = interactionConnection.getStore()
+    const client = outer ?? await this.pool.connect()
     try {
-      await client.query('begin')
+      if (!outer) await client.query('begin')
       const found = await client.query<{ record: unknown }>(
         `select record from native_session_lanes where id=$1 and record->>'leaseToken'=$2
          and (record->>'leaseExpiresAt')::timestamptz > clock_timestamp() for update`, [id, leaseToken],
@@ -287,8 +318,8 @@ export class PostgresInteractionCoordinationRepository {
         [id, next.revision, JSON.stringify(next), leaseToken],
       )
       if (updated.rowCount !== 1) throw new DomainError('SESSION_LANE_LEASE_LOST', 'The native writer expired during release.', 409)
-      await client.query('commit')
+      if (!outer) await client.query('commit')
       return next
-    } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
+    } catch (error) { if (!outer) await client.query('rollback'); throw error } finally { if (!outer) client.release() }
   }
 }

@@ -18,6 +18,7 @@ import { registerOperatorHttpSecurity } from './modules/access/http.js'
 import type { PostgresAccessService } from './modules/access/postgres.js'
 import { DomainError } from './modules/errors.js'
 import type { McpDetectionService } from './modules/harnesses/mcpDetection.js'
+import { registerUserInteractions } from './routes/userInteractions.js'
 import { registerManagementRoutes } from './routes/management.js'
 import { registerMcpDetectionRoute } from './routes/mcpDetection.js'
 import { registerProductRoutes, type ProductServices } from './routes/product.js'
@@ -109,6 +110,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   if (options.operator) registerOperatorHttpSecurity(app, options.operator.access)
   if (options.operator) registerManagementRoutes(app, options.operator.services)
   if (options.operator && options.mcpDetection) registerMcpDetectionRoute(app, options.mcpDetection.pool, options.mcpDetection.service)
+  if (options.operator && options.product?.interactions) registerUserInteractions(app, options.operator.access, options.product.interactions)
   if (options.product) registerProductRoutes(app, options.product, Boolean(options.operator))
   if (options.operator) registerOperatorMcp(app, options.operator.access, options.operator.services)
   if (options.appMcp) registerAppMcp(app, options.appMcp)

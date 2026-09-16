@@ -112,7 +112,7 @@ function fixture(options: { realGraph?: boolean; timeoutMs?: number; nodes?: str
   const workflows = { getVersion: async () => version }
   const approvals = {
     cancelRun: async () => { calls.cancel += 1 },
-    reconcileReviews: async () => undefined,
+    finishRun: async () => undefined, reconcileReviews: async () => undefined,
     residentRunIds: () => [] as string[],
     reviewers: { shutdown: async () => undefined },
   }
@@ -378,80 +378,29 @@ it('finishing tasks remove tracking only when they still own the registered entr
   assert.equal(f.internals.activeTasks.get(f.run.id), replacementTask)
 })
 
-it('resumed work is actively aborted at its remaining budget, not a fresh full timeout', async () => {
-  const f = fixture({ timeoutMs: 60_000 })
-  f.control.remainingMs = 25
-  const item = f.addInteraction('approval', true)
-  f.waiting(item)
-  let aborted = false
-  let cleaned = false
-  f.internals.executeNode = async (_run, _version, _nodeId, _predecessors, _state, signal) => {
-    await new Promise<void>((_resolve, reject) => {
-      signal.addEventListener('abort', () => { aborted = true; reject(signal.reason) }, { once: true })
-    }).finally(async () => {
-      await delay(10)
-      assert.equal(f.calls.owners, 1, 'ownership must survive native cleanup')
-      cleaned = true
-    })
-    return {}
-  }
-  f.control.invoke = async (_input, action) => {
-    await action('approval', { runId: f.run.id, executionIds: {} })
-    return f.complete()
-  }
-  const keepAlive = setTimeout(() => undefined, 1_000)
-  try { await f.engine.resumeInteraction(item) } finally { clearTimeout(keepAlive) }
-  assert.equal(aborted, true)
-  assert.equal(cleaned, true)
-  assert.equal(f.run.executionState, 'completed')
-  assert.equal(f.calls.owners, 0)
-  assert.equal(f.internals.activeTasks.size, 0)
-})
-
-it('budget expiry starts native cancellation before waiting for blocked observations to drain', async () => {
-  const f = fixture()
-  const canceled = deferred()
-  const item = f.addInteraction('approval', true)
-  f.waiting(item)
-  f.control.remainingMs = 25
-  let nodeSignal!: AbortSignal
-  let cleaned = false
-  f.approvals.cancelRun = async () => {
-    assert.equal(f.calls.owners, 1)
-    f.calls.cancel += 1
-    canceled.resolve()
-  }
-  f.internals.executeNode = async (_run, _version, _nodeId, _predecessors, _state, signal) => {
-    nodeSignal = signal
-    // Model provider I/O that only settles after the native session is canceled.
-    await canceled.promise
-    cleaned = true
+it('a finished short-budget branch does not arm a timer against other branches or successors', async () => {
+  const f = fixture({ timeoutMs: 60_000, nodes: ['short', 'long', 'successor'] })
+  f.control.remainingMs = 1
+  const short = f.addInteraction('short', true)
+  const long = f.addInteraction('long', true)
+  f.waiting(short, long)
+  const visited: string[] = []
+  f.internals.executeNode = async (_run, _version, nodeId, _predecessors, _state, signal) => {
+    if (nodeId !== 'short') await delay(25)
     signal.throwIfAborted()
-    return {}
+    visited.push(nodeId)
+    return { executionIds: { [nodeId]: `execution-${nodeId}` } }
   }
   f.control.invoke = async (_input, action) => {
-    const work = action('approval', { runId: f.run.id, executionIds: {} })
-    await Promise.race([work, new Promise<void>((_resolve, reject) => {
-      nodeSignal.addEventListener('abort', () => reject(nodeSignal.reason), { once: true })
-    })])
+    const state = { runId: f.run.id, executionIds: {} }
+    await Promise.all([action('short', state), action('long', state)])
+    await action('successor', state)
     return f.complete()
   }
-  const keepAlive = setTimeout(() => undefined, 1_000)
-  try { await f.engine.resumeInteraction(item) } finally { clearTimeout(keepAlive) }
-  assert.equal(cleaned, true)
-  assert.equal(f.calls.cancel, 1)
-  assert.equal(f.calls.owners, 0)
-  assert.equal(f.run.executionState, 'completed')
-})
-
-it('an exhausted active budget does not invoke the graph or native work', async () => {
-  const f = fixture()
-  f.control.remainingMs = 0
-  const item = f.addInteraction('approval', true)
-  f.waiting(item)
-  await f.engine.resumeInteraction(item)
-  assert.equal(f.run.executionState, 'completed')
-  assert.deepEqual(f.calls.invocations, [])
+  await f.engine.resumeInteraction(short)
+  assert.deepEqual(visited, ['short', 'long', 'successor'])
+  assert.equal(f.run.outcome, 'succeeded')
+  assert.equal(f.calls.cancel, 0)
 })
 
 it('approval waiting is not bounded by the active run timer', async () => {

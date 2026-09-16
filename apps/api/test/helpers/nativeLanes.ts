@@ -1,10 +1,11 @@
-import type { NativeSessionLane } from '@graphql/contracts'
+import type { NativeSessionLane, NativeSessionReference } from '@graphql/contracts'
 
 import { DomainError } from '../../src/modules/errors.js'
 import type { PostgresInteractionCoordinationRepository, WriterFence } from '../../src/modules/interactions/coordination.js'
 
 /** In-memory persistence boundary; tests still run the real session writer and lease guards. */
 export function nativeLanes(): PostgresInteractionCoordinationRepository {
+  const sessions = new Map<string, { session: NativeSessionReference; finalized: boolean }>()
   const lanes = new Map<string, NativeSessionLane>()
   const owned = (id: string, token: string) => {
     const lane = lanes.get(id)
@@ -14,6 +15,9 @@ export function nativeLanes(): PostgresInteractionCoordinationRepository {
     return lane
   }
   return {
+    async bindWorkflowSession(id: string, session: NativeSessionReference) { sessions.set(id, { session, finalized: false }) },
+    async finalizeWorkflowSession(id: string) { const saved = sessions.get(id); if (saved) saved.finalized = true },
+    async workflowSession(id: string) { return sessions.get(id) },
     async ensureLane(input: NativeSessionLane) {
       const existing = [...lanes.values()].find((lane) => lane.harness === input.harness && lane.nativeSessionId === input.nativeSessionId)
       if (existing && existing.ownerAgentId !== input.ownerAgentId) throw new DomainError('SESSION_LANE_OWNER_CONFLICT', 'Different owner.', 409)

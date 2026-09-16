@@ -145,7 +145,7 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
         await new Promise((resolve) => setTimeout(resolve, 1_000))
       }
 
-      expect(details?.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
+      expect(details?.run, JSON.stringify(details?.run.result)).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
       expect(details?.run.workflowVersionId).toBe(pinnedVersionId)
       expect(details?.executions).toHaveLength(3)
       const [first, second, third] = details?.executions ?? []

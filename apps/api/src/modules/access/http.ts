@@ -62,7 +62,7 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
 
   app.addHook('preHandler', async (request) => {
     const path = request.url.split('?')[0]
-    if (!path?.startsWith('/api/') || path === '/api/auth/enroll') return
+    if (!path?.startsWith('/api/') || path === '/api/auth/enroll' || path.startsWith('/api/user/')) return
     requireLocalRequest(request)
     // Clearing a stale session must not depend on authenticating that session.
     if (path === '/api/auth/logout' && request.method === 'POST') {

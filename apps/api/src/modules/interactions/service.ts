@@ -4,6 +4,7 @@ import type { DurableInteraction } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { ManagementAction } from '@graphql/contracts/management'
 
+import { canUserInteract } from '../access/userPolicy.js'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { assertOrchestratorInteractionAuthority, type WorkerInteractionAuthority } from './authorization.js'
@@ -13,13 +14,13 @@ import type { InteractionNativeRuntime } from './runtimePorts.js'
 import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence, type NativeDeliveryOutcome } from './delivery.js'
 
 export type InteractionResponder =
-  | { kind: 'user' }
+  | { kind: 'user'; principal?: ManagementPrincipal }
   | { kind: 'operator'; principal: ManagementPrincipal }
   | { kind: 'orchestrator'; authority: WorkerInteractionAuthority }
 
 function assertResponder(interaction: DurableInteraction, responder: InteractionResponder): void {
   if (responder.kind === 'user') {
-    if (interaction.approval.handler !== 'user') {
+    if (interaction.approval.handler !== 'user' || responder.principal && !canUserInteract(responder.principal, 'interactions:respond', interaction)) {
       throw new DomainError('INTERACTION_ACCESS_DENIED', 'The caller is not authorized for this interaction.', 403)
     }
     return
@@ -76,7 +77,6 @@ export class InteractionService {
     }, INTERACTION_DELIVERY_LEASE_MS / 3)
     heartbeat.unref()
     try {
-      await this.budgets.resume(claim.interaction.executionId)
       await this.resumeGraph(claim.interaction)
     } catch (error) {
       // RUN_NOT_RESUMABLE may mean binding/Run state has not caught up yet.
@@ -127,6 +127,8 @@ export class InteractionService {
       return await this.interactions.delivery.finish(claim, async (current, writeSignal) => {
         const option = current.responseOptions.find((candidate) => candidate.optionId === current.selectedOptionId)
         if (!option) throw new DomainError('INTERACTION_OPTION_INVALID', 'The durable response option is unavailable.', 409)
+        try { await this.nativeRuntime.validateInteraction?.(current, writeSignal) }
+        catch (error) { return { state: 'failed', error: message(error) } }
         // Only this try/catch classifies native errors. Database commit failures
         // and graph-resume failures must never turn a delivered response into a retry.
         try {
@@ -193,10 +195,11 @@ export class InteractionService {
       const reconciled = await this.reconcile(current)
       return { interaction: reconciled, replayed: true }
     }
+    await this.nativeRuntime.validateInteraction?.(current)
     await this.budgets.assertActive(current.executionId)
     const nativeResponse = { optionId: option.optionId, semantic: option.semantic }
     const auditReference = responder.kind === 'operator' ? responder.principal.id
-      : responder.kind === 'orchestrator' ? responder.authority.agentId : undefined
+      : responder.kind === 'orchestrator' ? responder.authority.agentId : responder.principal?.id
     const decision = await this.interactions.decide({
       id: current.id, optionId: option.optionId, expectedRevision: input.expectedRevision,
       nativeResponse, ...(auditReference ? { auditReference } : {}),

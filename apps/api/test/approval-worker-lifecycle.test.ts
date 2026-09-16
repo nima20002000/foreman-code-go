@@ -52,7 +52,7 @@ function fixture(harness: AgentHarness = 'codex', started = true) {
       }),
       pending: vi.fn(async () => undefined),
       history: vi.fn(async (): Promise<NativeHistory> => ({ events: [], pendingInteractions: [], terminalResult: { outcome: 'succeeded' } })),
-      reconcile: vi.fn(async (): Promise<NativeHistory> => ({ events: [], pendingInteractions: [] })),
+      reconcile: vi.fn(async (_session: NativeSessionReference, correlationId: string): Promise<NativeHistory> => ({ events: [], pendingInteractions: [], terminalTurn: { correlationId, providerId: 'workflow-turn', result: { outcome: 'succeeded' } } })),
       cancel: vi.fn(async () => true),
       close: vi.fn(async () => undefined),
     }
@@ -82,6 +82,7 @@ function fixture(harness: AgentHarness = 'codex', started = true) {
     revokeForExecution: vi.fn(async () => 1),
   }
   const budgets = {
+    resume: vi.fn(async () => undefined), remaining: vi.fn(async () => 60_000),
     ensure: vi.fn(async () => undefined), assertActive: vi.fn(async () => undefined),
     beginWait: vi.fn(async () => undefined), finish: vi.fn(async () => undefined), stop: vi.fn(async () => undefined),
   }
@@ -94,7 +95,7 @@ function fixture(harness: AgentHarness = 'codex', started = true) {
     recordActivity: vi.fn(async () => undefined),
     appendNativeEvent: vi.fn(async () => undefined),
   }
-  const interactions = { coordination: nativeLanes(), getForExecution: vi.fn(async () => undefined) }
+  const interactions = { cancelPendingForExecution: vi.fn(async () => undefined), coordination: nativeLanes(), getForExecution: vi.fn(async () => undefined) }
   const coordinator = new ApprovalExecutionCoordinator(runs as never, interactions as never, budgets as never, resolver, 60_000, credentials)
   const observe = () => coordinator.ensureObserve({
     candidate: execution, request, approval: { handler: 'user' }, workflowId: 'workflow-1', graphThreadId: 'thread-1',
@@ -312,9 +313,10 @@ it('still revokes and releases terminal work when budget finalization needs retr
   expect(f.budgets.finish).toHaveBeenLastCalledWith(f.context.executionId, persisted.finishedAt)
   expect(f.managers).toHaveLength(1)
   expect(f.managers[0]!.startTurn).toHaveBeenCalledTimes(1)
-  f.budgets.finish.mockRejectedValueOnce(new Error('accounting unavailable again'))
-  await expect(f.observe()).rejects.toThrow('accounting unavailable again')
-  expect(f.credentials.revokeForExecution).toHaveBeenCalledTimes(3)
+  // A finalized workflow replay cannot revoke a subsequently issued review credential.
+  const revoked = f.credentials.revokeForExecution.mock.calls.length
+  await expect(f.observe()).resolves.toMatchObject({ state: 'completed' })
+  expect(f.credentials.revokeForExecution).toHaveBeenCalledTimes(revoked)
 })
 
 it('revokes superseded credentials only after preflight and before a new process credential is issued', async () => {

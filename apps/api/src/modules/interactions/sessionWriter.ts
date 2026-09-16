@@ -128,6 +128,10 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   history: NativeHarnessSessionManager['history'] = (session, signal) => this.manager.history(session, signal)
   reconcile: NativeHarnessSessionManager['reconcile'] = (session, correlation, signal) => this.manager.reconcile(session, correlation, signal)
 
+  isActive(session: NativeSessionReference): boolean {
+    return this.active.has(session.nativeSessionId)
+  }
+
   private ensure(session: NativeSessionReference, status: NativeSessionLane['observedStatus']) {
     return this.coordination.ensureLane({
       id: `lane-${randomUUID()}`, harness: session.harness, nativeSessionId: session.nativeSessionId,
@@ -277,8 +281,15 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
         const result = await lease.guard.wait(action(lease.guard.signal))
         await lease.guard.check()
         if (lease.previous.correlationId) {
-          const history = await lease.guard.wait(this.manager.reconcile(session, lease.previous.correlationId, lease.guard.signal))
-          this.observe(session, history, lease.previous.correlationId, lease)
+          try {
+            const history = await lease.guard.wait(this.manager.reconcile(session, lease.previous.correlationId, lease.guard.signal))
+            this.observe(session, history, lease.previous.correlationId, lease)
+          } catch {
+            // The native action was acknowledged. A failed observation cannot
+            // erase that receipt, but lost ownership still fails closed.
+            lease.observedStatus = 'uncertain'
+          }
+          await lease.guard.check()
         }
         return result
       })

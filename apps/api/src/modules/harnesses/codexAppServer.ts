@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createInterface } from 'node:readline'
 
@@ -60,6 +60,8 @@ interface Runtime {
   transport: CodexStdioTransport
   session: NativeSessionReference
   events: NativeHarnessEvent[]
+  connectionId: string
+  correlationTurns: Map<string, string>
   waiting: WaitingRequest | undefined
   activeTurnId: string | undefined
   terminalResult: ExecutionResult | undefined
@@ -540,7 +542,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const runtime: Runtime = {
         input, workingDirectory, configuration: harnessConfiguration,
         scopedCredentialVariable,
-        transport, session, events: [], waiting: undefined, activeTurnId: undefined,
+        transport, session, events: [], connectionId: randomUUID(), correlationTurns: new Map(), waiting: undefined, activeTurnId: undefined,
         terminalResult: undefined, finalAnswer: undefined, lastAgentMessage: undefined,
         seenNotifications: new Set(), wake: new Set(), closed: false,
       }
@@ -592,7 +594,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       scopedCredentialVariable: prepared.scopedCredentialVariable,
       transport,
       session,
-      events: [],
+      events: [], connectionId: randomUUID(), correlationTurns: new Map(),
       waiting: undefined,
       activeTurnId: undefined,
       terminalResult: undefined,
@@ -654,6 +656,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const turnId = text(turn.id)
     if (!turnId) throw new HarnessExecutionError('CODEX_TURN_ID_MISSING', 'Codex did not return a native turn ID.')
     runtime.activeTurnId = turnId
+    runtime.correlationTurns.set(input.clientCorrelationId, turnId)
     this.record(runtime, 'turn.started', { threadId: session.nativeSessionId, turnId, clientCorrelationId: input.clientCorrelationId })
     let index = offset
     while (!signal?.aborted) {
@@ -708,20 +711,46 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   async reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory> {
     const runtime = this.requireRuntime(session)
+    let response: JsonObject
+    let restarted = false
     try {
-      const response = assertObject(await runtime.transport.request('thread/read', {
+      response = assertObject(await runtime.transport.request('thread/read', {
         threadId: session.nativeSessionId, includeTurns: true,
       }, signal), 'CODEX_THREAD_READ_INVALID')
-      this.record(runtime, 'thread.reconciled', { correlationId, thread: response.thread })
     } catch (error) {
       if (!runtime.closed) throw error
       await this.restart(runtime, signal)
-      const response = assertObject(await runtime.transport.request('thread/read', {
+      restarted = true
+      response = assertObject(await runtime.transport.request('thread/read', {
         threadId: session.nativeSessionId, includeTurns: true,
       }, signal), 'CODEX_THREAD_READ_INVALID')
-      this.record(runtime, 'thread.reconciled', { correlationId, restarted: true, thread: response.thread })
     }
-    return this.history(session)
+    const thread = assertObject(response.thread, 'CODEX_THREAD_READ_INVALID')
+    this.record(runtime, 'thread.reconciled', { correlationId, thread, ...(restarted ? { restarted } : {}) })
+    const known = runtime.correlationTurns.get(correlationId)
+    const turn = Array.isArray(thread.turns) ? thread.turns.filter(isObject).find((candidate) =>
+      known ? candidate.id === known : candidate.clientUserMessageId === correlationId
+        || Array.isArray(candidate.items) && candidate.items.some((item) => isObject(item) && item.clientUserMessageId === correlationId),
+    ) : undefined
+    const result = turn ? this.resultForTurn(turn) : undefined
+    const history = await this.history(session)
+    delete history.terminalResult
+    if (turn && typeof turn.id === 'string' && result) {
+      runtime.correlationTurns.set(correlationId, turn.id)
+      history.terminalResult = result
+      history.terminalTurn = { correlationId, providerId: turn.id, result }
+    }
+    return history
+  }
+
+  private resultForTurn(turn: JsonObject): ExecutionResult | undefined {
+    if (turn.status === 'interrupted') return { outcome: 'canceled' }
+    if (turn.status === 'failed') return { outcome: 'failed', error: { code: 'CODEX_TURN_FAILED', message: this.turnError(turn), retryable: false } }
+    if (turn.status !== 'completed') return undefined
+    const messages = Array.isArray(turn.items) ? turn.items.filter(isObject)
+      .filter((item) => item.type === 'agentMessage' && typeof item.text === 'string') : []
+    const final = messages.findLast((item) => item.phase === 'final_answer') ?? messages.at(-1)
+    return { outcome: 'succeeded', output: { text: typeof final?.text === 'string' ? final.text : '' } }
   }
 
   async close(session: NativeSessionReference): Promise<void> {
@@ -1066,7 +1095,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private record(runtime: Runtime, type: string, payload: JsonObject): void {
     runtime.events.push(NativeHarnessEventSchema.parse({
-      sequence: runtime.events.length,
+      sequence: runtime.events.length, connectionId: runtime.connectionId,
       type,
       occurredAt: new Date().toISOString(),
       payload,

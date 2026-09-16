@@ -1,6 +1,7 @@
 import { DurableInteractionSchema, type DurableInteraction } from '@graphql/contracts'
 import type pg from 'pg'
 
+import { interactionConnection } from './connection.js'
 import { DomainError } from '../errors.js'
 import {
   INTERACTION_DELIVERY_LEASE_MS,
@@ -183,7 +184,7 @@ export class PostgresInteractionDeliveryRepository {
       // Native exceptions must be converted by the callback, not by this transaction:
       // a database failure after a successful write is an uncertain commit, not a failed send.
       if (writing) combined.throwIfAborted()
-      const result = typeof outcome === 'function' ? await outcome(current, combined) : outcome
+      const result = typeof outcome === 'function' ? await interactionConnection.run(client, () => outcome(current, combined)) : outcome
       if ((claim.mode === 'reconcile' || attempt.state === 'uncertain') && result.state === 'failed') {
         throw new DomainError('DELIVERY_OUTCOME_UNCERTAIN', 'Reconciliation cannot turn an uncertain write into permission to resend.', 409)
       }

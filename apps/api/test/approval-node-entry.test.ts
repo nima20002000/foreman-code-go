@@ -80,7 +80,7 @@ async function fixture(approval = true) {
     },
   } as unknown as PostgresInteractionRepository
   const approvals = {
-    reconcileReviews: async () => undefined,
+    finishRun: async () => undefined, reconcileReviews: async () => undefined,
     residentRunIds: () => [] as string[],
     reviewers: { shutdown: async () => undefined },
     async ensureObserve(input: Parameters<ApprovalExecutionCoordinator['ensureObserve']>[0]): Promise<ApprovalExecutionObservation> {

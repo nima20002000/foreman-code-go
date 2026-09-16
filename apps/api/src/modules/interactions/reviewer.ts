@@ -74,19 +74,26 @@ export class ReviewerDispatcher {
       () => this.coordination.assertReviewJobLease(job.id, jobToken),
       () => this.coordination.renewReviewJob(job.id, jobToken, this.leaseMs),
       this.stopping.signal, job.leaseExpiresAt, 'REVIEW_JOB_LEASE_LOST')
+    let executionId: string | undefined
     const recovering = Boolean(job.submittedAt || job.acknowledgedAt || job.providerTurnOrMessageId
       || ['submitted', 'acknowledged', 'uncertain'].includes(available.state))
     try {
       const { providerVersion, ...ownerContext } = await guard.wait(this.coordination.getReviewJobContext(job.id))
+      executionId = ownerContext.executionId
       await guard.check()
+      if (!recovering && !await this.coordination.isReviewPending(job.interactionId, job.reviewerAgentId)) {
+        return await this.coordination.transitionReviewJob(job.id, jobToken, 'failed', {
+          error: { code: 'REVIEW_NO_LONGER_PENDING', message: 'The interaction no longer needs this review.' },
+        })
+      }
       const attached = await guard.wait(this.nativeRuntime.attachOwnedSession({
-        harness: job.provider, agentId: job.reviewerAgentId, ...ownerContext,
+        harness: job.provider, agentId: job.reviewerAgentId, ...ownerContext, purpose: 'reviewer',
       }, { harness: job.provider, providerVersion, nativeSessionId: job.nativeSessionId }, guard.signal))
       await guard.check()
       if (attached.session.harness !== job.provider || attached.session.nativeSessionId !== job.nativeSessionId
         || attached.session.providerVersion !== providerVersion) throw new Error('Reviewer attach changed its durable native identity.')
       const writer = coordinateSessionManager(attached.manager, this.coordination, job.reviewerAgentId, this.leaseMs)
-      return await writer.withLane(attached.session, job.correlationId, guard.signal, async (manager, lane) => {
+      return await writer.withLane(attached.session, job.correlationId, attached.signal ? AbortSignal.any([guard.signal, attached.signal]) : guard.signal, async (manager, lane) => {
         const session = attached.session
         let submitted = recovering
         let submitting = !recovering
@@ -170,6 +177,9 @@ export class ReviewerDispatcher {
           releaseLease: true,
           error: { code: busy ? 'REVIEW_SESSION_BUSY' : 'REVIEW_SESSION_DISCONNECTED', message: 'The existing reviewer session could not be exclusively attached.' },
         })
-    } finally { await guard.stop() }
+    } finally {
+      await guard.stop()
+      if (executionId && !guard.signal.aborted) await this.nativeRuntime.finishReview?.(executionId)
+    }
   }
 }
