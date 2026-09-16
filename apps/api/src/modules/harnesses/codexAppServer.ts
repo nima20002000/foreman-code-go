@@ -115,6 +115,22 @@ function assertObject(value: unknown, code: string): JsonObject {
   return value
 }
 
+function threadDiagnostics(response: JsonObject): JsonObject {
+  return {
+    model: response.model,
+    modelProvider: response.modelProvider,
+    serviceTier: response.serviceTier,
+    cwd: response.cwd,
+    runtimeWorkspaceRoots: response.runtimeWorkspaceRoots,
+    instructionSources: response.instructionSources,
+    approvalPolicy: response.approvalPolicy,
+    approvalsReviewer: response.approvalsReviewer,
+    sandbox: response.sandbox,
+    activePermissionProfile: response.activePermissionProfile,
+    reasoningEffort: response.reasoningEffort,
+  }
+}
+
 function safeEnvironment(input?: NativeSessionStart['environment'], scopedNames: readonly string[] = []): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
   for (const key of Object.keys(environment)) {
@@ -523,7 +539,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     holder.runtime = runtime
     this.runtimes.set(nativeSessionId, runtime)
-    this.record(runtime, 'thread.started', { threadId: nativeSessionId, thread })
+    this.record(runtime, 'thread.started', { threadId: nativeSessionId, thread, diagnostics: threadDiagnostics(response) })
     return session
   }
 
@@ -594,7 +610,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       }
       this.hydrateThread(runtime, thread)
       this.runtimes.set(session.nativeSessionId, runtime)
-      this.record(runtime, 'thread.attached', { threadId: session.nativeSessionId, thread })
+      this.record(runtime, 'thread.attached', {
+        threadId: session.nativeSessionId, thread, diagnostics: threadDiagnostics(response),
+      })
       return session
     } catch (error) {
       runtime.closed = true
