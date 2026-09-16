@@ -152,6 +152,10 @@ function configuration(input: NativeSessionStart): CodexHarnessConfiguration {
   return value
 }
 
+function developerInstructions(input: NativeSessionStart): string | null {
+  return input.kind === 'operator' ? null : input.request.configuration.prompt.system ?? null
+}
+
 function advanced(value: CodexHarnessConfiguration): CodexAdvancedConfiguration {
   return value.advanced ?? DEFAULT_CODEX_ADVANCED_CONFIGURATION
 }
@@ -526,6 +530,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         approvalsReviewer: draft.approvalsReviewer,
         sandbox: harnessConfiguration.sandbox,
         config: appServerConfig(harnessConfiguration),
+        developerInstructions: developerInstructions(input),
         ephemeral: draft.sessionPersistence === 'ephemeral',
       }, signal), 'CODEX_THREAD_START_INVALID')
       const thread = assertObject(response.thread, 'CODEX_THREAD_START_INVALID')
@@ -610,6 +615,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         approvalsReviewer: draft.approvalsReviewer,
         sandbox: prepared.harnessConfiguration.sandbox,
         config: appServerConfig(prepared.harnessConfiguration),
+        developerInstructions: developerInstructions(input),
         excludeTurns: false,
       }, signal), 'CODEX_THREAD_RESUME_INVALID')
       const thread = assertObject(response.thread, 'CODEX_THREAD_RESUME_INVALID')
