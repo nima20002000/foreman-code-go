@@ -6,6 +6,7 @@ import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@graphql/contr
 
 import { queryKeys } from '../../shared/api/query'
 import { AgentDefaultsSettings } from './AgentDefaultsSettings'
+import { clearRevisionedFormPersistence } from './revisionedForm'
 
 const { updateDefaults } = vi.hoisted(() => ({ updateDefaults: vi.fn() }))
 vi.mock('../../shared/api/query', async () => {
@@ -13,7 +14,7 @@ vi.mock('../../shared/api/query', async () => {
   return { ...actual, useUpdateAgentDefaultsMutation: () => useMutation({ mutationFn: updateDefaults }) }
 })
 
-afterEach(() => cleanup())
+afterEach(() => { cleanup(); clearRevisionedFormPersistence() })
 
 describe('Agent defaults settings', () => {
   it('keeps role templates distinct and exposes the Operator UI flag without enabling board insertion', async () => {
@@ -49,5 +50,17 @@ describe('Agent defaults settings', () => {
     expect(screen.getByRole('textbox', { name: 'Pattern 1' })).toHaveValue('git *')
     expect(screen.getByRole('textbox', { name: 'Pattern 2' })).toHaveValue('*')
     expect(screen.getByText(/Rules retain order and patterns exactly/i)).toBeVisible()
+  })
+
+  it('preserves an unsent Operator visibility draft across navigation-style unmounts', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    client.setQueryData(queryKeys.agentDefaults, { value: DEFAULT_AGENT_DEFAULTS, revision: 2, versionId: 'agents-v2' })
+    const first = render(<QueryClientProvider client={client}><AgentDefaultsSettings /></QueryClientProvider>)
+    const toggle = await screen.findByRole('checkbox', { name: /Enable Operator UI/ })
+    await userEvent.setup().click(toggle)
+    first.unmount()
+    render(<QueryClientProvider client={client}><AgentDefaultsSettings /></QueryClientProvider>)
+    expect(await screen.findByRole('checkbox', { name: /Enable Operator UI/ })).not.toBeChecked()
+    expect(screen.getByRole('button', { name: 'Save defaults' })).toBeEnabled()
   })
 })

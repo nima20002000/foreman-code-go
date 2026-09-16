@@ -63,7 +63,7 @@ export function AgentDefaultsSettings() {
   const query = useAgentDefaultsQuery()
   const mutation = useUpdateAgentDefaultsMutation()
   const { draft, baseRevision, isDirty, conflicted, setDraft, acknowledge, reset } = useRevisionedForm<AgentDefaults>(query.data
-    ? { value: query.data.value, revision: query.data.revision } : undefined)
+    ? { value: query.data.value, revision: query.data.revision } : undefined, 'settings:agents')
 
   if (query.isPending || !draft) return <p className="settings-state" role="status">Loading Agent defaults…</p>
   if (query.isError) return <p className="settings-state" role="alert">Agent defaults are unavailable.</p>

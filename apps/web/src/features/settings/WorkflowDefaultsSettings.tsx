@@ -7,7 +7,7 @@ export function WorkflowDefaultsSettings() {
   const query = useWorkflowDefaultsQuery()
   const mutation = useUpdateWorkflowDefaultsMutation()
   const { draft, baseRevision, isDirty, conflicted, setDraft, acknowledge, reset } = useRevisionedForm<WorkflowDefaults>(query.data
-    ? { value: query.data.value, revision: query.data.revision } : undefined)
+    ? { value: query.data.value, revision: query.data.revision } : undefined, 'settings:workflows')
   if (query.isPending || !draft) return <p className="settings-state" role="status">Loading workflow defaults…</p>
   if (query.isError) return <p className="settings-state" role="alert">Workflow defaults are unavailable.</p>
   return <section className="settings-form settings-form-compact" aria-labelledby="workflow-defaults-title">
