@@ -56,6 +56,7 @@ interface Runtime {
   input: NativeSessionStart
   workingDirectory: string
   configuration: CodexHarnessConfiguration
+  scopedCredentialVariable: string | undefined
   transport: CodexStdioTransport
   session: NativeSessionReference
   events: NativeHarnessEvent[]
@@ -109,10 +110,11 @@ function assertObject(value: unknown, code: string): JsonObject {
   return value
 }
 
-function safeEnvironment(input?: NativeSessionStart['environment']): NodeJS.ProcessEnv {
+function safeEnvironment(input?: NativeSessionStart['environment'], scopedNames: readonly string[] = []): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
   for (const key of Object.keys(environment)) {
     if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_')
+      || key.startsWith('GRAPHQL_APP_') || scopedNames.includes(key)
       || key === 'DATABASE_URL' || key === 'TEST_DATABASE_URL' || key === 'PGPASSWORD') {
       delete environment[key]
     }
@@ -166,6 +168,19 @@ function validateConfiguration(configurationValue: CodexHarnessConfiguration): v
     if (!directory.startsWith('/')) {
       throw new HarnessExecutionError('CODEX_SETTING_INVALID', 'Additional writable directories must be absolute paths.')
     }
+  }
+}
+
+function validateEnvironmentOwner(input: NativeSessionStart, requiredVariable?: string): void {
+  const expectedOwner = input.kind === 'operator' ? input.configuration.operatorId : input.request.configuration.agentId
+  if (input.environment && input.environment.agentId !== expectedOwner) {
+    throw new HarnessExecutionError('CODEX_SESSION_OWNER_MISMATCH', 'The scoped process environment belongs to another Agent.')
+  }
+  if (requiredVariable && (!input.environment || typeof input.environment.variables[requiredVariable] !== 'string')) {
+    throw new HarnessExecutionError(
+      'CODEX_SCOPED_ENVIRONMENT_REQUIRED',
+      `The enabled App MCP server requires a scoped '${requiredVariable}' process credential.`,
+    )
   }
 }
 
@@ -464,11 +479,19 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const harnessConfiguration = configuration(input)
     validateConfiguration(harnessConfiguration)
     const workingDirectory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+    let scopedCredentialVariable: string | undefined
+    try {
+      const mcp = await this.inspectMcpConfiguration(workingDirectory, signal)
+      scopedCredentialVariable = mcp.configured.enabled ? mcp.configured.bearerTokenEnvironmentVariable ?? undefined : undefined
+    } catch (error) {
+      if (!(error instanceof HarnessExecutionError) || error.result.error?.code !== 'CODEX_MCP_NOT_CONFIGURED') throw error
+    }
+    validateEnvironmentOwner(input, scopedCredentialVariable)
     const holder: { runtime?: Runtime } = {}
     const transport = new CodexStdioTransport(
       this.binary,
       workingDirectory,
-      safeEnvironment(input.environment),
+      safeEnvironment(input.environment, scopedCredentialVariable ? [scopedCredentialVariable] : []),
       async (request) => { if (holder.runtime) await this.handleRequest(holder.runtime, request) },
       async (method, params) => { if (holder.runtime) this.handleNotification(holder.runtime, method, params) },
       () => { if (holder.runtime) this.handleDisconnect(holder.runtime) },
@@ -492,6 +515,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const session = NativeSessionReferenceSchema.parse({ harness: 'codex', providerVersion: this.expectedVersion, nativeSessionId })
     const runtime: Runtime = {
       input, workingDirectory, configuration: harnessConfiguration,
+      scopedCredentialVariable,
       transport, session, events: [], waiting: undefined, activeTurnId: undefined,
       terminalResult: undefined, finalAnswer: undefined, lastAgentMessage: undefined,
       seenNotifications: new Set(), wake: new Set(), closed: false,
@@ -633,6 +657,12 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (!currentAgentId || currentAgentId !== environment.agentId) {
       throw new HarnessExecutionError('CODEX_SESSION_OWNER_MISMATCH', 'A Codex session cannot inherit another Agent\'s environment.')
     }
+    if (runtime.scopedCredentialVariable && typeof environment.variables[runtime.scopedCredentialVariable] !== 'string') {
+      throw new HarnessExecutionError(
+        'CODEX_SCOPED_ENVIRONMENT_REQUIRED',
+        `The replacement environment must include '${runtime.scopedCredentialVariable}'.`,
+      )
+    }
     if (runtime.waiting || (runtime.activeTurnId && !runtime.terminalResult)) {
       throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'Refresh the Codex process environment only at an idle turn boundary.')
     }
@@ -671,7 +701,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const transport = new CodexStdioTransport(
       this.binary,
       runtime.workingDirectory,
-      safeEnvironment(runtime.input.environment),
+      safeEnvironment(runtime.input.environment, runtime.scopedCredentialVariable ? [runtime.scopedCredentialVariable] : []),
       async (request) => this.handleRequest(runtime, request),
       async (method, params) => this.handleNotification(runtime, method, params),
       () => this.handleDisconnect(runtime),

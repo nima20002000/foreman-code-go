@@ -115,7 +115,9 @@ describe.skipIf(process.platform === 'win32')('Codex 0.154.0 app-server manager'
       },
     })
     const session = await manager.createSession({
-      request: request(directory), environment: { agentId: 'agent-a', variables: { TEST_AGENT_ID: 'agent-a' } },
+      request: request(directory), environment: {
+        agentId: 'agent-a', variables: { TEST_AGENT_ID: 'agent-a', GRAPHQL_APP_MCP_TOKEN: 'secret-a' },
+      },
     })
     const events = (async () => {
       const values = []
@@ -178,11 +180,24 @@ describe.skipIf(process.platform === 'win32')('Codex 0.154.0 app-server manager'
   it('restarts a lost transport for read-only reconciliation without replaying a turn', async () => {
     const { manager, directory } = await fixture()
     const session = await manager.createSession({
-      request: request(directory), environment: { agentId: 'agent-a', variables: { TEST_AGENT_ID: 'agent-a' } },
+      request: request(directory), environment: {
+        agentId: 'agent-a', variables: { TEST_AGENT_ID: 'agent-a', GRAPHQL_APP_MCP_TOKEN: 'secret-a' },
+      },
     })
     for await (const event of manager.startTurn(session, { prompt: 'crash', clientCorrelationId: 'crash-1' })) void event
     const history = await manager.reconcile(session, 'reconcile-1')
     expect(history.events.some((event) => event.type === 'thread.reconciled' && event.payload.restarted === true)).toBe(true)
     await manager.close(session)
+  })
+
+  it('fails closed before spawn for missing or cross-Agent scoped credentials', async () => {
+    const { manager, directory } = await fixture()
+    await expect(manager.createSession({
+      request: request(directory, 'agent-a'),
+      environment: { agentId: 'agent-b', variables: { GRAPHQL_APP_MCP_TOKEN: 'secret-b' } },
+    })).rejects.toMatchObject({ result: { error: { code: 'CODEX_SESSION_OWNER_MISMATCH' } } })
+    await expect(manager.createSession({ request: request(directory, 'agent-a') })).rejects.toMatchObject({
+      result: { error: { code: 'CODEX_SCOPED_ENVIRONMENT_REQUIRED' } },
+    })
   })
 })
