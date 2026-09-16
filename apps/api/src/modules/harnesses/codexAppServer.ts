@@ -481,7 +481,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       this.binary,
       workingDirectory,
       safeEnvironment(input.environment, scopedCredentialVariable ? [scopedCredentialVariable] : []),
-      async (request) => { if (holder.runtime) await this.handleRequest(holder.runtime, request) },
+      async (request) => {
+        if (holder.runtime) await this.handleRequest(holder.runtime, request)
+        else await transport.reject(request.id, -32000, 'Native interaction arrived before session initialization completed.')
+      },
       async (method, params) => { if (holder.runtime) this.handleNotification(holder.runtime, method, params) },
       () => { if (holder.runtime) this.handleDisconnect(holder.runtime) },
     )
