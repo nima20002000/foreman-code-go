@@ -27,12 +27,17 @@ const legacy = { workspace: { id: 'workspace-a', name: 'A' }, revision: 1, archi
 const posix = process.platform === 'win32' ? it.skip : it
 
 function request(harness: 'codex' | 'opencode', workingDirectory: string) {
+  const configuration = harness === 'opencode' ? {
+    ...DEFAULT_HARNESS_DEFAULTS.opencode,
+    autoApprove: true,
+    advanced: { ...DEFAULT_HARNESS_DEFAULTS.opencode.advanced!, permissionHandling: 'native_auto' as const },
+  } : DEFAULT_HARNESS_DEFAULTS.codex
   return HarnessExecutionRequestSchema.parse({
     executionId: 'execution', runId: 'run', workspaceId: 'workspace-a', workflowNodeId: 'node',
     workingDirectory, runtimeDirectory: `${workingDirectory}-runtime `, input: {},
     configuration: {
       id: 'configuration', workspaceId: 'workspace-a', agentId: 'agent', version: 1,
-      prompt: {}, assignedSkills: [], harness: DEFAULT_HARNESS_DEFAULTS[harness],
+      prompt: {}, assignedSkills: [], harness: configuration,
       contentHash: 'fixture', createdAt: new Date().toISOString(),
     },
   })

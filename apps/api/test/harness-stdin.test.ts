@@ -12,7 +12,8 @@ import { buildHarnessPrompt, MAX_HARNESS_PROMPT_BYTES } from '../src/modules/har
 
 const configurations: HarnessConfiguration[] = [
   { harness: 'codex', model: 'test-model', reasoningEffort: 'high', sandbox: 'read-only', serviceTier: 'standard' },
-  { harness: 'opencode', model: 'opencode-go/test-model', variant: 'max', nativeAgent: 'build', thinking: false, autoApprove: false },
+  // The noninteractive fallback only supports native auto; routed cases are tested separately.
+  { harness: 'opencode', model: 'opencode-go/test-model', variant: 'max', nativeAgent: 'build', thinking: false, autoApprove: true },
 ]
 
 function request(harness: HarnessConfiguration, input: HarnessExecutionRequest['input'], directory: string): HarnessExecutionRequest {
@@ -49,7 +50,7 @@ else {
       console.log(JSON.stringify({type:'thread.started',thread_id:'test-session'}))
       console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text}}))
     } else {
-      if (input.includes('EXPECT_ROUTED_APPROVAL')) console.log(JSON.stringify({type:'permission.asked',sessionID:'test-session'}))
+      if (input.includes('EXPECT_ROUTED_APPROVAL')) console.error('Warning: permission request rejected in noninteractive run')
       console.log(JSON.stringify({type:'text',sessionID:'test-session',part:{text}}))
     }
   })

@@ -5,12 +5,29 @@ import {
   type ExecutionResult,
   type HarnessExecutionRequest,
   type HarnessQualification,
+  type OpenCodeHarnessConfiguration,
 } from '@graphql/contracts'
 
 import { HarnessExecutionError } from './errors.js'
 import type { HarnessAdapter, HarnessExecutionCallbacks } from './port.js'
 import { runCommand, runCommands, runJsonlProcess, stopProcess } from './process.js'
 import { buildHarnessPrompt } from './prompt.js'
+
+/** The noninteractive CLI consumes permission requests itself; they are not JSON events. */
+export function assertOpenCodeFallbackConfiguration(configuration: OpenCodeHarnessConfiguration): void {
+  if (!configuration.autoApprove || configuration.advanced?.permissionHandling === 'graphql_routed') {
+    throw new HarnessExecutionError(
+      'OPENCODE_FALLBACK_APPROVAL_UNSUPPORTED',
+      'GraphQL-routed approval requires the qualified OpenCode native server transport; the run fallback cannot wait for a same-request response.',
+    )
+  }
+  if (configuration.advanced?.permissionRules.length) {
+    throw new HarnessExecutionError(
+      'OPENCODE_FALLBACK_PERMISSION_RULES_UNSUPPORTED',
+      'The opencode run fallback cannot apply Product permission rules losslessly. Use the qualified native transport; rules must not be silently ignored.',
+    )
+  }
+}
 
 export class OpenCodeAdapter implements HarnessAdapter {
   readonly harness = 'opencode' as const
@@ -23,6 +40,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
       throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'OpenCode received a non-OpenCode configuration.')
     }
     const configuration = request.configuration.harness
+    assertOpenCodeFallbackConfiguration(configuration)
     const provider = configuration.model.split('/')[0]
     if (!provider) throw new HarnessExecutionError('OPENCODE_MODEL_INVALID', 'OpenCode models must include a provider prefix.')
     if (provider !== 'opencode-go') {
@@ -52,7 +70,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
     const modelStart = models.stdout.indexOf(`${configuration.model}\n`)
     const nextModel = models.stdout.indexOf('\nopencode-go/', modelStart + configuration.model.length + 1)
     const modelDetails = models.stdout.slice(modelStart, nextModel === -1 ? undefined : nextModel)
-    if (!modelDetails.includes(`"${configuration.variant}"`)) {
+    if (configuration.variant && !modelDetails.includes(`"${configuration.variant}"`)) {
       throw new HarnessExecutionError(
         'OPENCODE_SETTING_UNSUPPORTED',
         `OpenCode model '${configuration.model}' does not support variant '${configuration.variant}'.`,
@@ -110,16 +128,16 @@ export class OpenCodeAdapter implements HarnessAdapter {
     if (configuration.harness !== 'opencode') {
       throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'OpenCode received a non-OpenCode configuration.')
     }
+    assertOpenCodeFallbackConfiguration(configuration)
     let finalText: string | undefined
     let sessionReported = false
-    let approvalRequested = false
     const prompt = buildHarnessPrompt(request)
     const args = [
       'run',
       '--format', 'json',
       '--dir', request.workingDirectory,
       '--model', configuration.model,
-      '--variant', configuration.variant,
+      ...(configuration.variant ? ['--variant', configuration.variant] : []),
       '--agent', configuration.nativeAgent,
       ...(configuration.thinking ? ['--thinking'] : []),
       ...(configuration.autoApprove ? ['--auto'] : []),
@@ -134,7 +152,6 @@ export class OpenCodeAdapter implements HarnessAdapter {
       ...(callbacks.beforeSpawn ? { beforeSpawn: callbacks.beforeSpawn } : {}),
       onSpawn: (process) => this.processes.set(request.executionId, process),
       onEvent: async (event) => {
-        if (event.type === 'permission.asked') approvalRequested = true
         if (typeof event.payload.sessionID === 'string' && !sessionReported) {
           sessionReported = true
           await callbacks.onSession(event.payload.sessionID)
@@ -153,12 +170,6 @@ export class OpenCodeAdapter implements HarnessAdapter {
     }).finally(() => this.processes.delete(request.executionId))
 
     if (callbacks.signal.aborted) throw new HarnessExecutionError('EXECUTION_CANCELED', 'OpenCode execution was canceled.')
-    if (approvalRequested && configuration.advanced?.permissionHandling === 'graphql_routed') {
-      throw new HarnessExecutionError(
-        'OPENCODE_FALLBACK_APPROVAL_UNSUPPORTED',
-        'The opencode run fallback encountered a native approval request and cannot wait for GraphQL-routed review; use the qualified native server transport.',
-      )
-    }
     if (result.exitCode !== 0) {
       throw new HarnessExecutionError(
         'OPENCODE_EXECUTION_FAILED',
