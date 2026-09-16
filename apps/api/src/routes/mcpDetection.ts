@@ -1,4 +1,4 @@
-import { AgentHarnessSchema, ExecutionLocationSchema } from '@graphql/contracts'
+import { AgentHarnessSchema, ExecutionLocationSchema, ScopedMcpDetectionSchema } from '@graphql/contracts'
 import type { FastifyInstance } from 'fastify'
 import type pg from 'pg'
 import { z } from 'zod'
@@ -30,11 +30,11 @@ export function registerMcpDetectionRoute(
       const raw = result.rows[0]?.execution_location
       if (!raw) throw new DomainError('WORKSPACE_LOCATION_UNCONFIGURED', 'The workspace has no configured execution location.', 409)
       const location = ExecutionLocationSchema.parse(raw)
-      return detection.inspect({
+      return ScopedMcpDetectionSchema.parse(await detection.inspect({
         harness: params.harness,
         runnerId: location.runnerId,
         workingDirectory: location.rootPath,
-      })
+      }))
     },
   )
 }

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { ScopedMcpDetectionSchema } from '@graphql/contracts'
 
 import {
   McpDetectionService,
@@ -48,6 +49,7 @@ describe('App MCP detection normalization', () => {
     })
     expect(failed.detection).toMatchObject({ state: 'check_failed', endpointMatches: null })
     expect(failed.detection.detail).toContain('unsupported output')
+    expect(ScopedMcpDetectionSchema.parse(failed)).toEqual(failed)
   })
 
   it('requires exact endpoint, transport, and credential reference before preflight succeeds', async () => {
