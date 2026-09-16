@@ -1,73 +1,103 @@
 import { createHash } from 'node:crypto'
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { createInterface } from 'node:readline'
+import { normalize } from 'node:path'
 
 import {
-  ApprovalResponseOptionSchema,
-  DEFAULT_CODEX_ADVANCED_CONFIGURATION,
-  McpDetectionSchema,
-  NativeHarnessCapabilitiesSchema,
-  NativeHarnessEventSchema,
-  NativeSessionReferenceSchema,
-  PendingNativeInteractionSchema,
-  type ApprovalResponseOption,
-  type ExecutionResult,
-  type McpDetection,
-  type NativeHarnessCapabilities,
-  type NativeHarnessEvent,
-  type NativeSessionReference,
-  type PendingNativeInteraction,
-  type CodexAdvancedConfiguration,
-  type CodexHarnessConfiguration,
+  ApprovalResponseOptionSchema, CodexHarnessConfigurationSchema, CodexSessionCompatibilitySchema,
+  DEFAULT_CODEX_ADVANCED_CONFIGURATION, McpDetectionSchema, NativeHarnessCapabilitiesSchema,
+  NativeHarnessEventSchema, NativeSessionReferenceSchema, PendingNativeInteractionSchema,
+  type ApprovalResponseOption, type CodexAdvancedConfiguration, type CodexHarnessConfiguration,
+  type ExecutionResult, type McpDetection, type NativeHarnessCapabilities, type NativeHarnessEvent,
+  type NativeSessionReference, type PendingNativeInteraction,
 } from '@graphql/contracts'
 
 import { HarnessExecutionError } from './errors.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from './port.js'
 import { runCommand } from './process.js'
+import {
+  assertCodexUnchanged, canonical, qualifyCodex, QUALIFIED_CODEX_VERSION,
+  QUALIFIED_CODEX_SCHEMA_SHA256, type QualifiedCodex,
+} from './codexProtocol.js'
+import { CodexRpcError, CodexStdioTransport, isObject, object, text, type JsonObject, type RequestId, type RpcRequest } from './codexStdioTransport.js'
 
-export const QUALIFIED_CODEX_VERSION = 'codex-cli 0.154.0'
-/** SHA-256 of the sorted relative-path/file-SHA manifest from 0.154.0 --experimental JSON schemas. */
-export const QUALIFIED_CODEX_SCHEMA_SHA256 = 'b785f87f96c4747e9db6c0492cea2de68e99b48f3462908174a1e8122a620054'
-const REQUEST_TIMEOUT_MS = 30_000
-const MAX_STDERR_LENGTH = 128_000
+export { QUALIFIED_CODEX_VERSION, QUALIFIED_CODEX_SCHEMA_SHA256 }
+const MAX_EVENTS = 1_024
+const MAX_EVENT_BYTES = 8 * 1024 * 1024
+const MAX_STAGED = 256
+const MAX_INTERACTIONS = 128
+const RESPONSE_DEADLINE_MS = 30_000
+const INTERRUPT_STARTUP_RETRIES = 20
+const INTERRUPT_STARTUP_RETRY_MS = 25
 
-type JsonObject = Record<string, unknown>
-type RequestId = string | number
-
-interface RpcRequest {
-  id: RequestId
-  method: string
-  params?: JsonObject
-}
-
-interface StoredResponse {
-  option: ApprovalResponseOption
-  nativeResponse: JsonObject
-}
-
+type Delivery = 'pending' | 'submitting' | 'submitted' | 'uncertain'
 interface WaitingRequest {
   pending: PendingNativeInteraction
   requestId: RequestId
-  responses: Map<string, StoredResponse>
-  delivery: 'pending' | 'uncertain'
+  method: string
+  generation: number
+  signature: string
+  responses: Map<string, { option: ApprovalResponseOption; nativeResponse: JsonObject }>
+  delivery: Delivery
+  selectedOptionId?: string
+  resolution: Promise<'resolved' | 'cleared'>
+  resolve(value: 'resolved' | 'cleared'): void
 }
-
-interface Runtime {
+interface TurnSnapshot {
+  activeTurnId: string | undefined
+  activeCorrelationId: string | undefined
+  terminalResult: ExecutionResult | undefined
+  finalAnswer: string | undefined
+  lastAgentMessage: string | undefined
+}
+interface StartingTurn {
+  correlationId: string
+  previous: TurnSnapshot
+  cancelRequested: boolean
+  nativeIdentity: Promise<string | undefined>
+  resolveIdentity(id: string | undefined): void
+  staged: Array<{ method: string; params: JsonObject } | { request: RpcRequest }>
+  stagedBytes: number
+}
+interface Runtime extends TurnSnapshot {
+  readonly binding: string
+  readonly ownerId: string
+  readonly configurationIdentity: string
   input: NativeSessionStart
   workingDirectory: string
   configuration: CodexHarnessConfiguration
   scopedCredentialVariable: string | undefined
   transport: CodexStdioTransport
   session: NativeSessionReference
+  generation: number
+  phase: 'idle' | 'starting' | 'active' | 'uncertain'
+  streamActive: boolean
+  starting: StartingTurn | undefined
+  cancellation: { turnId: string; promise: Promise<boolean> } | undefined
+  interactions: Map<string, WaitingRequest>
+  resolvedRequests: Map<string, string>
   events: NativeHarnessEvent[]
-  waiting: WaitingRequest | undefined
-  activeTurnId: string | undefined
-  terminalResult: ExecutionResult | undefined
-  finalAnswer: string | undefined
-  lastAgentMessage: string | undefined
+  eventSizes: number[]
+  eventBytes: number
+  sequence: number
   seenNotifications: Set<string>
   wake: Set<() => void>
   closed: boolean
+  disposed: boolean
+}
+interface Prepared {
+  input: NativeSessionStart
+  harnessConfiguration: CodexHarnessConfiguration
+  workingDirectory: string
+  scopedCredentialVariable: string | undefined
+  environment: NodeJS.ProcessEnv
+  qualified: QualifiedCodex
+}
+interface Creation {
+  identity: string
+  status: 'creating' | 'uncertain' | 'ready'
+  promise?: Promise<NativeSessionReference>
+  session?: NativeSessionReference
+  transport?: CodexStdioTransport
+  timer?: NodeJS.Timeout
 }
 
 export interface CodexMcpConfigurationInspection {
@@ -77,325 +107,154 @@ export interface CodexMcpConfigurationInspection {
   serverName: string
   inspectionScope: 'effective_config'
   configured: {
-    enabled: boolean
-    required: boolean
-    transport: 'stdio' | 'streamable_http' | 'unknown'
-    url: string | null
-    bearerTokenEnvironmentVariable: string | null
-    enabledTools: string[] | null
-    disabledTools: string[]
-    defaultToolsApprovalMode: string | null
-    tools: JsonObject
+    enabled: boolean; required: boolean; transport: 'stdio' | 'streamable_http' | 'unknown'
+    url: string | null; bearerTokenEnvironmentVariable: string | null
+    enabledTools: string[] | null; disabledTools: string[]
+    defaultToolsApprovalMode: string | null; tools: JsonObject
   }
 }
-
 export interface CodexQualificationEvidence {
   providerVersion: string
   schemaManifestSha256: string
+  referenceSchemaManifestSha256: string
+  stableSchemaGitBlob: string
+  schemaVerification: 'upstream-stable-pin-and-generated-experimental-validation'
   authentication: 'chatgpt'
   productionSupported: false
   productionRestriction: string
 }
 
-function isObject(value: unknown): value is JsonObject {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function text(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined
-}
-
-function sameStrings(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
-  if (!left || !right) return left === right
-  return left.length === right.length && left.every((value, index) => value === right[index])
-}
-
-function assertObject(value: unknown, code: string): JsonObject {
-  if (!isObject(value)) throw new HarnessExecutionError(code, 'Codex app-server returned an invalid response.')
-  return value
-}
-
-function threadDiagnostics(response: JsonObject): JsonObject {
-  return {
-    model: response.model,
-    modelProvider: response.modelProvider,
-    serviceTier: response.serviceTier,
-    cwd: response.cwd,
-    runtimeWorkspaceRoots: response.runtimeWorkspaceRoots,
-    instructionSources: response.instructionSources,
-    approvalPolicy: response.approvalPolicy,
-    approvalsReviewer: response.approvalsReviewer,
-    sandbox: response.sandbox,
-    activePermissionProfile: response.activePermissionProfile,
-    reasoningEffort: response.reasoningEffort,
-  }
-}
-
-function safeEnvironment(input?: NativeSessionStart['environment'], scopedNames: readonly string[] = []): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
-  for (const key of Object.keys(environment)) {
-    if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_')
-      || key.startsWith('GRAPHQL_APP_') || scopedNames.includes(key)
-      || key === 'DATABASE_URL' || key === 'TEST_DATABASE_URL' || key === 'PGPASSWORD') {
-      delete environment[key]
-    }
-  }
-  if (input) Object.assign(environment, input.variables)
-  return environment
-}
-
-function configuration(input: NativeSessionStart): CodexHarnessConfiguration {
-  const value = input.kind === 'operator' ? input.configuration.harness : input.request.configuration.harness
-  if (value.harness !== 'codex') {
-    throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'Codex received a non-Codex configuration.')
-  }
-  return value
-}
-
-function developerInstructions(input: NativeSessionStart): string | null {
-  return input.kind === 'operator' ? null : input.request.configuration.prompt.system ?? null
-}
-
 function advanced(value: CodexHarnessConfiguration): CodexAdvancedConfiguration {
   return value.advanced ?? DEFAULT_CODEX_ADVANCED_CONFIGURATION
 }
-
-function appServerConfig(configurationValue: CodexHarnessConfiguration): JsonObject {
-  const value = advanced(configurationValue)
-  const config: JsonObject = { model_reasoning_effort: configurationValue.reasoningEffort }
-  if (configurationValue.serviceTier === 'priority') config.service_tier = 'fast'
-  if (value.workspaceWrite) {
-    config.sandbox_workspace_write = {
-      writable_roots: value.additionalWritableDirectories ?? [],
-      network_access: value.workspaceWrite.networkAccess ?? false,
-      exclude_tmpdir_env_var: value.workspaceWrite.excludeTmpdirEnvVar ?? false,
-      exclude_slash_tmp: value.workspaceWrite.excludeSlashTmp ?? false,
-    }
-  }
-  if (value.shellEnvironment) {
-    config.shell_environment_policy = {
-      inherit: value.shellEnvironment.inherit ?? 'all',
-      ignore_default_excludes: value.shellEnvironment.ignoreDefaultExcludes ?? false,
-      filters: value.shellEnvironment.filters ?? {},
-      set: value.shellEnvironment.set ?? {},
-    }
-  }
-  if (value.webSearch) config.web_search = value.webSearch
-  return config
+function accepted(input: NativeSessionStart) {
+  return input.kind === 'operator' ? input.configuration : input.request.configuration
 }
-
-function validateConfiguration(configurationValue: CodexHarnessConfiguration): void {
-  const value = advanced(configurationValue)
-  if ((value.additionalWritableDirectories.length || value.workspaceWrite) && configurationValue.sandbox !== 'workspace-write') {
-    throw new HarnessExecutionError('CODEX_SETTING_UNSUPPORTED', 'Workspace-write controls require the workspace-write sandbox.')
+function ownerId(input: NativeSessionStart): string {
+  return input.kind === 'operator' ? input.configuration.operatorId : input.request.configuration.agentId
+}
+function binding(input: NativeSessionStart): string {
+  return input.kind === 'operator'
+    ? canonical({ kind: 'operator', ownerId: ownerId(input), cwd: input.workingDirectory })
+    : canonical({ kind: 'workflow', ownerId: ownerId(input), workspaceId: input.request.workspaceId,
+      runId: input.request.runId, workflowNodeId: input.request.workflowNodeId, cwd: input.request.workingDirectory })
+}
+function instructions(input: NativeSessionStart): string | null {
+  return input.kind === 'operator' ? null : input.request.configuration.prompt.system ?? null
+}
+function credentialIdentity(input: NativeSessionStart): string {
+  return canonical(input.environment ?? null)
+}
+function safeEnvironment(input?: NativeSessionStart['environment'], scopedNames: readonly string[] = []): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
+  for (const key of Object.keys(environment)) {
+    if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_') || key.startsWith('GRAPHQL_APP_')
+      || scopedNames.includes(key) || ['DATABASE_URL', 'TEST_DATABASE_URL', 'PGPASSWORD'].includes(key)) delete environment[key]
   }
-  for (const directory of value.additionalWritableDirectories) {
-    if (!directory.startsWith('/')) {
-      throw new HarnessExecutionError('CODEX_SETTING_INVALID', 'Additional writable directories must be absolute paths.')
+  if (input) {
+    for (const [key, value] of Object.entries(input.variables)) {
+      if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_') || ['DATABASE_URL', 'TEST_DATABASE_URL', 'PGPASSWORD'].includes(key)) {
+        throw new HarnessExecutionError('CODEX_ENVIRONMENT_INVALID', 'An Agent environment cannot contain application-global secrets.')
+      }
+      environment[key] = value
     }
   }
+  return environment
 }
-
 function validateEnvironmentOwner(input: NativeSessionStart, requiredVariable?: string): void {
-  const expectedOwner = input.kind === 'operator' ? input.configuration.operatorId : input.request.configuration.agentId
-  if (input.environment && input.environment.agentId !== expectedOwner) {
+  if (input.environment && input.environment.agentId !== ownerId(input)) {
     throw new HarnessExecutionError('CODEX_SESSION_OWNER_MISMATCH', 'The scoped process environment belongs to another Agent.')
   }
-  if (requiredVariable && (!input.environment || typeof input.environment.variables[requiredVariable] !== 'string')) {
-    throw new HarnessExecutionError(
-      'CODEX_SCOPED_ENVIRONMENT_REQUIRED',
-      `The enabled App MCP server requires a scoped '${requiredVariable}' process credential.`,
-    )
+  if (input.kind !== 'operator' && input.request.workspaceId !== input.request.configuration.workspaceId) {
+    throw new HarnessExecutionError('CODEX_SESSION_OWNER_MISMATCH', 'The accepted configuration belongs to another workspace.')
+  }
+  if (requiredVariable && !input.environment?.variables[requiredVariable]) {
+    throw new HarnessExecutionError('CODEX_SCOPED_ENVIRONMENT_REQUIRED', `The enabled App MCP server requires scoped '${requiredVariable}' credentials.`)
   }
 }
-
-class CodexStdioTransport {
-  private child?: ChildProcessWithoutNullStreams
-  private readonly pending = new Map<RequestId, {
-    resolve(value: unknown): void
-    reject(error: Error): void
-    timer: NodeJS.Timeout
-    wrote: boolean
-  }>()
-  private nextId = 1
-  private stderr = ''
-  private stopped = false
-
-  constructor(
-    private readonly binary: string,
-    private readonly cwd: string,
-    private readonly environment: NodeJS.ProcessEnv,
-    private readonly onRequest: (request: RpcRequest) => Promise<void>,
-    private readonly onNotification: (method: string, params: JsonObject) => Promise<void>,
-    private readonly onDisconnect: (error: Error) => void,
-  ) {}
-
-  async start(signal?: AbortSignal): Promise<void> {
-    signal?.throwIfAborted()
-    const child = spawn(this.binary, ['app-server', '--stdio'], {
-      cwd: this.cwd,
-      env: this.environment,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    })
-    this.child = child
-    child.stderr.setEncoding('utf8')
-    child.stderr.on('data', (chunk: string | Buffer) => {
-      this.stderr = (this.stderr + String(chunk)).slice(-MAX_STDERR_LENGTH)
-    })
-    const lines = createInterface({ input: child.stdout, crlfDelay: Infinity })
-    lines.on('line', (line) => { void this.receive(line) })
-    child.once('error', (error) => this.disconnect(error))
-    child.once('close', (code, exitSignal) => {
-      if (!this.stopped) {
-        this.disconnect(new HarnessExecutionError(
-          'CODEX_APP_SERVER_DISCONNECTED',
-          `Codex app-server disconnected (${String(code ?? exitSignal ?? 'unknown')}).`,
-        ))
-      }
-    })
-    const abort = () => { void this.close() }
-    signal?.addEventListener('abort', abort, { once: true })
-    try {
-      await this.request('initialize', {
-        clientInfo: { name: 'graphql', title: 'GraphQL', version: '0.1.0' },
-        capabilities: { experimentalApi: true, requestAttestation: false },
-      }, signal)
-      this.notify('initialized')
-    } catch (error) {
-      await this.close()
-      throw error
-    } finally {
+function configuration(input: NativeSessionStart): CodexHarnessConfiguration {
+  const value = accepted(input).harness
+  if (value.harness !== 'codex') throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'Codex received a non-Codex configuration.')
+  const parsed = CodexHarnessConfigurationSchema.safeParse(value)
+  if (!parsed.success) throw new HarnessExecutionError('CODEX_SETTING_INVALID', 'The accepted Codex configuration is invalid.')
+  return parsed.data
+}
+function configOverrides(value: CodexHarnessConfiguration): JsonObject {
+  const draft = advanced(value)
+  const config: JsonObject = {
+    model_reasoning_effort: value.reasoningEffort,
+    web_search: draft.webSearch,
+    shell_environment_policy: {
+      inherit: draft.shellEnvironment.inherit,
+      ignore_default_excludes: draft.shellEnvironment.ignoreDefaultExcludes,
+      filters: draft.shellEnvironment.filters, set: draft.shellEnvironment.set,
+    },
+  }
+  if (value.sandbox === 'workspace-write') config.sandbox_workspace_write = {
+    writable_roots: draft.additionalWritableDirectories,
+    network_access: draft.workspaceWrite?.networkAccess ?? false,
+    exclude_tmpdir_env_var: draft.workspaceWrite?.excludeTmpdirEnvVar ?? false,
+    exclude_slash_tmp: draft.workspaceWrite?.excludeSlashTmp ?? false,
+  }
+  return config
+}
+function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'workingDirectory' | 'input'>): JsonObject {
+  const value = prepared.harnessConfiguration
+  const draft = advanced(value)
+  return {
+    model: value.model,
+    // Explicit default, rather than null/inherit, clears a prior native Fast tier.
+    serviceTier: value.serviceTier === 'priority' ? 'fast' : 'default',
+    cwd: prepared.workingDirectory,
+    runtimeWorkspaceRoots: [prepared.workingDirectory, ...draft.additionalWritableDirectories],
+    approvalPolicy: draft.approvalPolicy, approvalsReviewer: draft.approvalsReviewer,
+    sandbox: value.sandbox, config: configOverrides(value), developerInstructions: instructions(prepared.input),
+  }
+}
+function sameSet(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
+  if (!left || !right) return left === right
+  return canonical([...new Set(left)].sort()) === canonical([...new Set(right)].sort())
+}
+function stringArray(value: unknown): string[] | undefined {
+  if (value == null) return undefined
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === 'string')) throw new Error('Invalid native string list.')
+  return value as string[]
+}
+function requestKey(generation: number, id: RequestId): string { return `${generation}:${typeof id}:${String(id)}` }
+function snapshot(runtime: Runtime): TurnSnapshot {
+  return {
+    activeTurnId: runtime.activeTurnId, activeCorrelationId: runtime.activeCorrelationId,
+    terminalResult: runtime.terminalResult, finalAnswer: runtime.finalAnswer, lastAgentMessage: runtime.lastAgentMessage,
+  }
+}
+function isUncertain(error: unknown): boolean { return error instanceof CodexRpcError && error.uncertain }
+function deadline<T>(promise: Promise<T>, signal?: AbortSignal, milliseconds = RESPONSE_DEADLINE_MS): Promise<T> {
+  signal?.throwIfAborted()
+  return new Promise<T>((resolve, reject) => {
+    let settled = false
+    const finish = (error: unknown, value?: T) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
       signal?.removeEventListener('abort', abort)
+      if (error !== undefined) reject(error)
+      else resolve(value as T)
     }
-  }
-
-  async request(method: string, params?: JsonObject, signal?: AbortSignal): Promise<unknown> {
-    signal?.throwIfAborted()
-    const child = this.child
-    if (!child || this.stopped || child.stdin.destroyed) {
-      throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Codex app-server is not connected.')
-    }
-    const id = this.nextId++
-    return new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id)
-        reject(new HarnessExecutionError('CODEX_APP_SERVER_TIMEOUT', `Codex app-server did not answer ${method}.`))
-      }, REQUEST_TIMEOUT_MS)
-      const operation = { resolve, reject, timer, wrote: false }
-      this.pending.set(id, operation)
-      const abort = () => {
-        if (!this.pending.delete(id)) return
-        clearTimeout(timer)
-        reject(signal?.reason instanceof Error ? signal.reason : new Error('Aborted'))
-      }
-      signal?.addEventListener('abort', abort, { once: true })
-      const payload = JSON.stringify({ method, id, params }) + '\n'
-      child.stdin.write(payload, (error) => {
-        operation.wrote = !error
-        if (error && this.pending.delete(id)) {
-          clearTimeout(timer)
-          reject(error)
-        }
-      })
-    })
-  }
-
-  notify(method: string, params?: JsonObject): void {
-    if (!this.child || this.stopped || this.child.stdin.destroyed) return
-    this.child.stdin.write(JSON.stringify({ method, ...(params ? { params } : {}) }) + '\n')
-  }
-
-  async respond(id: RequestId, result: JsonObject): Promise<void> {
-    const child = this.child
-    if (!child || this.stopped || child.stdin.destroyed) {
-      throw new HarnessExecutionError('NATIVE_RESPONSE_DELIVERY_FAILED', 'The native request is no longer connected.')
-    }
-    await new Promise<void>((resolve, reject) => {
-      child.stdin.write(JSON.stringify({ id, result }) + '\n', (error) => error ? reject(error) : resolve())
-    }).catch(() => {
-      throw new HarnessExecutionError(
-        'NATIVE_RESPONSE_DELIVERY_UNCERTAIN',
-        'The native response may have been written before the transport disconnected; reconcile before retrying.',
-      )
-    })
-  }
-
-  async reject(id: RequestId, code: number, message: string): Promise<void> {
-    const child = this.child
-    if (!child || this.stopped || child.stdin.destroyed) return
-    await new Promise<void>((resolve) => {
-      child.stdin.write(JSON.stringify({ id, error: { code, message } }) + '\n', () => resolve())
-    })
-  }
-
-  async close(): Promise<void> {
-    if (this.stopped) return
-    this.stopped = true
-    const child = this.child
-    if (!child) return
-    child.stdin.end()
-    if (child.exitCode === null) child.kill('SIGTERM')
-    await new Promise<void>((resolve) => {
-      if (child.exitCode !== null) resolve()
-      else child.once('close', () => resolve())
-    })
-  }
-
-  private async receive(line: string): Promise<void> {
-    let message: unknown
-    try { message = JSON.parse(line) } catch {
-      await this.onNotification('protocol/malformed', { redacted: true })
-      return
-    }
-    if (!isObject(message)) {
-      await this.onNotification('protocol/malformed', { redacted: true })
-      return
-    }
-    const id = typeof message.id === 'string' || typeof message.id === 'number' ? message.id : undefined
-    const method = text(message.method)
-    if (id !== undefined && method) {
-      await this.onRequest({ id, method, ...(isObject(message.params) ? { params: message.params } : {}) })
-      return
-    }
-    if (id !== undefined) {
-      const operation = this.pending.get(id)
-      if (!operation) return
-      this.pending.delete(id)
-      clearTimeout(operation.timer)
-      if (isObject(message.error)) {
-        operation.reject(new HarnessExecutionError(
-          'CODEX_APP_SERVER_REQUEST_FAILED',
-          text(message.error.message) ?? 'Codex app-server rejected a request.',
-        ))
-      } else operation.resolve(message.result)
-      return
-    }
-    if (method) await this.onNotification(method, isObject(message.params) ? message.params : {})
-    else await this.onNotification('protocol/unknown', { redacted: true })
-  }
-
-  private disconnect(error: Error): void {
-    if (this.stopped) return
-    this.stopped = true
-    for (const operation of this.pending.values()) {
-      clearTimeout(operation.timer)
-      operation.reject(new HarnessExecutionError(
-        operation.wrote ? 'CODEX_APP_SERVER_REQUEST_UNCERTAIN' : 'CODEX_APP_SERVER_DISCONNECTED',
-        operation.wrote
-          ? 'Codex app-server disconnected after request delivery; reconcile before retrying.'
-          : 'Codex app-server disconnected before request delivery.',
-      ))
-    }
-    this.pending.clear()
-    this.onDisconnect(error)
-  }
+    const abort = () => finish(signal?.reason ?? new Error('Aborted'))
+    const timer = setTimeout(() => finish(new HarnessExecutionError('NATIVE_RECONCILIATION_REQUIRED', 'Native confirmation has not arrived; reconcile before retrying.')), milliseconds)
+    signal?.addEventListener('abort', abort, { once: true })
+    void promise.then((value) => finish(undefined, value), (error: unknown) => finish(error))
+  })
 }
 
 export class CodexAppServerSessionManager implements NativeHarnessSessionManager {
   readonly harness = 'codex' as const
   private readonly runtimes = new Map<string, Runtime>()
-  private qualified?: NativeHarnessCapabilities
+  private readonly locks = new Set<string>()
+  private readonly creations = new Map<string, Creation>()
+  private loginControl: { transport: CodexStdioTransport; loginId?: string; timer?: NodeJS.Timeout } | undefined
+  private loginStarting = false
+  private readonly shutdownController = new AbortController()
 
   constructor(
     private readonly binary: string,
@@ -404,357 +263,366 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   ) {}
 
   async capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities> {
-    if (this.qualified) return this.qualified
-    const version = await runCommand(this.binary, ['--version'], process.cwd(), signal)
-    const actual = (version.stdout || version.stderr).trim()
-    if (version.exitCode !== 0 || actual !== this.expectedVersion) {
-      throw new HarnessExecutionError(
-        'CODEX_APP_SERVER_VERSION_UNQUALIFIED',
-        `Codex app-server requires exact version '${this.expectedVersion}' (found '${actual || 'unavailable'}').`,
-      )
-    }
-    const auth = await runCommand(this.binary, ['login', 'status'], process.cwd(), signal)
-    if (auth.exitCode !== 0 || !`${auth.stdout}\n${auth.stderr}`.includes('Logged in using ChatGPT')) {
-      throw new HarnessExecutionError('CODEX_APP_SERVER_AUTH_UNQUALIFIED', 'Managed ChatGPT authentication is required.')
-    }
-    this.qualified = NativeHarnessCapabilitiesSchema.parse({
-      provider: 'codex', providerVersion: actual, persistentSessions: true, reconnect: true,
+    const result = await qualifyCodex(this.binary, this.expectedVersion, process.cwd(), safeEnvironment(), true, signal)
+    return NativeHarnessCapabilitiesSchema.parse({
+      provider: 'codex', providerVersion: result.providerVersion, persistentSessions: true, reconnect: true,
       sameRequestResponses: true, cancellation: true, history: true, configurationInspection: true,
-      mcpDetection: true, supportedInteractionKinds: [
-        'command_approval', 'file_approval', 'permission_profile', 'tool_user_input', 'mcp_elicitation',
-      ],
+      mcpDetection: true,
+      // Generic question choices have no approval semantics in the shared contract.
+      supportedInteractionKinds: ['command_approval', 'file_approval', 'permission_profile', 'tool_user_input', 'mcp_elicitation'],
     })
-    return this.qualified
-  }
-
-  async inspectMcp(signal?: AbortSignal): Promise<McpDetection> {
-    await this.capabilities(signal)
-    const result = await runCommand(this.binary, ['mcp', 'get', this.appMcpServerName, '--json'], process.cwd(), signal)
-    const now = new Date().toISOString()
-    if (result.exitCode !== 0) {
-      return McpDetectionSchema.parse({
-        harness: 'codex', serverName: this.appMcpServerName, state: 'not_detected', endpointMatches: null,
-        credentialEnvironmentVariable: null, checkedAt: now,
-      })
-    }
-    try {
-      const config = assertObject(JSON.parse(result.stdout), 'CODEX_MCP_CONFIG_INVALID')
-      const transport = isObject(config.transport) ? config.transport : {}
-      const enabled = config.enabled !== false
-      const credentialEnvironmentVariable = text(transport.bearer_token_env_var) ?? null
-      return McpDetectionSchema.parse({
-        harness: 'codex', serverName: this.appMcpServerName,
-        state: enabled ? 'status_unavailable' : 'disabled', endpointMatches: null,
-        credentialEnvironmentVariable, checkedAt: now,
-        detail: 'CLI inspection proves configuration only; call inspectNativeMcp for runtime status.',
-      })
-    } catch {
-      return McpDetectionSchema.parse({
-        harness: 'codex', serverName: this.appMcpServerName, state: 'check_failed', endpointMatches: null,
-        credentialEnvironmentVariable: null, checkedAt: now, detail: 'Codex returned invalid structured MCP configuration.',
-      })
-    }
   }
 
   async qualificationEvidence(signal?: AbortSignal): Promise<CodexQualificationEvidence> {
-    const capability = await this.capabilities(signal)
+    const result = await qualifyCodex(this.binary, this.expectedVersion, process.cwd(), safeEnvironment(), true, signal)
     return {
-      providerVersion: capability.providerVersion,
-      schemaManifestSha256: QUALIFIED_CODEX_SCHEMA_SHA256,
-      authentication: 'chatgpt',
-      productionSupported: false,
-      productionRestriction: 'Codex app-server remains experimental and unsupported for production workloads; codex exec stays enabled.',
+      providerVersion: result.providerVersion, schemaManifestSha256: result.schemaManifestSha256,
+      referenceSchemaManifestSha256: result.referenceSchemaManifestSha256, stableSchemaGitBlob: result.stableSchemaGitBlob,
+      schemaVerification: 'upstream-stable-pin-and-generated-experimental-validation',
+      authentication: 'chatgpt', productionSupported: false,
+      productionRestriction: 'Codex app-server remains experimental; the existing codex exec production adapter stays enabled.',
     }
   }
 
-  async inspectMcpConfiguration(cwd: string, signal?: AbortSignal): Promise<CodexMcpConfigurationInspection> {
-    const capability = await this.capabilities(signal)
-    const result = await runCommand(this.binary, ['mcp', 'get', this.appMcpServerName, '--json'], cwd, signal)
-    if (result.exitCode !== 0) {
-      throw new HarnessExecutionError('CODEX_MCP_NOT_CONFIGURED', `Codex MCP server '${this.appMcpServerName}' is not configured.`)
+  async createSession(source: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
+    this.shutdownController.signal.throwIfAborted()
+    const input = structuredClone(source)
+    const key = this.creationKey(input)
+    const identity = canonical({ binding: binding(input), configuration: accepted(input), environment: input.environment ?? null })
+    const existing = this.creations.get(key)
+    if (existing) {
+      if (existing.identity !== identity) throw new HarnessExecutionError('CODEX_SESSION_CONFIGURATION_MISMATCH', 'The creation correlation belongs to a different accepted session.')
+      if (existing.session) return structuredClone(existing.session)
+      if (existing.status === 'uncertain') throw new HarnessExecutionError('CODEX_SESSION_CREATION_UNCERTAIN', 'A native thread may already exist for this creation correlation; do not create another one.')
+      return structuredClone(await existing.promise!)
     }
-    let parsed: JsonObject
-    try { parsed = assertObject(JSON.parse(result.stdout), 'CODEX_MCP_CONFIG_INVALID') } catch {
-      throw new HarnessExecutionError('CODEX_MCP_CONFIG_INVALID', 'Codex returned invalid structured MCP configuration.')
-    }
-    const enabledTools = Array.isArray(parsed.enabled_tools) ? parsed.enabled_tools.filter((value): value is string => typeof value === 'string') : null
-    const disabledTools = Array.isArray(parsed.disabled_tools) ? parsed.disabled_tools.filter((value): value is string => typeof value === 'string') : []
-    const transport = isObject(parsed.transport) ? parsed.transport : {}
-    const url = text(transport.url) ?? null
-    return {
-      providerVersion: capability.providerVersion,
-      binary: this.binary,
-      cwd,
-      serverName: this.appMcpServerName,
-      inspectionScope: 'effective_config',
-      configured: {
-        enabled: parsed.enabled !== false,
-        required: parsed.required === true,
-        transport: transport.type === 'streamable_http' || transport.type === 'stdio'
-          ? transport.type
-          : url ? 'streamable_http' : text(transport.command) ? 'stdio' : 'unknown',
-        url,
-        bearerTokenEnvironmentVariable: text(transport.bearer_token_env_var) ?? null,
-        enabledTools,
-        disabledTools,
-        defaultToolsApprovalMode: text(parsed.default_tools_approval_mode) ?? null,
-        tools: isObject(parsed.tools) ? parsed.tools : {},
-      },
-    }
+    if (this.creations.size >= 128) throw new HarnessExecutionError('CODEX_CREATION_LIMIT', 'Resolve or close existing sessions before creating more.')
+    const creation: Creation = { identity, status: 'creating' }
+    this.creations.set(key, creation)
+    creation.promise = this.create(input, creation, key, signal)
+    return structuredClone(await creation.promise)
   }
 
-  async createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
-    const { harnessConfiguration, workingDirectory, scopedCredentialVariable } = await this.prepareInput(input, signal)
-    const holder: { runtime?: Runtime } = {}
-    const transport = new CodexStdioTransport(
-      this.binary,
-      workingDirectory,
-      safeEnvironment(input.environment, scopedCredentialVariable ? [scopedCredentialVariable] : []),
-      async (request) => {
-        if (holder.runtime) await this.handleRequest(holder.runtime, request)
-        else await transport.reject(request.id, -32000, 'Native interaction arrived before session initialization completed.')
-      },
-      async (method, params) => { if (holder.runtime) this.handleNotification(holder.runtime, method, params) },
-      () => { if (holder.runtime) this.handleDisconnect(holder.runtime) },
-    )
-    await transport.start(signal)
-    let registeredSessionId: string | undefined
+  /** Retrieve an identity learned from a late thread/start response without replaying it. */
+  async reconcileSessionCreation(input: NativeSessionStart): Promise<NativeSessionReference> {
+    const creation = this.creations.get(this.creationKey(input))
+    const identity = canonical({ binding: binding(input), configuration: accepted(input), environment: input.environment ?? null })
+    if (!creation || creation.identity !== identity || !creation.session) {
+      throw new HarnessExecutionError('CODEX_SESSION_CREATION_UNCERTAIN', 'Native creation identity is not established; no replacement thread was created.')
+    }
+    return structuredClone(creation.session)
+  }
+
+  private creationKey(input: NativeSessionStart): string {
+    const correlation = input.correlationId ?? (input.kind === 'operator' ? undefined : input.request.executionId)
+    if (!correlation) throw new HarnessExecutionError('CODEX_CORRELATION_REQUIRED', 'Session creation requires a stable correlation ID.')
+    return canonical([binding(input), correlation])
+  }
+
+  private async create(input: NativeSessionStart, creation: Creation, key: string, signal?: AbortSignal): Promise<NativeSessionReference> {
+    let candidate: Awaited<ReturnType<CodexAppServerSessionManager['transport']>> | undefined
+    let expiration: NodeJS.Timeout | undefined
     try {
-      const draft = advanced(harnessConfiguration)
-      const response = assertObject(await transport.request('thread/start', {
-        model: harnessConfiguration.model,
-        serviceTier: harnessConfiguration.serviceTier === 'priority' ? 'fast' : null,
-        cwd: workingDirectory,
-        runtimeWorkspaceRoots: [workingDirectory, ...draft.additionalWritableDirectories],
-        approvalPolicy: draft.approvalPolicy,
-        approvalsReviewer: draft.approvalsReviewer,
-        sandbox: harnessConfiguration.sandbox,
-        config: appServerConfig(harnessConfiguration),
-        developerInstructions: developerInstructions(input),
-        ephemeral: draft.sessionPersistence === 'ephemeral',
-      }, signal), 'CODEX_THREAD_START_INVALID')
-      const thread = assertObject(response.thread, 'CODEX_THREAD_START_INVALID')
-      const nativeSessionId = text(thread.id)
-      if (!nativeSessionId) throw new HarnessExecutionError('CODEX_SESSION_ID_MISSING', 'Codex did not return a native thread ID.')
-      const session = NativeSessionReferenceSchema.parse({ harness: 'codex', providerVersion: this.expectedVersion, nativeSessionId })
-      const runtime: Runtime = {
-        input, workingDirectory, configuration: harnessConfiguration,
-        scopedCredentialVariable,
-        transport, session, events: [], waiting: undefined, activeTurnId: undefined,
-        terminalResult: undefined, finalAnswer: undefined, lastAgentMessage: undefined,
-        seenNotifications: new Set(), wake: new Set(), closed: false,
+      const prepared = await this.prepareInput(input, signal)
+      candidate = await this.transport(prepared, 0, signal)
+      creation.transport = candidate.transport
+      const publish = async (value: unknown): Promise<NativeSessionReference> => {
+        const response = object(value, 'CODEX_THREAD_START_INVALID')
+        const thread = this.validateThreadResponse(prepared, response)
+        const session = NativeSessionReferenceSchema.parse({ harness: 'codex', providerVersion: this.expectedVersion, nativeSessionId: thread.id })
+        if (this.runtimes.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_COLLISION', 'Codex returned an already-owned native session identity.')
+        const runtime = this.runtime(prepared, session, candidate!.transport)
+        this.runtimes.set(session.nativeSessionId, runtime)
+        try { await candidate!.activate(runtime) } catch (error) {
+          if (this.runtimes.get(session.nativeSessionId) === runtime) this.runtimes.delete(session.nativeSessionId)
+          throw error
+        }
+        creation.status = 'ready'
+        creation.session = session
+        clearTimeout(expiration)
+        this.record(runtime, 'thread.started', { threadId: session.nativeSessionId })
+        return session
       }
-      holder.runtime = runtime
-      this.runtimes.set(nativeSessionId, runtime)
-      registeredSessionId = nativeSessionId
-      this.record(runtime, 'thread.started', { threadId: nativeSessionId, thread, diagnostics: threadDiagnostics(response) })
-      return session
-    } catch (error) {
-      if (registeredSessionId) this.runtimes.delete(registeredSessionId)
-      await transport.close()
-      throw error
-    }
-  }
-
-  async attachSession(
-    session: NativeSessionReference,
-    input: NativeSessionStart,
-    signal?: AbortSignal,
-  ): Promise<NativeSessionReference> {
-    if (session.harness !== 'codex' || session.providerVersion !== this.expectedVersion) {
-      throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The persisted session does not match the qualified Codex version.')
-    }
-    const prepared = await this.prepareInput(input, signal)
-    const loaded = this.runtimes.get(session.nativeSessionId)
-    if (loaded) {
-      if (loaded.workingDirectory !== prepared.workingDirectory
-        || loaded.configuration.model !== prepared.harnessConfiguration.model
-        || loaded.configuration.reasoningEffort !== prepared.harnessConfiguration.reasoningEffort) {
-        throw new HarnessExecutionError('CODEX_SESSION_CONFIGURATION_MISMATCH', 'The loaded Codex session has a different accepted configuration.')
-      }
-      await loaded.transport.request('thread/read', { threadId: session.nativeSessionId, includeTurns: false }, signal)
-      return loaded.session
-    }
-    const holder: { runtime?: Runtime } = {}
-    const transport = new CodexStdioTransport(
-      this.binary,
-      prepared.workingDirectory,
-      safeEnvironment(input.environment, prepared.scopedCredentialVariable ? [prepared.scopedCredentialVariable] : []),
-      async (request) => { if (holder.runtime) await this.handleRequest(holder.runtime, request) },
-      async (method, params) => { if (holder.runtime) this.handleNotification(holder.runtime, method, params) },
-      () => { if (holder.runtime) this.handleDisconnect(holder.runtime) },
-    )
-    await transport.start(signal)
-    const runtime: Runtime = {
-      input,
-      workingDirectory: prepared.workingDirectory,
-      configuration: prepared.harnessConfiguration,
-      scopedCredentialVariable: prepared.scopedCredentialVariable,
-      transport,
-      session,
-      events: [],
-      waiting: undefined,
-      activeTurnId: undefined,
-      terminalResult: undefined,
-      finalAnswer: undefined,
-      lastAgentMessage: undefined,
-      seenNotifications: new Set(),
-      wake: new Set(),
-      closed: false,
-    }
-    holder.runtime = runtime
-    try {
-      const draft = advanced(prepared.harnessConfiguration)
-      const response = assertObject(await transport.request('thread/resume', {
-        threadId: session.nativeSessionId,
-        model: prepared.harnessConfiguration.model,
-        serviceTier: prepared.harnessConfiguration.serviceTier === 'priority' ? 'fast' : null,
-        cwd: prepared.workingDirectory,
-        runtimeWorkspaceRoots: [prepared.workingDirectory, ...draft.additionalWritableDirectories],
-        approvalPolicy: draft.approvalPolicy,
-        approvalsReviewer: draft.approvalsReviewer,
-        sandbox: prepared.harnessConfiguration.sandbox,
-        config: appServerConfig(prepared.harnessConfiguration),
-        developerInstructions: developerInstructions(input),
-        excludeTurns: false,
-      }, signal), 'CODEX_THREAD_RESUME_INVALID')
-      const thread = assertObject(response.thread, 'CODEX_THREAD_RESUME_INVALID')
-      if (text(thread.id) !== session.nativeSessionId) {
-        throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Codex resumed a different native thread identity.')
-      }
-      this.hydrateThread(runtime, thread)
-      this.runtimes.set(session.nativeSessionId, runtime)
-      this.record(runtime, 'thread.attached', {
-        threadId: session.nativeSessionId, thread, diagnostics: threadDiagnostics(response),
+      const result = await candidate.transport.request('thread/start', {
+        ...threadParameters(prepared), ephemeral: advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral',
+      }, signal, (value, error) => {
+        void (async () => {
+          if (error) {
+            clearTimeout(expiration)
+            this.creations.delete(key)
+            await candidate!.transport.close()
+          } else await publish(value)
+        })().catch(() => { void candidate!.transport.close().catch(() => undefined) })
       })
-      return session
+      return await publish(result)
     } catch (error) {
-      runtime.closed = true
-      this.runtimes.delete(session.nativeSessionId)
-      await transport.close()
+      if (isUncertain(error) && candidate && !this.shutdownController.signal.aborted) {
+        creation.status = 'uncertain'
+        // Keep a bounded late-response window. Expiry never authorizes a retry.
+        expiration = setTimeout(() => { void candidate!.transport.close().catch(() => undefined) }, 300_000)
+        creation.timer = expiration
+        expiration.unref()
+      } else {
+        this.creations.delete(key)
+        await candidate?.transport.close().catch(() => undefined)
+      }
       throw error
     }
+  }
+
+  async attachSession(session: NativeSessionReference, source: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
+    this.assertSessionVersion(session)
+    return this.exclusive(session.nativeSessionId, async () => {
+      const input = structuredClone(source)
+      const loaded = this.runtimes.get(session.nativeSessionId)
+      if (loaded) {
+        this.assertBinding(loaded, input)
+        if (credentialIdentity(loaded.input) !== credentialIdentity(input)) {
+          throw new HarnessExecutionError('CODEX_SESSION_ENVIRONMENT_REFRESH_REQUIRED', 'Use explicit idle-boundary credential refresh instead of attaching with a different environment.')
+        }
+        if (loaded.closed) await this.restart(loaded, signal)
+        const response = object(await loaded.transport.request('thread/read', { threadId: session.nativeSessionId, includeTurns: false }, signal))
+        if (object(response.thread).id !== session.nativeSessionId) throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Codex read a different native thread.')
+        return structuredClone(loaded.session)
+      }
+      const prepared = await this.prepareInput(input, signal)
+      if (advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral') {
+        throw new HarnessExecutionError('CODEX_SETTING_UNSUPPORTED', 'Ephemeral sessions cannot be resumed after their process exits.')
+      }
+      const candidate = await this.transport(prepared, 0, signal)
+      try {
+        const response = object(await candidate.transport.request('thread/resume', {
+          ...threadParameters(prepared), threadId: session.nativeSessionId, excludeTurns: true,
+        }, signal), 'CODEX_THREAD_RESUME_INVALID')
+        this.validateThreadResponse(prepared, response, session.nativeSessionId)
+        const runtime = this.runtime(prepared, structuredClone(session), candidate.transport)
+        await this.synchronize(runtime, undefined, signal)
+        await candidate.activate(runtime)
+        this.runtimes.set(session.nativeSessionId, runtime)
+        this.record(runtime, 'thread.attached', { threadId: session.nativeSessionId })
+        return structuredClone(session)
+      } catch (error) {
+        await candidate.transport.close().catch(() => undefined)
+        throw error
+      }
+    })
   }
 
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
     const runtime = this.requireRuntime(session)
-    if (runtime.activeTurnId && !runtime.terminalResult) {
-      throw new HarnessExecutionError('CODEX_TURN_ACTIVE', 'This Codex thread already has an active turn.')
+    signal?.throwIfAborted()
+    if (this.locks.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'A session lifecycle operation is in progress.')
+    if (runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Reconcile the disconnected session before starting another turn.')
+    if (runtime.phase !== 'idle' || runtime.streamActive || runtime.interactions.size > 0) {
+      throw new HarnessExecutionError('CODEX_TURN_ACTIVE', 'This session has an active or uncertain turn or interaction.')
     }
+    if (!input.clientCorrelationId.trim()) throw new HarnessExecutionError('CODEX_CORRELATION_REQUIRED', 'Turn startup requires a stable correlation ID.')
+    let resolveIdentity!: StartingTurn['resolveIdentity']
+    const nativeIdentity = new Promise<string | undefined>((resolve) => { resolveIdentity = resolve })
+    const starting: StartingTurn = {
+      correlationId: input.clientCorrelationId, previous: snapshot(runtime), cancelRequested: false,
+      nativeIdentity, resolveIdentity, staged: [], stagedBytes: 0,
+    }
+    runtime.streamActive = true
+    runtime.starting = starting
+    runtime.phase = 'starting'
+    runtime.activeTurnId = undefined
+    runtime.activeCorrelationId = input.clientCorrelationId
     runtime.terminalResult = undefined
     runtime.finalAnswer = undefined
     runtime.lastAgentMessage = undefined
-    const offset = runtime.events.length
-    const response = assertObject(await runtime.transport.request('turn/start', {
-      threadId: session.nativeSessionId,
-      clientUserMessageId: input.clientCorrelationId,
-      input: [{ type: 'text', text: input.prompt, text_elements: [] }],
-    }, signal), 'CODEX_TURN_START_INVALID')
-    const turn = assertObject(response.turn, 'CODEX_TURN_START_INVALID')
-    const turnId = text(turn.id)
-    if (!turnId) throw new HarnessExecutionError('CODEX_TURN_ID_MISSING', 'Codex did not return a native turn ID.')
-    runtime.activeTurnId = turnId
-    this.record(runtime, 'turn.started', { threadId: session.nativeSessionId, turnId, clientCorrelationId: input.clientCorrelationId })
-    let index = offset
-    while (!signal?.aborted) {
-      while (index < runtime.events.length) yield runtime.events[index++]!
-      if (runtime.terminalResult || runtime.closed) return
-      await this.wait(runtime, signal)
+    runtime.cancellation = undefined
+    runtime.seenNotifications.clear()
+    const abort = () => {
+      starting.cancelRequested = true
+      if (runtime.activeTurnId && !runtime.terminalResult) void this.interrupt(runtime).catch(() => undefined)
+    }
+    signal?.addEventListener('abort', abort, { once: true })
+    let cursor = runtime.sequence
+    try {
+      const result = await runtime.transport.request('turn/start', {
+        threadId: session.nativeSessionId, clientUserMessageId: input.clientCorrelationId,
+        input: [{ type: 'text', text: input.prompt, text_elements: [] }],
+        serviceTierForTurn: runtime.configuration.serviceTier === 'priority' ? 'fast' : 'default',
+      }, signal, (value, error) => {
+        if (runtime.starting !== starting || runtime.disposed) return
+        if (error) this.restoreRejectedStart(runtime, starting)
+        else void this.acceptStartedTurn(runtime, starting, value).catch(() => {
+          runtime.phase = 'uncertain'
+          this.record(runtime, 'turn.start_uncertain', { correlationId: starting.correlationId })
+        })
+      }).catch((error: unknown) => {
+        if (runtime.starting === starting) {
+          if (isUncertain(error)) {
+            runtime.phase = 'uncertain'
+            this.record(runtime, 'turn.start_uncertain', { correlationId: starting.correlationId })
+          } else this.restoreRejectedStart(runtime, starting)
+        }
+        throw error
+      })
+      await this.acceptStartedTurn(runtime, starting, result)
+      while (!signal?.aborted) {
+        const firstSequence = runtime.events[0]?.sequence ?? runtime.sequence
+        if (cursor < firstSequence) throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'The in-memory event window was exceeded; reload durable history.')
+        const available = runtime.events.filter((event) => event.sequence >= cursor)
+        for (const event of available) { cursor = event.sequence + 1; yield structuredClone(event) }
+        if (runtime.terminalResult || runtime.closed) return
+        await this.wait(runtime, signal)
+      }
+    } finally {
+      signal?.removeEventListener('abort', abort)
+      runtime.streamActive = false
     }
   }
 
   async pending(session: NativeSessionReference): Promise<PendingNativeInteraction | undefined> {
-    return this.requireRuntime(session).waiting?.pending
+    const first = this.requireRuntime(session).interactions.values().next().value as WaitingRequest | undefined
+    return first?.delivery === 'pending' ? structuredClone(first.pending) : undefined
   }
 
-  async respond(session: NativeSessionReference, nativeRequestId: string, option: ApprovalResponseOption): Promise<void> {
+  async respond(session: NativeSessionReference, nativeRequestId: string, option: ApprovalResponseOption, signal?: AbortSignal): Promise<void> {
     const runtime = this.requireRuntime(session)
-    const waiting = runtime.waiting
-    if (!waiting || waiting.pending.turn.nativeRequestId !== nativeRequestId) {
-      throw new HarnessExecutionError('NATIVE_RESPONSE_UNKNOWN_REQUEST', 'The addressed native request is not pending in this session.')
-    }
+    if (this.locks.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'A session lifecycle operation is in progress.')
+    const waiting = [...runtime.interactions.values()].find((entry) => entry.pending.turn.nativeRequestId === nativeRequestId)
+    if (!waiting) throw new HarnessExecutionError('NATIVE_RESPONSE_UNKNOWN_REQUEST', 'The addressed native request is not pending in this session.')
     const stored = waiting.responses.get(option.optionId)
     if (!stored) throw new HarnessExecutionError('NATIVE_RESPONSE_OPTION_INVALID', 'The selected response was not offered for this native request.')
+    if (waiting.delivery !== 'pending' || waiting.generation !== runtime.generation || runtime.closed) {
+      throw new HarnessExecutionError('NATIVE_RESPONSE_RECONCILIATION_REQUIRED', 'A submitted, disconnected, or uncertain native response cannot be retransmitted.')
+    }
+    signal?.throwIfAborted()
+    // Synchronous reservation prevents two competing responses from both writing.
+    waiting.delivery = 'submitting'
+    waiting.selectedOptionId = stored.option.optionId
     try {
-      await runtime.transport.respond(waiting.requestId, stored.nativeResponse)
-      runtime.waiting = undefined
-      this.record(runtime, 'interaction.responded', { nativeRequestId, optionId: option.optionId, semantic: stored.option.semantic })
+      await runtime.transport.respond(waiting.requestId, waiting.method, stored.nativeResponse)
+      if (runtime.interactions.get(requestKey(waiting.generation, waiting.requestId)) === waiting) {
+        waiting.delivery = 'submitted'
+        this.record(runtime, 'interaction.submitted', { nativeRequestId, optionId: stored.option.optionId, semantic: stored.option.semantic })
+      }
+      const resolved = await deadline(waiting.resolution, signal)
+      if (resolved === 'cleared') throw new HarnessExecutionError('NATIVE_RESPONSE_CLEARED', 'The native request was cleared; acceptance of the selected response was not confirmed.')
     } catch (error) {
-      waiting.delivery = error instanceof HarnessExecutionError && error.result.error?.code === 'NATIVE_RESPONSE_DELIVERY_UNCERTAIN'
-        ? 'uncertain' : waiting.delivery
+      if (runtime.interactions.get(requestKey(waiting.generation, waiting.requestId)) === waiting) {
+        const code = error instanceof HarnessExecutionError ? error.result.error?.code : undefined
+        waiting.delivery = ['NATIVE_RESPONSE_DELIVERY_FAILED', 'NATIVE_RESPONSE_INVALID'].includes(code ?? '') ? 'pending' : 'uncertain'
+        this.record(runtime, 'interaction.delivery_state', { nativeRequestId, delivery: waiting.delivery })
+      }
       throw error
     }
   }
 
   async cancel(session: NativeSessionReference, signal?: AbortSignal): Promise<boolean> {
     const runtime = this.requireRuntime(session)
+    if (runtime.starting) {
+      runtime.starting.cancelRequested = true
+      const id = await deadline(runtime.starting.nativeIdentity, signal)
+      if (!id) return false
+    }
     if (!runtime.activeTurnId || runtime.terminalResult) return false
-    await runtime.transport.request('turn/interrupt', {
-      threadId: session.nativeSessionId,
-      turnId: runtime.activeTurnId,
-    }, signal)
-    return true
+    return deadline(this.interrupt(runtime), signal)
   }
 
   async history(session: NativeSessionReference): Promise<NativeHistory> {
     const runtime = this.requireRuntime(session)
-    return {
-      events: [...runtime.events],
-      pendingInteractions: runtime.waiting ? [runtime.waiting.pending] : [],
-      ...(runtime.waiting ? { pendingInteraction: runtime.waiting.pending } : {}),
+    const all = [...runtime.interactions.values()]
+    const first = all[0]
+    return structuredClone({
+      events: runtime.events,
+      pendingInteractions: all.map((entry) => entry.pending),
+      ...(first?.delivery === 'pending' ? { pendingInteraction: first.pending } : {}),
       ...(runtime.terminalResult ? { terminalResult: runtime.terminalResult } : {}),
-    }
+      firstRetainedSequence: runtime.events[0]?.sequence ?? runtime.sequence,
+      nextSequence: runtime.sequence,
+      interactionDeliveries: all.map((entry) => ({
+        nativeRequestId: entry.pending.turn.nativeRequestId!, state: entry.delivery,
+        ...(entry.selectedOptionId ? { selectedOptionId: entry.selectedOptionId } : {}),
+      })),
+    })
   }
 
   async reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory> {
-    const runtime = this.requireRuntime(session)
-    try {
-      const response = assertObject(await runtime.transport.request('thread/read', {
-        threadId: session.nativeSessionId, includeTurns: true,
-      }, signal), 'CODEX_THREAD_READ_INVALID')
-      this.record(runtime, 'thread.reconciled', { correlationId, thread: response.thread })
-    } catch (error) {
-      if (!runtime.closed) throw error
-      await this.restart(runtime, signal)
-      const response = assertObject(await runtime.transport.request('thread/read', {
-        threadId: session.nativeSessionId, includeTurns: true,
-      }, signal), 'CODEX_THREAD_READ_INVALID')
-      this.record(runtime, 'thread.reconciled', { correlationId, restarted: true, thread: response.thread })
-    }
-    return this.history(session)
+    return this.exclusive(session.nativeSessionId, async () => {
+      const runtime = this.requireRuntime(session)
+      const restarted = runtime.closed
+      if (runtime.closed) await this.restart(runtime, signal)
+      await this.synchronize(runtime, correlationId, signal)
+      this.record(runtime, 'thread.reconciled', {
+        correlationId, restarted, threadId: session.nativeSessionId,
+        turnId: runtime.activeTurnId, terminal: runtime.terminalResult?.outcome ?? null,
+      })
+      return this.history(session)
+    })
   }
 
   async close(session: NativeSessionReference): Promise<void> {
-    const runtime = this.runtimes.get(session.nativeSessionId)
-    if (!runtime) return
-    runtime.closed = true
-    this.wake(runtime)
-    await runtime.transport.close()
-    this.runtimes.delete(session.nativeSessionId)
+    this.assertSessionVersion(session)
+    await this.exclusive(session.nativeSessionId, async () => {
+      const runtime = this.runtimes.get(session.nativeSessionId)
+      if (!runtime) return
+      runtime.closed = true
+      runtime.disposed = true
+      runtime.starting?.resolveIdentity(undefined)
+      for (const waiting of runtime.interactions.values()) waiting.resolve('cleared')
+      this.wake(runtime)
+      try { await runtime.transport.close() } finally {
+        if (this.runtimes.get(session.nativeSessionId) === runtime) this.runtimes.delete(session.nativeSessionId)
+        for (const [key, creation] of this.creations) if (creation.session?.nativeSessionId === session.nativeSessionId) this.creations.delete(key)
+      }
+    })
+  }
+
+  async inspectMcp(signal?: AbortSignal): Promise<McpDetection> {
+    const checkedAt = new Date().toISOString()
+    try {
+      const value = await this.inspectMcpConfiguration(process.cwd(), signal)
+      return McpDetectionSchema.parse({
+        harness: 'codex', serverName: this.appMcpServerName,
+        state: value.configured.enabled ? 'status_unavailable' : 'disabled', endpointMatches: null,
+        credentialEnvironmentVariable: value.configured.bearerTokenEnvironmentVariable, checkedAt,
+        detail: 'CLI inspection proves configuration only; inspectNativeMcp reports runtime status.',
+      })
+    } catch (error) {
+      if (signal?.aborted) throw error
+      const notConfigured = error instanceof HarnessExecutionError && error.result.error?.code === 'CODEX_MCP_NOT_CONFIGURED'
+      return McpDetectionSchema.parse({
+        harness: 'codex', serverName: this.appMcpServerName, state: notConfigured ? 'not_detected' : 'check_failed',
+        endpointMatches: null, credentialEnvironmentVariable: null, checkedAt,
+      })
+    }
+  }
+
+  async inspectMcpConfiguration(cwd: string, signal?: AbortSignal): Promise<CodexMcpConfigurationInspection> {
+    const environment = safeEnvironment()
+    const qualified = await qualifyCodex(this.binary, this.expectedVersion, cwd, environment, true, signal)
+    return this.mcpConfiguration(qualified.binary, cwd, environment, signal)
   }
 
   async inspectConfiguration(session: NativeSessionReference, includeLayers = true, signal?: AbortSignal): Promise<JsonObject> {
     const runtime = this.requireRuntime(session)
-    return assertObject(await runtime.transport.request('config/read', {
-      includeLayers, cwd: runtime.workingDirectory,
-    }, signal), 'CODEX_CONFIG_READ_INVALID')
+    return object(await runtime.transport.request('config/read', { includeLayers, cwd: runtime.workingDirectory }, signal), 'CODEX_CONFIG_READ_INVALID')
   }
 
   async inspectNativeMcp(session: NativeSessionReference, signal?: AbortSignal): Promise<JsonObject> {
     const runtime = this.requireRuntime(session)
-    return assertObject(await runtime.transport.request('mcpServerStatus/list', {
-      detail: 'toolsAndAuthOnly', threadId: session.nativeSessionId,
-    }, signal), 'CODEX_MCP_STATUS_INVALID')
+    return object(await runtime.transport.request('mcpServerStatus/list', { detail: 'toolsAndAuthOnly', threadId: session.nativeSessionId }, signal), 'CODEX_MCP_STATUS_INVALID')
   }
 
   async listNativeModels(session: NativeSessionReference, signal?: AbortSignal): Promise<JsonObject> {
-    const runtime = this.requireRuntime(session)
-    return assertObject(await runtime.transport.request('model/list', { includeHidden: false }, signal), 'CODEX_MODEL_CATALOG_INVALID')
+    return object(await this.requireRuntime(session).transport.request('model/list', { includeHidden: false }, signal), 'CODEX_MODEL_CATALOG_INVALID')
   }
 
   async reloadNativeMcp(session: NativeSessionReference, signal?: AbortSignal): Promise<void> {
-    const runtime = this.requireRuntime(session)
-    await runtime.transport.request('config/mcpServer/reload', undefined, signal)
+    await this.exclusive(session.nativeSessionId, async () => {
+      const runtime = this.requireRuntime(session)
+      this.assertIdle(runtime)
+      // Revalidate policy/credentials before allowing a newly enabled MCP entry.
+      const prepared = await this.prepareInput(runtime.input, signal)
+      if (prepared.scopedCredentialVariable !== runtime.scopedCredentialVariable) {
+        throw new HarnessExecutionError('CODEX_SESSION_ENVIRONMENT_REFRESH_REQUIRED', 'MCP credential requirements changed; refresh the process environment first.')
+      }
+      await runtime.transport.request('config/mcpServer/reload', undefined, signal)
+    })
   }
 
   async refreshProcessEnvironment(
@@ -762,348 +630,741 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     environment: NonNullable<NativeSessionStart['environment']>,
     signal?: AbortSignal,
   ): Promise<void> {
-    const runtime = this.requireRuntime(session)
-    const currentAgentId = runtime.input.environment?.agentId
-    if (!currentAgentId || currentAgentId !== environment.agentId) {
-      throw new HarnessExecutionError('CODEX_SESSION_OWNER_MISMATCH', 'A Codex session cannot inherit another Agent\'s environment.')
+    await this.exclusive(session.nativeSessionId, async () => {
+      const runtime = this.requireRuntime(session)
+      if (runtime.ownerId !== environment.agentId) throw new HarnessExecutionError('CODEX_SESSION_OWNER_MISMATCH', 'The replacement environment belongs to another Agent.')
+      this.assertIdle(runtime)
+      const nextInput = { ...structuredClone(runtime.input), environment: structuredClone(environment) }
+      // This also checks newly required MCP variables before stopping a usable process.
+      const prepared = await this.prepareInput(nextInput, signal)
+      if (advanced(runtime.configuration).sessionPersistence === 'ephemeral') {
+        throw new HarnessExecutionError('CODEX_SETTING_UNSUPPORTED', 'Refreshing an ephemeral process would discard its native session.')
+      }
+      runtime.closed = true
+      await runtime.transport.close()
+      await this.restart(runtime, signal, prepared)
+      this.record(runtime, 'transport.environment_refreshed', { agentId: runtime.ownerId })
+    })
+  }
+
+  /** A control-only transport makes fresh login possible without creating a thread. */
+  async startDeviceCodeLogin(session?: NativeSessionReference, signal?: AbortSignal): Promise<JsonObject> {
+    if (session) {
+      const runtime = this.requireRuntime(session)
+      this.assertIdle(runtime)
+      return object(await runtime.transport.request('account/login/start', { type: 'chatgptDeviceCode' }, signal), 'CODEX_LOGIN_START_INVALID')
     }
-    if (runtime.scopedCredentialVariable && typeof environment.variables[runtime.scopedCredentialVariable] !== 'string') {
-      throw new HarnessExecutionError(
-        'CODEX_SCOPED_ENVIRONMENT_REQUIRED',
-        `The replacement environment must include '${runtime.scopedCredentialVariable}'.`,
+    if (this.loginStarting || this.loginControl) throw new HarnessExecutionError('CODEX_LOGIN_ACTIVE', 'A device-code login is already in progress.')
+    this.shutdownController.signal.throwIfAborted()
+    signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
+    this.loginStarting = true
+    try {
+      const environment = safeEnvironment()
+      const qualified = await qualifyCodex(this.binary, this.expectedVersion, process.cwd(), environment, false, signal)
+      await assertCodexUnchanged(qualified)
+      const transport = new CodexStdioTransport(
+        qualified.binary, process.cwd(), environment, qualified.protocol,
+        async (request) => { await transport.reject(request.id, -32601, 'Execution requests are not supported by the login transport.') },
+        (method) => { if (method === 'account/login/completed') void this.closeLoginControl().catch(() => undefined) },
+        () => { void this.closeLoginControl().catch(() => undefined) },
       )
+      this.loginControl = { transport }
+      try {
+        await transport.start(signal)
+        const response = object(await transport.request('account/login/start', { type: 'chatgptDeviceCode' }, signal), 'CODEX_LOGIN_START_INVALID')
+        const loginId = text(response.loginId)
+        if (!loginId) throw new HarnessExecutionError('CODEX_LOGIN_START_INVALID', 'Codex did not return a login identity.')
+        if (!this.loginControl) throw new HarnessExecutionError('CODEX_LOGIN_DISCONNECTED', 'The login transport disconnected.')
+        this.loginControl.loginId = loginId
+        this.loginControl.timer = setTimeout(() => { void this.closeLoginControl().catch(() => undefined) }, 15 * 60_000)
+        this.loginControl.timer.unref()
+        return response
+      } catch (error) { await this.closeLoginControl().catch(() => undefined); throw error }
+    } finally { this.loginStarting = false }
+  }
+
+  async cancelLogin(session: NativeSessionReference | undefined, loginId: string, signal?: AbortSignal): Promise<void> {
+    if (session) { await this.requireRuntime(session).transport.request('account/login/cancel', { loginId }, signal); return }
+    const control = this.loginControl
+    if (!control || control.loginId !== loginId) throw new HarnessExecutionError('CODEX_LOGIN_UNKNOWN', 'This login identity is not active on the control transport.')
+    try { await control.transport.request('account/login/cancel', { loginId }, signal) } finally { await this.closeLoginControl() }
+  }
+
+  /** Application shutdown also owns control and uncertain-creation transports. */
+  async shutdown(): Promise<void> {
+    this.shutdownController.abort(new Error('Codex session manager is shutting down.'))
+    const cleanups: Promise<unknown>[] = []
+    for (const runtime of this.runtimes.values()) cleanups.push(this.close(runtime.session))
+    for (const creation of this.creations.values()) {
+      clearTimeout(creation.timer)
+      if (creation.transport) cleanups.push(creation.transport.close())
     }
-    if (runtime.waiting || (runtime.activeTurnId && !runtime.terminalResult)) {
-      throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'Refresh the Codex process environment only at an idle turn boundary.')
+    cleanups.push(this.closeLoginControl())
+    const results = await Promise.allSettled(cleanups)
+    const failed = results.find((result) => result.status === 'rejected')
+    if (failed?.status === 'rejected') throw failed.reason
+  }
+
+  async closeLoginControl(): Promise<void> {
+    const control = this.loginControl
+    if (!control) return
+    this.loginControl = undefined
+    clearTimeout(control.timer)
+    await control.transport.close()
+  }
+
+  private assertSessionVersion(session: NativeSessionReference): void {
+    if (session.harness !== 'codex' || session.providerVersion !== this.expectedVersion) {
+      throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The session does not match this qualified Codex provider.')
     }
-    await runtime.transport.close()
-    runtime.input = { ...runtime.input, environment }
-    runtime.closed = true
-    await this.restart(runtime, signal)
-    this.record(runtime, 'transport.environment_refreshed', { agentId: environment.agentId })
   }
-
-  async startDeviceCodeLogin(session: NativeSessionReference, signal?: AbortSignal): Promise<JsonObject> {
-    const runtime = this.requireRuntime(session)
-    return assertObject(await runtime.transport.request('account/login/start', { type: 'chatgptDeviceCode' }, signal), 'CODEX_LOGIN_START_INVALID')
-  }
-
-  async cancelLogin(session: NativeSessionReference, loginId: string, signal?: AbortSignal): Promise<void> {
-    const runtime = this.requireRuntime(session)
-    await runtime.transport.request('account/login/cancel', { loginId }, signal)
-  }
-
   private requireRuntime(session: NativeSessionReference): Runtime {
-    if (session.harness !== 'codex') throw new HarnessExecutionError('HARNESS_SESSION_MISMATCH', 'Codex requires a Codex session.')
+    this.assertSessionVersion(session)
     const runtime = this.runtimes.get(session.nativeSessionId)
-    if (!runtime) throw new HarnessExecutionError('CODEX_SESSION_UNAVAILABLE', 'The Codex native session is not loaded.')
+    if (!runtime || runtime.disposed) throw new HarnessExecutionError('CODEX_SESSION_UNAVAILABLE', 'The Codex native session is not loaded.')
     return runtime
   }
+  private assertBinding(runtime: Runtime, input: NativeSessionStart): void {
+    validateEnvironmentOwner(input)
+    if (runtime.binding !== binding(input) || runtime.ownerId !== ownerId(input)) {
+      throw new HarnessExecutionError('CODEX_SESSION_OWNER_MISMATCH', 'The loaded session belongs to a different owner or scope.')
+    }
+    if (runtime.configurationIdentity !== canonical(accepted(input))) {
+      throw new HarnessExecutionError('CODEX_SESSION_CONFIGURATION_MISMATCH', 'The loaded session has a different accepted configuration snapshot.')
+    }
+  }
+  private assertIdle(runtime: Runtime): void {
+    if (runtime.phase !== 'idle' || runtime.streamActive || runtime.interactions.size > 0) {
+      throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'This operation requires an idle, fully reconciled session.')
+    }
+  }
+  private async exclusive<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    if (this.locks.has(key)) throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'Another session lifecycle operation is in progress.')
+    this.locks.add(key)
+    try { return await operation() } finally { this.locks.delete(key) }
+  }
 
-  private async prepareInput(input: NativeSessionStart, signal?: AbortSignal): Promise<{
-    harnessConfiguration: CodexHarnessConfiguration
-    workingDirectory: string
-    scopedCredentialVariable: string | undefined
-  }> {
-    await this.capabilities(signal)
+  private async prepareInput(source: NativeSessionStart, signal?: AbortSignal): Promise<Prepared> {
+    signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
+    signal.throwIfAborted()
+    const input = structuredClone(source)
+    validateEnvironmentOwner(input)
     const harnessConfiguration = configuration(input)
-    validateConfiguration(harnessConfiguration)
     const workingDirectory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
-    await this.validateMcpPolicies(harnessConfiguration, workingDirectory, signal)
+    const environment = safeEnvironment(input.environment)
+    const qualified = await qualifyCodex(this.binary, this.expectedVersion, workingDirectory, environment, true, signal)
+    await this.validateMcpPolicies(harnessConfiguration, qualified.binary, workingDirectory, environment, signal)
     let scopedCredentialVariable: string | undefined
     try {
-      const mcp = await this.inspectMcpConfiguration(workingDirectory, signal)
-      scopedCredentialVariable = mcp.configured.enabled ? mcp.configured.bearerTokenEnvironmentVariable ?? undefined : undefined
+      const mcp = await this.mcpConfiguration(qualified.binary, workingDirectory, environment, signal)
+      if (mcp.configured.enabled) scopedCredentialVariable = mcp.configured.bearerTokenEnvironmentVariable ?? undefined
     } catch (error) {
       if (!(error instanceof HarnessExecutionError) || error.result.error?.code !== 'CODEX_MCP_NOT_CONFIGURED') throw error
     }
     validateEnvironmentOwner(input, scopedCredentialVariable)
-    return { harnessConfiguration, workingDirectory, scopedCredentialVariable }
+    const scopedEnvironment = safeEnvironment(input.environment, scopedCredentialVariable ? [scopedCredentialVariable] : [])
+    const result = await runCommand(qualified.binary, ['debug', 'models'], workingDirectory, signal, scopedEnvironment)
+    if (result.exitCode !== 0) throw new HarnessExecutionError('CODEX_MODEL_CATALOG_UNAVAILABLE', 'Codex model qualification failed.')
+    let catalog: JsonObject
+    try { catalog = object(JSON.parse(result.stdout)) } catch { throw new HarnessExecutionError('CODEX_MODEL_CATALOG_INVALID', 'Codex returned an invalid model catalog.') }
+    const models = Array.isArray(catalog.models) ? catalog.models.filter(isObject) : []
+    const model = models.find((entry) => entry.slug === harnessConfiguration.model)
+    if (!model) throw new HarnessExecutionError('CODEX_MODEL_UNAVAILABLE', 'The accepted Codex model is unavailable.')
+    const efforts = Array.isArray(model.supported_reasoning_levels) ? model.supported_reasoning_levels.filter(isObject) : []
+    if (!efforts.some((effort) => effort.effort === harnessConfiguration.reasoningEffort)
+      || (harnessConfiguration.serviceTier === 'priority' && !stringArray(model.additional_speed_tiers)?.includes('fast'))) {
+      throw new HarnessExecutionError('CODEX_SETTING_UNSUPPORTED', 'The selected model does not advertise the requested effort or service tier.')
+    }
+    return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, environment: scopedEnvironment, qualified }
+  }
+
+  private async mcpConfiguration(binary: string, cwd: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<CodexMcpConfigurationInspection> {
+    const result = await runCommand(binary, ['mcp', 'get', this.appMcpServerName, '--json'], cwd, signal, environment)
+    if (result.exitCode !== 0) throw new HarnessExecutionError('CODEX_MCP_NOT_CONFIGURED', 'The App MCP server is not configured on this runner.')
+    try {
+      const parsed = object(JSON.parse(result.stdout))
+      const transport = isObject(parsed.transport) ? parsed.transport : {}
+      const url = text(transport.url) ?? null
+      return {
+        providerVersion: this.expectedVersion, binary, cwd, serverName: this.appMcpServerName, inspectionScope: 'effective_config',
+        configured: {
+          enabled: parsed.enabled !== false, required: parsed.required === true,
+          transport: transport.type === 'streamable_http' || transport.type === 'stdio'
+            ? transport.type : url ? 'streamable_http' : text(transport.command) ? 'stdio' : 'unknown',
+          url, bearerTokenEnvironmentVariable: text(transport.bearer_token_env_var) ?? null,
+          enabledTools: stringArray(parsed.enabled_tools) ?? null, disabledTools: stringArray(parsed.disabled_tools) ?? [],
+          defaultToolsApprovalMode: text(parsed.default_tools_approval_mode) ?? null,
+          tools: isObject(parsed.tools) ? parsed.tools : {},
+        },
+      }
+    } catch { throw new HarnessExecutionError('CODEX_MCP_CONFIG_INVALID', 'Codex returned invalid structured MCP configuration.') }
   }
 
   private async validateMcpPolicies(
-    configurationValue: CodexHarnessConfiguration,
-    cwd: string,
-    signal?: AbortSignal,
+    value: CodexHarnessConfiguration, binary: string, cwd: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal,
   ): Promise<void> {
-    for (const [serverName, expected] of Object.entries(advanced(configurationValue).mcpServers)) {
-      const result = await runCommand(this.binary, ['mcp', 'get', serverName, '--json'], cwd, signal)
-      if (result.exitCode !== 0) {
-        throw new HarnessExecutionError(
-          expected.required ? 'CODEX_REQUIRED_MCP_UNAVAILABLE' : 'CODEX_MCP_POLICY_MISMATCH',
-          `Codex MCP server '${serverName}' is not configured on this runner.`,
-        )
-      }
+    for (const [serverName, expected] of Object.entries(advanced(value).mcpServers)) {
+      const result = await runCommand(binary, ['mcp', 'get', serverName, '--json'], cwd, signal, environment)
+      if (result.exitCode !== 0) throw new HarnessExecutionError(expected.required ? 'CODEX_REQUIRED_MCP_UNAVAILABLE' : 'CODEX_MCP_POLICY_MISMATCH', 'An accepted MCP server is not configured.')
       let actual: JsonObject
-      try { actual = assertObject(JSON.parse(result.stdout), 'CODEX_MCP_CONFIG_INVALID') } catch {
-        throw new HarnessExecutionError('CODEX_MCP_CONFIG_INVALID', `Codex returned invalid configuration for MCP server '${serverName}'.`)
+      try { actual = object(JSON.parse(result.stdout)) } catch { throw new HarnessExecutionError('CODEX_MCP_CONFIG_INVALID', 'Codex returned invalid MCP policy data.') }
+      const actualTools = isObject(actual.tools) ? actual.tools : {}
+      const normalizedTools: JsonObject = {}
+      for (const [name, policy] of Object.entries(actualTools)) {
+        if (!isObject(policy)) throw new HarnessExecutionError('CODEX_MCP_CONFIG_INVALID', 'Codex returned invalid MCP tool policy.')
+        const unknown = Object.keys(policy).filter((key) => !['enabled', 'approval_mode'].includes(key))
+        if (unknown.length > 0) throw new HarnessExecutionError('CODEX_MCP_POLICY_UNSUPPORTED', 'The installed MCP tool policy contains unqualified fields.')
+        normalizedTools[name] = {
+          enabled: policy.enabled ?? true,
+          ...(policy.approval_mode == null ? {} : { approvalMode: policy.approval_mode }),
+        }
       }
-      const actualEnabled = actual.enabled !== false
-      const actualRequired = actual.required === true
-      const actualEnabledTools = Array.isArray(actual.enabled_tools) ? actual.enabled_tools.filter((value): value is string => typeof value === 'string') : undefined
-      const actualDisabledTools = Array.isArray(actual.disabled_tools) ? actual.disabled_tools.filter((value): value is string => typeof value === 'string') : undefined
-      const actualTools = isObject(actual.tools) ? actual.tools : undefined
-      const mismatch = actualEnabled !== expected.enabled
-        || actualRequired !== expected.required
-        || !sameStrings(actualEnabledTools, expected.enabledTools)
-        || !sameStrings(actualDisabledTools, expected.disabledTools)
-        || text(actual.default_tools_approval_mode) !== expected.defaultToolsApprovalMode
-        || (expected.tools !== undefined && JSON.stringify(actualTools ?? {}) !== JSON.stringify(expected.tools))
-      if (mismatch) {
-        throw new HarnessExecutionError(
-          expected.required && (!actualEnabled || !actualRequired) ? 'CODEX_REQUIRED_MCP_UNAVAILABLE' : 'CODEX_MCP_POLICY_MISMATCH',
-          `Codex MCP server '${serverName}' does not match the accepted enabled/required/tool policy; no configuration was rewritten.`,
-        )
-      }
+      const expectedTools = Object.fromEntries(Object.entries(expected.tools ?? {}).map(([name, policy]) => [
+        name, { ...policy, enabled: policy.enabled ?? true },
+      ]))
+      const mismatch = (actual.enabled !== false) !== expected.enabled || (actual.required === true) !== expected.required
+        || !sameSet(stringArray(actual.enabled_tools), expected.enabledTools)
+        || !sameSet(stringArray(actual.disabled_tools) ?? [], expected.disabledTools ?? [])
+        || (text(actual.default_tools_approval_mode) !== expected.defaultToolsApprovalMode)
+        || canonical(normalizedTools) !== canonical(expectedTools)
+      if (mismatch) throw new HarnessExecutionError(
+        expected.required && (actual.enabled === false || actual.required !== true) ? 'CODEX_REQUIRED_MCP_UNAVAILABLE' : 'CODEX_MCP_POLICY_MISMATCH',
+        'Native MCP enabled/required/tool policies differ from the accepted configuration; no native configuration was rewritten.',
+      )
     }
   }
 
-  private hydrateThread(runtime: Runtime, thread: JsonObject): void {
-    if (!Array.isArray(thread.turns) || thread.turns.length === 0) return
-    const last = [...thread.turns].reverse().find(isObject)
-    if (!last) return
-    runtime.activeTurnId = text(last.id)
-    if (!Array.isArray(last.items)) return
-    for (const value of last.items) {
+  private validateThreadResponse(prepared: Pick<Prepared, 'harnessConfiguration' | 'workingDirectory'>, response: JsonObject, expectedId?: string): JsonObject {
+    const thread = object(response.thread, 'CODEX_THREAD_INVALID')
+    if (!text(thread.id) || String(thread.id).length > 1_024 || (expectedId !== undefined && thread.id !== expectedId)) {
+      throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Codex returned a different or missing thread identity.')
+    }
+    const value = prepared.harnessConfiguration
+    const draft = advanced(value)
+    const sandbox = object(response.sandbox, 'CODEX_EFFECTIVE_SETTINGS_MISMATCH')
+    const sandboxType = { 'read-only': 'readOnly', 'workspace-write': 'workspaceWrite', 'danger-full-access': 'dangerFullAccess' }[value.sandbox]
+    let mismatch = response.model !== value.model || response.reasoningEffort !== value.reasoningEffort
+      || normalize(String(response.cwd)) !== normalize(prepared.workingDirectory)
+      || canonical(response.approvalPolicy) !== canonical(draft.approvalPolicy)
+      || response.approvalsReviewer !== draft.approvalsReviewer || sandbox.type !== sandboxType
+      || (value.serviceTier === 'priority' ? response.serviceTier !== 'fast' : ![null, 'default'].includes(response.serviceTier as string | null))
+    if (value.sandbox === 'workspace-write') {
+      const roots = stringArray(sandbox.writableRoots) ?? []
+      const requested = draft.additionalWritableDirectories.map((path) => normalize(path))
+      const allowed = new Set([normalize(prepared.workingDirectory), ...requested])
+      mismatch ||= roots.some((path) => !allowed.has(normalize(path))) || requested.some((path) => !roots.some((root) => normalize(root) === path))
+        || sandbox.networkAccess !== (draft.workspaceWrite?.networkAccess ?? false)
+        || sandbox.excludeTmpdirEnvVar !== (draft.workspaceWrite?.excludeTmpdirEnvVar ?? false)
+        || sandbox.excludeSlashTmp !== (draft.workspaceWrite?.excludeSlashTmp ?? false)
+    }
+    if (thread.ephemeral !== undefined && thread.ephemeral !== (draft.sessionPersistence === 'ephemeral')) mismatch = true
+    if (mismatch) throw new HarnessExecutionError('CODEX_EFFECTIVE_SETTINGS_MISMATCH', 'Codex did not retain the accepted thread settings; execution is refused.')
+    return thread
+  }
+
+  private runtime(prepared: Prepared, session: NativeSessionReference, transport: CodexStdioTransport): Runtime {
+    return {
+      binding: binding(prepared.input), ownerId: ownerId(prepared.input), configurationIdentity: canonical(accepted(prepared.input)),
+      input: prepared.input, workingDirectory: prepared.workingDirectory, configuration: prepared.harnessConfiguration,
+      scopedCredentialVariable: prepared.scopedCredentialVariable, transport, session, generation: 0,
+      phase: 'idle', streamActive: false, starting: undefined, cancellation: undefined,
+      activeTurnId: undefined, activeCorrelationId: undefined, terminalResult: undefined, finalAnswer: undefined, lastAgentMessage: undefined,
+      interactions: new Map(), resolvedRequests: new Map(), events: [], eventSizes: [], eventBytes: 0, sequence: 0,
+      seenNotifications: new Set(), wake: new Set(), closed: false, disposed: false,
+    }
+  }
+
+  private async transport(prepared: Prepared, generation: number, signal?: AbortSignal): Promise<{
+    transport: CodexStdioTransport
+    activate(runtime: Runtime): Promise<void>
+  }> {
+    signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
+    signal.throwIfAborted()
+    let runtime: Runtime | undefined
+    let disconnected = false
+    let activating = false
+    let bufferedBytes = 0
+    const buffered: Array<{ request: RpcRequest } | { method: string; params: JsonObject }> = []
+    const enqueue = (event: typeof buffered[number]) => {
+      bufferedBytes += Buffer.byteLength(JSON.stringify(event))
+      if (buffered.length >= MAX_STAGED || bufferedBytes > MAX_EVENT_BYTES) throw new Error('Provider initialization buffer exceeded its limit.')
+      buffered.push(event)
+    }
+    await assertCodexUnchanged(prepared.qualified)
+    const transport = new CodexStdioTransport(
+      prepared.qualified.binary, prepared.workingDirectory, prepared.environment, prepared.qualified.protocol,
+      async (request) => {
+        if (!runtime || activating) { enqueue({ request }); return }
+        if (runtime.generation === generation && runtime.transport === transport && !runtime.disposed) await this.handleRequest(runtime, request)
+      },
+      (method, params) => {
+        if (!runtime || activating) { enqueue({ method, params }); return }
+        if (runtime.generation === generation && runtime.transport === transport && !runtime.disposed) this.handleNotification(runtime, method, params)
+      },
+      () => {
+        disconnected = true
+        if (runtime?.generation === generation && runtime.transport === transport && !runtime.disposed) this.handleDisconnect(runtime)
+      },
+    )
+    await transport.start(signal)
+    return {
+      transport,
+      activate: async (value) => {
+        if (disconnected) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'The candidate provider disconnected before attachment completed.')
+        runtime = value
+        activating = true
+        try {
+          while (buffered.length > 0) {
+            const event = buffered.shift()!
+            if ('request' in event) await this.handleRequest(runtime, event.request)
+            else this.handleNotification(runtime, event.method, event.params)
+          }
+        } finally { activating = false; bufferedBytes = 0 }
+      },
+    }
+  }
+
+  private async restart(runtime: Runtime, signal?: AbortSignal, supplied?: Prepared): Promise<void> {
+    if (advanced(runtime.configuration).sessionPersistence === 'ephemeral') {
+      throw new HarnessExecutionError('CODEX_SETTING_UNSUPPORTED', 'An ephemeral native session cannot survive a process restart.')
+    }
+    const prepared = supplied ?? await this.prepareInput(runtime.input, signal)
+    this.assertBinding(runtime, prepared.input)
+    const generation = runtime.generation + 1
+    // The old transport remains owned until its entire process tree is stopped.
+    await runtime.transport.close()
+    const candidate = await this.transport(prepared, generation, signal)
+    try {
+      const response = object(await candidate.transport.request('thread/resume', {
+        ...threadParameters(prepared), threadId: runtime.session.nativeSessionId, excludeTurns: true,
+      }, signal), 'CODEX_THREAD_RESUME_INVALID')
+      this.validateThreadResponse(prepared, response, runtime.session.nativeSessionId)
+      runtime.transport = candidate.transport
+      runtime.generation = generation
+      runtime.input = prepared.input
+      runtime.scopedCredentialVariable = prepared.scopedCredentialVariable
+      runtime.closed = false
+      for (const waiting of runtime.interactions.values()) waiting.delivery = 'uncertain'
+      await candidate.activate(runtime)
+    } catch (error) {
+      runtime.closed = true
+      await candidate.transport.close().catch(() => undefined)
+      throw error
+    }
+  }
+
+  private restoreRejectedStart(runtime: Runtime, starting: StartingTurn): void {
+    if (runtime.starting !== starting) return
+    Object.assign(runtime, starting.previous)
+    runtime.phase = 'idle'
+    runtime.starting = undefined
+    starting.resolveIdentity(undefined)
+    starting.staged.length = 0
+    this.record(runtime, 'turn.start_rejected', { correlationId: starting.correlationId })
+  }
+
+  private async acceptStartedTurn(runtime: Runtime, starting: StartingTurn, value: unknown): Promise<void> {
+    if (runtime.disposed || runtime.starting !== starting) return
+    const turn = object(object(value, 'CODEX_TURN_START_INVALID').turn, 'CODEX_TURN_START_INVALID')
+    const turnId = text(turn.id)
+    if (!turnId || turnId.length > 1_024 || turnId === starting.previous.activeTurnId) {
+      runtime.phase = 'uncertain'
+      throw new HarnessExecutionError('CODEX_TURN_START_INVALID', 'Codex did not establish a new turn identity.')
+    }
+    runtime.activeTurnId = turnId
+    runtime.activeCorrelationId = starting.correlationId
+    runtime.phase = 'active'
+    runtime.starting = undefined
+    starting.resolveIdentity(turnId)
+    this.record(runtime, 'turn.started', { threadId: runtime.session.nativeSessionId, turnId, clientCorrelationId: starting.correlationId })
+    this.applyTurn(runtime, turn)
+    for (const event of starting.staged) {
+      if ('request' in event) await this.handleRequest(runtime, event.request)
+      else this.handleNotification(runtime, event.method, event.params)
+    }
+    starting.staged.length = 0
+    if (starting.cancelRequested && !runtime.terminalResult) await this.interrupt(runtime)
+  }
+
+  private interrupt(runtime: Runtime): Promise<boolean> {
+    const turnId = runtime.activeTurnId
+    if (!turnId || runtime.terminalResult) return Promise.resolve(false)
+    if (runtime.cancellation?.turnId === turnId) return runtime.cancellation.promise
+    const promise = (async () => {
+      for (let attempt = 0; attempt <= INTERRUPT_STARTUP_RETRIES; attempt += 1) {
+        if (runtime.terminalResult) return false
+        try {
+          await runtime.transport.request('turn/interrupt', { threadId: runtime.session.nativeSessionId, turnId })
+          this.record(runtime, 'turn.cancel_submitted', { turnId })
+          return true
+        } catch (error) {
+          const startupRace = error instanceof CodexRpcError
+            && !error.uncertain
+            && error.nativeMessage?.startsWith('no active turn to interrupt')
+          if (!startupRace || attempt === INTERRUPT_STARTUP_RETRIES) throw error
+          await new Promise((resolve) => setTimeout(resolve, INTERRUPT_STARTUP_RETRY_MS))
+        }
+      }
+      return false
+    })()
+    runtime.cancellation = { turnId, promise }
+    void promise.catch(() => {
+      if (runtime.cancellation?.promise === promise) runtime.cancellation = undefined
+    })
+    return promise
+  }
+
+  private stage(runtime: Runtime, event: StartingTurn['staged'][number]): boolean {
+    const starting = runtime.starting
+    if (!starting || runtime.activeTurnId) return false
+    starting.stagedBytes += Buffer.byteLength(JSON.stringify(event))
+    if (starting.staged.length >= MAX_STAGED || starting.stagedBytes > MAX_EVENT_BYTES) {
+      runtime.phase = 'uncertain'
+      throw new Error('The turn-start notification buffer exceeded its limit.')
+    }
+    starting.staged.push(event)
+    return true
+  }
+
+  private async synchronize(runtime: Runtime, correlationId?: string, signal?: AbortSignal): Promise<void> {
+    const response = object(await runtime.transport.request('thread/read', { threadId: runtime.session.nativeSessionId, includeTurns: false }, signal), 'CODEX_THREAD_READ_INVALID')
+    const thread = object(response.thread, 'CODEX_THREAD_READ_INVALID')
+    if (thread.id !== runtime.session.nativeSessionId) throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Reconciliation returned another thread.')
+    const starting = runtime.starting
+    if (starting && correlationId !== starting.correlationId) {
+      throw new HarnessExecutionError('CODEX_CORRELATION_MISMATCH', 'Reconcile the correlation of the uncertain turn/start operation.')
+    }
+    const wantedId = runtime.activeTurnId
+    const wantedCorrelation = starting?.correlationId
+    const matches = (turn: JsonObject) => wantedId ? turn.id === wantedId
+      : wantedCorrelation ? Array.isArray(turn.items) && turn.items.some((item) => isObject(item) && item.type === 'userMessage' && item.id === wantedCorrelation)
+        : true
+    const turns = Array.isArray(thread.turns) ? thread.turns.filter(isObject) : []
+    let selected = [...turns].reverse().find(matches)
+    if (!selected || selected.itemsView !== 'full') {
+      let cursor: string | undefined
+      const seenCursors = new Set<string>()
+      selected = undefined
+      for (let page = 0; page < 20; page += 1) {
+        const result = object(await runtime.transport.request('thread/turns/list', {
+          threadId: runtime.session.nativeSessionId, limit: 50, sortDirection: 'desc', itemsView: 'full',
+          ...(cursor ? { cursor } : {}),
+        }, signal), 'CODEX_THREAD_READ_INVALID')
+        const candidates = Array.isArray(result.data) ? result.data.filter(isObject).filter(matches) : []
+        if (wantedCorrelation && candidates.length > 1) throw new HarnessExecutionError('CODEX_CORRELATION_AMBIGUOUS', 'More than one native turn has this correlation.')
+        if (candidates[0]) { selected = candidates[0]; break }
+        cursor = text(result.nextCursor)
+        if (!cursor) break
+        if (seenCursors.has(cursor)) throw new HarnessExecutionError('CODEX_THREAD_READ_INVALID', 'Codex repeated a history cursor.')
+        seenCursors.add(cursor)
+      }
+    }
+    if (!selected) {
+      if (wantedId || wantedCorrelation) {
+        runtime.phase = 'uncertain'
+        throw new HarnessExecutionError('CODEX_RECONCILIATION_UNCERTAIN', 'The submitted native turn was not found; absence of history does not authorize replay.')
+      }
+      runtime.phase = 'idle'
+      return
+    }
+    if (!text(selected.id) || !['inProgress', 'completed', 'failed', 'interrupted'].includes(String(selected.status))) {
+      throw new HarnessExecutionError('CODEX_THREAD_READ_INVALID', 'The reconciled native turn is malformed.')
+    }
+    if (selected.itemsView !== 'full') throw new HarnessExecutionError('CODEX_HISTORY_INCOMPLETE', 'Native reconciliation did not return full turn items.')
+    if (starting) await this.acceptStartedTurn(runtime, starting, { turn: selected })
+    else {
+      if (runtime.activeTurnId !== selected.id) {
+        runtime.activeTurnId = String(selected.id)
+        runtime.finalAnswer = undefined
+        runtime.lastAgentMessage = undefined
+        runtime.terminalResult = undefined
+        runtime.seenNotifications.clear()
+      }
+      this.applyTurn(runtime, selected)
+    }
+  }
+
+  private applyTurn(runtime: Runtime, turn: JsonObject): void {
+    if (turn.id !== runtime.activeTurnId || !Array.isArray(turn.items)) return
+    if (!['inProgress', 'completed', 'failed', 'interrupted'].includes(String(turn.status))) return
+    for (const value of turn.items) {
       if (!isObject(value) || value.type !== 'agentMessage' || typeof value.text !== 'string') continue
       runtime.lastAgentMessage = value.text
       if (value.phase === 'final_answer') runtime.finalAnswer = value.text
     }
-    const status = text(last.status)
-    if (status === 'completed') runtime.terminalResult = { outcome: 'succeeded', output: { text: runtime.finalAnswer ?? runtime.lastAgentMessage ?? '' } }
-    else if (status === 'interrupted') runtime.terminalResult = { outcome: 'canceled' }
-    else if (status === 'failed') runtime.terminalResult = {
-      outcome: 'failed', error: { code: 'CODEX_TURN_FAILED', message: this.turnError(last), retryable: false },
+    if (turn.status === 'inProgress') {
+      if (!runtime.terminalResult) runtime.phase = 'active'
+      return
     }
-  }
-
-  private async restart(runtime: Runtime, signal?: AbortSignal): Promise<void> {
-    if (runtime.waiting) {
-      runtime.waiting.delivery = 'uncertain'
-      throw new HarnessExecutionError(
-        'NATIVE_RESPONSE_DELIVERY_UNCERTAIN',
-        'A pending native request cannot be replayed after app-server restart.',
-      )
+    runtime.terminalResult = turn.status === 'completed'
+      ? { outcome: 'succeeded', output: { text: runtime.finalAnswer ?? runtime.lastAgentMessage ?? '' } }
+      : turn.status === 'interrupted' ? { outcome: 'canceled' }
+        : { outcome: 'failed', error: { code: 'CODEX_TURN_FAILED', message: text(isObject(turn.error) ? turn.error.message : undefined) ?? 'Codex turn failed.', retryable: false } }
+    runtime.phase = 'idle'
+    for (const [key, waiting] of runtime.interactions) {
+      if (waiting.pending.turn.nativeTurnId === turn.id) this.resolveInteraction(runtime, key, waiting, 'cleared')
     }
-    const transport = new CodexStdioTransport(
-      this.binary,
-      runtime.workingDirectory,
-      safeEnvironment(runtime.input.environment, runtime.scopedCredentialVariable ? [runtime.scopedCredentialVariable] : []),
-      async (request) => this.handleRequest(runtime, request),
-      async (method, params) => this.handleNotification(runtime, method, params),
-      () => this.handleDisconnect(runtime),
-    )
-    await transport.start(signal)
-    await transport.request('thread/resume', { threadId: runtime.session.nativeSessionId, excludeTurns: true }, signal)
-    runtime.transport = transport
-    runtime.closed = false
+    this.wake(runtime)
   }
 
   private async handleRequest(runtime: Runtime, request: RpcRequest): Promise<void> {
-    if (runtime.waiting) {
-      await runtime.transport.reject(request.id, -32000, 'Another native interaction is already pending.')
-      this.record(runtime, 'protocol.concurrent_request_rejected', { method: request.method })
+    const params = request.params ?? {}
+    if (params.threadId !== runtime.session.nativeSessionId) {
+      await runtime.transport.reject(request.id, -32602, 'This request belongs to another thread.'); return
+    }
+    if (this.stage(runtime, { request })) return
+    const key = requestKey(runtime.generation, request.id)
+    const signature = createHash('sha256').update(canonical([request.method, params])).digest('hex')
+    const existing = runtime.interactions.get(key)
+    const resolved = runtime.resolvedRequests.get(key)
+    if (existing || resolved) {
+      // Do not send an error using a still-live original request ID.
+      if ((existing?.signature ?? resolved) !== signature) this.record(runtime, 'protocol.conflicting_request_identity', { nativeRequestKey: key })
       return
     }
-    const translated = this.translateRequest(runtime, request)
+    if (runtime.interactions.size >= MAX_INTERACTIONS) {
+      await runtime.transport.reject(request.id, -32000, 'Native pending-interaction limit exceeded.'); return
+    }
+    if (request.method === 'mcpServer/elicitation/request' && params.turnId === null) {
+      await runtime.transport.reject(request.id, -32601, 'CODEX_STANDALONE_ELICITATION_UNSUPPORTED: the shared approval boundary requires a real native turn.');
+      this.record(runtime, 'interaction.unsupported', { nativeMethod: request.method, reason: 'standalone_elicitation' })
+      return
+    }
+    if (!text(params.turnId) || params.turnId !== runtime.activeTurnId || runtime.terminalResult) {
+      await runtime.transport.reject(request.id, -32602, 'The request does not belong to the active turn.'); return
+    }
+    const translated = this.translateRequest(runtime, request, signature)
     if (!translated) {
-      await runtime.transport.reject(request.id, -32601, 'Unsupported native interaction request.')
-      this.record(runtime, 'protocol.unsupported_request', { method: request.method })
+      await runtime.transport.reject(request.id, -32601, 'The request has no qualified approval mapping; generic questions and nonempty elicitation forms are not approval grants.')
+      this.record(runtime, 'interaction.unsupported', { nativeMethod: request.method, reason: 'unqualified_approval_shape' })
       return
     }
-    runtime.waiting = translated
+    const retainedBytes = [...runtime.interactions.values()].reduce((total, entry) => total + Buffer.byteLength(JSON.stringify(entry.pending)), 0)
+    if (retainedBytes + Buffer.byteLength(JSON.stringify(translated.pending)) > MAX_EVENT_BYTES) {
+      await runtime.transport.reject(request.id, -32000, 'Native pending-interaction memory limit exceeded.')
+      this.record(runtime, 'interaction.capacity_exceeded', { nativeMethod: request.method })
+      return
+    }
+    runtime.interactions.set(key, translated)
     this.record(runtime, 'interaction.pending', {
-      nativeRequestId: translated.pending.turn.nativeRequestId,
-      nativeRequestType: request.method,
+      nativeRequestId: translated.pending.turn.nativeRequestId, nativeRequestType: request.method,
       turnId: translated.pending.turn.nativeTurnId,
     })
   }
 
-  private translateRequest(runtime: Runtime, request: RpcRequest): WaitingRequest | undefined {
+  private translateRequest(runtime: Runtime, request: RpcRequest, signature: string): WaitingRequest | undefined {
     const params = request.params ?? {}
-    const threadId = text(params.threadId)
-    const turnId = text(params.turnId) ?? runtime.activeTurnId
-    if (!threadId || threadId !== runtime.session.nativeSessionId || !turnId) return undefined
-    const callbackId = text(params.approvalId) ?? String(request.id)
-    const nativeRequestId = `${threadId}:${turnId}:${request.method}:${callbackId}`
-    const responses = new Map<string, StoredResponse>()
-    const add = (suffix: string, option: Omit<ApprovalResponseOption, 'optionId'>, nativeResponse: JsonObject) => {
-      const optionId = `codex-${createHash('sha256').update(`${nativeRequestId}:${suffix}`).digest('hex').slice(0, 24)}`
-      const parsed = ApprovalResponseOptionSchema.parse({ optionId, ...option })
+    const turnId = text(params.turnId)
+    if (!turnId) return undefined
+    const nativeRequestId = `${runtime.session.nativeSessionId}:${turnId}:${request.method}:${requestKey(runtime.generation, request.id)}`
+    const responses: WaitingRequest['responses'] = new Map()
+    const add = (option: Omit<ApprovalResponseOption, 'optionId'>, nativeResponse: JsonObject) => {
+      if (advanced(runtime.configuration).sessionPersistence === 'ephemeral' && option.semantic === 'allow_session') return
+      const optionId = `codex-${createHash('sha256').update(canonical([nativeRequestId, nativeResponse])).digest('hex').slice(0, 24)}`
+      // Empty optional descriptions are omitted rather than violating the shared schema.
+      const { scopeSummary, ...rest } = option
+      const parsed = ApprovalResponseOptionSchema.parse({ optionId, ...rest, ...(scopeSummary?.trim() ? { scopeSummary } : {}) })
       responses.set(optionId, { option: parsed, nativeResponse })
     }
     if (request.method === 'item/commandExecution/requestApproval') {
-      const decisions = Array.isArray(params.availableDecisions)
-        ? params.availableDecisions
-        : ['accept', 'acceptForSession', 'decline', 'cancel']
+      const decisions = Array.isArray(params.availableDecisions) ? params.availableDecisions : ['accept', 'acceptForSession', 'decline', 'cancel']
       for (const decision of decisions) this.addCommandDecision(add, decision)
     } else if (request.method === 'item/fileChange/requestApproval') {
-      add('accept', simpleOption('approve_once', 'Approve once', 'request'), { decision: 'accept' })
-      add('acceptForSession', simpleOption('allow_session', 'Allow for this session', 'session'), { decision: 'acceptForSession' })
-      add('decline', simpleOption('reject', 'Reject', 'request'), { decision: 'decline' })
-      add('cancel', simpleOption('cancel', 'Cancel turn', 'request', true), { decision: 'cancel' })
+      add(simpleOption('approve_once', 'Approve once', 'request'), { decision: 'accept' })
+      add(simpleOption('allow_session', 'Allow for this session', 'session'), { decision: 'acceptForSession' })
+      add(simpleOption('reject', 'Reject', 'request'), { decision: 'decline' })
+      add(simpleOption('cancel', 'Cancel turn', 'request', true), { decision: 'cancel' })
     } else if (request.method === 'item/permissions/requestApproval') {
-      const permissions = isObject(params.permissions) ? params.permissions : {}
-      add('turn', simpleOption('allow_turn', 'Allow for this turn', 'turn'), { permissions, scope: 'turn' })
-      if (advanced(runtime.configuration).sessionPersistence !== 'ephemeral') {
-        add('session', simpleOption('allow_session', 'Allow for this session', 'session'), { permissions, scope: 'session' })
-      }
-      add('reject', simpleOption('reject', 'Reject', 'request'), { permissions: {}, scope: 'turn' })
+      if (!isObject(params.permissions)) return undefined
+      add(simpleOption('allow_turn', 'Allow for this turn', 'turn'), { permissions: params.permissions, scope: 'turn' })
+      add(simpleOption('allow_session', 'Allow for this session', 'session'), { permissions: params.permissions, scope: 'session' })
+      add(simpleOption('reject', 'Reject', 'request'), { permissions: {}, scope: 'turn' })
     } else if (request.method === 'item/tool/requestUserInput') {
-      const questions = Array.isArray(params.questions) ? params.questions.filter(isObject) : []
-      if (questions.length !== 1) return undefined
-      const question = questions[0]!
-      const questionId = text(question.id)
-      const options = Array.isArray(question.options) ? question.options.filter(isObject) : []
-      if (!questionId || options.length === 0) return undefined
-      for (const [index, offered] of options.entries()) {
-        const label = text(offered.label)
-        if (!label) continue
-        add(`input-${String(index)}`, {
-          semantic: 'provider_scoped_allow', label, persistence: /session/i.test(label) ? 'session' : 'request',
-          scopeSummary: text(offered.description), affectsOtherPendingRequests: false,
-          interruptsCurrentTurn: /cancel/i.test(label), mutatesPersistentPolicy: /don.t ask|persistent/i.test(label),
-        }, { answers: { [questionId]: { answers: [label] } } })
+      // Exact 0.154.0 MCP approval question, not arbitrary user-input prose.
+      const questions = Array.isArray(params.questions) ? params.questions : []
+      const question = questions.length === 1 && isObject(questions[0]) ? questions[0] : undefined
+      if (!question || !text(question.id)?.startsWith('mcp_tool_call_approval_')
+        || question.header !== 'Approve app tool call?' || question.isOther !== false || question.isSecret !== false
+        || params.isBlocking !== true || !Array.isArray(question.options)) return undefined
+      const choices = question.options.filter(isObject)
+      const qualifiedChoices: Record<string, Omit<ApprovalResponseOption, 'optionId'>> = {
+        Allow: simpleOption('approve_once', 'Allow', 'request'),
+        'Allow for this session': simpleOption('allow_session', 'Allow for this session', 'session'),
+        "Allow and don't ask me again": {
+          ...simpleOption('persistent_policy_change', "Allow and don't ask me again", 'persistent_config'),
+          mutatesPersistentPolicy: true,
+        },
+        Cancel: simpleOption('cancel', 'Cancel this tool call', 'request'),
+      }
+      if (choices.length !== question.options.length || !choices.some((choice) => choice.label === 'Allow')
+        || !choices.some((choice) => choice.label === 'Cancel')
+        || choices.some((choice) => typeof choice.label !== 'string' || !Object.hasOwn(qualifiedChoices, choice.label))) return undefined
+      for (const choice of choices) {
+        const label = String(choice.label)
+        add({ ...qualifiedChoices[label]!, ...(typeof choice.description === 'string' ? { scopeSummary: choice.description } : {}) },
+          { answers: { [String(question.id)]: { answers: [label] } } })
       }
     } else if (request.method === 'mcpServer/elicitation/request') {
-      add('decline', simpleOption('reject', 'Decline', 'request'), { action: 'decline', content: null, _meta: null })
-      add('cancel', simpleOption('cancel', 'Cancel', 'request'), { action: 'cancel', content: null, _meta: null })
+      let content: JsonObject | null
+      if (params.mode === 'url' && text(params.url) && text(params.elicitationId)) content = null
+      else if (['form', 'openai/form', 'openaiForm'].includes(String(params.mode)) && isObject(params.requestedSchema)) {
+        const schema = params.requestedSchema
+        // Only a no-data confirmation is representable by the current choice UI.
+        if (schema.type !== 'object'
+          || (schema.properties !== undefined && (!isObject(schema.properties) || Object.keys(schema.properties).length > 0))
+          || (schema.required !== undefined && (!Array.isArray(schema.required) || schema.required.length > 0))
+          || Object.keys(schema).some((field) => !['type', 'properties', 'required', 'additionalProperties', 'title', 'description', '$schema'].includes(field))
+          || (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== 'boolean')) return undefined
+        content = {}
+      } else return undefined
+      add({ ...simpleOption('approve_once', params.mode === 'url' ? 'Confirm authorization completed' : 'Accept', 'request'),
+        ...(typeof params.url === 'string' && params.url.trim() ? { scopeSummary: params.url } : {}) }, { action: 'accept', content, _meta: null })
+      // Pinned native MCP approval metadata explicitly advertises persistence.
+      if (content !== null && isObject(params._meta) && params._meta.codex_approval_kind === 'mcp_tool_call') {
+        const offered = Array.isArray(params._meta.persist) ? params._meta.persist : [params._meta.persist]
+        if (offered.includes('session')) add(simpleOption('allow_session', 'Allow for this session', 'session'),
+          { action: 'accept', content: {}, _meta: { persist: 'session' } })
+        if (offered.includes('always')) add({
+          ...simpleOption('persistent_policy_change', "Allow and don't ask me again", 'persistent_config'),
+          mutatesPersistentPolicy: true,
+        }, { action: 'accept', content: {}, _meta: { persist: 'always' } })
+      }
+      add(simpleOption('reject', 'Decline', 'request'), { action: 'decline', content: null, _meta: null })
+      add(simpleOption('cancel', 'Cancel request', 'request'), { action: 'cancel', content: null, _meta: null })
     } else return undefined
     if (responses.size === 0) return undefined
+    const options = [...responses.values()].map((value) => value.option)
+    CodexSessionCompatibilitySchema.parse({ configuration: runtime.configuration, responseOptions: options })
     const pending = PendingNativeInteractionSchema.parse({
-      session: runtime.session,
-      turn: { nativeTurnId: turnId, nativeRequestId },
-      nativeRequestType: request.method,
-      request: params,
-      responseOptions: [...responses.values()].map(({ option }) => option),
+      session: runtime.session, turn: { nativeTurnId: turnId, nativeRequestId },
+      nativeRequestType: request.method, request: params, responseOptions: options,
     })
-    return { pending, requestId: request.id, responses, delivery: 'pending' }
+    let resolve!: WaitingRequest['resolve']
+    const resolution = new Promise<'resolved' | 'cleared'>((complete) => { resolve = complete })
+    return { pending, requestId: request.id, method: request.method, generation: runtime.generation,
+      signature, responses, delivery: 'pending', resolution, resolve }
   }
 
   private addCommandDecision(
-    add: (suffix: string, option: Omit<ApprovalResponseOption, 'optionId'>, response: JsonObject) => void,
-    decision: unknown,
+    add: (option: Omit<ApprovalResponseOption, 'optionId'>, response: JsonObject) => void, decision: unknown,
   ): void {
-    if (decision === 'accept') add('accept', simpleOption('approve_once', 'Approve once', 'request'), { decision })
-    else if (decision === 'acceptForSession') add('acceptForSession', simpleOption('allow_session', 'Allow for this session', 'session'), { decision })
-    else if (decision === 'decline') add('decline', simpleOption('reject', 'Reject', 'request'), { decision })
-    else if (decision === 'cancel') add('cancel', simpleOption('cancel', 'Cancel turn', 'request', true), { decision })
+    if (decision === 'accept') add(simpleOption('approve_once', 'Approve once', 'request'), { decision })
+    else if (decision === 'acceptForSession') add(simpleOption('allow_session', 'Allow for this session', 'session'), { decision })
+    else if (decision === 'decline') add(simpleOption('reject', 'Reject', 'request'), { decision })
+    else if (decision === 'cancel') add(simpleOption('cancel', 'Cancel turn', 'request', true), { decision })
     else if (isObject(decision) && isObject(decision.acceptWithExecpolicyAmendment)) {
-      add('execpolicy', {
-        ...simpleOption('persistent_policy_change', 'Allow and save command policy', 'persistent_config'),
-        mutatesPersistentPolicy: true,
-      }, { decision })
+      add({ ...simpleOption('persistent_policy_change', 'Allow and save command policy', 'persistent_config'),
+        scopeSummary: canonical(decision.acceptWithExecpolicyAmendment), mutatesPersistentPolicy: true }, { decision })
     } else if (isObject(decision) && isObject(decision.applyNetworkPolicyAmendment)) {
-      add('network-policy', {
-        ...simpleOption('persistent_policy_change', 'Apply network policy change', 'persistent_config'),
-        mutatesPersistentPolicy: true,
-      }, { decision })
+      const amendment = isObject(decision.applyNetworkPolicyAmendment.network_policy_amendment)
+        ? decision.applyNetworkPolicyAmendment.network_policy_amendment : decision.applyNetworkPolicyAmendment
+      add({ ...simpleOption('persistent_policy_change', `Save network ${String(amendment.action ?? 'policy')} rule for ${String(amendment.host ?? 'the offered target')}`, 'persistent_config'),
+        scopeSummary: canonical(amendment), mutatesPersistentPolicy: true }, { decision })
     }
   }
 
   private handleNotification(runtime: Runtime, method: string, params: JsonObject): void {
-    if (method === 'item/completed') {
+    if (method === 'protocol/malformed') { this.record(runtime, 'native.malformed', params); return }
+    if (params.threadId !== undefined && params.threadId !== runtime.session.nativeSessionId) return
+    if (['serverRequest/resolved', 'turn/started', 'turn/completed', 'item/started', 'item/completed'].includes(method)) {
+      if (params.threadId !== runtime.session.nativeSessionId) return
+      if (this.stage(runtime, { method, params })) return
+    }
+    if (method === 'serverRequest/resolved') {
+      if (typeof params.requestId !== 'string' && typeof params.requestId !== 'number') return
+      const key = requestKey(runtime.generation, params.requestId)
+      const waiting = runtime.interactions.get(key)
+      if (waiting) this.resolveInteraction(runtime, key, waiting, 'resolved')
+      return
+    }
+    if (method === 'turn/started' || method === 'turn/completed') {
+      const turn = isObject(params.turn) ? params.turn : undefined
+      if (!turn || !text(turn.id) || turn.id !== runtime.activeTurnId || runtime.terminalResult) return
+      if (!Array.isArray(turn.items) || !['inProgress', 'completed', 'failed', 'interrupted'].includes(String(turn.status))) return
+      if (method === 'turn/completed' && turn.status === 'inProgress') return
+      this.applyTurn(runtime, turn)
+      this.record(runtime, method === 'turn/started' ? 'turn.started' : 'turn.completed', { threadId: params.threadId, turnId: turn.id, status: turn.status })
+      return
+    }
+    if (method === 'item/started' || method === 'item/completed') {
+      if (params.threadId !== runtime.session.nativeSessionId || params.turnId !== runtime.activeTurnId || runtime.terminalResult) return
       const item = isObject(params.item) ? params.item : undefined
-      const fingerprint = `${method}:${text(params.turnId) ?? ''}:${text(item?.id) ?? ''}:${String(params.completedAtMs ?? '')}`
+      if (!item || !text(item.id) || !text(item.type)) return
+      const fingerprint = createHash('sha256').update(canonical([method, params.turnId, item.id])).digest('hex')
       if (runtime.seenNotifications.has(fingerprint)) return
       runtime.seenNotifications.add(fingerprint)
-      if (item?.type === 'agentMessage' && typeof item.text === 'string') {
+      if (runtime.seenNotifications.size > MAX_EVENTS) runtime.seenNotifications.delete(runtime.seenNotifications.values().next().value!)
+      if (method === 'item/completed' && item.type === 'agentMessage' && typeof item.text === 'string') {
         runtime.lastAgentMessage = item.text
         if (item.phase === 'final_answer') runtime.finalAnswer = item.text
       }
-      this.record(runtime, 'item.completed', params)
+      this.record(runtime, method === 'item/started' ? 'item.started' : 'item.completed', params)
       return
     }
-    if (method === 'item/started') {
-      this.record(runtime, 'item.started', params)
-      return
-    }
-    if (method === 'turn/started') {
-      const turn = isObject(params.turn) ? params.turn : undefined
-      runtime.activeTurnId = text(turn?.id) ?? runtime.activeTurnId
-      this.record(runtime, 'turn.started', params)
-      return
-    }
-    if (method === 'turn/completed') {
-      const turn = isObject(params.turn) ? params.turn : undefined
-      const fingerprint = `${method}:${text(turn?.id) ?? ''}:${text(turn?.status) ?? ''}`
-      if (runtime.seenNotifications.has(fingerprint)) return
-      runtime.seenNotifications.add(fingerprint)
-      if (!runtime.finalAnswer && Array.isArray(turn?.items)) {
-        for (const value of turn.items) {
-          if (!isObject(value) || value.type !== 'agentMessage' || typeof value.text !== 'string') continue
-          runtime.lastAgentMessage = value.text
-          if (value.phase === 'final_answer') runtime.finalAnswer = value.text
-        }
-      }
-      const status = text(turn?.status)
-      runtime.terminalResult = status === 'completed'
-        ? { outcome: 'succeeded', output: { text: runtime.finalAnswer ?? runtime.lastAgentMessage ?? '' } }
-        : status === 'interrupted'
-          ? { outcome: 'canceled' }
-          : { outcome: 'failed', error: { code: 'CODEX_TURN_FAILED', message: this.turnError(turn), retryable: false } }
-      runtime.waiting = undefined
-      this.record(runtime, 'turn.completed', params)
-      return
-    }
-    if (method === 'thread/started') this.record(runtime, 'thread.started', params)
-    else if (method === 'protocol/malformed') this.record(runtime, 'native.malformed', params)
-    else this.record(runtime, 'native.notification', { nativeMethod: method, ...params })
+    // Streaming events with turn correlation obey the same identity gate.
+    if (params.turnId !== undefined && (params.turnId !== runtime.activeTurnId || runtime.terminalResult)) return
+    if (method === 'thread/started') {
+      if (!isObject(params.thread) || params.thread.id !== runtime.session.nativeSessionId) return
+      this.record(runtime, 'thread.started', { threadId: runtime.session.nativeSessionId })
+    } else this.record(runtime, 'native.notification', { nativeMethod: method, ...params })
   }
 
-  private turnError(turn: JsonObject | undefined): string {
-    const error = isObject(turn?.error) ? turn.error : undefined
-    return text(error?.message) ?? 'Codex turn failed.'
+  private resolveInteraction(runtime: Runtime, key: string, waiting: WaitingRequest, result: 'resolved' | 'cleared'): void {
+    if (runtime.interactions.get(key) !== waiting) return
+    runtime.interactions.delete(key)
+    runtime.resolvedRequests.set(key, waiting.signature)
+    if (runtime.resolvedRequests.size > MAX_EVENTS) runtime.resolvedRequests.delete(runtime.resolvedRequests.keys().next().value!)
+    waiting.resolve(result)
+    // Native "resolved" means answered OR cleared, not proof of a permission grant.
+    this.record(runtime, `interaction.${result}`, {
+      nativeRequestId: waiting.pending.turn.nativeRequestId,
+      ...(waiting.selectedOptionId ? { submittedOptionId: waiting.selectedOptionId } : {}),
+      evidence: result === 'resolved' ? 'serverRequest/resolved' : 'terminal_turn',
+    })
   }
 
   private handleDisconnect(runtime: Runtime): void {
     runtime.closed = true
-    if (runtime.waiting) runtime.waiting.delivery = 'uncertain'
-    this.record(runtime, 'transport.disconnected', {
-      pendingResponseDelivery: runtime.waiting?.delivery === 'uncertain',
-    })
+    if (runtime.phase === 'starting' || runtime.phase === 'active') runtime.phase = 'uncertain'
+    for (const waiting of runtime.interactions.values()) waiting.delivery = 'uncertain'
+    this.record(runtime, 'transport.disconnected', { unresolvedInteractions: runtime.interactions.size })
   }
 
   private record(runtime: Runtime, type: string, payload: JsonObject): void {
-    runtime.events.push(NativeHarnessEventSchema.parse({
-      sequence: runtime.events.length,
-      type,
-      occurredAt: new Date().toISOString(),
-      payload,
-    }))
+    const event = NativeHarnessEventSchema.parse({
+      sequence: runtime.sequence, type, occurredAt: new Date().toISOString(), payload,
+    })
+    const size = Buffer.byteLength(JSON.stringify(event))
+    if (size > MAX_EVENT_BYTES) throw new HarnessExecutionError('NATIVE_EVENT_TOO_LARGE', 'A native event exceeded the bounded delivery window.')
+    runtime.sequence += 1
+    runtime.events.push(event)
+    runtime.eventSizes.push(size)
+    runtime.eventBytes += size
+    while (runtime.events.length > MAX_EVENTS || runtime.eventBytes > MAX_EVENT_BYTES) {
+      runtime.events.shift()
+      runtime.eventBytes -= runtime.eventSizes.shift()!
+    }
     this.wake(runtime)
   }
-
   private wake(runtime: Runtime): void {
     for (const resolve of runtime.wake) resolve()
     runtime.wake.clear()
   }
-
   private wait(runtime: Runtime, signal?: AbortSignal): Promise<void> {
-    if (signal?.aborted) return Promise.reject(signal.reason)
+    signal?.throwIfAborted()
     return new Promise<void>((resolve, reject) => {
-      const done = () => {
-        signal?.removeEventListener('abort', aborted)
-        resolve()
-      }
-      const aborted = () => {
-        runtime.wake.delete(done)
-        reject(signal?.reason)
-      }
+      const done = () => { cleanup(); resolve() }
+      const abort = () => { cleanup(); reject(signal?.reason ?? new Error('Aborted')) }
+      const cleanup = () => { runtime.wake.delete(done); signal?.removeEventListener('abort', abort) }
       runtime.wake.add(done)
-      signal?.addEventListener('abort', aborted, { once: true })
+      signal?.addEventListener('abort', abort, { once: true })
     })
   }
 }
 
 function simpleOption(
-  semantic: ApprovalResponseOption['semantic'],
-  label: string,
-  persistence: ApprovalResponseOption['persistence'],
-  interruptsCurrentTurn = false,
+  semantic: ApprovalResponseOption['semantic'], label: string,
+  persistence: ApprovalResponseOption['persistence'], interruptsCurrentTurn = false,
 ): Omit<ApprovalResponseOption, 'optionId'> {
-  return {
-    semantic, label, persistence, affectsOtherPendingRequests: false,
-    interruptsCurrentTurn, mutatesPersistentPolicy: false,
-  }
+  return { semantic, label, persistence, affectsOtherPendingRequests: false, interruptsCurrentTurn, mutatesPersistentPolicy: false }
 }
