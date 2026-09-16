@@ -52,6 +52,7 @@ export class PostgresFoundationSettingsRepository {
     const client = await this.pool.connect()
     try {
       await client.query('begin')
+      await client.query('select pg_advisory_xact_lock(hashtext($1))', [`setting:${key}`])
       const current = await client.query<{ revision: string }>(
         'select revision from application_settings where key = $1 for update', [key],
       )
