@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -48,9 +48,11 @@ class FakeServer implements OpenCodeServerController {
   eventStreams = 0
   sessionExists = true
   restartEnvironments: unknown[] = []
+  sessionIds: string[] = []
+  disposals = 0
 
   async ensure() {}
-  async dispose() {}
+  async dispose() { this.disposals += 1 }
   async restart(environment: unknown) { this.restartEnvironments.push(environment) }
   async request(path: string, init?: RequestInit): Promise<Response> {
     this.calls.push({ path, ...(init ? { init } : {}) })
@@ -64,7 +66,7 @@ class FakeServer implements OpenCodeServerController {
     if (route === '/doc') return json({ paths: requiredPaths })
     if (route === '/provider') return json({ all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: { max: {} } } } }] })
     if (route === '/agent') return json([{ name: 'build' }, { name: 'plan' }])
-    if (route === '/session' && method === 'POST') return json({ id: 'ses_test' })
+    if (route === '/session' && method === 'POST') return json({ id: this.sessionIds.shift() ?? 'ses_test' })
     if (route === '/session/ses_test' && method === 'GET') return this.sessionExists
       ? json({ id: 'ses_test', directory: '/workspace/project', agent: 'build', model: { providerID: 'opencode-go', id: 'deepseek-v4.1-flash', variant: 'max' } })
       : new Response('missing', { status: 404 })
@@ -158,32 +160,83 @@ describe('OpenCode native server manager', () => {
     expect(server.calls).toEqual([])
   })
 
+  it('keeps a multi-session server until the last close and then clears its credential binding', async () => {
+    const server = new FakeServer()
+    server.sessionIds.push('ses_one', 'ses_two', 'ses_three')
+    const native = manager(server)
+    const environment = { agentId: 'agent-1', variables: { GRAPHQL_APP_MCP_TOKEN: 'token' } }
+    const first = await native.createSession({ request: request(), environment })
+    const second = await native.createSession({ request: request(), environment })
+    expect(server.restartEnvironments).toHaveLength(1)
+
+    await native.close(first)
+    expect(server.disposals).toBe(0)
+    await native.close(second)
+    expect(server.disposals).toBe(1)
+
+    await native.createSession({ request: request(), environment })
+    expect(server.restartEnvironments).toHaveLength(2)
+  })
+
   it.skipIf(process.platform === 'win32')('delivers the scoped App token to the restarted resident child process', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'graphql-opencode-server-env-'))
     const binary = join(directory, 'opencode-fixture.cjs')
+    const pidFile = join(directory, 'server.pid')
     await writeFile(binary, `#!${process.execPath}
 const http = require('node:http')
+const fs = require('node:fs')
 const args = process.argv.slice(2)
 if (args.includes('--version')) { console.log('1.18.31'); process.exit(0) }
 const token = process.env.GRAPHQL_APP_MCP_TOKEN
 const server = http.createServer((request, response) => {
   response.setHeader('content-type', 'application/json')
   if (request.url === '/global/health') response.end(JSON.stringify({healthy:true,version:'1.18.31'}))
+  else if (request.url === '/doc') response.end(JSON.stringify({paths:${JSON.stringify(requiredPaths)}}))
+  else if (request.url.startsWith('/provider')) response.end(JSON.stringify({all:[{id:'opencode-go',models:{'deepseek-v4.1-flash':{variants:{max:{}}}}}]}))
+  else if (request.url.startsWith('/agent')) response.end(JSON.stringify([{name:'build'}]))
+  else if (request.url.startsWith('/session/ses_missing')) { response.statusCode = 404; response.end('{}') }
+  else if (request.url.startsWith('/session') && request.method === 'POST') response.end(JSON.stringify({id:'ses_fixture'}))
   else if (request.url === '/test-env') response.end(JSON.stringify({present:token === 'scoped-token'}))
   else { response.statusCode = 404; response.end('{}') }
 })
-server.listen(0, '127.0.0.1', () => console.log('opencode server listening on http://127.0.0.1:' + server.address().port))
+server.listen(0, '127.0.0.1', () => {
+  fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))
+  console.log('opencode server listening on http://127.0.0.1:' + server.address().port)
+})
 `, { mode: 0o755 })
     await chmod(binary, 0o755)
     const server = new ManagedOpenCodeServer({
       binary, workingDirectory: directory, ownerAgentId: 'agent-1', pure: true,
     })
     try {
-      await server.restart({ agentId: 'agent-1', variables: { GRAPHQL_APP_MCP_TOKEN: 'scoped-token' } })
+      const environment = { agentId: 'agent-1', variables: { GRAPHQL_APP_MCP_TOKEN: 'scoped-token' } }
+      await server.restart(environment)
       await expect(server.request('/test-env').then((response) => response.json())).resolves.toEqual({ present: true })
       await expect(server.restart({ agentId: 'agent-2', variables: { GRAPHQL_APP_MCP_TOKEN: 'replacement' } }))
         .rejects.toMatchObject({ result: { error: { code: 'OPENCODE_CREDENTIAL_OWNER_MISMATCH' } } })
       await expect(server.request('/test-env').then((response) => response.json())).resolves.toEqual({ present: true })
+
+      const native = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1' })
+      const session = await native.createSession({ request: request(), environment })
+      const terminalPid = Number(await readFile(pidFile, 'utf8'))
+      await native.close(session)
+      await expectProcessExited(terminalPid)
+
+      const failedCreate = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1' })
+      const invalid = request()
+      if (invalid.configuration.harness.harness !== 'opencode') throw new Error('fixture mismatch')
+      invalid.configuration.harness.model = 'opencode-go/missing'
+      await expect(failedCreate.createSession({ request: invalid, environment }))
+        .rejects.toMatchObject({ result: { error: { code: 'OPENCODE_MODEL_UNAVAILABLE' } } })
+      await expectProcessExited(Number(await readFile(pidFile, 'utf8')))
+
+      const failedAttach = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1' })
+      await expect(failedAttach.attachSession({
+        harness: 'opencode', providerVersion: '1.18.31', nativeSessionId: 'ses_missing',
+      }, { request: request(), environment })).rejects.toMatchObject({
+        result: { error: { code: 'OPENCODE_SESSION_NOT_FOUND' } },
+      })
+      await expectProcessExited(Number(await readFile(pidFile, 'utf8')))
     } finally {
       await server.dispose()
       await rm(directory, { recursive: true, force: true })
@@ -395,4 +448,17 @@ function sse(text: string): Response {
   return new Response(new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close() } }), {
     status: 200, headers: { 'content-type': 'text/event-stream' },
   })
+}
+
+async function expectProcessExited(pid: number): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      process.kill(pid, 0)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return
+      throw error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  throw new Error(`Process ${pid} was still alive after server disposal.`)
 }
