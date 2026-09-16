@@ -19,9 +19,11 @@ export interface CodexMcpConfigurationInspector {
 }
 
 function errorCode(error: unknown): string | undefined {
-  return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
-    ? error.code
-    : undefined
+  if (!error || typeof error !== 'object') return undefined
+  if ('code' in error && typeof error.code === 'string') return error.code
+  if (!('result' in error) || !error.result || typeof error.result !== 'object' || !('error' in error.result)
+    || !error.result.error || typeof error.result.error !== 'object' || !('code' in error.result.error)) return undefined
+  return typeof error.result.error.code === 'string' ? error.result.error.code : undefined
 }
 
 /** Adapts HAP-02's model-free effective-config primitive; it never starts another runtime. */

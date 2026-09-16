@@ -29,7 +29,11 @@ describe('Codex HAP-02 MCP inspection adapter', () => {
 
   it('distinguishes a successful absent-entry result from inspection failure', async () => {
     const inspector = codexMcpInspectorAdapter({
-      inspectMcpConfiguration: async () => { throw Object.assign(new Error('missing'), { code: 'CODEX_MCP_NOT_CONFIGURED' }) },
+      inspectMcpConfiguration: async () => {
+        throw Object.assign(new Error('missing'), {
+          result: { outcome: 'failed', error: { code: 'CODEX_MCP_NOT_CONFIGURED', message: 'missing', retryable: false } },
+        })
+      },
     })
     await expect(inspector.inspect({
       harness: 'codex', runnerId: 'runner-local', workingDirectory: '/workspace', serverName: 'graphql-app',
