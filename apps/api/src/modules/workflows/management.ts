@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import { WorkflowDefinitionSchema } from '@graphql/contracts'
+import { DEFAULT_WORKFLOW_APPROVAL_HANDLER, WorkflowDefaultsSchema, WorkflowDefinitionSchema } from '@graphql/contracts'
 import {
   ManagedWorkflowSchema,
   type ManagedWorkflow,
@@ -62,9 +62,19 @@ export class WorkflowManagementService {
       perform: async (client) => {
         await lockActiveWorkspace(client, input.workspaceId)
         const now = new Date().toISOString()
+        const setting = await client.query<{ record: unknown }>(
+          'select record from application_settings where key=$1', ['workflow-defaults-v1'],
+        )
+        const approvalHandler = setting.rows[0]
+          ? WorkflowDefaultsSchema.parse(setting.rows[0].record).approvalHandler
+          : DEFAULT_WORKFLOW_APPROVAL_HANDLER
         const workflow = WorkflowDefinitionSchema.parse({
           id: `workflow-${randomUUID()}`, workspaceId: input.workspaceId, name: input.name,
           ...(input.description !== undefined ? { description: input.description } : {}),
+          // An empty workflow cannot designate an Orchestrator yet. Omission
+          // preserves the copied Orchestrator default, which Save resolves
+          // against the first eligible board topology.
+          ...(approvalHandler === 'orchestrator' ? {} : { approval: { handler: approvalHandler } }),
           executionCondition: { kind: 'manual' }, nodes: [], edges: [], createdAt: now, updatedAt: now,
         })
         const result = await client.query<WorkflowRow>(
