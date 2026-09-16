@@ -258,6 +258,46 @@ const migrations = [
       unique (interaction_id, reviewer_agent_id)
     );
   ` },
+  { version: 700, sql: `
+    create table if not exists operator_conversations (
+      id text primary key,
+      operator_id text not null references application_operators(id),
+      operator_configuration_version_id text not null references operator_configuration_versions(id),
+      harness text not null,
+      provider_version text,
+      native_session_id text,
+      active_request_id text,
+      active_native_turn_id text,
+      turn_state text not null default 'idle',
+      last_error text,
+      record jsonb not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      check (turn_state in ('idle','starting','active','canceling','uncertain','error'))
+    );
+    create unique index if not exists operator_conversations_native_session_idx
+      on operator_conversations (harness, native_session_id) where native_session_id is not null;
+    create index if not exists operator_conversations_recent_idx
+      on operator_conversations (updated_at desc, id);
+
+    create table if not exists operator_conversation_messages (
+      id text primary key,
+      conversation_id text not null references operator_conversations(id) on delete cascade,
+      sequence bigint generated always as identity,
+      role text not null,
+      content text not null,
+      client_request_id text,
+      native_message_id text,
+      record jsonb not null,
+      created_at timestamptz not null default now(),
+      check (role in ('user','assistant','system','tool')),
+      unique (conversation_id, sequence)
+    );
+    create unique index if not exists operator_messages_request_idx
+      on operator_conversation_messages (conversation_id, client_request_id) where client_request_id is not null;
+    create unique index if not exists operator_messages_native_idx
+      on operator_conversation_messages (conversation_id, native_message_id) where native_message_id is not null;
+  ` },
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

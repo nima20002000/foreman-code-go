@@ -21,6 +21,8 @@ import type { PostgresRunRepository } from '../modules/runs/postgres.js'
 import type { PostgresSettingsRepository } from '../modules/settings/postgres.js'
 import type { PostgresWorkflowRepository } from '../modules/workflows/postgres.js'
 import type { PostgresWorkspaceRepository } from '../modules/workspaces/postgres.js'
+import type { OperatorChatService } from '../modules/conversations/operatorChat.js'
+import { registerOperatorChatRoutes } from './operatorChat.js'
 
 export interface ProductServices {
   workspaces: PostgresWorkspaceRepository
@@ -28,6 +30,7 @@ export interface ProductServices {
   runs: PostgresRunRepository
   settings: PostgresSettingsRepository
   engine: LangGraphWorkflowEngine
+  chat?: OperatorChatService
 }
 
 interface WorkspaceParams { workspaceId: string }
@@ -40,6 +43,7 @@ function notFound(kind: string, id: string): never {
 }
 
 export function registerProductRoutes(app: FastifyInstance, services: ProductServices, managementOnlyMutations = false): void {
+  if (services.chat) registerOperatorChatRoutes(app, services.chat)
   app.get('/api/settings/harnesses', async () => GetHarnessDefaultsResponseSchema.parse({
     defaults: await services.settings.getHarnessDefaults(),
   }))

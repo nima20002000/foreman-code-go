@@ -1454,6 +1454,39 @@ export type CreateConversationRequest = z.infer<typeof CreateConversationRequest
 export const CreateConversationResponseSchema = z.object({ conversation: ConversationSchema }).strict();
 export type CreateConversationResponse = z.infer<typeof CreateConversationResponseSchema>;
 
+/** Application-global Operator chat commands. Browser route context is only a prompt hint. */
+export const OperatorConversationContextSchema = z.object({
+  route: z.string().trim().min(1).optional(),
+  workspaceId: IdSchema.optional(),
+  workflowId: IdSchema.optional(),
+  runId: IdSchema.optional(),
+}).strict();
+export const OperatorConversationStateSchema = z.object({
+  conversation: ConversationSchema,
+  messages: z.array(MessageSchema),
+  turnState: z.enum(["idle", "starting", "active", "canceling", "uncertain", "error"]),
+  error: z.string().optional(),
+}).strict();
+export type OperatorConversationState = z.infer<typeof OperatorConversationStateSchema>;
+export const CreateOperatorConversationRequestSchema = z.object({ title: z.string().trim().min(1).optional() }).strict();
+export const CreateOperatorConversationResponseSchema = z.object({ conversation: ConversationSchema }).strict();
+export const ListOperatorConversationsResponseSchema = z.object({ conversations: z.array(ConversationSchema) }).strict();
+export const GetOperatorConversationResponseSchema = OperatorConversationStateSchema;
+export const SendOperatorMessageRequestSchema = z.object({
+  requestId: IdSchema,
+  content: z.string().trim().min(1),
+  context: OperatorConversationContextSchema.optional(),
+}).strict();
+export const SendOperatorMessageResponseSchema = z.object({ state: OperatorConversationStateSchema, replayed: z.boolean() }).strict();
+export const CancelOperatorTurnResponseSchema = z.object({ state: OperatorConversationStateSchema }).strict();
+export const OperatorConversationStreamEventSchema = z.object({
+  id: z.number().int().nonnegative(),
+  conversationId: IdSchema,
+  type: z.enum(["snapshot", "delta", "message", "state", "error"]),
+  data: z.record(z.string(), z.unknown()),
+}).strict();
+export type OperatorConversationStreamEvent = z.infer<typeof OperatorConversationStreamEventSchema>;
+
 export const GetInteractionResponseSchema = z.object({ interaction: DurableInteractionSchema }).strict();
 export const ListInteractionsRequestSchema = z.object({
   workspaceId: IdSchema.optional(), workflowId: IdSchema.optional(), status: InteractionStatusSchema.optional(),

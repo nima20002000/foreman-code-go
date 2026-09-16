@@ -21,6 +21,13 @@ import {
   ListMessagesResponseSchema,
   ListVisibleResourcesRequestSchema,
   ListVisibleResourcesResponseSchema,
+  CreateOperatorConversationRequestSchema,
+  CreateOperatorConversationResponseSchema,
+  ListOperatorConversationsResponseSchema,
+  GetOperatorConversationResponseSchema,
+  SendOperatorMessageRequestSchema,
+  SendOperatorMessageResponseSchema,
+  CancelOperatorTurnResponseSchema,
   SaveWorkflowRequestSchema,
   SaveWorkflowResponseSchema,
   SaveHarnessDefaultsRequestSchema,
@@ -48,6 +55,7 @@ import {
   type ListMessagesResponse,
   type ListVisibleResourcesRequest,
   type ListVisibleResourcesResponse,
+  type OperatorConversationState,
   type SaveWorkflowRequest,
   type SaveWorkflowResponse,
   type SaveHarnessDefaultsRequest,
@@ -511,6 +519,28 @@ export class ApiClient {
     )
   }
 
+  listOperatorConversations(options?: RequestOptions) {
+    return this.request('/api/operator/conversations', ListOperatorConversationsResponseSchema, options)
+  }
+
+  createOperatorConversation(input: { title?: string } = {}, options?: RequestOptions) {
+    const request = parseRequest(CreateOperatorConversationRequestSchema, input)
+    return this.request('/api/operator/conversations', CreateOperatorConversationResponseSchema, { ...options, method: 'POST', body: request })
+  }
+
+  getOperatorConversation(conversationId: string, options?: RequestOptions): Promise<OperatorConversationState> {
+    return this.request(`/api/operator/conversations/${toPath(conversationId)}`, GetOperatorConversationResponseSchema, options)
+  }
+
+  sendOperatorMessage(conversationId: string, input: unknown, options?: RequestOptions) {
+    const request = parseRequest(SendOperatorMessageRequestSchema, input)
+    return this.request(`/api/operator/conversations/${toPath(conversationId)}/messages`, SendOperatorMessageResponseSchema, { ...options, method: 'POST', body: request })
+  }
+
+  cancelOperatorTurn(conversationId: string, options?: RequestOptions) {
+    return this.request(`/api/operator/conversations/${toPath(conversationId)}/cancel`, CancelOperatorTurnResponseSchema, { ...options, method: 'POST' })
+  }
+
   listConversations(input: ListConversationsRequest, options?: RequestOptions) {
     const request = parseRequest(ListConversationsRequestSchema, input)
     return this.request<ListConversationsResponse>(
@@ -585,6 +615,11 @@ export const saveWorkflow = apiClient.saveWorkflow.bind(apiClient)
 export const saveGraph = apiClient.saveGraph.bind(apiClient)
 export const startWorkflowRun = apiClient.startWorkflowRun.bind(apiClient)
 export const getRun = apiClient.getRun.bind(apiClient)
+export const listOperatorConversations = apiClient.listOperatorConversations.bind(apiClient)
+export const createOperatorConversation = apiClient.createOperatorConversation.bind(apiClient)
+export const getOperatorConversation = apiClient.getOperatorConversation.bind(apiClient)
+export const sendOperatorMessage = apiClient.sendOperatorMessage.bind(apiClient)
+export const cancelOperatorTurn = apiClient.cancelOperatorTurn.bind(apiClient)
 export const listConversations = apiClient.listConversations.bind(apiClient)
 export const getConversation = apiClient.getConversation.bind(apiClient)
 export const listMessages = apiClient.listMessages.bind(apiClient)

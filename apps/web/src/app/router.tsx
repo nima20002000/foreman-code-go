@@ -2,10 +2,10 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
-  Outlet,
   redirect,
 } from '@tanstack/react-router'
 import { UrlSearchSelectionSchema } from '@graphql/contracts'
+import { RootShell } from './RootShell'
 
 import { WorkspaceRouteEntry } from '../routes/WorkspaceRouteEntry'
 import {
@@ -20,9 +20,7 @@ import {
   WorkspacesRouteEntry,
 } from '../routes/WorkspaceSectionRoutes'
 
-const rootRoute = createRootRoute({
-  component: Outlet,
-})
+const rootRoute = createRootRoute({ component: RootShell })
 
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
