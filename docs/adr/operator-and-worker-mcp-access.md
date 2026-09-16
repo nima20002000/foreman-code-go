@@ -1,6 +1,6 @@
 # ADR: Operator and Worker MCP access
 
-- Status: Accepted for Operator MCP v1
+- Status: Accepted; Operator MCP v1 and App MCP v1 implemented
 - Date: 2026-09-15
 - Scope: NIM-2579 through NIM-2587
 
@@ -9,7 +9,9 @@
 The API process owns two logically separate MCP domains:
 
 - `/mcp/operator` is the authenticated product-management interface delivered by this wave.
-- `/mcp/tools` is reserved for a future Worker Tools MCP. It is not mounted by Operator MCP v1.
+- `/mcp/tools` is the authenticated App MCP for board Agents. Its V1 catalog is
+  `context_get`, `interaction_list`, `interaction_get`, and conditionally
+  `interaction_respond` for the exact designated Orchestrator.
 
 Both domains may reuse transport helpers, deterministic authorization, audit infrastructure, and application services. They have separate registries and credential audiences. Splitting endpoints is defense in depth; it is not operating-system isolation and does not replace authorization.
 
@@ -29,13 +31,64 @@ Accepted policy references may be pinned for reproducibility, but live expiratio
 
 Application permissions do not replace Codex/OpenCode sandbox, filesystem, network, or native tool controls. Native harness tools remain available only under those independent controls.
 
-Future board-agent MCP delivery must use supported per-session native MCP configuration, bind the credential to the accepted execution identity, and isolate credentials between concurrent executions. Credentials must not be written to global CLI configuration, prompts, graph JSON, logs, or unrelated child-process environments.
+Board-agent MCP delivery uses one static, manually installed provider entry and
+a different `GRAPHQL_APP_MCP_TOKEN` value in each owned Agent process. GraphQL
+derives the immutable Agent/workspace/workflow/run subject from the durable
+execution, stores only a SHA-256 token digest, expires the credential after 15
+minutes, and revokes it when the owning process ends. A resumed/new process gets
+a new credential for the same durable subject and does not rewrite config.
+
+Before providing the environment value, GraphQL inspects the effective config
+in the same runner and working directory. The entry must use Streamable HTTP,
+the exact expected `/mcp/tools` URL, and the expected environment reference.
+Missing, mismatched, failed, or unresolvable config receives no token. Detection
+is read-only and never installs, repairs, or rewrites user configuration.
+
+Credentials are never written to CLI arguments, prompts, graph JSON, native
+events, generic configuration reads, logs, global process environment, or an
+unrelated child process.
+
+## Manual provider setup
+
+The user owns this static configuration. Replace the local port only when the
+GraphQL API is intentionally served elsewhere; the path must remain
+`/mcp/tools`.
+
+Codex `config.toml`:
+
+```toml
+[mcp_servers.graphql-app]
+url = "http://127.0.0.1:3000/mcp/tools"
+bearer_token_env_var = "GRAPHQL_APP_MCP_TOKEN"
+```
+
+OpenCode configuration:
+
+```json
+{
+  "mcp": {
+    "graphql-app": {
+      "type": "remote",
+      "url": "http://127.0.0.1:3000/mcp/tools",
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer {env:GRAPHQL_APP_MCP_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+Do not put a literal token in either file. GraphQL does not automatically add,
+repair, or migrate these entries.
 
 ## Implemented now versus deferred
 
 Operator MCP v1 implements scoped local Operator credentials, authenticated management tools, shared application services, durable drafts, command receipts, and management audit.
 
-Deferred work includes the Worker Tools MCP, board settings for assigning MCP access, runtime credential injection into Codex/OpenCode sessions, public OAuth interoperability, memory, Files, Kanban, browser services, scheduling, remote runners, and a full Operator chat UI. No empty Worker endpoint or non-functional board access toggle is added.
+Deferred work includes automatic MCP installation/repair, public OAuth
+interoperability, memory, Files, Kanban, browser services, scheduling, remote
+runners, and a full Operator chat UI.
 
 ## Consequences
 

@@ -18,10 +18,10 @@ import { PostgresApprovalBudgetRepository } from './budget.js'
 import { PostgresInteractionRepository } from './postgres.js'
 import type {
   AttachedInteractionSession,
-  ExecutionCredentialProvider,
   NativeManagerResolutionContext,
   NativeSessionManagerResolver,
 } from './runtimePorts.js'
+import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
 
 export type ApprovalExecutionObservation =
   | { state: 'waiting'; execution: HarnessExecution; interaction: DurableInteraction }

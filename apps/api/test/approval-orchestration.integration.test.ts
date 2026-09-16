@@ -191,7 +191,7 @@ it('interrupts and resumes the same durable native execution without repeating p
   const approvalRuntime = new ApprovalExecutionCoordinator(runs, interactions, budgets, managerResolver, 10_000)
   engine = new LangGraphWorkflowEngine(
     runs, workflows, { resolve: () => { throw new Error('legacy adapter must not run') } },
-    checkpoints.saver, root, 10_000, locations, approvalRuntime, interactions,
+    checkpoints.saver, root, 10_000, locations, undefined, approvalRuntime, interactions,
   )
   const service = new InteractionService(interactions, budgets, approvalRuntime, (interaction) => engine.resumeInteraction(interaction))
   app = buildApp({
@@ -278,19 +278,27 @@ it('targets two parallel interrupt ids without respawning either branch or its p
   const prepared: Array<{ executionId: string; agentId: string; token: string }> = []
   const revoked: string[] = []
   const credentials = {
-    prepare: async (input: { executionId: string }) => {
+    prepare: async (input: { executionId: string; harness: 'codex' | 'opencode'; workingDirectory: string }) => {
       const owner = contexts.get(input.executionId)
       if (!owner) throw new Error('resolver context must precede credential issue')
       const token = `token-${owner.agentId}-${input.executionId}-${prepared.length + 1}`
       prepared.push({ executionId: input.executionId, agentId: owner.agentId, token })
-      return { credential: { principalId: `principal-${input.executionId}`, environment: { agentId: owner.agentId, variables: { GRAPHQL_APP_MCP_TOKEN: token } }, expiresAt: new Date(Date.now() + 60_000).toISOString() }, detection: {} }
+      return {
+        credential: { principalId: `principal-${input.executionId}`, environment: { agentId: owner.agentId, variables: { GRAPHQL_APP_MCP_TOKEN: token } }, expiresAt: new Date(Date.now() + 60_000).toISOString() },
+        detection: {
+          detection: { harness: input.harness, serverName: 'graphql-app', state: 'connected' as const, endpointMatches: true, credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN', checkedAt: new Date().toISOString() },
+          runnerId: 'runner-local', workingDirectory: input.workingDirectory,
+          providerVersion: input.harness === 'codex' ? '0.154.0' : '1.18.31', nativeFilters: {},
+        },
+      }
     },
+    revoke: async () => undefined,
     revokeForExecution: async (executionId: string) => { revoked.push(executionId); return 1 },
   }
   const approvalRuntime = new ApprovalExecutionCoordinator(runs, interactions, budgets, managerResolver, 10_000, credentials)
   engine = new LangGraphWorkflowEngine(
     runs, workflows, { resolve: () => { throw new Error('legacy adapter must not run') } },
-    checkpoints.saver, root, 10_000, locations, approvalRuntime, interactions,
+    checkpoints.saver, root, 10_000, locations, undefined, approvalRuntime, interactions,
   )
   const service = new InteractionService(interactions, budgets, approvalRuntime, (interaction) => engine.resumeInteraction(interaction))
 

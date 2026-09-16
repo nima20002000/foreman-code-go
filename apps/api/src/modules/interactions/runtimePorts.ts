@@ -1,6 +1,6 @@
 import type { AgentHarness, DurableInteraction, NativeSessionReference } from '@graphql/contracts'
 
-import type { ChildProcessEnvironment, NativeHarnessSessionManager } from '../harnesses/port.js'
+import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 
 export interface NativeManagerResolutionContext {
   harness: AgentHarness
@@ -48,23 +48,6 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
     const current = this.entries.get(context.executionId)
     if (current && current.context.agentId === context.agentId) this.entries.delete(context.executionId)
   }
-}
-
-export interface ExecutionLaunchCredential {
-  principalId: string
-  environment: ChildProcessEnvironment
-  expiresAt: string
-}
-
-/** Structurally compatible with HAP-04 WorkerLaunchCredentialService. */
-export interface ExecutionCredentialProvider {
-  prepare(input: {
-    executionId: string
-    harness: AgentHarness
-    workingDirectory: string
-    signal?: AbortSignal
-  }): Promise<{ credential: ExecutionLaunchCredential; detection: unknown }>
-  revokeForExecution(executionId: string): Promise<number>
 }
 
 export interface AttachedInteractionSession {
