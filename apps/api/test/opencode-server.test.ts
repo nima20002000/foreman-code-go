@@ -125,7 +125,7 @@ describe('OpenCode native server manager', () => {
     const session = await sessionFor(native)
     server.messagesAfterEventStreams = 2
     server.events.push(
-      `data: ${JSON.stringify({ id: 'evt_duplicate', type: 'message.updated', properties: { sessionID: 'ses_test', info: {} } })}\n\n`,
+      `data: not-json\n\ndata: ${JSON.stringify({ id: 'evt_duplicate', type: 'message.updated', properties: { sessionID: 'ses_test', info: {} } })}\n\n`,
       [
         `data: ${JSON.stringify({ id: 'evt_duplicate', type: 'message.updated', properties: { sessionID: 'ses_test', info: {} } })}`,
         '',

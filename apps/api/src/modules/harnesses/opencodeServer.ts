@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { isDeepStrictEqual } from 'node:util'
 
 import {
   NativeHarnessCapabilitiesSchema,
@@ -133,8 +134,13 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   async ensure(signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted()
     if (this.child && this.baseUrl && this.child.exitCode === null) {
-      const health = await this.rawRequest('/global/health', { method: 'GET' }, signal)
-      if (health.ok) return
+      try {
+        const health = await this.rawRequest('/global/health', { method: 'GET' }, signal)
+        if (health.ok) return
+      } catch {
+        // Replace an unhealthy owned process; mutations are never retried here.
+      }
+      await this.dispose()
     }
     if (!this.starting) {
       this.starting = this.start(signal).finally(() => { this.starting = undefined })
@@ -170,6 +176,10 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
           if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
         }
       } else child.kill('SIGKILL')
+      await Promise.race([
+        new Promise<void>((resolve) => child.once('close', () => resolve())),
+        new Promise<void>((resolve) => setTimeout(resolve, 1_000)),
+      ])
     }
   }
 
@@ -216,12 +226,14 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
     this.child = child
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk) => { this.stderr = (this.stderr + String(chunk)).slice(-MAX_STDERR_LENGTH) })
-    const baseUrl = await this.waitForUrl(child, signal)
-    this.baseUrl = baseUrl
-    const health = await this.rawRequest('/global/health', { method: 'GET' }, signal)
-    if (!health.ok) {
+    try {
+      const baseUrl = await this.waitForUrl(child, signal)
+      this.baseUrl = baseUrl
+      const health = await this.rawRequest('/global/health', { method: 'GET' }, signal)
+      if (!health.ok) throw new HarnessExecutionError('OPENCODE_SERVER_UNHEALTHY', `OpenCode health returned HTTP ${health.status}.`)
+    } catch (error) {
       await this.dispose()
-      throw new HarnessExecutionError('OPENCODE_SERVER_UNHEALTHY', `OpenCode health returned HTTP ${health.status}.`)
+      throw error
     }
   }
 
@@ -598,7 +610,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       throw new HarnessExecutionError('OPENCODE_SERVER_AUTO_CONFLICT', 'Native automatic permission handling cannot run with GraphQL-routed review.')
     }
     if (this.options.server instanceof ManagedOpenCodeServer
-      && JSON.stringify(configuration.advanced) !== JSON.stringify(this.options.server.advancedConfiguration)) {
+      && !isDeepStrictEqual(configuration.advanced, this.options.server.advancedConfiguration)) {
       throw new HarnessExecutionError('OPENCODE_SERVER_CONFIGURATION_MISMATCH', 'OpenCode process-level Advanced settings differ from the session configuration.')
     }
     const [providerID, ...modelParts] = configuration.model.split('/')
