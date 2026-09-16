@@ -28,4 +28,23 @@ describe('MCP detection settings', () => {
     expect(screen.getAllByText(/runner-local/)).toHaveLength(2)
     expect(screen.getByText(/will not rewrite it automatically/i)).toBeVisible()
   })
+
+  it.each([
+    ['not_detected', 'Not detected'], ['misconfigured', 'Misconfigured'],
+    ['status_unavailable', 'Detected · status unavailable'], ['connected', 'Detected · connected'],
+    ['disabled', 'Detected · disabled'], ['authentication_required', 'Detected · authentication required'],
+    ['broken', 'Detected · broken'], ['check_failed', 'Check failed'],
+  ] as const)('renders the normalized %s state', async (state, label) => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    for (const harness of ['codex', 'opencode'] as const) client.setQueryData(
+      queryKeys.mcpDetection('workspace-state', harness),
+      ScopedMcpDetectionSchema.parse({
+        runnerId: 'runner-state', workingDirectory: '/srv/state', providerVersion: 'qualified', nativeFilters: {},
+        detection: { harness, serverName: 'graphql-app', state, endpointMatches: state === 'not_detected' || state === 'check_failed' ? null : true,
+          credentialEnvironmentVariable: null, checkedAt: '2026-09-16T00:00:00.000Z' },
+      }),
+    )
+    render(<QueryClientProvider client={client}><McpDetectionSettings workspaceId="workspace-state" /></QueryClientProvider>)
+    expect((await screen.findAllByText(label))).toHaveLength(2)
+  })
 })
