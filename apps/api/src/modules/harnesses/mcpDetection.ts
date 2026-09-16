@@ -161,7 +161,7 @@ export function intersectNativeToolFilters(
   return authorized.filter((tool) => (!enabled || enabled.has(tool)) && !disabled.has(tool))
 }
 
-export class WorkerLaunchCredentialService {
+export class WorkerLaunchCredentialService implements ExecutionCredentialProvider {
   constructor(
     private readonly detection: McpDetectionService,
     private readonly credentials: WorkerCredentialService,
@@ -188,4 +188,27 @@ export class WorkerLaunchCredentialService {
   revoke(credential: IssuedWorkerCredential): Promise<void> {
     return this.credentials.revoke(credential)
   }
+
+  revokeForExecution(executionId: string): Promise<number> {
+    return this.credentials.revokeForExecution(executionId)
+  }
+}
+
+export interface ExecutionCredentialPrepareInput {
+  executionId: string
+  harness: AgentHarness
+  workingDirectory: string
+  signal?: AbortSignal
+}
+
+export interface PreparedExecutionCredential {
+  credential: IssuedWorkerCredential
+  detection: ScopedMcpDetection
+}
+
+/** Provider-neutral lifecycle seam consumed by legacy and rich session execution paths. */
+export interface ExecutionCredentialProvider {
+  prepare(input: ExecutionCredentialPrepareInput): Promise<PreparedExecutionCredential>
+  revoke(credential: IssuedWorkerCredential): Promise<void>
+  revokeForExecution(executionId: string): Promise<number>
 }

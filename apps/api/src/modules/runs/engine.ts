@@ -25,7 +25,7 @@ import type { RunOwnership } from './ownership.js'
 import { ExecutionLimiter } from './limiter.js'
 import { validateExecutableTopology } from './topology.js'
 import { resolveExecutionDirectory } from './executionDirectory.js'
-import type { WorkerLaunchCredentialService } from '../harnesses/mcpDetection.js'
+import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
 import type { IssuedWorkerCredential } from '../access/workerCredentials.js'
 
 const EngineState = Annotation.Root({
@@ -78,7 +78,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     workspaceRoot: string,
     private readonly timeoutMs: number,
     private readonly locations: WorkspaceLocationService,
-    private readonly workerCredentials?: WorkerLaunchCredentialService,
+    private readonly workerCredentials?: ExecutionCredentialProvider,
   ) {
     this.workspaceRoot = resolve(workspaceRoot)
   }

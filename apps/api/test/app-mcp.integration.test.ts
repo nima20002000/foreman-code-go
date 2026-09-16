@@ -207,5 +207,14 @@ describe('App MCP real transport and PostgreSQL policy', () => {
     const expiring = await credentials.issueForExecution(executionIds.wrongReviewer)
     await database.pool.query("update management_principals set expires_at=now()-interval '1 second' where id=$1", [expiring.principalId])
     await expect(connect('expired', token(expiring))).rejects.toThrow()
+
+    const coderRestart = await credentials.issueForExecution(executionIds.coder)
+    const otherAgentRestart = await credentials.issueForExecution(executionIds.wrongReviewer)
+    expect(token(coderRestart)).not.toBe(token(otherAgentRestart))
+    // Terminal/Stop revokes every still-active credential for only the target execution.
+    expect(await credentials.revokeForExecution(executionIds.coder)).toBe(2)
+    expect(await credentials.revokeForExecution(executionIds.coder)).toBe(0)
+    await expect(access.authenticate(token(coderRestart), 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+    await expect(access.authenticate(token(otherAgentRestart), 'worker')).resolves.toMatchObject({ agentId: 'agent-researcher' })
   }, 30_000)
 })

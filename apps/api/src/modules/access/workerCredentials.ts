@@ -115,4 +115,36 @@ export class WorkerCredentialService {
       client.release()
     }
   }
+
+  /** Terminal/Stop cleanup. Repeated calls are safe and return newly revoked credentials only. */
+  async revokeForExecution(executionId: string): Promise<number> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      const active = await client.query<{ principal_id: string }>(
+        `select principal_id from worker_credential_bindings
+         where execution_id=$1 and revoked_at is null
+         order by principal_id for update`,
+        [executionId],
+      )
+      const principalIds = active.rows.map((row) => row.principal_id)
+      if (principalIds.length > 0) {
+        await client.query(
+          'update management_principals set revoked_at=coalesce(revoked_at,now()) where id=any($1::text[])',
+          [principalIds],
+        )
+        await client.query(
+          'update worker_credential_bindings set revoked_at=coalesce(revoked_at,now()) where execution_id=$1 and revoked_at is null',
+          [executionId],
+        )
+      }
+      await client.query('commit')
+      return principalIds.length
+    } catch (error) {
+      await client.query('rollback')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
 }
