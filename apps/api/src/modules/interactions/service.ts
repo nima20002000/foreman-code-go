@@ -1,22 +1,15 @@
 import { randomUUID } from 'node:crypto'
 
-import type {
-  AgentHarness,
-  DurableInteraction,
-} from '@graphql/contracts'
+import type { DurableInteraction } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { ManagementAction } from '@graphql/contracts/management'
 
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
-import type { NativeHarnessSessionManager as SessionManager } from '../harnesses/port.js'
 import { assertOrchestratorInteractionAuthority, type WorkerInteractionAuthority } from './authorization.js'
 import { PostgresApprovalBudgetRepository } from './budget.js'
 import { PostgresInteractionRepository } from './postgres.js'
-
-export interface NativeSessionManagerResolver {
-  resolve(harness: AgentHarness): SessionManager
-}
+import type { InteractionNativeRuntime } from './runtimePorts.js'
 
 export type InteractionResponder =
   | { kind: 'user' }
@@ -62,9 +55,8 @@ export class InteractionService {
   constructor(
     private readonly interactions: PostgresInteractionRepository,
     private readonly budgets: PostgresApprovalBudgetRepository,
-    private readonly managers: NativeSessionManagerResolver,
+    private readonly nativeRuntime: InteractionNativeRuntime,
     private readonly resumeGraph: (interaction: DurableInteraction) => Promise<void>,
-    private readonly attachSession?: (interaction: DurableInteraction) => Promise<unknown>,
   ) {}
 
   private async resumeDelivered(interaction: DurableInteraction): Promise<void> {
@@ -117,8 +109,9 @@ export class InteractionService {
     })
     if (decision.interaction.deliveryState === 'delivered') return decision
 
+    let attached
     try {
-      await this.attachSession?.(decision.interaction)
+      attached = await this.nativeRuntime.attachInteraction(decision.interaction)
     } catch {
       return {
         interaction: await this.interactions.updateDelivery(
@@ -133,12 +126,9 @@ export class InteractionService {
     )
     const correlationId = `approval-${randomUUID()}`
     const attempt = await this.interactions.beginDeliveryAttempt(submitted, correlationId)
-    const manager = this.managers.resolve(submitted.harness)
+    const { manager, session } = attached
     try {
-      await manager.respond({
-        harness: submitted.harness, providerVersion: submitted.providerVersion,
-        nativeSessionId: submitted.nativeSessionId,
-      }, submitted.nativeRequestId, option)
+      await manager.respond(session, submitted.nativeRequestId, option)
       await this.interactions.finishDeliveryAttempt(submitted.id, attempt, 'delivered')
       const delivered = await this.interactions.updateDelivery(submitted.id, submitted.revision, 'delivered')
       await this.resumeDelivered(delivered)
@@ -153,13 +143,9 @@ export class InteractionService {
   }
 
   async reconcile(interaction: DurableInteraction): Promise<DurableInteraction> {
-    const manager = this.managers.resolve(interaction.harness)
     try {
-      await this.attachSession?.(interaction)
-      const history = await manager.reconcile({
-        harness: interaction.harness, providerVersion: interaction.providerVersion,
-        nativeSessionId: interaction.nativeSessionId,
-      }, `approval:${interaction.id}`)
+      const { manager, session } = await this.nativeRuntime.attachInteraction(interaction)
+      const history = await manager.reconcile(session, `approval:${interaction.id}`)
       const stillPending = history.pendingInteractions.some((item) => item.turn.nativeRequestId === interaction.nativeRequestId)
       return this.interactions.updateDelivery(interaction.id, interaction.revision, stillPending ? 'failed' : 'delivered')
     } catch {

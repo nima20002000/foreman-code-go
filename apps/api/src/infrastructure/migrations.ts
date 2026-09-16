@@ -295,6 +295,11 @@ const migrations = [
       primary key (principal_id,command_id)
     );
   ` },
+  { version: 502, sql: `
+    alter table review_jobs add column if not exists execution_id text;
+    alter table review_jobs add column if not exists working_directory text;
+    alter table review_jobs add column if not exists provider_version text;
+  ` },
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

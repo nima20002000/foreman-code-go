@@ -321,6 +321,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       // tracking and database ownership until every launched task cleans up.
       await drain()
       owner.assertOwned()
+      await this.approvals?.cancelRun(run.id)
       const result = failedResult(firstFailure?.error ?? error, signal.aborted)
       await this.runs.updateState(run.id, {
         executionState: 'completed',
@@ -409,8 +410,8 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
     if (this.approvals && run.approval) {
       const observation = await this.approvals.ensureObserve({
-        candidate: execution, request, approval: run.approval, workflowId: run.workflowId,
-        graphThreadId: run.id, owner,
+          candidate: execution, request, approval: run.approval, workflowId: run.workflowId,
+          graphThreadId: run.id, owner, signal,
       })
       execution = observation.execution
       if (observation.state === 'waiting') {

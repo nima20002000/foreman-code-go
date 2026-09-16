@@ -7,13 +7,14 @@ import { DomainError } from '../errors.js'
 export class PostgresInteractionCoordinationRepository {
   constructor(private readonly pool: pg.Pool) {}
 
-  async ensureReviewJob(job: ReviewJob): Promise<{ job: ReviewJob; created: boolean }> {
+  async ensureReviewJob(job: ReviewJob, context?: { executionId: string; workingDirectory: string; providerVersion: string }): Promise<{ job: ReviewJob; created: boolean }> {
     const parsed = ReviewJobSchema.parse(job)
     const inserted = await this.pool.query<{ record: unknown }>(
-      `insert into review_jobs (id, interaction_id, reviewer_agent_id, state, record)
-       values ($1,$2,$3,$4,$5::jsonb)
+      `insert into review_jobs (id, interaction_id, reviewer_agent_id, state, record, execution_id, working_directory, provider_version)
+       values ($1,$2,$3,$4,$5::jsonb,$6,$7,$8)
        on conflict (interaction_id, reviewer_agent_id) do nothing returning record`,
-      [parsed.id, parsed.interactionId, parsed.reviewerAgentId, parsed.state, JSON.stringify(parsed)],
+      [parsed.id, parsed.interactionId, parsed.reviewerAgentId, parsed.state, JSON.stringify(parsed),
+        context?.executionId ?? null, context?.workingDirectory ?? null, context?.providerVersion ?? null],
     )
     if (inserted.rows[0]) return { job: ReviewJobSchema.parse(inserted.rows[0].record), created: true }
     const current = await this.pool.query<{ record: unknown }>(
@@ -21,6 +22,17 @@ export class PostgresInteractionCoordinationRepository {
       [parsed.interactionId, parsed.reviewerAgentId],
     )
     return { job: ReviewJobSchema.parse(current.rows[0]?.record), created: false }
+  }
+
+  async getReviewJobContext(id: string): Promise<{ executionId: string; workingDirectory: string; providerVersion: string }> {
+    const result = await this.pool.query<{ execution_id: string | null; working_directory: string | null; provider_version: string | null }>(
+      'select execution_id,working_directory,provider_version from review_jobs where id=$1', [id],
+    )
+    const row = result.rows[0]
+    if (!row?.execution_id || !row.working_directory || !row.provider_version) {
+      throw new DomainError('REVIEW_JOB_CONTEXT_MISSING', 'The review job has no durable execution ownership context.', 409)
+    }
+    return { executionId: row.execution_id, workingDirectory: row.working_directory, providerVersion: row.provider_version }
   }
 
   async claimReviewJob(id: string, owner: string, token: string, leaseExpiresAt: string): Promise<ReviewJob> {

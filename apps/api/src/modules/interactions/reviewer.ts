@@ -2,23 +2,28 @@ import { randomUUID } from 'node:crypto'
 
 import { ReviewJobSchema, type DurableInteraction, type NativeSessionReference, type ReviewJob } from '@graphql/contracts'
 
-import type { NativeSessionManagerResolver } from './service.js'
 import { PostgresInteractionCoordinationRepository } from './coordination.js'
+import type { InteractionNativeRuntime, NativeManagerResolutionContext } from './runtimePorts.js'
 
 export class ReviewerDispatcher {
   constructor(
     private readonly coordination: PostgresInteractionCoordinationRepository,
-    private readonly managers: NativeSessionManagerResolver,
+    private readonly nativeRuntime: InteractionNativeRuntime,
     private readonly leaseMs = 30_000,
   ) {}
 
-  async enqueue(interaction: DurableInteraction, reviewerAgentId: string, session: NativeSessionReference): Promise<ReviewJob> {
+  async enqueue(
+    interaction: DurableInteraction,
+    reviewerAgentId: string,
+    session: NativeSessionReference,
+    context: Pick<NativeManagerResolutionContext, 'executionId' | 'workingDirectory'>,
+  ): Promise<ReviewJob> {
     const now = new Date().toISOString()
     const result = await this.coordination.ensureReviewJob(ReviewJobSchema.parse({
       id: `review-${randomUUID()}`, interactionId: interaction.id, reviewerAgentId,
       attempt: 0, state: 'pending', provider: session.harness, nativeSessionId: session.nativeSessionId,
       correlationId: `review-correlation-${randomUUID()}`, createdAt: now, updatedAt: now,
-    }))
+    }), { ...context, providerVersion: session.providerVersion })
     return result.job
   }
 
@@ -28,7 +33,7 @@ export class ReviewerDispatcher {
     const jobToken = `review-lease-${randomUUID()}`
     const leaseExpiresAt = new Date(Date.now() + this.leaseMs).toISOString()
     let job = await this.coordination.claimReviewJob(available.id, workerId, jobToken, leaseExpiresAt)
-    const manager = this.managers.resolve(job.provider)
+    const durableContext = await this.coordination.getReviewJobContext(job.id)
     let lane = await this.coordination.getLane(job.provider, job.nativeSessionId)
     if (!lane) throw new Error('The designated reviewer session has no durable single-writer lane.')
     if (lane.observedStatus === 'busy') return this.coordination.transitionReviewJob(job.id, jobToken, 'blocked_busy')
@@ -44,11 +49,22 @@ export class ReviewerDispatcher {
       return this.coordination.transitionReviewJob(job.id, jobToken, 'blocked_busy')
     }
 
-    const session = {
-      harness: job.provider,
-      providerVersion: (await manager.capabilities()).providerVersion,
-      nativeSessionId: job.nativeSessionId,
+    const { providerVersion, ...ownerContext } = durableContext
+    let attached
+    try {
+      attached = await this.nativeRuntime.attachOwnedSession({
+        harness: job.provider, agentId: job.reviewerAgentId, ...ownerContext,
+      }, {
+        harness: job.provider, providerVersion,
+        nativeSessionId: job.nativeSessionId,
+      })
+    } catch {
+      const blocked = await this.coordination.transitionReviewJob(job.id, jobToken, 'blocked_disconnected')
+      await this.coordination.releaseLane(lane.id, laneToken, { observedStatus: 'disconnected' }).catch(() => undefined)
+      return blocked
     }
+    const manager = attached.manager
+    const session = attached.session
     let acknowledged = false
     try {
       job = await this.coordination.transitionReviewJob(job.id, jobToken, 'submitted')
