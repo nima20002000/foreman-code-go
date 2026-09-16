@@ -110,7 +110,12 @@ function fixture(options: { realGraph?: boolean; timeoutMs?: number; nodes?: str
     list: async () => { throw new Error('Historical interaction pagination must not drive resume') },
   }
   const workflows = { getVersion: async () => version }
-  const approvals = { cancelRun: async () => { calls.cancel += 1 } }
+  const approvals = {
+    cancelRun: async () => { calls.cancel += 1 },
+    reconcileReviews: async () => undefined,
+    residentRunIds: () => [] as string[],
+    reviewers: { shutdown: async () => undefined },
+  }
   const engine = new LangGraphWorkflowEngine(
     runs as unknown as EngineArguments[0], workflows as unknown as EngineArguments[1], {} as EngineArguments[2],
     new MemorySaver(), '/runtime', options.timeoutMs ?? 5_000,
