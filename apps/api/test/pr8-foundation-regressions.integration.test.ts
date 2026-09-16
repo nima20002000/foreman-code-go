@@ -120,7 +120,7 @@ describe('PR8 PostgreSQL atomicity, recovery and upgrades', () => {
       await expect(repository.create({ ...interaction, id: `duplicate-${field}`, [field]: `different-${field}` })).rejects.toThrow()
     }
     expect((await repository.create({ ...interaction, id: 'valid-replay' })).created).toBe(false)
-    await expect(repository.updateDelivery(interaction.id, 0, 'delivered')).rejects.toMatchObject({ code: 'INTERACTION_DELIVERY_TRANSITION_INVALID' })
+    await expect(repository.updateDelivery(interaction.id, 0, 'delivered')).rejects.toMatchObject({ code: 'DELIVERY_TRANSITION_INVALID' })
     expect((await repository.get(interaction.id))!.revision).toBe(0)
     const decision = { id: interaction.id, expectedRevision: 0, optionId: 'codex-approve-once', nativeResponse: { decision: 'accept' } }
     const decided = await repository.decide(decision)
@@ -180,7 +180,8 @@ describe('PR8 PostgreSQL atomicity, recovery and upgrades', () => {
       .rejects.toMatchObject({ code:'REVIEW_JOB_LEASE_LOST' })
     await coordination.updateReviewJob({ id:'job', owner:'new', token:'new-token', attempt:next.attempt, state:'submitted' })
     await pool.query(`update review_jobs set record=jsonb_set(record,'{leaseExpiresAt}',to_jsonb('2000-01-01T00:00:00.000Z'::text)) where id='job'`)
-    await expect(coordination.claimReviewJob('job','third','third-token',future)).rejects.toMatchObject({ code:'REVIEW_JOB_NOT_CLAIMABLE' })
+    const recovered = await coordination.claimReviewJob('job','third','third-token',future)
+    expect(recovered).toMatchObject({ state:'submitted', attempt:next.attempt + 1, leaseOwner:'third', leaseToken:'third-token' })
     const lane = await coordination.claimLane('lane',0,'owner','token',future,'correlation')
     expect(lane.revision).toBe(1)
     await expect(coordination.claimLane('lane',0,'other','other-token',future,'next')).rejects.toMatchObject({ code:'SESSION_LANE_BUSY' })

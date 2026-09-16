@@ -1,17 +1,20 @@
 import { AgentDefaultsSchema, CodexSessionCompatibilitySchema, validateHarnessWorkflowCompatibility, type AgentDefaults, type WorkflowDefaults } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { isDeepStrictEqual } from 'node:util'
 
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import type { HarnessCatalogService } from '../harnesses/catalog.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { PostgresFoundationSettingsRepository } from './foundation.js'
+import type { PostgresOperatorRepository } from '../operators/postgres.js'
 
 export class FoundationSettingsManagementService {
   constructor(
     private readonly settings: PostgresFoundationSettingsRepository,
     private readonly commands: PostgresCommandCoordinator,
     private readonly harnesses?: Pick<HarnessCatalogService, 'qualifyConfiguration'>,
+    private readonly operators?: PostgresOperatorRepository,
   ) {}
 
   getAgentDefaults(principal: ManagementPrincipal) {
@@ -47,7 +50,15 @@ export class FoundationSettingsManagementService {
             throw new DomainError('AGENT_DEFAULTS_UNQUALIFIED', `The ${role} template was not saved: ${error instanceof Error ? error.message : 'Native qualification failed.'}`, 409)
           }
         }
-        return this.settings.updateManagedAgentDefaults(client, value, input.expectedRevision)
+        const operators = this.operators
+        const current = await operators?.ensureWithClient(client)
+        const result = await this.settings.updateManagedAgentDefaults(client, value, input.expectedRevision)
+        if (operators && current && !isDeepStrictEqual(current.configuration.harness, value.operator.harness)) {
+          await operators.updateWithClient(
+            client, value.operator.harness, current.operator.currentConfigurationVersionId,
+          )
+        }
+        return result
       },
     })
   }

@@ -8,6 +8,7 @@ import {
   CODEX_APPROVAL_OPTIONS_FIXTURE,
   AgentSchema,
   DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
+  DurableInteractionSchema,
   NATIVE_INTERACTION_FIXTURES,
   NativeHarnessEventSchema,
   type HarnessExecutionRequest,
@@ -23,6 +24,7 @@ import type { FastifyInstance } from 'fastify'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 
 import { buildApp } from '../src/app.js'
+import { WorkerCredentialService } from '../src/modules/access/workerCredentials.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
@@ -379,6 +381,7 @@ it('delivers an Orchestrator App MCP response to native execution, resumes the r
     const row = await pool.query<{ record: unknown }>('select record from agents where id=$1', [agentId])
     const agent = AgentSchema.parse({ ...AgentSchema.parse(row.rows[0]!.record), productRole })
     await pool.query('update agents set record=$2::jsonb where id=$1', [agentId, JSON.stringify(agent)])
+    await pool.query("update agent_configuration_versions set record=jsonb_set(record,'{productRole}',to_jsonb($2::text)) where agent_id=$1", [agentId, productRole])
   }
   const saved = await workflows.get('workspace-1', 'workflow-content-pipeline')
   if (!saved) throw new Error('seed missing')
@@ -430,27 +433,23 @@ it('delivers an Orchestrator App MCP response to native execution, resumes the r
   )
   const service = new InteractionService(interactions, budgets, runtime, (interaction) => engine.resumeInteraction(interaction))
   const access = new PostgresAccessService(pool)
-  const issued = await access.issue({
-    name: 'Designated orchestrator', audience: 'worker', agentId: 'agent-reviewer',
-    expiresAt: new Date(Date.now() + 60_000),
-    grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: {
-      workspaceIds: [run.workspaceId], workflowIds: [run.workflowId], runIds: [run.id],
-    } }],
-  })
   const commands = new PostgresCommandCoordinator(pool)
   app = buildApp({
     readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
     appMcp: { access, interactions: new PostgresAppInteractionService(pool, interactions, commands, service) },
   })
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
+  await engine.start(run.id)
+  const pending = (await interactions.list({ runId: run.id, limit: 10 }))[0]!
+  const reviewerExecution = (await runs.listExecutions(run.id)).find((item) => item.agentId === 'agent-reviewer')!
+  const issued = await new WorkerCredentialService(pool, access).issueForReviewer(reviewerExecution.id)
   const client = new Client({ name: 'orchestrator-app-proof', version: '1.0.0' })
   await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/tools', address), {
-    authProvider: { token: async () => issued.token },
+    authProvider: { token: async () => issued.environment.variables.GRAPHQL_APP_MCP_TOKEN! },
   }))
   try {
-    await engine.start(run.id)
-    const pending = (await interactions.list({ runId: run.id, limit: 10 }))[0]!
-    expect(revoked).toHaveLength(1)
+    const revocationsBeforeResponse = revoked.length
+    expect(revocationsBeforeResponse).toBeGreaterThan(0)
     const response = await client.callTool({ name: 'interaction_respond', arguments: {
       interactionId: pending.id,
       optionId: pending.responseOptions.find((option) => option.semantic === 'approve_once')!.optionId,
@@ -460,7 +459,7 @@ it('delivers an Orchestrator App MCP response to native execution, resumes the r
     expect((response.structuredContent as { interaction: { deliveryState: string } }).interaction.deliveryState).toBe('delivered')
     expect(await runs.get(run.id)).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
     expect([...managers.values()].reduce((count, manager) => count + manager.counters.deliveries, 0)).toBe(1)
-    expect(revoked).toHaveLength(2)
+    expect(revoked).toHaveLength(revocationsBeforeResponse + 1)
   } finally { await client.close() }
 })
 
@@ -535,11 +534,23 @@ it('lists, reads and responds to an Operator-assigned request through authentica
   await budgets.ensure(execution.id, run.id, 10_000)
   await budgets.beginWait(execution.id)
   const manager = new DeterministicNativeSessionManager('codex')
-  const session = await manager.createSession({ request: {
+  const session = await manager.attachSession({
+    harness: 'codex', providerVersion: '0.154.0', nativeSessionId: execution.nativeSessionId,
+  }, { request: {
     executionId: execution.id, runId: run.id, workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId,
     workingDirectory: projectRoot, runtimeDirectory: root, configuration, input: {},
   } })
   for await (const event of manager.startTurn(session, { prompt: 'fixture', clientCorrelationId: 'operator-proof' })) { void event; break }
+  const pendingNative = (await manager.pending(session))!
+  const rebound = DurableInteractionSchema.parse({
+    ...created.interaction,
+    nativeRequestId: pendingNative.turn.nativeRequestId,
+    nativeRequestType: pendingNative.nativeRequestType,
+    request: pendingNative.request,
+    responseOptions: pendingNative.responseOptions,
+  })
+  await pool.query('update durable_interactions set native_request_id=$2,record=$3::jsonb where id=$1',
+    [rebound.id, rebound.nativeRequestId, JSON.stringify(rebound)])
   const managerResolver = { resolve: () => ({ manager, processState: 'resident' as const }) }
   const runtime = new ApprovalExecutionCoordinator(runs, interactions, budgets, managerResolver, 10_000)
   const service = new InteractionService(interactions, budgets, runtime, async () => undefined)
@@ -589,7 +600,7 @@ it('lists, reads and responds to an Operator-assigned request through authentica
       interactionId: missing.interaction.id, optionId: 'codex-approve-once', expectedRevision: 0,
     })
     expect(blocked.interaction).toMatchObject({ status: 'delivery_failed', deliveryState: 'failed' })
-    expect(manager.counters).toMatchObject({ sessions: 1, deliveries: 1 })
+    expect(manager.counters).toMatchObject({ attaches: 1, deliveries: 1 })
     const uncertainManager = new UncertainOnceNativeManager('opencode')
     const uncertainSession = await uncertainManager.createSession({ request: {
       executionId: execution.id, runId: run.id, workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId,

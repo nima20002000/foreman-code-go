@@ -77,6 +77,7 @@ export interface OpenCodeNativeSessionManagerOptions {
   ownerAgentId: string
   appMcpServerName?: string
   expectedAppMcpEndpoint?: string
+  credentialEnvironmentVariable?: string
 }
 export interface OpenCodeMcpInspection {
   cwd: string
@@ -187,7 +188,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
-    yield* this.watchTurn(session, input.clientCorrelationId, input.prompt, this.signal(signal))
+    yield* this.watchTurn(session, input.clientCorrelationId, input.prompt, this.signal(signal), input.onSubmitted)
   }
 
   /** Explicit nonmutating recovery seam: this method never submits prompt_async. */
@@ -195,7 +196,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     yield* this.watchTurn(session, correlationId, undefined, this.signal(signal))
   }
 
-  private async *watchTurn(session: NativeSessionReference, correlationId: string, prompt: string | undefined, signal: AbortSignal): AsyncIterable<NativeHarnessEvent> {
+  private async *watchTurn(session: NativeSessionReference, correlationId: string, prompt: string | undefined, signal: AbortSignal,
+    onSubmitted?: (nativeTurnId: string) => Promise<void>): AsyncIterable<NativeHarnessEvent> {
     const state = this.requireSession(session)
     let turn: OwnedTurn | undefined
     let response: Response | undefined
@@ -254,6 +256,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
               agent: state.configuration.nativeAgent, parts: [{ type: 'text', text: prompt }],
             }),
           }, signal)
+          await onSubmitted?.(messageID)
         } catch (error) {
           if (error instanceof OpenCodeNativeDeliveryError && error.certainty === 'definite') turn.submitted = false
           throw error
@@ -379,9 +382,14 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     })
   }
 
-  cancel(session: NativeSessionReference, signal?: AbortSignal): Promise<boolean> {
+  cancel(session: NativeSessionReference, signal?: AbortSignal, nativeTurnId?: string): Promise<boolean> {
     const combined = this.signal(signal)
-    return this.exclusive(async () => { await this.ready(combined); return this.cancelReady(session, combined) })
+    return this.exclusive(async () => {
+      await this.ready(combined)
+      const turn = this.requireSession(session).turn
+      if (nativeTurnId && turn?.messageID !== nativeTurnId) return false
+      return this.cancelReady(session, combined)
+    })
   }
 
   private async cancelReady(session: NativeSessionReference, signal: AbortSignal): Promise<boolean> {
@@ -455,7 +463,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const root = await this.message(session.nativeSessionId, messageID, state.directory, signal)
     const page = await this.messagePage(session.nativeSessionId, state.directory, undefined, signal)
     const pendingInteractions = await this.pendingReady(session, signal)
-    const result: NativeHistory = { events: normalizedHistory(page.messages, state.configuration.thinking), pendingInteractions,
+    const result: NativeHistory = { correlationId, nativeTurnId: messageID,
+      events: normalizedHistory(page.messages, state.configuration.thinking), pendingInteractions,
       ...(pendingInteractions[0] ? { pendingInteraction: pendingInteractions[0] } : {}),
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     }
@@ -480,6 +489,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       }
       if (!history.rooted) throw new HarnessExecutionError('OPENCODE_TURN_HISTORY_INCOMPLETE', 'Native history did not include the correlated prompt; no older result was selected.')
       terminalResult = history.result
+      if (history.resultMessageId) result.nativeMessageId = history.resultMessageId
     }
     const statusAfter = await this.sessionStatus(session.nativeSessionId, state.directory, signal)
     if (statusBefore !== 'idle' || statusAfter !== 'idle' || pendingInteractions.length) return result
@@ -557,8 +567,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     if (!environment && this.boundEnvironmentFingerprint && this.options.server.credentialEnvironmentFingerprint === this.boundEnvironmentFingerprint) return
     const selected = environment ?? { agentId: this.options.ownerAgentId, variables: {} }
     if (selected.agentId !== this.options.ownerAgentId) throw new HarnessExecutionError('OPENCODE_SESSION_OWNER_MISMATCH', 'The session credential belongs to another Agent.')
-    if (Object.keys(selected.variables).some((key) => key !== 'GRAPHQL_APP_MCP_TOKEN')
-      || ('GRAPHQL_APP_MCP_TOKEN' in selected.variables && !selected.variables.GRAPHQL_APP_MCP_TOKEN)) {
+    const credentialEnvironmentVariable = this.options.credentialEnvironmentVariable ?? 'GRAPHQL_APP_MCP_TOKEN'
+    if (Object.keys(selected.variables).some((key) => key !== credentialEnvironmentVariable)
+      || (credentialEnvironmentVariable in selected.variables && !selected.variables[credentialEnvironmentVariable])) {
       throw new HarnessExecutionError('OPENCODE_CREDENTIAL_ENV_UNSUPPORTED', 'Only the scoped App credential can be bound.')
     }
     Object.values(selected.variables).forEach((value) => this.knownSecrets.add(value))
@@ -847,7 +858,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     try {
       const native = await this.inspectNativeMcp(first.directory, signal)
       const state: McpDetection['state'] = native.nativeStatus !== 'not_detected'
-        && (native.credentialEnvironmentVariable !== 'GRAPHQL_APP_MCP_TOKEN' || native.transport !== 'streamable-http')
+        && (native.credentialEnvironmentVariable !== (this.options.credentialEnvironmentVariable ?? 'GRAPHQL_APP_MCP_TOKEN') || native.transport !== 'streamable-http')
         ? 'misconfigured'
         : native.nativeStatus === 'not_detected' ? 'not_detected' : native.endpointMatches === false ? 'misconfigured'
           : native.nativeStatus === 'connected' ? 'connected' : native.nativeStatus === 'disabled' ? 'disabled'

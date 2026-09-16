@@ -32,41 +32,47 @@ export class PostgresOperatorRepository {
   constructor(private readonly pool: pg.Pool) {}
 
   async ensure(supplied?: pg.ClientBase): Promise<{ operator: OperatorAgent; configuration: OperatorConfigurationVersion }> {
-    return inTransaction(this.pool, supplied, async (client) => {
-      await client.query('select pg_advisory_xact_lock(hashtext($1))', ['application-operator'])
-      const found = await client.query<{ record: unknown; configuration: unknown }>(
-        `select o.record, c.record as configuration from application_operators o
-         join operator_configuration_versions c on c.id = o.current_configuration_version_id where o.id = $1`, [OPERATOR_ID],
-      )
-      if (found.rows[0]) {
-        return { operator: OperatorAgentSchema.parse(found.rows[0].record), configuration: OperatorConfigurationVersionSchema.parse(found.rows[0].configuration) }
-      }
-      const createdAt = new Date().toISOString()
-      const harness = (await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults(client)).value.operator.harness
-      const configuration = OperatorConfigurationVersionSchema.parse({
-        id: `${OPERATOR_ID}-config-v1-${randomUUID()}`, operatorId: OPERATOR_ID, version: 1,
-        harness, contentHash: hash(harness), createdAt,
-      })
-      const operator = OperatorAgentSchema.parse({
-        id: OPERATOR_ID, role: 'operator', name: 'Operator', currentConfigurationVersionId: configuration.id,
-        createdAt, updatedAt: createdAt,
-      })
-      await client.query(
-        'insert into application_operators (id, current_configuration_version_id, record) values ($1, $2, $3::jsonb)',
-        [operator.id, configuration.id, JSON.stringify(operator)],
-      )
-      await client.query(
-        `insert into operator_configuration_versions (id, operator_id, version, record)
-         values ($1, $2, $3, $4::jsonb)`,
-        [configuration.id, operator.id, configuration.version, JSON.stringify(configuration)],
-      )
-      return { operator, configuration }
+    return inTransaction(this.pool, supplied, (client) => this.ensureWithClient(client))
+  }
+
+  async ensureWithClient(client: pg.ClientBase): Promise<{ operator: OperatorAgent; configuration: OperatorConfigurationVersion }> {
+    await client.query('select pg_advisory_xact_lock(hashtext($1))', ['application-operator'])
+    const found = await client.query<{ record: unknown; configuration: unknown }>(
+      `select o.record, c.record as configuration from application_operators o
+       join operator_configuration_versions c on c.id = o.current_configuration_version_id where o.id = $1`, [OPERATOR_ID],
+    )
+    if (found.rows[0]) {
+      return { operator: OperatorAgentSchema.parse(found.rows[0].record), configuration: OperatorConfigurationVersionSchema.parse(found.rows[0].configuration) }
+    }
+    const createdAt = new Date().toISOString()
+    const harness = (await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults(client)).value.operator.harness
+    const configuration = OperatorConfigurationVersionSchema.parse({
+      id: `${OPERATOR_ID}-config-v1-${randomUUID()}`, operatorId: OPERATOR_ID, version: 1,
+      harness, contentHash: hash(harness), createdAt,
     })
+    const operator = OperatorAgentSchema.parse({
+      id: OPERATOR_ID, role: 'operator', name: 'Operator', currentConfigurationVersionId: configuration.id,
+      createdAt, updatedAt: createdAt,
+    })
+    await client.query(
+      'insert into application_operators (id, current_configuration_version_id, record) values ($1, $2, $3::jsonb)',
+      [operator.id, configuration.id, JSON.stringify(operator)],
+    )
+    await client.query(
+      `insert into operator_configuration_versions (id, operator_id, version, record)
+       values ($1, $2, $3, $4::jsonb)`,
+      [configuration.id, operator.id, configuration.version, JSON.stringify(configuration)],
+    )
+    return { operator, configuration }
   }
 
   async update(input: HarnessConfiguration, expectedConfigurationVersionId: string, supplied?: pg.ClientBase) {
     const harness = HarnessConfigurationSchema.parse(input)
-    return inTransaction(this.pool, supplied, async (client) => {
+    return inTransaction(this.pool, supplied, (client) => this.updateWithClient(client, harness, expectedConfigurationVersionId))
+  }
+
+  async updateWithClient(client: pg.ClientBase, harness: HarnessConfiguration, expectedConfigurationVersionId: string) {
+      await client.query('select pg_advisory_xact_lock(hashtext($1))', ['application-operator'])
       const row = await client.query<{ record: unknown; current_configuration_version_id: string }>(
         'select record, current_configuration_version_id from application_operators where id = $1 for update', [OPERATOR_ID],
       )
@@ -85,6 +91,5 @@ export class PostgresOperatorRepository {
       const next = OperatorAgentSchema.parse({ ...operator, currentConfigurationVersionId: configuration.id, updatedAt: createdAt })
       await client.query('update application_operators set current_configuration_version_id=$2, record=$3::jsonb, updated_at=now() where id=$1', [OPERATOR_ID, configuration.id, JSON.stringify(next)])
       return { operator: next, configuration }
-    })
   }
 }

@@ -43,11 +43,18 @@ export class PostgresCommandCoordinator {
       throw error
     })
     let releaseError: Error | undefined
+    let inTransaction = false
+    let lifecycleLock = false
+    const commandLock = `command:${input.principal.id}:${input.operation}:${input.commandId}`
     try {
       await client.query('begin')
-      await client.query('select pg_advisory_xact_lock(hashtext($1))', [
-        `command:${input.principal.id}:${input.operation}:${input.commandId}`,
-      ])
+      inTransaction = true
+      if (input.dedicatedConnection) {
+        await client.query('select pg_advisory_lock(hashtext($1))', [commandLock])
+        lifecycleLock = true
+      } else {
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [commandLock])
+      }
       const existing = await client.query<{ input_hash: string; target_key: string; result: unknown }>(
         `select input_hash, target_key, result from management_command_receipts
          where principal_id = $1 and operation = $2 and command_id = $3`,
@@ -60,10 +67,22 @@ export class PostgresCommandCoordinator {
         }
         const value = input.replayResult ? input.replayResult(receipt.result) : receipt.result as T
         await client.query('commit')
+        inTransaction = false
         return { value, replayed: true }
       }
 
+      // A lifecycle callback can wait for runtime cleanup and database work.
+      // Keep its command identity serialized by the session advisory lock, but
+      // do not retain row locks while the idempotent callback runs.
+      if (input.dedicatedConnection) {
+        await client.query('commit')
+        inTransaction = false
+      }
       const value = await input.perform(client)
+      if (input.dedicatedConnection) {
+        await client.query('begin')
+        inTransaction = true
+      }
       await client.query(
         `insert into management_command_receipts
           (principal_id, operation, command_id, target_key, input_hash, result)
@@ -76,14 +95,18 @@ export class PostgresCommandCoordinator {
         [input.principal.id, input.source, input.operation, input.targetKey, JSON.stringify({ commandId: input.commandId })],
       )
       await client.query('commit')
+      inTransaction = false
       return { value, replayed: false }
     } catch (error) {
-      try {
-        await client.query('rollback')
-      } catch (rollbackError) {
-        // A failed rollback leaves connection state unknown. Evict it, and
-        // preserve the command error rather than replacing it with cleanup.
-        releaseError = rollbackError instanceof Error ? rollbackError : new Error('Command rollback failed.')
+      if (inTransaction) {
+        try {
+          await client.query('rollback')
+          inTransaction = false
+        } catch (rollbackError) {
+          // A failed rollback leaves connection state unknown. Evict it, and
+          // preserve the command error rather than replacing it with cleanup.
+          releaseError = rollbackError instanceof Error ? rollbackError : new Error('Command rollback failed.')
+        }
       }
       if (!releaseError) {
         // Reuse this now-idle client. Asking the pool for a second connection
@@ -99,6 +122,9 @@ export class PostgresCommandCoordinator {
       }
       throw error
     } finally {
+      if (lifecycleLock && !releaseError) {
+        await client.query('select pg_advisory_unlock(hashtext($1))', [commandLock]).catch(() => undefined)
+      }
       client.release(releaseError)
       if (commandPool !== this.pool) await commandPool.end()
     }

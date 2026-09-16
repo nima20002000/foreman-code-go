@@ -45,6 +45,7 @@ export interface ManagedOpenCodeServerOptions {
   binary: string
   workingDirectory: string
   ownerAgentId: string
+  credentialEnvironmentVariable?: string
   environment?: ChildProcessEnvironment
   pure?: boolean
   advancedConfiguration?: OpenCodeAdvancedConfiguration
@@ -113,8 +114,9 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
     if (environment && environment.agentId !== this.options.ownerAgentId) {
       throw new HarnessExecutionError('OPENCODE_CREDENTIAL_OWNER_MISMATCH', 'The credential does not belong to this OpenCode server owner.')
     }
-    if (Object.keys(environment?.variables ?? {}).some((key) => key !== APP_CREDENTIAL_ENV)
-      || (environment && APP_CREDENTIAL_ENV in environment.variables && !environment.variables[APP_CREDENTIAL_ENV])) {
+    const credentialEnvironmentVariable = this.options.credentialEnvironmentVariable ?? APP_CREDENTIAL_ENV
+    if (Object.keys(environment?.variables ?? {}).some((key) => key !== credentialEnvironmentVariable)
+      || (environment && credentialEnvironmentVariable in environment.variables && !environment.variables[credentialEnvironmentVariable])) {
       throw new HarnessExecutionError('OPENCODE_CREDENTIAL_ENV_UNSUPPORTED', 'Only the scoped App credential environment variable is accepted.')
     }
     return environment ? { agentId: environment.agentId, variables: { ...environment.variables } } : undefined

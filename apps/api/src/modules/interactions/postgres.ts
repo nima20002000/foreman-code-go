@@ -359,7 +359,8 @@ export class PostgresInteractionRepository {
         const now = new Date().toISOString()
         const next = DurableInteractionSchema.parse({
           ...current, revision: current.revision + 1, status: 'canceled',
-          deliveryState: current.deliveryState === 'not_started' ? 'not_started' : 'failed', updatedAt: now,
+          deliveryState: current.deliveryState === 'not_started' ? 'not_started'
+            : current.deliveryState === 'delivered' ? 'delivered' : 'failed', updatedAt: now,
         })
         const updated = await client.query(
           `update durable_interactions set status=$2,revision=$3,record=$4::jsonb,updated_at=now(),

@@ -11,6 +11,7 @@ import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
 import { requireActiveWorkerBinding } from './workerLifecycle.js'
+import { intersectGrants } from './operatorDelegation.js'
 
 function digest(token: string): string {
   return createHash('sha256').update(token).digest('hex')
@@ -31,6 +32,7 @@ interface PrincipalRow {
   grants: unknown
   expires_at: Date
   revoked_at: Date | null
+  delegated_from?: string | null
 }
 
 function fromRow(row: PrincipalRow): ManagementPrincipal {
@@ -57,7 +59,7 @@ export class PostgresAccessService {
     if (!token) throw new DomainError('AUTH_REQUIRED', 'A bearer credential is required.', 401)
     const tokenHash = digest(token)
     const result = await this.pool.query<PrincipalRow>(
-      `select id, name, audience, agent_id, token_hash, grants, expires_at, revoked_at
+      `select id, name, audience, agent_id, token_hash, grants, expires_at, revoked_at, delegated_from
        from management_principals where token_hash = $1`,
       [tokenHash],
     )
@@ -68,7 +70,23 @@ export class PostgresAccessService {
     if (row.audience !== audience) throw new DomainError('AUTH_WRONG_AUDIENCE', 'The credential cannot access this endpoint.', 403)
     if (row.revoked_at) throw new DomainError('AUTH_REVOKED', 'The credential has been revoked.', 401)
     if (row.expires_at.getTime() <= Date.now()) throw new DomainError('AUTH_EXPIRED', 'The credential has expired.', 401)
+    const principal = fromRow(row)
     if (audience === 'worker') await requireActiveWorkerBinding(this.pool, row.id)
+    if (row.delegated_from) {
+      const parent = await this.currentOperator(row.delegated_from)
+      principal.grants = intersectGrants(principal.grants, parent.grants)
+      principal.expiresAt = new Date(Math.min(Date.parse(principal.expiresAt), Date.parse(parent.expiresAt))).toISOString()
+    }
+    return principal
+  }
+
+  async currentOperator(id: string): Promise<ManagementPrincipal> {
+    const result = await this.pool.query<PrincipalRow>(
+      'select id,name,audience,agent_id,token_hash,grants,expires_at,revoked_at,delegated_from from management_principals where id=$1', [id])
+    const row = result.rows[0]
+    if (!row || row.audience !== 'operator' || row.delegated_from) throw new DomainError('AUTH_INVALID', 'The owning Operator credential is unavailable.', 401)
+    if (row.revoked_at) throw new DomainError('AUTH_REVOKED', 'The owning Operator credential was revoked.', 401)
+    if (row.expires_at.getTime() <= Date.now()) throw new DomainError('AUTH_EXPIRED', 'The owning Operator credential expired.', 401)
     return fromRow(row)
   }
 

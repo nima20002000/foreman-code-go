@@ -104,7 +104,7 @@ it('cannot issue or renew credentials after Stop', async () => {
   const issued = await credentials.issueForExecution(execution.id)
   await budgets.stop(execution.id)
   await expect(credentials.renewForExecution(execution.id, issued)).rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_NOT_RENEWABLE' })
-  await expect(credentials.issueForExecution(execution.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_NOT_FOUND' })
+  await expect(credentials.issueForExecution(execution.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_INACTIVE' })
 })
 
 it('cannot renew an exhausted active-time budget even while approval is waiting', async () => {
@@ -118,7 +118,7 @@ it('cannot issue or renew credentials for a completed execution before cleanup c
   const completed = HarnessExecutionSchema.parse({ ...execution, state: 'completed', result: { outcome: 'succeeded' }, finishedAt: new Date().toISOString() })
   await pool.query('update harness_executions set record=$2::jsonb where id=$1', [execution.id, JSON.stringify(completed)])
   await expect(credentials.renewForExecution(execution.id, issued)).rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_NOT_RENEWABLE' })
-  await expect(credentials.issueForExecution(execution.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_TERMINAL' })
+  await expect(credentials.issueForExecution(execution.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_INACTIVE' })
 })
 
 it('issues and renews explicit reviewer credentials only after finalization and only for the active Run', async () => {
@@ -132,7 +132,7 @@ it('issues and renews explicit reviewer credentials only after finalization and 
   await expect(credentials.issueForReviewer(execution.id)).rejects.toMatchObject({ code: 'REVIEWER_EXECUTION_NOT_READY' })
   await coordination.finalizeWorkflowSession(execution.id)
   const review = await credentials.issueForReviewer(execution.id)
-  await expect(credentials.issueForExecution(execution.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_TERMINAL' })
+  await expect(credentials.issueForExecution(execution.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_INACTIVE' })
   await pool.query('update approval_execution_state set active_elapsed_ms=active_timeout_ms where execution_id=$1', [execution.id])
   await expect(credentials.renewForExecution(execution.id, review)).resolves.toEqual(expect.any(String))
   const principal = await access.authenticate(review.environment.variables.GRAPHQL_APP_MCP_TOKEN!, 'worker')
@@ -140,12 +140,12 @@ it('issues and renews explicit reviewer credentials only after finalization and 
   await pool.query("update runs set record=record || $2::jsonb where id=$1", [execution.runId,
     JSON.stringify({ executionState: 'completed', outcome: 'succeeded', result: { outcome: 'succeeded' }, finishedAt: new Date().toISOString() })])
   await expect(credentials.renewForExecution(execution.id, review)).rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_NOT_RENEWABLE' })
-  await expect(credentials.issueForReviewer(execution.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_TERMINAL' })
+  await expect(credentials.issueForReviewer(execution.id)).rejects.toMatchObject({ code: 'REVIEWER_EXECUTION_NOT_READY' })
 })
 
 it('revokes a superseded token when a new process credential is prepared', async () => {
   const issued = await credentials.issueForExecution(execution.id)
-  const launch = new WorkerLaunchCredentialService({ preflight: async () => ({}) } as never, credentials, 'runner-1')
+  const launch = new WorkerLaunchCredentialService({ preflight: async () => ({}) } as never, credentials, 'runner-1', 30_000)
   const fresh = await launch.prepare({ executionId: execution.id, harness: 'opencode', workingDirectory: '/project' })
   expect(fresh.credential.principalId).not.toBe(issued.principalId)
   expect(fresh.credential.environment.agentId).toBe(issued.environment.agentId)

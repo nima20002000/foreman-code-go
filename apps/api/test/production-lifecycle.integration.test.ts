@@ -238,7 +238,7 @@ it('reviews through the completed Orchestrator session, survives restart and set
   const { run, pending } = await start('orchestrator', true)
   const orchestrator = (await runs.listExecutions(run.id)).find((item) => item.agentId === 'agent-researcher')!
   expect(orchestrator.state).toBe('completed')
-  await expect(new WorkerCredentialService(database.pool, access).issueForExecution(orchestrator.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_TERMINAL' })
+  await expect(new WorkerCredentialService(database.pool, access).issueForExecution(orchestrator.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_INACTIVE' })
   expect((await runtime().reviewers.dispatchNext('agent-researcher', 'first-approval'))?.state).toBe('completed')
   const secondAsk = (await interactions.list({ runId: run.id, status: 'pending', limit: 10 }))[0]!
   expect(secondAsk.executionId).toBe(pending.executionId)

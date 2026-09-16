@@ -24,7 +24,7 @@ async function main() {
     config.checkpoints.schema,
     config.database,
   )
-  const { app, reconcile, shutdown } = buildProductionApp(config, database, checkpoints)
+  const { app, initialize, reconcile, shutdown } = buildProductionApp(config, database, checkpoints)
   let reconciliationTimer: NodeJS.Timeout | undefined
   const reportReconciliationError = (error: unknown) => app.log.error({ err: error }, 'run reconciliation failed')
 
@@ -65,6 +65,8 @@ async function main() {
     await checkpoints.ping()
     stopIfClosing()
     await mkdir(config.harnesses.workspaceRoot, { recursive: true })
+    stopIfClosing()
+    await initialize()
     stopIfClosing()
     // Native recovery may call the scoped MCP endpoint during attachment.
     await app.listen({ host: config.host, port: config.port })

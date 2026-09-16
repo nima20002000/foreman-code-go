@@ -221,6 +221,7 @@ export class OpenCodeTurnHistory {
   private pendingTools = false
   rooted = false
   result: ExecutionResult | undefined
+  resultMessageId: string | undefined
   constructor(private readonly root: OpenCodeMessage) {}
 
   push(message: OpenCodeMessage): boolean {
@@ -236,7 +237,9 @@ export class OpenCodeTurnHistory {
       this.rooted = true
       if (this.latest && this.latest.info.parentID !== info.id) this.invalidChain = true
       if (!this.invalidChain && !this.needsCompaction && !this.pendingTools) {
-        this.result = assistantResult(this.haveContinuation ? this.continuation : this.latest)
+        const answer = this.haveContinuation ? this.continuation : this.latest
+        this.result = assistantResult(answer)
+        this.resultMessageId = this.result && typeof answer?.info.id === 'string' ? answer.info.id : undefined
       }
       return true
     }

@@ -1,9 +1,20 @@
+import { isDeepStrictEqual } from 'node:util'
+import { resolve } from 'node:path'
+
 import type { ApiConfig } from './config.js'
 import { buildApp } from './app.js'
 import type { CheckpointStore } from './infrastructure/checkpoints.js'
 import type { createDatabase } from './infrastructure/database.js'
+import { OperatorRuntimeOwner } from './infrastructure/operatorRuntimeOwner.js'
 import { PostgresAccessService } from './modules/access/postgres.js'
 import { WorkerCredentialService } from './modules/access/workerCredentials.js'
+import {
+  ensureOperatorRuntimeDirectory,
+  OperatorChatService,
+  PostgresOperatorConversationRepository,
+  type NativeManagerResolver,
+} from './modules/conversations/operatorChat.js'
+import { OPERATOR_MCP_ENVIRONMENT_VARIABLE, PostgresOperatorChatAuthority } from './modules/conversations/operatorChatAuthority.js'
 import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
 import { DomainError } from './modules/errors.js'
 import { GraphDraftService } from './modules/graph-drafts/service.js'
@@ -13,6 +24,7 @@ import { codexMcpInspectorAdapter } from './modules/harnesses/codexMcpInspectorA
 import { McpDetectionService, WorkerLaunchCredentialService, type ExecutionCredentialProvider } from './modules/harnesses/mcpDetection.js'
 import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from './modules/harnesses/opencodeServer.js'
 import { openCodeMcpInspectorAdapter } from './modules/harnesses/opencodeMcpInspectorAdapter.js'
+import { NativeRollout } from './modules/harnesses/nativeRollout.js'
 import type { NativeHarnessSessionManager } from './modules/harnesses/port.js'
 import { LocalHarnessResolver } from './modules/harnesses/resolver.js'
 import { PostgresAppInteractionService } from './modules/interactions/app.js'
@@ -22,6 +34,8 @@ import { OperatorInteractionService } from './modules/interactions/operator.js'
 import { PostgresInteractionRepository } from './modules/interactions/postgres.js'
 import { ExecutionScopedNativeSessionManagerResolver } from './modules/interactions/runtimePorts.js'
 import { InteractionService } from './modules/interactions/service.js'
+import { AutomaticReviewService } from './modules/interactions/automaticReview.js'
+import { PostgresOperatorRepository } from './modules/operators/postgres.js'
 import { continuationValidator } from './modules/runs/continuation.js'
 import { LangGraphWorkflowEngine } from './modules/runs/engine.js'
 import { RunManagementService } from './modules/runs/management.js'
@@ -59,6 +73,8 @@ export function buildProductionApp(
   const workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
   const settings = new PostgresSettingsRepository(database.pool)
   const foundationSettings = new PostgresFoundationSettingsRepository(database.pool)
+  const operators = new PostgresOperatorRepository(database.pool)
+  const rollout = new NativeRollout(process.env)
   const harnesses = new LocalHarnessResolver(config.harnesses.codexBinary, config.harnesses.openCodeBinary)
   const harnessCatalog = new HarnessCatalogService(harnesses, settings, commands, config.harnesses.workspaceRoot)
   const endpointHost = config.host === '0.0.0.0' ? '127.0.0.1'
@@ -130,6 +146,43 @@ export function buildProductionApp(
   const interactions = new InteractionService(
     repository, budgets, approvals, (interaction) => engine.resumeInteraction(interaction),
   )
+  const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
+  const operatorMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/operator`
+  const operatorManagers = new Map<string, NativeHarnessSessionManager>()
+  const resolveOperatorManager: NativeManagerResolver = (configuration, conversationId) => {
+    const existing = operatorManagers.get(conversationId)
+    if (existing) return existing
+    let manager: NativeHarnessSessionManager
+    if (configuration.harness.harness === 'codex') {
+      manager = new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, 'graphql-operator')
+    } else {
+      const server = new ManagedOpenCodeServer({
+        binary: config.harnesses.openCodeBinary,
+        workingDirectory: operatorWorkingDirectory,
+        ownerAgentId: configuration.operatorId,
+        credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE,
+        ...(configuration.harness.advanced ? { advancedConfiguration: configuration.harness.advanced } : {}),
+      })
+      manager = new OpenCodeNativeSessionManager({
+        server,
+        ownerAgentId: configuration.operatorId,
+        appMcpServerName: 'graphql-operator',
+        expectedAppMcpEndpoint: operatorMcpEndpoint,
+        credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE,
+      })
+    }
+    operatorManagers.set(conversationId, manager)
+    return manager
+  }
+  resolveOperatorManager.release = (conversationId) => { operatorManagers.delete(conversationId) }
+  const chatAuthority = new PostgresOperatorChatAuthority(
+    database.pool, access, rollout, operatorWorkingDirectory, operatorMcpEndpoint,
+  )
+  const chat = new OperatorChatService(
+    new PostgresOperatorConversationRepository(database.pool), operators,
+    resolveOperatorManager, operatorWorkingDirectory, chatAuthority,
+  )
+  const reviews = new AutomaticReviewService(database.pool, runs, approvals, chat, access, locations, rollout)
   const operatorServices = {
     workspaces: new WorkspaceManagementService(database.pool, commands, locations),
     locations,
@@ -137,7 +190,7 @@ export function buildProductionApp(
     agents: new AgentManagementService(database.pool),
     drafts: new GraphDraftService(database.pool, commands),
     harnesses: harnessCatalog,
-    settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog),
+    settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators),
     runs: new RunManagementService(database.pool, commands, runs, engine, locations),
     commands,
     interactions: new OperatorInteractionService(interactions, repository),
@@ -169,19 +222,48 @@ export function buildProductionApp(
   const app = buildApp({
     readiness: { database, checkpoints },
     readinessTimeoutMs: config.readinessTimeoutMs,
-    product: { workspaces, workflows, runs, settings, foundationSettings, engine, interactions },
+    product: { workspaces, workflows, runs, settings, foundationSettings, engine, interactions, chat },
     operator: { access, services: operatorServices },
     appMcp: { access, interactions: new PostgresAppInteractionService(database.pool, repository, commands, interactions) },
     mcpDetection: { pool: database.pool, service: detection },
     logger,
   })
   let closing = false
+  let initialized = false
   let reconciliation: Promise<void> | undefined
+  const runtimeOwner = new OperatorRuntimeOwner(config.database.connectionString, (error) => {
+    app.log.error({ err: error }, 'native runtime ownership lost; stopping execution')
+    void Promise.allSettled([chat.shutdown(), reviews.shutdown(), engine.shutdown(), app.close()])
+  })
+  const initialize = async (): Promise<void> => {
+    if (initialized) return
+    await runtimeOwner.acquire()
+    try {
+      const canonicalDirectory = await ensureOperatorRuntimeDirectory(config.harnesses.workspaceRoot)
+      if (canonicalDirectory !== operatorWorkingDirectory) {
+        throw new DomainError('OPERATOR_RUNTIME_DIRECTORY_INVALID', 'The canonical Operator directory differs from the configured managed path.', 422)
+      }
+      const operator = await operators.ensure()
+      const defaults = await foundationSettings.getAgentDefaults()
+      if (!isDeepStrictEqual(operator.configuration.harness, defaults.value.operator.harness)) {
+        await operators.update(defaults.value.operator.harness, operator.operator.currentConfigurationVersionId)
+      }
+      await chatAuthority.revokeOrphanedCredentials()
+      initialized = true
+    } catch (error) {
+      await runtimeOwner.close().catch(() => undefined)
+      throw error
+    }
+  }
   const reconcile = (report: (error: unknown) => void): Promise<void> => {
     if (closing) return Promise.resolve()
     if (reconciliation) return reconciliation
     reconciliation = (async () => {
       await engine.reconcile(report)
+      if (initialized) {
+        await chat.reconcileActive()
+        await reviews.tick()
+      }
       let afterId: string | undefined
       do {
         if (closing) return
@@ -194,9 +276,17 @@ export function buildProductionApp(
   }
   const shutdown = async (): Promise<void> => {
     closing = true
-    const results = await Promise.allSettled([engine.shutdown(), reconciliation])
+    const managerCleanup = [...operatorManagers.values()].map(async (manager) => {
+      const disposable = manager as NativeHarnessSessionManager & { dispose?: () => Promise<void> }
+      await disposable.dispose?.()
+    })
+    const results = await Promise.allSettled([
+      chat.shutdown(), reviews.shutdown(), engine.shutdown(), reconciliation, managers.dispose(),
+      ...managerCleanup, ...(initialized ? [runtimeOwner.close()] : []),
+    ])
+    operatorManagers.clear()
     const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
     if (errors.length) throw new AggregateError(errors, 'Production runtime shutdown was incomplete.')
   }
-  return { app, engine, reconcile, shutdown }
+  return { app, engine, initialize, reconcile, shutdown }
 }

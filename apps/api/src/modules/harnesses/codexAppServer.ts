@@ -461,6 +461,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         throw error
       })
       await this.acceptStartedTurn(runtime, starting, result)
+      if (runtime.activeTurnId) await input.onSubmitted?.(runtime.activeTurnId)
       while (!signal?.aborted) {
         const firstSequence = runtime.events[0]?.sequence ?? runtime.sequence
         if (cursor < firstSequence) throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'The in-memory event window was exceeded; reload durable history.')
@@ -512,14 +513,14 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
   }
 
-  async cancel(session: NativeSessionReference, signal?: AbortSignal): Promise<boolean> {
+  async cancel(session: NativeSessionReference, signal?: AbortSignal, nativeTurnId?: string): Promise<boolean> {
     const runtime = this.requireRuntime(session)
     if (runtime.starting) {
       runtime.starting.cancelRequested = true
       const id = await deadline(runtime.starting.nativeIdentity, signal)
       if (!id) return false
     }
-    if (!runtime.activeTurnId || runtime.terminalResult) return false
+    if (!runtime.activeTurnId || runtime.terminalResult || (nativeTurnId && nativeTurnId !== runtime.activeTurnId)) return false
     return deadline(this.interrupt(runtime), signal)
   }
 
@@ -551,7 +552,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         correlationId, restarted, threadId: session.nativeSessionId,
         turnId: runtime.activeTurnId, terminal: runtime.terminalResult?.outcome ?? null,
       })
-      return this.history(session)
+      const history = await this.history(session)
+      return runtime.activeCorrelationId === correlationId && runtime.activeTurnId
+        ? { ...history, correlationId, nativeTurnId: runtime.activeTurnId }
+        : history
     })
   }
 

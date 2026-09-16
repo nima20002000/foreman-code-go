@@ -14,6 +14,7 @@ export interface WorkerExecutionIdentity {
   run_record: unknown
   execution_closed_at: Date | null
   run_closed_at: Date | null
+  approval_stopped_at: Date | null
 }
 
 /** Every lifecycle transaction locks runs, executions, principals, then bindings. */
@@ -38,9 +39,11 @@ export async function lockWorkerExecution(
     `select he.id as execution_id, he.run_id, he.agent_id, r.workspace_id, r.workflow_id,
             he.record as execution_record, r.record as run_record,
             he.worker_credentials_closed_at as execution_closed_at,
-            r.worker_credentials_closed_at as run_closed_at
+            r.worker_credentials_closed_at as run_closed_at,
+            s.stopped_at as approval_stopped_at
      from harness_executions he join runs r on r.id=he.run_id
      join agents a on a.id=he.agent_id and a.workspace_id=r.workspace_id
+     left join approval_execution_state s on s.execution_id=he.id
      where he.id=$1`, [executionId],
   )
   const identity = result.rows[0]
@@ -58,9 +61,9 @@ export async function lockWorkerExecution(
 export function requireActiveWorkerExecution(identity: WorkerExecutionIdentity): void {
   const execution = HarnessExecutionSchema.parse(identity.execution_record)
   const run = WorkflowRunSchema.parse(identity.run_record)
-  if (identity.execution_closed_at || identity.run_closed_at
+  if (identity.execution_closed_at || identity.run_closed_at || identity.approval_stopped_at
     || !['starting', 'running', 'waiting'].includes(execution.state)
-    || !['running', 'waiting'].includes(run.executionState) || run.outcome !== 'pending') {
+    || !['running', 'waiting'].includes(run.executionState)) {
     throw new DomainError('WORKER_EXECUTION_INACTIVE', 'The execution no longer accepts App credentials or decisions.', 409)
   }
 }
@@ -74,8 +77,15 @@ export async function requireActiveWorkerBinding(client: pg.ClientBase | pg.Pool
      join runs r on r.id=b.run_id and r.workspace_id=b.workspace_id and r.workflow_id=b.workflow_id
      where b.principal_id=$1 and b.revoked_at is null and p.revoked_at is null
        and p.audience='worker' and p.expires_at>clock_timestamp()
-       and he.worker_credentials_closed_at is null and r.worker_credentials_closed_at is null
-       and he.record->>'state' in ('starting','running','waiting')
+       and r.worker_credentials_closed_at is null
+       and ((b.purpose='workflow' and he.worker_credentials_closed_at is null
+           and he.record->>'state' in ('starting','running','waiting')
+           and not exists (select 1 from approval_execution_state s where s.execution_id=he.id and s.stopped_at is not null))
+         or (b.purpose='reviewer' and he.record->>'state'='completed'
+           and r.record->'approval'->>'handler'='orchestrator'
+           and r.record->'approval'->>'designatedOrchestratorAgentId'=b.agent_id
+           and exists (select 1 from execution_native_sessions ns where ns.execution_id=he.id
+             and ns.workflow_finalized_at is not null and ns.reference->>'nativeSessionId'=he.record->>'nativeSessionId')))
        and r.execution_state in ('running','waiting')
        and r.record->>'executionState'=r.execution_state and r.record->>'outcome'='pending'
        and he.record->>'id'=he.id and he.record->>'runId'=r.id and he.record->>'agentId'=b.agent_id
@@ -91,14 +101,17 @@ export async function lockActiveWorkerPrincipal(
   snapshot: ManagementPrincipal,
   targetRunId?: string,
 ): Promise<ManagementPrincipal> {
-  const binding = await client.query<{ execution_id: string }>(
-    'select execution_id from worker_credential_bindings where principal_id=$1', [snapshot.id],
+  const binding = await client.query<{ execution_id: string; purpose: 'workflow' | 'reviewer' }>(
+    'select execution_id,purpose from worker_credential_bindings where principal_id=$1', [snapshot.id],
   )
-  const executionId = binding.rows[0]?.execution_id
+  const acceptedBinding = binding.rows[0]
+  const executionId = acceptedBinding?.execution_id
   if (!executionId) throw new DomainError('AUTH_REVOKED', 'The credential is no longer active.', 401)
   const identity = await lockWorkerExecution(client, executionId, targetRunId)
-  try { requireActiveWorkerExecution(identity) } catch {
-    throw new DomainError('AUTH_REVOKED', 'The credential is no longer active.', 401)
+  if (acceptedBinding.purpose === 'workflow') {
+    try { requireActiveWorkerExecution(identity) } catch {
+      throw new DomainError('AUTH_REVOKED', 'The credential is no longer active.', 401)
+    }
   }
   const found = await client.query<{
     id: string; name: string; audience: string; agent_id: string | null; grants: unknown

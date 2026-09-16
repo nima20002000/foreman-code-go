@@ -21,6 +21,7 @@ vi.mock('../src/infrastructure/checkpoints.js', () => ({ createCheckpointStore: 
 vi.mock('../src/infrastructure/seed.js', () => ({ ensureAcceptanceSeed: async () => undefined }))
 vi.mock('../src/production.js', () => ({ buildProductionApp: () => ({
   app: state.app,
+  initialize: async () => undefined,
   reconcile: async () => {
     state.calls.push('recovery started')
     await new Promise<void>((resolve) => { state.finishRecovery = resolve })

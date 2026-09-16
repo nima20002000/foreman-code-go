@@ -523,13 +523,13 @@ export const DurableInteractionSchema = z.object({
   const allowedDeliveryStates: Record<typeof value.status, readonly typeof value.deliveryState[]> = {
     pending: ["not_started"], decided: ["not_started"],
     delivery_pending: ["pending", "submitted", "uncertain"],
-    delivered: ["delivered"], delivery_failed: ["failed"], canceled: ["not_started", "failed"],
+    delivered: ["delivered"], delivery_failed: ["failed"], canceled: ["not_started", "delivered", "failed"],
   };
   if (!allowedDeliveryStates[value.status].includes(value.deliveryState)) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["deliveryState"], message: "delivery state contradicts the interaction lifecycle" });
   }
-  if ((value.status === "delivered") !== (value.deliveredAt !== undefined)) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["deliveredAt"], message: "only delivered interactions require a delivery time" });
+  if ((value.deliveryState === "delivered") !== (value.deliveredAt !== undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["deliveredAt"], message: "confirmed native delivery requires a delivery time" });
   }
 });
 export type DurableInteraction = z.infer<typeof DurableInteractionSchema>;
@@ -1541,6 +1541,50 @@ export const CreateConversationRequestSchema = z.discriminatedUnion("scope", [
 export type CreateConversationRequest = z.infer<typeof CreateConversationRequestSchema>;
 export const CreateConversationResponseSchema = z.object({ conversation: ConversationSchema }).strict();
 export type CreateConversationResponse = z.infer<typeof CreateConversationResponseSchema>;
+
+/** Application-global Operator chat commands. Browser route context is only a prompt hint. */
+export const OperatorConversationContextSchema = z.object({
+  route: z.string().trim().min(1).optional(),
+  workspaceId: IdSchema.optional(),
+  workflowId: IdSchema.optional(),
+  runId: IdSchema.optional(),
+}).strict();
+export const OperatorConversationStateSchema = z.object({
+  conversation: ConversationSchema,
+  messages: z.array(MessageSchema),
+  turnState: z.enum(["idle", "starting", "active", "canceling", "uncertain", "error"]),
+  revision: z.number().int().nonnegative().default(0),
+  activeRequestId: IdSchema.nullable().default(null),
+  pendingInteraction: PendingNativeInteractionSchema.optional(),
+  responseDelivery: z.enum(["offered", "submitted", "uncertain"]).optional(),
+  lastResult: ExecutionResultSchema.optional(),
+  error: z.string().optional(),
+}).strict();
+export type OperatorConversationState = z.infer<typeof OperatorConversationStateSchema>;
+export const CreateOperatorConversationRequestSchema = z.object({ title: z.string().trim().min(1).optional() }).strict();
+export const CreateOperatorConversationResponseSchema = z.object({ conversation: ConversationSchema }).strict();
+export const ListOperatorConversationsResponseSchema = z.object({ conversations: z.array(ConversationSchema) }).strict();
+export const GetOperatorConversationResponseSchema = OperatorConversationStateSchema;
+export const SendOperatorMessageRequestSchema = z.object({
+  requestId: IdSchema,
+  content: z.string().trim().min(1),
+  context: OperatorConversationContextSchema.optional(),
+}).strict();
+export const SendOperatorMessageResponseSchema = z.object({ state: OperatorConversationStateSchema, replayed: z.boolean() }).strict();
+export const CancelOperatorTurnRequestSchema = z.object({ requestId: IdSchema }).strict();
+export const RespondOperatorInteractionRequestSchema = z.object({
+  requestId: IdSchema, nativeRequestId: IdSchema, optionId: IdSchema,
+}).strict();
+export type SendOperatorMessageRequest = z.infer<typeof SendOperatorMessageRequestSchema>;
+export type RespondOperatorInteractionRequest = z.infer<typeof RespondOperatorInteractionRequestSchema>;
+export const CancelOperatorTurnResponseSchema = z.object({ state: OperatorConversationStateSchema }).strict();
+export const OperatorConversationStreamEventSchema = z.object({
+  id: z.number().int().nonnegative(),
+  conversationId: IdSchema,
+  type: z.enum(["snapshot", "delta", "message", "state", "error"]),
+  data: z.record(z.string(), z.unknown()),
+}).strict();
+export type OperatorConversationStreamEvent = z.infer<typeof OperatorConversationStreamEventSchema>;
 
 export const GetInteractionResponseSchema = z.object({
   interaction: DurableInteractionSchema,

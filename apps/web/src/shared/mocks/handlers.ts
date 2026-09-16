@@ -61,6 +61,9 @@ function fixtureNotFound(kind: string, id: string) {
   )
 }
 
+const operatorConversations: Array<Record<string, unknown>> = []
+const operatorMessages = new Map<string, Array<Record<string, unknown>>>()
+
 function isFailureMode(value: string | null): value is MockFailureMode {
   return value === 'none' || value === 'graph-save' || value === 'user-message' || value === 'all'
 }
@@ -121,6 +124,36 @@ function managedWorkspace(workspaceId: string) {
 }
 
 export const handlers: RequestHandler[] = [
+  http.get('/api/operator/conversations', () => HttpResponse.json({ conversations: operatorConversations })),
+  http.post('/api/operator/conversations', () => {
+    const now = new Date().toISOString()
+    const conversation = { id: crypto.randomUUID(), agentId: 'application-operator', scope: 'application', operatorConfigurationVersionId: 'operator-config-v1', title: 'New conversation', status: 'open', createdAt: now, updatedAt: now }
+    operatorConversations.unshift(conversation); operatorMessages.set(String(conversation.id), [])
+    return HttpResponse.json({ conversation }, { status: 201 })
+  }),
+  http.get('/api/operator/conversations/:conversationId', ({ params }) => {
+    const id = String(params.conversationId); let conversation = operatorConversations.find((item) => item.id === id)
+    if (!conversation) {
+      const now = new Date().toISOString()
+      conversation = { id, agentId: 'application-operator', scope: 'application', operatorConfigurationVersionId: 'operator-config-v1', title: 'New conversation', status: 'open', createdAt: now, updatedAt: now }
+      operatorConversations.unshift(conversation); operatorMessages.set(id, [])
+    }
+    return HttpResponse.json({ conversation, messages: operatorMessages.get(id) ?? [], turnState: 'idle' })
+  }),
+  http.get('/api/operator/conversations/:conversationId/events', ({ params }) => {
+    const body = `event: snapshot\ndata: ${JSON.stringify({ conversationId: String(params.conversationId) })}\n\n`
+    return new HttpResponse(body, { headers: { 'content-type': 'text/event-stream' } })
+  }),
+  http.post('/api/operator/conversations/:conversationId/messages', async ({ params, request }) => {
+    const id = String(params.conversationId); const conversation = operatorConversations.find((item) => item.id === id)
+    if (!conversation) return fixtureNotFound('conversation', id)
+    const body = await readJson(request) as { requestId?: string; content?: string }
+    const now = new Date().toISOString(); const messages = operatorMessages.get(id) ?? []
+    messages.push({ id: crypto.randomUUID(), conversationId: id, role: 'user', content: body.content ?? '', createdAt: now, updatedAt: now })
+    messages.push({ id: crypto.randomUUID(), conversationId: id, role: 'assistant', content: 'Deterministic Operator response.', createdAt: now, updatedAt: now })
+    operatorMessages.set(id, messages)
+    return HttpResponse.json({ state: { conversation, messages, turnState: 'idle' }, replayed: false }, { status: 202 })
+  }),
   http.get('/api/management/interactions', () => HttpResponse.json({
     items: [], nextCursor: null, pendingCount: 0, pendingByWorkflow: {},
   })),

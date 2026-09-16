@@ -36,6 +36,8 @@ import type { PostgresSettingsRepository } from '../modules/settings/postgres.js
 import type { PostgresFoundationSettingsRepository } from '../modules/settings/foundation.js'
 import type { PostgresWorkflowRepository } from '../modules/workflows/postgres.js'
 import type { PostgresWorkspaceRepository } from '../modules/workspaces/postgres.js'
+import type { OperatorChatService } from '../modules/conversations/operatorChat.js'
+import { registerOperatorChatRoutes } from './operatorChat.js'
 import type { InteractionService } from '../modules/interactions/service.js'
 
 export interface ProductServices {
@@ -45,6 +47,7 @@ export interface ProductServices {
   settings: PostgresSettingsRepository
   foundationSettings?: PostgresFoundationSettingsRepository
   engine: LangGraphWorkflowEngine
+  chat?: OperatorChatService
   interactions?: InteractionService
 }
 
@@ -72,6 +75,7 @@ function requireOperatorInteraction(
 }
 
 export function registerProductRoutes(app: FastifyInstance, services: ProductServices, managementOnlyMutations = false): void {
+  if (services.chat) registerOperatorChatRoutes(app, services.chat)
   if (services.foundationSettings) {
     app.get('/api/settings/agents', async () => GetAgentDefaultsResponseSchema.parse(
       await services.foundationSettings!.getAgentDefaults(),
@@ -90,7 +94,6 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
       return UpdateWorkflowDefaultsResponseSchema.parse(await services.foundationSettings!.updateWorkflowDefaults(input.value, input.expectedRevision))
     })
   }
-
   app.get('/api/settings/harnesses', async () => GetHarnessDefaultsResponseSchema.parse({
     defaults: await services.settings.getHarnessDefaults(),
   }))

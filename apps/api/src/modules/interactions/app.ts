@@ -128,24 +128,41 @@ export class PostgresAppInteractionService implements AppInteractionService {
 
   async respond(principal: ManagementPrincipal, input: unknown) {
     const parsed = RespondToInteractionRequestSchema.parse(input)
-    const current = requireRespondableInteraction(principal, await this.interactions.get(parsed.interactionId))
-    if (!this.orchestration) throw new DomainError('INTERACTION_DELIVERY_UNAVAILABLE', 'Native interaction delivery is not configured.', 503)
+    let current: ReturnType<typeof DurableInteractionSchema.parse> | undefined
     try {
-      const result = await this.orchestration.respond({
-        kind: 'orchestrator',
-        authority: {
-          agentId: principal.agentId!, workspaceId: current.workspaceId, workflowId: current.workflowId,
-        },
-      }, parsed)
-      await this.commands.recordAudit(principal.id, 'mcp', 'interaction_respond', `interaction:${current.id}`, 'succeeded', {
-        replayed: result.replayed,
-        optionId: parsed.optionId,
-      })
+      current = requireRespondableInteraction(principal, await this.interactions.get(parsed.interactionId))
+      const result = this.orchestration
+        ? await this.orchestration.respond({
+            kind: 'orchestrator',
+            authority: {
+              agentId: principal.agentId!, workspaceId: current.workspaceId, workflowId: current.workflowId,
+            },
+          }, parsed)
+        : await this.interactions.decide({
+            id: parsed.interactionId, optionId: parsed.optionId, expectedRevision: parsed.expectedRevision,
+            nativeResponse: null, principal,
+            beforeCommit: (client, decision) => this.commands.recordAudit(
+              principal.id, 'mcp', 'interaction_respond', `interaction:${current!.id}`, 'succeeded',
+              { replayed: decision.replayed, optionId: parsed.optionId }, client,
+            ),
+          })
+      if (this.orchestration) {
+        await this.commands.recordAudit(principal.id, 'mcp', 'interaction_respond', `interaction:${current.id}`, 'succeeded', {
+          replayed: result.replayed,
+          optionId: parsed.optionId,
+        })
+      }
       return RespondToInteractionResponseSchema.parse(result)
     } catch (error) {
-      await this.commands.recordAudit(principal.id, 'mcp', 'interaction_respond', `interaction:${current.id}`, 'failed', {
-        code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR',
-      }).catch(() => undefined)
+      const denied = error instanceof DomainError && ['INTERACTION_NOT_FOUND', 'INTERACTION_ACCESS_DENIED'].includes(error.code)
+      if (denied) {
+        await this.commands.recordDenied(principal.id, 'mcp', 'interaction_respond', 'interaction:requested').catch(() => undefined)
+      } else {
+        await this.commands.recordAudit(principal.id, 'mcp', 'interaction_respond',
+          `interaction:${current?.id ?? parsed.interactionId}`, 'failed', {
+            code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR',
+          }).catch(() => undefined)
+      }
       throw error
     }
   }

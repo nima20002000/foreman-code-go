@@ -528,8 +528,96 @@ const migrations = [
     create trigger review_job_lifecycle after insert or update on review_jobs
       for each row execute function audit_review_job_lifecycle();
   ` },
+  { version: 507, sql: `
+    -- Some pre-foundation installations created management_principals without
+    -- the default audience constraint name. Establish it before migration 509
+    -- widens the unchanged historical constraint to include User principals.
+    do $$
+    begin
+      if not exists (
+        select 1 from pg_constraint
+        where conrelid='management_principals'::regclass
+          and conname='management_principals_audience_check'
+      ) then
+        alter table management_principals add constraint management_principals_audience_check
+          check (audience in ('operator','worker'));
+      end if;
+    end
+    $$;
+  ` },
   interactionDeliveryMigration,
   lifecycleMigration,
+  { version: 700, sql: `
+    create table if not exists operator_conversations (
+      id text primary key,
+      operator_id text not null references application_operators(id),
+      operator_configuration_version_id text not null references operator_configuration_versions(id),
+      harness text not null,
+      provider_version text,
+      native_session_id text,
+      active_request_id text,
+      active_native_turn_id text,
+      turn_state text not null default 'idle',
+      last_error text,
+      record jsonb not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      check (turn_state in ('idle','starting','active','canceling','uncertain','error'))
+    );
+    create unique index if not exists operator_conversations_native_session_idx
+      on operator_conversations (harness, native_session_id) where native_session_id is not null;
+    create index if not exists operator_conversations_recent_idx
+      on operator_conversations (updated_at desc, id);
+    create table if not exists operator_conversation_messages (
+      id text primary key,
+      conversation_id text not null references operator_conversations(id) on delete cascade,
+      sequence bigint generated always as identity,
+      role text not null,
+      content text not null,
+      client_request_id text,
+      native_message_id text,
+      record jsonb not null,
+      created_at timestamptz not null default now(),
+      check (role in ('user','assistant','system','tool')),
+      unique (conversation_id, sequence)
+    );
+    create unique index if not exists operator_messages_request_idx
+      on operator_conversation_messages (conversation_id, client_request_id) where client_request_id is not null;
+    create unique index if not exists operator_messages_native_idx
+      on operator_conversation_messages (conversation_id, native_message_id) where native_message_id is not null;
+  ` },
+  { version: 701, sql: `
+    alter table operator_conversations add column if not exists owner_principal_id text references management_principals(id);
+    alter table operator_conversations add column if not exists revision bigint not null default 0;
+    alter table operator_conversations add column if not exists active_phase text;
+    alter table operator_conversations add column if not exists cancel_requested boolean not null default false;
+    alter table operator_conversations add column if not exists pending_interaction jsonb;
+    alter table operator_conversations add column if not exists response_delivery text;
+    alter table operator_conversations add column if not exists last_result jsonb;
+    create table if not exists operator_conversation_turns (
+      conversation_id text not null references operator_conversations(id) on delete cascade,
+      request_id text not null,
+      payload jsonb not null,
+      input_hash text not null,
+      retryable boolean not null default false,
+      result jsonb,
+      primary key (conversation_id,request_id)
+    );
+    -- Old receipts did not store route context. Preserve their content without guessing context.
+    insert into operator_conversation_turns (conversation_id,request_id,payload,input_hash)
+      select conversation_id,client_request_id,jsonb_build_object('content',content),'legacy'
+      from operator_conversation_messages where client_request_id is not null
+      on conflict do nothing;
+    alter table management_principals add column if not exists delegated_from text references management_principals(id);
+    create table if not exists operator_chat_credentials (
+      principal_id text primary key references management_principals(id),
+      conversation_id text not null references operator_conversations(id) on delete cascade
+    );
+    create index if not exists operator_chat_owner_idx on operator_conversations(owner_principal_id,updated_at desc,id);
+    -- A restarted process cannot prove an old in-flight delivery did not happen.
+    update operator_conversations set active_phase='submitting',turn_state='uncertain'
+      where active_request_id is not null and active_phase is null;
+  ` },
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

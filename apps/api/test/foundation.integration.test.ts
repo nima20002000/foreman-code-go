@@ -30,7 +30,7 @@ describe('HAP-01 durable foundation', () => {
     try {
       await applyApplicationMigrations(pool)
       await applyApplicationMigrations(pool)
-      expect((await pool.query<{ version: number }>('select version from application_migrations order by version')).rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 100, 400, 500, 501, 502, 503, 508, 509])
+      expect((await pool.query<{ version: number }>('select version from application_migrations order by version')).rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 100, 400, 401, 500, 501, 502, 503, 507, 508, 509, 700, 701])
       await ensureAcceptanceSeed(pool)
 
       const settings = new PostgresFoundationSettingsRepository(pool)
@@ -71,7 +71,8 @@ describe('HAP-01 durable foundation', () => {
 
       await expect(access.issue({ name: 'invalid worker', audience: 'worker', grants: [], expiresAt: new Date(Date.now() + 60_000) })).rejects.toMatchObject({ code: 'WORKER_AGENT_REQUIRED' })
       const worker = await access.issue({ name: 'coder', audience: 'worker', agentId: 'agent-developer', grants: [], expiresAt: new Date(Date.now() + 60_000) })
-      expect((await access.authenticate(worker.token, 'worker')).agentId).toBe('agent-developer')
+      expect(worker.principal.agentId).toBe('agent-developer')
+      await expect(access.authenticate(worker.token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
       await expect(access.authenticate(worker.token, 'operator')).rejects.toMatchObject({ code: 'AUTH_WRONG_AUDIENCE' })
 
       const run = WorkflowRunSchema.parse({
