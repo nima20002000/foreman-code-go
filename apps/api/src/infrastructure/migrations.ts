@@ -258,6 +258,43 @@ const migrations = [
       unique (interaction_id, reviewer_agent_id)
     );
   ` },
+  { version: 500, sql: `
+    create table if not exists approval_execution_state (
+      execution_id text primary key,
+      graph_thread_id text not null,
+      active_timeout_ms bigint not null check (active_timeout_ms > 0),
+      active_elapsed_ms bigint not null default 0 check (active_elapsed_ms >= 0),
+      active_started_at timestamptz,
+      approval_wait_started_at timestamptz,
+      stopped_at timestamptz,
+      revision bigint not null default 0,
+      updated_at timestamptz not null default now()
+    );
+
+    create table if not exists interaction_delivery_attempts (
+      interaction_id text not null references durable_interactions(id) on delete cascade,
+      attempt integer not null check (attempt > 0),
+      state text not null check (state in ('submitted','uncertain','delivered','failed')),
+      native_session_id text not null,
+      native_request_id text not null,
+      correlation_id text not null,
+      error text,
+      created_at timestamptz not null default now(),
+      primary key (interaction_id, attempt)
+    );
+    create index if not exists interaction_delivery_attempts_reconcile_idx
+      on interaction_delivery_attempts (state, created_at, interaction_id);
+  ` },
+  { version: 501, sql: `
+    create table if not exists interaction_command_receipts (
+      principal_id text not null,
+      command_id text not null,
+      interaction_id text not null references durable_interactions(id) on delete cascade,
+      option_id text not null,
+      created_at timestamptz not null default now(),
+      primary key (principal_id,command_id)
+    );
+  ` },
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

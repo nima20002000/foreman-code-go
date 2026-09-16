@@ -9,6 +9,7 @@ import type { WorkspaceManagementService } from '../../modules/workspaces/manage
 import type { PostgresCommandCoordinator } from '../../modules/commands/postgres.js'
 import type { WorkspaceLocationService } from '../../modules/workspaces/location.js'
 import type { FoundationSettingsManagementService } from '../../modules/settings/management.js'
+import type { OperatorInteractionService } from '../../modules/interactions/operator.js'
 
 export interface OperatorServices {
   workspaces: WorkspaceManagementService
@@ -20,6 +21,7 @@ export interface OperatorServices {
   settings?: FoundationSettingsManagementService
   runs: RunManagementService
   commands: PostgresCommandCoordinator
+  interactions?: OperatorInteractionService
 }
 
 export interface OperatorRequestContext {

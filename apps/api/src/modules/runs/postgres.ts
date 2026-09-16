@@ -267,6 +267,10 @@ export class PostgresRunRepository implements RunRepository {
     return result.rows[0] ? HarnessExecutionSchema.parse(result.rows[0].record) : undefined
   }
 
+  async getExecutionConfiguration(configurationVersionId: string) {
+    return this.workflows.getAgentConfiguration(configurationVersionId)
+  }
+
   async listExecutions(runId: string): Promise<HarnessExecution[]> {
     const result = await this.pool.query<{ record: unknown }>(
       'select record from harness_executions where run_id = $1 order by created_at, id',

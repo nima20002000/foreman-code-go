@@ -12,12 +12,12 @@ import {
   UpdateWorkflowDefaultsResponseSchema,
   UpdateAgentDefaultsRequestSchema,
   UpdateWorkflowDefaultsRequestSchema,
-  GetInteractionResponseSchema,
+  ListAgentsResponseSchema,
   ListInteractionsRequestSchema,
   ListInteractionsResponseSchema,
+  GetInteractionResponseSchema,
   RespondToInteractionRequestSchema,
   RespondToInteractionResponseSchema,
-  ListAgentsResponseSchema,
   SaveWorkflowRequestSchema,
   SaveWorkflowResponseSchema,
   SaveHarnessDefaultsRequestSchema,
@@ -31,10 +31,9 @@ import type { LangGraphWorkflowEngine } from '../modules/runs/engine.js'
 import type { PostgresRunRepository } from '../modules/runs/postgres.js'
 import type { PostgresSettingsRepository } from '../modules/settings/postgres.js'
 import type { PostgresFoundationSettingsRepository } from '../modules/settings/foundation.js'
-import type { PostgresInteractionRepository } from '../modules/interactions/postgres.js'
-import type { DurableInteraction } from '@graphql/contracts'
 import type { PostgresWorkflowRepository } from '../modules/workflows/postgres.js'
 import type { PostgresWorkspaceRepository } from '../modules/workspaces/postgres.js'
+import type { InteractionService } from '../modules/interactions/service.js'
 
 export interface ProductServices {
   workspaces: PostgresWorkspaceRepository
@@ -42,11 +41,8 @@ export interface ProductServices {
   runs: PostgresRunRepository
   settings: PostgresSettingsRepository
   foundationSettings?: PostgresFoundationSettingsRepository
-  interactions?: PostgresInteractionRepository
-  interactionResponder?: {
-    respond(input: { interactionId: string; optionId: string; expectedRevision: number }): Promise<{ interaction: DurableInteraction; replayed: boolean }>
-  }
   engine: LangGraphWorkflowEngine
+  interactions?: InteractionService
 }
 
 interface WorkspaceParams { workspaceId: string }
@@ -78,37 +74,6 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
     })
   }
 
-  if (services.interactions) {
-    app.get<{ Querystring: Record<string, string | undefined> }>('/api/interactions', async (request) => {
-      const input = ListInteractionsRequestSchema.parse({
-        ...(request.query.cursor ? { cursor: request.query.cursor } : {}),
-        ...(request.query.limit ? { limit: Number(request.query.limit) } : {}),
-        ...(request.query.workspaceId ? { workspaceId: request.query.workspaceId } : {}),
-        ...(request.query.workflowId ? { workflowId: request.query.workflowId } : {}),
-        ...(request.query.status ? { status: request.query.status } : {}),
-      })
-      const items = await services.interactions!.list({
-        ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
-        ...(input.workflowId ? { workflowId: input.workflowId } : {}),
-        ...(input.status ? { status: input.status } : {}),
-        ...(input.cursor ? { afterId: input.cursor } : {}),
-        limit: input.limit + 1,
-      })
-      return ListInteractionsResponseSchema.parse({
-        items: items.slice(0, input.limit),
-        nextCursor: items.length > input.limit ? items[input.limit - 1]?.id ?? null : null,
-      })
-    })
-    app.get<{ Params: { interactionId: string } }>('/api/interactions/:interactionId', async (request) => {
-      const interaction = await services.interactions!.get(request.params.interactionId)
-      return interaction ? GetInteractionResponseSchema.parse({ interaction }) : notFound('interaction', request.params.interactionId)
-    })
-    app.post<{ Params: { interactionId: string }; Body: unknown }>('/api/interactions/:interactionId/respond', async (request) => {
-      if (!services.interactionResponder) throw new DomainError('INTERACTION_RESPONSE_UNAVAILABLE', 'Approval delivery is not available.', 503)
-      const input = RespondToInteractionRequestSchema.parse({ ...(request.body as object), interactionId: request.params.interactionId })
-      return RespondToInteractionResponseSchema.parse(await services.interactionResponder.respond(input))
-    })
-  }
   app.get('/api/settings/harnesses', async () => GetHarnessDefaultsResponseSchema.parse({
     defaults: await services.settings.getHarnessDefaults(),
   }))
@@ -196,6 +161,33 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
     const details = await services.runs.getDetails(request.params.workspaceId, request.params.runId)
     return details ? GetRunResponseSchema.parse(details) : notFound('run', request.params.runId)
   })
+
+  if (services.interactions) {
+    app.get<{ Querystring: unknown }>('/api/interactions', async (request) => {
+        const query = request.query as { cursor?: unknown; limit?: unknown }
+        const input = ListInteractionsRequestSchema.parse({
+          ...(typeof query.cursor === 'string' ? { cursor: query.cursor } : {}),
+          ...(query.limit !== undefined ? { limit: Number(query.limit) } : {}),
+        })
+        return ListInteractionsResponseSchema.parse(await services.interactions!.list({
+          handler: 'user', ...(input.cursor ? { cursor: input.cursor } : {}), limit: input.limit,
+        }))
+      })
+    app.get<{ Params: { interactionId: string } }>('/api/interactions/:interactionId', async (request) => {
+        const interaction = await services.interactions!.get(request.params.interactionId)
+        if (interaction.approval.handler !== 'user') return notFound('interaction', request.params.interactionId)
+        return GetInteractionResponseSchema.parse({ interaction })
+      })
+    app.post<{ Params: { interactionId: string }; Body: unknown }>('/api/interactions/:interactionId/respond', async (request) => {
+        const input = RespondToInteractionRequestSchema.parse(request.body)
+        if (input.interactionId !== request.params.interactionId) {
+          throw new DomainError('INVALID_INTERACTION', 'The response does not match the requested interaction.', 400)
+        }
+        return RespondToInteractionResponseSchema.parse(await services.interactions!.respond({
+          kind: 'user',
+        }, input))
+      })
+  }
 
   app.post<{ Params: RunParams }>('/api/workspaces/:workspaceId/runs/:runId/cancel', async (request) => {
     if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the idempotent management Stop command.', 409)
