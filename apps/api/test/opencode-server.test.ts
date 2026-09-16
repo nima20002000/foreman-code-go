@@ -1,3 +1,7 @@
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
 import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type HarnessExecutionRequest } from '@graphql/contracts'
@@ -5,6 +9,7 @@ import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type HarnessExecutionRequest }
 import {
   OpenCodeNativeDeliveryError,
   OpenCodeNativeSessionManager,
+  ManagedOpenCodeServer,
   buildOpenCodeConfigContent,
   type OpenCodeServerController,
 } from '../src/modules/harnesses/opencodeServer.js'
@@ -42,9 +47,11 @@ class FakeServer implements OpenCodeServerController {
   messagesAfterEventStreams = 0
   eventStreams = 0
   sessionExists = true
+  restartEnvironments: unknown[] = []
 
   async ensure() {}
   async dispose() {}
+  async restart(environment: unknown) { this.restartEnvironments.push(environment) }
   async request(path: string, init?: RequestInit): Promise<Response> {
     this.calls.push({ path, ...(init ? { init } : {}) })
     const route = path.split('?')[0]
@@ -117,6 +124,70 @@ describe('OpenCode native server manager', () => {
     const prompt = server.calls.find((call) => call.path.startsWith('/session/ses_test/prompt_async'))
     expect(JSON.parse(String(prompt?.init?.body))).toMatchObject({ messageID, agent: 'build', variant: 'max', parts: [{ type: 'text', text: 'hello' }] })
     expect(server.calls.findIndex((call) => call.path.startsWith('/event'))).toBeLessThan(server.calls.findIndex((call) => call.path.startsWith('/session/ses_test/prompt_async')))
+  })
+
+  it('binds the first scoped environment before native work and rejects credential replacement', async () => {
+    const server = new FakeServer()
+    const native = manager(server)
+    const executionRequest = request()
+    const environment = { agentId: 'agent-1', variables: { GRAPHQL_APP_MCP_TOKEN: 'first-token' } }
+    await native.createSession({ request: executionRequest, environment })
+    expect(server.restartEnvironments).toEqual([environment])
+    expect(server.calls[0]?.path).toBe('/global/health')
+
+    await native.createSession({ request: executionRequest, environment: {
+      agentId: 'agent-1', variables: { GRAPHQL_APP_MCP_TOKEN: 'first-token' },
+    } })
+    expect(server.restartEnvironments).toHaveLength(1)
+
+    await expect(native.createSession({ request: executionRequest, environment: {
+      agentId: 'agent-2', variables: { GRAPHQL_APP_MCP_TOKEN: 'other-agent' },
+    } })).rejects.toMatchObject({ result: { error: { code: 'OPENCODE_SESSION_OWNER_MISMATCH' } } })
+    await expect(native.createSession({ request: executionRequest, environment: {
+      agentId: 'agent-1', variables: { GRAPHQL_APP_MCP_TOKEN: 'replacement' },
+    } })).rejects.toMatchObject({ result: { error: { code: 'OPENCODE_CREDENTIAL_CONTEXT_MISMATCH' } } })
+    expect(server.restartEnvironments).toHaveLength(1)
+  })
+
+  it('fails before native work when the server cannot bind a scoped environment', async () => {
+    const server = new FakeServer()
+    Object.defineProperty(server, 'restart', { value: undefined })
+    await expect(manager(server).createSession({
+      request: request(), environment: { agentId: 'agent-1', variables: { GRAPHQL_APP_MCP_TOKEN: 'token' } },
+    })).rejects.toMatchObject({ result: { error: { code: 'OPENCODE_SERVER_RESTART_UNSUPPORTED' } } })
+    expect(server.calls).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('delivers the scoped App token to the restarted resident child process', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'graphql-opencode-server-env-'))
+    const binary = join(directory, 'opencode-fixture.cjs')
+    await writeFile(binary, `#!${process.execPath}
+const http = require('node:http')
+const args = process.argv.slice(2)
+if (args.includes('--version')) { console.log('1.18.31'); process.exit(0) }
+const token = process.env.GRAPHQL_APP_MCP_TOKEN
+const server = http.createServer((request, response) => {
+  response.setHeader('content-type', 'application/json')
+  if (request.url === '/global/health') response.end(JSON.stringify({healthy:true,version:'1.18.31'}))
+  else if (request.url === '/test-env') response.end(JSON.stringify({present:token === 'scoped-token'}))
+  else { response.statusCode = 404; response.end('{}') }
+})
+server.listen(0, '127.0.0.1', () => console.log('opencode server listening on http://127.0.0.1:' + server.address().port))
+`, { mode: 0o755 })
+    await chmod(binary, 0o755)
+    const server = new ManagedOpenCodeServer({
+      binary, workingDirectory: directory, ownerAgentId: 'agent-1', pure: true,
+    })
+    try {
+      await server.restart({ agentId: 'agent-1', variables: { GRAPHQL_APP_MCP_TOKEN: 'scoped-token' } })
+      await expect(server.request('/test-env').then((response) => response.json())).resolves.toEqual({ present: true })
+      await expect(server.restart({ agentId: 'agent-2', variables: { GRAPHQL_APP_MCP_TOKEN: 'replacement' } }))
+        .rejects.toMatchObject({ result: { error: { code: 'OPENCODE_CREDENTIAL_OWNER_MISMATCH' } } })
+      await expect(server.request('/test-env').then((response) => response.json())).resolves.toEqual({ present: true })
+    } finally {
+      await server.dispose()
+      await rm(directory, { recursive: true, force: true })
+    }
   })
 
   it('reconnects a dropped SSE stream and deduplicates provider events', async () => {

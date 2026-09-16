@@ -85,6 +85,7 @@ export class OpenCodeNativeDeliveryError extends Error {
 export interface OpenCodeServerController {
   readonly expectedVersion: string
   readonly advancedConfiguration?: OpenCodeAdvancedConfiguration | undefined
+  readonly credentialEnvironmentFingerprint?: string | undefined
   ensure(signal?: AbortSignal): Promise<void>
   request(path: string, init?: RequestInit, signal?: AbortSignal): Promise<Response>
   dispose(): Promise<void>
@@ -110,6 +111,10 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   private stderr = ''
   private starting: Promise<void> | undefined
   private environment: ChildProcessEnvironment | undefined
+
+  get credentialEnvironmentFingerprint(): string | undefined {
+    return this.environment ? childEnvironmentFingerprint(this.environment) : undefined
+  }
 
   constructor(private readonly options: ManagedOpenCodeServerOptions) {
     this.advancedConfiguration = options.advancedConfiguration
@@ -299,8 +304,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   readonly harness = 'opencode' as const
   private readonly sessions = new Map<string, SessionState>()
   private readonly activeTurns = new Set<string>()
+  private boundEnvironmentFingerprint: string | undefined
 
-  constructor(private readonly options: OpenCodeNativeSessionManagerOptions) {}
+  constructor(private readonly options: OpenCodeNativeSessionManagerOptions) {
+    this.boundEnvironmentFingerprint = options.server.credentialEnvironmentFingerprint
+  }
 
   async capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities> {
     await this.qualifyServer(signal)
@@ -316,9 +324,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const workingDirectory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
     const title = input.kind === 'operator' ? `GraphQL Operator ${input.correlationId}` : `GraphQL ${input.request.executionId}`
     const configuration = this.configuration(input)
-    if (input.environment && input.environment.agentId !== this.options.ownerAgentId) {
-      throw new HarnessExecutionError('OPENCODE_SESSION_OWNER_MISMATCH', 'The session credential belongs to another Agent.')
-    }
+    await this.bindSessionEnvironment(input.environment, signal)
     await this.qualifyServer(signal)
     await this.qualifyConfiguration(configuration, workingDirectory, signal)
     await this.applyMcpControls(configuration, workingDirectory, signal)
@@ -348,9 +354,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     if (session.harness !== 'opencode' || session.providerVersion !== QUALIFIED_VERSION) {
       throw new HarnessExecutionError('OPENCODE_SESSION_UNQUALIFIED', 'The persisted session is not qualified for this OpenCode manager.')
     }
-    if (input.environment && input.environment.agentId !== this.options.ownerAgentId) {
-      throw new HarnessExecutionError('OPENCODE_SESSION_OWNER_MISMATCH', 'The session credential belongs to another Agent.')
-    }
+    await this.bindSessionEnvironment(input.environment, signal)
     const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
     const configuration = this.configuration(input)
     await this.qualifyServer(signal)
@@ -529,7 +533,31 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       throw new HarnessExecutionError('OPENCODE_SERVER_RESTART_UNSUPPORTED', 'This OpenCode server controller cannot replace its credential environment.')
     }
     await this.options.server.restart(environment, signal)
+    this.boundEnvironmentFingerprint = childEnvironmentFingerprint(environment)
     await this.qualifyServer(signal)
+  }
+
+  private async bindSessionEnvironment(environment: ChildProcessEnvironment | undefined, signal?: AbortSignal): Promise<void> {
+    if (!environment) return
+    if (environment.agentId !== this.options.ownerAgentId) {
+      throw new HarnessExecutionError('OPENCODE_SESSION_OWNER_MISMATCH', 'The session credential belongs to another Agent.')
+    }
+    const fingerprint = childEnvironmentFingerprint(environment)
+    if (fingerprint === this.boundEnvironmentFingerprint) return
+    if (this.boundEnvironmentFingerprint) {
+      throw new HarnessExecutionError(
+        'OPENCODE_CREDENTIAL_CONTEXT_MISMATCH',
+        'A different credential cannot replace this OpenCode manager credential context; use the explicit idle renewal operation.',
+      )
+    }
+    if (!this.options.server.restart) {
+      throw new HarnessExecutionError(
+        'OPENCODE_SERVER_RESTART_UNSUPPORTED',
+        'The OpenCode server cannot bind the scoped App credential environment.',
+      )
+    }
+    await this.options.server.restart(environment, signal)
+    this.boundEnvironmentFingerprint = fingerprint
   }
 
   async inspectNativeMcp(directory: string, signal?: AbortSignal): Promise<OpenCodeMcpInspection> {
@@ -781,6 +809,11 @@ function isReasoningEvent(type: string): boolean {
 
 function messageId(correlationId: string): string {
   return `msg_${createHash('sha256').update(correlationId).digest('hex').slice(0, 24)}`
+}
+
+function childEnvironmentFingerprint(environment: ChildProcessEnvironment): string {
+  const variables = Object.entries(environment.variables).sort(([left], [right]) => left.localeCompare(right))
+  return createHash('sha256').update(JSON.stringify([environment.agentId, variables])).digest('hex')
 }
 
 function optionsForRequest(requestID: string): ApprovalResponseOption[] {
