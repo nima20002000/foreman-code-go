@@ -301,25 +301,23 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   async createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
-    if (input.kind === 'operator') {
-      throw new HarnessExecutionError('OPENCODE_OPERATOR_DIRECTORY_REQUIRED', 'OpenCode Operator sessions require an explicit shared runner working directory.')
-    }
-    const request = input.request
+    const workingDirectory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+    const title = input.kind === 'operator' ? `GraphQL Operator ${input.correlationId}` : `GraphQL ${input.request.executionId}`
     const configuration = this.configuration(input)
     if (input.environment && input.environment.agentId !== this.options.ownerAgentId) {
       throw new HarnessExecutionError('OPENCODE_SESSION_OWNER_MISMATCH', 'The session credential belongs to another Agent.')
     }
     await this.qualifyServer(signal)
-    await this.qualifyConfiguration(configuration, request.workingDirectory, signal)
-    await this.applyMcpControls(configuration, request.workingDirectory, signal)
+    await this.qualifyConfiguration(configuration, workingDirectory, signal)
+    await this.applyMcpControls(configuration, workingDirectory, signal)
     const [providerID, ...modelParts] = configuration.model.split('/')
     const permission = configuration.advanced?.permissionRules.map((rule) => ({
       permission: nativePermissionName(rule.permission), pattern: rule.pattern, action: rule.effect,
     }))
     const response = await this.json('/session', {
-      method: 'POST', directory: request.workingDirectory,
+      method: 'POST', directory: workingDirectory,
       body: {
-        title: `GraphQL ${request.executionId}`,
+        title,
         agent: configuration.nativeAgent,
         model: { providerID, id: modelParts.join('/'), variant: configuration.variant },
         ...(permission ? { permission } : {}),
@@ -328,7 +326,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const sessionId = stringField(response, 'id', 'OPENCODE_SESSION_ID_MISSING')
     const session = NativeSessionReferenceSchema.parse({ harness: 'opencode', providerVersion: QUALIFIED_VERSION, nativeSessionId: sessionId })
     this.sessions.set(sessionId, {
-      directory: request.workingDirectory, configuration,
+      directory: workingDirectory, configuration,
       events: [], seenEventIds: new Set(), seenPendingRequestIds: new Set(), correlationMessages: new Map(), sequence: 0,
     })
     return session
@@ -424,7 +422,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const request = before.find((item) => item.id === nativeRequestId && item.sessionID === session.nativeSessionId)
     if (!request) throw new OpenCodeNativeDeliveryError('OPENCODE_PERMISSION_NOT_PENDING', 'The native permission request is no longer pending.', 'definite')
     const expected = optionsForRequest(request.id).find((item) => item.optionId === option.optionId)
-    if (!expected || JSON.stringify(expected) !== JSON.stringify(option)) {
+    if (!expected || !sameApprovalOption(expected, option)) {
       throw new OpenCodeNativeDeliveryError('OPENCODE_PERMISSION_OPTION_INVALID', 'The response option is not valid for this native request.', 'definite')
     }
     const reply = option.semantic === 'approve_once' ? 'once'
@@ -716,6 +714,14 @@ function optionsForRequest(requestID: string): ApprovalResponseOption[] {
   return OPENCODE_APPROVAL_OPTIONS_FIXTURE.map((option) => ({ ...option, optionId: `${requestID}:${option.semantic}` }))
 }
 
+function sameApprovalOption(left: ApprovalResponseOption, right: ApprovalResponseOption): boolean {
+  return left.optionId === right.optionId && left.semantic === right.semantic && left.label === right.label
+    && left.persistence === right.persistence && left.scopeSummary === right.scopeSummary
+    && left.affectsOtherPendingRequests === right.affectsOtherPendingRequests
+    && left.interruptsCurrentTurn === right.interruptsCurrentTurn
+    && left.mutatesPersistentPolicy === right.mutatesPersistentPolicy
+}
+
 function pendingInteraction(session: NativeSessionReference, request: NativePermissionRequest): PendingNativeInteraction {
   return PendingNativeInteractionSchema.parse({
     session,
@@ -751,8 +757,13 @@ function finalResult(messages: NativeMessage[], parentID?: string): NativeHistor
   })
   if (!assistant) return undefined
   if (assistant.info.error) {
-    const error = assistant.info.error as JsonObject
-    return { outcome: 'failed', error: { code: typeof error.name === 'string' ? error.name : 'OPENCODE_TURN_FAILED', message: typeof error.message === 'string' ? error.message : 'OpenCode turn failed.', retryable: false } }
+    const error = asObject(assistant.info.error)
+    const data = objectField(error, 'data')
+    return { outcome: 'failed', error: {
+      code: typeof error.name === 'string' ? error.name : 'OPENCODE_TURN_FAILED',
+      message: typeof data.message === 'string' ? data.message : typeof error.message === 'string' ? error.message : 'OpenCode turn failed.',
+      retryable: data.isRetryable === true,
+    } }
   }
   const text = assistant.parts
     .filter((part) => part.type === 'text' && typeof part.text === 'string' && part.ignored !== true)

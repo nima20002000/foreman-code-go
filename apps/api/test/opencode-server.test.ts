@@ -60,7 +60,12 @@ class FakeServer implements OpenCodeServerController {
     if (route === '/event') { this.eventStreams += 1; return sse(this.events.shift() ?? '') }
     if (route === '/permission') return json(this.permissions)
     if (route === '/session/ses_test/message') return json(this.eventStreams >= this.messagesAfterEventStreams ? this.messages : [])
-    if (route === '/permission/per_one/reply' || route === '/permission/per_two/reply') return json(true)
+    if (route === '/permission/per_one/reply' || route === '/permission/per_two/reply') {
+      const reply = JSON.parse(String(init?.body)).reply
+      const requestID = route.split('/')[2]
+      this.permissions = reply === 'reject' ? [] : this.permissions.filter((item) => (item as { id?: string }).id !== requestID)
+      return json(true)
+    }
     if (route === '/session/ses_test/prompt_async') return new Response(null, { status: 204 })
     if (route === '/session/ses_test/abort') return json(true)
     if (route === '/config') return json(this.config)
@@ -169,6 +174,21 @@ describe('OpenCode native server manager', () => {
     await expect(native.respond(session, 'per_one', valid)).resolves.toBeUndefined()
   })
 
+  it('exposes every same-session pending request so reject cascades reconcile all rows', async () => {
+    const server = new FakeServer()
+    const native = manager(server)
+    const session = await sessionFor(native)
+    server.permissions = [
+      { id: 'per_one', sessionID: 'ses_test', permission: 'read', patterns: ['a'], metadata: {}, always: ['a'] },
+      { id: 'per_two', sessionID: 'ses_test', permission: 'bash', patterns: ['b'], metadata: {}, always: ['b'] },
+      { id: 'per_other', sessionID: 'ses_other', permission: 'read', patterns: ['c'], metadata: {}, always: ['c'] },
+    ]
+    const before = await native.pendingAll(session)
+    expect(before.map((item) => item.turn.nativeRequestId)).toEqual(['per_one', 'per_two'])
+    await native.respond(session, 'per_one', before[0]!.responseOptions.find((item) => item.semantic === 'reject')!)
+    expect(await native.pendingAll(session)).toEqual([])
+  })
+
   it('uses native abort and exposes precise resolved MCP evidence without secrets', async () => {
     const server = new FakeServer()
     const native = manager(server)
@@ -223,6 +243,22 @@ describe('OpenCode native server manager', () => {
       model: 'kept/model', plugin: ['kept'], subagent_depth: 0,
       compaction: { custom: true, auto: false, prune: true, tail_turns: 4, preserve_recent_tokens: 2048 },
     })
+  })
+
+  it('uses the explicit application Operator working directory without a cwd fallback', async () => {
+    const server = new FakeServer()
+    const native = manager(server)
+    await native.createSession({
+      kind: 'operator', correlationId: 'conversation-1', workingDirectory: '/runtime/operator',
+      configuration: {
+        id: 'operator-config-1', operatorId: 'agent-1', version: 1,
+        harness: request().configuration.harness,
+        contentHash: 'sha256:operator', createdAt: '2026-09-16T00:00:00.000Z',
+      },
+      environment: { agentId: 'agent-1', variables: {} },
+    })
+    expect(server.calls.some((call) => call.path === '/session?directory=%2Fruntime%2Foperator')).toBe(true)
+    expect(server.calls.some((call) => call.path.includes(encodeURIComponent(process.cwd())))).toBe(false)
   })
 })
 
