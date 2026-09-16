@@ -20,6 +20,7 @@ import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
 import { FoundationSettingsManagementService } from '../src/modules/settings/management.js'
+import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { AgentManagementService } from '../src/modules/workspaces/agents.js'
@@ -120,7 +121,7 @@ describe('Operator MCP with PostgreSQL', () => {
       agents: new AgentManagementService(database.pool),
       drafts: new GraphDraftService(database.pool, commands),
       harnesses: new HarnessCatalogService(deterministicHarnesses(), settings, commands, process.cwd()),
-      settings: new FoundationSettingsManagementService(foundationSettings, commands),
+      settings: new FoundationSettingsManagementService(foundationSettings, commands, new PostgresOperatorRepository(database.pool)),
       runs: new RunManagementService(database.pool, commands, runsRepository, engine, locations),
       commands,
     }

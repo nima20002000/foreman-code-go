@@ -1,5 +1,6 @@
 import { loadEnvFile } from 'node:process'
 import { mkdir } from 'node:fs/promises'
+import { isDeepStrictEqual } from 'node:util'
 import type { FastifyInstance } from 'fastify'
 
 import { buildApp } from './app.js'
@@ -138,7 +139,11 @@ async function main() {
     await checkpoints.setup()
     await checkpoints.ping()
     await mkdir(config.harnesses.workspaceRoot, { recursive: true })
-    await operators.ensure()
+    const operator = await operators.ensure()
+    const agentDefaults = await foundationSettings.getAgentDefaults()
+    if (!isDeepStrictEqual(operator.configuration.harness, agentDefaults.value.operator.harness)) {
+      await operators.update(agentDefaults.value.operator.harness, operator.operator.currentConfigurationVersionId)
+    }
     const operatorWorkingDirectory = await ensureOperatorRuntimeDirectory(config.harnesses.workspaceRoot)
     chat = new OperatorChatService(
       new PostgresOperatorConversationRepository(database.pool),
@@ -174,7 +179,7 @@ async function main() {
       agents: new AgentManagementService(database.pool),
       drafts: new GraphDraftService(database.pool, commands),
       harnesses: new HarnessCatalogService(legacyHarnesses, settings, commands, config.harnesses.workspaceRoot),
-      settings: new FoundationSettingsManagementService(foundationSettings, commands),
+      settings: new FoundationSettingsManagementService(foundationSettings, commands, operators),
       runs: new RunManagementService(database.pool, commands, runs, engine, locations),
       interactions: new OperatorInteractionService(interactionService, interactions),
       commands,

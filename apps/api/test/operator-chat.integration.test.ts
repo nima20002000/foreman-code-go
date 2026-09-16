@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import { NativeHarnessEventSchema, type NativeSessionReference } from '@graphql/contracts'
+import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, NativeHarnessEventSchema, type NativeSessionReference } from '@graphql/contracts'
 import pg from 'pg'
 import { describe, expect, it } from 'vitest'
 
@@ -8,6 +8,10 @@ import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { OperatorChatService, PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChat.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../src/modules/harnesses/port.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
+import { FoundationSettingsManagementService } from '../src/modules/settings/management.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2603'
 
@@ -49,6 +53,38 @@ async function waitFor(check: () => Promise<boolean>) {
 }
 
 describe('Operator chat persistence and native binding', () => {
+  it('pins existing chats while Agent defaults advance the shared Operator configuration', async () => {
+    const schema = `chat_defaults_${randomUUID().replaceAll('-', '')}`
+    const admin = new pg.Pool({ connectionString }); await admin.query(`create schema "${schema}"`)
+    const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
+    try {
+      await applyApplicationMigrations(pool)
+      const operators = new PostgresOperatorRepository(pool)
+      const manager = new ChatManager()
+      const chat = new OperatorChatService(new PostgresOperatorConversationRepository(pool), operators, () => manager, '/tmp/graphql-nim2603-operator')
+      const before = await chat.create('Before defaults change')
+      const access = new PostgresAccessService(pool)
+      const issued = await access.issue({
+        name: 'settings owner', audience: 'operator',
+        grants: [{ actions: ['settings:update'], scope: {} }],
+        expiresAt: new Date(Date.now() + 60_000),
+      })
+      const settings = new PostgresFoundationSettingsRepository(pool)
+      const service = new FoundationSettingsManagementService(settings, new PostgresCommandCoordinator(pool), operators)
+      const current = await settings.getAgentDefaults()
+      await service.updateAgentDefaults(issued.principal, 'http', {
+        commandId: 'change-operator-harness', expectedRevision: current.revision,
+        value: { ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness: DEFAULT_HARNESS_DEFAULTS.opencode } },
+      })
+      const after = await chat.create('After defaults change')
+      expect(after.operatorConfigurationVersionId).not.toBe(before.operatorConfigurationVersionId)
+      const rows = await pool.query<{ id: string; harness: string }>(
+        'select id,record->\'harness\'->>\'harness\' as harness from operator_configuration_versions order by version',
+      )
+      expect(rows.rows.map((row) => row.harness)).toEqual(['codex', 'opencode'])
+    } finally { await pool.end(); await admin.query(`drop schema if exists "${schema}" cascade`); await admin.end() }
+  }, 30_000)
+
   it('keeps empty conversations native-free and reuses exactly one session across replayed and later turns', async () => {
     const schema = `chat_${randomUUID().replaceAll('-', '')}`
     const admin = new pg.Pool({ connectionString }); await admin.query(`create schema "${schema}"`)
