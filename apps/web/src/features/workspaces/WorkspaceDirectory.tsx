@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { MoreHorizontal, PanelsTopLeft } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { ManagedWorkspace } from '@graphql/contracts/management'
 
@@ -12,6 +11,7 @@ import {
 } from '../../shared/api/query'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
+import { Alert, Button, Card, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField } from '../../shared/ui/nocturne'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { useNavigationUiStore } from './navigationUiStore'
 import { useWorkspaceSessionStore } from './workspaceSessionStore'
@@ -68,21 +68,21 @@ function WorkspaceCardActions({ workspaceId, name, revision = 0, onCommand }: {
   const uncertain = attempt.current.unresolved && !pending
   return (
     <div className="workspace-card-actions-wrap">
-      <button ref={triggerRef} type="button" className="workspace-card-more"
-        aria-label={`Open actions for ${name}`} aria-haspopup="dialog" aria-expanded={open}
+      <IconButton ref={triggerRef} label={`Open actions for ${name}`}
+        aria-haspopup="dialog" aria-expanded={open}
         onClick={() => { if (open) close(); else { setNextName(name); setBaseRevision(revision); setError(undefined); setOpen(true) } }}>
-        <MoreHorizontal aria-hidden="true" size={16} />
-      </button>
+        <Icon name="more" size={16} />
+      </IconButton>
       {open ? <div ref={surfaceRef} className="workspace-card-actions" role="dialog" aria-label={`${name} actions`}>
-        <label>Name<input disabled={pending || uncertain} value={nextName} onChange={(event) => setNextName(event.target.value)} /></label>
-        {error ? <p role="alert">{error}</p> : null}
+        <TextField label="Name" disabled={pending || uncertain} value={nextName} onChange={(event) => setNextName(event.target.value)} />
+        {error ? <Alert live tone="danger" title={error} /> : null}
         {uncertain ? <>
-          <p role="status">The previous request may have succeeded. Retry it before making another change.</p>
-          <button type="button" onClick={() => void submit(lastCommand.current?.type ?? 'rename')}>Retry previous request</button>
+          <Alert live tone="warning" title="The previous request may have succeeded.">Retry it before making another change.</Alert>
+          <Button onClick={() => void submit(lastCommand.current?.type ?? 'rename')}>Retry previous request</Button>
         </> : <>
-          <button type="button" disabled={pending} onClick={() => void submit('rename')}>Rename</button>
-          <button type="button" disabled={pending} onClick={() => void submit('archive')}>Remove workspace</button>
-          <button type="button" disabled={pending} onClick={close}>Close</button>
+          <Button disabled={pending} onClick={() => void submit('rename')}>Rename</Button>
+          <Button variant="danger" disabled={pending} onClick={() => void submit('archive')}>Remove workspace</Button>
+          <Button variant="ghost" disabled={pending} onClick={close}>Close</Button>
         </>}
       </div> : null}
     </div>
@@ -147,27 +147,29 @@ export function WorkspaceDirectory() {
   const failed = realMode ? managedQuery.isError : workspaceQuery.isError && hiddenWorkspaceIds.length === 0
   const loading = realMode ? managedQuery.isPending : workspaceQuery.isPending
   return (
-    <section className="workspace-directory" aria-labelledby="workspace-directory-title">
-      <header>
-        <p className="panel-kicker">GraphQL</p><h1 id="workspace-directory-title">Workspaces</h1>
-        <p>{realMode ? 'Open, rename or archive a durable workspace.' : 'Open a workspace or remove it from this frontend session.'}</p>
-      </header>
-      {realMode && failed ? <p className="workspace-directory-state" role="alert">Workspaces unavailable
-        <button type="button" onClick={() => void managedQuery.refetch()}>Retry</button>
-      </p> : workspaces.length > 0 ? (
+    <section className="workspace-directory n-theme" aria-label="Workspaces">
+      <PageHeader
+        eyebrow="GraphQL"
+        title="Workspaces"
+        description={realMode ? 'Open, rename or archive a durable workspace.' : 'Open a workspace or remove it from this frontend session.'}
+      />
+      {realMode && failed ? <ErrorState title="Workspaces unavailable" description="The workspace list could not be loaded."
+        onRetry={() => void managedQuery.refetch()} /> : workspaces.length > 0 ? (
         <ul className="workspace-card-list" data-testid="workspace-card-list">
-          {workspaces.map((workspace) => <li className="workspace-card" data-testid={`workspace-card-${workspace.id}`} key={workspace.id}>
-            <Link to="/workspaces/$workspaceId" params={{ workspaceId: workspace.id }} search={{}} className="workspace-card-open">
-              <PanelsTopLeft aria-hidden="true" size={18} /><span>{workspace.name}</span>
-            </Link>
-            <WorkspaceCardActions workspaceId={workspace.id} name={workspace.name}
-              revision={managedById.get(workspace.id)?.revision} onCommand={execute} />
+          {workspaces.map((workspace) => <li key={workspace.id}>
+            <Card className="workspace-card" data-testid={`workspace-card-${workspace.id}`}>
+              <Link to="/workspaces/$workspaceId" params={{ workspaceId: workspace.id }} search={{}} className="workspace-card-open">
+                <Icon name="grid" size={18} /><span>{workspace.name}</span>
+              </Link>
+              <WorkspaceCardActions workspaceId={workspace.id} name={workspace.name}
+                revision={managedById.get(workspace.id)?.revision} onCommand={execute} />
+            </Card>
           </li>)}
         </ul>
-      ) : loading ? <p className="workspace-directory-state" role="status">Loading workspaces…</p>
-        : failed ? <p className="workspace-directory-state" role="alert">Workspaces unavailable</p>
-          : <div className="workspace-directory-empty" data-testid="workspace-directory-empty">
-            <h2>No workspaces yet</h2><p>Use New workspace in the navigation to create one.</p>
+      ) : loading ? <LoadingState label="Loading workspaces…" />
+        : failed ? <Alert live tone="danger" title="Workspaces unavailable" />
+          : <div data-testid="workspace-directory-empty">
+            <EmptyState icon="folder" title="No workspaces yet" description="Use New workspace in the navigation to create one." />
           </div>}
     </section>
   )

@@ -25,6 +25,15 @@ it('does not send during IME composition or Shift+Enter', () => {
   fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', shiftKey: true })
   expect(send).not.toHaveBeenCalled()
 })
+it('can block sending without locking a caller-owned draft', () => {
+  const send = vi.fn(); const change = vi.fn()
+  render(<MessageComposer value="Next message" onValueChange={change} onSend={send} sendDisabled sendLabel="Send message" formLabel="Conversation composer" />)
+  expect(screen.getByRole('form', { name: 'Conversation composer' })).toBeInTheDocument()
+  expect(screen.getByRole('textbox')).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Editable draft' } })
+  expect(change).toHaveBeenCalledWith('Editable draft')
+})
 it('exposes stop only when supplied by the runtime owner', () => {
   const { rerender } = render(<MessageComposer pending value="A message" onValueChange={vi.fn()} onSend={vi.fn()} />)
   expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()

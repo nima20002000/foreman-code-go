@@ -17,6 +17,7 @@ import {
   useWorkspaceDetailsQuery,
 } from '../../shared/api/query'
 import { ApiError } from '../../shared/api/client'
+import { Alert, Badge, Button, Card, CardBody, CardHeader, EmptyState, ErrorState, LoadingState, Surface } from '../../shared/ui/nocturne'
 import { AgentIdentity } from '../agents/AgentIdentity'
 import {
   ConversationComposer,
@@ -113,19 +114,22 @@ function isNotFound(error: unknown): boolean {
 function UnsupportedActions() {
   const actions = ['Run', 'Resume', 'Login', 'Open Browser', 'Files']
   return (
-    <div aria-label="Phase 1 unavailable actions">
-      <p>Actions unavailable in Phase 1:</p>
+    <div className="n-stack" aria-label="Phase 1 unavailable actions">
+      <Badge tone="neutral">Actions unavailable in Phase 1</Badge>
+      <div className="n-actions">
       {actions.map((action) => (
-        <button
+        <Button
           key={action}
-          type="button"
+          size="sm"
+          variant="ghost"
           disabled
           aria-disabled="true"
           title={`${action} is not available in Phase 1.`}
         >
           {action}
-        </button>
+        </Button>
       ))}
+      </div>
       <p>These controls are shown for context only; no workflow is started.</p>
     </div>
   )
@@ -140,7 +144,7 @@ function updateMessages(
 }
 
 function ContextLoading() {
-  return <p role="status">Loading agent context…</p>
+  return <LoadingState label="Loading agent context…" rows={4} />
 }
 
 export function OperatorContextPanel({
@@ -210,48 +214,38 @@ export function OperatorContextPanel({
 
   if (isStale) {
     return (
-      <section aria-label="Agent context" data-testid="agent-context-stale" role="status">
-        <h2>Selection is stale</h2>
-        <p>The selected agent or its conversation is no longer available in this workspace.</p>
-        {selectedAgentId && onReturnToOperator ? (
-          <button type="button" onClick={onReturnToOperator}>
-            Return to Operator
-          </button>
-        ) : null}
-      </section>
+      <Surface aria-label="Agent context" data-testid="agent-context-stale" role="status">
+        <EmptyState icon="warning" title="Selection is stale" description="The selected agent or its conversation is no longer available in this workspace." action={
+          selectedAgentId && onReturnToOperator ? (
+          <Button onClick={onReturnToOperator}>Return to Operator</Button>
+          ) : undefined
+        } />
+      </Surface>
     )
   }
 
   if (identityError || conversationsQuery.error) {
     return (
-      <section aria-label="Agent context" role="alert">
-        <h2>Context unavailable</h2>
-        <p>{readableError(identityError ?? conversationsQuery.error)}</p>
-      </section>
+      <Surface aria-label="Agent context"><ErrorState title="Context unavailable" description={readableError(identityError ?? conversationsQuery.error)} /></Surface>
     )
   }
 
   if (!agent) {
     return (
-      <section aria-label="Agent context" data-testid="agent-context-empty">
-        <h2>No Operator agent</h2>
-        <p>This workspace has no stable Operator identity yet.</p>
-      </section>
+      <Surface aria-label="Agent context" data-testid="agent-context-empty"><EmptyState icon="bot" title="No Operator agent" description="This workspace has no stable Operator identity yet." /></Surface>
     )
   }
 
   if (!conversation) {
     return (
-      <section aria-label="Agent context" data-testid="agent-context-empty">
+      <Surface aria-label="Agent context" data-testid="agent-context-empty">
         <AgentIdentity agent={agent} />
-        <p>No conversation history is available for this agent.</p>
+        <EmptyState icon="history" title="No conversation history" description="No conversation history is available for this agent." />
         <UnsupportedActions />
         {selectedAgentId && onReturnToOperator ? (
-          <button type="button" onClick={onReturnToOperator}>
-            Return to Operator
-          </button>
+          <Button onClick={onReturnToOperator}>Return to Operator</Button>
         ) : null}
-      </section>
+      </Surface>
     )
   }
 
@@ -261,30 +255,30 @@ export function OperatorContextPanel({
   const refreshing = conversationQuery.isFetching && Boolean(conversationQuery.data)
 
   return (
-    <section aria-label="Agent context" data-testid="agent-context-panel">
+    <Surface aria-label="Agent context" data-testid="agent-context-panel">
       <AgentIdentity agent={agent} />
-      <section aria-labelledby="agent-condition-heading">
-        <h3 id="agent-condition-heading">Current condition</h3>
-        <p data-testid="agent-condition-label">{condition?.label}</p>
-        <p>{condition?.detail}</p>
-        {refreshing ? <p role="status">Refreshing context…</p> : null}
-      </section>
+      <Card>
+        <CardHeader title="Current condition" action={<Badge tone={condition?.label === 'Available' ? 'success' : condition?.label === 'Working' ? 'accent' : 'warning'}><span data-testid="agent-condition-label">{condition?.label}</span></Badge>} />
+        <CardBody><p>{condition?.detail}</p>{refreshing ? <p role="status">Refreshing context…</p> : null}</CardBody>
+      </Card>
 
-      <section aria-labelledby="agent-history-heading">
-        <h3 id="agent-history-heading">History</h3>
+      <Card>
+        <CardHeader title="History" />
+        <CardBody>
         {conversationError && !hasConversationData ? (
-          <p role="alert">Conversation history unavailable: {readableError(conversationError)}</p>
+          <Alert live tone="danger" title="Conversation history unavailable">{readableError(conversationError)}</Alert>
         ) : conversationQuery.isLoading ? (
-          <p role="status">Loading conversation history…</p>
+          <LoadingState label="Loading conversation history…" rows={3} />
         ) : (
           <>
             {conversationError ? (
-              <p role="status">Showing stale conversation history; refresh failed.</p>
+              <Alert live tone="warning" title="Showing stale conversation history">The latest refresh failed.</Alert>
             ) : null}
             <ConversationHistory messages={messages} />
           </>
         )}
-      </section>
+        </CardBody>
+      </Card>
 
       {!conversationError || hasConversationData ? (
         <ConversationComposer
@@ -297,11 +291,9 @@ export function OperatorContextPanel({
       ) : null}
       <UnsupportedActions />
       {selectedAgentId && onReturnToOperator ? (
-        <button type="button" onClick={onReturnToOperator}>
-          Return to Operator
-        </button>
+        <Button onClick={onReturnToOperator}>Return to Operator</Button>
       ) : null}
-    </section>
+    </Surface>
   )
 }
 

@@ -16,17 +16,16 @@ import {
   History,
   ListTodo,
   PanelsTopLeft,
-  Plus,
   Settings,
   SquareTerminal,
   Workflow,
-  X,
 } from 'lucide-react'
 import type { Workspace } from '@graphql/contracts'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 
 import { queryKeys, useCreateManagedWorkspaceMutation, useWorkspaceDetailsQuery } from '../../shared/api/query'
+import { Button, Divider, Icon, IconButton, TextField } from '../../shared/ui/nocturne'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { usePresence } from '../../shared/ui/usePresence'
 import { WorkflowNavigation } from '../workflows'
@@ -198,19 +197,19 @@ function NewWorkspaceControl() {
 
   return (
     <>
-      <button
+      <Button
         ref={triggerRef}
-        type="button"
+        variant="ghost"
         className="workspace-navigation-add"
         aria-label="New workspace"
         title="New workspace"
         aria-haspopup="dialog"
         aria-expanded={creating}
+        leading={<Icon name="plus" size={15} />}
         onClick={() => setCreating(true)}
       >
-        <Plus aria-hidden="true" size={15} />
         <span className="nav-item-label">New workspace</span>
-      </button>
+      </Button>
 
       {creating ? (
         <div className="workspace-create-backdrop">
@@ -225,23 +224,21 @@ function NewWorkspaceControl() {
           >
             <div className="workspace-create-heading">
               <h2 id="new-workspace-title">New workspace</h2>
-              <button
+              <IconButton
                 ref={closeButtonRef}
-                type="button"
-                aria-label="Close new workspace"
-                title="Close"
+                label="Close new workspace"
                 onClick={closeCreateDialog}
               >
-                <X aria-hidden="true" size={16} />
-              </button>
+                <Icon name="close" size={16} />
+              </IconButton>
             </div>
             <p id="new-workspace-description">
               Create a workspace for its own agents, workflows, files, tasks, and runs.
             </p>
-            <label className="workspace-create-label" htmlFor="new-workspace-name">Name</label>
-            <input
+            <TextField
               ref={nameInputRef}
               id="new-workspace-name"
+              label="Name"
               disabled={createManagedWorkspace.isPending || uncertain}
               value={name}
               autoFocus
@@ -265,16 +262,13 @@ function NewWorkspaceControl() {
             ) : null}
             {uncertain ? <p role="status">The previous request may have succeeded. Retry Create workspace to resolve it without creating a duplicate.</p> : null}
             <div className="workspace-create-actions">
-              <button type="button" onClick={closeCreateDialog}>
-                Close
-              </button>
-              <button
-                type="button"
+              <Button onClick={closeCreateDialog}>Close</Button>
+              <Button
                 onClick={() => void createNewWorkspace()}
                 disabled={createManagedWorkspace.isPending}
               >
                 Create workspace
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -348,18 +342,16 @@ function WorkspaceTreeItem({
                 <span className="nav-item-label">Workflows</span>
               </span>
             </Link>
-            <button
-              type="button"
+            <IconButton
               className="nav-item-toggle"
+              label={`${workflowsExpanded ? 'Collapse' : 'Expand'} workflows in ${entry.name}`}
               aria-expanded={workflowsExpanded}
               aria-controls={workflowsPanelId}
-              aria-label={`${workflowsExpanded ? 'Collapse' : 'Expand'} workflows in ${entry.name}`}
-              title="Workflows"
               onClick={() => setSectionExpanded(entry.id, 'workflows', !workflowsExpanded)}
               {...sections.getKeyboardProps(section)}
             >
               <ChevronDown aria-hidden="true" className="nav-item-chevron" size={14} />
-            </button>
+            </IconButton>
           </div>
           {workflowsPresence.mounted ? (
             <div
@@ -424,18 +416,16 @@ function WorkspaceTreeItem({
             <span className="nav-item-label">{entry.name}</span>
           </span>
         </Link>
-        <button
-          type="button"
+        <IconButton
           className="nav-item-toggle"
+          label={`${expanded ? 'Collapse' : 'Expand'} ${entry.name}`}
           aria-expanded={expanded}
           aria-controls={sectionsId}
-          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${entry.name}`}
-          title={entry.name}
           onClick={onToggle}
           {...reorderKeyboardProps}
         >
           <ChevronDown aria-hidden="true" className="nav-item-chevron" size={14} />
-        </button>
+        </IconButton>
       </div>
 
       {sectionsPresence.mounted ? (
@@ -568,17 +558,15 @@ export function WorkspaceNavigation({
                 <span className="nav-item-label">Workspaces</span>
               </span>
             </Link>
-            <button
-              type="button"
+            <IconButton
               className="nav-item-toggle"
+              label="Workspaces"
               aria-expanded={workspacesExpanded}
               aria-controls="workspace-entries"
-              aria-label="Workspaces"
-              title="Workspaces"
               onClick={() => setWorkspacesExpanded(!workspacesExpanded)}
             >
               <ChevronDown aria-hidden="true" className="nav-item-chevron" size={14} />
-            </button>
+            </IconButton>
           </div>
 
           {workspacesPresence.mounted ? (
@@ -618,6 +606,8 @@ export function WorkspaceNavigation({
           ) : null}
         </li>
       </ul>
+
+      <Divider />
 
       <ul
         className="workspace-global-navigation"

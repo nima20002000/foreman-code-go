@@ -350,7 +350,11 @@ describe('GraphEditor persistence boundary', () => {
     renderEditor()
 
     for (const agentId of ['agent-one', 'agent-two']) {
-      const handles = screen.getByTestId(`agent-node-${agentId}`).querySelectorAll('.workflow-agent-node-handle')
+      const node = screen.getByTestId(`agent-node-${agentId}`)
+      expect(node.querySelector('.n-node')).toBeInTheDocument()
+      expect(node.querySelector('.n-badge')).toBeInTheDocument()
+      expect(node.querySelector('.n-node-detail')).not.toBeInTheDocument()
+      const handles = node.querySelectorAll('.workflow-agent-node-handle')
       expect(handles).toHaveLength(4)
       expect([...handles].map((handle) => handle.getAttribute('data-handleid'))).toEqual(['top', 'right', 'bottom', 'left'])
     }
@@ -532,13 +536,13 @@ describe('GraphEditor persistence boundary', () => {
     const user = userEvent.setup()
     const first = renderEditor({ selectedAgentId: 'agent-one' })
     const resize = screen.getByRole('button', { name: 'Resize selected node' })
-    expect(resize).toHaveAttribute('data-min-width', '214')
+    expect(resize).toHaveAttribute('data-min-width', '208')
     expect(resize).toHaveAttribute('data-max-width', '520')
-    expect(resize).toHaveAttribute('data-min-height', '92')
+    expect(resize).toHaveAttribute('data-min-height', '112')
     expect(resize).toHaveAttribute('data-max-height', '320')
 
     await user.click(resize)
-    expect(getGraphDraft(key)?.workflow.nodes[0]).toMatchObject({ width: 520, height: 92 })
+    expect(getGraphDraft(key)?.workflow.nodes[0]).toMatchObject({ width: 520, height: 112 })
     expect(screen.getByRole('button', { name: 'Discard' })).toBeEnabled()
 
     await user.click(screen.getByRole('button', { name: 'Discard' }))
@@ -550,7 +554,7 @@ describe('GraphEditor persistence boundary', () => {
     await user.click(screen.getByRole('button', { name: 'Save graph' }))
     await waitFor(() => expect(second.queryClient.getQueryData(queryKeys.workflow(workflow.workspaceId, workflow.id))).toEqual({
       workflow: expect.objectContaining({
-        nodes: expect.arrayContaining([expect.objectContaining({ id: 'step-one', width: 520, height: 92 })]),
+        nodes: expect.arrayContaining([expect.objectContaining({ id: 'step-one', width: 520, height: 112 })]),
       }),
     }))
   })
@@ -736,7 +740,7 @@ describe('GraphEditor dirty-state gating', () => {
   it('drops a resize that returns the node to the saved size', async () => {
     const sizedWorkflow: WorkflowDefinition = {
       ...workflow,
-      nodes: workflow.nodes.map((node) => (node.id === 'step-one' ? { ...node, width: 520, height: 92 } : node)),
+      nodes: workflow.nodes.map((node) => (node.id === 'step-one' ? { ...node, width: 520, height: 112 } : node)),
     }
     const key = workflowDraftKey(workflow.workspaceId, workflow.id)
     renderEditor({ workflow: sizedWorkflow, selectedAgentId: 'agent-one' })

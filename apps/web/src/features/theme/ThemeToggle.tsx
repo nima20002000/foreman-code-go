@@ -1,5 +1,6 @@
 import { Moon, Sun } from 'lucide-react'
 
+import { IconButton } from '../../shared/ui/nocturne'
 import { toggleTheme, useTheme } from './themeStore'
 
 export function ThemeToggle() {
@@ -9,14 +10,12 @@ export function ThemeToggle() {
   const Icon = destination === 'light' ? Sun : Moon
 
   return (
-    <button
-      type="button"
+    <IconButton
       className="theme-toggle"
+      label={label}
       onClick={toggleTheme}
-      aria-label={label}
-      title={label}
     >
       <Icon aria-hidden="true" size={16} strokeWidth={2} />
-    </button>
+    </IconButton>
   )
 }

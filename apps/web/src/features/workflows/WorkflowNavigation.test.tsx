@@ -9,7 +9,7 @@ import {
 } from '@tanstack/react-router'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { UrlSearchSelectionSchema } from '@graphql/contracts'
 
 import { setMockScenario } from '../../shared/mocks/scenarios'
@@ -52,6 +52,15 @@ afterEach(() => {
   setMockScenario('normal')
   useWorkspaceSessionStore.getState().reset()
   useSessionWorkflowStore.getState().clearSessionWorkflows()
+})
+
+// jsdom does not implement the native modal dialog methods used by Nocturne Dialog.
+beforeEach(() => {
+  HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) { this.open = true }
+  HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) {
+    this.open = false
+    queueMicrotask(() => this.dispatchEvent(new Event('close')))
+  }
 })
 
 describe('WorkflowNavigation', () => {
@@ -166,17 +175,18 @@ describe('WorkflowNavigation', () => {
 
   it('keeps inside presses open and dismisses the creation dialog from its backdrop', async () => {
     const user = userEvent.setup()
-    const { container } = renderNavigation()
+    renderNavigation()
     const trigger = await screen.findByRole('button', { name: 'New workflow' })
     await user.click(trigger)
     const dialog = await screen.findByRole('dialog', { name: 'New workflow' })
 
-    fireEvent.mouseDown(dialog)
+    const name = screen.getByRole('textbox', { name: 'Name' })
+    fireEvent.pointerDown(name)
+    fireEvent.click(name)
     expect(screen.getByRole('dialog', { name: 'New workflow' })).toBeVisible()
 
-    const backdrop = container.querySelector('.workflow-create-backdrop')
-    if (!backdrop) throw new Error('Create-workflow backdrop missing')
-    fireEvent.mouseDown(backdrop)
+    fireEvent.pointerDown(dialog)
+    fireEvent.click(dialog)
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     await waitFor(() => expect(trigger).toHaveFocus())
   })

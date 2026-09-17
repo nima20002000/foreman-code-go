@@ -5,6 +5,7 @@ import { assertSession, sessionGeneration } from '../../shared/api/sessionBounda
 import { useSessionWorkflowStore } from './sessionWorkflowStore'
 import { useQueryClient } from '@tanstack/react-query'
 import { queryKeys, useCreateManagedWorkflowMutation } from '../../shared/api/query'
+import { Button, Dialog, Textarea, TextField } from '../../shared/ui/nocturne'
 import { isSessionWorkspaceId } from '../workspaces/workspaceSessionStore'
 
 export interface NewWorkflowDialogProps {
@@ -31,7 +32,8 @@ export function NewWorkflowDialog({
   const nameInputRef = useRef<HTMLInputElement>(null)
   const inFlight = useRef(false)
   const attempt = useRef(new CommandAttempt<{ workspaceId: string; name: string; description?: string }>())
-  const uncertain = attempt.current.unresolved && !createManagedWorkflow.isPending
+  const pending = createManagedWorkflow.isPending
+  const uncertain = attempt.current.unresolved && !pending
   const close = () => { if (!inFlight.current && !attempt.current.unresolved) onCancel() }
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -63,26 +65,26 @@ export function NewWorkflowDialog({
   }
 
   return (
-    <div className="new-workflow-dialog-content">
-      <header>
-        <p className="panel-kicker">Workspace workflow</p>
-        <h1 id="new-workflow-title">New workflow</h1>
-        <p>
-          Start an empty workflow{workspaceName ? ` in ${workspaceName}` : ''} and open its graph
-          editor. You can add agent steps after the draft is created.
-        </p>
-      </header>
-
+    <Dialog
+      open
+      onOpenChange={(nextOpen) => { if (!nextOpen) close() }}
+      title="New workflow"
+      description={`Start an empty workflow${workspaceName ? ` in ${workspaceName}` : ''} and open its graph editor. You can add agent steps after the draft is created.`}
+      busy={pending || uncertain}
+      closeOnOutsideClick
+      initialFocusRef={nameInputRef}
+    >
       <form className="new-workflow-form" aria-label="New workflow" noValidate onSubmit={handleSubmit}>
-        <label htmlFor="new-workflow-name">Name</label>
-        <input
+        <p className="panel-kicker">Workspace workflow</p>
+
+        <TextField
           ref={nameInputRef}
           id="new-workflow-name"
+          label="Name"
           name="name"
           type="text"
           value={name}
-          disabled={createManagedWorkflow.isPending || uncertain}
-          autoFocus
+          disabled={pending || uncertain}
           required
           aria-invalid={nameError ? true : undefined}
           aria-describedby={nameError ? 'new-workflow-name-error' : undefined}
@@ -97,15 +99,14 @@ export function NewWorkflowDialog({
           </p>
         ) : null}
 
-        <label htmlFor="new-workflow-description">
-          Description <span>(optional)</span>
-        </label>
-        <textarea
+        <Textarea
           id="new-workflow-description"
+          label="Description"
+          hint="(optional)"
           name="description"
           rows={3}
           value={description}
-          disabled={createManagedWorkflow.isPending || uncertain}
+          disabled={pending || uncertain}
           onChange={(event) => setDescription(event.target.value)}
         />
 
@@ -115,14 +116,14 @@ export function NewWorkflowDialog({
 
         {uncertain ? <p role="status">The previous request may have succeeded. Retry Create workflow to resolve it without creating a duplicate.</p> : null}
         <div className="new-workflow-actions">
-          <button type="button" onClick={close} disabled={createManagedWorkflow.isPending || uncertain}>
+          <Button onClick={close} disabled={pending || uncertain}>
             Cancel
-          </button>
-          <button type="submit" className="new-workflow-create" disabled={createManagedWorkflow.isPending}>
+          </Button>
+          <Button type="submit" variant="primary" disabled={pending}>
             Create workflow
-          </button>
+          </Button>
         </div>
       </form>
-    </div>
+    </Dialog>
   )
 }

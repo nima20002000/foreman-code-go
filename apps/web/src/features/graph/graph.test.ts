@@ -265,8 +265,8 @@ describe('normalized workflow comparison', () => {
         agentId: 'agent-research',
         name: 'Derived',
         position: { x: 64, y: 120 },
-        width: 238,
-        height: 92,
+        width: 208,
+        height: 112,
       }],
     }
 
@@ -299,7 +299,7 @@ describe('normalized workflow comparison', () => {
     expect(sameWorkflow(workflow, moved)).toBe(false)
     expect(sameWorkflow(workflow, resized)).toBe(false)
     expect(sameWorkflow(workflow, connected)).toBe(false)
-    expect(sameWorkflow(workflow, resizeWorkflowNode(workflow, 'step-research', 238, 92))).toBe(true)
+    expect(sameWorkflow(workflow, resizeWorkflowNode(workflow, 'step-research', 208, 112))).toBe(true)
   })
 })
 
@@ -340,7 +340,7 @@ describe('workflow graph draft store', () => {
     useGraphDraftStore.getState().updateDraft(
       key,
       workflow,
-      (current) => resizeWorkflowNode(current, 'step-research', 238, 92),
+      (current) => resizeWorkflowNode(current, 'step-research', 208, 112),
     )
     expect(getGraphDraft(key)).toBeUndefined()
   })

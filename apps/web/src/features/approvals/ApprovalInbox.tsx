@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { AlertTriangle, CheckCircle2, Clock3, Inbox, ShieldCheck, XCircle } from 'lucide-react'
 import type { ApprovalInboxView, DurableInteraction } from '@graphql/contracts'
 import { Link } from '@tanstack/react-router'
 
 import { useInteractionQuery, useInfiniteInteractionsQuery, useRespondToInteractionMutation, useWorkspaceDetailsQuery } from '../../shared/api/query'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
+import { Alert, Badge, Button, EmptyState, ErrorState, Icon, LoadingState, PageHeader } from '../../shared/ui/nocturne'
 import { canRecoverInteraction, interactionMatchesScope } from './approvalState'
 import { approvalReadOnlyReason, approvalStatuses, summarizeApprovalRequest } from './approvalPresentation'
 import { ApprovalRequestSummary } from './ApprovalRequestSummary'
@@ -23,10 +23,9 @@ const stateLabels = {
   pending: 'Waiting for decision', decided: 'Decision accepted', delivery_pending: 'Delivering',
   delivered: 'Delivered', delivery_failed: 'Delivery failed', canceled: 'Canceled',
 } as const
-function StateIcon({ state }: { state: keyof typeof stateLabels }) {
-  if (state === 'delivered') return <CheckCircle2 aria-hidden="true" size={16} />
-  if (state === 'delivery_failed' || state === 'canceled') return <XCircle aria-hidden="true" size={16} />
-  return <Clock3 aria-hidden="true" size={16} />
+function StateBadge({ state }: { state: keyof typeof stateLabels }) {
+  const tone = state === 'delivered' ? 'success' : state === 'delivery_failed' || state === 'canceled' ? 'danger' : 'warning'
+  return <Badge className={`approval-state approval-state-${state}`} tone={tone} dot>{stateLabels[state]}</Badge>
 }
 type ResponseInput = { interactionId: string; optionId: string; expectedRevision: number }
 
@@ -59,11 +58,11 @@ function ApprovalDetail({ interactionId, workspaceId, workflowId, onClear }: {
   const [retryInput, setRetryInput] = useState<ResponseInput>()
   const inFlight = useRef(false)
   // Never authorize a response from stale detail after an access/error response.
-  if (detail.isError) return <article className="approval-detail"><div role="alert"><h2>Request unavailable</h2><p>{detail.error.message}</p><button type="button" onClick={() => void detail.refetch()}>Retry request</button></div></article>
-  if (detail.isPending || !detail.data) return <article className="approval-detail"><p role="status">Loading request…</p></article>
+  if (detail.isError) return <article className="approval-detail"><ErrorState title="Request unavailable" description={detail.error.message} onRetry={() => void detail.refetch()} retrying={detail.isFetching} /></article>
+  if (detail.isPending || !detail.data) return <article className="approval-detail"><LoadingState label="Loading request…" rows={4} /></article>
   const selected = detail.data.interaction
   if (selected.id !== interactionId || !interactionMatchesScope(selected, { workspaceId, workflowId })) {
-    return <article className="approval-detail"><p role="alert">This request is outside the selected Inbox scope.</p><button type="button" onClick={onClear}>Clear selection</button></article>
+    return <article className="approval-detail"><ErrorState title="Request outside this Inbox" description="This request is outside the selected Inbox scope." /><Button onClick={onClear}>Clear selection</Button></article>
   }
   const canRespond = selected.approval.handler === 'user' && detail.data.canRespond === true
   const send = (optionId: string) => {
@@ -84,7 +83,7 @@ function ApprovalDetail({ interactionId, workspaceId, workflowId, onClear }: {
   const selectedLabel = selectedOption?.label
   const readOnlyReason = approvalReadOnlyReason(selected, detail.data.canRespond === true)
   return <article className="approval-detail">
-    <header><div><p className="panel-kicker">{selected.harness === 'codex' ? 'Codex' : 'OpenCode'} permission request</p><h2>{summarizeApprovalRequest(selected.request, selected.nativeRequestType).operation}</h2></div><span className={`approval-state approval-state-${selected.status}`}><StateIcon state={selected.status} />{stateLabels[selected.status]}</span></header>
+    <header><div><p className="panel-kicker">{selected.harness === 'codex' ? 'Codex' : 'OpenCode'} permission request</p><h2>{summarizeApprovalRequest(selected.request, selected.nativeRequestType).operation}</h2></div><StateBadge state={selected.status} /></header>
     <ApprovalNames interaction={selected} />
     <ApprovalRequestSummary request={selected.request} nativeRequestType={selected.nativeRequestType} />
     <details className="approval-request"><summary>Technical details</summary>
@@ -99,24 +98,24 @@ function ApprovalDetail({ interactionId, workspaceId, workflowId, onClear }: {
     </details>
     {readOnlyReason ? <p className="approval-reviewer-note">{readOnlyReason}</p> : null}
     {canRespond && selected.status === 'pending' && !retryInput ? <div className="approval-actions"><h3>Response</h3><div>
-      {selected.responseOptions.map((option) => <button key={option.optionId} type="button" disabled={respond.isPending} className={option.semantic === 'reject' || option.semantic === 'cancel' ? 'danger' : ''} onClick={() => send(option.optionId)}>
+      {selected.responseOptions.map((option) => <Button key={option.optionId} disabled={respond.isPending} variant={option.semantic === 'reject' || option.semantic === 'cancel' ? 'danger' : 'secondary'} onClick={() => send(option.optionId)}>
         <strong>{option.label}</strong><small>{approvalOptionScope(option)}</small>{option.scopeSummary ? <small>{option.scopeSummary}</small> : null}
-      </button>)}
-      </div>{selected.responseOptions.some((option) => option.affectsOtherPendingRequests) ? <p className="approval-warning"><AlertTriangle size={15} />A provider choice may affect other pending requests. Review its scope before responding.</p> : null}
+      </Button>)}
+      </div>{selected.responseOptions.some((option) => option.affectsOtherPendingRequests) ? <Alert tone="warning" title="A provider choice may affect other pending requests">Review its scope before responding.</Alert> : null}
     </div> : null}
     {recoverable && recoveryOption ? <div className="approval-actions"><h3>Delivery recovery</h3><p>A recorded decision is not proof of native delivery. Only the original choice can be retried; alternative choices stay closed.</p>
-      <button type="button" disabled={respond.isPending} onClick={() => send(recoveryOption)}>{respond.isPending ? 'Checking delivery…' : selected.deliveryState === 'uncertain' || selected.deliveryState === 'submitted' ? 'Reconcile delivery' : 'Retry selected response'}</button>
+      <Button disabled={respond.isPending} loading={respond.isPending} loadingLabel="Checking delivery…" onClick={() => send(recoveryOption)}>{selected.deliveryState === 'uncertain' || selected.deliveryState === 'submitted' ? 'Reconcile delivery' : 'Retry selected response'}</Button>
     </div> : null}
     {selected.selectedOptionId ? <div className="approval-history"><h3>Decision history</h3><p><strong>{selectedLabel ?? selected.selectedOptionId}</strong> accepted at {selected.decidedAt ?? 'unknown time'}.</p>{selectedOption ? <p>{approvalOptionScope(selectedOption)}</p> : null}<p>Delivery: {selected.deliveryState.replaceAll('_', ' ')}{selected.deliveredAt ? ` at ${selected.deliveredAt}` : ''}.</p></div> : null}
-    {respond.isError ? <p className="approval-warning" role="alert"><AlertTriangle size={15} />{respond.error.message}{retryInput ? ' Retry the original choice to resolve its outcome.' : ' Refresh the request before choosing again.'}</p> : null}
-    <button type="button" onClick={() => void detail.refetch()}>Refresh request</button>
+    {respond.isError ? <Alert live tone="danger" title="Response not confirmed">{respond.error.message}{retryInput ? ' Retry the original choice to resolve its outcome.' : ' Refresh the request before choosing again.'}</Alert> : null}
+    <Button variant="ghost" leading={<Icon name="refresh" size={15} />} onClick={() => void detail.refetch()}>Refresh request</Button>
   </article>
 }
 
 function ApprovalListItem({ item, selected, onSelect }: { item: DurableInteraction; selected: boolean; onSelect(button: HTMLButtonElement): void }) {
   const names = useApprovalNames(item)
   return <li><button type="button" className={selected ? 'selected' : ''} aria-current={selected ? 'true' : undefined} onClick={(event) => onSelect(event.currentTarget)}>
-    <span className={`approval-state approval-state-${item.status}`}><StateIcon state={item.status} />{stateLabels[item.status]}</span>
+    <StateBadge state={item.status} />
     <strong>{names.agent} · {summarizeApprovalRequest(item.request, item.nativeRequestType).operation}</strong>
     <small>{names.workflow}</small><span className="approval-handler">Handled by {item.approval.handler}</span>
   </button></li>
@@ -170,25 +169,26 @@ export function ApprovalInbox({ workspaceId, workflowId, selectedInteractionId, 
     return () => media.removeEventListener('change', reveal)
   }, [selectedInteractionId])
   const changeView = (next: ApprovalInboxView) => onChangeView?.(next)
-  return <section className="approval-inbox" aria-labelledby="approval-inbox-title">
-    <header className="approval-inbox-header"><div><p className="panel-kicker">Review queue</p><h1 id="approval-inbox-title">Approval Inbox</h1><p>{workflowId ? 'Requests for this workflow.' : workspaceId ? 'Requests across this workspace.' : 'Requests across every authorized workspace.'}</p></div>
-      <button type="button" className="approval-count" onClick={() => changeView('pending')}><Inbox size={17} />{pendingCount === undefined || isError ? 'Pending count unavailable' : `${pendingCount} pending`}</button></header>
+  return <section className="approval-inbox" aria-label="Approval Inbox">
+    <PageHeader eyebrow="Review queue" title="Approval Inbox" description={workflowId ? 'Requests for this workflow.' : workspaceId ? 'Requests across this workspace.' : 'Requests across every authorized workspace.'} actions={
+      <Button variant="secondary" className="approval-count" leading={<Icon name="shield" size={17} />} onClick={() => changeView('pending')}>{pendingCount === undefined || isError ? 'Pending count unavailable' : `${pendingCount} pending`}</Button>
+    } />
     <nav className="approval-filters" aria-label="Approval views">
-      {(['pending', 'delivery', 'history'] as const).map((item) => <button type="button" key={item} aria-pressed={view === item} onClick={() => changeView(item)}>{item === 'pending' ? 'Pending' : item === 'delivery' ? 'Delivery problems' : 'History'}</button>)}
+      {(['pending', 'delivery', 'history'] as const).map((item) => <Button variant={view === item ? 'primary' : 'secondary'} size="sm" key={item} aria-pressed={view === item} onClick={() => changeView(item)}>{item === 'pending' ? 'Pending' : item === 'delivery' ? 'Delivery problems' : 'History'}</Button>)}
     </nav>
     <div className="approval-layout" data-has-selection={Boolean(selectedInteractionId)}>
       <div ref={listPanel} tabIndex={-1} className="approval-list-pane" aria-label="Request list">
         {view === 'delivery' ? <p>Recorded decisions awaiting delivery, reconciliation, or retry.</p> : null}
-        {isError ? <div className="approval-empty" role="alert"><AlertTriangle /><h2>Inbox refresh failed</h2><p>Available requests are preserved. {activeQueues.find((queue) => queue.error)?.error?.message}</p><button type="button" onClick={() => { for (const queue of activeQueues) void queue.refetch() }}>Retry Inbox</button></div> : null}
-        {isPending ? <p role="status">Loading approvals…</p> : null}
-        {!isPending && !isError && interactions.length === 0 ? <div className="approval-empty"><ShieldCheck /><h2>{view === 'pending' ? 'No pending requests' : view === 'delivery' ? 'No delivery problems' : 'No approval history'}</h2><p>No matching requests were found in this authorized scope.</p></div> : null}
+        {isError ? <ErrorState title="Inbox refresh failed" description={`Available requests are preserved. ${activeQueues.find((queue) => queue.error)?.error?.message ?? ''}`} onRetry={() => { for (const queue of activeQueues) void queue.refetch() }} retrying={activeQueues.some((queue) => queue.isFetching)} /> : null}
+        {isPending ? <LoadingState label="Loading approvals…" rows={4} /> : null}
+        {!isPending && !isError && interactions.length === 0 ? <EmptyState icon="shield" title={view === 'pending' ? 'No pending requests' : view === 'delivery' ? 'No delivery problems' : 'No approval history'} description="No matching requests were found in this authorized scope." /> : null}
         <ol className="approval-list" aria-label="Approval requests">{interactions.map((item) => <ApprovalListItem key={item.id} item={item} selected={selectedInteractionId === item.id} onSelect={(button) => { selectionTrigger.current = button; onSelectInteraction?.(item.id) }} />)}</ol>
-        {activeQueues.some((queue) => queue.hasNextPage) ? <button type="button" disabled={activeQueues.some((queue) => queue.isFetchingNextPage)} onClick={() => { for (const queue of activeQueues) if (queue.hasNextPage && !queue.isFetchingNextPage) void queue.fetchNextPage() }}>{activeQueues.some((queue) => queue.isFetchingNextPage) ? 'Loading more…' : 'Load more requests'}</button> : null}
-        {activeQueues.some((queue) => queue.isFetchNextPageError) ? <p role="alert">The next page could not be loaded. Retry Load more requests.</p> : null}
+        {activeQueues.some((queue) => queue.hasNextPage) ? <Button disabled={activeQueues.some((queue) => queue.isFetchingNextPage)} loading={activeQueues.some((queue) => queue.isFetchingNextPage)} loadingLabel="Loading more…" onClick={() => { for (const queue of activeQueues) if (queue.hasNextPage && !queue.isFetchingNextPage) void queue.fetchNextPage() }}>Load more requests</Button> : null}
+        {activeQueues.some((queue) => queue.isFetchNextPageError) ? <Alert live tone="danger" title="The next page could not be loaded">Retry Load more requests.</Alert> : null}
       </div>
       <div ref={detailPanel} tabIndex={-1} className="approval-detail-pane" aria-label="Selected request details">
-        {selectedInteractionId ? <><button type="button" className="approval-back" onClick={() => onSelectInteraction?.(undefined)}>Back to requests</button><ApprovalDetail key={`${workspaceId ?? 'all'}:${workflowId ?? 'all'}:${selectedInteractionId}`} interactionId={selectedInteractionId} workspaceId={workspaceId} workflowId={workflowId} onClear={() => onSelectInteraction?.(undefined)} /></>
-          : <article className="approval-detail"><div className="approval-detail-placeholder"><Inbox /><h2>Select a request</h2><p>Inspect its scope, native choices and delivery history.</p></div></article>}
+        {selectedInteractionId ? <><Button variant="ghost" className="approval-back" onClick={() => onSelectInteraction?.(undefined)}>Back to requests</Button><ApprovalDetail key={`${workspaceId ?? 'all'}:${workflowId ?? 'all'}:${selectedInteractionId}`} interactionId={selectedInteractionId} workspaceId={workspaceId} workflowId={workflowId} onClear={() => onSelectInteraction?.(undefined)} /></>
+          : <article className="approval-detail"><EmptyState icon="shield" title="Select a request" description="Inspect its scope, native choices and delivery history." /></article>}
       </div>
     </div>
   </section>

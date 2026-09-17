@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import type { Message } from '@graphql/contracts'
+import { Badge, Button, Icon, MessageBubble } from '../../shared/ui/nocturne'
 import { ConversationHistory } from '../conversations'
 
 /** Follow new output only while the reader is at the end of the transcript. */
@@ -39,9 +40,11 @@ export function OperatorTranscript({ messages, partialText }: { messages: Messag
       }}>
       <div ref={contentRef}>
         <ConversationHistory messages={messages} />
-        {partialText ? <div className="operator-chat-partial" role="status" aria-label="Assistant response in progress">{partialText}</div> : null}
+        {partialText ? <div className="operator-chat-partial" role="status" aria-label="Assistant response in progress">
+          <MessageBubble author="Operator" status={<Badge tone="accent">Working</Badge>}>{partialText}</MessageBubble>
+        </div> : null}
       </div>
     </div>
-    {hasNewContent ? <button type="button" className="operator-chat-jump" onClick={jumpToLatest}>New output — Jump to latest</button> : null}
+    {hasNewContent ? <Button size="sm" variant="secondary" className="operator-chat-jump" leading={<Icon name="down" size={14} />} onClick={jumpToLatest}>New output — Jump to latest</Button> : null}
   </div>
 }

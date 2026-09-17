@@ -62,6 +62,55 @@
   --color-error-text: #a21d28;
   --color-dashed: #bdbdbd;
   --color-minimap-mask: rgba(255, 255, 255, 0.72);
+  --n-canvas: #f4f4f4;
+  --n-sidebar: #ededed;
+  --n-surface: #fafafa;
+  --n-raised: #fdfdfd;
+  --n-hover: #f2f2f2;
+  --n-border: #cfcfcf;
+  --n-border-strong: #a8a8a8;
+  --n-control-border: #a8a8a8;
+  --n-text: #171717;
+  --n-muted: #555555;
+  --n-faint: #686868;
+  --n-accent: #292929;
+  --n-accent-hover: #111111;
+  --n-accent-ink: #fdfdfd;
+  --n-accent-subtle: #f2f2f2;
+  --n-success: #14613b;
+  --n-success-subtle: #e6f2ec;
+  --n-warning: #765000;
+  --n-warning-subtle: #f7efdd;
+  --n-danger: #a21d28;
+  --n-danger-subtle: #f9e9ea;
+  --n-info: #1f4f8f;
+  --n-info-subtle: #e9f0f9;
+  --n-focus: #171717;
+  --n-shadow: 0 18px 60px rgba(0, 0, 0, 0.12), 0 4px 16px rgba(0, 0, 0, 0.08);
+}
+
+:root[data-theme='light'] .n-theme {
+  color-scheme: light;
+}
+
+:root[data-theme='light'] .n-dialog::backdrop {
+  background: rgba(23, 23, 23, 0.35);
+}
+
+:root[data-theme='light'] .n-button--danger {
+  border-color: color-mix(in srgb, var(--n-danger) 40%, transparent);
+}
+
+:root[data-theme='light'] .n-button--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--n-danger) 12%, transparent);
+}
+
+:root[data-theme='light'] .n-nav-item[aria-current='page'] {
+  border-color: color-mix(in srgb, var(--n-accent) 35%, transparent);
+}
+
+:root[data-theme='light'] .n-approval {
+  border-color: color-mix(in srgb, var(--n-warning) 45%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

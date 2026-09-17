@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Plus } from 'lucide-react'
 import type { WorkflowDefinition } from '@graphql/contracts'
 
 import { useInteractionsQuery, useManagedWorkflowsQuery, useWorkspaceDetailsQuery } from '../../shared/api/query'
-import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
+import { Badge, Button, Icon } from '../../shared/ui/nocturne'
 import { isSessionWorkspaceId, useWorkspaceSessionStore } from '../workspaces/workspaceSessionStore'
 import { NewWorkflowDialog } from './NewWorkflowDialog'
 import { useSessionWorkflowStore } from './sessionWorkflowStore'
@@ -46,7 +45,7 @@ function WorkflowNavigationItem({
       >
         <span className="nav-item-label">{workflow.name}</span>
         {pendingCount === undefined && !session ? <span className="visually-hidden">Approval count unavailable</span> : null}
-        {pendingCount !== undefined && pendingCount > 0 ? <span className="workflow-approval-badge" aria-label={`${pendingCount} pending approvals`}>{pendingCount}</span> : null}
+        {pendingCount !== undefined && pendingCount > 0 ? <Badge tone="accent" className="workflow-approval-badge">{pendingCount}</Badge> : null}
       </Link>
     </li>
   )
@@ -72,25 +71,10 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
   const hiddenWorkflowIds = useSessionWorkflowStore((state) => state.hiddenWorkflowIds)
   const navigate = useNavigate()
   const [creating, setCreating] = useState(false)
-  const triggerRef = useRef<HTMLButtonElement>(null)
-  const dialogRef = useRef<HTMLDivElement>(null)
 
   const closeCreateDialog = useCallback(() => {
     setCreating(false)
-    window.setTimeout(() => triggerRef.current?.focus(), 0)
   }, [])
-
-  useEffect(() => {
-    if (!creating) return
-    dialogRef.current?.querySelector<HTMLElement>('input, textarea, button')?.focus()
-  }, [creating])
-
-  useDismissableSurface({
-    open: creating,
-    onDismiss: closeCreateDialog,
-    surfaceRef: dialogRef,
-    triggerRef,
-  })
 
   const sessions = Object.values(sessionWorkflows).filter(
     (workflow) => workflow.workspaceId === workspaceId,
@@ -156,48 +140,37 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
         </p>
       ) : null}
 
-      <button
-        ref={triggerRef}
-        type="button"
+      <Button
         className="workflow-navigation-add"
+        variant="ghost"
         aria-label="New workflow"
         title="New workflow"
         aria-haspopup="dialog"
         aria-expanded={creating}
+        leading={<Icon name="plus" size={15} />}
         onClick={() => setCreating(true)}
       >
-        <Plus aria-hidden="true" size={15} />
         <span className="nav-item-label">New workflow</span>
-      </button>
+      </Button>
 
       {creating ? (
-        <div className="workflow-create-backdrop">
-          <div
-            ref={dialogRef}
-            className="workflow-create-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="new-workflow-title"
-          >
-            <NewWorkflowDialog
-              workspaceId={workspaceId}
-              workspaceName={sessionWorkspaceName ?? workflowsQuery.data?.workspace.name}
-              onCancel={closeCreateDialog}
-              onCreated={(workflowId) => {
-                closeCreateDialog()
-                void navigate({
-                  to: '/workspaces/$workspaceId',
-                  params: { workspaceId },
-                  search: (previous) => {
-                    const next = { ...previous, workflowId }
-                    delete next.agentId
-                    return next
-                  },
-                })
-              }}
-            />
-          </div>
-        </div>
+        <NewWorkflowDialog
+          workspaceId={workspaceId}
+          workspaceName={sessionWorkspaceName ?? workflowsQuery.data?.workspace.name}
+          onCancel={closeCreateDialog}
+          onCreated={(workflowId) => {
+            closeCreateDialog()
+            void navigate({
+              to: '/workspaces/$workspaceId',
+              params: { workspaceId },
+              search: (previous) => {
+                const next = { ...previous, workflowId }
+                delete next.agentId
+                return next
+              },
+            })
+          }}
+        />
       ) : null}
     </section>
   )

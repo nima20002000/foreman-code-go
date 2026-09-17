@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 
 import { enrollOperator } from '../../shared/api/client'
 import { rotateProtectedSession } from '../../shared/api/protectedChatStorage'
+import { Alert, Button, SettingsSection, TextField } from '../../shared/ui/nocturne'
 import { useConversationDraftStore } from '../conversations/conversationDraftStore'
 import { useOperatorChatStore } from '../operator-chat/operatorChatStore'
 import { beginSessionChange, clearProtectedStorage } from '../../shared/api/sessionBoundary'
@@ -77,21 +78,18 @@ export function OperatorAccessSettings() {
   }
 
   return (
-    <section className="settings-form" aria-label="Operator access">
+    <SettingsSection title="Operator access">
       <p className="settings-note" role="note">Changing access reloads the app and discards this browser's unsent edits and cached workspace data.</p>
-      <form className="settings-form-row" onSubmit={(event) => void enroll(event)}>
-        <label>
-          <span>Enrollment token</span>
-          <input type="password" value={token} autoComplete="off" disabled={status === 'working'}
-            onChange={(event) => { setToken(event.target.value); if (status === 'error') setStatus('idle') }}
-            aria-label="Operator enrollment token" />
-        </label>
-        <button type="submit" className="settings-primary-button" disabled={!token.trim() || status === 'working'}>
+      <form className="settings-enrollment-form" onSubmit={(event) => void enroll(event)}>
+        <TextField className="settings-enrollment-field" label="Enrollment token" type="password" value={token} autoComplete="off" disabled={status === 'working'}
+          onChange={(event) => { setToken(event.target.value); if (status === 'error') setStatus('idle') }}
+          aria-label="Operator enrollment token" />
+        <Button className="settings-enrollment-submit" type="submit" variant="primary" disabled={!token.trim() || status === 'working'}>
           {status === 'working' ? 'Enrolling…' : 'Enroll browser'}
-        </button>
+        </Button>
       </form>
-      {status === 'working' ? <p className="settings-save-status" role="status">Changing access and clearing the previous session…</p> : null}
-      {status === 'error' ? <p className="settings-save-status settings-state-error" role="alert">Enrollment failed or its response was lost. Check the credential and expiry, then retry.</p> : null}
-    </section>
+      {status === 'working' ? <Alert live tone="info" title="Changing access and clearing the previous session…" /> : null}
+      {status === 'error' ? <Alert live tone="danger" title="Enrollment failed or its response was lost. Check the credential and expiry, then retry." /> : null}
+    </SettingsSection>
   )
 }

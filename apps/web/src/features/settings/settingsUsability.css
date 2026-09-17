@@ -2,9 +2,9 @@
 .settings-form .settings-help { font-size: .875rem; line-height: 1.5; }
 .settings-save-actions { position: sticky; bottom: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; padding: 1rem 0; border-top: 1px solid var(--color-border); background: var(--color-surface); }
 .settings-save-actions > p { flex: 1 1 12rem; margin: 0; }
-.settings-conflict { padding: 1rem; border: 1px solid var(--color-border); border-radius: .75rem; margin-block: 1rem; }
-.settings-conflict pre { max-height: 16rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
-.settings-conflict button { margin: .5rem .5rem 0 0; }
+.settings-form-feedback { margin-block: 1rem; }
+.settings-defaults-conflict pre { max-height: 16rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.settings-defaults-conflict-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; }
 .settings-field-error { display: block; color: var(--color-text-strong); font-size: .875rem; line-height: 1.5; }
 .settings-field-error::before { content: 'Error: '; font-weight: 700; }
 .settings-readiness { grid-column: 1 / -1; font-size: .875rem; line-height: 1.5; }
@@ -32,14 +32,17 @@
 .agent-settings-form { display: grid; gap: .75rem; min-width: 0; }
 
 .settings-note { margin: 0 0 16px; padding: 11px 13px; border-radius: 10px; background: var(--color-status-bg); color: var(--color-text-muted); font-size: .8rem; line-height: 1.5; }
-.settings-form-row { display: flex; align-items: flex-end; gap: .75rem; margin-block: 0 12px; }
-.settings-form-row > label { display: grid; min-width: 0; flex: 1 1 auto; gap: 5px; color: var(--color-text-muted); font-size: .75rem; font-weight: 700; }
+.settings-enrollment-form { display: flex; align-items: flex-end; gap: .75rem; margin-block: 0 12px; }
+.settings-enrollment-field { flex: 1 1 auto; min-width: 0; }
 .settings-primary-button { border: 0; border-radius: 10px; padding: 10px 14px; color: var(--color-accent-contrast); background: var(--color-accent); font-weight: 750; white-space: nowrap; cursor: pointer; }
 .settings-primary-button:disabled { opacity: .45; cursor: not-allowed; }
-.settings-save-actions button { border: 1px solid var(--color-border-strong); border-radius: 10px; padding: 10px 14px; color: var(--color-text-strong); background: var(--color-surface-raised); font-weight: 750; cursor: pointer; }
-.settings-save-actions button:last-child { border-color: transparent; color: var(--color-accent-contrast); background: var(--color-accent); }
-.settings-save-actions button:disabled { opacity: .45; cursor: not-allowed; }
 @media (max-width: 600px) {
-  .settings-form-row { align-items: stretch; flex-direction: column; }
-  .settings-form-row > .settings-primary-button { align-self: flex-start; }
+  .settings-enrollment-form { align-items: stretch; flex-direction: column; }
+  .settings-enrollment-submit { align-self: flex-start; }
 }
+
+.settings-location-actions { display: flex; flex-wrap: wrap; gap: .65rem; }
+.mcp-detection-card-body { display: grid; align-content: start; gap: 9px; }
+.mcp-detection-details { display: grid; gap: 7px; margin: 0; }
+.mcp-detection-details dt { color: var(--color-text-faint); font-size: .65rem; font-weight: 800; text-transform: uppercase; }
+.mcp-detection-details dd { margin: 2px 0 0; color: var(--color-text-muted); font-size: .74rem; overflow-wrap: anywhere; }

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { MessageCircle, PanelLeftClose, PanelLeftOpen, Plus, X } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { OperatorConversationState, OperatorConversationSummary, SendOperatorMessageRequest, RespondOperatorInteractionRequest } from '@graphql/contracts'
 
@@ -12,6 +11,7 @@ import { subscribeOperatorChat, type OperatorChatConnection } from '../../shared
 import { useAccessFailureLatch } from '../../shared/api/useAccessFailureLatch'
 import { sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../shared/api/sessionBoundary'
 import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
+import { Alert, Badge, Button, EmptyState, Icon, IconButton, LoadingState, Select } from '../../shared/ui/nocturne'
 import { isNarrowOperatorChat, operatorChatNarrowQuery, useOperatorChatStore } from './operatorChatStore'
 import { useOperatorChatVisibility } from './useOperatorChatVisibility'
 import { acknowledgeOperatorMessage, readPendingOperatorMessage, reserveOperatorMessage } from './operatorOutbox'
@@ -206,41 +206,41 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
         else close()
       }}>
       <header>
-        <button ref={historyTriggerRef} type="button" aria-label={historyOpen ? 'Collapse history' : 'Open history'}
-          aria-expanded={historyOpen} aria-controls={historyOpen ? historyId : undefined} onClick={() => showHistory(!historyOpen)}>{historyOpen ? <PanelLeftClose /> : <PanelLeftOpen />}</button>
-        <div className="operator-chat-identity"><strong title={selectedTitle}>Operator · {selectedTitle}{attention.length ? <span className="operator-chat-attention">{attention.length} need a decision</span> : null}</strong>
-          <select aria-label="Switch conversation" value={selectedId ?? ''} onChange={(event) => {
+        <IconButton ref={historyTriggerRef} label={historyOpen ? 'Collapse history' : 'Open history'} variant="ghost"
+          aria-expanded={historyOpen} aria-controls={historyOpen ? historyId : undefined} onClick={() => showHistory(!historyOpen)}><Icon name={historyOpen ? 'close' : 'menu'} /></IconButton>
+        <div className="operator-chat-identity"><strong title={selectedTitle}>Operator · {selectedTitle}{attention.length ? <Badge tone="warning" className="operator-chat-attention">{attention.length} need a decision</Badge> : null}</strong>
+          <Select label="Switch conversation" value={selectedId ?? ''} options={[
+            { value: '', label: 'Choose a conversation', disabled: true },
+            ...(selectedId && !entries.some((item) => item.conversationId === selectedId) ? [{ value: selectedId, label: selectedTitle }] : []),
+            ...entries.map((item) => ({ value: item.conversationId, label: item.title?.trim() || 'Untitled conversation' })),
+          ]} onChange={(event) => {
             if (!event.target.value) return
             select(event.target.value)
             if (isNarrowOperatorChat()) showHistory(false)
-          }}>
-            <option value="" disabled>Choose a conversation</option>
-            {selectedId && !entries.some((item) => item.conversationId === selectedId) ? <option value={selectedId}>{selectedTitle}</option> : null}
-            {entries.map((item) => <option key={item.conversationId} value={item.conversationId}>{item.title?.trim() || 'Untitled conversation'}</option>)}
-          </select>
+          }} />
         </div>
-        <button ref={closeRef} type="button" aria-label="Close Operator chat" onClick={close}><X /></button>
+        <IconButton ref={closeRef} label="Close Operator chat" variant="ghost" onClick={close}><Icon name="close" /></IconButton>
       </header>
-      {settingsWarning ? <p className="operator-chat-warning" role="status">{settingsWarning}</p> : null}
-      {accessDenied ? <p className="operator-chat-warning" role="alert">Operator access is unavailable. Check your browser enrollment and permissions.</p> : null}
-      {!accessDenied && list.isError ? <p className="operator-chat-warning" role="status">Conversation status could not be refreshed. Attention indicators may be stale.</p> : null}
+      {settingsWarning ? <Alert live tone="warning" title="Operator settings unavailable">{settingsWarning}</Alert> : null}
+      {accessDenied ? <Alert live tone="danger" title="Operator access unavailable">Check your browser enrollment and permissions.</Alert> : null}
+      {!accessDenied && list.isError ? <Alert live tone="warning" title="Conversation status could not be refreshed">Attention indicators may be stale.</Alert> : null}
       <div className={`operator-chat-body${historyOpen ? ' operator-chat-history-open' : ''}`}>
         {historyOpen ? <aside ref={historyRef} id={historyId} aria-label="Operator conversation history">
-          <button type="button" onClick={createConversation} disabled={create.isPending || accessDenied}><Plus /> New chat</button>
-          {list.isPending ? <p role="status">Loading conversation history…</p> : null}
-          {list.isError ? <div role="alert"><p>{list.data ? 'History refresh failed. Previously loaded conversations are still shown.' : 'Conversation history could not be loaded.'}</p><button type="button" disabled={list.isFetching} onClick={() => void list.refetch()}>Retry history</button></div> : null}
-          {list.isSuccess && entries.length === 0 ? <p>No conversations yet. Start a new chat.</p> : null}
-          <nav>{entries.map((item) => <button type="button" aria-current={item.conversationId === selectedId ? 'page' : undefined}
+          <Button variant="primary" leading={<Icon name="plus" size={15} />} onClick={createConversation} disabled={create.isPending || accessDenied} loading={create.isPending}>New chat</Button>
+          {list.isPending ? <LoadingState label="Loading conversation history…" rows={3} /> : null}
+          {list.isError ? <Alert live tone="danger" title={list.data ? 'History refresh failed' : 'Conversation history could not be loaded'} action={<Button size="sm" disabled={list.isFetching} loading={list.isFetching} onClick={() => void list.refetch()}>Retry history</Button>}>{list.data ? 'Previously loaded conversations are still shown.' : 'Try the request again.'}</Alert> : null}
+          {list.isSuccess && entries.length === 0 ? <EmptyState icon="history" title="No conversations yet. Start a new chat." description="The Operator will keep the conversation history here." /> : null}
+          <nav>{entries.map((item) => <Button variant="ghost" aria-current={item.conversationId === selectedId ? 'page' : undefined}
             key={item.conversationId} onClick={() => {
               select(item.conversationId)
               if (isNarrowOperatorChat()) historyTriggerRef.current?.focus()
-            }}><span>{item.title ?? 'Conversation'}</span><small className={item.needsAttention ? 'operator-chat-attention' : undefined}>{operatorNavigationStatus(item)}</small></button>)}</nav>
+            }}><span>{item.title ?? 'Conversation'}</span><small className={item.needsAttention ? 'operator-chat-attention' : undefined}>{operatorNavigationStatus(item)}</small></Button>)}</nav>
         </aside> : null}
         <main className="operator-chat-main">
-          {create.error instanceof Error ? <p className="operator-chat-feedback" role="alert">Conversation could not be created: {create.error.message}</p> : null}
-          {!selectedId && !accessDenied ? <button type="button" onClick={createConversation} disabled={create.isPending}>Start a new conversation</button> : null}
-          {selected.isLoading ? <p role="status">Loading conversation…</p> : null}
-          {selected.isError ? <div className="operator-chat-feedback" role="alert"><p>{conversation ? 'Conversation refresh failed. Previously loaded messages are still shown.' : 'Conversation could not be loaded.'}</p><button type="button" disabled={selected.isFetching} onClick={() => void selected.refetch()}>Retry conversation</button></div> : null}
+          {create.error instanceof Error ? <Alert live tone="danger" title="Conversation could not be created">{create.error.message}</Alert> : null}
+          {!selectedId && !accessDenied ? <Button variant="primary" leading={<Icon name="plus" size={15} />} onClick={createConversation} disabled={create.isPending} loading={create.isPending}>Start a new conversation</Button> : null}
+          {selected.isLoading ? <LoadingState label="Loading conversation…" rows={4} /> : null}
+          {selected.isError ? <Alert live tone="danger" title={conversation ? 'Conversation refresh failed' : 'Conversation could not be loaded'} action={<Button size="sm" disabled={selected.isFetching} loading={selected.isFetching} onClick={() => void selected.refetch()}>Retry conversation</Button>}>{conversation ? 'Previously loaded messages are still shown.' : 'Try the request again.'}</Alert> : null}
           {conversation ? <>
             {conversation.messages.length === 0 && !active ? <p>No messages yet. Send a message to start this conversation.</p> : null}
             <OperatorTranscript key={conversation.conversation.id} messages={conversation.messages} partialText={partialText} />
@@ -251,29 +251,29 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
                 <ApprovalRequestSummary request={conversation.pendingInteraction.request} nativeRequestType={conversation.pendingInteraction.nativeRequestType} />
                 <details><summary>Technical details</summary><pre className="operator-chat-approval-details">{JSON.stringify(conversation.pendingInteraction.request, null, 2)}</pre></details>
                 {conversation.pendingInteraction.responseOptions.map((option) => <div key={option.optionId}>
-                  <button type="button" aria-describedby={`${panelId}-scope-${encodeURIComponent(option.optionId)}`} onClick={() => respond.mutate({ id: conversation.conversation.id, generation: sessionGeneration(),
-                    input: { requestId, nativeRequestId: conversation.pendingInteraction!.turn.nativeRequestId!, optionId: option.optionId } })}>{option.label}</button>
+                  <Button variant={option.semantic === 'reject' || option.semantic === 'cancel' ? 'danger' : 'secondary'} aria-describedby={`${panelId}-scope-${encodeURIComponent(option.optionId)}`} onClick={() => respond.mutate({ id: conversation.conversation.id, generation: sessionGeneration(),
+                    input: { requestId, nativeRequestId: conversation.pendingInteraction!.turn.nativeRequestId!, optionId: option.optionId } })}>{option.label}</Button>
                   <p id={`${panelId}-scope-${encodeURIComponent(option.optionId)}`}>{approvalOptionScope(option)}{option.scopeSummary ? ` ${option.scopeSummary}` : ''}</p>
                 </div>)}
-                {conversation.responseDelivery !== 'offered' ? <p>Response delivery is being reconciled. It will not be sent twice.</p> : null}
+                {conversation.responseDelivery !== 'offered' ? <Alert tone="warning" title="Response delivery is being reconciled">It will not be sent twice.</Alert> : null}
               </fieldset> : null}
               <div className="operator-chat-feedback">
-                {conversation.error ? <p role="alert">{conversation.error}</p> : null}
-                {respondVariables && respondVariables.id === selectedId && respondVariables.input.requestId === requestId && respond.error instanceof Error ? <p role="alert">Approval response failed: {respond.error.message}</p> : null}
-                {cancelVariables && cancelVariables.id === selectedId && cancelVariables.requestId === requestId && cancel.error instanceof Error ? <p role="alert">Cancellation failed: {cancel.error.message}</p> : null}
-                {pending.error ? <p role="alert">{pending.error}</p> : null}
-                {sendError ? <p role="alert">Message could not be sent: {sendError}</p> : null}
+                {conversation.error ? <Alert live tone="danger" title="Operator turn failed">{conversation.error}</Alert> : null}
+                {respondVariables && respondVariables.id === selectedId && respondVariables.input.requestId === requestId && respond.error instanceof Error ? <Alert live tone="danger" title="Approval response failed">{respond.error.message}</Alert> : null}
+                {cancelVariables && cancelVariables.id === selectedId && cancelVariables.requestId === requestId && cancel.error instanceof Error ? <Alert live tone="danger" title="Cancellation failed">{cancel.error.message}</Alert> : null}
+                {pending.error ? <Alert live tone="danger" title="Pending message unavailable">{pending.error}</Alert> : null}
+                {sendError ? <Alert live tone="danger" title="Message could not be sent">{sendError}</Alert> : null}
               </div>
-              {pending.command ? <button type="button" disabled={send.isPending && send.variables?.id === selectedId} onClick={() => {
+              {pending.command ? <Button disabled={send.isPending && send.variables?.id === selectedId} loading={send.isPending && send.variables?.id === selectedId} onClick={() => {
                 setPreparationError(undefined)
                 send.mutate({ id: conversation.conversation.id, command: pending.command!, generation: sessionGeneration() })
-              }}>Retry pending message</button> : null}
+              }}>Retry pending message</Button> : null}
             </div> : null}
             <footer className="operator-chat-controls">
               <div className="operator-chat-turn-actions">
                 <p role="status">{operatorTurnStatus(conversation, connectionState)}</p>
-                {requestId ? <button className="operator-chat-cancel" type="button" onClick={() => cancel.mutate({ id: conversation.conversation.id, requestId, generation: sessionGeneration() })}
-                  disabled={conversation.turnState === 'canceling' || (cancel.isPending && cancel.variables?.id === selectedId)}>{conversation.turnState === 'canceling' ? 'Cancel requested' : 'Cancel turn'}</button> : null}
+                {requestId ? <Button className="operator-chat-cancel" variant="danger" size="sm" onClick={() => cancel.mutate({ id: conversation.conversation.id, requestId, generation: sessionGeneration() })}
+                  disabled={conversation.turnState === 'canceling' || (cancel.isPending && cancel.variables?.id === selectedId)}>{conversation.turnState === 'canceling' ? 'Cancel requested' : 'Cancel turn'}</Button> : null}
               </div>
               <ConversationComposer conversationId={conversation.conversation.id} sendDisabled={active || Boolean(pending.error) || Boolean(pending.command)}
                 allowEditingWhileSending isSending={send.isPending && send.variables?.id === selectedId} onSubmit={submit} />
@@ -282,14 +282,13 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
         </main>
       </div>
     </section> : null}
-    <button ref={launcherRef} className="operator-chat-launcher" type="button" hidden={open}
-      aria-label={attention.length ? `Open Operator chat, ${attention.length} conversation${attention.length === 1 ? '' : 's'} need your decision` : 'Open Operator chat'}
+    <IconButton ref={launcherRef} className="operator-chat-launcher" variant="primary" label={attention.length ? `Open Operator chat, ${attention.length} conversation${attention.length === 1 ? '' : 's'} need your decision` : 'Open Operator chat'} hidden={open}
       aria-expanded={open} aria-controls={open ? panelId : undefined} aria-haspopup="dialog"
       aria-description={settingsWarning ?? (list.isError ? 'Conversation status may be stale.' : undefined)}
       title={settingsWarning ?? (list.isError ? 'Conversation status may be stale' : 'Open Operator chat')}
-      onClick={() => { if (attention[0]) select(attention[0].conversationId); setOpen(true) }}><MessageCircle />
-      {attention.length ? <span className="operator-chat-badge" aria-hidden="true">{attention.length}</span> : null}
-      {settingsWarning || list.isError ? <span className="operator-chat-connection-badge" aria-label="Connection warning">!</span> : null}
-    </button>
+      onClick={() => { if (attention[0]) select(attention[0].conversationId); setOpen(true) }}><Icon name="bot" />
+      {attention.length ? <Badge tone="warning" className="operator-chat-badge" aria-hidden="true">{attention.length}</Badge> : null}
+      {settingsWarning || list.isError ? <Badge tone="warning" className="operator-chat-connection-badge" aria-label="Connection warning">!</Badge> : null}
+    </IconButton>
   </div>
 }

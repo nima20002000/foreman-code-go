@@ -1,11 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { Check, ChevronLeft, ChevronRight, Trash2, X } from 'lucide-react'
 import {
   CodexSessionCompatibilitySchema, DEFAULT_HARNESS_DEFAULTS, changeCodexSandbox, legacyEffortForHarness,
   validateHarnessWorkflowCompatibility, withAdvancedDefaults,
   type Agent, type ApprovalHandler, type HarnessDefaults, type WorkflowExecutionPolicy,
 } from '@graphql/contracts'
 
+import { Alert, Button, Checkbox, Icon, IconButton, Select, Textarea, TextField } from '../../shared/ui/nocturne'
 import { CODEX_MODELS, OPENCODE_MODELS, configuredHarness, initialModel } from '../agents/agentSettings'
 import { useHarnessDefaultsQuery } from '../../shared/api/query'
 import { HarnessConfigurationFields } from '../settings/HarnessConfigurationFields'
@@ -33,7 +33,6 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
   const [issues, setIssues] = useState<FieldIssue[]>([])
   const [view, setView] = useState<'general' | 'advanced'>('general')
   const root = useRef<HTMLDivElement>(null)
-  const nameErrorId = useId()
   const modelListId = useId()
   useEffect(() => { if (issues.length) focusFirstInvalid(root.current) }, [issues])
   const [editor, setEditor] = useState(() => {
@@ -84,45 +83,45 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
   return <div ref={root} className="agent-settings-panel">
     <header className="agent-settings-heading">
       <div className="agent-settings-title">
-        {view === 'advanced' ? <button type="button" className="agent-settings-back" aria-label="Back to general settings" onClick={() => setView('general')}><ChevronLeft size={15} /></button> : null}
+        {view === 'advanced' ? <IconButton size="sm" variant="ghost" className="agent-settings-back" label="Back to general settings" onClick={() => setView('general')}><Icon name="chevron" size={15} /></IconButton> : null}
         <strong>{view === 'advanced' ? 'Advanced settings' : 'Agent settings'}</strong>
       </div>
       <div className="agent-settings-header-actions">
-      <button type="button" className="agent-settings-save" aria-label="Save agent settings" disabled={!isDirty} onClick={save}><Check size={13} /> Save</button>
-      <button type="button" aria-label="Close agent settings" onClick={onClose}><X size={15} /></button>
+      <Button size="sm" variant="primary" className="agent-settings-save" aria-label="Save agent settings" disabled={!isDirty} onClick={save} leading={<Icon name="check" size={13} />}>Save</Button>
+      <IconButton size="sm" variant="ghost" label="Close agent settings" onClick={onClose}><Icon name="close" size={15} /></IconButton>
       </div>
     </header>
     {view === 'general' ? <div className="agent-settings-general">
       <div className="agent-settings-row agent-settings-row-primary">
-        <label><span>Name</span><input aria-label="Name" aria-invalid={nameError ? true : undefined} aria-describedby={nameError ? nameErrorId : undefined} value={name} onChange={(event) => { setName(event.target.value); clearErrors() }} />{nameError ? <small id={nameErrorId} className="settings-field-error">{nameError}</small> : null}</label>
-        <label><span>Harness</span><select aria-label="Harness" value={configuration.harness} onChange={(event) => {
+        <TextField label="Name" aria-label="Name" value={name} error={nameError} onChange={(event) => { setName(event.target.value); clearErrors() }} />
+        <Select label="Harness" aria-label="Harness" value={configuration.harness} options={[{ value: 'codex', label: 'Codex' }, { value: 'opencode', label: 'OpenCode' }]} onChange={(event) => {
           const next = event.target.value as 'codex' | 'opencode'
           const fallback = providerDefaults?.[next] ?? DEFAULT_HARNESS_DEFAULTS[next]
           setEditor((current) => switchHarnessEditor(current, next, fallback))
           clearErrors()
-        }}><option value="codex">Codex</option><option value="opencode">OpenCode</option></select></label>
+        }} />
       </div>
       <div className={`agent-settings-row agent-settings-row-runtime agent-settings-row-${configuration.harness}`}>
-        <label><span>Model</span><input aria-label="Model" list={modelListId} value={configuration.model} onChange={(event) => updateConfiguration({ ...configuration, model: event.target.value })} /></label>
+        <TextField label="Model" aria-label="Model" list={modelListId} value={configuration.model} onChange={(event) => updateConfiguration({ ...configuration, model: event.target.value })} />
         <datalist id={modelListId}>{(configuration.harness === 'codex' ? CODEX_MODELS : OPENCODE_MODELS).map((model) => <option key={model} value={model} />)}</datalist>
         {configuration.harness === 'codex' ? <>
-          <label><span>Reasoning effort</span><select aria-label="Effort" value={configuration.reasoningEffort} onChange={(event) => updateConfiguration({ ...configuration, reasoningEffort: event.target.value as typeof configuration.reasoningEffort })}>{['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map((effort) => <option key={effort} value={effort}>{effort}</option>)}</select></label>
-          <label className="agent-settings-sandbox"><span>Sandbox</span><select aria-label="Sandbox" value={configuration.sandbox} onChange={(event) => updateConfiguration(changeCodexSandbox(configuration, event.target.value as typeof configuration.sandbox))}><option value="read-only">Read only</option><option value="workspace-write">Workspace write</option><option value="danger-full-access">Danger: full access</option></select></label>
+          <Select label="Effort" aria-label="Effort" value={configuration.reasoningEffort} options={['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map((effort) => ({ value: effort, label: effort }))} onChange={(event) => updateConfiguration({ ...configuration, reasoningEffort: event.target.value as typeof configuration.reasoningEffort })} />
+          <Select label="Sandbox" aria-label="Sandbox" className="agent-settings-sandbox" value={configuration.sandbox} options={[{ value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' }, { value: 'danger-full-access', label: 'Danger: full access' }]} onChange={(event) => updateConfiguration(changeCodexSandbox(configuration, event.target.value as typeof configuration.sandbox))} />
         </> : <>
-          <label><span>Provider variant</span><input aria-label="Provider variant" value={configuration.variant} onChange={(event) => updateConfiguration({ ...configuration, variant: event.target.value })} /></label>
-          <label className="agent-settings-thinking"><span>Show thinking</span><input type="checkbox" aria-label="Show thinking" checked={configuration.thinking} onChange={(event) => updateConfiguration({ ...configuration, thinking: event.target.checked })} /></label>
+          <TextField label="Provider variant" aria-label="Provider variant" value={configuration.variant} onChange={(event) => updateConfiguration({ ...configuration, variant: event.target.value })} />
+          <Checkbox label="Show thinking" aria-label="Show thinking" className="agent-settings-thinking" checked={configuration.thinking} onChange={(event) => updateConfiguration({ ...configuration, thinking: event.target.checked })} />
         </>}
       </div>
     </div> : <div className="agent-settings-advanced-view">
-      <label className="agent-settings-prompt">Initial prompt<textarea aria-label="Initial prompt" rows={3} value={prompt} onChange={(event) => { setPrompt(event.target.value); clearErrors() }} /></label>
+      <Textarea label="Initial prompt" aria-label="Initial prompt" className="agent-settings-prompt" rows={3} value={prompt} onChange={(event) => { setPrompt(event.target.value); clearErrors() }} />
       <HarnessConfigurationFields editor={editor} issues={issuesAt(issues, ['harness'])} onChange={(next) => { setEditor(next); clearErrors() }} allowHarnessChange={false} harnessDefaults={providerDefaults} workspaceId={workspaceId} routedApproval={Boolean(workflowApprovalHandler)} compact advancedOnly />
       <p className="settings-help">Save updates this graph draft. Use Save graph to persist it.</p>
     </div>}
-    {error ? <p className="agent-settings-error" role="alert">{error}</p> : null}
+    {error ? <Alert tone="danger" live title={error} /> : null}
     <footer className="agent-settings-footer">
-      {view === 'general' ? <button type="button" className="agent-settings-advanced-link" onClick={() => setView('advanced')}>Advanced settings<ChevronRight size={13} /></button> : null}
-      {view === 'general' && configuration.harness === 'codex' ? <label className="agent-settings-fast-mode"><span>Fast mode</span><input type="checkbox" aria-label="Fast mode" checked={configuration.serviceTier === 'priority'} onChange={(event) => updateConfiguration({ ...configuration, serviceTier: event.target.checked ? 'priority' : 'standard' })} /><span className="agent-settings-fast-track" aria-hidden="true" /></label> : null}
-      {onRemove ? <button type="button" className="agent-settings-trash" aria-label={`Remove ${agent.name} from workflow`} onClick={onRemove}><Trash2 size={15} /></button> : null}
+      {view === 'general' ? <Button size="sm" variant="ghost" className="agent-settings-advanced-link" onClick={() => setView('advanced')} trailing={<Icon name="chevron" size={13} />}>Advanced settings</Button> : null}
+      {view === 'general' && configuration.harness === 'codex' ? <Checkbox label="Fast mode" aria-label="Fast mode" className="agent-settings-fast-mode" checked={configuration.serviceTier === 'priority'} onChange={(event) => updateConfiguration({ ...configuration, serviceTier: event.target.checked ? 'priority' : 'standard' })} /> : null}
+      {onRemove ? <IconButton size="sm" variant="ghost" className="agent-settings-trash" label={`Remove ${agent.name} from workflow`} onClick={onRemove}><Icon name="minus" size={15} /></IconButton> : null}
     </footer>
   </div>
 }

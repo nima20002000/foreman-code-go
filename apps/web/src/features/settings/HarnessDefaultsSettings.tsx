@@ -1,6 +1,7 @@
 import { type HarnessDefaults, HarnessDefaultsSchema } from '@graphql/contracts'
 import { ManagementHarnessDefaultsSchema } from '@graphql/contracts/management'
 
+import { Button, ErrorState, LoadingState } from '../../shared/ui/nocturne'
 import {
   useHarnessDefaultsQuery, useManagedHarnessCatalogQuery,
   useSaveHarnessDefaultsMutation, useUpdateManagedHarnessDefaultsMutation,
@@ -39,10 +40,10 @@ export function HarnessDefaultsSettings() {
   const root = useSettingsValidation(form.issues)
   const draft = form.draft
   const query = realMode ? catalogQuery : defaultsQuery
-  if (query.isError && !draft) return <div className="settings-form settings-state-error" role="alert"><p>Harness defaults are unavailable.</p><button type="button" className="settings-primary-button" onClick={() => void query.refetch()}>Retry</button></div>
-  if (!draft) return <div className="settings-form"><p role="status">Loading harness defaults…</p></div>
+  if (query.isError && !draft) return <div className="settings-form settings-state-error"><ErrorState title="Harness defaults are unavailable" description={query.error.message} onRetry={() => void query.refetch()} /></div>
+  if (!draft) return <div className="settings-form"><LoadingState label="Loading harness defaults…" /></div>
   return <section ref={root} className="settings-form" aria-label="Harness defaults">
-    {query.isError ? <p role="alert">The refresh failed. Your draft is preserved.<button type="button" onClick={() => void query.refetch()}>Retry refresh</button></p> : null}
+    {query.isError ? <p role="alert">The refresh failed. Your draft is preserved.<Button size="sm" onClick={() => void query.refetch()}>Retry refresh</Button></p> : null}
     <SettingsFormFeedback form={form} />
     <div className="harness-defaults-grid">{(['codex', 'opencode'] as const).map((harness) => <fieldset key={harness}><legend>{harness === 'codex' ? 'Codex' : 'OpenCode'}</legend><div className="settings-field-grid"><HarnessConfigurationFields allowHarnessChange={false} editor={draft[harness]} issues={issuesAt(form.issues ?? [], [harness])} onChange={(value) => form.setDraft((current) => current && ({ ...current, [harness]: value }))} /></div></fieldset>)}</div>
     <SettingsFormActions form={form} onSave={() => void form.save(async (input) => {

@@ -1,5 +1,4 @@
-import { useId, type FormEvent } from 'react'
-
+import { MessageComposer } from '../../shared/ui/nocturne'
 import { useConversationDraftStore } from './conversationDraftStore'
 
 export interface ConversationComposerProps {
@@ -25,34 +24,22 @@ export function ConversationComposer({
   error,
   onSubmit,
 }: ConversationComposerProps) {
-  const inputId = useId()
   const draft = useConversationDraftStore((state) => state.drafts[conversationId] ?? '')
   const setDraft = useConversationDraftStore((state) => state.setDraft)
 
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const content = draft.trim()
-    if (!content || disabled || sendDisabled || isSending) return
-    onSubmit(content)
-  }
-
   return (
-    <form onSubmit={submit} aria-label="Conversation composer">
-      <label htmlFor={inputId}>Message</label>
-      <textarea
-        id={inputId}
-        value={draft}
-        rows={3}
-        disabled={disabled || (isSending && !allowEditingWhileSending)}
-        onChange={(event) => setDraft(conversationId, event.target.value)}
-        placeholder="Write a message for this agent"
-      />
-      <button type="submit" disabled={disabled || sendDisabled || isSending || !draft.trim()}>
-        {isSending ? 'Sending…' : 'Send message'}
-      </button>
-      {error ? (
-        <p role="alert">Message could not be sent: {error}</p>
-      ) : null}
-    </form>
+    <MessageComposer
+      formLabel="Conversation composer"
+      label="Message"
+      placeholder="Write a message for this agent"
+      sendLabel="Send message"
+      value={draft}
+      onValueChange={(value) => setDraft(conversationId, value)}
+      onSend={(content) => onSubmit(content.trim())}
+      pending={isSending}
+      disabled={disabled || (isSending && !allowEditingWhileSending)}
+      sendDisabled={sendDisabled}
+      error={error ? `Message could not be sent: ${error}` : undefined}
+    />
   )
 }

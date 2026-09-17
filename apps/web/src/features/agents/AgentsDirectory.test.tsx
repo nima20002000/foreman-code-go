@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Agent, WorkflowDefinition } from '@graphql/contracts'
 
@@ -48,6 +48,15 @@ afterEach(() => {
   useAgentDirectoryStore.getState().reset()
   useGraphDraftStore.getState().clearAllDrafts()
   useSessionWorkflowStore.getState().clearSessionWorkflows()
+})
+
+// jsdom does not implement the native modal dialog methods used by Nocturne Dialog.
+beforeEach(() => {
+  HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) { this.open = true }
+  HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) {
+    this.open = false
+    queueMicrotask(() => this.dispatchEvent(new Event('close')))
+  }
 })
 
 describe('AgentsDirectoryContent', () => {
@@ -212,22 +221,23 @@ describe('AgentsDirectoryContent', () => {
 
   it('dismisses the add modal from its backdrop, close control, or Escape and restores focus', async () => {
     const user = userEvent.setup()
-    const { container } = render(<AgentsDirectoryContent workspaceId="workspace-1" agents={agents} />)
+    render(<AgentsDirectoryContent workspaceId="workspace-1" agents={agents} />)
     const add = screen.getByRole('button', { name: 'Add agent' })
 
     await user.click(add)
     const dialog = screen.getByRole('dialog', { name: 'Add a local agent' })
-    fireEvent.mouseDown(dialog)
+    const name = screen.getByRole('textbox', { name: 'Name' })
+    fireEvent.pointerDown(name)
+    fireEvent.click(name)
     expect(dialog).toBeVisible()
 
-    const backdrop = container.querySelector('.agent-add-backdrop')
-    if (!backdrop) throw new Error('Add-agent backdrop missing')
-    fireEvent.mouseDown(backdrop)
+    fireEvent.pointerDown(dialog)
+    fireEvent.click(dialog)
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(add).toHaveFocus()
 
     await user.click(add)
-    await user.keyboard('{Escape}')
+    fireEvent(screen.getByRole('dialog'), new Event('cancel', { cancelable: true }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(add).toHaveFocus()
 

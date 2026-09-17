@@ -1,5 +1,7 @@
 import { useId, useState } from 'react'
 
+import { Button, Card, CardBody, CardHeader } from '../../shared/ui/nocturne'
+
 export interface TerminalPlaceholderProps {
   /** Keep the initial state deterministic for the shell and its tests. */
   defaultExpanded?: boolean
@@ -19,34 +21,34 @@ export function TerminalPlaceholder({
 
   return (
     <section
-      className="terminal-placeholder"
+      className="terminal-placeholder n-theme"
       data-testid="terminal-placeholder"
-      aria-labelledby={`${contentId}-title`}
+      aria-label="No terminal connected"
     >
-      <div className="terminal-heading">
-        <div>
-          <p className="panel-kicker">Terminal</p>
-          <h2 id={`${contentId}-title`}>No terminal connected</h2>
-        </div>
-        <button
-          type="button"
-          className="disclosure-button"
-          aria-controls={contentId}
-          aria-expanded={expanded}
-          onClick={() => setExpanded((current) => !current)}
-        >
-          {expanded ? 'Collapse' : 'Expand'}
-        </button>
-      </div>
-
-      {expanded ? (
-        <div id={contentId} className="terminal-content">
-          <p>
-            Connect a runner to open a terminal for this workspace. Terminal
-            input is unavailable until then.
-          </p>
-        </div>
-      ) : null}
+      <Card>
+        <CardHeader
+          eyebrow="Terminal"
+          title="No terminal connected"
+          action={
+            <Button
+              size="sm"
+              aria-controls={contentId}
+              aria-expanded={expanded}
+              onClick={() => setExpanded((current) => !current)}
+            >
+              {expanded ? 'Collapse' : 'Expand'}
+            </Button>
+          }
+        />
+        {expanded ? (
+          <CardBody>
+            <p id={contentId}>
+              Connect a runner to open a terminal for this workspace. Terminal
+              input is unavailable until then.
+            </p>
+          </CardBody>
+        ) : null}
+      </Card>
     </section>
   )
 }

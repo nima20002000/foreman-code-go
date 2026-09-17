@@ -117,7 +117,7 @@ describe('workspace section routes', () => {
   it('deep-links the Files placeholder under the workspaces menu', async () => {
     renderRoute('/workspaces/workspace-1/files')
 
-    expect(await screen.findByRole('heading', { name: 'Files', level: 1 })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Files' })).toBeVisible()
     expect(screen.getByTestId('coming-soon')).toHaveTextContent('Coming soon')
     expect(screen.getByRole('link', { name: 'Files' })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
