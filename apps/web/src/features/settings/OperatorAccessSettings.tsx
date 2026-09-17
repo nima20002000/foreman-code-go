@@ -22,6 +22,24 @@ export function OperatorAccessSettings() {
   const enroll = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!token.trim() || inFlight.current) return
+    const graphs = useGraphDraftStore.getState()
+    const workflows = useSessionWorkflowStore.getState()
+    const hasUnsavedWork = Object.values(graphs.drafts).some((draft) => draft.dirty)
+      || Object.values(graphs.managedSaving).some(Boolean)
+      || Object.keys(graphs.drafts).some((key) => managedSaveQueue.hasPending(key))
+      || Object.values(useConversationDraftStore.getState().drafts).some((draft) => draft.trim().length > 0)
+      || Object.keys(workflows.workflows).length > 0
+      || Object.keys(workflows.workflowNameOverrides).length > 0
+      || workflows.hiddenWorkflowIds.length > 0
+      || Object.values(useAgentDirectoryStore.getState().catalogs).some((catalog) =>
+        catalog.localAgents.length > 0 || catalog.deletedAgentIds.length > 0)
+      || queryClient.isMutating() > 0
+    // Always confirm: fields in a mounted editor may not yet be in a draft store.
+    // Cancel happens BEFORE any identity rotation, request cancellation, or cleanup.
+    const warning = hasUnsavedWork
+      ? 'Unsaved work or a pending operation was found in this browser. '
+      : 'This changes browser access. '
+    if (!window.confirm(`${warning}Enrollment reloads the app and discards unsent edits, message drafts, and browser-only workflows, even if enrollment fails. Cancel to save or copy your work first. Continue and discard?`)) return
     inFlight.current = true
     setStatus('working')
     const credential = token.trim()

@@ -20,6 +20,9 @@
   --color-focus: #f2f4f5;
   --color-status-bg: #242a2d;
   --color-status-dot: #c1c9cc;
+  --color-success-text: #72dbaa;
+  --color-warning-text: #ffd180;
+  --color-error-text: #ff9c9c;
   --color-dashed: #515a5f;
   --color-minimap-mask: rgba(17, 20, 22, 0.78);
   --motion-duration-fast: 140ms;
@@ -54,6 +57,9 @@
   --color-focus: #171717;
   --color-status-bg: #f2f2f2;
   --color-status-dot: #555555;
+  --color-success-text: #14613b;
+  --color-warning-text: #765000;
+  --color-error-text: #a21d28;
   --color-dashed: #bdbdbd;
   --color-minimap-mask: rgba(255, 255, 255, 0.72);
 }
@@ -1155,4 +1161,36 @@ h1 {
   .terminal-surface {
     border-top: 1px solid var(--color-border);
   }
+}
+
+
+/* Small semantic labels must remain legible on ordinary and selected surfaces. */
+.mcp-detection-card.mcp-state-connected > header,
+.mcp-detection-card.mcp-state-connected > header h3,
+.mcp-detection-card.mcp-state-connected > strong { color: var(--color-success-text); }
+.mcp-detection-card.mcp-state-broken > header,
+.mcp-detection-card.mcp-state-broken > header h3,
+.mcp-detection-card.mcp-state-broken > strong,
+.mcp-detection-card.mcp-state-check_failed > header,
+.mcp-detection-card.mcp-state-check_failed > header h3,
+.mcp-detection-card.mcp-state-check_failed > strong,
+.settings-save-status.settings-state-error { color: var(--color-error-text); }
+.mcp-detection-card.mcp-state-misconfigured > strong,
+.mcp-detection-card.mcp-state-authentication_required > strong { color: var(--color-warning-text); }
+
+.settings-field-grid label.settings-switch,
+.agent-settings-panel .agent-settings-fields label.settings-switch {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+.settings-field-grid input:is([type='checkbox'], [type='radio']),
+.agent-settings-panel input:is([type='checkbox'], [type='radio']) {
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
 }

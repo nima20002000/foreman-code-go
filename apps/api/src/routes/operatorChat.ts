@@ -2,6 +2,7 @@ import {
   CancelOperatorTurnRequestSchema, CancelOperatorTurnResponseSchema,
   CreateOperatorConversationRequestSchema, CreateOperatorConversationResponseSchema,
   GetOperatorConversationResponseSchema, ListOperatorConversationsResponseSchema,
+  ListOperatorConversationSummariesResponseSchema,
   SendOperatorMessageRequestSchema, SendOperatorMessageResponseSchema,
   RespondOperatorInteractionRequestSchema,
   type OperatorConversationStreamEvent,
@@ -21,6 +22,8 @@ export function registerOperatorChatRoutes(app: FastifyInstance, chat: OperatorC
   const streams = new Map<() => void, string>()
   app.addHook('preClose', async () => { for (const stop of streams.keys()) stop(); streams.clear() })
 
+  app.get('/api/operator/conversations/summaries', async (request) =>
+    ListOperatorConversationSummariesResponseSchema.parse({ conversations: await chat.summaries(requirePrincipal(request)) }))
   app.get('/api/operator/conversations', async (request) =>
     ListOperatorConversationsResponseSchema.parse({ conversations: await chat.list(requirePrincipal(request)) }))
   app.post<{ Body: unknown }>('/api/operator/conversations', async (request, reply) => {

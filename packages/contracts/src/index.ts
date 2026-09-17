@@ -1561,6 +1561,19 @@ export const OperatorConversationStateSchema = z.object({
   error: z.string().optional(),
 }).strict();
 export type OperatorConversationState = z.infer<typeof OperatorConversationStateSchema>;
+/** Owner-scoped navigation state; never contains message or approval payloads. */
+export const OperatorConversationSummarySchema = OperatorConversationStateSchema.pick({
+  turnState: true, revision: true, activeRequestId: true,
+}).extend({
+  conversationId: IdSchema,
+  title: z.string().optional(),
+  needsAttention: z.boolean(),
+}).strict();
+export type OperatorConversationSummary = z.infer<typeof OperatorConversationSummarySchema>;
+export const ListOperatorConversationSummariesResponseSchema = z.object({
+  conversations: z.array(OperatorConversationSummarySchema),
+}).strict();
+
 export const CreateOperatorConversationRequestSchema = z.object({ title: z.string().trim().min(1).optional() }).strict();
 export const CreateOperatorConversationResponseSchema = z.object({ conversation: ConversationSchema }).strict();
 export const ListOperatorConversationsResponseSchema = z.object({ conversations: z.array(ConversationSchema) }).strict();

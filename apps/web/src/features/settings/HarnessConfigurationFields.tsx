@@ -73,11 +73,13 @@ function PermissionRules({ value, onChange, issues }: {
   </fieldset>
 }
 
-export function HarnessConfigurationFields({ editor, onChange, routedApproval = false, allowHarnessChange = true, workspaceId, harnessDefaults, issues: saveIssues = [] }: {
+export function HarnessConfigurationFields({ editor, onChange, routedApproval = false, allowHarnessChange = true, compact = false, workspaceId, harnessDefaults, issues: saveIssues = [] }: {
   editor: HarnessEditor
   onChange(editor: HarnessEditor): void
   routedApproval?: boolean
   allowHarnessChange?: boolean
+  /** Keep the node editor focused on configuration, not the diagnostic dashboard. */
+  compact?: boolean
   workspaceId?: string
   harnessDefaults?: HarnessDefaults
   issues?: readonly FieldIssue[]
@@ -169,11 +171,11 @@ export function HarnessConfigurationFields({ editor, onChange, routedApproval = 
           setCheckAttempt({ snapshot, message: failure instanceof Error ? failure.message : 'Review the configuration.', issues: validationIssues(failure) })
         }
       }}>{nativeCheck.isPending ? checkingCurrent ? 'Checking selected configuration…' : 'Checking previous selection…' : 'Check selected configuration'}</button>
-      <details><summary>Provider readiness and qualification details</summary>
+      {!compact ? <details><summary>Provider readiness and qualification details</summary>
         {entry?.capability ? <><strong>Provider {entry.capability.version}</strong><p>Native checks for the saved Harness template report: {entry.capability.ready ? 'ready' : 'not ready'}. This is not a qualification of these unsaved edits.</p><p>Qualified settings: {entry.capability.supportedSettings.join(', ')}.</p>{entry.capability.unsupportedCapabilities.length ? <p>Unsupported: {entry.capability.unsupportedCapabilities.join(', ')}.</p> : null}</> : <p>Provider qualification is unavailable. These edits are not yet qualified.</p>}
         <p>Models, provider variants and native Agents are validated on the server when defaults are saved. Advanced runner-specific policies require the matching native session transport and are checked when a new session starts.</p>
         {checked ? <p>Checked this exact selection against {checked.qualification.version} at {checked.checkedAt}. Native checks cover: {checked.qualification.supportedSettings.join(', ')}. Other Advanced settings still require session admission.</p> : null}
-      </details>
+      </details> : <p>Full provider qualification details are available in Settings.</p>}
     </div>
     <details className="advanced-settings agent-settings-advanced"><summary>Advanced</summary>
       <p className="settings-help">Changes apply to new sessions, not an already accepted run. Process settings may require a new provider process. Native MCP policies do not install servers, rewrite runner configuration, or bypass the sandbox.</p>
@@ -203,6 +205,6 @@ export function HarnessConfigurationFields({ editor, onChange, routedApproval = 
       })()}
       <label>Native MCP controls JSON<textarea {...field(value.harness === 'codex' ? 'advanced.mcpServers' : 'advanced.mcp')} aria-label="Native MCP controls JSON" rows={7} value={editor.mcpText} onChange={(event) => onChange({ ...editor, mcpText: event.target.value })} /><small>{value.harness === 'codex' ? 'Map server names to enabled, required, enabledTools, disabledTools, defaultToolsApprovalMode and per-tool policies. The native runner must match the accepted policy.' : 'Map already configured server names to true (enabled) or false (disabled). Requires a new session; this does not install an MCP server.'}</small>{error(value.harness === 'codex' ? 'advanced.mcpServers' : 'advanced.mcp')}</label>
     </details>
-    {workspaceId ? <McpDetectionSettings workspaceId={workspaceId} /> : <details className="settings-help"><summary>Runner-scoped App MCP evidence</summary><p>Select a real workspace below to inspect runner-scoped App MCP evidence.</p></details>}
+    {compact ? <p className="settings-help">Full runner-scoped App MCP diagnostics are available in Settings. Checking this selection does not change permissions or qualify an existing session.</p> : workspaceId ? <McpDetectionSettings workspaceId={workspaceId} /> : <details className="settings-help"><summary>Runner-scoped App MCP evidence</summary><p>Select a real workspace below to inspect runner-scoped App MCP evidence.</p></details>}
   </div>
 }

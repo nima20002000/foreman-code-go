@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 
 import {
   ConversationSchema, MessageSchema, OperatorConfigurationVersionSchema, OperatorConversationStateSchema,
+  OperatorConversationSummarySchema, type OperatorConversationSummary,
   type Conversation, type ExecutionResult, type OperatorConfigurationVersion,
   type OperatorConversationState, type PendingNativeInteraction, type SendOperatorMessageRequest,
 } from '@graphql/contracts'
@@ -68,6 +69,22 @@ export class PostgresOperatorConversationRepository {
     const result = await this.pool.query<ConversationRow>(
       'select * from operator_conversations where owner_principal_id=$1 order by updated_at desc,id', [ownerId])
     return result.rows.map(conversation)
+  }
+
+  async summaries(ownerId: string): Promise<OperatorConversationSummary[]> {
+    // One small owner-filtered projection. Do not fetch message history or native request payloads.
+    const result = await this.pool.query<{
+      id: string; title: string | null; turn_state: OperatorConversationSummary['turnState'];
+      revision: string | number; active_request_id: string | null; needs_attention: boolean;
+    }>(`select id,record->>'title' as title,turn_state,revision,active_request_id,
+      coalesce(active_request_id is not null and pending_interaction is not null
+        and response_delivery='offered' and not cancel_requested, false) as needs_attention
+      from operator_conversations where owner_principal_id=$1 order by updated_at desc,id`, [ownerId])
+    return result.rows.map((row) => OperatorConversationSummarySchema.parse({
+      conversationId: row.id, ...(row.title === null ? {} : { title: row.title }),
+      turnState: row.turn_state, revision: Number(row.revision), activeRequestId: row.active_request_id,
+      needsAttention: row.needs_attention,
+    }))
   }
 
   async get(id: string, query: Queryable = this.pool): Promise<OperatorConversationState | undefined> {

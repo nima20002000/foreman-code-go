@@ -4,7 +4,12 @@ import { useConversationDraftStore } from './conversationDraftStore'
 
 export interface ConversationComposerProps {
   conversationId: string
+  /** Disable both editing and submission. */
   disabled?: boolean
+  /** Block submission without locking the draft. */
+  sendDisabled?: boolean
+  /** Existing callers keep their original in-flight editing behavior. */
+  allowEditingWhileSending?: boolean
   isSending?: boolean
   error?: string
   onSubmit: (content: string) => void
@@ -14,6 +19,8 @@ export interface ConversationComposerProps {
 export function ConversationComposer({
   conversationId,
   disabled = false,
+  sendDisabled = false,
+  allowEditingWhileSending = false,
   isSending = false,
   error,
   onSubmit,
@@ -25,7 +32,7 @@ export function ConversationComposer({
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const content = draft.trim()
-    if (!content || disabled || isSending) return
+    if (!content || disabled || sendDisabled || isSending) return
     onSubmit(content)
   }
 
@@ -36,11 +43,11 @@ export function ConversationComposer({
         id={inputId}
         value={draft}
         rows={3}
-        disabled={disabled || isSending}
+        disabled={disabled || (isSending && !allowEditingWhileSending)}
         onChange={(event) => setDraft(conversationId, event.target.value)}
         placeholder="Write a message for this agent"
       />
-      <button type="submit" disabled={disabled || isSending || !draft.trim()}>
+      <button type="submit" disabled={disabled || sendDisabled || isSending || !draft.trim()}>
         {isSending ? 'Sending…' : 'Send message'}
       </button>
       {error ? (

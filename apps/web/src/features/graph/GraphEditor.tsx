@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Bot, BotMessageSquare, Inbox, MoreHorizontal, Play, Plus, Settings, Square, X } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
+import { createPortal } from 'react-dom'
 import { AgentSettingsForm } from './AgentSettingsForm'
 import { WorkflowExecutionLimits } from './WorkflowExecutionLimits'
 
@@ -276,8 +277,15 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
       >
         <MoreHorizontal aria-hidden="true" size={17} />
       </button>
-      {menuOpen ? (
-        <div ref={menuRef} className="workflow-agent-node-menu agent-directory-card-actions nodrag" role="dialog" aria-label={`${data.label} settings`}>
+      {menuOpen ? createPortal((
+        <div ref={menuRef} className="agent-settings-inspector nodrag nowheel" role="dialog" aria-modal={false} aria-label={`${data.label} settings`}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            // A portal still bubbles through React: do not let Delete remove graph nodes.
+            event.stopPropagation()
+            if (event.key === 'Escape') { event.preventDefault(); closeMenu('escape') }
+          }}>
           <AgentSettingsForm
             workspaceId={nodeMenu?.workspaceId}
             workflowApprovalHandler={nodeMenu?.workflowApprovalHandler}
@@ -300,7 +308,7 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
             }}
           />
         </div>
-      ) : null}
+      ), document.body) : null}
     </article>
   )
 }
@@ -516,6 +524,17 @@ export function GraphEditor({
   const localAgents = agentCatalog?.localAgents ?? readLocalAgents(workspaceId)
   const deletedAgentIds = agentCatalog?.deletedAgentIds ?? readDeletedAgentIds(workspaceId)
   const addAgentButtonRef = useRef<HTMLButtonElement>(null)
+  const workflowSettingsButtonRef = useRef<HTMLButtonElement>(null)
+  const workflowSettingsRef = useRef<HTMLDivElement>(null)
+  const closeWorkflowSettings = useCallback((reason: SurfaceDismissReason = 'escape') => {
+    setWorkflowSettingsOpen(false)
+    if (reason === 'escape') workflowSettingsButtonRef.current?.focus()
+  }, [])
+  useDismissableSurface({ open: workflowSettingsOpen, onDismiss: closeWorkflowSettings,
+    surfaceRef: workflowSettingsRef, triggerRef: workflowSettingsButtonRef })
+  useEffect(() => {
+    if (workflowSettingsOpen) workflowSettingsRef.current?.querySelector<HTMLElement>('select, button')?.focus()
+  }, [workflowSettingsOpen])
   const connectionSourceNodeRef = useRef<string | undefined>(undefined)
   const agentPickerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -529,10 +548,14 @@ export function GraphEditor({
   const undoStackRef = useRef<GraphSaveSnapshot[]>([])
   const positionUndoActiveRef = useRef(false)
   const agentPickerPresence = usePresence(agentPickerOpen)
+  const openNodeMenu = useCallback((nodeId?: string) => {
+    if (nodeId) { setWorkflowSettingsOpen(false); setAgentPickerOpen(false) }
+    setOpenMenuNodeId(nodeId)
+  }, [])
   const nodeMenuValue = useMemo(
-    () => ({ openMenuNodeId, setOpenMenuNodeId, workspaceId,
+    () => ({ openMenuNodeId, setOpenMenuNodeId: openNodeMenu, workspaceId,
       workflowApprovalHandler: (draft?.workflow ?? workflow).approval?.handler }),
-    [openMenuNodeId, workspaceId, draft?.workflow, workflow],
+    [openMenuNodeId, openNodeMenu, workspaceId, draft?.workflow, workflow],
   )
   const saveMutation = useSaveGraphMutation()
   const isSaving = managedSaving || saveMutation.isPending
@@ -1336,7 +1359,9 @@ export function GraphEditor({
         </NodeMenuContext.Provider>
 
         <div className="workflow-graph-primary-actions" aria-label="Workflow controls">
-          <button type="button" className="workflow-graph-add-agent" aria-label="Workflow settings" title="Workflow settings" onClick={() => setWorkflowSettingsOpen((open) => !open)}><Settings aria-hidden="true" size={16} /></button>
+          <button ref={workflowSettingsButtonRef} type="button" className="workflow-graph-add-agent" aria-label="Workflow settings" title="Workflow settings"
+            aria-haspopup="dialog" aria-expanded={workflowSettingsOpen} aria-controls={workflowSettingsOpen ? 'workflow-settings-popover' : undefined}
+            onClick={() => { setAgentPickerOpen(false); setOpenMenuNodeId(undefined); setWorkflowSettingsOpen((open) => !open) }}><Settings aria-hidden="true" size={16} /></button>
           <Link to="/workspaces/$workspaceId/approvals" params={{ workspaceId }} search={{ workflowId: displayedWorkflow.id }} className="workflow-graph-add-agent" aria-label="Workflow Approval Inbox" title="Workflow Approval Inbox"><Inbox aria-hidden="true" size={16} /></Link>
           <button
             type="button"
@@ -1373,6 +1398,7 @@ export function GraphEditor({
             aria-expanded={agentPickerOpen}
             onClick={() => {
               setOpenMenuNodeId(undefined)
+              setWorkflowSettingsOpen(false)
               setAgentPickerOpen(true)
             }}
           >
@@ -1380,8 +1406,8 @@ export function GraphEditor({
           </button>
         </div>
 
-        {workflowSettingsOpen ? <div className="workflow-settings-popover" role="dialog" aria-labelledby="workflow-settings-title">
-          <header><div><p className="panel-kicker">Local override</p><h2 id="workflow-settings-title">Workflow settings</h2></div><button type="button" aria-label="Close workflow settings" onClick={() => setWorkflowSettingsOpen(false)}><X size={16} /></button></header>
+        {workflowSettingsOpen ? <div ref={workflowSettingsRef} id="workflow-settings-popover" className="workflow-settings-popover" role="dialog" aria-modal={false} aria-labelledby="workflow-settings-title">
+          <header><div><p className="panel-kicker">Local override</p><h2 id="workflow-settings-title">Workflow settings</h2></div><button type="button" aria-label="Close workflow settings" onClick={() => closeWorkflowSettings()}><X size={16} /></button></header>
           <label>Approval handler<select value={displayedWorkflow.approval?.handler ?? ''} onChange={(event) => {
             const handler = event.target.value as 'user' | 'orchestrator' | 'operator'
             applyBoardChange((saved) => ({ ...saved, approval: handler === 'orchestrator'

@@ -1,0 +1,44 @@
+import type pg from 'pg'
+import Fastify from 'fastify'
+import { describe, expect, it, vi } from 'vitest'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
+import { OperatorChatService } from '../src/modules/conversations/operatorChat.js'
+import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'
+
+const owner: ManagementPrincipal = { id: 'summary-owner', name: 'Owner', audience: 'operator',
+  grants: [{ actions: ['operator_chat:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000).toISOString(), revokedAt: null }
+function fixture() {
+  const query = vi.fn().mockResolvedValue({ rows: [{ id: 'owned-chat', title: 'Owned chat', turn_state: 'active', revision: '7', active_request_id: 'request', needs_attention: true }] })
+  const repository = new PostgresOperatorConversationRepository({ query } as unknown as pg.Pool)
+  // Unused native dependencies are intentionally not invoked by a read-only summary.
+  const chat = new OperatorChatService(repository, undefined as never, undefined as never, '/unused', undefined as never)
+  return { query, chat }
+}
+describe('PR17 owner-scoped lightweight navigation', () => {
+  it('reads one status projection with an owner parameter, without histories or native payloads', async () => {
+    const { query, chat } = fixture()
+    const result = await chat.summaries(owner)
+    expect(query).toHaveBeenCalledOnce()
+    expect(query.mock.calls[0]![0]).toContain('where owner_principal_id=$1')
+    expect(query.mock.calls[0]![0]).not.toMatch(/select \*|operator_conversation_messages/)
+    expect(query.mock.calls[0]![1]).toEqual([owner.id])
+    expect(result).toEqual([{ conversationId: 'owned-chat', title: 'Owned chat', turnState: 'active', revision: 7, activeRequestId: 'request', needsAttention: true }])
+  })
+  it('checks permission before touching the database', () => {
+    const { query, chat } = fixture()
+    expect(() => chat.summaries({ ...owner, grants: [] })).toThrow()
+    expect(query).not.toHaveBeenCalled()
+  })
+  it('routes summaries before the dynamic conversation route and applies the response contract', async () => {
+    const { chat } = fixture()
+    const app = Fastify()
+    app.addHook('preHandler', async (request) => { request.operatorPrincipal = owner })
+    registerOperatorChatRoutes(app, chat)
+    try {
+      const response = await app.inject({ method: 'GET', url: '/api/operator/conversations/summaries' })
+      expect(response.statusCode).toBe(200)
+      expect(response.json()).toEqual({ conversations: [{ conversationId: 'owned-chat', title: 'Owned chat', turnState: 'active', revision: 7, activeRequestId: 'request', needsAttention: true }] })
+    } finally { await app.close() }
+  })
+})

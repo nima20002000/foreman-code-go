@@ -5,6 +5,7 @@ import { Link } from '@tanstack/react-router'
 
 import { useInteractionQuery, useInfiniteInteractionsQuery, useRespondToInteractionMutation, useWorkspaceDetailsQuery } from '../../shared/api/query'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
+import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
 import { canRecoverInteraction, interactionMatchesScope } from './approvalState'
 import { approvalReadOnlyReason, approvalStatuses, summarizeApprovalRequest } from './approvalPresentation'
 import { ApprovalRequestSummary } from './ApprovalRequestSummary'
@@ -79,7 +80,8 @@ function ApprovalDetail({ interactionId, workspaceId, workflowId, onClear }: {
   const recoverable = canRespond && selected.status !== 'canceled' && selected.status !== 'delivered'
     && (canRecoverInteraction(selected) || Boolean(retryInput))
   const recoveryOption = retryInput?.optionId ?? selected.selectedOptionId
-  const selectedLabel = selected.responseOptions.find((option) => option.optionId === selected.selectedOptionId)?.label
+  const selectedOption = selected.responseOptions.find((option) => option.optionId === selected.selectedOptionId)
+  const selectedLabel = selectedOption?.label
   const readOnlyReason = approvalReadOnlyReason(selected, detail.data.canRespond === true)
   return <article className="approval-detail">
     <header><div><p className="panel-kicker">{selected.harness === 'codex' ? 'Codex' : 'OpenCode'} permission request</p><h2>{summarizeApprovalRequest(selected.request, selected.nativeRequestType).operation}</h2></div><span className={`approval-state approval-state-${selected.status}`}><StateIcon state={selected.status} />{stateLabels[selected.status]}</span></header>
@@ -98,14 +100,14 @@ function ApprovalDetail({ interactionId, workspaceId, workflowId, onClear }: {
     {readOnlyReason ? <p className="approval-reviewer-note">{readOnlyReason}</p> : null}
     {canRespond && selected.status === 'pending' && !retryInput ? <div className="approval-actions"><h3>Response</h3><div>
       {selected.responseOptions.map((option) => <button key={option.optionId} type="button" disabled={respond.isPending} className={option.semantic === 'reject' || option.semantic === 'cancel' ? 'danger' : ''} onClick={() => send(option.optionId)}>
-        <strong>{option.label}</strong><small>{option.scopeSummary ?? `Applies to: ${option.persistence}`}{option.mutatesPersistentPolicy ? ' — changes persistent native policy' : ''}</small>
+        <strong>{option.label}</strong><small>{approvalOptionScope(option)}</small>{option.scopeSummary ? <small>{option.scopeSummary}</small> : null}
       </button>)}
       </div>{selected.responseOptions.some((option) => option.affectsOtherPendingRequests) ? <p className="approval-warning"><AlertTriangle size={15} />A provider choice may affect other pending requests. Review its scope before responding.</p> : null}
     </div> : null}
     {recoverable && recoveryOption ? <div className="approval-actions"><h3>Delivery recovery</h3><p>A recorded decision is not proof of native delivery. Only the original choice can be retried; alternative choices stay closed.</p>
       <button type="button" disabled={respond.isPending} onClick={() => send(recoveryOption)}>{respond.isPending ? 'Checking delivery…' : selected.deliveryState === 'uncertain' || selected.deliveryState === 'submitted' ? 'Reconcile delivery' : 'Retry selected response'}</button>
     </div> : null}
-    {selected.selectedOptionId ? <div className="approval-history"><h3>Decision history</h3><p><strong>{selectedLabel ?? selected.selectedOptionId}</strong> accepted at {selected.decidedAt ?? 'unknown time'}.</p><p>Delivery: {selected.deliveryState.replaceAll('_', ' ')}{selected.deliveredAt ? ` at ${selected.deliveredAt}` : ''}.</p></div> : null}
+    {selected.selectedOptionId ? <div className="approval-history"><h3>Decision history</h3><p><strong>{selectedLabel ?? selected.selectedOptionId}</strong> accepted at {selected.decidedAt ?? 'unknown time'}.</p>{selectedOption ? <p>{approvalOptionScope(selectedOption)}</p> : null}<p>Delivery: {selected.deliveryState.replaceAll('_', ' ')}{selected.deliveredAt ? ` at ${selected.deliveredAt}` : ''}.</p></div> : null}
     {respond.isError ? <p className="approval-warning" role="alert"><AlertTriangle size={15} />{respond.error.message}{retryInput ? ' Retry the original choice to resolve its outcome.' : ' Refresh the request before choosing again.'}</p> : null}
     <button type="button" onClick={() => void detail.refetch()}>Refresh request</button>
   </article>

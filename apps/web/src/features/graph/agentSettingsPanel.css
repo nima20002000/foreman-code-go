@@ -1,0 +1,79 @@
+/* Portal inspector: graph pan/zoom and clipping cannot move Save off screen.
+ * Use the opposite side from Operator chat so its primary controls remain reachable. */
+.agent-settings-inspector {
+  position: fixed;
+  z-index: 110;
+  top: 1rem;
+  left: 1rem;
+  width: min(34rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  max-height: calc(100dvh - 2rem);
+  padding: 0;
+  border: 1px solid var(--color-border-strong);
+  border-radius: .5rem;
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 32%);
+  overflow: hidden;
+}
+.agent-settings-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  max-height: min(48rem, calc(100vh - 2rem));
+  max-height: min(48rem, calc(100dvh - 2rem));
+  grid-column: 1 / -1;
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+}
+.agent-settings-panel > .agent-settings-heading,
+.agent-settings-panel > .agent-settings-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: .75rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: .75rem;
+  margin: 0;
+  background: var(--color-surface-raised);
+}
+.agent-settings-panel > .agent-settings-heading { border-bottom: 1px solid var(--color-border); }
+.agent-settings-panel > .agent-settings-actions { border-top: 1px solid var(--color-border); flex-wrap: wrap; }
+.agent-settings-panel > .agent-settings-actions p { margin: 0; width: 100%; max-height: 4rem; overflow: auto; color: var(--color-error-text); }
+.agent-settings-panel > .agent-settings-actions button { margin-left: auto; }
+.agent-settings-panel .agent-settings-heading > div { display: flex; gap: .5rem; }
+.agent-settings-panel button {
+  display: inline-flex; gap: .4rem; align-items: center; justify-content: center;
+  min-height: 2rem; padding: .4rem .6rem; border: 1px solid var(--color-border-strong);
+  border-radius: .25rem; color: var(--color-text); background: var(--color-surface); cursor: pointer;
+}
+.agent-settings-panel button:disabled { opacity: .55; cursor: not-allowed; }
+.agent-settings-panel .agent-settings-fields {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .8rem; padding: .8rem; min-height: 0; overflow: auto; overscroll-behavior: contain;
+}
+.agent-settings-fields > .agent-settings-full-width,
+.agent-settings-fields > .settings-help,
+.agent-settings-fields > .advanced-settings,
+.agent-settings-fields > .agent-settings-limits,
+.agent-settings-fields > p,
+.agent-settings-fields > small { grid-column: 1 / -1; min-width: 0; }
+.agent-settings-panel label { display: grid; gap: .35rem; min-width: 0; color: var(--color-text-muted); font-size: .8rem; }
+.agent-settings-panel input:not([type='checkbox']):not([type='radio']),
+.agent-settings-panel textarea,
+.agent-settings-panel select { width: 100%; min-width: 0; padding: .5rem; border: 1px solid var(--color-border-strong); border-radius: .2rem; color: var(--color-text); background: var(--color-surface); }
+.agent-settings-panel textarea { resize: vertical; }
+.agent-settings-panel .settings-switch { display: flex; align-items: center; gap: .5rem; }
+.agent-settings-panel input[type='checkbox'], .agent-settings-panel input[type='radio'] { width: 1rem; height: 1rem; flex: 0 0 1rem; margin: 0; }
+.agent-settings-panel .settings-help { margin: 0; overflow-wrap: anywhere; font-size: .75rem; }
+.agent-settings-panel .settings-help p:last-child { margin-bottom: 0; }
+.agent-settings-panel .settings-field-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: .75rem; }
+.agent-settings-panel .permission-rules { min-width: 0; }
+.agent-settings-panel .permission-rules > div { display: flex; flex-wrap: wrap; gap: .35rem; }
+.agent-settings-panel .agent-settings-limits { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+@media (max-width: 600px) {
+  .agent-settings-inspector { top: .5rem; left: .5rem; width: calc(100vw - 1rem); }
+  .agent-settings-panel .agent-settings-fields, .agent-settings-panel .agent-settings-limits { grid-template-columns: minmax(0, 1fr); }
+}

@@ -8,7 +8,8 @@ import { OperatorChat } from './OperatorChat'
 import { useOperatorChatStore } from './operatorChatStore'
 
 const api = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), create: vi.fn(), clearDraft: vi.fn() }))
-vi.mock('../../shared/api/client', () => ({ listOperatorConversations: api.list, getOperatorConversation: api.get, createOperatorConversation: api.create, sendOperatorMessage: vi.fn(), cancelOperatorTurn: vi.fn(), respondOperatorInteraction: vi.fn() }))
+vi.mock('../../shared/api/client', () => ({ getOperatorConversation: api.get, createOperatorConversation: api.create, sendOperatorMessage: vi.fn(), cancelOperatorTurn: vi.fn(), respondOperatorInteraction: vi.fn() }))
+vi.mock('../../shared/api/operatorChatSummaries', () => ({ listOperatorConversationSummaries: api.list }))
 vi.mock('../../shared/api/operatorChatStream', () => ({ subscribeOperatorChat: () => () => {} }))
 vi.mock('../../shared/api/sessionBoundary', () => ({ sessionGeneration: () => 1, sessionIsSwitching: () => false }))
 vi.mock('./useOperatorChatVisibility', () => ({ useOperatorChatVisibility: () => true }))
@@ -24,7 +25,8 @@ const state = {
   messages: [{ id: 'm1', conversationId: 'c1', role: 'assistant', content: 'Previously loaded context' }],
   turnState: 'idle', revision: 1,
 } satisfies Partial<OperatorConversationState>
-const listKey = ['operator-chat', 'conversations']
+const summary = { conversationId: 'c1', title: state.conversation.title, turnState: 'idle' as const, revision: 1, activeRequestId: null, needsAttention: false }
+const listKey = ['operator-chat', 'summaries']
 const detailKey = ['operator-chat', 'conversation', 'c1']
 let client: QueryClient
 beforeEach(() => {
@@ -47,13 +49,13 @@ describe('PR17 Operator chat recovery', () => {
     expect(screen.queryByText('Loading conversation history…')).not.toBeInTheDocument()
   })
   it('provides a direct history retry without discarding cached conversations', async () => {
-    client.setQueryData(listKey, { conversations: [state.conversation] })
+    client.setQueryData(listKey, { conversations: [summary] })
     api.list.mockRejectedValue(new Error('offline'))
     mount()
     await act(async () => { await client.invalidateQueries({ queryKey: listKey }) })
     expect(await screen.findByText(/Previously loaded conversations are still shown/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Deployment investigation' })).toBeInTheDocument()
-    api.list.mockResolvedValue({ conversations: [state.conversation] })
+    expect(screen.getByRole('button', { name: /Deployment investigation/ })).toBeInTheDocument()
+    api.list.mockResolvedValue({ conversations: [summary] })
     await userEvent.setup().click(screen.getByRole('button', { name: 'Retry history' }))
     expect(api.list).toHaveBeenCalledTimes(2)
   })
@@ -72,7 +74,7 @@ describe('PR17 Operator chat recovery', () => {
   it('identifies and switches conversations even with history collapsed', async () => {
     const second = { ...state, conversation: { ...state.conversation, id: 'c2', title: 'Release plan' }, messages: [] }
     useOperatorChatStore.setState({ historyOpen: false, selectedConversationId: 'c1' })
-    client.setQueryData(listKey, { conversations: [state.conversation, second.conversation] })
+    client.setQueryData(listKey, { conversations: [summary, { ...summary, conversationId: 'c2', title: second.conversation.title }] })
     client.setQueryData(detailKey, state)
     client.setQueryData(['operator-chat', 'conversation', 'c2'], second)
     mount()

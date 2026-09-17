@@ -124,6 +124,12 @@ function managedWorkspace(workspaceId: string) {
 }
 
 export const handlers: RequestHandler[] = [
+  http.get('/api/operator/conversations/summaries', () => HttpResponse.json({
+    conversations: operatorConversations.map((item) => ({
+      conversationId: item.id, title: item.title, turnState: 'idle', revision: 0,
+      activeRequestId: null, needsAttention: false,
+    })),
+  })),
   http.get('/api/operator/conversations', () => HttpResponse.json({ conversations: operatorConversations })),
   http.post('/api/operator/conversations', () => {
     const now = new Date().toISOString()

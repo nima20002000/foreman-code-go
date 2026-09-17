@@ -2,9 +2,16 @@ import { Outlet } from '@tanstack/react-router'
 
 import { OperatorChat, OperatorChatVisibilityProvider } from '../features/operator-chat'
 import { useAgentDefaultsQuery } from '../shared/api/query'
+import { useAccessFailureLatch } from '../shared/api/useAccessFailureLatch'
+import { sessionIsSwitching } from '../shared/api/sessionBoundary'
 
 export function RootShell() {
   const defaults = useAgentDefaultsQuery()
-  const enabled = defaults.isSuccess && defaults.data.value.operator.uiEnabled
-  return <OperatorChatVisibilityProvider enabled={enabled}><Outlet /><OperatorChat /></OperatorChatVisibilityProvider>
+  // Query retains the last confirmed value during transient refresh failures.
+  // The enrollment boundary clears this cache before another identity can use it.
+  const denied = useAccessFailureLatch(defaults)
+  const enabled = !sessionIsSwitching() && !denied && defaults.data?.value.operator.uiEnabled === true
+  const settingsWarning = enabled && (defaults.isError || defaults.failureCount > 0)
+    ? 'Settings could not be refreshed. Showing the last confirmed Operator setting for this session.' : undefined
+  return <OperatorChatVisibilityProvider enabled={enabled}><Outlet /><OperatorChat settingsWarning={settingsWarning} /></OperatorChatVisibilityProvider>
 }

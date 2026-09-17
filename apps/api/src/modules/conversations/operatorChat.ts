@@ -131,6 +131,10 @@ export class OperatorChatService {
     requireAuthorization(principal, 'operator_chat:read')
     return this.repository.list(principal.id)
   }
+  summaries(principal: ManagementPrincipal) {
+    requireAuthorization(principal, 'operator_chat:read')
+    return this.repository.summaries(principal.id)
+  }
   async get(id: string, principal: ManagementPrincipal) {
     await this.assertAccess(id, principal)
     const state = await this.repository.get(id)
