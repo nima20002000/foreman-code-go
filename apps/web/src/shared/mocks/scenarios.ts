@@ -241,6 +241,7 @@ const baseFixture: MockFixture = {
 let state: MockScenarioState = { scenarioId: 'normal', failureMode: 'none' }
 let fixture: MockFixture = clone(baseFixture)
 let harnessDefaults: HarnessDefaults = clone(DEFAULT_HARNESS_DEFAULTS)
+let harnessDefaultsRevision = 0
 let agentDefaults: AgentDefaults = clone(DEFAULT_AGENT_DEFAULTS)
 let agentDefaultsRevision = 0
 let workflowDefaults: WorkflowDefaults = { approvalHandler: DEFAULT_WORKFLOW_APPROVAL_HANDLER }
@@ -421,6 +422,8 @@ export function setMockScenario(
 
 export function resetMockFixtures(): void {
   fixture = applyScenario(state.scenarioId)
+  harnessDefaults = clone(DEFAULT_HARNESS_DEFAULTS)
+  harnessDefaultsRevision = 0
   agentDefaults = clone(DEFAULT_AGENT_DEFAULTS)
   agentDefaultsRevision = 0
   workflowDefaults = { approvalHandler: DEFAULT_WORKFLOW_APPROVAL_HANDLER }
@@ -464,7 +467,24 @@ export function getMockHarnessDefaults(): HarnessDefaults {
 
 export function updateMockHarnessDefaults(next: HarnessDefaults): HarnessDefaults {
   harnessDefaults = clone(next)
+  harnessDefaultsRevision += 1
   return getMockHarnessDefaults()
+}
+
+export function getMockHarnessCatalog() {
+  return (['codex', 'opencode'] as const).map((harness) => ({
+    harness,
+    defaults: clone(harnessDefaults[harness]),
+    defaultsRevision: harnessDefaultsRevision,
+    capability: null,
+    discoveryError: null,
+  }))
+}
+
+export function updateMockManagedHarnessDefaults(next: HarnessDefaults, expectedRevision: number) {
+  if (expectedRevision !== harnessDefaultsRevision) return undefined
+  updateMockHarnessDefaults(next)
+  return { defaults: getMockHarnessDefaults(), revision: harnessDefaultsRevision }
 }
 
 export function getMockAgentDefaults() {

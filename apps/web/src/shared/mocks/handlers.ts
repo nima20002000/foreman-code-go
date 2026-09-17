@@ -10,6 +10,8 @@ import {
 } from '@graphql/contracts'
 import {
   AgentDefaultsUpdateInputSchema,
+  HarnessConfigurationCheckInputSchema,
+  HarnessDefaultsUpdateInputSchema,
   WorkflowDefaultsUpdateInputSchema,
   WorkspaceLocationSetInputSchema,
   WorkspaceLocationValidateInputSchema,
@@ -19,6 +21,7 @@ import {
   MOCK_SCENARIOS,
   getMockFixture,
   getMockAgentDefaults,
+  getMockHarnessCatalog,
   getMockHarnessDefaults,
   getMockMessages,
   getMockScenarioState,
@@ -34,6 +37,7 @@ import {
   updateMockAgents,
   updateMockAgentDefaults,
   updateMockHarnessDefaults,
+  updateMockManagedHarnessDefaults,
   updateMockWorkflowDefaults,
   appendMockMessage,
   type MockFailureMode,
@@ -169,6 +173,37 @@ export const handlers: RequestHandler[] = [
   http.get('/api/management/interactions', () => HttpResponse.json({
     items: [], nextCursor: null, pendingCount: 0, pendingByWorkflow: {},
   })),
+  http.get('/api/management/harnesses', () => HttpResponse.json(getMockHarnessCatalog())),
+  http.post('/api/management/harnesses/validate', async ({ request }) => {
+    const parsed = HarnessConfigurationCheckInputSchema.safeParse(await readJson(request))
+    if (!parsed.success) return apiError('INVALID_HARNESS_CONFIGURATION', 'Review the Harness configuration.', 400)
+    return HttpResponse.json({
+      configuration: parsed.data.configuration,
+      qualification: {
+        harness: parsed.data.configuration.harness,
+        version: 'mock',
+        authenticated: true,
+        ready: true,
+        structuredEvents: true,
+        supportsResume: true,
+        supportsCancellation: true,
+        supportsWorkingDirectory: true,
+        supportsStartupPrompt: true,
+        supportedNativeTools: [],
+        supportedSettings: [],
+        unsupportedCapabilities: [],
+      },
+      checkedAt: new Date().toISOString(),
+    })
+  }),
+  http.put('/api/management/harnesses/defaults', async ({ request }) => {
+    const parsed = HarnessDefaultsUpdateInputSchema.safeParse(await readJson(request))
+    if (!parsed.success) return apiError('INVALID_HARNESS_DEFAULTS', 'Review the Harness defaults.', 400)
+    const value = updateMockManagedHarnessDefaults(parsed.data.defaults, parsed.data.expectedRevision)
+    return value
+      ? HttpResponse.json({ value, replayed: false })
+      : apiError('REVISION_CONFLICT', 'Harness defaults changed since they were read.', 409, { currentRevision: getMockHarnessCatalog()[0]?.defaultsRevision ?? 0 })
+  }),
   http.get('/api/management/settings/agents', () => HttpResponse.json(getMockAgentDefaults())),
   http.put('/api/management/settings/agents', async ({ request }) => {
     const parsed = AgentDefaultsUpdateInputSchema.safeParse(await readJson(request))
