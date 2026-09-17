@@ -7,8 +7,8 @@ import { HarnessConfigurationFields } from './HarnessConfigurationFields'
 import { createHarnessEditor, prepareHarnessEditor } from './harnessEditor'
 import { AgentSettingsForm } from '../graph/AgentSettingsForm'
 
-vi.mock('../../shared/api/query', () => ({ useManagedHarnessCatalogQuery: () => ({ data: undefined }) }))
-vi.mock('../../shared/api/harnessValidation', () => ({ useValidateHarnessConfiguration: () => ({ data: undefined, mutate: vi.fn(), isPending: false, isError: false }) }))
+vi.mock('../../shared/api/query', () => ({ useManagedHarnessCatalogQuery: () => ({ data: undefined }), useHarnessDefaultsQuery: () => ({ data: { defaults: DEFAULT_HARNESS_DEFAULTS } }) }))
+vi.mock('../../shared/api/harnessValidation', () => ({ useValidateHarnessConfiguration: () => ({ data: undefined, mutate: vi.fn(), reset: vi.fn(), isPending: false, isError: false }) }))
 afterEach(cleanup)
 function Editor({ value, save }: { value: HarnessConfiguration; save(value: HarnessConfiguration): void }) {
   const [editor, setEditor] = useState(() => createHarnessEditor(value))
@@ -47,7 +47,7 @@ describe('PR12 actual provider fields', () => {
     const configuration = { ...DEFAULT_HARNESS_DEFAULTS.opencode, model: 'custom/model', variant: 'budget-4096', nativeAgent: 'custom-worker' }
     render(<AgentSettingsForm agent={{ id: 'a', name: 'Before', harness: 'opencode', harnessConfiguration: configuration }} onClose={() => {}} onSave={save} />)
     await user.clear(screen.getByLabelText('Name')); await user.type(screen.getByLabelText('Name'), 'After')
-    await user.click(screen.getByLabelText('Save agent settings'))
+    await user.click(screen.getByLabelText('Apply to draft'))
     expect(save).toHaveBeenCalledTimes(1)
     expect(save.mock.calls[0]![0]).toMatchObject({ name: 'After', harnessConfiguration: configuration })
     expect(save.mock.calls[0]![0].effort).toBeUndefined()

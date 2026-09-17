@@ -181,7 +181,7 @@ function GlobalSettingsPage({ selected }: { selected?: 'harnesses' | 'agents' | 
               <Link to="/settings/harnesses" aria-current={selected === 'harnesses' ? 'page' : undefined}>
                 <span>
                   <strong>Harnesses</strong>
-                  <small>Defaults for new board agents</small>
+                  <small>Provider presets</small>
                 </span>
               </Link>
               <Link to="/settings/agents" aria-current={selected === 'agents' ? 'page' : undefined}>
@@ -218,16 +218,20 @@ export function AgentSettingsRouteEntry() { return <GlobalSettingsPage selected=
 export function WorkflowSettingsRouteEntry() { return <GlobalSettingsPage selected="workflows" /> }
 
 export function GlobalApprovalsRouteEntry() {
-  const { interactionId } = useSearch({ from: '/approvals' })
+  const { interactionId, approvalView } = useSearch({ from: '/approvals' })
   const navigate = useNavigate({ from: '/approvals' })
-  return <WorkspaceShell workspaceId="workspace-1" slots={{ main: <ApprovalInbox selectedInteractionId={interactionId} onSelectInteraction={(next) => void navigate({ search: (previous) => ({ ...previous, interactionId: next }) })} /> }} />
+  return <WorkspaceShell workspaceId="workspace-1" slots={{ main: <ApprovalInbox selectedInteractionId={interactionId} view={approvalView}
+    onChangeView={(next) => void navigate({ search: (previous) => ({ ...previous, approvalView: next, interactionId: undefined }) })}
+    onSelectInteraction={(next) => void navigate({ search: (previous) => ({ ...previous, interactionId: next }) })} /> }} />
 }
 
 export function WorkspaceApprovalsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/approvals' })
-  const { workflowId, interactionId } = useSearch({ from: '/workspaces/$workspaceId/approvals' })
+  const { workflowId, interactionId, approvalView } = useSearch({ from: '/workspaces/$workspaceId/approvals' })
   const navigate = useNavigate({ from: '/workspaces/$workspaceId/approvals' })
-  return <WorkspaceShell workspaceId={workspaceId} activeSection="workflows" slots={{ main: <ApprovalInbox workspaceId={workspaceId} workflowId={workflowId} selectedInteractionId={interactionId} onSelectInteraction={(next) => void navigate({ search: (previous) => ({ ...previous, interactionId: next }) })} /> }} />
+  return <WorkspaceShell workspaceId={workspaceId} activeSection="workflows" slots={{ main: <ApprovalInbox workspaceId={workspaceId} workflowId={workflowId} selectedInteractionId={interactionId} view={approvalView}
+    onChangeView={(next) => void navigate({ search: (previous) => ({ ...previous, approvalView: next, interactionId: undefined }) })}
+    onSelectInteraction={(next) => void navigate({ search: (previous) => ({ ...previous, interactionId: next }) })} /> }} />
 }
 
 export function BrowsersSettingsRouteEntry() {

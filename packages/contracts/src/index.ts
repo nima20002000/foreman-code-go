@@ -1676,3 +1676,10 @@ export const UrlSearchSelectionSchema = z
 export type UrlSearchSelection = z.infer<typeof UrlSearchSelectionSchema>;
 export const ScenarioSelectionSchema = UrlSearchSelectionSchema;
 export type ScenarioSelection = UrlSearchSelection;
+
+/** Linkable Approval Inbox presentation; this does not change API authorization or request status. */
+export const ApprovalInboxViewSchema = z.enum(["pending", "delivery", "history"]);
+export type ApprovalInboxView = z.infer<typeof ApprovalInboxViewSchema>;
+export const ApprovalInboxSearchSchema = UrlSearchSelectionSchema.extend({
+  approvalView: ApprovalInboxViewSchema.optional().catch(undefined),
+});

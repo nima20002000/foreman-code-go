@@ -27,7 +27,7 @@ describe('PR8 exact native settings in the actual form', () => {
     expect((screen.getByLabelText('Provider variant') as HTMLInputElement).value).toBe('provider-custom-effort')
     expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe('provider/custom-model')
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'After' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Apply to draft' }))
     const saved = AgentSchema.parse(onSave.mock.calls[0]![0])
     expect(saved.name).toBe('After')
     expect(saved.effort).toBeUndefined()
@@ -40,7 +40,7 @@ describe('PR8 exact native settings in the actual form', () => {
     const onSave = vi.fn()
     renderWithQueryClient(<AgentSettingsForm agent={agent} onClose={() => undefined} onSave={onSave} />)
     fireEvent.change(screen.getByLabelText('Provider variant'), { target: { value: 'high' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Apply to draft' }))
     expect(onSave.mock.calls[0]![0]).toMatchObject({ effort: 'high', harnessConfiguration: { variant: 'high' } })
   })
 
@@ -55,7 +55,7 @@ describe('PR8 exact native settings in the actual form', () => {
     renderWithQueryClient(<AgentSettingsForm agent={agent} onClose={() => undefined} onSave={onSave} />)
     fireEvent.change(screen.getByLabelText('Sandbox'), { target: { value: sandbox } })
     expect(screen.getByText(/Leaving workspace-write removes additional writable directories/)).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Apply to draft' }))
     const saved = onSave.mock.calls[0]![0] as Agent
     expect(HarnessConfigurationSchema.safeParse(saved.harnessConfiguration).success).toBe(true)
     expect(saved.harnessConfiguration).toMatchObject({ sandbox, advanced: { additionalWritableDirectories: [] } })

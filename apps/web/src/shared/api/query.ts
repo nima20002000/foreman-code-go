@@ -328,13 +328,14 @@ export function useInteractionsQuery(input: Parameters<typeof listInteractions>[
   })
 }
 
-export function useInfiniteInteractionsQuery(input: Parameters<typeof listInteractions>[0]) {
+export function useInfiniteInteractionsQuery(input: Parameters<typeof listInteractions>[0], enabled = true) {
   return useInfiniteQuery({
+    enabled,
     queryKey: [...queryKeys.interactions(input.workspaceId, input.workflowId, input.status, input.cursor, input.limit), 'pages'],
     initialPageParam: input.cursor as string | undefined,
     queryFn: ({ signal, pageParam }) => listInteractions({ ...input, cursor: pageParam }, { signal }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    refetchInterval: 3_000,
+    refetchInterval: enabled ? 3_000 : false,
   })
 }
 

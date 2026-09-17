@@ -7,6 +7,9 @@ import {
 } from '../../shared/api/query'
 import { HarnessConfigurationFields } from './HarnessConfigurationFields'
 import { createHarnessEditor, prepareHarnessEditor, type HarnessEditor } from './harnessEditor'
+import { issuesAt, withValidationPath } from './fieldValidation'
+import { SettingsFormActions, SettingsFormFeedback } from './SettingsFormActions'
+import { useSettingsValidation } from './useSettingsValidation'
 import { useRevisionedForm } from './revisionedForm'
 
 type DefaultsEditor = { codex: HarnessEditor; opencode: HarnessEditor }
@@ -14,7 +17,10 @@ function editable(value: HarnessDefaults): DefaultsEditor {
   return { codex: createHarnessEditor(value.codex), opencode: createHarnessEditor(value.opencode) }
 }
 function prepared(value: DefaultsEditor): HarnessDefaults {
-  return HarnessDefaultsSchema.parse({ codex: prepareHarnessEditor(value.codex), opencode: prepareHarnessEditor(value.opencode) })
+  return HarnessDefaultsSchema.parse({
+    codex: withValidationPath(['codex'], () => prepareHarnessEditor(value.codex)),
+    opencode: withValidationPath(['opencode'], () => prepareHarnessEditor(value.opencode)),
+  })
 }
 
 export function HarnessDefaultsSettings() {
@@ -30,27 +36,24 @@ export function HarnessDefaultsSettings() {
       ? { value: editable({ codex: codex.defaults, opencode: opencode.defaults }), revision: codex.defaultsRevision } : undefined
     : defaultsQuery.data ? { value: editable(defaultsQuery.data.defaults), revision: 0 } : undefined
   const form = useRevisionedForm<DefaultsEditor>(incoming, 'settings:harnesses')
+  const root = useSettingsValidation(form.issues)
   const draft = form.draft
   const query = realMode ? catalogQuery : defaultsQuery
   if (query.isError && !draft) return <div role="alert"><p>Harness defaults are unavailable.</p><button type="button" onClick={() => void query.refetch()}>Retry</button></div>
   if (!draft) return <p role="status">Loading harness defaults…</p>
-  return <section className="harness-defaults" aria-labelledby="harness-defaults-title">
-    <header className="harness-defaults-heading"><div><h2 id="harness-defaults-title">Harness defaults</h2><p>Provider presets. Role templates under Agents determine new board Agent defaults; existing Agents never change.</p></div>
-      <button type="button" disabled={form.isSaving || (!form.isDirty && !form.uncertain) || (form.conflicted && !form.uncertain)} onClick={() => void form.save(async (input) => {
-        const defaults = prepared(input.value)
-        if (realMode) {
-          const response = await managedSaveMutation.mutateAsync({ defaults: ManagementHarnessDefaultsSchema.parse(defaults), expectedRevision: input.expectedRevision, commandId: input.commandId })
-          return { value: editable(response.value.defaults), revision: response.value.revision }
-        }
-        const response = await saveMutation.mutateAsync({ defaults })
-        return { value: editable(response.defaults), revision: 0 }
-      }, (value) => { const defaults = prepared(value); if (realMode) ManagementHarnessDefaultsSchema.parse(defaults); return value })}>{form.isSaving ? 'Saving…' : form.uncertain ? 'Retry original save' : 'Save defaults'}</button>
-    </header>
+  return <section ref={root} className="harness-defaults" aria-labelledby="harness-defaults-title">
+    <header className="harness-defaults-heading"><div><h2 id="harness-defaults-title">Harness defaults</h2><p>Provider presets. Role templates under Agents determine new board Agent defaults; existing Agents never change.</p></div></header>
     {query.isError ? <p role="alert">The refresh failed. Your draft is preserved.<button type="button" onClick={() => void query.refetch()}>Retry refresh</button></p> : null}
-    {form.conflicted ? <div role="alert">These defaults changed elsewhere. Your edits keep their original revision.<button type="button" disabled={form.isSaving || form.uncertain} onClick={form.reset}>Discard edits and load current defaults</button></div> : null}
-    {form.uncertain ? <p role="status">The previous save may have committed. Retry resolves that same request. Newer edits remain unsaved.</p> : null}
-    <div className="harness-defaults-grid">{(['codex', 'opencode'] as const).map((harness) => <fieldset key={harness}><legend>{harness === 'codex' ? 'Codex' : 'OpenCode'}</legend><HarnessConfigurationFields allowHarnessChange={false} editor={draft[harness]} onChange={(value) => form.setDraft((current) => current && ({ ...current, [harness]: value }))} /></fieldset>)}</div>
-    {form.isDirty ? <p role="status">Unsaved changes.</p> : null}
-    {form.error ? <p role="alert">{form.error}</p> : null}
+    <SettingsFormFeedback form={form} />
+    <div className="harness-defaults-grid">{(['codex', 'opencode'] as const).map((harness) => <fieldset key={harness}><legend>{harness === 'codex' ? 'Codex' : 'OpenCode'}</legend><HarnessConfigurationFields allowHarnessChange={false} editor={draft[harness]} issues={issuesAt(form.issues ?? [], [harness])} onChange={(value) => form.setDraft((current) => current && ({ ...current, [harness]: value }))} /></fieldset>)}</div>
+    <SettingsFormActions form={form} onSave={() => void form.save(async (input) => {
+      const defaults = prepared(input.value)
+      if (realMode) {
+        const response = await managedSaveMutation.mutateAsync({ defaults: ManagementHarnessDefaultsSchema.parse(defaults), expectedRevision: input.expectedRevision, commandId: input.commandId })
+        return { value: editable(response.value.defaults), revision: response.value.revision }
+      }
+      const response = await saveMutation.mutateAsync({ defaults })
+      return { value: editable(response.defaults), revision: 0 }
+    }, (value) => { const defaults = prepared(value); if (realMode) ManagementHarnessDefaultsSchema.parse(defaults); return value })} />
   </section>
 }

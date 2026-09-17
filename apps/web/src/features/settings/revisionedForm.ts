@@ -3,6 +3,8 @@ import { create } from 'zustand'
 
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
+import { validationIssues, type FieldIssue } from './fieldValidation'
+import { reapplySettingsEdits, settingsChanges } from './revisionedFormChanges'
 
 export interface Snapshot<T> { value: T; revision: number }
 interface Request<T> { value: T; expectedRevision: number; commandId: string }
@@ -18,6 +20,8 @@ export interface Form<T> {
   latest?: Snapshot<T>
   pending?: Pending<T>
   error?: string
+  issues?: FieldIssue[]
+  savedRevision?: number
 }
 const useForms = create<{ forms: Record<string, Form<unknown>> }>(() => ({ forms: {} }))
 let epoch = 0
@@ -31,7 +35,8 @@ export function clearRevisionedFormPersistence(): void {
 export function refreshRevisionedForm<T>(current: Form<T> | undefined, incoming: Snapshot<T>): Form<T> {
   if (current && incoming.revision < Math.max(current.base.revision, current.latest?.revision ?? 0)) return current
   if (!current || (!current.pending && same(current.value, current.base.value))) {
-    return { value: incoming.value, base: incoming, latest: incoming }
+    return { value: incoming.value, base: incoming, latest: incoming,
+      savedRevision: current?.base.revision === incoming.revision ? current.savedRevision : undefined }
   }
   return { ...current, latest: incoming }
 }
@@ -49,12 +54,13 @@ function update<T>(key: string, change: (current: Form<T> | undefined) => Form<T
 }
 
 function acknowledged<T>(current: Form<T> | undefined, submitted: T, value: T, revision: number): Form<T> {
-  if (current && current.base.revision > revision) return { ...current, pending: undefined, error: undefined }
+  if (current && current.base.revision > revision) return { ...current, pending: undefined, error: undefined, issues: undefined, savedRevision: revision }
   const base = { value, revision }
   return {
     value: !current || same(current.value, submitted) ? value : current.value,
     base,
     latest: current?.latest && current.latest.revision > revision ? current.latest : base,
+    savedRevision: revision,
   }
 }
 
@@ -69,7 +75,7 @@ export async function saveRevisionedForm<T>(
   const current = useForms.getState().forms[key] as Form<T> | undefined
   if (!current || current.pending?.state === 'sending') return false
   if (!current.pending && current.latest && current.base.revision !== current.latest.revision) {
-    update<T>(key, (form) => form && ({ ...form, error: 'These settings changed elsewhere. Load the current settings before saving.' }))
+    update<T>(key, (form) => form && ({ ...form, error: 'These settings changed elsewhere. Review the changes, then reapply your edits or explicitly discard them.' }))
     return false
   }
   let pending: Pending<T> | undefined
@@ -82,7 +88,7 @@ export async function saveRevisionedForm<T>(
       pending = { submitted, request, attempt, state: 'sending' }
     }
     const active = pending
-    update<T>(key, (form) => form && ({ ...form, pending: active, error: undefined }))
+    update<T>(key, (form) => form && ({ ...form, pending: active, error: undefined, issues: undefined, savedRevision: undefined }))
     const response = await perform(active.request)
     if (generation !== sessionGeneration() || startedEpoch !== epoch) return false
     active.attempt.succeeded()
@@ -92,9 +98,10 @@ export async function saveRevisionedForm<T>(
     if (generation !== sessionGeneration() || startedEpoch !== epoch) return false
     pending?.attempt.failed(error)
     const retained = pending?.attempt.unresolved ? { ...pending, state: 'uncertain' as const } : undefined
+    const issues = validationIssues(error)
     update<T>(key, (form) => form && ({
-      ...form, pending: retained,
-      error: error instanceof Error ? error.message : 'Settings could not be saved.',
+      ...form, pending: retained, issues, savedRevision: undefined,
+      error: issues.length ? 'Review the marked fields before saving.' : error instanceof Error ? error.message : 'Settings could not be saved.',
     }))
     return false
   }
@@ -120,20 +127,26 @@ export function useRevisionedForm<T>(incoming: Snapshot<T> | undefined, persiste
     // The serialized key tracks server content, not a newly allocated wrapper.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, incomingKey, generation, isDirty, hasPending])
+  const conflicted = Boolean(form?.latest && form.base.revision !== form.latest.revision && isDirty)
   return {
     draft: form?.value,
     baseRevision: form?.base.revision,
     isDirty,
-    conflicted: Boolean(form?.latest && form.base.revision !== form.latest.revision && !same(form.value, form.base.value)),
+    conflicted,
     isSaving: form?.pending?.state === 'sending',
     uncertain: form?.pending?.state === 'uncertain',
     error: form?.error,
+    issues: form?.issues,
+    savedRevision: form?.savedRevision,
+    serverChanges: conflicted && form?.latest ? settingsChanges(form.base.value, form.latest.value) : [],
+    localChanges: conflicted && form ? settingsChanges(form.base.value, form.value) : [],
     setDraft: (next: SetStateAction<T | undefined>) => {
       if (generation !== sessionGeneration()) return
       update<T>(key, (current) => {
         if (!current) return current
         const value = typeof next === 'function' ? (next as (value: T) => T | undefined)(current.value) : next
-        return value === undefined ? current : { ...current, value }
+        return value === undefined ? current : { ...current, value, issues: undefined, savedRevision: undefined,
+          error: current.pending ? current.error : undefined }
       })
     },
     acknowledge: (submitted: T, value: T, revision: number) => {
@@ -141,6 +154,14 @@ export function useRevisionedForm<T>(incoming: Snapshot<T> | undefined, persiste
     },
     save: (perform: (request: Request<T>) => Promise<Snapshot<T>>, prepare?: (value: T) => T) =>
       generation === sessionGeneration() ? saveRevisionedForm(key, perform, prepare) : Promise.resolve(false),
+    reapply: () => {
+      if (generation !== sessionGeneration()) return
+      update<T>(key, (current) => {
+        if (!current?.latest || current.pending || current.latest.revision === current.base.revision) return current
+        return { value: reapplySettingsEdits(current.base.value, current.value, current.latest.value),
+          base: current.latest, latest: current.latest }
+      })
+    },
     reset: () => {
       if (generation !== sessionGeneration()) return
       update<T>(key, (current) => {

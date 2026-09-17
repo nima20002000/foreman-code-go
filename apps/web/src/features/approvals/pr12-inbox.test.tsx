@@ -7,6 +7,7 @@ import { ApprovalInbox } from './ApprovalInbox'
 const api = vi.hoisted(() => ({ list: vi.fn(), detail: vi.fn(), response: vi.fn() }))
 vi.mock('../../shared/api/query', () => ({
   useInfiniteInteractionsQuery: api.list, useInteractionQuery: api.detail, useRespondToInteractionMutation: api.response,
+  useWorkspaceDetailsQuery: () => ({ data: undefined }),
 }))
 const interaction: DurableInteraction = { ...NATIVE_INTERACTION_FIXTURES.opencode, approval: { handler: 'user' } }
 const nextPage = vi.fn(); const mutate = vi.fn()
@@ -21,10 +22,10 @@ afterEach(cleanup)
 describe('PR12 Approval Inbox', () => {
   it('passes route scope to the server and renders detail independently of empty history', () => {
     render(<ApprovalInbox workspaceId={interaction.workspaceId} workflowId={interaction.workflowId} selectedInteractionId={interaction.id} />)
-    expect(api.list).toHaveBeenCalledWith({ workspaceId: interaction.workspaceId, workflowId: interaction.workflowId, limit: 100 })
+    expect(api.list).toHaveBeenCalledWith({ workspaceId: interaction.workspaceId, workflowId: interaction.workflowId, limit: 100, status: 'pending' }, true)
     expect(screen.getByText('Request details')).toBeTruthy()
     expect(screen.getByText('117 pending')).toBeTruthy()
-    expect(screen.getByText('No approval history')).toBeTruthy()
+    expect(screen.getByText('No pending requests')).toBeTruthy()
   })
   it('refuses a cross-scope detail and never exposes its response controls', () => {
     render(<ApprovalInbox workspaceId="other-workspace" selectedInteractionId={interaction.id} />)
@@ -64,4 +65,10 @@ describe('PR12 Approval Inbox', () => {
     await userEvent.setup().click(screen.getByRole('button', { name: 'Load more requests' }))
     expect(nextPage).toHaveBeenCalledTimes(1)
   })
+})
+
+vi.mock('@tanstack/react-router', async () => {
+  const React = await vi.importActual<typeof import('react')>('react')
+  return { Link: ({ children, params, search }: { children: import('react').ReactNode; params: { workspaceId: string }; search: { workflowId: string } }) =>
+    React.createElement('a', { href: `/workspaces/${encodeURIComponent(params.workspaceId)}?workflowId=${encodeURIComponent(search.workflowId)}` }, children) }
 })

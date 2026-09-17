@@ -197,7 +197,7 @@ describe('PR #3 editor lifecycle regressions', () => {
     /></QueryClientProvider>)
     const user = userEvent.setup()
     await user.selectOptions(screen.getByRole('combobox', { name: 'Harness' }), target)
-    await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    await user.click(screen.getByRole('button', { name: 'Apply to draft' }))
     expect(onSave).toHaveBeenCalledWith(
       expect.objectContaining({ harnessConfiguration: withAdvancedDefaults(defaults[target]) }),
       undefined,
@@ -215,7 +215,7 @@ describe('PR #3 editor lifecycle regressions', () => {
     const user = userEvent.setup()
     await user.click(screen.getByText('Advanced'))
     await user.selectOptions(screen.getByRole('combobox', { name: 'Approval reviewer' }), 'auto_review')
-    await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    await user.click(screen.getByRole('button', { name: 'Apply to draft' }))
     expect(onSave.mock.calls[0]![0].harnessConfiguration.advanced.approvalsReviewer).toBe('auto_review')
   })
 })

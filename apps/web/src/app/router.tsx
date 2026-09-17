@@ -4,7 +4,7 @@ import {
   createRouter,
   redirect,
 } from '@tanstack/react-router'
-import { UrlSearchSelectionSchema } from '@graphql/contracts'
+import { ApprovalInboxSearchSchema, UrlSearchSelectionSchema } from '@graphql/contracts'
 import { RootShell } from './RootShell'
 
 import { WorkspaceRouteEntry } from '../routes/WorkspaceRouteEntry'
@@ -118,13 +118,13 @@ const workflowSettingsRoute = createRoute({
 const globalApprovalsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/approvals',
-  validateSearch: UrlSearchSelectionSchema,
+  validateSearch: ApprovalInboxSearchSchema,
   component: GlobalApprovalsRouteEntry,
 })
 const workspaceApprovalsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workspaces/$workspaceId/approvals',
-  validateSearch: UrlSearchSelectionSchema,
+  validateSearch: ApprovalInboxSearchSchema,
   component: WorkspaceApprovalsRouteEntry,
 })
 

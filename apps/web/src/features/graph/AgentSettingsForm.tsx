@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { Check, Trash2, X } from 'lucide-react'
 import {
   CodexSessionCompatibilitySchema, legacyEffortForHarness, validateHarnessWorkflowCompatibility,
@@ -8,10 +8,10 @@ import {
 import { configuredHarness, initialModel } from '../agents/agentSettings'
 import { HarnessConfigurationFields } from '../settings/HarnessConfigurationFields'
 import { createHarnessEditor, prepareHarnessEditor } from '../settings/harnessEditor'
+import { FieldValidationError, fieldMessage, focusFirstInvalid, issuesAt, validationIssues, type FieldIssue } from '../settings/fieldValidation'
 
 export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onClose, onRemove, onSave,
-  executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 }, workflowNodeCount = 1,
-  workspaceId, workflowApprovalHandler,
+  executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 }, workspaceId, workflowApprovalHandler,
 }: {
   agent: Agent
   initialPrompt?: string
@@ -26,42 +26,54 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
 }) {
   const [name, setName] = useState(agent.name)
   const [prompt, setPrompt] = useState(initialPrompt ?? '')
-  const [maxNodeExecutions, setMaxNodeExecutions] = useState(executionPolicy.maxNodeExecutions)
-  const [maxParallelism, setMaxParallelism] = useState(executionPolicy.maxParallelism)
   const [error, setError] = useState<string>()
+  const [issues, setIssues] = useState<FieldIssue[]>([])
+  const root = useRef<HTMLDivElement>(null)
+  const nameErrorId = useId()
+  useEffect(() => { if (issues.length) focusFirstInvalid(root.current) }, [issues])
   const [editor, setEditor] = useState(() => {
     const harness = agent.harnessConfiguration?.harness ?? agent.harness ?? 'codex'
     return createHarnessEditor(agent.harnessConfiguration ?? configuredHarness(agent, harness,
       initialModel(agent, harness), agent.effort ?? 'medium', agent.fastMode ?? false, 'read-only', creationDefaults))
   })
-  const validLimits = Number.isInteger(maxNodeExecutions) && maxNodeExecutions >= workflowNodeCount && maxNodeExecutions <= 10_000
-    && Number.isInteger(maxParallelism) && maxParallelism >= 1 && maxParallelism <= 100
-  const invalidNodeLimit = !Number.isInteger(maxNodeExecutions) || maxNodeExecutions < workflowNodeCount || maxNodeExecutions > 10_000
-  const invalidParallelism = !Number.isInteger(maxParallelism) || maxParallelism < 1 || maxParallelism > 100
-  return <>
+  const nameError = fieldMessage(issues, 'name')
+  const clearErrors = () => { setError(undefined); setIssues([]) }
+  return <div ref={root} className="agent-settings-form">
     <header className="agent-settings-heading"><strong>Agent settings</strong><div>
       {onRemove ? <button type="button" aria-label={`Remove ${agent.name} from workflow`} onClick={onRemove}><Trash2 size={16} /></button> : null}
       <button type="button" aria-label="Close agent settings" onClick={onClose}><X size={15} /></button>
     </div></header>
-    <label>Name<input aria-label="Name" value={name} onChange={(event) => setName(event.target.value)} /></label>
-    <HarnessConfigurationFields editor={editor} onChange={setEditor} harnessDefaults={creationDefaults} workspaceId={workspaceId} routedApproval={Boolean(workflowApprovalHandler)} />
+    <label>Name<input aria-label="Name" aria-invalid={nameError ? true : undefined} aria-describedby={nameError ? nameErrorId : undefined} value={name} onChange={(event) => { setName(event.target.value); clearErrors() }} />{nameError ? <small id={nameErrorId} className="settings-field-error">{nameError}</small> : null}</label>
+    <HarnessConfigurationFields editor={editor} issues={issuesAt(issues, ['harness'])} onChange={(next) => { setEditor(next); clearErrors() }} harnessDefaults={creationDefaults} workspaceId={workspaceId} routedApproval={Boolean(workflowApprovalHandler)} />
     <label>Initial prompt<textarea aria-label="Initial prompt" rows={4} value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label>
-    <fieldset className="agent-settings-limits"><legend>Workflow limits</legend>
-      <label>Maximum node executions<input type="number" min={workflowNodeCount} max={10_000} step={1} aria-invalid={invalidNodeLimit} value={Number.isNaN(maxNodeExecutions) ? '' : maxNodeExecutions} onChange={(event) => setMaxNodeExecutions(event.target.valueAsNumber)} /></label>
-      <label>Maximum parallel agents<input type="number" min={1} max={100} step={1} aria-invalid={invalidParallelism} value={Number.isNaN(maxParallelism) ? '' : maxParallelism} onChange={(event) => setMaxParallelism(event.target.valueAsNumber)} /></label>
-    </fieldset>
+    <p className="settings-help">Workflow-wide execution limits are in Workflow settings. Applying these agent settings updates the draft only; use Save graph to persist them.</p>
     {error ? <p role="alert">{error}</p> : null}
-    <div className="agent-settings-actions"><button type="button" className="agent-settings-save" aria-label="Save agent settings" disabled={!name.trim() || !validLimits} onClick={() => {
+    <div className="agent-settings-actions"><button type="button" className="agent-settings-save" aria-label="Apply to draft" onClick={() => {
       try {
-        const configuration = prepareHarnessEditor(editor)
-        validateHarnessWorkflowCompatibility(configuration, workflowApprovalHandler)
-        if (configuration.harness === 'opencode' && configuration.autoApprove) throw new Error('Native auto approval is not supported by the managed OpenCode server. Select GraphQL routed review.')
-        if (configuration.harness === 'codex' && workflowApprovalHandler) CodexSessionCompatibilitySchema.parse({ configuration, requiresResume: true })
+        if (!name.trim()) throw new FieldValidationError([{ path: ['name'], message: 'Enter an agent name.' }])
+        const configuration = (() => {
+          try {
+            const next = prepareHarnessEditor(editor)
+            validateHarnessWorkflowCompatibility(next, workflowApprovalHandler)
+            if (next.harness === 'opencode' && next.autoApprove) throw new FieldValidationError([{ path: ['advanced', 'permissionHandling'], message: 'Native auto approval is not supported by the managed OpenCode server. Select GraphQL routed review.' }])
+            if (next.harness === 'codex' && workflowApprovalHandler) CodexSessionCompatibilitySchema.parse({ configuration: next, requiresResume: true })
+            return next
+          } catch (failure) {
+            const harnessIssues = validationIssues(failure)
+            if (harnessIssues.length) throw new FieldValidationError(harnessIssues.map((issue) => ({ ...issue,
+              path: ['harness', ...(issue.path[0] === 'configuration' ? issue.path.slice(1) : issue.path)] })))
+            throw failure
+          }
+        })()
         onSave({ ...agent, name: name.trim(), harness: configuration.harness, model: configuration.model,
           effort: legacyEffortForHarness(configuration), fastMode: configuration.harness === 'codex' ? configuration.serviceTier === 'priority' : undefined,
           harnessConfiguration: configuration,
-        }, prompt.trim() || undefined, { maxNodeExecutions, maxParallelism })
-      } catch (failure) { setError(failure instanceof Error ? failure.message : 'Agent settings are invalid.') }
-    }}><Check size={16} /></button></div>
-  </>
+        }, prompt.trim() || undefined, executionPolicy)
+      } catch (failure) {
+        const nextIssues = validationIssues(failure)
+        setIssues(nextIssues)
+        setError(nextIssues.length ? 'Review the marked fields before applying to the draft.' : failure instanceof Error ? failure.message : 'Agent settings are invalid.')
+      }
+    }}><Check size={16} /> Apply to draft</button></div>
+  </div>
 }

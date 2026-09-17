@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Bot, BotMessageSquare, Inbox, MoreHorizontal, Play, Plus, Settings, Square, X } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 import { AgentSettingsForm } from './AgentSettingsForm'
+import { WorkflowExecutionLimits } from './WorkflowExecutionLimits'
 
 import {
   addEdge,
@@ -1389,7 +1390,12 @@ export function GraphEditor({
           }}><option value="" disabled>Select handler</option><option value="user">User</option><option value="orchestrator" disabled={!hasDistinctCoder || workflowOrchestrators.length === 0}>Orchestrator</option><option value="operator">Operator</option></select></label>
           {displayedWorkflow.approval?.handler === 'orchestrator' ? <label>Designated Orchestrator<select value={displayedWorkflow.approval.designatedOrchestratorAgentId ?? ''} aria-label="Designated Orchestrator" onChange={(event) => applyBoardChange((saved) => ({ ...saved, approval: { handler: 'orchestrator', designatedOrchestratorAgentId: event.target.value || undefined } }))}><option value="">Choose an Orchestrator</option>{displayedWorkflow.approval.designatedOrchestratorAgentId && !workflowOrchestrators.some((agent) => agent.id === displayedWorkflow.approval?.designatedOrchestratorAgentId) ? <option disabled value={displayedWorkflow.approval.designatedOrchestratorAgentId}>Previously designated Agent is unavailable</option> : null}{workflowOrchestrators.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label> : null}
           {!hasDistinctCoder || workflowOrchestrators.length === 0 ? <p role="status">Orchestrator handling requires one Orchestrator and a distinct Coder on this board.</p> : null}
-          <p>Normal graph edges do not grant approval authority. This setting is pinned when you Save graph.</p>
+          <WorkflowExecutionLimits
+            key={`${displayedWorkflow.id}:${executionPolicy.maxNodeExecutions}:${executionPolicy.maxParallelism}`}
+            value={executionPolicy} nodeCount={displayedWorkflow.nodes.length}
+            onApply={(next) => applyBoardChange((saved) => ({ ...saved, executionPolicy: next }))}
+          />
+          <p>Normal graph edges do not grant approval authority. These workflow settings are pinned when you Save graph.</p>
         </div> : null}
 
         {isDirty || managedDraft ? (
@@ -1404,6 +1410,9 @@ export function GraphEditor({
         ) : null}
 
         <div className="workflow-graph-notifications" data-testid="workflow-graph-notifications">
+          {hasLocalChanges ? <p className="workflow-graph-toast workflow-graph-toast-info" role="status">
+            Unsaved graph changes. Use Save graph to persist applied agent and workflow settings.
+          </p> : null}
           {managedSaveQueue.hasPending(workflowKey) && !managedSaving ? <p className="workflow-graph-toast workflow-graph-toast-info" role="status">
             The previous save is unresolved. Retry Save graph before discarding local edits or starting.
           </p> : null}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { MessageCircle, PanelLeftClose, PanelLeftOpen, Plus, X } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { OperatorConversationState, SendOperatorMessageRequest, RespondOperatorInteractionRequest } from '@graphql/contracts'
@@ -12,6 +12,7 @@ import { useOperatorChatStore } from './operatorChatStore'
 import { useOperatorChatVisibility } from './useOperatorChatVisibility'
 import { acknowledgeOperatorMessage, readPendingOperatorMessage, reserveOperatorMessage } from './operatorOutbox'
 import { projectOperatorText, type OperatorTextProjection } from './operatorTextProjection'
+import { ApprovalRequestSummary } from '../approvals/ApprovalRequestSummary'
 import './operatorChat.css'
 
 const listKey = ['operator-chat', 'conversations'] as const
@@ -22,6 +23,7 @@ function newer(current: OperatorConversationState | undefined, next: OperatorCon
 
 export function OperatorChat() {
   const enabled = useOperatorChatVisibility()
+  const historyId = useId()
   const queryClient = useQueryClient()
   const open = useOperatorChatStore((state) => state.open)
   const historyOpen = useOperatorChatStore((state) => state.historyOpen)
@@ -96,7 +98,10 @@ export function OperatorChat() {
   }, [enabled, open, queryClient, selectedId])
 
   if (!enabled) return null
-  const conversation = selected.data
+  const conversation = selected.data?.conversation.id === selectedId ? selected.data : undefined
+  const selectedTitle = conversation?.conversation.title?.trim()
+    || list.data?.conversations.find((item) => item.id === selectedId)?.title?.trim()
+    || (selectedId ? 'Untitled conversation' : 'New conversation')
   const active = Boolean(conversation && (conversation.activeRequestId || !['idle', 'error'].includes(conversation.turnState)))
   const requestId = conversation?.activeRequestId
   const pending = selectedId ? readPendingOperatorMessage(selectedId) : {}
@@ -118,29 +123,40 @@ export function OperatorChat() {
     <div className="operator-chat-root">
       {open ? <section className="operator-chat" role="dialog" aria-label="Operator chat">
         <header>
-          <button type="button" aria-label={historyOpen ? 'Collapse history' : 'Open history'} onClick={() => setHistoryOpen(!historyOpen)}>{historyOpen ? <PanelLeftClose /> : <PanelLeftOpen />}</button>
-          <strong>Operator</strong>
+          <button type="button" aria-label={historyOpen ? 'Collapse history' : 'Open history'} aria-expanded={historyOpen} aria-controls={historyId} onClick={() => setHistoryOpen(!historyOpen)}>{historyOpen ? <PanelLeftClose /> : <PanelLeftOpen />}</button>
+          <div className="operator-chat-identity"><strong title={selectedTitle}>Operator · {selectedTitle}</strong>
+            <select aria-label="Switch conversation" value={selectedId ?? ''} onChange={(event) => { if (event.target.value) select(event.target.value) }}>
+              <option value="" disabled>Choose a conversation</option>
+              {selectedId && !list.data?.conversations.some((item) => item.id === selectedId) ? <option value={selectedId}>{selectedTitle}</option> : null}
+              {list.data?.conversations.map((item) => <option key={item.id} value={item.id}>{item.title?.trim() || 'Untitled conversation'}</option>)}
+            </select>
+          </div>
           <button type="button" aria-label="Close Operator chat" onClick={() => setOpen(false)}><X /></button>
         </header>
         <div className="operator-chat-body">
-          {historyOpen ? <aside aria-label="Operator conversation history">
+          {historyOpen ? <aside id={historyId} aria-label="Operator conversation history" aria-busy={list.isFetching}>
             <button type="button" onClick={() => create.mutate()} disabled={create.isPending}><Plus /> New chat</button>
-            {list.isError ? <p role="alert">Conversation history could not be loaded.</p> : null}
-            <nav>{list.data?.conversations.map((item) => <button type="button" aria-current={item.id === selectedId ? 'page' : undefined} key={item.id} onClick={() => select(item.id)}>{item.title ?? 'Conversation'}</button>)}</nav>
+            {list.isLoading ? <p role="status">Loading conversation history…</p> : null}
+            {list.isFetching && list.data ? <p role="status">Refreshing conversation history…</p> : null}
+            {list.isError ? <div role="alert"><p>{list.data ? 'History refresh failed. Previously loaded conversations are still shown.' : 'Conversation history could not be loaded.'}</p><button type="button" disabled={list.isFetching} onClick={() => void list.refetch()}>Retry history</button></div> : null}
+            {list.isSuccess && list.data.conversations.length === 0 ? <p>No conversations yet. Start a new chat.</p> : null}
+            <nav>{list.data?.conversations.map((item) => <button type="button" aria-current={item.id === selectedId ? 'page' : undefined} key={item.id} onClick={() => select(item.id)}>{item.title?.trim() || 'Untitled conversation'}</button>)}</nav>
           </aside> : null}
           <main>
             {create.error instanceof Error ? <p role="alert">Conversation could not be created: {create.error.message}</p> : null}
             {!selectedId ? <button type="button" onClick={() => create.mutate()} disabled={create.isPending}>Start a new conversation</button> : null}
-            {selected.isLoading ? <p>Loading conversation…</p> : null}
-            {selected.isError ? <p role="alert">Conversation could not be loaded.</p> : null}
+            {selectedId && selected.isLoading ? <p role="status">Loading conversation…</p> : null}
+            {selectedId && selected.isError ? <div role="alert"><p>{conversation ? 'Conversation refresh failed. Previously loaded messages are still shown.' : 'Conversation could not be loaded.'}</p><button type="button" disabled={selected.isFetching} onClick={() => void selected.refetch()}>Retry conversation</button></div> : null}
             {conversation ? <>
+              {conversation.messages.length === 0 && !active ? <p>No messages yet. Send a message to start this conversation.</p> : null}
               <ConversationHistory messages={conversation.messages} />
               {partialText ? <div className="operator-chat-partial" role="status" aria-label="Assistant response in progress">{partialText}</div> : null}
               {active ? <p role="status">{conversation.turnState === 'uncertain' ? 'Reconnecting. The previous turn may still be running.' : conversation.turnState === 'canceling' ? 'Waiting for confirmed cancellation…' : 'Operator is working…'}</p> : null}
               {conversation.error ? <p role="alert">{conversation.error}</p> : null}
               {requestId && conversation.pendingInteraction ? <fieldset disabled={(respond.isPending && respond.variables?.id === selectedId) || conversation.responseDelivery !== 'offered'}>
                 <legend>Operator permission request</legend>
-                <pre className="operator-chat-approval-details">{JSON.stringify(conversation.pendingInteraction.request, null, 2)}</pre>
+                <ApprovalRequestSummary request={conversation.pendingInteraction.request} nativeRequestType={conversation.pendingInteraction.nativeRequestType} />
+                <details><summary>Technical details</summary><pre className="operator-chat-approval-details">{JSON.stringify(conversation.pendingInteraction.request, null, 2)}</pre></details>
                 {conversation.pendingInteraction.responseOptions.map((option) => <div key={option.optionId}>
                   <button type="button" onClick={() => respond.mutate({ id: conversation.conversation.id,
                     input: { requestId, nativeRequestId: conversation.pendingInteraction!.turn.nativeRequestId!, optionId: option.optionId } })}>{option.label}</button>

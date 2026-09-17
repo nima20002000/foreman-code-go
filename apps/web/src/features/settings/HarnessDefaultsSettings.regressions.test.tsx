@@ -60,7 +60,7 @@ describe('PR #3 defaults form regressions', () => {
       resolve({ defaults: submitted.defaults })
       await pending
     })
-    expect(screen.getByText('Unsaved changes.')).toBeInTheDocument()
+    expect(screen.getByText('Saved submitted changes. Newer edits remain unsaved.')).toBeInTheDocument()
     expect(sandbox).toHaveValue('read-only')
   })
 
@@ -92,6 +92,7 @@ describe('PR #3 defaults form regressions', () => {
     } })
     clients.push(client)
     render(<QueryClientProvider client={client}><HarnessDefaultsSettings /></QueryClientProvider>)
+    await userEvent.setup().click(within(await screen.findByRole('group', { name: 'OpenCode' })).getByText('Advanced'))
     const permissionHandling = await screen.findByRole('combobox', { name: 'Permission handling' })
     expect(within(permissionHandling).getByRole('option', { name: /Native auto approve/ })).toBeDisabled()
     await userEvent.setup().selectOptions(permissionHandling, 'graphql_routed')

@@ -41,3 +41,9 @@ describe('Approval Inbox', () => {
     expect(screen.queryByRole('button', { name: /^Approve once/ })).not.toBeInTheDocument()
   })
 })
+
+vi.mock('@tanstack/react-router', async () => {
+  const React = await vi.importActual<typeof import('react')>('react')
+  return { Link: ({ children, params, search }: { children: import('react').ReactNode; params: { workspaceId: string }; search: { workflowId: string } }) =>
+    React.createElement('a', { href: `/workspaces/${encodeURIComponent(params.workspaceId)}?workflowId=${encodeURIComponent(search.workflowId)}` }, children) }
+})
