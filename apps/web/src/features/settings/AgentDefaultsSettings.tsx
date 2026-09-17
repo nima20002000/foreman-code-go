@@ -32,10 +32,9 @@ export function AgentDefaultsSettings() {
     ? { value: editable(query.data.value), revision: query.data.revision } : undefined, 'settings:agents')
   const root = useSettingsValidation(form.issues)
   const draft = form.draft
-  if (query.isError && !draft) return <div role="alert"><p>Agent defaults are unavailable. {query.error.message}</p><button type="button" onClick={() => void query.refetch()}>Retry</button></div>
-  if (!draft) return <p role="status">Loading Agent defaults…</p>
-  return <section ref={root} className="settings-form" aria-labelledby="agent-defaults-title">
-    <header className="settings-form-heading"><div><p className="panel-kicker">Templates</p><h2 id="agent-defaults-title">Agent defaults</h2><p>Copied into new Agents. Existing Agents and accepted runs stay pinned.</p></div></header>
+  if (query.isError && !draft) return <div className="settings-form settings-state-error" role="alert"><p>Agent defaults are unavailable. {query.error.message}</p><button type="button" className="settings-primary-button" onClick={() => void query.refetch()}>Retry</button></div>
+  if (!draft) return <div className="settings-form"><p role="status">Loading Agent defaults…</p></div>
+  return <section ref={root} className="settings-form" aria-label="Agent defaults">
     {query.isError ? <p role="alert">The refresh failed. Your draft is preserved. <button type="button" onClick={() => void query.refetch()}>Retry refresh</button></p> : null}
     <SettingsFormFeedback form={form} />
     <div className="agent-template-grid">{roles.map((role) => <article className="agent-template-card" key={role}>

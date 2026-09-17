@@ -7,6 +7,7 @@ import { AgentSettingsForm } from './AgentSettingsForm'
 import { WorkflowExecutionLimits } from './WorkflowExecutionLimits'
 
 vi.mock('../settings/HarnessConfigurationFields', () => ({ HarnessConfigurationFields: () => null }))
+vi.mock('../../shared/api/query', () => ({ useHarnessDefaultsQuery: () => ({ data: { defaults: DEFAULT_HARNESS_DEFAULTS } }) }))
 afterEach(cleanup)
 describe('PR17 agent versus workflow scope', () => {
   it('keeps workflow limits out of the agent inspector and preserves the existing policy', async () => {
@@ -14,16 +15,20 @@ describe('PR17 agent versus workflow scope', () => {
     const policy = { maxNodeExecutions: 50, maxParallelism: 7 }
     render(<AgentSettingsForm agent={{ id: 'agent', name: 'Coder', harnessConfiguration: DEFAULT_HARNESS_DEFAULTS.codex }} executionPolicy={policy} onSave={onSave} onClose={() => {}} />)
     expect(screen.queryByLabelText('Maximum node executions')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Save agent settings' })).not.toBeInTheDocument()
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Apply to draft' }))
+    expect(screen.getByRole('button', { name: 'Save agent settings' })).toBeDisabled()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /^Advanced settings/ }))
+    expect(screen.getByText(/Use Save graph to persist/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Back to general settings' }))
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Coder updated' } })
+    await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
     expect(onSave.mock.calls[0]![2]).toEqual(policy)
-    expect(screen.getByText(/use Save graph to persist/)).toBeInTheDocument()
   })
   it('allows a name validation attempt and focuses its explained error', async () => {
     const onSave = vi.fn()
     render(<AgentSettingsForm agent={{ id: 'agent', name: 'Coder', harnessConfiguration: DEFAULT_HARNESS_DEFAULTS.codex }} onSave={onSave} onClose={() => {}} />)
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: '  ' } })
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Apply to draft' }))
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Save agent settings' }))
     expect(screen.getByLabelText('Name')).toHaveAttribute('aria-invalid', 'true')
     await waitFor(() => expect(screen.getByLabelText('Name')).toHaveFocus())
     expect(screen.getByText('Enter an agent name.')).toBeInTheDocument()

@@ -77,18 +77,16 @@ export function OperatorAccessSettings() {
   }
 
   return (
-    <section className="harness-defaults" aria-labelledby="operator-access-title">
-      <div className="harness-defaults-heading"><div>
-        <h2 id="operator-access-title">Operator access</h2>
-        <p>Enroll this browser with a scoped local credential. It is kept in an HttpOnly cookie, not browser storage.</p>
-        <p role="note">Changing access reloads the app and discards this browser's unsent edits and cached workspace data.</p>
-      </div></div>
-      <form className="settings-control" onSubmit={(event) => void enroll(event)}>
-        <span>Enrollment token</span>
-        <input type="password" value={token} autoComplete="off" disabled={status === 'working'}
-          onChange={(event) => { setToken(event.target.value); if (status === 'error') setStatus('idle') }}
-          aria-label="Operator enrollment token" />
-        <button type="submit" disabled={!token.trim() || status === 'working'}>
+    <section className="settings-form" aria-label="Operator access">
+      <p className="settings-note" role="note">Changing access reloads the app and discards this browser's unsent edits and cached workspace data.</p>
+      <form className="settings-form-row" onSubmit={(event) => void enroll(event)}>
+        <label>
+          <span>Enrollment token</span>
+          <input type="password" value={token} autoComplete="off" disabled={status === 'working'}
+            onChange={(event) => { setToken(event.target.value); if (status === 'error') setStatus('idle') }}
+            aria-label="Operator enrollment token" />
+        </label>
+        <button type="submit" className="settings-primary-button" disabled={!token.trim() || status === 'working'}>
           {status === 'working' ? 'Enrolling…' : 'Enroll browser'}
         </button>
       </form>

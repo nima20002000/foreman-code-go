@@ -39,13 +39,12 @@ export function HarnessDefaultsSettings() {
   const root = useSettingsValidation(form.issues)
   const draft = form.draft
   const query = realMode ? catalogQuery : defaultsQuery
-  if (query.isError && !draft) return <div role="alert"><p>Harness defaults are unavailable.</p><button type="button" onClick={() => void query.refetch()}>Retry</button></div>
-  if (!draft) return <p role="status">Loading harness defaults…</p>
-  return <section ref={root} className="harness-defaults" aria-labelledby="harness-defaults-title">
-    <header className="harness-defaults-heading"><div><h2 id="harness-defaults-title">Harness defaults</h2><p>Provider presets. Role templates under Agents determine new board Agent defaults; existing Agents never change.</p></div></header>
+  if (query.isError && !draft) return <div className="settings-form settings-state-error" role="alert"><p>Harness defaults are unavailable.</p><button type="button" className="settings-primary-button" onClick={() => void query.refetch()}>Retry</button></div>
+  if (!draft) return <div className="settings-form"><p role="status">Loading harness defaults…</p></div>
+  return <section ref={root} className="settings-form" aria-label="Harness defaults">
     {query.isError ? <p role="alert">The refresh failed. Your draft is preserved.<button type="button" onClick={() => void query.refetch()}>Retry refresh</button></p> : null}
     <SettingsFormFeedback form={form} />
-    <div className="harness-defaults-grid">{(['codex', 'opencode'] as const).map((harness) => <fieldset key={harness}><legend>{harness === 'codex' ? 'Codex' : 'OpenCode'}</legend><HarnessConfigurationFields allowHarnessChange={false} editor={draft[harness]} issues={issuesAt(form.issues ?? [], [harness])} onChange={(value) => form.setDraft((current) => current && ({ ...current, [harness]: value }))} /></fieldset>)}</div>
+    <div className="harness-defaults-grid">{(['codex', 'opencode'] as const).map((harness) => <fieldset key={harness}><legend>{harness === 'codex' ? 'Codex' : 'OpenCode'}</legend><div className="settings-field-grid"><HarnessConfigurationFields allowHarnessChange={false} editor={draft[harness]} issues={issuesAt(form.issues ?? [], [harness])} onChange={(value) => form.setDraft((current) => current && ({ ...current, [harness]: value }))} /></div></fieldset>)}</div>
     <SettingsFormActions form={form} onSave={() => void form.save(async (input) => {
       const defaults = prepared(input.value)
       if (realMode) {

@@ -47,7 +47,7 @@ describe('PR12 actual provider fields', () => {
     const configuration = { ...DEFAULT_HARNESS_DEFAULTS.opencode, model: 'custom/model', variant: 'budget-4096', nativeAgent: 'custom-worker' }
     render(<AgentSettingsForm agent={{ id: 'a', name: 'Before', harness: 'opencode', harnessConfiguration: configuration }} onClose={() => {}} onSave={save} />)
     await user.clear(screen.getByLabelText('Name')); await user.type(screen.getByLabelText('Name'), 'After')
-    await user.click(screen.getByLabelText('Apply to draft'))
+    await user.click(screen.getByLabelText('Save agent settings'))
     expect(save).toHaveBeenCalledTimes(1)
     expect(save.mock.calls[0]![0]).toMatchObject({ name: 'After', harnessConfiguration: configuration })
     expect(save.mock.calls[0]![0].effort).toBeUndefined()

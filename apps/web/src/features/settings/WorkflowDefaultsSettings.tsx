@@ -16,10 +16,9 @@ export function WorkflowDefaultsSettings() {
   const errorId = useId()
   const handlerError = fieldMessage(form.issues ?? [], 'approvalHandler')
   const draft = form.draft
-  if (query.isError && !draft) return <div role="alert"><p>Workflow defaults are unavailable. {query.error.message}</p><button type="button" onClick={() => void query.refetch()}>Retry</button></div>
-  if (!draft) return <p role="status">Loading workflow defaults…</p>
-  return <section ref={root} className="settings-form settings-form-compact" aria-labelledby="workflow-defaults-title">
-    <header className="settings-form-heading"><div><p className="panel-kicker">New workflows</p><h2 id="workflow-defaults-title">Workflow defaults</h2><p>New workflows copy this handler. Existing and in-flight approvals do not change.</p></div></header>
+  if (query.isError && !draft) return <div className="settings-form settings-state-error" role="alert"><p>Workflow defaults are unavailable. {query.error.message}</p><button type="button" className="settings-primary-button" onClick={() => void query.refetch()}>Retry</button></div>
+  if (!draft) return <div className="settings-form"><p role="status">Loading workflow defaults…</p></div>
+  return <section ref={root} className="settings-form settings-form-compact" aria-label="Workflow defaults">
     {query.isError ? <p role="alert">The refresh failed. Your draft is preserved.<button type="button" onClick={() => void query.refetch()}>Retry refresh</button></p> : null}
     <SettingsFormFeedback form={form} />
     <label className="settings-prominent-field">Approval handler<select aria-invalid={handlerError ? true : undefined} aria-describedby={handlerError ? errorId : undefined} value={draft.approvalHandler} onChange={(event) => form.setDraft({ approvalHandler: event.target.value as WorkflowDefaults['approvalHandler'] })}>

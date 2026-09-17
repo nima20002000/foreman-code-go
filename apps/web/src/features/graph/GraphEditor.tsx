@@ -177,6 +177,20 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
   const menuOpen = nodeMenu ? nodeMenu.openMenuNodeId === data.workflowNodeId : localMenuOpen
   const menuRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const [menuPosition, setMenuPosition] = useState({ top: 8, left: 8 })
+
+  const positionMenu = useCallback(() => {
+    const trigger = triggerRef.current
+    if (!trigger) return
+    const rect = trigger.getBoundingClientRect()
+    const gap = 8
+    const width = Math.min(432, window.innerWidth - 16)
+    const estimatedHeight = Math.min(420, window.innerHeight - 16)
+    const fitsRight = rect.right + gap + width <= window.innerWidth - 8
+    const left = fitsRight ? rect.right + gap : Math.max(8, rect.left - gap - width)
+    const top = Math.max(8, Math.min(rect.top - 8, window.innerHeight - estimatedHeight - 8))
+    setMenuPosition({ top, left })
+  }, [])
 
   const setMenuOpen = useCallback((nextOpen: boolean) => {
     if (nodeMenu) nodeMenu.setOpenMenuNodeId(nextOpen ? data.workflowNodeId : undefined)
@@ -197,8 +211,15 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
 
   useEffect(() => {
     if (!menuOpen) return
+    positionMenu()
     menuRef.current?.querySelector<HTMLInputElement>('input:not([type="checkbox"])')?.focus()
-  }, [menuOpen])
+    window.addEventListener('resize', positionMenu)
+    window.addEventListener('scroll', positionMenu, true)
+    return () => {
+      window.removeEventListener('resize', positionMenu)
+      window.removeEventListener('scroll', positionMenu, true)
+    }
+  }, [menuOpen, positionMenu])
 
   if (data.departing) {
     return (
@@ -271,14 +292,17 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
         aria-expanded={menuOpen}
         onClick={(event) => {
           event.stopPropagation()
-          if (!menuOpen) data.onOpenSettings?.(data.agentId, data.workflowNodeId)
+          if (!menuOpen) {
+            positionMenu()
+            data.onOpenSettings?.(data.agentId, data.workflowNodeId)
+          }
           setMenuOpen(!menuOpen)
         }}
       >
         <MoreHorizontal aria-hidden="true" size={17} />
       </button>
       {menuOpen ? createPortal((
-        <div ref={menuRef} className="agent-settings-inspector nodrag nowheel" role="dialog" aria-modal={false} aria-label={`${data.label} settings`}
+        <div ref={menuRef} className="agent-settings-inspector nodrag nowheel" style={menuPosition} role="dialog" aria-modal={false} aria-label={`${data.label} settings`}
           onMouseDown={(event) => event.stopPropagation()}
           onClick={(event) => event.stopPropagation()}
           onKeyDown={(event) => {

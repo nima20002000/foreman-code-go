@@ -17,6 +17,7 @@ import {
   HarnessSettingsRouteEntry,
   AgentSettingsRouteEntry,
   WorkflowSettingsRouteEntry,
+  OperatorAccessSettingsRouteEntry,
   GlobalApprovalsRouteEntry,
   WorkspaceApprovalsRouteEntry,
   SettingsRouteEntry,
@@ -115,6 +116,11 @@ const workflowSettingsRoute = createRoute({
   path: '/settings/workflows',
   component: WorkflowSettingsRouteEntry,
 })
+const operatorAccessSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/operator-access',
+  component: OperatorAccessSettingsRouteEntry,
+})
 const globalApprovalsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/approvals',
@@ -145,6 +151,7 @@ export const routeTree = rootRoute.addChildren([
   harnessSettingsRoute,
   agentSettingsRoute,
   workflowSettingsRoute,
+  operatorAccessSettingsRoute,
   globalApprovalsRoute,
   workspaceApprovalsRoute,
 ])

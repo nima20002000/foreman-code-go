@@ -230,8 +230,9 @@ describe('GraphEditor persistence boundary', () => {
     expect(screen.getByRole('button', { name: 'Remove Researcher from workflow' })).toBeVisible()
     fireEvent.mouseDown(settings)
     expect(settings).toBeVisible()
+    await user.click(screen.getByRole('button', { name: /^Advanced settings/ }))
     await user.type(screen.getByRole('textbox', { name: 'Initial prompt' }), 'Investigate this first.')
-    await user.click(screen.getByRole('button', { name: 'Apply to draft' }))
+    await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
 
     expect(screen.queryByRole('dialog', { name: 'Researcher settings' })).not.toBeInTheDocument()
     expect(getGraphDraft(key)?.workflow.nodes).toHaveLength(2)
@@ -325,7 +326,7 @@ describe('GraphEditor persistence boundary', () => {
     renderEditor()
     await user.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
     await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'danger-full-access')
-    await user.click(screen.getByRole('button', { name: 'Apply to draft' }))
+    await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
     await user.click(screen.getByRole('button', { name: 'Save graph' }))
 
     await waitFor(() => expect(screen.getByText('Graph saved.')).toBeVisible())

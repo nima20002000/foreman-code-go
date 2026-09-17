@@ -73,13 +73,15 @@ function PermissionRules({ value, onChange, issues }: {
   </fieldset>
 }
 
-export function HarnessConfigurationFields({ editor, onChange, routedApproval = false, allowHarnessChange = true, compact = false, workspaceId, harnessDefaults, issues: saveIssues = [] }: {
+export function HarnessConfigurationFields({ editor, onChange, routedApproval = false, allowHarnessChange = true, compact = false, advancedOnly = false, workspaceId, harnessDefaults, issues: saveIssues = [] }: {
   editor: HarnessEditor
   onChange(editor: HarnessEditor): void
   routedApproval?: boolean
   allowHarnessChange?: boolean
   /** Keep the node editor focused on configuration, not the diagnostic dashboard. */
   compact?: boolean
+  /** Show only the full advanced configuration surface inside a parent editor view. */
+  advancedOnly?: boolean
   workspaceId?: string
   harnessDefaults?: HarnessDefaults
   issues?: readonly FieldIssue[]
@@ -124,7 +126,7 @@ export function HarnessConfigurationFields({ editor, onChange, routedApproval = 
     if (value.harness === 'opencode') change({ ...value, autoApprove: advanced.permissionHandling === 'native_auto', advanced })
   }
   const catalogKnows = (setting: string) => !entry?.capability || entry.capability.supportedSettings.includes(setting)
-  return <div className="harness-configuration-fields" ref={root}>
+  return <div className={`harness-configuration-fields${advancedOnly ? ' agent-settings-advanced-only' : ''}`} ref={root}>
     {allowHarnessChange ? <>
       <label>Harness<select aria-label="Harness" value={value.harness} onChange={(event) => {
         const next = event.target.value as 'codex' | 'opencode'
@@ -177,25 +179,31 @@ export function HarnessConfigurationFields({ editor, onChange, routedApproval = 
         {checked ? <p>Checked this exact selection against {checked.qualification.version} at {checked.checkedAt}. Native checks cover: {checked.qualification.supportedSettings.join(', ')}. Other Advanced settings still require session admission.</p> : null}
       </details> : <p>Full provider qualification details are available in Settings.</p>}
     </div>
-    <details className="advanced-settings agent-settings-advanced"><summary>Advanced</summary>
+    <details className="advanced-settings agent-settings-advanced" open={advancedOnly || undefined}><summary>Advanced</summary>
       <p className="settings-help">Changes apply to new sessions, not an already accepted run. Process settings may require a new provider process. Native MCP policies do not install servers, rewrite runner configuration, or bypass the sandbox.</p>
       {value.harness === 'codex' ? (() => {
         const advanced = value.advanced!
         const workspaceWrite = advanced.workspaceWrite ?? { networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }
         return <div className="settings-field-grid">
+          {advancedOnly ? <p className="agent-settings-section-label">Approval</p> : null}
           <label>Approval policy<select {...field('advanced.approvalPolicy')} aria-label="Approval policy" value={advanced.approvalPolicy} onChange={(event) => codex({ ...advanced, approvalPolicy: event.target.value as typeof advanced.approvalPolicy })}><option value="on-request">On request</option><option value="never">Never</option></select>{error('advanced.approvalPolicy')}</label>
           <label>Approval reviewer<select {...field('advanced.approvalsReviewer')} aria-label="Approval reviewer" value={advanced.approvalsReviewer} onChange={(event) => codex({ ...advanced, approvalsReviewer: event.target.value as typeof advanced.approvalsReviewer })}><option value="user">GraphQL routed</option><option value="auto_review" disabled={routedApproval}>Native AI reviewer</option></select><small>{routedApproval ? 'Native AI review conflicts with this workflow’s routed approval authority.' : 'Native AI reviewer uses Codex’s own reviewer.'}</small>{error('advanced.approvalsReviewer')}</label>
+          {advancedOnly ? <p className="agent-settings-section-label">Workspace access</p> : null}
           <label>Additional writable directories<textarea {...field('advanced.additionalWritableDirectories')} aria-label="Additional writable directories" rows={3} disabled={value.sandbox !== 'workspace-write'} value={advanced.additionalWritableDirectories.join('\n')} onChange={(event) => codex({ ...advanced, additionalWritableDirectories: event.target.value.split('\n') })} /><small>One absolute path per line. Spaces are significant; blank lines are removed only on Save.</small>{error('advanced.additionalWritableDirectories')}</label>
           {(['networkAccess', 'excludeTmpdirEnvVar', 'excludeSlashTmp'] as const).map((key) => <label className="settings-switch" key={key}><input {...field(`advanced.workspaceWrite.${key}`)} type="checkbox" disabled={value.sandbox !== 'workspace-write'} checked={workspaceWrite[key]} onChange={(event) => codex({ ...advanced, workspaceWrite: { ...workspaceWrite, [key]: event.target.checked } })} />{key === 'networkAccess' ? 'Workspace network access' : key === 'excludeTmpdirEnvVar' ? 'Exclude TMPDIR from writable roots' : 'Exclude /tmp from writable roots'}{error(`advanced.workspaceWrite.${key}`)}</label>)}
+          {advancedOnly ? <p className="agent-settings-section-label">Session &amp; tools</p> : null}
           <label>Session<select {...field('advanced.sessionPersistence')} aria-label="Session persistence" value={advanced.sessionPersistence} onChange={(event) => codex({ ...advanced, sessionPersistence: event.target.value as typeof advanced.sessionPersistence })}><option value="persistent">Persistent</option><option value="ephemeral" disabled={routedApproval}>Ephemeral</option></select><small>Ephemeral sessions cannot support resume-dependent approval handling.</small>{error('advanced.sessionPersistence')}</label>
           <label>Web search<select {...field('advanced.webSearch')} aria-label="Web search" value={advanced.webSearch} onChange={(event) => codex({ ...advanced, webSearch: event.target.value as typeof advanced.webSearch })}><option value="disabled">Disabled</option><option value="cached">Cached</option><option value="live">Live</option></select>{error('advanced.webSearch')}</label>
+          {advancedOnly ? <p className="agent-settings-section-label">Native configuration</p> : null}
           <label>Shell environment JSON<textarea {...field('advanced.shellEnvironment')} aria-label="Shell environment JSON" rows={6} value={editor.shellEnvironmentText} onChange={(event) => onChange({ ...editor, shellEnvironmentText: event.target.value })} /><small>Fields: inherit (all/core/none), ignoreDefaultExcludes, filters (include/exclude), and set. Do not enter credentials.</small>{error('advanced.shellEnvironment')}</label>
         </div>
       })() : (() => {
         const advanced = value.advanced!
         return <div className="settings-field-grid">
+          {advancedOnly ? <p className="agent-settings-section-label">Review permissions</p> : null}
           <label>Permission handling<select {...field('advanced.permissionHandling')} aria-label="Permission handling" value={advanced.permissionHandling} onChange={(event) => opencode({ ...advanced, permissionHandling: event.target.value as typeof advanced.permissionHandling })}><option value="graphql_routed">GraphQL routed review</option><option value="native_auto" disabled>Native auto approve (unsupported by the managed server)</option></select><small>Native auto is not a reviewer Agent and cannot be used by this routed managed transport. Select routed review to repair a legacy native-auto configuration.</small>{error('advanced.permissionHandling')}</label>
           <PermissionRules value={advanced.permissionRules} issues={issues} onChange={(permissionRules) => opencode({ ...advanced, permissionRules })} />
+          {advancedOnly ? <p className="agent-settings-section-label">Runtime</p> : null}
           <label>Plugin loading<select {...field('advanced.plugins')} aria-label="Plugin loading" value={advanced.plugins.mode} onChange={(event) => opencode({ ...advanced, plugins: { mode: event.target.value as 'inherit' | 'pure' } })}><option value="inherit">Inherit</option><option value="pure">Pure</option></select><small>Requires a new provider process.</small>{error('advanced.plugins')}</label>
           <label>Subagent depth<input {...field('advanced.subagentDepth')} aria-label="Subagent depth" type="number" min={0} step={1} value={Number.isNaN(advanced.subagentDepth) ? '' : advanced.subagentDepth ?? ''} onChange={(event) => opencode({ ...advanced, subagentDepth: event.target.value === '' ? undefined : event.target.valueAsNumber })} /><small>Enter a whole number of 0 or more, or leave blank.</small>{error('advanced.subagentDepth')}</label>
           {(['auto', 'prune'] as const).map((key) => <label className="settings-switch" key={key}><input type="checkbox" checked={advanced.compaction[key]} onChange={(event) => opencode({ ...advanced, compaction: { ...advanced.compaction, [key]: event.target.checked } })} />{key === 'auto' ? 'Automatic compaction' : 'Prune compacted messages'}</label>)}
@@ -203,6 +211,7 @@ export function HarnessConfigurationFields({ editor, onChange, routedApproval = 
           <p>Configuration loading: native. Session/process overrides do not rewrite project files.</p>
         </div>
       })()}
+      {advancedOnly ? <p className="agent-settings-section-label">MCP policy</p> : null}
       <label>Native MCP controls JSON<textarea {...field(value.harness === 'codex' ? 'advanced.mcpServers' : 'advanced.mcp')} aria-label="Native MCP controls JSON" rows={7} value={editor.mcpText} onChange={(event) => onChange({ ...editor, mcpText: event.target.value })} /><small>{value.harness === 'codex' ? 'Map server names to enabled, required, enabledTools, disabledTools, defaultToolsApprovalMode and per-tool policies. The native runner must match the accepted policy.' : 'Map already configured server names to true (enabled) or false (disabled). Requires a new session; this does not install an MCP server.'}</small>{error(value.harness === 'codex' ? 'advanced.mcpServers' : 'advanced.mcp')}</label>
     </details>
     {compact ? <p className="settings-help">Full runner-scoped App MCP diagnostics are available in Settings. Checking this selection does not change permissions or qualify an existing session.</p> : workspaceId ? <McpDetectionSettings workspaceId={workspaceId} /> : <details className="settings-help"><summary>Runner-scoped App MCP evidence</summary><p>Select a real workspace below to inspect runner-scoped App MCP evidence.</p></details>}

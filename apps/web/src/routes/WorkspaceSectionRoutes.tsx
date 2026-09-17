@@ -1,5 +1,15 @@
-import { useCallback } from 'react'
+import { useCallback, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
+import {
+  ArrowLeft,
+  Bot,
+  ChevronRight,
+  Inbox,
+  KeyRound,
+  SlidersHorizontal,
+  Workflow,
+  type LucideIcon,
+} from 'lucide-react'
 
 import { AgentsDirectory } from '../features/agents'
 import { AgentDefaultsSettings, HarnessDefaultsSettings, McpDetectionSettings, OperatorAccessSettings, WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
@@ -163,8 +173,57 @@ export function SettingsRouteEntry() {
   return <SettingsPage />
 }
 
-function GlobalSettingsPage({ selected }: { selected?: 'harnesses' | 'agents' | 'workflows' }) {
-  const detectionWorkspaceId = useNavigationUiStore((state) => state.activeWorkspaceId)
+function SettingsCardBody({ icon: Icon, title, description }: {
+  icon: LucideIcon
+  title: string
+  description: string
+}) {
+  return (
+    <>
+      <span className="settings-card-icon"><Icon aria-hidden="true" size={18} /></span>
+      <span className="settings-card-copy">
+        <strong>{title}</strong>
+        <small>{description}</small>
+      </span>
+      <ChevronRight aria-hidden="true" className="settings-card-chevron" size={16} />
+    </>
+  )
+}
+
+function SettingsBackLink() {
+  return (
+    <Link to="/settings" className="settings-back-link" aria-label="Back to settings">
+      <ArrowLeft aria-hidden="true" size={14} />Settings
+    </Link>
+  )
+}
+
+function SettingsDetailPage({ title, description, backLink, children }: {
+  title: string
+  description: string
+  backLink: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <div className="settings-page">
+      <header>
+        {backLink}
+        <p className="panel-kicker">GraphQL</p>
+        <h1>{title}</h1>
+        <p>{description}</p>
+      </header>
+      {children}
+    </div>
+  )
+}
+
+function McpDetectionSection({ workspaceId }: { workspaceId?: string }) {
+  return workspaceId
+    ? <McpDetectionSettings workspaceId={workspaceId} />
+    : <p className="settings-state">Select a workspace from navigation to inspect its runner-scoped App MCP evidence.</p>
+}
+
+export function GlobalSettingsRouteEntry() {
   return (
     <WorkspaceShell
       workspaceId="workspace-1"
@@ -177,28 +236,33 @@ function GlobalSettingsPage({ selected }: { selected?: 'harnesses' | 'agents' | 
               <h1>Settings</h1>
               <p>Configure application preferences and connected capabilities.</p>
             </header>
-            <nav aria-label="Settings sections">
-              <Link to="/settings/harnesses" aria-current={selected === 'harnesses' ? 'page' : undefined}>
-                <span>
-                  <strong>Harnesses</strong>
-                  <small>Provider presets</small>
-                </span>
-              </Link>
-              <Link to="/settings/agents" aria-current={selected === 'agents' ? 'page' : undefined}>
-                <span><strong>Agents</strong><small>Orchestrator, Coder and Operator templates</small></span>
-              </Link>
-              <Link to="/settings/workflows" aria-current={selected === 'workflows' ? 'page' : undefined}>
-                <span><strong>Workflows</strong><small>Defaults for new workflows</small></span>
-              </Link>
-              <Link to="/approvals"><span><strong>Approval Inbox</strong><small>Global review queue and delivery history</small></span></Link>
-            </nav>
-            <OperatorAccessSettings />
-            {selected === 'harnesses' ? <HarnessDefaultsSettings /> : null}
-            {selected === 'agents' ? <AgentDefaultsSettings /> : null}
-            {selected === 'workflows' ? <WorkflowDefaultsSettings /> : null}
-            {selected === 'harnesses' || selected === 'agents' ? detectionWorkspaceId
-              ? <McpDetectionSettings workspaceId={detectionWorkspaceId} />
-              : <p>Select a workspace from navigation to inspect its runner-scoped App MCP evidence.</p> : null}
+            <ul className="settings-card-list">
+              <li className="settings-card">
+                <Link to="/settings/harnesses" className="settings-card-open">
+                  <SettingsCardBody icon={SlidersHorizontal} title="Harnesses" description="Provider presets" />
+                </Link>
+              </li>
+              <li className="settings-card">
+                <Link to="/settings/agents" className="settings-card-open">
+                  <SettingsCardBody icon={Bot} title="Agents" description="Orchestrator, Coder and Operator templates" />
+                </Link>
+              </li>
+              <li className="settings-card">
+                <Link to="/settings/workflows" className="settings-card-open">
+                  <SettingsCardBody icon={Workflow} title="Workflows" description="Defaults for new workflows" />
+                </Link>
+              </li>
+              <li className="settings-card">
+                <Link to="/approvals" className="settings-card-open">
+                  <SettingsCardBody icon={Inbox} title="Approval Inbox" description="Global review queue and delivery history" />
+                </Link>
+              </li>
+              <li className="settings-card">
+                <Link to="/settings/operator-access" className="settings-card-open">
+                  <SettingsCardBody icon={KeyRound} title="Operator access" description="Enroll this browser with a local credential" />
+                </Link>
+              </li>
+            </ul>
           </div>
         ),
       }}
@@ -206,16 +270,89 @@ function GlobalSettingsPage({ selected }: { selected?: 'harnesses' | 'agents' | 
   )
 }
 
-export function GlobalSettingsRouteEntry() {
-  return <GlobalSettingsPage />
-}
-
 export function HarnessSettingsRouteEntry() {
-  return <GlobalSettingsPage selected="harnesses" />
+  const detectionWorkspaceId = useNavigationUiStore((state) => state.activeWorkspaceId)
+  return (
+    <WorkspaceShell
+      workspaceId="workspace-1"
+      activeGlobalSection="settings"
+      slots={{
+        main: (
+          <SettingsDetailPage
+            title="Harnesses"
+            description="Provider presets. Role templates under Agents determine new board Agent defaults; existing Agents never change."
+            backLink={<SettingsBackLink />}
+          >
+            <HarnessDefaultsSettings />
+            <McpDetectionSection workspaceId={detectionWorkspaceId} />
+          </SettingsDetailPage>
+        ),
+      }}
+    />
+  )
 }
 
-export function AgentSettingsRouteEntry() { return <GlobalSettingsPage selected="agents" /> }
-export function WorkflowSettingsRouteEntry() { return <GlobalSettingsPage selected="workflows" /> }
+export function AgentSettingsRouteEntry() {
+  const detectionWorkspaceId = useNavigationUiStore((state) => state.activeWorkspaceId)
+  return (
+    <WorkspaceShell
+      workspaceId="workspace-1"
+      activeGlobalSection="settings"
+      slots={{
+        main: (
+          <SettingsDetailPage
+            title="Agents"
+            description="Copied into new Agents. Existing Agents and accepted runs stay pinned."
+            backLink={<SettingsBackLink />}
+          >
+            <AgentDefaultsSettings />
+            <McpDetectionSection workspaceId={detectionWorkspaceId} />
+          </SettingsDetailPage>
+        ),
+      }}
+    />
+  )
+}
+
+export function WorkflowSettingsRouteEntry() {
+  return (
+    <WorkspaceShell
+      workspaceId="workspace-1"
+      activeGlobalSection="settings"
+      slots={{
+        main: (
+          <SettingsDetailPage
+            title="Workflows"
+            description="New workflows copy this handler. Existing and in-flight approvals do not change."
+            backLink={<SettingsBackLink />}
+          >
+            <WorkflowDefaultsSettings />
+          </SettingsDetailPage>
+        ),
+      }}
+    />
+  )
+}
+
+export function OperatorAccessSettingsRouteEntry() {
+  return (
+    <WorkspaceShell
+      workspaceId="workspace-1"
+      activeGlobalSection="settings"
+      slots={{
+        main: (
+          <SettingsDetailPage
+            title="Operator access"
+            description="Enroll this browser with a scoped local credential. It is kept in an HttpOnly cookie, not browser storage."
+            backLink={<SettingsBackLink />}
+          >
+            <OperatorAccessSettings />
+          </SettingsDetailPage>
+        ),
+      }}
+    />
+  )
+}
 
 export function GlobalApprovalsRouteEntry() {
   const { interactionId, approvalView } = useSearch({ from: '/approvals' })
