@@ -6,6 +6,7 @@ import { DomainError } from '../errors.js'
 import { nativePersistenceRedactor } from './nativePersistence.js'
 import type { ReviewCredentialMaintenance, ReviewerNativeRuntime } from './reviewerRuntime.js'
 import { PostgresInteractionCoordinationRepository } from './coordination.js'
+import { settleReviewCleanup } from './reviewerCleanup.js'
 import { definitelyRejected, ReviewEvidenceTracker } from './reviewerEvidence.js'
 import type { NativeManagerResolutionContext } from './runtimePorts.js'
 import { coordinateSessionManager, isLeaseLost, LeaseGuard, ownedEvents } from './sessionWriter.js'
@@ -89,6 +90,42 @@ export class ReviewerDispatcher {
       const { providerVersion, ...ownerContext } = await guard.wait(this.coordination.getReviewJobContext(job.id))
       executionId = ownerContext.executionId
       await guard.check()
+      if (job.cleanup) {
+        const session: NativeSessionReference = { harness: job.provider, providerVersion, nativeSessionId: job.nativeSessionId }
+        const recovery = await guard.wait(this.nativeRuntime.recoverReviewCleanup?.(executionId, session, job, guard.signal)
+          ?? Promise.reject(new Error('The reviewer runtime cannot recover native cleanup.')))
+        const writer = coordinateSessionManager(recovery.manager, this.coordination, job.reviewerAgentId, this.leaseMs)
+        return await writer.withLane(session, job.correlationId, guard.signal, async (manager, lane) => {
+          const check = async () => { await guard.check(); await lane.guard.check() }
+          const ownsTurn = job.error?.code !== 'REVIEW_JOB_IDENTITY_CONFLICT'
+            && lane.previous.correlationId === job.correlationId
+            && (!lane.previous.currentTurnOrMessageId || !job.providerTurnOrMessageId
+              || lane.previous.currentTurnOrMessageId === job.providerTurnOrMessageId)
+          if (ownsTurn) lane.observedStatus = 'uncertain'
+          const signal = AbortSignal.any([lane.guard.signal, AbortSignal.timeout(Math.min(this.leaseMs, 5_000))])
+          job = await settleReviewCleanup({ job, session, ownsTurn, closed: recovery.closed, check,
+            ...(recovery.resident ? {
+              observe: () => lane.guard.wait((session.harness === 'opencode' ? manager.history(session, signal)
+                : manager.reconcile(session, job.correlationId, signal)), signal),
+              cancel: (id: string) => lane.guard.wait(manager.cancel(session, signal, id), signal),
+            } : {}),
+            ...(recovery.confirmClosed ? { confirmClosed: () => lane.guard.wait(recovery.confirmClosed!(signal), signal) } : {}),
+            ...(this.nativeRuntime.revokeReviewCredential ? {
+              revoke: (id: string) => lane.guard.wait(this.nativeRuntime.revokeReviewCredential!(id), signal),
+            } : {}),
+            persist: async (cleanup, releaseLease, providerId) => {
+              await check()
+              job = await this.coordination.transitionReviewJob(job.id, jobToken, 'failed', {
+                cleanup, releaseLease, writerFence: lane.fence,
+                ...(providerId ? { providerTurnOrMessageId: providerId } : {}),
+              })
+              return job
+            },
+          })
+          if (ownsTurn && job.cleanup?.completedAt) lane.observedStatus = 'idle'
+          return job
+        })
+      }
       if (!recovering && !await this.coordination.isReviewPending(job.interactionId, job.reviewerAgentId)) {
         return await this.coordination.transitionReviewJob(job.id, jobToken, 'failed', {
           error: { code: 'REVIEW_NO_LONGER_PENDING', message: 'The interaction no longer needs this review.' },
@@ -114,7 +151,7 @@ export class ReviewerDispatcher {
         let workSignal = lane.guard.signal
         const check = async () => { await guard.check(); await lane.guard.check() }
         const transition = async (state: ReviewJob['state'], fields: {
-          providerTurnOrMessageId?: string; error?: ReviewJob['error']; releaseLease?: boolean
+          providerTurnOrMessageId?: string; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']; releaseLease?: boolean
         } = {}) => {
           await check()
           job = await this.coordination.transitionReviewJob(job.id, jobToken, state, {
@@ -139,41 +176,41 @@ export class ReviewerDispatcher {
           pendingRequests: readonly PendingNativeInteraction[] = pending ? [pending] : []) => {
           await maintenance?.stop()
           const evidence = tracker.snapshot()
-          const exactPending = pendingRequests.every((request) => request.session.harness === session.harness
-            && request.session.providerVersion === session.providerVersion && request.session.nativeSessionId === session.nativeSessionId
-            && request.turn.nativeTurnId === evidence.providerId && Boolean(request.turn.nativeRequestId))
           const identity = pendingRequests.length ? ` Native requests: ${JSON.stringify(pendingRequests.map((request) => ({
             session: request.session, turn: request.turn, nativeRequestType: request.nativeRequestType,
           })))}.` : ''
           const error = safe.value({ ...failure, message: `${failure.message}${identity} Stop this Run and correct the accepted reviewer configuration before starting a new Run; do not replay this review.` })
-          // Save the actionable failure BEFORE provider cleanup, retaining both leases.
-          // These are existing states; a submitted turn can never become fresh work.
-          await transition(submitted ? acknowledged ? 'acknowledged' : 'submitted' : 'leased', { error })
-          await this.nativeRuntime.recordReviewFailure?.(executionId!, job, error, pending ? safe.value(pending) : undefined, safe.value(pendingRequests))
-          await check()
-          let canceled = false
-          let revoked = false
-          const cleanupSignal = AbortSignal.any([lane.guard.signal, AbortSignal.timeout(Math.min(this.leaseMs, 5_000))])
-          if (evidence.providerId && !evidence.identityConflict && exactPending) {
-            try {
-              canceled = await lane.guard.wait(manager.cancel(session, cleanupSignal, evidence.providerId), cleanupSignal)
-              await check()
-            } catch (error) {
-              if (isLeaseLost(error) || guard.signal.aborted || lane.guard.signal.aborted) throw error
-            }
-          }
-          try {
-            if (maintenance) {
-              await lane.guard.wait(maintenance.invalidate(), cleanupSignal)
-              revoked = true
-            }
-          } catch (error) {
-            if (isLeaseLost(error) || guard.signal.aborted || lane.guard.signal.aborted) throw error
-          }
-          lane.observedStatus = canceled ? 'idle' : 'uncertain'
-          return transition('failed', { error: { ...error,
-            message: `${error.message} Native cancellation ${canceled ? 'confirmed' : 'unconfirmed'}; credential revocation ${revoked ? 'confirmed' : 'unconfirmed'}.`,
+          const ownsTurn = submitted && !evidence.identityConflict && (!recovering
+            || (lane.previous.correlationId === job.correlationId
+              && (!lane.previous.currentTurnOrMessageId || !job.providerTurnOrMessageId
+                || lane.previous.currentTurnOrMessageId === job.providerTurnOrMessageId)))
+          const credential = this.nativeRuntime.reviewCredentialIdentity?.(executionId!, session)
+          const principalId = maintenance?.principalId ?? credential?.principalId
+          // Persist business failure and cleanup identity BEFORE any native side effect.
+          // The failed job remains claimable until both independent cleanup duties settle.
+          await transition('failed', { error, releaseLease: false, cleanup: {
+            nativeState: submitted ? 'pending' : 'not_started',
+            credentialState: credential?.required === false ? 'not_required' : 'pending',
+            ...(principalId ? { credentialPrincipalId: principalId } : {}), interruptState: 'not_sent',
           } })
+          if (ownsTurn) lane.observedStatus = 'uncertain'
+          await this.nativeRuntime.recordReviewFailure?.(executionId!, job, error, pending ? safe.value(pending) : undefined, safe.value(pendingRequests))
+          const cleanupSignal = AbortSignal.any([lane.guard.signal, AbortSignal.timeout(Math.min(this.leaseMs, 5_000))])
+          job = await settleReviewCleanup({ job, session, ownsTurn,
+            pending: pendingRequests, check,
+            observe: () => lane.guard.wait((session.harness === 'opencode' ? manager.history(session, cleanupSignal)
+              : manager.reconcile(session, job.correlationId, cleanupSignal)), cleanupSignal),
+            cancel: (providerId) => lane.guard.wait(manager.cancel(session, cleanupSignal, providerId), cleanupSignal),
+            ...(maintenance ? { invalidate: () => lane.guard.wait(maintenance!.invalidate(), cleanupSignal) }
+              : this.nativeRuntime.revokeReviewCredential ? {
+              revoke: (id: string) => lane.guard.wait(this.nativeRuntime.revokeReviewCredential!(id), cleanupSignal),
+            } : {}),
+            persist: (cleanup, releaseLease, providerId) => transition('failed', { cleanup, releaseLease,
+              ...(providerId ? { providerTurnOrMessageId: providerId } : {}),
+            }),
+          })
+          if (ownsTurn && job.cleanup?.completedAt) lane.observedStatus = 'idle'
+          return job
         }
         const approvalFailure = (pending: PendingNativeInteraction, requests?: readonly PendingNativeInteraction[]) => failReview({
           code: 'REVIEWER_NATIVE_APPROVAL_UNSUPPORTED',
@@ -256,6 +293,7 @@ export class ReviewerDispatcher {
         } catch (rawError) {
           const error = safe.error(rawError)
           if (isLeaseLost(rawError) || guard.signal.aborted || lane.guard.signal.aborted) throw error
+          if (job.cleanup) return await transition('failed', { releaseLease: true })
           if (isLeaseLost(workSignal.reason)) throw workSignal.reason
           if ((workSignal.aborted && workSignal.reason instanceof DomainError && workSignal.reason.code === 'REVIEWER_CREDENTIAL_LOST')
             || (rawError instanceof DomainError && ['REVIEWER_CREDENTIAL_LOST', 'REVIEWER_AUTHORITY_LOST'].includes(rawError.code))) {
@@ -285,6 +323,7 @@ export class ReviewerDispatcher {
       const error = safe.error(rawError)
       if (isLeaseLost(rawError) || guard.signal.aborted) throw error
       await guard.check()
+      if (job.cleanup) return this.coordination.transitionReviewJob(job.id, jobToken, 'failed', { releaseLease: true })
       const busy = error instanceof DomainError && error.code === 'SESSION_LANE_BUSY'
       // Even an old uncertain record without submittedAt must never become fresh work on attach failure.
       const mayHaveSubmitted = recovering || Boolean(job.submittedAt || job.acknowledgedAt || job.providerTurnOrMessageId)
@@ -296,7 +335,7 @@ export class ReviewerDispatcher {
         })
     } finally {
       await guard.stop()
-      if (executionId && !guard.signal.aborted) {
+      if (executionId && !guard.signal.aborted && (!job.cleanup || job.cleanup.completedAt)) {
         await this.nativeRuntime.finishReview?.(executionId).catch((error) => Promise.reject(safe.error(error)))
       }
     }

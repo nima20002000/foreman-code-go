@@ -6,6 +6,10 @@ import {
   type Conversation, type ExecutionResult, type OperatorConfigurationVersion,
   type OperatorConversationState, type PendingNativeInteraction, type SendOperatorMessageRequest,
 } from '@graphql/contracts'
+import {
+  OperatorConversationHistoryPageSchema, OperatorConversationHistoryQuerySchema,
+  type OperatorConversationHistoryPage, type OperatorConversationHistoryQuery,
+} from '@graphql/contracts/operator-chat'
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
@@ -33,6 +37,10 @@ export interface ConversationRow {
   updated_at: Date
 }
 type Queryable = Pick<pg.PoolClient, 'query'>
+
+export const OPERATOR_SNAPSHOT_MESSAGE_LIMIT = 32
+export const OPERATOR_SNAPSHOT_MESSAGE_BYTES = 256 * 1024
+export const OPERATOR_HISTORY_PAGE_BYTES = 1024 * 1024
 
 export function commandPayload(input: SendOperatorMessageRequest) {
   return { content: input.content, ...(input.context && Object.keys(input.context).length ? {
@@ -103,11 +111,15 @@ export class PostgresOperatorConversationRepository {
   }
 
   async get(id: string, query: Queryable = this.pool): Promise<OperatorConversationState | undefined> {
-    // One statement gives messages and state the same MVCC snapshot. No nested pool checkout.
+    // One statement gives the bounded recent window and state the same MVCC
+    // snapshot. Large/older messages remain accessible through history().
     const result = await query.query<ConversationRow & { messages: unknown[] }>(`select c.*,
-      coalesce((select jsonb_agg(m.record order by m.sequence) from operator_conversation_messages m
-        where m.conversation_id=c.id),'[]'::jsonb) as messages
-      from operator_conversations c where c.id=$1`, [id])
+      coalesce((select jsonb_agg(retained.record order by retained.sequence) from (
+        select recent.*,sum(octet_length(recent.record::text)) over (order by recent.sequence desc) as bytes
+        from (select m.record,m.sequence from operator_conversation_messages m
+          where m.conversation_id=c.id order by m.sequence desc limit $2) recent
+        ) retained where retained.bytes<=$3),'[]'::jsonb) as messages
+      from operator_conversations c where c.id=$1`, [id, OPERATOR_SNAPSHOT_MESSAGE_LIMIT, OPERATOR_SNAPSHOT_MESSAGE_BYTES])
     const row = result.rows[0]
     if (!row) return undefined
     return OperatorConversationStateSchema.parse({ conversation: conversation(row), messages: row.messages,
@@ -117,6 +129,45 @@ export class PostgresOperatorConversationRepository {
       ...(row.pending_interaction ? { pendingInteraction: row.pending_interaction } : {}),
       ...(row.response_delivery ? { responseDelivery: row.response_delivery } : {}),
     })
+  }
+
+  /**
+   * Stable descending keyset selection, presented oldest-first within each page.
+   * Receipts are joined to the exact accepted user message, including after the
+   * active request clears or browser enrollment erases its local outbox.
+   */
+  async history(id: string, input: Partial<OperatorConversationHistoryQuery> = {}): Promise<OperatorConversationHistoryPage | undefined> {
+    const { before, limit } = OperatorConversationHistoryQuerySchema.parse(input)
+    const result = await this.pool.query<{
+      id: string; revision: number | string; active_request_id: string | null;
+      entries: unknown[]; next_cursor: string | null;
+    }>(`with candidates as (
+        select m.*,row_number() over (order by m.sequence desc) as ordinal,
+          sum(octet_length(m.record::text)) over (order by m.sequence desc) as bytes
+        from (select sequence,record,client_request_id from operator_conversation_messages
+          where conversation_id=$1 and ($2::bigint is null or sequence<$2::bigint)
+          order by sequence desc limit ($3::integer+1)) m
+      ), selected as (
+        select * from candidates where ordinal<=$3 and (bytes<=$4 or ordinal=1)
+      )
+      select c.id,c.revision,c.active_request_id,
+        coalesce((select jsonb_agg(jsonb_build_object(
+          'sequence',m.sequence::text,'message',m.record,
+          'receipt',case when t.request_id is null then null else jsonb_build_object(
+            'requestId',t.request_id,'inputHash',t.input_hash,
+            'outcome',t.result->>'outcome','retryable',t.retryable) end) order by m.sequence)
+          from selected m left join operator_conversation_turns t
+            on t.conversation_id=$1 and t.request_id=m.client_request_id),'[]'::jsonb) as entries,
+        case when exists(select 1 from candidates where sequence<(select min(sequence) from selected))
+          then (select min(sequence)::text from selected) else null end as next_cursor
+      from operator_conversations c where c.id=$1`,
+    [id, before ?? null, limit, OPERATOR_HISTORY_PAGE_BYTES])
+    const row = result.rows[0]
+    if (!row) return undefined
+    // One oversized message is returned over HTTP so the cursor always advances;
+    // it is never put in a live SSE snapshot.
+    return OperatorConversationHistoryPageSchema.parse({ conversationId: row.id, revision: Number(row.revision),
+      activeRequestId: row.active_request_id, entries: row.entries, nextCursor: row.next_cursor })
   }
 
   async configuration(id: string): Promise<OperatorConfigurationVersion | undefined> {
@@ -231,16 +282,19 @@ export class PostgresOperatorConversationRepository {
       await client.query('begin')
       const row = (await client.query<ConversationRow>('select * from operator_conversations where id=$1 for update', [id])).rows[0]
       if (!row || row.active_request_id !== requestId) { await client.query('commit'); return false }
-      if (result.outcome === 'succeeded') {
-        if (!nativeMessageId) throw new Error('A successful native result requires a verified native message identity.')
+      // Turn completion is proven by the service's exact native correlation,
+      // not by whether the provider happened to create an assistant message.
+      if (result.outcome === 'succeeded' && nativeMessageId) {
         const output = result.output
         const content = typeof output === 'string' ? output : output && typeof output === 'object' && !Array.isArray(output)
           ? typeof output.text === 'string' ? output.text : typeof output.content === 'string' ? output.content : '' : ''
-        const now = new Date().toISOString()
-        const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, role: 'assistant', content, createdAt: now, updatedAt: now })
-        // A conflict is a correlation error, not a successful answer for a second request.
-        await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,native_message_id,record)
-          values ($1,$2,'assistant',$3,$4,$5::jsonb)`, [message.id, id, content, nativeMessageId, JSON.stringify(message)])
+        if (content) {
+          const now = new Date().toISOString()
+          const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, role: 'assistant', content, createdAt: now, updatedAt: now })
+          // A conflict is a correlation error, not a successful answer for a second request.
+          await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,native_message_id,record)
+            values ($1,$2,'assistant',$3,$4,$5::jsonb)`, [message.id, id, content, nativeMessageId, JSON.stringify(message)])
+        }
       }
       await client.query('update operator_conversation_turns set result=$3::jsonb,retryable=$4 where conversation_id=$1 and request_id=$2',
         [id, requestId, JSON.stringify(result), retryable])

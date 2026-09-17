@@ -8,6 +8,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./operator-chat": {
+      "types": "./dist/operatorChat.d.ts",
+      "import": "./dist/operatorChat.js"
+    },
     "./management": {
       "types": "./dist/management/index.d.ts",
       "import": "./dist/management/index.js"

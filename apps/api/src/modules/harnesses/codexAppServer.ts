@@ -417,6 +417,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const input = structuredClone(source)
       const loaded = this.runtimes.get(session.nativeSessionId)
       if (loaded) {
+        if (loaded.disposed) throw new HarnessExecutionError('CODEX_SESSION_UNAVAILABLE', 'Session closure is still unconfirmed; retry cleanup before attaching.')
         this.assertBinding(loaded, input)
         if (credentialIdentity(loaded.input) !== credentialIdentity(input)) {
           throw new HarnessExecutionError('CODEX_SESSION_ENVIRONMENT_REFRESH_REQUIRED', 'Use explicit idle-boundary credential refresh instead of attaching with a different environment.')
@@ -510,6 +511,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         if (cursor < firstSequence) throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'The in-memory event window was exceeded; reload durable history.')
         const available = runtime.events.filter((event) => event.sequence >= cursor)
         for (const event of available) { cursor = event.sequence + 1; yield structuredClone(event) }
+        // The consumer can suspend at yield while more events (including terminal
+        // events) arrive. Drain them before returning or registering a waiter.
+        if (runtime.events.some((event) => event.sequence >= cursor)) continue
         if (runtime.terminalResult || runtime.closed) return
         await this.wait(runtime, signal)
       }
@@ -520,8 +524,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   async pending(session: NativeSessionReference): Promise<PendingNativeInteraction | undefined> {
-    const first = this.requireRuntime(session).interactions.values().next().value as WaitingRequest | undefined
-    return first?.delivery === 'pending' ? structuredClone(first.pending) : undefined
+    const first = [...this.requireRuntime(session).interactions.values()].find((entry) => entry.delivery === 'pending')
+    return first ? structuredClone(first.pending) : undefined
   }
 
   async respond(session: NativeSessionReference, nativeRequestId: string, option: ApprovalResponseOption, signal?: AbortSignal): Promise<void> {
@@ -570,7 +574,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   async history(session: NativeSessionReference): Promise<NativeHistory> {
     const runtime = this.requireRuntime(session)
     const all = [...runtime.interactions.values()]
-    const first = all[0]
+    const first = all.find((entry) => entry.delivery === 'pending')
     return structuredClone({
       events: runtime.events,
       pendingInteractions: all.map((entry) => entry.pending),
@@ -806,9 +810,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   async closeLoginControl(): Promise<void> {
     const control = this.loginControl
     if (!control) return
-    this.loginControl = undefined
     clearTimeout(control.timer)
     await control.transport.close()
+    if (this.loginControl === control) this.loginControl = undefined
   }
 
   private assertSessionVersion(session: NativeSessionReference): void {

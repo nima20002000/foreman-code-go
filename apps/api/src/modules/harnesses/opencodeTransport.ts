@@ -83,6 +83,8 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   private lifecycle: Promise<unknown> = Promise.resolve()
   private startupAbort: AbortController | undefined
   private epoch = 0
+  private cleanupRequired = false
+  private disposal: Promise<void> | undefined
   private stderr = ''
   private readonly stops = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>()
   private references: Readonly<Record<string, string>> = {}
@@ -149,6 +151,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   }
 
   private async ensureProcess(signal?: AbortSignal): Promise<void> {
+    if (this.cleanupRequired) throw new HarnessExecutionError('OPENCODE_SERVER_CLEANUP_REQUIRED', 'Native shutdown is unconfirmed; explicitly retry disposal or restart before requesting work.')
     if (this.child && this.baseUrl && this.child.exitCode === null && this.child.signalCode === null) {
       try {
         const health = await this.rawRequest('/global/health', { method: 'GET' }, signal)
@@ -160,6 +163,8 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       signal?.throwIfAborted()
       await this.stopLiveProcess()
     }
+    // A root exit or incomplete startup must not discard an owned process tree.
+    if (this.child) await this.stopLiveProcess()
     // Startup belongs to the owner, not to any one request waiting for it.
     await this.start()
   }
@@ -174,13 +179,17 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   }
 
   dispose(): Promise<void> {
+    if (this.disposal) return this.disposal
     this.epoch += 1
     this.startupAbort?.abort(new Error('OpenCode server disposed during startup.'))
-    return this.exclusive(async () => {
+    const attempt = this.exclusive(async () => {
       await this.stopLiveProcess()
       this.desiredEnvironment = undefined
       this.references = {}
     })
+    this.disposal = attempt
+    void attempt.catch(() => { if (this.disposal === attempt) this.disposal = undefined })
+    return attempt
   }
 
   async restart(environment: ChildProcessEnvironment, signal?: AbortSignal): Promise<void> {
@@ -200,6 +209,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   private stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
     const previous = this.stops.get(child)
     if (previous) return previous
+    if (this.child === child) { this.cleanupRequired = true; this.baseUrl = undefined }
     const task = (async () => {
       let error: unknown
       const send = async (signal: NodeJS.Signals) => {
@@ -221,22 +231,32 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       }
       child.stdout.destroy()
       child.stderr.destroy()
+      if (child.exitCode === null && child.signalCode === null) {
+        error ??= new Error('OpenCode process did not exit after forced shutdown.')
+      }
       if (error) throw error
+      if (this.child === child) {
+        this.child = undefined
+        this.password = undefined
+        this.cleanupRequired = false
+      }
     })()
     this.stops.set(child, task)
-    void task.catch(() => undefined)
+    void task.catch(() => { if (this.stops.get(child) === task) this.stops.delete(child) })
     return task
   }
 
   private async stopLiveProcess(): Promise<void> {
     const child = this.child
-    this.child = undefined
     this.baseUrl = undefined
-    this.password = undefined
     if (child) await this.stopChild(child)
+    // Keep both the child and its credential context when cleanup rejects.
+    this.password = undefined
   }
 
   private async start(): Promise<void> {
+    // This controller is reusable only after confirmed cleanup of its last child.
+    this.disposal = undefined
     const abort = new AbortController()
     this.startupAbort = abort
     const timer = setTimeout(() => abort.abort(new HarnessExecutionError('OPENCODE_SERVER_START_TIMEOUT',

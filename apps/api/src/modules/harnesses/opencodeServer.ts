@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 
 import {
@@ -66,6 +67,7 @@ interface OwnedTurn {
   nativeMessageId?: string
 }
 interface SessionState {
+  readonly connectionId: string
   autoReplies: OpenCodeNativeAutoReplies
   directory: string
   configuration: OpenCodeHarnessConfiguration
@@ -111,6 +113,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private readonly sessions = new Map<string, SessionState>()
   private lifecycle: Promise<unknown> = Promise.resolve()
   private lifetime = new AbortController()
+  private disposal: Promise<void> | undefined
   private boundEnvironmentFingerprint: string | undefined
   private readyGeneration: number | undefined
   private readonly knownSecrets = new Set<string>()
@@ -195,7 +198,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
           throw new OpenCodeNativeDeliveryError('OPENCODE_SESSION_ID_MISSING', 'Session creation may have succeeded but did not return a native identity.', 'uncertain')
         }
         const session = NativeSessionReferenceSchema.parse({ harness: 'opencode', providerVersion: QUALIFIED_OPENCODE_VERSION, nativeSessionId: response.id })
-        combined.throwIfAborted()
+        // A returned provider identity is authoritative even if cancellation raced
+        // the response. Publish and return it so the caller can persist ownership.
         this.sessions.set(response.id, newState(directory, configuration))
         return session
       } catch (error) { return this.cleanupFailedSetup(error) }
@@ -306,7 +310,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       })
       if (!turn) throw new Error('OpenCode turn reservation failed.')
       if (initialHistory) {
-        for (const event of initialHistory.events) yield this.recordSynthetic(state, event.type, event.payload)
+        // Authoritative history already carries stable content-addressed identities.
+        for (const event of initialHistory.events) yield structuredClone(event)
         for (const pending of initialHistory.pendingInteractions) {
           yield this.recordSynthetic(state, 'interaction.pending', { nativeRequestId: pending.turn.nativeRequestId, nativeSessionId: object(pending.request).sessionID, correlationId })
         }
@@ -357,7 +362,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
             const key = event.payload.nativeEventId
             if (typeof key === 'string' && state.historyIds.has(key)) continue
             if (typeof key === 'string') boundedSetAdd(state.historyIds, key)
-            yield this.recordSynthetic(state, event.type, event.payload)
+            yield structuredClone(event)
           }
           if (history.terminalResult) return
           for (const pending of history.pendingInteractions) {
@@ -507,6 +512,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         await events?.body?.cancel().catch(() => undefined)
       }
     })
+  }
+
+  /** Local quiescence only: no native write, cancellation receipt, or terminal evidence. */
+  stopAutomaticResponses(session: NativeSessionReference): void {
+    this.requireSession(session).autoReplies.stop()
   }
 
   cancel(session: NativeSessionReference, signal?: AbortSignal, nativeTurnId?: string): Promise<boolean> {
@@ -721,25 +731,28 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       if (state.turn?.observing || (state.turn?.submitted && !state.turn.terminalResult)) {
         throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'Cancel or reconcile this native turn before closing its session.')
       }
+      if (this.sessions.size === 1) await this.disposeUnusedServer()
       this.sessions.delete(session.nativeSessionId)
-      if (this.sessions.size === 0) await this.disposeUnusedServer()
     })
   }
 
   dispose(): Promise<void> {
+    if (this.disposal) return this.disposal
     // Synchronously invalidate queued setup and observers, then drain the owner lifecycle.
     this.lifetime.abort(new Error('OpenCode session manager disposed.'))
     const stopping = this.options.server.dispose()
     void stopping.catch(() => undefined)
-    return this.exclusive(async () => {
+    const attempt = this.exclusive(async () => {
+      await stopping
       this.sessions.clear()
-      try { await stopping } finally {
-        this.boundEnvironmentFingerprint = undefined
-        this.readyGeneration = undefined
-        this.knownSecrets.clear()
-        this.responseReceipts.clear()
-      }
+      this.boundEnvironmentFingerprint = undefined
+      this.readyGeneration = undefined
+      this.knownSecrets.clear()
+      this.responseReceipts.clear()
     })
+    this.disposal = attempt
+    void attempt.catch(() => { if (this.disposal === attempt) this.disposal = undefined })
+    return attempt
   }
 
   restartForCredential(environment: ChildProcessEnvironment, signal?: AbortSignal): Promise<void> {
@@ -982,7 +995,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const retained = serialized.length > 64_000 ? { nativeEventId: payload.nativeEventId,
       sessionID: payload.sessionID ?? object(payload.part).sessionID, payloadOmitted: true,
       detail: 'Retrieve this large native payload through paginated authoritative history.' } : payload
-    const event = NativeHarnessEventSchema.parse({ sequence: state.sequence++, type, occurredAt: new Date().toISOString(), payload: retained })
+    const event = NativeHarnessEventSchema.parse({ sequence: state.sequence++, connectionId: state.connectionId, type, occurredAt: new Date().toISOString(), payload: retained })
     state.events.push(event)
     state.eventBytes += JSON.stringify(event).length
     while (state.events.length > OPENCODE_EVENT_LIMIT || state.eventBytes > OPENCODE_EVENT_BYTES) {
@@ -1025,8 +1038,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     throw error
   }
   private async disposeUnusedServer(): Promise<void> {
-    try { await this.options.server.dispose() }
-    finally { this.boundEnvironmentFingerprint = undefined; this.readyGeneration = undefined }
+    await this.options.server.dispose()
+    this.boundEnvironmentFingerprint = undefined
+    this.readyGeneration = undefined
   }
 
   async inspectNativeMcp(
@@ -1094,7 +1108,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 }
 
 function newState(directory: string, configuration: OpenCodeHarnessConfiguration): SessionState {
-  return { autoReplies: new OpenCodeNativeAutoReplies(), directory, configuration, events: [], eventBytes: 0, eventIds: new Set(), pendingIds: new Set(), historyIds: new Set(),
+  return { connectionId: randomUUID(), autoReplies: new OpenCodeNativeAutoReplies(), directory, configuration, events: [], eventBytes: 0, eventIds: new Set(), pendingIds: new Set(), historyIds: new Set(),
     partTypes: new Map(), ownedIds: new Map(), sequence: 0, turn: undefined }
 }
 function withDirectory(path: string, directory: string): string {

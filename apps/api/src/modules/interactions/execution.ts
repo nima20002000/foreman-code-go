@@ -21,7 +21,7 @@ import type { NativeHarnessSessionManager, NativeHistory } from '../harnesses/po
 import { DomainError } from '../errors.js'
 import { ReviewerDispatcher } from './reviewer.js'
 import { nativePersistenceRedactor } from './nativePersistence.js'
-import type { ReviewCredentialMaintenance } from './reviewerRuntime.js'
+import type { ReviewCleanupSession, ReviewCredentialMaintenance } from './reviewerRuntime.js'
 import { coordinateSessionManager, isLeaseLost, type SingleWriterSessionManager } from './sessionWriter.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
@@ -286,6 +286,57 @@ export class ApprovalExecutionCoordinator {
     return nativePersistenceRedactor(Object.values(credential?.environment.variables ?? {}))
   }
 
+  reviewCredentialIdentity(executionId: string, session: NativeSessionReference): { required: boolean; principalId?: string } {
+    const owned = this.ownedSessions.get(executionId)
+    if (owned?.session) this.assertSessionIdentity(owned.session, session)
+    const credential = owned && this.managerCredentials.get(owned.manager)
+    return { required: Boolean(this.credentials), ...(credential ? { principalId: credential.principalId } : {}) }
+  }
+
+  async revokeReviewCredential(principalId: string): Promise<void> {
+    if (!this.credentials) throw new Error('The captured reviewer credential cannot be revoked without its provider.')
+    // The durable job stores only the captured principal, not a reusable token.
+    // Never revokeForExecution here: a successor may own a different principal.
+    await this.credentials.revoke({ principalId })
+  }
+
+  async recoverReviewCleanup(executionId: string, session: NativeSessionReference, job: ReviewJob,
+    signal: AbortSignal): Promise<ReviewCleanupSession> {
+    signal.throwIfAborted()
+    const execution = await this.runs.getExecution(executionId)
+    const native = await this.interactions.coordination.workflowSession(executionId)
+    const configuration = execution && await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+    if (!job.cleanup || job.state !== 'failed' || !execution || execution.agentId !== job.reviewerAgentId
+      || execution.nativeSessionId !== job.nativeSessionId || session.nativeSessionId !== job.nativeSessionId
+      || session.harness !== job.provider || !native?.finalized || !configuration
+      || configuration.harness.harness !== job.provider || configuration.agentId !== job.reviewerAgentId) {
+      throw new DomainError('REVIEW_JOB_IDENTITY_CONFLICT', 'Cleanup does not match the durable reviewer execution.', 409)
+    }
+    this.assertSessionIdentity(native.session, session)
+    signal.throwIfAborted()
+    const owned = this.ownedSessions.get(executionId)
+    if (owned?.session) this.assertSessionIdentity(owned.session, session)
+    const context = { ...this.managerContext(execution, configuration), purpose: 'reviewer' as const }
+    const resolved = owned ? undefined : this.resolveManager(context)
+    const manager = owned?.manager ?? resolved!.manager
+    // Resolving a writer is not starting/attaching it. In particular there is no
+    // prepareEnvironment, beginStart, capabilities, or credential heartbeat here.
+    const resident = owned ? Boolean(owned.session && !owned.opening) : resolved!.processState === 'resident'
+    return {
+      manager, resident, closed: this.closedExecutions.has(executionId),
+      confirmClosed: async (cleanupSignal) => {
+        cleanupSignal.throwIfAborted()
+        // Only the nonresident orphan-process path may perform closure recovery.
+        // A missing local manager by itself proves absolutely nothing.
+        if (owned || this.ownedSessions.has(executionId) || resolved?.processState !== 'needs_start') return false
+        const closed = await this.recoverNativeProcesses?.(executionId, cleanupSignal) === true
+        cleanupSignal.throwIfAborted()
+        if (closed) this.closedExecutions.add(executionId)
+        return closed
+      },
+    }
+  }
+
   private async validateReviewer(owned: OwnedNativeSession, session: NativeSessionReference, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted()
     if (this.ownedSessions.get(owned.execution.id) !== owned || owned.context.purpose !== 'reviewer'
@@ -336,7 +387,8 @@ export class ApprovalExecutionCoordinator {
     let invalidation: Promise<void> | undefined
     const invalidate = () => {
       // No revokeForExecution: a successor may already own a different principal.
-      invalidation ??= initial && this.credentials ? this.credentials.revoke(initial) : Promise.resolve()
+      invalidation ??= (initial && this.credentials ? this.credentials.revoke(initial) : Promise.resolve())
+        .catch((error: unknown) => { invalidation = undefined; throw error })
       return invalidation
     }
     // Initial authority reads can stall too. Do not wait past the process token's
@@ -388,7 +440,8 @@ export class ApprovalExecutionCoordinator {
         if (!isLeaseLost(error)) void invalidate().catch(() => undefined)
       },
     }) : undefined
-    return { signal, invalidate, stop: async () => { stopped.abort(); await stopRenewal?.() } }
+    return { signal, invalidate, ...(initial ? { principalId: initial.principalId } : {}),
+      stop: async () => { stopped.abort(); await stopRenewal?.() } }
   }
 
   async recordReviewFailure(executionId: string, job: ReviewJob, error: NonNullable<ReviewJob['error']>,

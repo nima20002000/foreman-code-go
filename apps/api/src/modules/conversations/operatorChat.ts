@@ -3,11 +3,12 @@ import { access, mkdir, realpath } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 
 import {
-  CodexSessionCompatibilitySchema, OperatorConversationStreamEventSchema, SendOperatorMessageRequestSchema,
+  CodexSessionCompatibilitySchema, ConversationSchema, OperatorConversationStreamEventSchema, SendOperatorMessageRequestSchema,
   type OperatorConfigurationVersion, type OperatorConversationStreamEvent, type NativeSessionReference,
   type ExecutionResult, type SendOperatorMessageRequest, type RespondOperatorInteractionRequest,
 } from '@graphql/contracts'
 import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
+import type { OperatorConversationHistoryQuery } from '@graphql/contracts/operator-chat'
 
 import { DomainError } from '../errors.js'
 import { requireAuthorization } from '../access/policy.js'
@@ -72,12 +73,26 @@ interface Runtime {
   disposal?: Promise<void>
 }
 function failure(error: unknown): ExecutionResult {
-  return { outcome: 'failed', error: { code: error instanceof DomainError ? error.code : 'OPERATOR_SETUP_FAILED',
-    message: error instanceof Error ? error.message : 'Operator setup failed.', retryable: true } }
+  const provider = error && typeof error === 'object' && 'result' in error
+    ? (error as { result?: ExecutionResult }).result?.error : undefined
+  return { outcome: 'failed', error: { code: provider?.code ?? (error && typeof error === 'object'
+    && 'code' in error && typeof error.code === 'string' ? error.code : 'OPERATOR_SETUP_FAILED'),
+    message: provider?.message ?? (error instanceof Error ? error.message : 'Operator setup failed.'), retryable: true } }
+}
+
+/** Only evidence about the attempted prompt, never a later history/approval error. */
+function definitePromptRejection(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  if ('certainty' in error) return error.certainty === 'definite'
+  // Codex's RPC contract predates NativeDeliveryCertainty. A rejected read or
+  // interrupt is not evidence that turn/start was rejected.
+  return 'method' in error && error.method === 'turn/start'
+    && 'uncertain' in error && error.uncertain === false
 }
 function definiteCreationFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false
-  if ('certainty' in error && error.certainty === 'definite') return true
+  if ('certainty' in error) return error.certainty === 'definite'
+  if ('uncertain' in error && error.uncertain === true) return false
   const code = 'result' in error ? (error as { result?: ExecutionResult }).result?.error?.code : undefined
   return Boolean(code && /(?:AUTH_|VERSION_|CONFIGURATION_|SETTING_|SCOPED_ENVIRONMENT_|OWNER_MISMATCH|MCP_|REQUEST_FAILED)/.test(code))
 }
@@ -89,6 +104,7 @@ export class OperatorChatService {
   private readonly accepting = new Set<Promise<unknown>>()
   private readonly acceptanceControllers = new Set<AbortController>()
   private readonly controls = new Map<string, Promise<unknown>>()
+  private readonly responding = new Set<string>()
   private readonly reviewCleanup = new Map<string, Promise<void>>()
   private readonly lifetime = new AbortController()
   private reconciliation: Promise<void> | undefined
@@ -149,6 +165,15 @@ export class OperatorChatService {
     return state
   }
 
+  async history(id: string, principal: ManagementPrincipal, query: Partial<OperatorConversationHistoryQuery> = {}) {
+    // Read-only recovery uses the same owner boundary as the live transcript.
+    // A recovered request ID is never submitted or approved by this endpoint.
+    await this.assertAccess(id, principal)
+    const page = await this.repository.history(id, query)
+    if (!page) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
+    return page
+  }
+
   send(id: string, value: SendOperatorMessageRequest, principal: ManagementPrincipal) {
     this.assertOpen()
     const controller = new AbortController()
@@ -162,12 +187,16 @@ export class OperatorChatService {
   private async accept(id: string, value: SendOperatorMessageRequest, principal: ManagementPrincipal, controller: AbortController) {
     const input = SendOperatorMessageRequestSchema.parse(value)
     const row = await this.assertAccess(id, principal, 'operator_chat:write')
+    if (ConversationSchema.parse(row.record).status === 'archived') {
+      throw new DomainError('CONVERSATION_ARCHIVED', 'This conversation is read-only.', 409)
+    }
     const configuration = await this.repository.configuration(row.operator_configuration_version_id)
     if (!configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Pinned Operator configuration was not found.', 409)
     this.validate(configuration)
     return this.control(id, async () => {
       this.assertOpen(); controller.signal.throwIfAborted()
       // Access ownership and execution authority are intentionally different for reviews.
+      requireAuthorization(await this.authority.current(row.owner_principal_id!), 'operator_chat:write')
       const begun = await this.repository.beginTurn(id, input, row.owner_principal_id!)
       if (begun.replayed) return begun
       if (this.closing || controller.signal.aborted) {
@@ -204,9 +233,45 @@ export class OperatorChatService {
     return runtime
   }
 
+  /** Existing owned work can be inspected/stopped without authority to launch new work. */
+  private async cleanupRuntime(id: string, row: ConversationRow, configuration: OperatorConfigurationVersion,
+    signal: AbortSignal): Promise<Runtime> {
+    if (!row.native_session_id || !row.active_request_id) throw new Error('Cleanup requires a durable native session and request.')
+    if (this.runtimes.has(id) && !this.runtimes.get(id)?.session) {
+      // A failed credentialed attach may have left a bound manager. Dispose that
+      // context before a cleanup-only attach; the durable request stays fenced.
+      await this.release(id)
+    }
+    const runtime: Runtime = this.runtimes.get(id) ?? { manager: this.managers(configuration, id) }
+    this.runtimes.set(id, runtime)
+    if (!runtime.session) {
+      runtime.session = await runtime.manager.attachSession({ harness: row.harness,
+        providerVersion: row.provider_version ?? 'unknown', nativeSessionId: row.native_session_id }, {
+        kind: 'operator', correlationId: nativeCorrelation(id, row.active_request_id), configuration,
+        workingDirectory: this.workingDirectory,
+        // Required native environment references still need a value on attach.
+        // This is deliberately NOT an issued credential: the App rejects it.
+        // Do not mint fresh owner authority merely to inspect/stop old work.
+        environment: { agentId: configuration.operatorId,
+          variables: { GRAPHQL_OPERATOR_MCP_TOKEN: 'operator-cleanup-disabled' } },
+        ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}),
+      }, signal)
+    }
+    // OpenCode history reads can consume automatic permissions. Stop that local
+    // responder before any cleanup read, including immediately after reattachment.
+    if (configuration.harness.harness === 'opencode'
+      && (configuration.harness.autoApprove || configuration.harness.advanced?.permissionHandling === 'native_auto')
+      && !runtime.manager.stopAutomaticResponses) {
+      throw new Error('The native manager does not support approval-free cleanup.')
+    }
+    runtime.manager.stopAutomaticResponses?.(runtime.session)
+    return runtime
+  }
+
   private async runTurn(id: string, input: SendOperatorMessageRequest, configuration: OperatorConfigurationVersion, ownerId: string, signal: AbortSignal) {
     let creating = false
     let submitting = false
+    let submitted = false
     try {
       let row = await this.repository.active(id)
       if (!row || row.active_request_id !== input.requestId) return
@@ -242,6 +307,9 @@ export class OperatorChatService {
       for await (const event of runtime.manager.startTurn(runtime.session, {
         prompt: `${input.content}${hint}`, clientCorrelationId: correlationId,
         onSubmitted: async (nativeTurnId) => {
+          // A callback is native evidence even when saving its identity fails.
+          // No subsequent definite error can make this prompt safe to replay.
+          submitted = true
           const cancelRequested = await this.control(id, async () => {
             if (!await this.repository.submitted(id, input.requestId, nativeTurnId)) throw new Error('Native turn ownership was lost.')
             const current = await this.repository.active(id)
@@ -274,6 +342,8 @@ export class OperatorChatService {
           }
         },
       }, signal)) {
+        // After native output, errors from pending/history reads are not prompt rejections.
+        submitted = true
         for (const delta of nativeAssistantText(event)) this.events.publish(id, 'delta', { ...delta, requestId: input.requestId })
         if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
           const pending = await runtime.manager.pending(runtime.session, signal)
@@ -284,12 +354,18 @@ export class OperatorChatService {
           }
         }
       }
+      submitted = true
       await this.control(id, () => this.observe(id, input.requestId, runtime))
     } catch (error) {
-      if (submitting || (creating && !definiteCreationFailure(error))) {
+      if (submitted || (submitting && !definitePromptRejection(error)) || (creating && !definiteCreationFailure(error))) {
         await this.repository.uncertain(id, input.requestId, error instanceof Error ? error.message : 'Native delivery is uncertain.')
       } else {
-        await this.control(id, () => this.complete(id, input.requestId, failure(error), undefined, true))
+        await this.control(id, async () => {
+          const current = await this.repository.active(id)
+          if (!current || current.active_request_id !== input.requestId) return
+          await this.complete(id, input.requestId, current.cancel_requested ? { outcome: 'canceled' } : failure(error),
+            undefined, !current.cancel_requested)
+        })
       }
       this.events.publish(id, 'error', { requestId: input.requestId, message: error instanceof Error ? error.message : 'Operator turn failed.' })
     }
@@ -337,14 +413,20 @@ export class OperatorChatService {
       await this.repository.uncertain(id, requestId, 'The provider has not proven the identity of this request. No new turn will be submitted.')
       return
     }
-    await this.repository.submitted(id, requestId, history.nativeTurnId)
+    if (!await this.repository.submitted(id, requestId, history.nativeTurnId)) return
     const pending = history.pendingInteraction ?? history.pendingInteractions[0]
     await this.repository.pending(id, requestId, pending)
     if (history.terminalResult && !pending) {
       await this.complete(id, requestId, history.terminalResult, history.nativeMessageId)
-    } else if (row.cancel_requested) {
-      await this.interrupt(id, { ...row, active_native_turn_id: history.nativeTurnId }, runtime)
-    } else this.events.publish(id, 'state', { requestId, turnState: 'active', pending: Boolean(pending) })
+    } else {
+      const current = await this.repository.active(id)
+      if (!current || current.active_request_id !== requestId) return
+      if (current.cancel_requested) {
+        await this.interrupt(id, { ...current, active_native_turn_id: history.nativeTurnId }, runtime)
+        return
+      }
+      this.events.publish(id, 'state', { requestId, turnState: 'active', pending: Boolean(pending) })
+    }
   }
   private async interrupt(id: string, row: ConversationRow, runtime: Runtime): Promise<void> {
     if (!runtime.session || !row.active_native_turn_id || !row.active_request_id) return
@@ -362,10 +444,15 @@ export class OperatorChatService {
       if (row?.active_request_id === requestId) await this.stopReview(id, 'Canceled by the authorized conversation owner.')
       return this.get(id, principal)
     }
-    await this.control(id, async () => {
+    // Intent is a request-fenced database transition, not a native write. Do not
+    // queue it behind a slow approval response. Native delivery stays serialized.
+    if (!await this.repository.requestCancel(id, requestId)) return this.get(id, principal)
+    const task = this.tasks.get(id)
+    if (task?.requestId === requestId) task.controller.abort(new Error('Operator cancellation requested.'))
+    const responseInFlight = this.responding.has(id)
+    const delivery = this.control(id, async () => {
       const row = await this.repository.active(id)
-      if (!row || row.active_request_id !== requestId) return // Late cancellation cannot target a newer request.
-      await this.repository.requestCancel(id, requestId)
+      if (!row || row.active_request_id !== requestId || !row.cancel_requested) return
       if (['accepted', 'ready'].includes(row.active_phase ?? '') && !this.tasks.has(id)) {
         await this.complete(id, requestId, { outcome: 'canceled' }); return
       }
@@ -377,7 +464,7 @@ export class OperatorChatService {
         }
       } catch (error) {
         await this.repository.uncertain(id, requestId, error instanceof Error ? error.message : 'Cancellation delivery is uncertain.')
-        throw error
+        this.events.publish(id, 'error', { requestId, turnState: 'uncertain' })
       } finally {
         // Once submission identity is durable, a silent event stream must not
         // pin the task forever after cancellation. Recovery still requires
@@ -388,6 +475,10 @@ export class OperatorChatService {
         }
       }
     })
+    // Preserve the ordinary immediate-cancel response, but never wait behind
+    // an approval delivery just to acknowledge durable cancellation intent.
+    void delivery.catch(() => undefined)
+    if (!responseInFlight) await delivery
     return this.get(id, principal)
   }
 
@@ -404,11 +495,14 @@ export class OperatorChatService {
       const configuration = await this.repository.configuration(row.operator_configuration_version_id)
       if (!configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Pinned Operator configuration was not found.', 409)
       const runtime = await this.runtime(id, row, configuration, this.lifetime.signal)
-      requireAuthorization(await this.authority.current(row.owner_principal_id!), 'operator_chat:respond')
+      const owner = await this.authority.current(row.owner_principal_id!)
+      requireAuthorization(owner, 'operator_chat:write')
+      requireAuthorization(owner, 'operator_chat:respond')
       if (!runtime.session || !await this.repository.claimResponse(id, input.requestId, input.nativeRequestId)) {
         throw new DomainError('NATIVE_RESPONSE_UNCERTAIN', 'A response was already submitted. Reconcile it before retrying.', 409)
       }
       let delivered = false
+      this.responding.add(id)
       try {
         await runtime.manager.respond(runtime.session, input.nativeRequestId, option, this.lifetime.signal)
         delivered = true
@@ -422,7 +516,7 @@ export class OperatorChatService {
         if (definite) await this.repository.responseFailed(id, input.requestId, input.nativeRequestId)
         else await this.repository.responseUncertain(id, input.requestId)
         throw error
-      }
+      } finally { this.responding.delete(id) }
     })
     return this.get(id, principal)
   }
@@ -434,10 +528,39 @@ export class OperatorChatService {
     this.reconciliation = promise
     return promise
   }
+  /** This preflight does no native writes and must not wait for a response lane. */
+  private async recoveryAuthority(row: ConversationRow): Promise<boolean> {
+    if (!row.owner_principal_id || !row.active_request_id) return false
+    try {
+      requireAuthorization(await this.authority.current(row.owner_principal_id), 'operator_chat:write')
+      return false
+    } catch (error) {
+      if (!(error instanceof DomainError) || !/AUTH_|ACCESS_DENIED/.test(error.code)) throw error
+      if (!await this.repository.requestCancel(row.id, row.active_request_id)) return true
+      const resident = this.runtimes.get(row.id)
+      if (resident?.session) resident.manager.stopAutomaticResponses?.(resident.session)
+      const task = this.tasks.get(row.id)
+      if (task?.requestId === row.active_request_id) task.controller.abort(new Error('Operator owner authority ended.'))
+      await this.authority.release(row.id)
+      return true
+    }
+  }
+
   private async reconcile() {
     const reviewErrors: unknown[] = []
     for (const candidate of await this.repository.unfinished()) {
       if (this.closing) break
+      let revoked = false
+      if (!isOperatorReview(candidate.id)) {
+        try { revoked = await this.recoveryAuthority(candidate) } catch (error) {
+          await this.repository.uncertain(candidate.id, candidate.active_request_id!,
+            error instanceof Error ? error.message : 'Owner recovery authority is unavailable.')
+          continue
+        }
+      }
+      // A response/cancel already owns this conversation's native write lane.
+      // Do not wait behind it and starve recovery for unrelated conversations.
+      if (!isOperatorReview(candidate.id) && this.controls.has(candidate.id)) continue
       if (isOperatorReview(candidate.id)) {
         try {
           if (!(await this.repository.reviews.binding(candidate.id))?.active) {
@@ -451,8 +574,9 @@ export class OperatorChatService {
         const requestId = row.active_request_id
         try {
           if (!row.owner_principal_id) throw new Error('This legacy conversation needs an explicit owner assignment before recovery.')
-          const principal = await this.authority.current(row.owner_principal_id)
-          requireAuthorization(principal, 'operator_chat:write')
+          if (isOperatorReview(row.id)) {
+            requireAuthorization(await this.authority.current(row.owner_principal_id), 'operator_chat:write')
+          }
           if (this.tasks.has(row.id)) return
           if (row.active_phase === 'accepted' || row.active_phase === 'ready') {
             await this.complete(row.id, requestId, row.cancel_requested ? { outcome: 'canceled' }
@@ -472,9 +596,14 @@ export class OperatorChatService {
           }
           const configuration = await this.repository.configuration(row.operator_configuration_version_id)
           if (!configuration) throw new Error('Pinned Operator configuration was not found.')
-          this.validate(configuration)
-          const runtime = await this.runtime(row.id, row, configuration, this.lifetime.signal)
-          await this.observe(row.id, requestId, runtime)
+          const cleanup = !isOperatorReview(row.id) && (revoked || row.cancel_requested)
+          if (!cleanup) this.validate(configuration)
+          const signal = isOperatorReview(row.id) ? this.lifetime.signal
+            : AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(5_000)])
+          const runtime = cleanup ? await this.cleanupRuntime(row.id, row, configuration, signal)
+            : await this.runtime(row.id, row, configuration, signal)
+          if (cleanup && row.active_native_turn_id) await this.interrupt(row.id, row, runtime)
+          await this.observe(row.id, requestId, runtime, signal)
         } catch (error) {
           await this.repository.uncertain(row.id, requestId, error instanceof Error ? error.message : 'Native recovery is uncertain.')
           // Revoked authority must not leave a resident model running with native tools.

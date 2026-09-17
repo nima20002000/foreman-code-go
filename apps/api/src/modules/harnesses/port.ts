@@ -104,6 +104,8 @@ export interface NativeHarnessSessionManager {
   startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent>
   pending(session: NativeSessionReference, signal?: AbortSignal): Promise<PendingNativeInteraction | undefined>
   respond(session: NativeSessionReference, nativeRequestId: string, option: ApprovalResponseOption, signal?: AbortSignal): Promise<void>
+  /** Synchronously stop client-side auto replies before cleanup reads; never terminal evidence. */
+  stopAutomaticResponses?(session: NativeSessionReference): void
   cancel(session: NativeSessionReference, signal?: AbortSignal, nativeTurnId?: string): Promise<boolean>
   history(session: NativeSessionReference, signal?: AbortSignal): Promise<NativeHistory>
   historyPage?(session: NativeSessionReference, before?: string, signal?: AbortSignal): Promise<NativeHistory>

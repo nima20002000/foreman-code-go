@@ -6,7 +6,8 @@ import { DomainError } from '../errors.js'
 import { appendNativeEvent } from '../runs/nativeEvents.js'
 
 // A submitted job may have reached the provider even when no acknowledgement was saved.
-const recoverableJob = `state in ('pending','leased','blocked_busy','blocked_disconnected','submitted','acknowledged','uncertain')
+const recoverableJob = `(state in ('pending','leased','blocked_busy','blocked_disconnected','submitted','acknowledged','uncertain')
+    or (state='failed' and record->'cleanup' is not null and record->'cleanup'->>'completedAt' is null))
   and (record->>'leaseExpiresAt' is null or (record->>'leaseExpiresAt')::timestamptz <= clock_timestamp())`
 
 export interface WriterFence { id: string; token: string }
@@ -121,8 +122,8 @@ export class PostgresInteractionCoordinationRepository {
       const current = found.rows[0] ? ReviewJobSchema.parse(found.rows[0].record) : undefined
       if (!current) throw new DomainError('REVIEW_JOB_NOT_CLAIMABLE', 'The review job is already owned or completed.', 409)
       const next = ReviewJobSchema.parse({
-        ...current, state: ['submitted', 'acknowledged', 'uncertain'].includes(current.state) ? current.state : 'leased', attempt: current.attempt + 1, leaseOwner: input.owner,
-        leaseToken: input.token, leaseExpiresAt: input.expiresAt, updatedAt: new Date().toISOString(), error: undefined,
+        ...current, state: ['submitted', 'acknowledged', 'uncertain', 'failed'].includes(current.state) ? current.state : 'leased', attempt: current.attempt + 1, leaseOwner: input.owner,
+        leaseToken: input.token, leaseExpiresAt: input.expiresAt, updatedAt: new Date().toISOString(), error: current.cleanup ? current.error : undefined,
       })
       await client.query(
         `update review_jobs set state=$3,revision=revision+1,record=$2::jsonb,updated_at=now() where id=$1`,
@@ -180,7 +181,7 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async transitionReviewJob(id: string, leaseToken: string, state: ReviewJob['state'], fields: {
-    providerTurnOrMessageId?: string; error?: ReviewJob['error']; writerFence?: WriterFence; releaseLease?: boolean
+    providerTurnOrMessageId?: string; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']; writerFence?: WriterFence; releaseLease?: boolean
   } = {}, expected?: { revision: number; fence: number }): Promise<ReviewJob> {
     const client = await this.pool.connect()
     try {
@@ -200,6 +201,20 @@ export class PostgresInteractionCoordinationRepository {
         && current.providerTurnOrMessageId !== fields.providerTurnOrMessageId) {
         throw new DomainError('REVIEW_JOB_IDENTITY_CONFLICT', 'The review job is already bound to another provider turn or message.', 409)
       }
+      if ((fields.cleanup && state !== 'failed') || (current.cleanup && state !== 'failed')
+        || (fields.cleanup?.nativeState === 'not_started'
+          && Boolean(current.submittedAt || current.acknowledgedAt || current.providerTurnOrMessageId))
+        || (current.cleanup?.credentialPrincipalId && fields.cleanup?.credentialPrincipalId !== undefined
+          && current.cleanup.credentialPrincipalId !== fields.cleanup.credentialPrincipalId)
+        || (current.cleanup && fields.cleanup && (
+          (current.cleanup.nativeState !== 'pending' && current.cleanup.nativeState !== fields.cleanup.nativeState)
+          || (current.cleanup.credentialState !== 'pending' && current.cleanup.credentialState !== fields.cleanup.credentialState)
+          || (current.cleanup.credentialPrincipalId && !fields.cleanup.credentialPrincipalId)
+          || (current.cleanup.interruptState !== 'not_sent' && fields.cleanup.interruptState === 'not_sent')
+          || (current.cleanup.interruptState === 'acknowledged' && fields.cleanup.interruptState !== 'acknowledged')
+          || (current.cleanup.completedAt && current.cleanup.completedAt !== fields.cleanup.completedAt)))) {
+        throw new DomainError('REVIEW_CLEANUP_CONFLICT', 'A failed review cannot restart or lose its cleanup evidence.', 409)
+      }
       if (fields.writerFence) {
         const owned = await client.query(
           `select id from native_session_lanes where id=$1 and record->>'leaseToken'=$2
@@ -209,14 +224,15 @@ export class PostgresInteractionCoordinationRepository {
         if (!owned.rowCount) throw new DomainError('SESSION_LANE_LEASE_LOST', 'The native writer is no longer owned.', 409)
       }
       const now = new Date().toISOString()
-      const releases = fields.releaseLease || ['completed', 'blocked_busy', 'blocked_disconnected', 'uncertain', 'failed'].includes(state)
+      const releases = fields.releaseLease ?? ['completed', 'blocked_busy', 'blocked_disconnected', 'uncertain', 'failed'].includes(state)
       const next = ReviewJobSchema.parse({
         ...current, state, updatedAt: now,
         ...(state === 'submitted' ? { submittedAt: current.submittedAt ?? now } : {}),
         ...(state === 'acknowledged' ? { acknowledgedAt: current.acknowledgedAt ?? now } : {}),
         ...(state === 'completed' ? { completedAt: current.completedAt ?? now } : {}),
         ...(fields.providerTurnOrMessageId ? { providerTurnOrMessageId: fields.providerTurnOrMessageId } : {}),
-        ...(fields.error ? { error: fields.error } : {}),
+        ...(fields.error && !current.cleanup ? { error: fields.error } : {}),
+        ...(fields.cleanup ? { cleanup: fields.cleanup } : {}),
         ...(releases ? { leaseOwner: undefined, leaseToken: undefined, leaseExpiresAt: undefined } : {}),
       })
       const updated = await client.query(
@@ -292,6 +308,15 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async bindLaneTurn(fence: WriterFence, correlationId: string): Promise<void> {
+    // The caller owns the writer lease throughout this read and the mutation.
+    // Native idleness cannot erase a failed review's outstanding cleanup duties.
+    const cleanup = await this.queryConnection.query(
+      `select l.id from native_session_lanes l join review_jobs j
+         on j.record->>'provider'=l.harness and j.record->>'nativeSessionId'=l.native_session_id
+       where l.id=$1 and j.state='failed' and j.record->'cleanup' is not null
+         and j.record->'cleanup'->>'completedAt' is null limit 1`, [fence.id],
+    )
+    if (cleanup.rowCount) throw new DomainError('SESSION_LANE_BUSY', 'Reviewer cleanup is still unresolved.', 409)
     const result = await this.queryConnection.query(
       `update native_session_lanes set revision=revision+1, updated_at=clock_timestamp(),
        record=jsonb_set(jsonb_set(record - 'currentTurnOrMessageId', '{revision}', to_jsonb((revision+1)::bigint)),

@@ -93,13 +93,15 @@ describe('PR17 Operator interaction regressions', () => {
   })
   it('preserves a reader position and offers an explicit jump to new output', () => {
     const messages: OperatorConversationState['messages'] = operatorState().messages
-    const view = render(<OperatorTranscript messages={messages} partialText="" />)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    clients.push(client)
+    const view = render(<QueryClientProvider client={client}><OperatorTranscript messages={messages} partialText="" /></QueryClientProvider>)
     const region = screen.getByRole('region', { name: 'Operator transcript' })
     Object.defineProperty(region, 'scrollHeight', { configurable: true, value: 1_000 })
     Object.defineProperty(region, 'clientHeight', { configurable: true, value: 200 })
     region.scrollTop = 100
     fireEvent.scroll(region)
-    view.rerender(<OperatorTranscript messages={messages} partialText="New response" />)
+    view.rerender(<QueryClientProvider client={client}><OperatorTranscript messages={messages} partialText="New response" /></QueryClientProvider>)
     expect(region.scrollTop).toBe(100)
     fireEvent.click(screen.getByRole('button', { name: /Jump to latest/ }))
     expect(region.scrollTop).toBe(1_000)

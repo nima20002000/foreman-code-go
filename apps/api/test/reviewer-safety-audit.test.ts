@@ -35,7 +35,8 @@ it('F3/F6: live reviewer-native approval fails durably, records exact request, c
   assert.equal(failureActivity[0]?.kind, 'review_job_state')
   assert.deepEqual(failureActivity[0]?.payload.nativeApproval?.turn, pending.turn)
   assert.match(JSON.stringify(failureActivity), /\[REDACTED\]/)
-  assert.ok(fixture.saved.jobs.find((job) => job.state === 'acknowledged' && job.error?.code === 'REVIEWER_NATIVE_APPROVAL_UNSUPPORTED'))
+  assert.ok(fixture.saved.jobs.find((job) => job.state === 'failed'
+    && job.error?.code === 'REVIEWER_NATIVE_APPROVAL_UNSUPPORTED' && job.cleanup))
 })
 
 it('F3: cold pending native approval binds the recovered provider identity before failing, without prompt replay', async () => {
@@ -47,7 +48,9 @@ it('F3: cold pending native approval binds the recovered provider identity befor
   assert.equal(result.error?.code, 'REVIEWER_NATIVE_APPROVAL_UNSUPPORTED')
   assert.equal(fixture.starts.length, 0)
   assert.equal(fixture.responses, 0)
-  assert.deepEqual(fixture.cancellations, [{ session, nativeTurnId: providerId }])
+  // The recovered lane was never durably bound to this review, so cleanup must not target it.
+  assert.deepEqual(fixture.cancellations, [])
+  assert.equal(result.cleanup?.nativeState, 'pending')
   assertNoSecrets(fixture.saved)
 })
 
@@ -57,7 +60,8 @@ it('F3: failed native cancellation stays visible and is never treated as success
   fixture.hooks.cancelError = new Error(`Provider could not cancel ${secret} ${historicalSecret}`)
   const result = await fixture.dispatcher.dispatchNext(fixture.job.reviewerAgentId, 'worker')
   assert.equal(result?.state, 'failed')
-  assert.ok(result.error?.message.includes('Native cancellation unconfirmed'))
+  assert.equal(result.cleanup?.nativeState, 'pending')
+  assert.equal(result.cleanup?.interruptState, 'submitted')
   assert.equal(fixture.responses, 0)
   assertNoSecrets(result)
   assertNoSecrets(fixture.saved)

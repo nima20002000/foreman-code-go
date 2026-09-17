@@ -7,6 +7,8 @@ import {
   RespondOperatorInteractionRequestSchema,
   type OperatorConversationStreamEvent,
 } from '@graphql/contracts'
+import { OperatorConversationHistoryQuerySchema, OperatorConversationHistoryPageSchema } from '@graphql/contracts/operator-chat'
+import { operatorChatBootstrapFrame } from '../modules/conversations/operatorChatBootstrap.js'
 import type { FastifyInstance } from 'fastify'
 import { requirePrincipal } from '../modules/access/http.js'
 import { DomainError } from '../modules/errors.js'
@@ -34,6 +36,9 @@ export function registerOperatorChatRoutes(app: FastifyInstance, chat: OperatorC
   })
   app.get<{ Params: ConversationParams }>('/api/operator/conversations/:conversationId', async (request) =>
     GetOperatorConversationResponseSchema.parse(await chat.get(request.params.conversationId, requirePrincipal(request))))
+  app.get<{ Params: ConversationParams; Querystring: unknown }>('/api/operator/conversations/:conversationId/history', async (request) =>
+    OperatorConversationHistoryPageSchema.parse(await chat.history(request.params.conversationId, requirePrincipal(request),
+      OperatorConversationHistoryQuerySchema.parse(request.query))))
   app.post<{ Params: ConversationParams; Body: unknown }>('/api/operator/conversations/:conversationId/messages', async (request, reply) => {
     const input = SendOperatorMessageRequestSchema.parse(request.body)
     const result = await chat.send(request.params.conversationId, input, requirePrincipal(request))
@@ -93,7 +98,7 @@ export function registerOperatorChatRoutes(app: FastifyInstance, chat: OperatorC
         connection: 'keep-alive', 'x-accel-buffering': 'no' })
       // Last-Event-ID is a hint only: every connection starts from an authoritative revisioned snapshot.
       // Transient deltas have no replay cursor and must never substitute for persisted messages.
-      write(`id: ${snapshot.revision}\nevent: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`)
+      write(operatorChatBootstrapFrame(snapshot))
       bootstrapping = false
       for (const frame of queued) write(frame)
       queued.length = 0

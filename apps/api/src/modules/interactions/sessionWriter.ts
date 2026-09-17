@@ -341,8 +341,8 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
 
   respond: NativeHarnessSessionManager['respond'] = (session, requestId, option, signal) =>
     this.control(session, signal, (ownedSignal) => this.manager.respond(session, requestId, option, ownedSignal))
-  cancel: NativeHarnessSessionManager['cancel'] = (session, signal) =>
-    this.control(session, signal, (ownedSignal) => this.manager.cancel(session, ownedSignal), true)
+  cancel: NativeHarnessSessionManager['cancel'] = (session, signal, nativeTurnId) =>
+    this.control(session, signal, (ownedSignal) => this.manager.cancel(session, ownedSignal, nativeTurnId), true)
 
   attachSession(session: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
     return this.withLane(session, `attach-${randomUUID()}`, signal, async (manager, lease) => {

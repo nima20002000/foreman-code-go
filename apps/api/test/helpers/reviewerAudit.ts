@@ -162,7 +162,7 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
       return job.leaseExpiresAt
     },
     async transitionReviewJob(id: string, token: string, state: ReviewJob['state'], fields: {
-      providerTurnOrMessageId?: string; error?: ReviewJob['error']; releaseLease?: boolean; writerFence?: WriterFence
+      providerTurnOrMessageId?: string; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']; releaseLease?: boolean; writerFence?: WriterFence
     } = {}) {
       await assertJob(id, token)
       if (fields.writerFence) await coordination.assertLaneLease(fields.writerFence.id, fields.writerFence.token)
@@ -173,8 +173,9 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
         ...(state === 'completed' ? { completedAt: now } : {}),
         ...(fields.providerTurnOrMessageId ? { providerTurnOrMessageId: fields.providerTurnOrMessageId } : {}),
         ...(fields.error ? { error: fields.error } : {}),
+        ...(fields.cleanup ? { cleanup: fields.cleanup } : {}),
       }
-      if (fields.releaseLease || ['failed', 'completed', 'blocked_busy', 'blocked_disconnected', 'uncertain'].includes(state)) {
+      if (fields.releaseLease ?? ['failed', 'completed', 'blocked_busy', 'blocked_disconnected', 'uncertain'].includes(state)) {
         delete job.leaseOwner; delete job.leaseToken; delete job.leaseExpiresAt
       }
       saved.jobs.push(structuredClone(job))

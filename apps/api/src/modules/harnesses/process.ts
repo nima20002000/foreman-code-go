@@ -124,8 +124,12 @@ async function runOwnedProcess<T>(
           clearTimeout(timer)
         }
         if (killError) throw killError
+        // A later explicit Stop may complete cleanup after the command rejected.
+        ownedProcesses.delete(child)
+        options.signal?.removeEventListener('abort', abort)
       })()
-      void shutdown.catch(() => undefined)
+      const attempt = shutdown
+      void attempt.catch(() => { if (shutdown === attempt) shutdown = undefined })
     }
     return shutdown
   }
@@ -314,10 +318,11 @@ export function spawnOwnedStdioProcess(options: {
           }
         } catch (error) { failure ??= error }
       }
+      let confirmed = false
       try {
-        // Registry shutdown includes its own grace period and verifies group absence.
+        // Registry shutdown includes its own grace period and verifies the launch boundary.
         // Do not wrap it in the shorter per-signal timeout used for legacy children.
-        if (await stopRecoveredChild(child)) return
+        if (await stopRecoveredChild(child)) { confirmed = true; return }
         // Signal the group even after its leader exited: descendants may own pipes.
         await send('SIGTERM')
         if (!didClose) await within(closed, PROCESS_SHUTDOWN_GRACE_MS)
@@ -325,16 +330,20 @@ export function spawnOwnedStdioProcess(options: {
         if (!didClose && !await within(closed, PROCESS_SHUTDOWN_GRACE_MS)) {
           failure ??= new Error('Provider process did not close after forced tree shutdown.')
         }
+        if (failure) throw failure
+        confirmed = true
       } finally {
         child.stdin.destroy()
         child.stdout.destroy()
         child.stderr.destroy()
-        ownedProcesses.delete(child)
+        // Closing pipes is not proof that the native launch boundary is empty.
+        // Keep the same child available to Stop after an unconfirmed attempt.
+        if (confirmed) ownedProcesses.delete(child)
       }
-      if (failure) throw failure
     })()
-    // Event-driven cleanup must never create an unhandled rejection.
-    void shutdown.catch(() => undefined)
+    // Coalesce in-flight attempts and cache success, but permit explicit retries.
+    const attempt = shutdown
+    void attempt.catch(() => { if (shutdown === attempt) shutdown = undefined })
     return shutdown
   }
   ownedProcesses.set(child, close)

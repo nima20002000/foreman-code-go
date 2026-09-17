@@ -1,7 +1,6 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { once } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NATIVE_INTERACTION_FIXTURES, type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
 import { NativeResponseJournal } from '../src/modules/harnesses/recovery/responseJournal.js'
@@ -61,14 +60,26 @@ describe('PR17 durable native response receipts', () => {
   })
 })
 
-it.skipIf(process.platform !== 'linux')('PR17 fresh registry closes the registered process group without replay or PID-only signals', async () => {
+it.skipIf(process.platform !== 'linux')('PR17 fresh registry closes the registered launch boundary without replay or PID-only signals', async (context) => {
   const root = await directory()
   const registry = new NativeProcessRegistry(root)
   const child = spawnNativeProcess(process.execPath, ['-e', "console.log('ready');process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"], {
     cwd: root, env: {}, recovery: registry.scope('execution:test'),
   })
-  child.stderr.resume()
-  await once(child.stdout, 'data')
+  let stderr = ''
+  child.stderr.on('data', (chunk) => { stderr += String(chunk) })
+  const ready = await new Promise<boolean>((resolve) => {
+    const started = () => { child.removeListener('close', exited); resolve(true) }
+    const exited = () => { child.stdout.removeListener('data', started); resolve(false) }
+    child.stdout.once('data', started)
+    child.once('close', exited)
+  })
+  if (!ready) {
+    expect(stderr).toMatch(/Native launch refused: delegated cgroup v2/)
+    expect(await registry.closeOwner('execution:test')).toBe(true)
+    context.skip('This process test requires a writable delegated cgroup v2 with cgroup.kill.')
+    return
+  }
   expect(await new NativeProcessRegistry(root).closeOwner('execution:test')).toBe(true)
   expect(sessionAlive(child.pid!)).toBe(false)
   expect(await registry.closeOwner('execution:test')).toBe(true)

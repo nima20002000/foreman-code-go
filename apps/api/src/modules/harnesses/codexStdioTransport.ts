@@ -58,7 +58,7 @@ export class CodexStdioTransport {
   private readonly writes = new Set<(error: Error) => void>()
   private nextId = 1
   private stopped = false
-  private closePromise?: Promise<void>
+  private closePromise: Promise<void> | undefined
   private stderr = ''
 
   constructor(
@@ -151,8 +151,11 @@ export class CodexStdioTransport {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise
     this.stop(new HarnessExecutionError('CODEX_APP_SERVER_CLOSED', 'Codex transport was closed.'))
-    this.closePromise = this.owned?.close() ?? Promise.resolve()
-    return this.closePromise
+    const attempt = this.owned?.close() ?? Promise.resolve()
+    this.closePromise = attempt
+    // A failed cleanup stays fenced, but the next explicit close must retry it.
+    void attempt.catch(() => { if (this.closePromise === attempt) this.closePromise = undefined })
+    return attempt
   }
 
   private assertConnected(code = 'CODEX_APP_SERVER_DISCONNECTED'): void {

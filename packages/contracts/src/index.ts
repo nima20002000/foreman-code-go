@@ -606,6 +606,21 @@ export const NativeSessionLaneSchema = z.object({
 }).strict();
 export type NativeSessionLane = z.infer<typeof NativeSessionLaneSchema>;
 
+/** Failure is a business outcome; native/credential cleanup has its own durable lifecycle. */
+export const ReviewCleanupSchema = z.object({
+  nativeState: z.enum(["pending", "not_started", "terminal", "closed"]),
+  credentialState: z.enum(["pending", "revoked", "not_required"]),
+  /** Opaque principal identity only. Never persist a process token or its environment. */
+  credentialPrincipalId: IdSchema.optional(),
+  interruptState: z.enum(["not_sent", "submitted", "acknowledged"]),
+  completedAt: TimestampSchema.optional(),
+}).strict().superRefine((value, context) => {
+  if (value.completedAt && (value.nativeState === "pending" || value.credentialState === "pending")) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["completedAt"], message: "cleanup requires confirmed native settlement and credential revocation" });
+  }
+});
+export type ReviewCleanup = z.infer<typeof ReviewCleanupSchema>;
+
 export const ReviewJobSchema = z.object({
   id: IdSchema,
   interactionId: IdSchema,
@@ -619,6 +634,7 @@ export const ReviewJobSchema = z.object({
   leaseToken: IdSchema.optional(),
   leaseExpiresAt: TimestampSchema.optional(),
   correlationId: IdSchema,
+  cleanup: ReviewCleanupSchema.optional(),
   error: z.object({ code: z.string().trim().min(1), message: z.string().trim().min(1) }).strict().optional(),
   createdAt: TimestampSchema,
   submittedAt: TimestampSchema.optional(),

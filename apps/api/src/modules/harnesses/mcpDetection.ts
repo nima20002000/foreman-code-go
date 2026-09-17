@@ -223,7 +223,7 @@ export class WorkerLaunchCredentialService implements ExecutionCredentialProvide
     return this.credentials.renewForExecution(executionId, credential)
   }
 
-  revoke(credential: IssuedWorkerCredential): Promise<void> {
+  revoke(credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<void> {
     return this.credentials.revoke(credential)
   }
 
@@ -253,7 +253,7 @@ export interface ExecutionCredentialProvider {
   prepare(input: ExecutionCredentialPrepareInput): Promise<PreparedExecutionCredential>
   /** Same-token server-side lease renewal. Providers without it must not rotate a busy process. */
   renew?(executionId: string, credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<string>
-  revoke(credential: IssuedWorkerCredential): Promise<void>
+  revoke(credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<void>
   revokeForExecution(executionId: string): Promise<number>
   revokeForRun?(runId: string, client?: pg.PoolClient): Promise<number>
   reconcileTerminalCredentials?(): Promise<void>

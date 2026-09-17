@@ -50,13 +50,58 @@ function identity() {
   if(parts.length<20 || !/^\\d+$/.test(parts[19]))throw new Error('Invalid Linux identity')
   return {pid:process.pid,startTicks:parts[19],group:Number(parts[2]),session:Number(parts[3]),state:parts[0]}
 }
+// This child may only launch native code inside an already-delegated cgroup v2
+// subtree. No controller, mount, permission, or host-security setting is changed.
+function contain(id, dir, owner, boot) {
+  const entry=fs.readFileSync('/proc/self/cgroup','utf8').split('\\n').filter(x=>x.startsWith('0::'))
+  if(entry.length!==1)throw new Error('Native recovery requires delegated cgroup v2')
+  const relative=entry[0].slice(3)
+  if(!relative.startsWith('/') || relative.split('/').includes('..'))throw new Error('Unsafe cgroup hierarchy')
+  const parent=resolve('/sys/fs/cgroup','.'+relative)
+  let current='/sys/fs/cgroup'
+  for(const part of parent.slice(current.length).split('/').filter(Boolean)) {
+    current=join(current,part)
+    const stat=fs.lstatSync(current)
+    if(!stat.isDirectory() || stat.isSymbolicLink())throw new Error('Unsafe cgroup directory')
+  }
+  if(fs.statfsSync(parent).type!==0x63677270)throw new Error('Native recovery requires cgroup v2')
+  const path=join(parent,'graphql-native-'+id)
+  fs.mkdirSync(path)
+  let fd
+  try {
+    fd=fs.openSync(path,fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+    const stat=fs.fstatSync(fd,{bigint:true})
+    // Qualify forced tree cleanup BEFORE native work is allowed to start.
+    const kill=fs.openSync('/proc/self/fd/'+fd+'/cgroup.kill',fs.constants.O_WRONLY)
+    fs.closeSync(kill)
+    const boundary={kind:'cgroup-v2',path,device:stat.dev.toString(),inode:stat.ino.toString()}
+    // Journal the empty boundary before entering it, so a crash before birth
+    // publication cannot leave an untracked cgroup behind.
+    birth(join(dir,'containment.json'),{format:1,id,owner,boot,boundary})
+    fs.writeFileSync('/proc/self/fd/'+fd+'/cgroup.procs',String(process.pid))
+    containmentFd=fd
+    return boundary
+  } catch(error) {
+    if(fd!==undefined)fs.closeSync(fd)
+    try{fs.rmdirSync(path)}catch{}
+    throw error
+  }
+}
+let containmentFd
 let stopping=false,started=false,leader=false
 function stop() {
   if(stopping)return
   stopping=true
   if(!leader)process.exit(1) // No native child exists before leader qualification.
   try {process.kill(-process.pid,'SIGTERM')}catch{}
-  setTimeout(()=>process.kill(-process.pid,'SIGKILL'),1000)
+  setTimeout(()=>{
+    // The cgroup includes detached descendants and is pinned by an open fd.
+    if(containmentFd!==undefined) {
+      try{fs.writeFileSync('/proc/self/fd/'+containmentFd+'/cgroup.kill','1');return}catch{}
+    }
+    // A failed boundary kill is never a close certificate. Recovery remains fenced.
+    try{process.kill(-process.pid,'SIGKILL')}catch{}
+  },1000)
 }
 process.on('SIGTERM',stop)
 process.on('SIGINT',stop)
@@ -107,7 +152,12 @@ process.on('message',input=>{
     server.on('error',stop)
     server.listen({path:'\\0graphql-native-'+intent.id},()=>{
       try {
-        birth(join(dir,'birth.json'),certificate)
+        let containment
+        try{containment=contain(intent.id,dir,intent.owner,boot)}catch(error){
+          process.stderr.write('Native launch refused: delegated cgroup v2 with cgroup.kill is required.\\n')
+          throw error
+        }
+        birth(join(dir,'birth.json'),{...certificate,containment})
         if(stopping || !process.connected){stop();return}
         const native=spawn(config.binary,config.args,{cwd:config.cwd,env:environment,
           detached:false,stdio:['inherit','inherit','inherit'],windowsHide:true})

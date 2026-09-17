@@ -82,18 +82,19 @@ class CoordinationFake {
     return this.job!.leaseExpiresAt = new Date(Date.now() + ms).toISOString()
   }
   async transitionReviewJob(id: string, token: string, state: ReviewJob['state'], fields: {
-    providerTurnOrMessageId?: string; writerFence?: WriterFence; releaseLease?: boolean; error?: ReviewJob['error']
+    providerTurnOrMessageId?: string; writerFence?: WriterFence; releaseLease?: boolean; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']
   } = {}) {
     await this.assertReviewJobLease(id, token)
     if (fields.writerFence) await this.assertLaneLease(fields.writerFence.id, fields.writerFence.token)
     this.transitions.push(state)
     this.job = { ...this.job!, state, updatedAt: new Date().toISOString(),
       ...(fields.providerTurnOrMessageId ? { providerTurnOrMessageId: fields.providerTurnOrMessageId } : {}),
-      ...(fields.error ? { error: fields.error } : {}) }
+      ...(fields.error ? { error: fields.error } : {}),
+      ...(fields.cleanup ? { cleanup: fields.cleanup } : {}) }
     if (state === 'submitted') this.job.submittedAt = new Date().toISOString()
     if (state === 'acknowledged') this.job.acknowledgedAt = new Date().toISOString()
     if (state === 'completed') this.job.completedAt = new Date().toISOString()
-    if (fields.releaseLease || ['completed', 'failed', 'uncertain', 'blocked_busy', 'blocked_disconnected'].includes(state)) {
+    if (fields.releaseLease ?? ['completed', 'failed', 'uncertain', 'blocked_busy', 'blocked_disconnected'].includes(state)) {
       delete this.job.leaseOwner; delete this.job.leaseToken; delete this.job.leaseExpiresAt
     }
     return clone(this.job)

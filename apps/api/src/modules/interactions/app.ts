@@ -9,7 +9,7 @@ import {
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
 
-import { workerScope, canReadInteraction, hasWorkerAction, requireReadableInteraction, requireRespondableInteraction } from '../access/appPolicy.js'
+import { workerScope, workerScopesForAction, hasWorkerAction, requireReadableInteraction, requireRespondableInteraction } from '../access/appPolicy.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import type { PostgresInteractionRepository } from './postgres.js'
@@ -99,21 +99,27 @@ export class PostgresAppInteractionService implements AppInteractionService {
 
   async list(principal: ManagementPrincipal, input: unknown) {
     const parsed = AppInteractionListInputSchema.parse(input)
-    const scope = workerScope(principal)
+    // The summary scope mixes actions and grants; it is not an authorization predicate.
+    workerScope(principal)
+    const scopes = workerScopesForAction(principal, 'interactions:read')
     const afterId = decodeInteractionCursor(parsed.cursor)
     const rows = await this.pool.query<{ record: unknown }>(
       `select record from durable_interactions
        where status = 'pending'
-         and ($1::text[] is null or workspace_id = any($1))
-         and ($2::text[] is null or workflow_id = any($2))
-         and ($3::text[] is null or run_id = any($3))
-         and ($4::text is null or id > $4)
-       order by id limit $5`,
-      [scope.workspaceIds ?? null, scope.workflowIds ?? null, scope.runIds ?? null, afterId ?? null, parsed.limit + 1],
+         and exists (
+           select 1 from jsonb_to_recordset($1::jsonb)
+             as read_grant("workspaceIds" text[], "workflowIds" text[], "runIds" text[])
+           where workspace_id = any(read_grant."workspaceIds")
+             and workflow_id = any(read_grant."workflowIds")
+             and run_id = any(read_grant."runIds")
+         )
+         and ($2::text is null or id > $2)
+       order by id limit $3`,
+      [JSON.stringify(scopes), afterId ?? null, parsed.limit + 1],
     )
-    const visible = rows.rows
-      .map((row) => requireReadableInteraction(principal, DurableInteractionSchema.parse(row.record)))
-      .filter((interaction) => canReadInteraction(principal, interaction))
+    // Visibility is decided before LIMIT. EXISTS also avoids duplicate page slots
+    // when more than one read grant authorizes the same interaction.
+    const visible = rows.rows.map((row) => DurableInteractionSchema.parse(row.record))
     const items = visible.slice(0, parsed.limit)
     return ListInteractionsResponseSchema.parse({
       items,

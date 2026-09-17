@@ -148,8 +148,7 @@ export class ReviewEvidenceTracker {
   observeHistory(history: NativeHistory): void {
     for (const event of history.events) this.observeEvent(event)
     const terminal = history.terminalTurn
-    const providerId = this.session.harness === 'opencode'
-      ? history.nativeMessageId ?? history.nativeTurnId : history.nativeTurnId
+    const providerId = history.nativeTurnId
     if (history.correlationId !== undefined) {
       if (history.correlationId !== this.correlationId) this.identityConflict = true
       else if (providerId) this.acknowledge(providerId)
