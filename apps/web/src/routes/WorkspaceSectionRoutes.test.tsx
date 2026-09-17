@@ -156,13 +156,30 @@ describe('workspace section routes', () => {
   })
 
   it('places Browsers under Settings and preserves its deep link', async () => {
-    renderRoute('/workspaces/workspace-1/browsers')
+    const user = userEvent.setup()
+    const { router } = renderRoute('/workspaces/workspace-1/browsers')
 
-    expect(await screen.findByRole('heading', { name: 'Settings' })).toBeVisible()
-    expect(screen.getByRole('link', { name: /Browsers/ })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByRole('heading', { name: 'Browsers' })).toBeVisible()
-    expect(screen.getAllByText('Coming soon')).toHaveLength(2)
+    expect(await screen.findByRole('heading', { name: 'Browsers', level: 1 })).toBeVisible()
+    expect(screen.getByText('Coming soon')).toBeVisible()
     expect(screen.getByRole('link', { name: 'Workspace settings' })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
+
+    await user.click(screen.getByRole('link', { name: 'Back to settings' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings'))
+    expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
+    expect(screen.getByRole('link', { name: /Browsers/ })).toBeVisible()
+  })
+
+  it('opens workspace execution location on its dedicated Settings page', async () => {
+    const user = userEvent.setup()
+    const { router } = renderRoute('/workspaces/workspace-1/settings')
+
+    expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
+    await user.click(screen.getByRole('link', { name: /Execution location/ }))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings/location'))
+    expect(await screen.findByRole('heading', { name: 'Execution location', level: 1 })).toBeVisible()
+    expect(await screen.findByRole('textbox', { name: 'Execution folder path' })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Back to settings' })).toHaveAttribute('href', '/workspaces/workspace-1/settings')
   })
 })

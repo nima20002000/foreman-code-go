@@ -21,7 +21,7 @@ export function WorkspaceExecutionLocationSetup({ workspaceId, children, enabled
         <Alert tone={workspace.isPending ? 'info' : 'warning'} title={workspace.isPending ? 'Checking the execution folder…'
           : current?.locationValidation.status === 'restricted' ? 'Execution folder access is restricted.'
             : 'Configure an available execution folder before starting this workflow.'}
-          action={<Link to="/workspaces/$workspaceId/settings" params={{ workspaceId }} search={{}}>
+          action={<Link to="/workspaces/$workspaceId/settings/location" params={{ workspaceId }}>
             Configure execution folder
           </Link>} />
       </aside> : null}

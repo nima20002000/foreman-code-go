@@ -22,6 +22,7 @@ import {
   OperatorAccessSettingsRouteEntry,
   GlobalApprovalsRouteEntry,
   WorkspaceApprovalsRouteEntry,
+  WorkspaceLocationSettingsRouteEntry,
   SettingsRouteEntry,
   WorkflowsRouteEntry,
   WorkspacesRouteEntry,
@@ -93,6 +94,11 @@ const settingsRoute = createRoute({
   path: '/workspaces/$workspaceId/settings',
   component: SettingsRouteEntry,
 })
+const workspaceLocationSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/workspaces/$workspaceId/settings/location',
+  component: WorkspaceLocationSettingsRouteEntry,
+})
 const globalTerminalRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/terminal',
@@ -155,6 +161,7 @@ export const routeTree = rootRoute.addChildren([
   terminalRoute,
   filesRoute,
   settingsRoute,
+  workspaceLocationSettingsRoute,
   globalTerminalRoute,
   globalSettingsRoute,
   harnessSettingsRoute,

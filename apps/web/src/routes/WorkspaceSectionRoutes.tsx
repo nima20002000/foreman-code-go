@@ -125,12 +125,8 @@ export function GlobalComingSoonRouteEntry({
   )
 }
 
-function SettingsPage({ browsersSelected = false }: { browsersSelected?: boolean }) {
-  const params = useParams({ strict: false })
-  const workspaceId = 'workspaceId' in params && typeof params.workspaceId === 'string'
-    ? params.workspaceId
-    : 'workspace-1'
-
+export function SettingsRouteEntry() {
+  const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/settings' })
   return (
     <WorkspaceShell
       workspaceId={workspaceId}
@@ -143,30 +139,28 @@ function SettingsPage({ browsersSelected = false }: { browsersSelected?: boolean
               title="Settings"
               description="Configure workspace-level preferences and connected capabilities."
             />
-            <nav aria-label="Settings sections">
-              <Link to="/workspaces/$workspaceId/browsers" params={{ workspaceId }} aria-current={browsersSelected ? 'page' : undefined}>
-                <span>
-                  <strong>Browsers</strong>
-                  <small>Browser profiles and access</small>
-                </span>
-                <Badge tone="neutral">Coming soon</Badge>
-              </Link>
-            </nav>
-            {!browsersSelected ? <><WorkspaceExecutionLocationSettings key={workspaceId} workspaceId={workspaceId} /><McpDetectionSettings workspaceId={workspaceId} /></> : null}
-            {browsersSelected ? (
-              <SettingsSection title="Browsers" description="Coming soon">
-                <p>Browser profile management is planned, but no browser capability is connected in Phase 1.</p>
-              </SettingsSection>
-            ) : null}
+            <ul className="settings-card-list">
+              <li>
+                <Card className="settings-card">
+                  <Link to="/workspaces/$workspaceId/settings/location" params={{ workspaceId }} className="settings-card-open">
+                    <SettingsCardBody icon="folder" title="Execution location" description="Folder where this workspace's agents run" />
+                  </Link>
+                </Card>
+              </li>
+              <li>
+                <Card className="settings-card">
+                  <Link to="/workspaces/$workspaceId/browsers" params={{ workspaceId }} className="settings-card-open">
+                    <SettingsCardBody icon="globe" title="Browsers" description="Browser profiles and access" />
+                  </Link>
+                </Card>
+              </li>
+            </ul>
+            <McpDetectionSettings workspaceId={workspaceId} />
           </div>
         ),
       }}
     />
   )
-}
-
-export function SettingsRouteEntry() {
-  return <SettingsPage />
 }
 
 function SettingsCardBody({ icon, title, description }: {
@@ -194,7 +188,8 @@ function SettingsBackLink() {
   )
 }
 
-function SettingsDetailPage({ title, description, backLink, children }: {
+function SettingsDetailPage({ eyebrow = 'GraphQL', title, description, backLink, children }: {
+  eyebrow?: string
   title: string
   description: string
   backLink: ReactNode
@@ -203,7 +198,7 @@ function SettingsDetailPage({ title, description, backLink, children }: {
   return (
     <div className="settings-page">
       {backLink}
-      <PageHeader eyebrow="GraphQL" title={title} description={description} />
+      <PageHeader eyebrow={eyebrow} title={title} description={description} />
       {children}
     </div>
   )
@@ -316,5 +311,27 @@ export function WorkspaceApprovalsRouteEntry() {
 }
 
 export function BrowsersSettingsRouteEntry() {
-  return <SettingsPage browsersSelected />
+  const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/browsers' })
+  return <WorkspaceShell workspaceId={workspaceId} activeSection="settings" slots={{ main:
+    <SettingsDetailPage eyebrow={`Workspace · ${workspaceId}`} title="Browsers"
+      description="Browser profiles this workspace's agents are allowed to drive."
+      backLink={<Link to="/workspaces/$workspaceId/settings" params={{ workspaceId }} className="settings-back-link" aria-label="Back to settings">
+        <ArrowLeft aria-hidden="true" size={14} />Settings
+      </Link>}>
+      <SettingsSection title="Browsers" description="Coming soon">
+        <p>Browser profile management is planned, but no browser capability is connected in Phase 1.</p>
+      </SettingsSection>
+    </SettingsDetailPage> }} />
+}
+
+export function WorkspaceLocationSettingsRouteEntry() {
+  const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/settings/location' })
+  return <WorkspaceShell workspaceId={workspaceId} activeSection="settings" slots={{ main:
+    <SettingsDetailPage eyebrow={`Workspace · ${workspaceId}`} title="Execution location"
+      description="Agents start in this folder. Filesystem restrictions depend on the selected harness and future isolation support."
+      backLink={<Link to="/workspaces/$workspaceId/settings" params={{ workspaceId }} className="settings-back-link" aria-label="Back to settings">
+        <ArrowLeft aria-hidden="true" size={14} />Settings
+      </Link>}>
+      <WorkspaceExecutionLocationSettings key={workspaceId} workspaceId={workspaceId} />
+    </SettingsDetailPage> }} />
 }
