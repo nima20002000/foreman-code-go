@@ -18,6 +18,7 @@ export interface ApprovalInboxProps {
   onSelectInteraction?(interactionId?: string): void
   view?: ApprovalInboxView
   onChangeView?(view: ApprovalInboxView): void
+  embedded?: boolean
 }
 const stateLabels = {
   pending: 'Waiting for decision', decided: 'Decision accepted', delivery_pending: 'Delivering',
@@ -93,7 +94,7 @@ function ApprovalListItem({ item, selected, onSelect }: { item: DurableInteracti
   </button></li>
 }
 
-export function ApprovalInbox({ workspaceId, workflowId, selectedInteractionId, onSelectInteraction, view = 'pending', onChangeView }: ApprovalInboxProps) {
+export function ApprovalInbox({ workspaceId, workflowId, selectedInteractionId, onSelectInteraction, view = 'pending', onChangeView, embedded = false }: ApprovalInboxProps) {
   // Each status has its own server cursor. Never filter only the first 100 historical records.
   const scope = { workspaceId, workflowId, limit: 100 }
   const queues = {
@@ -141,10 +142,12 @@ export function ApprovalInbox({ workspaceId, workflowId, selectedInteractionId, 
     return () => media.removeEventListener('change', reveal)
   }, [selectedInteractionId])
   const changeView = (next: ApprovalInboxView) => onChangeView?.(next)
-  return <section className="approval-inbox" aria-label="Approval Inbox">
-    <PageHeader eyebrow="Review queue" title="Approval Inbox" description={workflowId ? 'Requests for this workflow.' : workspaceId ? 'Requests across this workspace.' : 'Requests across every authorized workspace.'} actions={
+  return <section className={`approval-inbox${embedded ? ' approval-inbox--embedded' : ''}`} aria-label="Approval Inbox">
+    {!embedded ? <PageHeader eyebrow="Review queue" title="Approval Inbox" description={workflowId ? 'Requests for this workflow.' : workspaceId ? 'Requests across this workspace.' : 'Requests across every authorized workspace.'} actions={
       <Button variant="secondary" className="approval-count" leading={<Icon name="shield" size={17} />} onClick={() => changeView('pending')}>{pendingCount === undefined || isError ? 'Pending count unavailable' : `${pendingCount} pending`}</Button>
-    } />
+    } /> : <div className="approval-inbox-toolbar">
+      <Button variant="secondary" className="approval-count" leading={<Icon name="shield" size={17} />} onClick={() => changeView('pending')}>{pendingCount === undefined || isError ? 'Pending count unavailable' : `${pendingCount} pending`}</Button>
+    </div>}
     <nav className="approval-filters" aria-label="Approval views">
       {(['pending', 'delivery', 'history'] as const).map((item) => <Button variant={view === item ? 'primary' : 'secondary'} size="sm" key={item} aria-pressed={view === item} onClick={() => changeView(item)}>{item === 'pending' ? 'Pending' : item === 'delivery' ? 'Delivery problems' : 'History'}</Button>)}
     </nav>

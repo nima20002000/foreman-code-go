@@ -143,6 +143,18 @@ describe('workspace section routes', () => {
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
   })
 
+  it('renders the global Approval Inbox as a Settings detail page', async () => {
+    const { router } = renderRoute('/approvals')
+
+    expect(await screen.findByRole('heading', { name: 'Approval Inbox', level: 1 })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Back to settings' })).toHaveAttribute('href', '/settings')
+    expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('region', { name: 'Approval Inbox' })).toHaveClass('approval-inbox--embedded')
+
+    await userEvent.setup().click(screen.getByRole('link', { name: 'Back to settings' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
+  })
+
   it('places Browsers under Settings and preserves its deep link', async () => {
     renderRoute('/workspaces/workspace-1/browsers')
 

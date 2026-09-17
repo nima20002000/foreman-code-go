@@ -359,9 +359,12 @@ export function OperatorAccessSettingsRouteEntry() {
 export function GlobalApprovalsRouteEntry() {
   const { interactionId, approvalView } = useSearch({ from: '/approvals' })
   const navigate = useNavigate({ from: '/approvals' })
-  return <WorkspaceShell workspaceId="workspace-1" slots={{ main: <ApprovalInbox selectedInteractionId={interactionId} view={approvalView}
-    onChangeView={(next) => void navigate({ search: (previous) => ({ ...previous, approvalView: next, interactionId: undefined }) })}
-    onSelectInteraction={(next) => void navigate({ search: (previous) => ({ ...previous, interactionId: next }) })} /> }} />
+  return <WorkspaceShell workspaceId="workspace-1" activeGlobalSection="settings" slots={{ main:
+    <SettingsDetailPage title="Approval Inbox" description="Global review queue and delivery history." backLink={<SettingsBackLink />}>
+      <ApprovalInbox embedded selectedInteractionId={interactionId} view={approvalView}
+        onChangeView={(next) => void navigate({ search: (previous) => ({ ...previous, approvalView: next, interactionId: undefined }) })}
+        onSelectInteraction={(next) => void navigate({ search: (previous) => ({ ...previous, interactionId: next }) })} />
+    </SettingsDetailPage> }} />
 }
 
 export function WorkspaceApprovalsRouteEntry() {
