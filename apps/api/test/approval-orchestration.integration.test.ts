@@ -572,7 +572,7 @@ it('lists, reads and responds to an Operator-assigned request through authentica
   }))
   try {
     expect((await client.listTools()).tools.map((tool) => tool.name).sort()).toEqual([
-      'interaction_get', 'interaction_list', 'interaction_respond',
+      'interaction_get', 'interaction_list', 'interaction_respond', 'interaction_summary',
     ])
     const listed = await client.callTool({ name: 'interaction_list', arguments: { runId: run.id, limit: 10 } })
     expect((listed.structuredContent as { items: unknown[] }).items).toHaveLength(1)

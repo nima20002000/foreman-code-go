@@ -10,6 +10,7 @@ import {
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
+import { resolveAssignedSkills } from '../skills/catalog.js'
 
 export function configurationInput(
   workspaceId: string,
@@ -88,10 +89,12 @@ export async function saveAgentConfiguration(
   await lockAgentConfigurations(client, [parsed.id])
   const existingRow = await client.query<{
     workspace_id: string
+    archived_at: Date | null
     current_configuration_version_id: string | null
     record: unknown
-  }>('select workspace_id, current_configuration_version_id, record from agents where id = $1 for update', [parsed.id])
+  }>('select workspace_id, archived_at, current_configuration_version_id, record from agents where id = $1 for update', [parsed.id])
   const existing = existingRow.rows[0]
+  if (existing?.archived_at) throw new DomainError('AGENT_ARCHIVED', 'Restore the archived Agent before editing it.', 409)
   if (!existing && mustExist) {
     throw new DomainError('AGENT_NOT_FOUND', `Agent '${parsed.id}' was not found.`, 404)
   }
@@ -115,7 +118,9 @@ export async function saveAgentConfiguration(
   if (!current && (mustExist || existing?.current_configuration_version_id)) {
     throw new DomainError('AGENT_CONFIGURATION_UNAVAILABLE', 'This agent has no persisted configuration to edit.', 409)
   }
-  const nextInput = configurationInput(workspaceId, parsed, current)
+  const nextConfiguration = configurationInput(workspaceId, parsed, current)
+  const resolvedSkills = await resolveAssignedSkills(client, workspaceId, nextConfiguration.assignedSkills)
+  const nextInput = { ...nextConfiguration, ...(resolvedSkills.length ? { resolvedSkills } : {}) }
   const nextHash = `sha256:${createHash('sha256').update(JSON.stringify(nextInput)).digest('hex')}`
   const now = new Date().toISOString()
 

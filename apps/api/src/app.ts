@@ -112,7 +112,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   if (options.operator && options.mcpDetection) registerMcpDetectionRoute(app, options.mcpDetection.pool, options.mcpDetection.service)
   if (options.operator && options.product?.interactions) registerUserInteractions(app, options.operator.access, options.product.interactions)
   if (options.product) registerProductRoutes(app, options.product, Boolean(options.operator))
-  if (options.operator) registerOperatorMcp(app, options.operator.access, options.operator.services)
+  if (options.operator) registerOperatorMcp(app, options.operator.access, {
+    ...options.operator.services, workerToolsMcpImplemented: Boolean(options.appMcp),
+  })
   if (options.appMcp) registerAppMcp(app, options.appMcp)
 
   app.setErrorHandler(async (error, request, reply) => {

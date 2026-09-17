@@ -28,8 +28,8 @@ export class PostgresSettingsRepository {
     return normalizeHarnessDefaults(result.rows[0]?.record)
   }
 
-  async getManagedHarnessDefaults(): Promise<{ defaults: HarnessDefaults; revision: number }> {
-    const result = await this.pool.query<{ record: unknown; revision: string }>(
+  async getManagedHarnessDefaults(client?: pg.ClientBase): Promise<{ defaults: HarnessDefaults; revision: number }> {
+    const result = await (client ?? this.pool).query<{ record: unknown; revision: string }>(
       'select record, revision from application_settings where key = $1',
       [SETTINGS_KEY],
     )

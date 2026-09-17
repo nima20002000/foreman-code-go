@@ -1,4 +1,6 @@
-import { HarnessQualificationSchema, type HarnessConfiguration, type AgentHarness, type HarnessDefaults } from '@graphql/contracts'
+import { isDeepStrictEqual } from 'node:util'
+
+import { HarnessQualificationSchema, withAdvancedDefaults, type HarnessConfiguration, type AgentHarness, type HarnessDefaults } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
 import { requireAuthorization } from '../access/policy.js'
@@ -63,17 +65,11 @@ export class HarnessCatalogService {
       principal, source, operation: 'harness.defaults.update', commandId: input.commandId,
       targetKey: 'harness-defaults', payload: input,
       perform: async (client) => {
-        // The coordinator checks the receipt before running external work.
-        // This command replaces both templates, so new writes qualify both.
-        const qualified = await Promise.all((['codex', 'opencode'] as const).map((harness) =>
-          this.describe(principal, harness, input.defaults, input.expectedRevision)))
-        const unavailable = qualified.find((entry) => entry.discoveryError)
-        if (unavailable) {
-          throw new DomainError(
-            'HARNESS_DEFAULTS_UNQUALIFIED',
-            `The ${unavailable.harness} defaults could not be qualified: ${unavailable.discoveryError?.message ?? 'unknown discovery error'}`,
-            409,
-          )
+        const current = await this.settings.getManagedHarnessDefaults(client)
+        if (current.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Harness defaults changed since they were read.', 409)
+        for (const harness of ['codex', 'opencode'] as const) {
+          if (isDeepStrictEqual(withAdvancedDefaults(current.defaults[harness]), withAdvancedDefaults(input.defaults[harness]))) continue
+          await this.qualifyConfiguration(input.defaults[harness])
         }
         return this.settings.updateManagedHarnessDefaults(client, input.defaults, input.expectedRevision)
       },

@@ -14,6 +14,7 @@ import { HarnessExecutionError } from './errors.js'
 import { qualifyNativeCodexModel } from './codexQualification.js'
 import { nativeQualification } from './nativeQualification.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
+import { codexModelOptions } from './operatorOptions.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from './port.js'
 import { runCommand } from './process.js'
 import {
@@ -297,6 +298,14 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     await this.validateMcpPolicies(parsed.data, qualified.binary, workingDirectory, environment, signal)
     await qualifyNativeCodexModel(parsed.data, qualified.binary, workingDirectory, environment, signal)
     return nativeQualification(parsed.data, qualified.providerVersion)
+  }
+
+  async discoverModels(workingDirectory: string, signal?: AbortSignal) {
+    const qualified = await qualifyCodex(this.binary, this.expectedVersion, workingDirectory, safeEnvironment(), true, signal)
+    await assertCodexUnchanged(qualified)
+    const result = await runCommand(qualified.binary, ['debug', 'models'], workingDirectory, signal, safeEnvironment())
+    if (result.exitCode !== 0) throw new HarnessExecutionError('CODEX_MODEL_CATALOG_UNAVAILABLE', 'Native model discovery failed.')
+    return { providerVersion: qualified.providerVersion, models: codexModelOptions(JSON.parse(result.stdout)) }
   }
 
   async qualificationEvidence(signal?: AbortSignal): Promise<CodexQualificationEvidence> {

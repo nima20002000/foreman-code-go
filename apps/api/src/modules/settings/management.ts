@@ -1,4 +1,4 @@
-import { AgentDefaultsSchema, CodexSessionCompatibilitySchema, validateHarnessWorkflowCompatibility, type AgentDefaults, type WorkflowDefaults } from '@graphql/contracts'
+import { AgentDefaultsSchema, withAdvancedDefaults, CodexSessionCompatibilitySchema, validateHarnessWorkflowCompatibility, type AgentDefaults, type WorkflowDefaults } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { isDeepStrictEqual } from 'node:util'
 
@@ -36,9 +36,12 @@ export class FoundationSettingsManagementService {
       targetKey: 'agent-defaults-v1', payload: input,
       perform: async (client) => {
         const value = AgentDefaultsSchema.parse(input.value)
-        if (!this.harnesses) throw new DomainError('HARNESS_QUALIFICATION_UNAVAILABLE', 'Native provider qualification is not configured; these defaults were not saved.', 503)
+        const previous = await this.settings.getAgentDefaults(client)
+        if (previous.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Agent defaults changed since they were read.', 409)
         for (const role of ['orchestrator', 'coder', 'operator'] as const) {
           const configuration = value[role].harness
+          if (isDeepStrictEqual(withAdvancedDefaults(previous.value[role].harness), withAdvancedDefaults(configuration))) continue
+          if (!this.harnesses) throw new DomainError('HARNESS_QUALIFICATION_UNAVAILABLE', 'Native qualification is unavailable; changed configurations were not saved.', 503)
           if (role !== 'operator') {
             validateHarnessWorkflowCompatibility(configuration, 'user')
             if (configuration.harness === 'codex') CodexSessionCompatibilitySchema.parse({ configuration, requiresResume: true })
@@ -51,7 +54,8 @@ export class FoundationSettingsManagementService {
           }
         }
         const operators = this.operators
-        const current = await operators?.ensureWithClient(client)
+        const operatorChanged = !isDeepStrictEqual(withAdvancedDefaults(previous.value.operator.harness), withAdvancedDefaults(value.operator.harness))
+        const current = operatorChanged ? await operators?.ensureWithClient(client) : undefined
         const result = await this.settings.updateManagedAgentDefaults(client, value, input.expectedRevision)
         if (operators && current && !isDeepStrictEqual(current.configuration.harness, value.operator.harness)) {
           await operators.updateWithClient(

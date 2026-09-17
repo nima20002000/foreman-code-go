@@ -11,7 +11,14 @@ import { normalizeHarnessDefaults } from '../src/modules/settings/postgres.js'
 const principal: ManagementPrincipal = { id: 'p', name: 'p', audience: 'operator', grants: [{ actions: ['settings:read', 'settings:update'], scope: {} }], expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null }
 function fixture() {
   const write = vi.fn(async () => ({ value: DEFAULT_AGENT_DEFAULTS, revision: 2, versionId: 'v2' }))
-  const settings = { updateManagedAgentDefaults: write } as unknown as PostgresFoundationSettingsRepository
+  const previous = structuredClone(DEFAULT_AGENT_DEFAULTS)
+  for (const role of ['orchestrator', 'coder', 'operator'] as const) {
+    previous[role].harness.model = `${previous[role].harness.model}-previous`
+  }
+  const settings = {
+    getAgentDefaults: vi.fn(async () => ({ value: previous, revision: 1, versionId: 'v1' })),
+    updateManagedAgentDefaults: write,
+  } as unknown as PostgresFoundationSettingsRepository
   const client = {} as pg.PoolClient
   const execute = vi.fn(async (input: { perform(client: pg.PoolClient): Promise<unknown> }) => ({ value: await input.perform(client), replayed: false }))
   const commands = { execute } as unknown as PostgresCommandCoordinator

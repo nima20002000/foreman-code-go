@@ -1,3 +1,5 @@
+import type { OperatorExtensions } from './extensions.js'
+
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
 import type { AgentManagementService } from '../../modules/workspaces/agents.js'
@@ -12,6 +14,8 @@ import type { FoundationSettingsManagementService } from '../../modules/settings
 import type { OperatorInteractionService } from '../../modules/interactions/operator.js'
 
 export interface OperatorServices {
+  extensions?: OperatorExtensions
+  workerToolsMcpImplemented?: boolean
   workspaces: WorkspaceManagementService
   locations: WorkspaceLocationService
   workflows: WorkflowManagementService

@@ -21,7 +21,7 @@ export class PostgresWorkspaceRepository {
 
   async listAgents(workspaceId: string): Promise<Agent[]> {
     const result = await this.pool.query<{ record: unknown }>(
-      'select record from agents where workspace_id = $1 order by created_at, id',
+      'select record from agents where workspace_id = $1 and archived_at is null order by created_at, id',
       [workspaceId],
     )
     return result.rows.map((row) => AgentSchema.parse(row.record))

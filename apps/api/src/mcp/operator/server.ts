@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/server'
 
 import type { OperatorRequestContext } from './types.js'
 import { registerAgentTools } from './tools/agents.js'
+import { registerExtendedOperatorTools } from './tools/extensions.js'
 import { registerContextTools } from './tools/context.js'
 import { registerGraphTools } from './tools/graph.js'
 import { registerHarnessTools } from './tools/harnesses.js'
@@ -22,5 +23,6 @@ export function createOperatorMcpServer(context: OperatorRequestContext): McpSer
   registerGraphTools(server, context)
   registerRunTools(server, context)
   registerInteractionTools(server, context)
+  registerExtendedOperatorTools(server, context)
   return server
 }

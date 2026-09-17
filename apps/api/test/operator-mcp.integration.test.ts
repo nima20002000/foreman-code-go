@@ -8,6 +8,7 @@ import { ManagementActionSchema, OperatorToolNameSchema, type ManagementGrant } 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { buildApp } from '../src/app.js'
+import { operatorToolAvailable } from '../src/mcp/operator/availability.js'
 import { createDatabase } from '../src/infrastructure/database.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -158,7 +159,7 @@ describe('Operator MCP with PostgreSQL', () => {
     })
 
     const tools = await client.listTools()
-    const implementedOperatorTools = OperatorToolNameSchema.options.filter((name) => !name.startsWith('interaction_'))
+    const implementedOperatorTools = OperatorToolNameSchema.options.filter((name) => operatorToolAvailable({ principal: issued.principal, services }, name))
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual(implementedOperatorTools.sort())
     expect(tools.tools.every((tool) => tool.inputSchema.additionalProperties === false && tool.outputSchema?.additionalProperties === false)).toBe(true)
 

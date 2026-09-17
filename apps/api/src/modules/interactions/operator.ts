@@ -1,45 +1,48 @@
+import type { DurableInteraction } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
-import { InteractionService } from './service.js'
-import { PostgresInteractionRepository } from './postgres.js'
+import type { InteractionService } from './service.js'
+import type { PostgresInteractionRepository } from './postgres.js'
 
+export function operatorResponseAccess(principal: ManagementPrincipal, interaction: DurableInteraction) {
+  const authorized = interaction.approval.handler === 'operator' && isAuthorized(principal, 'interactions:respond', {
+    workspaceId: interaction.workspaceId, workflowId: interaction.workflowId, runId: interaction.runId,
+  })
+  return {
+    canRespond: authorized && interaction.status === 'pending',
+    canRetryDelivery: authorized && Boolean(interaction.selectedOptionId)
+      && ['decided', 'delivery_pending', 'delivery_failed'].includes(interaction.status),
+    handler: interaction.approval.handler,
+  }
+}
+
+type ListInput = {
+  workspaceId?: string | undefined; workflowId?: string | undefined; runId?: string | undefined;
+  handler?: DurableInteraction['approval']['handler'] | undefined;
+  status?: DurableInteraction['status'] | undefined; cursor?: string | undefined; limit: number;
+}
 export class OperatorInteractionService {
-  constructor(
-    private readonly service: InteractionService,
-    private readonly repository: PostgresInteractionRepository,
-  ) {}
+  constructor(private readonly service: InteractionService, private readonly repository: PostgresInteractionRepository) {}
 
-  async list(principal: ManagementPrincipal, input: {
-    workspaceId?: string | undefined; workflowId?: string | undefined; runId?: string | undefined;
-    status?: Parameters<InteractionService['list']>[0]['status'] | undefined;
-    cursor?: string | undefined; limit: number
-  }) {
-    const resource = {
-      ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
-      ...(input.workflowId ? { workflowId: input.workflowId } : {}),
-      ...(input.runId ? { runId: input.runId } : {}),
+  async list(principal: ManagementPrincipal, input: ListInput) {
+    // The repository filters grants before LIMIT, including an omitted scope and
+    // run-only grants. Reading a different handler never authorizes its response.
+    const page = await this.service.listVisible(principal, input)
+    return {
+      items: page.items, pageInfo: { nextCursor: page.nextCursor },
+      pendingCount: page.pendingCount, pendingByWorkflow: page.pendingByWorkflow,
+      responseAccess: Object.fromEntries(page.items.map((item) => [item.id, operatorResponseAccess(principal, item)])),
     }
-    requireAuthorization(principal, 'interactions:read', resource)
-    const page = await this.service.list({
-      ...resource, handler: 'operator', ...(input.status ? { status: input.status } : {}),
-      ...(input.cursor ? { cursor: input.cursor } : {}), limit: input.limit,
-    })
-    const items = page.items.filter((item) => isAuthorized(principal, 'interactions:read', {
-      workspaceId: item.workspaceId, workflowId: item.workflowId, runId: item.runId,
-    }))
-    return { items, pageInfo: { nextCursor: page.nextCursor } }
   }
-
+  async summary(principal: ManagementPrincipal, input: Omit<ListInput,'status'|'cursor'|'limit'>) {
+    const page = await this.service.listVisible(principal, {...input, limit: 1, status: 'pending'})
+    return {pendingCount: page.pendingCount, pendingByWorkflow: page.pendingByWorkflow}
+  }
   async get(principal: ManagementPrincipal, interactionId: string) {
-    const interaction = await this.service.get(interactionId)
-    if (interaction.approval.handler !== 'operator' || !isAuthorized(principal, 'interactions:read', {
-      workspaceId: interaction.workspaceId, workflowId: interaction.workflowId, runId: interaction.runId,
-    })) throw new DomainError('INTERACTION_NOT_FOUND', 'The interaction was not found.', 404)
-    return { interaction }
+    const interaction = await this.service.getVisible(principal, interactionId)
+    return {interaction, ...operatorResponseAccess(principal, interaction)}
   }
-
   async respond(principal: ManagementPrincipal, input: {
     interactionId: string; optionId: string; expectedRevision: number; commandId: string
   }) {
@@ -49,9 +52,7 @@ export class OperatorInteractionService {
     requireAuthorization(principal, 'interactions:respond', {
       workspaceId: interaction.workspaceId, workflowId: interaction.workflowId, runId: interaction.runId,
     })
-    // The authorized service binds the receipt in the same transaction as the
-    // decision. No receipt exists for an invalid option, stale revision, or denial.
-    const result = await this.service.respond({ kind: 'operator', principal }, input)
-    return { value: result.interaction, replayed: result.replayed }
+    const result = await this.service.respond({kind: 'operator', principal}, input)
+    return {value: result.interaction, replayed: result.replayed}
   }
 }

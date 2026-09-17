@@ -91,6 +91,12 @@ export const AssignedSkillSchema = z
   .strict();
 export type AssignedSkill = z.infer<typeof AssignedSkillSchema>;
 
+export const ResolvedSkillSchema = AssignedSkillSchema.extend({
+  instructions: z.string().min(1).max(100_000),
+  contentHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+}).strict();
+export type ResolvedSkill = z.infer<typeof ResolvedSkillSchema>;
+
 export const AgentPromptSchema = z
   .object({
     system: z.string().trim().min(1).optional(),
@@ -902,6 +908,7 @@ export const AgentConfigurationVersionSchema = z
     version: z.number().int().positive(),
     prompt: AgentPromptSchema,
     assignedSkills: z.array(AssignedSkillSchema),
+    resolvedSkills: z.array(ResolvedSkillSchema).max(100).optional(),
     harness: HarnessConfigurationSchema,
     contentHash: z.string().trim().min(1),
     createdAt: TimestampSchema,

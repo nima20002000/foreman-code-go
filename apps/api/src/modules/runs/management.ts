@@ -20,6 +20,7 @@ import { validateExecutableTopology } from './topology.js'
 import { requiredLocationAccess, WorkspaceLocationService } from '../workspaces/location.js'
 import { acceptedRunApproval, validateWorkflowApproval } from '../workflows/approval.js'
 import { acceptRunAuthority, bindRunAuthority } from '../access/runAuthority.js'
+import { assertTriggerDispatch } from '../workflows/triggerAuthority.js'
 
 export class RunManagementService {
   constructor(
@@ -96,7 +97,7 @@ export class RunManagementService {
   async start(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
     workspaceId: string; workflowId: string; workflowVersionId: string; expectedLocationRevision: number;
     commandId: string; input: RunInput;
-    draftId?: string | undefined; expectedDraftRevision?: number | undefined
+    draftId?: string | undefined; expectedDraftRevision?: number | undefined; triggerJobId?: string | undefined
   }) {
     requireAuthorization(principal, 'runs:start', { workspaceId: input.workspaceId, workflowId: input.workflowId })
     requireAuthorization(principal, 'workspace_locations:read', { workspaceId: input.workspaceId })
@@ -105,6 +106,7 @@ export class RunManagementService {
       targetKey: `workflow:${input.workflowId}:version:${input.workflowVersionId}`, payload: input,
       perform: async (client) => {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.workspaceId}`])
+        if (input.triggerJobId) await assertTriggerDispatch(client, principal, {...input, triggerJobId: input.triggerJobId})
         const parents = await client.query<{
           workspace_archived_at: Date | null; workflow_archived_at: Date | null; current_version_id: string | null
         }>(
@@ -143,7 +145,7 @@ export class RunManagementService {
         const currentConfigurations = await client.query<{ id: string; current_configuration_version_id: string | null; configuration_record: unknown }>(
           `select agents.id, agents.current_configuration_version_id, versions.record as configuration_record
            from agents join agent_configuration_versions versions on versions.id = agents.current_configuration_version_id
-           where agents.workspace_id = $1 and agents.id = any($2::text[])`,
+           where agents.workspace_id = $1 and agents.archived_at is null and agents.id = any($2::text[])`,
           [input.workspaceId, Object.keys(version.agentConfigurationVersionIds)],
         )
         if (currentConfigurations.rows.length !== Object.keys(version.agentConfigurationVersionIds).length

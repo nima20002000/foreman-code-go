@@ -178,6 +178,20 @@ export class WorkspaceLocationService {
     })
   }
 
+  /** Internal transaction seam for controlled provisioning; never accepts caller filesystem input over MCP. */
+  async assignProvisioned(client: pg.PoolClient, principal: ManagementPrincipal, input: WorkspaceLocationSetInput) {
+    requireAuthorization(principal, 'workspace_locations:provision', {workspaceId: input.workspaceId})
+    requireAuthorization(principal, 'workspace_locations:update', {workspaceId: input.workspaceId})
+    const accepted = await this.validatePath(input.workspaceId, input.runnerId, input.rootPath, 'read-only')
+    const result = await client.query(
+      `update workspaces set execution_location=$2::jsonb,execution_location_identity=$3::jsonb,location_revision=location_revision+1
+       where id=$1 and location_revision=$4 and archived_at is null and execution_location is null`,
+      [input.workspaceId, JSON.stringify(accepted.validation.location), JSON.stringify(accepted.identity), input.expectedLocationRevision],
+    )
+    if (result.rowCount !== 1) throw new DomainError('LOCATION_REVISION_CONFLICT', 'The workspace location changed during provisioning.', 409)
+    return {workspaceId: input.workspaceId, executionLocation: accepted.validation.location, locationRevision: input.expectedLocationRevision + 1}
+  }
+
   async snapshot(
     client: pg.PoolClient,
     workspaceId: string,

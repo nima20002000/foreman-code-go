@@ -46,6 +46,14 @@ describe('PostgreSQL infrastructure', () => {
           id text primary key, record jsonb not null, created_at timestamptz not null default now(),
           revision bigint not null default 1, archived_at timestamptz
         );
+        create table agents (id text primary key, workspace_id text not null references workspaces(id));
+        create table workflows (id text primary key, workspace_id text not null references workspaces(id));
+        create table management_principals (
+          id text primary key, name text not null, audience text not null,
+          token_hash text not null unique, grants jsonb not null, expires_at timestamptz not null,
+          revoked_at timestamptz, created_at timestamptz not null default now(),
+          check (audience in ('operator', 'worker'))
+        );
         create table agent_configuration_versions (id text primary key, record jsonb not null);
         create table harness_executions (id text primary key, record jsonb not null);
         create table harness_native_events (execution_id text not null, sequence integer not null, record jsonb not null,

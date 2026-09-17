@@ -18,6 +18,7 @@ import {
 
 import { HarnessExecutionError } from './errors.js'
 import { nativeQualification } from './nativeQualification.js'
+import { openCodeOptions } from './operatorOptions.js'
 import { endpointMatches, type NativeMcpEntryEvidence } from './mcpDetection.js'
 import type { ChildProcessEnvironment, NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from './port.js'
 import {
@@ -139,6 +140,33 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       persistentSessions: true, reconnect: true, sameRequestResponses: true,
       cancellation: true, history: true, configurationInspection: true,
       mcpDetection: true, supportedInteractionKinds: ['approval'],
+    })
+  }
+
+  async discoverOptions(directory: string, signal?: AbortSignal) {
+    const combined = this.signal(signal)
+    return this.exclusive(async () => {
+      await this.ready(combined)
+      const [providers, agents] = await Promise.all([this.json('/provider', directory, combined), this.json('/agent', directory, combined)])
+      return { providerVersion: QUALIFIED_OPENCODE_VERSION, ...openCodeOptions(providers, agents) }
+    })
+  }
+
+  async checkConfiguration(value: OpenCodeHarnessConfiguration, directory: string, signal?: AbortSignal): Promise<void> {
+    const combined = this.signal(signal)
+    await this.exclusive(async () => {
+      await this.ready(combined)
+      await this.qualifyConfiguration(value, directory, combined)
+      const [providers, agents] = await Promise.all([this.json('/provider', directory, combined), this.json('/agent', directory, combined)])
+      const options = openCodeOptions(providers, agents)
+      if (!options.models.some((model) => model.id === value.model && model.variants.includes(value.variant))) {
+        throw new HarnessExecutionError('OPENCODE_AUTH_REQUIRED', 'The selected model and variant must belong to a connected provider.')
+      }
+      // Inspect switches without connecting/disconnecting a native MCP server.
+      const configured = object(object(await this.json('/config', directory, combined)).mcp)
+      for (const name of Object.keys(value.advanced?.mcp.serverEnabled ?? {})) {
+        if (!Object.hasOwn(configured, name)) throw new HarnessExecutionError('OPENCODE_MCP_SERVER_NOT_CONFIGURED', 'An accepted MCP server is not configured.')
+      }
     })
   }
 

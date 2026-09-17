@@ -1,6 +1,7 @@
 import type { HarnessExecutionRequest } from '@graphql/contracts'
 
 import { HarnessExecutionError } from './errors.js'
+import { resolvedSkillPrompt } from '../skills/prompt.js'
 
 /** UTF-8 bytes, including system prompt, skill references, and accepted inputs. */
 export const MAX_HARNESS_PROMPT_BYTES = 8 * 1024 * 1024
@@ -18,6 +19,7 @@ export function buildHarnessPrompt(request: HarnessExecutionRequest): string {
   const prompt = [
     ...systemPrompt,
     `ASSIGNED SKILLS: ${skills}`,
+    ...resolvedSkillPrompt(request.configuration),
     '',
     ...initialPrompt,
     'ACCEPTED INPUT FROM THE WORKFLOW',

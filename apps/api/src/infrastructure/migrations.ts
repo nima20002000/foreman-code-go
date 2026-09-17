@@ -4,6 +4,7 @@ import { lifecycleMigration } from './lifecycleMigration.js'
 import { pr17AuditMigration } from './pr17AuditMigration.js'
 
 import { interactionDeliveryMigration } from './interactionDeliveryMigration.js'
+import { operatorMcpMigration } from './operatorMcpMigration.js'
 
 // Reserved migration blocks: HAP-01 100-109, HAP-02 200-209, HAP-03 300-309,
 // HAP-04 400-409, HAP-05 500-509, HAP-06 600-609, HAP-07 700-709.
@@ -619,6 +620,7 @@ const migrations = [
     update operator_conversations set active_phase='submitting',turn_state='uncertain'
       where active_request_id is not null and active_phase is null;
   ` },
+  operatorMcpMigration,
   pr17AuditMigration,
 ] as const
 

@@ -5,6 +5,8 @@ import { resolve } from 'node:path'
 
 import type { ApiConfig } from './config.js'
 import { buildApp } from './app.js'
+import { createOperatorExtensions } from './mcp/operator/extensions.js'
+import { NativeConfigurationService } from './modules/harnesses/nativeConfiguration.js'
 import type { CheckpointStore } from './infrastructure/checkpoints.js'
 import type { createDatabase } from './infrastructure/database.js'
 import { OperatorRuntimeOwner } from './infrastructure/operatorRuntimeOwner.js'
@@ -81,6 +83,9 @@ export function buildProductionApp(
   const rollout = new NativeRollout(process.env)
   const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, config.harnesses.openCodeBinary)
   const harnessCatalog = new HarnessCatalogService(qualifier, settings, commands, config.harnesses.workspaceRoot)
+  const nativeConfigurations = new NativeConfigurationService(
+    config.harnesses.codexBinary, config.harnesses.openCodeBinary, config.harnesses.workspaceRoot,
+  )
   const endpointHost = config.host === '0.0.0.0' ? '127.0.0.1'
     : config.host === '::' || config.host === '::1' ? '[::1]' : config.host
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/tools`
@@ -230,11 +235,16 @@ export function buildProductionApp(
       }
     },
   }, appMcpEndpoint)
+  const operatorExtensions = createOperatorExtensions({
+    pool: database.pool, commands, catalog: harnessCatalog, native: nativeConfigurations,
+    detection, engine, runs: operatorServices.runs, locations,
+    provisioningRoot: process.env.GRAPHQL_WORKSPACE_PROVISIONING_ROOT,
+  })
   const app = buildApp({
     readiness: { database, checkpoints },
     readinessTimeoutMs: config.readinessTimeoutMs,
     product: { workspaces, workflows, runs, settings, foundationSettings, engine, interactions, chat },
-    operator: { access, services: operatorServices },
+    operator: { access, services: { ...operatorServices, extensions: operatorExtensions } },
     appMcp: { access, interactions: new PostgresAppInteractionService(database.pool, repository, commands, interactions) },
     mcpDetection: { pool: database.pool, service: detection },
     logger,
@@ -274,6 +284,7 @@ export function buildProductionApp(
       if (initialized) {
         await chat.reconcileActive()
         await reviews.tick()
+        if (!closing) await operatorExtensions.triggers.tick(report)
       }
       let afterId: string | undefined
       do {
@@ -292,7 +303,7 @@ export function buildProductionApp(
       await disposable.dispose?.()
     })
     const results = await Promise.allSettled([
-      chat.shutdown(), reviews.shutdown(), engine.shutdown(), reconciliation, managers.dispose(),
+      operatorExtensions.triggers.shutdown(), chat.shutdown(), reviews.shutdown(), engine.shutdown(), reconciliation, managers.dispose(),
       ...managerCleanup, ...(initialized ? [runtimeOwner.close()] : []),
     ])
     operatorManagers.clear()
