@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { AgentSchema, type Agent, type WorkflowDefinition } from '@graphql/contracts'
 import { Link } from '@tanstack/react-router'
-import { Check, MoreHorizontal, Plus, Trash2, X } from 'lucide-react'
+import { Trash2 } from 'lucide-react'
 
 import { useWorkspaceDetailsQuery } from '../../shared/api/query'
 import { useSaveAgentMutation } from '../../shared/api/agentSettings'
+import {
+  Button, Card, CardHeader, Checkbox, Dialog, EmptyState, Icon, IconButton, LoadingState,
+  PageHeader, Select, TextField, Textarea,
+} from '../../shared/ui/nocturne'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
-import { usePresence } from '../../shared/ui/usePresence'
 import { isSessionWorkspaceId } from '../workspaces/workspaceSessionStore'
 import { useSessionWorkflowStore } from '../workflows/sessionWorkflowStore'
 import { useGraphDraftStore, workflowDraftKey } from '../graph/store'
@@ -20,21 +23,6 @@ function executionLabel(agent: Agent): string {
   const value = agent.executionState ?? agent.status
   if (!value) return 'No execution state'
   return value.replaceAll('_', ' ').replace(/^./, (letter) => letter.toUpperCase())
-}
-
-function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>) {
-  if (event.key !== 'Tab') return
-  const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input, textarea, a[href]')]
-  const first = controls[0]
-  const last = controls.at(-1)
-  if (!first || !last) return
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault()
-    last.focus()
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault()
-    first.focus()
-  }
 }
 
 function AgentCard({
@@ -120,15 +108,15 @@ function AgentCard({
       aria-label={`${agent.name}, ${role}, ${status}`}
       {...reorderAttributes}
     >
-      <article className="agent-directory-card">
-        <h2>{agent.name}</h2>
-        <span>{role} · {status}</span>
-      </article>
-    <button
+      <Card className="agent-directory-card">
+        <CardHeader title={agent.name} description={`${role} · ${status}`} />
+      </Card>
+    <IconButton
       ref={triggerRef}
-      type="button"
       className="agent-directory-card-more"
-      aria-label={`Open actions for ${agent.name}`}
+      label={`Open actions for ${agent.name}`}
+      variant="ghost"
+      size="sm"
       aria-haspopup="dialog"
       aria-expanded={menuOpen}
       onPointerDown={(event) => event.stopPropagation()}
@@ -145,8 +133,8 @@ function AgentCard({
         setMenuOpen(true)
       }}
     >
-      <MoreHorizontal aria-hidden="true" size={17} />
-    </button>
+      <Icon name="more" size={17} />
+    </IconButton>
     {menuOpen ? (
       <div ref={menuRef} className="agent-directory-card-actions" role="dialog" aria-label={`${agent.name} actions`} onPointerDown={(event) => event.stopPropagation()}>
         {localSaveError || saveError ? <p role="alert">{localSaveError ?? saveError}</p> : null}
@@ -155,56 +143,48 @@ function AgentCard({
           <p>Standalone agent editing is read-only in Operator mode. Open a workflow board to change this agent and Save graph.</p>
           {blockers.map((workflow) => <Link key={workflow.id} to="/workspaces/$workspaceId"
             params={{ workspaceId }} search={{ workflowId: workflow.id }}>{workflow.name}</Link>)}
-          <button type="button" onClick={closeMenu}>Close</button>
+          <Button onClick={closeMenu}>Close</Button>
         </div> : confirmClose ? (
           <div className="agent-settings-confirm">
             <p>You made changes. Save or discard?</p>
-            <button type="button" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
-            <button type="button" onClick={closeMenu} disabled={saving}>Discard</button>
+            <Button onClick={save} disabled={saving} loading={saving} loadingLabel="Saving…">Save</Button>
+            <Button onClick={closeMenu} disabled={saving}>Discard</Button>
           </div>
         ) : <>
           <div className="agent-settings-heading">
             <strong>Agent settings</strong>
             <div>
-              {harness === 'codex' ? <label className="agent-settings-fast"><input type="checkbox" disabled={saving} checked={fastMode} onChange={(event) => setFastMode(event.target.checked)} />Fast mode</label> : null}
-              <button type="button" className="agent-settings-trash" disabled={saving} aria-label={`Remove ${agent.name}`} onClick={() => {
+              {harness === 'codex' ? <Checkbox label="Fast mode" disabled={saving} checked={fastMode} onChange={(event) => setFastMode(event.target.checked)} /> : null}
+              <IconButton label={`Remove ${agent.name}`} className="agent-settings-trash" size="sm" disabled={saving} onClick={() => {
                 if (blockers.length > 0) {
                   setShowBlockers(true)
                   return
                 }
                 onRemove()
                 closeMenu()
-              }}><Trash2 aria-hidden="true" size={16} /></button>
-              <button type="button" aria-label="Close agent settings" disabled={saving} onClick={requestClose}><X aria-hidden="true" size={15} /></button>
+              }}><Trash2 aria-hidden="true" size={16} /></IconButton>
+              <IconButton label="Close agent settings" size="sm" disabled={saving} onClick={requestClose}><Icon name="close" size={15} /></IconButton>
             </div>
           </div>
-          <label className="agent-settings-name">Name<input disabled={saving} value={name} onChange={(event) => setName(event.target.value)} /></label>
-          <div className="agent-settings-field"><span>Harness</span><select disabled={saving} aria-label="Harness" value={harness} onChange={(event) => {
+          <TextField className="agent-settings-name" label="Name" disabled={saving} value={name} onChange={(event) => setName(event.target.value)} />
+          <Select label="Harness" disabled={saving} value={harness} options={[{ value: 'codex', label: 'Codex' }, { value: 'opencode', label: 'OpenCode' }]} onChange={(event) => {
             const nextHarness = event.target.value as NonNullable<Agent['harness']>
             setHarness(nextHarness)
             const nextModel = modelOptions(nextHarness).includes(model) ? model : modelOptions(nextHarness)[0]
             if (nextModel) setModel(nextModel)
             if (nextModel && !effortOptions(nextHarness, nextModel).includes(effort)) setEffort('max')
             event.currentTarget.blur()
-          }}>
-            <option value="codex">Codex</option><option value="opencode">OpenCode</option>
-          </select></div>
-          <div className="agent-settings-field"><span>Model</span><select disabled={saving} aria-label="Model" value={model} onChange={(event) => {
+          }} />
+          <Select label="Model" disabled={saving} value={model} options={modelOptions(harness).map((value) => ({ value, label: value }))} onChange={(event) => {
             const nextModel = event.target.value
             setModel(nextModel)
             if (!effortOptions(harness, nextModel).includes(effort)) setEffort('max')
             event.currentTarget.blur()
-          }}>
-            {modelOptions(harness).map((value) => <option key={value} value={value}>{value}</option>)}
-          </select></div>
-          <div className="agent-settings-field"><span>Effort</span><select disabled={saving} aria-label="Effort" value={effort} onChange={(event) => {
+          }} />
+          <Select label="Effort" disabled={saving} value={effort} options={effortOptions(harness, model).map((value) => ({ value, label: effortLabels[value] }))} onChange={(event) => {
             setEffort(event.target.value as NonNullable<Agent['effort']>)
             event.currentTarget.blur()
-          }}>
-            {effortOptions(harness, model).map((value) => (
-              <option key={value} value={value}>{effortLabels[value]}</option>
-            ))}
-          </select></div>
+          }} />
           {showBlockers ? (
           <div className="agent-removal-blocked" role="alert">
             <p>{agent.name} is already in use in:</p>
@@ -221,7 +201,7 @@ function AgentCard({
           </div>
           ) : null}
           <div className="agent-settings-actions">
-            <button type="button" className="agent-settings-save" aria-label="Save" title="Save" onClick={save} disabled={!dirty || saving}><Check aria-hidden="true" size={16} /></button>
+            <IconButton label="Save" className="agent-settings-save" size="sm" disabled={!dirty || saving} onClick={save}><Icon name="check" size={16} /></IconButton>
           </div>
         </>}
       </div>
@@ -261,9 +241,8 @@ export function AgentsDirectoryContent({
   const announcement = useAgentDirectoryStore((state) => state.announcement)
   const [adding, setAdding] = useState(false)
   const [error, setError] = useState<string>()
-  const addPresence = usePresence(adding)
   const addButtonRef = useRef<HTMLButtonElement>(null)
-  const dialogRef = useRef<HTMLFormElement>(null)
+  const nameInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     hydrateWorkspace(workspaceId)
@@ -274,18 +253,6 @@ export function AgentsDirectoryContent({
     setError(undefined)
     addButtonRef.current?.focus()
   }, [])
-
-  useDismissableSurface({
-    open: adding,
-    onDismiss: closeAddAgent,
-    surfaceRef: dialogRef,
-    triggerRef: addButtonRef,
-  })
-
-  useEffect(() => {
-    if (!adding) return
-    dialogRef.current?.querySelector<HTMLInputElement>('input[name="name"]')?.focus()
-  }, [adding])
 
   const addAgent = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -340,74 +307,56 @@ export function AgentsDirectoryContent({
     }))
   return (
     <div className="agents-directory" data-testid="agents-directory">
-      <header className="agents-directory-header">
-        <div>
-          <p className="panel-kicker">Workspace directory</p>
-          <h1>Agents</h1>
-          <p>Browse the reusable agents available to this workspace.</p>
-        </div>
-        <button
-          ref={addButtonRef}
-          type="button"
-          className="agents-add-button"
-          aria-expanded={adding}
-          aria-controls="add-agent-form"
-          onClick={() => {
-            setAdding(true)
-            setError(undefined)
-          }}
-        >
-          <Plus aria-hidden="true" size={16} />
-          Add agent
-        </button>
-      </header>
-
-      {addPresence.mounted ? (
-        <div
-          className="agent-add-backdrop"
-          data-presence={addPresence.exiting ? 'exiting' : 'entering'}
-          inert={addPresence.exiting || undefined}
-        >
-          <form
-            ref={dialogRef}
-            className="agent-add-form"
-            id="add-agent-form"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="add-agent-title"
-            aria-describedby="add-agent-description"
-            onSubmit={addAgent}
-            onKeyDown={trapDialogFocus}
-            noValidate
+      <PageHeader
+        eyebrow="Workspace directory"
+        title="Agents"
+        description="Browse the reusable agents available to this workspace."
+        actions={
+          <Button
+            ref={addButtonRef}
+            variant="primary"
+            aria-expanded={adding}
+            aria-controls="add-agent-form"
+            leading={<Icon name="plus" size={16} />}
+            onClick={() => {
+              setAdding(true)
+              setError(undefined)
+            }}
           >
-            <div className="agent-add-form-heading">
-              <div className="agent-add-form-copy">
-                <h2 id="add-agent-title">Add a local agent</h2>
-                <p id="add-agent-description">This creates a session-only draft in this browser tab. It is not saved to the workspace.</p>
-              </div>
-              <button type="button" aria-label="Close add agent" title="Close" onClick={closeAddAgent}>
-                <X aria-hidden="true" size={17} />
-              </button>
-            </div>
-            <label>
-              Name
-              <input name="name" autoComplete="off" aria-invalid={Boolean(error)} aria-describedby={error ? 'agent-name-error' : undefined} />
-            </label>
-            <label>
-              Role <span>Optional</span>
-              <input name="role" autoComplete="off" />
-            </label>
-            <label className="agent-add-description">
-              Description <span>Optional</span>
-              <textarea name="description" rows={3} />
-            </label>
+            Add agent
+          </Button>
+        }
+      />
+
+      {adding ? (
+        <Dialog
+          open
+          onOpenChange={(open) => { if (!open) closeAddAgent() }}
+          title="Add a local agent"
+          description="This creates a session-only draft in this browser tab. It is not saved to the workspace."
+          closeLabel="Close add agent"
+          size="lg"
+          closeOnOutsideClick
+          initialFocusRef={nameInputRef}
+        >
+          <form className="agent-add-form" id="add-agent-form" onSubmit={addAgent} noValidate>
+            <TextField
+              ref={nameInputRef}
+              label="Name"
+              name="name"
+              autoComplete="off"
+              aria-invalid={Boolean(error)}
+              aria-describedby={error ? 'agent-name-error' : undefined}
+            />
+            <TextField label="Role" hint="Optional" name="role" autoComplete="off" />
+            <Textarea className="agent-add-description" label="Description" hint="Optional" name="description" rows={3} />
             {error ? <p className="agent-add-error" id="agent-name-error" role="alert">{error}</p> : null}
             <div className="agent-add-actions">
-              <button type="button" onClick={closeAddAgent}>Cancel</button>
-              <button type="submit" className="agents-add-button">Add local agent</button>
+              <Button onClick={closeAddAgent}>Cancel</Button>
+              <Button type="submit" variant="primary">Add local agent</Button>
             </div>
           </form>
-        </div>
+        </Dialog>
       ) : null}
 
       {visibleAgents.length > 0 ? (
@@ -450,9 +399,12 @@ export function AgentsDirectoryContent({
           ))}
         </div>
       ) : (
-        <div className="agents-directory-empty" data-testid="agents-empty">
-          <h2>No agents yet</h2>
-          <p>Add a local session draft to explore the directory layout. Persistent agent creation is not available in Phase 1.</p>
+        <div data-testid="agents-empty">
+          <EmptyState
+            icon="bot"
+            title="No agents yet"
+            description="Add a local session draft to explore the directory layout. Persistent agent creation is not available in Phase 1."
+          />
         </div>
       )}
 
@@ -497,15 +449,18 @@ export function AgentsDirectory({
   }
 
   if (agentsQuery.isPending) {
-    return <div className="agents-directory-state" data-testid="agents-loading" role="status">Loading agents…</div>
+    return <div data-testid="agents-loading"><LoadingState label="Loading agents…" /></div>
   }
 
   if (agentsQuery.isError || !agentsQuery.data) {
     return (
-      <div className="agents-directory-state agents-directory-state-error" data-testid="agents-error" role="alert">
-        <h1>Agents unavailable</h1>
-        <p>{agentsQuery.error instanceof Error ? agentsQuery.error.message : 'The agents directory could not be loaded.'}</p>
-        <button type="button" onClick={() => void agentsQuery.refetch()}>Retry</button>
+      <div data-testid="agents-error" role="alert">
+        <EmptyState
+          icon="warning"
+          title="Agents unavailable"
+          description={agentsQuery.error instanceof Error ? agentsQuery.error.message : 'The agents directory could not be loaded.'}
+          action={<Button onClick={() => void agentsQuery.refetch()} leading={<Icon name="refresh" size={16} />}>Retry</Button>}
+        />
       </div>
     )
   }

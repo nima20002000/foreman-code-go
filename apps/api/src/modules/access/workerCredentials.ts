@@ -1,0 +1,281 @@
+import { HarnessExecutionSchema, WorkflowRunSchema } from '@graphql/contracts'
+import type pg from 'pg'
+
+import { DomainError } from '../errors.js'
+import type { ChildProcessEnvironment } from '../harnesses/port.js'
+import type { PostgresAccessService } from './postgres.js'
+import { lockWorkerExecution, requireActiveWorkerExecution } from './workerLifecycle.js'
+import { WORKER_BINDING_ELIGIBLE } from './workerEligibility.js'
+
+export const APP_MCP_TOKEN_ENVIRONMENT_VARIABLE = 'GRAPHQL_APP_MCP_TOKEN'
+export const DEFAULT_WORKER_CREDENTIAL_TTL_MS = 15 * 60 * 1000
+export const WORKER_CREDENTIAL_EXPIRY_MARGIN_MS = 30_000
+export const WORKER_CREDENTIAL_RENEWAL_WINDOW_MS = 60_000
+
+export interface IssuedWorkerCredential {
+  principalId: string
+  environment: ChildProcessEnvironment
+  expiresAt: string
+}
+
+/** Issues only from durable execution/run identity; callers cannot supply alternate scope. */
+export class WorkerCredentialService {
+  constructor(
+    private readonly pool: pg.Pool,
+    private readonly access: PostgresAccessService,
+    readonly ttlMs = DEFAULT_WORKER_CREDENTIAL_TTL_MS,
+  ) {
+    if (!Number.isSafeInteger(ttlMs) || ttlMs < 60_000 || ttlMs > 2147483647) {
+      throw new RangeError('Worker credential TTL must be at least one minute.')
+    }
+  }
+
+  private async transaction<T>(perform: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt += 1) {
+      const client = await this.pool.connect()
+      let releaseError: Error | undefined
+      try {
+        await client.query('begin')
+        const value = await perform(client)
+        await client.query('commit')
+        return value
+      } catch (error) {
+        try { await client.query('rollback') } catch (rollbackError) {
+          releaseError = rollbackError instanceof Error ? rollbackError : new Error('Credential rollback failed.')
+        }
+        const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+        if (releaseError || attempt >= 2 || (code !== '40P01' && code !== '40001')) throw error
+      } finally {
+        client.release(releaseError)
+      }
+    }
+  }
+
+  issueForExecution(executionId: string): Promise<IssuedWorkerCredential> {
+    return this.issue(executionId, 'workflow')
+  }
+
+  issueForReviewer(executionId: string): Promise<IssuedWorkerCredential> {
+    return this.issue(executionId, 'reviewer')
+  }
+
+  private async issue(executionId: string, purpose: 'workflow' | 'reviewer'): Promise<IssuedWorkerCredential> {
+    return this.transaction(async (client) => {
+      const identity = await lockWorkerExecution(client, executionId)
+      const execution = HarnessExecutionSchema.parse(identity.execution_record)
+      const run = WorkflowRunSchema.parse(identity.run_record)
+      if (purpose === 'workflow') requireActiveWorkerExecution(identity)
+      else {
+        if (identity.run_closed_at || !['running', 'waiting'].includes(run.executionState) || run.outcome !== 'pending') {
+          throw new DomainError('REVIEWER_EXECUTION_NOT_READY', 'The Run no longer accepts reviewer credentials.', 409)
+        }
+        const ready = await client.query(
+          `select s.execution_id from execution_native_sessions s
+           join harness_executions he on he.id=s.execution_id
+           join agent_configuration_versions c on c.id=he.record->>'agentConfigurationVersionId'
+           where s.execution_id=$1 and s.workflow_finalized_at is not null
+             and s.reference->>'nativeSessionId'=he.record->>'nativeSessionId'
+             and c.record->>'productRole'='orchestrator'`, [executionId],
+        )
+        if (execution.state !== 'completed' || run.approval?.handler !== 'orchestrator'
+          || run.approval.designatedOrchestratorAgentId !== execution.agentId || !ready.rowCount) {
+          throw new DomainError('REVIEWER_EXECUTION_NOT_READY', 'Only the finalized designated Orchestrator session can receive Run-lifetime review credentials.', 409)
+        }
+      }
+      const issued = await this.access.issue({
+        name: `execution:${identity.execution_id}`,
+        audience: 'worker',
+        agentId: identity.agent_id,
+        grants: [{
+          actions: [
+            'interactions:read',
+            ...(run.approval?.handler === 'orchestrator'
+              && run.approval.designatedOrchestratorAgentId === identity.agent_id
+              ? ['interactions:respond' as const] : []),
+          ],
+          scope: {
+            workspaceIds: [identity.workspace_id],
+            workflowIds: [identity.workflow_id],
+            runIds: [identity.run_id],
+          },
+        }],
+        expiresAt: new Date(Date.now() + this.ttlMs),
+      }, client)
+      await client.query(
+        `insert into worker_credential_bindings
+          (principal_id, execution_id, run_id, workspace_id, workflow_id, agent_id, environment_variable, purpose)
+         values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [issued.principal.id, identity.execution_id, identity.run_id, identity.workspace_id,
+          identity.workflow_id, identity.agent_id, APP_MCP_TOKEN_ENVIRONMENT_VARIABLE, purpose],
+      )
+      return {
+        principalId: issued.principal.id,
+        environment: {
+          agentId: identity.agent_id,
+          variables: { [APP_MCP_TOKEN_ENVIRONMENT_VARIABLE]: issued.token },
+        },
+        expiresAt: issued.principal.expiresAt,
+      }
+    })
+  }
+
+  /** Extend the same principal/token only while its exact execution lease remains valid. */
+  async renewForExecution(executionId: string, credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<string> {
+    const result = await this.pool.query<{ expires_at: Date }>(
+      `update management_principals p
+       set expires_at=greatest(p.expires_at,now()+($3::bigint * interval '1 millisecond'))
+       from worker_credential_bindings b
+       join harness_executions he on he.id=b.execution_id and he.agent_id=b.agent_id and he.run_id=b.run_id
+       join runs r on r.id=b.run_id and r.workspace_id=b.workspace_id and r.workflow_id=b.workflow_id
+       join agents a on a.id=b.agent_id and a.workspace_id=b.workspace_id
+       join approval_execution_state s on s.execution_id=he.id
+       where p.id=$1 and b.principal_id=p.id and b.execution_id=$2
+         and p.audience='worker' and p.agent_id=b.agent_id
+         and b.environment_variable=$4 and p.revoked_at is null and b.revoked_at is null
+         and he.record->>'id'=he.id and he.record->>'runId'=r.id and he.record->>'agentId'=b.agent_id
+         and r.record->>'id'=r.id and r.record->>'workspaceId'=b.workspace_id and r.record->>'workflowId'=b.workflow_id
+         and ((b.purpose='workflow' and he.record->>'state' in ('running','waiting')
+           and s.active_elapsed_ms + coalesce(extract(epoch from (now()-s.active_started_at))*1000,0) < s.active_timeout_ms)
+           or (b.purpose='reviewer' and p.expires_at > clock_timestamp() and he.record->>'state'='completed'
+             and r.record->'approval'->>'handler'='orchestrator'
+             and r.record->'approval'->>'designatedOrchestratorAgentId'=b.agent_id
+             and exists (select 1 from execution_native_sessions ns where ns.execution_id=he.id
+               and ns.workflow_finalized_at is not null and ns.reference->>'nativeSessionId'=he.record->>'nativeSessionId')))
+         and r.record->>'executionState' in ('running','waiting') and r.record->>'outcome'='pending'
+         and ${WORKER_BINDING_ELIGIBLE}
+       returning p.expires_at`,
+      [credential.principalId, executionId, this.ttlMs, APP_MCP_TOKEN_ENVIRONMENT_VARIABLE],
+    )
+    if (!result.rows[0]) {
+      throw new DomainError('WORKER_CREDENTIAL_NOT_RENEWABLE', 'The worker credential is revoked, mismatched, or its execution is no longer active.', 409)
+    }
+    return result.rows[0].expires_at.toISOString()
+  }
+
+  private async lockParents(client: pg.PoolClient, executionId: string): Promise<void> {
+    const found = await client.query<{ run_id: string }>(
+      `select run_id from harness_executions where id=$1
+       union select run_id from worker_credential_bindings where execution_id=$1`, [executionId],
+    )
+    await client.query('select id from runs where id=any($1::text[]) order by id for update',
+      [found.rows.map((row) => row.run_id).sort()])
+    await client.query('select id from harness_executions where id=$1 for update', [executionId])
+  }
+
+  private async revokeIds(client: pg.PoolClient, principalIds: string[]): Promise<void> {
+    if (principalIds.length === 0) return
+    await client.query('select id from management_principals where id=any($1::text[]) order by id for update', [principalIds])
+    await client.query(
+      'update management_principals set revoked_at=coalesce(revoked_at,now()) where id=any($1::text[])', [principalIds],
+    )
+    // Use exactly the captured IDs on BOTH sides, including repair of old
+    // binding-revoked/principal-active inconsistencies from earlier versions.
+    await client.query(
+      'update worker_credential_bindings set revoked_at=coalesce(revoked_at,now()) where principal_id=any($1::text[])', [principalIds],
+    )
+  }
+
+  async revoke(credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<void> {
+    await this.transaction(async (client) => {
+      const found = await client.query<{ execution_id: string }>(
+        'select execution_id from worker_credential_bindings where principal_id=$1', [credential.principalId],
+      )
+      if (found.rows[0]) await this.lockParents(client, found.rows[0].execution_id)
+      await this.revokeIds(client, [credential.principalId])
+    })
+  }
+
+  /** Revoke replaceable process credentials without terminally closing the execution. */
+  async revokeSupersededForExecution(executionId: string): Promise<number> {
+    return this.transaction(async (client) => {
+      await this.lockParents(client, executionId)
+      const active = await client.query<{ principal_id: string }>(
+        `select b.principal_id from worker_credential_bindings b
+         left join management_principals p on p.id=b.principal_id
+         where b.execution_id=$1 and (b.revoked_at is null or (p.id is not null and p.revoked_at is null))
+         order by b.principal_id`, [executionId],
+      )
+      const principalIds = active.rows.map((row) => row.principal_id)
+      await this.revokeIds(client, principalIds)
+      return principalIds.length
+    })
+  }
+
+  /** Terminal/Stop cleanup permanently closes this execution to new issuance. */
+  async revokeForExecution(executionId: string): Promise<number> {
+    return this.transaction(async (client) => {
+      await this.lockParents(client, executionId)
+      await client.query(
+        'update harness_executions set worker_credentials_closed_at=coalesce(worker_credentials_closed_at,now()) where id=$1',
+        [executionId],
+      )
+      const active = await client.query<{ principal_id: string }>(
+        `select b.principal_id from worker_credential_bindings b
+         left join management_principals p on p.id=b.principal_id
+         where b.execution_id=$1 and (b.revoked_at is null or (p.id is not null and p.revoked_at is null))
+         order by b.principal_id`, [executionId],
+      )
+      const principalIds = active.rows.map((row) => row.principal_id)
+      await this.revokeIds(client, principalIds)
+      return principalIds.length
+    })
+  }
+
+  /** The run barrier also blocks credentials for executions created during Stop. */
+  async revokeForRun(runId: string, transactionClient?: pg.PoolClient): Promise<number> {
+    const perform = async (client: pg.PoolClient): Promise<number> => {
+      await client.query('select id from runs where id=$1 for update', [runId])
+      await client.query(
+        'update runs set worker_credentials_closed_at=coalesce(worker_credentials_closed_at,now()) where id=$1', [runId],
+      )
+      await client.query('select id from harness_executions where run_id=$1 order by id for update', [runId])
+      await client.query(
+        'update harness_executions set worker_credentials_closed_at=coalesce(worker_credentials_closed_at,now()) where run_id=$1', [runId],
+      )
+      const active = await client.query<{ principal_id: string }>(
+        `select b.principal_id from worker_credential_bindings b
+         left join management_principals p on p.id=b.principal_id
+         where b.run_id=$1 and (b.revoked_at is null or (p.id is not null and p.revoked_at is null))
+         order by b.principal_id`, [runId],
+      )
+      const principalIds = active.rows.map((row) => row.principal_id)
+      await this.revokeIds(client, principalIds)
+      return principalIds.length
+    }
+    // Management Stop already owns a transaction/lease. Do not request a
+    // second pool connection or commit that caller's transaction here.
+    return transactionClient ? perform(transactionClient) : this.transaction(perform)
+  }
+
+  /** Durable terminal records + bindings are the retry queue; no in-memory token is needed. */
+  async reconcileTerminalCredentials(): Promise<void> {
+    const ineligible = `from worker_credential_bindings b
+      left join harness_executions he on he.id=b.execution_id
+      left join runs r on r.id=b.run_id
+      left join management_principals p on p.id=b.principal_id
+      where (b.revoked_at is null or (p.id is not null and p.revoked_at is null))
+        and not coalesce((${WORKER_BINDING_ELIGIBLE}),false)`
+    const pending = await this.pool.query<{ execution_id: string; principal_id: string }>(
+      `select b.execution_id,b.principal_id ${ineligible} order by b.principal_id limit 100`,
+    )
+    let failure: unknown
+    for (const row of pending.rows) {
+      try {
+        await this.transaction(async (client) => {
+          await this.lockParents(client, row.execution_id)
+          await client.query('select id from management_principals where id=$1 for update', [row.principal_id])
+          // Recheck after locking. A stale sweep observation must not revoke a valid reviewer.
+          const current = await client.query(`select b.principal_id ${ineligible} and b.principal_id=$1`, [row.principal_id])
+          if (current.rowCount) await this.revokeIds(client, [row.principal_id])
+        })
+      } catch (error) { failure ??= error }
+    }
+    // Heal unbound worker principals left by the old non-atomic issuer as well.
+    await this.pool.query(
+      `update management_principals p set revoked_at=now()
+       where p.audience='worker' and p.revoked_at is null
+         and not exists (select 1 from worker_credential_bindings b where b.principal_id=p.id)`,
+    )
+    if (failure) throw failure
+  }
+}

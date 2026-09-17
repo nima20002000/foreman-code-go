@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { MoreHorizontal, Workflow } from 'lucide-react'
 
 import {
   queryKeys, useArchiveManagedWorkflowMutation, useManagedWorkflowsQuery,
   useUpdateManagedWorkflowMutation, useWorkspaceDetailsQuery,
 } from '../../shared/api/query'
+import {
+  Button, Card, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField,
+} from '../../shared/ui/nocturne'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { isSessionWorkspaceId, useWorkspaceSessionStore } from '../workspaces/workspaceSessionStore'
 import { useSessionWorkflowStore } from './sessionWorkflowStore'
-import '../workspaces/workspaces.css'
+import './workflows.css'
 
 function WorkflowCardActions({ name, onRename, onRemove }: {
   name: string
@@ -27,28 +29,29 @@ function WorkflowCardActions({ name, onRename, onRemove }: {
   useDismissableSurface({ open, onDismiss: close, surfaceRef, triggerRef })
 
   return (
-    <div className="workspace-card-actions-wrap">
-      <button
+    <div className="workflow-card-actions-wrap">
+      <IconButton
         ref={triggerRef}
-        type="button"
-        className="workspace-card-more"
-        aria-label={`Open actions for ${name}`}
+        className="workflow-card-more"
+        label={`Open actions for ${name}`}
+        variant="ghost"
+        size="sm"
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <MoreHorizontal aria-hidden="true" size={16} />
-      </button>
+        <Icon name="more" size={16} />
+      </IconButton>
       {open ? (
-        <div ref={surfaceRef} className="workspace-card-actions" role="dialog" aria-label={`${name} actions`}>
-          <label>Name<input value={nextName} onChange={(event) => setNextName(event.target.value)} /></label>
-          <button type="button" onClick={() => {
+        <div ref={surfaceRef} className="workflow-card-actions" role="dialog" aria-label={`${name} actions`}>
+          <TextField label="Name" value={nextName} onChange={(event) => setNextName(event.target.value)} />
+          <Button onClick={() => {
             const value = nextName.trim()
             if (!value) return
             onRename(value)
             close()
-          }}>Rename</button>
-          <button type="button" onClick={onRemove}>Remove workflow</button>
+          }}>Rename</Button>
+          <Button variant="danger" onClick={onRemove}>Remove workflow</Button>
         </div>
       ) : null}
     </div>
@@ -87,61 +90,66 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
     }))
 
   return (
-    <section className="workspace-directory" aria-labelledby="workflow-directory-title">
-      <header>
-        <p className="panel-kicker">{workspaceName ?? workflowsQuery.data?.workspace.name ?? 'Workspace'}</p>
-        <h1 id="workflow-directory-title">Workflows</h1>
-        <p>{realMode ? 'Open, rename or archive a durable workflow.' : 'Open a workflow or remove it from this frontend session.'}</p>
-      </header>
+    <section className="workflow-directory" aria-label="Workflows">
+      <PageHeader
+        eyebrow={workspaceName ?? workflowsQuery.data?.workspace.name ?? 'Workspace'}
+        title="Workflows"
+        description={realMode ? 'Open, rename or archive a durable workflow.' : 'Open a workflow or remove it from this frontend session.'}
+      />
 
       {workflows.length > 0 ? (
-        <ul className="workspace-card-list" data-testid="workflow-card-list">
+        <ul className="workflow-card-list" data-testid="workflow-card-list">
           {workflows.map((workflow) => (
             <li
-              className="workspace-card"
+              className="workflow-card-item"
               data-testid={`workflow-card-${workflow.id}`}
               key={workflow.id}
             >
-              <Link
-                to="/workspaces/$workspaceId"
-                params={{ workspaceId }}
-                search={{ workflowId: workflow.id }}
-                className="workspace-card-open"
-                data-session-draft={sessionIds.has(workflow.id) ? 'true' : undefined}
-              >
-                <Workflow aria-hidden="true" size={18} />
-                <span>{workflow.name}</span>
-              </Link>
-              <WorkflowCardActions
-                name={workflow.name}
-                onRename={(name) => {
-                  if (!realMode) return renameWorkflow(workflow.id, name)
-                  const item = managedById.get(workflow.id)
-                  if (!item) return
-                  updateWorkflow.mutate({ workspaceId, workflowId: workflow.id, expectedRevision: item.revision, commandId: crypto.randomUUID(), name }, {
-                    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflows(workspaceId) }),
-                  })
-                }}
-                onRemove={() => {
-                  if (!realMode) return removeWorkflow(workflow.id)
-                  const item = managedById.get(workflow.id)
-                  if (!item) return
-                  archiveWorkflow.mutate({ workspaceId, workflowId: workflow.id, expectedRevision: item.revision, commandId: crypto.randomUUID() }, {
-                    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflows(workspaceId) }),
-                  })
-                }}
-              />
+              <Card className="workflow-card">
+                <Link
+                  to="/workspaces/$workspaceId"
+                  params={{ workspaceId }}
+                  search={{ workflowId: workflow.id }}
+                  className="workflow-card-open"
+                  data-session-draft={sessionIds.has(workflow.id) ? 'true' : undefined}
+                >
+                  <Icon name="workflow" size={18} aria-hidden="true" />
+                  <span>{workflow.name}</span>
+                </Link>
+                <WorkflowCardActions
+                  name={workflow.name}
+                  onRename={(name) => {
+                    if (!realMode) return renameWorkflow(workflow.id, name)
+                    const item = managedById.get(workflow.id)
+                    if (!item) return
+                    updateWorkflow.mutate({ workspaceId, workflowId: workflow.id, expectedRevision: item.revision, commandId: crypto.randomUUID(), name }, {
+                      onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflows(workspaceId) }),
+                    })
+                  }}
+                  onRemove={() => {
+                    if (!realMode) return removeWorkflow(workflow.id)
+                    const item = managedById.get(workflow.id)
+                    if (!item) return
+                    archiveWorkflow.mutate({ workspaceId, workflowId: workflow.id, expectedRevision: item.revision, commandId: crypto.randomUUID() }, {
+                      onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflows(workspaceId) }),
+                    })
+                  }}
+                />
+              </Card>
             </li>
           ))}
         </ul>
       ) : (realMode ? managedQuery.isPending : !sessionWorkspace && workflowsQuery.isPending) ? (
-        <p className="workspace-directory-state" role="status">Loading workflows…</p>
+        <LoadingState label="Loading workflows…" />
       ) : (realMode ? managedQuery.isError : !sessionWorkspace && workflowsQuery.isError) ? (
-        <p className="workspace-directory-state" role="alert">Workflows unavailable</p>
+        <ErrorState title="Workflows unavailable" description="" />
       ) : (
-        <div className="workspace-directory-empty" data-testid="workflow-directory-empty">
-          <h2>No workflows yet</h2>
-          <p>Use New workflow in the navigation to create one.</p>
+        <div data-testid="workflow-directory-empty">
+          <EmptyState
+            icon="workflow"
+            title="No workflows yet"
+            description="Use New workflow in the navigation to create one."
+          />
         </div>
       )}
     </section>

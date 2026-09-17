@@ -1,0 +1,58 @@
+import { setTimeout as delay } from 'node:timers/promises'
+import Fastify from 'fastify'
+import { expect, it, vi } from 'vitest'
+
+const state = vi.hoisted(() => ({
+  app: undefined as ReturnType<typeof Fastify> | undefined,
+  calls: [] as string[],
+  finishRecovery: undefined as (() => void) | undefined,
+}))
+vi.mock('node:process', () => ({ loadEnvFile: () => undefined }))
+vi.mock('node:fs/promises', () => ({ mkdir: async () => undefined }))
+vi.mock('../src/config.js', () => ({ loadConfig: () => ({ database: {}, checkpoints: { schema: 'test' }, harnesses: { workspaceRoot: '/fixture' }, host: '127.0.0.1', port: 0 }) }))
+vi.mock('../src/infrastructure/database.js', () => ({ createDatabase: () => ({
+  pool: {}, ping: async () => undefined, migrate: async () => undefined,
+  close: async () => { state.calls.push('database closed') },
+}) }))
+vi.mock('../src/infrastructure/checkpoints.js', () => ({ createCheckpointStore: () => ({
+  setup: async () => undefined, ping: async () => undefined,
+  close: async () => { state.calls.push('checkpoints closed') },
+}) }))
+vi.mock('../src/infrastructure/seed.js', () => ({ ensureAcceptanceSeed: async () => undefined }))
+vi.mock('../src/production.js', () => ({ buildProductionApp: () => ({
+  app: state.app,
+  initialize: async () => undefined,
+  reconcile: async () => {
+    state.calls.push('recovery started')
+    await new Promise<void>((resolve) => { state.finishRecovery = resolve })
+  },
+  drainShutdown: async () => { state.calls.push('native shutdown'); state.finishRecovery?.() },
+}) }))
+
+it('handles SIGTERM while startup recovery is still running and closes all resources', async () => {
+  state.app = Fastify()
+  const listeners = new Map<string, () => void>()
+  const once = vi.spyOn(process, 'once').mockImplementation(function (this: NodeJS.Process, event: string | symbol, listener: (...args: unknown[]) => void) {
+    if (event === 'SIGTERM' || event === 'SIGINT') listeners.set(event, listener)
+    return this
+  })
+  vi.spyOn(state.app, 'listen').mockImplementation(async () => {
+    expect(listeners.has('SIGTERM')).toBe(true)
+    await state.app!.ready()
+    state.calls.push('listening')
+    return 'http://localhost:0'
+  })
+  try {
+    await import('../src/server.js')
+    await vi.waitFor(() => expect(state.calls).toContain('recovery started'))
+    listeners.get('SIGTERM')!()
+    await vi.waitFor(() => expect(state.calls).toContain('database closed'))
+    await delay(5)
+    expect(state.calls).toEqual(['listening', 'recovery started', 'native shutdown', 'checkpoints closed', 'database closed'])
+  } finally {
+    state.finishRecovery?.()
+    await state.app.close()
+    once.mockRestore()
+    vi.restoreAllMocks()
+  }
+})

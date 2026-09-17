@@ -2,20 +2,21 @@ import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
-import { Annotation, END, START, StateGraph } from '@langchain/langgraph'
+import { Annotation, Command, END, START, StateGraph, interrupt, isGraphInterrupt } from '@langchain/langgraph'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import {
   HarnessExecutionRequestSchema,
   HarnessExecutionSchema,
-  HarnessNativeEventSchema,
   type ExecutionResult,
   type WorkflowRun,
   type WorkflowVersion,
+  type DurableInteraction,
 } from '@graphql/contracts'
 
 import { DomainError } from '../errors.js'
+import { validateWorkflowApproval } from '../workflows/approval.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
-import type { HarnessResolver, NativeEventInput } from '../harnesses/port.js'
+import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
 import { withFilesystemDeadline } from '../workspaces/filesystem.js'
@@ -25,6 +26,10 @@ import type { RunOwnership } from './ownership.js'
 import { ExecutionLimiter } from './limiter.js'
 import { validateExecutableTopology } from './topology.js'
 import { resolveExecutionDirectory } from './executionDirectory.js'
+import { withCleanupDeadline } from '../interactions/cleanup.js'
+import type { ApprovalExecutionCoordinator } from '../interactions/execution.js'
+import type { PostgresInteractionRepository } from '../interactions/postgres.js'
+import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
 
 const EngineState = Annotation.Root({
   runId: Annotation<string>(),
@@ -35,11 +40,23 @@ const EngineState = Annotation.Root({
 })
 type EngineStateValue = typeof EngineState.State
 
+interface GraphSnapshot {
+  values: Partial<EngineStateValue>
+  next: string[]
+  tasks: Array<{
+    name: string
+    error?: unknown
+    result?: unknown
+    interrupts?: Array<{ id: string; value: unknown }>
+  }>
+}
+
 interface DynamicCompiledGraph {
   invoke(
-    input: EngineStateValue,
-    config: { configurable: { thread_id: string } },
+    input: EngineStateValue | Command,
+    config: { configurable: { thread_id: string }; signal?: AbortSignal },
   ): Promise<EngineStateValue>
+  getState(config: { configurable: { thread_id: string } }): Promise<GraphSnapshot>
 }
 
 interface DynamicGraphBuilder {
@@ -61,9 +78,34 @@ function failedResult(error: unknown, canceled: boolean): ExecutionResult {
   }
 }
 
+function cleanupFailedResult(): ExecutionResult {
+  return {
+    outcome: 'failed',
+    error: { code: 'RUN_CLEANUP_FAILED', message: 'Run cleanup was incomplete. Native work may remain active; retry Stop to finish cleanup.', retryable: false },
+  }
+}
+
+/** Observe graph cancellation even when a native iterator ignores its signal. */
+async function withExecutionSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  let onAbort: (() => void) | undefined
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        onAbort = () => reject(signal.reason)
+        signal.addEventListener('abort', onAbort, { once: true })
+        if (signal.aborted) onAbort()
+      }),
+    ])
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort)
+  }
+}
+
 export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   private readonly activeRuns = new Map<string, AbortController>()
   private readonly activeTasks = new Map<string, Promise<void>>()
+  private readonly resumeTasks = new Map<string, Promise<void>>()
   private readonly workspaceRoot: string
   private closing = false
   private reconciliation: Promise<void> | undefined
@@ -71,33 +113,41 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   constructor(
     private readonly runs: PostgresRunRepository,
     private readonly workflows: PostgresWorkflowRepository,
-    private readonly harnesses: HarnessResolver,
+    private readonly nativeExecutions: ApprovalExecutionCoordinator,
     private readonly checkpointer: BaseCheckpointSaver,
     workspaceRoot: string,
-    private readonly timeoutMs: number,
     private readonly locations: WorkspaceLocationService,
+    private readonly workerCredentials?: ExecutionCredentialProvider,
+    private readonly interactions?: PostgresInteractionRepository,
+    private readonly onRunTerminal?: (runId: string, reason: string) => Promise<void>,
   ) {
     this.workspaceRoot = resolve(workspaceRoot)
   }
 
   start(runId: string): Promise<void> {
-    const existing = this.activeTasks.get(runId)
+    const existing = this.resumeTasks.get(runId) ?? this.activeTasks.get(runId)
     if (existing) return existing
+    return this.trackRun(runId, (controller) => this.startRun(runId, controller))
+  }
+
+  private trackRun(runId: string, work: (controller: AbortController) => Promise<void>): Promise<void> {
     if (this.closing) return Promise.reject(new DomainError('ENGINE_CLOSING', 'The workflow engine is shutting down.', 503))
     // Register cancellation before the first database await, including queued work.
     const controller = new AbortController()
     this.activeRuns.set(runId, controller)
-    const task = this.startRun(runId, controller).finally(() => {
-      this.activeRuns.delete(runId)
-      this.activeTasks.delete(runId)
+    const task = work(controller).then(async () => {
+      if ((await this.runs.get(runId))?.executionState === 'completed') {
+        await this.finishRunLifecycle(runId)
+      }
+    }).finally(() => {
+      if (this.activeRuns.get(runId) === controller) this.activeRuns.delete(runId)
+      if (this.activeTasks.get(runId) === task) this.activeTasks.delete(runId)
     })
     this.activeTasks.set(runId, task)
     return task
   }
 
   private async startRun(runId: string, controller: AbortController): Promise<void> {
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs)
-    timeout.unref()
     let owner: RunOwnership | undefined
     try {
       owner = await this.runs.acquireOwnership(runId, () => controller.abort(
@@ -110,12 +160,12 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         throw new DomainError('RUN_NOT_STARTABLE', `Run '${runId}' is not queued.`, 409)
       }
       if (controller.signal.aborted) {
-        await this.runs.settleOrphan(runId, owner, true)
+        const cleanupFailure = await this.cleanupApprovals(runId)
+        await this.settleCanceled(runId, owner, cleanupFailure)
         return
       }
       await this.executeRun(run, controller.signal, owner)
     } finally {
-      clearTimeout(timeout)
       await owner?.release()
     }
   }
@@ -125,40 +175,321 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     if (this.reconciliation) return this.reconciliation
     if (this.closing) return Promise.resolve()
     const task = (async () => {
+      await this.workerCredentials?.reconcileTerminalCredentials?.().catch(onError)
+      await this.nativeExecutions.reconcileReviews(onError)
       for (const candidate of await this.runs.reconciliationCandidates()) {
         if (this.closing) break
-        if (this.activeTasks.has(candidate.id)) continue
+        if (this.activeTasks.has(candidate.id) || this.resumeTasks.has(candidate.id)) continue
+        if (await this.runs.hasPendingCleanup?.(candidate.id)) {
+          await this.cancel(candidate.id).catch(onError)
+          if ((await this.runs.get(candidate.id))?.executionState === 'completed') {
+            await this.finishRunLifecycle(candidate.id).catch(onError)
+          }
+          continue
+        }
         if (candidate.executionState === 'queued') {
           void this.start(candidate.id).catch(onError)
           continue
         }
-        const owner = await this.runs.acquireOwnership(candidate.id, () => undefined)
-        if (!owner) continue
-        try {
-          await this.runs.settleOrphan(candidate.id, owner, false)
-        } finally {
-          await owner.release()
-        }
+        await this.trackRun(candidate.id, (controller) => this.reconcileRun(candidate.id, controller)).catch(onError)
       }
     })().finally(() => { this.reconciliation = undefined })
     this.reconciliation = task
     return task
   }
 
-  async resume(runId: string): Promise<void> {
-    throw new DomainError('RUN_RESUME_NOT_IMPLEMENTED', `Run '${runId}' cannot be replayed safely. Inspect the interrupted attempt, cancel its record, and start a new run when safe.`, 501)
+  private async reconcileRun(runId: string, controller: AbortController): Promise<void> {
+    const owner = await this.runs.acquireOwnership(runId, () => controller.abort(
+      new DomainError('RUN_OWNERSHIP_LOST', 'The database execution owner disconnected.', 409),
+    ))
+    if (!owner) return
+    try {
+      // Candidate records can be stale by the time database ownership is acquired.
+      const run = await this.runs.get(runId, owner)
+      if (!run || (run.executionState !== 'running' && run.executionState !== 'waiting')) return
+      controller.signal.throwIfAborted()
+      {
+        const { version, snapshot } = await this.readCheckpoint(run)
+        if (this.isApprovalWait(snapshot)) {
+          if (!run.approval) throw new DomainError('WORKFLOW_APPROVAL_INCOMPLETE', 'The saved approval wait has no accepted workflow handler. Reopen and save the workflow before starting a new Run.', 409)
+          const current = await this.currentInteractions(run, snapshot, owner)
+          controller.signal.throwIfAborted()
+          if (run.executionState !== 'waiting') {
+            await this.runs.updateState(run.id, { executionState: 'waiting', outcome: 'pending' }, owner)
+          }
+          const delivered = current.filter((item) => item.status === 'delivered' && item.deliveryState === 'delivered')
+          if (delivered.length) await this.resumeCheckpoint(run, delivered, controller, owner)
+          else await this.resumeTerminalRecoveries(run, current, controller, owner)
+          return
+        }
+        if (this.isTerminalCheckpoint(run, snapshot)) {
+          await this.completeRun(run, version, snapshot.values as EngineStateValue, controller.signal, owner)
+          return
+        }
+      }
+      // No healthy interrupt or terminal checkpoint: never replay orphaned work.
+      await this.nativeExecutions.cancelRun(runId)
+      await this.runs.settleOrphan(runId, owner, false)
+      await this.workerCredentials?.revokeForRun?.(runId)
+    } finally {
+      try {
+        if (controller.signal.aborted) await this.settleCanceledRun(runId, owner)
+      } finally { await owner.release() }
+    }
   }
 
-  async cancel(runId: string): Promise<boolean> {
-    const controller = this.activeRuns.get(runId)
-    if (controller) {
-      controller.abort()
-      return true
-    }
-    const owner = await this.runs.acquireOwnership(runId, () => undefined)
-    if (!owner) return false
+  async resume(runId: string): Promise<void> {
+    await this.queueResume(runId)
+  }
+
+  /** Runs terminal review cleanup only after Run ownership/command transactions are released. */
+  async finishRunLifecycle(runId: string, reason = 'The Run stopped or completed.'): Promise<void> {
+    if (!this.onRunTerminal) return
+    await this.runs.requestCleanup(runId)
     try {
-      return await this.runs.settleOrphan(runId, owner, true)
+      await this.onRunTerminal(runId, reason)
+      await this.runs.finishCleanup(runId, false)
+    } catch (error) {
+      await this.runs.finishCleanup(runId, true).catch(() => undefined)
+      throw error
+    }
+  }
+
+  async resumeInteraction(interaction: DurableInteraction): Promise<void> {
+    await this.resumeInteractions([interaction])
+  }
+
+  private async resumeInteractions(interactions: DurableInteraction[]): Promise<void> {
+    const runId = interactions[0]?.runId
+    if (!runId || interactions.some((item) => item.runId !== runId)) throw new DomainError('INTERACTION_RUN_MISMATCH', 'Resume interactions must belong to one Run.', 409)
+    await this.queueResume(runId, interactions.map((item) => item.id))
+  }
+
+  private queueResume(runId: string, requestedIds?: string[]): Promise<void> {
+    if (!this.interactions) return Promise.reject(new DomainError('RUN_RESUME_NOT_IMPLEMENTED', `Run '${runId}' has no durable approval runtime.`, 501))
+    if (this.closing) return Promise.reject(new DomainError('ENGINE_CLOSING', 'The workflow engine is shutting down.', 503))
+    // Publish the queue tail synchronously. Waiting callers must not all replace
+    // the same active task/controller after a shared predecessor settles.
+    const previous = this.resumeTasks.get(runId) ?? this.activeTasks.get(runId) ?? Promise.resolve()
+    const task = previous.catch(() => undefined).then(() =>
+      this.trackRun(runId, (controller) => this.resumeRun(runId, controller, requestedIds)),
+    ).finally(() => {
+      if (this.resumeTasks.get(runId) === task) this.resumeTasks.delete(runId)
+    })
+    this.resumeTasks.set(runId, task)
+    return task
+  }
+
+  private async resumeRun(runId: string, controller: AbortController, requestedIds?: string[]): Promise<void> {
+    let owner: RunOwnership | undefined
+    try {
+      owner = await this.runs.acquireOwnership(runId, () => controller.abort(
+        new DomainError('RUN_OWNERSHIP_LOST', 'The database execution owner disconnected.', 409),
+      ))
+      if (!owner) throw new DomainError('RUN_ALREADY_OWNED', `Run '${runId}' is owned by another engine.`, 409)
+      const run = await this.runs.get(runId, owner)
+      if (!run) throw new DomainError('RUN_NOT_FOUND', `Run '${runId}' was not found.`, 404)
+      // A preceding queued resume may already have consumed this notification.
+      if (run.executionState === 'completed' && requestedIds) return
+      if (!run.approval || (run.executionState !== 'waiting' && run.executionState !== 'running')) throw new DomainError('RUN_NOT_RESUMABLE', `Run '${runId}' is not waiting.`, 409)
+      controller.signal.throwIfAborted()
+      const { version, snapshot } = await this.readCheckpoint(run)
+      if (this.isTerminalCheckpoint(run, snapshot)) {
+        await this.completeRun(run, version, snapshot.values as EngineStateValue, controller.signal, owner)
+        return
+      }
+      if (!this.isApprovalWait(snapshot)) throw new DomainError('RUN_NOT_RESUMABLE', 'The Run has no healthy approval checkpoint.', 409)
+      const current = await this.currentInteractions(run, snapshot, owner)
+      controller.signal.throwIfAborted()
+      if (requestedIds && !current.some((item) => requestedIds.includes(item.id))) return
+      // Resolve by CURRENT checkpoint IDs, not a page of historical interactions.
+      // Include every delivered branch in one map; leave undecided branches alone.
+      const delivered = current.filter((item) => item.status === 'delivered' && item.deliveryState === 'delivered')
+      if (!delivered.length) {
+        if (await this.resumeTerminalRecoveries(run, current, controller, owner)) return
+        throw new DomainError('RUN_NOT_RESUMABLE', `Run '${runId}' has no confirmed delivery or exact terminal execution.`, 409)
+      }
+      await this.resumeCheckpoint(run, delivered, controller, owner)
+    } finally {
+      try {
+        if (owner && controller.signal.aborted) await this.settleCanceledRun(runId, owner)
+      } finally { await owner?.release() }
+    }
+  }
+
+  private async resumeTerminalRecoveries(run: WorkflowRun, interactions: DurableInteraction[], controller: AbortController, owner: RunOwnership): Promise<boolean> {
+    if (!this.nativeExecutions.recoverTerminalInteraction) return false
+    const resumes: Record<string, { terminalExecutionId: string }> = {}
+    const failures: unknown[] = []
+    for (const interaction of interactions) {
+      if (!interaction.graphInterruptId || resumes[interaction.graphInterruptId]) continue
+      try {
+        if (await this.nativeExecutions.recoverTerminalInteraction(interaction, owner, controller.signal)) {
+          resumes[interaction.graphInterruptId] = { terminalExecutionId: interaction.executionId }
+        }
+      } catch (error) {
+        controller.signal.throwIfAborted()
+        owner.assertOwned()
+        failures.push(error)
+      }
+    }
+    if (!Object.keys(resumes).length) {
+      if (failures.length) throw new AggregateError(failures, 'Terminal execution recovery remains unconfirmed.')
+      return false
+    }
+    // ensureObserve() returns the durable terminal execution before any interrupt
+    // response is consumed. This marker is NOT accepted by assertResume() and
+    // cannot serve as an approval for a later/different native request.
+    await this.executeRun(run, controller.signal, owner, new Command({ resume: resumes }))
+    return true
+  }
+
+  private async resumeCheckpoint(run: WorkflowRun, interactions: DurableInteraction[], controller: AbortController, owner: RunOwnership): Promise<void> {
+    const resumeMap = Object.fromEntries(interactions.map((item) => [item.graphInterruptId!, { interactionId: item.id }]))
+    // Approval time is persisted per execution. Each ensure/observe lifetime
+    // owns its deadline; completed branches cannot constrain later graph work.
+    await this.executeRun(run, controller.signal, owner, new Command({ resume: resumeMap }))
+  }
+
+  private buildGraph(version: WorkflowVersion, action: (nodeId: string, state: EngineStateValue) => Promise<Partial<EngineStateValue>>): DynamicCompiledGraph {
+    const topology = validateExecutableTopology(version)
+    const builder = new StateGraph(EngineState) as unknown as DynamicGraphBuilder
+    for (const node of version.definition.nodes) builder.addNode(node.id, (state) => action(node.id, state))
+    builder.addEdge(START, version.entryNodeId)
+    for (const node of version.definition.nodes) {
+      const sources = topology.incoming.get(node.id) ?? []
+      if (sources.length === 1) builder.addEdge(sources[0] as string, node.id)
+      if (sources.length > 1) builder.addEdge(sources, node.id)
+    }
+    for (const sink of topology.sinks) builder.addEdge(sink, END)
+    return builder.compile({ checkpointer: this.checkpointer })
+  }
+
+  private async readCheckpoint(run: WorkflowRun): Promise<{ version: WorkflowVersion; snapshot: GraphSnapshot }> {
+    const version = await this.workflows.getVersion(run.workflowVersionId)
+    if (!version) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', `Workflow version '${run.workflowVersionId}' was not found.`, 409)
+    // getState reads the existing thread without invoking any node, including
+    // predecessors. Keep a read-only graph incapable of launching native work.
+    const graph = this.buildGraph(version, async () => { throw new Error('Checkpoint inspection cannot execute nodes.') })
+    return { version, snapshot: await graph.getState({ configurable: { thread_id: run.id } }) }
+  }
+
+  private isApprovalWait(snapshot: GraphSnapshot): boolean {
+    return snapshot.tasks.some((task) => task.interrupts?.length)
+      && snapshot.tasks.every((task) => task.error == null && (task.interrupts?.length || task.result !== undefined))
+  }
+
+  private isTerminalCheckpoint(run: WorkflowRun, snapshot: GraphSnapshot): boolean {
+    return snapshot.values.runId === run.id && !!snapshot.values.executionIds
+      && snapshot.next.length === 0 && snapshot.tasks.length === 0
+  }
+
+  private async currentInteractions(run: WorkflowRun, snapshot: GraphSnapshot, owner: RunOwnership): Promise<DurableInteraction[]> {
+    if (!this.interactions) throw new DomainError('APPROVAL_RUNTIME_MISSING', 'The graph interrupted without an interaction repository.', 500)
+    const current: DurableInteraction[] = []
+    for (const pending of snapshot.tasks.flatMap((task) => task.interrupts ?? [])) {
+      const value = pending.value as { interactionId?: unknown; interactionIds?: unknown }
+      if (!pending.id || typeof value?.interactionId !== 'string') throw new DomainError('GRAPH_INTERRUPT_INVALID', 'The graph interrupt has no interaction identity.', 500)
+      const ids = value.interactionIds ?? [value.interactionId]
+      if (!Array.isArray(ids) || !ids.includes(value.interactionId) || ids.some((id) => typeof id !== 'string')
+        || new Set(ids).size !== ids.length) throw new DomainError('GRAPH_INTERRUPT_INVALID', 'The graph interrupt has invalid interaction identities.', 500)
+      for (const id of ids) {
+      const item = await this.interactions.get(id)
+      if (!item || item.runId !== run.id || item.graphThreadId !== run.id
+        || item.workspaceId !== run.workspaceId || item.workflowId !== run.workflowId) {
+        throw new DomainError('INTERACTION_RUN_MISMATCH', 'The graph interrupt does not belong to this Run.', 409)
+      }
+      const execution = await this.runs.getExecution(item.executionId, owner)
+      if (!execution || execution.runId !== run.id || execution.agentId !== item.requestingAgentId
+        || execution.nativeSessionId !== item.nativeSessionId) {
+        throw new DomainError('INTERACTION_IDENTITY_CONFLICT', 'The graph interrupt does not match its durable native execution.', 409)
+      }
+      if ((item.graphInterruptId && item.graphInterruptId !== pending.id)
+        || current.some((other) => other.id === item.id || (other.graphInterruptId === pending.id
+          && (other.executionId !== item.executionId || other.nativeSessionId !== item.nativeSessionId)))) {
+        throw new DomainError('INTERACTION_INTERRUPT_CONFLICT', 'The interaction has a conflicting graph interrupt identity.', 409)
+      }
+      // Repair only an absent binding after a checkpoint-write/process crash.
+      // Never replace a durable/native identity or redeliver a native response.
+      current.push(item.graphInterruptId ? item : await this.interactions.bindGraphInterrupt(item.id, pending.id))
+      }
+    }
+    return current
+  }
+
+  private async settleCanceledRun(runId: string, owner: RunOwnership): Promise<void> {
+    const run = await this.runs.get(runId, owner)
+    if (!run || (run.executionState === 'completed' && !await this.runs.hasPendingCleanup?.(runId, owner.client))) return
+    const cleanupFailure = await this.cleanupApprovals(runId)
+    await this.settleCanceled(runId, owner, cleanupFailure)
+    if (cleanupFailure) throw cleanupFailure.error
+  }
+
+  private async cleanupApprovals(runId: string, recordIntent = true): Promise<{ error: unknown } | undefined> {
+    try {
+      // This durable intent survives business-outcome settlement and a server restart.
+      if (recordIntent) await this.runs.requestCleanup?.(runId)
+      await this.nativeExecutions.cancelRun(runId)
+      return undefined
+    } catch (error) {
+      return { error }
+    }
+  }
+
+  private async settleCanceled(runId: string, owner: RunOwnership, cleanupFailure?: { error: unknown }): Promise<boolean> {
+    // Terminalize only after native cleanup. A failed closure is not a successful Stop.
+    const settled = await this.runs.settleOrphan(runId, owner, !cleanupFailure)
+    if (settled && cleanupFailure) {
+      const result = cleanupFailedResult()
+      await this.runs.updateState(runId, {
+        executionState: 'completed', outcome: result.outcome, result, finishedAt: new Date().toISOString(),
+      }, owner)
+    }
+    await this.runs.finishCleanup?.(runId, Boolean(cleanupFailure), owner.client)
+    // A terminal business record does not prevent completing its independent cleanup.
+    return settled || (!cleanupFailure && (await this.runs.get(runId, owner))?.executionState === 'completed')
+  }
+
+  async cancel(runId: string, transactionClient?: import('pg').PoolClient): Promise<boolean> {
+    const controller = this.activeRuns.get(runId)
+    const activeTask = this.activeTasks.get(runId)
+    controller?.abort()
+    await this.runs.requestCleanup?.(runId, transactionClient)
+    await this.workerCredentials?.revokeForRun?.(runId, transactionClient)
+    // Local native ownership outlives graph tasks and database execution state.
+    // Begin its cancellation even if acquiring database ownership later fails.
+    const localCleanup = controller || this.nativeExecutions.residentRunIds().includes(runId)
+      ? this.cleanupApprovals(runId, false) : undefined
+    let drainFailure: { error: unknown } | undefined
+    if (controller) {
+      await localCleanup
+      if (activeTask) {
+        try { await withCleanupDeadline(() => activeTask) } catch (error) {
+          // The task may observe this Stop between checkpoint reads. Its own
+          // cancellation reason is successful draining, not a cleanup failure.
+          if (error !== controller.signal.reason) drainFailure = { error }
+        }
+      }
+      // Stop can race the transition to waiting after graph invocation returns.
+      // Re-check durable settlement instead of treating a drained task as Stop.
+    }
+    let owner: RunOwnership | undefined
+    try {
+      owner = await this.runs.acquireOwnership(runId, () => undefined)
+    } catch (error) {
+      const cleanupFailure = await localCleanup
+      throw new AggregateError([error, ...(cleanupFailure ? [cleanupFailure.error] : [])], 'Stop could not acquire Run ownership.', { cause: error })
+    }
+    if (!owner) {
+      const cleanupFailure = (await localCleanup) ?? drainFailure
+      if (cleanupFailure) throw cleanupFailure.error
+      return false
+    }
+    try {
+      const cleanupFailure = (await (localCleanup ?? this.cleanupApprovals(runId, false))) ?? drainFailure
+      const settled = await this.settleCanceled(runId, owner, cleanupFailure)
+      if (cleanupFailure) throw cleanupFailure.error
+      return settled || Boolean(controller)
     } finally {
       await owner.release()
     }
@@ -166,22 +497,40 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
   async shutdown(): Promise<void> {
     this.closing = true
+    // A waiting Run has no active graph task. Runtime shutdown disposes its
+    // resident manager later, but must not turn an ordinary restart into Stop.
+    const runIds = new Set(this.activeRuns.keys())
     for (const controller of this.activeRuns.values()) controller.abort()
-    await this.reconciliation?.catch(() => undefined)
-    await Promise.allSettled(this.activeTasks.values())
+    // Waiting sessions are deliberately included; all cancellations start before
+    // any task drain, and a failed sibling must not short-circuit shutdown.
+    const reviewerCleanup = this.nativeExecutions.reviewers.shutdown()
+    const outcomes = await Promise.allSettled([...runIds].map((runId) => this.cancel(runId)))
+    const drains = await Promise.allSettled([
+      withCleanupDeadline(() => this.reconciliation ?? Promise.resolve()),
+      withCleanupDeadline(async () => { await Promise.allSettled([...this.activeTasks.values(), ...this.resumeTasks.values()]) }),
+      withCleanupDeadline(async () => { await reviewerCleanup }),
+    ])
+    const errors = [...outcomes, ...drains].flatMap((item) => item.status === 'rejected' ? [item.reason] : [])
+    if (errors.length) throw new AggregateError(errors, 'Workflow shutdown cleanup was incomplete.')
   }
 
-  private async executeRun(run: WorkflowRun, signal: AbortSignal, owner: RunOwnership): Promise<void> {
-    const startedAt = new Date().toISOString()
+  private async executeRun(run: WorkflowRun, signal: AbortSignal, owner: RunOwnership, resumeCommand?: Command): Promise<void> {
+    const startedAt = run.startedAt ?? new Date().toISOString()
     const failedNodes = new AbortController()
     const nodeSignal = AbortSignal.any([signal, failedNodes.signal])
     const activeNodes = new Set<Promise<Partial<EngineStateValue>>>()
     let firstFailure: { error: unknown } | undefined
-    const drain = async () => {
+    let graph: DynamicCompiledGraph | undefined
+    let cleanup: Promise<{ error: unknown } | undefined> | undefined
+    const cancelNative = () => { cleanup ??= this.cleanupApprovals(run.id) }
+    nodeSignal.addEventListener('abort', cancelNative, { once: true })
+    if (nodeSignal.aborted) cancelNative()
+    const drain = () => withCleanupDeadline(async () => {
       while (activeNodes.size) await Promise.allSettled([...activeNodes])
-    }
+    })
 
     try {
+      signal.throwIfAborted()
       const version = await this.workflows.getVersion(run.workflowVersionId)
       if (!version) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', `Workflow version '${run.workflowVersionId}' was not found.`, 409)
       if (!run.executionLocation) {
@@ -195,66 +544,55 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         if (!configuration) throw new DomainError('AGENT_CONFIGURATION_NOT_FOUND', `Configuration '${configurationVersionId}' was not found.`, 500)
         return configuration
       }))
+      for (const configuration of configurations) assertNativeWorkflowConfiguration(configuration.harness, run.approval)
+      if (run.approval) validateWorkflowApproval(version.definition, run.approval, configurations.map((configuration) => ({
+        id: configuration.agentId, productRole: configuration.productRole, harnessConfiguration: configuration.harness,
+      })))
       await this.locations.revalidateSnapshot(run.workspaceId, run.executionLocation, requiredLocationAccess(configurations), signal)
       await this.runs.updateState(run.id, { executionState: 'running', outcome: 'pending', startedAt }, owner)
       const topology = validateExecutableTopology(version)
       const limiter = new ExecutionLimiter(version.definition.executionPolicy!.maxParallelism)
-      const builder = new StateGraph(EngineState) as unknown as DynamicGraphBuilder
-      for (const node of version.definition.nodes) {
-        builder.addNode(node.id, (state) => {
-          const task = limiter.run(nodeSignal, () => this.executeNode(run, version, node.id, topology.incoming.get(node.id) ?? [], state, nodeSignal, owner))
-          activeNodes.add(task)
-          void task.then(
-            () => { activeNodes.delete(task) },
-            (error: unknown) => {
+      graph = this.buildGraph(version, (nodeId, state) => {
+        const task = limiter.run(nodeSignal, () => this.executeNode(run, version, nodeId, topology.incoming.get(nodeId) ?? [], state, nodeSignal, owner))
+        activeNodes.add(task)
+        void task.then(
+          () => { activeNodes.delete(task) },
+          (error: unknown) => {
+            if (!isGraphInterrupt(error)) {
               firstFailure ??= { error }
               failedNodes.abort(error)
-              activeNodes.delete(task)
-            },
-          )
-          return task
-        })
-      }
-      builder.addEdge(START, version.entryNodeId)
-      for (const node of version.definition.nodes) {
-        const sources = topology.incoming.get(node.id) ?? []
-        if (sources.length === 1) builder.addEdge(sources[0] as string, node.id)
-        if (sources.length > 1) builder.addEdge(sources, node.id)
-      }
-      for (const sink of topology.sinks) builder.addEdge(sink, END)
-
-      const graph = builder.compile({ checkpointer: this.checkpointer })
-      const state = await graph.invoke(
-        { runId: run.id, executionIds: {} },
-        { configurable: { thread_id: run.id } },
-      )
-      signal.throwIfAborted()
-      const finalOutputs = await Promise.all(topology.sinks.map(async (nodeId) => {
-        const executionId = state.executionIds[nodeId]
-        if (!executionId) throw new DomainError('FINAL_EXECUTION_MISSING', `Final node '${nodeId}' did not produce an execution.`, 500)
-        const result = await this.runs.getAcceptedResult(executionId, owner)
-        if (!result) throw new DomainError('FINAL_RESULT_MISSING', `Final node '${nodeId}' has no accepted result.`, 500)
-        return { nodeId, executionId, result: result.output ?? null }
-      }))
-      const result: ExecutionResult = {
-        outcome: 'succeeded',
-        output: finalOutputs.length === 1 ? finalOutputs[0]?.result ?? null : { outputs: finalOutputs },
-      }
-      signal.throwIfAborted()
-      await this.runs.updateState(run.id, {
-        executionState: 'completed',
-        outcome: 'succeeded',
-        result,
-        startedAt,
-        finishedAt: new Date().toISOString(),
-      }, owner)
-    } catch (error) {
-      failedNodes.abort(error)
-      // LangGraph can reject before sibling harnesses finish. Retain both local
-      // tracking and database ownership until every launched task cleans up.
+            }
+            activeNodes.delete(task)
+          },
+        )
+        return task
+      })
+      const graphConfig = { configurable: { thread_id: run.id } }
+      const state = await withExecutionSignal(graph.invoke(
+        resumeCommand ?? { runId: run.id, executionIds: {} },
+        { ...graphConfig, signal: nodeSignal },
+      ), nodeSignal)
       await drain()
+      signal.throwIfAborted()
+      if (firstFailure) throw firstFailure.error
+      if (await this.persistApprovalWait({ ...run, startedAt }, await graph.getState(graphConfig), signal, owner)) return
+      await this.completeRun({ ...run, startedAt }, version, state, signal, owner)
+    } catch (error) {
+      // A healthy interrupt and recoverable checkpoint I/O retain native work.
+      if (!signal.aborted && !firstFailure) {
+        await drain()
+        owner.assertOwned()
+        if (isGraphInterrupt(error) && graph
+          && await this.persistApprovalWait({ ...run, startedAt }, await graph.getState({ configurable: { thread_id: run.id } }), signal, owner)) return
+        if (resumeCommand) throw error
+      }
+      failedNodes.abort(error)
+      cancelNative()
+      const cleanupFailure = await cleanup
+      let drainFailed = false
+      try { await drain() } catch { drainFailed = true }
       owner.assertOwned()
-      const result = failedResult(firstFailure?.error ?? error, signal.aborted)
+      const result = cleanupFailure || drainFailed ? cleanupFailedResult() : failedResult(firstFailure?.error ?? error, signal.aborted)
       await this.runs.updateState(run.id, {
         executionState: 'completed',
         outcome: result.outcome,
@@ -262,10 +600,44 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         startedAt,
         finishedAt: new Date().toISOString(),
       }, owner)
+      await this.runs.finishCleanup?.(run.id, Boolean(cleanupFailure) || drainFailed, owner.client)
     } finally {
-      failedNodes.abort()
-      await drain()
+      nodeSignal.removeEventListener('abort', cancelNative)
+      // Do not abort a successful waiting graph's resident session. Its lifetime
+      // is owned by the coordinator until resume, Stop, or shutdown.
     }
+  }
+
+  private async persistApprovalWait(run: WorkflowRun, snapshot: GraphSnapshot, signal: AbortSignal, owner: RunOwnership): Promise<boolean> {
+    if (!snapshot.tasks.some((task) => task.interrupts?.length)) return false
+    await this.currentInteractions(run, snapshot, owner)
+    signal.throwIfAborted()
+    await this.runs.updateState(run.id, { executionState: 'waiting', outcome: 'pending', startedAt: run.startedAt ?? new Date().toISOString() }, owner)
+    signal.throwIfAborted()
+    await this.nativeExecutions.reconcileReviews(console.error).catch(console.error)
+    return true
+  }
+
+  private async completeRun(run: WorkflowRun, version: WorkflowVersion, state: EngineStateValue, signal: AbortSignal, owner: RunOwnership): Promise<void> {
+    signal.throwIfAborted()
+    const topology = validateExecutableTopology(version)
+    const finalOutputs = await Promise.all(topology.sinks.map(async (nodeId) => {
+      const executionId = state.executionIds[nodeId]
+      if (!executionId) throw new DomainError('FINAL_EXECUTION_MISSING', `Final node '${nodeId}' did not produce an execution.`, 500)
+      const result = await this.runs.getAcceptedResult(executionId, owner)
+      if (!result) throw new DomainError('FINAL_RESULT_MISSING', `Final node '${nodeId}' has no accepted result.`, 500)
+      return { nodeId, executionId, result: result.output ?? null }
+    }))
+    const result: ExecutionResult = {
+      outcome: 'succeeded',
+      output: finalOutputs.length === 1 ? finalOutputs[0]?.result ?? null : { outputs: finalOutputs },
+    }
+    signal.throwIfAborted()
+    await this.runs.updateState(run.id, {
+      executionState: 'completed', outcome: 'succeeded', result,
+      startedAt: run.startedAt ?? new Date().toISOString(), finishedAt: new Date().toISOString(),
+    }, owner)
+    await this.nativeExecutions.finishRun(run.id)
   }
 
   private async executeNode(
@@ -326,7 +698,6 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       createdAt: now,
       startedAt: now,
     })
-    await this.runs.createExecution(execution, owner)
     const request = HarnessExecutionRequestSchema.parse({
       executionId,
       runId: run.id,
@@ -338,76 +709,31 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       configuration,
       input,
     })
-    const adapter = this.harnesses.resolve(configuration.harness.harness)
-    let eventSequence = 0
-
-    try {
-      signal.throwIfAborted()
-      owner.assertOwned()
-      const result = await adapter.execute(request, {
-        signal,
-        beforeSpawn: async () => {
-          signal.throwIfAborted()
-          owner.assertOwned()
-          if (run.authorizationPrincipalId) {
-            await this.locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId, owner.client)
-          }
-          await this.locations.revalidateSnapshot(
-            run.workspaceId, run.executionLocation!, requiredLocationAccess([configuration]), signal,
-          )
-          signal.throwIfAborted()
-          owner.assertOwned()
-        },
-        onSession: async (nativeSessionId) => {
-          execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId, state: 'running' })
-          await this.runs.updateExecution(execution, owner)
-          await this.runs.recordActivity(run.id, 'harness', 'harness_session_started', {
-            workflowNodeId: nodeId,
-            agentId: node.agentId,
-            nativeSessionId,
-            harness: configuration.harness.harness,
-          }, executionId, owner.client)
-        },
-        onEvent: async (event: NativeEventInput) => {
-          const nativeEvent = HarnessNativeEventSchema.parse({
-            executionId,
-            sequence: eventSequence,
-            type: event.type,
-            occurredAt: new Date().toISOString(),
-            payload: event.payload,
-          })
-          eventSequence += 1
-          await this.runs.appendNativeEvent(nativeEvent, owner)
-        },
+    for (;;) {
+      const observation = await this.nativeExecutions.ensureObserve({
+        candidate: execution, request, approval: run.approval, workflowId: run.workflowId,
+        graphThreadId: run.id, owner, signal,
       })
-      signal.throwIfAborted()
-      execution = HarnessExecutionSchema.parse({
-        ...execution,
-        state: 'completed',
-        result,
-        finishedAt: new Date().toISOString(),
-      })
+      execution = observation.execution
+      if (observation.state === 'waiting') {
+        const resumed: unknown = interrupt({
+          interactionId: observation.interaction.id,
+          interactionIds: observation.interactions.map((item) => item.id),
+        })
+        // On node re-entry LangGraph can return an earlier delivery while a
+        // later native request is already pending. Validate the exact delivered
+        // identity, then observe again; never apply that value to the new ask.
+        await this.nativeExecutions.assertResume(execution, resumed)
+        continue
+      }
+      if (observation.result.outcome !== 'succeeded') {
+        throw new DomainError(
+          observation.result.error?.code ?? 'NATIVE_EXECUTION_FAILED',
+          observation.result.error?.message ?? 'The native execution did not succeed.', 409,
+        )
+      }
       await this.runs.acceptExecutionResult(execution, owner)
-      await this.runs.recordActivity(run.id, 'harness', 'harness_session_finished', {
-        workflowNodeId: nodeId,
-        outcome: result.outcome,
-      }, executionId, owner.client)
-      return { executionIds: { [nodeId]: executionId } }
-    } catch (error) {
-      const result = failedResult(error, signal.aborted)
-      execution = HarnessExecutionSchema.parse({
-        ...execution,
-        state: 'completed',
-        result,
-        finishedAt: new Date().toISOString(),
-      })
-      await this.runs.updateExecution(execution, owner)
-      await this.runs.recordActivity(run.id, 'harness', 'harness_session_finished', {
-        workflowNodeId: nodeId,
-        outcome: result.outcome,
-        error: result.error ?? null,
-      }, executionId, owner.client)
-      throw error
+      return { executionIds: { [nodeId]: execution.id } }
     }
   }
 

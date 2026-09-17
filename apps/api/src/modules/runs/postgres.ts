@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto'
 import {
   GetRunResponseSchema,
   HarnessExecutionSchema,
-  HarnessNativeEventSchema,
   RunActivitySchema,
   WorkflowRunSchema,
   type ActivityKind,
@@ -21,8 +20,12 @@ import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
 import type { RunRepository, RunStateUpdate } from './port.js'
+import { acceptedRunApproval } from '../workflows/approval.js'
+import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
+import { validateWorkflowApproval } from '../workflows/approval.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { RunOwnership } from './ownership.js'
+import { appendNativeEvent } from './nativeEvents.js'
 import { validateExecutableTopology } from './topology.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
 
@@ -37,11 +40,49 @@ export class PostgresRunRepository implements RunRepository {
     return RunOwnership.acquire(this.pool, runId, onLost)
   }
 
+  async requestCleanup(runId: string, client?: pg.ClientBase): Promise<void> {
+    await (client ?? this.pool).query(`insert into run_cleanup_intents(run_id) values($1)
+      on conflict(run_id) do update set pending=true,updated_at=now()`, [runId])
+  }
+
+  async hasPendingCleanup(runId: string, client?: Pick<pg.ClientBase, 'query'>): Promise<boolean> {
+    const found = await (client ?? this.pool).query(
+      'select 1 from run_cleanup_intents where run_id=$1 and pending', [runId])
+    return found.rowCount === 1
+  }
+
+  async finishCleanup(runId: string, failed: boolean, client?: pg.ClientBase): Promise<void> {
+    await (client ?? this.pool).query(`update run_cleanup_intents set pending=$2,attempts=attempts+1,
+      last_error=$3,updated_at=now() where run_id=$1`,
+    [runId, failed, failed ? 'Native closure or task draining remains unconfirmed; retry cleanup.' : null])
+  }
+
   async reconciliationCandidates(): Promise<WorkflowRun[]> {
     const result = await this.pool.query<{ record: unknown }>(
-      "select record from runs where execution_state in ('queued', 'running', 'waiting') order by created_at, id",
+      `select record from runs where execution_state in ('queued', 'running', 'waiting')
+        or exists(select 1 from run_cleanup_intents c where c.run_id=runs.id and c.pending)
+        order by created_at,id`,
     )
     return result.rows.map((row) => WorkflowRunSchema.parse(row.record))
+  }
+
+  /** Read persisted active time on the ownership connection, excluding approval waits. */
+  async remainingApprovalTime(runId: string, executionIds: string[], owner: RunOwnership): Promise<number> {
+    owner.assertOwned()
+    const ids = [...new Set(executionIds)]
+    const result = await owner.client.query<{ remaining_ms: string; stopped_at: Date | null }>(
+      `select (budget.active_timeout_ms - budget.active_elapsed_ms -
+         case when budget.approval_wait_started_at is not null then 0
+           else greatest(0, coalesce(extract(epoch from (clock_timestamp()-budget.active_started_at))*1000,0))
+         end)::text as remaining_ms, budget.stopped_at
+       from approval_execution_state budget
+       join harness_executions execution on execution.id=budget.execution_id
+       where execution.run_id=$1 and execution.id=any($2::text[])`, [runId, ids],
+    )
+    if (!ids.length || result.rows.length !== ids.length || result.rows.some((row) => row.stopped_at)) {
+      throw new DomainError('EXECUTION_STOPPED', 'A resumed execution is stopped or has no active-time budget.', 409)
+    }
+    return Math.max(0, Math.min(...result.rows.map((row) => Number(row.remaining_ms))))
   }
 
   /** Called only while holding database ownership; never modifies another live owner. */
@@ -90,6 +131,7 @@ export class PostgresRunRepository implements RunRepository {
       throw new DomainError('WORKFLOW_NOT_FOUND', `Workflow '${workflowId}' was not found.`, 404)
     }
     validateExecutableTopology(version)
+    const approval = acceptedRunApproval(version)
     await this.workflows.assertCurrentConfigurations(version)
     // Recovery must not launch a run whose creation transaction failed.
     const client = await this.pool.connect()
@@ -101,12 +143,19 @@ export class PostgresRunRepository implements RunRepository {
         if (!configuration) throw new DomainError('AGENT_CONFIGURATION_NOT_FOUND', `Configuration '${id}' was not found.`, 409)
         return configuration
       }))
+      // Decide approval authority before persisting/queuing any native work.
+      // Old saved records are never silently migrated to an automatic mode.
+      for (const configuration of configurations) assertNativeWorkflowConfiguration(configuration.harness, approval)
+      if (approval) validateWorkflowApproval(version.definition, approval, configurations.map((configuration) => ({
+        id: configuration.agentId, productRole: configuration.productRole, harnessConfiguration: configuration.harness,
+      })))
       const executionLocation = await this.locations.snapshot(
         client, workspaceId, expectedLocationRevision, requiredLocationAccess(configurations),
       )
       const run = WorkflowRunSchema.parse({
         id: `run-${randomUUID()}`, workspaceId, workflowId, workflowVersionId: version.id,
         agentConfigurationVersionIds: version.agentConfigurationVersionIds,
+        ...(approval ? { approval } : {}),
         executionLocation,
         executionCondition: version.definition.executionCondition, executionState: 'queued', outcome: 'pending',
         input, createdAt: new Date().toISOString(),
@@ -179,6 +228,36 @@ export class PostgresRunRepository implements RunRepository {
     }, parsed.id, owner?.client)
   }
 
+  async ensureExecution(execution: HarnessExecution, owner?: RunOwnership): Promise<{ execution: HarnessExecution; created: boolean }> {
+    owner?.assertOwned()
+    const parsed = HarnessExecutionSchema.parse(execution)
+    // One SQL statement is atomic on a pool lease AND on an owner's client.
+    // It never begins/commits a transaction owned by the engine or its caller.
+    const result = await (owner?.client ?? this.pool).query<{ record: unknown }>(
+      `with occurrence as (
+         insert into harness_executions (id, run_id, workflow_node_id, agent_id, attempt, record)
+         values ($1,$2,$3,$4,$5,$6::jsonb)
+         on conflict (run_id, workflow_node_id, attempt) do nothing returning record
+       ), scheduled as (
+         insert into run_activity (run_id, source, kind, harness_execution_id, occurred_at, payload)
+         select $2, 'langgraph', 'node_scheduled', $1, $7::timestamptz, $8::jsonb from occurrence
+         returning sequence
+       ) select occurrence.record from occurrence cross join scheduled`,
+      [parsed.id, parsed.runId, parsed.workflowNodeId, parsed.agentId, parsed.attempt, JSON.stringify(parsed),
+        new Date().toISOString(), JSON.stringify({ workflowNodeId: parsed.workflowNodeId, agentId: parsed.agentId, attempt: parsed.attempt })],
+    )
+    if (result.rows[0]) return { execution: parsed, created: true }
+    const found = await (owner?.client ?? this.pool).query<{ record: unknown }>(
+      'select record from harness_executions where run_id=$1 and workflow_node_id=$2 and attempt=$3',
+      [parsed.runId, parsed.workflowNodeId, parsed.attempt],
+    )
+    const current = HarnessExecutionSchema.parse(found.rows[0]?.record)
+    if (current.agentId !== parsed.agentId || current.agentConfigurationVersionId !== parsed.agentConfigurationVersionId) {
+      throw new DomainError('EXECUTION_OCCURRENCE_CONFLICT', 'This execution occurrence is already bound to different accepted configuration.', 409)
+    }
+    return { execution: current, created: false }
+  }
+
   async updateExecution(execution: HarnessExecution, owner?: RunOwnership): Promise<void> {
     owner?.assertOwned()
     const parsed = HarnessExecutionSchema.parse(execution)
@@ -216,19 +295,7 @@ export class PostgresRunRepository implements RunRepository {
 
   async appendNativeEvent(event: HarnessNativeEvent, owner?: RunOwnership): Promise<void> {
     owner?.assertOwned()
-    const parsed = HarnessNativeEventSchema.parse(event)
-    await (owner?.client ?? this.pool).query(
-      `insert into harness_native_events (execution_id, sequence, record)
-       values ($1, $2, $3::jsonb)`,
-      [parsed.executionId, parsed.sequence, JSON.stringify(parsed)],
-    )
-    const execution = await this.getExecution(parsed.executionId, owner)
-    if (execution) {
-      await this.recordActivity(execution.runId, 'harness', 'harness_output', {
-        nativeEventSequence: parsed.sequence,
-        nativeEventType: parsed.type,
-      }, parsed.executionId, owner?.client)
-    }
+    await appendNativeEvent(owner?.client ?? this.pool, event)
   }
 
   async getExecution(executionId: string, owner?: RunOwnership): Promise<HarnessExecution | undefined> {
@@ -238,6 +305,10 @@ export class PostgresRunRepository implements RunRepository {
       [executionId],
     )
     return result.rows[0] ? HarnessExecutionSchema.parse(result.rows[0].record) : undefined
+  }
+
+  async getExecutionConfiguration(configurationVersionId: string) {
+    return this.workflows.getAgentConfiguration(configurationVersionId)
   }
 
   async listExecutions(runId: string): Promise<HarnessExecution[]> {

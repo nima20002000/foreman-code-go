@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 
 import { WorkspaceExecutionLocationSetup } from '../features/settings/WorkspaceExecutionLocationSetup'
+import { Alert, EmptyState, ErrorState, LoadingState } from '../shared/ui/nocturne'
 
 import {
   WorkspaceShell,
@@ -30,62 +31,63 @@ function DefaultGraphSlot({
 }: Pick<WorkspaceRouteViewProps, 'workspaceId' | 'selectedAgentId' | 'state' | 'stateMessage'>) {
   if (state === 'loading') {
     return (
-      <div className="surface-placeholder" data-testid="workspace-loading" role="status">
-        <p className="panel-kicker">Workspace</p>
-        <h2>Loading workspace…</h2>
-        <p>Workspace data will appear here when the request completes.</p>
+      <div className="n-theme" data-testid="workspace-loading">
+        <LoadingState label="Loading workspace…" />
       </div>
     )
   }
 
   if (state === 'error') {
     return (
-      <div className="surface-placeholder surface-placeholder-error" data-testid="workspace-error" role="alert">
-        <p className="panel-kicker">Workspace</p>
-        <h2>Workspace unavailable</h2>
-        <p>{stateMessage ?? 'The workspace could not be loaded.'}</p>
+      <div className="n-theme" data-testid="workspace-error">
+        <ErrorState
+          title="Workspace unavailable"
+          description={stateMessage ?? 'The workspace could not be loaded.'}
+        />
       </div>
     )
   }
 
   if (state === 'not-found') {
     return (
-      <div className="surface-placeholder surface-placeholder-error" data-testid="workspace-not-found" role="alert">
-        <p className="panel-kicker">Workspace</p>
-        <h2>Workspace not found</h2>
-        <p>{stateMessage ?? `Workspace ${workspaceId} is not available.`}</p>
+      <div className="n-theme" data-testid="workspace-not-found">
+        <ErrorState
+          title="Workspace not found"
+          description={stateMessage ?? `Workspace ${workspaceId} is not available.`}
+        />
       </div>
     )
   }
 
   if (state === 'empty') {
     return (
-      <div className="surface-placeholder" data-testid="workspace-empty">
-        <p className="panel-kicker">Graph</p>
-        <h2>No saved workflow yet</h2>
-        <p>This workspace does not have a saved workflow to display.</p>
+      <div className="n-theme" data-testid="workspace-empty">
+        <EmptyState
+          icon="workflow"
+          title="No saved workflow yet"
+          description="This workspace does not have a saved workflow to display."
+        />
       </div>
     )
   }
 
   if (state === 'stale') {
     return (
-      <div className="surface-placeholder surface-placeholder-stale" data-testid="workspace-stale" role="status">
-        <p className="panel-kicker">Workspace</p>
-        <h2>Selection needs attention</h2>
-        <p>{stateMessage ?? `Agent ${selectedAgentId ?? 'selection'} is no longer available.`}</p>
+      <div className="n-theme" data-testid="workspace-stale">
+        <Alert live tone="warning" title="Selection needs attention">
+          {stateMessage ?? `Agent ${selectedAgentId ?? 'selection'} is no longer available.`}
+        </Alert>
       </div>
     )
   }
 
   return (
-    <div className="surface-placeholder" data-testid="workspace-ready">
-      <p className="panel-kicker">Graph</p>
-      <h2>Workflow graph</h2>
-      <p>
-        The graph surface is ready for workspace {workspaceId}.
-        {selectedAgentId ? ` Agent ${selectedAgentId} is selected.` : ' No agent is selected.'}
-      </p>
+    <div className="n-theme" data-testid="workspace-ready">
+      <EmptyState
+        icon="workflow"
+        title="Workflow graph"
+        description={`The graph surface is ready for workspace ${workspaceId}.${selectedAgentId ? ` Agent ${selectedAgentId} is selected.` : ' No agent is selected.'}`}
+      />
     </div>
   )
 }

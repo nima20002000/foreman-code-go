@@ -1,0 +1,45 @@
+import type pg from 'pg'
+
+import type { ApiConfig } from '../../config.js'
+import type { PostgresAccessService } from '../access/postgres.js'
+import { WorkerCredentialService } from '../access/workerCredentials.js'
+import type { PostgresCommandCoordinator } from '../commands/postgres.js'
+import { CodexAppServerSessionManager } from '../harnesses/codexAppServer.js'
+import { codexMcpInspectorAdapter } from '../harnesses/codexMcpInspectorAdapter.js'
+import { McpDetectionService, WorkerLaunchCredentialService } from '../harnesses/mcpDetection.js'
+import { openCodeConfigurationInspector } from '../harnesses/opencodeMcpConfiguration.js'
+import { PostgresAppInteractionService } from '../interactions/app.js'
+import type { PostgresInteractionRepository } from '../interactions/postgres.js'
+
+export function localAppMcpEndpoint(host: string, port: number): string {
+  const localHost = host === '0.0.0.0' ? '127.0.0.1' : host === '::' ? '::1' : host
+  const authority = localHost.includes(':') && !localHost.startsWith('[') ? `[${localHost}]` : localHost
+  return new URL('/mcp/tools', `http://${authority}:${port}`).href
+}
+
+/** Used by normal startup and composition tests; no test-only launch wiring. */
+export function createAppMcpRuntime(input: {
+  pool: pg.Pool
+  config: ApiConfig
+  access: PostgresAccessService
+  commands: PostgresCommandCoordinator
+  interactions: PostgresInteractionRepository
+  runnerId: string
+}) {
+  // The Codex manager supplies its model-free inspection primitive only.
+  // Execution remains on the existing production-qualified legacy adapters.
+  const codex = codexMcpInspectorAdapter(new CodexAppServerSessionManager(input.config.harnesses.codexBinary))
+  const opencode = openCodeConfigurationInspector(input.config.harnesses.openCodeBinary)
+  const detection = new McpDetectionService({
+    inspect: (request) => (request.harness === 'codex' ? codex : opencode).inspect(request),
+  }, localAppMcpEndpoint(input.config.host, input.config.port))
+  const credentials = new WorkerCredentialService(input.pool, input.access)
+  return {
+    appMcp: {
+      access: input.access,
+      interactions: new PostgresAppInteractionService(input.pool, input.interactions, input.commands),
+    },
+    mcpDetection: { pool: input.pool, service: detection },
+    executionCredentials: new WorkerLaunchCredentialService(detection, credentials, input.runnerId, input.config.harnesses.timeoutMs),
+  }
+}

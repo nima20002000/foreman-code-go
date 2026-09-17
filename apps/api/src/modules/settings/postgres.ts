@@ -1,6 +1,7 @@
 import {
   DEFAULT_HARNESS_DEFAULTS,
   HarnessDefaultsSchema,
+  withAdvancedDefaults,
   type HarnessDefaults,
 } from '@graphql/contracts'
 import type pg from 'pg'
@@ -9,10 +10,11 @@ import { DomainError } from '../errors.js'
 
 const SETTINGS_KEY = 'harness-defaults'
 
-/** Normalize legacy templates on read, never when validating an explicit write. */
+/** Complete legacy templates on read without changing their explicit permission choice. */
 export function normalizeHarnessDefaults(record: unknown): HarnessDefaults {
-  const defaults = record === undefined ? DEFAULT_HARNESS_DEFAULTS : HarnessDefaultsSchema.parse(record)
-  return { ...defaults, opencode: { ...defaults.opencode, autoApprove: false } }
+  const candidate = (record === undefined ? DEFAULT_HARNESS_DEFAULTS : record) as HarnessDefaults
+  const defaults = HarnessDefaultsSchema.parse(candidate)
+  return { codex: withAdvancedDefaults(defaults.codex), opencode: withAdvancedDefaults(defaults.opencode) }
 }
 
 export class PostgresSettingsRepository {
@@ -26,8 +28,8 @@ export class PostgresSettingsRepository {
     return normalizeHarnessDefaults(result.rows[0]?.record)
   }
 
-  async getManagedHarnessDefaults(): Promise<{ defaults: HarnessDefaults; revision: number }> {
-    const result = await this.pool.query<{ record: unknown; revision: string }>(
+  async getManagedHarnessDefaults(client?: pg.ClientBase): Promise<{ defaults: HarnessDefaults; revision: number }> {
+    const result = await (client ?? this.pool).query<{ record: unknown; revision: string }>(
       'select record, revision from application_settings where key = $1',
       [SETTINGS_KEY],
     )
@@ -43,9 +45,6 @@ export class PostgresSettingsRepository {
     expectedRevision: number,
   ): Promise<{ defaults: HarnessDefaults; revision: number }> {
     const defaults = HarnessDefaultsSchema.parse(input)
-    if (defaults.opencode.autoApprove) {
-      throw new DomainError('OPENCODE_SETTING_UNSUPPORTED', 'Automatic permission approval is disabled for Product Agent runs.', 400)
-    }
     const current = await client.query<{ revision: string }>(
       'select revision from application_settings where key = $1 for update', [SETTINGS_KEY],
     )
@@ -75,9 +74,6 @@ export class PostgresSettingsRepository {
 
   async saveHarnessDefaults(input: HarnessDefaults): Promise<HarnessDefaults> {
     const defaults = HarnessDefaultsSchema.parse(input)
-    if (defaults.opencode.autoApprove) {
-      throw new DomainError('OPENCODE_SETTING_UNSUPPORTED', 'Automatic permission approval is disabled for Product Agent runs.', 400)
-    }
     await this.pool.query(
       `insert into application_settings (key, record, revision, updated_at)
        values ($1, $2::jsonb, 1, now())

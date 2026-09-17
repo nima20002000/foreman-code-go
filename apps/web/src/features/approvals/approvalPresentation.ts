@@ -1,0 +1,45 @@
+import type { DurableInteraction, ApprovalInboxView } from '@graphql/contracts'
+
+export function approvalStatuses(view: ApprovalInboxView): DurableInteraction['status'][] {
+  if (view === 'delivery') return ['decided', 'delivery_pending', 'delivery_failed']
+  if (view === 'history') return ['delivered', 'canceled']
+  return ['pending']
+}
+
+function text(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length ? value : undefined
+}
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+/** Best-effort display of provider-supplied facts; never invent a command, target, or safety guarantee. */
+export function summarizeApprovalRequest(value: DurableInteraction['request'], nativeRequestType = '') {
+  const request: Record<string, unknown> = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const args = Array.isArray(request.command) && request.command.every((arg) => typeof arg === 'string') ? request.command : []
+  const command = text(request.command) ?? (args.length ? args.map((arg) => /^[A-Za-z0-9_./:@=-]+$/.test(arg) ? arg : JSON.stringify(arg)).join(' ') : undefined)
+  const permission = text(request.permission)
+  const tool = text(request.tool) ?? text(request.toolName)
+  const operation = command || nativeRequestType === 'item/commandExecution/requestApproval' || permission === 'bash' || permission === 'shell'
+    ? 'Run a command'
+    : nativeRequestType === 'item/fileChange/requestApproval' || permission === 'edit' || permission === 'write'
+      ? 'Change files'
+      : permission === 'external_directory' ? 'Access an external directory'
+        : tool ? `Call tool ${tool}` : permission ? `Request ${permission} permission` : 'Review a requested operation'
+  const patterns = strings(request.patterns)
+  const target = text(request.path) ?? text(request.filePath) ?? text(request.grantRoot) ?? text(request.cwd) ?? text(request.server)
+    ?? (patterns.length ? patterns.join(', ') : undefined)
+  return { operation, command, target, explanation: text(request.reason) ?? text(request.description) }
+}
+
+export function approvalReadOnlyReason(interaction: DurableInteraction, canRespond: boolean): string | undefined {
+  if (interaction.status === 'canceled') return 'This request was canceled. No further decision or delivery retry is available.'
+  if (interaction.status === 'delivered') return 'This decision was already delivered. No further response is available.'
+  if (interaction.approval.handler !== 'user') return `Read-only monitoring. This request is assigned to ${interaction.approval.handler}; no human override is available.`
+  if (!canRespond) return 'Read-only monitoring. This request is assigned to a user, but your current access does not include permission to respond.'
+  if (interaction.status === 'delivery_pending' || interaction.deliveryState === 'submitted' || interaction.deliveryState === 'uncertain') {
+    return 'A decision has already been recorded. Native delivery is being reconciled; only the original choice may be retried.'
+  }
+  if (interaction.status === 'decided' || interaction.status === 'delivery_failed') return 'This request has already been decided. Only delivery of the original choice may be retried.'
+  return undefined
+}

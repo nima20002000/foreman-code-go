@@ -68,6 +68,7 @@ export function useDismissableSurface({
     const closeOnOutsidePress = (event: MouseEvent) => {
       const target = event.target
       if (!(target instanceof Node)) return
+      if (target instanceof Element && target.closest('dialog[open][aria-modal="true"]')) return
       if (surfaceRef.current?.contains(target)) return
       if (triggerRef?.current?.contains(target)) return
       onDismissRef.current('outside')

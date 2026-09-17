@@ -1,0 +1,5 @@
+/* Import after application base styles. Keep foundation before interaction variants.
+   These styles stay unlayered so legacy unlayered element rules do not override
+   the toolkit's more-specific component selectors. */
+@import './foundation.css';
+@import './advanced.css';

@@ -2,10 +2,12 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
-  Outlet,
   redirect,
 } from '@tanstack/react-router'
-import { UrlSearchSelectionSchema } from '@graphql/contracts'
+import { ApprovalInboxSearchSchema, UrlSearchSelectionSchema } from '@graphql/contracts'
+import { RootShell } from './RootShell'
+import { AgentSettingsSearchSchema, HarnessSettingsSearchSchema } from '@graphql/contracts/management'
+import { WorkspaceDefaultsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
 
 import { WorkspaceRouteEntry } from '../routes/WorkspaceRouteEntry'
 import {
@@ -15,14 +17,17 @@ import {
   GlobalComingSoonRouteEntry,
   GlobalSettingsRouteEntry,
   HarnessSettingsRouteEntry,
+  AgentSettingsRouteEntry,
+  WorkflowSettingsRouteEntry,
+  OperatorAccessSettingsRouteEntry,
+  GlobalApprovalsRouteEntry,
+  WorkspaceApprovalsRouteEntry,
   SettingsRouteEntry,
   WorkflowsRouteEntry,
   WorkspacesRouteEntry,
 } from '../routes/WorkspaceSectionRoutes'
 
-const rootRoute = createRootRoute({
-  component: Outlet,
-})
+const rootRoute = createRootRoute({ component: RootShell })
 
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -101,7 +106,41 @@ const globalSettingsRoute = createRoute({
 const harnessSettingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/harnesses',
+  validateSearch: HarnessSettingsSearchSchema,
   component: HarnessSettingsRouteEntry,
+})
+const agentSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/agents',
+  validateSearch: AgentSettingsSearchSchema,
+  component: AgentSettingsRouteEntry,
+})
+const workspaceDefaultsSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/workspaces',
+  component: WorkspaceDefaultsSettingsRouteEntry,
+})
+const workflowSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/workflows',
+  component: WorkflowSettingsRouteEntry,
+})
+const operatorAccessSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/operator-access',
+  component: OperatorAccessSettingsRouteEntry,
+})
+const globalApprovalsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/approvals',
+  validateSearch: ApprovalInboxSearchSchema,
+  component: GlobalApprovalsRouteEntry,
+})
+const workspaceApprovalsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/workspaces/$workspaceId/approvals',
+  validateSearch: ApprovalInboxSearchSchema,
+  component: WorkspaceApprovalsRouteEntry,
 })
 
 export const routeTree = rootRoute.addChildren([
@@ -119,6 +158,12 @@ export const routeTree = rootRoute.addChildren([
   globalTerminalRoute,
   globalSettingsRoute,
   harnessSettingsRoute,
+  agentSettingsRoute,
+  workflowSettingsRoute,
+  workspaceDefaultsSettingsRoute,
+  operatorAccessSettingsRoute,
+  globalApprovalsRoute,
+  workspaceApprovalsRoute,
 ])
 
 export const router = createRouter({ routeTree })

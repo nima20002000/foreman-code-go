@@ -1,5 +1,21 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { Bot, BotMessageSquare, Check, MoreHorizontal, Play, Plus, Square, Trash2, X } from 'lucide-react'
+import { Inbox } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { createPortal } from 'react-dom'
+import { AgentSettingsForm } from './AgentSettingsForm'
+import { WorkflowExecutionLimits } from './WorkflowExecutionLimits'
+import {
+  Alert,
+  Button,
+  ErrorState,
+  Icon,
+  IconButton,
+  LoadingState,
+  Select,
+  Toolbar,
+  WorkflowNodeCard,
+  type Tone,
+} from '../../shared/ui/nocturne'
 
 import {
   addEdge,
@@ -7,6 +23,7 @@ import {
   BaseEdge,
   ConnectionMode,
   Handle,
+  MarkerType,
   MiniMap,
   NodeResizer,
   Position,
@@ -25,9 +42,11 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useQueryClient } from '@tanstack/react-query'
 
+import {
+  DEFAULT_AGENT_DEFAULTS, type AgentDefaults, type ApprovalHandler,
+} from '@graphql/contracts'
 import type {
   Agent,
-  HarnessDefaults,
   WorkflowDefinition,
   WorkflowEdge,
   WorkflowExecutionPolicy,
@@ -39,7 +58,7 @@ import type { GraphDraft as ManagedGraphDraft } from '@graphql/contracts/managem
 
 import {
   useAgentsQuery,
-  useHarnessDefaultsQuery,
+  useAgentDefaultsQuery,
   useRunQuery,
   useSaveGraphMutation,
   useManagedGraphContextQuery,
@@ -65,12 +84,8 @@ import { useDismissableSurface, type SurfaceDismissReason } from '../../shared/u
 import { useTheme } from '../theme'
 import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
 import {
-  configuredHarness,
   defaultAgentForHarness,
-  effortLabels,
-  effortOptions,
-  initialModel,
-  modelOptions,
+  nextCoderAgentName,
   nextHarnessAgentName,
 } from '../agents/agentSettings'
 import {
@@ -156,6 +171,8 @@ const HANDLE_POSITIONS: Record<GraphHandleSide, Position> = {
 }
 
 type NodeMenuContextValue = {
+  workspaceId?: string
+  workflowApprovalHandler?: ApprovalHandler
   openMenuNodeId?: string
   setOpenMenuNodeId: (nodeId?: string) => void
 }
@@ -166,169 +183,35 @@ type NodeMenuContextValue = {
  */
 const NodeMenuContext = createContext<NodeMenuContextValue | undefined>(undefined)
 
-function AgentSettingsForm({
-  agent,
-  initialPrompt,
-  creationDefaults,
-  onClose,
-  onRemove,
-  onSave,
-  executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 },
-  workflowNodeCount = 1,
-}: {
-  agent: Agent
-  initialPrompt?: string
-  creationDefaults?: HarnessDefaults
-  onClose: () => void
-  onRemove?: () => void
-  onSave: (agent: Agent, initialPrompt: string | undefined, executionPolicy: WorkflowExecutionPolicy) => void
-  executionPolicy?: WorkflowExecutionPolicy
-  workflowNodeCount?: number
-}) {
-  const [name, setName] = useState(agent.name)
-  const [harness, setHarness] = useState<NonNullable<Agent['harness']>>(agent.harness ?? 'codex')
-  const [model, setModel] = useState(() => initialModel(agent, agent.harness ?? 'codex'))
-  const [effort, setEffort] = useState<NonNullable<Agent['effort']>>(agent.effort ?? 'medium')
-  const [fastMode, setFastMode] = useState(agent.fastMode ?? false)
-  const [codexSandbox, setCodexSandbox] = useState<'read-only' | 'workspace-write' | 'danger-full-access'>(
-    agent.harnessConfiguration?.harness === 'codex'
-      ? agent.harnessConfiguration.sandbox
-      : 'read-only',
-  )
-  const [prompt, setPrompt] = useState(initialPrompt ?? '')
-  const [maxNodeExecutions, setMaxNodeExecutions] = useState(executionPolicy.maxNodeExecutions)
-  const [maxParallelism, setMaxParallelism] = useState(executionPolicy.maxParallelism)
-  const trimmedName = name.trim()
-  const limitsValid = Number.isInteger(maxNodeExecutions)
-    && maxNodeExecutions >= workflowNodeCount
-    && Number.isInteger(maxParallelism)
-    && maxParallelism >= 1
-
-  return (
-    <>
-      <div className="agent-settings-heading">
-        <strong>Agent settings</strong>
-        <div>
-          {harness === 'codex' ? (
-            <label className="agent-settings-fast">
-              <input type="checkbox" checked={fastMode} onChange={(event) => setFastMode(event.target.checked)} />
-              Fast mode
-            </label>
-          ) : null}
-          {onRemove ? (
-            <button type="button" className="agent-settings-trash" aria-label={`Remove ${agent.name} from workflow`} onClick={onRemove}>
-              <Trash2 aria-hidden="true" size={16} />
-            </button>
-          ) : null}
-          <button type="button" aria-label="Close agent settings" onClick={onClose}>
-            <X aria-hidden="true" size={15} />
-          </button>
-        </div>
-      </div>
-      <div className="agent-settings-name agent-settings-control">
-        <span>Name</span>
-        <input aria-label="Name" value={name} onChange={(event) => setName(event.target.value)} />
-      </div>
-      <div className="agent-settings-field"><span>Harness</span><select aria-label="Harness" value={harness} onChange={(event) => {
-        const nextHarness = event.target.value as NonNullable<Agent['harness']>
-        setHarness(nextHarness)
-        if (creationDefaults) {
-          const configuration = creationDefaults[nextHarness]
-          setModel(configuration.model)
-          setEffort(configuration.harness === 'codex' ? configuration.reasoningEffort : configuration.variant)
-          setFastMode(configuration.harness === 'codex' && configuration.serviceTier === 'priority')
-          if (configuration.harness === 'codex') setCodexSandbox(configuration.sandbox)
-          return
-        }
-        const nextModel = modelOptions(nextHarness).includes(model) ? model : modelOptions(nextHarness)[0]!
-        setModel(nextModel)
-        if (!effortOptions(nextHarness, nextModel).includes(effort)) setEffort(nextHarness === 'codex' ? 'medium' : 'max')
-      }}>
-        <option value="codex">Codex</option>
-        <option value="opencode">OpenCode</option>
-      </select></div>
-      <div className="agent-settings-field"><span>Model</span><select aria-label="Model" value={model} onChange={(event) => {
-        const nextModel = event.target.value
-        setModel(nextModel)
-        if (!effortOptions(harness, nextModel).includes(effort)) setEffort(harness === 'codex' ? 'medium' : 'max')
-      }}>
-        {modelOptions(harness).map((value) => <option key={value} value={value}>{value}</option>)}
-      </select></div>
-      <div className="agent-settings-field"><span>Effort</span><select aria-label="Effort" value={effort} onChange={(event) => setEffort(event.target.value as NonNullable<Agent['effort']>)}>
-        {effortOptions(harness, model).map((value) => <option key={value} value={value}>{effortLabels[value]}</option>)}
-      </select></div>
-      {harness === 'codex' ? (
-        <div className="agent-settings-field"><span>Sandbox</span><select aria-label="Sandbox" value={codexSandbox} onChange={(event) => setCodexSandbox(event.target.value as typeof codexSandbox)}>
-          <option value="read-only">Read only</option>
-          <option value="workspace-write">Workspace write</option>
-          <option value="danger-full-access">Danger: full access</option>
-        </select></div>
-      ) : null}
-      <div className="agent-settings-prompt agent-settings-control">
-        <span>Initial prompt</span>
-        <textarea
-          aria-label="Initial prompt"
-          rows={4}
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          placeholder="Tell this model what to do when the workflow reaches it."
-        />
-      </div>
-      <fieldset className="agent-settings-limits">
-        <legend>Workflow limits</legend>
-        <label>
-          Maximum node executions
-          <input
-            type="number"
-            min={workflowNodeCount}
-            step={1}
-            value={maxNodeExecutions}
-            aria-invalid={maxNodeExecutions < workflowNodeCount}
-            onChange={(event) => setMaxNodeExecutions(event.target.valueAsNumber)}
-          />
-        </label>
-        <label>
-          Maximum parallel agents
-          <input
-            type="number"
-            min={1}
-            step={1}
-            value={maxParallelism}
-            onChange={(event) => setMaxParallelism(event.target.valueAsNumber)}
-          />
-        </label>
-      </fieldset>
-      <div className="agent-settings-actions">
-        <button
-          type="button"
-          className="agent-settings-save"
-          aria-label="Save agent settings"
-          title="Save"
-          disabled={!trimmedName || !limitsValid}
-          onClick={() => onSave({
-            ...agent,
-            name: trimmedName,
-            harness,
-            model,
-            effort,
-            ...(harness === 'codex' ? { fastMode } : { fastMode: undefined }),
-            harnessConfiguration: configuredHarness(
-              agent,
-              harness,
-              model,
-              effort,
-              fastMode,
-              codexSandbox,
-              creationDefaults,
-            ),
-          }, prompt.trim() || undefined, { maxNodeExecutions, maxParallelism })}
-        >
-          <Check aria-hidden="true" size={16} />
-        </button>
-      </div>
-    </>
-  )
+function agentNodeTone(data: GraphNode['data']): Tone {
+  if (data.runState === 'completed' || data.executionState === 'available') return 'success'
+  if (data.executionState === 'auth_required' || data.executionState === 'waiting_browser' || data.runState === 'waiting') return 'warning'
+  if (data.executionState === 'interrupted' || data.executionState === 'disconnected') return 'danger'
+  if (data.executionState === 'working' || data.runState === 'queued' || data.runState === 'starting' || data.runState === 'running') return 'accent'
+  return 'neutral'
 }
+
+function agentNodeStatus(data: GraphNode['data']): string {
+  return data.runState?.replaceAll('_', ' ') ?? data.executionStateLabel
+}
+
+function agentNodeSubtitle(data: GraphNode['data']): string {
+  const harness = data.agent.harness ?? data.agent.harnessConfiguration?.harness
+  const harnessLabel = harness === 'opencode' ? 'OpenCode'
+    : harness === 'codex' ? 'Codex'
+      : data.agent.harnessSummary?.label ?? 'Agent'
+  const responsibility = data.role ?? data.agent.productRole ?? data.stepLabel
+  return `${harnessLabel} · ${responsibility}`
+}
+
+function agentNodeIcon(data: GraphNode['data']): 'workflow' | 'code' | 'eye' | 'bot' {
+  const responsibility = `${data.role ?? ''} ${data.agent.productRole ?? ''}`.toLowerCase()
+  if (responsibility.includes('review')) return 'eye'
+  if (responsibility.includes('orchestrat')) return 'workflow'
+  if (responsibility.includes('develop') || responsibility.includes('cod')) return 'code'
+  return 'bot'
+}
+
 
 function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
   const nodeMenu = useContext(NodeMenuContext)
@@ -336,6 +219,20 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
   const menuOpen = nodeMenu ? nodeMenu.openMenuNodeId === data.workflowNodeId : localMenuOpen
   const menuRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const [menuPosition, setMenuPosition] = useState({ top: 8, left: 8 })
+
+  const positionMenu = useCallback(() => {
+    const trigger = triggerRef.current
+    if (!trigger) return
+    const rect = trigger.getBoundingClientRect()
+    const gap = 8
+    const width = Math.min(432, window.innerWidth - 16)
+    const estimatedHeight = Math.min(420, window.innerHeight - 16)
+    const fitsRight = rect.right + gap + width <= window.innerWidth - 8
+    const left = fitsRight ? rect.right + gap : Math.max(8, rect.left - gap - width)
+    const top = Math.max(8, Math.min(rect.top - 8, window.innerHeight - estimatedHeight - 8))
+    setMenuPosition({ top, left })
+  }, [])
 
   const setMenuOpen = useCallback((nextOpen: boolean) => {
     if (nodeMenu) nodeMenu.setOpenMenuNodeId(nextOpen ? data.workflowNodeId : undefined)
@@ -356,17 +253,27 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
 
   useEffect(() => {
     if (!menuOpen) return
+    positionMenu()
     menuRef.current?.querySelector<HTMLInputElement>('input:not([type="checkbox"])')?.focus()
-  }, [menuOpen])
+    window.addEventListener('resize', positionMenu)
+    window.addEventListener('scroll', positionMenu, true)
+    return () => {
+      window.removeEventListener('resize', positionMenu)
+      window.removeEventListener('scroll', positionMenu, true)
+    }
+  }, [menuOpen, positionMenu])
 
   if (data.departing) {
     return (
       <div className="workflow-agent-node-departing" aria-hidden="true">
-        <span className="workflow-agent-node-meta">
-          <span>Agent</span>
-          <span>{data.stepLabel}</span>
-        </span>
-        <span className="workflow-agent-node-label">{data.label}</span>
+        <WorkflowNodeCard
+          title={data.label}
+          subtitle={agentNodeSubtitle(data)}
+          statusLabel={agentNodeStatus(data)}
+          tone={agentNodeTone(data)}
+          icon={agentNodeIcon(data)}
+          meta={data.stepLabel}
+        />
       </div>
     )
   }
@@ -400,45 +307,54 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
           className="workflow-agent-node-handle"
         />
       ))}
-      <button
-        type="button"
+      <WorkflowNodeCard
         className="workflow-agent-node-button"
-        aria-label={`${data.label} agent, ${data.stepLabel}`}
-        aria-pressed={selected}
-        onClick={(event) => data.onSelect?.(
+        title={data.label}
+        subtitle={agentNodeSubtitle(data)}
+        statusLabel={agentNodeStatus(data)}
+        tone={agentNodeTone(data)}
+        icon={agentNodeIcon(data)}
+        selected={selected}
+        working={data.runState === 'starting' || data.runState === 'running' || data.executionState === 'working'}
+        meta={data.stepLabel}
+        ariaLabel={`${data.label} agent, ${data.stepLabel}`}
+        onSelect={(event) => data.onSelect?.(
           data.agentId,
           data.workflowNodeId,
           event.ctrlKey || event.metaKey,
         )}
-      >
-        <span className="workflow-agent-node-meta">
-          <span>Agent</span>
-          <span>{data.stepLabel}</span>
-        </span>
-        <span className="workflow-agent-node-label">{data.label}</span>
-        {data.runState ? (
-          <span className="workflow-agent-node-run-state">{data.runState.replaceAll('_', ' ')}</span>
-        ) : null}
-      </button>
-      <button
-        type="button"
+      />
+      <Button
         ref={triggerRef}
-        className="workflow-agent-node-menu-trigger nodrag"
+        variant="ghost"
+        className="n-icon-button workflow-agent-node-menu-trigger nodrag"
         aria-label={`Open actions for ${data.label}`}
         title="Node actions"
         aria-haspopup="dialog"
         aria-expanded={menuOpen}
         onClick={(event) => {
           event.stopPropagation()
-          if (!menuOpen) data.onOpenSettings?.(data.agentId, data.workflowNodeId)
+          if (!menuOpen) {
+            positionMenu()
+            data.onOpenSettings?.(data.agentId, data.workflowNodeId)
+          }
           setMenuOpen(!menuOpen)
         }}
       >
-        <MoreHorizontal aria-hidden="true" size={17} />
-      </button>
-      {menuOpen ? (
-        <div ref={menuRef} className="workflow-agent-node-menu agent-directory-card-actions nodrag" role="dialog" aria-label={`${data.label} settings`}>
+        <Icon name="more" size={17} />
+      </Button>
+      {menuOpen ? createPortal((
+        <div ref={menuRef} className="agent-settings-inspector nodrag nowheel" style={menuPosition} role="dialog" aria-modal={false} aria-label={`${data.label} settings`}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            // A portal still bubbles through React: do not let Delete remove graph nodes.
+            event.stopPropagation()
+            if (event.key === 'Escape') { event.preventDefault(); closeMenu('escape') }
+          }}>
           <AgentSettingsForm
+            workspaceId={nodeMenu?.workspaceId}
+            workflowApprovalHandler={nodeMenu?.workflowApprovalHandler}
             agent={data.agent}
             initialPrompt={data.initialPrompt}
             executionPolicy={data.executionPolicy}
@@ -458,7 +374,7 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
             }}
           />
         </div>
-      ) : null}
+      ), document.body) : null}
     </article>
   )
 }
@@ -505,6 +421,7 @@ function HandoffEdge({
   return (
     <>
       <BaseEdge
+        className="n-flow-base workflow-graph-edge-path"
         id={id}
         path={edgePath}
         label={label}
@@ -527,8 +444,8 @@ function HandoffEdge({
         width={EDGE_CONTROL_SIZE}
         height={EDGE_CONTROL_SIZE}
       >
-        <button
-          type="button"
+        <Button
+          variant="secondary"
           className="workflow-graph-edge-remove"
           aria-label={`Remove connection from ${source} to ${target}`}
           title="Remove connection"
@@ -537,8 +454,8 @@ function HandoffEdge({
             data?.onRemove?.(id)
           }}
         >
-          <X aria-hidden="true" size={13} />
-        </button>
+          <Icon name="close" size={13} />
+        </Button>
       </foreignObject>
     </>
   )
@@ -663,6 +580,7 @@ export function GraphEditor({
   )?.id)
   const startLock = useRef(Boolean(activeRunId))
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
+  const [workflowSettingsOpen, setWorkflowSettingsOpen] = useState(false)
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => new Set())
   const [openMenuNodeId, setOpenMenuNodeId] = useState<string>()
   const [enteringEdgeId, setEnteringEdgeId] = useState<string>()
@@ -673,6 +591,17 @@ export function GraphEditor({
   const localAgents = agentCatalog?.localAgents ?? readLocalAgents(workspaceId)
   const deletedAgentIds = agentCatalog?.deletedAgentIds ?? readDeletedAgentIds(workspaceId)
   const addAgentButtonRef = useRef<HTMLButtonElement>(null)
+  const workflowSettingsButtonRef = useRef<HTMLButtonElement>(null)
+  const workflowSettingsRef = useRef<HTMLDivElement>(null)
+  const closeWorkflowSettings = useCallback((reason: SurfaceDismissReason = 'escape') => {
+    setWorkflowSettingsOpen(false)
+    if (reason === 'escape') workflowSettingsButtonRef.current?.focus()
+  }, [])
+  useDismissableSurface({ open: workflowSettingsOpen, onDismiss: closeWorkflowSettings,
+    surfaceRef: workflowSettingsRef, triggerRef: workflowSettingsButtonRef })
+  useEffect(() => {
+    if (workflowSettingsOpen) workflowSettingsRef.current?.querySelector<HTMLElement>('select, button')?.focus()
+  }, [workflowSettingsOpen])
   const connectionSourceNodeRef = useRef<string | undefined>(undefined)
   const agentPickerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -686,9 +615,14 @@ export function GraphEditor({
   const undoStackRef = useRef<GraphSaveSnapshot[]>([])
   const positionUndoActiveRef = useRef(false)
   const agentPickerPresence = usePresence(agentPickerOpen)
+  const openNodeMenu = useCallback((nodeId?: string) => {
+    if (nodeId) { setWorkflowSettingsOpen(false); setAgentPickerOpen(false) }
+    setOpenMenuNodeId(nodeId)
+  }, [])
   const nodeMenuValue = useMemo(
-    () => ({ openMenuNodeId, setOpenMenuNodeId }),
-    [openMenuNodeId],
+    () => ({ openMenuNodeId, setOpenMenuNodeId: openNodeMenu, workspaceId,
+      workflowApprovalHandler: (draft?.workflow ?? workflow).approval?.handler }),
+    [openMenuNodeId, openNodeMenu, workspaceId, draft?.workflow, workflow],
   )
   const saveMutation = useSaveGraphMutation()
   const isSaving = managedSaving || saveMutation.isPending
@@ -696,7 +630,8 @@ export function GraphEditor({
     ? draft?.managedBase ?? captureManagedBase(managedDraft, agents, managedAgentRevisions)
     : undefined, [agents, draft?.managedBase, managedAgentRevisions, managedDraft])
   const managedWorkspace = useManagedWorkspaceQuery(workspaceId, Boolean(managedDraft))
-  const harnessDefaultsQuery = useHarnessDefaultsQuery()
+  const agentDefaultsQuery = useAgentDefaultsQuery(import.meta.env.MODE !== 'test')
+  const agentDefaults: AgentDefaults = agentDefaultsQuery.data?.value ?? DEFAULT_AGENT_DEFAULTS
   const startRunMutation = useStartWorkflowRunMutation()
   const startManagedRun = useStartManagedRunMutation()
   const stopManagedRun = useStopManagedRunMutation()
@@ -755,7 +690,7 @@ export function GraphEditor({
     const firstControl = agentPickerRef.current?.querySelector<HTMLElement>('[data-agent-picker-option]')
       ?? agentPickerRef.current?.querySelector<HTMLElement>('button, a[href]')
     firstControl?.focus()
-  }, [agentPickerOpen, harnessDefaultsQuery.data])
+  }, [agentPickerOpen, agentDefaults])
 
   // Query owns the saved definition. The feature store is consulted only
   // while an unsaved draft exists, so refetches remain visible when clean.
@@ -782,6 +717,9 @@ export function GraphEditor({
     }
     return [...catalogById.values()]
   }, [agentOverrides, agents, deletedAgentIdSet, draft?.managedBase?.agents, localAgents])
+  const workflowAgentIds = useMemo(() => new Set(displayedWorkflow.nodes.map((node) => node.agentId)), [displayedWorkflow.nodes])
+  const workflowOrchestrators = catalogAgents.filter((agent) => workflowAgentIds.has(agent.id) && agent.productRole === 'orchestrator')
+  const hasDistinctCoder = catalogAgents.some((agent) => workflowAgentIds.has(agent.id) && agent.productRole === 'coder')
 
   const executionPolicy = displayedWorkflow.executionPolicy ?? {
     maxParallelism: Math.max(1, displayedWorkflow.nodes.length),
@@ -1461,7 +1399,11 @@ export function GraphEditor({
           deleteKeyCode={null}
           fitView
           fitViewOptions={{ padding: 0.2, minZoom: 0.7, maxZoom: 1.1 }}
-          defaultEdgeOptions={{ type: AGENT_HANDOFF_EDGE_TYPE, selectable: false }}
+          defaultEdgeOptions={{
+            type: AGENT_HANDOFF_EDGE_TYPE,
+            selectable: false,
+            markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: 'var(--n-border-strong)' },
+          }}
           proOptions={{ hideAttribution: true }}
           aria-label="Workflow editor canvas"
           onInit={(instance) => { flowInstanceRef.current = instance }}
@@ -1487,82 +1429,123 @@ export function GraphEditor({
         </ReactFlow>
         </NodeMenuContext.Provider>
 
-        <div className="workflow-graph-primary-actions" aria-label="Workflow controls">
-          <button
-            type="button"
-            className="workflow-graph-run"
-            aria-label={runActive ? 'Cancel workflow' : 'Start workflow'}
-            title={runActive ? 'Cancel workflow' : managedLocationReady ? 'Start workflow' : 'Set a valid workspace execution location first'}
-            disabled={runActive ? cancelRunMutation.isPending || stopManagedRun.isPending : startDisabled || (Boolean(managedDraft) && (isDirty || isSaving))}
-            onClick={runActive && activeRunId
-              ? () => managedDraft
-                ? stopManagedRun.mutate({ workspaceId, runId: activeRunId, commandId: crypto.randomUUID() }, {
-                    onSuccess: (result) => {
-                      setNotice({ kind: result.status === 'not_owner' ? 'error' : 'info', text:
-                        result.status === 'not_owner' ? 'This API does not own the running process. Stop was not accepted; use its active owner.' :
-                          result.status === 'already_terminal' ? 'The run record is already terminal. Native process exit has not been verified.' :
-                            'Cancellation was requested. Native process exit has not yet been verified.' })
-                      void queryClient.invalidateQueries({ queryKey: queryKeys.run(workspaceId, activeRunId) })
-                    },
-                    onError: (error) => setNotice({ kind: 'error', text: graphErrorMessage(error, 'The run could not be canceled.') }),
-                  })
-                : cancelRunMutation.mutate({ workspaceId, runId: activeRunId }, {
-                    onError: (error) => setNotice({ kind: 'error', text: graphErrorMessage(error, 'The run could not be canceled.') }),
-                  })
-              : handleStart}
-          >
-            {runActive ? <Square aria-hidden="true" size={14} /> : <Play aria-hidden="true" size={16} />}
-          </button>
-          <button
-            ref={addAgentButtonRef}
-            type="button"
-            className="workflow-graph-add-agent"
-            aria-label="Add agent to graph"
-            title="Add agent to graph"
-            aria-haspopup="dialog"
-            aria-expanded={agentPickerOpen}
-            onClick={() => {
-              setOpenMenuNodeId(undefined)
-              setAgentPickerOpen(true)
-            }}
-          >
-            <Plus aria-hidden="true" size={17} />
-          </button>
+        <div className="workflow-graph-primary-actions">
+          <Toolbar label="Workflow controls">
+            <Button ref={workflowSettingsButtonRef} variant="secondary" className="n-icon-button workflow-graph-add-agent" aria-label="Workflow settings" title="Workflow settings"
+              aria-haspopup="dialog" aria-expanded={workflowSettingsOpen} aria-controls={workflowSettingsOpen ? 'workflow-settings-popover' : undefined}
+              onClick={() => { setAgentPickerOpen(false); setOpenMenuNodeId(undefined); setWorkflowSettingsOpen((open) => !open) }}><Icon name="settings" size={16} /></Button>
+            <Link to="/workspaces/$workspaceId/approvals" params={{ workspaceId }} search={{ workflowId: displayedWorkflow.id }} className="workflow-graph-add-agent" aria-label="Workflow Approval Inbox" title="Workflow Approval Inbox"><Inbox aria-hidden="true" size={16} /></Link>
+            <Button
+              variant="secondary"
+              className="n-icon-button workflow-graph-run"
+              aria-label={runActive ? 'Cancel workflow' : 'Start workflow'}
+              title={runActive ? 'Cancel workflow' : managedLocationReady ? 'Start workflow' : 'Set a valid workspace execution location first'}
+              disabled={runActive ? cancelRunMutation.isPending || stopManagedRun.isPending : startDisabled || (Boolean(managedDraft) && (isDirty || isSaving))}
+              onClick={runActive && activeRunId
+                ? () => managedDraft
+                  ? stopManagedRun.mutate({ workspaceId, runId: activeRunId, commandId: crypto.randomUUID() }, {
+                      onSuccess: (result) => {
+                        setNotice({ kind: result.status === 'not_owner' ? 'error' : 'info', text:
+                          result.status === 'not_owner' ? 'This API does not own the running process. Stop was not accepted; use its active owner.' :
+                            result.status === 'already_terminal' ? 'The run record is already terminal. Native process exit has not been verified.' :
+                              'Cancellation was requested. Native process exit has not yet been verified.' })
+                        void queryClient.invalidateQueries({ queryKey: queryKeys.run(workspaceId, activeRunId) })
+                      },
+                      onError: (error) => setNotice({ kind: 'error', text: graphErrorMessage(error, 'The run could not be canceled.') }),
+                    })
+                  : cancelRunMutation.mutate({ workspaceId, runId: activeRunId }, {
+                      onError: (error) => setNotice({ kind: 'error', text: graphErrorMessage(error, 'The run could not be canceled.') }),
+                    })
+                : handleStart}
+            >
+              {runActive ? <Icon name="stop" size={14} /> : <Icon name="play" size={16} />}
+            </Button>
+            <Button
+              ref={addAgentButtonRef}
+              variant="secondary"
+              className="n-icon-button workflow-graph-add-agent"
+              aria-label="Add agent to graph"
+              title="Add agent to graph"
+              aria-haspopup="dialog"
+              aria-expanded={agentPickerOpen}
+              onClick={() => {
+                setOpenMenuNodeId(undefined)
+                setWorkflowSettingsOpen(false)
+                setAgentPickerOpen(true)
+              }}
+            >
+              <Icon name="plus" size={17} />
+            </Button>
+          </Toolbar>
         </div>
 
+        {workflowSettingsOpen ? <div ref={workflowSettingsRef} id="workflow-settings-popover" className="workflow-settings-popover" role="dialog" aria-modal={false} aria-labelledby="workflow-settings-title">
+          <header><div><p className="n-eyebrow">Local override</p><h2 id="workflow-settings-title">Workflow settings</h2></div><IconButton label="Close workflow settings" variant="ghost" onClick={() => closeWorkflowSettings()}><Icon name="close" size={16} /></IconButton></header>
+          <Select
+            label="Approval handler"
+            value={displayedWorkflow.approval?.handler ?? ''}
+            options={[
+              { value: '', label: 'Select handler', disabled: true },
+              { value: 'user', label: 'User' },
+              { value: 'orchestrator', label: 'Orchestrator', disabled: !hasDistinctCoder || workflowOrchestrators.length === 0 },
+              { value: 'operator', label: 'Operator' },
+            ]}
+            onChange={(event) => {
+              const handler = event.target.value as 'user' | 'orchestrator' | 'operator'
+              applyBoardChange((saved) => ({ ...saved, approval: handler === 'orchestrator'
+                ? { handler, ...(saved.approval?.handler === 'orchestrator' && saved.approval.designatedOrchestratorAgentId ? { designatedOrchestratorAgentId: saved.approval.designatedOrchestratorAgentId } : {}) }
+                : { handler } }))
+            }}
+          />
+          {displayedWorkflow.approval?.handler === 'orchestrator' ? <Select
+            label="Designated Orchestrator"
+            aria-label="Designated Orchestrator"
+            value={displayedWorkflow.approval.designatedOrchestratorAgentId ?? ''}
+            options={[
+              { value: '', label: 'Choose an Orchestrator' },
+              ...(displayedWorkflow.approval.designatedOrchestratorAgentId && !workflowOrchestrators.some((agent) => agent.id === displayedWorkflow.approval?.designatedOrchestratorAgentId)
+                ? [{ value: displayedWorkflow.approval.designatedOrchestratorAgentId, label: 'Previously designated Agent is unavailable', disabled: true }]
+                : []),
+              ...workflowOrchestrators.map((agent) => ({ value: agent.id, label: agent.name })),
+            ]}
+            onChange={(event) => applyBoardChange((saved) => ({ ...saved, approval: { handler: 'orchestrator', designatedOrchestratorAgentId: event.target.value || undefined } }))}
+          /> : null}
+          {!hasDistinctCoder || workflowOrchestrators.length === 0 ? <Alert live tone="warning" title="Orchestrator handling requires one Orchestrator and a distinct Coder on this board." /> : null}
+          <WorkflowExecutionLimits
+            key={`${displayedWorkflow.id}:${executionPolicy.maxNodeExecutions}:${executionPolicy.maxParallelism}`}
+            value={executionPolicy} nodeCount={displayedWorkflow.nodes.length}
+            onApply={(next) => applyBoardChange((saved) => ({ ...saved, executionPolicy: next }))}
+          />
+          <p>Normal graph edges do not grant approval authority. These workflow settings are pinned when you Save graph.</p>
+        </div> : null}
+
         {isDirty || managedDraft ? (
-          <div className="workflow-graph-actions" aria-label="Graph actions">
-            <button type="button" className="workflow-graph-action workflow-graph-action-quiet" onClick={handleDiscard} disabled={!hasLocalChanges || isSaving}>
-              {managedDraft ? 'Discard local edits' : 'Discard'}
-            </button>
-            <button type="button" className="workflow-graph-action workflow-graph-action-primary" onClick={handleSave} disabled={isSaving || (executionLimitExceeded && !managedSaveQueue.hasPending(workflowKey))}>
-              {isSaving ? 'Saving…' : 'Save graph'}
-            </button>
+          <div className="workflow-graph-actions">
+            <Toolbar label="Graph actions">
+              <Button variant="secondary" onClick={handleDiscard} disabled={!hasLocalChanges || isSaving}>
+                {managedDraft ? 'Discard local edits' : 'Discard'}
+              </Button>
+              <Button variant="primary" onClick={handleSave} disabled={isSaving || (executionLimitExceeded && !managedSaveQueue.hasPending(workflowKey))}>
+                {isSaving ? 'Saving…' : 'Save graph'}
+              </Button>
+            </Toolbar>
           </div>
         ) : null}
 
         <div className="workflow-graph-notifications" data-testid="workflow-graph-notifications">
-          {managedSaveQueue.hasPending(workflowKey) && !managedSaving ? <p className="workflow-graph-toast workflow-graph-toast-info" role="status">
-            The previous save is unresolved. Retry Save graph before discarding local edits or starting.
-          </p> : null}
-          {hasUnpublishedChanges ? <p className="workflow-graph-toast workflow-graph-toast-info" role="status">
-            The shared draft has unpublished changes. Save graph before starting it.
-          </p> : null}
+          {hasLocalChanges ? <Alert live title="Unsaved graph changes. Use Save graph to persist applied agent and workflow settings." /> : null}
+          {managedSaveQueue.hasPending(workflowKey) && !managedSaving ? <Alert live tone="warning" title="The previous save is unresolved. Retry Save graph before discarding local edits or starting." /> : null}
+          {hasUnpublishedChanges ? <Alert live tone="warning" title="The shared draft has unpublished changes. Save graph before starting it." /> : null}
           {runQuery.data?.run.executionLocation ? (
-            <p className="workflow-graph-toast workflow-graph-toast-info" role="status">
-              Run location: {runQuery.data.run.executionLocation.rootPath}
-            </p>
+            <Alert live title={`Run location: ${runQuery.data.run.executionLocation.rootPath}`} />
           ) : null}
           {notice ? (
-            <p
-              className={`workflow-graph-toast workflow-graph-toast-${notice.kind}`}
-              role={notice.kind === 'error' ? 'alert' : 'status'}
-              aria-live={notice.kind === 'error' ? 'assertive' : 'polite'}
-            >
-              {notice.text}
-            </p>
+            <Alert
+              live
+              tone={notice.kind === 'error' ? 'danger' : notice.kind === 'success' ? 'success' : 'info'}
+              title={notice.text}
+            />
           ) : null}
-
         </div>
 
         {agentPickerPresence.mounted ? (
@@ -1576,48 +1559,52 @@ export function GraphEditor({
           >
             <div className="agent-picker-heading">
               <div>
-                <h2 id="agent-picker-title">Add harness</h2>
+                <h2 id="agent-picker-title">Add Agent</h2>
               </div>
-              <button type="button" aria-label="Close agent picker" title="Close" onClick={closeAgentPicker}>
-                <X aria-hidden="true" size={17} />
-              </button>
+              <IconButton label="Close agent picker" variant="ghost" onClick={closeAgentPicker}>
+                <Icon name="close" size={17} />
+              </IconButton>
             </div>
 
-            {harnessDefaultsQuery.isPending ? (
-              <p className="agent-picker-state" role="status">Loading harness defaults…</p>
-            ) : harnessDefaultsQuery.isError || !harnessDefaultsQuery.data ? (
-              <div className="agent-picker-state" role="alert">
-                <p>Harness defaults are unavailable.</p>
-                <button type="button" onClick={() => void harnessDefaultsQuery.refetch()}>Retry</button>
-              </div>
+            {agentDefaultsQuery.isPending && agentDefaultsQuery.fetchStatus !== 'idle' ? (
+              <LoadingState label="Loading Agent templates…" rows={2} />
+            ) : agentDefaultsQuery.isError ? (
+              <ErrorState
+                title="Agent templates are unavailable."
+                description="The saved harness defaults could not be loaded."
+                onRetry={() => void agentDefaultsQuery.refetch()}
+                retrying={agentDefaultsQuery.isFetching}
+              />
             ) : (
               <div className="harness-picker-grid">
-                <button
-                  type="button"
+                <Button
+                  variant="secondary"
                   data-agent-picker-option
+                  leading={<Icon name="bot" size={28} />}
                   onClick={() => addAgentToGraph(defaultAgentForHarness(
-                    'codex',
-                    nextBoardAgentId('codex'),
-                    nextHarnessAgentName('codex', catalogAgents),
-                    harnessDefaultsQuery.data.defaults.codex,
+                    agentDefaults.orchestrator.harness.harness,
+                    nextBoardAgentId(agentDefaults.orchestrator.harness.harness),
+                    'Orchestrator',
+                    agentDefaults.orchestrator.harness,
+                    'orchestrator',
                   ))}
                 >
-                  <Bot aria-hidden="true" size={28} />
-                  <span>Codex</span>
-                </button>
-                <button
-                  type="button"
+                  Orchestrator
+                </Button>
+                <Button
+                  variant="secondary"
                   data-agent-picker-option
+                  leading={<Icon name="code" size={28} />}
                   onClick={() => addAgentToGraph(defaultAgentForHarness(
-                    'opencode',
-                    nextBoardAgentId('opencode'),
-                    nextHarnessAgentName('opencode', catalogAgents),
-                    harnessDefaultsQuery.data.defaults.opencode,
+                    agentDefaults.coder.harness.harness,
+                    nextBoardAgentId(agentDefaults.coder.harness.harness),
+                    nextCoderAgentName(catalogAgents),
+                    agentDefaults.coder.harness,
+                    'coder',
                   ))}
                 >
-                  <BotMessageSquare aria-hidden="true" size={28} />
-                  <span>OpenCode</span>
-                </button>
+                  Coder
+                </Button>
               </div>
             )}
           </div>
@@ -1639,10 +1626,8 @@ export function WorkflowGraph({ workspaceId, workflowId, selectedAgentId, onSele
 
   if (workflowQuery.isPending || agentsQuery.isPending || workspaceQuery.isPending || (realMode && (managedAgentsQuery.isPending || managedDraftQuery.isPending))) {
     return (
-      <div className="workflow-graph-state" data-testid="workflow-graph-loading" role="status">
-        <p className="workflow-graph-kicker">Workflow graph</p>
-        <h2>Loading graph…</h2>
-        <p>Loading the saved definition and its agent steps.</p>
+      <div className="workflow-graph-state" data-testid="workflow-graph-loading">
+        <LoadingState label="Loading graph…" rows={3} />
       </div>
     )
   }
@@ -1657,10 +1642,11 @@ export function WorkflowGraph({ workspaceId, workflowId, selectedAgentId, onSele
     (realMode && (managedContextQuery.isError || !managedAgentsQuery.data || !managedDraftQuery.data))
   ) {
     return (
-      <div className="workflow-graph-state workflow-graph-state-error" data-testid="workflow-graph-error" role="alert">
-        <p className="workflow-graph-kicker">Workflow graph</p>
-        <h2>Graph unavailable</h2>
-        <p>{graphErrorMessage(workflowQuery.error ?? agentsQuery.error ?? workspaceQuery.error ?? managedAgentsQuery.error ?? managedDraftQuery.error, 'The workflow could not be loaded.')}</p>
+      <div className="workflow-graph-state workflow-graph-state-error" data-testid="workflow-graph-error">
+        <ErrorState
+          title="Graph unavailable"
+          description={graphErrorMessage(workflowQuery.error ?? agentsQuery.error ?? workspaceQuery.error ?? managedAgentsQuery.error ?? managedDraftQuery.error, 'The workflow could not be loaded.')}
+        />
       </div>
     )
   }

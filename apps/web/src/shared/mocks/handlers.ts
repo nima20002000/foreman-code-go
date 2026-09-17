@@ -1,4 +1,5 @@
 import { http, HttpResponse, type RequestHandler } from 'msw'
+import { settingsExperienceHandlers, resetSettingsExperienceFixtures } from './settingsExperienceHandlers'
 import {
   ApiErrorResponseSchema,
   CreateRunRequestSchema,
@@ -9,6 +10,10 @@ import {
   type WorkflowRun,
 } from '@graphql/contracts'
 import {
+  AgentDefaultsUpdateInputSchema,
+  HarnessConfigurationCheckInputSchema,
+  HarnessDefaultsUpdateInputSchema,
+  WorkflowDefaultsUpdateInputSchema,
   WorkspaceLocationSetInputSchema,
   WorkspaceLocationValidateInputSchema,
 } from '@graphql/contracts/management'
@@ -16,11 +21,14 @@ import {
 import {
   MOCK_SCENARIOS,
   getMockFixture,
+  getMockAgentDefaults,
+  getMockHarnessCatalog,
   getMockHarnessDefaults,
   getMockMessages,
   getMockScenarioState,
+  getMockWorkflowDefaults,
   isMockScenario,
-  resetMockFixtures,
+  resetMockFixtures as resetExistingMockFixtures,
   serializeAgent,
   setMockFailureMode,
   setMockScenario,
@@ -28,10 +36,15 @@ import {
   shouldFailMutation,
   updateMockWorkflow,
   updateMockAgents,
+  updateMockAgentDefaults,
   updateMockHarnessDefaults,
+  updateMockManagedHarnessDefaults,
+  updateMockWorkflowDefaults,
   appendMockMessage,
   type MockFailureMode,
 } from './scenarios'
+
+function resetMockFixtures() { resetExistingMockFixtures(); resetSettingsExperienceFixtures() }
 
 const errorSchema = ApiErrorResponseSchema
 
@@ -60,6 +73,9 @@ function fixtureNotFound(kind: string, id: string) {
     404,
   )
 }
+
+const operatorConversations: Array<Record<string, unknown>> = []
+const operatorMessages = new Map<string, Array<Record<string, unknown>>>()
 
 function isFailureMode(value: string | null): value is MockFailureMode {
   return value === 'none' || value === 'graph-save' || value === 'user-message' || value === 'all'
@@ -121,6 +137,134 @@ function managedWorkspace(workspaceId: string) {
 }
 
 export const handlers: RequestHandler[] = [
+  ...settingsExperienceHandlers,
+  http.get('/api/operator/conversations/summaries', () => HttpResponse.json({
+    conversations: operatorConversations.map((item) => ({
+      conversationId: item.id, title: item.title, turnState: 'idle', revision: 0,
+      activeRequestId: null, needsAttention: false,
+    })),
+  })),
+  http.get('/api/operator/conversations', () => HttpResponse.json({ conversations: operatorConversations })),
+  http.post('/api/operator/conversations', () => {
+    const now = new Date().toISOString()
+    const conversation = { id: crypto.randomUUID(), agentId: 'application-operator', scope: 'application', operatorConfigurationVersionId: 'operator-config-v1', title: 'New conversation', status: 'open', createdAt: now, updatedAt: now }
+    operatorConversations.unshift(conversation); operatorMessages.set(String(conversation.id), [])
+    return HttpResponse.json({ conversation }, { status: 201 })
+  }),
+  http.get('/api/operator/conversations/:conversationId', ({ params }) => {
+    const id = String(params.conversationId); let conversation = operatorConversations.find((item) => item.id === id)
+    if (!conversation) {
+      const now = new Date().toISOString()
+      conversation = { id, agentId: 'application-operator', scope: 'application', operatorConfigurationVersionId: 'operator-config-v1', title: 'New conversation', status: 'open', createdAt: now, updatedAt: now }
+      operatorConversations.unshift(conversation); operatorMessages.set(id, [])
+    }
+    return HttpResponse.json({ conversation, messages: operatorMessages.get(id) ?? [], turnState: 'idle' })
+  }),
+  http.get('/api/operator/conversations/:conversationId/events', ({ params }) => {
+    const body = `event: snapshot\ndata: ${JSON.stringify({ conversationId: String(params.conversationId) })}\n\n`
+    return new HttpResponse(body, { headers: { 'content-type': 'text/event-stream' } })
+  }),
+  http.post('/api/operator/conversations/:conversationId/messages', async ({ params, request }) => {
+    const id = String(params.conversationId); const conversation = operatorConversations.find((item) => item.id === id)
+    if (!conversation) return fixtureNotFound('conversation', id)
+    const body = await readJson(request) as { requestId?: string; content?: string }
+    const now = new Date().toISOString(); const messages = operatorMessages.get(id) ?? []
+    messages.push({ id: crypto.randomUUID(), conversationId: id, role: 'user', content: body.content ?? '', createdAt: now, updatedAt: now })
+    messages.push({ id: crypto.randomUUID(), conversationId: id, role: 'assistant', content: 'Deterministic Operator response.', createdAt: now, updatedAt: now })
+    operatorMessages.set(id, messages)
+    return HttpResponse.json({ state: { conversation, messages, turnState: 'idle' }, replayed: false }, { status: 202 })
+  }),
+  http.get('/api/management/interactions', () => HttpResponse.json({
+    items: [], nextCursor: null, pendingCount: 0, pendingByWorkflow: {},
+  })),
+  http.get('/api/management/harnesses', () => HttpResponse.json(getMockHarnessCatalog())),
+  http.get('/api/management/harnesses/:harness/options', ({ params }) => {
+    const harness = String(params.harness)
+    if (harness !== 'codex' && harness !== 'opencode') return fixtureNotFound('harness', harness)
+    return HttpResponse.json({
+      harness, providerVersion: 'mock', authenticated: true,
+      models: harness === 'codex' ? [
+        { id: 'gpt-5.6-luna', name: 'gpt-5.6-luna', reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], variants: [], serviceTiers: ['standard', 'priority'] },
+        { id: 'gpt-5.6-terra', name: 'gpt-5.6-terra', reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], variants: [], serviceTiers: ['standard', 'priority'] },
+        { id: 'gpt-5.6-sol', name: 'gpt-5.6-sol', reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], variants: [], serviceTiers: ['standard', 'priority'] },
+        { id: 'gpt-6-astra', name: 'gpt-6-astra', reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], variants: [], serviceTiers: ['standard', 'priority'] },
+      ] : [{ id: 'opencode-go/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', reasoningEfforts: [], variants: ['', 'low', 'high', 'max', 'provider-custom-effort', 'budget-4096'], serviceTiers: [] }],
+      nativeAgents: harness === 'opencode' ? ['', 'custom-worker'] : [], settings: [], restrictions: [], checkedAt: new Date().toISOString(),
+    })
+  }),
+  http.post('/api/management/harnesses/:harness/refresh', ({ params }) => HttpResponse.json({
+    harness: params.harness, providerVersion: 'mock', authenticated: true, models: [], nativeAgents: [], settings: [], restrictions: [], checkedAt: new Date().toISOString(),
+  })),
+  http.get('/api/management/harnesses/:harness/mcp', ({ params }) => HttpResponse.json({
+    harness: params.harness, revision: `sha256:${'0'.repeat(64)}`, servers: [], checkedAt: new Date().toISOString(), scope: 'native-user',
+  })),
+  http.get('/api/management/harnesses/:harness/mcp/plans', () => HttpResponse.json({ items: [] })),
+  http.post('/api/management/harnesses/validate', async ({ request }) => {
+    const parsed = HarnessConfigurationCheckInputSchema.safeParse(await readJson(request))
+    if (!parsed.success) return apiError('INVALID_HARNESS_CONFIGURATION', 'Review the Harness configuration.', 400)
+    return HttpResponse.json({
+      configuration: parsed.data.configuration,
+      qualification: {
+        harness: parsed.data.configuration.harness,
+        version: 'mock',
+        authenticated: true,
+        ready: true,
+        structuredEvents: true,
+        supportsResume: true,
+        supportsCancellation: true,
+        supportsWorkingDirectory: true,
+        supportsStartupPrompt: true,
+        supportedNativeTools: [],
+        supportedSettings: [],
+        unsupportedCapabilities: [],
+      },
+      checkedAt: new Date().toISOString(),
+    })
+  }),
+  http.put('/api/management/harnesses/defaults', async ({ request }) => {
+    const parsed = HarnessDefaultsUpdateInputSchema.safeParse(await readJson(request))
+    if (!parsed.success) return apiError('INVALID_HARNESS_DEFAULTS', 'Review the Harness defaults.', 400)
+    const value = updateMockManagedHarnessDefaults(parsed.data.defaults, parsed.data.expectedRevision)
+    return value
+      ? HttpResponse.json({ value, replayed: false })
+      : apiError('REVISION_CONFLICT', 'Harness defaults changed since they were read.', 409, { currentRevision: getMockHarnessCatalog()[0]?.defaultsRevision ?? 0 })
+  }),
+  http.get('/api/management/settings/agents', () => HttpResponse.json(getMockAgentDefaults())),
+  http.put('/api/management/settings/agents', async ({ request }) => {
+    const parsed = AgentDefaultsUpdateInputSchema.safeParse(await readJson(request))
+    if (!parsed.success) return apiError('INVALID_AGENT_DEFAULTS', 'Review the Agent defaults.', 400)
+    const value = updateMockAgentDefaults(parsed.data.value, parsed.data.expectedRevision)
+    return value
+      ? HttpResponse.json({ value, replayed: false })
+      : apiError('REVISION_CONFLICT', 'Agent defaults changed since they were read.', 409, { currentRevision: getMockAgentDefaults().revision })
+  }),
+  http.get('/api/management/settings/workflows', () => HttpResponse.json(getMockWorkflowDefaults())),
+  http.put('/api/management/settings/workflows', async ({ request }) => {
+    const parsed = WorkflowDefaultsUpdateInputSchema.safeParse(await readJson(request))
+    if (!parsed.success) return apiError('INVALID_WORKFLOW_DEFAULTS', 'Review the Workflow defaults.', 400)
+    const value = updateMockWorkflowDefaults(parsed.data.value, parsed.data.expectedRevision)
+    return value
+      ? HttpResponse.json({ value, replayed: false })
+      : apiError('REVISION_CONFLICT', 'Workflow defaults changed since they were read.', 409, { currentRevision: getMockWorkflowDefaults().revision })
+  }),
+  http.get('/api/management/workspaces/:workspaceId/harnesses/:harness/mcp-detection', ({ params }) => {
+    const harness = String(params.harness)
+    if (harness !== 'codex' && harness !== 'opencode') return fixtureNotFound('harness', harness)
+    return HttpResponse.json({
+      runnerId: 'runner-local',
+      workingDirectory: '/workspace',
+      providerVersion: 'mock',
+      nativeFilters: {},
+      detection: {
+        harness,
+        serverName: 'graphql-app',
+        state: 'not_detected',
+        endpointMatches: null,
+        credentialEnvironmentVariable: null,
+        checkedAt: '2026-09-16T00:00:00.000Z',
+      },
+    })
+  }),
   http.get('/api/management/workspaces/:workspaceId', ({ params }) => {
     const result = managedWorkspace(String(params.workspaceId))
     return result ? HttpResponse.json(result) : fixtureNotFound('workspace', String(params.workspaceId))

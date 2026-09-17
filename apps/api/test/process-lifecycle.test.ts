@@ -117,7 +117,7 @@ it('escalates qualification cancellation when SIGTERM is ignored', async () => {
     pid = Number(readFileSync(ready, 'utf8'))
     const started = Date.now()
     controller.abort()
-    await task
+    await assert.rejects(task, { name: 'AbortError' })
     assert.equal(running(pid), false)
     assert.ok(Date.now() - started < 3_000)
   } finally {

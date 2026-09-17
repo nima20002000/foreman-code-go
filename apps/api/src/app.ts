@@ -7,15 +7,21 @@ import {
 } from '@graphql/contracts'
 import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify'
 import { localhostHostValidation, localhostOriginValidation } from '@modelcontextprotocol/fastify'
+import type pg from 'pg'
 import { z } from 'zod'
 
-import { DomainError } from './modules/errors.js'
-import { registerOperatorHttpSecurity } from './modules/access/http.js'
-import type { PostgresAccessService } from './modules/access/postgres.js'
+import { registerAppMcp } from './mcp/app/transport.js'
+import type { AppMcpServices } from './mcp/app/types.js'
 import { registerOperatorMcp } from './mcp/operator/transport.js'
 import type { OperatorServices } from './mcp/operator/types.js'
-import { registerProductRoutes, type ProductServices } from './routes/product.js'
+import { registerOperatorHttpSecurity } from './modules/access/http.js'
+import type { PostgresAccessService } from './modules/access/postgres.js'
+import { DomainError } from './modules/errors.js'
+import type { McpDetectionService } from './modules/harnesses/mcpDetection.js'
+import { registerUserInteractions } from './routes/userInteractions.js'
 import { registerManagementRoutes } from './routes/management.js'
+import { registerMcpDetectionRoute } from './routes/mcpDetection.js'
+import { registerProductRoutes, type ProductServices } from './routes/product.js'
 
 export interface ReadinessDependencies {
   database: { ping(signal?: AbortSignal): Promise<void> }
@@ -27,6 +33,8 @@ export interface BuildAppOptions {
   readinessTimeoutMs?: number
   product?: ProductServices
   operator?: { access: PostgresAccessService; services: OperatorServices }
+  appMcp?: AppMcpServices
+  mcpDetection?: { pool: pg.Pool; service: McpDetectionService }
   logger?: boolean | FastifyBaseLogger
 }
 
@@ -75,7 +83,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       : { logger: options.logger ?? false }),
     genReqId: () => randomUUID(),
   })
-  if (options.operator) {
+  if (options.operator || options.appMcp) {
     app.addHook('onRequest', localhostHostValidation())
     app.addHook('onRequest', localhostOriginValidation())
   }
@@ -101,8 +109,13 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
 
   if (options.operator) registerOperatorHttpSecurity(app, options.operator.access)
   if (options.operator) registerManagementRoutes(app, options.operator.services)
+  if (options.operator && options.mcpDetection) registerMcpDetectionRoute(app, options.mcpDetection.pool, options.mcpDetection.service)
+  if (options.operator && options.product?.interactions) registerUserInteractions(app, options.operator.access, options.product.interactions)
   if (options.product) registerProductRoutes(app, options.product, Boolean(options.operator))
-  if (options.operator) registerOperatorMcp(app, options.operator.access, options.operator.services)
+  if (options.operator) registerOperatorMcp(app, options.operator.access, {
+    ...options.operator.services, workerToolsMcpImplemented: Boolean(options.appMcp),
+  })
+  if (options.appMcp) registerAppMcp(app, options.appMcp)
 
   app.setErrorHandler(async (error, request, reply) => {
     const domain = error instanceof DomainError

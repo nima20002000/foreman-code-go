@@ -18,6 +18,9 @@ import type { LangGraphWorkflowEngine } from './engine.js'
 import type { PostgresRunRepository } from './postgres.js'
 import { validateExecutableTopology } from './topology.js'
 import { requiredLocationAccess, WorkspaceLocationService } from '../workspaces/location.js'
+import { acceptedRunApproval, validateWorkflowApproval } from '../workflows/approval.js'
+import { acceptRunAuthority, bindRunAuthority } from '../access/runAuthority.js'
+import { assertTriggerDispatch } from '../workflows/triggerAuthority.js'
 
 export class RunManagementService {
   constructor(
@@ -94,7 +97,7 @@ export class RunManagementService {
   async start(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
     workspaceId: string; workflowId: string; workflowVersionId: string; expectedLocationRevision: number;
     commandId: string; input: RunInput;
-    draftId?: string | undefined; expectedDraftRevision?: number | undefined
+    draftId?: string | undefined; expectedDraftRevision?: number | undefined; triggerJobId?: string | undefined
   }) {
     requireAuthorization(principal, 'runs:start', { workspaceId: input.workspaceId, workflowId: input.workflowId })
     requireAuthorization(principal, 'workspace_locations:read', { workspaceId: input.workspaceId })
@@ -103,6 +106,7 @@ export class RunManagementService {
       targetKey: `workflow:${input.workflowId}:version:${input.workflowVersionId}`, payload: input,
       perform: async (client) => {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.workspaceId}`])
+        if (input.triggerJobId) await assertTriggerDispatch(client, principal, {...input, triggerJobId: input.triggerJobId})
         const parents = await client.query<{
           workspace_archived_at: Date | null; workflow_archived_at: Date | null; current_version_id: string | null
         }>(
@@ -137,10 +141,11 @@ export class RunManagementService {
         if (!versionRow.rows[0]) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', `Workflow version '${input.workflowVersionId}' was not found.`, 404)
         const version = WorkflowVersionSchema.parse(versionRow.rows[0].record)
         validateExecutableTopology(version)
+        const approval = acceptedRunApproval(version)
         const currentConfigurations = await client.query<{ id: string; current_configuration_version_id: string | null; configuration_record: unknown }>(
           `select agents.id, agents.current_configuration_version_id, versions.record as configuration_record
            from agents join agent_configuration_versions versions on versions.id = agents.current_configuration_version_id
-           where agents.workspace_id = $1 and agents.id = any($2::text[])`,
+           where agents.workspace_id = $1 and agents.archived_at is null and agents.id = any($2::text[])`,
           [input.workspaceId, Object.keys(version.agentConfigurationVersionIds)],
         )
         if (currentConfigurations.rows.length !== Object.keys(version.agentConfigurationVersionIds).length
@@ -148,18 +153,26 @@ export class RunManagementService {
           throw new DomainError('WORKFLOW_CONFIGURATION_STALE', 'Agent settings changed. Save the graph again before starting it.', 409)
         }
         const configurations = currentConfigurations.rows.map((row) => AgentConfigurationVersionSchema.parse(row.configuration_record))
+        if (approval) validateWorkflowApproval(version.definition, approval, configurations.map((configuration) => ({
+          id: configuration.agentId, productRole: configuration.productRole, harnessConfiguration: configuration.harness,
+        })))
         const executionLocation = await this.locations.snapshot(
           client, input.workspaceId, input.expectedLocationRevision, requiredLocationAccess(configurations),
         )
+        const authority = await acceptRunAuthority(client, principal, approval?.handler === 'operator')
+        requireAuthorization(authority.principal, 'runs:start', { workspaceId: input.workspaceId, workflowId: input.workflowId })
+        requireAuthorization(authority.principal, 'workspace_locations:read', { workspaceId: input.workspaceId })
         const run = WorkflowRunSchema.parse({
           id: `run-${randomUUID()}`, workspaceId: input.workspaceId, workflowId: input.workflowId,
           workflowVersionId: version.id, agentConfigurationVersionIds: version.agentConfigurationVersionIds,
           executionLocation,
-          authorizationPrincipalId: principal.id,
+          ...(approval ? { approval } : {}),
+          authorizationPrincipalId: authority.principal.id,
           executionCondition: version.definition.executionCondition, executionState: 'queued', outcome: 'pending',
           input: input.input, createdAt: new Date().toISOString(),
         })
         await this.runs.create(run, client)
+        await bindRunAuthority(client, run.id, authority)
         await this.runs.recordActivity(run.id, 'backend', 'run_state_changed', { executionState: 'queued' }, undefined, client)
         return run
       },
@@ -173,7 +186,7 @@ export class RunManagementService {
     if (!run) throw new DomainError('RUN_NOT_FOUND', `Run '${input.runId}' was not found.`, 404)
     requireAuthorization(principal, 'runs:stop', { workspaceId: input.workspaceId, workflowId: run.workflowId, runId: input.runId })
     const execution = await this.commands.execute({
-      principal, source, operation: 'run.stop', commandId: input.commandId,
+      principal, source, operation: 'run.stop', commandId: input.commandId, dedicatedConnection: true,
       targetKey: `run:${input.runId}`, payload: input,
       perform: async (client) => {
         // Reuse the coordinator's lease. Ownership uses its dedicated session;
@@ -183,15 +196,18 @@ export class RunManagementService {
         )
         const latest = latestRow.rows[0] ? WorkflowRunSchema.parse(latestRow.rows[0].record) : undefined
         if (!latest) throw new DomainError('RUN_NOT_FOUND', `Run '${input.runId}' was not found.`, 404)
-        if (latest.executionState === 'completed') {
+        if (latest.executionState === 'completed' && !await this.runs.hasPendingCleanup(input.runId, client)) {
           return { runId: input.runId, status: 'already_terminal' as const, processStopped: false }
         }
-        const accepted = await this.engine.cancel(input.runId)
+        const accepted = await this.engine.cancel(input.runId, client)
         return accepted
           ? { runId: input.runId, status: 'accepted' as const, processStopped: false }
           : { runId: input.runId, status: 'not_owner' as const, processStopped: false }
       },
     })
+    if (execution.value.status === 'accepted' || execution.value.status === 'already_terminal') {
+      await this.engine.finishRunLifecycle?.(input.runId, 'The Run was stopped.')
+    }
     // Older receipts may have inferred termination from a terminal record.
     // This API has no process-exit observation, including on receipt replay.
     return { ...execution.value, processStopped: false, replayed: execution.replayed }

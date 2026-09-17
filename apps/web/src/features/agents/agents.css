@@ -7,167 +7,21 @@
   padding: clamp(1.25rem, 3vw, 2.5rem);
 }
 
-.agents-directory-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1.5rem;
-}
-
-.agents-directory-header h1,
-.agent-add-form h2,
-.agent-directory-card h2,
-.agents-directory-empty h2,
-.agents-directory-state h1 {
-  margin: 0;
-  color: var(--color-text-strong);
-}
-
-.agents-directory-header h1 {
-  margin-top: 0.25rem;
-  font-size: 1.5rem;
-}
-
-.agents-directory-header > div > p:last-child,
-.agent-add-form-copy p,
-.agents-directory-empty p,
-.agents-directory-state p {
-  max-width: 65ch;
-  margin: 0.5rem 0 0;
-  color: var(--color-text-muted);
-  font-size: 0.875rem;
-  line-height: 1.55;
-}
-
-.agents-add-button,
-.agent-add-actions button,
-.agents-directory-state button {
-  display: inline-flex;
-  min-height: 2.25rem;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.875rem;
-  border: 1px solid var(--color-border-strong);
-  border-radius: 2px;
-  color: var(--color-text-strong);
-  background: var(--color-surface-raised);
-  cursor: pointer;
-  font-size: 0.8125rem;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.agents-add-button:hover,
-.agent-add-actions button:hover,
-.agents-directory-state button:hover {
-  border-color: var(--color-text-strong);
-  background: var(--color-surface-subtle);
-}
-
 .agent-add-form {
   display: grid;
   grid-template-columns: minmax(12rem, 1fr) repeat(2, minmax(10rem, 0.8fr));
   gap: 1rem;
-  padding: 1.25rem;
-  border: 1px solid var(--color-border-strong);
-  border-radius: 2px;
-  background: var(--color-surface-raised);
-  box-shadow: 0 1.25rem 4rem rgb(0 0 0 / 38%);
 }
 
-.agent-add-backdrop {
-  position: fixed;
-  z-index: 20;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  padding: 1.25rem;
-  background: rgb(8 10 11 / 62%);
-  animation: workspace-overlay-in var(--motion-duration-fast) ease-out both;
-}
-
-.agent-add-backdrop[data-presence='exiting'] {
-  animation: workspace-overlay-out var(--motion-duration-fast) ease-in both;
-  pointer-events: none;
-}
-
-.agent-add-backdrop .agent-add-form {
-  width: min(100%, 42rem);
-  max-height: calc(100vh - 2.5rem);
-  overflow: auto;
-}
-
-.agent-add-form {
-  animation: workspace-dialog-in var(--motion-duration) var(--motion-ease-out) both;
-}
-
-.agent-add-backdrop[data-presence='exiting'] .agent-add-form {
-  animation: workspace-dialog-out var(--motion-duration-fast) ease-in both;
-}
-
-.agent-add-form-heading,
 .agent-add-description,
 .agent-add-error,
 .agent-add-actions {
   grid-column: 1 / -1;
 }
 
-.agent-add-form-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.agent-add-form-heading > button {
-  display: grid;
-  width: 2.25rem;
-  height: 2.25rem;
-  flex: 0 0 auto;
-  place-items: center;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 2px;
-  color: var(--color-text-muted);
-  background: transparent;
-  cursor: pointer;
-}
-
-.agent-add-form-heading > button:hover {
-  border-color: var(--color-border-strong);
-  color: var(--color-text-strong);
-  background: var(--color-surface-subtle);
-}
-
-.agent-add-form label {
-  display: grid;
-  gap: 0.375rem;
-  color: var(--color-text);
-  font-size: 0.75rem;
-  font-weight: 700;
-}
-
-.agent-add-form label > span {
-  color: var(--color-text-faint);
-  font-weight: 500;
-}
-
-.agent-add-form input,
-.agent-add-form textarea {
-  width: 100%;
-  padding: 0.625rem 0.75rem;
-  border: 1px solid var(--color-border-strong);
-  border-radius: 2px;
-  color: var(--color-text-strong);
-  background: var(--color-surface);
-  font-size: 0.875rem;
-  font-weight: 500;
-}
-
 .agent-add-error {
   margin: 0;
-  color: var(--color-danger, #c65f5f);
+  color: var(--n-danger);
   font-size: 0.8125rem;
 }
 
@@ -184,17 +38,17 @@
 }
 
 .agent-directory-card {
-  display: grid;
   min-height: 5.5rem;
-  align-content: center;
-  gap: 0.45rem;
-  padding: 1rem 1.125rem;
-  border: 1px solid var(--color-border);
-  border-radius: 2px;
-  color: var(--color-text-strong);
-  background: var(--color-surface-raised);
-  font: inherit;
-  text-align: left;
+}
+
+.agent-directory-card .n-card-header h3 {
+  font-size: 1rem;
+}
+
+.agent-directory-card .n-card-header p:not(.n-eyebrow) {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
 .agent-directory-card-shell {
@@ -213,23 +67,6 @@
   z-index: 2;
   top: 0.5rem;
   right: 0.5rem;
-  display: grid;
-  width: 2rem;
-  height: 2rem;
-  place-items: center;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 2px;
-  color: var(--color-text-faint);
-  background: transparent;
-  cursor: pointer;
-}
-
-.agent-directory-card-more:hover,
-.agent-directory-card-more[aria-expanded='true'] {
-  border-color: var(--color-border-strong);
-  color: var(--color-text-strong);
-  background: var(--color-surface-subtle);
 }
 
 .agent-directory-card-actions {
@@ -267,10 +104,27 @@
 .agent-settings-name,
 .agent-settings-prompt,
 .agent-settings-limits,
+.agent-settings-advanced,
 .agent-settings-confirm,
 .agent-removal-blocked {
   grid-column: 1 / -1;
 }
+
+.agent-settings-advanced {
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 0.6875rem;
+}
+
+.agent-settings-advanced summary { cursor: pointer; font-weight: 750; }
+.agent-settings-advanced-fields { display: grid; gap: 0.5rem; margin-top: 0.625rem; }
+.agent-settings-advanced-fields label { display: grid; gap: 0.25rem; font-weight: 700; }
+.agent-settings-advanced-fields small,
+.agent-settings-advanced-fields p { margin: 0; line-height: 1.4; }
+.agent-settings-rules { display: grid; gap: 0.4rem; margin: 0; padding: 0.5rem; border: 1px solid var(--color-border); }
+.agent-settings-rules > div { display: grid; grid-template-columns: 1fr 1fr 0.75fr; gap: 0.3rem; }
+.agent-settings-rules button { min-height: 1.8rem; border: 1px solid var(--color-border-strong); color: var(--color-text); background: var(--color-surface); cursor: pointer; }
 
 .agent-settings-limits {
   display: grid;
@@ -347,53 +201,6 @@
   background: var(--color-surface-subtle);
 }
 
-.agent-directory-card-actions > label,
-.agent-settings-control,
-.agent-settings-field {
-  display: grid;
-  gap: 0.25rem;
-  color: var(--color-text-muted);
-  font-size: 0.6875rem;
-  font-weight: 700;
-}
-
-.agent-settings-field > span {
-  pointer-events: none;
-}
-
-.agent-directory-card-actions input,
-.agent-directory-card-actions select,
-.agent-directory-card-actions textarea {
-  width: 100%;
-  min-height: 2rem;
-  padding: 0.375rem 0.5rem;
-  border: 1px solid var(--color-border-strong);
-  border-radius: 2px;
-  color: var(--color-text-strong);
-  background: var(--color-surface);
-  font: inherit;
-}
-
-.agent-directory-card-actions textarea {
-  min-height: 5rem;
-  resize: vertical;
-}
-
-.agent-directory-card-actions .agent-settings-fast {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  color: var(--color-text-muted);
-  font-size: 0.6875rem;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.agent-settings-fast input {
-  width: auto;
-  min-height: auto;
-}
-
 .agent-settings-confirm {
   position: fixed;
   z-index: 60;
@@ -448,52 +255,6 @@
   outline-offset: 2px;
 }
 
-.agent-directory-card h2 {
-  font-size: 1rem;
-}
-
-.agent-directory-card > span {
-  color: var(--color-text-muted);
-  font-size: 0.8125rem;
-  font-weight: 600;
-  line-height: 1.4;
-}
-
-.agents-directory-empty,
-.agents-directory-state {
-  display: grid;
-  min-height: 18rem;
-  place-content: center;
-  justify-items: start;
-  padding: 2rem;
-  border: 1px dashed var(--color-border-strong);
-  border-radius: 2px;
-  color: var(--color-text-muted);
-}
-
-.agents-directory-state-error {
-  border-style: solid;
-}
-
-@media (max-width: 760px) {
-  .agents-directory-header {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .agents-directory-header .agents-add-button {
-    align-self: flex-start;
-  }
-
-  .agent-add-form {
-    grid-template-columns: 1fr;
-  }
-
-  .agent-directory-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
 .agent-navigation {
   display: grid;
   gap: 0.25rem;
@@ -528,4 +289,14 @@
 .workspace-shell-navigation-collapsed .agent-navigation-list,
 .workspace-shell-navigation-collapsed .agent-navigation-state {
   display: none;
+}
+
+@media (max-width: 760px) {
+  .agent-add-form {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-directory-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

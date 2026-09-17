@@ -7,6 +7,9 @@ import {
   WorkspaceUpdateInputSchema,
   WorkspaceLocationSetInputSchema,
   WorkspaceLocationValidateInputSchema,
+  OperatorCapabilitiesSchema,
+  InteractionListInputSchema,
+  InteractionRespondInputSchema,
 } from "../src/management/index.js";
 
 describe("management contracts", () => {
@@ -62,8 +65,8 @@ describe("management contracts", () => {
     })).toThrow();
   });
 
-  it("does not advertise unsupported OpenCode automatic approval", () => {
-    expect(() => GraphDraftApplyInputSchema.parse({
+  it("accepts supported OpenCode native automatic approval", () => {
+    const parsed = GraphDraftApplyInputSchema.parse({
       workspaceId: "workspace-1", workflowId: "workflow-1", draftId: "draft-1",
       commandId: "command-123", expectedRevision: 0,
       operations: [{
@@ -73,6 +76,18 @@ describe("management contracts", () => {
           nativeAgent: "build", thinking: false, autoApprove: true,
         },
       }],
-    })).toThrow();
+    });
+    expect(parsed.operations).toContainEqual(expect.objectContaining({
+      type: "agent.configure", configuration: expect.objectContaining({ autoApprove: true }),
+    }));
+  });
+
+  it("supports truthful App MCP capability and scoped interaction tools", () => {
+    expect(OperatorCapabilitiesSchema.parse({
+      endpoint: "/mcp/operator", audience: "operator", protocol: "2026-07-28", tools: [],
+      workerToolsMcp: { implemented: true, endpoint: "/mcp/tools" },
+    }).workerToolsMcp.implemented).toBe(true);
+    expect(InteractionListInputSchema.parse({ workspaceId: "workspace-1", workflowId: "workflow-1", status: "pending" })).toMatchObject({ limit: 50 });
+    expect(InteractionRespondInputSchema.parse({ interactionId: "interaction-1", optionId: "option-1", expectedRevision: 0, commandId: "command-123" })).toMatchObject({ expectedRevision: 0 });
   });
 });

@@ -1,16 +1,17 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 
 import {
   AgentSchema,
   AgentConfigurationVersionSchema,
   WorkflowDefinitionSchema,
-  WorkflowVersionSchema,
+  projectHarnessEffort,
   type Agent,
   type WorkflowDefinition,
   type WorkflowVersion,
 } from '@graphql/contracts'
 import {
   GraphDraftSchema,
+  ManagementHarnessConfigurationSchema,
   GraphValidationResultSchema,
   type GraphDraft,
   type GraphDraftOperation,
@@ -22,17 +23,16 @@ import type pg from 'pg'
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
-import { validateExecutableTopology } from '../runs/topology.js'
-import { lockAgentConfigurations, saveAgentConfiguration } from '../workspaces/agentConfiguration.js'
+import { buildExecutableWorkflowVersion } from '../workflows/executableVersion.js'
+import { configurationInput, lockAgentConfigurations, saveAgentConfiguration } from '../workspaces/agentConfiguration.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
+import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { normalizeHarnessDefaults } from '../settings/postgres.js'
+import { readAgentForReuse } from '../workspaces/operatorAgents.js'
+import { assertSourceAgentPins, restoreWorkflowDraft } from './operatorOperations.js'
 
 interface DraftRow { id: string; record: unknown; discarded_at: Date | null }
 interface AgentRow { record: unknown; metadata_revision: string; current_configuration_version_id: string | null }
-
-function contentHash(value: unknown): string {
-  return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`
-}
 
 function replaceAgent(draft: GraphDraft, agent: Agent, baseRevision: number | null): GraphDraft {
   const stagedAgents = draft.stagedAgents.filter((item) => item.agent.id !== agent.id)
@@ -63,7 +63,7 @@ export class GraphDraftService {
 
   private referencedDraft(draft: GraphDraft): GraphDraft {
     const ids = new Set(draft.graph.nodes.map((node) => node.agentId))
-    return GraphDraftSchema.parse({ ...draft, stagedAgents: draft.stagedAgents.filter((item) => ids.has(item.agent.id)) })
+    return GraphDraftSchema.parse({ ...draft, stagedAgents: draft.stagedAgents.filter((item) => ids.has(item.agent.id)), sourceAgentPins: draft.sourceAgentPins?.filter((item) => ids.has(item.agentId)) })
   }
 
   private readableDraft(principal: ManagementPrincipal, draft: GraphDraft): GraphDraft {
@@ -81,6 +81,7 @@ export class GraphDraftService {
   }
 
   private requireConfigurationAuthorization(principal: ManagementPrincipal, draft: GraphDraft, agent: Agent): void {
+    if (agent.assignedSkills?.length) requireAuthorization(principal, 'skills:read', {workspaceId: draft.workspaceId})
     if (agent.harnessConfiguration?.harness === 'codex' && agent.harnessConfiguration.sandbox === 'danger-full-access') {
       requireAuthorization(principal, 'harnesses:update', { workspaceId: draft.workspaceId, workflowId: draft.workflowId })
     }
@@ -158,7 +159,7 @@ export class GraphDraftService {
   private async loadAgent(client: pg.PoolClient, workspaceId: string, agentId: string): Promise<{ agent: Agent; revision: number }> {
     const result = await client.query<AgentRow>(
       `select record, metadata_revision, current_configuration_version_id from agents
-       where workspace_id = $1 and id = $2 for share`, [workspaceId, agentId],
+       where workspace_id = $1 and id = $2 and archived_at is null for share`, [workspaceId, agentId],
     )
     const row = result.rows[0]
     if (!row) throw new DomainError('AGENT_NOT_FOUND', `Agent '${agentId}' was not found.`, 404)
@@ -172,9 +173,9 @@ export class GraphDraftService {
       const configuration = AgentConfigurationVersionSchema.parse(saved.rows[0].record)
       const harness = configuration.harness
       agent = AgentSchema.parse({
-        ...agent, configurationVersionId: configuration.id, harness: harness.harness,
+        ...agent, productRole: configuration.productRole, configurationVersionId: configuration.id, harness: harness.harness,
         harnessConfiguration: harness, model: harness.model,
-        effort: harness.harness === 'codex' ? harness.reasoningEffort : harness.variant,
+        effort: projectHarnessEffort(harness),
         fastMode: harness.harness === 'codex' ? harness.serviceTier === 'priority' : undefined,
         prompt: configuration.prompt, assignedSkills: configuration.assignedSkills,
       })
@@ -194,21 +195,53 @@ export class GraphDraftService {
   private async applyOperation(client: pg.PoolClient, draft: GraphDraft, operation: GraphDraftOperation, principal: ManagementPrincipal): Promise<GraphDraft> {
     const graph = structuredClone(draft.graph)
     switch (operation.type) {
-      case 'agent.add': {
+      case 'workflow.set_execution_condition':
+        graph.executionCondition = operation.executionCondition
+        return GraphDraftSchema.parse({ ...draft, graph })
+      case 'workflow.restore_version':
+        return restoreWorkflowDraft(client, principal, draft, operation.versionId)
+      case 'agent.attach': {
+        if (graph.nodes.some((node) => node.id === operation.nodeId)) throw new DomainError('NODE_ID_CONFLICT', 'The node ID already exists.', 409)
+        const source = await readAgentForReuse(client, principal, draft.workspaceId, operation.agentId)
+        if (source.baseRevision !== operation.expectedAgentRevision || source.agent.configurationVersionId !== operation.expectedConfigurationVersionId) {
+          throw new DomainError('AGENT_SOURCE_CONFLICT', 'The source Agent changed since it was selected.', 409)
+        }
+        this.requireConfigurationAuthorization(principal, draft, source.agent)
+        graph.nodes.push({id: operation.nodeId,agentId: operation.agentId,name: operation.name ?? source.agent.name,
+          ...(operation.position ? {position: operation.position} : {})})
+        const sourceAgentPins = [...(draft.sourceAgentPins ?? []).filter((pin) => pin.agentId !== operation.agentId),
+          {agentId: operation.agentId,metadataRevision: source.baseRevision,configurationVersionId: source.agent.configurationVersionId!}]
+        return GraphDraftSchema.parse({ ...draft, graph, sourceAgentPins })
+      }
+      case 'agent.add':
+      case 'agent.add_from_template': {
         if (graph.nodes.some((node) => node.id === operation.nodeId)) throw new DomainError('NODE_ID_CONFLICT', 'The node ID already exists.', 409)
         const existing = await client.query('select id from agents where id = $1', [operation.agentId])
         if (existing.rows[0] || draft.stagedAgents.some((item) => item.agent.id === operation.agentId)) {
           throw new DomainError('AGENT_ID_CONFLICT', 'The agent ID already exists.', 409)
         }
-        const settings = await client.query<{ record: unknown }>('select record from application_settings where key = $1', ['harness-defaults'])
-        const defaults = normalizeHarnessDefaults(settings.rows[0]?.record)
-        const configuration = defaults[operation.harness]
+        const defaults = await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults(client)
+        const role = operation.type === 'agent.add_from_template' ? operation.template : operation.productRole ?? 'coder'
+        const template = defaults.value[role]
+        let selected = operation.configuration ?? template.harness
+        if (operation.type === 'agent.add' && !operation.configuration && operation.harness
+          && defaults.versionId === null && operation.harness !== selected.harness) {
+          // Legacy clients explicitly choose a provider. Preserve that choice and their
+          // old defaults until a matching role template is persisted. Do not mix providers.
+          const legacy = await client.query<{ record: unknown }>('select record from application_settings where key = $1', ['harness-defaults'])
+          selected = normalizeHarnessDefaults(legacy.rows[0]?.record)[operation.harness]
+        }
+        if (operation.type === 'agent.add' && operation.harness && operation.harness !== selected.harness) {
+          throw new DomainError('AGENT_TEMPLATE_HARNESS_MISMATCH', 'The requested harness differs from the role template. Supply an explicit matching configuration.', 409)
+        }
+        const configuration = ManagementHarnessConfigurationSchema.parse(selected)
         const agent = AgentSchema.parse({
-          id: operation.agentId, name: operation.name, harness: operation.harness,
+          id: operation.agentId, name: operation.name, productRole: role, harness: configuration.harness,
           model: configuration.model,
-          effort: configuration.harness === 'codex' ? configuration.reasoningEffort : configuration.variant,
+          effort: projectHarnessEffort(configuration),
           fastMode: configuration.harness === 'codex' ? configuration.serviceTier === 'priority' : undefined,
-          harnessConfiguration: configuration, prompt: {}, assignedSkills: [],
+          harnessConfiguration: configuration, prompt: operation.prompt ?? {}, assignedSkills: operation.assignedSkills ?? [],
+          description: operation.description, role: operation.role,
         })
         this.requireConfigurationAuthorization(principal, draft, agent)
         graph.nodes.push({ id: operation.nodeId, agentId: agent.id, name: operation.nodeName ?? operation.name, ...(operation.position ? { position: operation.position } : {}) })
@@ -229,7 +262,7 @@ export class GraphDraftService {
         const configuration = operation.configuration
         const agent = AgentSchema.parse({
           ...staged.agent, harness: configuration.harness, model: configuration.model,
-          effort: configuration.harness === 'codex' ? configuration.reasoningEffort : configuration.variant,
+          effort: projectHarnessEffort(configuration),
           fastMode: configuration.harness === 'codex' ? configuration.serviceTier === 'priority' : undefined,
           harnessConfiguration: configuration,
           ...(operation.prompt !== undefined ? { prompt: operation.prompt } : {}),
@@ -245,7 +278,9 @@ export class GraphDraftService {
         if (existing.rows[0] || draft.stagedAgents.some((item) => item.agent.id === operation.agentId)) {
           throw new DomainError('AGENT_ID_CONFLICT', 'The clone agent ID already exists.', 409)
         }
-        const source = await this.stageAgent(client, draft, operation.sourceAgentId, principal)
+        const source = draft.graph.nodes.some((node) => node.agentId === operation.sourceAgentId)
+          ? await this.stageAgent(client, draft, operation.sourceAgentId, principal)
+          : await readAgentForReuse(client, principal, draft.workspaceId, operation.sourceAgentId)
         if (operation.expectedSourceConfigurationVersionId !== undefined
           && operation.expectedSourceConfigurationVersionId !== (source.agent.configurationVersionId ?? null)) {
           throw new DomainError('AGENT_CONFIGURATION_CONFLICT', 'The copied source configuration changed. Copy it again before saving.', 409)
@@ -300,6 +335,9 @@ export class GraphDraftService {
         else graph.edges[index] = edge
         return GraphDraftSchema.parse({ ...draft, graph })
       }
+      case 'workflow.set_approval':
+        graph.approval = operation.approval
+        return GraphDraftSchema.parse({ ...draft, graph })
       case 'workflow.reset_execution_limits':
         delete graph.executionPolicy
         return GraphDraftSchema.parse({ ...draft, graph })
@@ -391,8 +429,15 @@ export class GraphDraftService {
           }
           const previousEntry = draft.graph.nodes[0]?.id
           draft = await this.applyOperation(client, draft, operation, principal)
+          if (operation.type === 'workflow.restore_version') {
+            for (const staged of draft.stagedAgents) {
+              const workflowIds = await this.authorizeAgentWrite(client, principal, draft, staged.agent.id)
+              if (workflowIds.length > 1) effects.push({code: 'SHARED_AGENT_CHANGED', agentId: staged.agent.id, workflowIds})
+              this.requireConfigurationAuthorization(principal, draft, staged.agent)
+            }
+          }
           const nextEntry = draft.graph.nodes[0]?.id
-          if (previousEntry && previousEntry !== nextEntry && (operation.type === 'node.remove' || operation.type === 'nodes.reorder')) {
+          if (previousEntry && previousEntry !== nextEntry && (operation.type === 'node.remove' || operation.type === 'nodes.reorder' || operation.type === 'workflow.restore_version')) {
             effects.push({ code: 'ENTRY_NODE_CHANGED', previousEntryNodeId: previousEntry, nextEntryNodeId: nextEntry ?? null })
           }
         }
@@ -409,42 +454,39 @@ export class GraphDraftService {
     })
   }
 
-  private async validateWithClient(client: pg.PoolClient, draft: GraphDraft): Promise<{ result: ReturnType<typeof GraphValidationResultSchema.parse>; version?: WorkflowVersion }> {
-    const issues: Array<{ code: string; message: string }> = []
-    if (draft.graph.nodes.length === 0) issues.push({ code: 'WORKFLOW_HAS_NO_ENTRY_POINT', message: 'Add at least one Agent before saving.' })
-    const agentIds = [...new Set(draft.graph.nodes.map((node) => node.agentId))]
-    const stagedIds = new Set(draft.stagedAgents.map((item) => item.agent.id))
-    const existingIds = agentIds.filter((id) => !stagedIds.has(id))
-    const rows = existingIds.length > 0
-      ? await client.query<{ id: string; current_configuration_version_id: string | null }>(
-          'select id, current_configuration_version_id from agents where workspace_id = $1 and id = any($2::text[])',
-          [draft.workspaceId, existingIds],
-        )
-      : { rows: [] as Array<{ id: string; current_configuration_version_id: string | null }> }
-    const configurations = Object.fromEntries([
-      ...rows.rows.filter((row) => row.current_configuration_version_id).map((row) => [row.id, row.current_configuration_version_id!]),
-      ...draft.stagedAgents.map((item) => [item.agent.id, item.agent.configurationVersionId ?? `pending:${item.agent.id}`]),
-    ])
-    for (const id of agentIds) if (!configurations[id]) issues.push({ code: 'AGENT_CONFIGURATION_UNAVAILABLE', message: `Agent '${id}' has no configuration.` })
-    if (issues.length > 0) return { result: GraphValidationResultSchema.parse({ valid: false, issues }) }
+  private async validateWithClient(client: pg.PoolClient, draft: GraphDraft, previousDefinition?: WorkflowDefinition): Promise<{ result: ReturnType<typeof GraphValidationResultSchema.parse>; version?: WorkflowVersion }> {
     try {
-      const definition = WorkflowDefinitionSchema.parse({
-        ...draft.graph, version: 1,
-        nodes: draft.graph.nodes.map((node) => ({
-          ...node,
-          ...(draft.graph.edges.filter((edge) => edge.target === node.id).length > 1 && !node.join ? { join: { mode: 'all' as const } } : {}),
-        })),
-        edges: draft.graph.edges.map((edge) => ({ ...edge, route: edge.route ?? { outcomes: ['succeeded' as const] } })),
-        executionPolicy: draft.graph.executionPolicy ?? {
-          maxParallelism: Math.max(1, draft.graph.nodes.length), maxNodeExecutions: draft.graph.nodes.length,
-        },
+      const now = new Date().toISOString()
+      const configurations = []
+      for (const agentId of new Set(draft.graph.nodes.map((node) => node.agentId))) {
+        const staged = draft.stagedAgents.find((item) => item.agent.id === agentId)
+        const agent = staged?.agent ?? (await this.loadAgent(client, draft.workspaceId, agentId)).agent
+        const saved = agent.configurationVersionId ? await client.query<{ record: unknown }>(
+          'select record from agent_configuration_versions where id=$1 and workspace_id=$2 and agent_id=$3',
+          [agent.configurationVersionId, draft.workspaceId, agentId],
+        ) : undefined
+        const current = saved?.rows[0] ? AgentConfigurationVersionSchema.parse(saved.rows[0].record) : undefined
+        if (!current && staged?.baseRevision !== null) {
+          throw new DomainError('AGENT_CONFIGURATION_UNAVAILABLE', `Agent '${agentId}' has no persisted configuration.`, 409)
+        }
+        // Use the same merge rules as the eventual write, including legacy projections.
+        configurations.push(AgentConfigurationVersionSchema.parse({
+          ...configurationInput(draft.workspaceId, agent, current),
+          id: staged ? `pending:${agentId}` : current!.id,
+          version: current?.version ?? 1, contentHash: 'validation', createdAt: now,
+        }))
+      }
+      if (!previousDefinition) {
+        const previous = await client.query<{ record: unknown }>(
+          'select record from workflows where workspace_id=$1 and id=$2', [draft.workspaceId, draft.workflowId],
+        )
+        if (!previous.rows[0]) throw new DomainError('WORKFLOW_NOT_FOUND', 'The workflow was not found in this workspace.', 404)
+        previousDefinition = WorkflowDefinitionSchema.parse(previous.rows[0].record)
+      }
+      const version = buildExecutableWorkflowVersion({
+        id: 'validation-version', definition: draft.graph, previousDefinition,
+        version: 1, configurations, createdAt: now,
       })
-      const version = WorkflowVersionSchema.parse({
-        id: 'validation-version', workspaceId: draft.workspaceId, workflowId: draft.workflowId,
-        version: 1, entryNodeId: definition.nodes[0]!.id, definition,
-        agentConfigurationVersionIds: configurations, contentHash: 'validation', createdAt: new Date().toISOString(),
-      })
-      validateExecutableTopology(version)
       return { result: GraphValidationResultSchema.parse({ valid: true, issues: [] }), version }
     } catch (error) {
       return { result: GraphValidationResultSchema.parse({
@@ -481,7 +523,8 @@ export class GraphDraftService {
         if (workflowRow.current_version_id !== draft.baseWorkflowVersionId) throw new DomainError('WORKFLOW_BASE_CONFLICT', 'The saved workflow changed since this draft was opened.', 409)
         const agentIdsToLock = [...new Set(draft.graph.nodes.map((node) => node.agentId))].sort()
         await lockAgentConfigurations(client, agentIdsToLock)
-        const validation = await this.validateWithClient(client, draft)
+        await assertSourceAgentPins(client, draft, principal)
+        const validation = await this.validateWithClient(client, draft, WorkflowDefinitionSchema.parse(workflowRow.record))
         if (!validation.result.valid) throw new DomainError('GRAPH_INVALID', 'The graph is not executable.', 409, { issues: validation.result.issues })
 
         for (const staged of [...draft.stagedAgents].sort((left, right) => left.agent.id < right.agent.id ? -1 : left.agent.id > right.agent.id ? 1 : 0)) {
@@ -505,27 +548,24 @@ export class GraphDraftService {
           }
         }
         const agentIds = [...new Set(draft.graph.nodes.map((node) => node.agentId))]
-        const configRows = await client.query<{ id: string; current_configuration_version_id: string | null }>(
-          'select id, current_configuration_version_id from agents where workspace_id = $1 and id = any($2::text[]) order by id for share',
+        const configRows = await client.query<{ record: unknown }>(
+          `select versions.record from agents
+           join agent_configuration_versions versions on versions.id = agents.current_configuration_version_id
+           where agents.workspace_id = $1 and agents.id = any($2::text[]) order by agents.id for share of agents`,
           [input.workspaceId, agentIds],
         )
-        const configurations = Object.fromEntries(configRows.rows.map((row) => [row.id, row.current_configuration_version_id]))
+        const configurations = configRows.rows.map((row) => AgentConfigurationVersionSchema.parse(row.record))
         const versionNumber = Number((await client.query<{ next: string }>(
           'select coalesce(max(version), 0) + 1 as next from workflow_versions where workflow_id = $1', [input.workflowId],
         )).rows[0]?.next ?? 1)
         const now = new Date().toISOString()
         const metadata = WorkflowDefinitionSchema.parse(workflowRow.record)
-        const definition = WorkflowDefinitionSchema.parse({
-          ...validation.version!.definition, name: metadata.name, description: metadata.description,
-          version: versionNumber, updatedAt: now,
+        const version = buildExecutableWorkflowVersion({
+          id: `${input.workflowId}-v${versionNumber}-${randomUUID()}`,
+          definition: { ...draft.graph, name: metadata.name, description: metadata.description },
+          previousDefinition: metadata, version: versionNumber, configurations, createdAt: now,
         })
-        const version = WorkflowVersionSchema.parse({
-          id: `${input.workflowId}-v${versionNumber}-${randomUUID()}`, workspaceId: input.workspaceId,
-          workflowId: input.workflowId, version: versionNumber, entryNodeId: definition.nodes[0]!.id,
-          definition, agentConfigurationVersionIds: configurations,
-          contentHash: contentHash({ definition, configurations, entryNodeId: definition.nodes[0]!.id }), createdAt: now,
-        })
-        validateExecutableTopology(version)
+        const definition = version.definition
         await client.query(
           `insert into workflow_versions (id, workspace_id, workflow_id, version, entry_node_id, record)
            values ($1, $2, $3, $4, $5, $6::jsonb)`,
@@ -538,7 +578,7 @@ export class GraphDraftService {
         draft = GraphDraftSchema.parse({
           ...draft, revision: draft.revision + 1, baseWorkflowVersionId: version.id,
           publishedRevision: draft.revision + 1,
-          graph: definition, stagedAgents: [], updatedByPrincipalId: principal.id, updatedAt: now,
+          graph: definition, stagedAgents: [], sourceAgentPins: [], updatedByPrincipalId: principal.id, updatedAt: now,
         })
         await client.query(
           `update graph_drafts set revision = $2, base_workflow_version_id = $3, record = $4::jsonb, updated_at = now()

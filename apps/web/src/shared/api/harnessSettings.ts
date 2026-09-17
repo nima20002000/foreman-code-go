@@ -1,0 +1,122 @@
+import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  HarnessOptionsResultSchema, HarnessConfigurationCheckResultSchema,
+  HarnessMcpListResultSchema, HarnessMcpPlansResultSchema, HarnessMcpPlanResultSchema,
+  HarnessMcpPlanInputSchema, HarnessMcpPlanSchema, HarnessDirectoryBrowseResultSchema,
+  type HarnessMcpPlanInput,
+} from '@graphql/contracts/management'
+import type { HarnessConfiguration } from '@graphql/contracts'
+import { apiClient } from './client'
+import { sessionGeneration, sessionSignal, sessionIsSwitching } from './sessionBoundary'
+
+// Each abort rotates the existing session controller synchronously. Re-arm after rotation.
+function subscribeSession(changed: () => void) {
+  let active = true
+  let signal = sessionSignal()
+  const abort = () => queueMicrotask(() => {
+    if (!active) return
+    signal.removeEventListener('abort', abort)
+    signal = sessionSignal()
+    signal.addEventListener('abort', abort, { once: true })
+    changed()
+  })
+  signal.addEventListener('abort', abort, { once: true })
+  return () => { active = false; signal.removeEventListener('abort', abort) }
+}
+export function useHarnessSessionEpoch() { return useSyncExternalStore(subscribeSession, sessionGeneration, sessionGeneration) }
+
+type Harness = HarnessConfiguration['harness']
+export const harnessSettingsKeys = {
+  root: ['workbench', 'management', 'harness-settings'] as const,
+  options: (harness: Harness) => [...harnessSettingsKeys.root, sessionGeneration(), harness, 'options'] as const,
+  check: (snapshot: string) => [...harnessSettingsKeys.root, 'check', sessionGeneration(), snapshot] as const,
+  mcp: (harness: Harness) => [...harnessSettingsKeys.root, sessionGeneration(), harness, 'mcp'] as const,
+  plans: (harness: Harness) => [...harnessSettingsKeys.root, sessionGeneration(), harness, 'plans'] as const,
+}
+
+export function useNativeHarnessOptions(harness: Harness) {
+  useHarnessSessionEpoch()
+  return useQuery({ queryKey: harnessSettingsKeys.options(harness), enabled: !sessionIsSwitching(), staleTime: 300_000, retry: false,
+    refetchOnWindowFocus: false,
+    queryFn: ({ signal }) => apiClient.request(`/api/management/harnesses/${harness}/options`, HarnessOptionsResultSchema, { signal }),
+  })
+}
+
+/** Exact drafts have distinct cache keys. A late result can never qualify a newer selection. */
+export function useAutomaticHarnessCheck(configuration: HarnessConfiguration | undefined) {
+  useHarnessSessionEpoch()
+  const snapshot = configuration ? JSON.stringify(configuration) : ''
+  const [settled, setSettled] = useState(snapshot)
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(snapshot), 400)
+    return () => clearTimeout(timer)
+  }, [snapshot])
+  const result = useQuery({ queryKey: harnessSettingsKeys.check(settled),
+    enabled: !sessionIsSwitching() && Boolean(settled) && snapshot === settled, staleTime: 300_000, retry: false,
+    refetchOnWindowFocus: false,
+    queryFn: ({ signal }) => apiClient.request('/api/management/harnesses/validate', HarnessConfigurationCheckResultSchema,
+      { method: 'POST', body: { configuration: JSON.parse(settled) as HarnessConfiguration }, signal }),
+  })
+  return { result, current: Boolean(snapshot) && snapshot === settled }
+}
+
+export function useRefreshNativeHarness(harness: Harness) {
+  const client = useQueryClient()
+  return useMutation({ retry: false,
+    mutationFn: () => apiClient.request(`/api/management/harnesses/${harness}/refresh`, HarnessOptionsResultSchema, { method: 'POST', body: {} }),
+    onSuccess: async (data) => {
+      client.setQueryData(harnessSettingsKeys.options(harness), data)
+      await Promise.all([
+        client.invalidateQueries({ queryKey: [...harnessSettingsKeys.root, 'check'] }),
+        client.invalidateQueries({ queryKey: ['workbench', 'management', 'harnesses'] }),
+      ])
+    },
+  })
+}
+
+export function useNativeMcpServers(harness: Harness, enabled = true) {
+  useHarnessSessionEpoch()
+  return useQuery({ queryKey: harnessSettingsKeys.mcp(harness), enabled: enabled && !sessionIsSwitching(), staleTime: 30_000, retry: false,
+    refetchOnWindowFocus: false,
+    queryFn: ({ signal }) => apiClient.request(`/api/management/harnesses/${harness}/mcp`, HarnessMcpListResultSchema, { signal }),
+  })
+}
+export function useNativeMcpPlans(harness: Harness, enabled = true) {
+  useHarnessSessionEpoch()
+  return useQuery({ queryKey: harnessSettingsKeys.plans(harness), enabled: enabled && !sessionIsSwitching(), retry: false,
+    refetchInterval: enabled ? 10_000 : false,
+    queryFn: ({ signal }) => apiClient.request(`/api/management/harnesses/${harness}/mcp/plans`, HarnessMcpPlansResultSchema, { signal }),
+  })
+}
+export function useRequestNativeMcpChange() {
+  const client = useQueryClient()
+  return useMutation({ retry: false,
+    mutationFn: (input: HarnessMcpPlanInput) => apiClient.request('/api/management/harnesses/mcp/plans', HarnessMcpPlanResultSchema,
+      { method: 'POST', body: HarnessMcpPlanInputSchema.parse(input) }),
+    onSuccess: async (data) => { await client.invalidateQueries({ queryKey: harnessSettingsKeys.plans(data.value.harness) }) },
+  })
+}
+export function useDecideNativeMcpChange() {
+  const client = useQueryClient()
+  return useMutation({ retry: false,
+    mutationFn: (input: { planId: string; approve: boolean }) => apiClient.request('/api/management/harnesses/mcp/decision', HarnessMcpPlanSchema,
+      { method: 'POST', body: input }),
+    onSettled: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: harnessSettingsKeys.root }),
+        client.invalidateQueries({ queryKey: ['workbench', 'management', 'harnesses'] }),
+      ])
+    },
+  })
+}
+export function useHarnessDirectories(input: { rootId?: string; path?: string; cursor?: string }, enabled: boolean) {
+  useHarnessSessionEpoch()
+  return useQuery({ queryKey: [...harnessSettingsKeys.root, sessionGeneration(), 'directories', input], enabled: enabled && !sessionIsSwitching(), retry: false,
+    queryFn: ({ signal }) => {
+      const query = new URLSearchParams()
+      for (const [key, value] of Object.entries(input)) if (value !== undefined) query.set(key, value)
+      return apiClient.request(`/api/management/harnesses/directories?${query}`, HarnessDirectoryBrowseResultSchema, { signal })
+    },
+  })
+}

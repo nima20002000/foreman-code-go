@@ -117,10 +117,42 @@ describe('workspace section routes', () => {
   it('deep-links the Files placeholder under the workspaces menu', async () => {
     renderRoute('/workspaces/workspace-1/files')
 
-    expect(await screen.findByRole('heading', { name: 'Files', level: 1 })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Files' })).toBeVisible()
     expect(screen.getByTestId('coming-soon')).toHaveTextContent('Coming soon')
     expect(screen.getByRole('link', { name: 'Files' })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
+  })
+
+  it('opens each settings card on its own page instead of below the hub', async () => {
+    const user = userEvent.setup()
+    const { router } = renderRoute('/settings')
+
+    expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
+    expect(screen.getByRole('link', { name: /Provider presets/ })).toHaveAttribute('href', '/settings/harnesses')
+    expect(screen.getByRole('link', { name: /Orchestrator, Coder and Operator templates/ })).toHaveAttribute('href', '/settings/agents')
+    expect(screen.getByRole('link', { name: /Defaults for new workflows/ })).toHaveAttribute('href', '/settings/workflows')
+    expect(screen.getByRole('link', { name: /Global review queue and delivery history/ })).toHaveAttribute('href', '/approvals')
+
+    await user.click(screen.getByRole('link', { name: /Orchestrator, Coder and Operator templates/ }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/settings/agents'))
+    expect(await screen.findByRole('heading', { name: 'Agents', level: 1 })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Settings', level: 1 })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('link', { name: 'Back to settings' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
+    expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
+  })
+
+  it('renders the global Approval Inbox as a Settings detail page', async () => {
+    const { router } = renderRoute('/approvals')
+
+    expect(await screen.findByRole('heading', { name: 'Approval Inbox', level: 1 })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Back to settings' })).toHaveAttribute('href', '/settings')
+    expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('region', { name: 'Approval Inbox' })).toHaveClass('approval-inbox--embedded')
+
+    await userEvent.setup().click(screen.getByRole('link', { name: 'Back to settings' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
   })
 
   it('places Browsers under Settings and preserves its deep link', async () => {

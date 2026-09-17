@@ -3,34 +3,116 @@ import type {
   ExecutionResult,
   HarnessExecutionRequest,
   HarnessQualification,
+  HarnessConfiguration,
+  ApprovalResponseOption,
+  McpDetection,
+  NativeHarnessCapabilities,
+  NativeHarnessEvent,
+  NativeSessionReference,
+  PendingNativeInteraction,
+  OperatorConfigurationVersion,
 } from '@graphql/contracts'
+
+import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
 
 export interface NativeEventInput {
   type: string
   payload: Record<string, unknown>
 }
 
-export interface HarnessExecutionCallbacks {
-  signal: AbortSignal
-  /** Runner consistency check after qualification, immediately before agent spawn. */
-  beforeSpawn?(): Promise<void>
-  onSession(nativeSessionId: string): Promise<void>
-  onEvent(event: NativeEventInput): Promise<void>
+/** Read-only settings discovery; this cannot launch, resume, or cancel workflow work. */
+export interface HarnessConfigurationQualifier {
+  qualify(configuration: HarnessConfiguration, workingDirectory: string, signal?: AbortSignal): Promise<HarnessQualification>
 }
 
-/** Product Agent execution boundary; native Agent/session concepts stay inside adapters. */
-export interface HarnessAdapter {
+/** Values are supplied only to one child process and must never enter logs or persisted graph state. */
+export interface ChildProcessEnvironment {
+  readonly agentId: string
+  readonly variables: Readonly<Record<string, string>>
+}
+
+export interface WorkflowNativeSessionStart {
+  kind?: 'workflow'
+  correlationId?: string
+  nativeTurnId?: string
+  request: HarnessExecutionRequest
+  environment?: ChildProcessEnvironment
+}
+
+export interface OperatorNativeSessionStart {
+  kind: 'operator'
+  correlationId: string
+  configuration: OperatorConfigurationVersion
+  /** Durable identity of the addressed turn, not the latest turn in the session. */
+  nativeTurnId?: string
+  /** Dedicated validated application-global runtime directory; never inferred from process.cwd(). */
+  workingDirectory: string
+  environment?: ChildProcessEnvironment
+}
+
+export type NativeSessionStart = WorkflowNativeSessionStart | OperatorNativeSessionStart
+
+export interface NativeTurnInput {
+  prompt: string
+  clientCorrelationId: string
+  /** Await persistence of the provider identity immediately after submission acknowledgement. */
+  onSubmitted?(nativeTurnId: string): Promise<void>
+}
+
+/** Response identity is not a model-turn correlation and must never be used to replay a prompt. */
+export interface NativeResponseIdentity {
+  nativeRequestId: string
+  nativeRequestType: string
+  option: ApprovalResponseOption
+}
+
+export interface NativeHistory {
+  /** Set only when the provider result was matched to this exact request. */
+  correlationId?: string
+  nativeTurnId?: string
+  nativeMessageId?: string
+  /** Opaque native cursor for older authoritative history; never interpreted as a message ID. */
+  nextCursor?: string
+  /** This is a bounded live window; callers persist streamed events at the durable boundary. */
+  firstRetainedSequence?: number
+  nextSequence?: number
+  interactionDeliveries?: readonly {
+    nativeRequestId: string
+    state: 'pending' | 'submitting' | 'submitted' | 'uncertain'
+    selectedOptionId?: string
+  }[]
+  /** Explicit provider cancellation evidence, scoped to this exact session. */
+  canceledRequestIds?: readonly string[]
+  /** Result of the exact requested correlation, never the session's latest turn. */
+  terminalTurn?: { correlationId: string; providerId: string; result: ExecutionResult }
+  /** Optional positive evidence; an empty pending list is never a delivery receipt. */
+  responseDeliveries?: readonly NativeResponseDeliveryEvidence[]
+  events: readonly NativeHarnessEvent[]
+  pendingInteractions: readonly PendingNativeInteraction[]
+  pendingInteraction?: PendingNativeInteraction
+  terminalResult?: ExecutionResult
+}
+
+/** Rich provider-neutral lifecycle. Concrete Codex/OpenCode transports are HAP-02/03. */
+export interface NativeHarnessSessionManager {
   readonly harness: AgentHarness
-  qualify(request: HarnessExecutionRequest, signal?: AbortSignal): Promise<HarnessQualification>
-  execute(request: HarnessExecutionRequest, callbacks: HarnessExecutionCallbacks): Promise<ExecutionResult>
-  resume(
-    request: HarnessExecutionRequest,
-    nativeSessionId: string,
-    callbacks: HarnessExecutionCallbacks,
-  ): Promise<ExecutionResult>
-  cancel(executionId: string): Promise<boolean>
-}
-
-export interface HarnessResolver {
-  resolve(harness: AgentHarness): HarnessAdapter
+  capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities>
+  inspectMcp(signal?: AbortSignal): Promise<McpDetection>
+  createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>
+  /** Verify and rebind a persisted provider identity; never create a replacement session. */
+  attachSession(session: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>
+  startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent>
+  pending(session: NativeSessionReference, signal?: AbortSignal): Promise<PendingNativeInteraction | undefined>
+  respond(session: NativeSessionReference, nativeRequestId: string, option: ApprovalResponseOption, signal?: AbortSignal): Promise<void>
+  /** Synchronously stop client-side auto replies before cleanup reads; never terminal evidence. */
+  stopAutomaticResponses?(session: NativeSessionReference): void
+  cancel(session: NativeSessionReference, signal?: AbortSignal, nativeTurnId?: string): Promise<boolean>
+  history(session: NativeSessionReference, signal?: AbortSignal): Promise<NativeHistory>
+  historyPage?(session: NativeSessionReference, before?: string, signal?: AbortSignal): Promise<NativeHistory>
+  reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory>
+  /** Read-only recovery of the exact response; missing evidence remains uncertain. */
+  reconcileResponse?(session: NativeSessionReference, response: NativeResponseIdentity, signal?: AbortSignal): Promise<NativeHistory>
+  close(session: NativeSessionReference): Promise<void>
+  /** Stop every owned transport, including creations without a known session identity. */
+  dispose?(): Promise<void>
 }

@@ -1,3 +1,7 @@
+import type { OperatorExtensions } from './extensions.js'
+import type { HarnessMcpSettingsService } from '../../modules/harnesses/mcpSettings.js'
+import type { HarnessDirectoryBrowser } from '../../modules/harnesses/directoryBrowser.js'
+
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
 import type { AgentManagementService } from '../../modules/workspaces/agents.js'
@@ -8,16 +12,23 @@ import type { WorkflowManagementService } from '../../modules/workflows/manageme
 import type { WorkspaceManagementService } from '../../modules/workspaces/management.js'
 import type { PostgresCommandCoordinator } from '../../modules/commands/postgres.js'
 import type { WorkspaceLocationService } from '../../modules/workspaces/location.js'
+import type { FoundationSettingsManagementService } from '../../modules/settings/management.js'
+import type { OperatorInteractionService } from '../../modules/interactions/operator.js'
 
 export interface OperatorServices {
+  harnessSettings?: { mcp: HarnessMcpSettingsService; directories: HarnessDirectoryBrowser }
+  extensions?: OperatorExtensions
+  workerToolsMcpImplemented?: boolean
   workspaces: WorkspaceManagementService
   locations: WorkspaceLocationService
   workflows: WorkflowManagementService
   agents: AgentManagementService
   drafts: GraphDraftService
   harnesses: HarnessCatalogService
+  settings?: FoundationSettingsManagementService
   runs: RunManagementService
   commands: PostgresCommandCoordinator
+  interactions?: OperatorInteractionService
 }
 
 export interface OperatorRequestContext {

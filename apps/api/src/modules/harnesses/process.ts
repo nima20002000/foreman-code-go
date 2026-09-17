@@ -1,10 +1,13 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import type { Readable } from 'node:stream'
+import { spawnNativeProcess, stopRecoveredChild, type NativeProcessRecovery } from './recovery/processRegistry.js'
 
-import type { NativeEventInput } from './port.js'
+import type { ChildProcessEnvironment, NativeEventInput } from './port.js'
+import { inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
 
 const MAX_STDERR_LENGTH = 1_000_000
 export const PROCESS_SHUTDOWN_GRACE_MS = 1_000
+export const NATIVE_COMMAND_TIMEOUT_MS = 30_000
 const ownedProcesses = new WeakMap<ChildProcess, () => Promise<void>>()
 
 export interface JsonlProcessOptions {
@@ -14,7 +17,8 @@ export interface JsonlProcessOptions {
   signal: AbortSignal
   stdin?: string
   onSpawn(process: ChildProcess): void
-  beforeSpawn?(): Promise<void>
+  expectedAgentId?: string
+  beforeSpawn?(): Promise<ChildProcessEnvironment | void>
   onEvent(event: NativeEventInput): Promise<void>
 }
 
@@ -24,13 +28,15 @@ export interface JsonlProcessResult {
   stderr: string
 }
 
-type ProcessOptions = Pick<JsonlProcessOptions, 'binary' | 'args' | 'cwd' | 'stdin' | 'beforeSpawn'> & {
+type ProcessOptions = Pick<JsonlProcessOptions, 'binary' | 'args' | 'cwd' | 'stdin' | 'beforeSpawn' | 'expectedAgentId'> & {
   signal?: AbortSignal
   onSpawn?(process: ChildProcess): void
+  environment?: NodeJS.ProcessEnv
 }
 type ProcessExit = Pick<JsonlProcessResult, 'exitCode' | 'exitSignal'>
 
-async function signalTree(child: ChildProcess, signal: NodeJS.Signals): Promise<void> {
+export async function signalTree(child: ChildProcess, signal: NodeJS.Signals): Promise<void> {
+  if (await stopRecoveredChild(child)) return
   if (!child.pid) return
   if (process.platform === 'win32') {
     // Windows has no POSIX process groups. Kill the tree, not just its root.
@@ -63,19 +69,25 @@ export async function stopProcess(child: ChildProcess): Promise<boolean> {
 
 async function runOwnedProcess<T>(
   options: ProcessOptions,
-  read: (child: ChildProcessWithoutNullStreams) => Promise<T>,
+  read: (child: ChildProcessWithoutNullStreams, secrets: readonly string[]) => Promise<T>,
 ): Promise<T & ProcessExit> {
   options.signal?.throwIfAborted()
-  const childEnvironment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
-  for (const key of Object.keys(childEnvironment)) {
-    if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_')
-      || key === 'DATABASE_URL' || key === 'TEST_DATABASE_URL' || key === 'PGPASSWORD') {
-      delete childEnvironment[key]
-    }
-  }
+  const childEnvironment = inheritedAgentEnvironment(options.environment)
   // No asynchronous work may separate the launch check from process creation.
   // This detects qualification-time replacement; it is not an atomic cwd pin.
-  if (options.beforeSpawn) await options.beforeSpawn()
+  const scopedEnvironment = options.beforeSpawn ? await options.beforeSpawn() : undefined
+  const secrets: string[] = []
+  if (scopedEnvironment) {
+    if (!options.expectedAgentId || scopedEnvironment.agentId !== options.expectedAgentId) {
+      throw new Error('Child process environment belongs to another Agent.')
+    }
+    const entries = Object.entries(scopedEnvironment.variables)
+    if (entries.length !== 1 || entries[0]?.[0] !== 'GRAPHQL_APP_MCP_TOKEN' || !entries[0][1]) {
+      throw new Error('Only the scoped GraphQL App MCP credential may be injected into an Agent process.')
+    }
+    childEnvironment.GRAPHQL_APP_MCP_TOKEN = entries[0][1]
+    secrets.push(entries[0][1])
+  }
   options.signal?.throwIfAborted()
   const child = spawn(options.binary, options.args, {
     cwd: options.cwd,
@@ -112,8 +124,12 @@ async function runOwnedProcess<T>(
           clearTimeout(timer)
         }
         if (killError) throw killError
+        // A later explicit Stop may complete cleanup after the command rejected.
+        ownedProcesses.delete(child)
+        options.signal?.removeEventListener('abort', abort)
       })()
-      void shutdown.catch(() => undefined)
+      const attempt = shutdown
+      void attempt.catch(() => { if (shutdown === attempt) shutdown = undefined })
     }
     return shutdown
   }
@@ -124,7 +140,7 @@ async function runOwnedProcess<T>(
   child.once('exit', abort)
   child.once('error', abort)
 
-  const readers = Promise.resolve().then(() => read(child))
+  const readers = Promise.resolve().then(() => read(child, secrets))
   const input = new Promise<void>((resolve, reject) => {
     child.stdin.on('error', (error: NodeJS.ErrnoException) => {
       // Early CLI exits (including qualification failures) can close stdin.
@@ -195,39 +211,52 @@ function asEvent(line: string): NativeEventInput {
 }
 
 export async function runJsonlProcess(options: JsonlProcessOptions): Promise<JsonlProcessResult> {
-  return runOwnedProcess(options, async (child) => {
+  return runOwnedProcess(options, async (child, secrets) => {
     let eventChain = Promise.resolve()
     const emit = (event: NativeEventInput) => {
-      eventChain = eventChain.then(() => options.onEvent(event))
+      const safe = redactKnownSecrets(event, secrets)
+      eventChain = eventChain.then(() => options.onEvent(safe))
       return eventChain
     }
     let stderr = ''
     await settleReaders(child, [
       readLines(child.stdout, async (line) => { if (line.trim()) await emit(asEvent(line)) }),
       readLines(child.stderr, async (line) => {
-        stderr = (stderr + `${line}\n`).slice(0, MAX_STDERR_LENGTH)
-        await emit({ type: 'stderr', payload: { text: line } })
+        const safe = redactSecretText(line, secrets)
+        stderr = (stderr + `${safe}\n`).slice(0, MAX_STDERR_LENGTH)
+        await emit({ type: 'stderr', payload: { text: safe } })
       }),
     ])
     return { stderr }
   })
 }
 
-export async function runCommand(binary: string, args: string[], cwd: string, signal?: AbortSignal): Promise<{
-  exitCode: number | null
-  stdout: string
-  stderr: string
-}> {
-  return runOwnedProcess({ binary, args, cwd, ...(signal ? { signal } : {}) }, async (child) => {
+/** A model-free native inspection command. Scoped injection remains owner checked. */
+export async function runCommand(
+  binary: string,
+  args: string[],
+  cwd: string,
+  signal?: AbortSignal,
+  environmentOrScope?: NodeJS.ProcessEnv | Pick<JsonlProcessOptions, 'beforeSpawn' | 'expectedAgentId'>,
+): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
+  const scoped = environmentOrScope && ('beforeSpawn' in environmentOrScope || 'expectedAgentId' in environmentOrScope)
+    ? environmentOrScope as Pick<JsonlProcessOptions, 'beforeSpawn' | 'expectedAgentId'>
+    : undefined
+  const environment = environmentOrScope && !scoped ? environmentOrScope as NodeJS.ProcessEnv : undefined
+  const deadline = AbortSignal.timeout(NATIVE_COMMAND_TIMEOUT_MS)
+  const combined = signal ? AbortSignal.any([signal, deadline]) : deadline
+  const result = await runOwnedProcess({ binary, args, cwd, signal: combined, ...scoped, ...(environment ? { environment } : {}) }, async (child, secrets) => {
     const collect = async (stream: Readable) => {
       stream.setEncoding('utf8')
       let text = ''
       for await (const chunk of stream) text += String(chunk)
-      return text
+      return redactSecretText(text, secrets)
     }
     const [stdout = '', stderr = ''] = await settleReaders(child, [collect(child.stdout), collect(child.stderr)])
     return { stdout, stderr }
   })
+  combined.throwIfAborted()
+  return result
 }
 
 /** Qualification commands share cancellation and are all drained on failure. */
@@ -242,4 +271,88 @@ export async function runCommands(binary: string, commands: string[][], cwd: str
     await Promise.allSettled(tasks)
     throw error
   }
+}
+
+/** Bidirectional providers use the same tree ownership as one-shot harnesses. */
+export function spawnOwnedStdioProcess(options: {
+  binary: string
+  args: string[]
+  cwd: string
+  environment: NodeJS.ProcessEnv
+  recovery?: NativeProcessRecovery
+  onError(error: Error): void
+}): {
+  child: ChildProcessWithoutNullStreams
+  closed: Promise<ProcessExit>
+  close(): Promise<void>
+} {
+  const child = spawnNativeProcess(options.binary, options.args, {
+    cwd: options.cwd, env: options.environment,
+    ...(options.recovery ? { recovery: options.recovery } : {}),
+  })
+  let didClose = false
+  const closed = new Promise<ProcessExit>((resolve) => {
+    child.once('close', (exitCode, exitSignal) => {
+      didClose = true
+      resolve({ exitCode, exitSignal })
+    })
+  })
+  let shutdown: Promise<void> | undefined
+  const within = async (operation: Promise<unknown>, milliseconds: number): Promise<boolean> => {
+    let timer: NodeJS.Timeout | undefined
+    try {
+      return await Promise.race([
+        operation.then(() => true),
+        new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), milliseconds) }),
+      ])
+    } finally { clearTimeout(timer) }
+  }
+  const close = (): Promise<void> => {
+    if (shutdown) return shutdown
+    shutdown = (async () => {
+      let failure: unknown
+      const send = async (signal: NodeJS.Signals) => {
+        try {
+          if (!await within(signalTree(child, signal), PROCESS_SHUTDOWN_GRACE_MS)) {
+            failure ??= new Error('Timed out signaling the owned provider process tree.')
+          }
+        } catch (error) { failure ??= error }
+      }
+      let confirmed = false
+      try {
+        // Registry shutdown includes its own grace period and verifies the launch boundary.
+        // Do not wrap it in the shorter per-signal timeout used for legacy children.
+        if (await stopRecoveredChild(child)) { confirmed = true; return }
+        // Signal the group even after its leader exited: descendants may own pipes.
+        await send('SIGTERM')
+        if (!didClose) await within(closed, PROCESS_SHUTDOWN_GRACE_MS)
+        await send('SIGKILL')
+        if (!didClose && !await within(closed, PROCESS_SHUTDOWN_GRACE_MS)) {
+          failure ??= new Error('Provider process did not close after forced tree shutdown.')
+        }
+        if (failure) throw failure
+        confirmed = true
+      } finally {
+        child.stdin.destroy()
+        child.stdout.destroy()
+        child.stderr.destroy()
+        // Closing pipes is not proof that the native launch boundary is empty.
+        // Keep the same child available to Stop after an unconfirmed attempt.
+        if (confirmed) ownedProcesses.delete(child)
+      }
+    })()
+    // Coalesce in-flight attempts and cache success, but permit explicit retries.
+    const attempt = shutdown
+    void attempt.catch(() => { if (shutdown === attempt) shutdown = undefined })
+    return shutdown
+  }
+  ownedProcesses.set(child, close)
+  const failed = (error: Error) => {
+    try { options.onError(error) } catch { /* A lifecycle observer cannot crash the API. */ }
+    finally { void close().catch(() => undefined) }
+  }
+  child.on('error', failed)
+  for (const stream of [child.stdin, child.stdout, child.stderr]) stream.on('error', failed)
+  child.once('exit', () => { void close().catch(() => undefined) })
+  return { child, closed, close }
 }

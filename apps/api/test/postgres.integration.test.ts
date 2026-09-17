@@ -46,6 +46,18 @@ describe('PostgreSQL infrastructure', () => {
           id text primary key, record jsonb not null, created_at timestamptz not null default now(),
           revision bigint not null default 1, archived_at timestamptz
         );
+        create table agents (id text primary key, workspace_id text not null references workspaces(id));
+        create table workflows (id text primary key, workspace_id text not null references workspaces(id));
+        create table management_principals (
+          id text primary key, name text not null, audience text not null,
+          token_hash text not null unique, grants jsonb not null, expires_at timestamptz not null,
+          revoked_at timestamptz, created_at timestamptz not null default now(),
+          check (audience in ('operator', 'worker'))
+        );
+        create table agent_configuration_versions (id text primary key, record jsonb not null);
+        create table harness_executions (id text primary key, record jsonb not null);
+        create table harness_native_events (execution_id text not null, sequence integer not null, record jsonb not null,
+          primary key(execution_id,sequence));
         create table runs (
           id text primary key, workspace_id text not null, workflow_id text not null, workflow_version_id text not null,
           execution_state text not null, record jsonb not null, created_at timestamptz not null default now()
@@ -250,7 +262,9 @@ describe('PostgreSQL infrastructure', () => {
         expect(database.pool.waitingCount).toBe(0)
         expect(database.pool.totalCount).toBe(0)
       })
-      expect((await app.inject('/health/ready')).statusCode).toBe(200)
+      await vi.waitFor(async () => {
+        expect((await app.inject('/health/ready')).statusCode).toBe(200)
+      }, { timeout: 1500 })
     } finally {
       if (!released) blocker.release()
       await app.close()

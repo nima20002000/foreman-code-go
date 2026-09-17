@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { HarnessConfigurationCheckResultSchema } from '@graphql/contracts/management'
 
 import { ApiError, ApiClient, apiClient } from './client'
 import { resetMockFixtures, setMockScenario } from '../mocks/scenarios'
@@ -34,6 +36,45 @@ describe('Phase 1 API boundary', () => {
       status: 503,
     })
     expect(ApiError.is(new ApiError({ code: 'TEST', message: 'test' }))).toBe(true)
+  })
+
+  it('serves and revision-checks managed settings in mock mode', async () => {
+    const agents = await apiClient.getManagedAgentDefaults()
+    const workflows = await apiClient.getManagedWorkflowDefaults()
+    expect(agents).toEqual({ value: DEFAULT_AGENT_DEFAULTS, revision: 0, versionId: null })
+    expect(workflows).toEqual({ value: { approvalHandler: 'orchestrator' }, revision: 0, versionId: null })
+
+    const next = structuredClone(DEFAULT_AGENT_DEFAULTS)
+    next.operator.uiEnabled = false
+    const updated = await apiClient.updateManagedAgentDefaults({
+      commandId: 'mock-agent-defaults-update', expectedRevision: 0, value: next,
+    })
+    expect(updated).toMatchObject({ value: { value: next, revision: 1 }, replayed: false })
+    await expect(apiClient.updateManagedAgentDefaults({
+      commandId: 'stale-agent-defaults-update', expectedRevision: 0, value: DEFAULT_AGENT_DEFAULTS,
+    })).rejects.toMatchObject({ code: 'REVISION_CONFLICT', status: 409 })
+  })
+
+  it('covers the Harness and workspace settings requests used in mock mode', async () => {
+    const catalog = await apiClient.getManagedHarnessCatalog()
+    expect(catalog.map((entry) => entry.harness)).toEqual(['codex', 'opencode'])
+    expect(catalog.every((entry) => entry.defaultsRevision === 0)).toBe(true)
+
+    const checked = await apiClient.request(
+      '/api/management/harnesses/validate',
+      HarnessConfigurationCheckResultSchema,
+      { method: 'POST', body: { configuration: DEFAULT_HARNESS_DEFAULTS.codex } },
+    )
+    expect(checked).toMatchObject({ configuration: DEFAULT_HARNESS_DEFAULTS.codex, qualification: { ready: true, version: 'mock' } })
+
+    const workspace = await apiClient.getManagedWorkspace('workspace-1')
+    expect(workspace).toMatchObject({ workspace: { id: 'workspace-1' }, locationValidation: { status: 'unconfigured' } })
+    await expect(apiClient.validateWorkspaceLocation({
+      workspaceId: 'workspace-1', runnerId: 'runner-local', rootPath: '/workspace', accessMode: 'read-only',
+    })).resolves.toMatchObject({ workspaceId: 'workspace-1', location: { rootPath: '/workspace' } })
+    await expect(apiClient.getScopedMcpDetection('workspace-1', 'codex')).resolves.toMatchObject({
+      runnerId: 'runner-local', detection: { harness: 'codex', state: 'not_detected' },
+    })
   })
 
   it('passes AbortSignal through to fetch', async () => {

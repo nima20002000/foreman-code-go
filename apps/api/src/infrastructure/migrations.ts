@@ -1,7 +1,18 @@
 import type pg from 'pg'
+import { harnessSettingsMigration } from './harnessSettingsMigration.js'
 
-const migrations = [
-  `
+import { lifecycleMigration } from './lifecycleMigration.js'
+import { pr17AuditMigration } from './pr17AuditMigration.js'
+import { nativeEventSequenceMigration } from './nativeEventSequenceMigration.js'
+
+import { interactionDeliveryMigration } from './interactionDeliveryMigration.js'
+import { operatorMcpMigration } from './operatorMcpMigration.js'
+
+// Reserved migration blocks: HAP-01 100-109, HAP-02 200-209, HAP-03 300-309,
+// HAP-04 400-409, HAP-05 500-509, HAP-06 600-609, HAP-07 700-709.
+// Explicit versions prevent sibling worktrees from colliding when integrated.
+export const migrations = [
+  { version: 1, sql: `
     create table if not exists application_migrations (
       version integer primary key,
       applied_at timestamptz not null default now()
@@ -96,15 +107,15 @@ const migrations = [
       on harness_executions (run_id, created_at);
     create index if not exists run_activity_run_idx
       on run_activity (run_id, sequence);
-  `,
-  `
+  ` },
+  { version: 2, sql: `
     create table if not exists application_settings (
       key text primary key,
       record jsonb not null,
       updated_at timestamptz not null default now()
     );
-  `,
-  `
+  ` },
+  { version: 3, sql: `
     alter table workspaces add column if not exists revision bigint not null default 1;
     alter table workspaces add column if not exists archived_at timestamptz;
     alter table workflows add column if not exists revision bigint not null default 1;
@@ -159,8 +170,8 @@ const migrations = [
       updated_at timestamptz not null default now(),
       unique (workflow_id)
     );
-  `,
-  `
+  ` },
+  { version: 4, sql: `
     alter table workspaces add column if not exists execution_location jsonb;
     alter table workspaces add column if not exists execution_location_identity jsonb;
     alter table workspaces add column if not exists location_revision bigint not null default 0;
@@ -171,7 +182,450 @@ const migrations = [
 
     create index if not exists runs_workspace_location_idx
       on runs (workspace_id, location_revision) where location_revision is not null;
-  `,
+  ` },
+  { version: 100, sql: `
+    create table if not exists management_principals (
+      id text primary key, name text not null, audience text not null,
+      token_hash text not null unique, grants jsonb not null, expires_at timestamptz not null,
+      revoked_at timestamptz, created_at timestamptz not null default now(),
+      check (audience in ('operator', 'worker'))
+    );
+    create table if not exists application_settings (
+      key text primary key, record jsonb not null, updated_at timestamptz not null default now(),
+      revision bigint not null default 1
+    );
+    alter table management_principals add column if not exists agent_id text;
+    create index if not exists management_worker_agent_idx
+      on management_principals (agent_id) where audience = 'worker';
+
+    create table if not exists application_setting_versions (
+      id text primary key,
+      setting_key text not null,
+      version integer not null,
+      record jsonb not null,
+      created_at timestamptz not null default now(),
+      unique (setting_key, version)
+    );
+    alter table application_settings add column if not exists current_version_id text;
+
+    create table if not exists application_operators (
+      id text primary key,
+      current_configuration_version_id text not null,
+      record jsonb not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+    create table if not exists operator_configuration_versions (
+      id text primary key,
+      operator_id text not null references application_operators(id) deferrable initially deferred,
+      version integer not null,
+      record jsonb not null,
+      created_at timestamptz not null default now(),
+      unique (operator_id, version)
+    );
+
+    create table if not exists durable_interactions (
+      id text primary key,
+      workspace_id text not null,
+      workflow_id text not null,
+      run_id text not null,
+      execution_id text not null,
+      requesting_agent_id text not null,
+      harness text not null,
+      native_session_id text not null,
+      native_request_id text not null,
+      status text not null,
+      revision bigint not null default 0,
+      record jsonb not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      unique (harness, native_session_id, native_request_id)
+    );
+    create index if not exists durable_interactions_scope_idx
+      on durable_interactions (workspace_id, workflow_id, status, created_at, id);
+
+    create table if not exists native_session_lanes (
+      id text primary key,
+      harness text not null,
+      native_session_id text not null,
+      owner_agent_id text not null,
+      revision bigint not null default 0,
+      record jsonb not null,
+      updated_at timestamptz not null default now(),
+      unique (harness, native_session_id)
+    );
+    create table if not exists review_jobs (
+      id text primary key,
+      interaction_id text not null references durable_interactions(id) on delete cascade,
+      reviewer_agent_id text not null,
+      state text not null,
+      revision bigint not null default 0,
+      record jsonb not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      unique (interaction_id, reviewer_agent_id)
+    );
+  ` },
+  { version: 400, sql: `
+    create table if not exists worker_credential_bindings (
+      principal_id text primary key,
+      execution_id text not null,
+      run_id text not null,
+      workspace_id text not null,
+      workflow_id text not null,
+      agent_id text not null,
+      environment_variable text not null,
+      issued_at timestamptz not null default now(),
+      revoked_at timestamptz,
+      unique (execution_id, principal_id),
+      check (environment_variable = 'GRAPHQL_APP_MCP_TOKEN')
+    );
+    create index if not exists worker_credential_bindings_execution_idx
+      on worker_credential_bindings (execution_id, revoked_at);
+  ` },
+  { version: 401, sql: `
+    alter table if exists runs add column if not exists worker_credentials_closed_at timestamptz;
+    alter table if exists harness_executions add column if not exists worker_credentials_closed_at timestamptz;
+    create index if not exists worker_credential_bindings_run_idx
+      on worker_credential_bindings (run_id, principal_id);
+    -- Preserve terminal cleanup intent across upgrades/restarts. The binding
+    -- sweep revokes any remaining principals without needing the old plaintext.
+    update runs set worker_credentials_closed_at=now()
+      where execution_state not in ('queued','running','waiting') and worker_credentials_closed_at is null;
+    do $$
+    begin
+      if to_regclass('harness_executions') is not null then
+        update harness_executions set worker_credentials_closed_at=now()
+          where record->>'state' not in ('starting','running','waiting') and worker_credentials_closed_at is null;
+      end if;
+    end
+    $$;
+  ` },
+  { version: 500, sql: `
+    create table if not exists approval_execution_state (
+      execution_id text primary key,
+      graph_thread_id text not null,
+      active_timeout_ms bigint not null check (active_timeout_ms > 0),
+      active_elapsed_ms bigint not null default 0 check (active_elapsed_ms >= 0),
+      active_started_at timestamptz,
+      approval_wait_started_at timestamptz,
+      stopped_at timestamptz,
+      revision bigint not null default 0,
+      updated_at timestamptz not null default now()
+    );
+
+    create table if not exists interaction_delivery_attempts (
+      interaction_id text not null references durable_interactions(id) on delete cascade,
+      attempt integer not null check (attempt > 0),
+      state text not null check (state in ('submitted','uncertain','delivered','failed')),
+      native_session_id text not null,
+      native_request_id text not null,
+      correlation_id text not null,
+      error text,
+      created_at timestamptz not null default now(),
+      primary key (interaction_id, attempt)
+    );
+    create index if not exists interaction_delivery_attempts_reconcile_idx
+      on interaction_delivery_attempts (state, created_at, interaction_id);
+  ` },
+  { version: 501, sql: `
+    create table if not exists interaction_command_receipts (
+      principal_id text not null,
+      command_id text not null,
+      interaction_id text not null references durable_interactions(id) on delete cascade,
+      option_id text not null,
+      created_at timestamptz not null default now(),
+      primary key (principal_id,command_id)
+    );
+  ` },
+  { version: 502, sql: `
+    alter table review_jobs add column if not exists execution_id text;
+    alter table review_jobs add column if not exists working_directory text;
+    alter table review_jobs add column if not exists provider_version text;
+  ` },
+  { version: 503, sql: `
+    -- Additive HAP-05 recovery state. Native identities and applied SQL stay untouched.
+    alter table durable_interactions
+      add column delivery_owner text,
+      add column delivery_token text,
+      add column delivery_fence bigint not null default 0,
+      add column delivery_lease_expires_at timestamptz,
+      add column last_delivery_error jsonb,
+      add column reconciliation_status text not null default 'not_required'
+        check (reconciliation_status in ('not_required','required','delivered','not_delivered','unknown'));
+    alter table interaction_delivery_attempts
+      add column delivery_fence bigint not null default 0,
+      add column evidence jsonb not null default '{}'::jsonb,
+      add column updated_at timestamptz not null default now();
+    alter table interaction_command_receipts
+      add column decision_revision bigint,
+      add column authorized_at timestamptz;
+    -- Old receipts remain unverified until an authorized decision transaction binds them.
+
+    create table interaction_reconciliation_evidence (
+      sequence bigint generated always as identity primary key,
+      interaction_id text not null references durable_interactions(id) on delete cascade,
+      attempt integer,
+      delivery_fence bigint not null,
+      native_session_id text not null,
+      native_request_id text not null,
+      correlation_id text,
+      outcome text not null check (outcome in ('delivered','not_delivered','unknown')),
+      evidence jsonb not null,
+      error jsonb,
+      occurred_at timestamptz not null default now(),
+      foreign key (interaction_id, attempt) references interaction_delivery_attempts(interaction_id, attempt)
+    );
+
+    create table interaction_graph_resumes (
+      interaction_id text primary key references durable_interactions(id) on delete cascade,
+      run_id text not null,
+      execution_id text not null,
+      graph_thread_id text not null,
+      graph_interrupt_id text,
+      delivery_revision bigint not null,
+      state text not null default 'pending'
+        check (state in ('pending','resuming','resumed','blocked','canceled')),
+      revision bigint not null default 0,
+      lease_owner text,
+      lease_token text,
+      lease_fence bigint not null default 0,
+      lease_expires_at timestamptz,
+      evidence jsonb not null default '{}'::jsonb,
+      error jsonb,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+    -- Backfill intent, not success: the graph owner must inspect the exact checkpoint
+    -- before resuming a pre-migration delivery. This never replays native work.
+    insert into interaction_graph_resumes
+      (interaction_id,run_id,execution_id,graph_thread_id,graph_interrupt_id,delivery_revision,evidence)
+      select id,run_id,execution_id,record->>'graphThreadId',record->>'graphInterruptId',revision,
+        '{"requiresCheckpointReconciliation":true,"migration":503}'::jsonb
+      from durable_interactions where status='delivered';
+
+    alter table review_jobs
+      add column lease_owner text,
+      add column lease_token text,
+      add column lease_expires_at timestamptz,
+      add column lease_fence bigint not null default 0,
+      add column recovery_evidence jsonb not null default '[]'::jsonb;
+    update review_jobs set lease_owner=record->>'leaseOwner',lease_token=record->>'leaseToken',
+      lease_expires_at=(record->>'leaseExpiresAt')::timestamptz,
+      lease_fence=case when record->>'leaseToken' is null then 0 else 1 end;
+
+    create index durable_interactions_execution_latest_idx
+      on durable_interactions (execution_id,created_at desc,id desc);
+    create index durable_interactions_delivery_recovery_idx
+      on durable_interactions (delivery_lease_expires_at,id) where status='delivery_pending';
+    create index interaction_reconciliation_history_idx
+      on interaction_reconciliation_evidence (interaction_id,sequence);
+    create index interaction_delivery_attempts_open_idx
+      on interaction_delivery_attempts (interaction_id,attempt desc) where state in ('submitted','uncertain');
+    create index interaction_graph_resumes_recovery_idx
+      on interaction_graph_resumes (lease_expires_at,interaction_id) where state in ('pending','resuming','blocked');
+    create index interaction_graph_resumes_run_idx on interaction_graph_resumes (run_id,state,interaction_id);
+    create index review_jobs_recovery_idx
+      on review_jobs (reviewer_agent_id,state,lease_expires_at,created_at,id);
+
+    -- Typed lifecycle kinds are from ActivityKindSchema. Triggers keep the audit
+    -- atomic even when another repository/worker performs the state transition.
+    create function audit_interaction_lifecycle() returns trigger language plpgsql as $$
+    declare previous jsonb; activity_payload jsonb; activity_kind text;
+    begin
+      previous := case when TG_OP='INSERT' then '{}'::jsonb else OLD.record end;
+      activity_payload := jsonb_strip_nulls(jsonb_build_object(
+        'interactionId',NEW.id,'revision',NEW.revision,'harness',NEW.harness,
+        'nativeSessionId',NEW.native_session_id,'nativeRequestId',NEW.native_request_id,
+        'handler',NEW.record->'approval'->>'handler','status',NEW.status,
+        'previousStatus',previous->>'status','deliveryState',NEW.record->>'deliveryState',
+        'previousDeliveryState',previous->>'deliveryState','deliveryFence',NEW.delivery_fence,
+        'selectedOptionId',NEW.record->>'selectedOptionId','selectedSemantic',NEW.record->>'selectedSemantic',
+        'auditReference',NEW.record->>'auditReference','error',NEW.last_delivery_error,
+        'reconciliationStatus',NEW.reconciliation_status));
+      foreach activity_kind in array array[
+        case when TG_OP='INSERT' and NEW.status='pending' then 'interaction_pending' end,
+        case when NEW.record->>'selectedOptionId' is not null and previous->>'selectedOptionId' is null
+          then 'interaction_decided' end,
+        case when TG_OP='UPDATE' and (NEW.record->>'deliveryState' is distinct from previous->>'deliveryState'
+          or NEW.last_delivery_error is distinct from OLD.last_delivery_error
+          or NEW.reconciliation_status is distinct from OLD.reconciliation_status) then 'interaction_delivery_state' end,
+        case when NEW.status in ('delivered','delivery_failed','canceled')
+          and NEW.status is distinct from previous->>'status' then 'interaction_resolved' end
+      ] loop
+        if activity_kind is not null then
+          insert into run_activity (run_id,source,kind,harness_execution_id,occurred_at,payload)
+            values (NEW.run_id,'backend',activity_kind,NEW.execution_id,clock_timestamp(),activity_payload);
+        end if;
+      end loop;
+      if NEW.status='delivered' then
+        insert into interaction_graph_resumes
+          (interaction_id,run_id,execution_id,graph_thread_id,graph_interrupt_id,delivery_revision)
+          values (NEW.id,NEW.run_id,NEW.execution_id,NEW.record->>'graphThreadId',
+            NEW.record->>'graphInterruptId',NEW.revision) on conflict do nothing;
+        update interaction_graph_resumes set graph_interrupt_id=NEW.record->>'graphInterruptId',
+          revision=revision+1,updated_at=clock_timestamp()
+          where interaction_id=NEW.id and graph_interrupt_id is null and NEW.record->>'graphInterruptId' is not null;
+      elsif NEW.status='canceled' then
+        update interaction_graph_resumes set state='canceled',revision=revision+1,lease_fence=lease_fence+1,
+          lease_owner=null,lease_token=null,lease_expires_at=null,updated_at=clock_timestamp(),
+          error=jsonb_build_object('code','INTERACTION_CANCELED','message','The interaction was canceled before graph resume completed.')
+          where interaction_id=NEW.id and state not in ('resumed','canceled');
+      end if;
+      return NEW;
+    end $$;
+    create trigger durable_interaction_lifecycle after insert or update on durable_interactions
+      for each row execute function audit_interaction_lifecycle();
+
+    create function audit_interaction_delivery_attempt() returns trigger language plpgsql as $$
+    begin
+      if TG_OP='INSERT' or NEW.state is distinct from OLD.state or NEW.error is distinct from OLD.error
+        or NEW.evidence is distinct from OLD.evidence then
+        insert into run_activity (run_id,source,kind,harness_execution_id,occurred_at,payload)
+          select i.run_id,'backend','interaction_delivery_state',i.execution_id,clock_timestamp(),
+            jsonb_strip_nulls(jsonb_build_object('interactionId',NEW.interaction_id,'stage','attempt',
+              'attempt',NEW.attempt,'deliveryState',NEW.state,'deliveryFence',NEW.delivery_fence,
+              'nativeSessionId',NEW.native_session_id,'nativeRequestId',NEW.native_request_id,
+              'correlationId',NEW.correlation_id,'error',NEW.error,'evidence',NEW.evidence))
+            from durable_interactions i where i.id=NEW.interaction_id;
+      end if;
+      return NEW;
+    end $$;
+    create trigger interaction_delivery_attempt_lifecycle after insert or update on interaction_delivery_attempts
+      for each row execute function audit_interaction_delivery_attempt();
+
+    -- Typed columns mirror the existing ReviewJob contract; indexes never cast
+    -- JSON timestamps, and recovery does not replace provider/session/correlation IDs.
+    create function sync_review_job_lease() returns trigger language plpgsql as $$
+    begin
+      NEW.lease_owner := NEW.record->>'leaseOwner';
+      NEW.lease_token := NEW.record->>'leaseToken';
+      NEW.lease_expires_at := (NEW.record->>'leaseExpiresAt')::timestamptz;
+      if TG_OP='INSERT' then
+        NEW.lease_fence := case when NEW.lease_token is null then 0 else 1 end;
+      else
+        NEW.lease_fence := OLD.lease_fence + case
+          when NEW.lease_token is not null and NEW.lease_token is distinct from OLD.lease_token then 1 else 0 end;
+      end if;
+      return NEW;
+    end $$;
+    create trigger review_job_lease before insert or update on review_jobs
+      for each row execute function sync_review_job_lease();
+
+    create function audit_review_job_lifecycle() returns trigger language plpgsql as $$
+    begin
+      if TG_OP='INSERT' or NEW.state is distinct from OLD.state or NEW.lease_fence is distinct from OLD.lease_fence
+        or NEW.record->'error' is distinct from OLD.record->'error'
+        or NEW.recovery_evidence is distinct from OLD.recovery_evidence then
+        insert into run_activity (run_id,source,kind,harness_execution_id,occurred_at,payload)
+          select i.run_id,'backend','review_job_state',NEW.execution_id,clock_timestamp(),
+            jsonb_strip_nulls(jsonb_build_object('interactionId',NEW.interaction_id,'reviewJobId',NEW.id,
+              'reviewerAgentId',NEW.reviewer_agent_id,'state',NEW.state,'revision',NEW.revision,
+              'attempt',NEW.record->'attempt','harness',NEW.record->>'provider',
+              'nativeSessionId',NEW.record->>'nativeSessionId','correlationId',NEW.record->>'correlationId',
+              'providerTurnOrMessageId',NEW.record->>'providerTurnOrMessageId',
+              'leaseFence',NEW.lease_fence,'error',NEW.record->'error','recoveryEvidence',NEW.recovery_evidence))
+            from durable_interactions i where i.id=NEW.interaction_id;
+      end if;
+      return NEW;
+    end $$;
+    create trigger review_job_lifecycle after insert or update on review_jobs
+      for each row execute function audit_review_job_lifecycle();
+  ` },
+  { version: 507, sql: `
+    -- Some pre-foundation installations created management_principals without
+    -- the default audience constraint name. Establish it before migration 509
+    -- widens the unchanged historical constraint to include User principals.
+    do $$
+    begin
+      if not exists (
+        select 1 from pg_constraint
+        where conrelid='management_principals'::regclass
+          and conname='management_principals_audience_check'
+      ) then
+        alter table management_principals add constraint management_principals_audience_check
+          check (audience in ('operator','worker'));
+      end if;
+    end
+    $$;
+  ` },
+  interactionDeliveryMigration,
+  lifecycleMigration,
+  { version: 700, sql: `
+    create table if not exists operator_conversations (
+      id text primary key,
+      operator_id text not null references application_operators(id),
+      operator_configuration_version_id text not null references operator_configuration_versions(id),
+      harness text not null,
+      provider_version text,
+      native_session_id text,
+      active_request_id text,
+      active_native_turn_id text,
+      turn_state text not null default 'idle',
+      last_error text,
+      record jsonb not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      check (turn_state in ('idle','starting','active','canceling','uncertain','error'))
+    );
+    create unique index if not exists operator_conversations_native_session_idx
+      on operator_conversations (harness, native_session_id) where native_session_id is not null;
+    create index if not exists operator_conversations_recent_idx
+      on operator_conversations (updated_at desc, id);
+    create table if not exists operator_conversation_messages (
+      id text primary key,
+      conversation_id text not null references operator_conversations(id) on delete cascade,
+      sequence bigint generated always as identity,
+      role text not null,
+      content text not null,
+      client_request_id text,
+      native_message_id text,
+      record jsonb not null,
+      created_at timestamptz not null default now(),
+      check (role in ('user','assistant','system','tool')),
+      unique (conversation_id, sequence)
+    );
+    create unique index if not exists operator_messages_request_idx
+      on operator_conversation_messages (conversation_id, client_request_id) where client_request_id is not null;
+    create unique index if not exists operator_messages_native_idx
+      on operator_conversation_messages (conversation_id, native_message_id) where native_message_id is not null;
+  ` },
+  { version: 701, sql: `
+    alter table operator_conversations add column if not exists owner_principal_id text references management_principals(id);
+    alter table operator_conversations add column if not exists revision bigint not null default 0;
+    alter table operator_conversations add column if not exists active_phase text;
+    alter table operator_conversations add column if not exists cancel_requested boolean not null default false;
+    alter table operator_conversations add column if not exists pending_interaction jsonb;
+    alter table operator_conversations add column if not exists response_delivery text;
+    alter table operator_conversations add column if not exists last_result jsonb;
+    create table if not exists operator_conversation_turns (
+      conversation_id text not null references operator_conversations(id) on delete cascade,
+      request_id text not null,
+      payload jsonb not null,
+      input_hash text not null,
+      retryable boolean not null default false,
+      result jsonb,
+      primary key (conversation_id,request_id)
+    );
+    -- Old receipts did not store route context. Preserve their content without guessing context.
+    insert into operator_conversation_turns (conversation_id,request_id,payload,input_hash)
+      select conversation_id,client_request_id,jsonb_build_object('content',content),'legacy'
+      from operator_conversation_messages where client_request_id is not null
+      on conflict do nothing;
+    alter table management_principals add column if not exists delegated_from text references management_principals(id);
+    create table if not exists operator_chat_credentials (
+      principal_id text primary key references management_principals(id),
+      conversation_id text not null references operator_conversations(id) on delete cascade
+    );
+    create index if not exists operator_chat_owner_idx on operator_conversations(owner_principal_id,updated_at desc,id);
+    -- A restarted process cannot prove an old in-flight delivery did not happen.
+    update operator_conversations set active_phase='submitting',turn_state='uncertain'
+      where active_request_id is not null and active_phase is null;
+  ` },
+  operatorMcpMigration,
+  pr17AuditMigration,
+  nativeEventSequenceMigration,
+  harnessSettingsMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
@@ -187,10 +641,10 @@ export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
     `)
     const applied = await client.query<{ version: number }>('select version from application_migrations')
     const appliedVersions = new Set(applied.rows.map((row) => row.version))
-    for (const [index, migration] of migrations.entries()) {
-      const version = index + 1
+    for (const migration of migrations) {
+      const { version } = migration
       if (appliedVersions.has(version)) continue
-      await client.query(migration)
+      await client.query(migration.sql)
       await client.query('insert into application_migrations (version) values ($1)', [version])
     }
     await client.query('commit')

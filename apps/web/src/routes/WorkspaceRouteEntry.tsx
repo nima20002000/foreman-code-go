@@ -7,6 +7,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { WorkspaceDetailsResponse } from '@graphql/contracts'
 
+import { Alert, Badge, Button, Select } from '../shared/ui/nocturne'
 import { GraphEditor, WorkflowGraph } from '../features/graph'
 import { useSessionWorkflowStore } from '../features/workflows'
 import {
@@ -112,7 +113,7 @@ function MockDataControl({ workspaceId }: MockDataControlProps) {
     return (
       <section className="mock-data-control" data-testid="mock-data-control" aria-label="Mock data">
         <span className="slot-label">Mock data</span>
-        <p role="alert">Mock scenarios are unavailable.</p>
+        <Alert live tone="danger" title="Mock scenarios are unavailable." />
       </section>
     )
   }
@@ -124,26 +125,21 @@ function MockDataControl({ workspaceId }: MockDataControlProps) {
     <section className="mock-data-control" data-testid="mock-data-control" aria-label="Mock data">
       <div>
         <span className="slot-label">Mock data</span>
-        <strong data-testid="mock-mode">{selectedScenario}</strong>
-        {activeFailureMode !== 'none' ? <span> · {activeFailureMode}</span> : null}
+        <Badge tone="info">
+          <strong data-testid="mock-mode">{selectedScenario}</strong>
+          {activeFailureMode !== 'none' ? <span> · {activeFailureMode}</span> : null}
+        </Badge>
       </div>
-      <label>
-        Scenario
-        <select
-          aria-label="Mock data scenario"
-          value={selectedScenario}
-          disabled={scenarioMutation.isPending}
-          onChange={(event) => scenarioMutation.mutate(event.target.value)}
-        >
-          {scenarioQuery.data.scenarios.map((scenario) => (
-            <option value={scenario} key={scenario}>
-              {scenario}
-            </option>
-          ))}
-        </select>
-      </label>
+      <Select
+        label="Scenario"
+        aria-label="Mock data scenario"
+        value={selectedScenario}
+        disabled={scenarioMutation.isPending}
+        onChange={(event) => scenarioMutation.mutate(event.target.value)}
+        options={scenarioQuery.data.scenarios.map((scenario) => ({ value: scenario, label: scenario }))}
+      />
       {scenarioMutation.isError ? (
-        <p role="alert">Could not switch mock scenario: {readableError(scenarioMutation.error, 'request failed')}</p>
+        <Alert live tone="danger" title={`Could not switch mock scenario: ${readableError(scenarioMutation.error, 'request failed')}`} />
       ) : null}
     </section>
   )
@@ -265,9 +261,9 @@ export function WorkspaceRouteEntry() {
           <>
             {children}
             {!notFound ? (
-              <button type="button" onClick={() => void workspaceQuery.refetch()}>
+              <Button variant="secondary" onClick={() => void workspaceQuery.refetch()}>
                 Retry workspace request
-              </button>
+              </Button>
             ) : null}
           </>
         }

@@ -1,0 +1,195 @@
+import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+
+import type { NativeHarnessEvent, NativeSessionReference, PendingNativeInteraction, ReviewCleanup, ReviewJob } from '@graphql/contracts'
+import { describe, it } from 'vitest'
+
+import type { NativeHistory } from '../src/modules/harnesses/port.js'
+import { reviewOwnsPermission, settleReviewCleanup, type ReviewCleanupAttempt } from '../src/modules/interactions/reviewerCleanup.js'
+import { reviewTurnEvidence } from '../src/modules/interactions/reviewerEvidence.js'
+
+const time = '2026-09-17T00:00:00.000Z'
+const session: NativeSessionReference = { harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'review-session' }
+const failure = { code: 'REVIEWER_NATIVE_APPROVAL_UNSUPPORTED', message: 'Original business failure.' }
+function event(type: string, payload: Record<string, unknown>): NativeHarnessEvent {
+  return { type, payload, sequence: 0, occurredAt: time }
+}
+function job(): ReviewJob {
+  return { id: 'review-job', interactionId: 'interaction', reviewerAgentId: 'reviewer', attempt: 1,
+    state: 'failed', provider: 'codex', nativeSessionId: session.nativeSessionId, correlationId: 'correlation',
+    providerTurnOrMessageId: 'review-turn', submittedAt: time, createdAt: time, updatedAt: time, error: failure,
+    cleanup: { nativeState: 'pending', credentialState: 'pending', credentialPrincipalId: 'original-principal', interruptState: 'not_sent' } }
+}
+function history(status = 'inProgress'): NativeHistory {
+  return { events: [event('thread.reconciled', { thread: { id: session.nativeSessionId,
+    status: status === 'inProgress' ? 'active' : 'idle',
+    turns: [{ id: 'review-turn', clientUserMessageId: 'correlation', status, items: [] }] } })], pendingInteractions: [] }
+}
+function harness(initial = job()) {
+  let current = initial
+  const persisted: ReviewJob[] = []
+  const calls: string[] = []
+  const input: ReviewCleanupAttempt = {
+    job: current, session, ownsTurn: true, check: async () => {}, observe: async () => history(),
+    cancel: async (id) => { calls.push(`cancel:${id}`); return true },
+    revoke: async (id) => { calls.push(`revoke:${id}`) },
+    persist: async (cleanup: ReviewCleanup, release: boolean, providerId?: string) => {
+      current = { ...current, cleanup: structuredClone(cleanup), ...(providerId ? { providerTurnOrMessageId: providerId } : {}) }
+      if (release) { delete current.leaseToken; delete current.leaseOwner; delete current.leaseExpiresAt }
+      persisted.push(structuredClone(current))
+      return current
+    },
+  }
+  const run = async () => { input.job = current; return settleReviewCleanup(input) }
+  return { input, run, calls, persisted }
+}
+
+describe('PR17 #2: durable failure cleanup', () => {
+  it('keeps an acknowledged interrupt nonterminal and later settles exact native history', async () => {
+    const h = harness()
+    const failed = await h.run()
+    assert.equal(failed.state, 'failed')
+    assert.deepEqual(failed.error, failure)
+    assert.equal(failed.cleanup?.nativeState, 'pending')
+    assert.equal(failed.cleanup?.interruptState, 'acknowledged')
+    assert.equal(failed.cleanup?.credentialState, 'revoked')
+    assert.equal(failed.cleanup?.completedAt, undefined)
+    assert.equal(h.persisted[0]?.cleanup?.interruptState, 'submitted')
+    await h.run()
+    assert.deepEqual(h.calls, ['cancel:review-turn', 'revoke:original-principal'])
+    h.input.observe = async () => history('interrupted')
+    const settled = await h.run()
+    assert.equal(settled.state, 'failed')
+    assert.deepEqual(settled.error, failure)
+    assert.equal(settled.cleanup?.nativeState, 'terminal')
+    assert.ok(settled.cleanup?.completedAt)
+    assert.deepEqual(h.calls, ['cancel:review-turn', 'revoke:original-principal'])
+  })
+
+  for (const mode of ['false', 'throw'] as const) {
+    it(`keeps ${mode} cancellation recoverable without replaying an uncertain mutation`, async () => {
+      const h = harness()
+      h.input.cancel = async () => { h.calls.push('cancel'); if (mode === 'throw') throw new Error('lost response'); return false }
+      assert.equal((await h.run()).cleanup?.nativeState, 'pending')
+      await h.run()
+      assert.equal(h.calls.filter((call) => call === 'cancel').length, 1)
+      h.input.observe = async () => history('interrupted')
+      assert.ok((await h.run()).cleanup?.completedAt)
+    })
+  }
+
+  it('persists terminal native proof before retrying failed exact-principal revocation', async () => {
+    const h = harness()
+    h.input.observe = async () => history('completed')
+    h.input.revoke = async () => { throw new Error('database unavailable') }
+    const failed = await h.run()
+    assert.equal(failed.cleanup?.nativeState, 'terminal')
+    assert.equal(failed.cleanup?.credentialState, 'pending')
+    assert.equal(failed.cleanup?.completedAt, undefined)
+    h.input.observe = async () => { throw new Error('must not need native work again') }
+    h.input.revoke = async (id) => { h.calls.push(`revoke:${id}`) }
+    assert.ok((await h.run()).cleanup?.completedAt)
+    assert.deepEqual(h.calls, ['revoke:original-principal'])
+  })
+
+  it('does not cancel a successor or infer closure from missing local state', async () => {
+    const h = harness()
+    h.input.ownsTurn = false
+    h.input.confirmClosed = async () => { throw new Error('must not close successor') }
+    await h.run()
+    assert.deepEqual(h.calls, ['revoke:original-principal'])
+    delete h.input.observe
+    assert.equal((await h.run()).cleanup?.nativeState, 'pending')
+    h.input.closed = true // positive evidence, not an absent manager
+    assert.equal((await h.run()).cleanup?.nativeState, 'closed')
+  })
+
+  it('requires actual closure success for nonresident cleanup', async () => {
+    const h = harness()
+    delete h.input.observe
+    h.input.confirmClosed = async () => false
+    assert.equal((await h.run()).cleanup?.nativeState, 'pending')
+    h.input.confirmClosed = async () => true
+    assert.equal((await h.run()).cleanup?.nativeState, 'closed')
+  })
+
+  it('does not interpret empty history or generic terminalResult as terminal proof', async () => {
+    const h = harness()
+    h.input.observe = async () => ({ events: [], pendingInteractions: [], terminalResult: { outcome: 'canceled' } })
+    assert.equal((await h.run()).cleanup?.nativeState, 'pending')
+  })
+
+  it('stops all cleanup side effects when the writer/job fence is lost', async () => {
+    const h = harness()
+    h.input.check = async () => { throw new Error('lease lost') }
+    await assert.rejects(h.run, /lease lost/)
+    assert.deepEqual(h.calls, [])
+    assert.deepEqual(h.persisted, [])
+  })
+})
+
+describe('PR17 #5: OpenCode permission lineage', () => {
+  const open: NativeSessionReference = { harness: 'opencode', providerVersion: '1.18.31', nativeSessionId: 'open-review' }
+  const root = `msg_${createHash('sha256').update('correlation').digest('hex').slice(0, 24)}`
+  function permission(parent = root, messageId = 'assistant-tool-message') {
+    const request: PendingNativeInteraction = { session: open, turn: { nativeTurnId: messageId, nativeRequestId: 'permission' },
+      nativeRequestType: 'permission.asked', request: { id: 'permission', sessionID: open.nativeSessionId,
+        tool: { messageID: messageId, callID: 'call' } }, responseOptions: [{ optionId: 'reject', semantic: 'reject',
+        label: 'Reject', persistence: 'request', affectsOtherPendingRequests: true, interruptsCurrentTurn: false, mutatesPersistentPolicy: false }] }
+    const native: NativeHistory = { events: [event('message.updated', { info: {
+      id: messageId, sessionID: open.nativeSessionId, role: 'assistant', parentID: parent, time: { created: 1 },
+    } })], pendingInteractions: [request], nativeTurnId: root, correlationId: 'correlation' }
+    return { request, native }
+  }
+
+  it('proves assistant/tool message -> root user lineage without equating the IDs', () => {
+    const { request, native } = permission()
+    assert.notEqual(request.turn.nativeTurnId, root)
+    assert.equal(reviewOwnsPermission(open, root, request, native), true)
+  })
+
+  it('rejects unrelated, conflicting, missing, or foreign-session lineage', () => {
+    const unrelated = permission('another-root')
+    assert.equal(reviewOwnsPermission(open, root, unrelated.request, unrelated.native), false)
+    const { request, native } = permission()
+    assert.equal(reviewOwnsPermission(open, root, request, { ...native, events: [] }), false)
+    const foreign = structuredClone(native)
+    foreign.events[0]!.payload.info = { id: 'assistant-tool-message', role: 'assistant', parentID: root, sessionID: 'other-session' }
+    assert.equal(reviewOwnsPermission(open, root, request, foreign), false)
+    const conflicting = { ...native, events: [...native.events, ...unrelated.native.events] }
+    assert.equal(reviewOwnsPermission(open, root, request, conflicting), false)
+  })
+
+  it('cancels only proven permissions and keeps an OpenCode cancellation ACK nonterminal', async () => {
+    const h = harness({ ...job(), provider: 'opencode', nativeSessionId: open.nativeSessionId, providerTurnOrMessageId: root })
+    const { native } = permission()
+    h.input.session = open
+    h.input.observe = async () => native
+    await h.run()
+    assert.deepEqual(h.calls, [`cancel:${root}`, 'revoke:original-principal'])
+    h.input.observe = async () => ({ ...native, pendingInteractions: [], events: [],
+      terminalTurn: { correlationId: 'correlation', providerId: root, result: { outcome: 'canceled' } } })
+    assert.equal((await h.run()).cleanup?.nativeState, 'pending')
+  })
+
+  it('does not cancel when any pending permission belongs to another turn', async () => {
+    const h = harness({ ...job(), provider: 'opencode', nativeSessionId: open.nativeSessionId, providerTurnOrMessageId: root })
+    const owned = permission(), unrelated = permission('other-root', 'other-message')
+    h.input.session = open
+    h.input.observe = async () => ({ ...owned.native, events: [...owned.native.events, ...unrelated.native.events],
+      pendingInteractions: [owned.request, unrelated.request] })
+    await h.run()
+    assert.deepEqual(h.calls, ['revoke:original-principal'])
+  })
+
+  it('uses nativeTurnId as the root even when nativeMessageId identifies the final assistant', () => {
+    const native: NativeHistory = { nativeTurnId: root, nativeMessageId: 'final-assistant', correlationId: 'correlation',
+      pendingInteractions: [], events: [event('message.updated', { info: { id: 'final-assistant', parentID: root,
+        sessionID: open.nativeSessionId, role: 'assistant', finish: 'stop', time: { completed: 2 } } })],
+      terminalTurn: { correlationId: 'correlation', providerId: root, result: { outcome: 'succeeded' } } }
+    const evidence = reviewTurnEvidence(open, native, 'correlation', root)
+    assert.equal(evidence.providerId, root)
+    assert.equal(evidence.identityConflict, undefined)
+    assert.equal(evidence.terminal, true)
+  })
+})

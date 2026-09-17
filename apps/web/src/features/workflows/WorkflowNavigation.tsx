@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Plus } from 'lucide-react'
 import type { WorkflowDefinition } from '@graphql/contracts'
 
-import { useManagedWorkflowsQuery, useWorkspaceDetailsQuery } from '../../shared/api/query'
-import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
+import { useInteractionsQuery, useManagedWorkflowsQuery, useWorkspaceDetailsQuery } from '../../shared/api/query'
+import { Badge, Button, Icon } from '../../shared/ui/nocturne'
 import { isSessionWorkspaceId, useWorkspaceSessionStore } from '../workspaces/workspaceSessionStore'
 import { NewWorkflowDialog } from './NewWorkflowDialog'
 import { useSessionWorkflowStore } from './sessionWorkflowStore'
@@ -21,11 +20,13 @@ function WorkflowNavigationItem({
   workspaceId,
   active,
   session,
+  pendingCount,
 }: {
   workflow: WorkflowDefinition
   workspaceId: string
   active: boolean
   session: boolean
+  pendingCount: number | undefined
 }) {
   return (
     <li className="workflow-navigation-row">
@@ -43,6 +44,8 @@ function WorkflowNavigationItem({
         title={workflow.name}
       >
         <span className="nav-item-label">{workflow.name}</span>
+        {pendingCount === undefined && !session ? <span className="visually-hidden">Approval count unavailable</span> : null}
+        {pendingCount !== undefined && pendingCount > 0 ? <Badge tone="accent" className="workflow-approval-badge">{pendingCount}</Badge> : null}
       </Link>
     </li>
   )
@@ -59,6 +62,7 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
   const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false') && !sessionWorkspace
   const workflowsQuery = useWorkspaceDetailsQuery(workspaceId, { enabled: !sessionWorkspace && !realMode })
   const managedQuery = useManagedWorkflowsQuery(workspaceId, realMode)
+  const interactionsQuery = useInteractionsQuery({ workspaceId, status: 'pending', limit: 1 }, !sessionWorkspace)
   const sessionWorkspaceName = useWorkspaceSessionStore((state) =>
     state.workspaces.find((workspace) => workspace.id === workspaceId)?.name,
   )
@@ -67,25 +71,10 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
   const hiddenWorkflowIds = useSessionWorkflowStore((state) => state.hiddenWorkflowIds)
   const navigate = useNavigate()
   const [creating, setCreating] = useState(false)
-  const triggerRef = useRef<HTMLButtonElement>(null)
-  const dialogRef = useRef<HTMLDivElement>(null)
 
   const closeCreateDialog = useCallback(() => {
     setCreating(false)
-    window.setTimeout(() => triggerRef.current?.focus(), 0)
   }, [])
-
-  useEffect(() => {
-    if (!creating) return
-    dialogRef.current?.querySelector<HTMLElement>('input, textarea, button')?.focus()
-  }, [creating])
-
-  useDismissableSurface({
-    open: creating,
-    onDismiss: closeCreateDialog,
-    surfaceRef: dialogRef,
-    triggerRef,
-  })
 
   const sessions = Object.values(sessionWorkflows).filter(
     (workflow) => workflow.workspaceId === workspaceId,
@@ -111,12 +100,15 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
           {workflows.map((workflow) => {
             const active = workflow.id === activeWorkflowId
             const session = sessionIds.has(workflow.id)
+            const pendingCount = interactionsQuery.isError ? undefined : interactionsQuery.data?.pendingByWorkflow?.[workflow.id]
+              ?? (interactionsQuery.data?.pendingByWorkflow ? 0 : undefined)
             return <WorkflowNavigationItem
               key={workflow.id}
               workflow={workflow}
               workspaceId={workspaceId}
               active={active}
               session={session}
+              pendingCount={pendingCount}
             />
           })}
         </ul>
@@ -148,48 +140,37 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
         </p>
       ) : null}
 
-      <button
-        ref={triggerRef}
-        type="button"
+      <Button
         className="workflow-navigation-add"
+        variant="ghost"
         aria-label="New workflow"
         title="New workflow"
         aria-haspopup="dialog"
         aria-expanded={creating}
+        leading={<Icon name="plus" size={15} />}
         onClick={() => setCreating(true)}
       >
-        <Plus aria-hidden="true" size={15} />
         <span className="nav-item-label">New workflow</span>
-      </button>
+      </Button>
 
       {creating ? (
-        <div className="workflow-create-backdrop">
-          <div
-            ref={dialogRef}
-            className="workflow-create-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="new-workflow-title"
-          >
-            <NewWorkflowDialog
-              workspaceId={workspaceId}
-              workspaceName={sessionWorkspaceName ?? workflowsQuery.data?.workspace.name}
-              onCancel={closeCreateDialog}
-              onCreated={(workflowId) => {
-                closeCreateDialog()
-                void navigate({
-                  to: '/workspaces/$workspaceId',
-                  params: { workspaceId },
-                  search: (previous) => {
-                    const next = { ...previous, workflowId }
-                    delete next.agentId
-                    return next
-                  },
-                })
-              }}
-            />
-          </div>
-        </div>
+        <NewWorkflowDialog
+          workspaceId={workspaceId}
+          workspaceName={sessionWorkspaceName ?? workflowsQuery.data?.workspace.name}
+          onCancel={closeCreateDialog}
+          onCreated={(workflowId) => {
+            closeCreateDialog()
+            void navigate({
+              to: '/workspaces/$workspaceId',
+              params: { workspaceId },
+              search: (previous) => {
+                const next = { ...previous, workflowId }
+                delete next.agentId
+                return next
+              },
+            })
+          }}
+        />
       ) : null}
     </section>
   )

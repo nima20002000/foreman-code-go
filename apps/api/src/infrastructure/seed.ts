@@ -144,6 +144,7 @@ const workflow = WorkflowDefinitionSchema.parse({
   name: 'Real three-agent handoff',
   description: 'Codex produces facts, OpenCode summarizes them, and Codex reviews the stored summary.',
   executionCondition: { kind: 'manual', description: 'Started by the operator.' },
+  approval: { handler: 'user' },
   requiredAgentCount: 3,
   nodes: [
     { id: 'node-researcher', agentId: 'agent-researcher', name: 'Researcher', position: { x: 120, y: 160 } },
@@ -182,6 +183,7 @@ const workflowVersion = WorkflowVersionSchema.parse({
   agentConfigurationVersionIds: Object.fromEntries(
     parsedConfigurations.map((configuration) => [configuration.agentId, configuration.id]),
   ),
+  approval: workflow.approval,
   contentHash: contentHash(workflow),
   createdAt: seededAt,
 })

@@ -10,6 +10,15 @@ import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
 import { GraphEditor } from './GraphEditor'
 import { getGraphDraft, useGraphDraftStore, workflowDraftKey } from './store'
 
+// These existing tests isolate editor behavior; pr12-navigation.test.tsx covers the real router Link.
+vi.mock('@tanstack/react-router', async () => {
+  const actual = await vi.importActual<typeof import('@tanstack/react-router')>('@tanstack/react-router')
+  const React = await vi.importActual<typeof import('react')>('react')
+  return { ...actual, Link: ({ children, className, ...props }: {
+    children?: import('react').ReactNode; className?: string; 'aria-label'?: string; title?: string
+  }) => React.createElement('a', { href: '#', className, 'aria-label': props['aria-label'], title: props.title }, children) }
+})
+
 const agents: Agent[] = [{ id: 'agent-one', name: 'Researcher', configurationVersionId: 'config-one' }]
 const workflow: WorkflowDefinition = {
   id: 'workflow-controls', workspaceId: 'workspace-1', name: 'Execution controls',
@@ -96,21 +105,21 @@ it('explains the fourth-step safety limit and requires an explicit operator chan
   editor()
   const user = userEvent.setup()
   await user.click(screen.getByRole('button', { name: 'Add agent to graph' }))
-  await user.click(await screen.findByRole('button', { name: 'Codex' }))
+  await user.click(await screen.findByRole('button', { name: 'Orchestrator' }))
   expect(screen.getByRole('button', { name: 'Save graph' })).toBeDisabled()
   expect(getGraphDraft(workflowDraftKey(workflow.workspaceId, workflow.id))?.workflow.executionPolicy?.maxNodeExecutions).toBe(3)
-  await user.click(screen.getByRole('button', { name: 'Open actions for codex-001' }))
+  await user.click(screen.getByRole('button', { name: 'Workflow settings' }))
   const limit = screen.getByRole('spinbutton', { name: 'Maximum node executions' })
   expect(limit).toHaveAttribute('aria-invalid', 'true')
   fireEvent.change(limit, { target: { value: '4' } })
-  await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
+  await user.click(screen.getByRole('button', { name: 'Apply workflow limits to draft' }))
   expect(screen.getByRole('button', { name: 'Save graph' })).toBeEnabled()
   expect(getGraphDraft(workflowDraftKey(workflow.workspaceId, workflow.id))?.workflow.executionPolicy?.maxNodeExecutions).toBe(4)
 })
 
 it('does not show board save controls without a meaningful graph or agent change', () => {
   editor()
-  expect(screen.queryByRole('button', { name: 'Save agent settings' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Apply to draft' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Save graph' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument()
   expect(getGraphDraft(workflowDraftKey(workflow.workspaceId, workflow.id))).toBeUndefined()

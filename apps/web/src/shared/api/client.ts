@@ -7,6 +7,12 @@ import {
   GetAgentRequestSchema,
   GetAgentResponseSchema,
   GetHarnessDefaultsResponseSchema,
+  GetInteractionResponseSchema,
+  ListInteractionsRequestSchema,
+  ListInteractionsResponseSchema,
+  RespondToInteractionRequestSchema,
+  RespondToInteractionResponseSchema,
+  ScopedMcpDetectionSchema,
   GetConversationRequestSchema,
   GetConversationResponseSchema,
   GetRunRequestSchema,
@@ -21,6 +27,15 @@ import {
   ListMessagesResponseSchema,
   ListVisibleResourcesRequestSchema,
   ListVisibleResourcesResponseSchema,
+  CreateOperatorConversationRequestSchema,
+  CreateOperatorConversationResponseSchema,
+  ListOperatorConversationsResponseSchema,
+  GetOperatorConversationResponseSchema,
+  SendOperatorMessageRequestSchema,
+  SendOperatorMessageResponseSchema,
+  CancelOperatorTurnResponseSchema,
+  CancelOperatorTurnRequestSchema,
+  RespondOperatorInteractionRequestSchema,
   SaveWorkflowRequestSchema,
   SaveWorkflowResponseSchema,
   SaveHarnessDefaultsRequestSchema,
@@ -48,6 +63,7 @@ import {
   type ListMessagesResponse,
   type ListVisibleResourcesRequest,
   type ListVisibleResourcesResponse,
+  type OperatorConversationState,
   type SaveWorkflowRequest,
   type SaveWorkflowResponse,
   type SaveHarnessDefaultsRequest,
@@ -80,6 +96,12 @@ import {
   HarnessCatalogSchema,
   HarnessDefaultsUpdateInputSchema,
   HarnessDefaultsUpdateResultSchema,
+  ManagedAgentDefaultsSchema,
+  ManagedWorkflowDefaultsSchema,
+  AgentDefaultsUpdateInputSchema,
+  AgentDefaultsUpdateResultSchema,
+  WorkflowDefaultsUpdateInputSchema,
+  WorkflowDefaultsUpdateResultSchema,
   OperatorEnrollmentRequestSchema,
   OperatorEnrollmentResponseSchema,
   WorkspaceArchiveInputSchema,
@@ -263,6 +285,26 @@ export class ApiClient {
     return parsed.data
   }
 
+  private userApprovalOptions(token: string, options: RequestOptions = {}): RequestOptions {
+    const accepted = token.trim()
+    if (!accepted || /\s/.test(accepted)) throw new ApiError({ code: 'USER_CREDENTIAL_REQUIRED', message: 'Enter a valid User bearer credential, not an Operator session.' }, 401)
+    const headers = new Headers(options.headers)
+    headers.set('Authorization', `Bearer ${accepted}`)
+    // A User request must never fall back to the Operator browser cookie.
+    return { ...options, headers, credentials: 'omit' }
+  }
+
+  getUserInteraction(interactionId: string, token: string, options?: RequestOptions) {
+    return this.request(`/api/user/interactions/${toPath(interactionId)}`, GetInteractionResponseSchema,
+      this.userApprovalOptions(token, options))
+  }
+
+  respondToUserInteraction(token: string, input: z.infer<typeof RespondToInteractionRequestSchema>, options?: RequestOptions) {
+    const request = parseRequest(RespondToInteractionRequestSchema, input)
+    return this.request(`/api/user/interactions/${toPath(request.interactionId)}/respond`, RespondToInteractionResponseSchema,
+      { ...this.userApprovalOptions(token, options), method: 'POST', body: request })
+  }
+
   enrollOperator(token: string, options?: RequestOptions) {
     const input = parseRequest(OperatorEnrollmentRequestSchema, { token })
     return this.request('/api/auth/enroll', OperatorEnrollmentResponseSchema, { ...options, method: 'POST', body: input })
@@ -417,6 +459,54 @@ export class ApiClient {
     return this.request('/api/management/harnesses/defaults', HarnessDefaultsUpdateResultSchema, { ...options, method: 'PUT', body: request })
   }
 
+  getManagedAgentDefaults(options?: RequestOptions) {
+    return this.request('/api/management/settings/agents', ManagedAgentDefaultsSchema, options)
+  }
+
+  updateManagedAgentDefaults(input: z.input<typeof AgentDefaultsUpdateInputSchema>, options?: RequestOptions) {
+    const request = parseRequest(AgentDefaultsUpdateInputSchema, input)
+    return this.request('/api/management/settings/agents', AgentDefaultsUpdateResultSchema, { ...options, method: 'PUT', body: request })
+  }
+
+  getManagedWorkflowDefaults(options?: RequestOptions) {
+    return this.request('/api/management/settings/workflows', ManagedWorkflowDefaultsSchema, options)
+  }
+
+  getScopedMcpDetection(workspaceId: string, harness: 'codex' | 'opencode', options?: RequestOptions) {
+    return this.request(
+      `/api/management/workspaces/${toPath(workspaceId)}/harnesses/${harness}/mcp-detection`,
+      ScopedMcpDetectionSchema,
+      options,
+    )
+  }
+
+  updateManagedWorkflowDefaults(input: z.input<typeof WorkflowDefaultsUpdateInputSchema>, options?: RequestOptions) {
+    const request = parseRequest(WorkflowDefaultsUpdateInputSchema, input)
+    return this.request('/api/management/settings/workflows', WorkflowDefaultsUpdateResultSchema, { ...options, method: 'PUT', body: request })
+  }
+
+  listInteractions(input: z.input<typeof ListInteractionsRequestSchema>, options?: RequestOptions) {
+    const request = parseRequest(ListInteractionsRequestSchema, input)
+    const query = new URLSearchParams()
+    if (request.cursor) query.set('cursor', request.cursor)
+    query.set('limit', String(request.limit))
+    if (request.workspaceId) query.set('workspaceId', request.workspaceId)
+    if (request.workflowId) query.set('workflowId', request.workflowId)
+    if (request.status) query.set('status', request.status)
+    return this.request(`/api/management/interactions?${query.toString()}`, ListInteractionsResponseSchema, options)
+  }
+
+  getInteraction(interactionId: string, options?: RequestOptions) {
+    return this.request(`/api/management/interactions/${toPath(interactionId)}`, GetInteractionResponseSchema, options)
+  }
+
+  respondToInteraction(input: z.input<typeof RespondToInteractionRequestSchema>, options?: RequestOptions) {
+    const request = parseRequest(RespondToInteractionRequestSchema, input)
+    return this.request(`/api/interactions/${toPath(request.interactionId)}/respond`, RespondToInteractionResponseSchema, {
+      ...options, method: 'POST', body: request,
+    })
+  }
+
   getWorkspaceDetails(input: WorkspaceDetailsRequest, options?: RequestOptions) {
     const request = parseRequest(WorkspaceDetailsRequestSchema, input)
     return this.request<WorkspaceDetailsResponse>(
@@ -511,6 +601,34 @@ export class ApiClient {
     )
   }
 
+  listOperatorConversations(options?: RequestOptions) {
+    return this.request('/api/operator/conversations', ListOperatorConversationsResponseSchema, options)
+  }
+
+  createOperatorConversation(input: { title?: string } = {}, options?: RequestOptions) {
+    const request = parseRequest(CreateOperatorConversationRequestSchema, input)
+    return this.request('/api/operator/conversations', CreateOperatorConversationResponseSchema, { ...options, method: 'POST', body: request })
+  }
+
+  getOperatorConversation(conversationId: string, options?: RequestOptions): Promise<OperatorConversationState> {
+    return this.request(`/api/operator/conversations/${toPath(conversationId)}`, GetOperatorConversationResponseSchema, options)
+  }
+
+  sendOperatorMessage(conversationId: string, input: unknown, options?: RequestOptions) {
+    const request = parseRequest(SendOperatorMessageRequestSchema, input)
+    return this.request(`/api/operator/conversations/${toPath(conversationId)}/messages`, SendOperatorMessageResponseSchema, { ...options, method: 'POST', body: request })
+  }
+
+  cancelOperatorTurn(conversationId: string, requestId: string, options?: RequestOptions) {
+    const request = parseRequest(CancelOperatorTurnRequestSchema, { requestId })
+    return this.request(`/api/operator/conversations/${toPath(conversationId)}/cancel`, CancelOperatorTurnResponseSchema, { ...options, method: 'POST', body: request })
+  }
+
+  respondOperatorInteraction(conversationId: string, input: z.infer<typeof RespondOperatorInteractionRequestSchema>, options?: RequestOptions) {
+    const request = parseRequest(RespondOperatorInteractionRequestSchema, input)
+    return this.request(`/api/operator/conversations/${toPath(conversationId)}/responses`, CancelOperatorTurnResponseSchema, { ...options, method: 'POST', body: request })
+  }
+
   listConversations(input: ListConversationsRequest, options?: RequestOptions) {
     const request = parseRequest(ListConversationsRequestSchema, input)
     return this.request<ListConversationsResponse>(
@@ -585,6 +703,12 @@ export const saveWorkflow = apiClient.saveWorkflow.bind(apiClient)
 export const saveGraph = apiClient.saveGraph.bind(apiClient)
 export const startWorkflowRun = apiClient.startWorkflowRun.bind(apiClient)
 export const getRun = apiClient.getRun.bind(apiClient)
+export const listOperatorConversations = apiClient.listOperatorConversations.bind(apiClient)
+export const createOperatorConversation = apiClient.createOperatorConversation.bind(apiClient)
+export const getOperatorConversation = apiClient.getOperatorConversation.bind(apiClient)
+export const sendOperatorMessage = apiClient.sendOperatorMessage.bind(apiClient)
+export const cancelOperatorTurn = apiClient.cancelOperatorTurn.bind(apiClient)
+export const respondOperatorInteraction = apiClient.respondOperatorInteraction.bind(apiClient)
 export const listConversations = apiClient.listConversations.bind(apiClient)
 export const getConversation = apiClient.getConversation.bind(apiClient)
 export const listMessages = apiClient.listMessages.bind(apiClient)
@@ -614,3 +738,11 @@ export const startManagedRun = apiClient.startManagedRun.bind(apiClient)
 export const stopManagedRun = apiClient.stopManagedRun.bind(apiClient)
 export const getManagedHarnessCatalog = apiClient.getManagedHarnessCatalog.bind(apiClient)
 export const updateManagedHarnessDefaults = apiClient.updateManagedHarnessDefaults.bind(apiClient)
+export const getManagedAgentDefaults = apiClient.getManagedAgentDefaults.bind(apiClient)
+export const updateManagedAgentDefaults = apiClient.updateManagedAgentDefaults.bind(apiClient)
+export const getManagedWorkflowDefaults = apiClient.getManagedWorkflowDefaults.bind(apiClient)
+export const updateManagedWorkflowDefaults = apiClient.updateManagedWorkflowDefaults.bind(apiClient)
+export const getScopedMcpDetection = apiClient.getScopedMcpDetection.bind(apiClient)
+export const listInteractions = apiClient.listInteractions.bind(apiClient)
+export const getInteraction = apiClient.getInteraction.bind(apiClient)
+export const respondToInteraction = apiClient.respondToInteraction.bind(apiClient)

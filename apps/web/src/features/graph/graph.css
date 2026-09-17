@@ -26,7 +26,6 @@
   background: var(--graph-panel);
 }
 
-.workflow-graph-kicker,
 .workflow-agent-node-eyebrow {
   margin: 0 0 7px;
   color: var(--graph-muted);
@@ -35,14 +34,6 @@
   letter-spacing: 0.14em;
   line-height: 1.4;
   text-transform: uppercase;
-}
-
-.workflow-graph-state h2 {
-  margin: 0.25rem 0 0;
-  color: var(--graph-ink);
-  font-size: clamp(1.1rem, 1.8vw, 1.4rem);
-  letter-spacing: -0.025em;
-  line-height: 1.2;
 }
 
 .workflow-graph-help {
@@ -106,40 +97,6 @@
   opacity: 0.55;
 }
 
-.workflow-graph-action {
-  min-height: 36px;
-  padding: 0 12px;
-  border: 1px solid var(--graph-line-strong);
-  border-radius: 2px;
-  background: var(--graph-panel);
-  color: var(--graph-ink);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.8125rem;
-  font-weight: 700;
-}
-
-.workflow-graph-action:hover:not(:disabled) {
-  border-color: var(--graph-ink);
-  background: var(--graph-subtle);
-}
-
-.workflow-graph-action:disabled {
-  cursor: not-allowed;
-  opacity: 0.48;
-}
-
-.workflow-graph-action-primary {
-  border-color: var(--graph-ink);
-  background: var(--graph-ink);
-  color: var(--graph-accent-contrast);
-}
-
-.workflow-graph-action-primary:hover:not(:disabled) {
-  border-color: var(--color-accent-strong);
-  background: var(--color-accent-strong);
-}
-
 .workflow-graph-notifications {
   position: absolute;
   z-index: 6;
@@ -154,19 +111,6 @@
   overflow: hidden;
   transform: translateX(-50%);
   pointer-events: none;
-}
-
-.workflow-graph-toast {
-  max-width: 100%;
-  margin: 0;
-  padding: 0.75rem 0.875rem;
-  border: 1px solid var(--graph-line-strong);
-  border-radius: 3px;
-  background: var(--graph-panel);
-  color: var(--graph-ink);
-  font-size: 0.8125rem;
-  line-height: 1.45;
-  box-shadow: 0 0.375rem 1.25rem rgb(0 0 0 / 22%);
 }
 
 .workflow-graph-connection-status {
@@ -321,6 +265,17 @@
   animation: agent-picker-popover-in var(--motion-duration) var(--motion-ease-out) both;
 }
 
+.workflow-settings-popover {
+  position:absolute; z-index:10; top:4.25rem; left:1.25rem; width:min(22rem,calc(100% - 2.5rem));
+  display:grid; gap:.9rem; padding:1rem; border:1px solid var(--graph-line-strong); border-radius:3px;
+  color:var(--graph-ink); background:var(--graph-panel); box-shadow:0 1rem 3rem rgb(0 0 0 / 32%);
+}
+.workflow-settings-popover header { display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; }
+.workflow-settings-popover h2 { margin:.2rem 0 0; font-size:1rem; }.workflow-settings-popover header button { border:0; color:inherit; background:transparent; cursor:pointer; }
+.workflow-settings-popover label { display:grid; gap:.35rem; color:var(--graph-muted); font-size:.75rem; font-weight:700; }
+.workflow-settings-popover select { width:100%; padding:.55rem; border:1px solid var(--graph-line-strong); border-radius:2px; color:var(--graph-ink); background:var(--graph-panel); }
+.workflow-settings-popover p { margin:0; color:var(--graph-muted); font-size:.75rem; line-height:1.45; }
+
 .agent-picker-popover[data-presence='exiting'] {
   animation: agent-picker-popover-out var(--motion-duration-fast) ease-in both;
   pointer-events: none;
@@ -343,31 +298,6 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.75rem;
-}
-
-.agent-picker-state {
-  display: grid;
-  gap: 0.625rem;
-  margin: 0;
-  color: var(--graph-muted);
-  font-size: 0.8125rem;
-}
-
-.agent-picker-state p {
-  margin: 0;
-}
-
-.agent-picker-state button {
-  min-height: 2.25rem;
-  justify-self: start;
-  padding: 0.45rem 0.75rem;
-  border: 1px solid var(--graph-line-strong);
-  border-radius: 2px;
-  color: var(--graph-ink);
-  background: var(--graph-panel);
-  cursor: pointer;
-  font: inherit;
-  font-weight: 700;
 }
 
 .harness-picker-grid > button {
@@ -415,14 +345,6 @@
     opacity: 0;
     transform: translateY(-4px);
   }
-}
-
-.workflow-graph-toast-success {
-  border-color: var(--graph-accent);
-}
-
-.workflow-graph-toast-error {
-  border-color: var(--color-danger, #c65f5f);
 }
 
 .workflow-graph-canvas {
@@ -485,7 +407,7 @@
 }
 
 .workflow-graph-canvas .react-flow__edge-path {
-  stroke: var(--graph-edge);
+  stroke: var(--n-border-strong);
   stroke-width: 1.6;
 }
 
@@ -496,8 +418,9 @@
 }
 
 .workflow-graph-canvas .react-flow__edge:focus .react-flow__edge-path,
-.workflow-graph-canvas .react-flow__edge:focus-visible .react-flow__edge-path {
-  stroke: var(--graph-focus);
+.workflow-graph-canvas .react-flow__edge:focus-visible .react-flow__edge-path,
+.workflow-graph-canvas .react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--n-accent);
 }
 
 .workflow-graph-edge-control {
@@ -507,7 +430,9 @@
 .workflow-graph-edge-remove {
   display: grid;
   width: 100%;
+  min-width: 0;
   height: 100%;
+  min-height: 0;
   place-items: center;
   padding: 0;
   border: 1px solid var(--graph-line-strong);
@@ -579,7 +504,6 @@
   }
 }
 
-.workflow-graph-toast,
 .workflow-graph-connection-status {
   animation: workflow-graph-pop-in var(--motion-duration) var(--motion-ease-out) both;
 }
@@ -597,26 +521,26 @@
 }
 
 .workflow-graph-canvas .react-flow__edge-text {
-  fill: var(--graph-muted);
-  font-size: 9px;
+  fill: var(--n-muted);
+  font-family: var(--n-font);
+  font-size: 10px;
+  font-weight: 600;
 }
 
 .workflow-graph-canvas .react-flow__edge-textbg {
-  fill: var(--graph-canvas);
+  fill: var(--n-surface);
+  stroke: var(--n-border);
+  stroke-width: 1px;
 }
 
 .workflow-agent-node {
   position: relative;
   width: 100%;
   height: 100%;
-  min-width: 214px;
-  min-height: 92px;
-  border: 1px solid var(--graph-line-strong);
-  border-radius: 2px;
-  background: var(--graph-panel);
-  transition:
-    border-color var(--motion-duration-fast) ease,
-    box-shadow var(--motion-duration-fast) ease;
+  min-width: 208px;
+  min-height: 112px;
+  border-radius: 11px;
+  background: transparent;
 }
 
 .workflow-agent-node-entering {
@@ -636,20 +560,16 @@
 }
 
 .workflow-agent-node-departing {
-  display: grid;
   width: 100%;
   height: 100%;
-  min-width: 214px;
-  min-height: 92px;
-  align-content: center;
-  gap: 0.75rem;
-  padding: 0.875rem 3rem 0.875rem 1rem;
-  border: 1px solid var(--graph-line-strong);
-  border-radius: 2px;
-  color: var(--graph-ink);
-  background: var(--graph-panel);
+  min-width: 208px;
+  min-height: 112px;
   pointer-events: none;
   animation: workflow-node-depart var(--motion-duration-fast) ease-in both;
+}
+
+.workflow-agent-node-departing > .n-node {
+  height: 100%;
 }
 
 @keyframes workflow-node-depart {
@@ -659,24 +579,13 @@
   }
 }
 
-.workflow-agent-node:hover,
-.workflow-agent-node:focus-within {
-  border-color: var(--graph-ink);
+.workflow-agent-node-active > .n-node {
+  border-color: var(--n-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--n-accent) 16%, transparent), 0 8px 24px #0005;
 }
 
-.workflow-agent-node-selected {
-  border-color: var(--graph-focus);
-  outline: 1px solid var(--graph-focus);
-  outline-offset: 2px;
-}
-
-.workflow-agent-node-active {
-  border-color: var(--graph-focus);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--graph-focus) 20%, transparent);
-}
-
-.workflow-agent-node[data-connection-armed='true'] {
-  border-color: var(--graph-focus);
+.workflow-agent-node[data-connection-armed='true'] > .n-node {
+  border-color: var(--n-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--graph-focus) 24%, transparent);
 }
 
@@ -696,36 +605,34 @@
   display: flex;
   width: 100%;
   height: 100%;
-  min-height: 90px;
+  min-height: 112px;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 0.75rem;
-  padding: 0.875rem 3rem 0.875rem 1rem;
-  border: 0;
-  border-radius: 1px;
-  background: transparent;
-  color: var(--graph-ink);
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
+  justify-content: flex-start;
+  overflow: hidden;
 }
 
-.workflow-agent-node-meta {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  color: var(--graph-muted);
-  font-size: 0.625rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  line-height: 1.3;
-  text-transform: uppercase;
+.workflow-agent-node-button .n-node-top {
+  width: 100%;
+  flex: 0 0 auto;
 }
 
-.workflow-agent-node-meta span + span::before {
-  margin-right: 0.625rem;
-  color: var(--graph-line-strong);
-  content: '·';
+.workflow-agent-node-button .n-node-top strong {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.workflow-agent-node-button .n-node-top small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-agent-node-button .n-node-bottom {
+  width: 100%;
+  flex: 0 0 auto;
+  margin-top: 8px;
 }
 
 .workflow-agent-node-menu-trigger {
@@ -735,7 +642,9 @@
   right: 0.5rem;
   display: grid;
   width: 2rem;
+  min-width: 2rem;
   height: 2rem;
+  min-height: 2rem;
   place-items: center;
   padding: 0;
   border: 1px solid transparent;
@@ -743,6 +652,14 @@
   color: var(--graph-muted);
   background: transparent;
   cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-duration-fast) ease, background var(--motion-duration-fast) ease;
+}
+
+.workflow-agent-node:hover .workflow-agent-node-menu-trigger,
+.workflow-agent-node-menu-trigger:focus-visible,
+.workflow-agent-node-menu-trigger[aria-expanded='true'] {
+  opacity: 1;
 }
 
 .workflow-agent-node-menu-trigger:hover,
@@ -794,32 +711,13 @@
   opacity: 0.62;
 }
 
-.workflow-agent-node-button:focus-visible {
-  outline: 2px solid var(--graph-focus);
-  outline-offset: -4px;
-}
-
-.workflow-agent-node-label {
-  font-size: 1rem;
-  font-weight: 760;
-  letter-spacing: -0.018em;
-  line-height: 1.2;
-}
-
-.workflow-agent-node-run-state {
-  color: var(--graph-focus);
-  font-size: 0.6875rem;
-  font-weight: 700;
-  line-height: 1.2;
-  text-transform: capitalize;
-}
-
 .workflow-agent-node .react-flow__handle {
   z-index: 2;
-  width: 8px;
-  height: 8px;
-  border: 2px solid var(--graph-canvas);
-  background: var(--graph-handle);
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--n-canvas);
+  background: var(--n-border-strong);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--n-border-strong) 45%, transparent);
 }
 
 /* One handle per side serves every connection on that side. */
@@ -831,7 +729,9 @@
 
 .workflow-agent-node:hover .workflow-agent-node-handle,
 .workflow-agent-node .workflow-agent-node-handle.connectionindicator {
-  background: var(--graph-focus);
+  border-color: var(--n-canvas);
+  background: var(--n-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--n-accent) 18%, transparent);
 }
 
 .workflow-graph-state {
@@ -842,17 +742,6 @@
   border: 1px solid var(--graph-line-strong);
   border-radius: 2px;
   background: var(--graph-panel);
-}
-
-.workflow-graph-state .workflow-graph-kicker {
-  margin-bottom: 0;
-}
-
-.workflow-graph-state p:last-child {
-  max-width: 480px;
-  margin-top: 0.5rem;
-  color: var(--graph-muted);
-  line-height: 1.55;
 }
 
 .workflow-graph-state-error {
@@ -876,4 +765,18 @@
   .agent-picker-popover {
     top: 7.75rem;
   }
+}
+
+/* Both toolbar surfaces use the same anchor and fit within the remaining canvas. */
+.workflow-graph-canvas { --graph-popover-top: 4.25rem; }
+.workflow-graph-canvas .agent-picker-popover,
+.workflow-graph-canvas .workflow-settings-popover {
+  top: var(--graph-popover-top);
+  left: 1.25rem;
+  max-height: calc(100% - var(--graph-popover-top) - .75rem);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+@media (max-width: 720px) {
+  .workflow-graph-canvas { --graph-popover-top: 7.75rem; }
 }

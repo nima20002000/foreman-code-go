@@ -1,8 +1,10 @@
 import {
   DEFAULT_HARNESS_DEFAULTS,
+  AgentEffortSchema,
   type Agent,
   type HarnessConfiguration,
   type HarnessDefaults,
+  type AgentProductRole,
 } from '@graphql/contracts'
 
 export const CODEX_MODELS: readonly string[] = [
@@ -24,7 +26,7 @@ export function modelOptions(harness: NonNullable<Agent['harness']>): readonly s
 
 export function initialModel(agent: Agent, harness: NonNullable<Agent['harness']>): string {
   const options = modelOptions(harness)
-  return agent.model && options.includes(agent.model) ? agent.model : options[0]!
+  return (agent.harnessConfiguration?.harness === harness ? agent.harnessConfiguration.model : agent.model) ?? options[0]!
 }
 
 export function effortOptions(
@@ -36,6 +38,8 @@ export function effortOptions(
 }
 
 export const effortLabels: Record<NonNullable<Agent['effort']>, string> = {
+  none: 'None',
+  minimal: 'Minimal',
   low: 'Low',
   medium: 'Medium',
   high: 'High',
@@ -48,7 +52,7 @@ export function configuredHarness(
   agent: Agent,
   harness: NonNullable<Agent['harness']>,
   model: string,
-  effort: NonNullable<Agent['effort']>,
+  effort: string,
   fastMode: boolean,
   sandbox: 'read-only' | 'workspace-write' | 'danger-full-access',
   creationDefaults?: HarnessDefaults,
@@ -64,14 +68,16 @@ export function configuredHarness(
     return {
       ...opencode,
       model,
-      variant: effort === 'low' || effort === 'high' || effort === 'max' ? effort : 'max',
+      // A custom provider variant cannot be represented by the legacy effort control.
+      variant: !['low', 'high', 'max'].includes(opencode.variant) ? opencode.variant
+        : effort === 'low' || effort === 'high' || effort === 'max' ? effort : opencode.variant,
     }
   }
   const codex = current.harness === 'codex' ? current : DEFAULT_HARNESS_DEFAULTS.codex
   return {
     ...codex,
     model,
-    reasoningEffort: effort,
+    reasoningEffort: AgentEffortSchema.parse(effort),
     sandbox,
     serviceTier: fastMode ? 'priority' : 'standard',
   }
@@ -82,20 +88,34 @@ export function defaultAgentForHarness(
   id: string,
   name: string,
   configuration: HarnessConfiguration = DEFAULT_HARNESS_DEFAULTS[harness],
+  productRole?: Exclude<AgentProductRole, 'operator'>,
 ): Agent {
-  const exact = configuration.harness === harness
+  const exact = structuredClone(configuration.harness === harness
     ? configuration
-    : DEFAULT_HARNESS_DEFAULTS[harness]
+    : DEFAULT_HARNESS_DEFAULTS[harness])
+  const legacyEffort = exact.harness === 'codex'
+    ? exact.reasoningEffort
+    : AgentEffortSchema.safeParse(exact.variant).data
   return {
     id,
     name,
     role: 'Agent',
+    ...(productRole ? { productRole, role: productRole === 'orchestrator' ? 'Orchestrator' : 'Coder' } : {}),
     harness,
     model: exact.model,
-    effort: exact.harness === 'codex' ? exact.reasoningEffort : exact.variant,
+    effort: legacyEffort,
     ...(exact.harness === 'codex' ? { fastMode: exact.serviceTier === 'priority' } : {}),
     harnessConfiguration: exact,
   }
+}
+
+export function nextCoderAgentName(agents: readonly Agent[]): string {
+  const highest = agents.reduce((current, agent) => {
+    const match = /^coder-(\d{3,})$/i.exec(agent.name.trim())
+    const number = match ? Number(match[1]) : 0
+    return Number.isSafeInteger(number) ? Math.max(current, number) : current
+  }, 0)
+  return `coder-${String(highest + 1).padStart(3, '0')}`
 }
 
 export function nextHarnessAgentName(

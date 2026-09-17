@@ -12,9 +12,9 @@ export function toolResult(value: unknown): CallToolResult {
   }
 }
 
-export function toolFailure(error: unknown): CallToolResult {
+export function toolFailure(error: unknown, internalMessage = 'The Operator service could not complete the request.'): CallToolResult {
   const body = error instanceof DomainError
     ? { error: { code: error.code, message: error.message, ...(error.details ? { details: error.details } : {}) } }
-    : { error: { code: 'INTERNAL_ERROR', message: 'The Operator service could not complete the request.' } }
+    : { error: { code: 'INTERNAL_ERROR', message: internalMessage } }
   return { isError: true, content: [{ type: 'text', text: JSON.stringify(body) }], structuredContent: body }
 }

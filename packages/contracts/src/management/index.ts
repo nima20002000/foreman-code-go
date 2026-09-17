@@ -1,10 +1,16 @@
 import { z } from "zod";
 
+export * from "./extensions.js";
+export * from "./harnessSettings.js";
+export * from "./settingsExperience.js";
+
 import {
   AgentSchema,
+  AgentDefaultsSchema,
   CodexHarnessConfigurationSchema,
   OpenCodeHarnessConfigurationSchema,
   HarnessQualificationSchema,
+  HarnessConfigurationSchema,
   GetRunResponseSchema,
   ExecutionLocationSchema,
   RunActivitySchema,
@@ -12,20 +18,45 @@ import {
   RunInputSchema,
   TimestampSchema,
   WorkflowDefinitionSchema,
+  WorkflowApprovalConfigurationSchema,
   WorkflowNodeSchema,
   WorkflowEdgeSchema,
   WorkflowRunSchema,
   WorkflowVersionSchema,
   WorkspaceSchema,
+  DurableInteractionSchema,
+  InteractionStatusSchema,
+  ApprovalHandlerSchema,
+  WorkflowDefaultsSchema,
 } from "../index.js";
 
-export const ManagementAudienceSchema = z.enum(["operator", "worker"]);
+export const ManagementAudienceSchema = z.enum(["operator", "worker", "user"]);
 export type ManagementAudience = z.infer<typeof ManagementAudienceSchema>;
 
 export const ManagementActionSchema = z.enum([
+  "agents:create",
+  "agents:update",
+  "agents:archive",
+  "agents:restore",
+  "workspaces:restore",
+  "workflows:restore",
+  "workspace_locations:provision",
+  "skills:read",
+  "skills:publish",
+  "workflow_triggers:read",
+  "workflow_triggers:update",
+  "workflow_triggers:fire",
+  "runs:resume",
+
   "capabilities:read",
+  "operator_chat:read",
+  "operator_chat:write",
+  "operator_chat:cancel",
+  "operator_chat:respond",
   "harnesses:read",
   "harnesses:update",
+  "settings:read",
+  "settings:update",
   "workspaces:read",
   "workspaces:create",
   "workspaces:update",
@@ -44,6 +75,8 @@ export const ManagementActionSchema = z.enum([
   "runs:read",
   "runs:start",
   "runs:stop",
+  "interactions:read",
+  "interactions:respond",
 ]);
 export type ManagementAction = z.infer<typeof ManagementActionSchema>;
 
@@ -69,16 +102,35 @@ export const ManagementPrincipalSchema = z
     id: IdSchema,
     name: z.string().trim().min(1),
     audience: ManagementAudienceSchema,
+    /** Immutable backend-issued logical Agent subject for worker/App principals. */
+    agentId: IdSchema.optional(),
     grants: z.array(ManagementGrantSchema),
     expiresAt: TimestampSchema,
     revokedAt: TimestampSchema.nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.audience === "worker" && !value.agentId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["agentId"], message: "worker principals require an immutable Agent subject" });
+    }
+    if (value.audience !== "worker" && value.agentId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["agentId"], message: "Operator principals do not impersonate board Agents" });
+    }
+  });
 export type ManagementPrincipal = z.infer<typeof ManagementPrincipalSchema>;
 
-export const ManagementOpenCodeHarnessConfigurationSchema = OpenCodeHarnessConfigurationSchema.extend({
-  autoApprove: z.literal(false),
+/** Browser identity readback. No bearer token, cookie, or token hash is returned. */
+export const BrowserAccessSessionSchema = z.object({
+  principal: z.object({
+    id: IdSchema, name: z.string().min(1), expiresAt: TimestampSchema,
+    grants: z.array(ManagementGrantSchema),
+  }).strict(),
 }).strict();
+export const BrowserAccessLogoutSchema = z.object({ signedOut: z.literal(true) }).strict();
+
+// Native automatic handling is supported by the server. The shared schema
+// still enforces agreement between autoApprove and Advanced permission handling.
+export const ManagementOpenCodeHarnessConfigurationSchema = OpenCodeHarnessConfigurationSchema;
 export const ManagementHarnessConfigurationSchema = z.discriminatedUnion("harness", [
   CodexHarnessConfigurationSchema,
   ManagementOpenCodeHarnessConfigurationSchema,
@@ -231,10 +283,11 @@ export type WorkflowArchiveInput = z.infer<typeof WorkflowArchiveInputSchema>;
 export const AgentListInputSchema = z.object({
   workspaceId: IdSchema,
   workflowId: IdSchema.optional(),
+  includeArchived: z.boolean().default(false),
   ...ManagementPageInputSchema.omit({ includeArchived: true }).shape,
 }).strict();
 export const AgentGetInputSchema = z.object({ workspaceId: IdSchema, agentId: IdSchema }).strict();
-export const ManagedAgentSchema = z.object({ agent: AgentSchema, metadataRevision: ExpectedRevisionSchema }).strict();
+export const ManagedAgentSchema = z.object({ agent: AgentSchema, metadataRevision: ExpectedRevisionSchema, archivedAt: TimestampSchema.nullable().optional() }).strict();
 export const ManagedAgentPageSchema = z.object({ items: z.array(ManagedAgentSchema), pageInfo: ManagementPageInfoSchema }).strict();
 export const ManagedAgentDetailSchema = ManagedAgentSchema.extend({ workflowIds: z.array(IdSchema) }).strict();
 
@@ -244,8 +297,23 @@ const AgentAddOperationSchema = z.object({
   nodeId: IdSchema,
   name: z.string().trim().min(1).max(200),
   nodeName: z.string().trim().min(1).max(200).optional(),
-  harness: z.enum(["codex", "opencode"]),
+  productRole: z.enum(["orchestrator", "coder"]).optional(),
+  /** Omit to copy the role template. A different harness requires an explicit configuration. */
+  harness: z.enum(["codex", "opencode"]).optional(),
+  configuration: ManagementHarnessConfigurationSchema.optional(),
+  prompt: AgentSchema.shape.prompt,
+  assignedSkills: AgentSchema.shape.assignedSkills,
+  description: z.string().max(10_000).optional(),
+  role: z.string().trim().min(1).max(200).optional(),
   position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict().optional(),
+}).strict();
+/** Select a product template; callers cannot fabricate a privileged Agent role. */
+const AgentAddFromTemplateOperationSchema = AgentAddOperationSchema.omit({ harness: true }).extend({
+  type: z.literal("agent.add_from_template"), template: z.enum(["orchestrator", "coder"]),
+}).strict().refine((value) => value.productRole === undefined || value.productRole === value.template,
+  "productRole must match the selected template");
+const WorkflowApprovalOperationSchema = z.object({
+  type: z.literal("workflow.set_approval"), approval: WorkflowApprovalConfigurationSchema,
 }).strict();
 const AgentRenameOperationSchema = z.object({
   type: z.literal("agent.rename"), agentId: IdSchema,
@@ -307,6 +375,16 @@ const ResetExecutionLimitsOperationSchema = z.object({ type: z.literal("workflow
 const ResetRequiredAgentCountOperationSchema = z.object({ type: z.literal("workflow.reset_required_agent_count") }).strict();
 
 export const GraphDraftOperationSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("agent.attach"), agentId: IdSchema, nodeId: IdSchema,
+    expectedAgentRevision: ExpectedRevisionSchema, expectedConfigurationVersionId: IdSchema,
+    name: z.string().trim().min(1).max(200).optional(),
+    position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict().optional(),
+  }).strict(),
+  z.object({ type: z.literal("workflow.restore_version"), versionId: IdSchema }).strict(),
+  z.object({ type: z.literal("workflow.set_execution_condition"),
+    executionCondition: WorkflowDefinitionSchema.shape.executionCondition,
+  }).strict(),
+  WorkflowApprovalOperationSchema,
   NodeReplaceOperationSchema,
   NodeOrderOperationSchema,
   EdgePutOperationSchema,
@@ -315,6 +393,7 @@ export const GraphDraftOperationSchema = z.discriminatedUnion("type", [
   RequiredAgentCountOperationSchema,
   ResetRequiredAgentCountOperationSchema,
   AgentAddOperationSchema,
+  AgentAddFromTemplateOperationSchema,
   AgentRenameOperationSchema,
   AgentConfigureOperationSchema,
   AgentCloneOperationSchema,
@@ -339,6 +418,7 @@ export const GraphDraftSchema = z.object({
   publishedRevision: ExpectedRevisionSchema.nullable().optional(),
   graph: WorkflowDefinitionSchema,
   stagedAgents: z.array(StagedAgentSchema),
+  sourceAgentPins: z.array(z.object({agentId: IdSchema, metadataRevision: ExpectedRevisionSchema, configurationVersionId: IdSchema}).strict()).optional(),
   updatedByPrincipalId: IdSchema,
   updatedAt: TimestampSchema,
 }).strict();
@@ -377,6 +457,15 @@ export const HarnessDefaultsUpdateInputSchema = z.object({
   ...RevisionMutationFields,
   defaults: ManagementHarnessDefaultsSchema,
 }).strict();
+export const HarnessConfigurationCheckInputSchema = z.object({
+  configuration: HarnessConfigurationSchema,
+}).strict();
+export const HarnessConfigurationCheckResultSchema = z.object({
+  configuration: HarnessConfigurationSchema,
+  qualification: HarnessQualificationSchema,
+  checkedAt: TimestampSchema,
+}).strict();
+
 export const HarnessGetInputSchema = z.object({ harness: z.enum(["codex", "opencode"]) }).strict();
 export const HarnessCatalogEntrySchema = z.object({
   harness: z.enum(["codex", "opencode"]),
@@ -391,6 +480,21 @@ export const HarnessDefaultsUpdateResultSchema = z.object({
   value: z.object({ defaults: ManagementHarnessDefaultsSchema, revision: ExpectedRevisionSchema }).strict(),
   replayed: z.boolean(),
 }).strict();
+
+export const ManagedAgentDefaultsSchema = z.object({
+  value: AgentDefaultsSchema, revision: ExpectedRevisionSchema, versionId: IdSchema.nullable(),
+}).strict();
+export const ManagedWorkflowDefaultsSchema = z.object({
+  value: WorkflowDefaultsSchema, revision: ExpectedRevisionSchema, versionId: IdSchema.nullable(),
+}).strict();
+export const AgentDefaultsUpdateInputSchema = z.object({
+  ...RevisionMutationFields, value: AgentDefaultsSchema,
+}).strict();
+export const WorkflowDefaultsUpdateInputSchema = z.object({
+  ...RevisionMutationFields, value: WorkflowDefaultsSchema,
+}).strict();
+export const AgentDefaultsUpdateResultSchema = z.object({ value: ManagedAgentDefaultsSchema, replayed: z.boolean() }).strict();
+export const WorkflowDefaultsUpdateResultSchema = z.object({ value: ManagedWorkflowDefaultsSchema, replayed: z.boolean() }).strict();
 
 export const RunListInputSchema = z.object({
   workspaceId: IdSchema,
@@ -420,14 +524,74 @@ export const RunStopInputSchema = z.object({
   ...MutationFields,
 }).strict();
 
+export const InteractionListInputSchema = z.object({
+  workspaceId: IdSchema.optional(), workflowId: IdSchema.optional(), runId: IdSchema.optional(),
+  handler: ApprovalHandlerSchema.optional(),
+  status: InteractionStatusSchema.optional(),
+  ...ManagementPageInputSchema.omit({ includeArchived: true }).shape,
+}).strict();
+export const InteractionGetInputSchema = z.object({ interactionId: IdSchema }).strict();
+export const InteractionRespondInputSchema = z.object({
+  interactionId: IdSchema, optionId: IdSchema, expectedRevision: ExpectedRevisionSchema, ...MutationFields,
+}).strict();
+export const InteractionResponseAccessSchema = z.object({
+  canRespond: z.boolean(), canRetryDelivery: z.boolean(), handler: ApprovalHandlerSchema,
+}).strict();
+export const ManagedInteractionPageSchema = z.object({
+  items: z.array(DurableInteractionSchema), pageInfo: ManagementPageInfoSchema,
+  pendingCount: z.number().int().nonnegative().optional(),
+  pendingByWorkflow: z.record(z.string(), z.number().int().nonnegative()).optional(),
+  responseAccess: z.record(z.string(), InteractionResponseAccessSchema).optional(),
+}).strict();
+export const ManagedInteractionSchema = z.object({ interaction: DurableInteractionSchema,
+  canRespond: z.boolean().optional(), canRetryDelivery: z.boolean().optional(), handler: ApprovalHandlerSchema.optional(),
+}).strict();
+export const InteractionRespondResultSchema = z.object({
+  value: DurableInteractionSchema, replayed: z.boolean(),
+}).strict();
+
 export const OperatorToolNameSchema = z.enum([
+  "workspace_defaults_get",
+  "workspace_defaults_update",
+  "harness_mcp_servers_list", "harness_mcp_change_request", "harness_mcp_change_get",
+  "harness_configuration_check",
+  "harness_options_get",
+  "harness_mcp_detection_get",
+  "agent_create",
+  "agent_update",
+  "agent_clone",
+  "workflow_versions_list",
+  "workflow_version_get",
+  "agent_configuration_versions_list",
+  "agent_configuration_version_get",
+  "agent_configuration_restore",
+  "workspace_restore",
+  "workflow_restore",
+  "agent_archive",
+  "agent_restore",
+  "workspace_location_clear",
+  "workspace_location_provision",
+  "runner_list",
+  "skill_list",
+  "skill_get",
+  "skill_publish",
+  "workflow_trigger_get",
+  "workflow_trigger_update",
+  "workflow_trigger_disable",
+  "workflow_trigger_fire",
+  "workflow_trigger_jobs_list",
+  "run_resume",
+  "run_retry",
+  "interaction_summary",
   "operator_get_capabilities", "harness_list", "harness_get", "harness_defaults_update",
+  "agent_defaults_get", "agent_defaults_update", "workflow_defaults_get", "workflow_defaults_update",
   "workspace_list", "workspace_get", "workspace_create", "workspace_update", "workspace_archive",
   "workspace_location_validate", "workspace_location_set",
   "workflow_list", "workflow_get", "workflow_create", "workflow_update", "workflow_archive",
   "agent_list", "agent_get", "graph_draft_open", "graph_draft_get", "graph_draft_apply",
   "graph_validate", "graph_save", "graph_draft_discard", "run_list", "run_get",
   "run_events_list", "run_start", "run_stop",
+  "interaction_list", "interaction_get", "interaction_respond",
 ]);
 export type OperatorToolName = z.infer<typeof OperatorToolNameSchema>;
 
@@ -459,5 +623,10 @@ export const GraphDraftDiscardResultSchema = z.object({
 export const OperatorCapabilitiesSchema = z.object({
   endpoint: z.literal("/mcp/operator"), audience: z.literal("operator"), protocol: z.literal("2026-07-28"),
   tools: z.array(OperatorToolNameSchema),
-  workerToolsMcp: z.object({ implemented: z.literal(false), endpoint: z.literal("/mcp/tools") }).strict(),
+  principal: z.object({id: IdSchema, name: z.string(), expiresAt: TimestampSchema}).strict().optional(),
+  grants: z.array(ManagementGrantSchema).optional(),
+  requestedResource: z.object({workspaceId: IdSchema.optional(),workflowId: IdSchema.optional(),runId: IdSchema.optional()}).strict().optional(),
+  requirements: z.array(z.object({name: OperatorToolNameSchema, actions: z.array(ManagementActionSchema), detail: z.string()}).strict()).optional(),
+  runtimeLimits: z.array(z.object({feature: z.string(), state: z.enum(["unsupported", "protected", "limited"]), detail: z.string()}).strict()).optional(),
+  workerToolsMcp: z.object({ implemented: z.boolean(), endpoint: z.literal("/mcp/tools") }).strict(),
 }).strict();

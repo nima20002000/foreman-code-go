@@ -10,6 +10,7 @@ import {
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 
 import { ThemeToggle } from '../../features/theme'
+import { EmptyState, IconButton } from './nocturne'
 import {
   DEFAULT_NAVIGATION_WIDTH,
   MAX_NAVIGATION_WIDTH,
@@ -53,9 +54,11 @@ export interface WorkspaceShellProps {
 function DefaultGraph({ workspaceId }: { workspaceId: string }) {
   return (
     <div className="surface-placeholder">
-      <p className="panel-kicker">Graph</p>
-      <h2>Workflow graph</h2>
-      <p>No graph connected for workspace {workspaceId}.</p>
+      <EmptyState
+        icon="workflow"
+        title="Workflow graph"
+        description={`No graph connected for workspace ${workspaceId}.`}
+      />
     </div>
   )
 }
@@ -81,6 +84,17 @@ export function WorkspaceShell({
     : workspaceId
 
   useEffect(() => () => stopResizeRef.current?.(), [])
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const phone = window.matchMedia('(max-width: 640px)')
+    const collapseForPhone = (event: MediaQueryListEvent | MediaQueryList) => {
+      if (event.matches) setCollapsed(true)
+    }
+    collapseForPhone(phone)
+    phone.addEventListener('change', collapseForPhone)
+    return () => phone.removeEventListener('change', collapseForPhone)
+  }, [setCollapsed])
 
   const startResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || navigationCollapsed) return
@@ -134,11 +148,9 @@ export function WorkspaceShell({
         aria-label="Primary navigation"
         data-collapsed={navigationCollapsed}
       >
-        <button
-          type="button"
+        <IconButton
           className="sidebar-collapse-button"
-          aria-label={navigationCollapsed ? 'Expand navigation' : 'Collapse navigation'}
-          title={navigationCollapsed ? 'Expand navigation' : 'Collapse navigation'}
+          label={navigationCollapsed ? 'Expand navigation' : 'Collapse navigation'}
           aria-expanded={!navigationCollapsed}
           aria-controls="workspace-primary-navigation"
           onClick={() => setCollapsed(!navigationCollapsed)}
@@ -148,7 +160,7 @@ export function WorkspaceShell({
           ) : (
             <ChevronLeft aria-hidden="true" size={16} />
           )}
-        </button>
+        </IconButton>
 
         <div
           className="sidebar-resize-handle"

@@ -1,5 +1,6 @@
 import {
   useMutation,
+  useInfiniteQuery,
   useQuery,
   useQueryClient,
   type UseMutationOptions,
@@ -46,6 +47,10 @@ import {
   listManagedAgents, getManagedGraphContext, openManagedGraphDraft, applyManagedGraphDraft, saveManagedGraphDraft, discardManagedGraphDraft,
   startManagedRun, stopManagedRun,
   getManagedHarnessCatalog, updateManagedHarnessDefaults,
+  getManagedAgentDefaults, updateManagedAgentDefaults,
+  getManagedWorkflowDefaults, updateManagedWorkflowDefaults,
+  getScopedMcpDetection,
+  listInteractions, getInteraction, respondToInteraction,
   type RequestOptions,
 } from './client'
 import { keepLatestWorkspaceLocation, locationMutationKey, shareManagedWorkspace } from './workspaceLocationCache'
@@ -78,6 +83,12 @@ export const queryKeys = {
   managedAgents: (workspaceId: string) => ['workbench', 'management', 'workspace', workspaceId, 'agents'] as const,
   managedDraft: (workspaceId: string, workflowId: string) => ['workbench', 'management', 'workspace', workspaceId, 'workflow', workflowId, 'draft'] as const,
   managedHarnessCatalog: ['workbench', 'management', 'harnesses'] as const,
+  agentDefaults: ['workbench', 'management', 'settings', 'agents'] as const,
+  workflowDefaults: ['workbench', 'management', 'settings', 'workflows'] as const,
+  interactions: (workspaceId?: string, workflowId?: string, status?: string, cursor?: string, limit = 50) =>
+    ['workbench', 'interactions', workspaceId ?? 'all', workflowId ?? 'all', status ?? 'all', cursor ?? null, limit] as const,
+  interaction: (interactionId: string) => ['workbench', 'interaction', interactionId] as const,
+  mcpDetection: (workspaceId: string, harness: string) => ['workbench', 'management', 'workspace', workspaceId, 'mcp-detection', harness] as const,
   managedGraphContext: (workspaceId: string, workflowId: string) =>
     ['workbench', 'management', 'workspace', workspaceId, 'workflow', workflowId, 'context'] as const,
 }
@@ -249,6 +260,108 @@ export function useUpdateManagedHarnessDefaultsMutation() {
     onSuccess: (response) => {
       client.setQueryData(queryKeys.harnessDefaults, { defaults: response.value.defaults })
       void client.invalidateQueries({ queryKey: queryKeys.managedHarnessCatalog }).catch(() => undefined)
+    },
+  })
+}
+
+export function useAgentDefaultsQuery(enabled = true) {
+  const client = useQueryClient()
+  return useQuery({
+    enabled,
+    queryKey: queryKeys.agentDefaults,
+    queryFn: async ({ signal }) => {
+      const next = await getManagedAgentDefaults({ signal })
+      const current = client.getQueryData<Awaited<ReturnType<typeof getManagedAgentDefaults>>>(queryKeys.agentDefaults)
+      return current && current.revision > next.revision ? current : next
+    },
+    refetchInterval: enabled ? 3_000 : false,
+  })
+}
+
+export function useUpdateAgentDefaultsMutation() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (input: Parameters<typeof updateManagedAgentDefaults>[0]) => updateManagedAgentDefaults(input),
+    onSuccess: (response) => client.setQueryData<Awaited<ReturnType<typeof getManagedAgentDefaults>>>(queryKeys.agentDefaults,
+      (current) => current && current.revision > response.value.revision ? current : response.value),
+  })
+}
+
+export function useWorkflowDefaultsQuery(enabled = true) {
+  const client = useQueryClient()
+  return useQuery({
+    enabled,
+    queryKey: queryKeys.workflowDefaults,
+    queryFn: async ({ signal }) => {
+      const next = await getManagedWorkflowDefaults({ signal })
+      const current = client.getQueryData<Awaited<ReturnType<typeof getManagedWorkflowDefaults>>>(queryKeys.workflowDefaults)
+      return current && current.revision > next.revision ? current : next
+    },
+    refetchInterval: enabled ? 3_000 : false,
+  })
+}
+
+export function useUpdateWorkflowDefaultsMutation() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (input: Parameters<typeof updateManagedWorkflowDefaults>[0]) => updateManagedWorkflowDefaults(input),
+    onSuccess: (response) => client.setQueryData<Awaited<ReturnType<typeof getManagedWorkflowDefaults>>>(queryKeys.workflowDefaults,
+      (current) => current && current.revision > response.value.revision ? current : response.value),
+  })
+}
+
+export function useMcpDetectionQuery(workspaceId: string, harness: 'codex' | 'opencode', enabled = true) {
+  return useQuery({
+    enabled,
+    queryKey: queryKeys.mcpDetection(workspaceId, harness),
+    queryFn: ({ signal }) => getScopedMcpDetection(workspaceId, harness, { signal }),
+    refetchInterval: enabled ? 10_000 : false,
+  })
+}
+
+export function useInteractionsQuery(input: Parameters<typeof listInteractions>[0], enabled = true) {
+  return useQuery({
+    enabled,
+    queryKey: queryKeys.interactions(input.workspaceId, input.workflowId, input.status, input.cursor, input.limit),
+    queryFn: ({ signal }) => listInteractions(input, { signal }),
+    refetchInterval: enabled ? 3_000 : false,
+  })
+}
+
+export function useInfiniteInteractionsQuery(input: Parameters<typeof listInteractions>[0], enabled = true) {
+  return useInfiniteQuery({
+    enabled,
+    queryKey: [...queryKeys.interactions(input.workspaceId, input.workflowId, input.status, input.cursor, input.limit), 'pages'],
+    initialPageParam: input.cursor as string | undefined,
+    queryFn: ({ signal, pageParam }) => listInteractions({ ...input, cursor: pageParam }, { signal }),
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    refetchInterval: enabled ? 3_000 : false,
+  })
+}
+
+export function useInteractionQuery(interactionId: string | undefined) {
+  const client = useQueryClient()
+  return useQuery({
+    enabled: Boolean(interactionId),
+    queryKey: queryKeys.interaction(interactionId ?? 'none'),
+    queryFn: async ({ signal }) => {
+      const next = await getInteraction(interactionId!, { signal })
+      const current = client.getQueryData<Awaited<ReturnType<typeof getInteraction>>>(queryKeys.interaction(interactionId!))
+      return current && current.interaction.id === next.interaction.id && current.interaction.revision > next.interaction.revision
+        ? { ...current, canRespond: next.canRespond } : next
+    },
+    refetchInterval: interactionId ? 3_000 : false,
+  })
+}
+
+export function useRespondToInteractionMutation() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (input: Parameters<typeof respondToInteraction>[0]) => respondToInteraction(input),
+    onSuccess: (response) => {
+      client.setQueryData<Awaited<ReturnType<typeof getInteraction>>>(queryKeys.interaction(response.interaction.id), (current) =>
+        current && current.interaction.revision > response.interaction.revision ? current : { ...current, interaction: response.interaction })
+      void client.invalidateQueries({ queryKey: ['workbench', 'interactions'] }).catch(() => undefined)
     },
   })
 }

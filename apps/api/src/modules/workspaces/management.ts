@@ -13,6 +13,7 @@ import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { WorkspaceLocationService } from './location.js'
 import { replayWorkspaceResult } from './receipts.js'
+import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 
 interface WorkspaceRow { record: unknown; revision: string; archived_at: Date | null }
 
@@ -32,6 +33,7 @@ export class WorkspaceManagementService {
     private readonly pool: pg.Pool,
     private readonly commands: PostgresCommandCoordinator,
     private readonly locations: WorkspaceLocationService,
+    private readonly defaults: Pick<PostgresFoundationSettingsRepository, 'getWorkspaceDefaults'> = new PostgresFoundationSettingsRepository(pool),
   ) {}
 
   async list(principal: ManagementPrincipal, input: { cursor?: string | undefined; limit: number; includeArchived: boolean }) {
@@ -74,10 +76,12 @@ export class WorkspaceManagementService {
       principal, source, operation: 'workspace.create', commandId: input.commandId,
       targetKey: 'workspaces:new', payload: input,
       perform: async (client) => {
+        const defaults = input.description === undefined ? await this.defaults.getWorkspaceDefaults(client) : undefined
+        const description = input.description ?? defaults?.value.description ?? ''
         const now = new Date().toISOString()
         const workspace = WorkspaceSchema.parse({
           id: `workspace-${randomUUID()}`, name: input.name,
-          ...(input.description !== undefined ? { description: input.description } : {}),
+          ...(description ? { description } : {}),
           createdAt: now, updatedAt: now,
         })
         const result = await client.query<WorkspaceRow>(

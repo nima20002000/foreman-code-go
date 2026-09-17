@@ -4,6 +4,7 @@ import type {
   RunOutcome,
   Timestamp,
   WorkflowRun,
+  HarnessExecution,
 } from '@graphql/contracts'
 
 export interface RunStateUpdate {
@@ -19,6 +20,8 @@ export interface RunRepository {
   get(runId: string): Promise<WorkflowRun | undefined>
   create(run: WorkflowRun): Promise<void>
   updateState(runId: string, update: RunStateUpdate): Promise<void>
+  /** Stable occurrence identity used by interrupt/resume node re-entry. */
+  ensureExecution?(execution: HarnessExecution): Promise<{ execution: HarnessExecution; created: boolean }>
 }
 
 /** ENG-04 maps a pinned run to LangGraph without coupling HTTP routes to graph internals. */

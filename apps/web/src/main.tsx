@@ -8,6 +8,7 @@ import { AppProviders } from './app/providers'
 import { router } from './app/router'
 import { initializeTheme } from './features/theme'
 import './styles.css'
+import './shared/ui/nocturne/legacy-bridge.css'
 
 const rootElement = document.getElementById('root')
 

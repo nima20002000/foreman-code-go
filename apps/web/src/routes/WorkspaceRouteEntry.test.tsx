@@ -138,6 +138,7 @@ describe('WorkspaceRouteEntry integration', () => {
 
     await screen.findByTestId('workspace-entry-workspace-1')
     await user.click(screen.getByRole('button', { name: 'New workspace' }))
+    await user.clear(screen.getByRole('textbox', { name: 'Name' }))
     await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Scratch')
     await user.click(screen.getByRole('button', { name: 'Create workspace' }))
 
@@ -148,6 +149,7 @@ describe('WorkspaceRouteEntry integration', () => {
     expect(screen.getByTestId('workspace-entry-workspace-1')).toHaveTextContent('Website')
 
     await user.click(screen.getByRole('button', { name: 'New workspace' }))
+    await user.clear(screen.getByRole('textbox', { name: 'Name' }))
     await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Beta')
     await user.click(screen.getByRole('button', { name: 'Create workspace' }))
     await waitFor(() => expect(router.state.location.pathname).not.toContain(scratchId as string))

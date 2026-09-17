@@ -16,17 +16,18 @@ import {
   History,
   ListTodo,
   PanelsTopLeft,
-  Plus,
   Settings,
   SquareTerminal,
   Workflow,
-  X,
 } from 'lucide-react'
 import type { Workspace } from '@graphql/contracts'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 
 import { queryKeys, useCreateManagedWorkspaceMutation, useWorkspaceDetailsQuery } from '../../shared/api/query'
+import { Button, Divider, Icon, IconButton, TextField, Textarea } from '../../shared/ui/nocturne'
+import { DEFAULT_WORKSPACE_DEFAULTS } from '@graphql/contracts/management'
+import { useWorkspaceCreationDefaultsQuery } from '../../shared/api/settingsExperience'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { usePresence } from '../../shared/ui/usePresence'
 import { WorkflowNavigation } from '../workflows'
@@ -118,7 +119,7 @@ const workspaceSectionItems = workspaceSections.map((section) => ({
 
 function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>) {
   if (event.key !== 'Tab') return
-  const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href]')]
+  const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled)')]
   const first = controls[0]
   const last = controls.at(-1)
   if (!first || !last) return
@@ -140,6 +141,9 @@ function NewWorkspaceControl() {
   const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false')
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const touched = useRef({ name: false, description: false, defaultsApplied: false })
+  const defaults = useWorkspaceCreationDefaultsQuery(realMode && creating)
   const [nameError, setNameError] = useState<string>()
   const triggerRef = useRef<HTMLButtonElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
@@ -149,7 +153,7 @@ function NewWorkspaceControl() {
   const queryClient = useQueryClient()
   const createManagedWorkspace = useCreateManagedWorkspaceMutation()
   const inFlight = useRef(false)
-  const attempt = useRef(new CommandAttempt<{ name: string }>())
+  const attempt = useRef(new CommandAttempt<{ name: string; description: string }>())
   const uncertain = attempt.current.unresolved && !createManagedWorkspace.isPending
   const createWorkspace = useWorkspaceSessionStore((state) => state.createWorkspace)
 
@@ -157,9 +161,20 @@ function NewWorkspaceControl() {
     if (inFlight.current || attempt.current.unresolved) return
     setCreating(false)
     setName('')
+    setDescription('')
+    touched.current = { name: false, description: false, defaultsApplied: false }
     setNameError(undefined)
     window.setTimeout(() => triggerRef.current?.focus(), 0)
   }, [])
+
+  useEffect(() => {
+    if (!creating || touched.current.defaultsApplied || attempt.current.unresolved) return
+    const template = realMode ? defaults.data : DEFAULT_WORKSPACE_DEFAULTS
+    if (!template) return
+    touched.current.defaultsApplied = true
+    if (!touched.current.name) setName(template.suggestedName)
+    if (!touched.current.description) setDescription(template.description)
+  }, [creating, defaults.data, realMode])
 
   useEffect(() => {
     if (!creating) return
@@ -174,7 +189,7 @@ function NewWorkspaceControl() {
   })
 
   const createNewWorkspace = async () => {
-    if (inFlight.current) return
+    if (inFlight.current || (realMode && defaults.isPending && !attempt.current.unresolved)) return
     const trimmedName = name.trim()
     if (!trimmedName) { setNameError('Enter a workspace name.'); nameInputRef.current?.focus(); return }
     inFlight.current = true
@@ -182,7 +197,7 @@ function NewWorkspaceControl() {
     setNameError(undefined)
     try {
       const workspace = realMode
-        ? (await createManagedWorkspace.mutateAsync(attempt.current.input({ name: trimmedName }))).value.workspace
+        ? (await createManagedWorkspace.mutateAsync(attempt.current.input({ name: trimmedName, description }))).value.workspace
         : createWorkspace(trimmedName)
       assertSession(generation)
       attempt.current.succeeded()
@@ -198,19 +213,19 @@ function NewWorkspaceControl() {
 
   return (
     <>
-      <button
+      <Button
         ref={triggerRef}
-        type="button"
+        variant="ghost"
         className="workspace-navigation-add"
         aria-label="New workspace"
         title="New workspace"
         aria-haspopup="dialog"
         aria-expanded={creating}
+        leading={<Icon name="plus" size={15} />}
         onClick={() => setCreating(true)}
       >
-        <Plus aria-hidden="true" size={15} />
         <span className="nav-item-label">New workspace</span>
-      </button>
+      </Button>
 
       {creating ? (
         <div className="workspace-create-backdrop">
@@ -225,27 +240,26 @@ function NewWorkspaceControl() {
           >
             <div className="workspace-create-heading">
               <h2 id="new-workspace-title">New workspace</h2>
-              <button
+              <IconButton
                 ref={closeButtonRef}
-                type="button"
-                aria-label="Close new workspace"
-                title="Close"
+                label="Close new workspace"
                 onClick={closeCreateDialog}
               >
-                <X aria-hidden="true" size={16} />
-              </button>
+                <Icon name="close" size={16} />
+              </IconButton>
             </div>
             <p id="new-workspace-description">
               Create a workspace for its own agents, workflows, files, tasks, and runs.
             </p>
-            <label className="workspace-create-label" htmlFor="new-workspace-name">Name</label>
-            <input
+            <TextField
               ref={nameInputRef}
               id="new-workspace-name"
+              label="Name"
               disabled={createManagedWorkspace.isPending || uncertain}
               value={name}
               autoFocus
               onChange={(event) => {
+                touched.current.name = true
                 setName(event.target.value)
                 if (nameError) setNameError(undefined)
               }}
@@ -258,6 +272,13 @@ function NewWorkspaceControl() {
               aria-invalid={nameError ? true : undefined}
               aria-describedby={nameError ? 'new-workspace-name-error' : undefined}
             />
+            <Textarea label="Description (optional)" rows={3} maxLength={10_000} value={description}
+              disabled={createManagedWorkspace.isPending || uncertain} onChange={(event) => {
+                touched.current.description = true
+                setDescription(event.target.value)
+              }} />
+            {realMode && defaults.isPending ? <p role="status">Loading workspace defaults…</p> : null}
+            {realMode && defaults.isError ? <p role="status">Defaults could not be loaded. You can still enter your own values. <Button size="sm" onClick={() => void defaults.refetch()}>Retry defaults</Button></p> : null}
             {nameError ? (
               <p id="new-workspace-name-error" className="workspace-create-error" role="alert">
                 {nameError}
@@ -265,16 +286,13 @@ function NewWorkspaceControl() {
             ) : null}
             {uncertain ? <p role="status">The previous request may have succeeded. Retry Create workspace to resolve it without creating a duplicate.</p> : null}
             <div className="workspace-create-actions">
-              <button type="button" onClick={closeCreateDialog}>
-                Close
-              </button>
-              <button
-                type="button"
+              <Button onClick={closeCreateDialog}>Close</Button>
+              <Button
                 onClick={() => void createNewWorkspace()}
-                disabled={createManagedWorkspace.isPending}
+                disabled={createManagedWorkspace.isPending || (realMode && defaults.isPending && !uncertain)}
               >
                 Create workspace
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -348,18 +366,16 @@ function WorkspaceTreeItem({
                 <span className="nav-item-label">Workflows</span>
               </span>
             </Link>
-            <button
-              type="button"
+            <IconButton
               className="nav-item-toggle"
+              label={`${workflowsExpanded ? 'Collapse' : 'Expand'} workflows in ${entry.name}`}
               aria-expanded={workflowsExpanded}
               aria-controls={workflowsPanelId}
-              aria-label={`${workflowsExpanded ? 'Collapse' : 'Expand'} workflows in ${entry.name}`}
-              title="Workflows"
               onClick={() => setSectionExpanded(entry.id, 'workflows', !workflowsExpanded)}
               {...sections.getKeyboardProps(section)}
             >
               <ChevronDown aria-hidden="true" className="nav-item-chevron" size={14} />
-            </button>
+            </IconButton>
           </div>
           {workflowsPresence.mounted ? (
             <div
@@ -424,18 +440,16 @@ function WorkspaceTreeItem({
             <span className="nav-item-label">{entry.name}</span>
           </span>
         </Link>
-        <button
-          type="button"
+        <IconButton
           className="nav-item-toggle"
+          label={`${expanded ? 'Collapse' : 'Expand'} ${entry.name}`}
           aria-expanded={expanded}
           aria-controls={sectionsId}
-          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${entry.name}`}
-          title={entry.name}
           onClick={onToggle}
           {...reorderKeyboardProps}
         >
           <ChevronDown aria-hidden="true" className="nav-item-chevron" size={14} />
-        </button>
+        </IconButton>
       </div>
 
       {sectionsPresence.mounted ? (
@@ -568,17 +582,15 @@ export function WorkspaceNavigation({
                 <span className="nav-item-label">Workspaces</span>
               </span>
             </Link>
-            <button
-              type="button"
+            <IconButton
               className="nav-item-toggle"
+              label="Workspaces"
               aria-expanded={workspacesExpanded}
               aria-controls="workspace-entries"
-              aria-label="Workspaces"
-              title="Workspaces"
               onClick={() => setWorkspacesExpanded(!workspacesExpanded)}
             >
               <ChevronDown aria-hidden="true" className="nav-item-chevron" size={14} />
-            </button>
+            </IconButton>
           </div>
 
           {workspacesPresence.mounted ? (
@@ -618,6 +630,8 @@ export function WorkspaceNavigation({
           ) : null}
         </li>
       </ul>
+
+      <Divider />
 
       <ul
         className="workspace-global-navigation"

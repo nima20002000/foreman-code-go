@@ -5,10 +5,6 @@ import { sameManagedValue as same, type AgentRevisions, type CloneSources } from
 function configuration(agent: Agent) {
   const value = agent.harnessConfiguration
   if (!value) throw new Error(`Agent '${agent.id}' needs its saved harness configuration. Reload it before saving these changes.`)
-  if (value.harness === 'opencode') {
-    if (value.autoApprove) throw new Error('OpenCode automatic permission approval is not supported.')
-    return { ...value, autoApprove: false as const }
-  }
   return value
 }
 function content(agent: Agent) {
@@ -79,7 +75,7 @@ export function managementGraphOperations(input: {
       // A copied, unsaved source may have been deleted locally. Its complete
       // local snapshot is safe to create, but an incomplete legacy one is not.
       const harness = configuration(agent)
-      operations.push({ type: 'agent.add', agentId: agent.id, nodeId: node.id, name: agent.name, harness: harness.harness })
+      operations.push({ type: 'agent.add', agentId: agent.id, nodeId: node.id, name: agent.name, productRole: agent.productRole ?? 'coder', harness: harness.harness, configuration: harness })
       operations.push({ type: 'agent.configure', agentId: agent.id, expectedAgentRevision: 0,
         configuration: harness, ...content(agent) })
     }
@@ -126,5 +122,9 @@ export function managementGraphOperations(input: {
       ? { type: 'workflow.reset_required_agent_count' }
       : { type: 'workflow.set_required_agent_count', requiredAgentCount: input.next.requiredAgentCount },
   )
+  if (!same(input.base.approval, input.next.approval)) {
+    if (!input.next.approval) throw new Error('Choose an approval handler instead of removing the workflow approval configuration.')
+    operations.push({ type: 'workflow.set_approval', approval: input.next.approval })
+  }
   return operations
 }

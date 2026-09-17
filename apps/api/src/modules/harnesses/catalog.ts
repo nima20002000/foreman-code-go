@@ -1,17 +1,42 @@
-import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
+import { canonical } from './codexProtocol.js'
+import { QualificationCache } from './qualificationCache.js'
+import { qualificationError } from './qualificationErrors.js'
 
-import { AgentConfigurationVersionSchema, type AgentHarness, type HarnessDefaults } from '@graphql/contracts'
+import { HarnessQualificationSchema, withAdvancedDefaults, type HarnessConfiguration, type AgentHarness, type HarnessDefaults } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
 import { requireAuthorization } from '../access/policy.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { PostgresSettingsRepository } from '../settings/postgres.js'
-import type { HarnessResolver } from './port.js'
+import type { HarnessConfigurationQualifier } from './port.js'
 import { DomainError } from '../errors.js'
 
 export class HarnessCatalogService {
+  private readonly checks = new QualificationCache<{ qualification: ReturnType<typeof HarnessQualificationSchema.parse>; checkedAt: string }>()
+  invalidateChecks(): void { this.checks.clear() }
+  async shutdownChecks(): Promise<void> { await this.checks.close() }
+
+  /** Run once after native runtime ownership is acquired. No model turn is created. */
+  async warmup(): Promise<void> {
+    const managed = await this.settings.getManagedHarnessDefaults()
+    await Promise.allSettled((['codex', 'opencode'] as const).map((harness) => this.qualifyConfiguration(managed.defaults[harness])))
+  }
+
+  private async inspectConfiguration(value: HarnessConfiguration) {
+    try {
+      return await this.checks.get(canonical(withAdvancedDefaults(value)), async () => {
+        const qualification = HarnessQualificationSchema.parse(await this.qualifier.qualify(value, this.qualificationDirectory, AbortSignal.timeout(60_000)))
+        if (!qualification.ready || !qualification.authenticated || qualification.harness !== value.harness) {
+          throw new DomainError('HARNESS_DEFAULTS_UNQUALIFIED', 'Sign in to the native harness and check this selection again.', 409)
+        }
+        return { qualification, checkedAt: new Date().toISOString() }
+      })
+    } catch (error) { throw qualificationError(error) }
+  }
+
   constructor(
-    private readonly resolver: HarnessResolver,
+    private readonly qualifier: HarnessConfigurationQualifier,
     private readonly settings: PostgresSettingsRepository,
     private readonly commands: PostgresCommandCoordinator,
     private readonly qualificationDirectory: string,
@@ -29,21 +54,20 @@ export class HarnessCatalogService {
     return this.describe(principal, harness, managed.defaults, managed.revision)
   }
 
+  /** Native model/variant/Agent qualification shared by every defaults writer. No turn is started. */
+  async qualifyConfiguration(value: HarnessConfiguration) {
+    return (await this.inspectConfiguration(value)).qualification
+  }
+
+  async checkConfiguration(principal: ManagementPrincipal, configuration: HarnessConfiguration) {
+    requireAuthorization(principal, 'harnesses:read')
+    return { configuration, ...await this.inspectConfiguration(configuration) }
+  }
+
   private async describe(principal: ManagementPrincipal, harness: AgentHarness, defaults: HarnessDefaults, revision: number) {
     requireAuthorization(principal, 'harnesses:read')
-    const now = new Date().toISOString()
-    const configuration = AgentConfigurationVersionSchema.parse({
-      id: `qualification-${randomUUID()}`, workspaceId: 'qualification', agentId: 'qualification',
-      version: 1, prompt: {}, assignedSkills: [], harness: defaults[harness],
-      contentHash: 'qualification', createdAt: now,
-    })
     try {
-      const capability = await this.resolver.resolve(harness).qualify({
-        executionId: `qualification-${randomUUID()}`, runId: 'qualification', workspaceId: 'qualification',
-        workflowNodeId: 'qualification', workingDirectory: this.qualificationDirectory,
-        runtimeDirectory: this.qualificationDirectory,
-        configuration, input: {},
-      })
+      const capability = await this.qualifyConfiguration(defaults[harness])
       return { harness, defaults: defaults[harness], defaultsRevision: revision, capability, discoveryError: null }
     } catch (error) {
       return {
@@ -61,17 +85,11 @@ export class HarnessCatalogService {
       principal, source, operation: 'harness.defaults.update', commandId: input.commandId,
       targetKey: 'harness-defaults', payload: input,
       perform: async (client) => {
-        // The coordinator checks the receipt before running external work.
-        // This command replaces both templates, so new writes qualify both.
-        const qualified = await Promise.all((['codex', 'opencode'] as const).map((harness) =>
-          this.describe(principal, harness, input.defaults, input.expectedRevision)))
-        const unavailable = qualified.find((entry) => entry.discoveryError)
-        if (unavailable) {
-          throw new DomainError(
-            'HARNESS_DEFAULTS_UNQUALIFIED',
-            `The ${unavailable.harness} defaults could not be qualified: ${unavailable.discoveryError?.message ?? 'unknown discovery error'}`,
-            409,
-          )
+        const current = await this.settings.getManagedHarnessDefaults(client)
+        if (current.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Harness defaults changed since they were read.', 409)
+        for (const harness of ['codex', 'opencode'] as const) {
+          if (isDeepStrictEqual(withAdvancedDefaults(current.defaults[harness]), withAdvancedDefaults(input.defaults[harness]))) continue
+          await this.qualifyConfiguration(input.defaults[harness])
         }
         return this.settings.updateManagedHarnessDefaults(client, input.defaults, input.expectedRevision)
       },

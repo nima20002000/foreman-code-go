@@ -8,16 +8,20 @@ import { ManagementActionSchema, OperatorToolNameSchema, type ManagementGrant } 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { buildApp } from '../src/app.js'
+import { operatorToolAvailable } from '../src/mcp/operator/availability.js'
 import { createDatabase } from '../src/infrastructure/database.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { GraphDraftService } from '../src/modules/graph-drafts/service.js'
 import { HarnessCatalogService } from '../src/modules/harnesses/catalog.js'
-import type { HarnessResolver } from '../src/modules/harnesses/port.js'
+import type { HarnessConfigurationQualifier } from '../src/modules/harnesses/port.js'
 import type { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
+import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
+import { FoundationSettingsManagementService } from '../src/modules/settings/management.js'
+import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { AgentManagementService } from '../src/modules/workspaces/agents.js'
@@ -38,24 +42,14 @@ function structured(result: { structuredContent?: unknown }): Record<string, unk
   return result.structuredContent as Record<string, unknown>
 }
 
-function deterministicHarnesses(): HarnessResolver {
+function deterministicHarnesses(): HarnessConfigurationQualifier {
   return {
-    resolve(harness) {
+    async qualify(configuration) {
       return {
-        harness,
-        qualify: async () => ({
-          harness, version: 'integration-fixture', authenticated: true, ready: true,
-          structuredEvents: true, supportsResume: true, supportsCancellation: true,
-          supportsWorkingDirectory: true, supportsStartupPrompt: true,
-          supportedNativeTools: [],
-          supportedSettings: harness === 'codex'
-            ? ['model', 'reasoningEffort', 'sandbox', 'serviceTier']
-            : ['model', 'variant', 'nativeAgent', 'thinking'],
-          unsupportedCapabilities: [],
-        }),
-        execute: async () => ({ outcome: 'succeeded', output: {} }),
-        resume: async () => ({ outcome: 'succeeded', output: {} }),
-        cancel: async () => true,
+        harness: configuration.harness, version: 'integration-fixture', authenticated: true, ready: true,
+        structuredEvents: true, supportsResume: true, supportsCancellation: true,
+        supportsWorkingDirectory: true, supportsStartupPrompt: true,
+        supportedNativeTools: [], supportedSettings: ['model'], unsupportedCapabilities: [],
       }
     },
   }
@@ -68,6 +62,12 @@ describe('Operator MCP with PostgreSQL', () => {
     const settingsBefore = await database.pool.query<{ record: unknown; revision: string; updated_at: Date }>(
       "select record, revision, updated_at from application_settings where key = 'harness-defaults'",
     )
+    const agentDefaultsBefore = await database.pool.query<{ record: unknown; revision: string; current_version_id: string | null; updated_at: Date }>(
+      "select record, revision, current_version_id, updated_at from application_settings where key = 'agent-defaults-v1'",
+    )
+    const agentDefaultsVersionBefore = Number((await database.pool.query<{ version: string }>(
+      "select coalesce(max(version),0) as version from application_setting_versions where setting_key='agent-defaults-v1'",
+    )).rows[0]!.version)
     const restoreSettings = async () => {
       if (settingsBefore.rows[0]) {
         await database.pool.query(
@@ -81,7 +81,7 @@ describe('Operator MCP with PostgreSQL', () => {
     const access = new PostgresAccessService(database.pool)
     const grant: ManagementGrant = { actions: ManagementActionSchema.options, scope: {} }
     const issued = await access.issue({ name: 'Integration owner', audience: 'operator', grants: [grant], expiresAt: new Date(Date.now() + 60_000) })
-    const worker = await access.issue({ name: 'Worker', audience: 'worker', grants: [grant], expiresAt: new Date(Date.now() + 60_000) })
+    const worker = await access.issue({ name: 'Worker', audience: 'worker', agentId: 'agent-developer', grants: [grant], expiresAt: new Date(Date.now() + 60_000) })
     const restricted = await access.issue({
       name: 'Restricted operator', audience: 'operator',
       grants: [{ actions: ['capabilities:read', 'workspaces:read', 'workspace_locations:validate'], scope: { workspaceIds: ['not-this-workspace'] } }],
@@ -104,13 +104,18 @@ describe('Operator MCP with PostgreSQL', () => {
       }),
     } as unknown as LangGraphWorkflowEngine
     const settings = new PostgresSettingsRepository(database.pool)
+    const foundationSettings = new PostgresFoundationSettingsRepository(database.pool)
+    const harnessCatalog = new HarnessCatalogService(deterministicHarnesses(), settings, commands, process.cwd())
     const services = {
       workspaces: new WorkspaceManagementService(database.pool, commands, locations),
       locations,
       workflows: new WorkflowManagementService(database.pool, commands),
       agents: new AgentManagementService(database.pool),
       drafts: new GraphDraftService(database.pool, commands),
-      harnesses: new HarnessCatalogService(deterministicHarnesses(), settings, commands, process.cwd()),
+      harnesses: harnessCatalog,
+      settings: new FoundationSettingsManagementService(
+        foundationSettings, commands, harnessCatalog, new PostgresOperatorRepository(database.pool),
+      ),
       runs: new RunManagementService(database.pool, commands, runsRepository, engine, locations),
       commands,
     }
@@ -131,6 +136,22 @@ describe('Operator MCP with PostgreSQL', () => {
     cleanup.push(async () => { await client.close(); await app.close(); await database.close() })
     cleanup.push(restoreSettings)
     cleanup.push(async () => {
+      if (agentDefaultsBefore.rows[0]) {
+        await database.pool.query(
+          `insert into application_settings (key,record,revision,current_version_id,updated_at)
+           values ('agent-defaults-v1',$1::jsonb,$2,$3,$4)
+           on conflict (key) do update set record=excluded.record,revision=excluded.revision,
+             current_version_id=excluded.current_version_id,updated_at=excluded.updated_at`,
+          [JSON.stringify(agentDefaultsBefore.rows[0].record), agentDefaultsBefore.rows[0].revision,
+            agentDefaultsBefore.rows[0].current_version_id, agentDefaultsBefore.rows[0].updated_at],
+        )
+      } else await database.pool.query("delete from application_settings where key='agent-defaults-v1'")
+      await database.pool.query(
+        "delete from application_setting_versions where setting_key='agent-defaults-v1' and version>$1",
+        [agentDefaultsVersionBefore],
+      )
+    })
+    cleanup.push(async () => {
       const ids = [issued.principal.id, worker.principal.id, restricted.principal.id, expired.principal.id]
       await database.pool.query('delete from management_command_receipts where principal_id = any($1::text[])', [ids])
       await database.pool.query('delete from management_audit where principal_id = any($1::text[])', [ids])
@@ -138,7 +159,8 @@ describe('Operator MCP with PostgreSQL', () => {
     })
 
     const tools = await client.listTools()
-    expect(tools.tools.map((tool) => tool.name).sort()).toEqual([...OperatorToolNameSchema.options].sort())
+    const implementedOperatorTools = OperatorToolNameSchema.options.filter((name) => operatorToolAvailable({ principal: issued.principal, services }, name))
+    expect(tools.tools.map((tool) => tool.name).sort()).toEqual(implementedOperatorTools.sort())
     expect(tools.tools.every((tool) => tool.inputSchema.additionalProperties === false && tool.outputSchema?.additionalProperties === false)).toBe(true)
 
     const harnesses = structured(await client.callTool({ name: 'harness_list', arguments: {} })) as unknown as {
@@ -155,6 +177,17 @@ describe('Operator MCP with PostgreSQL', () => {
       },
     }))
     expect((defaultsUpdate.value as { revision: number }).revision).toBe(harnesses.items[0]!.defaultsRevision + 1)
+    const agentDefaults = structured(await client.callTool({ name: 'agent_defaults_get', arguments: {} })) as {
+      value: { operator: { uiEnabled: boolean } }; revision: number
+    }
+    const agentDefaultsUpdate = structured(await client.callTool({
+      name: 'agent_defaults_update', arguments: {
+        commandId: `agent-defaults-${randomUUID()}`, expectedRevision: agentDefaults.revision,
+        value: { ...agentDefaults.value, operator: { ...agentDefaults.value.operator, uiEnabled: !agentDefaults.value.operator.uiEnabled } },
+      },
+    }))
+    expect((agentDefaultsUpdate.value as { value: { operator: { uiEnabled: boolean } } }).value.operator.uiEnabled)
+      .toBe(!agentDefaults.value.operator.uiEnabled)
 
     const restrictedClient = new Client({ name: 'restricted-operator', version: '1.0.0' })
     await restrictedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), {
@@ -318,7 +351,9 @@ describe('Operator MCP with PostgreSQL', () => {
           { type: 'agent.configure', agentId: codexAgentId, expectedAgentRevision: 0, configuration: {
             harness: 'codex', model: 'gpt-5.6-luna', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard',
           } },
-          { type: 'agent.add', agentId: openCodeAgentId, nodeId: openCodeNodeId, name: 'OpenCode', harness: 'opencode' },
+          { type: 'agent.add', agentId: openCodeAgentId, nodeId: openCodeNodeId, name: 'OpenCode', harness: 'opencode', configuration: {
+            harness: 'opencode', model: 'opencode-go/deepseek-v4.1-flash', variant: 'max', nativeAgent: 'build', thinking: false, autoApprove: false,
+          } },
           { type: 'agent.rename', agentId: openCodeAgentId, expectedAgentRevision: 0, name: 'OpenCode renamed' },
           { type: 'agent.configure', agentId: openCodeAgentId, expectedAgentRevision: 0, configuration: {
             harness: 'opencode', model: 'opencode-go/deepseek-v4.1-flash', variant: 'max', nativeAgent: 'build', thinking: false, autoApprove: false,
@@ -329,7 +364,9 @@ describe('Operator MCP with PostgreSQL', () => {
           { type: 'edge.connect', edgeId, sourceNodeId: codexNodeId, targetNodeId: openCodeNodeId },
           { type: 'agent.clone', sourceAgentId: codexAgentId, agentId: cloneAgentId, nodeId: cloneNodeId, name: 'Codex clone' },
           { type: 'node.remove', nodeId: cloneNodeId },
+          { type: 'workflow.set_approval', approval: { handler: 'user' } },
           { type: 'workflow.set_execution_limits', maxParallelism: 2, maxNodeExecutions: 2 },
+          { type: 'workflow.set_approval', approval: { handler: 'user' } },
         ],
       },
     }))
