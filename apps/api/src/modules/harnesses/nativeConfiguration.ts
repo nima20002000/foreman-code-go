@@ -2,15 +2,26 @@ import {
   HarnessConfigurationSchema, type HarnessConfiguration,
 } from '@graphql/contracts'
 import { HarnessOptionsResultSchema } from '@graphql/contracts/management'
+import { QualificationCache } from './qualificationCache.js'
+import { qualificationError } from './qualificationErrors.js'
 import { CodexAppServerSessionManager } from './codexAppServer.js'
 import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from './opencodeServer.js'
 import { harnessSettingSupport } from './operatorOptions.js'
 
 export class NativeConfigurationService {
+  private readonly catalogCache = new QualificationCache<ReturnType<typeof HarnessOptionsResultSchema.parse>>()
+  private readonly configurationChecks = new QualificationCache<Awaited<ReturnType<NativeConfigurationService['inspectConfiguration']>>>()
+  invalidateOptions(): void { this.catalogCache.clear(); this.configurationChecks.clear() }
+  async shutdownChecks(): Promise<void> { await Promise.all([this.catalogCache.close(), this.configurationChecks.close()]) }
   constructor(private readonly codexBinary: string, private readonly openCodeBinary: string, private readonly directory: string) {}
 
   async qualifyConfiguration(input: HarnessConfiguration) {
     const value = HarnessConfigurationSchema.parse(input)
+    try { return await this.configurationChecks.get(JSON.stringify(value), () => this.inspectConfiguration(value)) }
+    catch (error) { throw qualificationError(error) }
+  }
+
+  private async inspectConfiguration(value: HarnessConfiguration) {
     const signal = AbortSignal.timeout(60_000)
     if (value.harness === 'codex') {
       const manager = new CodexAppServerSessionManager(this.codexBinary)
@@ -27,6 +38,11 @@ export class NativeConfigurationService {
   }
 
   async options(harness: 'codex' | 'opencode') {
+    try { return await this.catalogCache.get(harness, () => this.discoverOptions(harness)) }
+    catch (error) { throw qualificationError(error) }
+  }
+
+  private async discoverOptions(harness: 'codex' | 'opencode') {
     const signal = AbortSignal.timeout(60_000)
     if (harness === 'codex') {
       const manager = new CodexAppServerSessionManager(this.codexBinary)

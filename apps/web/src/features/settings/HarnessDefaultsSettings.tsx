@@ -45,7 +45,7 @@ export function HarnessDefaultsSettings() {
   return <section ref={root} className="settings-form" aria-label="Harness defaults">
     {query.isError ? <p role="alert">The refresh failed. Your draft is preserved.<Button size="sm" onClick={() => void query.refetch()}>Retry refresh</Button></p> : null}
     <SettingsFormFeedback form={form} />
-    <div className="harness-defaults-grid">{(['codex', 'opencode'] as const).map((harness) => <fieldset key={harness}><legend>{harness === 'codex' ? 'Codex' : 'OpenCode'}</legend><div className="settings-field-grid"><HarnessConfigurationFields allowHarnessChange={false} editor={draft[harness]} issues={issuesAt(form.issues ?? [], [harness])} onChange={(value) => form.setDraft((current) => current && ({ ...current, [harness]: value }))} /></div></fieldset>)}</div>
+    <div className="harness-defaults-grid">{(['codex', 'opencode'] as const).map((harness) => <HarnessConfigurationFields key={harness} allowHarnessChange={false} editor={draft[harness]} issues={issuesAt(form.issues ?? [], [harness])} onChange={(value) => form.setDraft((current) => current && ({ ...current, [harness]: value }))} />)}</div>
     <SettingsFormActions form={form} onSave={() => void form.save(async (input) => {
       const defaults = prepared(input.value)
       if (realMode) {

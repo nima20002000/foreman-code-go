@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -14,21 +15,27 @@ function Editor({ value, save }: { value: HarnessConfiguration; save(value: Harn
   const [editor, setEditor] = useState(() => createHarnessEditor(value))
   return <><HarnessConfigurationFields editor={editor} onChange={setEditor} /><button onClick={() => save(prepareHarnessEditor(editor))}>Store</button></>
 }
+function mount(ui: ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>)
+}
 
 describe('PR12 actual provider fields', () => {
-  it('supports Enter and trailing spaces in writable directory input', async () => {
+  it('preserves server-vetted writable directory paths exactly', async () => {
     const user = userEvent.setup(); const save = vi.fn()
-    render(<Editor value={{ ...DEFAULT_HARNESS_DEFAULTS.codex, sandbox: 'workspace-write', advanced: undefined }} save={save} />)
+    const value = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
+    value.sandbox = 'workspace-write'
+    value.advanced!.additionalWritableDirectories = ['/first/path ', '/second/path ']
+    mount(<Editor value={value} save={save} />)
     await user.click(screen.getByText('Advanced'))
-    const input = screen.getByLabelText('Additional writable directories')
-    await user.type(input, '/first/path {Enter}/second/path ')
-    expect((input as HTMLTextAreaElement).value).toBe('/first/path \n/second/path ')
+    expect(screen.getByText('/first/path')).toBeInTheDocument()
+    expect(screen.getByText('/second/path')).toBeInTheDocument()
     await user.click(screen.getByText('Store'))
     expect(save.mock.calls[0]![0].advanced.additionalWritableDirectories).toEqual(['/first/path ', '/second/path '])
   })
   it('keeps rule focus while typing and preserves order on removal', async () => {
     const user = userEvent.setup(); const save = vi.fn()
-    render(<Editor value={{ ...DEFAULT_HARNESS_DEFAULTS.opencode, advanced: undefined }} save={save} />)
+    mount(<Editor value={{ ...DEFAULT_HARNESS_DEFAULTS.opencode, advanced: undefined }} save={save} />)
     await user.click(screen.getByText('Advanced'))
     await user.click(screen.getByText('Add custom rule'))
     const input = screen.getByLabelText('Permission 1')
@@ -45,7 +52,7 @@ describe('PR12 actual provider fields', () => {
   it('round trips a custom model and variant when only the Agent name changes', async () => {
     const user = userEvent.setup(); const save = vi.fn()
     const configuration = { ...DEFAULT_HARNESS_DEFAULTS.opencode, model: 'custom/model', variant: 'budget-4096', nativeAgent: 'custom-worker' }
-    render(<AgentSettingsForm agent={{ id: 'a', name: 'Before', harness: 'opencode', harnessConfiguration: configuration }} onClose={() => {}} onSave={save} />)
+    mount(<AgentSettingsForm agent={{ id: 'a', name: 'Before', harness: 'opencode', harnessConfiguration: configuration }} onClose={() => {}} onSave={save} />)
     await user.clear(screen.getByLabelText('Name')); await user.type(screen.getByLabelText('Name'), 'After')
     await user.click(screen.getByLabelText('Save agent settings'))
     expect(save).toHaveBeenCalledTimes(1)
@@ -54,7 +61,7 @@ describe('PR12 actual provider fields', () => {
   })
   it('repairs legacy native-auto coherently instead of losing the matching boolean', async () => {
     const user = userEvent.setup(); const save = vi.fn()
-    render(<Editor value={{ ...DEFAULT_HARNESS_DEFAULTS.opencode, advanced: undefined, autoApprove: true }} save={save} />)
+    mount(<Editor value={{ ...DEFAULT_HARNESS_DEFAULTS.opencode, advanced: undefined, autoApprove: true }} save={save} />)
     await user.click(screen.getByText('Advanced'))
     await user.selectOptions(screen.getByLabelText('Permission handling'), 'graphql_routed')
     await user.click(screen.getByText('Store'))

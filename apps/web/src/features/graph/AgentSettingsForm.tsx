@@ -1,14 +1,15 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
-  CodexSessionCompatibilitySchema, DEFAULT_HARNESS_DEFAULTS, changeCodexSandbox, legacyEffortForHarness,
+  CodexSessionCompatibilitySchema, DEFAULT_HARNESS_DEFAULTS, legacyEffortForHarness,
   validateHarnessWorkflowCompatibility, withAdvancedDefaults,
   type Agent, type ApprovalHandler, type HarnessDefaults, type WorkflowExecutionPolicy,
 } from '@graphql/contracts'
 
-import { Alert, Button, Checkbox, Icon, IconButton, Select, Textarea, TextField } from '../../shared/ui/nocturne'
-import { CODEX_MODELS, OPENCODE_MODELS, configuredHarness, initialModel } from '../agents/agentSettings'
+import { Alert, Button, Icon, IconButton, Select, Textarea, TextField } from '../../shared/ui/nocturne'
+import { configuredHarness, initialModel } from '../agents/agentSettings'
 import { useHarnessDefaultsQuery } from '../../shared/api/query'
 import { HarnessConfigurationFields } from '../settings/HarnessConfigurationFields'
+import { HarnessBasicFields, HarnessFooterOptions } from '../settings/HarnessBasicFields'
 import { createHarnessEditor, prepareHarnessEditor, switchHarnessEditor } from '../settings/harnessEditor'
 import { FieldValidationError, fieldMessage, focusFirstInvalid, issuesAt, validationIssues, type FieldIssue } from '../settings/fieldValidation'
 import './agentSettingsPanel.css'
@@ -33,7 +34,6 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
   const [issues, setIssues] = useState<FieldIssue[]>([])
   const [view, setView] = useState<'general' | 'advanced'>('general')
   const root = useRef<HTMLDivElement>(null)
-  const modelListId = useId()
   useEffect(() => { if (issues.length) focusFirstInvalid(root.current) }, [issues])
   const [editor, setEditor] = useState(() => {
     const harness = agent.harnessConfiguration?.harness ?? agent.harness ?? 'codex'
@@ -101,15 +101,7 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
         }} />
       </div>
       <div className={`agent-settings-row agent-settings-row-runtime agent-settings-row-${configuration.harness}`}>
-        <TextField label="Model" aria-label="Model" list={modelListId} value={configuration.model} onChange={(event) => updateConfiguration({ ...configuration, model: event.target.value })} />
-        <datalist id={modelListId}>{(configuration.harness === 'codex' ? CODEX_MODELS : OPENCODE_MODELS).map((model) => <option key={model} value={model} />)}</datalist>
-        {configuration.harness === 'codex' ? <>
-          <Select label="Effort" aria-label="Effort" value={configuration.reasoningEffort} options={['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map((effort) => ({ value: effort, label: effort }))} onChange={(event) => updateConfiguration({ ...configuration, reasoningEffort: event.target.value as typeof configuration.reasoningEffort })} />
-          <Select label="Sandbox" aria-label="Sandbox" className="agent-settings-sandbox" value={configuration.sandbox} options={[{ value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' }, { value: 'danger-full-access', label: 'Danger: full access' }]} onChange={(event) => updateConfiguration(changeCodexSandbox(configuration, event.target.value as typeof configuration.sandbox))} />
-        </> : <>
-          <TextField label="Provider variant" aria-label="Provider variant" value={configuration.variant} onChange={(event) => updateConfiguration({ ...configuration, variant: event.target.value })} />
-          <Checkbox label="Show thinking" aria-label="Show thinking" className="agent-settings-thinking" checked={configuration.thinking} onChange={(event) => updateConfiguration({ ...configuration, thinking: event.target.checked })} />
-        </>}
+        <HarnessBasicFields value={configuration} issues={issuesAt(issues, ['harness'])} onChange={updateConfiguration} />
       </div>
     </div> : <div className="agent-settings-advanced-view">
       <Textarea label="Initial prompt" aria-label="Initial prompt" className="agent-settings-prompt" rows={3} value={prompt} onChange={(event) => { setPrompt(event.target.value); clearErrors() }} />
@@ -119,7 +111,7 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
     {error ? <Alert tone="danger" live title={error} /> : null}
     <footer className="agent-settings-footer">
       {view === 'general' ? <Button size="sm" variant="ghost" className="agent-settings-advanced-link" onClick={() => setView('advanced')} trailing={<Icon name="chevron" size={13} />}>Advanced settings</Button> : null}
-      {view === 'general' && configuration.harness === 'codex' ? <Checkbox label="Fast mode" aria-label="Fast mode" className="agent-settings-fast-mode" checked={configuration.serviceTier === 'priority'} onChange={(event) => updateConfiguration({ ...configuration, serviceTier: event.target.checked ? 'priority' : 'standard' })} /> : null}
+      {view === 'general' ? <HarnessFooterOptions value={configuration} issues={issuesAt(issues, ['harness'])} onChange={updateConfiguration} /> : null}
       {onRemove ? <IconButton size="sm" variant="ghost" className="agent-settings-trash" label={`Remove ${agent.name} from workflow`} onClick={onRemove}><Icon name="minus" size={15} /></IconButton> : null}
     </footer>
   </div>

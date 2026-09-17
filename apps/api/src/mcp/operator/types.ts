@@ -1,4 +1,6 @@
 import type { OperatorExtensions } from './extensions.js'
+import type { HarnessMcpSettingsService } from '../../modules/harnesses/mcpSettings.js'
+import type { HarnessDirectoryBrowser } from '../../modules/harnesses/directoryBrowser.js'
 
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
@@ -14,6 +16,7 @@ import type { FoundationSettingsManagementService } from '../../modules/settings
 import type { OperatorInteractionService } from '../../modules/interactions/operator.js'
 
 export interface OperatorServices {
+  harnessSettings?: { mcp: HarnessMcpSettingsService; directories: HarnessDirectoryBrowser }
   extensions?: OperatorExtensions
   workerToolsMcpImplemented?: boolean
   workspaces: WorkspaceManagementService

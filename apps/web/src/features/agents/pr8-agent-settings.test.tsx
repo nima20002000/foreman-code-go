@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { AgentSchema, DEFAULT_HARNESS_DEFAULTS, HarnessConfigurationSchema, type Agent } from '@graphql/contracts'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import type { ReactElement } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -34,17 +35,18 @@ describe('PR8 exact native settings in the actual form', () => {
     expect(saved.harnessConfiguration).toEqual(defaults.opencode)
   })
 
-  it('changes a native variant only after an explicit selection', () => {
+  it('changes a native variant only after an explicit selection', async () => {
     const configuration = { ...DEFAULT_HARNESS_DEFAULTS.opencode, variant: 'provider-custom-effort' }
     const agent = defaultAgentForHarness('opencode', 'agent', 'Agent', configuration)
     const onSave = vi.fn()
     renderWithQueryClient(<AgentSettingsForm agent={agent} onClose={() => undefined} onSave={onSave} />)
-    fireEvent.change(screen.getByLabelText('Provider variant'), { target: { value: 'high' } })
+    await waitFor(() => expect(screen.getByRole('option', { name: 'high' })).toBeInTheDocument())
+    await userEvent.setup().selectOptions(screen.getByLabelText('Provider variant'), 'high')
     fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
     expect(onSave.mock.calls[0]![0]).toMatchObject({ effort: 'high', harnessConfiguration: { variant: 'high' } })
   })
 
-  it.each(['read-only', 'danger-full-access'] as const)('explains and removes incompatible controls when changing to %s', (sandbox) => {
+  it.each(['read-only', 'danger-full-access'] as const)('explains and removes incompatible controls when changing to %s', async (sandbox) => {
     const configuration = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
     configuration.sandbox = 'workspace-write'
     configuration.advanced!.additionalWritableDirectories = ['/tmp/project-extra']
@@ -54,6 +56,10 @@ describe('PR8 exact native settings in the actual form', () => {
     const onSave = vi.fn()
     renderWithQueryClient(<AgentSettingsForm agent={agent} onClose={() => undefined} onSave={onSave} />)
     fireEvent.change(screen.getByLabelText('Sandbox'), { target: { value: sandbox } })
+    if (sandbox === 'danger-full-access') {
+      await userEvent.setup().type(screen.getByLabelText('Type “full access” to confirm'), 'full access')
+      await userEvent.setup().click(screen.getByRole('button', { name: 'Use full access' }))
+    }
     fireEvent.click(screen.getByRole('button', { name: /^Advanced settings/ }))
     expect(screen.getByText(/Leaving workspace-write removes additional writable directories/)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))

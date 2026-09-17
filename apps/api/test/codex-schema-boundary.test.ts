@@ -15,7 +15,7 @@ function bundle(): JsonObject {
     initialize: 'InitializeResponse', 'thread/start': 'ThreadStartResponse', 'thread/resume': 'ThreadResumeResponse',
     'thread/read': 'ThreadReadResponse', 'thread/turns/list': 'ThreadTurnsListResponse', 'thread/items/list': 'ThreadItemsListResponse',
     'turn/start': 'TurnStartResponse', 'turn/interrupt': 'TurnInterruptResponse', 'config/read': 'ConfigReadResponse',
-    'model/list': 'ModelListResponse', 'mcpServerStatus/list': 'ListMcpServerStatusResponse',
+    'config/batchWrite': 'ConfigWriteResponse', 'model/list': 'ModelListResponse', 'mcpServerStatus/list': 'ListMcpServerStatusResponse',
     'account/login/start': 'LoginAccountResponse', 'account/login/cancel': 'CancelLoginAccountResponse',
   }
   const serverResponses: Record<string, string> = {

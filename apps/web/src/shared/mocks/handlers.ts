@@ -174,6 +174,27 @@ export const handlers: RequestHandler[] = [
     items: [], nextCursor: null, pendingCount: 0, pendingByWorkflow: {},
   })),
   http.get('/api/management/harnesses', () => HttpResponse.json(getMockHarnessCatalog())),
+  http.get('/api/management/harnesses/:harness/options', ({ params }) => {
+    const harness = String(params.harness)
+    if (harness !== 'codex' && harness !== 'opencode') return fixtureNotFound('harness', harness)
+    return HttpResponse.json({
+      harness, providerVersion: 'mock', authenticated: true,
+      models: harness === 'codex' ? [
+        { id: 'gpt-5.6-luna', name: 'gpt-5.6-luna', reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], variants: [], serviceTiers: ['standard', 'priority'] },
+        { id: 'gpt-5.6-terra', name: 'gpt-5.6-terra', reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], variants: [], serviceTiers: ['standard', 'priority'] },
+        { id: 'gpt-5.6-sol', name: 'gpt-5.6-sol', reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], variants: [], serviceTiers: ['standard', 'priority'] },
+        { id: 'gpt-6-astra', name: 'gpt-6-astra', reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], variants: [], serviceTiers: ['standard', 'priority'] },
+      ] : [{ id: 'opencode-go/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', reasoningEfforts: [], variants: ['', 'low', 'high', 'max', 'provider-custom-effort', 'budget-4096'], serviceTiers: [] }],
+      nativeAgents: harness === 'opencode' ? ['', 'custom-worker'] : [], settings: [], restrictions: [], checkedAt: new Date().toISOString(),
+    })
+  }),
+  http.post('/api/management/harnesses/:harness/refresh', ({ params }) => HttpResponse.json({
+    harness: params.harness, providerVersion: 'mock', authenticated: true, models: [], nativeAgents: [], settings: [], restrictions: [], checkedAt: new Date().toISOString(),
+  })),
+  http.get('/api/management/harnesses/:harness/mcp', ({ params }) => HttpResponse.json({
+    harness: params.harness, revision: `sha256:${'0'.repeat(64)}`, servers: [], checkedAt: new Date().toISOString(), scope: 'native-user',
+  })),
+  http.get('/api/management/harnesses/:harness/mcp/plans', () => HttpResponse.json({ items: [] })),
   http.post('/api/management/harnesses/validate', async ({ request }) => {
     const parsed = HarnessConfigurationCheckInputSchema.safeParse(await readJson(request))
     if (!parsed.success) return apiError('INVALID_HARNESS_CONFIGURATION', 'Review the Harness configuration.', 400)

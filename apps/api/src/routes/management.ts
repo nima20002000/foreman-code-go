@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import { registerHarnessSettingsRoutes } from './harnessSettings.js'
 
 import {
   AgentGetInputSchema,
@@ -62,6 +63,7 @@ function page(query: Query) {
 }
 
 export function registerManagementRoutes(app: FastifyInstance, services: OperatorServices): void {
+  registerHarnessSettingsRoutes(app, services)
   app.get<{ Querystring: Query }>('/api/management/workspaces', async (request) =>
     services.workspaces.list(requirePrincipal(request), WorkspaceListInputSchema.parse(page(request.query))))
   app.post<{ Body: unknown }>('/api/management/workspaces', async (request, reply) => {

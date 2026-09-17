@@ -248,5 +248,5 @@ it('recovers reviewer ownership without replaying or replacing submission identi
 it('applies the additive migration once and preserves the original HAP versions', async () => {
   await applyApplicationMigrations(pool)
   const applied = await pool.query('select version from application_migrations order by version')
-  assert.deepEqual(applied.rows.map((row) => row.version), [1, 2, 3, 4, 100, 400, 401, 500, 501, 502, 503, 507, 508, 509, 700, 701, 800, 1701, 1702])
+  assert.deepEqual(applied.rows.map((row) => row.version), [1, 2, 3, 4, 100, 400, 401, 500, 501, 502, 503, 507, 508, 509, 700, 701, 800, 1701, 1702, 170017])
 })

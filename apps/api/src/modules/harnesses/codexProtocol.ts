@@ -69,6 +69,7 @@ const responseTypes: Record<string, string> = {
   'thread/turns/list': 'ThreadTurnsListResponse', 'thread/items/list': 'ThreadItemsListResponse',
   'turn/start': 'TurnStartResponse', 'turn/interrupt': 'TurnInterruptResponse',
   'config/read': 'ConfigReadResponse', 'model/list': 'ModelListResponse',
+  'config/batchWrite': 'ConfigWriteResponse',
   'mcpServerStatus/list': 'ListMcpServerStatusResponse',
   'account/login/start': 'LoginAccountResponse', 'account/login/cancel': 'CancelLoginAccountResponse',
 }

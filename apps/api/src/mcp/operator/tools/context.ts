@@ -16,7 +16,7 @@ export const OPERATOR_RUNTIME_LIMITS = [
   {feature:'remote_runners_and_host_browsing',state:'unsupported',detail:'Only the registered local runner and explicitly configured controlled provisioning are available; no arbitrary host browsing or remote dispatch.'},
   {feature:'approval_reassignment',state:'protected',detail:'Read permissions span handlers; response authority stays with the accepted handler. Changing a draft does not take over a running request.'},
   {feature:'operator_self_authorization',state:'protected',detail:'No tools are added for the Operator to answer its own human gates or manage its delegated credential.'},
-  {feature:'native_mcp_provisioning',state:'protected',detail:'MCP diagnostics and accepted policy controls do not install credentials or rewrite native connection configuration.'},
+  {feature:'native_mcp_provisioning',state:'protected',detail:'Native MCP connections can be listed and changes requested. A signed-in user must review changes in Settings. The Operator cannot approve its own request, expose credentials, or approve package installation. Connection requests do not themselves download packages.'},
   {feature:'schedule_delivery',state:'limited',detail:'Interval schedules use the lifecycle polling worker and an expiring principal/delegation chain. No cron or external webhook subscription is implied.'},
   {feature:'opencode_thinking',state:'limited',detail:'The stored thinking flag is metadata-only on the server path; choose an advertised variant for runtime model behavior.'},
 ] as const

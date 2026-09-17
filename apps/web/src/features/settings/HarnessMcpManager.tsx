@@ -1,0 +1,138 @@
+import { useRef, useState } from 'react'
+import {
+  HarnessMcpChangeSchema, type HarnessMcpChange, type HarnessMcpPlan,
+} from '@graphql/contracts/management'
+import { Alert, Button, Checkbox, Dialog, Select, StatusBadge, Textarea, TextField } from '../../shared/ui/nocturne'
+import {
+  useNativeMcpServers, useNativeMcpPlans, useRequestNativeMcpChange, useDecideNativeMcpChange, useHarnessSessionEpoch,
+} from '../../shared/api/harnessSettings'
+
+type Harness = 'codex' | 'opencode'
+const words = { add: 'Add', remove: 'Remove', enable: 'Update' }
+function ChangeDetails({ change }: { change: HarnessMcpChange }) {
+  return <dl className="harness-change-details"><div><dt>Server</dt><dd>{change.name}</dd></div>
+    <div><dt>Change</dt><dd>{change.kind === 'enable' ? change.enabled ? 'Enable' : 'Disable' : words[change.kind]}</dd></div>
+    {change.kind === 'add' ? change.connection.transport === 'remote' ? <>
+      <div><dt>Endpoint</dt><dd>{change.connection.url}</dd></div>
+      <div><dt>Authentication</dt><dd>{change.connection.bearerTokenEnvironmentVariable ? `Bearer token from ${change.connection.bearerTokenEnvironmentVariable}` : 'Native authentication'}</dd></div>
+    </> : <>
+      <div><dt>Executable</dt><dd>{change.connection.executable}</dd></div>
+      <div><dt>Arguments</dt><dd>{change.connection.arguments.length ? <ol>{change.connection.arguments.map((argument, index) => <li key={index}><code>{argument || '(empty argument)'}</code></li>)}</ol> : 'None'}</dd></div>
+      <div><dt>Environment references</dt><dd>{change.connection.environmentVariables.join(', ') || 'None added'}</dd></div>
+    </> : null}
+  </dl>
+}
+function ConnectionForm({ busy, onReview }: { busy: boolean; onReview(change: HarnessMcpChange): void }) {
+  const [name, setName] = useState('')
+  const [transport, setTransport] = useState<'remote' | 'stdio'>('remote')
+  const [url, setUrl] = useState('')
+  const [variable, setVariable] = useState('')
+  const [executable, setExecutable] = useState('')
+  const [argumentsText, setArgumentsText] = useState('')
+  const [environment, setEnvironment] = useState('')
+  const [error, setError] = useState<string>()
+  const review = () => {
+    const candidate = HarnessMcpChangeSchema.safeParse({ kind: 'add', name: name.trim(), connection: transport === 'remote'
+      ? { transport, url: url.trim(), ...(variable.trim() ? { bearerTokenEnvironmentVariable: variable.trim() } : {}) }
+      : { transport, executable: executable.trim(), arguments: argumentsText === '' ? [] : argumentsText.split('\n'),
+        environmentVariables: environment.split(/[,\s]+/).filter(Boolean) } })
+    if (!candidate.success) { setError(candidate.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join(' ')); return }
+    setError(undefined)
+    onReview(candidate.data)
+  }
+  return <div className="harness-form-stack">
+    <TextField label="Server name" value={name} maxLength={80} autoComplete="off" onChange={(event) => setName(event.target.value)} />
+    <Select label="Connection" value={transport} options={[{ value: 'remote', label: 'Remote · URL' }, { value: 'stdio', label: 'Local · installed program' }]}
+      onChange={(event) => setTransport(event.target.value as typeof transport)} />
+    {transport === 'remote' ? <>
+      <TextField label="Server URL" type="url" placeholder="https://example.com/mcp" value={url} onChange={(event) => setUrl(event.target.value)} />
+      <TextField label="Token environment variable (optional)" placeholder="MY_SERVICE_TOKEN" autoComplete="off" spellCheck={false} value={variable}
+        hint="Enter the variable name, not the token." onChange={(event) => setVariable(event.target.value)} />
+    </> : <>
+      <TextField label="Installed executable" value={executable} placeholder="/absolute/path/to/mcp-server" autoComplete="off" onChange={(event) => setExecutable(event.target.value)} />
+      <Textarea label="Arguments · one per line" rows={3} value={argumentsText} spellCheck={false} onChange={(event) => setArgumentsText(event.target.value)} />
+      <TextField label="Environment variable names (optional)" value={environment} autoComplete="off" placeholder="SERVICE_TOKEN, SERVICE_ACCOUNT" onChange={(event) => setEnvironment(event.target.value)} />
+    </>}
+    {error ? <Alert tone="danger" live title={error} /> : null}
+    <Button variant="primary" disabled={busy} onClick={review}>Review connection</Button>
+  </div>
+}
+
+function NativeMcpManager({ harness }: { harness: Harness }) {
+  const servers = useNativeMcpServers(harness)
+  const plans = useNativeMcpPlans(harness)
+  const request = useRequestNativeMcpChange()
+  const decision = useDecideNativeMcpChange()
+  const [adding, setAdding] = useState(false)
+  const [active, setActive] = useState<string>()
+  const [created, setCreated] = useState<HarnessMcpPlan>()
+  const [feedback, setFeedback] = useState<string>()
+  // A failed HTTP response may hide a committed plan. Reuse the same receipt ID on retry.
+  const command = useRef<{ signature: string; id: string } | undefined>(undefined)
+  const selected = decision.data?.id === active ? decision.data : plans.data?.items.find((plan) => plan.id === active) ?? (created?.id === active ? created : undefined)
+  const expired = Boolean(selected && Date.parse(selected.expiresAt) <= Date.now())
+  const requestChange = (change: HarnessMcpChange) => {
+    if (!servers.data || request.isPending) return
+    const signature = JSON.stringify([harness, servers.data.revision, change])
+    if (command.current?.signature !== signature) command.current = { signature, id: crypto.randomUUID() }
+    setFeedback(undefined)
+    decision.reset()
+    request.mutate({ harness, commandId: command.current.id, expectedRevision: servers.data.revision, change }, {
+      onSuccess: (result) => { setCreated(result.value); setActive(result.value.id); setAdding(false) },
+    })
+  }
+  const decide = (approve: boolean) => {
+    if (!selected || selected.status !== 'pending') return
+    decision.mutate({ planId: selected.id, approve }, { onSuccess: (result) => {
+      setCreated(result)
+      if (result.status === 'applied') { setFeedback('Connection settings saved. New sessions will use them.'); setActive(undefined) }
+      if (result.status === 'rejected') setActive(undefined)
+    } })
+  }
+  const outstanding = plans.data?.items.filter((plan) => ['pending', 'submitting', 'uncertain'].includes(plan.status)) ?? []
+  return <section className="harness-mcp-manager" aria-label={`${harness} MCP connections`}>
+    <div className="harness-section-heading"><div><h4>MCP servers</h4><p className="harness-muted">Native user configuration · changes apply to new sessions.</p></div>
+      <div className="harness-inline-actions"><Button size="sm" disabled={servers.isFetching} onClick={() => void servers.refetch()}>Refresh</Button>
+        <Button size="sm" variant="primary" disabled={!servers.data || servers.isError} onClick={() => { request.reset(); setAdding(true) }}>Add server</Button></div></div>
+    {servers.isPending ? <p role="status">Reading configured servers…</p> : null}
+    {servers.isError ? <Alert tone="danger" title={servers.error.message} /> : null}
+    {request.isError ? <Alert live tone="danger" title={request.error.message} /> : null}
+    {feedback ? <p role="status" className="harness-success">{feedback}</p> : null}
+    {servers.data?.servers.length === 0 ? <div className="harness-empty">No servers configured. Add a connection to give this harness more tools.</div> : null}
+    <ul className="harness-server-list">{servers.data?.servers.map((server) => <li key={server.name}>
+      <span className="harness-server-symbol" aria-hidden="true">{server.transport === 'remote' ? '↗' : '⌘'}</span>
+      <div className="harness-server-name"><strong>{server.name}</strong><small>{server.label}</small></div>
+      <StatusBadge tone={server.enabled ? 'info' : 'neutral'} label={server.enabled ? 'Configured' : 'Disabled'} />
+      {server.protected ? <span className="harness-muted">App-managed</span> : server.editable ? <div className="harness-inline-actions">
+        <Checkbox label={`Enable ${server.name}`} checked={server.enabled} disabled={request.isPending}
+          onChange={(event) => requestChange({ kind: 'enable', name: server.name, enabled: event.target.checked })} />
+        <Button size="sm" variant="ghost" disabled={request.isPending} aria-label={`Remove MCP server ${server.name}`} onClick={() => requestChange({ kind: 'remove', name: server.name })}>Remove</Button>
+      </div> : <span className="harness-muted">Inherited</span>}
+    </li>)}</ul>
+    {outstanding.length ? <section className="harness-pending-plans" aria-label="MCP change requests"><h4>Change requests</h4>
+      {outstanding.map((plan) => <div key={plan.id} className="harness-plan-row"><span>{words[plan.change.kind]} <strong>{plan.change.name}</strong><small>{plan.status === 'pending' && Date.parse(plan.expiresAt) <= Date.now() ? 'Expired' : plan.status}</small></span>
+        <Button size="sm" onClick={() => { decision.reset(); setActive(plan.id) }}>Review</Button></div>)}
+    </section> : null}
+    {plans.isError ? <p className="harness-muted" role="status">Change requests: {plans.error.message}</p> : null}
+    <Dialog open={adding} onOpenChange={setAdding} title={`Add ${harness === 'codex' ? 'Codex' : 'OpenCode'} MCP server`} size="md" busy={request.isPending}>
+      {adding ? <ConnectionForm busy={request.isPending} onReview={requestChange} /> : null}
+      {request.isError ? <Alert tone="danger" title={request.error.message} /> : null}
+    </Dialog>
+    <Dialog open={Boolean(active)} onOpenChange={(open) => { if (!open) setActive(undefined) }} title="Review MCP change" size="md" busy={decision.isPending}
+      footer={selected?.status === 'pending' && !expired ? <><Button disabled={decision.isPending} onClick={() => decide(false)}>Reject</Button>
+        <Button variant={selected.change.kind === 'remove' ? 'danger' : 'primary'} disabled={decision.isPending} onClick={() => decide(true)}>{decision.isPending ? 'Applying…' : 'Approve and apply'}</Button></> : <Button onClick={() => setActive(undefined)}>Close</Button>}>
+      {selected ? <div className="harness-form-stack"><p>{selected.harness === 'codex' ? 'Codex' : 'OpenCode'} · native user configuration</p><ChangeDetails change={selected.change} />
+        <p className="harness-access-warning">A server may run programs or send data to its endpoint. Only approve a connection you trust.</p>
+        <span className="harness-muted">Requested by {selected.requestedBy}</span>
+        {selected.status !== 'pending' || expired ? <Alert tone={selected.status === 'applied' ? 'success' : 'warning'} title={expired && selected.status === 'pending' ? 'Request expired. Create a new request.' : `Change ${selected.status}`}>
+          {selected.error ?? (selected.status === 'uncertain' ? 'The write may have completed. Inspect the native configuration before requesting another change.' : null)}</Alert> : null}
+        {decision.isError ? <Alert tone="danger" live title={decision.error.message} /> : null}
+      </div> : <p role="status">Loading request…</p>}
+    </Dialog>
+  </section>
+}
+
+export function HarnessMcpManager({ harness }: { harness: Harness }) {
+  const epoch = useHarnessSessionEpoch()
+  return <NativeMcpManager key={`${harness}:${epoch}`} harness={harness} />
+}

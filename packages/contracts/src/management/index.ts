@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export * from "./extensions.js";
+export * from "./harnessSettings.js";
 
 import {
   AgentSchema,
@@ -540,6 +541,7 @@ export const InteractionRespondResultSchema = z.object({
 }).strict();
 
 export const OperatorToolNameSchema = z.enum([
+  "harness_mcp_servers_list", "harness_mcp_change_request", "harness_mcp_change_get",
   "harness_configuration_check",
   "harness_options_get",
   "harness_mcp_detection_get",

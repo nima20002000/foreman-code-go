@@ -7,6 +7,10 @@ import type { ApiConfig } from './config.js'
 import { buildApp } from './app.js'
 import { createOperatorExtensions } from './mcp/operator/extensions.js'
 import { NativeConfigurationService } from './modules/harnesses/nativeConfiguration.js'
+import { HarnessMcpSettingsService } from './modules/harnesses/mcpSettings.js'
+import { HarnessDirectoryBrowser, configuredDirectoryRoots } from './modules/harnesses/directoryBrowser.js'
+import { CodexMcpConnections } from './modules/harnesses/codexMcpConnections.js'
+import { OpenCodeMcpConnections } from './modules/harnesses/openCodeMcpConnections.js'
 import type { CheckpointStore } from './infrastructure/checkpoints.js'
 import type { createDatabase } from './infrastructure/database.js'
 import { OperatorRuntimeOwner } from './infrastructure/operatorRuntimeOwner.js'
@@ -87,6 +91,15 @@ export function buildProductionApp(
   const nativeConfigurations = new NativeConfigurationService(
     config.harnesses.codexBinary, config.harnesses.openCodeBinary, config.harnesses.workspaceRoot,
   )
+  const harnessSettings = {
+    directories: new HarnessDirectoryBrowser(configuredDirectoryRoots(config.harnesses.workspaceRoot, process.env.GRAPHQL_HARNESS_DIRECTORY_ROOTS), database.pool),
+    mcp: new HarnessMcpSettingsService(database.pool, commands, {
+      codex: new CodexMcpConnections(config.harnesses.codexBinary, config.harnesses.workspaceRoot, processRegistry.scope('settings:mcp:codex')),
+      opencode: new OpenCodeMcpConnections(config.harnesses.openCodeBinary, config.harnesses.workspaceRoot, processRegistry.scope('settings:mcp:opencode')),
+    }, () => { harnessCatalog.invalidateChecks(); nativeConfigurations.invalidateOptions() }, async () => {
+      await Promise.all([processRegistry.closeOwner('settings:mcp:codex'), processRegistry.closeOwner('settings:mcp:opencode')])
+    }),
+  }
   const endpointHost = config.host === '0.0.0.0' ? '127.0.0.1'
     : config.host === '::' || config.host === '::1' ? '[::1]' : config.host
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/tools`
@@ -251,7 +264,7 @@ export function buildProductionApp(
     readiness: { database, checkpoints },
     readinessTimeoutMs: config.readinessTimeoutMs,
     product: { workspaces, workflows, runs, settings, foundationSettings, engine, interactions, chat },
-    operator: { access, services: { ...operatorServices, extensions: operatorExtensions } },
+    operator: { access, services: { ...operatorServices, extensions: operatorExtensions, harnessSettings } },
     appMcp: { access, interactions: new PostgresAppInteractionService(database.pool, repository, commands, interactions) },
     mcpDetection: { pool: database.pool, service: detection },
     logger,
@@ -273,6 +286,8 @@ export function buildProductionApp(
   })
   const lifecycle = new RuntimeShutdown({
     stop: [
+      { name: 'native MCP settings', run: () => harnessSettings.mcp.shutdown() },
+      { name: 'harness qualification checks', run: () => Promise.all([harnessCatalog.shutdownChecks(), nativeConfigurations.shutdownChecks()]).then(() => undefined) },
       { name: 'workflow triggers', run: () => operatorExtensions.triggers.shutdown() },
       { name: 'Operator chat', run: () => chat.shutdown() },
       { name: 'automatic reviews', run: () => reviews.shutdown() },
@@ -331,6 +346,10 @@ export function buildProductionApp(
         assertOpen()
       }
       await chatAuthority.revokeOrphanedCredentials()
+      assertOpen()
+      await harnessSettings.mcp.recover()
+      assertOpen()
+      await Promise.allSettled([harnessCatalog.warmup(), nativeConfigurations.options('codex'), nativeConfigurations.options('opencode')])
       assertOpen()
       initialized = true
     })

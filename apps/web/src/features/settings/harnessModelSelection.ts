@@ -1,0 +1,22 @@
+import type { HarnessConfiguration, AgentEffort } from '@graphql/contracts'
+import type { HarnessOptions } from '@graphql/contracts/management'
+
+const knownEfforts = new Set<string>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
+export function supportedEfforts(model: HarnessOptions['models'][number] | undefined): AgentEffort[] {
+  return (model?.reasoningEfforts ?? []).filter((effort): effort is AgentEffort => knownEfforts.has(effort))
+}
+export function selectNativeModel(configuration: HarnessConfiguration, model: HarnessOptions['models'][number]): HarnessConfiguration {
+  if (configuration.harness === 'opencode') return { ...configuration, model: model.id,
+    variant: model.variants.includes(configuration.variant) ? configuration.variant : '' }
+  const efforts = supportedEfforts(model)
+  // No guess when a catalog has an unknown effort: validation will report the preserved selection.
+  return { ...configuration, model: model.id,
+    reasoningEffort: efforts.includes(configuration.reasoningEffort) ? configuration.reasoningEffort : efforts[0] ?? configuration.reasoningEffort,
+    serviceTier: model.serviceTiers.includes(configuration.serviceTier) ? configuration.serviceTier : 'standard',
+  }
+}
+export function nativeOptionsWithSaved(values: readonly string[], saved: string, emptyLabel = 'Native default') {
+  const choices = [...new Set(values)].map((value) => ({ value, label: value || emptyLabel, disabled: false }))
+  if (!choices.some((item) => item.value === saved)) choices.unshift({ value: saved, label: `${saved || emptyLabel} · saved, unavailable`, disabled: true })
+  return choices
+}

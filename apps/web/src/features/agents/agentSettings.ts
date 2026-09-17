@@ -38,6 +38,8 @@ export function effortOptions(
 }
 
 export const effortLabels: Record<NonNullable<Agent['effort']>, string> = {
+  none: 'None',
+  minimal: 'Minimal',
   low: 'Low',
   medium: 'Medium',
   high: 'High',

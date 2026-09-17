@@ -79,7 +79,7 @@ export type HarnessSummary = z.infer<typeof HarnessSummarySchema>;
 
 export const AgentHarnessSchema = z.enum(["codex", "opencode"]);
 export type AgentHarness = z.infer<typeof AgentHarnessSchema>;
-export const AgentEffortSchema = z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]);
+export const AgentEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 export type AgentEffort = z.infer<typeof AgentEffortSchema>;
 
 /** A Skill Hub reference pinned when an agent configuration version is created. */

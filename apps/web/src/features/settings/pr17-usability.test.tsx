@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { useState } from 'react'
 import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
@@ -28,20 +28,17 @@ function mount(initial?: HarnessEditor) {
   return render(<QueryClientProvider client={client}><Editor initial={initial} /></QueryClientProvider>)
 }
 describe('PR17 provider editing recovery', () => {
-  it('preserves invalid raw JSON and independent model edits across harness switches', async () => {
+  it('preserves independent native drafts across harness switches', async () => {
     mount()
     const user = userEvent.setup()
-    await user.click(screen.getByText('Advanced'))
-    fireEvent.change(screen.getByLabelText('Native MCP controls JSON'), { target: { value: '{' } })
-    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'codex/local-draft' } })
+    await user.selectOptions(screen.getByLabelText('Sandbox'), 'workspace-write')
     await user.selectOptions(screen.getByLabelText('Harness'), 'opencode')
     expect(screen.getByLabelText('Model')).toHaveValue('saved/custom-model')
-    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'opencode/local-draft' } })
+    await user.click(screen.getByLabelText('Show thinking'))
     await user.selectOptions(screen.getByLabelText('Harness'), 'codex')
-    expect(screen.getByLabelText('Model')).toHaveValue('codex/local-draft')
-    expect(screen.getByLabelText('Native MCP controls JSON')).toHaveValue('{')
+    expect(screen.getByLabelText('Sandbox')).toHaveValue('workspace-write')
     await user.selectOptions(screen.getByLabelText('Harness'), 'opencode')
-    expect(screen.getByLabelText('Model')).toHaveValue('opencode/local-draft')
+    expect(screen.getByLabelText('Show thinking')).toBeChecked()
   })
   it('does not silently substitute built-in defaults when saved presets fail', () => {
     api.presets.mockReturnValue({ isPending: false, isError: true, refetch: vi.fn() })
@@ -50,24 +47,18 @@ describe('PR17 provider editing recovery', () => {
     expect(screen.getByText(/built-in defaults will not be substituted/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /use built-in defaults/ })).toBeEnabled()
   })
-  it('attaches JSON validation to its field, opens Advanced, and focuses it', async () => {
-    mount({ ...createHarnessEditor(DEFAULT_HARNESS_DEFAULTS.codex), mcpText: '{' })
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Check selected configuration' }))
-    const input = screen.getByLabelText('Native MCP controls JSON')
-    expect(input).toHaveAttribute('aria-invalid', 'true')
-    expect(document.getElementById(input.getAttribute('aria-describedby')!)).toHaveTextContent('must contain valid JSON')
-    expect(input.closest('details')).toHaveAttribute('open')
-    await waitFor(() => expect(input).toHaveFocus())
-    expect(api.check).not.toHaveBeenCalled()
-  })
-  it('hides the old native check failure after the configuration changes', async () => {
-    api.check.mockRejectedValue(new Error('The checked model is unavailable'))
+  it('uses structured native MCP controls instead of the legacy JSON field', async () => {
     mount()
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Check selected configuration' }))
-    expect(await screen.findByText('The checked model is unavailable')).toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'new/model' } })
-    expect(screen.queryByText('The checked model is unavailable')).not.toBeInTheDocument()
-    expect(screen.getByText(/^Not checked\./)).toBeInTheDocument()
+    const user = userEvent.setup()
+    await user.click(screen.getByText('Advanced'))
+    await user.click(screen.getByRole('button', { name: 'MCP & tools' }))
+    expect(screen.getByRole('region', { name: 'codex MCP connections' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Pinned MCP policy requirements' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Native MCP controls JSON')).not.toBeInTheDocument()
+  })
+  it('automatically qualifies the current native configuration', async () => {
+    mount()
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Ready'))
   })
   it('has visible rule labels and keyboard-usable reorder controls with retained identity', async () => {
     const initial = structuredClone(DEFAULT_HARNESS_DEFAULTS.opencode)

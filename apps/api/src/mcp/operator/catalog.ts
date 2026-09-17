@@ -1,6 +1,9 @@
 import type { ManagementAction, OperatorToolName } from '@graphql/contracts/management'
 
 export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; action: ManagementAction }> = [
+  { name: 'harness_mcp_servers_list', action: 'harnesses:read' },
+  { name: 'harness_mcp_change_request', action: 'harnesses:update' },
+  { name: 'harness_mcp_change_get', action: 'harnesses:read' },
   { name: 'harness_configuration_check', action: 'harnesses:read' },
   { name: 'harness_options_get', action: 'harnesses:read' },
   { name: 'harness_mcp_detection_get', action: 'harnesses:read' },

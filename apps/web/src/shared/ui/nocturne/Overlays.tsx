@@ -59,8 +59,8 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
     role={role} aria-modal="true" aria-busy={busy || undefined} data-side={side} aria-labelledby={`${id}-title`} aria-describedby={description ? `${id}-description` : undefined}
     onCancel={(event) => { event.preventDefault(); if (canDismiss) onOpenChange(false) }}
     onClose={(event) => { if (!event.currentTarget.open) { if (open) onOpenChange(false); onAfterClose?.() } }}
-    onPointerDown={(event) => { backdropDown.current = event.target === event.currentTarget }}
-    onClick={(event) => { if (closeOnOutsideClick && canDismiss && backdropDown.current && event.target === event.currentTarget) onOpenChange(false); backdropDown.current = false }}>
+    onPointerDown={(event) => { event.stopPropagation(); backdropDown.current = event.target === event.currentTarget }}
+    onClick={(event) => { event.stopPropagation(); if (closeOnOutsideClick && canDismiss && backdropDown.current && event.target === event.currentTarget) onOpenChange(false); backdropDown.current = false }}>
     <div className="n-dialog-inner"><header className="n-dialog-header"><div><h2 id={`${id}-title`} tabIndex={-1} ref={heading}>{title}</h2>
       {description && <p id={`${id}-description`}>{description}</p>}</div><IconButton label={closeLabel} variant="ghost" disabled={!canDismiss} onClick={() => onOpenChange(false)}><Icon name="close" /></IconButton></header>
       <div className="n-dialog-body">{children}</div>{footer && <footer className="n-dialog-footer">{footer}</footer>}

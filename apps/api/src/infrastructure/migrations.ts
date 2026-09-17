@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { harnessSettingsMigration } from './harnessSettingsMigration.js'
 
 import { lifecycleMigration } from './lifecycleMigration.js'
 import { pr17AuditMigration } from './pr17AuditMigration.js'
@@ -624,6 +625,7 @@ export const migrations = [
   operatorMcpMigration,
   pr17AuditMigration,
   nativeEventSequenceMigration,
+  harnessSettingsMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

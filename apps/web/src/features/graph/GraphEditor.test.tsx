@@ -326,6 +326,8 @@ describe('GraphEditor persistence boundary', () => {
     renderEditor()
     await user.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
     await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'danger-full-access')
+    fireEvent.change(screen.getByLabelText('Type “full access” to confirm'), { target: { value: 'full access' } })
+    await user.click(screen.getByRole('button', { name: 'Use full access' }))
     await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
     await user.click(screen.getByRole('button', { name: 'Save graph' }))
 
