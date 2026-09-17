@@ -132,10 +132,14 @@ beforeEach(async () => {
     if (correlationId) event(manager, 'thread.reconciled', { thread: { id: reference.nativeSessionId,
       status: saved.pending.length ? 'active' : 'idle', turns: [...saved.turns].map(([id, value]) => ({ id, clientUserMessageId: id, status: value ? 'completed' : 'inProgress' })) } })
     return { events: [...connections.get(manager)!.events], pendingInteractions: [...saved.pending],
-      ...(result && correlationId ? { terminalResult: result, terminalTurn: { correlationId, providerId: correlationId, result } } : {}) }
+      ...(result && correlationId ? { correlationId, nativeTurnId: correlationId,
+        terminalResult: result, terminalTurn: { correlationId, providerId: correlationId, result } } : {}) }
   }
   vi.spyOn(CodexAppServerSessionManager.prototype, 'history').mockImplementation(async function (this: CodexAppServerSessionManager, reference) { return history(this, reference) })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'reconcile').mockImplementation(async function (this: CodexAppServerSessionManager, reference, correlation) { return history(this, reference, correlation) })
+  vi.spyOn(CodexAppServerSessionManager.prototype, 'pending').mockImplementation(async function (_reference) {
+    return sessions.get(_reference.nativeSessionId)?.pending[0]
+  })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'respond').mockImplementation(async function (this: CodexAppServerSessionManager, reference, requestId) {
     const saved = sessions.get(reference.nativeSessionId)!
     expect(saved.pending.some((item) => item.turn.nativeRequestId === requestId)).toBe(true)

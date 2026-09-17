@@ -20,7 +20,7 @@ describe('PR17 owner-scoped lightweight navigation', () => {
     const { query, chat } = fixture()
     const result = await chat.summaries(owner)
     expect(query).toHaveBeenCalledOnce()
-    expect(query.mock.calls[0]![0]).toContain('where owner_principal_id=$1')
+    expect(query.mock.calls[0]![0]).toContain('where (c.owner_principal_id=$1')
     expect(query.mock.calls[0]![0]).not.toMatch(/select \*|operator_conversation_messages/)
     expect(query.mock.calls[0]![1]).toEqual([owner.id])
     expect(result).toEqual([{ conversationId: 'owned-chat', title: 'Owned chat', turnState: 'active', revision: 7, activeRequestId: 'request', needsAttention: true }])

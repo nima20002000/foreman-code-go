@@ -188,26 +188,27 @@ it('does not reopen a delivered, failed, or canceled native response', async () 
 })
 
 it('stores native event envelopes and their activity references atomically, with exact replay only', async () => {
-  const events = new Map<number, unknown>()
+  const events = new Map<string, unknown>()
   let activityCount = 0
   const db = { query: async (sql: string, values: unknown[]) => {
-    const sequence = Number(values[1]); const record: unknown = JSON.parse(String(values[2]))
-    if (sql.startsWith('with appended')) {
-      assert.match(sql, /insert into harness_native_events/)
-      assert.match(sql, /insert into run_activity/)
-      if (events.has(sequence)) return { rows: [], rowCount: 0 }
-      events.set(sequence, record); activityCount += 1
-      return { rows: [], rowCount: 1 }
+    assert.equal(sql, 'select append_harness_native_event($1::jsonb)')
+    const record = JSON.parse(String(values[0])) as HarnessNativeEvent
+    const identity = `${record.executionId}:${record.connectionId ?? 'legacy'}:${record.sequence}`
+    const existing = events.get(identity)
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(record)) throw Object.assign(new Error('identity conflict'), { code: 'PNE01' })
+      return { rows: [{ append_harness_native_event: false }], rowCount: 1 }
     }
-    return { rows: [{ matches: JSON.stringify(events.get(sequence)) === JSON.stringify(record) }], rowCount: 1 }
+    events.set(identity, record); activityCount += 1
+    return { rows: [{ append_harness_native_event: true }], rowCount: 1 }
   } } as unknown as pg.ClientBase
   const event: HarnessNativeEvent = { executionId: 'execution-1', sequence: 7, type: 'native.approval', occurredAt: '2026-09-16T00:00:00.000Z', payload: { requestId: 'exact-native-request', nested: { value: true } } }
   await appendNativeEvent(db, event)
   await appendNativeEvent(db, event)
   assert.equal(activityCount, 1)
-  assert.deepEqual(events.get(7), event)
+  assert.deepEqual(events.get('execution-1:legacy:7'), event)
   await assert.rejects(appendNativeEvent(db, { ...event, payload: { requestId: 'another-request' } }), { code: 'NATIVE_EVENT_IDENTITY_CONFLICT' })
-  assert.deepEqual(events.get(7), event)
+  assert.deepEqual(events.get('execution-1:legacy:7'), event)
 })
 
 function deliveryService(attachError?: Error, graphError?: Error) {
@@ -280,6 +281,6 @@ it('keeps every applied migration byte-for-byte and composes HAP-04 and HAP-05 m
     return { rows: [], rowCount: 0 }
   } }) } as unknown as pg.Pool
   await applyApplicationMigrations(pool)
-  assert.deepEqual([...observed.keys()], [...Object.keys(expected).map(Number), 503, 507, 508, 509, 700, 701, 800, 1701])
+  assert.deepEqual([...observed.keys()], [...Object.keys(expected).map(Number), 503, 507, 508, 509, 700, 701, 800, 1701, 1702])
   for (const [version, hash] of Object.entries(expected)) assert.equal(observed.get(Number(version)), hash, `migration ${version}`)
 })

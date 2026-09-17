@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 
 import type { NativeHarnessEvent, NativeSessionLane, NativeSessionReference } from '@graphql/contracts'
 
 import { DomainError } from '../errors.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../harnesses/port.js'
 import { PostgresInteractionCoordinationRepository, type WriterFence } from './coordination.js'
-import { definitelyRejected, reviewTurnEvidence } from './reviewerEvidence.js'
+import { definitelyRejected, ReviewEvidenceTracker, reviewTurnEvidence, type TurnEvidence } from './reviewerEvidence.js'
 
 /** Heartbeats start before any potentially long native await. Loss aborts the writer, never retries it. */
 export class LeaseGuard {
@@ -52,13 +53,14 @@ export class LeaseGuard {
     this.signal.throwIfAborted()
   }
 
-  async wait<T>(work: Promise<T>): Promise<T> {
+  async wait<T>(work: Promise<T>, signal: AbortSignal = this.signal): Promise<T> {
+    const ownedSignal = signal === this.signal ? signal : AbortSignal.any([this.signal, signal])
     let abort: (() => void) | undefined
     return Promise.race([work, new Promise<never>((_resolve, reject) => {
-      abort = () => reject(this.signal.reason)
-      this.signal.addEventListener('abort', abort, { once: true })
-      if (this.signal.aborted) abort()
-    })]).finally(() => { if (abort) this.signal.removeEventListener('abort', abort) })
+      abort = () => reject(ownedSignal.reason)
+      ownedSignal.addEventListener('abort', abort, { once: true })
+      if (ownedSignal.aborted) abort()
+    })]).finally(() => { if (abort) ownedSignal.removeEventListener('abort', abort) })
   }
 
   async stop(): Promise<void> {
@@ -69,27 +71,36 @@ export class LeaseGuard {
 }
 
 /** Stop requesting events as soon as ownership expires, even if the iterator ignores abort. */
-export async function* ownedEvents(events: AsyncIterable<NativeHarnessEvent>, guard: LeaseGuard): AsyncIterable<NativeHarnessEvent> {
+export async function* ownedEvents(events: AsyncIterable<NativeHarnessEvent>, guard: LeaseGuard, signal: AbortSignal = guard.signal): AsyncIterable<NativeHarnessEvent> {
+  const ownedSignal = signal === guard.signal ? signal : AbortSignal.any([guard.signal, signal])
   const iterator = events[Symbol.asyncIterator]()
+  let count = 0
   try {
     while (true) {
+      // An immediately resolved iterator must not starve lease/Stop timers.
+      if (count > 0 && count % 256 === 0) {
+        try { await yieldToEventLoop(undefined, { signal: ownedSignal }) }
+        catch (error) { ownedSignal.throwIfAborted(); throw error }
+      }
       await guard.check()
       let abort: (() => void) | undefined
       const next = await Promise.race([
-        Promise.resolve().then(() => { guard.signal.throwIfAborted(); return iterator.next() }),
+        Promise.resolve().then(() => { ownedSignal.throwIfAborted(); return iterator.next() }),
         new Promise<never>((_resolve, reject) => {
-          abort = () => reject(guard.signal.reason)
-          guard.signal.addEventListener('abort', abort, { once: true })
-          if (guard.signal.aborted) abort()
+          abort = () => reject(ownedSignal.reason)
+          ownedSignal.addEventListener('abort', abort, { once: true })
+          if (ownedSignal.aborted) abort()
         }),
-      ]).finally(() => { if (abort) guard.signal.removeEventListener('abort', abort) })
+      ]).finally(() => { if (abort) ownedSignal.removeEventListener('abort', abort) })
       await guard.check()
+      ownedSignal.throwIfAborted()
       if (next.done) return
+      count += 1
       yield next.value
     }
   } finally {
     const closed = Promise.resolve(iterator.return?.())
-    if (guard.signal.aborted) void closed.catch(() => undefined)
+    if (ownedSignal.aborted) void closed.catch(() => undefined)
     else await closed
   }
 }
@@ -194,18 +205,26 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   }
 
   async requireIdle(manager: NativeHarnessSessionManager, session: NativeSessionReference,
-    correlationId: string, lease: SessionWriteLease): Promise<void> {
+    correlationId: string, lease: SessionWriteLease, signal: AbortSignal = lease.guard.signal): Promise<void> {
     const previous = lease.previous
     await lease.guard.check()
+    signal.throwIfAborted()
     if (previous.observedStatus === 'idle' && !previous.correlationId && !previous.currentTurnOrMessageId) {
       lease.observedStatus = 'idle'
       return
     }
     lease.observedStatus = 'disconnected'
-    const history = await lease.guard.wait(manager.reconcile(session, previous.correlationId ?? correlationId, lease.guard.signal))
+    const history = await lease.guard.wait(manager.reconcile(session, previous.correlationId ?? correlationId, signal), signal)
     await lease.guard.check()
-    const evidence = reviewTurnEvidence(session, history, previous.correlationId ?? correlationId, previous.currentTurnOrMessageId)
-    if (history.pendingInteractions.length || evidence.nativeBusy
+    signal.throwIfAborted()
+    // Idle lanes clear their correlation but can retain the last provider ID.
+    // That finished identity must not be bound to the NEXT review's correlation.
+    // This preflight observes availability only; it never completes the new turn.
+    const unresolved = previous.observedStatus !== 'idle' || Boolean(previous.correlationId)
+    const evidence = reviewTurnEvidence(session, history,
+      previous.correlationId ?? (!unresolved ? history.correlationId : undefined) ?? correlationId,
+      unresolved ? previous.currentTurnOrMessageId : undefined)
+    if (history.pendingInteraction || history.pendingInteractions.length || evidence.nativeBusy || evidence.identityConflict
       || (previous.observedStatus !== 'idle' && !evidence.nativeIdle)) {
       lease.observedStatus = evidence.nativeBusy ? 'busy' : 'uncertain'
       throw new DomainError('SESSION_LANE_BUSY', 'The native session has active or unreconciled work.', 409)
@@ -215,14 +234,18 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
 
   private observe(session: NativeSessionReference, history: NativeHistory, correlationId: string, lease: SessionWriteLease): void {
     const evidence = reviewTurnEvidence(session, history, correlationId, lease.providerId)
+    this.observeEvidence(evidence, lease)
+  }
+
+  private observeEvidence(evidence: TurnEvidence, lease: SessionWriteLease): void {
     if (evidence.providerId) lease.providerId = evidence.providerId
-    lease.observedStatus = evidence.terminal && !evidence.nativeBusy ? 'idle'
-      : evidence.acknowledged || history.pendingInteractions.length ? 'busy' : 'uncertain'
+    lease.observedStatus = evidence.identityConflict ? 'uncertain' : evidence.terminal ? 'idle'
+      : evidence.acknowledged || evidence.nativeBusy ? 'busy' : 'uncertain'
   }
 
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
     const lease = await this.acquire(session, input.clientCorrelationId, signal)
-    const events: NativeHarnessEvent[] = []
+    const evidence = new ReviewEvidenceTracker(session, input.clientCorrelationId)
     let submitted = false
     try {
       await this.requireIdle(this.manager, session, input.clientCorrelationId, lease)
@@ -232,19 +255,31 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       this.active.set(session.nativeSessionId, lease)
       await lease.guard.check()
       submitted = true
-      for await (const event of ownedEvents(this.manager.startTurn(session, input, lease.guard.signal), lease.guard)) {
+      for await (const event of ownedEvents(this.manager.startTurn(session, {
+        ...input,
+        onSubmitted: async (providerId) => {
+          await lease.guard.check()
+          evidence.acknowledge(providerId)
+          if (evidence.snapshot().identityConflict) throw new DomainError('NATIVE_TURN_IDENTITY_CONFLICT',
+            'The provider returned conflicting turn identities. Native work will not be replayed.', 409)
+          lease.providerId = providerId
+          await input.onSubmitted?.(providerId)
+          await lease.guard.check()
+        },
+      }, lease.guard.signal), lease.guard)) {
         await lease.guard.check()
-        events.push(event)
-        this.observe(session, { events, pendingInteractions: [] }, input.clientCorrelationId, lease)
+        evidence.observeEvent(event)
+        this.observeEvidence(evidence.snapshot(), lease)
         yield event
       }
       await lease.guard.check()
       const history = await lease.guard.wait(this.manager.reconcile(session, input.clientCorrelationId, lease.guard.signal))
       await lease.guard.check()
-      this.observe(session, { ...history, events: [...events, ...history.events] }, input.clientCorrelationId, lease)
+      evidence.observeHistory(history)
+      this.observeEvidence(evidence.snapshot(), lease)
     } catch (error) {
       if (submitted && !isLeaseLost(error)) {
-        lease.observedStatus = definitelyRejected(error) && events.length === 0 ? 'idle' : 'uncertain'
+        lease.observedStatus = definitelyRejected(error) && evidence.processedEvents === 0 && !evidence.snapshot().acknowledged ? 'idle' : 'uncertain'
       }
       throw error
     } finally {

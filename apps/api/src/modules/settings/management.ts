@@ -40,6 +40,11 @@ export class FoundationSettingsManagementService {
         if (previous.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Agent defaults changed since they were read.', 409)
         for (const role of ['orchestrator', 'coder', 'operator'] as const) {
           const configuration = value[role].harness
+          // Even unchanged legacy defaults must satisfy Operator chat's resumability boundary.
+          // Validate before the unchanged-configuration shortcut or any persistent write.
+          if (role === 'operator' && configuration.harness === 'codex') {
+            CodexSessionCompatibilitySchema.parse({ configuration, requiresResume: true })
+          }
           if (isDeepStrictEqual(withAdvancedDefaults(previous.value[role].harness), withAdvancedDefaults(configuration))) continue
           if (!this.harnesses) throw new DomainError('HARNESS_QUALIFICATION_UNAVAILABLE', 'Native qualification is unavailable; changed configurations were not saved.', 503)
           if (role !== 'operator') {

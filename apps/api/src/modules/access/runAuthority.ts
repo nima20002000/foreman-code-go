@@ -11,6 +11,7 @@ interface Row {
 }
 interface Binding {
   owner_principal_id: string; grant_ceiling: unknown; accepted_expires_at: Date
+  execution_state: string; cleanup_pending: boolean
 }
 function principal(row: Row | undefined): ManagementPrincipal {
   if (!row || row.audience !== 'operator') throw new DomainError('AUTH_INVALID', 'The owning Operator authority is unavailable.', 401)
@@ -33,12 +34,16 @@ export async function currentOperatorAuthority(database: Database, id: string): 
   const stored = await row(database, id)
   const accepted = principal(stored)
   if (!stored!.delegated_from) return { principal: accepted, owner: accepted }
-  const found = await database.query<Binding>(`select b.owner_principal_id,b.grant_ceiling,b.accepted_expires_at
+  const found = await database.query<Binding>(`select b.owner_principal_id,b.grant_ceiling,b.accepted_expires_at,r.execution_state,
+    exists(select 1 from run_cleanup_intents cleanup where cleanup.run_id=r.id and cleanup.pending) as cleanup_pending
     from run_authority_principals b join runs r on r.id=b.run_id
     where b.principal_id=$1 and r.record->>'authorizationPrincipalId'=b.principal_id`, [id])
   const binding = found.rows[0]
   if (!binding || binding.owner_principal_id !== stored!.delegated_from) {
     throw new DomainError('AUTH_INVALID', 'A temporary chat credential is not durable Run authority.', 401)
+  }
+  if (binding.execution_state === 'completed' || binding.cleanup_pending) {
+    throw new DomainError('AUTH_RUN_ENDED', 'The accepted Run authority cannot act after Stop or terminal completion.', 401)
   }
   const ownerRow = await row(database, binding.owner_principal_id)
   const owner = principal(ownerRow)

@@ -13,6 +13,7 @@ import { DomainError } from '../errors.js'
 import { requireActiveWorkerBinding } from './workerLifecycle.js'
 import { intersectGrants } from './operatorDelegation.js'
 import { currentOperatorAuthority } from './runAuthority.js'
+import { requireActiveOperatorReviewCredential } from '../conversations/operatorReviewLifecycle.js'
 
 function digest(token: string): string {
   return createHash('sha256').update(token).digest('hex')
@@ -74,6 +75,7 @@ export class PostgresAccessService {
     const principal = fromRow(row)
     if (audience === 'worker') await requireActiveWorkerBinding(this.pool, row.id)
     if (row.delegated_from) {
+      if (audience === 'operator') await requireActiveOperatorReviewCredential(this.pool, row.id)
       const parent = await this.currentOperator(row.delegated_from)
       principal.grants = intersectGrants(principal.grants, parent.grants)
       principal.expiresAt = new Date(Math.min(Date.parse(principal.expiresAt), Date.parse(parent.expiresAt))).toISOString()

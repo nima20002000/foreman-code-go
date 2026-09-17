@@ -5,21 +5,69 @@ import { DomainError } from '../modules/errors.js'
 export class OperatorRuntimeOwner {
   private readonly client: pg.Client
   private held = false
+  private closing = false
+  private loss: Error | undefined
+  private acquisition: Promise<void> | undefined
+  private closure: Promise<void> | undefined
+  private ending: Promise<void> | undefined
+
   constructor(connectionString: string, onLost: (error: Error) => void) {
     this.client = new pg.Client({ connectionString, connectionTimeoutMillis: 5_000 })
-    this.client.on('error', (error) => { if (this.held) { this.held = false; onLost(error) } })
-  }
-  async acquire(): Promise<void> {
-    await this.client.connect()
-    const result = await this.client.query<{ acquired: boolean }>('select pg_try_advisory_lock($1) as acquired', [710_014])
-    if (!result.rows[0]?.acquired) {
-      await this.client.end()
-      throw new DomainError('OPERATOR_API_ALREADY_OWNED', 'Another API process owns the native runtime for this database. Multi-instance native execution is not enabled.', 503)
+    const lost = (error: Error) => {
+      if (this.ending || this.loss) return
+      this.loss = error
+      if (this.held) {
+        this.held = false
+        onLost(error)
+      }
     }
-    this.held = true
+    this.client.on('error', lost)
+    this.client.on('end', () => lost(new Error('The native runtime ownership connection ended.')))
   }
-  async close(): Promise<void> {
-    const held = this.held; this.held = false
-    try { if (held) await this.client.query('select pg_advisory_unlock($1)', [710_014]) } finally { await this.client.end() }
+
+  acquire(): Promise<void> {
+    if (this.closing) return Promise.reject(new Error('Native runtime ownership is closing.'))
+    if (this.loss) return Promise.reject(this.loss)
+    this.acquisition ??= Promise.resolve().then(async () => {
+      try {
+        await this.client.connect()
+        if (this.closing) throw new Error('Native runtime ownership is closing.')
+        const result = await this.client.query<{ acquired: boolean }>('select pg_try_advisory_lock($1) as acquired', [710_014])
+        if (!result.rows[0]?.acquired) {
+          throw new DomainError('OPERATOR_API_ALREADY_OWNED', 'Another API process owns the native runtime for this database. Multi-instance native execution is not enabled.', 503)
+        }
+        if (this.loss) throw this.loss
+        this.held = true
+      } catch (error) {
+        // No protected work is admitted until acquisition succeeds.
+        try { await this.end() } catch (cleanupError) {
+          throw new AggregateError([error, cleanupError], 'Native runtime ownership acquisition cleanup failed.', { cause: cleanupError })
+        }
+        throw error
+      }
+    })
+    return this.acquisition
+  }
+
+  /** Call only AFTER successful protected cleanup, never in a cleanup finally block. */
+  close(): Promise<void> {
+    this.closing = true
+    this.closure ??= Promise.resolve().then(async () => {
+      // A shutdown during connect must not leave a late-acquired lock behind.
+      if (!this.acquisition) return
+      await this.acquisition.catch(() => undefined)
+      try {
+        if (this.held) await this.client.query('select pg_advisory_unlock($1)', [710_014])
+      } finally {
+        this.held = false
+        await this.end()
+      }
+    })
+    return this.closure
+  }
+
+  private end(): Promise<void> {
+    this.ending ??= Promise.resolve().then(() => this.client.end())
+    return this.ending
   }
 }

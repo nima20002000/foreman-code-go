@@ -119,6 +119,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     private readonly locations: WorkspaceLocationService,
     private readonly workerCredentials?: ExecutionCredentialProvider,
     private readonly interactions?: PostgresInteractionRepository,
+    private readonly onRunTerminal?: (runId: string, reason: string) => Promise<void>,
   ) {
     this.workspaceRoot = resolve(workspaceRoot)
   }
@@ -134,7 +135,11 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     // Register cancellation before the first database await, including queued work.
     const controller = new AbortController()
     this.activeRuns.set(runId, controller)
-    const task = work(controller).finally(() => {
+    const task = work(controller).then(async () => {
+      if ((await this.runs.get(runId))?.executionState === 'completed') {
+        await this.finishRunLifecycle(runId)
+      }
+    }).finally(() => {
       if (this.activeRuns.get(runId) === controller) this.activeRuns.delete(runId)
       if (this.activeTasks.get(runId) === task) this.activeTasks.delete(runId)
     })
@@ -177,6 +182,9 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         if (this.activeTasks.has(candidate.id) || this.resumeTasks.has(candidate.id)) continue
         if (await this.runs.hasPendingCleanup?.(candidate.id)) {
           await this.cancel(candidate.id).catch(onError)
+          if ((await this.runs.get(candidate.id))?.executionState === 'completed') {
+            await this.finishRunLifecycle(candidate.id).catch(onError)
+          }
           continue
         }
         if (candidate.executionState === 'queued') {
@@ -232,6 +240,19 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
   async resume(runId: string): Promise<void> {
     await this.queueResume(runId)
+  }
+
+  /** Runs terminal review cleanup only after Run ownership/command transactions are released. */
+  async finishRunLifecycle(runId: string, reason = 'The Run stopped or completed.'): Promise<void> {
+    if (!this.onRunTerminal) return
+    await this.runs.requestCleanup(runId)
+    try {
+      await this.onRunTerminal(runId, reason)
+      await this.runs.finishCleanup(runId, false)
+    } catch (error) {
+      await this.runs.finishCleanup(runId, true).catch(() => undefined)
+      throw error
+    }
   }
 
   async resumeInteraction(interaction: DurableInteraction): Promise<void> {
@@ -476,7 +497,9 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
   async shutdown(): Promise<void> {
     this.closing = true
-    const runIds = new Set([...this.activeRuns.keys(), ...this.nativeExecutions.residentRunIds()])
+    // A waiting Run has no active graph task. Runtime shutdown disposes its
+    // resident manager later, but must not turn an ordinary restart into Stop.
+    const runIds = new Set(this.activeRuns.keys())
     for (const controller of this.activeRuns.values()) controller.abort()
     // Waiting sessions are deliberately included; all cancellations start before
     // any task drain, and a failed sibling must not short-circuit shutdown.

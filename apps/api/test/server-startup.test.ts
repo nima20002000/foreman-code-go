@@ -26,7 +26,7 @@ vi.mock('../src/production.js', () => ({ buildProductionApp: () => ({
     state.calls.push('recovery started')
     await new Promise<void>((resolve) => { state.finishRecovery = resolve })
   },
-  shutdown: async () => { state.calls.push('native shutdown'); state.finishRecovery?.() },
+  drainShutdown: async () => { state.calls.push('native shutdown'); state.finishRecovery?.() },
 }) }))
 
 it('handles SIGTERM while startup recovery is still running and closes all resources', async () => {

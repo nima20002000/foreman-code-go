@@ -24,13 +24,13 @@ async function main() {
     config.checkpoints.schema,
     config.database,
   )
-  const { app, initialize, reconcile, shutdown } = buildProductionApp(config, database, checkpoints)
+  const { app, initialize, reconcile, drainShutdown } = buildProductionApp(config, database, checkpoints)
   let reconciliationTimer: NodeJS.Timeout | undefined
   const reportReconciliationError = (error: unknown) => app.log.error({ err: error }, 'run reconciliation failed')
 
   app.addHook('onClose', async () => {
     if (reconciliationTimer) clearInterval(reconciliationTimer)
-    try { await shutdown() }
+    try { await drainShutdown() }
     finally { await Promise.allSettled([checkpoints.close(), database.close()]) }
   })
 

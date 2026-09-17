@@ -10,11 +10,12 @@ import { listOperatorConversationSummaries } from '../../shared/api/operatorChat
 import { subscribeOperatorChat, type OperatorChatConnection } from '../../shared/api/operatorChatStream'
 import { useAccessFailureLatch } from '../../shared/api/useAccessFailureLatch'
 import { sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../shared/api/sessionBoundary'
+import { chatStoragePrefix, identityEpoch } from '../../shared/api/protectedChatStorage'
 import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
 import { Alert, Badge, Button, EmptyState, Icon, IconButton, LoadingState, Select } from '../../shared/ui/nocturne'
 import { isNarrowOperatorChat, operatorChatNarrowQuery, useOperatorChatStore } from './operatorChatStore'
 import { useOperatorChatVisibility } from './useOperatorChatVisibility'
-import { acknowledgeOperatorMessage, readPendingOperatorMessage, reserveOperatorMessage } from './operatorOutbox'
+import { acknowledgeOperatorMessage, assertOperatorMessageReserved, readPendingOperatorMessage, reserveOperatorMessage } from './operatorOutbox'
 import { projectOperatorText, type OperatorTextProjection } from './operatorTextProjection'
 import { newerOperatorSummaries, operatorNavigationStatus, operatorTurnStatus, summarizeOperatorConversation } from './operatorChatStatus'
 import { OperatorTranscript } from './OperatorTranscript'
@@ -51,6 +52,8 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
   const [preparationError, setPreparationError] = useState<{ id: string; message: string }>()
   const [connection, setConnection] = useState<{ id: string; state: OperatorChatConnection }>()
   const [, refreshOutbox] = useState(0)
+  const reservations = useRef(new Set<string>())
+  const [preparingId, setPreparingId] = useState<string>()
   const list = useQuery({ queryKey: listKey, enabled, refetchInterval: 5_000,
     queryFn: async ({ signal }) => {
       const next = await listOperatorConversationSummaries({ signal })
@@ -93,11 +96,21 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       await queryClient.invalidateQueries({ queryKey: listKey })
     } })
   const send = useMutation({
-    mutationFn: ({ id, command }: { id: string; command: SendOperatorMessageRequest; generation: number }) => sendOperatorMessage(id, command),
+    mutationFn: ({ id, command, generation, epoch }: { id: string; command: SendOperatorMessageRequest; generation: number; epoch: string }) => {
+      if (!currentSession(generation) || epoch !== identityEpoch()) throw new SessionChangedError()
+      assertOperatorMessageReserved(id, command)
+      return sendOperatorMessage(id, command)
+    },
     onSuccess: async (result, input) => {
-      if (!currentSession(input.generation)) return
-      acknowledgeOperatorMessage(input.id, input.command.requestId)
-      clearDraft(input.id, input.command.content)
+      if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
+      try {
+        const acknowledged = await acknowledgeOperatorMessage(input.id, input.command.requestId)
+        if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
+        if (acknowledged) clearDraft(input.id, input.command.content)
+      } catch (error) {
+        if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
+        setPreparationError({ id: input.id, message: error instanceof Error ? error.message : 'The message receipt could not be saved.' })
+      }
       refreshOutbox((value) => value + 1)
       acceptState(input.id, result.state)
       await invalidate(input.id)
@@ -115,6 +128,14 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       if (!currentSession(variables.generation)) return
       acceptState(variables.id, result.state); await invalidate(variables.id)
     } })
+
+  useEffect(() => {
+    const changed = (event: StorageEvent) => {
+      if (event.key === null || event.key.startsWith(chatStoragePrefix)) refreshOutbox((value) => value + 1)
+    }
+    window.addEventListener('storage', changed)
+    return () => window.removeEventListener('storage', changed)
+  }, [])
 
   useEffect(() => {
     if (enabled && open) closeRef.current?.focus()
@@ -160,6 +181,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
   if (!enabled || sessionIsSwitching()) return null
   const conversation = accessDenied ? undefined : selected.data
   const active = Boolean(conversation && (conversation.activeRequestId || !['idle', 'error'].includes(conversation.turnState)))
+  const archived = conversation?.conversation.status === 'archived'
   const requestId = conversation?.activeRequestId
   const pending = selectedId && !accessDenied ? readPendingOperatorMessage(selectedId) : {}
   const scopedSendError = send.variables?.id === selectedId && send.error instanceof Error ? send.error.message : undefined
@@ -189,13 +211,26 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
     })
   }
   const createConversation = () => create.mutate({ generation: sessionGeneration() })
-  const submit = (content: string) => {
-    if (!selectedId || active || accessDenied || pending.command || pending.error || (send.isPending && send.variables?.id === selectedId)) return
+  const submit = async (content: string) => {
+    if (!selectedId || archived || active || accessDenied || pending.command || pending.error
+      || reservations.current.has(selectedId) || (send.isPending && send.variables?.id === selectedId)) return
+    const id = selectedId
+    const generation = sessionGeneration()
+    const epoch = identityEpoch()
+    reservations.current.add(id); setPreparingId(id)
     try {
-      const command = reserveOperatorMessage(selectedId, content, window.location.pathname + window.location.search)
+      const command = await reserveOperatorMessage(id, content, window.location.pathname + window.location.search)
+      if (!currentSession(generation) || epoch !== identityEpoch()) return
       setPreparationError(undefined)
-      send.mutate({ id: selectedId, command, generation: sessionGeneration() })
-    } catch (error) { setPreparationError({ id: selectedId, message: error instanceof Error ? error.message : 'Message preparation failed.' }) }
+      send.mutate({ id, command, generation, epoch })
+    } catch (error) {
+      if (currentSession(generation) && epoch === identityEpoch()) setPreparationError({ id,
+        message: error instanceof Error ? error.message : 'Message preparation failed.' })
+    } finally {
+      reservations.current.delete(id)
+      setPreparingId((current) => current === id ? undefined : current)
+      refreshOutbox((value) => value + 1)
+    }
   }
   return <div className="operator-chat-root">
     {open ? <section id={panelId} className="operator-chat" role="dialog" aria-modal={false} aria-label="Operator chat"
@@ -242,11 +277,12 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
           {selected.isLoading ? <LoadingState label="Loading conversation…" rows={4} /> : null}
           {selected.isError ? <Alert live tone="danger" title={conversation ? 'Conversation refresh failed' : 'Conversation could not be loaded'} action={<Button size="sm" disabled={selected.isFetching} loading={selected.isFetching} onClick={() => void selected.refetch()}>Retry conversation</Button>}>{conversation ? 'Previously loaded messages are still shown.' : 'Try the request again.'}</Alert> : null}
           {conversation ? <>
+            {archived ? <Alert tone="warning" title="Conversation ended">This conversation is read-only. Its history and pending receipt remain available.</Alert> : null}
             {conversation.messages.length === 0 && !active ? <p>No messages yet. Send a message to start this conversation.</p> : null}
             <OperatorTranscript key={conversation.conversation.id} messages={conversation.messages} partialText={partialText} />
             {conversation.pendingInteraction || conversation.error || pending.error || pending.command || sendError
               || (respondVariables?.id === selectedId && respond.error) || (cancelVariables?.id === selectedId && cancel.error) ? <div className="operator-chat-decision-area">
-              {requestId && conversation.pendingInteraction ? <fieldset disabled={(respond.isPending && respond.variables?.id === selectedId) || conversation.responseDelivery !== 'offered' || conversation.turnState === 'canceling'}>
+              {requestId && conversation.pendingInteraction ? <fieldset disabled={archived || (respond.isPending && respond.variables?.id === selectedId) || conversation.responseDelivery !== 'offered' || conversation.turnState === 'canceling'}>
                 <legend>Operator permission request</legend>
                 <ApprovalRequestSummary request={conversation.pendingInteraction.request} nativeRequestType={conversation.pendingInteraction.nativeRequestType} />
                 <details><summary>Technical details</summary><pre className="operator-chat-approval-details">{JSON.stringify(conversation.pendingInteraction.request, null, 2)}</pre></details>
@@ -266,7 +302,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
               </div>
               {pending.command ? <Button disabled={send.isPending && send.variables?.id === selectedId} loading={send.isPending && send.variables?.id === selectedId} onClick={() => {
                 setPreparationError(undefined)
-                send.mutate({ id: conversation.conversation.id, command: pending.command!, generation: sessionGeneration() })
+                send.mutate({ id: conversation.conversation.id, command: pending.command!, generation: sessionGeneration(), epoch: identityEpoch() })
               }}>Retry pending message</Button> : null}
             </div> : null}
             <footer className="operator-chat-controls">
@@ -275,8 +311,8 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
                 {requestId ? <Button className="operator-chat-cancel" variant="danger" size="sm" onClick={() => cancel.mutate({ id: conversation.conversation.id, requestId, generation: sessionGeneration() })}
                   disabled={conversation.turnState === 'canceling' || (cancel.isPending && cancel.variables?.id === selectedId)}>{conversation.turnState === 'canceling' ? 'Cancel requested' : 'Cancel turn'}</Button> : null}
               </div>
-              <ConversationComposer conversationId={conversation.conversation.id} sendDisabled={active || Boolean(pending.error) || Boolean(pending.command)}
-                allowEditingWhileSending isSending={send.isPending && send.variables?.id === selectedId} onSubmit={submit} />
+              <ConversationComposer conversationId={conversation.conversation.id} sendDisabled={archived || active || preparingId === selectedId || Boolean(pending.error) || Boolean(pending.command)}
+                allowEditingWhileSending isSending={preparingId === selectedId || (send.isPending && send.variables?.id === selectedId)} onSubmit={submit} />
             </footer>
           </> : null}
         </main>

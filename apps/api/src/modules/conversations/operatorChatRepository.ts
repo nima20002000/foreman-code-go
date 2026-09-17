@@ -9,6 +9,7 @@ import {
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
+import { isOperatorReview, operatorConversationOwnerPredicate, PostgresOperatorReviewLifecycle } from './operatorReviewLifecycle.js'
 
 export type TurnPhase = 'accepted' | 'creating' | 'ready' | 'submitting' | 'submitted'
 export interface ConversationRow {
@@ -50,24 +51,38 @@ function conversation(row: ConversationRow): Conversation {
 
 /** SQL transitions are fenced by the accepted request, even under a delayed native response. */
 export class PostgresOperatorConversationRepository {
-  constructor(private readonly pool: pg.Pool) {}
+  readonly reviews: PostgresOperatorReviewLifecycle
+  constructor(private readonly pool: pg.Pool) { this.reviews = new PostgresOperatorReviewLifecycle(pool) }
 
   async create(operatorId: string, configuration: OperatorConfigurationVersion, ownerId: string, title?: string, id: string = randomUUID()): Promise<Conversation> {
+    if (!isOperatorReview(id)) return this.createWithQuery(this.pool, operatorId, configuration, ownerId, title, id)
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      await this.reviews.lockAdmission(id.slice('operator-review:'.length), ownerId, client)
+      const value = await this.createWithQuery(client, operatorId, configuration, ownerId, title, id)
+      await client.query('commit')
+      return value
+    } catch (error) { await client.query('rollback').catch(() => undefined); throw error } finally { client.release() }
+  }
+
+  private async createWithQuery(query: Queryable, operatorId: string, configuration: OperatorConfigurationVersion,
+    ownerId: string, title: string | undefined, id: string): Promise<Conversation> {
     const now = new Date().toISOString()
     const value = ConversationSchema.parse({ id, agentId: operatorId, scope: 'application',
       operatorConfigurationVersionId: configuration.id, title: title ?? 'New conversation', status: 'open', createdAt: now, updatedAt: now })
-    await this.pool.query(`insert into operator_conversations
+    await query.query(`insert into operator_conversations
       (id,operator_id,operator_configuration_version_id,harness,owner_principal_id,record)
       values ($1,$2,$3,$4,$5,$6::jsonb) on conflict(id) do nothing`,
     [id, operatorId, configuration.id, configuration.harness.harness, ownerId, JSON.stringify(value)])
-    const row = await this.active(id)
+    const row = await this.active(id, query)
     if (!row || row.owner_principal_id !== ownerId) throw new DomainError('ACCESS_DENIED', 'The conversation belongs to another principal.', 403)
     return conversation(row)
   }
 
   async list(ownerId: string): Promise<Conversation[]> {
     const result = await this.pool.query<ConversationRow>(
-      'select * from operator_conversations where owner_principal_id=$1 order by updated_at desc,id', [ownerId])
+      `select c.* from operator_conversations c where ${operatorConversationOwnerPredicate} order by c.updated_at desc,c.id`, [ownerId])
     return result.rows.map(conversation)
   }
 
@@ -78,8 +93,8 @@ export class PostgresOperatorConversationRepository {
       revision: string | number; active_request_id: string | null; needs_attention: boolean;
     }>(`select id,record->>'title' as title,turn_state,revision,active_request_id,
       coalesce(active_request_id is not null and pending_interaction is not null
-        and response_delivery='offered' and not cancel_requested, false) as needs_attention
-      from operator_conversations where owner_principal_id=$1 order by updated_at desc,id`, [ownerId])
+        and response_delivery='offered' and not cancel_requested and record->>'status'='open', false) as needs_attention
+      from operator_conversations c where ${operatorConversationOwnerPredicate} order by updated_at desc,id`, [ownerId])
     return result.rows.map((row) => OperatorConversationSummarySchema.parse({
       conversationId: row.id, ...(row.title === null ? {} : { title: row.title }),
       turnState: row.turn_state, revision: Number(row.revision), activeRequestId: row.active_request_id,
@@ -108,8 +123,8 @@ export class PostgresOperatorConversationRepository {
     const result = await this.pool.query<{ record: unknown }>('select record from operator_configuration_versions where id=$1', [id])
     return result.rows[0] ? OperatorConfigurationVersionSchema.parse(result.rows[0].record) : undefined
   }
-  async active(id: string): Promise<ConversationRow | undefined> {
-    return (await this.pool.query<ConversationRow>('select * from operator_conversations where id=$1', [id])).rows[0]
+  async active(id: string, query: Queryable = this.pool): Promise<ConversationRow | undefined> {
+    return (await query.query<ConversationRow>('select * from operator_conversations where id=$1', [id])).rows[0]
   }
   async unfinished(): Promise<ConversationRow[]> {
     return (await this.pool.query<ConversationRow>(
@@ -131,6 +146,8 @@ export class PostgresOperatorConversationRepository {
       }
       const replayed = Boolean(prior && (!prior.retryable || row.active_request_id))
       if (!replayed) {
+        if (conversation(row).status === 'archived') throw new DomainError('CONVERSATION_ARCHIVED', 'This conversation is read-only.', 409)
+        await this.reviews.assertActive(id, client)
         if (row.active_request_id || !['idle', 'error'].includes(row.turn_state)) {
           throw new DomainError('CONVERSATION_TURN_ACTIVE', 'This conversation has an active or uncertain turn.', 409)
         }
@@ -162,7 +179,7 @@ export class PostgresOperatorConversationRepository {
 
   async phase(id: string, requestId: string, phase: TurnPhase): Promise<boolean> {
     const result = await this.pool.query(`update operator_conversations set active_phase=$3,revision=revision+1,updated_at=now()
-      where id=$1 and active_request_id=$2 and not cancel_requested`, [id, requestId, phase])
+      where id=$1 and active_request_id=$2 and not cancel_requested and record->>'status' is distinct from 'archived'`, [id, requestId, phase])
     return result.rowCount === 1
   }
   async bind(id: string, requestId: string, version: string, nativeId: string): Promise<void> {
@@ -195,7 +212,7 @@ export class PostgresOperatorConversationRepository {
   }
   async claimResponse(id: string, requestId: string, nativeRequestId: string): Promise<boolean> {
     return (await this.pool.query(`update operator_conversations set response_delivery='submitted',revision=revision+1,updated_at=now()
-      where id=$1 and active_request_id=$2 and not cancel_requested and response_delivery='offered'
+      where id=$1 and active_request_id=$2 and not cancel_requested and record->>'status' is distinct from 'archived' and response_delivery='offered'
         and pending_interaction->'turn'->>'nativeRequestId'=$3`, [id, requestId, nativeRequestId])).rowCount === 1
   }
   async responseFailed(id: string, requestId: string, nativeRequestId: string): Promise<void> {

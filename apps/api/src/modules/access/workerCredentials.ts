@@ -136,7 +136,7 @@ export class WorkerCredentialService {
          and r.record->>'id'=r.id and r.record->>'workspaceId'=b.workspace_id and r.record->>'workflowId'=b.workflow_id
          and ((b.purpose='workflow' and he.record->>'state' in ('running','waiting')
            and s.active_elapsed_ms + coalesce(extract(epoch from (now()-s.active_started_at))*1000,0) < s.active_timeout_ms)
-           or (b.purpose='reviewer' and he.record->>'state'='completed'
+           or (b.purpose='reviewer' and p.expires_at > clock_timestamp() and he.record->>'state'='completed'
              and r.record->'approval'->>'handler'='orchestrator'
              and r.record->'approval'->>'designatedOrchestratorAgentId'=b.agent_id
              and exists (select 1 from execution_native_sessions ns where ns.execution_id=he.id

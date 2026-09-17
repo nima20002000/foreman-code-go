@@ -395,14 +395,14 @@ it('settles a cleanup failure as failed, never as a successful canceled Run (#23
   assert.ok(f.calls.includes('release-owner'))
 })
 
-it('shutdown cancels every resident waiting Run despite a sibling cleanup failure (#20/#23)', async () => {
+it('shutdown preserves resident waiting Runs for restart recovery', async () => {
   const canceled: string[] = []
   const f = engineFixture({ residentRunIds: () => ['one', 'two'], cancelRun: async (runId: string) => {
     canceled.push(runId)
     if (runId === 'one') throw new Error('one failed')
   } } as unknown as ApprovalExecutionCoordinator)
-  await assert.rejects(f.engine.shutdown(), AggregateError)
-  assert.deepEqual(canceled.sort(), ['one', 'two'])
+  await f.engine.shutdown()
+  assert.deepEqual(canceled, [])
 })
 
 it('shutdown signals native cancellation before waiting for active graph tasks', async () => {

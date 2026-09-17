@@ -13,7 +13,7 @@ vi.mock('../../shared/api/operatorChatSummaries', () => ({ listOperatorConversat
 vi.mock('../../shared/api/operatorChatStream', () => ({ subscribeOperatorChat: () => () => {} }))
 vi.mock('../../shared/api/sessionBoundary', () => ({ sessionGeneration: () => 1, sessionIsSwitching: () => false }))
 vi.mock('./useOperatorChatVisibility', () => ({ useOperatorChatVisibility: () => true }))
-vi.mock('./operatorOutbox', () => ({ readPendingOperatorMessage: () => ({}), reserveOperatorMessage: vi.fn(), acknowledgeOperatorMessage: vi.fn() }))
+vi.mock('./operatorOutbox', () => ({ readPendingOperatorMessage: () => ({}), reserveOperatorMessage: vi.fn(), acknowledgeOperatorMessage: vi.fn(), assertOperatorMessageReserved: vi.fn() }))
 vi.mock('../conversations', () => ({
   ConversationHistory: ({ messages }: { messages: { id: string; content: string }[] }) => <div>{messages.map((message) => <p key={message.id}>{message.content}</p>)}</div>,
   ConversationComposer: ({ conversationId }: { conversationId: string }) => <div data-testid="composer">Composer for {conversationId}</div>,

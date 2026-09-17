@@ -10,6 +10,7 @@ import { NativeConfigurationService } from './modules/harnesses/nativeConfigurat
 import type { CheckpointStore } from './infrastructure/checkpoints.js'
 import type { createDatabase } from './infrastructure/database.js'
 import { OperatorRuntimeOwner } from './infrastructure/operatorRuntimeOwner.js'
+import { RuntimeShutdown } from './infrastructure/runtimeShutdown.js'
 import { PostgresAccessService } from './modules/access/postgres.js'
 import { WorkerCredentialService } from './modules/access/workerCredentials.js'
 import {
@@ -152,9 +153,14 @@ export function buildProductionApp(
     runs, repository, budgets, managers, config.harnesses.timeoutMs, launchCredentials, validateContinuation,
     (executionId, signal) => processRegistry.closeOwner(`execution:${executionId}`, signal),
   )
+  const reviewLifecycle: { current?: AutomaticReviewService } = {}
   const engine = new LangGraphWorkflowEngine(
     runs, workflows, approvals, checkpoints.saver, config.harnesses.workspaceRoot,
     locations, launchCredentials, repository,
+    (runId, reason) => {
+      if (!reviewLifecycle.current) throw new Error('Automatic review lifecycle is not initialized.')
+      return reviewLifecycle.current.stopRun(runId, reason)
+    },
   )
   const interactions = new InteractionService(
     repository, budgets, approvals, (interaction) => engine.resumeInteraction(interaction), responseJournal,
@@ -199,6 +205,7 @@ export function buildProductionApp(
     resolveOperatorManager, operatorWorkingDirectory, chatAuthority,
   )
   const reviews = new AutomaticReviewService(database.pool, runs, approvals, chat, access, locations, rollout)
+  reviewLifecycle.current = reviews
   const operatorServices = {
     workspaces: new WorkspaceManagementService(database.pool, commands, locations),
     locations,
@@ -250,39 +257,96 @@ export function buildProductionApp(
     logger,
   })
   let closing = false
+  let httpClosing = false
   let initialized = false
+  let initialization: Promise<void> | undefined
   let reconciliation: Promise<void> | undefined
+  let applicationClose: Promise<void> | undefined
   const runtimeOwner = new OperatorRuntimeOwner(config.database.connectionString, (error) => {
     app.log.error({ err: error }, 'native runtime ownership lost; stopping execution')
-    void Promise.allSettled([chat.shutdown(), reviews.shutdown(), engine.shutdown(), app.close()])
+    beginShutdown()
+    // Never re-enter/await app.close() from an onClose cleanup. The failed
+    // connection has already lost its lock; native recovery fencing still applies.
+    if (!httpClosing) void shutdown().catch((failure: unknown) => {
+      app.log.error({ err: failure }, 'shutdown after native runtime ownership loss failed')
+    })
   })
-  const initialize = async (): Promise<void> => {
-    if (initialized) return
-    await runtimeOwner.acquire()
-    try {
+  const lifecycle = new RuntimeShutdown({
+    stop: [
+      { name: 'workflow triggers', run: () => operatorExtensions.triggers.shutdown() },
+      { name: 'Operator chat', run: () => chat.shutdown() },
+      { name: 'automatic reviews', run: () => reviews.shutdown() },
+      { name: 'workflow engine', run: () => engine.shutdown() },
+    ],
+    drain: [
+      // Initialization errors belong to initialize()'s caller, not to cleanup.
+      // Wait for its last DB/filesystem operation even if startup was canceled.
+      { name: 'initialization', run: () => initialization?.then(() => undefined, () => undefined) },
+      { name: 'reconciliation', run: () => reconciliation },
+    ],
+    dispose: [
+      { name: 'execution native managers', run: () => managers.dispose() },
+      { name: 'remaining Operator native managers', run: async () => {
+        // Snapshot only after all producers have drained. Keep failed disposals
+        // visible instead of clearing their ownership records unconditionally.
+        const results = await Promise.allSettled([...operatorManagers.entries()].map(async ([id, manager]) => {
+          const disposable = manager as NativeHarnessSessionManager & { dispose?: () => Promise<void> }
+          if (!disposable.dispose) throw new Error('An owned native manager has no disposal contract.')
+          await disposable.dispose()
+          if (operatorManagers.get(id) === manager) operatorManagers.delete(id)
+        }))
+        const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
+        if (errors.length) throw new AggregateError(errors, 'Operator native manager disposal was incomplete.')
+      } },
+    ],
+    // Independent of initialized: startup can acquire ownership and then fail.
+    releaseOwnership: () => runtimeOwner.close(),
+  })
+  const beginShutdown = (): void => {
+    closing = true
+    lifecycle.begin()
+  }
+  const assertOpen = (): void => {
+    if (closing) throw new DomainError('NATIVE_RUNTIME_CLOSING', 'The native runtime is shutting down.', 503)
+  }
+  const initialize = (): Promise<void> => {
+    if (closing) return Promise.reject(new DomainError('NATIVE_RUNTIME_CLOSING', 'The native runtime is shutting down.', 503))
+    if (initialized) return Promise.resolve()
+    // Coalesce startup and publish its lifetime before starting any async work.
+    initialization ??= Promise.resolve().then(async () => {
+      assertOpen()
+      await runtimeOwner.acquire()
+      assertOpen()
       const canonicalDirectory = await ensureOperatorRuntimeDirectory(config.harnesses.workspaceRoot)
+      assertOpen()
       if (canonicalDirectory !== operatorWorkingDirectory) {
         throw new DomainError('OPERATOR_RUNTIME_DIRECTORY_INVALID', 'The canonical Operator directory differs from the configured managed path.', 422)
       }
       const operator = await operators.ensure()
+      assertOpen()
       const defaults = await foundationSettings.getAgentDefaults()
+      assertOpen()
       if (!isDeepStrictEqual(operator.configuration.harness, defaults.value.operator.harness)) {
         await operators.update(defaults.value.operator.harness, operator.operator.currentConfigurationVersionId)
+        assertOpen()
       }
       await chatAuthority.revokeOrphanedCredentials()
+      assertOpen()
       initialized = true
-    } catch (error) {
-      await runtimeOwner.close().catch(() => undefined)
-      throw error
-    }
+    })
+    // On failure the startup caller closes the app. Only the shared shutdown
+    // barrier may release the owner, after any already-admitted work drains.
+    return initialization
   }
   const reconcile = (report: (error: unknown) => void): Promise<void> => {
     if (closing) return Promise.resolve()
     if (reconciliation) return reconciliation
     reconciliation = (async () => {
       await engine.reconcile(report)
+      if (closing) return
       if (initialized) {
         await chat.reconcileActive()
+        if (closing) return
         await reviews.tick()
         if (!closing) await operatorExtensions.triggers.tick(report)
       }
@@ -296,19 +360,27 @@ export function buildProductionApp(
     })().finally(() => { reconciliation = undefined })
     return reconciliation
   }
-  const shutdown = async (): Promise<void> => {
-    closing = true
-    const managerCleanup = [...operatorManagers.values()].map(async (manager) => {
-      const disposable = manager as NativeHarnessSessionManager & { dispose?: () => Promise<void> }
-      await disposable.dispose?.()
-    })
-    const results = await Promise.allSettled([
-      operatorExtensions.triggers.shutdown(), chat.shutdown(), reviews.shutdown(), engine.shutdown(), reconciliation, managers.dispose(),
-      ...managerCleanup, ...(initialized ? [runtimeOwner.close()] : []),
-    ])
-    operatorManagers.clear()
-    const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
-    if (errors.length) throw new AggregateError(errors, 'Production runtime shutdown was incomplete.')
+  app.addHook('preClose', async () => {
+    httpClosing = true
+    beginShutdown()
+    // Signal now, but do not release ownership before in-flight HTTP handlers
+    // have drained. They may still finish native/DB lifecycle operations.
+  })
+  // This hook-only boundary never calls app.close(). server.ts uses it before
+  // closing database/checkpoint resources, whichever onClose hook runs first.
+  const drainShutdown = (): Promise<void> => {
+    httpClosing = true
+    beginShutdown()
+    return lifecycle.finish()
   }
-  return { app, engine, initialize, reconcile, shutdown }
+  app.addHook('onClose', async () => { await drainShutdown() })
+  const shutdown = (): Promise<void> => {
+    beginShutdown()
+    // External callers close HTTP first. Repeated calls share app.close(), and
+    // cannot release ownership while HTTP is draining in preClose.
+    // onClose hooks must use drainShutdown(), not await this enclosing close.
+    applicationClose ??= Promise.resolve().then(() => app.close())
+    return applicationClose
+  }
+  return { app, engine, initialize, reconcile, shutdown, drainShutdown }
 }

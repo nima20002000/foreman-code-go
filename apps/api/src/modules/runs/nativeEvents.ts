@@ -3,56 +3,18 @@ import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
 
-/** The native-event insert and its Run Activity reference either both commit or neither does. */
+/** The native-event insert, sequence allocation and Run Activity reference commit atomically. */
 export async function appendNativeEvent(client: pg.Pool | pg.ClientBase, event: HarnessNativeEvent): Promise<void> {
   const parsed = HarnessNativeEventSchema.parse(event)
-  if (parsed.connectionId) {
-    const inserted = await client.query(
-      `with owner as materialized (
-         select id from harness_executions where id=$1 for update
-       ), identity as (
-         select coalesce(max(e.sequence)+1,0)::integer as sequence
-         from owner left join harness_native_events e on e.execution_id=owner.id
-       ),
-       appended as (
-         insert into harness_native_events(execution_id,sequence,record,connection_id,source_sequence)
-           select $1,sequence,jsonb_set($3::jsonb,'{sequence}',to_jsonb(sequence)),$4,$2 from identity
-           on conflict (execution_id,connection_id,source_sequence) do nothing returning execution_id,sequence
-       )
-       insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
-         select e.run_id,'harness','harness_output',e.id,$5::timestamptz,
-           jsonb_build_object('nativeEventSequence',a.sequence,'nativeEventType',$6::text)
-         from appended a join harness_executions e on e.id=a.execution_id`,
-      [parsed.executionId, parsed.sequence, JSON.stringify(parsed), parsed.connectionId, parsed.occurredAt, parsed.type],
-    )
-    if (inserted.rowCount === 1) return
-    const existing = await client.query<{ matches: boolean }>(
-      `select record-'sequence'=$4::jsonb-'sequence' as matches from harness_native_events
-       where execution_id=$1 and connection_id=$2 and source_sequence=$3`,
-      [parsed.executionId, parsed.connectionId, parsed.sequence, JSON.stringify(parsed)],
-    )
-    if (!existing.rows[0]?.matches) throw new DomainError('NATIVE_EVENT_IDENTITY_CONFLICT', 'The native source identity is already bound to different history.', 409)
-    return
-  }
-  const written = await client.query(
-    `with appended as (
-       insert into harness_native_events (execution_id,sequence,record) values ($1,$2,$3::jsonb)
-       on conflict (execution_id,sequence) do nothing returning execution_id
-     )
-     insert into run_activity (run_id,source,kind,harness_execution_id,occurred_at,payload)
-       select e.run_id,'harness','harness_output',e.id,$4::timestamptz,
-         jsonb_build_object('nativeEventSequence',$2::integer,'nativeEventType',$5::text)
-       from appended a join harness_executions e on e.id=a.execution_id`,
-    [parsed.executionId, parsed.sequence, JSON.stringify(parsed), parsed.occurredAt, parsed.type],
-  )
-  if (written.rowCount === 1) return
-  // Re-reading the same history is a storage replay, not permission to replay a
-  // native action. Never silently overwrite or renumber a conflicting event.
-  const existing = await client.query<{ matches: boolean }>(
-    'select record=$3::jsonb as matches from harness_native_events where execution_id=$1 and sequence=$2',
-    [parsed.executionId, parsed.sequence, JSON.stringify(parsed)],
-  )
-  if (!existing.rows[0]?.matches) {
-    throw new DomainError('NATIVE_EVENT_IDENTITY_CONFLICT', 'This native event sequence is already bound to different history.', 409)
+  try {
+    // One server-side statement works with a Pool, an autocommit Client, or a
+    // supplied ownership-fenced transaction. Never BEGIN/COMMIT the caller's
+    // transaction or use different Pool connections for the lock and append.
+    await client.query('select append_harness_native_event($1::jsonb)', [JSON.stringify(parsed)])
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'PNE01') {
+      throw new DomainError('NATIVE_EVENT_IDENTITY_CONFLICT', 'The native source identity is already bound to different history.', 409)
+    }
+    throw error
   }
 }

@@ -205,6 +205,9 @@ export class RunManagementService {
           : { runId: input.runId, status: 'not_owner' as const, processStopped: false }
       },
     })
+    if (execution.value.status === 'accepted' || execution.value.status === 'already_terminal') {
+      await this.engine.finishRunLifecycle?.(input.runId, 'The Run was stopped.')
+    }
     // Older receipts may have inferred termination from a terminal record.
     // This API has no process-exit observation, including on receipt replay.
     return { ...execution.value, processStopped: false, replayed: execution.replayed }

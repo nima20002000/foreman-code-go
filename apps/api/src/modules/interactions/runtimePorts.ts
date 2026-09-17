@@ -42,6 +42,7 @@ export interface NativeSessionManagerResolver {
 
 export class ExecutionScopedNativeSessionManagerResolver implements NativeSessionManagerResolver {
   private disposed = false
+  private disposal: Promise<void> | undefined
   private readonly entries = new Map<string, {
     context: NativeManagerResolutionContext
     manager: NativeHarnessSessionManager
@@ -106,14 +107,18 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
     }
   }
 
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
     this.disposed = true
-    const managers = [...this.entries.values()].map((entry) => entry.manager)
-    this.entries.clear()
-    await Promise.allSettled(managers.map(async (manager) => {
-      const disposable = manager as NativeHarnessSessionManager & { dispose?: () => Promise<void> }
-      await disposable.dispose?.()
-    }))
+    this.disposal ??= Promise.allSettled([...this.entries.entries()].map(async ([executionId, entry]) => {
+      const disposable = entry.manager as NativeHarnessSessionManager & { dispose?: () => Promise<void> }
+      if (!disposable.dispose) throw new Error('An execution native manager has no disposal contract.')
+      await disposable.dispose()
+      if (this.entries.get(executionId) === entry) this.entries.delete(executionId)
+    })).then((results) => {
+      const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
+      if (errors.length) throw new AggregateError(errors, 'Execution native manager disposal was incomplete.')
+    })
+    return this.disposal
   }
 }
 

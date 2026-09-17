@@ -2,6 +2,7 @@ import type pg from 'pg'
 
 import { lifecycleMigration } from './lifecycleMigration.js'
 import { pr17AuditMigration } from './pr17AuditMigration.js'
+import { nativeEventSequenceMigration } from './nativeEventSequenceMigration.js'
 
 import { interactionDeliveryMigration } from './interactionDeliveryMigration.js'
 import { operatorMcpMigration } from './operatorMcpMigration.js'
@@ -9,7 +10,7 @@ import { operatorMcpMigration } from './operatorMcpMigration.js'
 // Reserved migration blocks: HAP-01 100-109, HAP-02 200-209, HAP-03 300-309,
 // HAP-04 400-409, HAP-05 500-509, HAP-06 600-609, HAP-07 700-709.
 // Explicit versions prevent sibling worktrees from colliding when integrated.
-const migrations = [
+export const migrations = [
   { version: 1, sql: `
     create table if not exists application_migrations (
       version integer primary key,
@@ -622,6 +623,7 @@ const migrations = [
   ` },
   operatorMcpMigration,
   pr17AuditMigration,
+  nativeEventSequenceMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
