@@ -9,6 +9,8 @@ import {
   type WorkflowRun,
 } from '@graphql/contracts'
 import {
+  AgentDefaultsUpdateInputSchema,
+  WorkflowDefaultsUpdateInputSchema,
   WorkspaceLocationSetInputSchema,
   WorkspaceLocationValidateInputSchema,
 } from '@graphql/contracts/management'
@@ -16,9 +18,11 @@ import {
 import {
   MOCK_SCENARIOS,
   getMockFixture,
+  getMockAgentDefaults,
   getMockHarnessDefaults,
   getMockMessages,
   getMockScenarioState,
+  getMockWorkflowDefaults,
   isMockScenario,
   resetMockFixtures,
   serializeAgent,
@@ -28,7 +32,9 @@ import {
   shouldFailMutation,
   updateMockWorkflow,
   updateMockAgents,
+  updateMockAgentDefaults,
   updateMockHarnessDefaults,
+  updateMockWorkflowDefaults,
   appendMockMessage,
   type MockFailureMode,
 } from './scenarios'
@@ -163,6 +169,24 @@ export const handlers: RequestHandler[] = [
   http.get('/api/management/interactions', () => HttpResponse.json({
     items: [], nextCursor: null, pendingCount: 0, pendingByWorkflow: {},
   })),
+  http.get('/api/management/settings/agents', () => HttpResponse.json(getMockAgentDefaults())),
+  http.put('/api/management/settings/agents', async ({ request }) => {
+    const parsed = AgentDefaultsUpdateInputSchema.safeParse(await readJson(request))
+    if (!parsed.success) return apiError('INVALID_AGENT_DEFAULTS', 'Review the Agent defaults.', 400)
+    const value = updateMockAgentDefaults(parsed.data.value, parsed.data.expectedRevision)
+    return value
+      ? HttpResponse.json({ value, replayed: false })
+      : apiError('REVISION_CONFLICT', 'Agent defaults changed since they were read.', 409, { currentRevision: getMockAgentDefaults().revision })
+  }),
+  http.get('/api/management/settings/workflows', () => HttpResponse.json(getMockWorkflowDefaults())),
+  http.put('/api/management/settings/workflows', async ({ request }) => {
+    const parsed = WorkflowDefaultsUpdateInputSchema.safeParse(await readJson(request))
+    if (!parsed.success) return apiError('INVALID_WORKFLOW_DEFAULTS', 'Review the Workflow defaults.', 400)
+    const value = updateMockWorkflowDefaults(parsed.data.value, parsed.data.expectedRevision)
+    return value
+      ? HttpResponse.json({ value, replayed: false })
+      : apiError('REVISION_CONFLICT', 'Workflow defaults changed since they were read.', 409, { currentRevision: getMockWorkflowDefaults().revision })
+  }),
   http.get('/api/management/workspaces/:workspaceId/harnesses/:harness/mcp-detection', ({ params }) => {
     const harness = String(params.harness)
     if (harness !== 'codex' && harness !== 'opencode') return fixtureNotFound('harness', harness)

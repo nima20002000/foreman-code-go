@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { DEFAULT_AGENT_DEFAULTS } from '@graphql/contracts'
 
 import { ApiError, ApiClient, apiClient } from './client'
 import { resetMockFixtures, setMockScenario } from '../mocks/scenarios'
@@ -34,6 +35,23 @@ describe('Phase 1 API boundary', () => {
       status: 503,
     })
     expect(ApiError.is(new ApiError({ code: 'TEST', message: 'test' }))).toBe(true)
+  })
+
+  it('serves and revision-checks managed settings in mock mode', async () => {
+    const agents = await apiClient.getManagedAgentDefaults()
+    const workflows = await apiClient.getManagedWorkflowDefaults()
+    expect(agents).toEqual({ value: DEFAULT_AGENT_DEFAULTS, revision: 0, versionId: null })
+    expect(workflows).toEqual({ value: { approvalHandler: 'orchestrator' }, revision: 0, versionId: null })
+
+    const next = structuredClone(DEFAULT_AGENT_DEFAULTS)
+    next.operator.uiEnabled = false
+    const updated = await apiClient.updateManagedAgentDefaults({
+      commandId: 'mock-agent-defaults-update', expectedRevision: 0, value: next,
+    })
+    expect(updated).toMatchObject({ value: { value: next, revision: 1 }, replayed: false })
+    await expect(apiClient.updateManagedAgentDefaults({
+      commandId: 'stale-agent-defaults-update', expectedRevision: 0, value: DEFAULT_AGENT_DEFAULTS,
+    })).rejects.toMatchObject({ code: 'REVISION_CONFLICT', status: 409 })
   })
 
   it('passes AbortSignal through to fetch', async () => {

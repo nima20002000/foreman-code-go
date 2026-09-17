@@ -1,10 +1,13 @@
 import {
+  DEFAULT_AGENT_DEFAULTS,
   DEFAULT_HARNESS_DEFAULTS,
+  DEFAULT_WORKFLOW_APPROVAL_HANDLER,
   AgentStatusSchema,
   ApiErrorResponseSchema,
   ScenarioIdSchema,
   type AgentStatus,
   type Agent,
+  type AgentDefaults,
   type HarnessDefaults,
   type BrowserProfileSummary,
   type Conversation,
@@ -13,6 +16,7 @@ import {
   type RunnerSummary,
   type ScenarioId,
   type WorkflowDefinition,
+  type WorkflowDefaults,
   type WorkflowRunSummary,
   type WorkspaceDetails,
 } from '@graphql/contracts'
@@ -237,6 +241,10 @@ const baseFixture: MockFixture = {
 let state: MockScenarioState = { scenarioId: 'normal', failureMode: 'none' }
 let fixture: MockFixture = clone(baseFixture)
 let harnessDefaults: HarnessDefaults = clone(DEFAULT_HARNESS_DEFAULTS)
+let agentDefaults: AgentDefaults = clone(DEFAULT_AGENT_DEFAULTS)
+let agentDefaultsRevision = 0
+let workflowDefaults: WorkflowDefaults = { approvalHandler: DEFAULT_WORKFLOW_APPROVAL_HANDLER }
+let workflowDefaultsRevision = 0
 let messageSequence = 0
 
 function clone<T>(value: T): T {
@@ -413,6 +421,10 @@ export function setMockScenario(
 
 export function resetMockFixtures(): void {
   fixture = applyScenario(state.scenarioId)
+  agentDefaults = clone(DEFAULT_AGENT_DEFAULTS)
+  agentDefaultsRevision = 0
+  workflowDefaults = { approvalHandler: DEFAULT_WORKFLOW_APPROVAL_HANDLER }
+  workflowDefaultsRevision = 0
   messageSequence = 0
 }
 
@@ -453,6 +465,28 @@ export function getMockHarnessDefaults(): HarnessDefaults {
 export function updateMockHarnessDefaults(next: HarnessDefaults): HarnessDefaults {
   harnessDefaults = clone(next)
   return getMockHarnessDefaults()
+}
+
+export function getMockAgentDefaults() {
+  return { value: clone(agentDefaults), revision: agentDefaultsRevision, versionId: agentDefaultsRevision ? `mock-agent-defaults-v${agentDefaultsRevision}` : null }
+}
+
+export function updateMockAgentDefaults(next: AgentDefaults, expectedRevision: number) {
+  if (expectedRevision !== agentDefaultsRevision) return undefined
+  agentDefaults = clone(next)
+  agentDefaultsRevision += 1
+  return getMockAgentDefaults()
+}
+
+export function getMockWorkflowDefaults() {
+  return { value: clone(workflowDefaults), revision: workflowDefaultsRevision, versionId: workflowDefaultsRevision ? `mock-workflow-defaults-v${workflowDefaultsRevision}` : null }
+}
+
+export function updateMockWorkflowDefaults(next: WorkflowDefaults, expectedRevision: number) {
+  if (expectedRevision !== workflowDefaultsRevision) return undefined
+  workflowDefaults = clone(next)
+  workflowDefaultsRevision += 1
+  return getMockWorkflowDefaults()
 }
 
 export function appendMockMessage(workspaceId: string, next: Omit<Message, 'id'>): Message {
