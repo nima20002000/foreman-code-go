@@ -1,22 +1,14 @@
-import { createHash } from 'node:crypto'
-import { mkdtemp, mkdir, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import {
-  DEFAULT_HARNESS_DEFAULTS,
-  HarnessExecutionRequestSchema,
-  HarnessQualificationSchema,
-} from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, HarnessExecutionRequestSchema } from '@graphql/contracts'
 import { ManagedWorkspaceCommandResultSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
 
 import { commandInputHash, PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
-import { CodexAdapter } from '../src/modules/harnesses/codex.js'
-import { OpenCodeAdapter } from '../src/modules/harnesses/opencode.js'
 import { pathsOverlap, canonicalRuntimePath, withFilesystemDeadline } from '../src/modules/workspaces/filesystem.js'
-import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { replayWorkspaceResult } from '../src/modules/workspaces/receipts.js'
 
 const principal: ManagementPrincipal = {
@@ -26,48 +18,21 @@ const principal: ManagementPrincipal = {
 const legacy = { workspace: { id: 'workspace-a', name: 'A' }, revision: 1, archivedAt: null }
 const posix = process.platform === 'win32' ? it.skip : it
 
-function request(harness: 'codex' | 'opencode', workingDirectory: string) {
-  const configuration = harness === 'opencode' ? {
-    ...DEFAULT_HARNESS_DEFAULTS.opencode,
-    autoApprove: true,
-    advanced: { ...DEFAULT_HARNESS_DEFAULTS.opencode.advanced!, permissionHandling: 'native_auto' as const },
-  } : DEFAULT_HARNESS_DEFAULTS.codex
+function request(workingDirectory: string) {
   return HarnessExecutionRequestSchema.parse({
     executionId: 'execution', runId: 'run', workspaceId: 'workspace-a', workflowNodeId: 'node',
     workingDirectory, runtimeDirectory: `${workingDirectory}-runtime `, input: {},
     configuration: {
       id: 'configuration', workspaceId: 'workspace-a', agentId: 'agent', version: 1,
-      prompt: {}, assignedSkills: [], harness: configuration,
+      prompt: {}, assignedSkills: [], harness: DEFAULT_HARNESS_DEFAULTS.codex,
       contentHash: 'fixture', createdAt: new Date().toISOString(),
     },
   })
 }
 
-function qualification(harness: 'codex' | 'opencode') {
-  return HarnessQualificationSchema.parse({
-    harness, version: 'fixture', authenticated: true, ready: true, structuredEvents: true,
-    supportsResume: true, supportsCancellation: true, supportsWorkingDirectory: true, supportsStartupPrompt: true,
-    supportedNativeTools: [], supportedSettings: [], unsupportedCapabilities: [],
-  })
-}
-
-async function nativeFixture(root: string): Promise<string> {
-  const binary = join(root, 'fixture-native')
-  await writeFile(binary, `#!${process.execPath}\nconst fs = require('node:fs');
-process.stdin.resume();
-process.stdin.on('end', () => {
-  fs.writeFileSync('launched', process.cwd());
-  const text = fs.readFileSync('marker', 'utf8');
-  const codex = process.argv[2] === 'exec';
-  console.log(JSON.stringify(codex ? {type:'thread.started',thread_id:'session'} : {type:'start',sessionID:'session'}));
-  console.log(JSON.stringify(codex ? {type:'item.completed',item:{type:'agent_message',text}} : {type:'text',part:{text}}));
-});\n`, { mode: 0o755 })
-  return binary
-}
-
 describe('PR #5 runner locations', () => {
   it('preserves both accepted launch paths byte-for-byte and rejects NUL', () => {
-    const parsed = request('codex', '/projects/project ')
+    const parsed = request('/projects/project ')
     expect(parsed.workingDirectory).toBe('/projects/project ')
     expect(parsed.runtimeDirectory).toBe('/projects/project -runtime ')
     expect(() => HarnessExecutionRequestSchema.parse({ ...parsed, workingDirectory: '/projects/a\0b' })).toThrow()
@@ -167,65 +132,4 @@ describe('PR #5 runner locations', () => {
     expect(client.release).toHaveBeenCalledOnce()
   })
 
-  for (const harness of ['codex', 'opencode'] as const) {
-    for (const resume of [false, true]) {
-      posix(`${harness} ${resume ? 'resume' : 'execute'} launches in the exact trailing-space directory`, async () => {
-        const root = await mkdtemp(join(tmpdir(), 'pr5-launch-'))
-        try {
-          const selected = join(root, 'project ')
-          const sibling = join(root, 'project')
-          await mkdir(selected)
-          await mkdir(sibling)
-          await writeFile(join(selected, 'marker'), 'SELECTED')
-          await writeFile(join(sibling, 'marker'), 'UNSELECTED')
-          const binary = await nativeFixture(root)
-          const adapter = harness === 'codex' ? new CodexAdapter(binary) : new OpenCodeAdapter(binary)
-          vi.spyOn(adapter, 'qualify').mockResolvedValue(qualification(harness))
-          const callbacks = { signal: new AbortController().signal, onSession: async () => {}, onEvent: async () => {} }
-          const parsed = request(harness, selected)
-          const result = await (resume ? adapter.resume(parsed, 'session', callbacks) : adapter.execute(parsed, callbacks))
-          expect(result.output).toEqual({ text: 'SELECTED' })
-          expect(await readFile(join(selected, 'launched'), 'utf8')).toBe(selected)
-          await expect(stat(join(sibling, 'launched'))).rejects.toMatchObject({ code: 'ENOENT' })
-          // The same accepted path still works without the trimmed sibling.
-          await rm(sibling, { recursive: true, force: true })
-          await expect(adapter.execute(parsed, callbacks)).resolves.toMatchObject({ output: { text: 'SELECTED' } })
-        } finally {
-          await rm(root, { recursive: true, force: true })
-        }
-      })
-
-      posix(`${harness} ${resume ? 'resume' : 'execute'} rechecks replacement after qualification and before spawning`, async () => {
-        const root = await mkdtemp(join(tmpdir(), 'pr5-replacement-'))
-        try {
-          const selected = join(root, 'project')
-          await mkdir(selected)
-          const details = await stat(selected, { bigint: true })
-          const snapshot = {
-            runnerId: 'runner-local', rootPath: selected, locationRevision: 1,
-            identityHash: `sha256:${createHash('sha256').update(`${details.dev}:${details.ino}`).digest('hex')}`,
-          }
-          const service = new WorkspaceLocationService({} as pg.Pool, {} as PostgresCommandCoordinator)
-          await service.revalidateSnapshot('workspace-a', snapshot, 'read-only')
-          const binary = await nativeFixture(root)
-          const adapter = harness === 'codex' ? new CodexAdapter(binary) : new OpenCodeAdapter(binary)
-          vi.spyOn(adapter, 'qualify').mockImplementation(async () => {
-            await rename(selected, `${selected}-original`)
-            await mkdir(selected)
-            await writeFile(join(selected, 'marker'), 'REPLACEMENT')
-            return qualification(harness)
-          })
-          const callbacks = {
-            signal: new AbortController().signal, onSession: async () => {}, onEvent: async () => {},
-            beforeSpawn: () => service.revalidateSnapshot('workspace-a', snapshot, 'read-only'),
-          }
-          await expect(resume ? adapter.resume(request(harness, selected), 'session', callbacks)
-            : adapter.execute(request(harness, selected), callbacks)).rejects.toMatchObject({ code: 'WORKSPACE_LOCATION_CHANGED' })
-          await expect(stat(join(selected, 'launched'))).rejects.toMatchObject({ code: 'ENOENT' })
-        } finally {
-          await rm(root, { recursive: true, force: true })
-        }
-      })
-    }
-  }
 })

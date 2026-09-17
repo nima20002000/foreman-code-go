@@ -11,6 +11,8 @@ import {
 } from '@graphql/contracts'
 
 import { HarnessExecutionError } from './errors.js'
+import { qualifyNativeCodexModel } from './codexQualification.js'
+import { nativeQualification } from './nativeQualification.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from './port.js'
 import { runCommand } from './process.js'
 import {
@@ -273,6 +275,19 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     })
   }
 
+  /** Qualify the same native transport/settings without creating a thread or issuing an App credential. */
+  async qualifyConfiguration(value: CodexHarnessConfiguration, workingDirectory: string, signal?: AbortSignal) {
+    signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
+    signal.throwIfAborted()
+    const parsed = CodexHarnessConfigurationSchema.safeParse(value)
+    if (!parsed.success) throw new HarnessExecutionError('CODEX_SETTING_INVALID', 'The accepted Codex configuration is invalid.')
+    const environment = safeEnvironment()
+    const qualified = await qualifyCodex(this.binary, this.expectedVersion, workingDirectory, environment, true, signal)
+    await this.validateMcpPolicies(parsed.data, qualified.binary, workingDirectory, environment, signal)
+    await qualifyNativeCodexModel(parsed.data, qualified.binary, workingDirectory, environment, signal)
+    return nativeQualification(parsed.data, qualified.providerVersion)
+  }
+
   async qualificationEvidence(signal?: AbortSignal): Promise<CodexQualificationEvidence> {
     const result = await qualifyCodex(this.binary, this.expectedVersion, process.cwd(), safeEnvironment(), true, signal)
     return {
@@ -280,7 +295,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       referenceSchemaManifestSha256: result.referenceSchemaManifestSha256, stableSchemaGitBlob: result.stableSchemaGitBlob,
       schemaVerification: 'upstream-stable-pin-and-generated-experimental-validation',
       authentication: 'chatgpt', productionSupported: false,
-      productionRestriction: 'Codex app-server remains experimental; the existing codex exec production adapter stays enabled.',
+      productionRestriction: 'Codex app-server remains experimental upstream. It is the only application execution transport; native qualification failure refuses execution.',
     }
   }
 
@@ -784,18 +799,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     validateEnvironmentOwner(input, scopedCredentialVariable)
     const scopedEnvironment = safeEnvironment(input.environment, scopedCredentialVariable ? [scopedCredentialVariable] : [])
-    const result = await runCommand(qualified.binary, ['debug', 'models'], workingDirectory, signal, scopedEnvironment)
-    if (result.exitCode !== 0) throw new HarnessExecutionError('CODEX_MODEL_CATALOG_UNAVAILABLE', 'Codex model qualification failed.')
-    let catalog: JsonObject
-    try { catalog = object(JSON.parse(result.stdout)) } catch { throw new HarnessExecutionError('CODEX_MODEL_CATALOG_INVALID', 'Codex returned an invalid model catalog.') }
-    const models = Array.isArray(catalog.models) ? catalog.models.filter(isObject) : []
-    const model = models.find((entry) => entry.slug === harnessConfiguration.model)
-    if (!model) throw new HarnessExecutionError('CODEX_MODEL_UNAVAILABLE', 'The accepted Codex model is unavailable.')
-    const efforts = Array.isArray(model.supported_reasoning_levels) ? model.supported_reasoning_levels.filter(isObject) : []
-    if (!efforts.some((effort) => effort.effort === harnessConfiguration.reasoningEffort)
-      || (harnessConfiguration.serviceTier === 'priority' && !stringArray(model.additional_speed_tiers)?.includes('fast'))) {
-      throw new HarnessExecutionError('CODEX_SETTING_UNSUPPORTED', 'The selected model does not advertise the requested effort or service tier.')
-    }
+    await qualifyNativeCodexModel(harnessConfiguration, qualified.binary, workingDirectory, scopedEnvironment, signal)
     return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, environment: scopedEnvironment, qualified }
   }
 

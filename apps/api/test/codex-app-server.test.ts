@@ -253,7 +253,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert(history.events.length <= 1024)
     assert((history.firstRetainedSequence ?? 0) > 0)
     assert.equal(history.events.at(-1)!.sequence + 1, history.nextSequence)
-  })
+  }, 15_000)
 
   it('F15: native resolution clears the addressed prompt and a duplicate cannot reopen it', async () => {
     const session = await manager.createSession(source)

@@ -80,7 +80,7 @@ describe('PR #3 defaults form regressions', () => {
     expect(within(screen.getByRole('group', { name: 'Codex' })).getByRole('combobox', { name: 'Model' })).toHaveValue('gpt-5.6-luna')
   })
 
-  it('repairs legacy native auto-approval and never submits it as enabled', async () => {
+  it('preserves and submits an explicit legacy native auto-approval default', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
     client.setQueryData(queryKeys.harnessDefaults, { defaults: {
       ...DEFAULT_HARNESS_DEFAULTS,
@@ -92,12 +92,15 @@ describe('PR #3 defaults form regressions', () => {
     } })
     clients.push(client)
     render(<QueryClientProvider client={client}><HarnessDefaultsSettings /></QueryClientProvider>)
-    await userEvent.setup().click(within(await screen.findByRole('group', { name: 'OpenCode' })).getByText('Advanced'))
+    const user = userEvent.setup()
+    const openCode = within(await screen.findByRole('group', { name: 'OpenCode' }))
+    await user.click(openCode.getByText('Advanced'))
     const permissionHandling = await screen.findByRole('combobox', { name: 'Permission handling' })
-    expect(within(permissionHandling).getByRole('option', { name: /Native auto approve/ })).toBeDisabled()
-    await userEvent.setup().selectOptions(permissionHandling, 'graphql_routed')
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Save defaults' }))
+    expect(within(permissionHandling).getByRole('option', { name: /Native auto approve/ })).toBeEnabled()
+    expect(permissionHandling).toHaveValue('native_auto')
+    await user.type(openCode.getByRole('combobox', { name: 'Model' }), '-updated')
+    await user.click(screen.getByRole('button', { name: 'Save defaults' }))
     await waitFor(() => expect(saveDefaults).toHaveBeenCalledOnce())
-    expect(saveDefaults.mock.calls[0]![0].defaults.opencode.autoApprove).toBe(false)
+    expect(saveDefaults.mock.calls[0]![0].defaults.opencode.autoApprove).toBe(true)
   })
 })

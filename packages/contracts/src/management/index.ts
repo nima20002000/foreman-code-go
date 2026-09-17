@@ -100,9 +100,9 @@ export const ManagementPrincipalSchema = z
   });
 export type ManagementPrincipal = z.infer<typeof ManagementPrincipalSchema>;
 
-export const ManagementOpenCodeHarnessConfigurationSchema = OpenCodeHarnessConfigurationSchema.safeExtend({
-  autoApprove: z.literal(false),
-}).strict();
+// Native automatic handling is supported by the server. The shared schema
+// still enforces agreement between autoApprove and Advanced permission handling.
+export const ManagementOpenCodeHarnessConfigurationSchema = OpenCodeHarnessConfigurationSchema;
 export const ManagementHarnessConfigurationSchema = z.discriminatedUnion("harness", [
   CodexHarnessConfigurationSchema,
   ManagementOpenCodeHarnessConfigurationSchema,

@@ -1,27 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_HARNESS_DEFAULTS,
-  DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
   type Agent,
-  type HarnessExecutionRequest,
   type WorkflowDefinition,
 } from '@graphql/contracts'
 import type pg from 'pg'
 
-import { OpenCodeAdapter } from '../src/modules/harnesses/opencode.js'
 import type { PostgresRunRepository } from '../src/modules/runs/postgres.js'
-import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
-import { configurationInput, saveAgentConfiguration } from '../src/modules/workspaces/agentConfiguration.js'
+import { configurationInput } from '../src/modules/workspaces/agentConfiguration.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
-
-const { runCommands } = vi.hoisted(() => ({ runCommands: vi.fn() }))
-vi.mock('../src/modules/harnesses/process.js', () => ({
-  runCommands,
-  runCommand: vi.fn(),
-  runJsonlProcess: vi.fn(),
-  stopProcess: vi.fn(),
-}))
 
 const workspaceId = 'workspace-pr3'
 const workflow: WorkflowDefinition = {
@@ -80,63 +68,4 @@ describe('PR #3 agent persistence regressions', () => {
       .toThrow(expect.objectContaining({ code: 'AGENT_HARNESS_MISMATCH', status: 400 }))
   })
 
-  it('rejects unsupported approval before defaults or agent settings can be written', async () => {
-    const query = vi.fn()
-    const defaults = {
-      ...DEFAULT_HARNESS_DEFAULTS,
-      opencode: { ...DEFAULT_HARNESS_DEFAULTS.opencode, autoApprove: true },
-    }
-    const settings = new PostgresSettingsRepository({ query } as unknown as pg.Pool)
-    await expect(settings.saveHarnessDefaults(defaults))
-      .rejects.toMatchObject({ code: 'OPENCODE_SETTING_UNSUPPORTED', status: 400 })
-    expect(query).not.toHaveBeenCalled()
-    expect(() => configurationInput(workspaceId, {
-      id: 'new-agent', name: 'OpenCode', harnessConfiguration: defaults.opencode,
-    })).toThrow(expect.objectContaining({ code: 'OPENCODE_SETTING_UNSUPPORTED' }))
-  })
-
-  it('does not copy an unsupported legacy default into newly created agents', async () => {
-    const record = { ...DEFAULT_HARNESS_DEFAULTS, opencode: { ...DEFAULT_HARNESS_DEFAULTS.opencode, autoApprove: true } }
-    const query = vi.fn().mockResolvedValue({ rows: [{ record }] })
-    const defaults = await new PostgresSettingsRepository({ query } as unknown as pg.Pool).getHarnessDefaults()
-    expect(defaults.opencode.autoApprove).toBe(false)
-    expect(record.opencode.autoApprove).toBe(true)
-  })
-
-  it.each(['low', 'high', 'max'] as const)('persists and qualifies OpenCode defaults with variant %s', async (variant) => {
-    for (const thinking of [false, true]) {
-      for (const nativeAgent of ['build', 'plan']) {
-        const harnessConfiguration = { ...DEFAULT_HARNESS_DEFAULTS.opencode, variant, thinking, nativeAgent }
-        const query = vi.fn(async (sql: string, values?: unknown[]) => {
-          if (sql.includes('insert into agent_configuration_versions')) {
-            expect(values?.[4]).toEqual(expect.any(String))
-          }
-          return { rows: sql.includes('coalesce(max(version)') ? [{ next_version: 1 }] : [], rowCount: 1 }
-        })
-        const saved = await saveAgentConfiguration({ query } as unknown as pg.PoolClient, workspaceId, {
-          id: 'new-agent', name: 'OpenCode', harnessConfiguration,
-        })
-        expect(saved.harness).toBe('opencode')
-        expect(saved.harnessConfiguration).toEqual(harnessConfiguration)
-        const inserted = query.mock.calls.find(([sql]) => sql.includes('insert into agent_configuration_versions'))
-        expect(inserted).toBeDefined()
-        const configuration = JSON.parse(String(inserted![1]![4]))
-        runCommands.mockResolvedValue([
-          { stdout: '1.0.0', stderr: '', exitCode: 0 },
-          { stdout: 'OpenCode Go', stderr: '', exitCode: 0 },
-          { stdout: `${harnessConfiguration.model}\n{"variants":["low","high","max"]}`, stderr: '', exitCode: 0 },
-          { stdout: '{}', stderr: '', exitCode: 0 },
-        ])
-        const request = { configuration: { ...configuration, harness: {
-          ...configuration.harness,
-          autoApprove: true,
-          advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionHandling: 'native_auto' },
-        } }, workingDirectory: '/tmp' } as HarnessExecutionRequest
-        await expect(new OpenCodeAdapter('opencode').qualify(request)).resolves.toMatchObject({ ready: true })
-        expect(runCommands).toHaveBeenLastCalledWith('opencode', expect.arrayContaining([
-          ['debug', 'agent', nativeAgent],
-        ]), '/tmp', undefined)
-      }
-    }
-  })
 })

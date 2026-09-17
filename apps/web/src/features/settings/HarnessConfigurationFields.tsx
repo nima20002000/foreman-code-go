@@ -209,8 +209,8 @@ export function HarnessConfigurationFields({ editor, onChange, routedApproval = 
         const advanced = value.advanced!
         return <div className="settings-field-grid">
           {advancedOnly ? <p className="agent-settings-section-label">Review permissions</p> : null}
-          <Select label="Permission handling" aria-label="Permission handling" id={fieldId('advanced.permissionHandling')} value={advanced.permissionHandling} error={error('advanced.permissionHandling')} hint="Native auto is not a reviewer Agent and cannot be used by this routed managed transport. Select routed review to repair a legacy native-auto configuration."
-            options={[{ value: 'graphql_routed', label: 'GraphQL routed review' }, { value: 'native_auto', label: 'Native auto approve (unsupported by the managed server)', disabled: true }]}
+          <Select label="Permission handling" aria-label="Permission handling" id={fieldId('advanced.permissionHandling')} value={advanced.permissionHandling} error={error('advanced.permissionHandling')} hint={routedApproval ? 'Native auto conflicts with this workflow’s routed approval authority. Choose GraphQL routed review.' : 'Native asks are approved once, without a GraphQL reviewer. Native deny rules remain enforced; permissions are not saved permanently.'}
+            options={[{ value: 'graphql_routed', label: 'GraphQL routed review' }, { value: 'native_auto', label: 'Native auto approve', disabled: routedApproval }]}
             onChange={(event) => opencode({ ...advanced, permissionHandling: event.target.value as typeof advanced.permissionHandling })} />
           <PermissionRules value={advanced.permissionRules} issues={issues} onChange={(permissionRules) => opencode({ ...advanced, permissionRules })} />
           {advancedOnly ? <p className="agent-settings-section-label">Runtime</p> : null}

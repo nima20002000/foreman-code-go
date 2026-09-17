@@ -20,6 +20,8 @@ import { DomainError } from '../errors.js'
 import { ReviewerDispatcher } from './reviewer.js'
 import { coordinateSessionManager, isLeaseLost, type SingleWriterSessionManager } from './sessionWriter.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
+import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
+import { redactKnownSecrets, redactSecretText } from '../harnesses/secrets.js'
 import { attemptCleanup } from './cleanup.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
@@ -340,6 +342,8 @@ export class ApprovalExecutionCoordinator {
     signal = signal ? AbortSignal.any([signal, owned.controller.signal]) : owned.controller.signal
     try {
       const environment = await this.prepareEnvironment(resolutionContext, resolved, signal, context.purpose)
+      await this.validateContinuation?.(execution.id, signal)
+      signal.throwIfAborted()
       if (resolved.processState === 'resident') {
         await resolved.manager.history(sessionReference, signal)
         return { manager: resolved.manager, session: sessionReference, signal: owned.controller.signal }
@@ -453,7 +457,7 @@ export class ApprovalExecutionCoordinator {
   async ensureObserve(input: {
     candidate: HarnessExecution
     request: HarnessExecutionRequest
-    approval: WorkflowApprovalConfiguration
+    approval?: WorkflowApprovalConfiguration | undefined
     workflowId: string
     graphThreadId: string
     owner: RunOwnership
@@ -461,6 +465,7 @@ export class ApprovalExecutionCoordinator {
   }): Promise<ApprovalExecutionObservation> {
     let signal = input.signal
     signal.throwIfAborted()
+    assertNativeWorkflowConfiguration(input.request.configuration.harness, input.approval)
     const ensured = await this.runs.ensureExecution(input.candidate, input.owner)
     let execution = ensured.execution
     let context: NativeManagerResolutionContext | undefined
@@ -469,6 +474,44 @@ export class ApprovalExecutionCoordinator {
     let ownedSession: OwnedNativeSession | undefined
     let session: NativeSessionReference | undefined
     let budgetTimer: ReturnType<typeof setTimeout> | undefined
+    let credentialTimer: ReturnType<typeof setTimeout> | undefined
+    const knownSecrets: string[] = []
+    const credentialExpiry = new AbortController()
+    signal = AbortSignal.any([signal, credentialExpiry.signal])
+    // The same credential safety boundary applies to routed and non-routed turns.
+    const watchCredential = () => {
+      const credential = manager && this.managerCredentials.get(manager)
+      if (!credential) return
+      knownSecrets.push(...Object.values(credential.environment.variables))
+      const remaining = Date.parse(credential.expiresAt) - Date.now() - 30_000
+      const fail = () => credentialExpiry.abort(new DomainError(
+        'WORKER_CREDENTIAL_EXPIRING',
+        'Execution stopped before its App credential expired. Active native work was not restarted.', 409,
+      ))
+      if (!Number.isFinite(remaining) || remaining <= 0 || remaining > 2_147_483_647) {
+        fail()
+        signal.throwIfAborted()
+      }
+      clearTimeout(credentialTimer)
+      credentialTimer = setTimeout(fail, remaining)
+      credentialTimer.unref()
+    }
+    const safeError = (error: unknown): unknown => {
+      if (error instanceof AggregateError) return new AggregateError(
+        [...error.errors].map(safeError), redactSecretText(error.message, knownSecrets),
+      )
+      if (error instanceof HarnessExecutionError) {
+        return new HarnessExecutionError(error.result.error?.code ?? 'NATIVE_EXECUTION_FAILED',
+          redactSecretText(error.message, knownSecrets), error.result.error?.retryable)
+      }
+      if (error instanceof DomainError) return new DomainError(error.code,
+        redactSecretText(error.message, knownSecrets), error.status, redactKnownSecrets(error.details, knownSecrets))
+      if (error instanceof Error) {
+        const message = redactSecretText(error.message, knownSecrets)
+        return error.cause === undefined ? new Error(message) : new Error(message, { cause: safeError(error.cause) })
+      }
+      return redactKnownSecrets(error, knownSecrets)
+    }
     try {
       signal.throwIfAborted()
       input.owner.assertOwned()
@@ -517,6 +560,10 @@ export class ApprovalExecutionCoordinator {
         if (history.canceledRequestIds?.length) await this.interactions.cancelPendingForExecution(execution.id, history.canceledRequestIds)
         const waiting: DurableInteraction[] = []
         for (const pending of history.pendingInteractions) {
+          if (!input.approval) throw new DomainError(
+            'NATIVE_APPROVAL_HANDLER_MISSING',
+            'The native execution asked for a decision but this workflow has no routed approval handler. Reopen and save the workflow or Agent configuration. The request was not automatically approved.', 409,
+          )
           this.assertSessionIdentity(session!, pending.session)
           if (!pending.turn.nativeRequestId) throw new Error('Native approval request is missing its stable request identity.')
           const now = new Date().toISOString()
@@ -529,7 +576,7 @@ export class ApprovalExecutionCoordinator {
             harness: session!.harness, providerVersion: session!.providerVersion,
             nativeSessionId: session!.nativeSessionId, nativeRequestId: pending.turn.nativeRequestId,
             nativeRequestType: pending.nativeRequestType, graphThreadId: input.graphThreadId,
-            request: pending.request, approval: input.approval, responseOptions: pending.responseOptions,
+            request: redactKnownSecrets(pending.request, knownSecrets), approval: input.approval, responseOptions: pending.responseOptions,
             status: 'pending', deliveryState: 'not_started', createdAt: now, updatedAt: now,
           }))
           // A provider may briefly report an already-delivered request. Observe
@@ -556,18 +603,27 @@ export class ApprovalExecutionCoordinator {
           throw new DomainError('NATIVE_SESSION_START_UNCERTAIN', 'The existing execution has no recorded native session. Native side effects will not be replayed.', 409)
         }
         const environment = await this.prepareEnvironment(context, resolved, signal)
+        watchCredential()
+        await this.validateContinuation?.(execution.id, signal)
+        signal.throwIfAborted()
+        input.owner.assertOwned()
         session = await this.openingSession(ownedSession, manager.createSession({ request, ...(environment ? { environment } : {}) }, signal))
         if (session.harness !== context.harness) throw new Error('The created native session has the wrong harness.')
         resolved.markResident?.()
         await this.interactions.coordination.bindWorkflowSession(execution.id, session)
         execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: session.nativeSessionId, state: 'running' })
         await this.runs.updateExecution(execution, input.owner)
+        // Qualification and credential preparation may await external work.
+        // Recheck accepted authority/location at the actual turn boundary.
+        await this.validateContinuation?.(execution.id, signal)
+        signal.throwIfAborted()
+        input.owner.assertOwned()
         for await (const event of manager.startTurn(session, {
           prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
         }, signal)) {
           signal.throwIfAborted()
           await this.budgets.assertActive(execution.id)
-          await this.runs.appendNativeEvent({ ...event, executionId: execution.id }, input.owner)
+          await this.runs.appendNativeEvent(redactKnownSecrets({ ...event, executionId: execution.id }, knownSecrets), input.owner)
           const waiting = await observePending(await manager.history(session, signal))
           if (waiting) return waiting
         }
@@ -580,6 +636,10 @@ export class ApprovalExecutionCoordinator {
         ownedSession.session = session
         if (existing) this.assertSessionIdentity(session, existing)
         const environment = await this.prepareEnvironment(context, resolved, signal)
+        watchCredential()
+        await this.validateContinuation?.(execution.id, signal)
+        signal.throwIfAborted()
+        input.owner.assertOwned()
         if (resolved.processState === 'needs_start') {
           const attached = await this.openingSession(ownedSession, manager.attachSession(session, {
             kind: 'workflow', correlationId: `execution:${execution.id}`, request,
@@ -598,11 +658,11 @@ export class ApprovalExecutionCoordinator {
         input.owner.assertOwned()
         await this.budgets.assertActive(execution.id)
         const history = await manager.reconcile(session, `execution:${execution.id}`, signal)
-        for (const event of history.events) await this.runs.appendNativeEvent({ ...event, executionId: execution.id }, input.owner)
+        for (const event of history.events) await this.runs.appendNativeEvent(redactKnownSecrets({ ...event, executionId: execution.id }, knownSecrets), input.owner)
         const waiting = await observePending(history)
         if (waiting) return waiting
         if (history.terminalTurn?.correlationId === `execution:${execution.id}`) {
-          const result = history.terminalTurn.result
+          const result = redactKnownSecrets(history.terminalTurn.result, knownSecrets)
           execution = HarnessExecutionSchema.parse({
             ...execution, state: 'completed', result, finishedAt: new Date().toISOString(),
           })
@@ -625,15 +685,21 @@ export class ApprovalExecutionCoordinator {
         }
         await delay(100, undefined, { signal: signal })
       }
-    } catch (error) {
-      if ((resolved && !manager) || isLeaseLost(error)
+    } catch (rawError) {
+      // A credential may have been issued just before an abort rejected setup.
+      const credential = manager && this.managerCredentials.get(manager)
+      if (credential) knownSecrets.push(...Object.values(credential.environment.variables))
+      const error = safeError(signal.aborted && signal.reason instanceof DomainError
+        && signal.reason.code === 'WORKER_CREDENTIAL_EXPIRING' ? signal.reason : rawError)
+      if ((resolved && !manager) || isLeaseLost(rawError)
         || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw error
       if (execution.state === 'completed' && (!ownedSession || this.closedExecutions.has(execution.id))) throw error
       try {
         input.owner.assertOwned()
         if (execution.state !== 'completed') {
-          const timedOut = signal.aborted && signal.reason instanceof DomainError && signal.reason.code === 'EXECUTION_ACTIVE_TIMEOUT'
-          const failure: unknown = timedOut ? signal.reason : error
+          const timedOut = signal.aborted && signal.reason instanceof DomainError
+            && ['EXECUTION_ACTIVE_TIMEOUT', 'WORKER_CREDENTIAL_EXPIRING'].includes(signal.reason.code)
+          const failure: unknown = timedOut ? safeError(signal.reason) : error
           const result: ExecutionResult = signal.aborted && !timedOut ? { outcome: 'canceled' }
             : failure instanceof HarnessExecutionError ? failure.result : {
               outcome: 'failed', error: {
@@ -670,6 +736,7 @@ export class ApprovalExecutionCoordinator {
       throw error
     } finally {
       if (budgetTimer) clearTimeout(budgetTimer)
+      clearTimeout(credentialTimer)
     }
   }
 }

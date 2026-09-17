@@ -29,9 +29,6 @@ export function configurationInput(
       : undefined
     const currentHarness = suppliedHarness
       ?? (current?.harness.harness === 'opencode' ? current.harness : undefined)
-    if (currentHarness?.autoApprove) {
-      throw new DomainError('OPENCODE_SETTING_UNSUPPORTED', 'Automatic permission approval is disabled for Product Agent runs.', 400)
-    }
     const variant = suppliedHarness?.variant ?? agent.effort ?? currentHarness?.variant ?? 'max'
     return {
       workspaceId,
@@ -45,7 +42,7 @@ export function configurationInput(
         variant,
         nativeAgent: currentHarness?.nativeAgent ?? 'build',
         thinking: currentHarness?.thinking ?? false,
-        autoApprove: false,
+        autoApprove: currentHarness?.autoApprove ?? false,
         ...(currentHarness?.advanced ? { advanced: currentHarness.advanced } : {}),
       },
     } as const

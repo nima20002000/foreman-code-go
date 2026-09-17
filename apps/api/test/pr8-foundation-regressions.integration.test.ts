@@ -24,8 +24,7 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { GraphDraftService } from '../src/modules/graph-drafts/service.js'
 import { HarnessCatalogService } from '../src/modules/harnesses/catalog.js'
-import { CodexAdapter } from '../src/modules/harnesses/codex.js'
-import { OpenCodeAdapter } from '../src/modules/harnesses/opencode.js'
+import { NativeHarnessConfigurationQualifier } from '../src/modules/harnesses/nativeConfigurationQualifier.js'
 import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
@@ -267,8 +266,7 @@ describe.each(['http', 'mcp'] as const)('PR8 managed %s acceptance', (source) =>
       workspaces:new WorkspaceManagementService(pool,commands,locations),
       workflows:new WorkflowManagementService(pool,commands), agents:new AgentManagementService(pool),
       drafts:new GraphDraftService(pool,commands),
-      harnesses:new HarnessCatalogService({ resolve: (provider) => provider === 'codex'
-        ? new CodexAdapter('/unused-native-engine') : new OpenCodeAdapter('/unused-native-engine') },settings,commands,runtimeDirectory),
+      harnesses:new HarnessCatalogService(new NativeHarnessConfigurationQualifier('/unused-native-engine', '/unused-native-engine'),settings,commands,runtimeDirectory),
       runs:new RunManagementService(pool,commands,runs,engine,locations),
     }
     const app = buildApp({

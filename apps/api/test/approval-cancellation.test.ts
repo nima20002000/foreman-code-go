@@ -326,8 +326,8 @@ it('Stop cancels every unresolved SQL state including delivery_failed without ch
   }
 })
 
-function engineFixture(approvals?: ApprovalExecutionCoordinator) {
-  if (approvals) Object.assign(approvals, { finishRun: async () => undefined, reconcileReviews: async () => undefined, reviewers: { shutdown: async () => undefined } })
+function engineFixture(approvals: ApprovalExecutionCoordinator) {
+  Object.assign(approvals, { finishRun: async () => undefined, reconcileReviews: async () => undefined, reviewers: { shutdown: async () => undefined } })
   const calls: string[] = []
   let owned = true
   const owner = { client: {}, assertOwned: () => { if (!owned) throw new Error('ownership lost') }, release: async () => { calls.push('release-owner') } } as unknown as RunOwnership
@@ -366,8 +366,8 @@ function engineFixture(approvals?: ApprovalExecutionCoordinator) {
   }
   const engine = new LangGraphWorkflowEngine(runs as unknown as PostgresRunRepository,
     { getVersion: async () => version } as unknown as PostgresWorkflowRepository,
-    { resolve: () => { throw new Error('legacy harness must not run') } }, new MemorySaver(), '/runtime', 60_000,
-    { revalidateSnapshot: async () => undefined } as unknown as WorkspaceLocationService, undefined, approvals,
+    approvals, new MemorySaver(), '/runtime',
+    { revalidateSnapshot: async () => undefined } as unknown as WorkspaceLocationService, undefined,
     interactions as unknown as PostgresInteractionRepository)
   const internals = engine as unknown as {
     executeRun: (run: WorkflowRun, signal: AbortSignal, owner: RunOwnership) => Promise<void>

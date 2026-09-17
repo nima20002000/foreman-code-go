@@ -38,7 +38,7 @@ describe('PR #11 production composition and HTTP detection', () => {
     assert.equal(runtime.appMcp.access, access)
     const bootstrap = await readFile(new URL('../src/production.ts', import.meta.url), 'utf8')
     assert(bootstrap.includes('const launchCredentials: ExecutionCredentialProvider'))
-    assert(bootstrap.includes('launchCredentials, approvals, repository'))
+    assert(bootstrap.includes('locations, launchCredentials, repository'))
     assert(bootstrap.includes('mcpDetection: { pool: database.pool, service: detection }'))
   })
 

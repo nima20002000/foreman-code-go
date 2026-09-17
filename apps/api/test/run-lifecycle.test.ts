@@ -117,11 +117,10 @@ function fixture(options: { realGraph?: boolean; timeoutMs?: number; nodes?: str
     reviewers: { shutdown: async () => undefined },
   }
   const engine = new LangGraphWorkflowEngine(
-    runs as unknown as EngineArguments[0], workflows as unknown as EngineArguments[1], {} as EngineArguments[2],
-    new MemorySaver(), '/runtime', options.timeoutMs ?? 5_000,
-    { revalidateSnapshot: async () => undefined } as unknown as EngineArguments[6], undefined,
-    approvals as unknown as EngineArguments[8],
-    interactions as unknown as EngineArguments[9],
+    runs as unknown as EngineArguments[0], workflows as unknown as EngineArguments[1],
+    approvals as unknown as EngineArguments[2], new MemorySaver(), '/runtime',
+    { revalidateSnapshot: async () => undefined } as unknown as EngineArguments[5], undefined,
+    interactions as unknown as EngineArguments[7],
   )
   const internals = engine as unknown as Internals
   if (!options.realGraph) {

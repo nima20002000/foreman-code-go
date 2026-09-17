@@ -116,7 +116,7 @@ afterEach(async () => {
 it('uses one real approval runtime across production HTTP, Operator MCP, App MCP, and targeted resume', async () => {
   const options = vi.mocked(buildApp).mock.calls.at(-1)![0]
   const service = options.product!.interactions!
-  const approvals: unknown = Reflect.get(production.engine, 'approvals')
+  const approvals: unknown = Reflect.get(production.engine, 'nativeExecutions')
   const repository: unknown = Reflect.get(production.engine, 'interactions')
   expect(approvals).toBeInstanceOf(ApprovalExecutionCoordinator)
   expect(repository).toBeInstanceOf(PostgresInteractionRepository)
@@ -140,7 +140,7 @@ it('uses one real approval runtime across production HTTP, Operator MCP, App MCP
 })
 
 it('constructs separate OpenCode managers with the pinned configuration, owner, and accepted directory', () => {
-  const approvals: object = Reflect.get(production.engine, 'approvals') as object
+  const approvals: object = Reflect.get(production.engine, 'nativeExecutions') as object
   const managers = Reflect.get(approvals, 'managers') as NativeSessionManagerResolver
   // The factory consumes the harness portion; the execution coordinator validates
   // the complete durable configuration before it calls this factory.

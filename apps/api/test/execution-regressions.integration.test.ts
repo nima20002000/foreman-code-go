@@ -4,14 +4,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import { WorkflowRunSchema, type HarnessExecutionRequest, type WorkflowDefinition } from '@graphql/contracts'
+import { HarnessExecutionSchema, WorkflowRunSchema, type HarnessExecutionRequest, type WorkflowDefinition } from '@graphql/contracts'
 import pg from 'pg'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
-import type { HarnessAdapter } from '../src/modules/harnesses/port.js'
+import type { ApprovalExecutionCoordinator, ApprovalExecutionObservation } from '../src/modules/interactions/execution.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
@@ -77,20 +77,28 @@ afterEach(async () => {
 })
 
 function engine(onExecute: (request: HarnessExecutionRequest) => Promise<void> = async () => undefined) {
-  const adapter: HarnessAdapter = {
-    harness: 'codex',
-    qualify: async () => { throw new Error('The deterministic integration adapter needs no external qualification') },
-    resume: async () => { throw new Error('Interrupted side effects must not be replayed') },
-    cancel: async () => false,
-    execute: async (request, callbacks) => {
-      callbacks.signal.throwIfAborted()
-      await callbacks.onSession(`session-${request.executionId}`)
+  const nativeExecutions = {
+    reviewers: { shutdown: async () => undefined },
+    residentRunIds: () => [] as string[],
+    reconcileReviews: async () => undefined,
+    cancelRun: async () => undefined,
+    finishRun: async () => undefined,
+    assertResume: async () => undefined,
+    async ensureObserve(input: Parameters<ApprovalExecutionCoordinator['ensureObserve']>[0]): Promise<ApprovalExecutionObservation> {
+      input.signal.throwIfAborted()
+      const ensured = await runs.ensureExecution(input.candidate, input.owner)
+      const request = { ...input.request, executionId: ensured.execution.id }
       await onExecute(request)
-      callbacks.signal.throwIfAborted()
-      return { outcome: 'succeeded', output: { text: request.workflowNodeId } }
+      input.signal.throwIfAborted()
+      const result = { outcome: 'succeeded' as const, output: { text: request.workflowNodeId } }
+      const execution = HarnessExecutionSchema.parse({
+        ...ensured.execution, state: 'completed', result, finishedAt: new Date().toISOString(),
+      })
+      await runs.updateExecution(execution, input.owner)
+      return { state: 'completed', execution, result }
     },
-  }
-  const instance = new LangGraphWorkflowEngine(runs, workflows, { resolve: () => adapter }, checkpoints.saver, root, 10_000, locations)
+  } as unknown as ApprovalExecutionCoordinator
+  const instance = new LangGraphWorkflowEngine(runs, workflows, nativeExecutions, checkpoints.saver, root, locations)
   engines.push(instance)
   return instance
 }

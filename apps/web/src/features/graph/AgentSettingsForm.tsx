@@ -60,7 +60,6 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
         try {
           const next = prepareHarnessEditor(editor)
           validateHarnessWorkflowCompatibility(next, workflowApprovalHandler)
-          if (next.harness === 'opencode' && next.autoApprove) throw new FieldValidationError([{ path: ['advanced', 'permissionHandling'], message: 'Native auto approval is not supported by the managed OpenCode server. Select GraphQL routed review.' }])
           if (next.harness === 'codex' && workflowApprovalHandler) CodexSessionCompatibilitySchema.parse({ configuration: next, requiresResume: true })
           return next
         } catch (failure) {

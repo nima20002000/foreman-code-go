@@ -3,6 +3,7 @@ import type {
   ExecutionResult,
   HarnessExecutionRequest,
   HarnessQualification,
+  HarnessConfiguration,
   ApprovalResponseOption,
   McpDetection,
   NativeHarnessCapabilities,
@@ -19,29 +20,9 @@ export interface NativeEventInput {
   payload: Record<string, unknown>
 }
 
-export interface HarnessExecutionCallbacks {
-  signal: AbortSignal
-  /** Runner consistency check after qualification, immediately before agent spawn. */
-  beforeSpawn?(): Promise<ChildProcessEnvironment | void>
-  onSession(nativeSessionId: string): Promise<void>
-  onEvent(event: NativeEventInput): Promise<void>
-}
-
-/** Product Agent execution boundary; native Agent/session concepts stay inside adapters. */
-export interface HarnessAdapter {
-  readonly harness: AgentHarness
-  qualify(request: HarnessExecutionRequest, signal?: AbortSignal): Promise<HarnessQualification>
-  execute(request: HarnessExecutionRequest, callbacks: HarnessExecutionCallbacks): Promise<ExecutionResult>
-  resume(
-    request: HarnessExecutionRequest,
-    nativeSessionId: string,
-    callbacks: HarnessExecutionCallbacks,
-  ): Promise<ExecutionResult>
-  cancel(executionId: string): Promise<boolean>
-}
-
-export interface HarnessResolver {
-  resolve(harness: AgentHarness): HarnessAdapter
+/** Read-only settings discovery; this cannot launch, resume, or cancel workflow work. */
+export interface HarnessConfigurationQualifier {
+  qualify(configuration: HarnessConfiguration, workingDirectory: string, signal?: AbortSignal): Promise<HarnessQualification>
 }
 
 /** Values are supplied only to one child process and must never enter logs or persisted graph state. */

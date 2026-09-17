@@ -5,6 +5,7 @@ import {
   NativeHarnessEventSchema,
   NativeSessionReferenceSchema,
   OPENCODE_APPROVAL_OPTIONS_FIXTURE,
+  OpenCodeHarnessConfigurationSchema,
   PendingNativeInteractionSchema,
   type ApprovalResponseOption,
   type McpDetection,
@@ -16,6 +17,7 @@ import {
 } from '@graphql/contracts'
 
 import { HarnessExecutionError } from './errors.js'
+import { nativeQualification } from './nativeQualification.js'
 import { endpointMatches, type NativeMcpEntryEvidence } from './mcpDetection.js'
 import type { ChildProcessEnvironment, NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from './port.js'
 import {
@@ -30,6 +32,7 @@ import {
   type NativeDeliveryCertainty, type OpenCodeServerController,
 } from './opencodeTransport.js'
 import { redactKnownSecrets } from './secrets.js'
+import { OpenCodeNativeAutoReplies, usesOpenCodeNativeAuto } from './opencodeNativeAuto.js'
 
 export {
   ManagedOpenCodeServer, OpenCodeNativeDeliveryError, buildOpenCodeConfigContent,
@@ -58,6 +61,7 @@ interface OwnedTurn {
   terminalResult: NativeHistory['terminalResult']
 }
 interface SessionState {
+  autoReplies: OpenCodeNativeAutoReplies
   directory: string
   configuration: OpenCodeHarnessConfiguration
   events: NativeHarnessEvent[]
@@ -140,7 +144,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         const configuration = this.configuration(input)
         await this.bindEnvironment(input.environment, combined)
         await this.ready(combined)
-        await this.qualifyConfiguration(configuration, directory, combined)
+        await this.assertConfiguration(configuration, directory, combined)
         await this.applyMcpControls(configuration, directory, combined)
         const [providerID, ...model] = configuration.model.split('/')
         const response = object(await this.mutate(withDirectory('/session', directory), {
@@ -176,7 +180,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         const configuration = this.configuration(input)
         await this.bindEnvironment(input.environment, combined)
         await this.ready(combined)
-        await this.qualifyConfiguration(configuration, directory, combined)
+        await this.assertConfiguration(configuration, directory, combined)
         const native = object(await this.json(`/session/${encodeURIComponent(session.nativeSessionId)}`, directory, combined))
         this.verifyAttachedSession(native, session.nativeSessionId, directory, configuration)
         await this.applyMcpControls(configuration, directory, combined)
@@ -232,6 +236,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
             idleObserved: false, scopedError: undefined, terminalResult: undefined,
           }
           state.turn = turn
+          state.autoReplies.resume()
         }
         turn.observing = true
         if (turn.terminalResult) return
@@ -281,6 +286,15 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
             if (!id || !(await this.ownedSession(session.nativeSessionId, id, state, signal))) continue
             if (id === session.nativeSessionId && native.type === 'session.error') turn.scopedError = object(object(native.properties).error)
             if (id === session.nativeSessionId && native.type === 'session.idle') turn.idleObserved = true
+            if (native.type === 'permission.asked' && usesOpenCodeNativeAuto(state.configuration)) {
+              for (const request of await this.autoReplyPending(session, signal)) {
+                yield this.recordSynthetic(state, 'permission.auto_replied', {
+                  nativeRequestId: request.id, nativeSessionId: request.sessionID, correlationId, reply: 'once',
+                })
+              }
+              // This is a native client response, not a durable GraphQL review.
+              continue
+            }
             if (visibleNativeEvent(native, state.configuration.thinking, state.partTypes)) {
               const event = this.record(state, native)
               if (event) yield event
@@ -294,7 +308,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
           }
         } catch (error) {
           if (signal.aborted) throw error
-          if (error instanceof OpenCodeNativeDeliveryError && error.certainty === 'definite') throw error
+          if (error instanceof HarnessExecutionError || (error instanceof OpenCodeNativeDeliveryError && error.certainty === 'definite')) throw error
           failures += 1
         } finally {
           await response?.body?.cancel().catch(() => undefined)
@@ -345,7 +359,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     return this.pendingReady(session, combined)
   }
 
-  private async pendingReady(session: NativeSessionReference, signal: AbortSignal): Promise<PendingNativeInteraction[]> {
+  private async ownedPermissions(session: NativeSessionReference, signal: AbortSignal): Promise<NativePermissionRequest[]> {
     const state = this.requireSession(session)
     const requests = await this.permissionRequests(state.directory, signal)
     const owned: NativePermissionRequest[] = []
@@ -354,7 +368,30 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     }
     const current = new Set(owned.map((item) => item.id))
     for (const id of state.pendingIds) if (!current.has(id)) state.pendingIds.delete(id)
-    return owned.map((request) => PendingNativeInteractionSchema.parse({
+    return owned
+  }
+
+  private autoReplyPending(session: NativeSessionReference, signal: AbortSignal) {
+    const state = this.requireSession(session)
+    return state.autoReplies.consume(
+      (current) => this.ownedPermissions(session, current),
+      async (request, current) => {
+        await this.mutate(withDirectory(`/permission/${encodeURIComponent(request.id)}/reply`, state.directory), {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reply: 'once' }),
+        }, current)
+      }, signal,
+    )
+  }
+
+  private async pendingReady(session: NativeSessionReference, signal: AbortSignal, handleAuto = true): Promise<PendingNativeInteraction[]> {
+    const state = this.requireSession(session)
+    if (handleAuto && usesOpenCodeNativeAuto(state.configuration) && !state.autoReplies.stopped) {
+      // Reconnect/history use the same authoritative queue as SSE. Only actual
+      // owned asks are answered; native allow/deny policy is never changed.
+      await this.autoReplyPending(session, signal)
+      return []
+    }
+    return (await this.ownedPermissions(session, signal)).map((request) => PendingNativeInteractionSchema.parse({
       session, turn: { nativeTurnId: request.tool?.messageID ?? request.id, nativeRequestId: request.id },
       nativeRequestType: 'permission.asked', request,
       responseOptions: optionsForRequest(request.id),
@@ -366,6 +403,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     await this.exclusive(async () => {
       await this.ready(combined)
       const state = this.requireSession(session)
+      if (usesOpenCodeNativeAuto(state.configuration)) throw new OpenCodeNativeDeliveryError(
+        'OPENCODE_NATIVE_AUTO_RESPONSE_CONFLICT', 'Native automatic handling cannot also accept a routed response.', 'definite',
+      )
       const pending = await this.pendingReady(session, combined)
       const request = pending.find((item) => item.turn.nativeRequestId === nativeRequestId)
       if (!request) throw new OpenCodeNativeDeliveryError('OPENCODE_PERMISSION_NOT_PENDING', 'That permission request is no longer pending in an owned session.', 'definite')
@@ -383,6 +423,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   cancel(session: NativeSessionReference, signal?: AbortSignal, nativeTurnId?: string): Promise<boolean> {
+    const state = this.sessions.get(session.nativeSessionId)
+    if (session.harness === 'opencode' && session.providerVersion === QUALIFIED_OPENCODE_VERSION
+      && state && (!nativeTurnId || state.turn?.messageID === nativeTurnId)) state.autoReplies.stop()
     const combined = this.signal(signal)
     return this.exclusive(async () => {
       await this.ready(combined)
@@ -394,6 +437,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   private async cancelReady(session: NativeSessionReference, signal: AbortSignal): Promise<boolean> {
     const state = this.requireSession(session)
+    state.autoReplies.stop()
     const statuses = object(await this.json('/session/status', state.directory, signal))
     const permissions = await this.permissionRequests(state.directory, signal)
     const questions = await this.json('/question', state.directory, signal)
@@ -417,7 +461,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       rejected.add(request.sessionID)
     }
     await this.rejectQuestions(session, signal)
-    const remaining = await this.pendingReady(session, signal)
+    const remaining = await this.pendingReady(session, signal, false)
     const after = object(await this.json('/session/status', state.directory, signal))
     for (const id of Object.keys(after)) {
       if (object(after[id]).type !== 'idle' && await this.ownedSession(session.nativeSessionId, id, state, signal)) accepted = false
@@ -496,7 +540,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       if (history.resultMessageId) result.nativeMessageId = history.resultMessageId
     }
     const statusAfter = await this.sessionStatus(session.nativeSessionId, state.directory, signal)
-    if (statusBefore !== 'idle' || statusAfter !== 'idle' || pendingInteractions.length) return result
+    if (statusBefore !== 'idle' || statusAfter !== 'idle' || pendingInteractions.length
+      || (usesOpenCodeNativeAuto(state.configuration) && !state.autoReplies.stopped && state.autoReplies.hasPending)) return result
     if (!terminalResult && turn?.scopedError && (root || turn.idleObserved)) {
       const error = turn.scopedError
       terminalResult = failure(typeof error.name === 'string' ? error.name : 'OPENCODE_TURN_FAILED',
@@ -589,6 +634,21 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     this.boundEnvironmentFingerprint = fingerprint
   }
 
+  /** Same qualified server and settings as execution, without creating a native session. */
+  async qualifyConfiguration(value: OpenCodeHarnessConfiguration, directory: string, signal?: AbortSignal) {
+    const combined = signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal
+    combined.throwIfAborted()
+    const parsed = OpenCodeHarnessConfigurationSchema.safeParse(value)
+    if (!parsed.success) throw new HarnessExecutionError('OPENCODE_CONFIGURATION_INVALID', 'The accepted OpenCode settings are invalid or contain conflicting permission modes.')
+    await this.ready(combined)
+    const providers = object(await this.assertConfiguration(parsed.data, directory, combined))
+    const providerId = parsed.data.model.split('/')[0]
+    if (!Array.isArray(providers.connected) || !providers.connected.includes(providerId)) {
+      throw new HarnessExecutionError('OPENCODE_AUTH_REQUIRED', 'The selected native provider is not connected. Configure its credentials before saving these defaults.')
+    }
+    return nativeQualification(parsed.data, this.options.server.expectedVersion)
+  }
+
   private async ready(signal: AbortSignal): Promise<void> {
     signal.throwIfAborted()
     if (this.options.server.expectedVersion !== QUALIFIED_OPENCODE_VERSION) throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'OpenCode native mode requires exactly 1.18.31.')
@@ -615,8 +675,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     this.readyGeneration = generation
   }
 
-  private async qualifyConfiguration(configuration: OpenCodeHarnessConfiguration, directory: string, signal: AbortSignal): Promise<void> {
-    if (configuration.autoApprove || configuration.advanced?.permissionHandling === 'native_auto') throw new HarnessExecutionError('OPENCODE_SERVER_AUTO_CONFLICT', 'Native auto handling conflicts with GraphQL-routed review.')
+  private async assertConfiguration(configuration: OpenCodeHarnessConfiguration, directory: string, signal: AbortSignal): Promise<unknown> {
     if (this.options.server instanceof ManagedOpenCodeServer && !isDeepStrictEqual(configuration.advanced, this.options.server.advancedConfiguration)) {
       throw new HarnessExecutionError('OPENCODE_SERVER_CONFIGURATION_MISMATCH', 'Process-level Advanced settings differ from the pinned session configuration.')
     }
@@ -630,6 +689,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const [providers, agents] = await Promise.all([this.json('/provider', directory, signal), this.json('/agent', directory, signal)])
     if (!providerSupports(providers, providerID, model.join('/'), configuration.variant)) throw new HarnessExecutionError('OPENCODE_MODEL_UNAVAILABLE', 'The selected OpenCode model or named variant is not advertised.')
     if (!Array.isArray(agents) || !agents.some((agent) => object(agent).name === configuration.nativeAgent)) throw new HarnessExecutionError('OPENCODE_NATIVE_AGENT_UNAVAILABLE', 'The selected native Agent is unavailable.')
+    return providers
   }
 
   private async applyMcpControls(configuration: OpenCodeHarnessConfiguration, directory: string, signal: AbortSignal): Promise<void> {
@@ -661,7 +721,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private configuration(input: NativeSessionStart): OpenCodeHarnessConfiguration {
     const configuration = input.kind === 'operator' ? input.configuration.harness : input.request.configuration.harness
     if (configuration.harness !== 'opencode') throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'OpenCode received a different harness configuration.')
-    return structuredClone(configuration)
+    const parsed = OpenCodeHarnessConfigurationSchema.safeParse(configuration)
+    if (!parsed.success) throw new HarnessExecutionError('OPENCODE_CONFIGURATION_INVALID', 'The accepted OpenCode settings are invalid or contain conflicting permission modes.')
+    return structuredClone(parsed.data)
   }
   private validateReference(session: NativeSessionReference): void {
     if (session.harness !== 'opencode' || session.providerVersion !== QUALIFIED_OPENCODE_VERSION) throw new HarnessExecutionError('OPENCODE_SESSION_UNQUALIFIED', 'The persisted native session is not qualified for this manager.')
@@ -877,7 +939,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 }
 
 function newState(directory: string, configuration: OpenCodeHarnessConfiguration): SessionState {
-  return { directory, configuration, events: [], eventBytes: 0, eventIds: new Set(), pendingIds: new Set(), historyIds: new Set(),
+  return { autoReplies: new OpenCodeNativeAutoReplies(), directory, configuration, events: [], eventBytes: 0, eventIds: new Set(), pendingIds: new Set(), historyIds: new Set(),
     partTypes: new Map(), ownedIds: new Map(), sequence: 0, turn: undefined }
 }
 function withDirectory(path: string, directory: string): string {

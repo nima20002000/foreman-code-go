@@ -5,10 +5,6 @@ import { sameManagedValue as same, type AgentRevisions, type CloneSources } from
 function configuration(agent: Agent) {
   const value = agent.harnessConfiguration
   if (!value) throw new Error(`Agent '${agent.id}' needs its saved harness configuration. Reload it before saving these changes.`)
-  if (value.harness === 'opencode') {
-    if (value.autoApprove) throw new Error('OpenCode automatic permission approval is not supported.')
-    return { ...value, autoApprove: false as const }
-  }
   return value
 }
 function content(agent: Agent) {

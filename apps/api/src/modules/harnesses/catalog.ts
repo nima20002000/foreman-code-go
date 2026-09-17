@@ -1,17 +1,15 @@
-import { randomUUID } from 'node:crypto'
-
-import { AgentConfigurationVersionSchema, HarnessQualificationSchema, type HarnessConfiguration, type AgentHarness, type HarnessDefaults } from '@graphql/contracts'
+import { HarnessQualificationSchema, type HarnessConfiguration, type AgentHarness, type HarnessDefaults } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
 import { requireAuthorization } from '../access/policy.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { PostgresSettingsRepository } from '../settings/postgres.js'
-import type { HarnessResolver } from './port.js'
+import type { HarnessConfigurationQualifier } from './port.js'
 import { DomainError } from '../errors.js'
 
 export class HarnessCatalogService {
   constructor(
-    private readonly resolver: HarnessResolver,
+    private readonly qualifier: HarnessConfigurationQualifier,
     private readonly settings: PostgresSettingsRepository,
     private readonly commands: PostgresCommandCoordinator,
     private readonly qualificationDirectory: string,
@@ -31,17 +29,7 @@ export class HarnessCatalogService {
 
   /** Native model/variant/Agent qualification shared by every defaults writer. No turn is started. */
   async qualifyConfiguration(value: HarnessConfiguration) {
-    const id = `qualification-${randomUUID()}`
-    const configuration = AgentConfigurationVersionSchema.parse({
-      id, workspaceId: 'qualification', agentId: 'qualification', version: 1,
-      prompt: {}, assignedSkills: [], harness: value,
-      contentHash: 'qualification', createdAt: new Date().toISOString(),
-    })
-    const result = HarnessQualificationSchema.parse(await this.resolver.resolve(value.harness).qualify({
-      executionId: id, runId: 'qualification', workspaceId: 'qualification', workflowNodeId: 'qualification',
-      workingDirectory: this.qualificationDirectory, runtimeDirectory: this.qualificationDirectory,
-      configuration, input: {},
-    }))
+    const result = HarnessQualificationSchema.parse(await this.qualifier.qualify(value, this.qualificationDirectory))
     if (!result.ready || !result.authenticated || result.harness !== value.harness) {
       throw new DomainError('HARNESS_DEFAULTS_UNQUALIFIED', 'The native provider did not qualify this configuration as ready and authenticated.', 409)
     }

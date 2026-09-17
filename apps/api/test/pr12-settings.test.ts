@@ -52,4 +52,12 @@ describe('PR12 role-default qualification', () => {
     expect(normalized.opencode.advanced?.compaction.auto).toBe(true)
     expect(legacy.codex.advanced).toBeUndefined()
   })
+  it('preserves an explicit legacy native-auto default while completing Advanced settings', () => {
+    const legacy = structuredClone(DEFAULT_HARNESS_DEFAULTS)
+    legacy.opencode.autoApprove = true
+    delete legacy.opencode.advanced
+    const normalized = normalizeHarnessDefaults(legacy)
+    expect(normalized.opencode.autoApprove).toBe(true)
+    expect(normalized.opencode.advanced?.permissionHandling).toBe('native_auto')
+  })
 })

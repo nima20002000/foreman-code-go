@@ -8,7 +8,7 @@ import { describe, it } from 'vitest'
 
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { CodexRpcError, isObject } from '../src/modules/harnesses/codexStdioTransport.js'
-import type { HarnessExecutionCallbacks } from '../src/modules/harnesses/port.js'
+// Workflow and live acceptance share the native session manager.
 
 const enabled = process.env.RUN_CODEX_APP_SERVER_TESTS === '1'
 const binary = process.env.CODEX_BINARY ?? 'codex'
@@ -31,7 +31,7 @@ function request(directory: string): HarnessExecutionRequest {
 
 // The approval scenario uses POSIX shell syntax. It is not Windows acceptance.
 describe.skipIf(!enabled || process.platform === 'win32')('authenticated Codex app-server 0.154.0 acceptance', () => {
-  it('measures the installed schemas, approves, continues, cancels, reattaches and actually executes the fallback', async () => {
+  it('measures installed schemas, approves, continues, cancels and reattaches the same native session', async () => {
     const directory = process.cwd()
     const scratch = await mkdtemp(join(tmpdir(), 'graphql-hap02-live-'))
     const marker = join(scratch, 'approved-command.txt')
@@ -96,29 +96,7 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated Codex a
       for await (const event of restored.startTurn(session, { prompt: 'Reply exactly HAP02_REATTACHED. Do not use tools.', clientCorrelationId: 'reattached' }, signal)) void event
       assert(outputText((await restored.history(session)).terminalResult?.output).includes('HAP02_REATTACHED'))
 
-      // An import assertion is not fallback parity: execute and resume the real adapter.
-      const { CodexAdapter } = await import('../src/modules/harnesses/codex.js')
-      const fallback = new CodexAdapter(binary)
-      const legacyRequest = request(directory)
-      legacyRequest.executionId = 'nim2598-live-fallback'
-      legacyRequest.configuration.prompt.system = 'Reply exactly HAP02_EXEC_FALLBACK. Do not use tools.'
-      let legacySession: string | undefined
-      const eventTypes: string[] = []
-      const callbacks: HarnessExecutionCallbacks = {
-        signal, onSession: async (id) => { legacySession = id }, onEvent: async (event) => { eventTypes.push(event.type) },
-      }
-      const executed = await fallback.execute(legacyRequest, callbacks)
-      assert.equal(executed.outcome, 'succeeded')
-      assert(outputText(executed.output).includes('HAP02_EXEC_FALLBACK'))
-      assert(legacySession)
-      assert(eventTypes.includes('harness.qualified') && eventTypes.includes('item.completed'))
-      const expectedSession = legacySession
-      legacyRequest.executionId = 'nim2598-live-fallback-resume'
-      legacyRequest.configuration.prompt.system = 'Reply exactly HAP02_EXEC_RESUMED. Do not use tools.'
-      const resumed = await fallback.resume(legacyRequest, expectedSession, callbacks)
-      assert.equal(resumed.outcome, 'succeeded')
-      assert(outputText(resumed.output).includes('HAP02_EXEC_RESUMED'))
-      assert.equal(legacySession, expectedSession)
+      // Continued/reattached turns above cover the sole execution transport.
     } finally {
       try { await Promise.all([manager.shutdown(), restored.shutdown()]) }
       finally { await rm(scratch, { recursive: true, force: true }) }

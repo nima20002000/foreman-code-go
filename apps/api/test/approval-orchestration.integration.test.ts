@@ -213,8 +213,7 @@ it('interrupts and resumes the same durable native execution without repeating p
   const managerResolver = { resolve: () => ({ manager, processState: 'resident' as const }) }
   const approvalRuntime = new ApprovalExecutionCoordinator(runs, interactions, budgets, managerResolver, 10_000)
   engine = new LangGraphWorkflowEngine(
-    runs, workflows, { resolve: () => { throw new Error('legacy adapter must not run') } },
-    checkpoints.saver, root, 10_000, locations, undefined, approvalRuntime, interactions,
+    runs, workflows, approvalRuntime, checkpoints.saver, root, locations, undefined, interactions,
   )
   const service = new InteractionService(interactions, budgets, approvalRuntime, (interaction) => engine.resumeInteraction(interaction))
   app = buildApp({
@@ -333,8 +332,7 @@ it('targets two parallel interrupt ids without respawning either branch or its p
   }
   const approvalRuntime = new ApprovalExecutionCoordinator(runs, interactions, budgets, managerResolver, 10_000, credentials)
   engine = new LangGraphWorkflowEngine(
-    runs, workflows, { resolve: () => { throw new Error('legacy adapter must not run') } },
-    checkpoints.saver, root, 10_000, locations, undefined, approvalRuntime, interactions,
+    runs, workflows, approvalRuntime, checkpoints.saver, root, locations, undefined, interactions,
   )
   const service = new InteractionService(interactions, budgets, approvalRuntime, (interaction) => engine.resumeInteraction(interaction))
 
@@ -428,8 +426,7 @@ it('delivers an Orchestrator App MCP response to native execution, resumes the r
   }
   const runtime = new ApprovalExecutionCoordinator(runs, interactions, budgets, resolver, 10_000, credentials)
   engine = new LangGraphWorkflowEngine(
-    runs, workflows, { resolve: () => { throw new Error('legacy adapter must not run') } }, checkpoints.saver,
-    root, 10_000, locations, undefined, runtime, interactions,
+    runs, workflows, runtime, checkpoints.saver, root, locations, undefined, interactions,
   )
   const service = new InteractionService(interactions, budgets, runtime, (interaction) => engine.resumeInteraction(interaction))
   const access = new PostgresAccessService(pool)

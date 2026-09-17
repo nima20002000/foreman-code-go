@@ -21,6 +21,7 @@ import type pg from 'pg'
 import { DomainError } from '../errors.js'
 import type { RunRepository, RunStateUpdate } from './port.js'
 import { acceptedRunApproval } from '../workflows/approval.js'
+import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { RunOwnership } from './ownership.js'
 import { appendNativeEvent } from './nativeEvents.js'
@@ -122,6 +123,9 @@ export class PostgresRunRepository implements RunRepository {
         if (!configuration) throw new DomainError('AGENT_CONFIGURATION_NOT_FOUND', `Configuration '${id}' was not found.`, 409)
         return configuration
       }))
+      // Decide approval authority before persisting/queuing any native work.
+      // Old saved records are never silently migrated to an automatic mode.
+      for (const configuration of configurations) assertNativeWorkflowConfiguration(configuration.harness, approval)
       const executionLocation = await this.locations.snapshot(
         client, workspaceId, expectedLocationRevision, requiredLocationAccess(configurations),
       )

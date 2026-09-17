@@ -3,7 +3,7 @@ import {
   DEFAULT_AGENT_DEFAULTS,
   DEFAULT_HARNESS_DEFAULTS,
   DurableInteractionSchema,
-  HarnessExecutionRequestSchema,
+  // Execution request coverage is provided by native coordinator tests.
   HarnessWorkflowCompatibilitySchema,
   NATIVE_INTERACTION_FIXTURES,
   OperatorConfigurationVersionSchema,
@@ -16,9 +16,7 @@ import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
 
 import { inTransaction } from '../src/infrastructure/transaction.js'
-import { CodexAdapter } from '../src/modules/harnesses/codex.js'
-import { OpenCodeAdapter } from '../src/modules/harnesses/opencode.js'
-import { assertFallbackConfiguration } from '../src/modules/harnesses/fallbackCapabilities.js'
+// Native execution/configuration coverage lives in native-runtime-consolidation.test.ts.
 import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
@@ -99,58 +97,7 @@ describe('PR8 executable approval acceptance', () => {
   })
 })
 
-describe('PR8 fallback settings and exact variants', () => {
-  it.each(['codex', 'opencode'] as const)('accepts %s defaults and legacy basic settings', (harness) => {
-    expect(() => assertFallbackConfiguration(DEFAULT_HARNESS_DEFAULTS[harness])).not.toThrow()
-    const basic = structuredClone(DEFAULT_HARNESS_DEFAULTS[harness])
-    delete basic.advanced
-    expect(() => assertFallbackConfiguration(basic)).not.toThrow()
-  })
-
-  it.each(['webSearch', 'approvalPolicy', 'shellEnvironment', 'mcpServers', 'sessionPersistence'] as const)('rejects changed Codex %s', (field) => {
-    const harness = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
-    const advanced = harness.advanced!
-    if (field === 'webSearch') advanced.webSearch = 'disabled'
-    if (field === 'approvalPolicy') advanced.approvalPolicy = 'never'
-    if (field === 'shellEnvironment') advanced.shellEnvironment.inherit = 'none'
-    if (field === 'mcpServers') advanced.mcpServers.test = { enabled: false, required: false }
-    if (field === 'sessionPersistence') advanced.sessionPersistence = 'ephemeral'
-    expect(() => assertFallbackConfiguration(harness)).toThrow(expect.objectContaining({
-      result: expect.objectContaining({ error: expect.objectContaining({ code: 'HARNESS_ADVANCED_UNSUPPORTED' }) }),
-    }))
-  })
-
-  it.each(['permissionRules', 'subagentDepth', 'plugins', 'compaction', 'mcp'] as const)('rejects changed OpenCode %s', (field) => {
-    const harness = structuredClone(DEFAULT_HARNESS_DEFAULTS.opencode)
-    const advanced = harness.advanced!
-    if (field === 'permissionRules') advanced.permissionRules = [{ permission: 'bash', pattern: '*', effect: 'deny' }]
-    if (field === 'subagentDepth') advanced.subagentDepth = 0
-    if (field === 'plugins') advanced.plugins.mode = 'pure'
-    if (field === 'compaction') advanced.compaction.prune = true
-    if (field === 'mcp') advanced.mcp.serverEnabled.test = false
-    expect(() => assertFallbackConfiguration(harness)).toThrow(expect.objectContaining({
-      result: expect.objectContaining({ error: expect.objectContaining({ code: 'HARNESS_ADVANCED_UNSUPPORTED' }) }),
-    }))
-  })
-
-  it.each(['codex', 'opencode'] as const)('rejects %s restrictions before qualification, execute or resume spawns', async (provider) => {
-    const harness = structuredClone(DEFAULT_HARNESS_DEFAULTS[provider])
-    if (harness.harness === 'codex') harness.advanced!.webSearch = 'disabled'
-    else harness.advanced!.permissionRules = [{ permission: 'bash', pattern: '*', effect: 'deny' }]
-    const request = HarnessExecutionRequestSchema.parse({
-      executionId: 'execution', runId: 'run', workspaceId: 'workspace', workflowNodeId: 'node',
-      workingDirectory: '/tmp', runtimeDirectory: '/tmp', configuration: configuration('coder', 'coder', harness), input: {},
-    })
-    const adapter = provider === 'codex' ? new CodexAdapter('/must-not-spawn') : new OpenCodeAdapter('/must-not-spawn')
-    const callbacks = { signal: new AbortController().signal, onEvent: vi.fn(async () => undefined), onSession: vi.fn(async () => undefined) }
-    const expected = { result: { error: { code: provider === 'codex'
-      ? 'HARNESS_ADVANCED_UNSUPPORTED'
-      : 'OPENCODE_FALLBACK_APPROVAL_UNSUPPORTED' } } }
-    await expect(adapter.qualify(request)).rejects.toMatchObject(expected)
-    await expect(adapter.execute(request, callbacks)).rejects.toMatchObject(expected)
-    await expect(adapter.resume(request, 'session', callbacks)).rejects.toMatchObject(expected)
-    expect(callbacks.onEvent).not.toHaveBeenCalled()
-  })
+describe('PR8 native settings and exact variants', () => {
 
   it('never replaces a native variant with a stale legacy effort projection', () => {
     const harness = { ...DEFAULT_HARNESS_DEFAULTS.opencode, variant: 'provider-custom-effort' }

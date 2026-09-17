@@ -10,27 +10,11 @@ import { DomainError } from '../errors.js'
 
 const SETTINGS_KEY = 'harness-defaults'
 
-/** Normalize legacy templates on read, never when validating an explicit write. */
+/** Complete legacy templates on read without changing their explicit permission choice. */
 export function normalizeHarnessDefaults(record: unknown): HarnessDefaults {
   const candidate = (record === undefined ? DEFAULT_HARNESS_DEFAULTS : record) as HarnessDefaults
-  // Retain the existing conservative migration of legacy auto-approval.
-  const defaults = HarnessDefaultsSchema.parse({
-    ...candidate,
-    opencode: {
-      ...candidate.opencode,
-      autoApprove: false,
-      ...(candidate.opencode?.advanced
-        ? { advanced: { ...candidate.opencode.advanced, permissionHandling: 'graphql_routed' } }
-        : {}),
-    },
-  })
+  const defaults = HarnessDefaultsSchema.parse(candidate)
   return { codex: withAdvancedDefaults(defaults.codex), opencode: withAdvancedDefaults(defaults.opencode) }
-}
-
-function rejectUnsupportedAutoApproval(input: unknown): void {
-  if ((input as { opencode?: { autoApprove?: boolean } }).opencode?.autoApprove) {
-    throw new DomainError('OPENCODE_SETTING_UNSUPPORTED', 'Automatic permission approval is disabled for Product Agent runs.', 400)
-  }
 }
 
 export class PostgresSettingsRepository {
@@ -60,11 +44,7 @@ export class PostgresSettingsRepository {
     input: HarnessDefaults,
     expectedRevision: number,
   ): Promise<{ defaults: HarnessDefaults; revision: number }> {
-    rejectUnsupportedAutoApproval(input)
     const defaults = HarnessDefaultsSchema.parse(input)
-    if (defaults.opencode.autoApprove) {
-      throw new DomainError('OPENCODE_SETTING_UNSUPPORTED', 'Automatic permission approval is disabled for Product Agent runs.', 400)
-    }
     const current = await client.query<{ revision: string }>(
       'select revision from application_settings where key = $1 for update', [SETTINGS_KEY],
     )
@@ -93,11 +73,7 @@ export class PostgresSettingsRepository {
   }
 
   async saveHarnessDefaults(input: HarnessDefaults): Promise<HarnessDefaults> {
-    rejectUnsupportedAutoApproval(input)
     const defaults = HarnessDefaultsSchema.parse(input)
-    if (defaults.opencode.autoApprove) {
-      throw new DomainError('OPENCODE_SETTING_UNSUPPORTED', 'Automatic permission approval is disabled for Product Agent runs.', 400)
-    }
     await this.pool.query(
       `insert into application_settings (key, record, revision, updated_at)
        values ($1, $2::jsonb, 1, now())

@@ -33,6 +33,22 @@ describe('management graph diff', () => {
     ])
   })
 
+  it('preserves explicit OpenCode native auto handling in agent configuration', () => {
+    const nativeAuto = {
+      ...DEFAULT_HARNESS_DEFAULTS.opencode,
+      autoApprove: true,
+      advanced: { ...DEFAULT_HARNESS_DEFAULTS.opencode.advanced!, permissionHandling: 'native_auto' as const },
+    }
+    const operations = managementGraphOperations({
+      base, next: base, baseAgents: [agent],
+      nextAgents: [{ ...agent, harnessConfiguration: nativeAuto }],
+      metadataRevisions: { 'agent-1': 2 },
+    })
+    expect(operations).toContainEqual(expect.objectContaining({
+      type: 'agent.configure', configuration: nativeAuto,
+    }))
+  })
+
   it('transmits an explicit required-agent-count change', () => {
     expect(managementGraphOperations({
       base,

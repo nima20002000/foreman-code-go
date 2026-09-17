@@ -77,16 +77,7 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
       })
       const approvals = new ApprovalExecutionCoordinator(runs, interactions, budgets, managers, 300_000)
       const engine = new LangGraphWorkflowEngine(
-        runs,
-        workflows,
-        { resolve: () => { throw new Error('The real acceptance workflow must use qualified native transports.') } },
-        checkpoints.saver,
-        runtimeDirectory,
-        300_000,
-        locations,
-        undefined,
-        approvals,
-        interactions,
+        runs, workflows, approvals, checkpoints.saver, runtimeDirectory, locations, undefined, interactions,
       )
       app = buildApp({
         readiness: { database, checkpoints },

@@ -26,7 +26,7 @@ import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from './modules/h
 import { openCodeMcpInspectorAdapter } from './modules/harnesses/opencodeMcpInspectorAdapter.js'
 import { NativeRollout } from './modules/harnesses/nativeRollout.js'
 import type { NativeHarnessSessionManager } from './modules/harnesses/port.js'
-import { LocalHarnessResolver } from './modules/harnesses/resolver.js'
+import { NativeHarnessConfigurationQualifier } from './modules/harnesses/nativeConfigurationQualifier.js'
 import { PostgresAppInteractionService } from './modules/interactions/app.js'
 import { PostgresApprovalBudgetRepository } from './modules/interactions/budget.js'
 import { ApprovalExecutionCoordinator } from './modules/interactions/execution.js'
@@ -75,8 +75,8 @@ export function buildProductionApp(
   const foundationSettings = new PostgresFoundationSettingsRepository(database.pool)
   const operators = new PostgresOperatorRepository(database.pool)
   const rollout = new NativeRollout(process.env)
-  const harnesses = new LocalHarnessResolver(config.harnesses.codexBinary, config.harnesses.openCodeBinary)
-  const harnessCatalog = new HarnessCatalogService(harnesses, settings, commands, config.harnesses.workspaceRoot)
+  const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, config.harnesses.openCodeBinary)
+  const harnessCatalog = new HarnessCatalogService(qualifier, settings, commands, config.harnesses.workspaceRoot)
   const endpointHost = config.host === '0.0.0.0' ? '127.0.0.1'
     : config.host === '::' || config.host === '::1' ? '[::1]' : config.host
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/tools`
@@ -140,8 +140,8 @@ export function buildProductionApp(
     runs, repository, budgets, managers, config.harnesses.timeoutMs, launchCredentials, validateContinuation,
   )
   const engine = new LangGraphWorkflowEngine(
-    runs, workflows, harnesses, checkpoints.saver, config.harnesses.workspaceRoot,
-    config.harnesses.timeoutMs, locations, launchCredentials, approvals, repository,
+    runs, workflows, approvals, checkpoints.saver, config.harnesses.workspaceRoot,
+    locations, launchCredentials, repository,
   )
   const interactions = new InteractionService(
     repository, budgets, approvals, (interaction) => engine.resumeInteraction(interaction),

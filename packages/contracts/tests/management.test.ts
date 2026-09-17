@@ -65,8 +65,8 @@ describe("management contracts", () => {
     })).toThrow();
   });
 
-  it("does not advertise unsupported OpenCode automatic approval", () => {
-    expect(() => GraphDraftApplyInputSchema.parse({
+  it("accepts supported OpenCode native automatic approval", () => {
+    const parsed = GraphDraftApplyInputSchema.parse({
       workspaceId: "workspace-1", workflowId: "workflow-1", draftId: "draft-1",
       commandId: "command-123", expectedRevision: 0,
       operations: [{
@@ -76,7 +76,10 @@ describe("management contracts", () => {
           nativeAgent: "build", thinking: false, autoApprove: true,
         },
       }],
-    })).toThrow();
+    });
+    expect(parsed.operations).toContainEqual(expect.objectContaining({
+      type: "agent.configure", configuration: expect.objectContaining({ autoApprove: true }),
+    }));
   });
 
   it("supports truthful App MCP capability and scoped interaction tools", () => {

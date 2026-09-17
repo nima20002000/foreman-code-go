@@ -7,7 +7,6 @@ import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import {
   HarnessExecutionRequestSchema,
   HarnessExecutionSchema,
-  HarnessNativeEventSchema,
   type ExecutionResult,
   type WorkflowRun,
   type WorkflowVersion,
@@ -16,7 +15,7 @@ import {
 
 import { DomainError } from '../errors.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
-import type { HarnessResolver, NativeEventInput } from '../harnesses/port.js'
+import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
 import { withFilesystemDeadline } from '../workspaces/filesystem.js'
@@ -30,8 +29,6 @@ import { withCleanupDeadline } from '../interactions/cleanup.js'
 import type { ApprovalExecutionCoordinator } from '../interactions/execution.js'
 import type { PostgresInteractionRepository } from '../interactions/postgres.js'
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
-import { WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, type IssuedWorkerCredential } from '../access/workerCredentials.js'
-import { redactKnownSecrets, redactSecretText } from '../harnesses/secrets.js'
 
 const EngineState = Annotation.Root({
   runId: Annotation<string>(),
@@ -115,13 +112,11 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   constructor(
     private readonly runs: PostgresRunRepository,
     private readonly workflows: PostgresWorkflowRepository,
-    private readonly harnesses: HarnessResolver,
+    private readonly nativeExecutions: ApprovalExecutionCoordinator,
     private readonly checkpointer: BaseCheckpointSaver,
     workspaceRoot: string,
-    private readonly timeoutMs: number,
     private readonly locations: WorkspaceLocationService,
     private readonly workerCredentials?: ExecutionCredentialProvider,
-    private readonly approvals?: ApprovalExecutionCoordinator,
     private readonly interactions?: PostgresInteractionRepository,
   ) {
     this.workspaceRoot = resolve(workspaceRoot)
@@ -147,7 +142,6 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   }
 
   private async startRun(runId: string, controller: AbortController): Promise<void> {
-    let timeout: ReturnType<typeof setTimeout> | undefined
     let owner: RunOwnership | undefined
     try {
       owner = await this.runs.acquireOwnership(runId, () => controller.abort(
@@ -156,10 +150,6 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       if (!owner) throw new DomainError('RUN_ALREADY_OWNED', `Run '${runId}' is owned by another engine.`, 409)
       const run = await this.runs.get(runId, owner)
       if (!run) throw new DomainError('RUN_NOT_FOUND', `Run '${runId}' was not found.`, 404)
-      if (!run.approval) {
-        timeout = setTimeout(() => controller.abort(), this.timeoutMs)
-        timeout.unref()
-      }
       if (run.executionState !== 'queued') {
         throw new DomainError('RUN_NOT_STARTABLE', `Run '${runId}' is not queued.`, 409)
       }
@@ -170,7 +160,6 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       }
       await this.executeRun(run, controller.signal, owner)
     } finally {
-      clearTimeout(timeout)
       await owner?.release()
     }
   }
@@ -181,7 +170,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     if (this.closing) return Promise.resolve()
     const task = (async () => {
       await this.workerCredentials?.reconcileTerminalCredentials?.().catch(onError)
-      await this.approvals?.reconcileReviews(onError)
+      await this.nativeExecutions.reconcileReviews(onError)
       for (const candidate of await this.runs.reconciliationCandidates()) {
         if (this.closing) break
         if (this.activeTasks.has(candidate.id) || this.resumeTasks.has(candidate.id)) continue
@@ -202,18 +191,14 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     ))
     if (!owner) return
     try {
-      if (!this.approvals) {
-        await this.runs.settleOrphan(runId, owner, false)
-        await this.workerCredentials?.revokeForRun?.(runId)
-        return
-      }
       // Candidate records can be stale by the time database ownership is acquired.
       const run = await this.runs.get(runId, owner)
       if (!run || (run.executionState !== 'running' && run.executionState !== 'waiting')) return
       controller.signal.throwIfAborted()
-      if (run.approval) {
+      {
         const { version, snapshot } = await this.readCheckpoint(run)
         if (this.isApprovalWait(snapshot)) {
+          if (!run.approval) throw new DomainError('WORKFLOW_APPROVAL_INCOMPLETE', 'The saved approval wait has no accepted workflow handler. Reopen and save the workflow before starting a new Run.', 409)
           const current = await this.currentInteractions(run, snapshot, owner)
           controller.signal.throwIfAborted()
           if (run.executionState !== 'waiting') {
@@ -229,8 +214,9 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         }
       }
       // No healthy interrupt or terminal checkpoint: never replay orphaned work.
-      await this.approvals?.cancelRun(runId)
+      await this.nativeExecutions.cancelRun(runId)
       await this.runs.settleOrphan(runId, owner, false)
+      await this.workerCredentials?.revokeForRun?.(runId)
     } finally {
       try {
         if (controller.signal.aborted) await this.settleCanceledRun(runId, owner)
@@ -253,7 +239,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   }
 
   private queueResume(runId: string, requestedIds?: string[]): Promise<void> {
-    if (!this.interactions || !this.approvals) return Promise.reject(new DomainError('RUN_RESUME_NOT_IMPLEMENTED', `Run '${runId}' has no durable approval runtime.`, 501))
+    if (!this.interactions) return Promise.reject(new DomainError('RUN_RESUME_NOT_IMPLEMENTED', `Run '${runId}' has no durable approval runtime.`, 501))
     if (this.closing) return Promise.reject(new DomainError('ENGINE_CLOSING', 'The workflow engine is shutting down.', 503))
     // Publish the queue tail synchronously. Waiting callers must not all replace
     // the same active task/controller after a shared predecessor settles.
@@ -302,7 +288,6 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   }
 
   private async resumeCheckpoint(run: WorkflowRun, interactions: DurableInteraction[], controller: AbortController, owner: RunOwnership): Promise<void> {
-    if (!this.approvals) throw new DomainError('APPROVAL_RUNTIME_MISSING', 'The Run has no durable approval runtime.', 503)
     const resumeMap = Object.fromEntries(interactions.map((item) => [item.graphInterruptId!, { interactionId: item.id }]))
     // Approval time is persisted per execution. Each ensure/observe lifetime
     // owns its deadline; completed branches cannot constrain later graph work.
@@ -385,7 +370,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
   private async cleanupApprovals(runId: string): Promise<{ error: unknown } | undefined> {
     try {
-      await this.approvals?.cancelRun(runId)
+      await this.nativeExecutions.cancelRun(runId)
       return undefined
     } catch (error) {
       return { error }
@@ -409,10 +394,9 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     const activeTask = this.activeTasks.get(runId)
     controller?.abort()
     await this.workerCredentials?.revokeForRun?.(runId, transactionClient)
-    if (controller && !this.approvals) return true
     // Local native ownership outlives graph tasks and database execution state.
     // Begin its cancellation even if acquiring database ownership later fails.
-    const localCleanup = controller || this.approvals?.residentRunIds().includes(runId)
+    const localCleanup = controller || this.nativeExecutions.residentRunIds().includes(runId)
       ? this.cleanupApprovals(runId) : undefined
     let drainFailure: { error: unknown } | undefined
     if (controller) {
@@ -451,11 +435,11 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
   async shutdown(): Promise<void> {
     this.closing = true
-    const runIds = new Set([...this.activeRuns.keys(), ...(this.approvals?.residentRunIds() ?? [])])
+    const runIds = new Set([...this.activeRuns.keys(), ...this.nativeExecutions.residentRunIds()])
     for (const controller of this.activeRuns.values()) controller.abort()
     // Waiting sessions are deliberately included; all cancellations start before
     // any task drain, and a failed sibling must not short-circuit shutdown.
-    const reviewerCleanup = this.approvals?.reviewers.shutdown()
+    const reviewerCleanup = this.nativeExecutions.reviewers.shutdown()
     const outcomes = await Promise.allSettled([...runIds].map((runId) => this.cancel(runId)))
     const drains = await Promise.allSettled([
       withCleanupDeadline(() => this.reconciliation ?? Promise.resolve()),
@@ -496,6 +480,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         if (!configuration) throw new DomainError('AGENT_CONFIGURATION_NOT_FOUND', `Configuration '${configurationVersionId}' was not found.`, 500)
         return configuration
       }))
+      for (const configuration of configurations) assertNativeWorkflowConfiguration(configuration.harness, run.approval)
       await this.locations.revalidateSnapshot(run.workspaceId, run.executionLocation, requiredLocationAccess(configurations), signal)
       await this.runs.updateState(run.id, { executionState: 'running', outcome: 'pending', startedAt }, owner)
       const topology = validateExecutableTopology(version)
@@ -561,7 +546,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     signal.throwIfAborted()
     await this.runs.updateState(run.id, { executionState: 'waiting', outcome: 'pending', startedAt: run.startedAt ?? new Date().toISOString() }, owner)
     signal.throwIfAborted()
-    await this.approvals?.reconcileReviews(console.error).catch(console.error)
+    await this.nativeExecutions.reconcileReviews(console.error).catch(console.error)
     return true
   }
 
@@ -584,7 +569,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       executionState: 'completed', outcome: 'succeeded', result,
       startedAt: run.startedAt ?? new Date().toISOString(), finishedAt: new Date().toISOString(),
     }, owner)
-    await this.approvals?.finishRun(run.id)
+    await this.nativeExecutions.finishRun(run.id)
   }
 
   private async executeNode(
@@ -645,7 +630,6 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       createdAt: now,
       startedAt: now,
     })
-    if (!this.approvals || !run.approval) await this.runs.createExecution(execution, owner)
     const request = HarnessExecutionRequestSchema.parse({
       executionId,
       runId: run.id,
@@ -657,158 +641,31 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       configuration,
       input,
     })
-    let eventSequence = 0
-    let workerCredential: IssuedWorkerCredential | undefined
-
-    if (this.approvals && run.approval) {
-      for (;;) {
-        const observation = await this.approvals.ensureObserve({
-          candidate: execution, request, approval: run.approval, workflowId: run.workflowId,
-          graphThreadId: run.id, owner, signal,
+    for (;;) {
+      const observation = await this.nativeExecutions.ensureObserve({
+        candidate: execution, request, approval: run.approval, workflowId: run.workflowId,
+        graphThreadId: run.id, owner, signal,
+      })
+      execution = observation.execution
+      if (observation.state === 'waiting') {
+        const resumed: unknown = interrupt({
+          interactionId: observation.interaction.id,
+          interactionIds: observation.interactions.map((item) => item.id),
         })
-        execution = observation.execution
-        if (observation.state === 'waiting') {
-          const resumed: unknown = interrupt({
-            interactionId: observation.interaction.id,
-            interactionIds: observation.interactions.map((item) => item.id),
-          })
-          // On node re-entry LangGraph can return an earlier delivery while a
-          // later native request is already pending. Validate the exact delivered
-          // identity, then observe again; never apply that value to the new ask.
-          await this.approvals.assertResume(execution, resumed)
-          continue
-        }
-        if (observation.result.outcome !== 'succeeded') {
-          throw new DomainError(
-            observation.result.error?.code ?? 'NATIVE_EXECUTION_FAILED',
-            observation.result.error?.message ?? 'The native execution did not succeed.', 409,
-          )
-        }
-        await this.runs.acceptExecutionResult(execution, owner)
-        return { executionIds: { [nodeId]: execution.id } }
+        // On node re-entry LangGraph can return an earlier delivery while a
+        // later native request is already pending. Validate the exact delivered
+        // identity, then observe again; never apply that value to the new ask.
+        await this.nativeExecutions.assertResume(execution, resumed)
+        continue
       }
-    }
-
-    const adapter = this.harnesses.resolve(configuration.harness.harness)
-    const knownSecrets: string[] = []
-    const expiry = new AbortController()
-    const executionSignal = AbortSignal.any([signal, expiry.signal])
-    let expiryTimer: ReturnType<typeof setTimeout> | undefined
-    const cleanupCredential = async () => {
-      if (!workerCredential || !this.workerCredentials) return
-      try {
-        await this.workerCredentials.revokeForExecution(executionId)
-      } catch {
-        await this.runs.recordActivity(run.id, 'backend', 'run_state_changed', {
-          credentialCleanup: { state: 'retry_pending', code: 'WORKER_CREDENTIAL_CLEANUP_FAILED' },
-        }, executionId, owner.client).catch(() => undefined)
-      } finally {
-        workerCredential = undefined
+      if (observation.result.outcome !== 'succeeded') {
+        throw new DomainError(
+          observation.result.error?.code ?? 'NATIVE_EXECUTION_FAILED',
+          observation.result.error?.message ?? 'The native execution did not succeed.', 409,
+        )
       }
-    }
-    const safeError = (error: unknown): unknown => {
-      if (!(error instanceof Error)) return error
-      const message = redactSecretText(error.message, knownSecrets)
-      return error instanceof DomainError
-        ? new DomainError(error.code, message, error.status, error.details)
-        : new Error(message)
-    }
-    try {
-      executionSignal.throwIfAborted()
-      owner.assertOwned()
-      const rawResult = await adapter.execute(request, {
-            signal: executionSignal,
-            beforeSpawn: async () => {
-              executionSignal.throwIfAborted()
-              owner.assertOwned()
-              if (this.workerCredentials) {
-                if (workerCredential) throw new DomainError('WORKER_CREDENTIAL_ALREADY_ISSUED', 'This execution already received an App credential.', 500)
-                const prepared = await this.workerCredentials.prepare({
-                  executionId,
-                  harness: configuration.harness.harness,
-                  workingDirectory,
-                  signal: executionSignal,
-                })
-                workerCredential = prepared.credential
-                knownSecrets.push(...Object.values(workerCredential.environment.variables))
-                const remaining = Date.parse(workerCredential.expiresAt) - Date.now() - WORKER_CREDENTIAL_EXPIRY_MARGIN_MS
-                if (!Number.isFinite(remaining) || remaining <= 0 || remaining > 2147483647) {
-                  throw new DomainError('WORKER_CREDENTIAL_EXPIRING', 'The prepared App credential cannot cover a safe launch interval.', 409)
-                }
-                expiryTimer = setTimeout(() => expiry.abort(new DomainError(
-                  'WORKER_CREDENTIAL_EXPIRING',
-                  'Execution stopped before its App credential expired. Active native work was not restarted.',
-                  409,
-                )), remaining)
-                expiryTimer.unref()
-              }
-              // Credential preparation can await provider and database work. Recheck
-              // both accepted authority and directory at the final spawn boundary.
-              if (run.authorizationPrincipalId) {
-                await this.locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId, owner.client)
-              }
-              await this.locations.revalidateSnapshot(
-                run.workspaceId, run.executionLocation!, requiredLocationAccess([configuration]), executionSignal,
-              )
-              executionSignal.throwIfAborted()
-              owner.assertOwned()
-              return workerCredential?.environment
-            },
-            onSession: async (nativeSessionId) => {
-              execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId, state: 'running' })
-              await this.runs.updateExecution(execution, owner)
-              await this.runs.recordActivity(run.id, 'harness', 'harness_session_started', {
-                workflowNodeId: nodeId,
-                agentId: node.agentId,
-                nativeSessionId,
-                harness: configuration.harness.harness,
-              }, executionId, owner.client)
-            },
-            onEvent: async (event: NativeEventInput) => {
-              const nativeEvent = HarnessNativeEventSchema.parse(redactKnownSecrets({
-                executionId,
-                sequence: eventSequence,
-                type: event.type,
-                occurredAt: new Date().toISOString(),
-                payload: event.payload,
-              }, knownSecrets))
-              eventSequence += 1
-              await this.runs.appendNativeEvent(nativeEvent, owner)
-            },
-          })
-      const result = redactKnownSecrets(rawResult, knownSecrets)
-      executionSignal.throwIfAborted()
-      execution = HarnessExecutionSchema.parse({
-        ...execution,
-        state: 'completed',
-        result,
-        finishedAt: new Date().toISOString(),
-      })
       await this.runs.acceptExecutionResult(execution, owner)
-      await this.runs.recordActivity(run.id, 'harness', 'harness_session_finished', {
-        workflowNodeId: nodeId,
-        outcome: result.outcome,
-      }, executionId, owner.client)
-      return { executionIds: { [nodeId]: executionId } }
-    } catch (error) {
-      const safe = safeError(error)
-      const result = failedResult(safe, signal.aborted)
-      execution = HarnessExecutionSchema.parse({
-        ...execution,
-        state: 'completed',
-        result,
-        finishedAt: new Date().toISOString(),
-      })
-      await this.runs.updateExecution(execution, owner)
-      await this.runs.recordActivity(run.id, 'harness', 'harness_session_finished', {
-        workflowNodeId: nodeId,
-        outcome: result.outcome,
-        error: result.error ?? null,
-      }, executionId, owner.client)
-      throw safe
-    } finally {
-      clearTimeout(expiryTimer)
-      await cleanupCredential()
+      return { executionIds: { [nodeId]: execution.id } }
     }
   }
 

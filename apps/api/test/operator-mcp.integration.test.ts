@@ -13,7 +13,7 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { GraphDraftService } from '../src/modules/graph-drafts/service.js'
 import { HarnessCatalogService } from '../src/modules/harnesses/catalog.js'
-import type { HarnessResolver } from '../src/modules/harnesses/port.js'
+import type { HarnessConfigurationQualifier } from '../src/modules/harnesses/port.js'
 import type { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
@@ -41,24 +41,14 @@ function structured(result: { structuredContent?: unknown }): Record<string, unk
   return result.structuredContent as Record<string, unknown>
 }
 
-function deterministicHarnesses(): HarnessResolver {
+function deterministicHarnesses(): HarnessConfigurationQualifier {
   return {
-    resolve(harness) {
+    async qualify(configuration) {
       return {
-        harness,
-        qualify: async () => ({
-          harness, version: 'integration-fixture', authenticated: true, ready: true,
-          structuredEvents: true, supportsResume: true, supportsCancellation: true,
-          supportsWorkingDirectory: true, supportsStartupPrompt: true,
-          supportedNativeTools: [],
-          supportedSettings: harness === 'codex'
-            ? ['model', 'reasoningEffort', 'sandbox', 'serviceTier']
-            : ['model', 'variant', 'nativeAgent', 'thinking'],
-          unsupportedCapabilities: [],
-        }),
-        execute: async () => ({ outcome: 'succeeded', output: {} }),
-        resume: async () => ({ outcome: 'succeeded', output: {} }),
-        cancel: async () => true,
+        harness: configuration.harness, version: 'integration-fixture', authenticated: true, ready: true,
+        structuredEvents: true, supportsResume: true, supportsCancellation: true,
+        supportsWorkingDirectory: true, supportsStartupPrompt: true,
+        supportedNativeTools: [], supportedSettings: ['model'], unsupportedCapabilities: [],
       }
     },
   }

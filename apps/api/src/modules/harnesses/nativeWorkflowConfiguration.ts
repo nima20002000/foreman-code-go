@@ -1,0 +1,39 @@
+import {
+  AcceptedWorkflowApprovalConfigurationSchema,
+  CodexSessionCompatibilitySchema,
+  validateHarnessWorkflowCompatibility,
+  type HarnessConfiguration,
+  type WorkflowApprovalConfiguration,
+} from '@graphql/contracts'
+
+import { DomainError } from '../errors.js'
+
+/** Approval authority is explicit; missing legacy fields never select another transport. */
+export function assertNativeWorkflowConfiguration(
+  configuration: HarnessConfiguration,
+  approval?: WorkflowApprovalConfiguration,
+): void {
+  if (approval && !AcceptedWorkflowApprovalConfigurationSchema.safeParse(approval).success) {
+    throw new DomainError('WORKFLOW_APPROVAL_INCOMPLETE', 'Reopen and save the workflow with complete approval settings before starting it.', 409)
+  }
+  try { validateHarnessWorkflowCompatibility(configuration, approval?.handler) }
+  catch {
+    throw new DomainError('WORKFLOW_HARNESS_APPROVAL_CONFLICT', 'The Agent configuration is invalid or native automatic handling conflicts with routed workflow approval. Reopen and save the Agent and workflow settings.', 409)
+  }
+  if (approval) {
+    if (configuration.harness === 'codex'
+      && !CodexSessionCompatibilitySchema.safeParse({ configuration, requiresResume: true }).success) {
+      throw new DomainError('WORKFLOW_HARNESS_APPROVAL_CONFLICT', 'Routed approval requires a resumable Codex session. Reopen and save the Agent with persistent sessions.', 409)
+    }
+    return
+  }
+  if (configuration.harness === 'codex'
+    && (configuration.advanced?.approvalPolicy === 'never' || configuration.advanced?.approvalsReviewer === 'auto_review')) return
+  if (configuration.harness === 'opencode'
+    && (configuration.autoApprove || configuration.advanced?.permissionHandling === 'native_auto')) return
+  throw new DomainError(
+    'NATIVE_APPROVAL_CONFIGURATION_REQUIRED',
+    'This workflow has no accepted approval handler and its Agent may ask for permission. Reopen and save the workflow with a routed handler, or explicitly configure native approval handling on the Agent. No approval authority or automatic approval was inferred.',
+    409,
+  )
+}

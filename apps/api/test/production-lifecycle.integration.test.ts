@@ -50,7 +50,7 @@ function ask(reference: NativeSessionReference, suffix: number): PendingNativeIn
   return { session: reference, turn: { nativeTurnId: 'workflow-turn', nativeRequestId: `ask-${reference.nativeSessionId}-${suffix}` },
     nativeRequestType: 'item/commandExecution/requestApproval', request: { command: 'test' }, responseOptions: CODEX_APPROVAL_OPTIONS_FIXTURE }
 }
-function runtime() { return Reflect.get(production.engine, 'approvals') as ApprovalExecutionCoordinator }
+function runtime() { return Reflect.get(production.engine, 'nativeExecutions') as ApprovalExecutionCoordinator }
 async function mcp(token: string, input: Record<string, unknown>) {
   const client = new Client({ name: 'production-review', version: '1.0' })
   try {

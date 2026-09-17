@@ -10,7 +10,7 @@ import type {
 import { MemorySaver } from '@langchain/langgraph'
 import { it } from 'vitest'
 
-import type { HarnessExecutionCallbacks, HarnessResolver } from '../src/modules/harnesses/port.js'
+import { DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@graphql/contracts'
 import type { ApprovalExecutionCoordinator, ApprovalExecutionObservation } from '../src/modules/interactions/execution.js'
 import type { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
@@ -22,12 +22,13 @@ import type { WorkspaceLocationService } from '../src/modules/workspaces/locatio
 const now = '2026-09-16T00:00:00.000Z'
 const success: ExecutionResult = { outcome: 'succeeded', output: { done: true } }
 
-async function fixture(approval = true) {
+async function fixture(approval = true, nativeNever = false) {
   const root = await mkdtemp(join(tmpdir(), 'graphql-approval-node-'))
   const configuration: AgentConfigurationVersion = {
     id: 'configuration-1', workspaceId: 'workspace-1', agentId: 'agent-1', version: 1,
     prompt: {}, assignedSkills: [], contentHash: 'sha256:fixture', createdAt: now,
-    harness: { harness: 'codex', model: 'fixture', reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard' },
+    harness: { harness: 'codex', model: 'fixture', reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard',
+      ...(nativeNever ? { advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'never' as const } } : {}) },
   }
   let run: WorkflowRun = {
     id: 'run-1', workspaceId: 'workspace-1', workflowId: 'workflow-1', workflowVersionId: 'version-1',
@@ -48,8 +49,8 @@ async function fixture(approval = true) {
   const records = new Map<string, DurableInteraction>()
   const resumeIds: string[] = []
   const owner = { assertOwned() {}, client: {}, async release() {} } as unknown as RunOwnership
-  let pendingIds = ['a']
-  let legacyStarts = 0
+  let pendingIds = approval ? ['a'] : []
+  let nativeObservations = 0
   const runs = {
     async acquireOwnership() { return owner },
     async get() { return run },
@@ -84,6 +85,7 @@ async function fixture(approval = true) {
     residentRunIds: () => [] as string[],
     reviewers: { shutdown: async () => undefined },
     async ensureObserve(input: Parameters<ApprovalExecutionCoordinator['ensureObserve']>[0]): Promise<ApprovalExecutionObservation> {
+      nativeObservations += 1
       const execution: HarnessExecution = { ...input.candidate, id: 'execution-durable', nativeSessionId: 'session-exact',
         state: pendingIds.length ? 'waiting' : 'completed',
         ...(pendingIds.length ? {} : { result: success, finishedAt: now }) }
@@ -116,23 +118,15 @@ async function fixture(approval = true) {
     },
     async cancelRun() {},
   } as unknown as ApprovalExecutionCoordinator
-  const harnesses = { resolve() { return {
-    async execute(request: { executionId: string }, callbacks: HarnessExecutionCallbacks) {
-      legacyStarts += 1
-      assert.ok(executions.has(request.executionId), 'legacy execution must be persisted before native work')
-      await callbacks.beforeSpawn?.()
-      await callbacks.onSession('session-legacy')
-      return success
-    },
-  } } } as unknown as HarnessResolver
+  // All executions, including non-routed ones, use the native coordinator.
   const workflows = { async getVersion() { return version }, async getAgentConfiguration() { return configuration } } as unknown as PostgresWorkflowRepository
   const locations = { async revalidateSnapshot() {} } as unknown as WorkspaceLocationService
-  const engine = new LangGraphWorkflowEngine(runs, workflows, harnesses, new MemorySaver(), root, 60_000, locations,
-    undefined, approvals, interactions)
+  const engine = new LangGraphWorkflowEngine(runs, workflows, approvals, new MemorySaver(), root, locations,
+    undefined, interactions)
   return {
     engine, records, executions, resumeIds,
     getRun: () => run,
-    legacyStarts: () => legacyStarts,
+    nativeObservations: () => nativeObservations,
     pending(ids: string[]) { pendingIds = ids },
     deliver(id: string) {
       const current = records.get(id)
@@ -162,7 +156,7 @@ it('consumes returned LangGraph resume values while later native approvals are a
     await f.engine.resumeInteraction(f.deliver('c'))
     assert.equal(f.getRun().outcome, 'succeeded')
     assert.deepEqual([...f.executions.keys()], ['execution-durable'])
-    assert.equal(f.legacyStarts(), 0)
+    assert.ok(f.nativeObservations() > 0)
   } finally { await f.close() }
 })
 
@@ -180,19 +174,31 @@ it('binds every simultaneous approval and allows the second request to be delive
     f.pending([])
     await f.engine.resumeInteraction(f.deliver('a'))
     assert.equal(f.getRun().outcome, 'succeeded')
-    assert.equal(f.legacyStarts(), 0)
+    assert.ok(f.nativeObservations() > 0)
   } finally { await f.close() }
 })
 
-it('persists legacy executions when approval infrastructure exists but the run has no approval configuration', async () => {
+it('refuses ambiguous legacy approval settings before starting any native work', async () => {
   const f = await fixture(false)
   try {
     await f.engine.start(f.getRun().id)
+    assert.equal(f.getRun().outcome, 'failed')
+    assert.equal(f.getRun().result?.error?.code, 'NATIVE_APPROVAL_CONFIGURATION_REQUIRED')
+    assert.equal(f.nativeObservations(), 0)
+    assert.equal(f.executions.size, 0)
+    assert.equal(f.records.size, 0)
+  } finally { await f.close() }
+})
+
+it('executes an explicitly configured never-ask workflow through the same native coordinator', async () => {
+  const f = await fixture(false, true)
+  try {
+    await f.engine.start(f.getRun().id)
     assert.equal(f.getRun().outcome, 'succeeded')
-    assert.equal(f.legacyStarts(), 1)
+    assert.equal(f.nativeObservations(), 1)
     assert.equal(f.executions.size, 1)
     assert.equal([...f.executions.values()][0]?.state, 'completed')
-    assert.equal([...f.executions.values()][0]?.nativeSessionId, 'session-legacy')
+    assert.equal([...f.executions.values()][0]?.nativeSessionId, 'session-exact')
     assert.equal(f.records.size, 0)
   } finally { await f.close() }
 })

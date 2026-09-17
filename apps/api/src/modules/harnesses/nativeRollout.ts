@@ -13,6 +13,6 @@ export class NativeRollout {
     if (!this.enabled(configuration.harness.harness)) throw new DomainError('OPERATOR_NATIVE_CAPABILITY_DISABLED',
       configuration.harness.harness === 'codex'
         ? 'Persistent Codex chat requires an explicit experimental opt-in outside production; this provider is not production-qualified.'
-        : 'Persistent OpenCode chat requires an explicit completed parity qualification. Legacy workflow execution remains available.', 409)
+        : 'Persistent OpenCode chat requires an explicit completed parity qualification. All workflow execution uses native sessions; there is no alternate execution transport.', 409)
   }
 }

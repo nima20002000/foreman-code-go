@@ -506,10 +506,15 @@ it('keeps a multi-session server until the final idle session closes', async () 
   assert.equal(server.disposals, 1)
 })
 
-it('refuses native auto approval and unsupported live API versions', async () => {
-  const server = new FixtureServer()
-  const auto = configuration(); auto.autoApprove = true
-  await assert.rejects(sessionFor(manager(server), auto), errorCode('OPENCODE_SERVER_AUTO_CONFLICT'))
+it('supports explicit native auto but still refuses unsupported live API versions', async () => {
+  const server = new FixtureServer(), native = manager(server)
+  try {
+    const auto = configuration(); auto.autoApprove = true
+    const session = await sessionFor(native, auto)
+    server.permissions = [permission('automatic', session.nativeSessionId)]
+    assert.deepEqual(await native.pendingAll(session), [])
+    assert.deepEqual(server.calls.find((call) => call.path.startsWith('/permission/automatic/reply'))?.body, { reply: 'once' })
+  } finally { await native.dispose() }
   server.expectedVersion = '1.18.30'
   await assert.rejects(sessionFor(manager(server)), errorCode('OPENCODE_SERVER_VERSION_UNQUALIFIED'))
 })
