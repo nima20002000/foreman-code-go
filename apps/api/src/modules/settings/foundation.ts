@@ -9,12 +9,13 @@ import {
   type WorkflowDefaults,
 } from '@graphql/contracts'
 import type pg from 'pg'
+import { WorkspaceDefaultsSchema, DEFAULT_WORKSPACE_DEFAULTS, type WorkspaceDefaults } from '@graphql/contracts/management'
 
 import { inTransaction } from '../../infrastructure/transaction.js'
 
 import { DomainError } from '../errors.js'
 
-const KEYS = { agents: 'agent-defaults-v1', workflows: 'workflow-defaults-v1' } as const
+const KEYS = { agents: 'agent-defaults-v1', workflows: 'workflow-defaults-v1', workspaces: 'workspace-defaults-v1' } as const
 
 const LEGACY_WORKFLOW_DEFAULTS: WorkflowDefaults = {
   approvalHandler: 'orchestrator',
@@ -35,6 +36,14 @@ export class PostgresFoundationSettingsRepository {
         operator: { ...snapshot.value.operator, harness: withAdvancedDefaults(snapshot.value.operator.harness) },
       },
     }))
+  }
+
+  getWorkspaceDefaults(client?: pg.ClientBase): Promise<VersionedSetting<WorkspaceDefaults>> {
+    return this.read(KEYS.workspaces, WorkspaceDefaultsSchema, DEFAULT_WORKSPACE_DEFAULTS, client)
+  }
+
+  updateWorkspaceDefaults(value: WorkspaceDefaults, expectedRevision: number, client?: pg.ClientBase) {
+    return this.write(KEYS.workspaces, WorkspaceDefaultsSchema.parse(value), expectedRevision, client)
   }
 
   getWorkflowDefaults(client?: pg.ClientBase): Promise<VersionedSetting<WorkflowDefaults>> {

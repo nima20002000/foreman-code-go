@@ -1,0 +1,87 @@
+import { changeCodexSandbox, withAdvancedDefaults, type CodexAdvancedConfiguration, type HarnessConfiguration, type OpenCodeAdvancedConfiguration } from '@graphql/contracts'
+import type { HarnessSettingsSection } from '@graphql/contracts/management'
+import { Button, Checkbox, Select, TextField } from '../../shared/ui/nocturne'
+import type { HarnessEditor } from './harnessEditor'
+import { fieldMessage, type FieldIssue } from './fieldValidation'
+import { HarnessDirectoryPicker } from './HarnessDirectoryPicker'
+import { HarnessBasicFields, HarnessSandboxField } from './HarnessBasicFields'
+import { HarnessPermissionRules } from './HarnessPermissionRules'
+import { HarnessMcpPolicies } from './HarnessMcpPolicies'
+import { HarnessMcpManager } from './HarnessMcpManager'
+import { McpDetectionSettings } from './McpDetectionSettings'
+
+export function HarnessSectionFields({ editor, onChange, section, issues = [], routedApproval = false, requiresResume = false, workspaceId }: {
+  editor: HarnessEditor; onChange(editor: HarnessEditor): void; section: HarnessSettingsSection;
+  issues?: readonly FieldIssue[]; routedApproval?: boolean; requiresResume?: boolean; workspaceId?: string;
+}) {
+  const value = withAdvancedDefaults(editor.configuration)
+  const error = (path: string) => fieldMessage(issues, path)
+  const change = (configuration: HarnessConfiguration) => onChange({ ...editor, configuration })
+  const codex = (advanced: CodexAdvancedConfiguration) => { if (value.harness === 'codex') change({ ...value, advanced }) }
+  const opencode = (advanced: OpenCodeAdvancedConfiguration) => {
+    if (value.harness === 'opencode') change({ ...value, autoApprove: advanced.permissionHandling === 'native_auto', advanced })
+  }
+  return <div className="harness-section-fields">
+    {section === 'model' ? <HarnessBasicFields value={value} onChange={change} issues={issues} includeSandbox={false} /> : null}
+            {value.harness === 'codex' && section === 'permissions' ? <>
+              <HarnessSandboxField value={value} onChange={change} issues={issues} />
+              <div className="harness-two-columns">
+                <Select label="Approval policy" value={value.advanced!.approvalPolicy} error={error('advanced.approvalPolicy')}
+                  options={[{ value: 'on-request', label: 'Ask when needed' }, { value: 'never', label: 'Never request escalation' }]}
+                  onChange={(event) => codex({ ...value.advanced!, approvalPolicy: event.target.value as CodexAdvancedConfiguration['approvalPolicy'] })} />
+                <Select label="Approval reviewer" value={value.advanced!.approvalsReviewer} error={error('advanced.approvalsReviewer')}
+                  options={[{ value: 'user', label: 'User / app routing' }, { value: 'auto_review', label: 'Codex automatic review', disabled: routedApproval }]}
+                  hint={routedApproval ? 'This workflow uses app approval routing.' : undefined}
+                  onChange={(event) => codex({ ...value.advanced!, approvalsReviewer: event.target.value as CodexAdvancedConfiguration['approvalsReviewer'] })} />
+              </div>
+              {value.sandbox === 'workspace-write' ? <>
+                <HarnessDirectoryPicker value={value.advanced!.additionalWritableDirectories} error={error('advanced.additionalWritableDirectories')}
+                  onChange={(directories) => codex({ ...value.advanced!, additionalWritableDirectories: directories })} />
+                <div className="harness-switch-list">{([
+                  ['networkAccess', 'Workspace network access'],
+                  ['excludeTmpdirEnvVar', 'Exclude TMPDIR from writable roots'],
+                  ['excludeSlashTmp', 'Exclude /tmp from writable roots'],
+                ] as const).map(([key, label]) => <Checkbox key={key} label={label} checked={value.advanced!.workspaceWrite?.[key] ?? false}
+                  error={error(`advanced.workspaceWrite.${key}`)} onChange={(event) => codex({ ...value.advanced!, workspaceWrite: {
+                    networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false,
+                    ...value.advanced!.workspaceWrite, [key]: event.target.checked,
+                  } })} />)}</div>
+              </> : <div className="harness-empty"><span>Leaving workspace-write removes additional writable directories and workspace-write options.</span><Button size="sm" onClick={() => change(changeCodexSandbox(value, 'workspace-write'))}>Use Workspace write</Button></div>}
+            </> : null}
+            {value.harness === 'codex' && section === 'session' ? <div className="harness-two-columns">
+              <Select label="Web search" value={value.advanced!.webSearch} error={error('advanced.webSearch')}
+                options={[{ value: 'disabled', label: 'Disabled' }, { value: 'cached', label: 'Cached' }, { value: 'live', label: 'Live' }]}
+                onChange={(event) => codex({ ...value.advanced!, webSearch: event.target.value as CodexAdvancedConfiguration['webSearch'] })} />
+              <Select label="Session history" value={value.advanced!.sessionPersistence} error={error('advanced.sessionPersistence') ?? error('requiresResume')}
+                options={[{ value: 'persistent', label: 'Keep history · supports recovery' }, { value: 'ephemeral', label: 'Ephemeral · no resume', disabled: requiresResume || routedApproval }]}
+                onChange={(event) => codex({ ...value.advanced!, sessionPersistence: event.target.value as CodexAdvancedConfiguration['sessionPersistence'] })} />
+            </div> : null}
+            {value.harness === 'opencode' && section === 'permissions' ? <>
+              <Select label="Permission handling" value={value.advanced!.permissionHandling} error={error('advanced.permissionHandling') ?? error('autoApprove')}
+                options={[{ value: 'graphql_routed', label: 'App approval routing' }, { value: 'native_auto', label: 'Native automatic handling (unavailable)', disabled: true }]}
+                onChange={(event) => opencode({ ...value.advanced!, permissionHandling: event.target.value as OpenCodeAdvancedConfiguration['permissionHandling'] })} />
+              <HarnessPermissionRules value={value.advanced!.permissionRules} issues={issues} onChange={(permissionRules) => opencode({ ...value.advanced!, permissionRules })} />
+            </> : null}
+            {value.harness === 'opencode' && section === 'session' ? <>
+              <div className="harness-two-columns">
+                <Select label="Plugins" value={value.advanced!.plugins.mode} options={[{ value: 'inherit', label: 'Use configured plugins' }, { value: 'pure', label: 'Pure mode · no plugins' }]}
+                  onChange={(event) => opencode({ ...value.advanced!, plugins: { mode: event.target.value as 'inherit' | 'pure' } })} />
+                <TextField label="Subagent depth" type="number" min={0} step={1} value={Number.isNaN(value.advanced!.subagentDepth) ? '' : value.advanced!.subagentDepth ?? ''} placeholder="Native default" error={error('advanced.subagentDepth')}
+                  onChange={(event) => opencode({ ...value.advanced!, subagentDepth: event.target.value === '' ? undefined : event.target.valueAsNumber })} />
+              </div>
+              <div className="harness-switch-list"><Checkbox label="Automatic compaction" checked={value.advanced!.compaction.auto}
+                onChange={(event) => opencode({ ...value.advanced!, compaction: { ...value.advanced!.compaction, auto: event.target.checked } })} />
+                <Checkbox label="Prune old tool output" checked={value.advanced!.compaction.prune}
+                  onChange={(event) => opencode({ ...value.advanced!, compaction: { ...value.advanced!.compaction, prune: event.target.checked } })} /></div>
+              <div className="harness-two-columns">{([
+                ['reservedTokens', 'Reserved tokens'], ['tailTurns', 'Recent turns to keep'], ['preserveRecentTokens', 'Recent tokens to keep'],
+              ] as const).map(([key, label]) => <TextField key={key} label={label} type="number" min={0} step={1} placeholder="Native default"
+                value={Number.isNaN(value.advanced!.compaction[key]) ? '' : value.advanced!.compaction[key] ?? ''} error={error(`advanced.compaction.${key}`)}
+                onChange={(event) => opencode({ ...value.advanced!, compaction: { ...value.advanced!.compaction, [key]: event.target.value === '' ? undefined : event.target.valueAsNumber } })} />)}</div>
+            </> : null}
+
+    {section === 'tools' ? <HarnessMcpPolicies key={`policies-${value.harness}`} editor={editor} onChange={onChange} /> : null}
+    {section === 'connections' ? <HarnessMcpManager key={value.harness} harness={value.harness} /> : null}
+    {section === 'workspace' ? <McpDetectionSettings workspaceId={workspaceId} harness={value.harness} /> : null}
+  </div>
+}

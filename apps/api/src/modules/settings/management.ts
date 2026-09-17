@@ -1,5 +1,5 @@
 import { AgentDefaultsSchema, withAdvancedDefaults, CodexSessionCompatibilitySchema, validateHarnessWorkflowCompatibility, type AgentDefaults, type WorkflowDefaults } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { WorkspaceDefaultsUpdateInputSchema, type WorkspaceDefaultsUpdateInput, type ManagementPrincipal } from '@graphql/contracts/management'
 import { isDeepStrictEqual } from 'node:util'
 
 import { requireAuthorization } from '../access/policy.js'
@@ -16,6 +16,25 @@ export class FoundationSettingsManagementService {
     private readonly harnesses?: Pick<HarnessCatalogService, 'qualifyConfiguration'>,
     private readonly operators?: PostgresOperatorRepository,
   ) {}
+
+  getWorkspaceDefaults(principal: ManagementPrincipal) {
+    requireAuthorization(principal, 'settings:read')
+    return this.settings.getWorkspaceDefaults()
+  }
+
+  async getWorkspaceCreationDefaults(principal: ManagementPrincipal) {
+    requireAuthorization(principal, 'workspaces:create')
+    return (await this.settings.getWorkspaceDefaults()).value
+  }
+
+  updateWorkspaceDefaults(principal: ManagementPrincipal, source: 'http' | 'mcp', input: WorkspaceDefaultsUpdateInput) {
+    requireAuthorization(principal, 'settings:update')
+    const accepted = WorkspaceDefaultsUpdateInputSchema.parse(input)
+    return this.commands.execute({ principal, source, operation: 'workspace.defaults.update', commandId: accepted.commandId,
+      targetKey: 'workspace-defaults-v1', payload: accepted,
+      perform: (client) => this.settings.updateWorkspaceDefaults(accepted.value, accepted.expectedRevision, client),
+    })
+  }
 
   getAgentDefaults(principal: ManagementPrincipal) {
     requireAuthorization(principal, 'settings:read')

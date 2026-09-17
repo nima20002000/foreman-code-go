@@ -6,6 +6,8 @@ import {
 } from '@tanstack/react-router'
 import { ApprovalInboxSearchSchema, UrlSearchSelectionSchema } from '@graphql/contracts'
 import { RootShell } from './RootShell'
+import { AgentSettingsSearchSchema, HarnessSettingsSearchSchema } from '@graphql/contracts/management'
+import { WorkspaceDefaultsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
 
 import { WorkspaceRouteEntry } from '../routes/WorkspaceRouteEntry'
 import {
@@ -104,12 +106,19 @@ const globalSettingsRoute = createRoute({
 const harnessSettingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/harnesses',
+  validateSearch: HarnessSettingsSearchSchema,
   component: HarnessSettingsRouteEntry,
 })
 const agentSettingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/agents',
+  validateSearch: AgentSettingsSearchSchema,
   component: AgentSettingsRouteEntry,
+})
+const workspaceDefaultsSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/workspaces',
+  component: WorkspaceDefaultsSettingsRouteEntry,
 })
 const workflowSettingsRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -151,6 +160,7 @@ export const routeTree = rootRoute.addChildren([
   harnessSettingsRoute,
   agentSettingsRoute,
   workflowSettingsRoute,
+  workspaceDefaultsSettingsRoute,
   operatorAccessSettingsRoute,
   globalApprovalsRoute,
   workspaceApprovalsRoute,

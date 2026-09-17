@@ -25,7 +25,9 @@ import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 
 import { queryKeys, useCreateManagedWorkspaceMutation, useWorkspaceDetailsQuery } from '../../shared/api/query'
-import { Button, Divider, Icon, IconButton, TextField } from '../../shared/ui/nocturne'
+import { Button, Divider, Icon, IconButton, TextField, Textarea } from '../../shared/ui/nocturne'
+import { DEFAULT_WORKSPACE_DEFAULTS } from '@graphql/contracts/management'
+import { useWorkspaceCreationDefaultsQuery } from '../../shared/api/settingsExperience'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { usePresence } from '../../shared/ui/usePresence'
 import { WorkflowNavigation } from '../workflows'
@@ -117,7 +119,7 @@ const workspaceSectionItems = workspaceSections.map((section) => ({
 
 function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>) {
   if (event.key !== 'Tab') return
-  const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href]')]
+  const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled)')]
   const first = controls[0]
   const last = controls.at(-1)
   if (!first || !last) return
@@ -139,6 +141,9 @@ function NewWorkspaceControl() {
   const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false')
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const touched = useRef({ name: false, description: false, defaultsApplied: false })
+  const defaults = useWorkspaceCreationDefaultsQuery(realMode && creating)
   const [nameError, setNameError] = useState<string>()
   const triggerRef = useRef<HTMLButtonElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
@@ -148,7 +153,7 @@ function NewWorkspaceControl() {
   const queryClient = useQueryClient()
   const createManagedWorkspace = useCreateManagedWorkspaceMutation()
   const inFlight = useRef(false)
-  const attempt = useRef(new CommandAttempt<{ name: string }>())
+  const attempt = useRef(new CommandAttempt<{ name: string; description: string }>())
   const uncertain = attempt.current.unresolved && !createManagedWorkspace.isPending
   const createWorkspace = useWorkspaceSessionStore((state) => state.createWorkspace)
 
@@ -156,9 +161,20 @@ function NewWorkspaceControl() {
     if (inFlight.current || attempt.current.unresolved) return
     setCreating(false)
     setName('')
+    setDescription('')
+    touched.current = { name: false, description: false, defaultsApplied: false }
     setNameError(undefined)
     window.setTimeout(() => triggerRef.current?.focus(), 0)
   }, [])
+
+  useEffect(() => {
+    if (!creating || touched.current.defaultsApplied || attempt.current.unresolved) return
+    const template = realMode ? defaults.data : DEFAULT_WORKSPACE_DEFAULTS
+    if (!template) return
+    touched.current.defaultsApplied = true
+    if (!touched.current.name) setName(template.suggestedName)
+    if (!touched.current.description) setDescription(template.description)
+  }, [creating, defaults.data, realMode])
 
   useEffect(() => {
     if (!creating) return
@@ -173,7 +189,7 @@ function NewWorkspaceControl() {
   })
 
   const createNewWorkspace = async () => {
-    if (inFlight.current) return
+    if (inFlight.current || (realMode && defaults.isPending && !attempt.current.unresolved)) return
     const trimmedName = name.trim()
     if (!trimmedName) { setNameError('Enter a workspace name.'); nameInputRef.current?.focus(); return }
     inFlight.current = true
@@ -181,7 +197,7 @@ function NewWorkspaceControl() {
     setNameError(undefined)
     try {
       const workspace = realMode
-        ? (await createManagedWorkspace.mutateAsync(attempt.current.input({ name: trimmedName }))).value.workspace
+        ? (await createManagedWorkspace.mutateAsync(attempt.current.input({ name: trimmedName, description }))).value.workspace
         : createWorkspace(trimmedName)
       assertSession(generation)
       attempt.current.succeeded()
@@ -243,6 +259,7 @@ function NewWorkspaceControl() {
               value={name}
               autoFocus
               onChange={(event) => {
+                touched.current.name = true
                 setName(event.target.value)
                 if (nameError) setNameError(undefined)
               }}
@@ -255,6 +272,13 @@ function NewWorkspaceControl() {
               aria-invalid={nameError ? true : undefined}
               aria-describedby={nameError ? 'new-workspace-name-error' : undefined}
             />
+            <Textarea label="Description (optional)" rows={3} maxLength={10_000} value={description}
+              disabled={createManagedWorkspace.isPending || uncertain} onChange={(event) => {
+                touched.current.description = true
+                setDescription(event.target.value)
+              }} />
+            {realMode && defaults.isPending ? <p role="status">Loading workspace defaults…</p> : null}
+            {realMode && defaults.isError ? <p role="status">Defaults could not be loaded. You can still enter your own values. <Button size="sm" onClick={() => void defaults.refetch()}>Retry defaults</Button></p> : null}
             {nameError ? (
               <p id="new-workspace-name-error" className="workspace-create-error" role="alert">
                 {nameError}
@@ -265,7 +289,7 @@ function NewWorkspaceControl() {
               <Button onClick={closeCreateDialog}>Close</Button>
               <Button
                 onClick={() => void createNewWorkspace()}
-                disabled={createManagedWorkspace.isPending}
+                disabled={createManagedWorkspace.isPending || (realMode && defaults.isPending && !uncertain)}
               >
                 Create workspace
               </Button>

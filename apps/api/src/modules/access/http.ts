@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { BrowserAccessSessionSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import { hasAction, requireAuthorization } from './policy.js'
 import { bearerToken, type PostgresAccessService } from './postgres.js'
 import { DomainError } from '../errors.js'
@@ -119,6 +119,15 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
         }
       }
     }
+  })
+
+  app.get('/api/auth/session', async (request, reply) => {
+    const principal = requirePrincipal(request)
+    reply.header('cache-control', 'no-store')
+    reply.header('vary', 'Cookie, Authorization')
+    return BrowserAccessSessionSchema.parse({ principal: {
+      id: principal.id, name: principal.name, expiresAt: principal.expiresAt, grants: principal.grants,
+    } })
   })
 
   app.post('/api/auth/logout', async (_request, reply) => {

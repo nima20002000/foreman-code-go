@@ -1,4 +1,5 @@
 import { http, HttpResponse, type RequestHandler } from 'msw'
+import { settingsExperienceHandlers, resetSettingsExperienceFixtures } from './settingsExperienceHandlers'
 import {
   ApiErrorResponseSchema,
   CreateRunRequestSchema,
@@ -27,7 +28,7 @@ import {
   getMockScenarioState,
   getMockWorkflowDefaults,
   isMockScenario,
-  resetMockFixtures,
+  resetMockFixtures as resetExistingMockFixtures,
   serializeAgent,
   setMockFailureMode,
   setMockScenario,
@@ -42,6 +43,8 @@ import {
   appendMockMessage,
   type MockFailureMode,
 } from './scenarios'
+
+function resetMockFixtures() { resetExistingMockFixtures(); resetSettingsExperienceFixtures() }
 
 const errorSchema = ApiErrorResponseSchema
 
@@ -134,6 +137,7 @@ function managedWorkspace(workspaceId: string) {
 }
 
 export const handlers: RequestHandler[] = [
+  ...settingsExperienceHandlers,
   http.get('/api/operator/conversations/summaries', () => HttpResponse.json({
     conversations: operatorConversations.map((item) => ({
       conversationId: item.id, title: item.title, turnState: 'idle', revision: 0,

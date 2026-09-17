@@ -9,9 +9,19 @@ import { McpDetectionSettings } from './McpDetectionSettings'
 afterEach(cleanup)
 
 describe('MCP detection settings', () => {
+  function seedWorkspace(client: QueryClient, workspaceId: string, workingDirectory: string) {
+    const value = {
+      workspace: { id: workspaceId, name: 'Test workspace', description: '' }, revision: 1, archivedAt: null,
+      executionLocation: { runnerId: 'runner-local', rootPath: workingDirectory }, locationRevision: 1,
+      locationValidation: { status: 'ready', checkedAt: '2026-09-16T00:00:00.000Z' },
+    }
+    client.setQueryData(queryKeys.managedWorkspaces, { items: [value], pageInfo: { nextCursor: null } })
+    client.setQueryData(queryKeys.managedWorkspace(workspaceId), value)
+  }
   it('distinguishes connected evidence from an unknown failed check and scopes both to the runner', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
     const base = { runnerId: 'runner-local', workingDirectory: '/srv/project', providerVersion: '0.154.0', nativeFilters: {} }
+    seedWorkspace(client, 'workspace-1', '/srv/project')
     client.setQueryData(queryKeys.mcpDetection('workspace-1', 'codex'), ScopedMcpDetectionSchema.parse({
       ...base, detection: { harness: 'codex', serverName: 'graphql-app', state: 'connected', endpointMatches: true,
         credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN', checkedAt: '2026-09-16T00:00:00.000Z' },
@@ -22,20 +32,21 @@ describe('MCP detection settings', () => {
         credentialEnvironmentVariable: null, checkedAt: '2026-09-16T00:00:00.000Z', detail: 'CLI unavailable' },
     }))
     render(<QueryClientProvider client={client}><McpDetectionSettings workspaceId="workspace-1" /></QueryClientProvider>)
-    expect(await screen.findByText('Detected · connected')).toBeVisible()
+    expect(await screen.findByText('Connected')).toBeVisible()
     expect(screen.getByText('Check failed')).toBeVisible()
-    expect(screen.getByText(/unknown, not evidence that MCP is absent/i)).toBeVisible()
+    expect(screen.getByText('CLI unavailable')).toBeVisible()
     expect(screen.getAllByText(/runner-local/)).toHaveLength(2)
-    expect(screen.getByText(/will not rewrite it automatically/i)).toBeVisible()
+    expect(screen.getAllByText('Connection details')).toHaveLength(2)
   })
 
   it.each([
-    ['not_detected', 'Not detected'], ['misconfigured', 'Misconfigured'],
-    ['status_unavailable', 'Detected · status unavailable'], ['connected', 'Detected · connected'],
-    ['disabled', 'Detected · disabled'], ['authentication_required', 'Detected · authentication required'],
-    ['broken', 'Detected · broken'], ['check_failed', 'Check failed'],
+    ['not_detected', 'Not configured'], ['misconfigured', 'Configuration mismatch'],
+    ['status_unavailable', 'Configured · health unknown'], ['connected', 'Connected'],
+    ['disabled', 'Disabled'], ['authentication_required', 'Sign-in required'],
+    ['broken', 'Connection failed'], ['check_failed', 'Check failed'],
   ] as const)('renders the normalized %s state', async (state, label) => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    seedWorkspace(client, 'workspace-state', '/srv/state')
     for (const harness of ['codex', 'opencode'] as const) client.setQueryData(
       queryKeys.mcpDetection('workspace-state', harness),
       ScopedMcpDetectionSchema.parse({

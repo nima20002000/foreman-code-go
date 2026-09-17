@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export * from "./extensions.js";
 export * from "./harnessSettings.js";
+export * from "./settingsExperience.js";
 
 import {
   AgentSchema,
@@ -117,6 +118,15 @@ export const ManagementPrincipalSchema = z
     }
   });
 export type ManagementPrincipal = z.infer<typeof ManagementPrincipalSchema>;
+
+/** Browser identity readback. No bearer token, cookie, or token hash is returned. */
+export const BrowserAccessSessionSchema = z.object({
+  principal: z.object({
+    id: IdSchema, name: z.string().min(1), expiresAt: TimestampSchema,
+    grants: z.array(ManagementGrantSchema),
+  }).strict(),
+}).strict();
+export const BrowserAccessLogoutSchema = z.object({ signedOut: z.literal(true) }).strict();
 
 // Native automatic handling is supported by the server. The shared schema
 // still enforces agreement between autoApprove and Advanced permission handling.
@@ -541,6 +551,8 @@ export const InteractionRespondResultSchema = z.object({
 }).strict();
 
 export const OperatorToolNameSchema = z.enum([
+  "workspace_defaults_get",
+  "workspace_defaults_update",
   "harness_mcp_servers_list", "harness_mcp_change_request", "harness_mcp_change_get",
   "harness_configuration_check",
   "harness_options_get",

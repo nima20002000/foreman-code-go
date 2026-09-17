@@ -1,6 +1,7 @@
 import { loadEnvFile } from 'node:process'
 
-import { ManagementActionSchema, type ManagementGrant } from '@graphql/contracts/management'
+import type { ManagementGrant } from '@graphql/contracts/management'
+import { credentialActions } from './credentialAccess.js'
 
 import { loadConfig } from '../config.js'
 import { createDatabase } from '../infrastructure/database.js'
@@ -26,7 +27,7 @@ async function main() {
     }
     const { name, audience, days, workspaceId } = input
     const grant: ManagementGrant = {
-      actions: ManagementActionSchema.options,
+      actions: credentialActions(input.access),
       scope: workspaceId ? { workspaceIds: [workspaceId] } : {},
     }
     const issued = await access.issue({

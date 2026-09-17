@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { Alert, Button } from '../../shared/ui/nocturne'
 import type { SettingsChange } from './revisionedFormChanges'
 import './settingsUsability.css'
@@ -42,14 +43,15 @@ export function SettingsFormFeedback({ form }: { form: SettingsFormState }) {
   </>
 }
 
-export function SettingsFormActions({ form, onSave }: { form: SettingsFormState; onSave(): void }) {
+export function SettingsFormActions({ form, onSave, saveLabel = 'Save defaults', extra }: { form: SettingsFormState; onSave(): void; saveLabel?: string; extra?: ReactNode }) {
   return <footer className="settings-save-actions">
+    {extra ? <div className="settings-footer-options">{extra}</div> : null}
     <p role="status" aria-live="polite">{form.isSaving ? 'Saving…' : form.savedRevision !== undefined
       ? form.isDirty ? 'Saved submitted changes. Newer edits remain unsaved.' : 'Saved.'
       : form.isDirty ? 'Unsaved changes.' : 'No unsaved changes.'}</p>
     {!form.conflicted ? <Button disabled={!form.isDirty || form.isSaving || form.uncertain} onClick={form.reset}>Discard changes</Button> : null}
     <Button variant="primary" disabled={form.isSaving || (!form.isDirty && !form.uncertain) || (form.conflicted && !form.uncertain)} onClick={onSave}>
-      {form.isSaving ? 'Saving…' : form.uncertain ? 'Retry original save' : 'Save defaults'}
+      {form.isSaving ? 'Saving…' : form.uncertain ? 'Retry original save' : saveLabel}
     </Button>
   </footer>
 }

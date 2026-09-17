@@ -1,15 +1,14 @@
 import { useState } from 'react'
-import { changeCodexSandbox, type HarnessConfiguration } from '@graphql/contracts'
+import { changeCodexSandbox, type CodexHarnessConfiguration, type HarnessConfiguration } from '@graphql/contracts'
 import { Alert, Button, Checkbox, Combobox, ConfirmDialog, Select } from '../../shared/ui/nocturne'
 import { useNativeHarnessOptions, useRefreshNativeHarness } from '../../shared/api/harnessSettings'
 import { fieldMessage, type FieldIssue } from './fieldValidation'
 import { nativeOptionsWithSaved, selectNativeModel, supportedEfforts } from './harnessModelSelection'
 
 type Props = { value: HarnessConfiguration; onChange(value: HarnessConfiguration): void; issues?: readonly FieldIssue[] }
-export function HarnessBasicFields({ value, onChange, issues = [] }: Props) {
+export function HarnessBasicFields({ value, onChange, issues = [], includeSandbox = true }: Props & { includeSandbox?: boolean }) {
   const query = useNativeHarnessOptions(value.harness)
   const refresh = useRefreshNativeHarness(value.harness)
-  const [fullAccess, setFullAccess] = useState(false)
   const selected = query.data?.models.find((item) => item.id === value.model)
   const models: Array<{ value: string; label: string; description: string; disabled?: boolean }> = query.data?.models.map((item) => ({ value: item.id, label: item.name || item.id, description: item.id })) ?? []
   if (!models.some((item) => item.value === value.model)) models.unshift({ value: value.model, label: value.model,
@@ -24,26 +23,13 @@ export function HarnessBasicFields({ value, onChange, issues = [] }: Props) {
       <Select label="Effort" value={value.reasoningEffort} aria-label="Effort" error={fieldMessage(issues, 'reasoningEffort')}
         options={nativeOptionsWithSaved(supportedEfforts(selected), value.reasoningEffort)}
         onChange={(event) => onChange({ ...value, reasoningEffort: event.target.value as typeof value.reasoningEffort })} />
-      <Select label="Sandbox" value={value.sandbox} aria-label="Sandbox" error={fieldMessage(issues, 'sandbox')}
-        hint="Leaving workspace-write removes additional writable directories and workspace-write options."
-        options={[{ value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' },
-          { value: 'danger-full-access', label: 'Full access · no sandbox' }]}
-        onChange={(event) => {
-          if (event.target.value === 'danger-full-access' && value.sandbox !== 'danger-full-access') setFullAccess(true)
-          else onChange(changeCodexSandbox(value, event.target.value as typeof value.sandbox))
-        }} />
-      {value.sandbox === 'danger-full-access' ? <span className="harness-access-warning">Commands are not restricted by the Codex sandbox.</span> : null}
+      {includeSandbox ? <HarnessSandboxField value={value} onChange={onChange} issues={issues} /> : null}
     </div> : <div className="harness-two-columns">
       <Select label="Provider variant" value={value.variant} error={fieldMessage(issues, 'variant')}
         options={nativeOptionsWithSaved(selected ? ['', ...selected.variants] : [], value.variant)} onChange={(event) => onChange({ ...value, variant: event.target.value })} />
       <Select label="Native Agent" value={value.nativeAgent} error={fieldMessage(issues, 'nativeAgent')}
         options={nativeOptionsWithSaved(query.data?.nativeAgents ?? [], value.nativeAgent)} onChange={(event) => onChange({ ...value, nativeAgent: event.target.value })} />
     </div>}
-    <ConfirmDialog open={fullAccess} onOpenChange={setFullAccess} title="Allow full access?" description="Codex commands will run without its filesystem or network sandbox. This does not change approval routing."
-      confirmation="full access" confirmLabel="Use full access" onConfirm={() => {
-        if (value.harness === 'codex') onChange(changeCodexSandbox(value, 'danger-full-access'))
-        setFullAccess(false)
-      }} />
   </div>
 }
 export function HarnessFooterOptions({ value, onChange, issues = [] }: Props) {
@@ -53,4 +39,25 @@ export function HarnessFooterOptions({ value, onChange, issues = [] }: Props) {
   return <Checkbox label="Fast mode" checked={value.serviceTier === 'priority'} disabled={!supported && value.serviceTier !== 'priority'}
     error={fieldMessage(issues, 'serviceTier') ?? (query.isSuccess && !supported && value.serviceTier === 'priority' ? 'Not offered by this model. Turn Fast mode off.' : undefined)}
     onChange={(event) => onChange({ ...value, serviceTier: event.target.checked ? 'priority' : 'standard' })} />
+}
+
+export function HarnessSandboxField({ value, onChange, issues = [] }: {
+  value: CodexHarnessConfiguration; onChange(value: HarnessConfiguration): void; issues?: readonly FieldIssue[];
+}) {
+  const [fullAccess, setFullAccess] = useState(false)
+  return <div className="harness-sandbox-field">
+      <Select label="Sandbox" value={value.sandbox} aria-label="Sandbox" error={fieldMessage(issues, 'sandbox')}
+        options={[{ value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' },
+          { value: 'danger-full-access', label: 'Full access · no sandbox' }]}
+        onChange={(event) => {
+          if (event.target.value === 'danger-full-access' && value.sandbox !== 'danger-full-access') setFullAccess(true)
+          else onChange(changeCodexSandbox(value, event.target.value as typeof value.sandbox))
+        }} />
+      {value.sandbox === 'danger-full-access' ? <span className="harness-access-warning">Commands are not restricted by the Codex sandbox.</span> : null}
+    <ConfirmDialog open={fullAccess} onOpenChange={setFullAccess} title="Allow full access?" description="Codex commands will run without its filesystem or network sandbox. This does not change approval routing."
+      confirmation="full access" confirmLabel="Use full access" onConfirm={() => {
+        if (value.harness === 'codex') onChange(changeCodexSandbox(value, 'danger-full-access'))
+        setFullAccess(false)
+      }} />
+  </div>
 }

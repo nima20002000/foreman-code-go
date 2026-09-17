@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
 
 import { AgentsDirectory } from '../features/agents'
-import { AgentDefaultsSettings, HarnessDefaultsSettings, McpDetectionSettings, OperatorAccessSettings, WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
+import { McpDetectionSettings, WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
 import { ApprovalInbox } from '../features/approvals'
 import { WorkflowDirectory } from '../features/workflows'
 import { Badge, Card, EmptyState, Icon, PageHeader, SettingsSection, type IconName } from '../shared/ui/nocturne'
@@ -209,11 +209,7 @@ function SettingsDetailPage({ title, description, backLink, children }: {
   )
 }
 
-function McpDetectionSection({ workspaceId }: { workspaceId?: string }) {
-  return workspaceId
-    ? <McpDetectionSettings workspaceId={workspaceId} />
-    : <p className="settings-state">Select a workspace from navigation to inspect its runner-scoped App MCP evidence.</p>
-}
+export { AgentSettingsRouteEntry, HarnessSettingsRouteEntry, OperatorAccessSettingsRouteEntry } from './SettingsExperienceRoutes'
 
 export function GlobalSettingsRouteEntry() {
   return (
@@ -229,6 +225,13 @@ export function GlobalSettingsRouteEntry() {
               description="Configure application preferences and connected capabilities."
             />
             <ul className="settings-card-list">
+              <li>
+                <Card className="settings-card">
+                  <Link to="/settings/workspaces" className="settings-card-open">
+                    <SettingsCardBody icon="folder" title="Workspaces" description="Defaults for new workspaces" />
+                  </Link>
+                </Card>
+              </li>
               <li>
                 <Card className="settings-card">
                   <Link to="/settings/harnesses" className="settings-card-open">
@@ -260,56 +263,12 @@ export function GlobalSettingsRouteEntry() {
               <li>
                 <Card className="settings-card">
                   <Link to="/settings/operator-access" className="settings-card-open">
-                    <SettingsCardBody icon="lock" title="Operator access" description="Enroll this browser with a local credential" />
+                    <SettingsCardBody icon="lock" title="App access" description="Connect this browser and review its permissions" />
                   </Link>
                 </Card>
               </li>
             </ul>
           </div>
-        ),
-      }}
-    />
-  )
-}
-
-export function HarnessSettingsRouteEntry() {
-  const detectionWorkspaceId = useNavigationUiStore((state) => state.activeWorkspaceId)
-  return (
-    <WorkspaceShell
-      workspaceId="workspace-1"
-      activeGlobalSection="settings"
-      slots={{
-        main: (
-          <SettingsDetailPage
-            title="Harnesses"
-            description="Provider presets. Role templates under Agents determine new board Agent defaults; existing Agents never change."
-            backLink={<SettingsBackLink />}
-          >
-            <HarnessDefaultsSettings />
-            <McpDetectionSection workspaceId={detectionWorkspaceId} />
-          </SettingsDetailPage>
-        ),
-      }}
-    />
-  )
-}
-
-export function AgentSettingsRouteEntry() {
-  const detectionWorkspaceId = useNavigationUiStore((state) => state.activeWorkspaceId)
-  return (
-    <WorkspaceShell
-      workspaceId="workspace-1"
-      activeGlobalSection="settings"
-      slots={{
-        main: (
-          <SettingsDetailPage
-            title="Agents"
-            description="Copied into new Agents. Existing Agents and accepted runs stay pinned."
-            backLink={<SettingsBackLink />}
-          >
-            <AgentDefaultsSettings />
-            <McpDetectionSection workspaceId={detectionWorkspaceId} />
-          </SettingsDetailPage>
         ),
       }}
     />
@@ -329,26 +288,6 @@ export function WorkflowSettingsRouteEntry() {
             backLink={<SettingsBackLink />}
           >
             <WorkflowDefaultsSettings />
-          </SettingsDetailPage>
-        ),
-      }}
-    />
-  )
-}
-
-export function OperatorAccessSettingsRouteEntry() {
-  return (
-    <WorkspaceShell
-      workspaceId="workspace-1"
-      activeGlobalSection="settings"
-      slots={{
-        main: (
-          <SettingsDetailPage
-            title="Operator access"
-            description="Enroll this browser with a scoped local credential. It is kept in an HttpOnly cookie, not browser storage."
-            backLink={<SettingsBackLink />}
-          >
-            <OperatorAccessSettings />
           </SettingsDetailPage>
         ),
       }}

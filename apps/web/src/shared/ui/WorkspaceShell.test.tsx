@@ -207,6 +207,7 @@ describe('WorkspaceShell', () => {
 
     const dialog = await screen.findByRole('dialog', { name: 'New workspace' })
     expect(dialog).toHaveTextContent('Create a workspace for its own agents')
+    await user.clear(screen.getByRole('textbox', { name: 'Name' }))
     await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Scratch')
     await user.click(screen.getByRole('button', { name: 'Create workspace' }))
 

@@ -27,7 +27,7 @@ describe('PR12 actual provider fields', () => {
     value.sandbox = 'workspace-write'
     value.advanced!.additionalWritableDirectories = ['/first/path ', '/second/path ']
     mount(<Editor value={value} save={save} />)
-    await user.click(screen.getByText('Advanced'))
+    await user.click(screen.getByRole('button', { name: 'Access & approvals' }))
     expect(screen.getByText('/first/path')).toBeInTheDocument()
     expect(screen.getByText('/second/path')).toBeInTheDocument()
     await user.click(screen.getByText('Store'))
@@ -36,7 +36,7 @@ describe('PR12 actual provider fields', () => {
   it('keeps rule focus while typing and preserves order on removal', async () => {
     const user = userEvent.setup(); const save = vi.fn()
     mount(<Editor value={{ ...DEFAULT_HARNESS_DEFAULTS.opencode, advanced: undefined }} save={save} />)
-    await user.click(screen.getByText('Advanced'))
+    await user.click(screen.getByRole('button', { name: 'Access & approvals' }))
     await user.click(screen.getByText('Add custom rule'))
     const input = screen.getByLabelText('Permission 1')
     await user.clear(input); await user.type(input, 'custom-permission')
@@ -62,7 +62,7 @@ describe('PR12 actual provider fields', () => {
   it('repairs legacy native-auto coherently instead of losing the matching boolean', async () => {
     const user = userEvent.setup(); const save = vi.fn()
     mount(<Editor value={{ ...DEFAULT_HARNESS_DEFAULTS.opencode, advanced: undefined, autoApprove: true }} save={save} />)
-    await user.click(screen.getByText('Advanced'))
+    await user.click(screen.getByRole('button', { name: 'Access & approvals' }))
     await user.selectOptions(screen.getByLabelText('Permission handling'), 'graphql_routed')
     await user.click(screen.getByText('Store'))
     expect(save.mock.calls[0]![0]).toMatchObject({ autoApprove: false, advanced: { permissionHandling: 'graphql_routed' } })
