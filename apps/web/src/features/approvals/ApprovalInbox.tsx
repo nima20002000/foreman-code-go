@@ -1,12 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import type { ApprovalInboxView, DurableInteraction } from '@graphql/contracts'
 import { Link } from '@tanstack/react-router'
 
-import { useInteractionQuery, useInfiniteInteractionsQuery, useRespondToInteractionMutation, useWorkspaceDetailsQuery } from '../../shared/api/query'
-import { CommandAttempt } from '../../shared/api/commandAttempt'
+import { useInteractionQuery, useInfiniteInteractionsQuery, useWorkspaceDetailsQuery } from '../../shared/api/query'
 import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
 import { Alert, Badge, Button, EmptyState, ErrorState, Icon, LoadingState, PageHeader } from '../../shared/ui/nocturne'
-import { canRecoverInteraction, interactionMatchesScope } from './approvalState'
+import { interactionMatchesScope } from './approvalState'
+import { UserApprovalResponse } from './UserApprovalResponse'
 import { approvalReadOnlyReason, approvalStatuses, summarizeApprovalRequest } from './approvalPresentation'
 import { ApprovalRequestSummary } from './ApprovalRequestSummary'
 import './approvals.css'
@@ -27,7 +27,6 @@ function StateBadge({ state }: { state: keyof typeof stateLabels }) {
   const tone = state === 'delivered' ? 'success' : state === 'delivery_failed' || state === 'canceled' ? 'danger' : 'warning'
   return <Badge className={`approval-state approval-state-${state}`} tone={tone} dot>{stateLabels[state]}</Badge>
 }
-type ResponseInput = { interactionId: string; optionId: string; expectedRevision: number }
 
 function useApprovalNames(interaction: DurableInteraction) {
   const query = useWorkspaceDetailsQuery(interaction.workspaceId, { retry: false })
@@ -53,10 +52,6 @@ function ApprovalDetail({ interactionId, workspaceId, workflowId, onClear }: {
   interactionId: string; workspaceId?: string; workflowId?: string; onClear(): void
 }) {
   const detail = useInteractionQuery(interactionId)
-  const respond = useRespondToInteractionMutation()
-  const [attempt] = useState(() => new CommandAttempt<ResponseInput>())
-  const [retryInput, setRetryInput] = useState<ResponseInput>()
-  const inFlight = useRef(false)
   // Never authorize a response from stale detail after an access/error response.
   if (detail.isError) return <article className="approval-detail"><ErrorState title="Request unavailable" description={detail.error.message} onRetry={() => void detail.refetch()} retrying={detail.isFetching} /></article>
   if (detail.isPending || !detail.data) return <article className="approval-detail"><LoadingState label="Loading request…" rows={4} /></article>
@@ -64,24 +59,9 @@ function ApprovalDetail({ interactionId, workspaceId, workflowId, onClear }: {
   if (selected.id !== interactionId || !interactionMatchesScope(selected, { workspaceId, workflowId })) {
     return <article className="approval-detail"><ErrorState title="Request outside this Inbox" description="This request is outside the selected Inbox scope." /><Button onClick={onClear}>Clear selection</Button></article>
   }
-  const canRespond = selected.approval.handler === 'user' && detail.data.canRespond === true
-  const send = (optionId: string) => {
-    if (inFlight.current) return
-    const input = retryInput ?? { interactionId: selected.id, optionId, expectedRevision: selected.revision }
-    attempt.input(input)
-    inFlight.current = true
-    setRetryInput(input)
-    respond.mutate(input, {
-      onSuccess: () => { inFlight.current = false; attempt.succeeded(); setRetryInput(undefined) },
-      onError: (error) => { inFlight.current = false; attempt.failed(error); if (!attempt.unresolved) setRetryInput(undefined) },
-    })
-  }
-  const recoverable = canRespond && selected.status !== 'canceled' && selected.status !== 'delivered'
-    && (canRecoverInteraction(selected) || Boolean(retryInput))
-  const recoveryOption = retryInput?.optionId ?? selected.selectedOptionId
   const selectedOption = selected.responseOptions.find((option) => option.optionId === selected.selectedOptionId)
   const selectedLabel = selectedOption?.label
-  const readOnlyReason = approvalReadOnlyReason(selected, detail.data.canRespond === true)
+  const readOnlyReason = approvalReadOnlyReason(selected, false)
   return <article className="approval-detail">
     <header><div><p className="panel-kicker">{selected.harness === 'codex' ? 'Codex' : 'OpenCode'} permission request</p><h2>{summarizeApprovalRequest(selected.request, selected.nativeRequestType).operation}</h2></div><StateBadge state={selected.status} /></header>
     <ApprovalNames interaction={selected} />
@@ -97,17 +77,9 @@ function ApprovalDetail({ interactionId, workspaceId, workflowId, onClear }: {
       <h3>Request details</h3><pre>{JSON.stringify(selected.request, null, 2)}</pre>
     </details>
     {readOnlyReason ? <p className="approval-reviewer-note">{readOnlyReason}</p> : null}
-    {canRespond && selected.status === 'pending' && !retryInput ? <div className="approval-actions"><h3>Response</h3><div>
-      {selected.responseOptions.map((option) => <Button key={option.optionId} disabled={respond.isPending} variant={option.semantic === 'reject' || option.semantic === 'cancel' ? 'danger' : 'secondary'} onClick={() => send(option.optionId)}>
-        <strong>{option.label}</strong><small>{approvalOptionScope(option)}</small>{option.scopeSummary ? <small>{option.scopeSummary}</small> : null}
-      </Button>)}
-      </div>{selected.responseOptions.some((option) => option.affectsOtherPendingRequests) ? <Alert tone="warning" title="A provider choice may affect other pending requests">Review its scope before responding.</Alert> : null}
-    </div> : null}
-    {recoverable && recoveryOption ? <div className="approval-actions"><h3>Delivery recovery</h3><p>A recorded decision is not proof of native delivery. Only the original choice can be retried; alternative choices stay closed.</p>
-      <Button disabled={respond.isPending} loading={respond.isPending} loadingLabel="Checking delivery…" onClick={() => send(recoveryOption)}>{selected.deliveryState === 'uncertain' || selected.deliveryState === 'submitted' ? 'Reconcile delivery' : 'Retry selected response'}</Button>
-    </div> : null}
+    {selected.approval.handler === 'user' ? <UserApprovalResponse key={selected.id} interaction={selected}
+      onChanged={() => { void detail.refetch() }} /> : null}
     {selected.selectedOptionId ? <div className="approval-history"><h3>Decision history</h3><p><strong>{selectedLabel ?? selected.selectedOptionId}</strong> accepted at {selected.decidedAt ?? 'unknown time'}.</p>{selectedOption ? <p>{approvalOptionScope(selectedOption)}</p> : null}<p>Delivery: {selected.deliveryState.replaceAll('_', ' ')}{selected.deliveredAt ? ` at ${selected.deliveredAt}` : ''}.</p></div> : null}
-    {respond.isError ? <Alert live tone="danger" title="Response not confirmed">{respond.error.message}{retryInput ? ' Retry the original choice to resolve its outcome.' : ' Refresh the request before choosing again.'}</Alert> : null}
     <Button variant="ghost" leading={<Icon name="refresh" size={15} />} onClick={() => void detail.refetch()}>Refresh request</Button>
   </article>
 }

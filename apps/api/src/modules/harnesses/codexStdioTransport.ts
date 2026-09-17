@@ -1,5 +1,6 @@
 import { HarnessExecutionError } from './errors.js'
 import { spawnOwnedStdioProcess } from './process.js'
+import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { redactKnownSecrets, redactSecretText } from './secrets.js'
 
 export type JsonObject = Record<string, unknown>
@@ -69,6 +70,7 @@ export class CodexStdioTransport {
     private readonly onNotification: (method: string, params: JsonObject) => void,
     private readonly onDisconnect: (error: Error) => void,
     private readonly timeoutMs = DEFAULT_TIMEOUT_MS,
+    private readonly processRecovery?: NativeProcessRecovery,
   ) {}
 
   async start(signal?: AbortSignal): Promise<void> {
@@ -77,11 +79,12 @@ export class CodexStdioTransport {
     this.owned = spawnOwnedStdioProcess({
       binary: this.binary, args: ['app-server', '--stdio'], cwd: this.cwd, environment: this.environment,
       onError: (error) => this.fail(error),
+      ...(this.processRecovery ? { recovery: this.processRecovery } : {}),
     })
     const { child, closed } = this.owned
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => {
-      this.stderr = redactSecretText(this.stderr + chunk, [this.environment.GRAPHQL_APP_MCP_TOKEN ?? '']).slice(-128_000)
+      this.stderr = redactSecretText(this.stderr + chunk, [this.environment.GRAPHQL_APP_MCP_TOKEN ?? '', this.environment.GRAPHQL_OPERATOR_MCP_TOKEN ?? '']).slice(-128_000)
     })
     void this.readFrames().catch((error: unknown) => this.fail(error instanceof Error ? error : new Error('Codex dispatch failed.')))
     void closed.then(() => this.fail(new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Codex app-server disconnected.')))
@@ -210,7 +213,7 @@ export class CodexStdioTransport {
 
   private async receive(line: string): Promise<void> {
     let message: unknown
-    try { message = redactKnownSecrets(JSON.parse(line), [this.environment.GRAPHQL_APP_MCP_TOKEN ?? '']) } catch {
+    try { message = redactKnownSecrets(JSON.parse(line), [this.environment.GRAPHQL_APP_MCP_TOKEN ?? '', this.environment.GRAPHQL_OPERATOR_MCP_TOKEN ?? '']) } catch {
       this.onNotification('protocol/malformed', { reason: 'invalid_json' }); return
     }
     if (!isObject(message)) { this.onNotification('protocol/malformed', { reason: 'invalid_envelope' }); return }

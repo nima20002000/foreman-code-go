@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, realpath, rename, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { CODEX_APPROVAL_OPTIONS_FIXTURE, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction } from '@graphql/contracts'
+import { CODEX_APPROVAL_OPTIONS_FIXTURE, DEFAULT_CODEX_ADVANCED_CONFIGURATION, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction } from '@graphql/contracts'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import pg from 'pg'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -169,6 +169,10 @@ afterEach(async () => {
 async function start(handler: 'user' | 'orchestrator', twoWorkers = false) {
   const workflows = new PostgresWorkflowRepository(database.pool)
   const saved = (await workflows.get('workspace-1', 'workflow-content-pipeline'))!
+  if (handler === 'orchestrator') {
+    await database.pool.query("update agent_configuration_versions set record=jsonb_set(record,'{harness,advanced}',$1::jsonb,true) where agent_id='agent-researcher'",
+      [JSON.stringify({ ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'never' })])
+  }
   const nodes = [{ id: 'orchestrator', agentId: 'agent-researcher', name: 'Orchestrator' },
     { id: 'worker-a', agentId: 'agent-reviewer', name: 'Worker A' },
     ...(twoWorkers ? [{ id: 'worker-b', agentId: 'agent-reviewer', name: 'Worker B' }] : [])]

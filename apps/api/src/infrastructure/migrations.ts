@@ -1,6 +1,7 @@
 import type pg from 'pg'
 
 import { lifecycleMigration } from './lifecycleMigration.js'
+import { pr17AuditMigration } from './pr17AuditMigration.js'
 
 import { interactionDeliveryMigration } from './interactionDeliveryMigration.js'
 
@@ -618,6 +619,7 @@ const migrations = [
     update operator_conversations set active_phase='submitting',turn_state='uncertain'
       where active_request_id is not null and active_phase is null;
   ` },
+  pr17AuditMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

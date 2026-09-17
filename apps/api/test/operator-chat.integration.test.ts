@@ -153,7 +153,8 @@ describe('Operator chat persistence and native binding', () => {
     await chat.send(conversation.id, { requestId: 'request-two', content: 'continue' }, owner)
     await waitFor(async () => (await chat.get(conversation.id, owner)).messages.length === 4)
     expect(manager.sessions).toBe(1); expect(manager.attachments).toBe(1); expect(manager.turns).toBe(2)
-    expect(manager.closes).toBe(2) // Idle history does not keep a native runtime resident.
+    expect(manager.closes).toBe(0)
+    expect(manager.disposals).toBe(2) // Disposal owns session closure and avoids racing the lifecycle lock.
     const state = await chat.get(conversation.id, owner)
     expect(state.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
     expect(new Set(state.messages.map((message) => message.id)).size).toBe(4)

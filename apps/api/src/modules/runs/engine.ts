@@ -14,6 +14,7 @@ import {
 } from '@graphql/contracts'
 
 import { DomainError } from '../errors.js'
+import { validateWorkflowApproval } from '../workflows/approval.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
@@ -174,6 +175,10 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       for (const candidate of await this.runs.reconciliationCandidates()) {
         if (this.closing) break
         if (this.activeTasks.has(candidate.id) || this.resumeTasks.has(candidate.id)) continue
+        if (await this.runs.hasPendingCleanup?.(candidate.id)) {
+          await this.cancel(candidate.id).catch(onError)
+          continue
+        }
         if (candidate.executionState === 'queued') {
           void this.start(candidate.id).catch(onError)
           continue
@@ -206,6 +211,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
           }
           const delivered = current.filter((item) => item.status === 'delivered' && item.deliveryState === 'delivered')
           if (delivered.length) await this.resumeCheckpoint(run, delivered, controller, owner)
+          else await this.resumeTerminalRecoveries(run, current, controller, owner)
           return
         }
         if (this.isTerminalCheckpoint(run, snapshot)) {
@@ -278,13 +284,43 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       // Resolve by CURRENT checkpoint IDs, not a page of historical interactions.
       // Include every delivered branch in one map; leave undecided branches alone.
       const delivered = current.filter((item) => item.status === 'delivered' && item.deliveryState === 'delivered')
-      if (!delivered.length) throw new DomainError('RUN_NOT_RESUMABLE', `Run '${runId}' has no delivered graph interrupt.`, 409)
+      if (!delivered.length) {
+        if (await this.resumeTerminalRecoveries(run, current, controller, owner)) return
+        throw new DomainError('RUN_NOT_RESUMABLE', `Run '${runId}' has no confirmed delivery or exact terminal execution.`, 409)
+      }
       await this.resumeCheckpoint(run, delivered, controller, owner)
     } finally {
       try {
         if (owner && controller.signal.aborted) await this.settleCanceledRun(runId, owner)
       } finally { await owner?.release() }
     }
+  }
+
+  private async resumeTerminalRecoveries(run: WorkflowRun, interactions: DurableInteraction[], controller: AbortController, owner: RunOwnership): Promise<boolean> {
+    if (!this.nativeExecutions.recoverTerminalInteraction) return false
+    const resumes: Record<string, { terminalExecutionId: string }> = {}
+    const failures: unknown[] = []
+    for (const interaction of interactions) {
+      if (!interaction.graphInterruptId || resumes[interaction.graphInterruptId]) continue
+      try {
+        if (await this.nativeExecutions.recoverTerminalInteraction(interaction, owner, controller.signal)) {
+          resumes[interaction.graphInterruptId] = { terminalExecutionId: interaction.executionId }
+        }
+      } catch (error) {
+        controller.signal.throwIfAborted()
+        owner.assertOwned()
+        failures.push(error)
+      }
+    }
+    if (!Object.keys(resumes).length) {
+      if (failures.length) throw new AggregateError(failures, 'Terminal execution recovery remains unconfirmed.')
+      return false
+    }
+    // ensureObserve() returns the durable terminal execution before any interrupt
+    // response is consumed. This marker is NOT accepted by assertResume() and
+    // cannot serve as an approval for a later/different native request.
+    await this.executeRun(run, controller.signal, owner, new Command({ resume: resumes }))
+    return true
   }
 
   private async resumeCheckpoint(run: WorkflowRun, interactions: DurableInteraction[], controller: AbortController, owner: RunOwnership): Promise<void> {
@@ -362,14 +398,16 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
   private async settleCanceledRun(runId: string, owner: RunOwnership): Promise<void> {
     const run = await this.runs.get(runId, owner)
-    if (!run || run.executionState === 'completed') return
+    if (!run || (run.executionState === 'completed' && !await this.runs.hasPendingCleanup?.(runId, owner.client))) return
     const cleanupFailure = await this.cleanupApprovals(runId)
     await this.settleCanceled(runId, owner, cleanupFailure)
     if (cleanupFailure) throw cleanupFailure.error
   }
 
-  private async cleanupApprovals(runId: string): Promise<{ error: unknown } | undefined> {
+  private async cleanupApprovals(runId: string, recordIntent = true): Promise<{ error: unknown } | undefined> {
     try {
+      // This durable intent survives business-outcome settlement and a server restart.
+      if (recordIntent) await this.runs.requestCleanup?.(runId)
       await this.nativeExecutions.cancelRun(runId)
       return undefined
     } catch (error) {
@@ -386,18 +424,21 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         executionState: 'completed', outcome: result.outcome, result, finishedAt: new Date().toISOString(),
       }, owner)
     }
-    return settled
+    await this.runs.finishCleanup?.(runId, Boolean(cleanupFailure), owner.client)
+    // A terminal business record does not prevent completing its independent cleanup.
+    return settled || (!cleanupFailure && (await this.runs.get(runId, owner))?.executionState === 'completed')
   }
 
   async cancel(runId: string, transactionClient?: import('pg').PoolClient): Promise<boolean> {
     const controller = this.activeRuns.get(runId)
     const activeTask = this.activeTasks.get(runId)
     controller?.abort()
+    await this.runs.requestCleanup?.(runId, transactionClient)
     await this.workerCredentials?.revokeForRun?.(runId, transactionClient)
     // Local native ownership outlives graph tasks and database execution state.
     // Begin its cancellation even if acquiring database ownership later fails.
     const localCleanup = controller || this.nativeExecutions.residentRunIds().includes(runId)
-      ? this.cleanupApprovals(runId) : undefined
+      ? this.cleanupApprovals(runId, false) : undefined
     let drainFailure: { error: unknown } | undefined
     if (controller) {
       await localCleanup
@@ -424,7 +465,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       return false
     }
     try {
-      const cleanupFailure = (await (localCleanup ?? this.cleanupApprovals(runId))) ?? drainFailure
+      const cleanupFailure = (await (localCleanup ?? this.cleanupApprovals(runId, false))) ?? drainFailure
       const settled = await this.settleCanceled(runId, owner, cleanupFailure)
       if (cleanupFailure) throw cleanupFailure.error
       return settled || Boolean(controller)
@@ -481,6 +522,9 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         return configuration
       }))
       for (const configuration of configurations) assertNativeWorkflowConfiguration(configuration.harness, run.approval)
+      if (run.approval) validateWorkflowApproval(version.definition, run.approval, configurations.map((configuration) => ({
+        id: configuration.agentId, productRole: configuration.productRole, harnessConfiguration: configuration.harness,
+      })))
       await this.locations.revalidateSnapshot(run.workspaceId, run.executionLocation, requiredLocationAccess(configurations), signal)
       await this.runs.updateState(run.id, { executionState: 'running', outcome: 'pending', startedAt }, owner)
       const topology = validateExecutableTopology(version)
@@ -533,6 +577,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         startedAt,
         finishedAt: new Date().toISOString(),
       }, owner)
+      await this.runs.finishCleanup?.(run.id, Boolean(cleanupFailure) || drainFailed, owner.client)
     } finally {
       nodeSignal.removeEventListener('abort', cancelNative)
       // Do not abort a successful waiting graph's resident session. Its lifetime

@@ -12,6 +12,7 @@ import type pg from 'pg'
 import { DomainError } from '../errors.js'
 import { requireActiveWorkerBinding } from './workerLifecycle.js'
 import { intersectGrants } from './operatorDelegation.js'
+import { currentOperatorAuthority } from './runAuthority.js'
 
 function digest(token: string): string {
   return createHash('sha256').update(token).digest('hex')
@@ -81,13 +82,7 @@ export class PostgresAccessService {
   }
 
   async currentOperator(id: string): Promise<ManagementPrincipal> {
-    const result = await this.pool.query<PrincipalRow>(
-      'select id,name,audience,agent_id,token_hash,grants,expires_at,revoked_at,delegated_from from management_principals where id=$1', [id])
-    const row = result.rows[0]
-    if (!row || row.audience !== 'operator' || row.delegated_from) throw new DomainError('AUTH_INVALID', 'The owning Operator credential is unavailable.', 401)
-    if (row.revoked_at) throw new DomainError('AUTH_REVOKED', 'The owning Operator credential was revoked.', 401)
-    if (row.expires_at.getTime() <= Date.now()) throw new DomainError('AUTH_EXPIRED', 'The owning Operator credential expired.', 401)
-    return fromRow(row)
+    return (await currentOperatorAuthority(this.pool, id)).principal
   }
 
   async issue(input: {

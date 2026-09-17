@@ -8,6 +8,7 @@ import {
   NATIVE_INTERACTION_FIXTURES,
   WorkflowRunSchema,
 } from '@graphql/contracts'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { buildApp } from '../src/app.js'
@@ -51,7 +52,7 @@ describe('App MCP real transport and PostgreSQL policy', () => {
     const commands = new PostgresCommandCoordinator(database.pool)
     const interactions = new PostgresInteractionRepository(database.pool)
     const appInteractions = new PostgresAppInteractionService(database.pool, interactions, commands, {
-      respond: async (_responder: unknown, input: { interactionId: string; optionId: string; expectedRevision: number }) => {
+      respond: async (responder: { principal?: ManagementPrincipal; beforeCommit?: Parameters<PostgresInteractionRepository['decide']>[0]['beforeCommit'] }, input: { interactionId: string; optionId: string; expectedRevision: number }) => {
         const current = await interactions.get(input.interactionId)
         if (!current) throw new Error('interaction missing')
         const option = current.responseOptions.find((candidate) => candidate.optionId === input.optionId)
@@ -59,6 +60,8 @@ describe('App MCP real transport and PostgreSQL policy', () => {
         return interactions.decide({
           id: current.id, optionId: option.optionId, expectedRevision: input.expectedRevision,
           nativeResponse: { optionId: option.optionId, semantic: option.semantic },
+          ...(responder.principal ? { principal: responder.principal } : {}),
+          ...(responder.beforeCommit ? { beforeCommit: responder.beforeCommit } : {}),
         })
       },
     })

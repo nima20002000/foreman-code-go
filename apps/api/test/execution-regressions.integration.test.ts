@@ -186,7 +186,7 @@ it('rechecks revoked Operator authority before a queued Run launches', async () 
   })
 })
 
-it('does not steal live ownership; a disconnected owner becomes interrupted and cancelable', async () => {
+it('does not steal live ownership; a durable Stop intent completes after the disconnected owner releases', async () => {
   const run = await runs.createForWorkflow(workspaceId, workflowId, {}, 1)
   const owner = await runs.acquireOwnership(run.id, () => undefined)
   if (!owner) throw new Error('Ownership acquisition failed')
@@ -209,9 +209,9 @@ it('does not steal live ownership; a disconnected owner becomes interrupted and 
     await expect.poll(async () => {
       await restarted.reconcile()
       return (await runs.get(run.id))?.executionState
-    }).toBe('interrupted')
+    }).toBe('completed')
     const attempts = await runs.listExecutions(run.id)
-    expect(attempts[0]?.result?.error?.code).toBe('EXECUTION_INTERRUPTED')
+    expect(attempts[0]?.result?.outcome).toBe('canceled')
     expect(attempts[0]?.nativeSessionId).toBe('existing-native-session')
     expect(await restarted.cancel(run.id)).toBe(true)
     expect((await runs.get(run.id))?.outcome).toBe('canceled')

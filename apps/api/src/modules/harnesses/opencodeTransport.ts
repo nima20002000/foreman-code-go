@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import type { ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawnNativeProcess, type NativeProcessRecovery } from './recovery/processRegistry.js'
 import { randomBytes } from 'node:crypto'
 
 import type { OpenCodeAdvancedConfiguration } from '@graphql/contracts'
@@ -42,6 +43,7 @@ export interface OpenCodeServerController {
 }
 
 export interface ManagedOpenCodeServerOptions {
+  processRecovery?: NativeProcessRecovery
   binary: string
   workingDirectory: string
   ownerAgentId: string
@@ -258,9 +260,9 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       }
       const pure = this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true
       this.stderr = ''
-      const child = spawn(this.options.binary, ['serve', '--hostname', '127.0.0.1', '--port', '0', ...(pure ? ['--pure'] : [])], {
-        cwd: this.options.workingDirectory, env: environment, detached: process.platform !== 'win32',
-        stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+      const child = spawnNativeProcess(this.options.binary, ['serve', '--hostname', '127.0.0.1', '--port', '0', ...(pure ? ['--pure'] : [])], {
+        cwd: this.options.workingDirectory, env: environment,
+        ...(this.options.processRecovery ? { recovery: this.options.processRecovery } : {}),
       })
       this.child = child
       child.stdin.on('error', () => undefined)

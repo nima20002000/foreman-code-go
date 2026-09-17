@@ -285,6 +285,26 @@ export class ApiClient {
     return parsed.data
   }
 
+  private userApprovalOptions(token: string, options: RequestOptions = {}): RequestOptions {
+    const accepted = token.trim()
+    if (!accepted || /\s/.test(accepted)) throw new ApiError({ code: 'USER_CREDENTIAL_REQUIRED', message: 'Enter a valid User bearer credential, not an Operator session.' }, 401)
+    const headers = new Headers(options.headers)
+    headers.set('Authorization', `Bearer ${accepted}`)
+    // A User request must never fall back to the Operator browser cookie.
+    return { ...options, headers, credentials: 'omit' }
+  }
+
+  getUserInteraction(interactionId: string, token: string, options?: RequestOptions) {
+    return this.request(`/api/user/interactions/${toPath(interactionId)}`, GetInteractionResponseSchema,
+      this.userApprovalOptions(token, options))
+  }
+
+  respondToUserInteraction(token: string, input: z.infer<typeof RespondToInteractionRequestSchema>, options?: RequestOptions) {
+    const request = parseRequest(RespondToInteractionRequestSchema, input)
+    return this.request(`/api/user/interactions/${toPath(request.interactionId)}/respond`, RespondToInteractionResponseSchema,
+      { ...this.userApprovalOptions(token, options), method: 'POST', body: request })
+  }
+
   enrollOperator(token: string, options?: RequestOptions) {
     const input = parseRequest(OperatorEnrollmentRequestSchema, { token })
     return this.request('/api/auth/enroll', OperatorEnrollmentResponseSchema, { ...options, method: 'POST', body: input })

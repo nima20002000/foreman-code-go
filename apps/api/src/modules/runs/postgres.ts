@@ -22,6 +22,7 @@ import { DomainError } from '../errors.js'
 import type { RunRepository, RunStateUpdate } from './port.js'
 import { acceptedRunApproval } from '../workflows/approval.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
+import { validateWorkflowApproval } from '../workflows/approval.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { RunOwnership } from './ownership.js'
 import { appendNativeEvent } from './nativeEvents.js'
@@ -39,9 +40,28 @@ export class PostgresRunRepository implements RunRepository {
     return RunOwnership.acquire(this.pool, runId, onLost)
   }
 
+  async requestCleanup(runId: string, client?: pg.ClientBase): Promise<void> {
+    await (client ?? this.pool).query(`insert into run_cleanup_intents(run_id) values($1)
+      on conflict(run_id) do update set pending=true,updated_at=now()`, [runId])
+  }
+
+  async hasPendingCleanup(runId: string, client?: Pick<pg.ClientBase, 'query'>): Promise<boolean> {
+    const found = await (client ?? this.pool).query(
+      'select 1 from run_cleanup_intents where run_id=$1 and pending', [runId])
+    return found.rowCount === 1
+  }
+
+  async finishCleanup(runId: string, failed: boolean, client?: pg.ClientBase): Promise<void> {
+    await (client ?? this.pool).query(`update run_cleanup_intents set pending=$2,attempts=attempts+1,
+      last_error=$3,updated_at=now() where run_id=$1`,
+    [runId, failed, failed ? 'Native closure or task draining remains unconfirmed; retry cleanup.' : null])
+  }
+
   async reconciliationCandidates(): Promise<WorkflowRun[]> {
     const result = await this.pool.query<{ record: unknown }>(
-      "select record from runs where execution_state in ('queued', 'running', 'waiting') order by created_at, id",
+      `select record from runs where execution_state in ('queued', 'running', 'waiting')
+        or exists(select 1 from run_cleanup_intents c where c.run_id=runs.id and c.pending)
+        order by created_at,id`,
     )
     return result.rows.map((row) => WorkflowRunSchema.parse(row.record))
   }
@@ -126,6 +146,9 @@ export class PostgresRunRepository implements RunRepository {
       // Decide approval authority before persisting/queuing any native work.
       // Old saved records are never silently migrated to an automatic mode.
       for (const configuration of configurations) assertNativeWorkflowConfiguration(configuration.harness, approval)
+      if (approval) validateWorkflowApproval(version.definition, approval, configurations.map((configuration) => ({
+        id: configuration.agentId, productRole: configuration.productRole, harnessConfiguration: configuration.harness,
+      })))
       const executionLocation = await this.locations.snapshot(
         client, workspaceId, expectedLocationRevision, requiredLocationAccess(configurations),
       )

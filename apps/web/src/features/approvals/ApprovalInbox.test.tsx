@@ -1,6 +1,5 @@
 import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NATIVE_INTERACTION_FIXTURES } from '@graphql/contracts'
 
@@ -16,19 +15,18 @@ vi.mock('../../shared/api/query', async () => {
 afterEach(() => cleanup())
 
 describe('Approval Inbox', () => {
-  it('renders provider-truthful options and submits only the opaque option ID and revision', async () => {
+  it('requires a separate User credential instead of responding with Operator authority', async () => {
     const interaction = { ...NATIVE_INTERACTION_FIXTURES.opencode, approval: { handler: 'user' as const } }
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
     client.setQueryData(queryKeys.interactions(undefined, undefined, undefined), { items: [interaction], nextCursor: null })
     client.setQueryData(queryKeys.interaction(interaction.id), { interaction, canRespond: true })
     respond.mockResolvedValue({ interaction: { ...interaction, status: 'delivery_pending' }, replayed: false })
     render(<QueryClientProvider client={client}><ApprovalInbox selectedInteractionId={interaction.id} /></QueryClientProvider>)
-    expect(await screen.findByRole('button', { name: /Approve once/ })).toBeVisible()
+    expect(await screen.findByLabelText('User bearer credential')).toBeVisible()
+    expect(screen.queryByRole('button', { name: /Approve once/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Allow for this session/ })).not.toBeInTheDocument()
-    expect(screen.getByText(/may affect other pending requests/i)).toBeVisible()
-    await userEvent.setup().click(screen.getByRole('button', { name: /^Approve once/ }))
-    await waitFor(() => expect(respond).toHaveBeenCalled())
-    expect(respond.mock.calls[0]![0]).toEqual({ interactionId: interaction.id, optionId: 'opencode-approve-once', expectedRevision: 0 })
+    expect(screen.getByText(/Operator session is only used for monitoring/i)).toBeVisible()
+    expect(respond).not.toHaveBeenCalled()
   })
 
   it('shows the configured reviewer and prevents a competing human response', async () => {

@@ -19,6 +19,7 @@ import {
 import type pg from 'pg'
 
 import { requireAuthorization } from '../access/policy.js'
+import { currentOperatorAuthority } from '../access/runAuthority.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { canonicalRuntimePath, pathsOverlap, withFilesystemDeadline } from './filesystem.js'
@@ -224,18 +225,9 @@ export class WorkspaceLocationService {
     workflowId: string,
     client?: Pick<pg.PoolClient, 'query'>,
   ): Promise<void> {
-    // The engine already owns a connection. Do not acquire a nested one.
-    const result = await (client ?? this.pool).query<{ id: string; name: string; audience: string; grants: unknown; expires_at: Date; revoked_at: Date | null }>(
-      `select id, name, audience, grants, expires_at, revoked_at
-       from management_principals where id = $1`, [principalId],
-    )
-    const row = result.rows[0]
-    if (!row) throw new DomainError('RUN_AUTHORIZATION_REVOKED', 'The authority that accepted this Run no longer exists.', 403)
-    const principal = {
-      id: row.id, name: row.name, audience: row.audience, grants: row.grants,
-      expiresAt: row.expires_at.toISOString(), revokedAt: row.revoked_at?.toISOString() ?? null,
-    } as ManagementPrincipal
+    // Preserve the accepted ceiling and live root owner without acquiring a nested connection.
     try {
+      const { principal } = await currentOperatorAuthority(client ?? this.pool, principalId)
       requireAuthorization(principal, 'runs:start', { workspaceId, workflowId })
       requireAuthorization(principal, 'workspace_locations:read', { workspaceId })
     } catch {

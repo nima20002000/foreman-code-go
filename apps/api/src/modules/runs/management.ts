@@ -18,7 +18,8 @@ import type { LangGraphWorkflowEngine } from './engine.js'
 import type { PostgresRunRepository } from './postgres.js'
 import { validateExecutableTopology } from './topology.js'
 import { requiredLocationAccess, WorkspaceLocationService } from '../workspaces/location.js'
-import { acceptedRunApproval } from '../workflows/approval.js'
+import { acceptedRunApproval, validateWorkflowApproval } from '../workflows/approval.js'
+import { acceptRunAuthority, bindRunAuthority } from '../access/runAuthority.js'
 
 export class RunManagementService {
   constructor(
@@ -150,21 +151,26 @@ export class RunManagementService {
           throw new DomainError('WORKFLOW_CONFIGURATION_STALE', 'Agent settings changed. Save the graph again before starting it.', 409)
         }
         const configurations = currentConfigurations.rows.map((row) => AgentConfigurationVersionSchema.parse(row.configuration_record))
+        if (approval) validateWorkflowApproval(version.definition, approval, configurations.map((configuration) => ({
+          id: configuration.agentId, productRole: configuration.productRole, harnessConfiguration: configuration.harness,
+        })))
         const executionLocation = await this.locations.snapshot(
           client, input.workspaceId, input.expectedLocationRevision, requiredLocationAccess(configurations),
         )
+        const authority = await acceptRunAuthority(client, principal, approval?.handler === 'operator')
+        requireAuthorization(authority.principal, 'runs:start', { workspaceId: input.workspaceId, workflowId: input.workflowId })
+        requireAuthorization(authority.principal, 'workspace_locations:read', { workspaceId: input.workspaceId })
         const run = WorkflowRunSchema.parse({
           id: `run-${randomUUID()}`, workspaceId: input.workspaceId, workflowId: input.workflowId,
           workflowVersionId: version.id, agentConfigurationVersionIds: version.agentConfigurationVersionIds,
-          ...(version.approval ? { approval: version.approval } : {}),
           executionLocation,
           ...(approval ? { approval } : {}),
-          authorizationPrincipalId: principal.id,
-          ...(version.approval ? { approval: version.approval } : {}),
+          authorizationPrincipalId: authority.principal.id,
           executionCondition: version.definition.executionCondition, executionState: 'queued', outcome: 'pending',
           input: input.input, createdAt: new Date().toISOString(),
         })
         await this.runs.create(run, client)
+        await bindRunAuthority(client, run.id, authority)
         await this.runs.recordActivity(run.id, 'backend', 'run_state_changed', { executionState: 'queued' }, undefined, client)
         return run
       },
@@ -188,7 +194,7 @@ export class RunManagementService {
         )
         const latest = latestRow.rows[0] ? WorkflowRunSchema.parse(latestRow.rows[0].record) : undefined
         if (!latest) throw new DomainError('RUN_NOT_FOUND', `Run '${input.runId}' was not found.`, 404)
-        if (latest.executionState === 'completed') {
+        if (latest.executionState === 'completed' && !await this.runs.hasPendingCleanup(input.runId, client)) {
           return { runId: input.runId, status: 'already_terminal' as const, processStopped: false }
         }
         const accepted = await this.engine.cancel(input.runId, client)

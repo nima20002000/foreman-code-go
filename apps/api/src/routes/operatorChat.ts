@@ -11,6 +11,7 @@ import type { FastifyInstance } from 'fastify'
 import { requirePrincipal } from '../modules/access/http.js'
 import { DomainError } from '../modules/errors.js'
 import type { OperatorChatService } from '../modules/conversations/operatorChat.js'
+import { createSseWriter } from './sseWriter.js'
 
 interface ConversationParams { conversationId: string }
 const MAX_STREAMS = 64
@@ -64,16 +65,12 @@ export function registerOperatorChatRoutes(app: FastifyInstance, chat: OperatorC
     const queued: string[] = []
     const stop = () => {
       if (stopped) return
-      stopped = true; clearInterval(heartbeat); unsubscribe(); streams.delete(stop)
+      stopped = true; writer.close(); clearInterval(heartbeat); unsubscribe(); streams.delete(stop)
       if (reply.raw.headersSent && !reply.raw.writableEnded) reply.raw.end()
     }
-    const write = (frame: string) => {
-      if (stopped || reply.raw.destroyed || Date.parse(principal.expiresAt) <= Date.now()) { stop(); return }
-      try {
-        // Close on backpressure rather than accumulating an unbounded per-client queue.
-        if (!reply.raw.write(frame)) stop()
-      } catch { stop() }
-    }
+    const writer = createSseWriter(reply.raw,
+      () => !stopped && Date.parse(principal.expiresAt) > Date.now(), stop)
+    const write = (frame: string) => writer.write(frame)
     const event = (value: OperatorConversationStreamEvent) => {
       const frame = `event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`
       if (bootstrapping) {

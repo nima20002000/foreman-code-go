@@ -3,6 +3,7 @@ import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/co
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
+import { WORKER_BINDING_ELIGIBLE } from './workerEligibility.js'
 
 export interface WorkerExecutionIdentity {
   execution_id: string
@@ -75,22 +76,8 @@ export async function requireActiveWorkerBinding(client: pg.ClientBase | pg.Pool
      join management_principals p on p.id=b.principal_id and p.agent_id=b.agent_id
      join harness_executions he on he.id=b.execution_id and he.run_id=b.run_id and he.agent_id=b.agent_id
      join runs r on r.id=b.run_id and r.workspace_id=b.workspace_id and r.workflow_id=b.workflow_id
-     where b.principal_id=$1 and b.revoked_at is null and p.revoked_at is null
-       and p.audience='worker' and p.expires_at>clock_timestamp()
-       and r.worker_credentials_closed_at is null
-       and ((b.purpose='workflow' and he.worker_credentials_closed_at is null
-           and he.record->>'state' in ('starting','running','waiting')
-           and not exists (select 1 from approval_execution_state s where s.execution_id=he.id and s.stopped_at is not null))
-         or (b.purpose='reviewer' and he.record->>'state'='completed'
-           and r.record->'approval'->>'handler'='orchestrator'
-           and r.record->'approval'->>'designatedOrchestratorAgentId'=b.agent_id
-           and exists (select 1 from execution_native_sessions ns where ns.execution_id=he.id
-             and ns.workflow_finalized_at is not null and ns.reference->>'nativeSessionId'=he.record->>'nativeSessionId')))
-       and r.execution_state in ('running','waiting')
-       and r.record->>'executionState'=r.execution_state and r.record->>'outcome'='pending'
-       and he.record->>'id'=he.id and he.record->>'runId'=r.id and he.record->>'agentId'=b.agent_id
-       and r.record->>'id'=r.id and r.record->>'workspaceId'=b.workspace_id
-       and r.record->>'workflowId'=b.workflow_id`, [principalId],
+     where b.principal_id=$1 and p.expires_at>clock_timestamp()
+       and ${WORKER_BINDING_ELIGIBLE}`, [principalId],
   )
   if (active.rowCount !== 1) throw new DomainError('AUTH_REVOKED', 'The credential is no longer active.', 401)
 }

@@ -33,9 +33,11 @@ function configuration(agentId: string, productRole: 'orchestrator' | 'coder', h
   })
 }
 function executable() {
+  const orchestratorHarness = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
+  orchestratorHarness.advanced!.approvalPolicy = 'never'
   return {
     id: 'version', version: 1, createdAt: now,
-    configurations: [configuration('orchestrator', 'orchestrator'), configuration('coder', 'coder')],
+    configurations: [configuration('orchestrator', 'orchestrator', orchestratorHarness), configuration('coder', 'coder')],
     definition: WorkflowDefinitionSchema.parse({
       id: 'workflow', workspaceId: 'workspace', name: 'Approval fixture',
       approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'orchestrator' },

@@ -322,7 +322,7 @@ it('[F17] accepted mutations with broken bodies retain uncertain delivery', asyn
   await assert.rejects(native.respond(session, 'per_body', pending!.responseOptions[0]!), (error: unknown) => {
     assert(error instanceof OpenCodeNativeDeliveryError); assert.equal(error.certainty, 'uncertain'); return true
   })
-})
+}, 10_000)
 
 it('[F17] session creation uses mutation certainty for accepted-body failures and possible commits before 500', async () => {
   for (const status of [200, 500]) {

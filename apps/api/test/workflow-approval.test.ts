@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { validateWorkflowApproval } from '../src/modules/workflows/approval.js'
-import { NATIVE_INTERACTION_FIXTURES } from '@graphql/contracts'
+import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, NATIVE_INTERACTION_FIXTURES } from '@graphql/contracts'
 import { assertOrchestratorInteractionAuthority } from '../src/modules/interactions/authorization.js'
 
 const definition = {
@@ -12,7 +12,11 @@ const definition = {
   ], edges: [],
 }
 const agents = [
-  { id: 'agent-orchestrator', name: 'O', role: 'anything', productRole: 'orchestrator' as const },
+  { id: 'agent-orchestrator', name: 'O', role: 'anything', productRole: 'orchestrator' as const,
+    // This fixture explicitly chooses noninteractive bootstrap; the sandbox remains read-only.
+    harnessConfiguration: { harness: 'codex' as const, model: 'test-model', reasoningEffort: 'medium' as const,
+      sandbox: 'read-only' as const, serviceTier: 'standard' as const,
+      advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'never' as const } } },
   { id: 'agent-coder', name: 'C', role: 'orchestrator', productRole: 'coder' as const },
 ]
 
@@ -30,6 +34,17 @@ describe('workflow approval authority', () => {
   it('rejects a model-supplied display role and wrong-workflow designation', () => {
     expect(() => validateWorkflowApproval(definition, { handler: 'orchestrator', designatedOrchestratorAgentId: 'agent-coder' }, agents)).toThrowError(expect.objectContaining({ code: 'APPROVAL_ORCHESTRATOR_ROLE_REQUIRED' }))
     expect(() => validateWorkflowApproval(definition, { handler: 'orchestrator', designatedOrchestratorAgentId: 'agent-other' }, agents)).toThrowError(expect.objectContaining({ code: 'APPROVAL_ORCHESTRATOR_WRONG_WORKFLOW' }))
+  })
+
+  it('rejects a downstream reviewer and an interactive reviewer bootstrap', () => {
+    const approval = { handler: 'orchestrator' as const, designatedOrchestratorAgentId: 'agent-orchestrator' }
+    expect(() => validateWorkflowApproval({ ...definition, nodes: [...definition.nodes].reverse() }, approval, agents))
+      .toThrowError(expect.objectContaining({ code: 'APPROVAL_REVIEWER_BOOTSTRAP_ORDER' }))
+    const interactive = agents.map((agent) => agent.id !== 'agent-orchestrator' ? agent : { ...agent,
+      harnessConfiguration: { ...agent.harnessConfiguration!,
+        advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'on-request' as const } } })
+    expect(() => validateWorkflowApproval(definition, approval, interactive))
+      .toThrowError(expect.objectContaining({ code: 'APPROVAL_REVIEWER_BOOTSTRAP_INTERACTIVE' }))
   })
 
   it('denies cross-workflow and self approval from worker identity', () => {

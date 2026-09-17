@@ -1,0 +1,121 @@
+/**
+ * A self-contained Node program. Keeping it in the compiled module avoids a
+ * missing .js asset when the API runs through Vitest/tsx rather than dist/.
+ * No provider arguments, paths or credentials are interpolated into this code;
+ * the launching API sends them only through its private IPC channel.
+ */
+export const NATIVE_GUARDIAN_SOURCE = `
+const { spawn } = require('node:child_process')
+const { timingSafeEqual, randomUUID } = require('node:crypto')
+const { createServer } = require('node:net')
+const { join, dirname, resolve, parse, sep } = require('node:path')
+const fs = require('node:fs')
+
+function object(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Malformed guardian record')
+  return value
+}
+function directory(path) {
+  const absolute = resolve(path)
+  let part = parse(absolute).root
+  for (const item of absolute.slice(part.length).split(sep).filter(Boolean)) {
+    part = join(part, item)
+    const stat = fs.lstatSync(part)
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe guardian directory')
+  }
+  const stat = fs.lstatSync(absolute)
+  if ((stat.mode & 0o077) || stat.uid !== process.getuid()) throw new Error('Nonprivate guardian directory')
+  return absolute
+}
+function record(path) {
+  const fd = fs.openSync(path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+  try {
+    const stat = fs.fstatSync(fd)
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 65536 || (stat.mode & 0o077) || stat.uid !== process.getuid()) throw new Error('Unsafe guardian record')
+    return object(JSON.parse(fs.readFileSync(fd,'utf8')))
+  } finally { fs.closeSync(fd) }
+}
+function birth(path, value) {
+  const parent = directory(dirname(path))
+  const temp = join(parent, '.pending-'+randomUUID())
+  const fd = fs.openSync(temp, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600)
+  try { fs.writeFileSync(fd,JSON.stringify(value));fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+  try { fs.linkSync(temp,path) } finally { fs.unlinkSync(temp) }
+  const dir = fs.openSync(parent, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+  try { fs.fsyncSync(dir) } finally { fs.closeSync(dir) }
+}
+function identity() {
+  const value=fs.readFileSync('/proc/self/stat','utf8')
+  const parts=value.slice(value.lastIndexOf(')')+2).trim().split(/\\s+/)
+  if(parts.length<20 || !/^\\d+$/.test(parts[19]))throw new Error('Invalid Linux identity')
+  return {pid:process.pid,startTicks:parts[19],group:Number(parts[2]),session:Number(parts[3]),state:parts[0]}
+}
+let stopping=false,started=false,leader=false
+function stop() {
+  if(stopping)return
+  stopping=true
+  if(!leader)process.exit(1) // No native child exists before leader qualification.
+  try {process.kill(-process.pid,'SIGTERM')}catch{}
+  setTimeout(()=>process.kill(-process.pid,'SIGKILL'),1000)
+}
+process.on('SIGTERM',stop)
+process.on('SIGINT',stop)
+process.on('disconnect',stop)
+process.on('uncaughtException',stop)
+process.on('unhandledRejection',stop)
+process.on('message',input=>{
+  if(started || stopping)return
+  started=true
+  try {
+    const config=object(input)
+    if(config.operation!=='start' || typeof config.directory!=='string' || typeof config.binary!=='string'
+      || typeof config.cwd!=='string' || !Array.isArray(config.args) || config.args.some(x=>typeof x!=='string'))throw new Error('Invalid launch')
+    const environment=object(config.environment)
+    if(Object.values(environment).some(x=>x!==undefined && typeof x!=='string'))throw new Error('Invalid environment')
+    const dir=directory(config.directory)
+    const intent=record(join(dir,'intent.json'))
+    const live=identity()
+    const boot=fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim()
+    if(live.group!==process.pid || live.session!==process.pid || intent.boot!==boot
+      || typeof intent.id!=='string' || !/^[0-9a-f-]{36}$/.test(intent.id)
+      || typeof intent.controlKey!=='string' || !/^[0-9a-f]{64}$/.test(intent.controlKey)
+      || typeof intent.owner!=='string')throw new Error('Unverified process generation')
+    leader=true
+    const certificate={format:1,id:intent.id,owner:intent.owner,boot,guardian:live}
+    const expected=Buffer.from(intent.controlKey,'hex')
+    const server=createServer(socket=>{
+      let pending=''
+      socket.setTimeout(2000,()=>socket.destroy())
+      socket.on('error',()=>socket.destroy())
+      socket.on('data',chunk=>{
+        pending+=chunk.toString('utf8')
+        if(Buffer.byteLength(pending)>4096){socket.destroy();return}
+        if(!pending.includes('\\n'))return
+        socket.pause()
+        try {
+          const message=object(JSON.parse(pending.slice(0,pending.indexOf('\\n'))))
+          const supplied=typeof message.controlKey==='string' && /^[0-9a-f]{64}$/.test(message.controlKey)?Buffer.from(message.controlKey,'hex'):Buffer.alloc(0)
+          if(message.operation!=='stop' || message.id!==intent.id || message.owner!==intent.owner
+            || message.startTicks!==live.startTicks || supplied.length!==expected.length
+            || !timingSafeEqual(supplied,expected)){socket.destroy();return}
+          socket.end(JSON.stringify({id:intent.id,startTicks:live.startTicks,accepted:true})+'\\n')
+          stop()
+        }catch{socket.destroy()}
+      })
+    })
+    server.maxConnections=8
+    server.on('error',stop)
+    server.listen({path:'\\0graphql-native-'+intent.id},()=>{
+      try {
+        birth(join(dir,'birth.json'),certificate)
+        if(stopping || !process.connected){stop();return}
+        const native=spawn(config.binary,config.args,{cwd:config.cwd,env:environment,
+          detached:false,stdio:['inherit','inherit','inherit'],windowsHide:true})
+        native.once('error',stop)
+        native.once('exit',stop)
+      }catch{stop()}
+    })
+  }catch{stop()}
+})
+if(!process.connected)stop()
+`

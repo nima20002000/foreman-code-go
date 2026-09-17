@@ -1,0 +1,67 @@
+import { constants, closeSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync,
+  openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join, parse, resolve, sep } from 'node:path'
+import { randomUUID } from 'node:crypto'
+
+/** These records are backend state, never Agent workspace files or native tool inputs. */
+export function privateDirectory(path: string): string {
+  const absolute = resolve(path)
+  let current = parse(absolute).root
+  for (const part of absolute.slice(current.length).split(sep).filter(Boolean)) {
+    current = join(current, part)
+    try { mkdirSync(current, { mode: 0o700 }); syncDirectory(dirname(current)) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    }
+    const stat = lstatSync(current)
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Recovery storage cannot contain a symlink or non-directory.')
+  }
+  const stat = lstatSync(absolute)
+  if ((stat.mode & 0o077) !== 0 || (process.getuid && stat.uid !== process.getuid())) {
+    throw new Error('Recovery storage must be owned by this service user and private (0700).')
+  }
+  return absolute
+}
+
+export function readRecord(path: string): unknown | undefined {
+  let fd: number
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+  try {
+    const stat = fstatSync(fd)
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 64 * 1024 || (stat.mode & 0o077) !== 0
+      || (process.getuid && stat.uid !== process.getuid())) throw new Error('Unsafe or oversized recovery record.')
+    return JSON.parse(readFileSync(fd, 'utf8')) as unknown
+  } finally { closeSync(fd) }
+}
+
+export function syncDirectory(path: string): void {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+  try { fsyncSync(fd) } finally { closeSync(fd) }
+}
+
+/** fsync the data AND containing directory; an existing immutable record is never overwritten. */
+export function writeRecord(path: string, value: unknown, immutable = false): void {
+  const directory = privateDirectory(dirname(path))
+  const temporary = join(directory, `.pending-${randomUUID()}`)
+  const data = JSON.stringify(value)
+  if (Buffer.byteLength(data) > 64 * 1024) throw new Error('Recovery record exceeds its size limit.')
+  const fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)
+  try { writeFileSync(fd, data); fsyncSync(fd) } finally { closeSync(fd) }
+  let failure: unknown
+  try {
+    if (immutable) linkSync(temporary, path)
+    else renameSync(temporary, path)
+  } catch (error) { failure = error }
+  try { unlinkSync(temporary) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && failure === undefined) failure = error
+  }
+  if (failure !== undefined) throw failure
+  syncDirectory(directory)
+}
+
+export function recordObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Malformed recovery record.')
+  return value as Record<string, unknown>
+}

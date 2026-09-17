@@ -46,12 +46,13 @@ describe('PR12 Approval Inbox', () => {
     expect(screen.getByText(/Read-only monitoring/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Approve once' })).toBeNull()
   })
-  it.each(['failed', 'uncertain'] as const)('recovers %s delivery using only the selected choice', async (deliveryState) => {
+  it.each(['failed', 'uncertain'] as const)('requires User reauthentication before recovering %s delivery', (deliveryState) => {
     const optionId = interaction.responseOptions[0]!.optionId
     api.detail.mockReturnValue({ data: { interaction: { ...interaction, status: deliveryState === 'failed' ? 'delivery_failed' : 'delivery_pending', deliveryState, selectedOptionId: optionId }, canRespond: true }, isError: false, isPending: false })
     render(<ApprovalInbox selectedInteractionId={interaction.id} />)
-    await userEvent.setup().click(screen.getByRole('button', { name: deliveryState === 'failed' ? 'Retry selected response' : 'Reconcile delivery' }))
-    expect(mutate.mock.calls[0]![0]).toEqual({ interactionId: interaction.id, optionId, expectedRevision: interaction.revision })
+    expect(screen.getByLabelText('User bearer credential')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: deliveryState === 'failed' ? 'Retry selected response' : 'Reconcile delivery' })).toBeNull()
+    expect(mutate).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: /^Reject/ })).toBeNull()
   })
   it('does not offer recovery for a canceled interaction', () => {

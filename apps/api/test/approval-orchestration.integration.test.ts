@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import {
   CODEX_APPROVAL_OPTIONS_FIXTURE,
   AgentSchema,
+  DEFAULT_CODEX_ADVANCED_CONFIGURATION,
   DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
   DurableInteractionSchema,
   NATIVE_INTERACTION_FIXTURES,
@@ -319,7 +320,7 @@ it('targets two parallel interrupt ids without respawning either branch or its p
       const token = `token-${owner.agentId}-${input.executionId}-${prepared.length + 1}`
       prepared.push({ executionId: input.executionId, agentId: owner.agentId, token })
       return {
-        credential: { principalId: `principal-${input.executionId}`, environment: { agentId: owner.agentId, variables: { GRAPHQL_APP_MCP_TOKEN: token } }, expiresAt: new Date(Date.now() + 60_000).toISOString() },
+        credential: { principalId: `principal-${input.executionId}`, environment: { agentId: owner.agentId, variables: { GRAPHQL_APP_MCP_TOKEN: token } }, expiresAt: new Date(Date.now() + 900_000).toISOString() },
         detection: {
           detection: { harness: input.harness, serverName: 'graphql-app', state: 'connected' as const, endpointMatches: true, credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN', checkedAt: new Date().toISOString() },
           runnerId: 'runner-local', workingDirectory: input.workingDirectory,
@@ -338,7 +339,7 @@ it('targets two parallel interrupt ids without respawning either branch or its p
 
   await engine.start(run.id)
   const pending = await interactions.list({ runId: run.id, limit: 10 })
-  expect(pending).toHaveLength(2)
+  expect(pending, JSON.stringify(await runs.get(run.id))).toHaveLength(2)
   expect(pending.every((item) => Boolean(item.graphInterruptId))).toBe(true)
   expect(prepared).toHaveLength(3)
   expect(new Set(prepared.map((item) => item.agentId))).toEqual(new Set(['agent-researcher', 'agent-developer', 'agent-reviewer']))
@@ -381,6 +382,8 @@ it('delivers an Orchestrator App MCP response to native execution, resumes the r
     await pool.query('update agents set record=$2::jsonb where id=$1', [agentId, JSON.stringify(agent)])
     await pool.query("update agent_configuration_versions set record=jsonb_set(record,'{productRole}',to_jsonb($2::text)) where agent_id=$1", [agentId, productRole])
   }
+  await pool.query("update agent_configuration_versions set record=jsonb_set(record,'{harness,advanced}',$1::jsonb,true) where agent_id='agent-reviewer'",
+    [JSON.stringify({ ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'never' })])
   const saved = await workflows.get('workspace-1', 'workflow-content-pipeline')
   if (!saved) throw new Error('seed missing')
   await workflows.save('workspace-1', {
@@ -413,7 +416,7 @@ it('delivers an Orchestrator App MCP response to native execution, resumes the r
       credential: {
         principalId: `principal-${input.executionId}`,
         environment: { agentId: ownerByExecution.get(input.executionId)!, variables: { GRAPHQL_APP_MCP_TOKEN: `token-${input.executionId}` } },
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
       },
       detection: {
         detection: { harness: input.harness, serverName: 'graphql-app', state: 'connected' as const, endpointMatches: true, credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN', checkedAt: new Date().toISOString() },
@@ -679,7 +682,7 @@ it('evicts a failed provider so retry preflights a fresh Agent-scoped manager an
       const token = `fresh-${input.executionId}-${tokens.length + 1}`
       tokens.push({ executionId: input.executionId, agentId, token })
       return {
-        credential: { principalId: `principal-${token}`, environment: { agentId, variables: { GRAPHQL_APP_MCP_TOKEN: token } }, expiresAt: new Date(Date.now() + 60_000).toISOString() },
+        credential: { principalId: `principal-${token}`, environment: { agentId, variables: { GRAPHQL_APP_MCP_TOKEN: token } }, expiresAt: new Date(Date.now() + 900_000).toISOString() },
         detection: {
           detection: { harness: input.harness, serverName: 'graphql-app', state: 'connected' as const, endpointMatches: true, credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN', checkedAt: now },
           runnerId: 'runner-local', workingDirectory: input.workingDirectory, providerVersion: '0.154.0', nativeFilters: {},

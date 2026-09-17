@@ -59,6 +59,13 @@ export interface NativeTurnInput {
   onSubmitted?(nativeTurnId: string): Promise<void>
 }
 
+/** Response identity is not a model-turn correlation and must never be used to replay a prompt. */
+export interface NativeResponseIdentity {
+  nativeRequestId: string
+  nativeRequestType: string
+  option: ApprovalResponseOption
+}
+
 export interface NativeHistory {
   /** Set only when the provider result was matched to this exact request. */
   correlationId?: string
@@ -101,5 +108,9 @@ export interface NativeHarnessSessionManager {
   history(session: NativeSessionReference, signal?: AbortSignal): Promise<NativeHistory>
   historyPage?(session: NativeSessionReference, before?: string, signal?: AbortSignal): Promise<NativeHistory>
   reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory>
+  /** Read-only recovery of the exact response; missing evidence remains uncertain. */
+  reconcileResponse?(session: NativeSessionReference, response: NativeResponseIdentity, signal?: AbortSignal): Promise<NativeHistory>
   close(session: NativeSessionReference): Promise<void>
+  /** Stop every owned transport, including creations without a known session identity. */
+  dispose?(): Promise<void>
 }

@@ -238,8 +238,8 @@ export const HarnessWorkflowCompatibilitySchema = z.object({
   if (value.configuration.harness === "codex" && value.configuration.advanced?.approvalsReviewer === "auto_review") {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "approvalsReviewer"], message: "native auto review conflicts with GraphQL-routed approval" });
   }
-  // Legacy records can omit Advanced settings. Both representations must obey
-  // the same workflow approval boundary before the fallback can enable --auto.
+  // Saved records can omit Advanced settings. Both explicit and defaulted
+  // representations must obey the same workflow approval boundary.
   if (value.configuration.harness === "opencode"
     && (value.configuration.autoApprove || value.configuration.advanced?.permissionHandling === "native_auto")) {
     context.addIssue({

@@ -338,6 +338,9 @@ describe.each(['http', 'mcp'] as const)('PR8 managed %s acceptance', (source) =>
           { type:'agent.add_from_template',template:scenario === 'missing-coder' ? 'orchestrator':'coder',agentId:coder,nodeId:'second',name:'Coder' },
           { type:'edge.connect',edgeId:'handoff',sourceNodeId:'first',targetNodeId:'second' },
         ]
+        const orchestratorConfiguration = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
+        orchestratorConfiguration.advanced!.approvalPolicy = 'never'
+        operations.push({ type:'agent.configure',agentId:orchestrator,expectedAgentRevision:0,configuration:orchestratorConfiguration })
         if (scenario !== 'missing') operations.push({ type:'workflow.set_approval',approval:{
           handler:'orchestrator',designatedOrchestratorAgentId:scenario === 'wrong-workflow' ? 'other-workflow-agent':orchestrator,
         } })
@@ -355,10 +358,13 @@ describe.each(['http', 'mcp'] as const)('PR8 managed %s acceptance', (source) =>
       const initial = await create('Valid approval')
       const orchestrator = `orchestrator-${randomUUID()}`
       const coder = `coder-${randomUUID()}`
+      const orchestratorConfiguration = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
+      orchestratorConfiguration.advanced!.approvalPolicy = 'never'
       const draft = await apply(initial.draft,[
         { type:'agent.add_from_template',template:'orchestrator',agentId:orchestrator,nodeId:'first',name:'Orchestrator' },
         { type:'agent.add_from_template',template:'coder',agentId:coder,nodeId:'second',name:'Coder' },
         { type:'edge.connect',edgeId:'handoff',sourceNodeId:'first',targetNodeId:'second' },
+        { type:'agent.configure',agentId:orchestrator,expectedAgentRevision:0,configuration:orchestratorConfiguration },
         { type:'workflow.set_approval',approval:{ handler:'orchestrator',designatedOrchestratorAgentId:orchestrator } },
       ])
       const published = await save(draft)

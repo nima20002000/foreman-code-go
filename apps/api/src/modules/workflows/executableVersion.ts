@@ -39,15 +39,15 @@ export function buildExecutableWorkflowVersion(input: {
   }
   // Omission is not a clearing operation. Legacy versions remain unconfigured.
   const selection = graph.approval ?? input.previousDefinition?.approval ?? input.initialApproval
-  const approval = selection ? validateWorkflowApproval(graph, selection, referenced.map((id) => ({
-    id, productRole: byAgent.get(id)!.productRole,
-  }))) : undefined
-  if (approval) {
+  if (selection) {
     for (const agentId of referenced) {
-      try { validateHarnessWorkflowCompatibility(byAgent.get(agentId)!.harness, approval.handler) }
+      try { validateHarnessWorkflowCompatibility(byAgent.get(agentId)!.harness, selection.handler) }
       catch { throw new DomainError('WORKFLOW_HARNESS_APPROVAL_CONFLICT', `Agent '${agentId}' uses native automatic review that conflicts with workflow approval.`, 409) }
     }
   }
+  const approval = selection ? validateWorkflowApproval(graph, selection, referenced.map((id) => ({
+    id, productRole: byAgent.get(id)!.productRole, harnessConfiguration: byAgent.get(id)!.harness,
+  }))) : undefined
   const definition = WorkflowDefinitionSchema.parse({
     ...graph,
     ...(approval ? { approval } : {}),

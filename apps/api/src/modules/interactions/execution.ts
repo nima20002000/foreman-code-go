@@ -24,6 +24,7 @@ import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowCo
 import { redactKnownSecrets, redactSecretText } from '../harnesses/secrets.js'
 import { attemptCleanup } from './cleanup.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
+import { maintainCredential } from '../harnesses/credentialHeartbeat.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import type { PostgresApprovalBudgetRepository } from './budget.js'
@@ -133,6 +134,10 @@ export class ApprovalExecutionCoordinator {
           return true
         }) === true
       }
+      if (!closed && this.recoverNativeProcesses) {
+        closed = await attempt('recover registered native process groups',
+          (signal) => this.recoverNativeProcesses!(owned.execution.id, signal)) === true
+      }
       if (closed) this.closedExecutions.add(owned.execution.id)
       const revoked = await attempt('revoke execution credential', async () => {
         await this.credentials?.revokeForExecution(owned.execution.id)
@@ -156,6 +161,7 @@ export class ApprovalExecutionCoordinator {
     private readonly activeTimeoutMs: number,
     private readonly credentials?: ExecutionCredentialProvider,
     private readonly validateContinuation?: (executionId: string, signal?: AbortSignal) => Promise<void>,
+    private readonly recoverNativeProcesses?: (executionId: string, signal: AbortSignal) => Promise<boolean>,
   ) {
     this.reviewers = new ReviewerDispatcher(interactions.coordination, this)
   }
@@ -243,6 +249,10 @@ export class ApprovalExecutionCoordinator {
         const renewedExpiry = await this.credentials.renew(context.executionId, { principalId: credential.principalId })
         if (!Number.isFinite(Date.parse(renewedExpiry)) || Date.parse(renewedExpiry) <= Date.now()) {
           throw new Error('Worker credential renewal did not return a live lease.')
+        }
+        signal?.throwIfAborted()
+        if (this.managerCredentials.get(resolved.manager) !== credential) {
+          throw new Error('The native credential owner changed during renewal.')
         }
         this.managerCredentials.set(resolved.manager, { ...credential, expiresAt: renewedExpiry })
       }
@@ -372,6 +382,39 @@ export class ApprovalExecutionCoordinator {
     }
   }
 
+  /**
+   * A terminal execution can be recovered without claiming that an ambiguous
+   * approval was delivered. Only the exact durable execution correlation counts.
+   * No prompt/response is sent and the interaction's delivery ledger is untouched.
+   */
+  async recoverTerminalInteraction(interaction: DurableInteraction, owner: RunOwnership, signal: AbortSignal): Promise<boolean> {
+    if (!interaction.selectedOptionId || !['submitted', 'uncertain'].includes(interaction.deliveryState)) return false
+    signal.throwIfAborted()
+    owner.assertOwned()
+    const execution = await this.runs.getExecution(interaction.executionId, owner)
+    if (!execution || execution.runId !== interaction.runId || execution.agentId !== interaction.requestingAgentId
+      || execution.nativeSessionId !== interaction.nativeSessionId) return false
+    if (execution.state === 'completed') return Boolean(execution.result)
+    const attached = await this.attachInteraction(interaction, signal)
+    this.assertSessionIdentity(attached.session, interaction)
+    const correlationId = `execution:${execution.id}`
+    const history = await attached.manager.reconcile(attached.session, correlationId, signal)
+    const terminal = history.terminalTurn
+    if (!terminal || terminal.correlationId !== correlationId || history.correlationId !== correlationId
+      || !history.nativeTurnId || terminal.providerId !== history.nativeTurnId
+      || history.pendingInteraction || history.pendingInteractions.length) return false
+    signal.throwIfAborted()
+    owner.assertOwned()
+    for (const event of history.events) await this.runs.appendNativeEvent({ ...event, executionId: execution.id }, owner)
+    await this.runs.updateExecution(HarnessExecutionSchema.parse({ ...execution, state: 'completed',
+      result: terminal.result, finishedAt: new Date().toISOString() }), owner)
+    await this.runs.recordActivity(execution.runId, 'backend', 'harness_output', {
+      executionTerminalRecovered: true, nativeTurnId: terminal.providerId,
+      interactionId: interaction.id, approvalDeliveryUnconfirmed: true,
+    }, execution.id, owner.client)
+    return true
+  }
+
   /** Resume values are delivery notifications, never decisions for the currently pending request. */
   async assertResume(execution: HarnessExecution, value: unknown): Promise<void> {
     const id = value && typeof value === 'object' && 'interactionId' in value ? value.interactionId : undefined
@@ -406,6 +449,9 @@ export class ApprovalExecutionCoordinator {
       for (const execution of executions ?? []) {
         cleanups.push((async () => {
           if (known.has(execution.id)) return
+          const recovered = await attemptCleanup(failures, `${execution.id}: recover registered process groups`,
+            async (signal) => this.recoverNativeProcesses ? this.recoverNativeProcesses(execution.id, signal) : false)
+          if (recovered) this.closedExecutions.add(execution.id)
           const owned = await attemptCleanup(failures, `${execution.id}: resolve native session`, async (signal) => {
             if (!execution.nativeSessionId || this.closedExecutions.has(execution.id)) return undefined
             if (execution.state === 'completed') {
@@ -463,7 +509,9 @@ export class ApprovalExecutionCoordinator {
     owner: RunOwnership
     signal: AbortSignal
   }): Promise<ApprovalExecutionObservation> {
-    let signal = input.signal
+    const credentialFailure = new AbortController()
+    let signal = AbortSignal.any([input.signal, credentialFailure.signal])
+    let stopRenewal: (() => Promise<void>) | undefined
     signal.throwIfAborted()
     assertNativeWorkflowConfiguration(input.request.configuration.harness, input.approval)
     const ensured = await this.runs.ensureExecution(input.candidate, input.owner)
@@ -474,27 +522,11 @@ export class ApprovalExecutionCoordinator {
     let ownedSession: OwnedNativeSession | undefined
     let session: NativeSessionReference | undefined
     let budgetTimer: ReturnType<typeof setTimeout> | undefined
-    let credentialTimer: ReturnType<typeof setTimeout> | undefined
     const knownSecrets: string[] = []
-    const credentialExpiry = new AbortController()
-    signal = AbortSignal.any([signal, credentialExpiry.signal])
-    // The same credential safety boundary applies to routed and non-routed turns.
     const watchCredential = () => {
       const credential = manager && this.managerCredentials.get(manager)
       if (!credential) return
       knownSecrets.push(...Object.values(credential.environment.variables))
-      const remaining = Date.parse(credential.expiresAt) - Date.now() - 30_000
-      const fail = () => credentialExpiry.abort(new DomainError(
-        'WORKER_CREDENTIAL_EXPIRING',
-        'Execution stopped before its App credential expired. Active native work was not restarted.', 409,
-      ))
-      if (!Number.isFinite(remaining) || remaining <= 0 || remaining > 2_147_483_647) {
-        fail()
-        signal.throwIfAborted()
-      }
-      clearTimeout(credentialTimer)
-      credentialTimer = setTimeout(fail, remaining)
-      credentialTimer.unref()
     }
     const safeError = (error: unknown): unknown => {
       if (error instanceof AggregateError) return new AggregateError(
@@ -511,6 +543,36 @@ export class ApprovalExecutionCoordinator {
         return error.cause === undefined ? new Error(message) : new Error(message, { cause: safeError(error.cause) })
       }
       return redactKnownSecrets(error, knownSecrets)
+    }
+    const startCredentialMaintenance = () => {
+      watchCredential()
+      if (!this.credentials || stopRenewal || !manager || !this.managerCredentials.has(manager)) return
+      stopRenewal = maintainCredential({
+        expiresAt: () => this.managerCredentials.get(manager!)?.expiresAt,
+        signal,
+        refresh: async () => {
+          signal.throwIfAborted()
+          input.owner.assertOwned()
+          await this.validateContinuation?.(execution.id, signal)
+          input.owner.assertOwned()
+          const credential = this.managerCredentials.get(manager!)
+          if (!credential) throw new Error('The execution lost its native credential lease.')
+          if (Date.parse(credential.expiresAt) <= Date.now() + WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) {
+            if (!this.credentials?.renew) throw new Error('This native credential cannot be renewed.')
+            const expiresAt = await this.credentials.renew(context!.executionId, { principalId: credential.principalId })
+            signal.throwIfAborted()
+            input.owner.assertOwned()
+            if (this.managerCredentials.get(manager!) !== credential || !Number.isFinite(Date.parse(expiresAt))
+              || Date.parse(expiresAt) <= Date.now()) throw new Error('Native credential renewal lost its owner or returned an invalid expiry.')
+            this.managerCredentials.set(manager!, { ...credential, expiresAt })
+          }
+          input.owner.assertOwned()
+        },
+        onFailure: () => credentialFailure.abort(new DomainError(
+          'WORKER_CREDENTIAL_EXPIRING',
+          'Execution stopped before its App credential expired. Active native work was not restarted.', 409,
+        )),
+      })
     }
     try {
       signal.throwIfAborted()
@@ -559,6 +621,11 @@ export class ApprovalExecutionCoordinator {
         input.owner.assertOwned()
         if (history.canceledRequestIds?.length) await this.interactions.cancelPendingForExecution(execution.id, history.canceledRequestIds)
         const waiting: DurableInteraction[] = []
+        if (history.pendingInteractions.length && input.approval?.handler === 'orchestrator'
+          && input.approval.designatedOrchestratorAgentId === execution.agentId) {
+          throw new DomainError('ORCHESTRATOR_BOOTSTRAP_APPROVAL_UNSUPPORTED',
+            'The initial Orchestrator requested an approval it cannot review. Execution stopped without self-approval or changing the accepted handler.', 409)
+        }
         for (const pending of history.pendingInteractions) {
           if (!input.approval) throw new DomainError(
             'NATIVE_APPROVAL_HANDLER_MISSING',
@@ -603,7 +670,7 @@ export class ApprovalExecutionCoordinator {
           throw new DomainError('NATIVE_SESSION_START_UNCERTAIN', 'The existing execution has no recorded native session. Native side effects will not be replayed.', 409)
         }
         const environment = await this.prepareEnvironment(context, resolved, signal)
-        watchCredential()
+        startCredentialMaintenance()
         await this.validateContinuation?.(execution.id, signal)
         signal.throwIfAborted()
         input.owner.assertOwned()
@@ -636,7 +703,7 @@ export class ApprovalExecutionCoordinator {
         ownedSession.session = session
         if (existing) this.assertSessionIdentity(session, existing)
         const environment = await this.prepareEnvironment(context, resolved, signal)
-        watchCredential()
+        startCredentialMaintenance()
         await this.validateContinuation?.(execution.id, signal)
         signal.throwIfAborted()
         input.owner.assertOwned()
@@ -735,8 +802,8 @@ export class ApprovalExecutionCoordinator {
       }
       throw error
     } finally {
+      await stopRenewal?.()
       if (budgetTimer) clearTimeout(budgetTimer)
-      clearTimeout(credentialTimer)
     }
   }
 }

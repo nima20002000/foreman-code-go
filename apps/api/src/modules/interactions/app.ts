@@ -133,10 +133,14 @@ export class PostgresAppInteractionService implements AppInteractionService {
       current = requireRespondableInteraction(principal, await this.interactions.get(parsed.interactionId))
       const result = this.orchestration
         ? await this.orchestration.respond({
-            kind: 'orchestrator',
+            kind: 'orchestrator', principal,
             authority: {
               agentId: principal.agentId!, workspaceId: current.workspaceId, workflowId: current.workflowId,
             },
+            beforeCommit: (client, decision) => this.commands.recordAudit(
+              principal.id, 'mcp', 'interaction_respond', `interaction:${current!.id}`, 'succeeded',
+              { replayed: decision.replayed, optionId: parsed.optionId }, client,
+            ),
           }, parsed)
         : await this.interactions.decide({
             id: parsed.interactionId, optionId: parsed.optionId, expectedRevision: parsed.expectedRevision,
@@ -146,12 +150,6 @@ export class PostgresAppInteractionService implements AppInteractionService {
               { replayed: decision.replayed, optionId: parsed.optionId }, client,
             ),
           })
-      if (this.orchestration) {
-        await this.commands.recordAudit(principal.id, 'mcp', 'interaction_respond', `interaction:${current.id}`, 'succeeded', {
-          replayed: result.replayed,
-          optionId: parsed.optionId,
-        })
-      }
       return RespondToInteractionResponseSchema.parse(result)
     } catch (error) {
       const denied = error instanceof DomainError && ['INTERACTION_NOT_FOUND', 'INTERACTION_ACCESS_DENIED'].includes(error.code)

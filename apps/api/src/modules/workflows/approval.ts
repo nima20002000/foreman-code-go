@@ -8,12 +8,13 @@ import {
 } from '@graphql/contracts'
 
 import { DomainError } from '../errors.js'
+import { validateReviewerBootstrap } from './reviewerBootstrap.js'
 
 /** Validate accepted authority from durable Agent records, never display role strings or graph edges. */
 export function validateWorkflowApproval(
   definition: WorkflowDefinition,
   approval: WorkflowApprovalConfiguration,
-  agents: readonly Pick<Agent, 'id' | 'productRole'>[],
+  agents: readonly Pick<Agent, 'id' | 'productRole' | 'harnessConfiguration'>[],
 ): AcceptedWorkflowApprovalConfiguration {
   const accepted = AcceptedWorkflowApprovalConfigurationSchema.safeParse(approval)
   if (!accepted.success) {
@@ -33,6 +34,7 @@ export function validateWorkflowApproval(
   if (!distinctCoder) {
     throw new DomainError('APPROVAL_DISTINCT_CODER_REQUIRED', 'Orchestrator-handled workflows require a distinct Coder.', 409)
   }
+  validateReviewerBootstrap(definition, accepted.data, durable.get(designatedId)?.harnessConfiguration)
   return accepted.data
 }
 

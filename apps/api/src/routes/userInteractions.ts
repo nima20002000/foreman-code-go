@@ -39,7 +39,8 @@ export function registerUserInteractions(app: FastifyInstance, access: PostgresA
     if (interaction.approval.handler !== 'user' || !canUserInteract(principal, 'interactions:read', interaction)) {
       throw new DomainError('INTERACTION_NOT_FOUND', 'The interaction was not found.', 404)
     }
-    return GetInteractionResponseSchema.parse({ interaction })
+    return GetInteractionResponseSchema.parse({ interaction,
+      canRespond: canUserInteract(principal, 'interactions:respond', interaction) })
   })
   app.post<{ Params: { interactionId: string }; Body: unknown }>('/api/user/interactions/:interactionId/respond', async (request) => {
     const principal = await authenticate(request)

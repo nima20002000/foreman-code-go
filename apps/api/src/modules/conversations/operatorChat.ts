@@ -270,11 +270,11 @@ export class OperatorChatService {
     }
   }
   private async stopRuntime(id: string, runtime: Runtime | undefined) {
-    const disposable = runtime?.manager as (NativeHarnessSessionManager & { dispose?: () => Promise<void> }) | undefined
-    const results = await Promise.allSettled([
-      ...(runtime?.session ? [runtime.manager.close(runtime.session)] : []),
-      ...(disposable?.dispose ? [disposable.dispose()] : []),
-    ])
+    // Disposal already closes known sessions. Racing it with close() acquires the
+    // Codex lifecycle lock twice and can turn a successful chat into a cleanup error.
+    const results = await Promise.allSettled(runtime?.manager.dispose
+      ? [runtime.manager.dispose()]
+      : runtime?.session ? [runtime.manager.close(runtime.session)] : [])
     await this.authority.release(id)
     const failed = results.find((result) => result.status === 'rejected')
     if (failed?.status === 'rejected') throw failed.reason

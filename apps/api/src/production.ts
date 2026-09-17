@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
+import { NativeResponseJournal } from './modules/harnesses/recovery/responseJournal.js'
+import { NativeProcessRegistry } from './modules/harnesses/recovery/processRegistry.js'
 import { resolve } from 'node:path'
 
 import type { ApiConfig } from './config.js'
@@ -63,6 +65,8 @@ export function buildProductionApp(
   checkpoints: CheckpointStore,
   logger = true,
 ) {
+  const responseJournal = new NativeResponseJournal(resolve(config.harnesses.workspaceRoot, 'native-response-receipts'))
+  const processRegistry = new NativeProcessRegistry(resolve(config.harnesses.workspaceRoot, 'native-process-registry'))
   const access = new PostgresAccessService(database.pool)
   const commands = new PostgresCommandCoordinator(database.pool)
   const repository = new PostgresInteractionRepository(database.pool)
@@ -85,15 +89,18 @@ export function buildProductionApp(
     if (configuration.harness !== context.harness) {
       throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'The pinned configuration does not match the execution harness.', 409)
     }
-    if (configuration.harness === 'codex') return new CodexAppServerSessionManager(config.harnesses.codexBinary)
+    if (configuration.harness === 'codex') return new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, undefined,
+      processRegistry.scope(`execution:${context.executionId}`))
     return new OpenCodeNativeSessionManager({
       server: new ManagedOpenCodeServer({
         binary: config.harnesses.openCodeBinary,
         workingDirectory: context.workingDirectory,
         ownerAgentId: context.agentId,
+        processRecovery: processRegistry.scope(`execution:${context.executionId}`),
         ...(configuration.advanced ? { advancedConfiguration: configuration.advanced } : {}),
       }),
       ownerAgentId: context.agentId,
+      responseJournal,
       expectedAppMcpEndpoint: appMcpEndpoint,
     })
   })
@@ -138,13 +145,14 @@ export function buildProductionApp(
   }
   const approvals = new ApprovalExecutionCoordinator(
     runs, repository, budgets, managers, config.harnesses.timeoutMs, launchCredentials, validateContinuation,
+    (executionId, signal) => processRegistry.closeOwner(`execution:${executionId}`, signal),
   )
   const engine = new LangGraphWorkflowEngine(
     runs, workflows, approvals, checkpoints.saver, config.harnesses.workspaceRoot,
     locations, launchCredentials, repository,
   )
   const interactions = new InteractionService(
-    repository, budgets, approvals, (interaction) => engine.resumeInteraction(interaction),
+    repository, budgets, approvals, (interaction) => engine.resumeInteraction(interaction), responseJournal,
   )
   const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
   const operatorMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/operator`
@@ -154,12 +162,14 @@ export function buildProductionApp(
     if (existing) return existing
     let manager: NativeHarnessSessionManager
     if (configuration.harness.harness === 'codex') {
-      manager = new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, 'graphql-operator')
+      manager = new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, 'graphql-operator',
+        processRegistry.scope(`conversation:${conversationId}`))
     } else {
       const server = new ManagedOpenCodeServer({
         binary: config.harnesses.openCodeBinary,
         workingDirectory: operatorWorkingDirectory,
         ownerAgentId: configuration.operatorId,
+        processRecovery: processRegistry.scope(`conversation:${conversationId}`),
         credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE,
         ...(configuration.harness.advanced ? { advancedConfiguration: configuration.harness.advanced } : {}),
       })
@@ -167,6 +177,7 @@ export function buildProductionApp(
         server,
         ownerAgentId: configuration.operatorId,
         appMcpServerName: 'graphql-operator',
+        responseJournal,
         expectedAppMcpEndpoint: operatorMcpEndpoint,
         credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE,
       })

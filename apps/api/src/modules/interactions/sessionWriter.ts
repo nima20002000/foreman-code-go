@@ -127,6 +127,8 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   pending: NativeHarnessSessionManager['pending'] = (session, signal) => this.manager.pending(session, signal)
   history: NativeHarnessSessionManager['history'] = (session, signal) => this.manager.history(session, signal)
   reconcile: NativeHarnessSessionManager['reconcile'] = (session, correlation, signal) => this.manager.reconcile(session, correlation, signal)
+  reconcileResponse: NonNullable<NativeHarnessSessionManager['reconcileResponse']> = (session, response, signal) =>
+    this.manager.reconcileResponse ? this.manager.reconcileResponse(session, response, signal) : this.manager.history(session, signal)
 
   isActive(session: NativeSessionReference): boolean {
     return this.active.has(session.nativeSessionId)

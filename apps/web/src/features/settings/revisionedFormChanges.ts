@@ -19,8 +19,11 @@ export function reapplySettingsEdits<T>(base: T, draft: T, latest: T): T {
   if (same(base, draft)) return structuredClone(latest)
   if (record(base) && record(draft) && record(latest)) {
     // A provider change is an atomic replacement, not a union of incompatible configurations.
-    if ('harness' in base && (base.harness !== draft.harness || base.harness !== latest.harness)) return structuredClone(draft)
+    if (typeof base.harness === 'string' && typeof draft.harness === 'string' && typeof latest.harness === 'string'
+      && (base.harness !== draft.harness || base.harness !== latest.harness)) return structuredClone(draft)
     if ('configuration' in base && record(base.configuration) && record(draft.configuration) && record(latest.configuration)
+      && typeof base.configuration.harness === 'string' && typeof draft.configuration.harness === 'string'
+      && typeof latest.configuration.harness === 'string'
       && (base.configuration.harness !== draft.configuration.harness || base.configuration.harness !== latest.configuration.harness)) return structuredClone(draft)
     const result: Record<string, unknown> = structuredClone(latest)
     for (const key of new Set([...Object.keys(base), ...Object.keys(draft)])) {

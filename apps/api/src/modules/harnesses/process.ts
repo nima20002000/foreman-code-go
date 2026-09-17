@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import type { Readable } from 'node:stream'
+import { spawnNativeProcess, stopRecoveredChild, type NativeProcessRecovery } from './recovery/processRegistry.js'
 
 import type { ChildProcessEnvironment, NativeEventInput } from './port.js'
 import { inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
@@ -35,6 +36,7 @@ type ProcessOptions = Pick<JsonlProcessOptions, 'binary' | 'args' | 'cwd' | 'std
 type ProcessExit = Pick<JsonlProcessResult, 'exitCode' | 'exitSignal'>
 
 export async function signalTree(child: ChildProcess, signal: NodeJS.Signals): Promise<void> {
+  if (await stopRecoveredChild(child)) return
   if (!child.pid) return
   if (process.platform === 'win32') {
     // Windows has no POSIX process groups. Kill the tree, not just its root.
@@ -273,16 +275,16 @@ export function spawnOwnedStdioProcess(options: {
   args: string[]
   cwd: string
   environment: NodeJS.ProcessEnv
+  recovery?: NativeProcessRecovery
   onError(error: Error): void
 }): {
   child: ChildProcessWithoutNullStreams
   closed: Promise<ProcessExit>
   close(): Promise<void>
 } {
-  const child = spawn(options.binary, options.args, {
+  const child = spawnNativeProcess(options.binary, options.args, {
     cwd: options.cwd, env: options.environment,
-    detached: process.platform !== 'win32',
-    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+    ...(options.recovery ? { recovery: options.recovery } : {}),
   })
   let didClose = false
   const closed = new Promise<ProcessExit>((resolve) => {
@@ -313,6 +315,9 @@ export function spawnOwnedStdioProcess(options: {
         } catch (error) { failure ??= error }
       }
       try {
+        // Registry shutdown includes its own grace period and verifies group absence.
+        // Do not wrap it in the shorter per-signal timeout used for legacy children.
+        if (await stopRecoveredChild(child)) return
         // Signal the group even after its leader exited: descendants may own pipes.
         await send('SIGTERM')
         if (!didClose) await within(closed, PROCESS_SHUTDOWN_GRACE_MS)

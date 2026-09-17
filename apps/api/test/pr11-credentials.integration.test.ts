@@ -107,7 +107,7 @@ describe('PR #11 real PostgreSQL lifecycle and decisions', () => {
       await assert.rejects(f.access.authenticate(token(issued), 'worker'), { code: 'AUTH_REVOKED' })
       await assert.rejects(f.credentials.issueForExecution(f.coder.id), { code: 'WORKER_EXECUTION_INACTIVE' })
       class TemporaryFailure extends WorkerCredentialService {
-        override async revokeForExecution(): Promise<number> { throw new Error('temporary cleanup outage') }
+        override async reconcileTerminalCredentials(): Promise<void> { throw new Error('temporary cleanup outage') }
       }
       await assert.rejects(new TemporaryFailure(pool, f.access).reconcileTerminalCredentials(), /temporary cleanup outage/)
       await new WorkerCredentialService(pool, f.access).reconcileTerminalCredentials()

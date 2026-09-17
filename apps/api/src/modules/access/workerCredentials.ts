@@ -5,6 +5,7 @@ import { DomainError } from '../errors.js'
 import type { ChildProcessEnvironment } from '../harnesses/port.js'
 import type { PostgresAccessService } from './postgres.js'
 import { lockWorkerExecution, requireActiveWorkerExecution } from './workerLifecycle.js'
+import { WORKER_BINDING_ELIGIBLE } from './workerEligibility.js'
 
 export const APP_MCP_TOKEN_ENVIRONMENT_VARIABLE = 'GRAPHQL_APP_MCP_TOKEN'
 export const DEFAULT_WORKER_CREDENTIAL_TTL_MS = 15 * 60 * 1000
@@ -141,7 +142,7 @@ export class WorkerCredentialService {
              and exists (select 1 from execution_native_sessions ns where ns.execution_id=he.id
                and ns.workflow_finalized_at is not null and ns.reference->>'nativeSessionId'=he.record->>'nativeSessionId')))
          and r.record->>'executionState' in ('running','waiting') and r.record->>'outcome'='pending'
-         and s.stopped_at is null
+         and ${WORKER_BINDING_ELIGIBLE}
        returning p.expires_at`,
       [credential.principalId, executionId, this.ttlMs, APP_MCP_TOKEN_ENVIRONMENT_VARIABLE],
     )
@@ -248,21 +249,26 @@ export class WorkerCredentialService {
 
   /** Durable terminal records + bindings are the retry queue; no in-memory token is needed. */
   async reconcileTerminalCredentials(): Promise<void> {
-    const pending = await this.pool.query<{ execution_id: string }>(
-      `select distinct b.execution_id from worker_credential_bindings b
-       left join harness_executions he on he.id=b.execution_id
-       left join runs r on r.id=b.run_id
-       left join management_principals p on p.id=b.principal_id
-       where (b.revoked_at is null or (p.id is not null and p.revoked_at is null))
-         and (he.id is null or r.id is null or he.worker_credentials_closed_at is not null
-           or r.worker_credentials_closed_at is not null
-           or he.record->>'state' not in ('starting','running','waiting')
-           or r.execution_state not in ('running','waiting'))
-       order by b.execution_id limit 100`,
+    const ineligible = `from worker_credential_bindings b
+      left join harness_executions he on he.id=b.execution_id
+      left join runs r on r.id=b.run_id
+      left join management_principals p on p.id=b.principal_id
+      where (b.revoked_at is null or (p.id is not null and p.revoked_at is null))
+        and not coalesce((${WORKER_BINDING_ELIGIBLE}),false)`
+    const pending = await this.pool.query<{ execution_id: string; principal_id: string }>(
+      `select b.execution_id,b.principal_id ${ineligible} order by b.principal_id limit 100`,
     )
     let failure: unknown
     for (const row of pending.rows) {
-      try { await this.revokeForExecution(row.execution_id) } catch (error) { failure ??= error }
+      try {
+        await this.transaction(async (client) => {
+          await this.lockParents(client, row.execution_id)
+          await client.query('select id from management_principals where id=$1 for update', [row.principal_id])
+          // Recheck after locking. A stale sweep observation must not revoke a valid reviewer.
+          const current = await client.query(`select b.principal_id ${ineligible} and b.principal_id=$1`, [row.principal_id])
+          if (current.rowCount) await this.revokeIds(client, [row.principal_id])
+        })
+      } catch (error) { failure ??= error }
     }
     // Heal unbound worker principals left by the old non-atomic issuer as well.
     await this.pool.query(

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { NativeResponseJournal } from '../harnesses/recovery/responseJournal.js'
 
 import type { DurableInteraction } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -16,7 +17,8 @@ import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence, type NativeDel
 export type InteractionResponder =
   | { kind: 'user'; principal?: ManagementPrincipal }
   | { kind: 'operator'; principal: ManagementPrincipal }
-  | { kind: 'orchestrator'; authority: WorkerInteractionAuthority }
+  | { kind: 'orchestrator'; authority: WorkerInteractionAuthority; principal?: ManagementPrincipal;
+      beforeCommit?: NonNullable<Parameters<PostgresInteractionRepository['decide']>[0]['beforeCommit']> }
 
 function assertResponder(interaction: DurableInteraction, responder: InteractionResponder): void {
   if (responder.kind === 'user') {
@@ -26,6 +28,10 @@ function assertResponder(interaction: DurableInteraction, responder: Interaction
     return
   }
   if (responder.kind === 'orchestrator') {
+    if (responder.principal && (responder.principal.audience !== 'worker'
+      || responder.principal.agentId !== responder.authority.agentId)) {
+      throw new DomainError('INTERACTION_ACCESS_DENIED', 'The authenticated worker does not own this reviewer authority.', 403)
+    }
     assertOrchestratorInteractionAuthority(interaction, responder.authority)
     return
   }
@@ -59,6 +65,7 @@ export class InteractionService {
     private readonly budgets: PostgresApprovalBudgetRepository,
     private readonly nativeRuntime: InteractionNativeRuntime,
     private readonly resumeGraph: (interaction: DurableInteraction) => Promise<void>,
+    private readonly responseJournal?: NativeResponseJournal,
   ) {}
 
   private async resumeDelivered(interaction: DurableInteraction): Promise<void> {
@@ -97,8 +104,19 @@ export class InteractionService {
       if (claim.mode === 'reconcile') {
         let outcome: NativeDeliveryOutcome = { state: 'uncertain' }
         try {
+          const option = claim.interaction.responseOptions.find((item) => item.optionId === claim.interaction.selectedOptionId)
+          if (!option) throw new DomainError('INTERACTION_OPTION_INVALID', 'The recorded response choice is unavailable.', 409)
+          const identity = { harness: claim.interaction.harness, providerVersion: claim.interaction.providerVersion,
+            nativeSessionId: claim.interaction.nativeSessionId }
+          const receipt = this.responseJournal?.read(identity, { nativeRequestId: claim.interaction.nativeRequestId,
+            nativeRequestType: claim.interaction.nativeRequestType, option })
+          if (receipt) return await this.interactions.delivery.finish(claim, { state: 'delivered', evidence: receipt })
           const { manager, session } = await this.nativeRuntime.attachInteraction(claim.interaction, signal)
-          const history = await manager.reconcile(session, claim.correlationId, signal)
+          // approval-* identifies a delivery attempt, not a submitted model prompt.
+          const history = manager.reconcileResponse
+            ? await manager.reconcileResponse(session, { nativeRequestId: claim.interaction.nativeRequestId,
+                nativeRequestType: claim.interaction.nativeRequestType, option }, signal)
+            : await manager.history(session, signal)
           const evidence = manager.harness === claim.interaction.harness
             ? matchingDeliveryEvidence(claim.interaction, session, history) : undefined
           outcome = evidence ? { state: 'delivered', evidence }
@@ -199,11 +217,15 @@ export class InteractionService {
     if (current.selectedOptionId && current.selectedOptionId !== input.optionId) {
       throw new DomainError('INTERACTION_ALREADY_DECIDED', 'The interaction already has a different decision.', 409)
     }
-    if (current.selectedOptionId === input.optionId && responder.kind === 'operator' && input.commandId) {
-      // Even a harmless delivery replay must validate this command identity in
-      // the authorized decision transaction before touching the graph handoff.
+    const workerDecision = responder.kind === 'orchestrator' && responder.principal
+      ? { principal: responder.principal, ...(responder.beforeCommit ? { beforeCommit: responder.beforeCommit } : {}) } : {}
+    if (current.selectedOptionId === input.optionId
+      && ((responder.kind === 'operator' && input.commandId) || (responder.kind === 'orchestrator' && responder.principal))) {
+      // Replays revalidate the live worker binding under the same parent locks as Stop.
       await this.interactions.decide({ id: current.id, optionId: input.optionId, expectedRevision: input.expectedRevision,
-        nativeResponse: current.nativeResponse, command: { principal: responder.principal, commandId: input.commandId } })
+        nativeResponse: current.nativeResponse, ...workerDecision,
+        ...(responder.kind === 'operator' && input.commandId
+          ? { command: { principal: responder.principal, commandId: input.commandId } } : {}) })
     }
     if (current.selectedOptionId === input.optionId && current.deliveryState === 'delivered') {
       // Authorization still applies, but completed replays do not consult the
@@ -220,10 +242,10 @@ export class InteractionService {
     await this.budgets.assertActive(current.executionId)
     const nativeResponse = { optionId: option.optionId, semantic: option.semantic }
     const auditReference = responder.kind === 'operator' ? responder.principal.id
-      : responder.kind === 'orchestrator' ? responder.authority.agentId : responder.principal?.id
+      : responder.kind === 'orchestrator' ? responder.principal?.id ?? responder.authority.agentId : responder.principal?.id
     const decision = await this.interactions.decide({
       id: current.id, optionId: option.optionId, expectedRevision: input.expectedRevision,
-      nativeResponse, ...(auditReference ? { auditReference } : {}),
+      nativeResponse, ...workerDecision, ...(auditReference ? { auditReference } : {}),
       ...(responder.kind === 'operator' && input.commandId ? {
         command: { principal: responder.principal, commandId: input.commandId },
       } : {}),

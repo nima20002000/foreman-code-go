@@ -33,6 +33,9 @@ import {
 } from './opencodeTransport.js'
 import { redactKnownSecrets } from './secrets.js'
 import { OpenCodeNativeAutoReplies, usesOpenCodeNativeAuto } from './opencodeNativeAuto.js'
+import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
+import { isOpenCodeReplyAcknowledgement } from './openCodeResponseAcknowledgement.js'
+import type { NativeResponseJournal } from './recovery/responseJournal.js'
 
 export {
   ManagedOpenCodeServer, OpenCodeNativeDeliveryError, buildOpenCodeConfigContent,
@@ -59,6 +62,7 @@ interface OwnedTurn {
   idleObserved: boolean
   scopedError: JsonObject | undefined
   terminalResult: NativeHistory['terminalResult']
+  nativeMessageId?: string
 }
 interface SessionState {
   autoReplies: OpenCodeNativeAutoReplies
@@ -73,10 +77,12 @@ interface SessionState {
   ownedIds: Map<string, boolean>
   sequence: number
   turn: OwnedTurn | undefined
+  recoveryCorrelationId?: string
 }
 interface MessagePage { messages: OpenCodeMessage[]; nextCursor?: string }
 
 export interface OpenCodeNativeSessionManagerOptions {
+  responseJournal?: NativeResponseJournal
   server: OpenCodeServerController
   ownerAgentId: string
   appMcpServerName?: string
@@ -107,6 +113,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private boundEnvironmentFingerprint: string | undefined
   private readyGeneration: number | undefined
   private readonly knownSecrets = new Set<string>()
+  private readonly responseReceipts = new Map<string, NativeResponseDeliveryEvidence>()
 
   constructor(private readonly options: OpenCodeNativeSessionManagerOptions) {
     if (options.server.ownerAgentId !== undefined && options.server.ownerAgentId !== options.ownerAgentId) {
@@ -185,7 +192,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         this.verifyAttachedSession(native, session.nativeSessionId, directory, configuration)
         await this.applyMcpControls(configuration, directory, combined)
         combined.throwIfAborted()
-        this.sessions.set(session.nativeSessionId, newState(directory, configuration))
+        const state = newState(directory, configuration)
+        if (input.correlationId) state.recoveryCorrelationId = input.correlationId
+        this.sessions.set(session.nativeSessionId, state)
         return session
       } catch (error) { return this.cleanupFailedSetup(error) }
     })
@@ -415,10 +424,60 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       }
       const reply = option.semantic === 'approve_once' ? 'once' : option.semantic === 'provider_scoped_allow' ? 'always' : option.semantic === 'reject' ? 'reject' : undefined
       if (!reply) throw new OpenCodeNativeDeliveryError('OPENCODE_PERMISSION_SEMANTIC_UNSUPPORTED', 'The selected response cannot be represented by OpenCode V1.', 'definite')
-      await this.mutate(withDirectory(`/permission/${encodeURIComponent(nativeRequestId)}/reply`, state.directory), {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reply }),
-      }, combined)
-      await this.pendingReady(session, combined)
+      // Subscribe before dispatch so an exact provider reply event can recover
+      // a lost HTTP acknowledgement. Observation is bounded and never retransmits.
+      const observer = new AbortController()
+      const observedSignal = AbortSignal.any([combined, observer.signal, AbortSignal.timeout(5_000)])
+      let events: Response | undefined
+      let acknowledged = false
+      let observing: Promise<void> = Promise.resolve()
+      const acknowledge = () => {
+        const receipt: NativeResponseDeliveryEvidence = {
+          source: 'provider_acknowledgement', harness: session.harness, providerVersion: session.providerVersion,
+          nativeSessionId: session.nativeSessionId, nativeRequestId, nativeRequestType: request.nativeRequestType,
+          optionId: expected.optionId, semantic: expected.semantic,
+        }
+        // Persist before resolving respond(), evicting a cache entry, or committing a caller transaction.
+        // A journal failure is an uncertain outcome; it never authorizes another native send.
+        this.options.responseJournal?.record(receipt)
+        boundedMapSet(this.responseReceipts, JSON.stringify([session.nativeSessionId, nativeRequestId]), receipt)
+        acknowledged = true
+      }
+      try {
+        try {
+          events = await this.openEvents(state.directory, observedSignal, false)
+          const stream = events.body!
+          observing = (async () => {
+            let count = 0
+            for await (const event of parseOpenCodeSse(stream, observedSignal)) {
+              if (isOpenCodeReplyAcknowledgement(event, String(object(request.request).sessionID), nativeRequestId, reply)) {
+                acknowledge()
+                return
+              }
+              if (++count >= 1_024) return
+            }
+          })().catch(() => undefined)
+        } catch { /* A successful exact HTTP reply remains usable without SSE. */ }
+        combined.throwIfAborted()
+        try {
+          const result = await this.mutate(withDirectory(`/permission/${encodeURIComponent(nativeRequestId)}/reply`, state.directory), {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reply }),
+          }, combined)
+          if (result !== true) throw new OpenCodeNativeDeliveryError('OPENCODE_PERMISSION_ACK_INVALID',
+            'The provider did not return its qualified response acknowledgement.', 'uncertain')
+          acknowledge()
+        } catch (error) {
+          if (!(error instanceof OpenCodeNativeDeliveryError) || error.certainty !== 'uncertain') throw error
+          await observing
+          if (!acknowledged) throw error
+        }
+        // Retain acknowledgement BEFORE any secondary read or caller database commit.
+        // A failed pending-list refresh is not a failed native send.
+      } finally {
+        observer.abort()
+        await observing
+        await events?.body?.cancel().catch(() => undefined)
+      }
     })
   }
 
@@ -429,10 +488,33 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const combined = this.signal(signal)
     return this.exclusive(async () => {
       await this.ready(combined)
-      const turn = this.requireSession(session).turn
-      if (nativeTurnId && turn?.messageID !== nativeTurnId) return false
+      const state = this.requireSession(session)
+      if (nativeTurnId) {
+        const correlationId = state.turn?.correlationId ?? state.recoveryCorrelationId
+        if (!correlationId || nativeMessageId(correlationId) !== nativeTurnId) return false
+        const history = await this.reconcileReady(session, correlationId, combined)
+        if (history.nativeTurnId !== nativeTurnId || history.terminalResult) return false
+        if (!await this.isLatestUserTurn(session.nativeSessionId, nativeTurnId, state.directory, combined)) return false
+      }
       return this.cancelReady(session, combined)
     })
+  }
+
+  private async isLatestUserTurn(sessionId: string, messageId: string, directory: string, signal: AbortSignal): Promise<boolean> {
+    let cursor: string | undefined
+    const seen = new Set<string>()
+    for (let count = 0; count < 100; count += 1) {
+      const page = await this.messagePage(sessionId, directory, cursor, signal)
+      if (page.messages.some((message) => message.info.sessionID !== sessionId)) {
+        throw new HarnessExecutionError('OPENCODE_TURN_IDENTITY_INVALID', 'History contains a message from another native session.')
+      }
+      const latestUser = [...page.messages].reverse().find((message) => message.info.role === 'user')
+      if (latestUser) return latestUser.info.id === messageId
+      if (!page.nextCursor || seen.has(page.nextCursor)) return false
+      seen.add(page.nextCursor)
+      cursor = page.nextCursor
+    }
+    return false // Unbounded/incomplete history never authorizes canceling a newer turn.
   }
 
   private async cancelReady(session: NativeSessionReference, signal: AbortSignal): Promise<boolean> {
@@ -483,10 +565,38 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const page = await this.messagePage(session.nativeSessionId, state.directory, before, combined)
     const pendingInteractions = await this.pendingReady(session, combined)
     return { events: normalizedHistory(page.messages, state.configuration.thinking), pendingInteractions,
+      responseDeliveries: this.receipts(session),
       ...(pendingInteractions[0] ? { pendingInteraction: pendingInteractions[0] } : {}),
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
       // A general history page has no requested turn identity. Do not invent a terminal result.
     }
+  }
+
+  async reconcileResponse(
+    session: NativeSessionReference,
+    response: import('./port.js').NativeResponseIdentity,
+    signal?: AbortSignal,
+  ): Promise<NativeHistory> {
+    this.validateReference(session)
+    signal?.throwIfAborted()
+    const durable = this.options.responseJournal?.read(session, response)
+    if (durable) return { events: [], pendingInteractions: [], responseDeliveries: [durable] }
+    const combined = this.signal(signal)
+    await this.exclusive(() => this.ready(combined))
+    this.requireSession(session)
+    const pendingInteractions = await this.pendingReady(session, combined)
+    const receipt = this.responseReceipts.get(JSON.stringify([session.nativeSessionId, response.nativeRequestId]))
+    return { events: [], pendingInteractions,
+      responseDeliveries: receipt && receipt.providerVersion === session.providerVersion
+        && receipt.nativeRequestType === response.nativeRequestType
+        && receipt.optionId === response.option.optionId && receipt.semantic === response.option.semantic
+        ? [structuredClone(receipt)] : [],
+    }
+  }
+
+  private receipts(session: NativeSessionReference): NativeResponseDeliveryEvidence[] {
+    return [...this.responseReceipts.values()].filter((receipt) => receipt.nativeSessionId === session.nativeSessionId
+      && receipt.providerVersion === session.providerVersion).map((receipt) => structuredClone(receipt))
   }
 
   async reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory> {
@@ -497,7 +607,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   private async reconcileReady(session: NativeSessionReference, correlationId: string, signal: AbortSignal): Promise<NativeHistory> {
     const state = this.requireSession(session)
-    const turn = state.turn?.correlationId === correlationId ? state.turn : undefined
+    let turn = state.turn?.correlationId === correlationId ? state.turn : undefined
     if (await this.rejectQuestions(session, signal)) {
       await this.cancelReady(session, signal)
       if (turn) turn.terminalResult = failure('OPENCODE_QUESTION_UNSUPPORTED', 'An owned native question was rejected because this transport supports approvals, not interactive questions.')
@@ -507,7 +617,19 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const root = await this.message(session.nativeSessionId, messageID, state.directory, signal)
     const page = await this.messagePage(session.nativeSessionId, state.directory, undefined, signal)
     const pendingInteractions = await this.pendingReady(session, signal)
-    const result: NativeHistory = { correlationId, nativeTurnId: messageID,
+    if (!turn && root?.info.role === 'user') {
+      if (state.turn && !state.turn.terminalResult) {
+        throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'A different owned turn is still active; recovery cannot replace it.')
+      }
+      turn = {
+        correlationId, messageID, promptHash: undefined, submitted: true, observing: false,
+        // A recovered idle prompt without a final answer is interrupted, not a new submission.
+        generation: this.generation - 1, submittedAt: 0, idleObserved: false,
+        scopedError: undefined, terminalResult: undefined,
+      }
+      state.turn = turn
+    }
+    const result: NativeHistory = { correlationId, nativeTurnId: messageID, responseDeliveries: this.receipts(session),
       events: normalizedHistory(page.messages, state.configuration.thinking), pendingInteractions,
       ...(pendingInteractions[0] ? { pendingInteraction: pendingInteractions[0] } : {}),
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
@@ -515,6 +637,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     if (turn?.terminalResult) return {
       ...result,
       terminalResult: turn.terminalResult,
+      ...(turn.nativeMessageId ? { nativeMessageId: turn.nativeMessageId } : {}),
       terminalTurn: { correlationId, providerId: messageID, result: turn.terminalResult },
     }
     if (!root) {
@@ -537,7 +660,10 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       }
       if (!history.rooted) throw new HarnessExecutionError('OPENCODE_TURN_HISTORY_INCOMPLETE', 'Native history did not include the correlated prompt; no older result was selected.')
       terminalResult = history.result
-      if (history.resultMessageId) result.nativeMessageId = history.resultMessageId
+      if (history.resultMessageId) {
+        result.nativeMessageId = history.resultMessageId
+        if (turn) turn.nativeMessageId = history.resultMessageId
+      }
     }
     const statusAfter = await this.sessionStatus(session.nativeSessionId, state.directory, signal)
     if (statusBefore !== 'idle' || statusAfter !== 'idle' || pendingInteractions.length
@@ -583,6 +709,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         this.boundEnvironmentFingerprint = undefined
         this.readyGeneration = undefined
         this.knownSecrets.clear()
+        this.responseReceipts.clear()
       }
     })
   }
@@ -791,7 +918,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const response = await this.options.server.request(withDirectory(`/session/${encodeURIComponent(sessionID)}/message/${encodeURIComponent(messageID)}`, directory), { method: 'GET' }, signal)
     if (response.status === 404) { await response.body?.cancel().catch(() => undefined); return undefined }
     if (!response.ok) throw await responseError(response, 'OPENCODE_MESSAGE_LOOKUP_FAILED', response.status >= 500 ? 'uncertain' : 'definite')
-    const message = object(await readJson(response))
+    const message = this.sanitize(object(await readJson(response)))
     if (object(message.info).id !== messageID || object(message.info).sessionID !== sessionID || !Array.isArray(message.parts)) throw new Error('Native message identity did not match the lookup.')
     return message as OpenCodeMessage
   }
@@ -801,7 +928,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const response = await this.options.server.request(withDirectory(query, directory), { method: 'GET' }, signal)
     if (!response.ok) throw await responseError(response, 'OPENCODE_HISTORY_UNAVAILABLE', response.status >= 500 ? 'uncertain' : 'definite')
     const nextCursor = response.headers.get('x-next-cursor')
-    const value = await readJson(response)
+    const value = this.sanitize(await readJson(response))
     if (!Array.isArray(value) || value.some((item) => !object(item).info || !Array.isArray(object(item).parts))) throw new Error('Invalid native message history.')
     return { messages: value as OpenCodeMessage[], ...(nextCursor ? { nextCursor } : {}) }
   }

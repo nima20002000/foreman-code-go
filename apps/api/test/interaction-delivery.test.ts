@@ -4,7 +4,7 @@ import type { DurableInteraction, NativeSessionReference } from '@graphql/contra
 import { it } from 'vitest'
 
 import { DomainError } from '../src/modules/errors.js'
-import type { NativeHistory } from '../src/modules/harnesses/port.js'
+import type { NativeHistory, NativeResponseIdentity } from '../src/modules/harnesses/port.js'
 import type { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
 import { matchingDeliveryEvidence, type InteractionDeliveryClaim, type NativeDeliveryOutcome, type NativeResponseDeliveryEvidence } from '../src/modules/interactions/delivery.js'
 import type { GraphResumeClaim } from '../src/modules/interactions/deliveryPostgres.js'
@@ -120,8 +120,10 @@ function harness() {
           calls.sends++
           await control.onSend()
         },
-        reconcile: async (_session: NativeSessionReference, correlationId: string) => {
-          assert.equal(correlationId, 'persisted-correlation')
+        reconcileResponse: async (_session: NativeSessionReference, response: NativeResponseIdentity) => {
+          assert.equal(response.nativeRequestId, record.nativeRequestId)
+          assert.equal(response.nativeRequestType, record.nativeRequestType)
+          assert.equal(response.option.optionId, record.selectedOptionId)
           calls.reconciles++
           return control.history
         },
