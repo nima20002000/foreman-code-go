@@ -22,7 +22,9 @@ export function validateExecutableTopology(version: WorkflowVersion): Executable
   const outgoing = new Map([...nodeIds].map((nodeId) => [nodeId, [] as string[]]))
 
   for (const edge of version.definition.edges) {
-    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
+    const sources = incoming.get(edge.target)
+    const targets = outgoing.get(edge.source)
+    if (!sources || !targets) {
       throw new DomainError('WORKFLOW_EDGE_INVALID', `Edge '${edge.id}' references an unknown node.`, 409)
     }
     if (
@@ -38,12 +40,12 @@ export function validateExecutableTopology(version: WorkflowVersion): Executable
         409,
       )
     }
-    incoming.get(edge.target)?.push(edge.source)
-    outgoing.get(edge.source)?.push(edge.target)
+    sources.push(edge.source)
+    targets.push(edge.target)
   }
 
   for (const node of version.definition.nodes) {
-    const sources = incoming.get(node.id) ?? []
+    const sources = incoming.get(node.id)!
     if ((node.join && node.join.mode !== 'all') || (sources.length > 1 && !node.join)) {
       throw new DomainError(
         'WORKFLOW_JOIN_UNSUPPORTED',
@@ -72,8 +74,8 @@ export function validateExecutableTopology(version: WorkflowVersion): Executable
     const current = topological.shift()
     if (!current) continue
     visited += 1
-    for (const target of outgoing.get(current) ?? []) {
-      const degree = (degrees.get(target) ?? 0) - 1
+    for (const target of outgoing.get(current)!) {
+      const degree = degrees.get(target)! - 1
       degrees.set(target, degree)
       if (degree === 0) topological.push(target)
     }

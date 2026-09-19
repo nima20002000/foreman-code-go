@@ -11,7 +11,7 @@ import { nativeCorrelation } from '../src/modules/conversations/operatorChatRepo
 import { operatorChatBootstrapFrame, OPERATOR_BOOTSTRAP_FRAME_BYTES } from '../src/modules/conversations/operatorChatBootstrap.js'
 import { ReviewManager } from './fixtures/agent1OperatorChat.js'
 
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2603'
+const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
 let schema: string, admin: pg.Pool, pool: pg.Pool
 let owner: ManagementPrincipal, access: PostgresAccessService
 let repository: PostgresOperatorConversationRepository, chat: OperatorChatService, manager: ReviewManager

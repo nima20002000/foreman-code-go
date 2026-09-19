@@ -1,27 +1,7 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
 
-import { buildOpenCodeConfigContent } from '../src/modules/harnesses/opencodeServer.js'
 import { credentialReferences, parseConfigObject, parseOpenCodeSse, providerSupports, visibleNativeEvent, object } from '../src/modules/harnesses/opencodeProtocol.js'
-import { advanced } from './opencode-fixtures.js'
-
-it('[F25] merges valid JSONC comments and trailing commas without corrupting quoted text', () => {
-  const source = `{
-    // Native inline config accepts JSONC.
-    "model": "provider/model", "url": "https://host/path//not-a-comment",
-    "note": "escaped quote: \\\u0022 /* still string */",
-    "plugin": ["one",], /* block comment */
-    "compaction": { "custom": true, },
-  }`
-  const selected = { ...advanced(), subagentDepth: 0, compaction: { auto: false, prune: true, tailTurns: 4, preserveRecentTokens: 2_048 } }
-  const result = JSON.parse(buildOpenCodeConfigContent(source, selected))
-  assert.equal(result.url, 'https://host/path//not-a-comment')
-  assert.deepEqual(result.plugin, ['one'])
-  assert.deepEqual(result.compaction, { custom: true, auto: false, prune: true, tail_turns: 4, preserve_recent_tokens: 2_048 })
-  assert.equal(result.subagent_depth, 0)
-  assert.throws(() => parseConfigObject('{/* unterminated'))
-  assert.throws(() => parseConfigObject('[]'))
-})
 
 it('[F22] credential provenance recognizes Bearer placeholders only in unresolved input', () => {
   assert.deepEqual(credentialReferences({ mcp: { app: { headers: { Authorization: 'Bearer {env:GRAPHQL_APP_MCP_TOKEN}' } } } }), { app: 'GRAPHQL_APP_MCP_TOKEN' })
@@ -78,4 +58,36 @@ it('[F19] heartbeat expiry cancels a silent stream without imposing a healthy wh
   const iterator = parseOpenCodeSse(silent, undefined, 10)[Symbol.asyncIterator]()
   await assert.rejects(iterator.next(), /heartbeat timed out/)
   assert.equal(cancelled, true)
+})
+
+for (const [label, source, expected] of [
+  ['empty object', '{}', {}],
+  ['comments and trailing commas', '{/* native */"items":[1,2,],"nested":{"allow":false,},}', { items: [1, 2], nested: { allow: false } }],
+  ['quoted comment markers', '{"url":"https://host/path//text","note":"/* text */"}', { url: 'https://host/path//text', note: '/* text */' }],
+  ['byte-order mark', '\uFEFF{"enabled":true}', { enabled: true }],
+] as const) {
+  it(`parses JSONC ${label}`, () => { assert.deepEqual(parseConfigObject(source), expected) })
+}
+
+for (const [label, source] of [
+  ['unterminated comment', '{/* unterminated'],
+  ['array root', '[]'],
+  ['null root', 'null'],
+  ['empty input', ''],
+  ['missing value', '{"permission":}'],
+  ['multiple documents', '{}{}'],
+  ['JavaScript expression', '{"permission":process.env.SECRET}'],
+] as const) {
+  it(`rejects JSONC ${label}`, () => { assert.throws(() => parseConfigObject(source)) })
+}
+
+it('skips malformed SSE payloads and still forwards an unknown native event', async () => {
+  const frames = ['not-json', 'null', '[]', '{"properties":{}}', '{"type":"future.event","properties":{"value":1}}']
+  const stream = new ReadableStream<Uint8Array>({ start(controller) {
+    controller.enqueue(new TextEncoder().encode(frames.map((frame) => `data: ${frame}\n\n`).join('')))
+    controller.close()
+  } })
+  const events = []
+  for await (const event of parseOpenCodeSse(stream)) events.push(event)
+  assert.deepEqual(events, [{ type: 'future.event', properties: { value: 1 } }])
 })

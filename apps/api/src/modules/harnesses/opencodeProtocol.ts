@@ -178,6 +178,10 @@ export function failure(code: string, message: string): ExecutionResult {
   return { outcome: 'failed', error: { code, message, retryable: false } }
 }
 
+function hasPendingTools(message: OpenCodeMessage): boolean {
+  return message.parts.some((part) => part.type === 'tool' && ['pending', 'running'].includes(String(object(part.state).status)))
+}
+
 function assistantResult(message: OpenCodeMessage | undefined): ExecutionResult | undefined {
   if (!message) return undefined
   const info = message.info
@@ -192,7 +196,7 @@ function assistantResult(message: OpenCodeMessage | undefined): ExecutionResult 
   }
   if (info.summary === true || typeof object(info.time).completed !== 'number'
     || typeof info.finish !== 'string' || ['tool-calls', 'unknown', 'error'].includes(info.finish)) return undefined
-  if (message.parts.some((part) => part.type === 'tool' && ['pending', 'running'].includes(String(object(part.state).status)))) return undefined
+  if (hasPendingTools(message)) return undefined
   return { outcome: 'succeeded', output: { text: message.parts
     .filter((part) => part.type === 'text' && typeof part.text === 'string' && part.ignored !== true)
     .map((part) => part.text as string).join('') } }
@@ -231,7 +235,7 @@ export class OpenCodeTurnHistory {
     if (info.role === 'assistant') {
       // The newest assistant matters even if incomplete; never fall back to an older completion.
       this.latest ??= message
-      if (message.parts.some((part) => part.type === 'tool' && ['pending', 'running'].includes(String(object(part.state).status)))) this.pendingTools = true
+      if (hasPendingTools(message)) this.pendingTools = true
       return false
     }
     if (info.role !== 'user') return false
@@ -249,7 +253,8 @@ export class OpenCodeTurnHistory {
     const compaction = message.parts.find((part) => part.type === 'compaction' && part.auto === true)
     const synthetic = message.parts.some((part) => part.type === 'text' && part.synthetic === true
       && object(part.metadata).compaction_continue === true)
-    const replay = replayParts(message) === replayParts(this.root) || replayParts(message) === replayParts(this.root, true)
+    const parts = replayParts(message)
+    const replay = parts === replayParts(this.root) || parts === replayParts(this.root, true)
     if (compaction) {
       if (this.needsCompaction === 'replay' && compaction.overflow !== true) this.invalidChain = true
       if (!this.haveContinuation) {

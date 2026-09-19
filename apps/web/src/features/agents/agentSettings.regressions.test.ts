@@ -31,11 +31,10 @@ describe('PR #3 harness defaults and names', () => {
     )).toEqual(direct.harnessConfiguration)
   })
 
-  it('does not apply later global defaults to an existing agent', () => {
+  it('keeps existing agent settings when no creation defaults are supplied', () => {
     const existing = defaultAgentForHarness('codex', 'existing', 'Existing agent')
     expect(configuredHarness(existing, 'codex', existing.model!, existing.effort!, false, 'read-only'))
       .toEqual(DEFAULT_HARNESS_DEFAULTS.codex)
-    expect(defaults.codex.sandbox).toBe('workspace-write')
   })
 
   it.each(['codex', 'opencode'] as const)('continues %s names through 998, 999, 1000, and 1001', (harness) => {

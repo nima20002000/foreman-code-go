@@ -16,5 +16,5 @@ export function toolFailure(error: unknown, internalMessage = 'The Operator serv
   const body = error instanceof DomainError
     ? { error: { code: error.code, message: error.message, ...(error.details ? { details: error.details } : {}) } }
     : { error: { code: 'INTERNAL_ERROR', message: internalMessage } }
-  return { isError: true, content: [{ type: 'text', text: JSON.stringify(body) }], structuredContent: body }
+  return { isError: true, ...toolResult(body) }
 }

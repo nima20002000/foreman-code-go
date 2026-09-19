@@ -51,11 +51,11 @@ export function AgentNavigation({ workspaceId, activeAgentId }: AgentNavigationP
         >
           Agents unavailable
         </p>
-      ) : agents.length === 0 ? (
+      ) : (
         <p className="agent-navigation-state" data-testid="agent-navigation-empty">
           No agents yet
         </p>
-      ) : null}
+      )}
 
       {agents.length > 0 && agentsQuery.isPending ? (
         <p className="agent-navigation-state" role="status">Loading workspace agents…</p>

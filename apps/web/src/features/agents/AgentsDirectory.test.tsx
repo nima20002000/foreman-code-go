@@ -43,8 +43,8 @@ describe('AgentsDirectoryContent', () => {
   it('directs empty workspaces to create agents through a workflow graph', () => {
     render(<AgentsDirectoryContent workspaceId="workspace-empty" agents={[]} />)
 
-    expect(screen.getByTestId('agents-empty')).toHaveTextContent('No agents yet')
-    expect(screen.getByTestId('agents-empty')).toHaveTextContent('Add agents from a workflow graph')
+    expect(screen.getByText('No agents yet')).toBeVisible()
+    expect(screen.getByText(/Add agents from a workflow graph/)).toBeVisible()
   })
 
   it('keeps accessible card reordering as local interaction state only', async () => {
@@ -57,6 +57,6 @@ describe('AgentsDirectoryContent', () => {
 
     const cards = [...document.querySelectorAll<HTMLElement>('[data-agent-id]')]
     expect(cards.map((card) => card.dataset.agentId)).toEqual(['agent-builder', 'agent-researcher'])
-    expect(screen.getByTestId('agent-reorder-announcement')).toHaveTextContent('Moved Researcher')
+    expect(screen.getByRole('status')).toHaveTextContent('Moved Researcher')
   })
 })

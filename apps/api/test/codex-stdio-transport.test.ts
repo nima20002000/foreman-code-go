@@ -29,6 +29,33 @@ describe.skipIf(process.platform === 'win32')('Codex owned stdio transport', () 
     await rm(f.directory, { recursive: true, force: true })
   })
 
+  it('drains large stderr output before initialization without forwarding diagnostics', async () => {
+    await writeFile(f.binary, `#!${process.execPath}
+const { createInterface } = require('node:readline')
+void (async () => {
+  await new Promise((resolve, reject) => {
+    process.stderr.write((process.env.GRAPHQL_APP_MCP_TOKEN + '\\n').repeat(65_536), (error) => error ? reject(error) : resolve())
+  })
+  const lines = createInterface({ input: process.stdin })
+  for await (const line of lines) {
+    const request = JSON.parse(line)
+    if (request.id !== undefined) {
+      process.stdout.write(JSON.stringify({ id: request.id, result: request.method === 'initialize' ? {} : request.params }) + '\\n')
+    }
+  }
+})().catch(() => process.exit(1))
+`)
+    const observed: unknown[] = []
+    const value = new CodexStdioTransport(
+      f.binary, f.directory, { ...process.env, GRAPHQL_APP_MCP_TOKEN: 'fixture-stderr-token' }, protocol,
+      async () => undefined, (method, params) => { observed.push({ method, params }) }, (error) => { observed.push(error) }, 5_000,
+    )
+    transports.push(value)
+    await value.start()
+    assert.deepEqual(await value.request('test/echo', { alive: true }), { alive: true })
+    assert.deepEqual(observed, [])
+  }, 15_000)
+
   it('F13: successful and failed RPCs remove every abort listener', async () => {
     const value = await transport()
     const controller = new AbortController()

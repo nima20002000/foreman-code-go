@@ -43,46 +43,48 @@ describe('runtime shutdown ownership barrier', () => {
   })
 
   for (const failing of ['stop', 'drain', 'dispose'] as const) {
-    it(`retains ownership and the rejected result after a ${failing} failure`, async () => {
+    it.each(['throw', 'reject'] as const)(`retains ownership and the rejected result after a ${failing} %s`, async (mode) => {
       const failure = new Error('closure is uncertain')
+      const sibling = vi.fn()
       const cleanup = vi.fn(async () => undefined)
       const releaseOwnership = vi.fn(async () => undefined)
-      const step = (stage: string) => ({ name: stage, run: async () => { if (stage === failing) throw failure } })
+      const step = (stage: string) => ({ name: stage, run: () => {
+        if (stage !== failing) return
+        if (mode === 'throw') throw failure
+        return Promise.reject(failure)
+      } })
       const shutdown = new RuntimeShutdown({
-        stop: [step('stop')], drain: [step('drain')],
+        stop: [step('stop'), { name: 'other stop', run: sibling }], drain: [step('drain')],
         dispose: [step('dispose'), { name: 'other manager', run: cleanup }], releaseOwnership,
       })
       const result = shutdown.finish()
       await expect(result).rejects.toThrow('runtime ownership was not released')
       expect(shutdown.finish()).toBe(result)
       await expect(shutdown.finish()).rejects.toBeInstanceOf(AggregateError)
+      expect(sibling).toHaveBeenCalledTimes(1)
       expect(cleanup).toHaveBeenCalledTimes(1)
       expect(releaseOwnership).not.toHaveBeenCalled()
     })
   }
 
-  it('does not skip sibling cancellation when a public stop throws synchronously', async () => {
-    const sibling = vi.fn()
-    const releaseOwnership = vi.fn(async () => undefined)
-    const shutdown = new RuntimeShutdown({
-      stop: [{ name: 'broken', run: () => { throw new Error('stop failed') } }, { name: 'sibling', run: sibling }],
-      drain: [], dispose: [], releaseOwnership,
-    })
-    await expect(shutdown.finish()).rejects.toBeInstanceOf(AggregateError)
-    expect(sibling).toHaveBeenCalledOnce()
-    expect(releaseOwnership).not.toHaveBeenCalled()
-  })
-
-  it('publishes its single-flight result before a synchronous lifecycle re-entry', async () => {
+  it.each(['begin', 'finish'] as const)('shares one shutdown across synchronous re-entry from %s', async (entry) => {
     let reentered: Promise<void> | undefined
     const releaseOwnership = vi.fn(async () => undefined)
+    const stop = vi.fn(() => {
+      shutdown.begin()
+      reentered = shutdown.finish()
+    })
     const shutdown = new RuntimeShutdown({
-      stop: [{ name: 'reenter', run: () => { reentered = shutdown.finish() } }],
+      stop: [{ name: 'reenter', run: stop }],
       drain: [], dispose: [], releaseOwnership,
     })
+    shutdown[entry]()
     const result = shutdown.finish()
     expect(reentered).toBe(result)
+    expect(stop).toHaveBeenCalledTimes(1)
     await result
+    shutdown.begin()
+    expect(stop).toHaveBeenCalledTimes(1)
     expect(releaseOwnership).toHaveBeenCalledTimes(1)
   })
 

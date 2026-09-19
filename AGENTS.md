@@ -21,6 +21,33 @@ redefine API/domain shapes locally or import server-only code.
 
 Do not duplicate one state source in another layer without a documented reason.
 
+## UI/UX learning loop
+
+Before doing UI or UX work in `apps/web`, read the root `UI-UX-lessons.md` file.
+Treat it as project-specific design and interaction guidance learned from earlier
+fixes, not as optional background reading.
+
+When a UI/UX fix reveals a reusable lesson, update `UI-UX-lessons.md` in the same
+change. Record the reason the old behavior failed, the durable rule future work
+should follow, and the evidence that protects the behavior. Do not turn the file
+into a changelog of screens, commits, or cosmetic edits.
+
+When updating the lessons file:
+
+- Merge new evidence into an existing lesson when the underlying cause is the same.
+- Add a new lesson only when it changes how future UI/UX work should be designed or tested.
+- Preserve the distinction between server truth, editable drafts, URL-owned state,
+  and local interaction state.
+- Include the important states for the changed interaction: clean/dirty, loading,
+  empty, error, conflict, pending/in-flight, success, narrow viewport, keyboard,
+  and focus behavior when relevant.
+- Prefer tests that protect the reason for the fix rather than snapshots of incidental markup.
+- Do not rewrite an evidence-based lesson just to match a personal design preference.
+
+A UI/UX task is not complete if it repeats a known failure documented in
+`UI-UX-lessons.md`, or if it introduces a new reusable lesson and leaves that
+lesson undocumented.
+
 ## Verification
 
 From the repository root, use the pinned pnpm runtime. Plain npm installs are

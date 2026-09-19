@@ -9,7 +9,6 @@ import {
   ManagedInteractionSchema,
 } from '@graphql/contracts/management'
 
-import { hasAction } from '../../../modules/access/policy.js'
 import { invokeOperatorTool } from '../invoke.js'
 import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'
@@ -22,23 +21,19 @@ export function registerInteractionTools(server: McpServer, context: OperatorReq
     inputSchema: InteractionSummaryInputSchema, outputSchema: InteractionSummaryResultSchema,
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'interaction_summary', () => service.summary(context.principal, input)))
-  if (hasAction(context.principal, 'interactions:read')) {
-    if (operatorToolAvailable(context, 'interaction_list')) server.registerTool('interaction_list', {
-      description: 'List authorized native interactions across handlers, with scoped counts and response permissions. Reading is not approval authority.',
-      inputSchema: InteractionListInputSchema, outputSchema: ManagedInteractionPageSchema,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    }, async (input) => invokeOperatorTool(context, 'interaction_list', () => service.list(context.principal, input)))
-    if (operatorToolAvailable(context, 'interaction_get')) server.registerTool('interaction_get', {
-      description: 'Read one authorized native interaction and its handler-specific response permissions.',
-      inputSchema: InteractionGetInputSchema, outputSchema: ManagedInteractionSchema,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    }, async (input) => invokeOperatorTool(context, 'interaction_get', () => service.get(context.principal, input.interactionId)))
-  }
-  if (hasAction(context.principal, 'interactions:respond')) {
-    if (operatorToolAvailable(context, 'interaction_respond')) server.registerTool('interaction_respond', {
-      description: 'Choose one server-generated opaque response option for an Operator-assigned native request.',
-      inputSchema: InteractionRespondInputSchema, outputSchema: InteractionRespondResultSchema,
-      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-    }, async (input) => invokeOperatorTool(context, 'interaction_respond', () => service.respond(context.principal, input)))
-  }
+  if (operatorToolAvailable(context, 'interaction_list')) server.registerTool('interaction_list', {
+    description: 'List authorized native interactions across handlers, with scoped counts and response permissions. Reading is not approval authority.',
+    inputSchema: InteractionListInputSchema, outputSchema: ManagedInteractionPageSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input) => invokeOperatorTool(context, 'interaction_list', () => service.list(context.principal, input)))
+  if (operatorToolAvailable(context, 'interaction_get')) server.registerTool('interaction_get', {
+    description: 'Read one authorized native interaction and its handler-specific response permissions.',
+    inputSchema: InteractionGetInputSchema, outputSchema: ManagedInteractionSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input) => invokeOperatorTool(context, 'interaction_get', () => service.get(context.principal, input.interactionId)))
+  if (operatorToolAvailable(context, 'interaction_respond')) server.registerTool('interaction_respond', {
+    description: 'Choose one server-generated opaque response option for an Operator-assigned native request.',
+    inputSchema: InteractionRespondInputSchema, outputSchema: InteractionRespondResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, async (input) => invokeOperatorTool(context, 'interaction_respond', () => service.respond(context.principal, input)))
 }

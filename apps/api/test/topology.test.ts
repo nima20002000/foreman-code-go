@@ -49,6 +49,36 @@ describe('LangGraph topology validation', () => {
     expect(topology.sinks).toEqual(['node-c'])
   })
 
+  it.each(['source', 'target'] as const)('rejects an unknown edge %s before building adjacency', (endpoint) => {
+    const version = workflowVersion()
+    version.definition.edges[0]![endpoint] = 'missing-node'
+
+    expect(() => validateExecutableTopology(version)).toThrow('references an unknown node')
+  })
+
+  it('rejects a missing all join at a fan-in', () => {
+    const version = workflowVersion()
+    delete version.definition.nodes[2]!.join
+
+    expect(() => validateExecutableTopology(version)).toThrow('must use an all join')
+  })
+
+  it('rejects an unreachable node even when all edge endpoints exist', () => {
+    const version = workflowVersion()
+    version.definition.edges = version.definition.edges.filter((edge) => edge.id !== 'a-b')
+
+    expect(() => validateExecutableTopology(version)).toThrow('Every workflow node must be reachable')
+  })
+
+  it('rejects a reachable cycle instead of treating it as a terminal graph', () => {
+    const version = workflowVersion()
+    version.definition.edges.push({
+      ...version.definition.edges[0]!, id: 'c-a', source: 'node-c', target: 'node-a',
+    })
+
+    expect(() => validateExecutableTopology(version)).toThrow('Cycles and bounded repeats are not supported')
+  })
+
   it('rejects unsupported result routing instead of silently changing it', () => {
     const version = workflowVersion()
     version.definition.edges[0]!.route = {

@@ -15,9 +15,7 @@ export interface RuntimeShutdownOptions {
 
 function settle(steps: RuntimeShutdownStep[]): Promise<Error[]> {
   // Start every sibling even if another throws synchronously or never settles.
-  const work = steps.map((step) => {
-    try { return Promise.resolve(step.run()) } catch (error) { return Promise.reject(error) }
-  })
+  const work = steps.map(async (step) => step.run())
   return Promise.allSettled(work).then((results) => results.flatMap((result, index) =>
     result.status === 'rejected'
       ? [new Error(`Runtime shutdown step '${steps[index]!.name}' failed.`, { cause: result.reason })]
@@ -32,15 +30,13 @@ function settle(steps: RuntimeShutdownStep[]): Promise<Error[]> {
  * failure, including timeouts whose underlying work may still be running.
  */
 export class RuntimeShutdown {
-  private started = false
   private stopping: Promise<Error[]> | undefined
   private completion: Promise<void> | undefined
 
   constructor(private readonly options: RuntimeShutdownOptions) {}
 
   begin(): void {
-    if (this.started) return
-    this.started = true
+    if (this.stopping) return
     // Publish the promise before invoking callbacks, including synchronous re-entry.
     let stopped!: (errors: Error[]) => void
     this.stopping = new Promise<Error[]>((resolve) => { stopped = resolve })
@@ -50,7 +46,6 @@ export class RuntimeShutdown {
   finish(): Promise<void> {
     // Publish the shared result before any lifecycle callback can re-enter.
     this.completion ??= Promise.resolve().then(async () => {
-      this.begin()
       const errors = await this.stopping!
       errors.push(...await settle(this.options.drain))
       // Attempt every disposer even when a previous drain failed. Such a failure

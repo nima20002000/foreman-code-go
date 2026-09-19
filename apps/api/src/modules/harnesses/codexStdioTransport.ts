@@ -1,7 +1,7 @@
 import { HarnessExecutionError } from './errors.js'
 import { spawnOwnedStdioProcess } from './process.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
-import { redactKnownSecrets, redactSecretText } from './secrets.js'
+import { redactKnownSecrets } from './secrets.js'
 
 export type JsonObject = Record<string, unknown>
 export type RequestId = string | number
@@ -59,7 +59,6 @@ export class CodexStdioTransport {
   private nextId = 1
   private stopped = false
   private closePromise: Promise<void> | undefined
-  private stderr = ''
 
   constructor(
     private readonly binary: string,
@@ -82,10 +81,8 @@ export class CodexStdioTransport {
       ...(this.processRecovery ? { recovery: this.processRecovery } : {}),
     })
     const { child, closed } = this.owned
-    child.stderr.setEncoding('utf8')
-    child.stderr.on('data', (chunk: string) => {
-      this.stderr = redactSecretText(this.stderr + chunk, [this.environment.GRAPHQL_APP_MCP_TOKEN ?? '', this.environment.GRAPHQL_OPERATOR_MCP_TOKEN ?? '']).slice(-128_000)
-    })
+    // Drain diagnostics without retaining or exposing provider stderr.
+    child.stderr.resume()
     void this.readFrames().catch((error: unknown) => this.fail(error instanceof Error ? error : new Error('Codex dispatch failed.')))
     void closed.then(() => this.fail(new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Codex app-server disconnected.')))
     try {
@@ -172,13 +169,12 @@ export class CodexStdioTransport {
         if (settled) return
         settled = true
         clearTimeout(timer)
-        this.writes.delete(failed)
+        this.writes.delete(finish)
         if (error) reject(error)
         else resolve()
       }
-      const failed = (error: Error) => finish(error)
       const timer = setTimeout(() => finish(new Error('Provider write timed out.')), this.timeoutMs)
-      this.writes.add(failed)
+      this.writes.add(finish)
       try { this.owned!.child.stdin.write(JSON.stringify(message) + '\n', finish) } catch (error) {
         finish(error instanceof Error ? error : new Error('Provider write failed.'))
       }

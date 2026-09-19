@@ -15,6 +15,7 @@ import { createDatabase } from '../src/infrastructure/database.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { DomainError } from '../src/modules/errors.js'
+import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
@@ -139,22 +140,26 @@ it('uses one real approval runtime across production HTTP, Operator MCP, App MCP
   expect(resume).toHaveBeenCalledExactlyOnceWith(current)
 })
 
-it('constructs separate OpenCode managers with the pinned configuration, owner, and accepted directory', () => {
+it.each(['codex', 'opencode'] as const)('constructs separate native %s managers for each accepted execution', (harness) => {
   const approvals: object = Reflect.get(production.engine, 'nativeExecutions') as object
   const managers = Reflect.get(approvals, 'managers') as NativeSessionManagerResolver
   // The factory consumes the harness portion; the execution coordinator validates
   // the complete durable configuration before it calls this factory.
   const configuration = {
     id: 'config-1', agentId: 'agent-1',
-    harness: { harness: 'opencode', advanced: DEFAULT_OPENCODE_ADVANCED_CONFIGURATION },
+    harness: harness === 'opencode'
+      ? { harness, advanced: DEFAULT_OPENCODE_ADVANCED_CONFIGURATION }
+      : { harness },
   } as AgentConfigurationVersion
-  const context = { executionId: 'execution-1', agentId: 'agent-1', workingDirectory: '/accepted/project', harness: 'opencode' as const, configuration }
+  const context = { executionId: 'execution-1', agentId: 'agent-1', workingDirectory: '/accepted/project', harness, configuration }
   const first = managers.resolve(context)
-  expect(first.manager).toBeInstanceOf(OpenCodeNativeSessionManager)
+  expect(first.manager).toBeInstanceOf(harness === 'codex' ? CodexAppServerSessionManager : OpenCodeNativeSessionManager)
   expect(first.processState).toBe('needs_start')
-  expect(first.manager).toHaveProperty('options.ownerAgentId', context.agentId)
-  expect(first.manager).toHaveProperty('options.server.options.workingDirectory', context.workingDirectory)
-  expect(first.manager).toHaveProperty('options.server.advancedConfiguration', configuration.harness.advanced)
+  if (harness === 'opencode') {
+    expect(first.manager).toHaveProperty('options.ownerAgentId', context.agentId)
+    expect(first.manager).toHaveProperty('options.server.options.workingDirectory', context.workingDirectory)
+    expect(first.manager).toHaveProperty('options.server.advancedConfiguration', configuration.harness.advanced)
+  }
   expect(managers.resolve(context)).toMatchObject({ manager: first.manager, processState: 'needs_start', lifecycle: 'allocated' })
   const second = managers.resolve({ ...context, executionId: 'execution-2' })
   expect(second.manager).not.toBe(first.manager)

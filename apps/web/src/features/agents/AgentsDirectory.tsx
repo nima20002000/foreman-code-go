@@ -89,17 +89,15 @@ export function AgentsDirectoryContent({
 }) {
   const graphDrafts = useGraphDraftStore((state) => state.drafts)
   const announcement = useAgentDirectoryStore((state) => state.announcement)
-  const visibleAgents = [...agents]
   const reorder = useReorderableAgents(
     workspaceId,
-    visibleAgents.map((agent) => ({ id: agent.id, label: agent.name })),
+    agents.map((agent) => ({ id: agent.id, label: agent.name })),
   )
-  const agentById = new Map(visibleAgents.map((agent) => [agent.id, agent]))
+  const agentById = new Map(agents.map((agent) => [agent.id, agent]))
   const orderedAgents = reorder.orderedIds
     .map((agentId) => agentById.get(agentId))
     .filter((agent): agent is Agent => Boolean(agent))
-  const workspaceWorkflows = [...workflows]
-    .map((workflow) => graphDrafts[workflowDraftKey(workspaceId, workflow.id)]?.workflow ?? workflow)
+  const workspaceWorkflows = workflows.map((workflow) => graphDrafts[workflowDraftKey(workspaceId, workflow.id)]?.workflow ?? workflow)
   return (
     <div className="agents-directory" data-testid="agents-directory">
       <PageHeader
@@ -108,7 +106,7 @@ export function AgentsDirectoryContent({
         description="Browse the reusable agents available to this workspace."
       />
 
-      {visibleAgents.length > 0 ? (
+      {agents.length > 0 ? (
         <div className="agent-directory-grid" aria-label="Agents" {...reorder.containerProps}>
           {orderedAgents.map((agent) => (
             <AgentCard
@@ -123,7 +121,7 @@ export function AgentsDirectoryContent({
           ))}
         </div>
       ) : (
-        <div data-testid="agents-empty">
+        <div>
           <EmptyState
             icon="bot"
             title="No agents yet"
@@ -135,7 +133,6 @@ export function AgentsDirectoryContent({
       <p
         key={announcement?.nonce ?? 0}
         className="visually-hidden"
-        data-testid="agent-reorder-announcement"
         role="status"
         aria-live="polite"
       >

@@ -9,6 +9,12 @@ import {
   writeLocalAgents,
 } from './localAgents'
 
+export {
+  applyStoredOrder as applyAgentOrder,
+  moveItemRelative as moveAgentRelative,
+  moveItemToIndex as moveAgentToIndex,
+} from '../../shared/ui/listOrder'
+
 export interface AgentDirectoryAnnouncement {
   message: string
   nonce: number
@@ -87,44 +93,3 @@ export const useAgentDirectoryStore = create<AgentDirectoryState>((set) => ({
     })),
   reset: () => set({ orders: {}, catalogs: {}, announcement: null }),
 }))
-
-/** Apply a workspace's order to the current query/local projection. */
-export function applyAgentOrder(
-  ids: readonly string[],
-  storedOrder: readonly string[] | undefined,
-): string[] {
-  if (!storedOrder || storedOrder.length === 0) return [...ids]
-  const available = new Set(ids)
-  const ordered = [...new Set(storedOrder)].filter((id) => available.has(id))
-  const orderedSet = new Set(ordered)
-  return [...ordered, ...ids.filter((id) => !orderedSet.has(id))]
-}
-
-export function moveAgentToIndex(
-  ids: readonly string[],
-  id: string,
-  targetIndex: number,
-): string[] {
-  const from = ids.indexOf(id)
-  if (from === -1) return [...ids]
-  const to = Math.max(0, Math.min(targetIndex, ids.length - 1))
-  if (from === to) return [...ids]
-  const next = [...ids]
-  next.splice(from, 1)
-  next.splice(to, 0, id)
-  return next
-}
-
-export function moveAgentRelative(
-  ids: readonly string[],
-  id: string,
-  targetId: string,
-  position: 'before' | 'after',
-): string[] {
-  if (id === targetId) return [...ids]
-  const without = ids.filter((value) => value !== id)
-  const targetIndex = without.indexOf(targetId)
-  if (targetIndex === -1) return [...ids]
-  without.splice(position === 'after' ? targetIndex + 1 : targetIndex, 0, id)
-  return without
-}

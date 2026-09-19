@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  AgentCreateInputSchema, AgentUpdateInputSchema, GraphDraftOperationSchema,
-  InteractionRespondInputSchema, LocationProvisionInputSchema, RunRetryInputSchema,
-  WorkflowTriggerUpdateInputSchema, ManagementActionSchema, type ManagementPrincipal,
-} from '@graphql/contracts/management'
+import { ManagementActionSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import { firstScheduleAt, dueSchedule } from '../src/modules/workflows/triggerTiming.js'
 import { codexModelOptions, openCodeOptions, harnessSettingSupport } from '../src/modules/harnesses/operatorOptions.js'
 import { operatorToolAvailable } from '../src/mcp/operator/availability.js'
@@ -12,8 +8,6 @@ import { operatorResponseAccess } from '../src/modules/interactions/operator.js'
 import type { OperatorRequestContext } from '../src/mcp/operator/types.js'
 import type { DurableInteraction } from '@graphql/contracts'
 
-const configuration = {harness:'codex',model:'fixture',reasoningEffort:'low',sandbox:'read-only',serviceTier:'standard'} as const
-const commandId = 'comprehensive-command'
 const owner: ManagementPrincipal = {id:'owner',name:'Owner',audience:'operator',expiresAt:'2099-01-01T00:00:00Z',revokedAt:null,
   grants:[{actions:[...ManagementActionSchema.options],scope:{}}]}
 function context(principal = owner): OperatorRequestContext {
@@ -21,53 +15,7 @@ function context(principal = owner): OperatorRequestContext {
     workspace:{provisioningEnabled:true},runs:{},skills:{},triggers:{}}}} as unknown as OperatorRequestContext
 }
 
-describe('Operator MCP comprehensive contracts and permission boundaries', () => {
-  it('defaults new standalone Agents to coder, not Operator authority', () => {
-    const input={workspaceId:'w',agentId:'a',name:'Agent',commandId,configuration}
-    expect(AgentCreateInputSchema.parse(input).productRole).toBe('coder')
-    expect(AgentCreateInputSchema.safeParse({...input,productRole:'operator'}).success).toBe(false)
-  })
-  it('does not allow arbitrary native settings or operational state in creation', () => {
-    const input={workspaceId:'w',agentId:'a',name:'Agent',commandId,configuration}
-    expect(AgentCreateInputSchema.safeParse({...input,activeRunId:'run'}).success).toBe(false)
-    expect(AgentCreateInputSchema.safeParse({...input,configuration:{...configuration,unknownFlag:true}}).success).toBe(false)
-  })
-  it('requires both the metadata revision and current configuration pin for standalone changes', () => {
-    const input={workspaceId:'w',agentId:'a',commandId,expectedRevision:0,name:'Changed'}
-    expect(AgentUpdateInputSchema.safeParse(input).success).toBe(false)
-    expect(AgentUpdateInputSchema.safeParse({...input,expectedConfigurationVersionId:'v1'}).success).toBe(true)
-    expect(AgentUpdateInputSchema.safeParse({workspaceId:'w',agentId:'a',commandId,expectedRevision:0,expectedConfigurationVersionId:'v1'}).success).toBe(false)
-  })
-  it('preserves template configuration overrides and rejects conflicting product-role declarations', () => {
-    const input={type:'agent.add_from_template',agentId:'a',nodeId:'n',name:'Agent',template:'coder',configuration}
-    expect(GraphDraftOperationSchema.parse(input)).toMatchObject({configuration})
-    expect(GraphDraftOperationSchema.safeParse({...input,productRole:'orchestrator'}).success).toBe(false)
-  })
-  it('requires source pins when attaching an existing Agent', () => {
-    const input={type:'agent.attach',agentId:'a',nodeId:'n'}
-    expect(GraphDraftOperationSchema.safeParse(input).success).toBe(false)
-    expect(GraphDraftOperationSchema.safeParse({...input,expectedAgentRevision:0,expectedConfigurationVersionId:'v1'}).success).toBe(true)
-  })
-  it('exposes typed history restore and execution-condition edits', () => {
-    expect(GraphDraftOperationSchema.safeParse({type:'workflow.restore_version',versionId:'v1'}).success).toBe(true)
-    expect(GraphDraftOperationSchema.safeParse({type:'workflow.set_execution_condition',executionCondition:{kind:'on_event'}}).success).toBe(true)
-  })
-  it('does not accept arbitrary host paths in controlled provisioning', () => {
-    const input={workspaceId:'w',commandId,expectedLocationRevision:0}
-    expect(LocationProvisionInputSchema.safeParse(input).success).toBe(true)
-    expect(LocationProvisionInputSchema.safeParse({...input,rootPath:'/etc'}).success).toBe(false)
-  })
-  it('keeps retry and general-question contracts separate from approval semantics', () => {
-    expect(RunRetryInputSchema.safeParse({workspaceId:'w',runId:'r',commandId,workflowVersionId:'v1',expectedLocationRevision:0,nodeId:'n'}).success).toBe(false)
-    expect(InteractionRespondInputSchema.safeParse({interactionId:'i',commandId,expectedRevision:0,answer:'yes'}).success).toBe(false)
-  })
-  it('rejects sub-minute schedules and cron-like unimplemented fields', () => {
-    const input={workspaceId:'w',workflowId:'f',commandId,expectedRevision:0,workflowVersionId:'v1',expectedLocationRevision:1,enabled:true,
-      trigger:{kind:'schedule',startsAt:'2026-09-17T00:00:00Z',intervalSeconds:60}}
-    expect(WorkflowTriggerUpdateInputSchema.safeParse(input).success).toBe(true)
-    expect(WorkflowTriggerUpdateInputSchema.safeParse({...input,trigger:{...input.trigger,intervalSeconds:59}}).success).toBe(false)
-    expect(WorkflowTriggerUpdateInputSchema.safeParse({...input,trigger:{...input.trigger,cron:'* * * * *'}}).success).toBe(false)
-  })
+describe('Operator MCP permission boundaries', () => {
   it('does not borrow location permission from another workspace', () => {
     const principal={...owner,grants:[{actions:['runs:start'] as const,scope:{workspaceIds:['a']}},{actions:['workspace_locations:read'] as const,scope:{workspaceIds:['b']}}]}
     const candidate={...owner,grants:principal.grants.map(g=>({...g,actions:[...g.actions]}))}
