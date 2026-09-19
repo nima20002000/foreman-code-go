@@ -12,6 +12,25 @@ afterEach(() => {
 })
 
 describe('WorkflowDirectory', () => {
+  it('offers creation alongside existing workflows', async () => {
+    const user = userEvent.setup()
+    renderWithRouter(<WorkflowDirectory workspaceId="workspace-1" />)
+
+    await screen.findByTestId('workflow-card-workflow-content-pipeline')
+    await user.click(screen.getByRole('button', { name: 'New workflow' }))
+    expect(screen.getByRole('dialog', { name: 'New workflow' })).toBeVisible()
+  })
+
+  it('offers creation directly in the empty state', async () => {
+    const user = userEvent.setup()
+    server.use(http.get('/api/management/workspaces/workspace-1/workflows', () => HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })))
+    renderWithRouter(<WorkflowDirectory workspaceId="workspace-1" />)
+
+    expect(await screen.findByTestId('workflow-directory-empty')).toHaveTextContent('No workflows yet')
+    await user.click(screen.getByRole('button', { name: 'New workflow' }))
+    expect(screen.getByRole('dialog', { name: 'New workflow' })).toBeVisible()
+  })
+
   it('lists durable workflows as directory cards', async () => {
     renderWithRouter(<WorkflowDirectory workspaceId="workspace-1" />)
 

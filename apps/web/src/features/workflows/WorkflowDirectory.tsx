@@ -10,6 +10,7 @@ import {
   Button, Card, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField,
 } from '../../shared/ui/nocturne'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
+import { NewWorkflowAction } from './NewWorkflowAction'
 import './workflows.css'
 
 function WorkflowCardActions({ name, onRename, onRemove }: {
@@ -83,9 +84,8 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
   return (
     <section className="workflow-directory" aria-label="Workflows">
       <PageHeader
-        eyebrow="Workspace"
         title="Workflows"
-        description="Open, rename or archive a durable workflow."
+        actions={workflows.length > 0 ? <NewWorkflowAction workspaceId={workspaceId} /> : undefined}
       />
 
       {workflows.length > 0 ? (
@@ -136,7 +136,7 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
           <EmptyState
             icon="workflow"
             title="No workflows yet"
-            description="Use New workflow in the navigation to create one."
+            action={<NewWorkflowAction workspaceId={workspaceId} />}
           />
         </div>
       )}

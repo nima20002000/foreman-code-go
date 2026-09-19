@@ -4,7 +4,7 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
@@ -112,7 +112,7 @@ describe('WorkspaceRouteEntry integration', () => {
     if (!oldDetails) throw new Error('Workspace details were not loaded')
     server.use(http.get('/api/workspaces/workspace-1', () => HttpResponse.json(oldDetails)))
 
-    await user.click(screen.getByRole('button', { name: 'New workflow' }))
+    await user.click(within(screen.getByRole('region', { name: 'Workspace workflows' })).getByRole('button', { name: 'New workflow' }))
     await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Draft workflow')
     await user.click(screen.getByRole('button', { name: 'Create workflow' }))
 

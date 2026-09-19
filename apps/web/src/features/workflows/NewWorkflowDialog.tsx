@@ -11,7 +11,6 @@ import { Button, Dialog, Textarea, TextField } from '../../shared/ui/nocturne'
 
 export interface NewWorkflowDialogProps {
   workspaceId: string
-  workspaceName?: string
   onCreated: (workflowId: string) => void
   onCancel: () => void
 }
@@ -19,7 +18,6 @@ export interface NewWorkflowDialogProps {
 /** Compact form used by the New workflow dialog. */
 export function NewWorkflowDialog({
   workspaceId,
-  workspaceName,
   onCreated,
   onCancel,
 }: NewWorkflowDialogProps) {
@@ -104,14 +102,11 @@ export function NewWorkflowDialog({
       open
       onOpenChange={(nextOpen) => { if (!nextOpen) close() }}
       title="New workflow"
-      description={`Start an empty workflow${workspaceName ? ` in ${workspaceName}` : ''} and open its graph editor. You can add agent steps after the draft is created.`}
       busy={pending || uncertain}
       closeOnOutsideClick
       initialFocusRef={nameInputRef}
     >
       <form className="new-workflow-form" aria-label="New workflow" noValidate onSubmit={(event) => { event.preventDefault(); void create() }}>
-        <p className="panel-kicker">Workspace workflow</p>
-
         <TextField
           ref={nameInputRef}
           id="new-workflow-name"
@@ -144,10 +139,6 @@ export function NewWorkflowDialog({
           disabled={pending || uncertain || Boolean(createdWorkflow)}
           onChange={(event) => setDescription(event.target.value)}
         />
-
-        <p className="new-workflow-session-note" role="note">
-          This empty workflow is stored by the workspace backend.
-        </p>
 
         {uncertain ? <p role="status">The previous request may have succeeded. Retry Create workflow to resolve it without creating a duplicate.</p> : null}
         {openError ? <p role="alert">{openError}</p> : null}

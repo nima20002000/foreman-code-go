@@ -31,8 +31,8 @@ export function Progress({ label, value, max = 100, tone = 'accent', showValue =
   return <div className="n-progress" data-tone={tone}><div className="n-between"><span>{label}</span>{showValue && safe !== undefined && <span className="n-mono">{Math.round(safe / upper * 100)}%</span>}</div>
     <progress aria-label={label} value={safe} max={upper} /></div>
 }
-export function EmptyState({ title, description, icon = 'folder', action }: { title: string; description: string; icon?: IconName; action?: ReactNode }) {
-  return <div className="n-empty"><span className="n-empty-icon"><Icon name={icon} size={24} /></span><h3>{title}</h3><p>{description}</p>{action}</div>
+export function EmptyState({ title, description, icon = 'folder', action }: { title: string; description?: string; icon?: IconName; action?: ReactNode }) {
+  return <div className="n-empty"><span className="n-empty-icon"><Icon name={icon} size={24} /></span><h3>{title}</h3>{description && <p>{description}</p>}{action}</div>
 }
 export function ErrorState({ title = 'Something went wrong', description, onRetry, retrying = false }: { title?: string; description: string; onRetry?: () => void; retrying?: boolean }) {
   return <div className="n-error-state" role="alert"><EmptyState icon="warning" title={title} description={description}

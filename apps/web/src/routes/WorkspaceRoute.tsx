@@ -1,7 +1,9 @@
 import type { ReactNode } from 'react'
 
 import { WorkspaceExecutionLocationSetup } from '../features/settings/WorkspaceExecutionLocationSetup'
+import { NewWorkflowAction } from '../features/workflows/NewWorkflowAction'
 import { Alert, EmptyState, ErrorState, LoadingState } from '../shared/ui/nocturne'
+import '../features/workflows/workflows.css'
 
 import {
   WorkspaceShell,
@@ -61,11 +63,11 @@ function DefaultGraphSlot({
 
   if (state === 'empty') {
     return (
-      <div className="n-theme" data-testid="workspace-empty">
+      <div className="n-theme workspace-board-empty" data-testid="workspace-empty">
         <EmptyState
           icon="workflow"
-          title="No saved workflow yet"
-          description="This workspace does not have a saved workflow to display."
+          title="No workflows yet"
+          action={<NewWorkflowAction workspaceId={workspaceId} />}
         />
       </div>
     )
@@ -115,7 +117,10 @@ export function WorkspaceRouteView({
 
   resolvedSlots.graph = (
     <WorkspaceExecutionLocationSetup workspaceId={workspaceId} enabled={state !== 'loading' && state !== 'error' && state !== 'not-found'}>
-      {resolvedSlots.graph}
+      {state === 'ready' ? <div className="workspace-board">
+        <div className="workspace-board-actions" data-testid="workspace-board-actions"><NewWorkflowAction workspaceId={workspaceId} variant="secondary" /></div>
+        {resolvedSlots.graph}
+      </div> : resolvedSlots.graph}
     </WorkspaceExecutionLocationSetup>
   )
 

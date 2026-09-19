@@ -1,10 +1,9 @@
-import { useCallback, useState } from 'react'
-import { Link, useNavigate } from '@tanstack/react-router'
+import { Link } from '@tanstack/react-router'
 import type { WorkflowDefinition } from '@graphql/contracts'
 
-import { useInteractionsQuery, useManagedWorkflowsQuery, useWorkspaceDetailsQuery } from '../../shared/api/query'
-import { Badge, Button, Icon } from '../../shared/ui/nocturne'
-import { NewWorkflowDialog } from './NewWorkflowDialog'
+import { useInteractionsQuery, useManagedWorkflowsQuery } from '../../shared/api/query'
+import { Badge } from '../../shared/ui/nocturne'
+import { NewWorkflowAction } from './NewWorkflowAction'
 import './workflows.css'
 
 export interface WorkflowNavigationProps {
@@ -52,15 +51,8 @@ function WorkflowNavigationItem({
  * workflow opens a compact creation dialog in the active workspace.
  */
 export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNavigationProps) {
-  const workspaceQuery = useWorkspaceDetailsQuery(workspaceId)
   const managedQuery = useManagedWorkflowsQuery(workspaceId, true)
   const interactionsQuery = useInteractionsQuery({ workspaceId, status: 'pending', limit: 1 }, true)
-  const navigate = useNavigate()
-  const [creating, setCreating] = useState(false)
-
-  const closeCreateDialog = useCallback(() => {
-    setCreating(false)
-  }, [])
 
   const workflows = managedQuery.data?.items.map((item) => item.workflow) ?? []
   const hasWorkflows = workflows.length > 0
@@ -114,38 +106,7 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
         </p>
       ) : null}
 
-      <Button
-        className="workflow-navigation-add"
-        variant="ghost"
-        aria-label="New workflow"
-        title="New workflow"
-        aria-haspopup="dialog"
-        aria-expanded={creating}
-        leading={<Icon name="plus" size={15} />}
-        onClick={() => setCreating(true)}
-      >
-        <span className="nav-item-label">New workflow</span>
-      </Button>
-
-      {creating ? (
-        <NewWorkflowDialog
-          workspaceId={workspaceId}
-          workspaceName={workspaceQuery.data?.workspace.name}
-          onCancel={closeCreateDialog}
-          onCreated={(workflowId) => {
-            closeCreateDialog()
-            void navigate({
-              to: '/workspaces/$workspaceId',
-              params: { workspaceId },
-              search: (previous) => {
-                const next = { ...previous, workflowId }
-                delete next.agentId
-                return next
-              },
-            })
-          }}
-        />
-      ) : null}
+      <NewWorkflowAction workspaceId={workspaceId} navigation />
     </section>
   )
 }

@@ -69,6 +69,29 @@
   padding: clamp(1.5rem, 4vw, 3rem);
 }
 
+.workspace-board {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.workspace-board-actions {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.workspace-board-empty {
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  place-items: center;
+}
+
 .workflow-card-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr));
@@ -151,17 +174,6 @@
   margin: 0;
   color: var(--n-danger);
   font-size: 0.8125rem;
-}
-
-.new-workflow-session-note {
-  margin: 0.75rem 0 0;
-  padding: 0.625rem 0.75rem;
-  border: 1px dashed var(--n-border-strong);
-  border-radius: 2px;
-  color: var(--n-muted);
-  background: var(--n-hover);
-  font-size: 0.8125rem;
-  line-height: 1.5;
 }
 
 .new-workflow-actions {

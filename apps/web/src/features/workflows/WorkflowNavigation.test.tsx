@@ -138,7 +138,7 @@ describe('WorkflowNavigation', () => {
     await user.click(trigger)
 
     const dialog = await screen.findByRole('dialog', { name: 'New workflow' })
-    expect(dialog).toHaveTextContent('Start an empty workflow')
+    expect(dialog).not.toHaveTextContent('This empty workflow is stored by the workspace backend.')
     expect(screen.getByRole('button', { name: 'Create workflow' })).toBeEnabled()
 
     await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Draft workflow')
