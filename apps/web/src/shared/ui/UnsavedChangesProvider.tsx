@@ -75,7 +75,6 @@ export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
       description={active ? `You have unsaved changes in ${active.label}.` : 'Your changes have been resolved.'}
       onOpenChange={(open) => { if (!open && !working.current) finish(false) }}
       footer={<>
-        <Button disabled={busy} onClick={() => finish(false)}>Keep editing</Button>
         <Button disabled={busy || active?.uncertain} onClick={() => void act('discard')}>Discard</Button>
         <Button variant="primary" disabled={busy || active?.saveDisabled} onClick={() => void act('save')}>
           {busy ? 'Saving…' : active?.uncertain ? 'Retry original save' : active ? 'Save' : 'Continue'}
