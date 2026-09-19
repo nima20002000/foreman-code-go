@@ -207,7 +207,7 @@ const RevisionMutationFields = { ...MutationFields, expectedRevision: ExpectedRe
 export const WorkspaceListInputSchema = ManagementPageInputSchema;
 export const WorkspaceGetInputSchema = WorkspaceScopeSchema;
 export const WorkspaceCreateInputSchema = z.object({
-  parentPath: z.string().trim().min(1).max(4096).refine((value) => !value.includes("\0"), "Invalid folder path").optional(),
+  parentPath: z.string().trim().min(1).max(4096).refine((value) => !value.includes("\0"), "Invalid folder path").optional().describe("Existing parent folder on Local Runner. Pass workspace_defaults_get.value.parentPath to use the configured default; creates a new child named after the workspace. Omit only to leave execution location unconfigured."),
   ...MutationFields,
   name: z.string().trim().min(1).max(200),
   description: z.string().max(10_000).optional(),

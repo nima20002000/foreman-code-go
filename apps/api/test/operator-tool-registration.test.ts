@@ -15,6 +15,7 @@ import { registerInteractionTools } from '../src/mcp/operator/tools/interactions
 import { registerRunTools } from '../src/mcp/operator/tools/runs.js'
 import { registerSettingsTools } from '../src/mcp/operator/tools/settings.js'
 import { registerWorkflowTools } from '../src/mcp/operator/tools/workflows.js'
+import { registerWorkspaceDefaultsTools } from '../src/mcp/operator/tools/workspaceDefaults.js'
 import { registerWorkspaceTools } from '../src/mcp/operator/tools/workspaces.js'
 import type { OperatorRequestContext } from '../src/mcp/operator/types.js'
 
@@ -30,8 +31,8 @@ const actionTools: Array<[ManagementAction, OperatorToolName[]]> = [
   ['interactions:respond', ['interaction_respond']],
   ['runs:read', ['run_events_list', 'run_get', 'run_list']],
   ['runs:stop', ['run_stop']],
-  ['settings:read', ['agent_defaults_get', 'workflow_defaults_get']],
-  ['settings:update', ['agent_defaults_update', 'workflow_defaults_update']],
+  ['settings:read', ['agent_defaults_get', 'workflow_defaults_get', 'workspace_defaults_get']],
+  ['settings:update', ['agent_defaults_update', 'workflow_defaults_update', 'workspace_defaults_update']],
   ['workflows:read', ['workflow_get', 'workflow_list']],
   ['workflows:create', ['workflow_create']],
   ['workflows:update', ['workflow_update']],
@@ -60,7 +61,7 @@ function registered(context: OperatorRequestContext): string[] {
   const server = { registerTool: (name: string) => { names.push(name) } } as unknown as McpServer
   for (const register of [registerAgentTools, registerGraphTools, registerHarnessTools,
     registerInteractionTools, registerRunTools, registerSettingsTools,
-    registerWorkflowTools, registerWorkspaceTools]) {
+    registerWorkflowTools, registerWorkspaceTools, registerWorkspaceDefaultsTools]) {
     register(server, context)
   }
   return names.sort()

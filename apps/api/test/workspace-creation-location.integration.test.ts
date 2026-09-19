@@ -38,12 +38,13 @@ it('creates a ready project folder once, preserves defaults and rejects collisio
     expect(await readdir(parentPath)).toEqual([input.name])
     await expect(service.create(principal, 'http', { ...input, commandId: randomUUID() })).rejects.toMatchObject({ code: 'WORKSPACE_FOLDER_EXISTS' })
     await expect(service.create(principal, 'http', { ...input, commandId: randomUUID(), name: '../escape' })).rejects.toMatchObject({ code: 'WORKSPACE_FOLDER_NAME_INVALID' })
-    await expect(service.create(principal, 'mcp', { ...input, commandId: randomUUID(), name: 'MCP' })).rejects.toMatchObject({ code: 'BROWSER_REQUIRED' })
+    const mcp = await service.create(principal, 'mcp', { ...input, commandId: randomUUID(), name: 'MCP' })
+    expect(mcp.value.executionLocation?.rootPath).toBe(join(parentPath, 'MCP'))
     const restricted = { ...principal, grants: [{ actions: ['workspaces:create' as const], scope: {} }] }
     await expect(service.create(restricted, 'http', { ...input, commandId: randomUUID(), name: 'Denied' })).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
     await defaults.updateWorkspaceDefaults({ suggestedName: 'Elsewhere', description: '', parentPath: tmpdir() }, 1)
     expect((await service.get(principal, created.value.workspace.id)).executionLocation?.rootPath).toBe(join(parentPath, input.name))
-    expect((await pool.query('select count(*)::int as count from workspaces')).rows[0].count).toBe(1)
+    expect((await pool.query('select count(*)::int as count from workspaces')).rows[0].count).toBe(2)
   } finally {
     await pool.end()
     await admin.query(`drop schema "${schema}" cascade`)

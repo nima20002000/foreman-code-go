@@ -73,7 +73,6 @@ export class WorkspaceManagementService {
 
   async create(principal: ManagementPrincipal, source: 'http' | 'mcp', input: WorkspaceCreateInput) {
     requireAuthorization(principal, 'workspaces:create')
-    if (input.parentPath && source !== 'http') throw new DomainError('BROWSER_REQUIRED', 'Create project folders in the signed-in browser.', 403)
     return this.commands.execute({
       replayResult: replayWorkspaceResult,
       principal, source, operation: 'workspace.create', commandId: input.commandId,

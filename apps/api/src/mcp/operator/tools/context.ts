@@ -13,7 +13,7 @@ export const OPERATOR_RUNTIME_LIMITS = [
   {feature:'process_exit_confirmation',state:'limited',detail:'run_stop acceptance is not native-process-exit proof; processStopped remains conservative.'},
   {feature:'historical_runs',state:'limited',detail:'Restore history into a new validated current version before running it. Old immutable versions are never edited.'},
   {feature:'resource_deletion',state:'protected',detail:'History-preserving archive/restore is supported; permanent deletion is not exposed.'},
-  {feature:'remote_runners_and_host_browsing',state:'unsupported',detail:'Only the registered local runner and explicitly configured controlled provisioning are available; no arbitrary host browsing or remote dispatch.'},
+  {feature:'remote_runners_and_host_browsing',state:'unsupported',detail:'Only the local runner is supported. workspace_create can create a named project folder under an explicit parentPath with provisioning, location-update and location-read grants. No arbitrary host browsing or remote dispatch.'},
   {feature:'approval_reassignment',state:'protected',detail:'Read permissions span handlers; response authority stays with the accepted handler. Changing a draft does not take over a running request.'},
   {feature:'operator_self_authorization',state:'protected',detail:'No tools are added for the Operator to answer its own human gates or manage its delegated credential.'},
   {feature:'native_mcp_provisioning',state:'protected',detail:'Native MCP connections can be listed and changes requested. A signed-in user must review changes in Settings. The Operator cannot approve its own request, expose credentials, or approve package installation. Connection requests do not themselves download packages.'},
@@ -34,7 +34,7 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
       principal:{id:context.principal.id,name:context.principal.name,expiresAt:context.principal.expiresAt},
       grants:context.principal.grants,requestedResource:resource,
       requirements:tools.map((name)=>({name,actions:operatorToolRequirements(name).map((item)=>item.action),
-        detail:'Requirements are scoped independently. Staged/shared Agent writes, skill contents, and enabling triggers can require additional permissions; services revalidate every concrete operation.'})),
+        detail:name === 'workspace_create' ? 'Creating parentPath/name additionally requires global workspace_locations:provision, workspace_locations:update and workspace_locations:read grants. Read workspace_defaults_get for the default parentPath; omit parentPath only for an unconfigured workspace.' : 'Requirements are scoped independently. Staged/shared Agent writes, skill contents, and enabling triggers can require additional permissions; services revalidate every concrete operation.'})),
       runtimeLimits:[...OPERATOR_RUNTIME_LIMITS],
       workerToolsMcp:{implemented:context.services.workerToolsMcpImplemented===true,endpoint:'/mcp/tools'}}
   }))

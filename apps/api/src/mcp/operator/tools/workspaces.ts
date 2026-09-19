@@ -23,9 +23,9 @@ export function registerWorkspaceTools(server: McpServer, context: OperatorReque
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workspace_get', () => context.services.workspaces.get(context.principal, input.workspaceId)))
   if (operatorToolAvailable(context, 'workspace_create')) server.registerTool('workspace_create', {
-    description: 'Create an empty durable workspace.', inputSchema: WorkspaceCreateInputSchema,
+    description: 'Create a durable workspace. Read workspace_defaults_get and pass its parentPath (or an explicit override) to create parentPath/name and save it as the execution location inherited by all workflows. Folder creation requires workspace_locations:provision, workspace_locations:update and workspace_locations:read with global scope. Existing folders are rejected. Omitting parentPath creates an unconfigured workspace. Reuse commandId and the same input on an uncertain retry.', inputSchema: WorkspaceCreateInputSchema,
     outputSchema: ManagedWorkspaceCommandResultSchema,
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (input) => invokeOperatorTool(context, 'workspace_create', () => context.services.workspaces.create(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_update')) server.registerTool('workspace_update', {
     description: 'Revision-check and rename or describe a workspace.', inputSchema: WorkspaceUpdateInputSchema,
@@ -44,7 +44,7 @@ export function registerWorkspaceTools(server: McpServer, context: OperatorReque
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (input) => invokeOperatorTool(context, 'workspace_location_validate', () => context.services.locations.validate(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_location_set')) server.registerTool('workspace_location_set', {
-    description: 'Revision-check and save a validated canonical workspace execution location.',
+    description: 'Revision-check and save an existing canonical workspace execution folder. All workflows inherit it for new runs; accepted runs retain their snapshots. Read workspace_get for expectedLocationRevision. This does not change harness permissions.',
     inputSchema: WorkspaceLocationSetInputSchema,
     outputSchema: WorkspaceLocationSetResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },

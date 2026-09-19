@@ -21,12 +21,12 @@ export function registerWorkflowTools(server: McpServer, context: OperatorReques
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workflow_get', () => context.services.workflows.get(context.principal, input.workspaceId, input.workflowId)))
   if (operatorToolAvailable(context, 'workflow_create')) server.registerTool('workflow_create', {
-    description: 'Create a named durable empty workflow.', inputSchema: WorkflowCreateInputSchema,
+    description: 'Create a named durable workflow using global workflow defaults. It inherits the workspace execution folder; do not configure a separate workflow path.', inputSchema: WorkflowCreateInputSchema,
     outputSchema: ManagedWorkflowCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workflow_create', () => context.services.workflows.create(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workflow_update')) server.registerTool('workflow_update', {
-    description: 'Revision-check and rename or describe a workflow without saving its graph.', inputSchema: WorkflowUpdateInputSchema,
+    description: 'Revision-check and rename or describe a workflow. For workflow settings, open a graph draft, apply workflow.set_approval, workflow.set_execution_condition, workflow.set_execution_limits or workflow.set_required_agent_count, then graph_save. Global workflow_defaults_update affects only future workflows.', inputSchema: WorkflowUpdateInputSchema,
     outputSchema: ManagedWorkflowCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workflow_update', () => context.services.workflows.update(context.principal, 'mcp', input)))

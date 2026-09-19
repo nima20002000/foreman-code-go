@@ -27,7 +27,7 @@ export function registerGraphTools(server: McpServer, context: OperatorRequestCo
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'graph_validate', () => context.services.drafts.validate(context.principal, input.workspaceId, input.workflowId, input.draftId)))
   if (operatorToolAvailable(context, 'graph_draft_apply')) server.registerTool('graph_draft_apply', {
-    description: 'Atomically apply a strict ordered batch of typed graph operations.', inputSchema: GraphDraftApplyInputSchema,
+    description: 'Atomically apply typed graph and workflow-setting operations to the expected draft revision. Supports approval routing, execution condition, execution limits, required agent count, agent configuration, prompts, nodes and edges. Changes are drafts until graph_save succeeds.', inputSchema: GraphDraftApplyInputSchema,
     outputSchema: GraphDraftCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'graph_draft_apply', () => context.services.drafts.apply(context.principal, 'mcp', input)))

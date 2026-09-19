@@ -11,6 +11,16 @@ integrations unless the current workstream explicitly authorizes them.
 Keep feature work behind the shared contracts package. The web app should not
 redefine API/domain shapes locally or import server-only code.
 
+## Operator MCP parity
+
+Every critical product capability added or changed in the app must ship with equivalent Operator MCP support in the same change. This includes workspace and workflow creation, edits, execution locations, global defaults, workspace settings, and workflow settings.
+
+- Keep the UI and MCP on shared contracts and domain services. Update tool schemas, descriptions, capability discovery, and permission requirements when behavior changes.
+- The Operator must be able to perform the complete supported workflow through MCP, including reading defaults, creating configured objects, editing settings, and reading back persisted results. A listed tool that fails solely because the caller is MCP is not parity.
+- Preserve explicit grants, scope checks, validation, revision conflicts, idempotent retries, and audit records. MCP parity never grants a read-only agent write access or bypasses harness security.
+- Test the changed workflow through the authenticated MCP endpoint, including a denied caller and persisted readback. UI-only tests are not sufficient.
+- If a capability intentionally remains human-only, document the reason and expose that limit clearly rather than implying Operator support.
+
 ## State and data ownership
 
 - TanStack Query owns server state and request lifecycle state.

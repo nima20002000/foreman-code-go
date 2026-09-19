@@ -9,7 +9,7 @@ export function registerWorkspaceDefaultsTools(server: McpServer, context: Opera
   const settings = context.services.settings
   if (!settings) return
   if (operatorToolAvailable(context, 'workspace_defaults_get')) server.registerTool('workspace_defaults_get', {
-    description: 'Read suggested names and initial descriptions for new workspaces. Does not grant filesystem access.',
+    description: 'Read the default parentPath, suggested name and starting description for new workspaces. Pass parentPath to workspace_create to create a project folder. Reading defaults does not grant filesystem access.',
     inputSchema: z.object({}).strict(), outputSchema: ManagedWorkspaceDefaultsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'workspace_defaults_get', () => settings.getWorkspaceDefaults(context.principal)))
