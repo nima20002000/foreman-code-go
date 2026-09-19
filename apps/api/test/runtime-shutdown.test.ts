@@ -78,7 +78,7 @@ describe('runtime shutdown ownership barrier', () => {
       stop: [{ name: 'reenter', run: stop }],
       drain: [], dispose: [], releaseOwnership,
     })
-    shutdown[entry]()
+    void shutdown[entry]()
     const result = shutdown.finish()
     expect(reentered).toBe(result)
     expect(stop).toHaveBeenCalledTimes(1)
