@@ -4,6 +4,7 @@ import { ManagementHarnessDefaultsSchema, type HarnessSettingsSection } from '@g
 import { Button, ErrorState, LoadingState } from '../../shared/ui/nocturne'
 import { useManagedHarnessCatalogQuery, useUpdateManagedHarnessDefaultsMutation } from '../../shared/api/query'
 import { HarnessConfigurationFields } from './HarnessConfigurationFields'
+import { HarnessCompatibilityPanel } from './HarnessCompatibilityPanel'
 import { createHarnessEditor, prepareHarnessEditor, type HarnessEditor } from './harnessEditor'
 import { issuesAt, withValidationPath } from './fieldValidation'
 import { SettingsFormActions, SettingsFormFeedback } from './SettingsFormActions'
@@ -76,6 +77,7 @@ function ProviderEditor({ harness, section, onSectionChange, onBack, showBack }:
         const response = await managedSave.mutateAsync({ defaults: ManagementHarnessDefaultsSchema.parse(defaults), expectedRevision: input.expectedRevision, commandId: input.commandId })
         return { value: editable(response.value.defaults), revision: response.value.revision }
       }, (value) => { ManagementHarnessDefaultsSchema.parse(prepared(value)); return value })} />}>
+    {section === 'workspace' ? <HarnessCompatibilityPanel harness={harness} /> : null}
     <HarnessConfigurationFields allowHarnessChange={false} editor={draft[harness]} onChange={update} issues={issuesAt(form.issues ?? [], [harness])}
       section={section} onSectionChange={onSectionChange} frameless />
   </SettingsEditorLayout></div>

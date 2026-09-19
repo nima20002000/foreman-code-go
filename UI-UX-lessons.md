@@ -142,12 +142,13 @@ Blank space and generic failures made several surfaces harder to understand than
 - success/acknowledgement when it matters.
 
 Do not erase usable stale content just because a refresh failed. Error messages should say what remains available and what the user can do next.
+After a save, keep a visible success state even when the form becomes clean. A toast confirms the event; inline feedback confirms the current form state. Tests should assert that distinction and that newer unsaved edits remain visible.
 
 The Nocturne migration moved these states into shared `LoadingState`, `EmptyState`, `ErrorState`, `Alert`, and button-loading patterns so behavior stays consistent instead of each screen inventing its own version.
 
 A diagnostic result must describe exactly what was checked, not imply permission to execute. Show the observed installation separately from the qualified target; a passing schema check cannot stand in for authentication, policy, or execution qualification. Keep diagnostic status independently readable when configuration discovery fails, retain the last report on refresh failure, and never overwrite editable settings while retrying a check. Toasts should describe the requested operation and its real result, not announce every background poll.
 
-Uncommitted evidence: `HarnessCompatibilityPanel.test.tsx` covers separate installed/qualified versions, failure and stale-report visibility, read-only retry permissions, and requested-check toasts. These tests are written but unverified.
+Evidence: `HarnessCompatibilityPanel.test.tsx` covers separate installed/qualified versions, failure and stale-report visibility, read-only retry permissions, and requested-check toasts.
 
 Evidence: `9afe3a5` (`feat(web): complete Nocturne UI migration`), `94a235e`.
 
@@ -198,6 +199,8 @@ Evidence: `b99d422`, `9afe3a5`.
 The Approval Inbox looked wrong when a full standalone page header/padding was rendered inside a Settings detail page that already provided its own header and layout.
 
 **Project rule:** reusable full-page features that can also be embedded need an explicit embedded presentation mode or a composition boundary that lets the parent own page chrome. Do not stack duplicate headings, max-width containers, or padding just because both layers are valid in isolation.
+
+Place operational diagnostics inside the settings section that owns them. A provider compatibility check belongs under that provider's App connection tab, not as a second titled page above the Harnesses overview or every editor tab. Keep the status concise and disclose repair detail on demand; verify its route placement in a regression test.
 
 Evidence: `fcbf550` (`fix(settings): align approval inbox layout`).
 

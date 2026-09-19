@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export * from "./harnessEditing.js";
+export * from "./harnessCompatibility.js";
 
 /** A non-empty identifier. IDs are intentionally unbranded at the API boundary. */
 export const IdSchema = z.string().trim().min(1);

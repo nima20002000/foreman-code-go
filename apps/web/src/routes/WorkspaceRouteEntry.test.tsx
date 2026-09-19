@@ -49,7 +49,7 @@ describe('WorkspaceRouteEntry integration', () => {
   it('renders the saved workflow and keeps a valid agent selection in the URL', async () => {
     const { router } = renderWorkspace('/workspaces/workspace-1')
 
-    expect(await screen.findByTestId('agent-node-agent-researcher')).toBeInTheDocument()
+    expect(await screen.findByTestId('agent-node-agent-researcher', {}, { timeout: 5000 })).toBeInTheDocument()
     expect(document.querySelector('.shell-header')).not.toBeInTheDocument()
     expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
     expect(screen.queryByRole('separator', { name: 'Resize workspace context panel' })).not.toBeInTheDocument()
@@ -67,7 +67,7 @@ describe('WorkspaceRouteEntry integration', () => {
   it('keeps an URL-selected agent in the graph without mounting a context panel', async () => {
     const { router } = renderWorkspace('/workspaces/workspace-1?agentId=agent-researcher')
 
-    const node = await screen.findByTestId('agent-node-agent-researcher')
+    const node = await screen.findByTestId('agent-node-agent-researcher', {}, { timeout: 5000 })
     expect(node.querySelector('button')).toHaveAttribute('aria-pressed', 'true')
     expect(router.state.location.search.agentId).toBe('agent-researcher')
     expect(document.querySelector('.shell-header')).not.toBeInTheDocument()

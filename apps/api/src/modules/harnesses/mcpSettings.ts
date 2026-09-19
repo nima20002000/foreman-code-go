@@ -16,6 +16,7 @@ const projection = (row: Row): HarnessMcpPlan => HarnessMcpPlanSchema.parse({ id
 export class HarnessMcpSettingsService {
   private readonly stopping = new AbortController()
   private readonly pending = new Set<Promise<unknown>>()
+  private readonly reads = new Map<Harness, Promise<ReturnType<typeof publicMcpList>>>()
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly adapters: Record<Harness, NativeMcpAdapter>, private readonly changed: () => void,
     private readonly closeProcesses: () => Promise<unknown> = async () => undefined) {}
@@ -40,10 +41,16 @@ export class HarnessMcpSettingsService {
   }
   async list(principal: ManagementPrincipal, harness: Harness) {
     requireAuthorization(principal, 'harnesses:read')
-    return this.work(async (signal) => {
+    const active = this.reads.get(harness)
+    if (active) return active
+    const reading = this.work(async (signal) => {
       try { return publicMcpList(await this.adapters[harness].read(signal)) }
       catch (error) { throw qualificationError(error) }
     })
+    this.reads.set(harness, reading)
+    const clear = () => { if (this.reads.get(harness) === reading) this.reads.delete(harness) }
+    void reading.then(clear, clear)
+    return reading
   }
   async plans(principal: ManagementPrincipal, harness: Harness) {
     requireAuthorization(principal, 'harnesses:read')

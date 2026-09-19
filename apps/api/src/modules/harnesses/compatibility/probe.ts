@@ -1,0 +1,218 @@
+import { createHash } from 'node:crypto'
+import { constants, createReadStream } from 'node:fs'
+import { access, lstat, mkdir, mkdtemp, open, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
+import { delimiter, isAbsolute, join, resolve } from 'node:path'
+import type { CompatibilityHarness } from '@graphql/contracts'
+import { spawnOwnedStdioProcess } from '../process.js'
+import { CompatibilityCheckError } from './errors.js'
+
+export interface HarnessInstallation { executable: string; identity: string; version: string }
+export interface CompatibilityProbe {
+  inspect(harness: CompatibilityHarness, signal: AbortSignal): Promise<HarnessInstallation>
+  probe(harness: CompatibilityHarness, installation: HarnessInstallation, signal: AbortSignal): Promise<string>
+  assertUnchanged(installation: HarnessInstallation, signal: AbortSignal): Promise<void>
+  close?(): Promise<void>
+}
+type DiagnosticProcess = ReturnType<typeof spawnOwnedStdioProcess>
+const EXPORT_LIMIT = 16 * 1024 * 1024
+const unavailable = () => new CompatibilityCheckError('CLI_UNAVAILABLE', 'The configured CLI could not be found or executed. Repair that installation; no other harness was substituted.')
+
+export function parseInstalledVersion(harness: CompatibilityHarness, stdout: string, stderr: string): string {
+  const value = (stdout.trim() || stderr.trim())
+  const semver = '(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?'
+  const prefix = harness === 'codex' ? 'codex-cli ' : ''
+  if (!new RegExp(`^${prefix}${semver}$`).test(value) || value.length > 100) {
+    throw new CompatibilityCheckError('CLI_VERSION_INVALID', 'The configured CLI returned an unrecognized version. Check the binary setting and retry.')
+  }
+  return value.slice(prefix.length)
+}
+export function diagnosticEnvironment(directory: string, source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  // Do NOT inherit model/API tokens, NODE_OPTIONS, native configuration overrides,
+  // plugin settings, app credentials, proxy secrets, or the real home directory.
+  const environment: NodeJS.ProcessEnv = {}
+  for (const key of ['PATH', 'PATHEXT', 'SystemRoot', 'WINDIR', 'COMSPEC']) {
+    if (source[key] !== undefined) environment[key] = source[key]
+  }
+  return {
+    ...environment, HOME: directory, USERPROFILE: directory,
+    TMPDIR: directory, TMP: directory, TEMP: directory,
+    XDG_CONFIG_HOME: join(directory, 'config'), XDG_CACHE_HOME: join(directory, 'cache'),
+    XDG_DATA_HOME: join(directory, 'data'), XDG_STATE_HOME: join(directory, 'state'),
+    CODEX_HOME: join(directory, 'codex'), OPENCODE_CONFIG_DIR: join(directory, 'config'),
+    OPENCODE_CONFIG_CONTENT: '{"plugin":[],"mcp":{},"autoupdate":false}',
+    OPENCODE_PURE: '1', OPENCODE_DISABLE_AUTOUPDATE: '1', OPENCODE_DISABLE_MODELS_FETCH: '1',
+    OPENCODE_DISABLE_DEFAULT_PLUGINS: '1', OPENCODE_DISABLE_LSP_DOWNLOAD: '1',
+    OPENCODE_DISABLE_CLAUDE_CODE: '1', OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+    CI: '1', NO_COLOR: '1', TERM: 'dumb',
+  }
+}
+export function schemaExportArguments(harness: CompatibilityHarness, directory: string): string[] {
+  return harness === 'codex'
+    ? ['app-server', 'generate-json-schema', '--experimental', '--out', join(directory, 'schemas')]
+    : ['--pure', 'generate']
+}
+async function executable(binary: string, cwd: string, environment: NodeJS.ProcessEnv): Promise<string> {
+  const paths = isAbsolute(binary) || binary.includes('/') || binary.includes('\\')
+    ? [resolve(cwd, binary)]
+    : (environment.PATH ?? '').split(delimiter).flatMap((directory) => {
+      const base = resolve(cwd, directory || '.', binary)
+      return process.platform === 'win32' && !/\.[a-z]+$/i.test(binary)
+        ? (environment.PATHEXT ?? '.EXE;.COM').split(';').map((extension) => base + extension.toLowerCase()) : [base]
+    })
+  for (const candidate of paths) {
+    try { await access(candidate, constants.X_OK); return await realpath(candidate) } catch { /* Next PATH entry, never another harness. */ }
+  }
+  throw unavailable()
+}
+async function fingerprint(path: string, signal: AbortSignal): Promise<string> {
+  signal.throwIfAborted()
+  const before = await stat(path)
+  if (!before.isFile()) throw unavailable()
+  const metadata = (value: typeof before) => [value.dev, value.ino, value.size, value.mtimeMs, value.ctimeMs]
+  const hash = createHash('sha256')
+  // Streaming keeps large native executables out of memory and observes cancellation.
+  for await (const chunk of createReadStream(path, { signal })) hash.update(chunk as Buffer)
+  const after = await stat(path)
+  if (JSON.stringify(metadata(before)) !== JSON.stringify(metadata(after))) {
+    throw new CompatibilityCheckError('CLI_CHANGED', 'The CLI changed during inspection. Retry after the installation has finished.')
+  }
+  return createHash('sha256').update(JSON.stringify([await realpath(path), metadata(after), hash.digest('hex')])).digest('hex')
+}
+
+/** Only fixed version/schema commands call this. No shell, credentials, stdin prompts, or server. */
+async function command(binary: string, args: string[], directory: string, environment: NodeJS.ProcessEnv, signal: AbortSignal, limit: number, processes: Set<DiagnosticProcess>) {
+  signal.throwIfAborted()
+  let rejectFailure: (error: unknown) => void = () => undefined
+  const failure = new Promise<never>((_resolve, reject) => { rejectFailure = reject })
+  void failure.catch(() => undefined)
+  const owned = spawnOwnedStdioProcess({ binary, args, cwd: directory, environment,
+    onError: () => rejectFailure(unavailable()),
+  })
+  processes.add(owned)
+  let stdout = ''; let stderr = ''; let bytes = 0
+  const collect = (target: 'stdout' | 'stderr', chunk: Buffer) => {
+    bytes += chunk.length
+    if (bytes > limit) {
+      rejectFailure(new CompatibilityCheckError('CLI_OUTPUT_LIMIT', 'The CLI export exceeded the diagnostic output limit. Review this release before qualifying it.'))
+      void owned.close().catch(rejectFailure)
+      return
+    }
+    if (target === 'stdout') stdout += chunk.toString('utf8')
+    else stderr += chunk.toString('utf8')
+  }
+  // Generated JSON is UTF-8; setEncoding preserves characters split between chunks.
+  owned.child.stdout.setEncoding('utf8'); owned.child.stderr.setEncoding('utf8')
+  owned.child.stdout.on('data', (chunk: string) => collect('stdout', Buffer.from(chunk)))
+  owned.child.stderr.on('data', (chunk: string) => collect('stderr', Buffer.from(chunk)))
+  const abort = () => { rejectFailure(signal.reason); void owned.close().catch(rejectFailure) }
+  const closeOwned = async () => {
+    try { await owned.close(); processes.delete(owned) } catch {
+      throw new CompatibilityCheckError('CLI_CLEANUP_FAILED', 'The diagnostic process did not confirm clean shutdown. Check the CLI process before retrying.')
+    }
+  }
+  signal.addEventListener('abort', abort, { once: true })
+  owned.child.stdin.end()
+  if (signal.aborted) abort()
+  try {
+    const result = await Promise.race([owned.closed, failure])
+    signal.throwIfAborted()
+    if (result.exitCode !== 0) throw new CompatibilityCheckError('CLI_CHECK_REJECTED',
+      'The CLI rejected its version/schema export command. The release may not support this diagnostic. Review the installation and retry.')
+    return { stdout, stderr }
+  } finally {
+    signal.removeEventListener('abort', abort)
+    await closeOwned()
+  }
+}
+async function isolated<T>(source: NodeJS.ProcessEnv, directories: Set<string>, work: (directory: string, environment: NodeJS.ProcessEnv) => Promise<T>): Promise<T> {
+  const directory = await mkdtemp(join(tmpdir(), 'graphql-compatibility-'))
+  directories.add(directory)
+  let retain = false
+  try {
+    await Promise.all(['config', 'cache', 'data', 'state', 'codex'].map((name) => mkdir(join(directory, name), { mode: 0o700 })))
+    return await work(directory, diagnosticEnvironment(directory, source))
+  } catch (error) {
+    retain = error instanceof CompatibilityCheckError && error.code === 'CLI_CLEANUP_FAILED'
+    throw error
+  } finally {
+    if (!retain) { await rm(directory, { recursive: true, force: true }); directories.delete(directory) }
+  }
+}
+async function readExport(path: string): Promise<string> {
+  const info = await lstat(path)
+  if (!info.isFile() || info.isSymbolicLink() || info.size > EXPORT_LIMIT) throw new Error('Invalid export file.')
+  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+  try {
+    const bytes = Buffer.alloc(EXPORT_LIMIT + 1)
+    const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0)
+    if (bytesRead > EXPORT_LIMIT) throw new Error('Export limit exceeded.')
+    return bytes.subarray(0, bytesRead).toString('utf8')
+  } finally { await handle.close() }
+}
+export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, string>, workingDirectory: string, source: NodeJS.ProcessEnv = process.env): CompatibilityProbe {
+  const processes = new Set<DiagnosticProcess>()
+  const directories = new Set<string>()
+  return {
+    async inspect(harness, signal) {
+      const resolved = await executable(binaries[harness], workingDirectory, source)
+      const identity = await fingerprint(resolved, signal)
+      const version = await isolated(source, directories, async (directory, environment) => {
+        const output = await command(resolved, ['--version'], directory, environment,
+          AbortSignal.any([signal, AbortSignal.timeout(2000)]), 4096, processes)
+        return parseInstalledVersion(harness, output.stdout, output.stderr)
+      })
+      return { executable: resolved, identity, version }
+    },
+    async probe(harness, installation, signal) {
+      return isolated(source, directories, async (directory, environment) => {
+        const output = await command(installation.executable, schemaExportArguments(harness, directory), directory, environment, signal, EXPORT_LIMIT, processes)
+        const text = harness === 'codex' ? await readExport(join(directory, 'schemas', 'codex_app_server_protocol.schemas.json')) : output.stdout
+        signal.throwIfAborted()
+        const input = join(directory, 'diagnostic-schema.json')
+        await writeFile(input, text, { flag: 'wx', mode: 0o600 })
+        let result: unknown
+        try {
+          const development = import.meta.url.endsWith('.ts')
+          const worker = fileURLToPath(new URL(`./schemaWorker.${development ? 'ts' : 'js'}`, import.meta.url))
+          const args = development ? ['--import', createRequire(import.meta.url).resolve('tsx'), worker] : [worker]
+          const checked = await command(process.execPath, [...args, harness, input], directory, environment, signal, 4096, processes)
+          result = JSON.parse(checked.stdout)
+        } catch (error) {
+          if (signal.aborted || (error instanceof CompatibilityCheckError
+            && !['CLI_UNAVAILABLE', 'CLI_CHECK_REJECTED'].includes(error.code))) throw error
+          throw new CompatibilityCheckError('CHECKER_UNAVAILABLE',
+            'The application schema checker could not finish. Rebuild the API and retry; do not switch harnesses to work around this error.')
+        }
+        if (result && typeof result === 'object' && 'ok' in result && result.ok === false) {
+          throw new CompatibilityCheckError('PROTOCOL_SETTINGS_UNSUPPORTED',
+            'The installed export does not satisfy the protocol/settings checks. Restore the qualified release or request a new qualification.')
+        }
+        if (!result || typeof result !== 'object' || !('ok' in result) || result.ok !== true
+          || !('schemaSha256' in result) || typeof result.schemaSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(result.schemaSha256)) {
+          throw new CompatibilityCheckError('CHECKER_OUTPUT_INVALID', 'The application schema checker returned an invalid result. Rebuild the API and retry.')
+        }
+        signal.throwIfAborted()
+        return result.schemaSha256
+      })
+    },
+    async assertUnchanged(installation, signal) {
+      if (await fingerprint(installation.executable, signal) !== installation.identity) {
+        throw new CompatibilityCheckError('CLI_CHANGED', 'The CLI changed while it was checked. Retry after the installation has finished.')
+      }
+    },
+    async close() {
+      const results = await Promise.allSettled([...processes].map(async (owned) => {
+        await owned.close(); processes.delete(owned)
+      }))
+      if (results.some((result) => result.status === 'rejected')) {
+        throw new CompatibilityCheckError('CLI_CLEANUP_FAILED', 'Diagnostic process shutdown is unconfirmed; ownership was retained for a later cleanup attempt.')
+      }
+      await Promise.all([...directories].map(async (directory) => {
+        await rm(directory, { recursive: true, force: true }); directories.delete(directory)
+      }))
+    },
+  }
+}

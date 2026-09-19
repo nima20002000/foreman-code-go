@@ -1,0 +1,181 @@
+import { createHash, randomUUID } from 'node:crypto'
+import {
+  HarnessCompatibilitySchema, type CompatibilityHarness, type HarnessCompatibility,
+} from '@graphql/contracts'
+import { FileCompatibilityCache, type CompatibilityCache, type CompatibilityCacheEntry } from './cache.js'
+import { CompatibilityCheckError, compatibilityReason } from './errors.js'
+import { nativeCompatibilityProbe, type CompatibilityProbe, type HarnessInstallation } from './probe.js'
+import { COMPATIBILITY_CHECKER_REVISION, QUALIFIED_RELEASES, RELEASE_MANIFEST_SHA256, knownRelease } from './releases.js'
+
+const HARNESSES = ['codex', 'opencode'] as const
+const CACHE_WARNING = 'This result is available now, but the compatibility cache could not be read or saved. A later startup may repeat the check.'
+export interface CompatibilityOptions {
+  probe: CompatibilityProbe
+  cache: CompatibilityCache
+  now?: () => number
+  checkerRevision?: string
+  timeoutMs?: number
+}
+export function compatibilityCacheKey(harness: CompatibilityHarness, installation: HarnessInstallation, revision: string): string {
+  return createHash('sha256').update(JSON.stringify([
+    harness, installation.identity, installation.version, process.platform, process.arch,
+    process.version, revision, RELEASE_MANIFEST_SHA256,
+  ])).digest('hex')
+}
+async function cacheOperation<T>(work: Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([work, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('Cache I/O deadline exceeded.')), 200)
+    })])
+  } finally { clearTimeout(timer) }
+}
+
+/**
+ * Diagnostics are deliberately not an admission/authorization dependency.
+ * Reads return immediately. At most one owned diagnostic per harness is active.
+ */
+export class HarnessCompatibilityService {
+  private readonly reports: Record<CompatibilityHarness, HarnessCompatibility>
+  private readonly flights = new Map<CompatibilityHarness, Promise<void>>()
+  private readonly cleanupBlocked = new Set<CompatibilityHarness>()
+  private readonly lifetime = new AbortController()
+  private readonly now: () => number
+  private readonly revision: string
+  private readonly timeoutMs: number
+  constructor(private readonly options: CompatibilityOptions) {
+    this.now = options.now ?? Date.now
+    this.revision = options.checkerRevision ?? COMPATIBILITY_CHECKER_REVISION
+    this.timeoutMs = options.timeoutMs ?? 6000
+    if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 30_000) throw new RangeError('Invalid compatibility deadline.')
+    this.reports = { codex: this.initial('codex'), opencode: this.initial('opencode') }
+  }
+  private initial(harness: CompatibilityHarness): HarnessCompatibility {
+    return {
+      harness, checkId: randomUUID(), installedVersion: null, status: 'not-checked',
+      checkedAt: null, source: 'none', checkerRevision: this.revision,
+      qualifiedRelease: QUALIFIED_RELEASES[harness], knownRelease: null,
+      matchesQualifiedVersion: false, reason: null, schemaSha256: null,
+      cacheWarning: null, scope: 'protocol-settings-diagnostic-only',
+    }
+  }
+  list(): HarnessCompatibility[] { return HARNESSES.map((harness) => this.get(harness)) }
+  get(harness: CompatibilityHarness): HarnessCompatibility {
+    // Contract parsing also prevents callers from mutating the in-memory report.
+    return HarnessCompatibilitySchema.parse(this.reports[harness])
+  }
+  start(): void {
+    for (const harness of HARNESSES) this.begin(harness, false)
+  }
+  retry(harness: CompatibilityHarness): HarnessCompatibility {
+    this.begin(harness, true)
+    return this.get(harness)
+  }
+  async checkAll(): Promise<HarnessCompatibility[]> {
+    this.start()
+    await Promise.all(this.flights.values())
+    return this.list()
+  }
+  async close(): Promise<void> {
+    this.lifetime.abort(new Error('Compatibility checks are stopping.'))
+    await Promise.allSettled(this.flights.values())
+    await this.options.probe.close?.()
+  }
+  private begin(harness: CompatibilityHarness, force: boolean): void {
+    if (this.lifetime.signal.aborted) throw new Error('Compatibility service is closed.')
+    if (this.flights.has(harness) || this.cleanupBlocked.has(harness)) return
+    this.reports[harness] = {
+      ...this.initial(harness), status: 'checking',
+      installedVersion: this.reports[harness].installedVersion,
+      checkedAt: this.reports[harness].checkedAt,
+    }
+    const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(this.timeoutMs)])
+    const checkId = this.reports[harness].checkId
+    // Publish the flight before invoking any dependency, including synchronous test doubles.
+    const task = Promise.resolve().then(() => this.check(harness, checkId, force, signal))
+      .catch((error: unknown) => {
+        this.reports[harness] = {
+          ...this.reports[harness], status: 'unavailable', checkedAt: new Date(this.now()).toISOString(),
+          reason: compatibilityReason(error, signal.aborted), source: 'none',
+        }
+      }).finally(() => { this.flights.delete(harness) })
+    this.flights.set(harness, task)
+  }
+  private async check(harness: CompatibilityHarness, checkId: string, force: boolean, signal: AbortSignal): Promise<void> {
+    let installation: HarnessInstallation | undefined
+    let warning: string | null = null
+    try {
+      installation = await this.options.probe.inspect(harness, signal)
+      signal.throwIfAborted()
+      const release = knownRelease(harness, installation.version)
+      const base: HarnessCompatibility = {
+        ...this.initial(harness), checkId, installedVersion: installation.version,
+        knownRelease: release, matchesQualifiedVersion: installation.version === QUALIFIED_RELEASES[harness].version,
+      }
+      this.reports[harness] = { ...base, status: 'checking' }
+      if (release) {
+        await this.options.probe.assertUnchanged(installation, signal)
+        signal.throwIfAborted()
+        this.reports[harness] = {
+          ...base, status: 'known-compatible', source: 'release-record', checkedAt: new Date(this.now()).toISOString(),
+        }
+        return
+      }
+      const key = compatibilityCacheKey(harness, installation, this.revision)
+      let cached: CompatibilityCacheEntry | null = null
+      if (!force) {
+        try { cached = await cacheOperation(this.options.cache.load(harness, key, this.now())) }
+        catch { warning = CACHE_WARNING }
+      }
+      signal.throwIfAborted()
+      if (cached) {
+        await this.options.probe.assertUnchanged(installation, signal)
+        signal.throwIfAborted()
+        this.reports[harness] = {
+          ...base, status: cached.status, source: 'cache', checkedAt: cached.checkedAt,
+          schemaSha256: cached.schemaSha256, reason: cached.reason, cacheWarning: warning,
+        }
+        return
+      }
+      let status: 'probe-passed' | 'probe-failed' = 'probe-passed'
+      let reason: HarnessCompatibility['reason'] = null
+      let schemaSha256: string | null = null
+      try { schemaSha256 = await this.options.probe.probe(harness, installation, signal) }
+      catch (error) { status = 'probe-failed'; reason = compatibilityReason(error, signal.aborted) }
+      if (reason?.code === 'CLI_CLEANUP_FAILED') {
+        this.cleanupBlocked.add(harness)
+        throw new CompatibilityCheckError('CLI_CLEANUP_FAILED',
+          'The diagnostic process did not confirm clean shutdown. Stop that process and restart the API before another check.')
+      }
+      // Never cache a result for a replaced binary or an interrupted check.
+      signal.throwIfAborted()
+      await this.options.probe.assertUnchanged(installation, signal)
+      signal.throwIfAborted()
+      const checked = this.now()
+      const checkedAt = new Date(checked).toISOString()
+      const entry: CompatibilityCacheEntry = {
+        format: 1, harness, key, checkedAt, status, reason, schemaSha256,
+        expiresAt: new Date(checked + (status === 'probe-passed' ? 7 * 86_400_000 : 60_000)).toISOString(),
+      }
+      try { await cacheOperation(this.options.cache.save(entry)) }
+      catch { warning = CACHE_WARNING }
+      signal.throwIfAborted()
+      this.reports[harness] = {
+        ...base, status, checkedAt, reason, schemaSha256, source: 'local-probe', cacheWarning: warning,
+      }
+    } catch (error) {
+      if (error instanceof CompatibilityCheckError && error.code === 'CLI_CLEANUP_FAILED') this.cleanupBlocked.add(harness)
+      this.reports[harness] = {
+        ...this.initial(harness), checkId, installedVersion: installation?.version ?? null,
+        status: installation ? 'probe-failed' : 'unavailable', checkedAt: new Date(this.now()).toISOString(),
+        reason: compatibilityReason(error, signal.aborted), cacheWarning: warning,
+      }
+    }
+  }
+}
+export function createHarnessCompatibility(config: { codexBinary: string; openCodeBinary: string; workspaceRoot: string }): HarnessCompatibilityService {
+  return new HarnessCompatibilityService({
+    probe: nativeCompatibilityProbe({ codex: config.codexBinary, opencode: config.openCodeBinary }, config.workspaceRoot),
+    cache: new FileCompatibilityCache(),
+  })
+}

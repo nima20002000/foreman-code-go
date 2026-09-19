@@ -24,6 +24,8 @@ import { registerUserInteractions } from './routes/userInteractions.js'
 import { registerManagementRoutes } from './routes/management.js'
 import { registerMcpDetectionRoute } from './routes/mcpDetection.js'
 import { registerProductRoutes, type ProductServices } from './routes/product.js'
+import { registerHarnessCompatibilityRoutes } from './routes/harnessCompatibility.js'
+import type { HarnessCompatibilityService } from './modules/harnesses/compatibility/service.js'
 
 export interface ReadinessDependencies {
   database: { ping(signal?: AbortSignal): Promise<void> }
@@ -32,6 +34,7 @@ export interface ReadinessDependencies {
 
 export interface BuildAppOptions {
   browserAuth?: BrowserAuthentication
+  harnessCompatibility?: HarnessCompatibilityService
   readiness: ReadinessDependencies
   readinessTimeoutMs?: number
   product?: ProductServices
@@ -113,6 +116,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   if (options.operator) registerBrowserAuthRoutes(app, options.browserAuth)
   if (options.operator) registerOperatorHttpSecurity(app, options.operator.access, options.browserAuth)
   if (options.operator) registerManagementRoutes(app, options.operator.services)
+  if (options.operator && options.harnessCompatibility) registerHarnessCompatibilityRoutes(app, options.harnessCompatibility)
   if (options.operator && options.mcpDetection) registerMcpDetectionRoute(app, options.mcpDetection.pool, options.mcpDetection.service)
   if (options.operator && options.product?.interactions) registerUserInteractions(app, options.operator.access, options.product.interactions)
   if (options.product) registerProductRoutes(app, options.product, Boolean(options.operator))

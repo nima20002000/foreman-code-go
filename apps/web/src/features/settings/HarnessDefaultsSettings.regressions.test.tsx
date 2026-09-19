@@ -7,6 +7,7 @@ import { queryKeys } from '../../shared/api/query'
 import { HarnessDefaultsSettings } from './HarnessDefaultsSettings'
 import { clearRevisionedFormPersistence } from './revisionedForm'
 import { nativeOptionsFixture } from './settingsExperience.fixtures'
+import { ToastProvider } from '../../shared/ui/nocturne'
 type SaveDefaults = ReturnType<typeof import('../../shared/api/query').useUpdateManagedHarnessDefaultsMutation>['mutateAsync']
 type SaveInput = Parameters<SaveDefaults>[0]
 type SaveResponse = Awaited<ReturnType<SaveDefaults>>
@@ -28,18 +29,28 @@ const clients: QueryClient[]=[]
 function renderSettings(defaults=DEFAULT_HARNESS_DEFAULTS) {
   const client=new QueryClient({defaultOptions:{queries:{retry:false,staleTime:Infinity}}})
   client.setQueryData(queryKeys.managedHarnessCatalog,(['codex','opencode'] as const).map((harness)=>({harness,defaults:defaults[harness],defaultsRevision:0,capability:null,discoveryError:null})));clients.push(client)
-  render(<QueryClientProvider client={client}><HarnessDefaultsSettings /></QueryClientProvider>);return client
+  render(<QueryClientProvider client={client}><ToastProvider><HarnessDefaultsSettings /></ToastProvider></QueryClientProvider>);return client
 }
 beforeEach(()=>{saveDefaults.mockReset();saveDefaults.mockImplementation(async(input)=>({value:{defaults:input.defaults,revision:1},replayed:false}))})
 afterEach(()=>{cleanup();clearRevisionedFormPersistence();for(const client of clients.splice(0))client.clear()})
 describe('Harness overview and draft regressions',()=>{
+  it.each(['Codex','OpenCode'] as const)('shows %s installation diagnostics only in App connection',async(name)=>{
+    renderSettings();const user=userEvent.setup()
+    expect(screen.queryByRole('region',{name:`${name} installation`})).not.toBeInTheDocument()
+    await user.click(await screen.findByRole('button',{name:`Edit ${name} defaults`}))
+    expect(screen.queryByRole('region',{name:`${name} installation`})).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button',{name:'App connection'}))
+    expect(await screen.findByRole('region',{name:`${name} installation`})).toBeVisible()
+    await user.click(screen.getByRole('button',{name:'Model & speed'}))
+    expect(screen.queryByRole('region',{name:`${name} installation`})).not.toBeInTheDocument()
+  })
   it('preserves newer edits while the selected provider save is pending',async()=>{
     let resolve!:(response:SaveResponse)=>void;const pending=new Promise<SaveResponse>(done=>{resolve=done});saveDefaults.mockImplementationOnce(()=>pending)
     renderSettings();const user=userEvent.setup();await user.click(await screen.findByRole('button',{name:'Edit Codex defaults'}));await user.click(screen.getByRole('button',{name:'Access & approvals'}))
     const sandbox=screen.getByRole('combobox',{name:'Sandbox'});await user.selectOptions(sandbox,'workspace-write');await user.click(screen.getByRole('button',{name:'Save Codex preset'}))
     await waitFor(()=>expect(saveDefaults).toHaveBeenCalledOnce());await user.selectOptions(sandbox,'read-only')
     const submitted=saveDefaults.mock.calls[0]![0];await act(async()=>{resolve({value:{defaults:submitted.defaults,revision:1},replayed:false});await pending})
-    expect(screen.getByText('Earlier changes saved; newer edits are unsaved.')).toBeVisible();expect(sandbox).toHaveValue('read-only')
+    expect(screen.getByText('Earlier changes saved')).toBeVisible();expect(screen.getAllByText('Newer edits are still unsaved.')[0]).toBeVisible();expect(sandbox).toHaveValue('read-only')
   })
   it('does not replace a local provider draft after a server refresh',async()=>{
     const client=renderSettings();const user=userEvent.setup();await user.click(await screen.findByRole('button',{name:'Edit Codex defaults'}));await user.click(screen.getByRole('button',{name:'Access & approvals'}))

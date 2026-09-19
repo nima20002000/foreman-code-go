@@ -44,7 +44,7 @@ export function SettingsFormFeedback({ form }: { form: SettingsFormState }) {
     {form.error && !form.conflicted && !form.uncertain ? <div className="settings-form-feedback"><Alert live tone="danger" title="Changes were not saved">
       {form.error} Your edits are still here.
     </Alert></div> : null}
-    {form.savedRevision !== undefined && form.isDirty && !form.error && !form.uncertain ? <div className="settings-form-feedback">
+    {form.savedRevision !== undefined && !form.error && !form.uncertain ? <div className="settings-form-feedback">
       <Alert live tone={form.isDirty ? 'warning' : 'success'} title={form.isDirty ? 'Earlier changes saved' : 'Changes saved to the server'}>
         {form.isDirty ? 'Newer edits are still unsaved.' : 'Your saved settings are ready to use.'}
       </Alert>

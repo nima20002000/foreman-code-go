@@ -29,6 +29,7 @@ import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
 import { DomainError } from './modules/errors.js'
 import { GraphDraftService } from './modules/graph-drafts/service.js'
 import { HarnessCatalogService } from './modules/harnesses/catalog.js'
+import { createHarnessCompatibility } from './modules/harnesses/compatibility/service.js'
 import { CodexAppServerSessionManager } from './modules/harnesses/codexAppServer.js'
 import { codexMcpInspectorAdapter } from './modules/harnesses/codexMcpInspectorAdapter.js'
 import { McpDetectionService, WorkerLaunchCredentialService, type ExecutionCredentialProvider } from './modules/harnesses/mcpDetection.js'
@@ -87,6 +88,7 @@ export function buildProductionApp(
   const foundationSettings = new PostgresFoundationSettingsRepository(database.pool)
   const operators = new PostgresOperatorRepository(database.pool)
   const rollout = new NativeRollout(process.env)
+  const harnessCompatibility = createHarnessCompatibility(config.harnesses)
   const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, config.harnesses.openCodeBinary)
   const harnessCatalog = new HarnessCatalogService(qualifier, settings, commands, config.harnesses.workspaceRoot)
   const nativeConfigurations = new NativeConfigurationService(
@@ -265,6 +267,7 @@ export function buildProductionApp(
     ...(config.browserAuth ? { browserAuth: new BrowserAuthentication(database.pool, access, config.browserAuth) } : {}),
     readiness: { database, checkpoints },
     readinessTimeoutMs: config.readinessTimeoutMs,
+    harnessCompatibility,
     product: { workspaces, workflows, runs, settings, foundationSettings, engine, interactions, chat },
     operator: { access, services: { ...operatorServices, extensions: operatorExtensions, harnessSettings } },
     appMcp: { access, interactions: new PostgresAppInteractionService(database.pool, repository, commands, interactions) },
@@ -288,6 +291,7 @@ export function buildProductionApp(
   })
   const lifecycle = new RuntimeShutdown({
     stop: [
+      { name: 'harness compatibility diagnostics', run: () => harnessCompatibility.close() },
       { name: 'native MCP settings', run: () => harnessSettings.mcp.shutdown() },
       { name: 'harness qualification checks', run: () => Promise.all([harnessCatalog.shutdownChecks(), nativeConfigurations.shutdownChecks()]).then(() => undefined) },
       { name: 'workflow triggers', run: () => operatorExtensions.triggers.shutdown() },
@@ -351,7 +355,10 @@ export function buildProductionApp(
       assertOpen()
       await harnessSettings.mcp.recover()
       assertOpen()
-      await Promise.allSettled([harnessCatalog.warmup(), nativeConfigurations.options('codex'), nativeConfigurations.options('opencode')])
+      // Optional discovery warmups used to block startup on native auth/network.
+      // Qualification still runs at every existing on-demand configuration/execution gate.
+      // The bounded compatibility diagnostic creates no native session or model turn.
+      harnessCompatibility.start()
       assertOpen()
       initialized = true
     })
