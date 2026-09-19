@@ -16,22 +16,20 @@ import {
   WorkflowDefaultsUpdateInputSchema,
   WorkspaceLocationSetInputSchema,
   WorkspaceLocationValidateInputSchema,
+  type ManagedWorkspace,
 } from '@graphql/contracts/management'
 
 import {
-  MOCK_SCENARIOS,
   getMockFixture,
   getMockAgentDefaults,
   getMockHarnessCatalog,
   getMockHarnessDefaults,
   getMockMessages,
+  getMockScenarioRevision,
   getMockScenarioState,
   getMockWorkflowDefaults,
-  isMockScenario,
   resetMockFixtures as resetExistingMockFixtures,
   serializeAgent,
-  setMockFailureMode,
-  setMockScenario,
   serializeConversation,
   shouldFailMutation,
   updateMockWorkflow,
@@ -44,7 +42,35 @@ import {
   type MockFailureMode,
 } from './scenarios'
 
-function resetMockFixtures() { resetExistingMockFixtures(); resetSettingsExperienceFixtures() }
+const managedWorkspaceNames = new Map<string, string>()
+const managedWorkspaceDescriptions = new Map<string, string | undefined>()
+const managedWorkspaceArchives = new Set<string>()
+const managedWorkspaces = new Map<string, ManagedWorkspace>()
+const managedWorkflowArchives = new Set<string>()
+let managedScenarioRevision = getMockScenarioRevision()
+
+function syncManagedFixtures() {
+  const revision = getMockScenarioRevision()
+  if (revision === managedScenarioRevision) return
+  managedScenarioRevision = revision
+  managedWorkspaceNames.clear()
+  managedWorkspaceDescriptions.clear()
+  managedWorkspaceArchives.clear()
+  managedWorkspaces.clear()
+  managedWorkflowArchives.clear()
+}
+
+export function resetTestFixtures() {
+  resetExistingMockFixtures()
+  resetSettingsExperienceFixtures()
+  managedWorkspaceNames.clear()
+  managedWorkspaceDescriptions.clear()
+  managedWorkspaceArchives.clear()
+  managedWorkspaces.clear()
+  managedWorkflowArchives.clear()
+  mockLocations.clear()
+  managedScenarioRevision = getMockScenarioRevision()
+}
 
 const errorSchema = ApiErrorResponseSchema
 
@@ -94,14 +120,6 @@ async function readJson(request: Request): Promise<unknown> {
   }
 }
 
-function scenarioResponse() {
-  return HttpResponse.json({
-    scenarioId: getMockScenarioState().scenarioId,
-    failureMode: getMockScenarioState().failureMode,
-    scenarios: MOCK_SCENARIOS,
-  })
-}
-
 const mockStartedRun: WorkflowRun = {
   id: 'run-mock-started',
   workspaceId: 'workspace-1',
@@ -133,6 +151,34 @@ function managedWorkspace(workspaceId: string) {
     locationValidation: location
       ? { status: 'ready' as const, checkedAt: new Date().toISOString() }
       : { status: 'unconfigured' as const },
+  }
+}
+
+function visibleManagedWorkspace(workspaceId: string) {
+  syncManagedFixtures()
+  const stored = managedWorkspaces.get(workspaceId)
+  const base = stored ?? managedWorkspace(workspaceId)
+  if (!base) return undefined
+  return {
+    ...base,
+    workspace: {
+      ...base.workspace,
+      name: managedWorkspaceNames.get(workspaceId) ?? base.workspace.name,
+      description: managedWorkspaceDescriptions.has(workspaceId)
+        ? managedWorkspaceDescriptions.get(workspaceId)
+        : base.workspace.description,
+    },
+    archivedAt: managedWorkspaceArchives.has(workspaceId) ? new Date().toISOString() : null,
+  }
+}
+
+function managedWorkflow(workflow: WorkflowDefinition) {
+  syncManagedFixtures()
+  return {
+    workflow,
+    revision: 1,
+    currentVersionId: `${workflow.id}-v1`,
+    archivedAt: managedWorkflowArchives.has(workflow.id) ? new Date().toISOString() : null,
   }
 }
 
@@ -265,8 +311,133 @@ export const handlers: RequestHandler[] = [
       },
     })
   }),
+  http.get('/api/management/workspaces', () => {
+    const failure = readFailure()
+    if (failure) return failure
+    const base = visibleManagedWorkspace('workspace-1')
+    const items = [base, ...managedWorkspaces.values()]
+      .filter((item): item is NonNullable<typeof item> => Boolean(item && !item.archivedAt))
+    return HttpResponse.json({ items, pageInfo: { nextCursor: null } })
+  }),
+  http.post('/api/management/workspaces', async ({ request }) => {
+    const body = await readJson(request) as { name?: string; description?: string }
+    if (!body?.name?.trim()) return apiError('INVALID_REQUEST', 'A workspace name is required.', 400)
+    const id = `workspace-${crypto.randomUUID()}`
+    const now = new Date().toISOString()
+    const value = {
+      workspace: {
+        id, name: body.name.trim(), ...(body.description ? { description: body.description } : {}),
+        agentIds: [], workflowIds: [], createdAt: now, updatedAt: now,
+      },
+      revision: 1,
+      archivedAt: null,
+      executionLocation: null,
+      locationRevision: 0,
+      locationValidation: { status: 'unconfigured' as const },
+    }
+    managedWorkspaces.set(id, value)
+    return HttpResponse.json({ value, replayed: false }, { status: 201 })
+  }),
+  http.patch('/api/management/workspaces/:workspaceId', async ({ params, request }) => {
+    const workspaceId = String(params.workspaceId)
+    const current = visibleManagedWorkspace(workspaceId)
+    if (!current) return fixtureNotFound('workspace', workspaceId)
+    const body = await readJson(request) as { name?: string; description?: string }
+    if (body.name !== undefined) managedWorkspaceNames.set(workspaceId, body.name)
+    if (body.description !== undefined) managedWorkspaceDescriptions.set(workspaceId, body.description)
+    const value = { ...visibleManagedWorkspace(workspaceId)!, revision: current.revision + 1 }
+    if (managedWorkspaces.has(workspaceId)) managedWorkspaces.set(workspaceId, value)
+    return HttpResponse.json({ value, replayed: false })
+  }),
+  http.delete('/api/management/workspaces/:workspaceId', ({ params }) => {
+    const workspaceId = String(params.workspaceId)
+    const current = visibleManagedWorkspace(workspaceId)
+    if (!current) return fixtureNotFound('workspace', workspaceId)
+    managedWorkspaceArchives.add(workspaceId)
+    const value = { ...visibleManagedWorkspace(workspaceId)!, revision: current.revision + 1 }
+    if (managedWorkspaces.has(workspaceId)) managedWorkspaces.set(workspaceId, value)
+    return HttpResponse.json({ value, replayed: false })
+  }),
+  http.get('/api/management/workspaces/:workspaceId/workflows', ({ params }) => {
+    const failure = readFailure()
+    if (failure) return failure
+    const fixture = getMockFixture(String(params.workspaceId))
+    if (!fixture) return HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })
+    const items = fixture.workflows
+      .filter((workflow) => !managedWorkflowArchives.has(workflow.id))
+      .map(managedWorkflow)
+    return HttpResponse.json({ items, pageInfo: { nextCursor: null } })
+  }),
+  http.post('/api/management/workspaces/:workspaceId/workflows', async ({ params, request }) => {
+    const workspaceId = String(params.workspaceId)
+    if (!getMockFixture(workspaceId)) return fixtureNotFound('workspace', workspaceId)
+    const body = await readJson(request) as { name?: string; description?: string }
+    if (!body?.name?.trim()) return apiError('INVALID_REQUEST', 'A workflow name is required.', 400)
+    const now = new Date().toISOString()
+    const workflow = updateMockWorkflow(workspaceId, {
+      id: `workflow-${crypto.randomUUID()}`,
+      workspaceId,
+      name: body.name.trim(),
+      ...(body.description ? { description: body.description } : {}),
+      executionCondition: { kind: 'manual' },
+      nodes: [],
+      edges: [],
+      createdAt: now,
+      updatedAt: now,
+    })
+    return HttpResponse.json({ value: managedWorkflow(workflow), replayed: false }, { status: 201 })
+  }),
+  http.patch('/api/management/workspaces/:workspaceId/workflows/:workflowId', async ({ params, request }) => {
+    const workspaceId = String(params.workspaceId)
+    const fixture = getMockFixture(workspaceId)
+    const current = fixture?.workflows.find((workflow) => workflow.id === String(params.workflowId))
+    if (!current) return fixtureNotFound('workflow', String(params.workflowId))
+    const body = await readJson(request) as { name?: string; description?: string }
+    const workflow = updateMockWorkflow(workspaceId, {
+      ...current,
+      ...(body.name !== undefined ? { name: body.name } : {}),
+      ...(body.description !== undefined ? { description: body.description } : {}),
+      updatedAt: new Date().toISOString(),
+    })
+    return HttpResponse.json({ value: { ...managedWorkflow(workflow), revision: 2 }, replayed: false })
+  }),
+  http.delete('/api/management/workspaces/:workspaceId/workflows/:workflowId', ({ params }) => {
+    const workspaceId = String(params.workspaceId)
+    const fixture = getMockFixture(workspaceId)
+    const current = fixture?.workflows.find((workflow) => workflow.id === String(params.workflowId))
+    if (!current) return fixtureNotFound('workflow', String(params.workflowId))
+    managedWorkflowArchives.add(current.id)
+    return HttpResponse.json({ value: { ...managedWorkflow(current), revision: 2 }, replayed: false })
+  }),
+  http.get('/api/management/workspaces/:workspaceId/agents', ({ params }) => {
+    const failure = readFailure()
+    if (failure) return failure
+    const fixture = getMockFixture(String(params.workspaceId))
+    const items = fixture?.agents.map((agent) => ({ agent: serializeAgent(agent), metadataRevision: 1 })) ?? []
+    return HttpResponse.json({ items, pageInfo: { nextCursor: null } })
+  }),
+  http.post('/api/management/workspaces/:workspaceId/workflows/:workflowId/drafts', ({ params }) => {
+    const workspaceId = String(params.workspaceId)
+    const fixture = getMockFixture(workspaceId)
+    const workflow = fixture?.workflows.find((item) => item.id === String(params.workflowId))
+    if (!workflow) return fixtureNotFound('workflow', String(params.workflowId))
+    return HttpResponse.json({
+      id: `draft-${workflow.id}`,
+      workspaceId,
+      workflowId: workflow.id,
+      revision: 0,
+      baseWorkflowVersionId: `${workflow.id}-v1`,
+      publishedRevision: 1,
+      graph: workflow,
+      stagedAgents: [],
+      updatedByPrincipalId: 'principal-test',
+      updatedAt: new Date().toISOString(),
+    })
+  }),
   http.get('/api/management/workspaces/:workspaceId', ({ params }) => {
-    const result = managedWorkspace(String(params.workspaceId))
+    const failure = readFailure()
+    if (failure) return failure
+    const result = visibleManagedWorkspace(String(params.workspaceId))
     return result ? HttpResponse.json(result) : fixtureNotFound('workspace', String(params.workspaceId))
   }),
   http.post('/api/management/workspaces/:workspaceId/location/validate', async ({ request, params }) => {
@@ -319,49 +490,6 @@ export const handlers: RequestHandler[] = [
     const parsed = SaveHarnessDefaultsRequestSchema.safeParse(await readJson(request))
     if (!parsed.success) return apiError('INVALID_HARNESS_DEFAULTS', 'Review the harness defaults.', 400)
     return HttpResponse.json({ defaults: updateMockHarnessDefaults(parsed.data.defaults) })
-  }),
-
-  // Mock controls are intentionally separate from product resource endpoints.
-  http.get('/api/mock/scenario', () => scenarioResponse()),
-  http.post('/api/mock/scenario', async ({ request }) => {
-    const body = await readJson(request)
-    if (!body || typeof body !== 'object') return apiError('INVALID_SCENARIO', 'A scenario selection is required.', 400)
-    const value = body as { scenarioId?: unknown; failureMode?: unknown }
-    if (typeof value.scenarioId !== 'string' || !isMockScenario(value.scenarioId)) {
-      return apiError('INVALID_SCENARIO', 'The requested mock scenario is not available.', 400)
-    }
-    if (value.failureMode !== undefined && (typeof value.failureMode !== 'string' || !isFailureMode(value.failureMode))) {
-      return apiError('INVALID_FAILURE_MODE', 'The requested mock failure mode is not available.', 400)
-    }
-    setMockScenario(value.scenarioId, (value.failureMode as MockFailureMode | undefined) ?? 'none')
-    return scenarioResponse()
-  }),
-  http.put('/api/mock/scenario', async ({ request }) => {
-    const body = await readJson(request)
-    if (!body || typeof body !== 'object') return apiError('INVALID_SCENARIO', 'A scenario selection is required.', 400)
-    const value = body as { scenarioId?: unknown; failureMode?: unknown }
-    if (typeof value.scenarioId !== 'string' || !isMockScenario(value.scenarioId)) {
-      return apiError('INVALID_SCENARIO', 'The requested mock scenario is not available.', 400)
-    }
-    if (value.failureMode !== undefined && (typeof value.failureMode !== 'string' || !isFailureMode(value.failureMode))) {
-      return apiError('INVALID_FAILURE_MODE', 'The requested mock failure mode is not available.', 400)
-    }
-    setMockScenario(value.scenarioId, (value.failureMode as MockFailureMode | undefined) ?? 'none')
-    return scenarioResponse()
-  }),
-  http.post('/api/mock/reset', () => {
-    resetMockFixtures()
-    mockLocations.clear()
-    return scenarioResponse()
-  }),
-  http.post('/api/mock/failures', async ({ request }) => {
-    const body = await readJson(request)
-    const value = body && typeof body === 'object' ? (body as { failureMode?: unknown }).failureMode : undefined
-    if (typeof value !== 'string' || !isFailureMode(value)) {
-      return apiError('INVALID_FAILURE_MODE', 'A valid mock failure mode is required.', 400)
-    }
-    setMockFailureMode(value)
-    return scenarioResponse()
   }),
 
   http.post('/api/workspaces/:workspaceId/workflows/:workflowId/runs', async ({ request, params }) => {

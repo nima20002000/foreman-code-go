@@ -3,32 +3,20 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { renderWithRouter } from '../../test/renderWithRouter'
-import { useWorkspaceSessionStore } from '../workspaces/workspaceSessionStore'
 import { WorkflowDirectory } from './WorkflowDirectory'
-import { useSessionWorkflowStore } from './sessionWorkflowStore'
 
 afterEach(() => {
-  useWorkspaceSessionStore.getState().reset()
-  useSessionWorkflowStore.getState().clearSessionWorkflows()
   sessionStorage.clear()
 })
 
 describe('WorkflowDirectory', () => {
-  it('lists saved and session workflows as directory cards', async () => {
-    const draft = useSessionWorkflowStore.getState().createSessionWorkflow({
-      workspaceId: 'workspace-1',
-      name: 'Draft flow',
-    })
+  it('lists durable workflows as directory cards', async () => {
     renderWithRouter(<WorkflowDirectory workspaceId="workspace-1" />)
 
     expect(
       within(await screen.findByTestId('workflow-card-workflow-content-pipeline'))
         .getByRole('link', { name: 'Research to review' }),
     ).toHaveAttribute('href', expect.stringContaining('workflowId=workflow-content-pipeline'))
-    expect(
-      within(screen.getByTestId(`workflow-card-${draft.id}`))
-        .getByRole('link', { name: 'Draft flow' }),
-    ).toBeVisible()
   })
 
   it('renames and removes workflows from card actions', async () => {

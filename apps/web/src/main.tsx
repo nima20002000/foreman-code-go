@@ -18,16 +18,7 @@ if (!rootElement) {
 
 initializeTheme()
 
-async function enableDevelopmentMocks() {
-  if (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false') return
-
-  const { startMockWorker } = await import('./mocks/browser')
-  await startMockWorker()
-}
-
-async function bootstrap(element: HTMLElement) {
-  await enableDevelopmentMocks()
-
+function bootstrap(element: HTMLElement) {
   createRoot(element).render(
     <StrictMode>
       <AppProviders>
@@ -37,4 +28,4 @@ async function bootstrap(element: HTMLElement) {
   )
 }
 
-void bootstrap(rootElement)
+bootstrap(rootElement)

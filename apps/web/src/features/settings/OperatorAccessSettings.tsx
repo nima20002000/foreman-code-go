@@ -11,8 +11,6 @@ import { beginSessionChange, clearProtectedStorage } from '../../shared/api/sess
 import { useGraphDraftStore } from '../graph/store'
 import { managedSaveQueue } from '../graph/managedSave'
 import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
-import { useWorkspaceSessionStore } from '../workspaces/workspaceSessionStore'
-import { useSessionWorkflowStore } from '../workflows/sessionWorkflowStore'
 import { clearRevisionedFormPersistence } from './revisionedForm'
 import { browserCredentialCommand, revokeCredentialCommand } from './accessSetup'
 import './settingsExperience.css'
@@ -72,8 +70,6 @@ export function OperatorAccessSettings() {
     managedSaveQueue.reset()
     useGraphDraftStore.getState().clearAllDrafts()
     useAgentDirectoryStore.getState().reset()
-    useWorkspaceSessionStore.getState().reset()
-    useSessionWorkflowStore.getState().clearSessionWorkflows()
     useConversationDraftStore.getState().clearAllDrafts()
     useOperatorChatStore.getState().reset()
     clearRevisionedFormPersistence()

@@ -4,6 +4,7 @@ import { cleanup } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, vi } from 'vitest'
 
 import { server } from '../mocks/server'
+import { resetTestFixtures } from '../shared/mocks/handlers'
 import { useNavigationUiStore } from '../features/workspaces/navigationUiStore'
 
 if (typeof HTMLDialogElement !== 'undefined' && !HTMLDialogElement.prototype.showModal) {
@@ -17,6 +18,7 @@ beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 
 afterEach(() => {
   server.resetHandlers()
+  resetTestFixtures()
   cleanup()
   useNavigationUiStore.getState().reset()
   vi.restoreAllMocks()

@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { http, HttpResponse } from 'msw'
 
-import { resetMockScenario } from '../../shared/mocks/control'
+import { setMockScenario } from '../../shared/mocks/scenarios'
 import { queryKeys } from '../../shared/api/query'
 import { WorkspaceExecutionLocationSettings } from './WorkspaceExecutionLocationSettings'
 import { useWorkspaceLocationDraftStore } from './workspaceLocationDraftStore'
@@ -23,9 +23,9 @@ function renderLocation() {
   return { client, ...rendered }
 }
 
-beforeEach(async () => {
+beforeEach(() => {
   useWorkspaceLocationDraftStore.getState().reset()
-  await resetMockScenario()
+  setMockScenario('normal')
 })
 afterEach(() => {
   cleanup()

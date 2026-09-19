@@ -83,7 +83,7 @@ export function ComingSoonRouteEntry({ section, label }: { section: WorkspaceSec
       slots={{
         main: (
           <div className="coming-soon-page n-theme" data-testid="coming-soon">
-            <p className="n-eyebrow">Phase 1</p>
+            <p className="n-eyebrow">GraphQL</p>
             <EmptyState
               icon="clock"
               title={label}
@@ -115,7 +115,7 @@ export function GlobalComingSoonRouteEntry({
             <EmptyState
               icon="clock"
               title={label}
-              description="This destination is available globally and is not connected in Phase 1."
+              description="This destination is not implemented yet."
               action={<Badge tone="neutral">Coming soon</Badge>}
             />
           </div>
@@ -316,7 +316,7 @@ export function BrowsersSettingsRouteEntry() {
         <ArrowLeft aria-hidden="true" size={14} />Settings
       </Link>}>
       <SettingsSection title="Browsers" description="Coming soon">
-        <p>Browser profile management is planned, but no browser capability is connected in Phase 1.</p>
+        <p>Browser profile management is planned but is not implemented yet.</p>
       </SettingsSection>
     </SettingsDetailPage> }} />
 }

@@ -1,10 +1,6 @@
-import { useEffect } from 'react'
 import { Link } from '@tanstack/react-router'
 
 import { useAgentsQuery } from '../../shared/api/query'
-import { isSessionWorkspaceId } from '../workspaces/workspaceSessionStore'
-import { useAgentDirectoryStore } from './agentDirectoryStore'
-import { readDeletedAgentIds, readLocalAgents } from './localAgents'
 import './agents.css'
 
 export interface AgentNavigationProps {
@@ -18,23 +14,8 @@ export interface AgentNavigationProps {
  * server-shaped agents query; the selected agent stays in the URL `agentId`.
  */
 export function AgentNavigation({ workspaceId, activeAgentId }: AgentNavigationProps) {
-  const sessionWorkspace = isSessionWorkspaceId(workspaceId)
-  const agentsQuery = useAgentsQuery(workspaceId, { enabled: !sessionWorkspace })
-  const catalog = useAgentDirectoryStore((state) => state.catalogs[workspaceId])
-  const hydrateWorkspace = useAgentDirectoryStore((state) => state.hydrateWorkspace)
-
-  useEffect(() => {
-    hydrateWorkspace(workspaceId)
-  }, [hydrateWorkspace, workspaceId])
-
-  const localAgents = catalog?.localAgents ?? readLocalAgents(workspaceId)
-  const deletedAgentIds = catalog?.deletedAgentIds ?? readDeletedAgentIds(workspaceId)
-  const deletedAgentIdSet = new Set(deletedAgentIds)
-
-  const agents = [...new Map([
-    ...(sessionWorkspace ? [] : agentsQuery.data?.agents ?? []),
-    ...localAgents,
-  ].filter((agent) => !deletedAgentIdSet.has(agent.id)).map((agent) => [agent.id, agent])).values()]
+  const agentsQuery = useAgentsQuery(workspaceId)
+  const agents = agentsQuery.data?.agents ?? []
 
   return (
     <section className="agent-navigation" data-testid="agent-navigation" aria-label="Workspace agents">
@@ -58,11 +39,11 @@ export function AgentNavigation({ workspaceId, activeAgentId }: AgentNavigationP
             )
           })}
         </ul>
-      ) : !sessionWorkspace && agentsQuery.isPending ? (
+      ) : agentsQuery.isPending ? (
         <p className="agent-navigation-state" role="status">
           Loading agents…
         </p>
-      ) : !sessionWorkspace && agentsQuery.isError ? (
+      ) : agentsQuery.isError ? (
         <p
           className="agent-navigation-state agent-navigation-state-error"
           data-testid="agent-navigation-error"
@@ -76,10 +57,10 @@ export function AgentNavigation({ workspaceId, activeAgentId }: AgentNavigationP
         </p>
       ) : null}
 
-      {agents.length > 0 && !sessionWorkspace && agentsQuery.isPending ? (
+      {agents.length > 0 && agentsQuery.isPending ? (
         <p className="agent-navigation-state" role="status">Loading workspace agents…</p>
       ) : null}
-      {agents.length > 0 && !sessionWorkspace && agentsQuery.isError ? (
+      {agents.length > 0 && agentsQuery.isError ? (
         <p
           className="agent-navigation-state agent-navigation-state-error"
           data-testid="agent-navigation-error"

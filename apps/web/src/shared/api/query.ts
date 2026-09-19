@@ -369,7 +369,7 @@ export function useRespondToInteractionMutation() {
 export const useWorkspaceQuery = useWorkspaceDetailsQuery
 
 export function useHarnessDefaultsQuery(options?: QueryOptions<GetHarnessDefaultsResponse>) {
-  const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false')
+  const realMode = true
   return useQuery({
     refetchInterval: realMode ? 3_000 : false,
     ...options,

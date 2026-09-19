@@ -57,7 +57,6 @@ import type {
 import type { GraphDraft as ManagedGraphDraft } from '@graphql/contracts/management'
 
 import {
-  useAgentsQuery,
   useAgentDefaultsQuery,
   useRunQuery,
   useSaveGraphMutation,
@@ -67,7 +66,6 @@ import {
   useStopManagedRunMutation,
   useStartWorkflowRunMutation,
   useWorkspaceDetailsQuery,
-  useWorkflowQuery,
   queryKeys,
 } from '../../shared/api/query'
 import { useCancelRunMutation } from '../../shared/api/runActions'
@@ -1616,15 +1614,12 @@ export function GraphEditor({
 }
 
 export function WorkflowGraph({ workspaceId, workflowId, selectedAgentId, onSelectAgent, onClearAgent }: WorkflowGraphProps) {
-  const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false')
-  const workflowQuery = useWorkflowQuery(workspaceId, workflowId)
-  const agentsQuery = useAgentsQuery(workspaceId)
-  const managedContextQuery = useManagedGraphContextQuery(workspaceId, workflowId, realMode)
+  const managedContextQuery = useManagedGraphContextQuery(workspaceId, workflowId)
   const managedAgentsQuery = { ...managedContextQuery, data: managedContextQuery.data?.agents }
   const managedDraftQuery = { ...managedContextQuery, data: managedContextQuery.data?.draft }
   const workspaceQuery = useWorkspaceDetailsQuery(workspaceId)
 
-  if (workflowQuery.isPending || agentsQuery.isPending || workspaceQuery.isPending || (realMode && (managedAgentsQuery.isPending || managedDraftQuery.isPending))) {
+  if (workspaceQuery.isPending || managedAgentsQuery.isPending || managedDraftQuery.isPending) {
     return (
       <div className="workflow-graph-state" data-testid="workflow-graph-loading">
         <LoadingState label="Loading graph…" rows={3} />
@@ -1633,19 +1628,17 @@ export function WorkflowGraph({ workspaceId, workflowId, selectedAgentId, onSele
   }
 
   if (
-    workflowQuery.isError ||
-    agentsQuery.isError ||
     workspaceQuery.isError ||
-    !workflowQuery.data ||
-    !agentsQuery.data ||
     !workspaceQuery.data ||
-    (realMode && (managedContextQuery.isError || !managedAgentsQuery.data || !managedDraftQuery.data))
+    managedContextQuery.isError ||
+    !managedAgentsQuery.data ||
+    !managedDraftQuery.data
   ) {
     return (
       <div className="workflow-graph-state workflow-graph-state-error" data-testid="workflow-graph-error">
         <ErrorState
           title="Graph unavailable"
-          description={graphErrorMessage(workflowQuery.error ?? agentsQuery.error ?? workspaceQuery.error ?? managedAgentsQuery.error ?? managedDraftQuery.error, 'The workflow could not be loaded.')}
+          description={graphErrorMessage(workspaceQuery.error ?? managedAgentsQuery.error ?? managedDraftQuery.error, 'The workflow could not be loaded.')}
         />
       </div>
     )
@@ -1655,20 +1648,20 @@ export function WorkflowGraph({ workspaceId, workflowId, selectedAgentId, onSele
     <GraphEditor
       key={`${workspaceId}:${workflowId}`}
       workspaceId={workspaceId}
-      workflow={realMode ? managedDraftQuery.data!.graph : workflowQuery.data.workflow}
-      agents={realMode ? [...new Map([
+      workflow={managedDraftQuery.data.graph}
+      agents={[...new Map([
         ...managedAgentsQuery.data!.items.map((item) => item.agent),
         ...managedDraftQuery.data!.stagedAgents.map((item) => item.agent),
-      ].map((agent) => [agent.id, agent])).values()] : agentsQuery.data.agents}
+      ].map((agent) => [agent.id, agent])).values()]}
       runFacts={workspaceQuery.data.runs}
       selectedAgentId={selectedAgentId}
       onSelectAgent={onSelectAgent}
       onClearAgent={onClearAgent}
-      managedDraft={realMode ? managedDraftQuery.data : undefined}
-      managedAgentRevisions={realMode ? Object.fromEntries([
+      managedDraft={managedDraftQuery.data}
+      managedAgentRevisions={Object.fromEntries([
         ...managedAgentsQuery.data!.items.map((item) => [item.agent.id, item.metadataRevision]),
         ...managedDraftQuery.data!.stagedAgents.map((item) => [item.agent.id, item.baseRevision]),
-      ]) : undefined}
+      ])}
     />
   )
 }

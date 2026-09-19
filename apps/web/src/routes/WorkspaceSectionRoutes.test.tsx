@@ -119,7 +119,7 @@ describe('workspace section routes', () => {
 
     expect(await screen.findByRole('heading', { name: 'Files' })).toBeVisible()
     expect(screen.getByTestId('coming-soon')).toHaveTextContent('Coming soon')
-    expect(screen.getByRole('link', { name: 'Files' })).toHaveAttribute('aria-current', 'page')
+    expect(await screen.findByRole('link', { name: 'Files' })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
   })
 
@@ -173,7 +173,7 @@ describe('workspace section routes', () => {
 
     expect(await screen.findByRole('heading', { name: 'Browsers', level: 1 })).toBeVisible()
     expect(screen.getByText('Coming soon')).toBeVisible()
-    expect(screen.getByRole('link', { name: 'Workspace settings' })).toHaveAttribute('aria-current', 'page')
+    expect(await screen.findByRole('link', { name: 'Workspace settings' })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
 
     await user.click(screen.getByRole('link', { name: 'Back to settings' }))

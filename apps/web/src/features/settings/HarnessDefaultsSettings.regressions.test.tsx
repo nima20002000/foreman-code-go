@@ -7,13 +7,13 @@ import { queryKeys } from '../../shared/api/query'
 import { HarnessDefaultsSettings } from './HarnessDefaultsSettings'
 import { clearRevisionedFormPersistence } from './revisionedForm'
 import { nativeOptionsFixture } from './settingsExperience.fixtures'
-type SaveDefaults = ReturnType<typeof import('../../shared/api/query').useSaveHarnessDefaultsMutation>['mutateAsync']
+type SaveDefaults = ReturnType<typeof import('../../shared/api/query').useUpdateManagedHarnessDefaultsMutation>['mutateAsync']
 type SaveInput = Parameters<SaveDefaults>[0]
 type SaveResponse = Awaited<ReturnType<SaveDefaults>>
 const { saveDefaults } = vi.hoisted(() => ({ saveDefaults: vi.fn<SaveDefaults>() }))
 vi.mock('../../shared/api/query', async () => {
   const actual = await vi.importActual<typeof import('../../shared/api/query')>('../../shared/api/query')
-  return { ...actual, useSaveHarnessDefaultsMutation: () => useMutation({ mutationFn: (input: SaveInput) => saveDefaults(input) }) }
+  return { ...actual, useUpdateManagedHarnessDefaultsMutation: () => useMutation({ mutationFn: (input: SaveInput) => saveDefaults(input) }) }
 })
 
 vi.mock('../../shared/api/harnessSettings', () => ({
@@ -27,10 +27,10 @@ vi.mock('./HarnessDirectoryPicker', () => ({ HarnessDirectoryPicker: () => <div>
 const clients: QueryClient[]=[]
 function renderSettings(defaults=DEFAULT_HARNESS_DEFAULTS) {
   const client=new QueryClient({defaultOptions:{queries:{retry:false,staleTime:Infinity}}})
-  client.setQueryData(queryKeys.harnessDefaults,{defaults});clients.push(client)
+  client.setQueryData(queryKeys.managedHarnessCatalog,(['codex','opencode'] as const).map((harness)=>({harness,defaults:defaults[harness],defaultsRevision:0,capability:null,discoveryError:null})));clients.push(client)
   render(<QueryClientProvider client={client}><HarnessDefaultsSettings /></QueryClientProvider>);return client
 }
-beforeEach(()=>{saveDefaults.mockReset();saveDefaults.mockImplementation(async(input)=>({defaults:input.defaults}))})
+beforeEach(()=>{saveDefaults.mockReset();saveDefaults.mockImplementation(async(input)=>({value:{defaults:input.defaults,revision:1},replayed:false}))})
 afterEach(()=>{cleanup();clearRevisionedFormPersistence();for(const client of clients.splice(0))client.clear()})
 describe('Harness overview and draft regressions',()=>{
   it('preserves newer edits while the selected provider save is pending',async()=>{
@@ -38,13 +38,13 @@ describe('Harness overview and draft regressions',()=>{
     renderSettings();const user=userEvent.setup();await user.click(await screen.findByRole('button',{name:'Edit Codex defaults'}));await user.click(screen.getByRole('button',{name:'Access & approvals'}))
     const sandbox=screen.getByRole('combobox',{name:'Sandbox'});await user.selectOptions(sandbox,'workspace-write');await user.click(screen.getByRole('button',{name:'Save Codex preset'}))
     await waitFor(()=>expect(saveDefaults).toHaveBeenCalledOnce());await user.selectOptions(sandbox,'read-only')
-    const submitted=saveDefaults.mock.calls[0]![0];await act(async()=>{resolve({defaults:submitted.defaults});await pending})
+    const submitted=saveDefaults.mock.calls[0]![0];await act(async()=>{resolve({value:{defaults:submitted.defaults,revision:1},replayed:false});await pending})
     expect(screen.getByText('Earlier changes saved; newer edits are unsaved.')).toBeVisible();expect(sandbox).toHaveValue('read-only')
   })
   it('does not replace a local provider draft after a server refresh',async()=>{
     const client=renderSettings();const user=userEvent.setup();await user.click(await screen.findByRole('button',{name:'Edit Codex defaults'}));await user.click(screen.getByRole('button',{name:'Access & approvals'}))
     const sandbox=screen.getByRole('combobox',{name:'Sandbox'});await user.selectOptions(sandbox,'workspace-write')
-    act(()=>client.setQueryData(queryKeys.harnessDefaults,{defaults:{...DEFAULT_HARNESS_DEFAULTS,codex:{...DEFAULT_HARNESS_DEFAULTS.codex,model:'different-model'}}}))
+    act(()=>client.setQueryData(queryKeys.managedHarnessCatalog,(['codex','opencode'] as const).map((harness)=>({harness,defaults:harness==='codex'?{...DEFAULT_HARNESS_DEFAULTS.codex,model:'different-model'}:DEFAULT_HARNESS_DEFAULTS.opencode,defaultsRevision:1,capability:null,discoveryError:null}))))
     expect(sandbox).toHaveValue('workspace-write');await user.click(screen.getByRole('button',{name:'Model & speed'}))
     expect(screen.getByRole('combobox',{name:'Model'})).toHaveValue(DEFAULT_HARNESS_DEFAULTS.codex.model)
   })

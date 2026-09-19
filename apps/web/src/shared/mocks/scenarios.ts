@@ -239,6 +239,7 @@ const baseFixture: MockFixture = {
 }
 
 let state: MockScenarioState = { scenarioId: 'normal', failureMode: 'none' }
+let scenarioRevision = 0
 let fixture: MockFixture = clone(baseFixture)
 let harnessDefaults: HarnessDefaults = clone(DEFAULT_HARNESS_DEFAULTS)
 let harnessDefaultsRevision = 0
@@ -391,6 +392,10 @@ export function getMockScenarioState(): MockScenarioState {
   return { ...state }
 }
 
+export function getMockScenarioRevision(): number {
+  return scenarioRevision
+}
+
 /** API serialization keeps the agent identity required by the shared contract. */
 export function serializeConversation(value: ConversationWithAgent): Conversation {
   return value
@@ -416,12 +421,14 @@ export function setMockScenario(
 ): MockScenarioState {
   state = { scenarioId, failureMode }
   fixture = applyScenario(scenarioId)
+  scenarioRevision += 1
   messageSequence = 0
   return getMockScenarioState()
 }
 
 export function resetMockFixtures(): void {
   fixture = applyScenario(state.scenarioId)
+  scenarioRevision += 1
   harnessDefaults = clone(DEFAULT_HARNESS_DEFAULTS)
   harnessDefaultsRevision = 0
   agentDefaults = clone(DEFAULT_AGENT_DEFAULTS)

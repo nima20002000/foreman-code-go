@@ -4,14 +4,12 @@ import { useQueryClient } from '@tanstack/react-query'
 
 import {
   queryKeys, useArchiveManagedWorkflowMutation, useManagedWorkflowsQuery,
-  useUpdateManagedWorkflowMutation, useWorkspaceDetailsQuery,
+  useUpdateManagedWorkflowMutation,
 } from '../../shared/api/query'
 import {
   Button, Card, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField,
 } from '../../shared/ui/nocturne'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
-import { isSessionWorkspaceId, useWorkspaceSessionStore } from '../workspaces/workspaceSessionStore'
-import { useSessionWorkflowStore } from './sessionWorkflowStore'
 import './workflows.css'
 
 function WorkflowCardActions({ name, onRename, onRemove }: {
@@ -59,42 +57,20 @@ function WorkflowCardActions({ name, onRename, onRemove }: {
 }
 
 export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
-  const sessionWorkspace = isSessionWorkspaceId(workspaceId)
-  const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false') && !sessionWorkspace
   const queryClient = useQueryClient()
-  const workflowsQuery = useWorkspaceDetailsQuery(workspaceId, { enabled: !sessionWorkspace && !realMode })
-  const managedQuery = useManagedWorkflowsQuery(workspaceId, realMode)
+  const managedQuery = useManagedWorkflowsQuery(workspaceId, true)
   const updateWorkflow = useUpdateManagedWorkflowMutation()
   const archiveWorkflow = useArchiveManagedWorkflowMutation()
-  const sessionWorkflows = useSessionWorkflowStore((state) => state.workflows)
-  const workflowNameOverrides = useSessionWorkflowStore((state) => state.workflowNameOverrides)
-  const hiddenWorkflowIds = useSessionWorkflowStore((state) => state.hiddenWorkflowIds)
-  const renameWorkflow = useSessionWorkflowStore((state) => state.renameWorkflow)
-  const removeWorkflow = useSessionWorkflowStore((state) => state.removeWorkflow)
-  const workspaceName = useWorkspaceSessionStore((state) =>
-    state.workspaces.find((workspace) => workspace.id === workspaceId)?.name,
-  )
-
-  const sessions = Object.values(sessionWorkflows).filter(
-    (workflow) => workflow.workspaceId === workspaceId,
-  )
-  const sessionIds = new Set(sessions.map((workflow) => workflow.id))
-  const hiddenIds = new Set(hiddenWorkflowIds)
   const managed = managedQuery.data?.items ?? []
   const managedById = new Map(managed.map((item) => [item.workflow.id, item]))
-  const workflows = realMode ? managed.map((item) => item.workflow) : [...sessions, ...(workflowsQuery.data?.workflows ?? [])]
-    .filter((workflow) => !hiddenIds.has(workflow.id))
-    .map((workflow) => ({
-      ...workflow,
-      name: workflowNameOverrides[workflow.id] ?? workflow.name,
-    }))
+  const workflows = managed.map((item) => item.workflow)
 
   return (
     <section className="workflow-directory" aria-label="Workflows">
       <PageHeader
-        eyebrow={workspaceName ?? workflowsQuery.data?.workspace.name ?? 'Workspace'}
+        eyebrow="Workspace"
         title="Workflows"
-        description={realMode ? 'Open, rename or archive a durable workflow.' : 'Open a workflow or remove it from this frontend session.'}
+        description="Open, rename or archive a durable workflow."
       />
 
       {workflows.length > 0 ? (
@@ -111,7 +87,6 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
                   params={{ workspaceId }}
                   search={{ workflowId: workflow.id }}
                   className="workflow-card-open"
-                  data-session-draft={sessionIds.has(workflow.id) ? 'true' : undefined}
                 >
                   <Icon name="workflow" size={18} aria-hidden="true" />
                   <span>{workflow.name}</span>
@@ -119,7 +94,6 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
                 <WorkflowCardActions
                   name={workflow.name}
                   onRename={(name) => {
-                    if (!realMode) return renameWorkflow(workflow.id, name)
                     const item = managedById.get(workflow.id)
                     if (!item) return
                     updateWorkflow.mutate({ workspaceId, workflowId: workflow.id, expectedRevision: item.revision, commandId: crypto.randomUUID(), name }, {
@@ -127,7 +101,6 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
                     })
                   }}
                   onRemove={() => {
-                    if (!realMode) return removeWorkflow(workflow.id)
                     const item = managedById.get(workflow.id)
                     if (!item) return
                     archiveWorkflow.mutate({ workspaceId, workflowId: workflow.id, expectedRevision: item.revision, commandId: crypto.randomUUID() }, {
@@ -139,9 +112,9 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
             </li>
           ))}
         </ul>
-      ) : (realMode ? managedQuery.isPending : !sessionWorkspace && workflowsQuery.isPending) ? (
+      ) : managedQuery.isPending ? (
         <LoadingState label="Loading workflows…" />
-      ) : (realMode ? managedQuery.isError : !sessionWorkspace && workflowsQuery.isError) ? (
+      ) : managedQuery.isError ? (
         <ErrorState title="Workflows unavailable" description="" />
       ) : (
         <div data-testid="workflow-directory-empty">

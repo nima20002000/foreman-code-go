@@ -7,30 +7,6 @@
   padding: clamp(1.25rem, 3vw, 2.5rem);
 }
 
-.agent-add-form {
-  display: grid;
-  grid-template-columns: minmax(12rem, 1fr) repeat(2, minmax(10rem, 0.8fr));
-  gap: 1rem;
-}
-
-.agent-add-description,
-.agent-add-error,
-.agent-add-actions {
-  grid-column: 1 / -1;
-}
-
-.agent-add-error {
-  margin: 0;
-  color: var(--n-danger);
-  font-size: 0.8125rem;
-}
-
-.agent-add-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-
 .agent-directory-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, 17rem);
@@ -292,10 +268,6 @@
 }
 
 @media (max-width: 760px) {
-  .agent-add-form {
-    grid-template-columns: 1fr;
-  }
-
   .agent-directory-grid {
     grid-template-columns: minmax(0, 1fr);
   }

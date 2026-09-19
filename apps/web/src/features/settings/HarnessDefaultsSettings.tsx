@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { type HarnessDefaults, HarnessDefaultsSchema } from '@graphql/contracts'
 import { ManagementHarnessDefaultsSchema, type HarnessSettingsSection } from '@graphql/contracts/management'
 import { Button, ErrorState, LoadingState } from '../../shared/ui/nocturne'
-import { useHarnessDefaultsQuery, useManagedHarnessCatalogQuery, useSaveHarnessDefaultsMutation, useUpdateManagedHarnessDefaultsMutation } from '../../shared/api/query'
+import { useManagedHarnessCatalogQuery, useUpdateManagedHarnessDefaultsMutation } from '../../shared/api/query'
 import { HarnessConfigurationFields } from './HarnessConfigurationFields'
 import { HarnessFooterOptions } from './HarnessBasicFields'
 import { createHarnessEditor, prepareHarnessEditor, type HarnessEditor } from './harnessEditor'
@@ -23,16 +23,13 @@ function prepared(value: DefaultsEditor): HarnessDefaults {
   })
 }
 function useProviderDefaults() {
-  const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false')
-  const defaultsQuery = useHarnessDefaultsQuery({ enabled: !realMode })
-  const catalogQuery = useManagedHarnessCatalogQuery(realMode)
+  const catalogQuery = useManagedHarnessCatalogQuery(true)
   const codex = catalogQuery.data?.find((entry) => entry.harness === 'codex')
   const opencode = catalogQuery.data?.find((entry) => entry.harness === 'opencode')
-  const incoming = realMode
-    ? codex?.defaults.harness === 'codex' && opencode?.defaults.harness === 'opencode' && codex.defaultsRevision === opencode.defaultsRevision
-      ? { value: { codex: codex.defaults, opencode: opencode.defaults }, revision: codex.defaultsRevision } : undefined
-    : defaultsQuery.data ? { value: defaultsQuery.data.defaults, revision: 0 } : undefined
-  return { incoming, query: realMode ? catalogQuery : defaultsQuery, realMode }
+  const incoming = codex?.defaults.harness === 'codex' && opencode?.defaults.harness === 'opencode' && codex.defaultsRevision === opencode.defaultsRevision
+    ? { value: { codex: codex.defaults, opencode: opencode.defaults }, revision: codex.defaultsRevision }
+    : undefined
+  return { incoming, query: catalogQuery }
 }
 function ProviderCard({ harness, value, onSelect }: { harness: Harness; value: HarnessDefaults; onSelect(): void }) {
   const status = useSettingsDraftStatus(`settings:harnesses:${harness}`)
@@ -62,9 +59,8 @@ export function HarnessDefaultsSettings({ selectedHarness, section: selectedSect
 function ProviderEditor({ harness, section, onSectionChange, onBack }: {
   harness: Harness; section: HarnessSettingsSection; onSectionChange(section: HarnessSettingsSection): void; onBack(): void;
 }) {
-  const { incoming, query, realMode } = useProviderDefaults()
+  const { incoming, query } = useProviderDefaults()
   const form = useRevisionedForm<DefaultsEditor>(incoming ? { value: editable(incoming.value), revision: incoming.revision } : undefined, `settings:harnesses:${harness}`)
-  const save = useSaveHarnessDefaultsMutation()
   const managedSave = useUpdateManagedHarnessDefaultsMutation()
   const root = useSettingsValidation(form.issues)
   const draft = form.draft
@@ -80,13 +76,9 @@ function ProviderEditor({ harness, section, onSectionChange, onBack }: {
         onChange={(configuration) => update({ ...draft[harness], configuration })} />}
       onSave={() => void form.save(async (input) => {
         const defaults = prepared(input.value)
-        if (realMode) {
-          const response = await managedSave.mutateAsync({ defaults: ManagementHarnessDefaultsSchema.parse(defaults), expectedRevision: input.expectedRevision, commandId: input.commandId })
-          return { value: editable(response.value.defaults), revision: response.value.revision }
-        }
-        const response = await save.mutateAsync({ defaults })
-        return { value: editable(response.defaults), revision: 0 }
-      }, (value) => { const defaults = prepared(value); if (realMode) ManagementHarnessDefaultsSchema.parse(defaults); return value })} />}>
+        const response = await managedSave.mutateAsync({ defaults: ManagementHarnessDefaultsSchema.parse(defaults), expectedRevision: input.expectedRevision, commandId: input.commandId })
+        return { value: editable(response.value.defaults), revision: response.value.revision }
+      }, (value) => { ManagementHarnessDefaultsSchema.parse(prepared(value)); return value })} />}>
     <HarnessConfigurationFields allowHarnessChange={false} editor={draft[harness]} onChange={update} issues={issuesAt(form.issues ?? [], [harness])}
       section={section} onSectionChange={onSectionChange} frameless />
   </SettingsEditorLayout></div>

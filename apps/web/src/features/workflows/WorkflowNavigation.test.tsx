@@ -13,9 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { UrlSearchSelectionSchema } from '@graphql/contracts'
 
 import { setMockScenario } from '../../shared/mocks/scenarios'
-import { useWorkspaceSessionStore } from '../workspaces/workspaceSessionStore'
 import { WorkflowNavigation } from './WorkflowNavigation'
-import { useSessionWorkflowStore } from './sessionWorkflowStore'
 
 function renderNavigation(activeWorkflowId?: string, workspaceId = 'workspace-1') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -50,8 +48,6 @@ function renderNavigation(activeWorkflowId?: string, workspaceId = 'workspace-1'
 
 afterEach(() => {
   setMockScenario('normal')
-  useWorkspaceSessionStore.getState().reset()
-  useSessionWorkflowStore.getState().clearSessionWorkflows()
 })
 
 // jsdom does not implement the native modal dialog methods used by Nocturne Dialog.
@@ -132,7 +128,7 @@ describe('WorkflowNavigation', () => {
     expect(screen.getByRole('button', { name: 'New workflow' })).toBeVisible()
   })
 
-  it('opens a compact creation dialog and creates a session workflow', async () => {
+  it('opens a compact creation dialog and creates a durable workflow', async () => {
     const user = userEvent.setup()
     renderNavigation()
     const trigger = await screen.findByRole('button', { name: 'New workflow' })
@@ -150,27 +146,6 @@ describe('WorkflowNavigation', () => {
     const draftLink = screen.getByRole('link', { name: /Draft workflow/ })
     expect(draftLink).toBeVisible()
     expect(draftLink).not.toHaveTextContent('Session')
-  })
-
-  it('resolves an empty session workspace without a workflow request', async () => {
-    const sessionWorkspace = useWorkspaceSessionStore.getState().createWorkspace('Scratch')
-    renderNavigation(undefined, sessionWorkspace.id)
-
-    expect(await screen.findByTestId('workflow-navigation-empty')).toHaveTextContent('No workflows yet')
-    expect(screen.queryByText('Loading workflows…')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'New workflow' })).toBeVisible()
-  })
-
-  it('names the session workspace in its workflow creation dialog', async () => {
-    const user = userEvent.setup()
-    const sessionWorkspace = useWorkspaceSessionStore.getState().createWorkspace('Scratch')
-    renderNavigation(undefined, sessionWorkspace.id)
-
-    await user.click(await screen.findByRole('button', { name: 'New workflow' }))
-
-    expect(await screen.findByRole('dialog', { name: 'New workflow' })).toHaveTextContent(
-      'Start an empty workflow in Scratch',
-    )
   })
 
   it('keeps inside presses open and dismisses the creation dialog from its backdrop', async () => {

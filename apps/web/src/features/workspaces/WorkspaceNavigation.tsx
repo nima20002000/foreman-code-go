@@ -24,14 +24,12 @@ import type { Workspace } from '@graphql/contracts'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 
-import { queryKeys, useCreateManagedWorkspaceMutation, useWorkspaceDetailsQuery } from '../../shared/api/query'
+import { queryKeys, useCreateManagedWorkspaceMutation, useManagedWorkspaceQuery } from '../../shared/api/query'
 import { Button, Divider, Icon, IconButton, TextField, Textarea } from '../../shared/ui/nocturne'
-import { DEFAULT_WORKSPACE_DEFAULTS } from '@graphql/contracts/management'
 import { useWorkspaceCreationDefaultsQuery } from '../../shared/api/settingsExperience'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { usePresence } from '../../shared/ui/usePresence'
 import { WorkflowNavigation } from '../workflows'
-import { isSessionWorkspaceId, useWorkspaceSessionStore } from './workspaceSessionStore'
 import { useNavigationUiStore } from './navigationUiStore'
 import {
   WORKSPACES_ORDER_KEY,
@@ -132,18 +130,13 @@ function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>) {
   }
 }
 
-/**
- * The always-visible create entry point for the workspace list. Creating a
- * workspace needs the future backend, so this opens an explicit wireframe
- * notice instead of inventing persistence.
- */
+/** The always-visible, server-backed create entry point for the workspace list. */
 function NewWorkspaceControl() {
-  const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false')
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const touched = useRef({ name: false, description: false, defaultsApplied: false })
-  const defaults = useWorkspaceCreationDefaultsQuery(realMode && creating)
+  const defaults = useWorkspaceCreationDefaultsQuery(creating)
   const [nameError, setNameError] = useState<string>()
   const triggerRef = useRef<HTMLButtonElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
@@ -155,7 +148,6 @@ function NewWorkspaceControl() {
   const inFlight = useRef(false)
   const attempt = useRef(new CommandAttempt<{ name: string; description: string }>())
   const uncertain = attempt.current.unresolved && !createManagedWorkspace.isPending
-  const createWorkspace = useWorkspaceSessionStore((state) => state.createWorkspace)
 
   const closeCreateDialog = useCallback(() => {
     if (inFlight.current || attempt.current.unresolved) return
@@ -169,12 +161,12 @@ function NewWorkspaceControl() {
 
   useEffect(() => {
     if (!creating || touched.current.defaultsApplied || attempt.current.unresolved) return
-    const template = realMode ? defaults.data : DEFAULT_WORKSPACE_DEFAULTS
+    const template = defaults.data
     if (!template) return
     touched.current.defaultsApplied = true
     if (!touched.current.name) setName(template.suggestedName)
     if (!touched.current.description) setDescription(template.description)
-  }, [creating, defaults.data, realMode])
+  }, [creating, defaults.data])
 
   useEffect(() => {
     if (!creating) return
@@ -189,19 +181,19 @@ function NewWorkspaceControl() {
   })
 
   const createNewWorkspace = async () => {
-    if (inFlight.current || (realMode && defaults.isPending && !attempt.current.unresolved)) return
+    if (inFlight.current || (defaults.isPending && !attempt.current.unresolved)) return
     const trimmedName = name.trim()
     if (!trimmedName) { setNameError('Enter a workspace name.'); nameInputRef.current?.focus(); return }
     inFlight.current = true
     const generation = sessionGeneration()
     setNameError(undefined)
     try {
-      const workspace = realMode
-        ? (await createManagedWorkspace.mutateAsync(attempt.current.input({ name: trimmedName, description }))).value.workspace
-        : createWorkspace(trimmedName)
+      const workspace = (await createManagedWorkspace.mutateAsync(
+        attempt.current.input({ name: trimmedName, description }),
+      )).value.workspace
       assertSession(generation)
       attempt.current.succeeded()
-      if (realMode) void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkspaces }).catch(() => undefined)
+      void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkspaces }).catch(() => undefined)
       inFlight.current = false
       closeCreateDialog()
       void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId: workspace.id } })
@@ -277,8 +269,8 @@ function NewWorkspaceControl() {
                 touched.current.description = true
                 setDescription(event.target.value)
               }} />
-            {realMode && defaults.isPending ? <p role="status">Loading workspace defaults…</p> : null}
-            {realMode && defaults.isError ? <p role="status">Defaults could not be loaded. You can still enter your own values. <Button size="sm" onClick={() => void defaults.refetch()}>Retry defaults</Button></p> : null}
+            {defaults.isPending ? <p role="status">Loading workspace defaults…</p> : null}
+            {defaults.isError ? <p role="status">Defaults could not be loaded. You can still enter your own values. <Button size="sm" onClick={() => void defaults.refetch()}>Retry defaults</Button></p> : null}
             {nameError ? (
               <p id="new-workspace-name-error" className="workspace-create-error" role="alert">
                 {nameError}
@@ -289,7 +281,7 @@ function NewWorkspaceControl() {
               <Button onClick={closeCreateDialog}>Close</Button>
               <Button
                 onClick={() => void createNewWorkspace()}
-                disabled={createManagedWorkspace.isPending || (realMode && defaults.isPending && !uncertain)}
+                disabled={createManagedWorkspace.isPending || (defaults.isPending && !uncertain)}
               >
                 Create workspace
               </Button>
@@ -492,13 +484,7 @@ export function WorkspaceNavigation({
   workspaceOverviewActive = false,
   workflowsContent,
 }: WorkspaceNavigationProps) {
-  const detailsQuery = useWorkspaceDetailsQuery(workspaceId, {
-    enabled: !isSessionWorkspaceId(workspaceId),
-  })
-  const sessionWorkspaces = useWorkspaceSessionStore((state) => state.workspaces)
-  const knownWorkspaces = useWorkspaceSessionStore((state) => state.knownWorkspaces)
-  const hiddenWorkspaceIds = useWorkspaceSessionStore((state) => state.hiddenWorkspaceIds)
-  const registerWorkspace = useWorkspaceSessionStore((state) => state.registerWorkspace)
+  const detailsQuery = useManagedWorkspaceQuery(workspaceId)
   const rememberWorkspace = useNavigationUiStore((state) => state.rememberWorkspace)
   const workspacesExpanded = useNavigationUiStore((state) => state.workspacesExpanded)
   const setWorkspacesExpanded = useNavigationUiStore((state) => state.setWorkspacesExpanded)
@@ -507,38 +493,24 @@ export function WorkspaceNavigation({
   const workspacesPresence = usePresence(workspacesExpanded)
 
   useEffect(() => {
-    for (const workspace of workspaces ?? []) registerWorkspace(workspace)
-    const activeWorkspace = detailsQuery.data?.workspace
-    if (activeWorkspace) registerWorkspace({ id: activeWorkspace.id, name: activeWorkspace.name })
-  }, [detailsQuery.data?.workspace, registerWorkspace, workspaces])
-
-  useEffect(() => {
-    const sessionWorkspaceExists = sessionWorkspaces.some((workspace) => workspace.id === workspaceId)
-    if (!activeGlobalSection && !workspaceOverviewActive && (detailsQuery.data?.workspace || sessionWorkspaceExists)) {
+    if (!activeGlobalSection && !workspaceOverviewActive && detailsQuery.data?.workspace) {
       rememberWorkspace(workspaceId)
     }
-  }, [activeGlobalSection, detailsQuery.data?.workspace, rememberWorkspace, sessionWorkspaces, workspaceId, workspaceOverviewActive])
+  }, [activeGlobalSection, detailsQuery.data?.workspace, rememberWorkspace, workspaceId, workspaceOverviewActive])
 
   const entries = useMemo<readonly WorkspaceNavigationEntry[]>(
     () => {
-      const hidden = new Set(hiddenWorkspaceIds)
-      const next = knownWorkspaces.filter((entry) => !hidden.has(entry.id))
+      const next = [...(workspaces ?? [])]
       const known = new Set(next.map((entry) => entry.id))
-      for (const sessionWorkspace of sessionWorkspaces) {
-        if (!known.has(sessionWorkspace.id)) {
-          next.push(sessionWorkspace)
-          known.add(sessionWorkspace.id)
-        }
-      }
-      if (!activeGlobalSection && !workspaceOverviewActive && !known.has(workspaceId)) {
+      if (!workspaceOverviewActive && detailsQuery.data?.workspace && !known.has(workspaceId)) {
         next.unshift({
           id: workspaceId,
-          name: detailsQuery.data?.workspace.name ?? workspaceId,
+          name: detailsQuery.data.workspace.name,
         })
       }
       return next
     },
-    [activeGlobalSection, detailsQuery.data?.workspace.name, hiddenWorkspaceIds, knownWorkspaces, sessionWorkspaces, workspaceId, workspaceOverviewActive],
+    [detailsQuery.data?.workspace, workspaces, workspaceId, workspaceOverviewActive],
   )
 
   const entryItems = useMemo(

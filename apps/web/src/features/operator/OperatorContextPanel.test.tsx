@@ -135,7 +135,7 @@ describe('OperatorContextPanel', () => {
       const button = screen.getByRole('button', { name: label })
       expect(button).toBeDisabled()
       expect(button).toHaveAttribute('aria-disabled', 'true')
-      expect(button).toHaveAttribute('title', expect.stringContaining('Phase 1'))
+      expect(button).toHaveAttribute('title', expect.stringContaining('is not available.'))
     }
 
     await user.click(screen.getByRole('button', { name: 'Return to Operator' }))

@@ -1,18 +1,16 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { renderWithRouter } from '../../test/renderWithRouter'
 import {
   DEFAULT_NAVIGATION_WIDTH,
   MAX_NAVIGATION_WIDTH,
-  useWorkspaceSessionStore,
 } from '../../features/workspaces'
 import { WorkspaceShell } from './WorkspaceShell'
 
 describe('WorkspaceShell', () => {
   afterEach(() => {
     sessionStorage.clear()
-    useWorkspaceSessionStore.getState().reset()
   })
 
   it('nests the workspace destinations under an active Workspaces menu', async () => {
@@ -24,7 +22,7 @@ describe('WorkspaceShell', () => {
     expect(workspaces).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
 
-    const workflows = screen.getByRole('link', { name: 'Workflows' })
+    const workflows = await screen.findByRole('link', { name: 'Workflows' })
     expect(workflows).toHaveAttribute('href', '/workspaces/workspace-1/workflows')
     expect(workflows).toHaveAttribute('aria-current', 'page')
 
@@ -122,7 +120,7 @@ describe('WorkspaceShell', () => {
     expect(await screen.findByRole('region', { name: 'Workspace content' })).toHaveTextContent('Directory')
     expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Workspaces' })).not.toHaveClass('nav-item-active')
-    expect(screen.getByRole('link', { name: 'Workflows' })).not.toHaveAttribute('aria-current')
+    expect(await screen.findByRole('link', { name: 'Workflows' })).not.toHaveAttribute('aria-current')
   })
 
   it('keeps Terminal top-level and active outside the workspace tree', async () => {
@@ -130,7 +128,7 @@ describe('WorkspaceShell', () => {
 
     expect(await screen.findByRole('link', { name: 'Terminal' })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('link', { name: 'Workspaces' })).not.toHaveClass('nav-item-active')
-    expect(screen.getByTestId('workspace-entry-workspace-1')).not.toHaveClass('nav-item-active')
+    expect(await screen.findByTestId('workspace-entry-workspace-1')).not.toHaveClass('nav-item-active')
   })
 
   it('expands and collapses each workspace entry independently', async () => {
@@ -204,26 +202,6 @@ describe('WorkspaceShell', () => {
     expect(filesLinks.some((link) => link.getAttribute('href') === '/workspaces/workspace-2/files')).toBe(true)
     const workflowsLinks = screen.getAllByRole('link', { name: 'Workflows' })
     expect(workflowsLinks.some((link) => link.getAttribute('href') === '/workspaces/workspace-2/workflows')).toBe(true)
-  })
-
-  it('creates a session workspace from the modal', async () => {
-    const user = userEvent.setup()
-    const { router } = renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
-
-    const trigger = await screen.findByRole('button', { name: 'New workspace' })
-    expect(trigger).toBeVisible()
-
-    await user.click(trigger)
-
-    const dialog = await screen.findByRole('dialog', { name: 'New workspace' })
-    expect(dialog).toHaveTextContent('Create a workspace for its own agents')
-    await user.clear(screen.getByRole('textbox', { name: 'Name' }))
-    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Scratch')
-    await user.click(screen.getByRole('button', { name: 'Create workspace' }))
-
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/workspaces\/session-/))
-    expect(useWorkspaceSessionStore.getState().workspaces[0]?.name).toBe('Scratch')
   })
 
   it('resizes the navigation by pointer and keyboard within safe bounds', async () => {

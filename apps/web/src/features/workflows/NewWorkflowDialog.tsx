@@ -2,11 +2,9 @@ import { useRef, useState, type FormEvent } from 'react'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 
-import { useSessionWorkflowStore } from './sessionWorkflowStore'
 import { useQueryClient } from '@tanstack/react-query'
 import { queryKeys, useCreateManagedWorkflowMutation } from '../../shared/api/query'
 import { Button, Dialog, Textarea, TextField } from '../../shared/ui/nocturne'
-import { isSessionWorkspaceId } from '../workspaces/workspaceSessionStore'
 
 export interface NewWorkflowDialogProps {
   workspaceId: string
@@ -22,10 +20,8 @@ export function NewWorkflowDialog({
   onCreated,
   onCancel,
 }: NewWorkflowDialogProps) {
-  const createSessionWorkflow = useSessionWorkflowStore((state) => state.createSessionWorkflow)
   const queryClient = useQueryClient()
   const createManagedWorkflow = useCreateManagedWorkflowMutation()
-  const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false') && !isSessionWorkspaceId(workspaceId)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [nameError, setNameError] = useState<string>()
@@ -46,17 +42,13 @@ export function NewWorkflowDialog({
     setNameError(undefined)
     try {
       const input = { workspaceId, name: trimmedName, ...(description ? { description } : {}) }
-      const workflow = realMode
-        ? (await createManagedWorkflow.mutateAsync(attempt.current.input(input))).value.workflow
-        : createSessionWorkflow(input)
+      const workflow = (await createManagedWorkflow.mutateAsync(attempt.current.input(input))).value.workflow
       assertSession(generation)
       attempt.current.succeeded()
-      if (realMode) {
-        void Promise.all([
-          queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflows(workspaceId) }),
-          queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) }),
-        ]).catch(() => undefined)
-      }
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflows(workspaceId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) }),
+      ]).catch(() => undefined)
       onCreated(workflow.id)
     } catch (error) {
       attempt.current.failed(error)
@@ -111,7 +103,7 @@ export function NewWorkflowDialog({
         />
 
         <p className="new-workflow-session-note" role="note">
-          {realMode ? 'This empty workflow is stored by the workspace backend.' : 'This draft lives only in this browser session and disappears when you refresh or close the tab.'}
+          This empty workflow is stored by the workspace backend.
         </p>
 
         {uncertain ? <p role="status">The previous request may have succeeded. Retry Create workflow to resolve it without creating a duplicate.</p> : null}

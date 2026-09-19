@@ -3,21 +3,15 @@ import { Link } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import type { ManagedWorkspace } from '@graphql/contracts/management'
 
-import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
-import { useSessionWorkflowStore } from '../workflows/sessionWorkflowStore'
 import {
   queryKeys, useArchiveManagedWorkspaceMutation, useManagedWorkspacesQuery,
-  useUpdateManagedWorkspaceMutation, useWorkspaceDetailsQuery,
+  useUpdateManagedWorkspaceMutation,
 } from '../../shared/api/query'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { ApiError } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { Alert, Button, Card, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField } from '../../shared/ui/nocturne'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
-import { useNavigationUiStore } from './navigationUiStore'
-import { useWorkspaceSessionStore } from './workspaceSessionStore'
-
-const DEFAULT_WORKSPACE_ID = 'workspace-1'
 interface CardCommand { type: 'rename' | 'archive'; workspaceId: string; expectedRevision: number; name?: string }
 
 function WorkspaceCardActions({ workspaceId, name, revision = 0, onCommand }: {
@@ -91,74 +85,47 @@ function WorkspaceCardActions({ workspaceId, name, revision = 0, onCommand }: {
 }
 
 export function WorkspaceDirectory() {
-  const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false')
   const queryClient = useQueryClient()
-  const workspaceQuery = useWorkspaceDetailsQuery(DEFAULT_WORKSPACE_ID, { enabled: !realMode })
-  const managedQuery = useManagedWorkspacesQuery(realMode)
+  const managedQuery = useManagedWorkspacesQuery(true)
   const updateWorkspace = useUpdateManagedWorkspaceMutation()
   const archiveWorkspace = useArchiveManagedWorkspaceMutation()
-  const sessionWorkspaces = useWorkspaceSessionStore((state) => state.workspaces)
-  const knownWorkspaces = useWorkspaceSessionStore((state) => state.knownWorkspaces)
-  const hiddenWorkspaceIds = useWorkspaceSessionStore((state) => state.hiddenWorkspaceIds)
-  const workspaceNameOverrides = useWorkspaceSessionStore((state) => state.workspaceNameOverrides)
-  const registerWorkspace = useWorkspaceSessionStore((state) => state.registerWorkspace)
-  const removeWorkspace = useWorkspaceSessionStore((state) => state.removeWorkspace)
-  const renameWorkspace = useWorkspaceSessionStore((state) => state.renameWorkspace)
-  const removeWorkspaceState = useNavigationUiStore((state) => state.removeWorkspaceState)
-  const removeWorkspaceAgents = useAgentDirectoryStore((state) => state.removeWorkspace)
-  const removeWorkspaceWorkflows = useSessionWorkflowStore((state) => state.removeWorkspaceWorkflows)
 
-  useEffect(() => {
-    if (workspaceQuery.data?.workspace) registerWorkspace(workspaceQuery.data.workspace)
-  }, [registerWorkspace, workspaceQuery.data?.workspace])
-
-  const workspaces = useMemo(() => {
-    if (realMode) return managedQuery.isError ? [] : managedQuery.data?.items.map((item) => item.workspace) ?? []
-    const hidden = new Set(hiddenWorkspaceIds)
-    const entries = [...(workspaceQuery.data?.workspace ? [workspaceQuery.data.workspace] : []), ...knownWorkspaces, ...sessionWorkspaces]
-    return [...new Map(entries.filter((workspace) => !hidden.has(workspace.id)).map((workspace) => [workspace.id, {
-      ...workspace, name: workspaceNameOverrides[workspace.id] ?? workspace.name,
-    }])).values()]
-  }, [hiddenWorkspaceIds, knownWorkspaces, managedQuery.data?.items, managedQuery.isError, realMode,
-    sessionWorkspaces, workspaceNameOverrides, workspaceQuery.data?.workspace])
+  const workspaces = useMemo(
+    () => managedQuery.isError ? [] : managedQuery.data?.items.map((item) => item.workspace) ?? [],
+    [managedQuery.data?.items, managedQuery.isError],
+  )
   const managedById = new Map(managedQuery.data?.items.map((item) => [item.workspace.id, item]))
 
   const execute = async (input: CardCommand & { commandId: string }) => {
     const { workspaceId, commandId, expectedRevision } = input
-    if (realMode) {
-      const response = input.type === 'rename'
-        ? await updateWorkspace.mutateAsync({ workspaceId, commandId, expectedRevision, name: input.name! })
-        : await archiveWorkspace.mutateAsync({ workspaceId, commandId, expectedRevision })
-      // The write has committed. Cache refresh failure must not turn it into a retryable write.
-      queryClient.setQueryData<{ items: ManagedWorkspace[]; pageInfo: { nextCursor: string | null } }>(queryKeys.managedWorkspaces, (current) => current ? {
-        ...current,
-        items: input.type === 'archive' ? current.items.filter((item) => item.workspace.id !== workspaceId)
-          : current.items.map((item) => item.workspace.id === workspaceId ? response.value : item),
-      } : current)
-      void Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkspaces }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) }),
-      ]).catch(() => undefined)
-      return
-    }
-    if (input.type === 'rename') { renameWorkspace(workspaceId, input.name!); return }
-    removeWorkspace(workspaceId); removeWorkspaceState(workspaceId)
-    removeWorkspaceAgents(workspaceId); removeWorkspaceWorkflows(workspaceId)
+    const response = input.type === 'rename'
+      ? await updateWorkspace.mutateAsync({ workspaceId, commandId, expectedRevision, name: input.name! })
+      : await archiveWorkspace.mutateAsync({ workspaceId, commandId, expectedRevision })
+    // The write has committed. Cache refresh failure must not turn it into a retryable write.
+    queryClient.setQueryData<{ items: ManagedWorkspace[]; pageInfo: { nextCursor: string | null } }>(queryKeys.managedWorkspaces, (current) => current ? {
+      ...current,
+      items: input.type === 'archive' ? current.items.filter((item) => item.workspace.id !== workspaceId)
+        : current.items.map((item) => item.workspace.id === workspaceId ? response.value : item),
+    } : current)
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkspaces }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) }),
+    ]).catch(() => undefined)
   }
-  const failed = realMode ? managedQuery.isError : workspaceQuery.isError && hiddenWorkspaceIds.length === 0
-  const loading = realMode ? managedQuery.isPending : workspaceQuery.isPending
-  const needsAccess = realMode && failed && ApiError.is(managedQuery.error) && managedQuery.error.status === 401
+  const failed = managedQuery.isError
+  const loading = managedQuery.isPending
+  const needsAccess = failed && ApiError.is(managedQuery.error) && managedQuery.error.status === 401
   return (
     <section className="workspace-directory n-theme" aria-label="Workspaces">
       <PageHeader
         eyebrow="GraphQL"
         title="Workspaces"
-        description={realMode ? 'Open, rename or archive a durable workspace.' : 'Open a workspace or remove it from this frontend session.'}
+        description="Open, rename or archive a durable workspace."
       />
       {needsAccess ? <EmptyState icon="warning" title="Connect this browser"
         description="App access is required to load workspaces."
         action={<Link to="/settings/operator-access" className="n-button n-button--primary">Open App access</Link>} />
-        : realMode && failed ? <ErrorState title="Workspaces unavailable" description="The workspace list could not be loaded."
+        : failed ? <ErrorState title="Workspaces unavailable" description="The workspace list could not be loaded."
           onRetry={() => void managedQuery.refetch()} /> : workspaces.length > 0 ? (
         <ul className="workspace-card-list" data-testid="workspace-card-list">
           {workspaces.map((workspace) => <li key={workspace.id}>

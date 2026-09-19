@@ -114,8 +114,8 @@ function isNotFound(error: unknown): boolean {
 function UnsupportedActions() {
   const actions = ['Run', 'Resume', 'Login', 'Open Browser', 'Files']
   return (
-    <div className="n-stack" aria-label="Phase 1 unavailable actions">
-      <Badge tone="neutral">Actions unavailable in Phase 1</Badge>
+    <div className="n-stack" aria-label="Unavailable actions">
+      <Badge tone="neutral">Actions unavailable</Badge>
       <div className="n-actions">
       {actions.map((action) => (
         <Button
@@ -124,7 +124,7 @@ function UnsupportedActions() {
           variant="ghost"
           disabled
           aria-disabled="true"
-          title={`${action} is not available in Phase 1.`}
+          title={`${action} is not available.`}
         >
           {action}
         </Button>

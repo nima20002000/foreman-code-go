@@ -37,7 +37,7 @@ describe('WorkspaceRoute', () => {
     )
 
     expect(await screen.findByTestId('workspace-stale')).toHaveTextContent('agent-old')
-    expect(screen.getByRole('link', { name: 'Workflows' })).toHaveAttribute('aria-current', 'page')
+    expect(await screen.findByRole('link', { name: 'Workflows' })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
   })
 })

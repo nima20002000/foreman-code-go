@@ -1,17 +1,11 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
-import type { Agent, WorkflowDefinition } from '@graphql/contracts'
+import type { Agent } from '@graphql/contracts'
 
-import { renderWithRouter } from '../../test/renderWithRouter'
-import { setMockScenario } from '../../shared/mocks/scenarios'
 import { AgentsDirectoryContent } from './AgentsDirectory'
-import { AgentNavigation } from './AgentNavigation'
 import { useAgentDirectoryStore } from './agentDirectoryStore'
-import { deleteAgentForSession, writeLocalAgents } from './localAgents'
-import { useGraphDraftStore, workflowDraftKey } from '../graph/store'
-import { useSessionWorkflowStore } from '../workflows/sessionWorkflowStore'
 
 const agents: Agent[] = [
   {
@@ -22,10 +16,6 @@ const agents: Agent[] = [
     executionState: 'available',
     model: 'gpt-test',
   },
-]
-
-const reorderAgents: Agent[] = [
-  ...agents,
   {
     id: 'agent-builder',
     name: 'Builder',
@@ -33,337 +23,40 @@ const reorderAgents: Agent[] = [
     executionState: 'available',
     model: 'gpt-test',
   },
-  {
-    id: 'agent-reviewer',
-    name: 'Reviewer',
-    role: 'reviewer',
-    executionState: 'available',
-    model: 'gpt-test',
-  },
 ]
 
 afterEach(() => {
-  setMockScenario('normal')
   sessionStorage.clear()
   useAgentDirectoryStore.getState().reset()
-  useGraphDraftStore.getState().clearAllDrafts()
-  useSessionWorkflowStore.getState().clearSessionWorkflows()
-})
-
-// jsdom does not implement the native modal dialog methods used by Nocturne Dialog.
-beforeEach(() => {
-  HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) { this.open = true }
-  HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) {
-    this.open = false
-    queueMicrotask(() => this.dispatchEvent(new Event('close')))
-  }
 })
 
 describe('AgentsDirectoryContent', () => {
-  it('renders existing contract-shaped agents as directory cards', () => {
+  it('renders persisted agents without a local creation path', () => {
     render(<AgentsDirectoryContent workspaceId="workspace-1" agents={agents} />)
 
     expect(screen.getByRole('heading', { name: 'Agents', level: 1 })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'Researcher' })).toBeVisible()
     expect(screen.getByLabelText('Researcher, researcher, Available')).toBeVisible()
-    expect(screen.getByText('researcher · Available')).toBeVisible()
-    expect(screen.queryByText('Finds and summarizes source material.')).not.toBeInTheDocument()
-    expect(screen.queryByText('Workspace data')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add agent' })).not.toBeInTheDocument()
   })
 
-  it('validates and adds a clearly local session agent through the modal form', async () => {
-    const user = userEvent.setup()
-    render(<AgentsDirectoryContent workspaceId="workspace-1" agents={agents} />)
-
-    await user.click(screen.getByRole('button', { name: 'Add agent' }))
-    const name = screen.getByRole('textbox', { name: 'Name' })
-    expect(name).toHaveFocus()
-
-    await user.click(screen.getByRole('button', { name: 'Add local agent' }))
-    expect(screen.getByRole('alert')).toHaveTextContent('Name is required.')
-    expect(name).toHaveAttribute('aria-invalid', 'true')
-
-    await user.type(name, 'Planner')
-    await user.type(screen.getByRole('textbox', { name: /Role/ }), 'planning')
-    await user.type(screen.getByRole('textbox', { name: /Description/ }), 'Creates implementation plans.')
-    await user.click(screen.getByRole('button', { name: 'Add local agent' }))
-
-    expect(screen.getByRole('heading', { name: 'Planner' })).toBeVisible()
-    expect(screen.getByLabelText('Planner, planning, Local session')).toBeVisible()
-    expect(screen.getByText('planning · Local session')).toBeVisible()
-    expect(sessionStorage.getItem('graphql-local-agents:workspace-1')).toContain('Planner')
-  })
-
-  it('updates the workspace agent submenu reactively after local add and delete', async () => {
-    const user = userEvent.setup()
-    renderWithRouter(
-      <>
-        <AgentNavigation workspaceId="session-reactive" />
-        <AgentsDirectoryContent workspaceId="session-reactive" agents={[]} />
-      </>,
-    )
-
-    expect(await screen.findByTestId('agent-navigation-empty')).toHaveTextContent('No agents yet')
-    await user.click(screen.getByRole('button', { name: 'Add agent' }))
-    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Gamma Agent')
-    await user.click(screen.getByRole('button', { name: 'Add local agent' }))
-
-    const submenuAgent = await screen.findByRole('link', { name: 'Gamma Agent' })
-    expect(submenuAgent).toBeVisible()
-    const createdAgent = useAgentDirectoryStore.getState().catalogs['session-reactive']?.localAgents[0]
-    if (!createdAgent) throw new Error('Reactive local agent missing from store')
-    useAgentDirectoryStore.getState().deleteAgent('session-reactive', createdAgent.id)
-    await waitFor(() => expect(screen.queryByRole('link', { name: 'Gamma Agent' })).not.toBeInTheDocument())
-    expect(screen.getByTestId('agent-navigation-empty')).toHaveTextContent('No agents yet')
-  })
-
-  it('blocks removal while a selectable workflow uses the agent, then allows it after unlinking', async () => {
-    const user = userEvent.setup()
-    const workflowUsingAgent: WorkflowDefinition = {
-      id: 'workflow-using-researcher',
-      workspaceId: 'workspace-1',
-      name: 'Research flow',
-      executionCondition: { kind: 'manual' },
-      nodes: [{ id: 'research-step', agentId: 'agent-researcher' }],
-      edges: [],
-    }
-    renderWithRouter(
-      <AgentsDirectoryContent
-        workspaceId="workspace-1"
-        agents={agents}
-        workflows={[workflowUsingAgent]}
-      />,
-    )
-
-    await user.click(await screen.findByRole('button', { name: 'Open actions for Researcher' }))
-    await user.click(screen.getByRole('button', { name: 'Remove Researcher' }))
-    const workflowLink = screen.getByRole('link', { name: 'Research flow' })
-    expect(screen.getByRole('alert')).toHaveTextContent('Researcher is already in use')
-    expect(workflowLink).toHaveAttribute(
-      'href',
-      expect.stringContaining('workflowId=workflow-using-researcher'),
-    )
-
-    fireEvent.mouseDown(document.body)
-    act(() => {
-      useGraphDraftStore.getState().updateDraft(
-        workflowDraftKey('workspace-1', workflowUsingAgent.id),
-        workflowUsingAgent,
-        (current) => ({ ...current, nodes: [] }),
-      )
-    })
-    await user.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
-    await user.click(screen.getByRole('button', { name: 'Remove Researcher' }))
-
-    expect(screen.queryByRole('heading', { name: 'Researcher' })).not.toBeInTheDocument()
-  })
-
-  it('edits agent settings and confirms before closing dirty changes', async () => {
-    const user = userEvent.setup()
-    renderWithRouter(<AgentsDirectoryContent workspaceId="workspace-1" agents={agents} />)
-
-    await user.click(await screen.findByRole('button', { name: 'Open actions for Researcher' }))
-    const settings = screen.getByRole('dialog', { name: 'Researcher actions' })
-    expect(within(settings).getByRole('textbox', { name: 'Name' })).toHaveValue('Researcher')
-    expect(within(settings).getByRole('combobox', { name: 'Harness' })).toHaveValue('codex')
-    const modelSelect = within(settings).getByRole('combobox', { name: 'Model' })
-    expect(within(modelSelect).getAllByRole('option').map((option) => option.textContent)).toEqual([
-      'gpt-5.6-luna',
-      'gpt-5.6-terra',
-      'gpt-5.6-sol',
-      'gpt-6-astra',
-    ])
-    expect(within(settings).getByRole('combobox', { name: 'Effort' })).toHaveValue('medium')
-    expect(within(settings).getByRole('option', { name: 'Max' })).toBeVisible()
-    expect(within(settings).getByRole('checkbox', { name: 'Fast mode' })).toBeVisible()
-
-    await user.selectOptions(modelSelect, 'gpt-6-astra')
-    expect(within(settings).getByRole('option', { name: 'Ultra' })).toBeVisible()
-    await user.selectOptions(within(settings).getByRole('combobox', { name: 'Effort' }), 'ultra')
-    await user.selectOptions(modelSelect, 'gpt-5.6-luna')
-    expect(within(settings).getByRole('combobox', { name: 'Effort' })).toHaveValue('max')
-    expect(within(settings).queryByRole('option', { name: 'Ultra' })).not.toBeInTheDocument()
-
-    await user.selectOptions(within(settings).getByRole('combobox', { name: 'Harness' }), 'opencode')
-    expect(modelSelect).toHaveValue('opencode-go/deepseek-v4.1-flash')
-    expect(within(settings).queryByRole('checkbox', { name: 'Fast mode' })).not.toBeInTheDocument()
-    expect(within(settings).getByRole('combobox', { name: 'Harness' })).not.toHaveFocus()
-
-    await user.clear(within(settings).getByRole('textbox', { name: 'Name' }))
-    await user.type(within(settings).getByRole('textbox', { name: 'Name' }), 'Lead Researcher')
-    fireEvent.mouseDown(document.body)
-    expect(settings).toHaveTextContent('You made changes. Save or discard?')
-    await user.click(within(settings).getByRole('button', { name: 'Save' }))
-
-    expect(await screen.findByRole('heading', { name: 'Lead Researcher' })).toBeVisible()
-  })
-
-  it('keeps local agents usable when the workspace agent request fails', async () => {
-    setMockScenario('error')
-    writeLocalAgents('workspace-1', [{ id: 'agent-local-planner', name: 'Planner' }])
-
-    renderWithRouter(<AgentNavigation workspaceId="workspace-1" />)
-
-    expect(await screen.findByRole('link', { name: 'Planner' })).toBeVisible()
-    expect(await screen.findByTestId('agent-navigation-error')).toHaveTextContent(
-      'Workspace agents unavailable',
-    )
-  })
-
-  it('renders agent cards as non-selectable content with only an actions control', () => {
-    render(<AgentsDirectoryContent workspaceId="workspace-1" agents={agents} />)
-
-    expect(screen.queryByRole('button', { name: 'Researcher, researcher, Available' })).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Researcher' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Open actions for Researcher' })).toBeVisible()
-    expect(screen.queryByRole('dialog', { name: 'Researcher' })).not.toBeInTheDocument()
-  })
-
-  it('dismisses the add modal from its backdrop, close control, or Escape and restores focus', async () => {
-    const user = userEvent.setup()
-    render(<AgentsDirectoryContent workspaceId="workspace-1" agents={agents} />)
-    const add = screen.getByRole('button', { name: 'Add agent' })
-
-    await user.click(add)
-    const dialog = screen.getByRole('dialog', { name: 'Add a local agent' })
-    const name = screen.getByRole('textbox', { name: 'Name' })
-    fireEvent.pointerDown(name)
-    fireEvent.click(name)
-    expect(dialog).toBeVisible()
-
-    fireEvent.pointerDown(dialog)
-    fireEvent.click(dialog)
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(add).toHaveFocus()
-
-    await user.click(add)
-    fireEvent(screen.getByRole('dialog'), new Event('cancel', { cancelable: true }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(add).toHaveFocus()
-
-    await user.click(add)
-    await user.click(screen.getByRole('button', { name: 'Close add agent' }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(add).toHaveFocus()
-  })
-
-  it('teaches the session-only path when there are no agents', () => {
+  it('directs empty workspaces to create agents through a workflow graph', () => {
     render(<AgentsDirectoryContent workspaceId="workspace-empty" agents={[]} />)
 
     expect(screen.getByTestId('agents-empty')).toHaveTextContent('No agents yet')
-    expect(screen.getByTestId('agents-empty')).toHaveTextContent('Persistent agent creation is not available in Phase 1')
+    expect(screen.getByTestId('agents-empty')).toHaveTextContent('Add agents from a workflow graph')
   })
 
-  it('hides session-deleted workspace and local agents across remounts', () => {
-    writeLocalAgents('workspace-1', [{ id: 'agent-planner', name: 'Planner' }])
-    deleteAgentForSession('workspace-1', 'agent-researcher')
-    deleteAgentForSession('workspace-1', 'agent-planner')
-
-    const first = render(<AgentsDirectoryContent workspaceId="workspace-1" agents={agents} />)
-    expect(screen.queryByRole('heading', { name: 'Researcher' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Planner' })).not.toBeInTheDocument()
-    expect(screen.getByTestId('agents-empty')).toHaveTextContent('No agents yet')
-
-    first.unmount()
-    render(<AgentsDirectoryContent workspaceId="workspace-1" agents={agents} />)
-    expect(screen.queryByRole('heading', { name: 'Researcher' })).not.toBeInTheDocument()
-    expect(sessionStorage.getItem('graphql-local-agents:workspace-1')).not.toContain('Planner')
-  })
-
-  it('reorders cards with the accessible keyboard path and keeps order per workspace', async () => {
+  it('keeps accessible card reordering as local interaction state only', async () => {
     const user = userEvent.setup()
-    const view = render(<AgentsDirectoryContent workspaceId="workspace-1" agents={reorderAgents} />)
+    render(<AgentsDirectoryContent workspaceId="workspace-1" agents={agents} />)
     const researcher = screen.getByLabelText('Researcher, researcher, Available')
 
     researcher.focus()
     await user.keyboard('{Alt>}{ArrowDown}{/Alt}')
 
     const cards = [...document.querySelectorAll<HTMLElement>('[data-agent-id]')]
-    expect(cards.map((card) => card.dataset.agentId)).toEqual([
-      'agent-builder',
-      'agent-researcher',
-      'agent-reviewer',
-    ])
-    expect(screen.getByTestId('agent-reorder-announcement')).toHaveTextContent(
-      'Moved Researcher to position 2 of 3',
-    )
-
-    view.unmount()
-    render(<AgentsDirectoryContent workspaceId="workspace-1" agents={reorderAgents} />)
-    expect([...document.querySelectorAll<HTMLElement>('[data-agent-id]')].map((card) => card.dataset.agentId)).toEqual([
-      'agent-builder',
-      'agent-researcher',
-      'agent-reviewer',
-    ])
-  })
-
-  it('distinguishes a pointer drag from a click and announces the committed order', () => {
-    const rects = new Map<Element, DOMRect>()
-    const cardRects = [
-      ['agent-researcher', 100],
-      ['agent-builder', 160],
-      ['agent-reviewer', 220],
-    ] as const
-    const makeRect = (top: number, height = 50) => ({
-      x: 0,
-      y: top,
-      top,
-      left: 0,
-      width: 260,
-      height,
-      right: 260,
-      bottom: top + height,
-      toJSON: () => ({}),
-    }) as DOMRect
-    render(<AgentsDirectoryContent workspaceId="workspace-1" agents={reorderAgents} />)
-    const list = document.querySelector('.agent-directory-grid')
-    if (!list) throw new Error('Agent grid missing')
-    rects.set(list, makeRect(100, 170))
-    for (const [id, top] of cardRects) {
-      const card = document.querySelector(`[data-agent-id="${id}"]`)
-      if (card) rects.set(card, makeRect(top))
-    }
-    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
-      return rects.get(this) ?? makeRect(0, 0)
-    })
-    const source = document.querySelector<HTMLDivElement>('[data-agent-id="agent-reviewer"]')
-    if (!source) throw new Error('Reviewer card missing')
-
-    fireEvent.pointerDown(source, {
-      button: 0,
-      pointerId: 1,
-      pointerType: 'mouse',
-      clientX: 20,
-      clientY: 240,
-    })
-    fireEvent.pointerMove(window, {
-      pointerId: 1,
-      pointerType: 'mouse',
-      clientX: 20,
-      clientY: 180,
-      buttons: 1,
-    })
-    fireEvent.pointerMove(window, {
-      pointerId: 1,
-      pointerType: 'mouse',
-      clientX: 20,
-      clientY: 110,
-      buttons: 1,
-    })
-    fireEvent.pointerUp(window, {
-      pointerId: 1,
-      pointerType: 'mouse',
-      clientX: 20,
-      clientY: 110,
-    })
-
-    expect([...document.querySelectorAll<HTMLElement>('[data-agent-id]')].map((card) => card.dataset.agentId)).toEqual([
-      'agent-reviewer',
-      'agent-researcher',
-      'agent-builder',
-    ])
-    expect(screen.getByTestId('agent-reorder-announcement')).toHaveTextContent(
-      'Moved Reviewer to position 1 of 3',
-    )
+    expect(cards.map((card) => card.dataset.agentId)).toEqual(['agent-builder', 'agent-researcher'])
+    expect(screen.getByTestId('agent-reorder-announcement')).toHaveTextContent('Moved Researcher')
   })
 })

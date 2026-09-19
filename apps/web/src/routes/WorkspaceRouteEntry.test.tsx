@@ -5,13 +5,10 @@ import {
   RouterProvider,
 } from '@tanstack/react-router'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { routeTree } from '../app/router'
 import { setMockScenario } from '../shared/mocks/scenarios'
-import { useSessionWorkflowStore } from '../features/workflows'
-import { useWorkspaceSessionStore } from '../features/workspaces'
 
 function renderWorkspace(initialEntry: string) {
   const queryClient = new QueryClient({
@@ -45,8 +42,6 @@ describe('WorkspaceRouteEntry integration', () => {
 
   afterEach(() => {
     setMockScenario('normal')
-    useWorkspaceSessionStore.getState().reset()
-    useSessionWorkflowStore.getState().clearSessionWorkflows()
     sessionStorage.clear()
     vi.unstubAllEnvs()
   })
@@ -108,113 +103,4 @@ describe('WorkspaceRouteEntry integration', () => {
     missing.unmount()
   })
 
-  it('refreshes workspace query projections after selecting a mock scenario', async () => {
-    vi.stubEnv('VITE_ENABLE_MSW', 'true')
-    const user = userEvent.setup()
-    renderWorkspace('/workspaces/workspace-1')
-
-    expect(await screen.findByTestId('mock-mode')).toHaveTextContent('normal')
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Mock data scenario' }), 'empty')
-
-    expect(await screen.findByTestId('workspace-empty')).toBeVisible()
-    expect(screen.queryByTestId('workflow-graph')).not.toBeInTheDocument()
-  })
-
-  it('enables mock data controls by default in development and honors an explicit opt-out', async () => {
-    const enabled = renderWorkspace('/workspaces/workspace-1')
-    expect(await screen.findByTestId('mock-data-control')).toBeInTheDocument()
-    enabled.unmount()
-
-    vi.stubEnv('VITE_ENABLE_MSW', 'false')
-    renderWorkspace('/workspaces/workspace-1')
-
-    expect(await screen.findByTestId('workflow-graph')).toBeVisible()
-    expect(screen.queryByTestId('mock-data-control')).not.toBeInTheDocument()
-  })
-
-  it('keeps independently created workspace names isolated across rapid URL switches', async () => {
-    const user = userEvent.setup()
-    const { router } = renderWorkspace('/workspaces/workspace-1')
-
-    await screen.findByTestId('workspace-entry-workspace-1')
-    await user.click(screen.getByRole('button', { name: 'New workspace' }))
-    await user.clear(screen.getByRole('textbox', { name: 'Name' }))
-    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Scratch')
-    await user.click(screen.getByRole('button', { name: 'Create workspace' }))
-
-    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/workspaces\/session-/))
-    const scratchId = router.state.location.pathname.split('/').at(-1)
-    expect(scratchId).toMatch(/^session-/)
-    expect(await screen.findByTestId(`workspace-entry-${scratchId}`)).toHaveTextContent('Scratch')
-    expect(screen.getByTestId('workspace-entry-workspace-1')).toHaveTextContent('Website')
-
-    await user.click(screen.getByRole('button', { name: 'New workspace' }))
-    await user.clear(screen.getByRole('textbox', { name: 'Name' }))
-    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Beta')
-    await user.click(screen.getByRole('button', { name: 'Create workspace' }))
-    await waitFor(() => expect(router.state.location.pathname).not.toContain(scratchId as string))
-    expect(screen.getByTestId('workspace-entry-workspace-1')).toHaveTextContent('Website')
-    expect(screen.getByTestId(`workspace-entry-${scratchId}`)).toHaveTextContent('Scratch')
-    const beta = screen.getByRole('link', { name: 'Beta' })
-    expect(beta).toBeVisible()
-    expect(beta).toHaveClass('nav-item-active')
-    expect(
-      screen.getAllByTestId(/^workspace-entry-/)
-        .filter((entry) => entry.classList.contains('nav-item-active')),
-    ).toEqual([beta])
-    expect(screen.getByRole('button', { name: 'Expand Website' })).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.getByRole('button', { name: 'Expand Scratch' })).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.getByRole('button', { name: 'Collapse Beta' })).toHaveAttribute('aria-expanded', 'true')
-
-    await router.navigate({ to: '/workspaces/$workspaceId', params: { workspaceId: 'workspace-1' } })
-    const website = await screen.findByTestId('workspace-entry-workspace-1')
-    expect(website).toHaveTextContent('Website')
-    expect(website).toHaveClass('nav-item-active')
-    expect(
-      screen.getAllByTestId(/^workspace-entry-/)
-        .filter((entry) => entry.classList.contains('nav-item-active')),
-    ).toEqual([website])
-    expect(screen.getByRole('button', { name: 'Collapse Website' })).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByRole('button', { name: 'Expand Beta' })).toHaveAttribute('aria-expanded', 'false')
-
-    await router.navigate({
-      to: '/workspaces/$workspaceId',
-      params: { workspaceId: scratchId as string },
-    })
-    expect(await screen.findByTestId(`workspace-entry-${scratchId}`)).toHaveTextContent('Scratch')
-    expect(screen.getByTestId('workspace-entry-workspace-1')).toHaveTextContent('Website')
-    expect(screen.getByRole('link', { name: 'Beta' })).toBeVisible()
-  })
-
-  it('canonically selects a session workflow when its workspace URL has no workflow id', async () => {
-    const sessionWorkspace = useWorkspaceSessionStore.getState().createWorkspace('Scratch')
-    const workflow = useSessionWorkflowStore.getState().createSessionWorkflow({
-      workspaceId: sessionWorkspace.id,
-      name: 'Scratch flow',
-    })
-
-    const { router } = renderWorkspace(`/workspaces/${sessionWorkspace.id}`)
-
-    expect(await screen.findByRole('link', { name: /Scratch flow/ })).toHaveAttribute('aria-current', 'page')
-    expect(await screen.findByTestId('workflow-graph')).toBeVisible()
-    await waitFor(() => expect(router.state.location.search.workflowId).toBe(workflow.id))
-  })
-
-  it('keeps the last workspace available through global navigation and switches from its name', async () => {
-    const sessionWorkspace = useWorkspaceSessionStore.getState().createWorkspace('Scratch')
-    const user = userEvent.setup()
-    const { router } = renderWorkspace(`/workspaces/${sessionWorkspace.id}`)
-
-    expect(await screen.findByTestId('workspace-empty')).toBeVisible()
-    await user.click(screen.getByRole('link', { name: 'Settings' }))
-    await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
-
-    const workspaceLink = await screen.findByRole('link', { name: 'Scratch' })
-    expect(workspaceLink).toBeVisible()
-    await user.click(workspaceLink)
-    await waitFor(() => {
-      expect(router.state.location.pathname).toBe(`/workspaces/${sessionWorkspace.id}`)
-      expect(router.state.location.search).toEqual({})
-    })
-  })
 })

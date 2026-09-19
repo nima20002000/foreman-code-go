@@ -11,6 +11,7 @@ import { ChevronLeft, ChevronRight, UserRound } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 
 import { ThemeToggle } from '../../features/theme'
+import { useManagedWorkspacesQuery } from '../api/query'
 import { EmptyState, IconButton } from './nocturne'
 import {
   DEFAULT_NAVIGATION_WIDTH,
@@ -73,6 +74,8 @@ export function WorkspaceShell({
   workspaceOverviewActive = false,
   workspaces,
 }: WorkspaceShellProps) {
+  const workspacesQuery = useManagedWorkspacesQuery(workspaces === undefined)
+  const navigationWorkspaces = workspaces ?? workspacesQuery.data?.items.map((item) => item.workspace)
   const navigationCollapsed = useNavigationUiStore((state) => state.collapsed)
   const navigationWidth = useNavigationUiStore((state) => state.width)
   const rememberedWorkspaceId = useNavigationUiStore((state) => state.activeWorkspaceId)
@@ -193,17 +196,13 @@ export function WorkspaceShell({
             activeWorkflowId={activeWorkflowId}
             activeGlobalSection={activeGlobalSection}
             workspaceOverviewActive={workspaceOverviewActive}
-            workspaces={workspaces}
+            workspaces={navigationWorkspaces}
             navigationCollapsed={navigationCollapsed}
           />
         </nav>
 
         <div className="sidebar-footer">
-          <p className="sidebar-note">
-            {import.meta.env.DEV && import.meta.env.VITE_ENABLE_MSW !== 'false'
-              ? 'Phase 1 · Mock data'
-              : 'Local backend'}
-          </p>
+          <p className="sidebar-note">Local backend</p>
           <div className="sidebar-account-row">
             <Link to="/account" className={`sidebar-account-link${activeGlobalSection === 'account' ? ' sidebar-account-link-active' : ''}`}
               aria-current={activeGlobalSection === 'account' ? 'page' : undefined} aria-label={navigationCollapsed ? 'Account' : undefined}

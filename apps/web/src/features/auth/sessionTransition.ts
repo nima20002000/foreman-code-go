@@ -5,8 +5,6 @@ import { useOperatorChatStore } from '../operator-chat/operatorChatStore'
 import { useGraphDraftStore } from '../graph/store'
 import { managedSaveQueue } from '../graph/managedSave'
 import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
-import { useWorkspaceSessionStore } from '../workspaces/workspaceSessionStore'
-import { useSessionWorkflowStore } from '../workflows/sessionWorkflowStore'
 import { clearRevisionedFormPersistence } from '../settings/revisionedForm'
 
 export function clearBrowserIdentity(client: QueryClient): void {
@@ -14,8 +12,6 @@ export function clearBrowserIdentity(client: QueryClient): void {
   managedSaveQueue.reset()
   useGraphDraftStore.getState().clearAllDrafts()
   useAgentDirectoryStore.getState().reset()
-  useWorkspaceSessionStore.getState().reset()
-  useSessionWorkflowStore.getState().clearSessionWorkflows()
   useConversationDraftStore.getState().clearAllDrafts()
   useOperatorChatStore.getState().reset()
   clearRevisionedFormPersistence()

@@ -100,7 +100,6 @@ export function WorkspaceRouteView({
   stateMessage,
   slots,
 }: WorkspaceRouteViewProps) {
-  const realMode = import.meta.env.MODE !== 'test' && (!import.meta.env.DEV || import.meta.env.VITE_ENABLE_MSW === 'false')
   const resolvedSlots: WorkspaceShellSlots = {
     workspace: slots?.workspace ?? <DefaultWorkspaceSlot workspaceId={workspaceId} />,
     graph:
@@ -114,13 +113,11 @@ export function WorkspaceRouteView({
       ),
   }
 
-  if (realMode) {
-    resolvedSlots.graph = (
-      <WorkspaceExecutionLocationSetup workspaceId={workspaceId} enabled>
-        {resolvedSlots.graph}
-      </WorkspaceExecutionLocationSetup>
-    )
-  }
+  resolvedSlots.graph = (
+    <WorkspaceExecutionLocationSetup workspaceId={workspaceId} enabled>
+      {resolvedSlots.graph}
+    </WorkspaceExecutionLocationSetup>
+  )
 
   return (
     <WorkspaceShell
