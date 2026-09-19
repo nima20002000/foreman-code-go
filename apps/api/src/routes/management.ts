@@ -35,7 +35,7 @@ import {
   WorkspaceLocationValidateInputSchema,
   WorkflowDefaultsUpdateInputSchema,
 } from '@graphql/contracts/management'
-import { requirePrincipal } from '../modules/access/http.js'
+import { requireBrowserSession, requirePrincipal } from '../modules/access/http.js'
 import type { OperatorServices } from '../mcp/operator/types.js'
 import { DomainError } from '../modules/errors.js'
 
@@ -69,7 +69,9 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
   app.get<{ Querystring: Query }>('/api/management/workspaces', async (request) =>
     services.workspaces.list(requirePrincipal(request), WorkspaceListInputSchema.parse(page(request.query))))
   app.post<{ Body: unknown }>('/api/management/workspaces', async (request, reply) => {
-    const result = await services.workspaces.create(requirePrincipal(request), 'http', WorkspaceCreateInputSchema.parse(request.body))
+    const input = WorkspaceCreateInputSchema.parse(request.body)
+    if (input.parentPath) requireBrowserSession(request)
+    const result = await services.workspaces.create(requirePrincipal(request), 'http', input)
     reply.code(result.replayed ? 200 : 201)
     return result
   })

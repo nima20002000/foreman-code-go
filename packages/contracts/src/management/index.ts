@@ -207,6 +207,7 @@ const RevisionMutationFields = { ...MutationFields, expectedRevision: ExpectedRe
 export const WorkspaceListInputSchema = ManagementPageInputSchema;
 export const WorkspaceGetInputSchema = WorkspaceScopeSchema;
 export const WorkspaceCreateInputSchema = z.object({
+  parentPath: z.string().trim().min(1).max(4096).refine((value) => !value.includes("\0"), "Invalid folder path").optional(),
   ...MutationFields,
   name: z.string().trim().min(1).max(200),
   description: z.string().max(10_000).optional(),

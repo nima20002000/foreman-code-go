@@ -1,9 +1,11 @@
+import { rmdir } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 
 import {
   ManagedWorkspaceSchema,
   type ManagementPrincipal,
   type ManagedWorkspace,
+  type WorkspaceCreateInput,
 } from '@graphql/contracts/management'
 import { WorkspaceSchema } from '@graphql/contracts'
 import type pg from 'pg'
@@ -69,8 +71,9 @@ export class WorkspaceManagementService {
     return ManagedWorkspaceSchema.parse({ ...base, ...await this.locations.inspect(principal, workspaceId) })
   }
 
-  async create(principal: ManagementPrincipal, source: 'http' | 'mcp', input: { commandId: string; name: string; description?: string | undefined }) {
+  async create(principal: ManagementPrincipal, source: 'http' | 'mcp', input: WorkspaceCreateInput) {
     requireAuthorization(principal, 'workspaces:create')
+    if (input.parentPath && source !== 'http') throw new DomainError('BROWSER_REQUIRED', 'Create project folders in the signed-in browser.', 403)
     return this.commands.execute({
       replayResult: replayWorkspaceResult,
       principal, source, operation: 'workspace.create', commandId: input.commandId,
@@ -84,11 +87,27 @@ export class WorkspaceManagementService {
           ...(description ? { description } : {}),
           createdAt: now, updatedAt: now,
         })
-        const result = await client.query<WorkspaceRow>(
-          `insert into workspaces (id, record) values ($1, $2::jsonb)
-           returning record, revision, archived_at`, [workspace.id, JSON.stringify(workspace)],
-        )
-        return managed(result.rows[0]!)
+        const folder = input.parentPath
+          ? await this.locations.createProjectFolder(principal, workspace.id, input.parentPath, workspace.name)
+          : undefined
+        try {
+          const result = await client.query<WorkspaceRow>(
+            `insert into workspaces (id, record, execution_location, execution_location_identity, location_revision)
+             values ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5)
+             returning record, revision, archived_at`,
+            [workspace.id, JSON.stringify(workspace), folder ? JSON.stringify(folder.validation.location) : null,
+              folder ? JSON.stringify(folder.identity) : null, folder ? 1 : 0],
+          )
+          const value = managed(result.rows[0]!)
+          return folder ? ManagedWorkspaceSchema.parse({ ...value,
+            executionLocation: folder.validation.location, locationRevision: 1,
+            locationValidation: { status: 'ready', checkedAt: folder.validation.checkedAt },
+          }) : value
+        } catch (error) {
+          // Only remove the empty folder created by this attempt, never existing project content.
+          if (folder) await rmdir(folder.validation.location.rootPath).catch(() => undefined)
+          throw error
+        }
       },
     })
   }

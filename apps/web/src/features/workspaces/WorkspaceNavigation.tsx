@@ -20,6 +20,7 @@ import {
   SquareTerminal,
   Workflow,
 } from 'lucide-react'
+import { WorkspaceFolderPicker } from '../settings/WorkspaceFolderPicker'
 import type { Workspace } from '@graphql/contracts'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
@@ -135,7 +136,8 @@ function NewWorkspaceControl() {
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const touched = useRef({ name: false, description: false, defaultsApplied: false })
+  const [parentPath, setParentPath] = useState('')
+  const touched = useRef({ name: false, description: false, parentPath: false, defaultsApplied: false })
   const defaults = useWorkspaceCreationDefaultsQuery(creating)
   const [nameError, setNameError] = useState<string>()
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -146,7 +148,7 @@ function NewWorkspaceControl() {
   const queryClient = useQueryClient()
   const createManagedWorkspace = useCreateManagedWorkspaceMutation()
   const inFlight = useRef(false)
-  const attempt = useRef(new CommandAttempt<{ name: string; description: string }>())
+  const attempt = useRef(new CommandAttempt<{ name: string; description: string; parentPath: string }>())
   const uncertain = attempt.current.unresolved && !createManagedWorkspace.isPending
 
   const closeCreateDialog = useCallback(() => {
@@ -154,7 +156,8 @@ function NewWorkspaceControl() {
     setCreating(false)
     setName('')
     setDescription('')
-    touched.current = { name: false, description: false, defaultsApplied: false }
+    setParentPath('')
+    touched.current = { name: false, description: false, parentPath: false, defaultsApplied: false }
     setNameError(undefined)
     window.setTimeout(() => triggerRef.current?.focus(), 0)
   }, [])
@@ -166,6 +169,7 @@ function NewWorkspaceControl() {
     touched.current.defaultsApplied = true
     if (!touched.current.name) setName(template.suggestedName)
     if (!touched.current.description) setDescription(template.description)
+    if (!touched.current.parentPath) setParentPath(template.parentPath ?? '')
   }, [creating, defaults.data])
 
   useEffect(() => {
@@ -184,12 +188,13 @@ function NewWorkspaceControl() {
     if (inFlight.current || (defaults.isPending && !attempt.current.unresolved)) return
     const trimmedName = name.trim()
     if (!trimmedName) { setNameError('Enter a workspace name.'); nameInputRef.current?.focus(); return }
+    if (!parentPath.trim()) { setNameError('Choose a location for the project folder.'); return }
     inFlight.current = true
     const generation = sessionGeneration()
     setNameError(undefined)
     try {
       const workspace = (await createManagedWorkspace.mutateAsync(
-        attempt.current.input({ name: trimmedName, description }),
+        attempt.current.input({ name: trimmedName, description, parentPath: parentPath.trim() }),
       )).value.workspace
       assertSession(generation)
       attempt.current.succeeded()
@@ -241,7 +246,7 @@ function NewWorkspaceControl() {
               </IconButton>
             </div>
             <p id="new-workspace-description">
-              Create a workspace for its own agents, workflows, files, tasks, and runs.
+              A project folder will be created for this workspace.
             </p>
             <TextField
               ref={nameInputRef}
@@ -264,6 +269,12 @@ function NewWorkspaceControl() {
               aria-invalid={nameError ? true : undefined}
               aria-describedby={nameError ? 'new-workspace-name-error' : undefined}
             />
+            <TextField label="Location" value={parentPath} disabled={createManagedWorkspace.isPending || uncertain}
+              onChange={(event) => { touched.current.parentPath = true; setParentPath(event.target.value) }} />
+            <WorkspaceFolderPicker disabled={createManagedWorkspace.isPending || uncertain} onSelect={(path) => {
+              touched.current.parentPath = true; setParentPath(path)
+            }} />
+            {parentPath && name.trim() ? <p className="workspace-create-path">Folder: {parentPath.replace(/\/$/, '')}/{name.trim()}</p> : null}
             <Textarea label="Description (optional)" rows={3} maxLength={10_000} value={description}
               disabled={createManagedWorkspace.isPending || uncertain} onChange={(event) => {
                 touched.current.description = true

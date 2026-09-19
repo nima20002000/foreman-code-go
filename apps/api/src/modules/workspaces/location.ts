@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
-import { access, realpath, stat } from 'node:fs/promises'
+import { access, mkdir, realpath, rmdir, stat } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 
 import {
@@ -62,6 +62,26 @@ export class WorkspaceLocationService {
     readonly runnerId = LOCAL_RUNNER_ID,
   ) {
     this.managedRuntimeRoot = managedRuntimeRoot ? resolve(managedRuntimeRoot) : undefined
+  }
+
+  async createProjectFolder(principal: ManagementPrincipal, workspaceId: string, parentPath: string, name: string) {
+    requireAuthorization(principal, 'workspace_locations:provision', { workspaceId })
+    requireAuthorization(principal, 'workspace_locations:update', { workspaceId })
+    requireAuthorization(principal, 'workspace_locations:read', { workspaceId })
+    if (!name.trim() || name === '.' || name === '..' || name.includes('/') || name.includes('\\')
+      || Array.from(name).some((character) => character.charCodeAt(0) < 32)) {
+      throw new DomainError('WORKSPACE_FOLDER_NAME_INVALID', 'Use a workspace name without slashes or control characters.', 400)
+    }
+    const parent = await this.validatePath(workspaceId, this.runnerId, parentPath, 'read-write')
+    const path = resolve(parent.validation.location.rootPath, name)
+    try { await mkdir(path) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new DomainError('WORKSPACE_FOLDER_EXISTS', 'A folder with this name already exists. Choose another name or location.', 409)
+      }
+      throw locationError(error, path)
+    }
+    try { return await this.validatePath(workspaceId, this.runnerId, path, 'read-write') }
+    catch (error) { await rmdir(path).catch(() => undefined); throw error }
   }
 
   private async validatePath(

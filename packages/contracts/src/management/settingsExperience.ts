@@ -15,6 +15,7 @@ export const HarnessSettingsSearchSchema = z.object({
 
 /** Creation suggestions only. A template never grants filesystem or runner access. */
 export const WorkspaceDefaultsSchema = z.object({
+  parentPath: z.string().trim().min(1).max(4096).refine((value) => !value.includes("\0"), "Invalid folder path").optional(),
   suggestedName: z.string().trim().min(1).max(200),
   description: z.string().max(10_000),
 }).strict();

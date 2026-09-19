@@ -1,4 +1,4 @@
-import { fireEvent, screen } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { renderWithRouter } from '../../test/renderWithRouter'
@@ -11,6 +11,21 @@ import { WorkspaceShell } from './WorkspaceShell'
 describe('WorkspaceShell', () => {
   afterEach(() => {
     sessionStorage.clear()
+  })
+
+  it('prefills the parent location and previews a folder for the entered name', async () => {
+    const user = userEvent.setup()
+    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
+    await user.click(await screen.findByRole('button', { name: 'New workspace' }))
+    const location = await screen.findByRole('textbox', { name: 'Location' })
+    await waitFor(() => expect(location).toHaveValue('/home/test/Desktop'))
+    const name = screen.getByRole('textbox', { name: 'Name' })
+    await user.clear(name)
+    await user.type(name, 'My Project')
+    expect(screen.getByText('Folder: /home/test/Desktop/My Project')).toBeVisible()
+    await user.clear(location)
+    await user.type(location, '/projects')
+    expect(screen.getByText('Folder: /projects/My Project')).toBeVisible()
   })
 
   it('nests the workspace destinations under an active Workspaces menu', async () => {

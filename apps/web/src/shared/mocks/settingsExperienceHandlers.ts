@@ -4,10 +4,10 @@ import { BrowserAccessSessionSchema, DEFAULT_WORKSPACE_DEFAULTS, ManagedWorkspac
 import { getMockScenarioState } from './scenarios'
 
 // Development/test fixtures only. These handlers do not create or authenticate real credentials.
-let defaults = ManagedWorkspaceDefaultsSchema.parse({ value: DEFAULT_WORKSPACE_DEFAULTS, revision: 0, versionId: null })
+let defaults = ManagedWorkspaceDefaultsSchema.parse({ value: { ...DEFAULT_WORKSPACE_DEFAULTS, parentPath: '/home/test/Desktop' }, revision: 0, versionId: null })
 const receipts = new Map<string, { input: string; result: typeof defaults }>()
 export function resetSettingsExperienceFixtures() {
-  defaults = ManagedWorkspaceDefaultsSchema.parse({ value: DEFAULT_WORKSPACE_DEFAULTS, revision: 0, versionId: null })
+  defaults = ManagedWorkspaceDefaultsSchema.parse({ value: { ...DEFAULT_WORKSPACE_DEFAULTS, parentPath: '/home/test/Desktop' }, revision: 0, versionId: null })
   receipts.clear()
 }
 function failure() {

@@ -59,6 +59,8 @@ The graph originally forced a configuration step just to add a default Codex/Ope
 
 Folder selection should offer browsing before requiring a typed absolute path. Browse only the runner’s approved folders, show which machine owns them, and keep selection as a draft until Save. Cancel must preserve the prior draft; loading or failed listings must never be selectable. A workspace folder applies to all of its workflows, so do not ask again per workflow. Evidence: `WorkspaceExecutionLocationSettings.test.tsx` covers browsing, cancellation, errors, and saving the selected path.
 
+Workspace creation should collect the name and show the inherited parent location together, previewing the new folder before submission. Copy defaults only into untouched fields; changes to defaults must not relocate existing workspaces. Create and save the location in the same operation, preserve command identity on uncertain retries, and reject existing folders rather than silently adopting their contents. Creating a folder still requires explicit provisioning authority. Evidence: `workspace-creation-location.integration.test.ts` covers creation, replay, collisions, traversal, permissions, and unchanged existing locations; `WorkspaceDefaultsSettings.test.tsx` covers saved parent locations.
+
 The shortcut must never invent unsafe permissions or hide a meaningful choice. “Use the default” is only valid when the default is already an accepted product configuration.
 
 Evidence: `6f78537` (`fix: add default harness agents in one step`).

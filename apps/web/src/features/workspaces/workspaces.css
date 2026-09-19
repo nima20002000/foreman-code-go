@@ -218,6 +218,8 @@
 }
 
 .workspace-create-dialog {
+  max-height: calc(100dvh - 2.5rem);
+  overflow-y: auto;
   display: grid;
   gap: 1rem;
   width: min(100%, 26rem);
@@ -335,3 +337,5 @@
     width: 1.5rem;
   }
 }
+
+.workspace-create-path { overflow-wrap: anywhere; font-size: .8125rem; }

@@ -1,4 +1,4 @@
-import { Link } from '@tanstack/react-router'
+import { WorkspaceFolderPicker } from './WorkspaceFolderPicker'
 import { ProtectedAccessError } from '../auth/ProtectedAccessError'
 import { useProtectedAccessError } from '../auth/useProtectedAccessError'
 import { WorkspaceDefaultsSchema, type WorkspaceDefaults } from '@graphql/contracts/management'
@@ -29,8 +29,10 @@ export function WorkspaceDefaultsSettings() {
         onChange={(event) => form.setDraft({ ...draft, suggestedName: event.target.value })} />
       <Textarea label="Starting description" rows={4} maxLength={10_000} value={draft.description} error={fieldMessage(form.issues ?? [], 'description')}
         placeholder="Optional context for new workspaces" onChange={(event) => form.setDraft({ ...draft, description: event.target.value })} />
-      <div className="settings-simple-row"><strong>Execution folders & runners</strong><p>Choose these for each workspace. Defaults never grant file access.</p>
-        <Link to="/workspaces" className="settings-text-link">Open existing workspaces →</Link></div>
+      <TextField label="Default location" value={draft.parentPath ?? ''} error={fieldMessage(form.issues ?? [], 'parentPath')}
+        onChange={(event) => form.setDraft({ ...draft, parentPath: event.target.value })}
+        hint="New workspaces get their own folder here." />
+      <WorkspaceFolderPicker disabled={form.isSaving || form.uncertain} onSelect={(parentPath) => form.setDraft({ ...draft, parentPath })} />
     </div>
     <SettingsFormActions form={form} saveLabel="Save workspace defaults" onSave={() => form.save(async (input) => {
       const response = await mutation.mutateAsync({ ...input, value: WorkspaceDefaultsSchema.parse(input.value) })

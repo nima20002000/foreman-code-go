@@ -320,7 +320,7 @@ export const handlers: RequestHandler[] = [
     return HttpResponse.json({ items, pageInfo: { nextCursor: null } })
   }),
   http.post('/api/management/workspaces', async ({ request }) => {
-    const body = await readJson(request) as { name?: string; description?: string }
+    const body = await readJson(request) as { name?: string; description?: string; parentPath?: string }
     if (!body?.name?.trim()) return apiError('INVALID_REQUEST', 'A workspace name is required.', 400)
     const id = `workspace-${crypto.randomUUID()}`
     const now = new Date().toISOString()
@@ -331,9 +331,9 @@ export const handlers: RequestHandler[] = [
       },
       revision: 1,
       archivedAt: null,
-      executionLocation: null,
-      locationRevision: 0,
-      locationValidation: { status: 'unconfigured' as const },
+      executionLocation: body.parentPath ? { runnerId: 'runner-local', rootPath: body.parentPath.replace(/\/$/, '') + '/' + body.name.trim() } : null,
+      locationRevision: body.parentPath ? 1 : 0,
+      locationValidation: body.parentPath ? { status: 'ready' as const, checkedAt: now } : { status: 'unconfigured' as const },
     }
     managedWorkspaces.set(id, value)
     return HttpResponse.json({ value, replayed: false }, { status: 201 })

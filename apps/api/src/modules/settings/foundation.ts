@@ -1,3 +1,5 @@
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 import {
@@ -40,6 +42,7 @@ export class PostgresFoundationSettingsRepository {
 
   getWorkspaceDefaults(client?: pg.ClientBase): Promise<VersionedSetting<WorkspaceDefaults>> {
     return this.read(KEYS.workspaces, WorkspaceDefaultsSchema, DEFAULT_WORKSPACE_DEFAULTS, client)
+      .then((snapshot) => ({ ...snapshot, value: { ...snapshot.value, parentPath: snapshot.value.parentPath ?? join(homedir(), 'Desktop') } }))
   }
 
   updateWorkspaceDefaults(value: WorkspaceDefaults, expectedRevision: number, client?: pg.ClientBase) {
