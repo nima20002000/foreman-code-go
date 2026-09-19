@@ -116,10 +116,9 @@ describe('sidebar menu reordering', () => {
       'workflows',
       'tasks',
       'runs',
-      'settings',
     ])
     expect(screen.getByTestId('navigation-reorder-announcement')).toHaveTextContent(
-      'Moved Files to position 1 of 5',
+      'Moved Files to position 1 of 4',
     )
   })
 
@@ -169,10 +168,9 @@ describe('sidebar menu reordering', () => {
       'workflows',
       'tasks',
       'runs',
-      'settings',
     ])
     expect(screen.getByTestId('navigation-reorder-announcement')).toHaveTextContent(
-      'Moved Files to position 1 of 5',
+      'Moved Files to position 1 of 4',
     )
   })
 
@@ -203,14 +201,12 @@ describe('sidebar menu reordering', () => {
       'files',
       'tasks',
       'runs',
-      'settings',
     ])
     expect(reorderIds(sectionsGroupTwo)).toEqual([
       'workflows',
       'files',
       'tasks',
       'runs',
-      'settings',
     ])
   })
 
@@ -244,7 +240,6 @@ describe('sidebar menu reordering', () => {
       'files',
       'tasks',
       'runs',
-      'settings',
     ])
   })
 
@@ -261,7 +256,6 @@ describe('sidebar menu reordering', () => {
       'files',
       'tasks',
       'runs',
-      'settings',
     ])
   })
 

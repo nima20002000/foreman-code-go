@@ -18,7 +18,7 @@ Read this file before changing UI or UX. It captures reusable design judgment: w
 
 **Bad UX:** Expanding a workspace changes the route, dragging a child reorders its parent, or Back leads to an unrelated page from browser history.
 
-**Good UX:** Separate disclosure from activation, derive active styling from the route, and isolate nested drag gestures. Preserve useful expansion without making expanded items look active. Give substantial settings tasks stable detail routes and one Back link to the immediate product parent, available during loading and errors. Send dirty navigation through the shared leave guard.
+**Good UX:** Separate disclosure from activation, derive active styling from the route, and isolate nested drag gestures. Preserve useful expansion without making expanded items look active. Workspace names open that workspace’s settings; keep disclosure separate and avoid a duplicate settings child in the sidebar. Give substantial settings tasks stable detail routes and one Back link to the immediate product parent, available during loading and errors. Send dirty navigation through the shared leave guard.
 
 **Protect it:** Check one active workspace, independent expansion, nested reordering, direct detail links, and parent navigation with clean and dirty forms.
 

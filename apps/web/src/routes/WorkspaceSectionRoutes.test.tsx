@@ -173,7 +173,8 @@ describe('workspace section routes', () => {
 
     expect(await screen.findByRole('heading', { name: 'Browsers', level: 1 })).toBeVisible()
     expect(screen.getByText('Coming soon')).toBeVisible()
-    expect(await screen.findByRole('link', { name: 'Workspace settings' })).toHaveAttribute('aria-current', 'page')
+    expect(await screen.findByTestId('workspace-entry-workspace-1')).toHaveAttribute('aria-current', 'location')
+    expect(screen.queryByRole('link', { name: 'Workspace settings' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
 
     await user.click(screen.getByRole('link', { name: 'Back to settings' }))

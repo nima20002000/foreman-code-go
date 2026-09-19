@@ -153,6 +153,8 @@ describe('WorkspaceShell', () => {
     const entry = await screen.findByRole('link', { name: 'Website' })
     const toggle = screen.getByRole('button', { name: 'Collapse Website' })
     expect(entry).toHaveAttribute('data-testid', 'workspace-entry-workspace-1')
+    expect(entry).toHaveAttribute('href', '/workspaces/workspace-1/settings')
+    expect(screen.queryByRole('link', { name: 'Workspace settings' })).not.toBeInTheDocument()
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('link', { name: 'Files' })).toBeVisible()
 
@@ -208,6 +210,7 @@ describe('WorkspaceShell', () => {
     const docs = await screen.findByTestId('workspace-entry-workspace-2')
     const docsToggle = screen.getByRole('button', { name: 'Expand Docs' })
     expect(docs).toHaveAccessibleName('Docs')
+    expect(docs).toHaveAttribute('href', '/workspaces/workspace-2/settings')
     expect(docsToggle).toHaveAttribute('aria-expanded', 'false')
 
     await user.click(docsToggle)

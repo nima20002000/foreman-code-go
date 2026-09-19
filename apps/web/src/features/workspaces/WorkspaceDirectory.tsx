@@ -130,7 +130,7 @@ export function WorkspaceDirectory() {
         <ul className="workspace-card-list" data-testid="workspace-card-list">
           {workspaces.map((workspace) => <li key={workspace.id}>
             <Card className="workspace-card" data-testid={`workspace-card-${workspace.id}`}>
-              <Link to="/workspaces/$workspaceId" params={{ workspaceId: workspace.id }} search={{}} className="workspace-card-open">
+              <Link to="/workspaces/$workspaceId/settings" params={{ workspaceId: workspace.id }} search={{}} className="workspace-card-open">
                 <Icon name="grid" size={18} /><span>{workspace.name}</span>
               </Link>
               <WorkspaceCardActions workspaceId={workspace.id} name={workspace.name}
