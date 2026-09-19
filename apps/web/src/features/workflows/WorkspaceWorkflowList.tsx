@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { useManagedWorkflowsQuery } from '../../shared/api/query'
-import { Button, Icon, SettingsSection } from '../../shared/ui/nocturne'
+import { Button, Card, Icon } from '../../shared/ui/nocturne'
+import './workflows.css'
 import './workspaceWorkflowList.css'
 
 export function WorkspaceWorkflowList({ workspaceId }: { workspaceId: string }) {
@@ -8,22 +9,25 @@ export function WorkspaceWorkflowList({ workspaceId }: { workspaceId: string }) 
   const workflows = query.data?.items ?? []
 
   return (
-    <SettingsSection title="Workflows">
+    <section className="workspace-settings-workflows" aria-label="Workflows">
+      <h2><Icon name="folder" size={18} />Workflows</h2>
       {query.isPending ? <p role="status">Loading workflows…</p> : null}
       {query.isError ? <div role="alert">Workflows unavailable. <Button size="sm" onClick={() => void query.refetch()}>Retry</Button></div> : null}
       {query.isSuccess && workflows.length === 0 ? <p>No workflows yet</p> : null}
       {workflows.length > 0 ? (
-        <ul className="workspace-settings-workflows">
+        <ul className="workflow-card-list">
           {workflows.map(({ workflow }) => (
-            <li key={workflow.id}>
-              <Link to="/workspaces/$workspaceId" params={{ workspaceId }} search={{ workflowId: workflow.id }}>
-                <span>{workflow.name}</span>
-                <Icon name="chevron" size={16} />
-              </Link>
+            <li key={workflow.id} className="workflow-card-item">
+              <Card className="workflow-card">
+                <Link to="/workspaces/$workspaceId" params={{ workspaceId }} search={{ workflowId: workflow.id }} className="workflow-card-open">
+                  <Icon name="workflow" size={18} />
+                  <span>{workflow.name}</span>
+                </Link>
+              </Card>
             </li>
           ))}
         </ul>
       ) : null}
-    </SettingsSection>
+    </section>
   )
 }

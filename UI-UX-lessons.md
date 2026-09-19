@@ -134,7 +134,7 @@ Diagnostics state exactly what was checked. Installation, qualification, authent
 
 **Bad UI:** Matching dialogs dismiss differently, or an embedded feature brings a second heading, padding layer, and page container into Settings.
 
-**Good UI:** Shared primitives carry focus, keyboard, disabled/loading, validation, dismissal, status, and responsive behavior. Repair repeated behavior there while keeping business rules in features. Let the parent own page chrome through an embedded presentation or composition boundary. Place diagnostics in the settings section that owns them, with concise status and repair detail on demand.
+**Good UI:** Shared primitives carry focus, keyboard, disabled/loading, validation, dismissal, status, and responsive behavior. Repair repeated behavior there while keeping business rules in features. Let the parent own page chrome through an embedded presentation or composition boundary. Preserve the established card treatment when showing workflow objects in another context; concise copy should not turn selectable objects into an undifferentiated text list. Place diagnostics in the settings section that owns them, with concise status and repair detail on demand.
 
 **Protect it:** Check shared behavior across consumers and embedded versus standalone hierarchy, including the route placement of diagnostics.
 

@@ -9,9 +9,11 @@ import { WorkspaceWorkflowList } from './WorkspaceWorkflowList'
 const endpoint = '/api/management/workspaces/:workspaceId/workflows'
 
 describe('workspace settings workflows', () => {
-  it('opens the selected workflow in its workspace', async () => {
+  it('shows workflow cards under the Workflows heading and opens the selected workflow', async () => {
     const { router } = renderWithRouter(<WorkspaceWorkflowList workspaceId="workspace-1" />)
     const link = await screen.findByRole('link', { name: 'Research to review' })
+    expect(screen.getByRole('heading', { name: 'Workflows' })).toBeVisible()
+    expect(link.closest('.workflow-card')).toBeVisible()
     expect(link).toHaveAttribute('href', '/workspaces/workspace-1?workflowId=workflow-content-pipeline')
     await userEvent.setup().click(link)
     await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1'))
