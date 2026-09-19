@@ -1,0 +1,108 @@
+/* Shared overview treatment. Scope typography to these pages, not the graph. */
+.workspace-directory.resource-directory,
+.workflow-directory.resource-directory,
+.settings-page.workspace-overview,
+.settings-page.workspace-detail {
+  box-sizing: border-box;
+  width: min(100%, 64rem);
+  min-width: 0;
+  margin-inline: auto;
+  padding: clamp(1rem, 3vw, 2rem);
+  font-size: .875rem;
+}
+.workspace-directory.resource-directory,
+.workflow-directory.resource-directory { display: grid; align-content: start; gap: 1.25rem; }
+.resource-directory h1,
+.workspace-overview h1,
+.workspace-detail h1 { font-size: 1.5rem; font-weight: 600; line-height: 1.3; letter-spacing: -.025em; }
+.workspace-overview .n-page-header,
+.workspace-detail .n-page-header { margin: 0; }
+.resource-card-list.workspace-card-list,
+.resource-card-list.workflow-card-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr));
+  gap: .75rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.resource-card-list > li { display: flex; min-width: 0; }
+.resource-card.n-card {
+  display: flex;
+  align-items: center;
+  gap: .25rem;
+  flex: 1;
+  min-width: 0;
+  padding: .375rem;
+  border: 1px solid var(--n-border);
+  border-radius: var(--n-radius);
+  background: var(--n-surface);
+  transition: border-color var(--n-fast), background var(--n-fast);
+}
+.resource-card.n-card:hover,
+.resource-card.n-card:focus-within { border-color: var(--n-border-strong); background: var(--n-raised); }
+.resource-card .resource-card-open {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  flex: 1;
+  min-width: 0;
+  min-height: 4.25rem;
+  padding: .75rem;
+  border-radius: var(--n-radius-sm);
+  color: var(--n-text);
+  font-size: .875rem;
+  font-weight: 500;
+  line-height: 1.5;
+  text-decoration: none;
+}
+.resource-card .resource-card-open > svg { flex: 0 0 16px; color: var(--n-muted); }
+.resource-card .resource-card-open:focus-visible { outline: 2px solid var(--n-focus); outline-offset: -2px; }
+.resource-card .resource-card-open .resource-card-name {
+  display: block;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-weight: 550;
+  font-size: .875rem;
+}
+.resource-card .resource-card-copy { display: grid; gap: .25rem; min-width: 0; }
+.resource-card .resource-card-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--n-muted);
+  font-size: .75rem;
+  font-weight: 400;
+}
+.resource-card .n-icon-button { min-width: 44px; min-height: 44px; width: 44px; height: 44px; }
+.resource-card :is(.workflow-card-actions, .workspace-card-actions) {
+  width: min(17rem, calc(100vw - 3rem));
+  max-height: min(30rem, 70dvh);
+  overflow-y: auto;
+  padding: .875rem;
+  gap: .75rem;
+  border-color: var(--n-border-strong);
+  border-radius: var(--n-radius);
+  color: var(--n-text);
+  background: var(--n-raised);
+}
+.resource-card :is(.workflow-card-actions, .workspace-card-actions) .n-button { min-height: 44px; font-size: .875rem; }
+.resource-card :is(.workflow-card-actions, .workspace-card-actions) .n-input { min-height: 44px; font-size: 1rem; }
+.workspace-overview { display: grid; align-content: start; gap: 1.5rem; }
+.workspace-overview .settings-card-list { grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: .75rem; }
+.workspace-overview .settings-card-open { min-height: 5rem; gap: .75rem; padding: 1rem; }
+.workspace-overview .settings-card-icon { width: 1rem; height: 1rem; min-width: 1rem; padding: 0; border: 0; background: none; color: var(--n-muted); }
+.workspace-overview .settings-card-copy strong { font-size: .875rem; font-weight: 550; }
+.workspace-overview .settings-card-copy small { font-size: .8125rem; line-height: 1.5; }
+.workspace-detail > .workspace-location-form { width: min(100%, 38rem); }
+.workspace-detail .settings-back-link { font-size: .875rem; min-height: 44px; }
+@media (max-width: 480px) {
+  .resource-card-list.workspace-card-list,
+  .resource-card-list.workflow-card-list,
+  .workspace-overview .settings-card-list { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .resource-card.n-card { transition: none; }
+}

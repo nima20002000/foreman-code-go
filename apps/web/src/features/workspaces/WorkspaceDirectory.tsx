@@ -12,6 +12,7 @@ import { ApiError } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { Alert, Button, Card, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField } from '../../shared/ui/nocturne'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
+import '../../shared/ui/resourceDirectory.css'
 interface CardCommand { type: 'rename' | 'archive'; workspaceId: string; expectedRevision: number; name?: string }
 
 function WorkspaceCardActions({ workspaceId, name, revision = 0, onCommand }: {
@@ -63,7 +64,7 @@ function WorkspaceCardActions({ workspaceId, name, revision = 0, onCommand }: {
   const uncertain = attempt.current.unresolved && !pending
   return (
     <div className="workspace-card-actions-wrap">
-      <IconButton ref={triggerRef} label={`Open actions for ${name}`}
+      <IconButton ref={triggerRef} label={`Open actions for ${name}`} variant="ghost"
         aria-haspopup="dialog" aria-expanded={open}
         onClick={() => { if (open) close(); else { setNextName(name); setBaseRevision(revision); setError(undefined); setOpen(true) } }}>
         <Icon name="more" size={16} />
@@ -116,22 +117,25 @@ export function WorkspaceDirectory() {
   const loading = managedQuery.isPending
   const needsAccess = failed && ApiError.is(managedQuery.error) && managedQuery.error.status === 401
   return (
-    <section className="workspace-directory n-theme" aria-label="Workspaces">
+    <section className="workspace-directory resource-directory n-theme" aria-label="Workspaces">
       <PageHeader
-        eyebrow="GraphQL"
         title="Workspaces"
-        description="Open, rename or archive a durable workspace."
       />
       {needsAccess ? <EmptyState icon="warning" title="Connect this browser"
         description="App access is required to load workspaces."
         action={<Link to="/settings/operator-access" className="n-button n-button--primary">Open App access</Link>} />
         : failed ? <ErrorState title="Workspaces unavailable" description="The workspace list could not be loaded."
           onRetry={() => void managedQuery.refetch()} /> : workspaces.length > 0 ? (
-        <ul className="workspace-card-list" data-testid="workspace-card-list">
+        <ul className="workspace-card-list resource-card-list" data-testid="workspace-card-list">
           {workspaces.map((workspace) => <li key={workspace.id}>
-            <Card className="workspace-card" data-testid={`workspace-card-${workspace.id}`}>
-              <Link to="/workspaces/$workspaceId/settings" params={{ workspaceId: workspace.id }} search={{}} className="workspace-card-open">
-                <Icon name="grid" size={18} /><span>{workspace.name}</span>
+            <Card className="workspace-card resource-card" data-testid={`workspace-card-${workspace.id}`}>
+              <Link to="/workspaces/$workspaceId/settings" params={{ workspaceId: workspace.id }} search={{}} className="workspace-card-open resource-card-open" aria-label={workspace.name}>
+                <Icon name="grid" size={16} />
+                <span className="resource-card-copy">
+                  <span className="resource-card-name">{workspace.name}</span>
+                  <small dir="ltr">{managedById.get(workspace.id)?.locationValidation.status === 'restricted'
+                    ? 'Location restricted' : managedById.get(workspace.id)?.executionLocation?.rootPath || 'Choose a destination'}</small>
+                </span>
               </Link>
               <WorkspaceCardActions workspaceId={workspace.id} name={workspace.name}
                 revision={managedById.get(workspace.id)?.revision} onCommand={execute} />

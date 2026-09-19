@@ -2,6 +2,9 @@ import { useCallback, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
 
+import { useManagedWorkspaceQuery } from '../shared/api/query'
+import '../shared/ui/resourceDirectory.css'
+
 import { AgentsDirectory } from '../features/agents'
 import { McpDetectionSettings, WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
 import { ApprovalInbox } from '../features/approvals'
@@ -127,22 +130,31 @@ export function GlobalComingSoonRouteEntry({
 
 export function SettingsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/settings' })
+  const workspace = useManagedWorkspaceQuery(workspaceId)
+  const name = workspace.data?.workspace.id === workspaceId ? workspace.data.workspace.name : undefined
   return (
     <WorkspaceShell
       workspaceId={workspaceId}
       activeSection="settings"
       slots={{
         main: (
-          <div className="settings-page">
+          <div className="settings-page workspace-overview n-theme">
             <PageHeader
-              eyebrow={`Workspace · ${workspaceId}`}
+              eyebrow={name ?? 'Workspace'}
               title="Settings"
             />
             <ul className="settings-card-list">
               <li>
                 <Card className="settings-card">
                   <Link to="/workspaces/$workspaceId/settings/location" params={{ workspaceId }} className="settings-card-open">
-                    <SettingsCardBody icon="folder" title="Execution location" description="Folder where this workspace's agents run" />
+                    <SettingsCardBody icon="folder" title="Execution location" description="Where agents run" />
+                  </Link>
+                </Card>
+              </li>
+              <li>
+                <Card className="settings-card">
+                  <Link to="/workspaces/$workspaceId/approvals" params={{ workspaceId }} search={{}} className="settings-card-open">
+                    <SettingsCardBody icon="shield" title="Approvals" description="Review requests in this workspace" />
                   </Link>
                 </Card>
               </li>
@@ -169,9 +181,9 @@ function SettingsCardBody({ icon, title, description }: {
 }) {
   return (
     <>
-      <span className="settings-card-icon"><Icon name={icon} size={18} /></span>
+      <span className="settings-card-icon"><Icon name={icon} size={16} /></span>
       <span className="settings-card-copy">
-        <strong>{title}</strong>
+        <strong>{title}</strong>{' '}
         <small>{description}</small>
       </span>
       <Icon className="settings-card-chevron" name="chevron" size={16} />
@@ -195,7 +207,7 @@ function SettingsDetailPage({ eyebrow = 'GraphQL', title, description, backLink,
   children: ReactNode
 }) {
   return (
-    <div className="settings-page">
+    <div className="settings-page workspace-detail n-theme">
       {backLink}
       <PageHeader eyebrow={eyebrow} title={title} description={description} />
       {children}
@@ -249,16 +261,6 @@ export function GlobalSettingsRouteEntry() {
                 </Card>
               </li>
             </ul>
-            <h2 className="settings-group-heading" id="settings-operations-heading">Operations</h2>
-            <ul className="settings-card-list" aria-labelledby="settings-operations-heading">
-              <li>
-                <Card className="settings-card">
-                  <Link to="/approvals" className="settings-card-open">
-                    <SettingsCardBody icon="shield" title="Approval Inbox" description="Global review queue and delivery history" />
-                  </Link>
-                </Card>
-              </li>
-            </ul>
           </div>
         ),
       }}
@@ -287,23 +289,24 @@ export function WorkflowSettingsRouteEntry() {
 }
 
 export function GlobalApprovalsRouteEntry() {
-  const { interactionId, approvalView } = useSearch({ from: '/approvals' })
-  const navigate = useNavigate({ from: '/approvals' })
-  return <WorkspaceShell workspaceId="workspace-1" activeGlobalSection="settings" slots={{ main:
-    <SettingsDetailPage title="Approval Inbox" description="Global review queue and delivery history." backLink={<SettingsBackLink />}>
-      <ApprovalInbox embedded selectedInteractionId={interactionId} view={approvalView}
-        onChangeView={(next) => void navigate({ search: (previous) => ({ ...previous, approvalView: next, interactionId: undefined }) })}
-        onSelectInteraction={(next) => void navigate({ search: (previous) => ({ ...previous, interactionId: next }) })} />
-    </SettingsDetailPage> }} />
+  // Old bookmarks lead to workspace choice, never a global queue or a guessed scope.
+  return <WorkspacesRouteEntry />
 }
 
 export function WorkspaceApprovalsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/approvals' })
   const { workflowId, interactionId, approvalView } = useSearch({ from: '/workspaces/$workspaceId/approvals' })
   const navigate = useNavigate({ from: '/workspaces/$workspaceId/approvals' })
-  return <WorkspaceShell workspaceId={workspaceId} activeSection="workflows" slots={{ main: <ApprovalInbox workspaceId={workspaceId} workflowId={workflowId} selectedInteractionId={interactionId} view={approvalView}
-    onChangeView={(next) => void navigate({ search: (previous) => ({ ...previous, approvalView: next, interactionId: undefined }) })}
-    onSelectInteraction={(next) => void navigate({ search: (previous) => ({ ...previous, interactionId: next }) })} /> }} />
+  return <WorkspaceShell workspaceId={workspaceId} activeSection="settings" slots={{ main:
+    <SettingsDetailPage eyebrow="Workspace" title="Approval Inbox"
+      description={workflowId ? 'Requests for this workflow.' : 'Requests for this workspace.'}
+      backLink={<Link to="/workspaces/$workspaceId/settings" params={{ workspaceId }} className="settings-back-link" aria-label="Back to workspace settings">
+        <ArrowLeft aria-hidden="true" size={16} />Workspace
+      </Link>}>
+      <ApprovalInbox key={workspaceId} embedded workspaceId={workspaceId} workflowId={workflowId} selectedInteractionId={interactionId} view={approvalView}
+        onChangeView={(next) => void navigate({ search: (previous) => ({ ...previous, approvalView: next, interactionId: undefined }) })}
+        onSelectInteraction={(next) => void navigate({ search: (previous) => ({ ...previous, interactionId: next }) })} />
+    </SettingsDetailPage> }} />
 }
 
 export function BrowsersSettingsRouteEntry() {
@@ -324,7 +327,7 @@ export function WorkspaceLocationSettingsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/settings/location' })
   return <WorkspaceShell workspaceId={workspaceId} activeSection="settings" slots={{ main:
     <SettingsDetailPage title="Execution location"
-      description="One project folder for every workflow in this workspace."
+      description="The folder used by this workspace’s workflows."
       backLink={<Link to="/workspaces/$workspaceId/settings" params={{ workspaceId }} className="settings-back-link" aria-label="Back to settings">
         <ArrowLeft aria-hidden="true" size={14} />Settings
       </Link>}>

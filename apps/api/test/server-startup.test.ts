@@ -8,7 +8,7 @@ const state = vi.hoisted(() => ({
   finishRecovery: undefined as (() => void) | undefined,
 }))
 vi.mock('node:process', () => ({ loadEnvFile: () => undefined }))
-vi.mock('node:fs/promises', () => ({ mkdir: async () => undefined }))
+vi.mock('node:fs/promises', () => ({ mkdir: async () => undefined, realpath: async (path: string) => path }))
 vi.mock('../src/config.js', () => ({ loadConfig: () => ({ database: {}, checkpoints: { schema: 'test' }, harnesses: { workspaceRoot: '/fixture' }, host: '127.0.0.1', port: 0 }) }))
 vi.mock('../src/infrastructure/database.js', () => ({ createDatabase: () => ({
   pool: {}, ping: async () => undefined, migrate: async () => undefined,

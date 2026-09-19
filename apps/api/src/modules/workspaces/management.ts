@@ -56,7 +56,10 @@ export class WorkspaceManagementService {
       .filter((item) => {
         try { requireAuthorization(principal, 'workspaces:read', { workspaceId: item.workspace.id }); return true } catch { return false }
       })
-    const items = visible.slice(0, input.limit)
+    const items = await Promise.all(visible.slice(0, input.limit).map(async (item) => {
+      if (!isAuthorized(principal, 'workspace_locations:read', { workspaceId: item.workspace.id })) return item
+      return ManagedWorkspaceSchema.parse({ ...item, ...await this.locations.inspect(principal, item.workspace.id) })
+    }))
     return { items, pageInfo: { nextCursor: visible.length > input.limit ? items.at(-1)!.workspace.id : null } }
   }
 

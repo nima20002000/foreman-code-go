@@ -12,6 +12,7 @@ import {
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { NewWorkflowAction } from './NewWorkflowAction'
 import './workflows.css'
+import '../../shared/ui/resourceDirectory.css'
 
 function WorkflowCardActions({ name, onRename, onRemove }: {
   name: string
@@ -82,29 +83,29 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
   const workflows = managed.map((item) => item.workflow)
 
   return (
-    <section className="workflow-directory" aria-label="Workflows">
+    <section className="workflow-directory resource-directory n-theme" aria-label="Workflows">
       <PageHeader
         title="Workflows"
         actions={workflows.length > 0 ? <NewWorkflowAction workspaceId={workspaceId} /> : undefined}
       />
 
       {workflows.length > 0 ? (
-        <ul className="workflow-card-list" data-testid="workflow-card-list">
+        <ul className="workflow-card-list resource-card-list" data-testid="workflow-card-list">
           {workflows.map((workflow) => (
             <li
               className="workflow-card-item"
               data-testid={`workflow-card-${workflow.id}`}
               key={workflow.id}
             >
-              <Card className="workflow-card">
+              <Card className="workflow-card resource-card">
                 <Link
                   to="/workspaces/$workspaceId"
                   params={{ workspaceId }}
                   search={{ workflowId: workflow.id }}
-                  className="workflow-card-open"
+                  className="workflow-card-open resource-card-open"
                 >
-                  <Icon name="workflow" size={18} aria-hidden="true" />
-                  <span>{workflow.name}</span>
+                  <Icon name="workflow" size={16} />
+                  <span className="resource-card-name">{workflow.name}</span>
                 </Link>
                 <WorkflowCardActions
                   name={workflow.name}
@@ -130,7 +131,7 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
       ) : managedQuery.isPending ? (
         <LoadingState label="Loading workflows…" />
       ) : managedQuery.isError ? (
-        <ErrorState title="Workflows unavailable" description="" />
+        <ErrorState title="Workflows unavailable" description="The workflow list could not be loaded." onRetry={() => void managedQuery.refetch()} />
       ) : (
         <div data-testid="workflow-directory-empty">
           <EmptyState

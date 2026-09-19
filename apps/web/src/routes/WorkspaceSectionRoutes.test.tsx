@@ -131,7 +131,7 @@ describe('workspace section routes', () => {
     expect(screen.getByRole('link', { name: /Provider presets/ })).toHaveAttribute('href', '/settings/harnesses')
     expect(screen.getByRole('link', { name: /Orchestrator, Coder and Operator templates/ })).toHaveAttribute('href', '/settings/agents')
     expect(screen.getByRole('link', { name: /Defaults for new workflows/ })).toHaveAttribute('href', '/settings/workflows')
-    expect(screen.getByRole('link', { name: /Global review queue and delivery history/ })).toHaveAttribute('href', '/approvals')
+    expect(screen.queryByRole('link', { name: /Approval/i })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('link', { name: /Orchestrator, Coder and Operator templates/ }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/settings/agents'))
@@ -155,16 +155,42 @@ describe('workspace section routes', () => {
     expect(await screen.findByRole('heading', { name: 'Profile', level: 1 })).toBeVisible()
   })
 
-  it('renders the global Approval Inbox as a Settings detail page', async () => {
-    const { router } = renderRoute('/approvals')
+  it('asks for workspace choice at the old global approval URL instead of opening a wider queue', async () => {
+    renderRoute('/approvals?interactionId=unscoped-request')
+    expect(await screen.findByRole('heading', { name: 'Workspaces', level: 1 })).toBeVisible()
+    expect(screen.queryByRole('region', { name: 'Approval Inbox' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
+  })
 
+  it('opens approvals from the selected workspace and returns to that workspace', async () => {
+    const user = userEvent.setup()
+    const { router } = renderRoute('/workspaces/workspace-1/settings')
+    expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
+    expect(screen.queryByTestId('workflow-card-workflow-content-pipeline')).not.toBeInTheDocument()
+    const approvals = screen.getByRole('link', { name: /Approvals Review requests in this workspace/ })
+    expect(approvals).toHaveAttribute('href', '/workspaces/workspace-1/approvals')
+    await user.click(approvals)
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/approvals'))
     expect(await screen.findByRole('heading', { name: 'Approval Inbox', level: 1 })).toBeVisible()
-    expect(screen.getByRole('link', { name: 'Back to settings' })).toHaveAttribute('href', '/settings')
-    expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getAllByRole('heading', { name: 'Approval Inbox' })).toHaveLength(1)
     expect(screen.getByRole('region', { name: 'Approval Inbox' })).toHaveClass('approval-inbox--embedded')
+    expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
+    const back = screen.getByRole('link', { name: 'Back to workspace settings' })
+    expect(back).toHaveAttribute('href', '/workspaces/workspace-1/settings')
+    await user.click(back)
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings'))
+  })
 
-    await userEvent.setup().click(screen.getByRole('link', { name: 'Back to settings' }))
-    await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
+  it('preserves workflow and view filters on a workspace approval deep link', async () => {
+    const user = userEvent.setup()
+    const { router } = renderRoute('/workspaces/workspace-1/approvals?workflowId=workflow-content-pipeline&approvalView=history')
+    expect(await screen.findByRole('heading', { name: 'Approval Inbox', level: 1 })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'History' })).toHaveAttribute('aria-pressed', 'true')
+    await user.click(screen.getByRole('button', { name: 'Delivery problems' }))
+    await waitFor(() => expect(router.state.location.search).toMatchObject({
+      workflowId: 'workflow-content-pipeline', approvalView: 'delivery',
+    }))
+    expect(router.state.location.pathname).toBe('/workspaces/workspace-1/approvals')
   })
 
   it('places Browsers under Settings and preserves its deep link', async () => {

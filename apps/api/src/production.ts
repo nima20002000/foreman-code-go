@@ -8,7 +8,8 @@ import { buildApp } from './app.js'
 import { createOperatorExtensions } from './mcp/operator/extensions.js'
 import { NativeConfigurationService } from './modules/harnesses/nativeConfiguration.js'
 import { HarnessMcpSettingsService } from './modules/harnesses/mcpSettings.js'
-import { HarnessDirectoryBrowser, configuredDirectoryRoots } from './modules/harnesses/directoryBrowser.js'
+import { workspaceStorageRoot } from './modules/workspaces/storage.js'
+import { HarnessDirectoryBrowser } from './modules/harnesses/directoryBrowser.js'
 import { CodexMcpConnections } from './modules/harnesses/codexMcpConnections.js'
 import { OpenCodeMcpConnections } from './modules/harnesses/openCodeMcpConnections.js'
 import type { CheckpointStore } from './infrastructure/checkpoints.js'
@@ -80,12 +81,13 @@ export function buildProductionApp(
   const commands = new PostgresCommandCoordinator(database.pool)
   const repository = new PostgresInteractionRepository(database.pool)
   const budgets = new PostgresApprovalBudgetRepository(database.pool)
-  const locations = new WorkspaceLocationService(database.pool, commands, config.harnesses.workspaceRoot)
+  const projectRoot = config.workspaceStorageRoot ?? workspaceStorageRoot()
+  const locations = new WorkspaceLocationService(database.pool, commands, config.harnesses.workspaceRoot, 'runner-local', projectRoot)
   const workflows = new PostgresWorkflowRepository(database.pool)
   const runs = new PostgresRunRepository(database.pool, workflows, locations)
   const workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
   const settings = new PostgresSettingsRepository(database.pool)
-  const foundationSettings = new PostgresFoundationSettingsRepository(database.pool)
+  const foundationSettings = new PostgresFoundationSettingsRepository(database.pool, projectRoot)
   const operators = new PostgresOperatorRepository(database.pool)
   const rollout = new NativeRollout(process.env)
   const harnessCompatibility = createHarnessCompatibility(config.harnesses)
@@ -95,7 +97,7 @@ export function buildProductionApp(
     config.harnesses.codexBinary, config.harnesses.openCodeBinary, config.harnesses.workspaceRoot,
   )
   const harnessSettings = {
-    directories: new HarnessDirectoryBrowser(configuredDirectoryRoots(config.harnesses.workspaceRoot, process.env.GRAPHQL_HARNESS_DIRECTORY_ROOTS), database.pool),
+    directories: new HarnessDirectoryBrowser([projectRoot], database.pool),
     mcp: new HarnessMcpSettingsService(database.pool, commands, {
       codex: new CodexMcpConnections(config.harnesses.codexBinary, config.harnesses.workspaceRoot, processRegistry.scope('settings:mcp:codex')),
       opencode: new OpenCodeMcpConnections(config.harnesses.openCodeBinary, config.harnesses.workspaceRoot, processRegistry.scope('settings:mcp:opencode')),
@@ -223,7 +225,7 @@ export function buildProductionApp(
   const reviews = new AutomaticReviewService(database.pool, runs, approvals, chat, access, locations, rollout)
   reviewLifecycle.current = reviews
   const operatorServices = {
-    workspaces: new WorkspaceManagementService(database.pool, commands, locations),
+    workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings),
     locations,
     workflows: new WorkflowManagementService(database.pool, commands),
     agents: new AgentManagementService(database.pool),
@@ -261,7 +263,7 @@ export function buildProductionApp(
   const operatorExtensions = createOperatorExtensions({
     pool: database.pool, commands, catalog: harnessCatalog, native: nativeConfigurations,
     detection, engine, runs: operatorServices.runs, locations,
-    provisioningRoot: process.env.GRAPHQL_WORKSPACE_PROVISIONING_ROOT,
+    provisioningRoot: projectRoot,
   })
   const app = buildApp({
     ...(config.browserAuth ? { browserAuth: new BrowserAuthentication(database.pool, access, config.browserAuth) } : {}),

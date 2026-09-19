@@ -1,7 +1,9 @@
 import { UnsavedEditorGuard } from '../../shared/ui/unsavedChanges'
-import { useContext, useEffect } from 'react'
+import { useContext, useEffect, useRef } from 'react'
 import { useIsMutating, useQueryClient } from '@tanstack/react-query'
 
+import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
+import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { ApiError } from '../../shared/api/client'
 import {
   useManagedWorkspaceQuery,
@@ -13,7 +15,6 @@ import { Alert, Button, LoadingState } from '../../shared/ui/nocturne'
 import { ToastContext } from '../../shared/ui/nocturne/toastContext'
 import {
   acknowledgeLocationSave,
-  editLocationDraft,
   hydrateLocationDraft,
   locationDraftConflicts,
   locationDraftFor,
@@ -29,12 +30,14 @@ function message(error: unknown): string {
   return error instanceof ApiError ? error.message : error instanceof Error ? error.message : 'The location request failed.'
 }
 
-export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceId: string }) {
+function LocationSettings({ workspaceId }: { workspaceId: string }) {
   const toasts = useContext(ToastContext)
   const queryClient = useQueryClient()
   const workspace = useManagedWorkspaceQuery(workspaceId)
   const save = useSetWorkspaceLocationMutation(workspaceId)
   const reload = useReloadWorkspaceLocationMutation(workspaceId)
+  type SaveInput = Omit<Parameters<typeof save.mutateAsync>[0], 'commandId'>
+  const operation = useRef({ attempt: new CommandAttempt<SaveInput>(), input: undefined as SaveInput | undefined, conflicted: false }).current
   const busy = useIsMutating({ mutationKey: locationMutationKey(workspaceId) }) > 0
   const draft = useWorkspaceLocationDraftStore((state) => locationDraftFor(state, workspaceId))
   const update = useWorkspaceLocationDraftStore((state) => state.update)
@@ -60,7 +63,7 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
   }
   if (!draft) return <section className="workspace-location-form" aria-label="Project folder"><LoadingState label="Loading execution location…" /></section>
 
-  const conflict = locationDraftConflicts(draft, current.locationRevision)
+  const conflict = operation.conflicted || locationDraftConflicts(draft, current.locationRevision) || (draft.conflictRevision ?? 0) > draft.baseRevision
   const archived = current.archivedAt !== null
   const writable = !busy && !archived
   const status = current.locationValidation.status
@@ -70,23 +73,31 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
     return locationDraftFor(useWorkspaceLocationDraftStore.getState(), workspaceId)
   }
 
-  const savePath = async () => {
+  const savePath = async (selectedPath?: string) => {
     const submitted = submittedDraft()
-    if (!submitted?.dirty || !submitted.rootPath || locationDraftConflicts(submitted, current.locationRevision)) return false
+    const rootPath = selectedPath ?? submitted?.rootPath
+    if (!submitted || !rootPath || (selectedPath === undefined && !submitted.dirty)
+      || (!operation.attempt.unresolved && (conflict || locationDraftConflicts(submitted, current.locationRevision)))) return false
+    // Selecting an already accepted, usable destination is a successful no-op.
+    if (!operation.attempt.unresolved && !submitted.dirty && status === 'ready'
+      && rootPath === current.executionLocation?.rootPath) return true
     update(workspaceId, (value) => value ? { ...value, notice: undefined } : value)
     try {
       // mutateAsync settles even after this route unmounts. Apply the result to
       // its submitted workspace's draft, never the workspace navigated to later.
-      const result = await save.mutateAsync({
-        workspaceId, runnerId: RUNNER_ID, rootPath: submitted.rootPath,
-        expectedLocationRevision: submitted.baseRevision, commandId: crypto.randomUUID(),
-      })
+      operation.input ??= { workspaceId, runnerId: RUNNER_ID, rootPath, expectedLocationRevision: submitted.baseRevision }
+      if (operation.input.rootPath !== rootPath) throw new Error('Retry the previous destination before choosing another folder.')
+      const result = await save.mutateAsync(operation.attempt.input(operation.input))
+      operation.attempt.succeeded(); operation.input = undefined
       update(workspaceId, (value) => value ? acknowledgeLocationSave(
         value, submitted.editVersion, result.value.executionLocation.rootPath, result.value.locationRevision,
       ) : value)
       toasts?.notify({ tone: 'success', title: 'Execution location saved', description: 'Future runs will use this folder.' })
       return true
     } catch (error) {
+      operation.attempt.failed(error)
+      if (error instanceof ApiError && error.code === 'LOCATION_REVISION_CONFLICT') operation.conflicted = true
+      if (!operation.attempt.unresolved) operation.input = undefined
       update(workspaceId, (value) => {
         if (!value) return value
         const revision = error instanceof ApiError ? error.details?.currentLocationRevision : undefined
@@ -99,6 +110,10 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
         }
       })
       toasts?.notify({ tone: 'danger', title: 'Execution location not saved', description: message(error) })
+      if (selectedPath !== undefined) {
+        if (operation.conflicted) throw new Error(`${message(error)} Close this dialog and reload the saved location.`, { cause: error })
+        throw error
+      }
       return false
     }
   }
@@ -109,6 +124,8 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
     try {
       const saved = await reload.mutateAsync({ workspaceId })
       if (saved.workspace.id !== workspaceId) throw new Error('The reloaded location belongs to another workspace.')
+      if (saved.locationValidation.status !== 'restricted'
+        && saved.locationRevision >= Math.max(submitted.baseRevision, submitted.conflictRevision ?? 0)) operation.conflicted = false
       update(workspaceId, (value) => value ? reloadLocationDraft(value, submitted.editVersion, saved) : value)
       toasts?.notify({ tone: 'info', title: 'Saved location reloaded' })
     } catch (error) {
@@ -119,16 +136,17 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
 
   return (
     <section className="workspace-location-form" aria-label="Project folder">
-      <UnsavedEditorGuard editor={{ label: 'execution location', dirty: draft.dirty, busy,
+      <UnsavedEditorGuard editor={{ label: 'execution location', dirty: draft.dirty || operation.attempt.unresolved, busy: busy || operation.attempt.unresolved,
         saveDisabled: archived || conflict || !draft.rootPath,
         error: conflict ? 'The saved location changed. Keep editing to resolve the conflict.' : save.isError ? message(save.error) : undefined,
         save: async () => { await savePath() },
         discard: () => update(workspaceId, () => hydrateLocationDraft(undefined, current)),
       }} />
       {archived ? <Alert live tone="danger" title="This workspace is archived. Its execution location cannot be edited." /> : null}
-      <WorkspaceFolderPicker key={workspaceId} value={draft.rootPath} disabled={!writable || conflict} onSelect={async (path) => {
-        update(workspaceId, (value) => value ? editLocationDraft(value, path) : value)
-        if (!await savePath()) {
+      <WorkspaceFolderPicker key={workspaceId} value={draft.rootPath} copyValue={current.executionLocation?.rootPath ?? ''}
+        disabled={!writable || (conflict && !operation.attempt.unresolved)} selectionUnconfirmed={operation.attempt.unresolved && !busy} onSelect={async (path) => {
+        // The modal owns its candidate. Only acknowledgement changes the page's destination.
+        if (!await savePath(path)) {
           throw new Error(locationDraftFor(useWorkspaceLocationDraftStore.getState(), workspaceId)?.notice
             ?? 'The saved location changed. Close this dialog and reload the saved location.')
         }
@@ -143,4 +161,9 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
       </div>
     </section>
   )
+}
+
+export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceId: string }) {
+  const epoch = useHarnessSessionEpoch()
+  return <LocationSettings key={`${epoch}:${workspaceId}`} workspaceId={workspaceId} />
 }

@@ -21,112 +21,80 @@
   padding: 1rem;
 }
 
-.workspace-location-form { display: grid; gap: 1rem; max-width: 42rem; }
-
-.workspace-folder-field { display: grid; gap: .5rem; }
-.workspace-folder-field > label { font-size: .875rem; font-weight: 500; }
-.workspace-folder-trigger { display: flex; align-items: center; justify-content: space-between; gap: 1rem; width: 100%; min-height: 44px; padding: .65rem .75rem; text-align: start; color: var(--color-text-strong); background: var(--color-surface-raised); border: 1px solid var(--color-border-strong); border-radius: 6px; cursor: pointer; }
-.workspace-folder-trigger > span { overflow-wrap: anywhere; min-width: 0; }
-.workspace-folder-trigger > svg { flex-shrink: 0; }
-.workspace-folder-trigger:focus-visible { outline: 2px solid var(--color-accent, #a78bfa); outline-offset: 2px; }
-.workspace-folder-trigger:disabled { opacity: .5; cursor: default; }
-
-/* Keep the task chrome outside the only scrolling area. Shared Nocturne
-   primitives still own dismissal, focus containment, and busy behavior. */
-.workspace-folder-dialog {
-  --workspace-folder-max-height: min(42rem, calc(100dvh - 2rem));
+.workspace-location-form { display: grid; gap: 16px; max-width: 40rem; min-width: 0; }
+.workspace-folder-field { display: grid; gap: 8px; min-width: 0; }
+.workspace-folder-field > label { font-size: 14px; font-weight: 500; }
+.workspace-folder-trigger {
   box-sizing: border-box;
-  width: min(35rem, calc(100vw - 2rem));
-  max-height: var(--workspace-folder-max-height);
-  overflow: hidden;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; min-height: 48px; padding: 12px; border: 1px solid var(--n-control-border);
+  border-radius: var(--n-radius-sm); color: var(--n-text); background: var(--n-canvas);
+  text-align: start; font: 400 14px/1.5 var(--n-font); cursor: pointer;
+}
+.workspace-folder-trigger > span { min-width: 0; overflow-wrap: anywhere; }
+.workspace-folder-trigger > svg { flex-shrink: 0; color: var(--n-muted); }
+.workspace-folder-trigger:hover:not(:disabled) { border-color: var(--n-accent); }
+.workspace-folder-trigger:focus-visible { outline: 2px solid var(--n-focus); outline-offset: 3px; }
+.workspace-folder-trigger:disabled { opacity: .5; cursor: not-allowed; }
+
+/* One scrolling body; navigation and confirmation never scroll away. */
+.workspace-folder-dialog {
+  box-sizing: border-box;
+  --workspace-folder-max-height: min(38rem, calc(100dvh - 32px));
+  width: min(34rem, calc(100vw - 32px)); max-height: var(--workspace-folder-max-height);
+  overflow: hidden; font-size: 14px;
 }
 .workspace-folder-dialog .n-dialog-inner { max-height: calc(var(--workspace-folder-max-height) - 2px); }
 .workspace-folder-dialog .n-dialog-header {
-  display: grid;
-  grid-template-columns: 4.75rem minmax(0, 1fr) 4.75rem;
-  align-items: center;
-  gap: .5rem;
-  padding: .75rem 1rem;
-  flex-shrink: 0;
+  display: grid; grid-template-columns: 76px minmax(0, 1fr) 76px; align-items: center;
+  gap: 8px; padding: 8px 12px; flex-shrink: 0;
 }
 .workspace-folder-dialog .n-dialog-header > div { min-width: 0; text-align: center; }
-.workspace-folder-dialog .n-dialog-header h2 { font-size: 1rem; overflow-wrap: anywhere; }
-.workspace-folder-dialog .n-dialog-header > button:first-child { justify-self: start; }
-.workspace-folder-dialog .n-dialog-header > button:last-child { justify-self: end; width: 44px; height: 44px; }
-.workspace-folder-dialog .n-button { min-height: 44px; }
-.workspace-folder-dialog .n-dialog-body {
-  min-height: 0;
-  padding: 1rem;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-.workspace-folder-dialog .n-dialog-footer {
-  flex-shrink: 0;
-  padding: .75rem 1rem;
-  gap: .5rem;
-  background: var(--n-surface);
-}
-.workspace-folder-dialog .n-dialog-footer > .n-button--primary { min-width: 9rem; }
-.workspace-folder-browser { display: grid; gap: .75rem; min-width: 0; }
-.workspace-folder-current-row {
-  display: flex;
-  align-items: center;
-  gap: .75rem;
-  min-width: 0;
-  padding: .75rem;
-  border: 1px solid var(--n-border);
-  border-radius: var(--n-radius);
-  background: var(--n-canvas);
-}
-.workspace-folder-current-row > svg { color: var(--n-accent); }
-.workspace-folder-location { display: grid; gap: .125rem; min-width: 0; }
-.workspace-folder-host { color: var(--n-faint); font-size: .6875rem; }
-.workspace-folder-current {
-  display: block;
-  min-width: 0;
-  color: var(--n-text);
-  font-family: var(--n-mono);
-  font-size: .75rem;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-.workspace-folder-toolbar { display: flex; align-items: center; justify-content: space-between; gap: .75rem; min-height: 44px; }
-.workspace-folder-toolbar h3 { color: var(--n-muted); font-size: .75rem; font-weight: 500; }
-.workspace-folder-toolbar > button { flex-shrink: 0; }
-.workspace-folder-entries { display: grid; gap: .125rem; list-style: none; padding: .25rem; margin: 0; min-width: 0; }
-.workspace-folder-entries > li { min-width: 0; }
-.workspace-folder-entries > li > .n-button {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) 14px;
-  gap: .75rem;
-  width: 100%;
-  min-height: 48px;
-  padding: .625rem .75rem;
-  color: var(--n-text);
-  text-align: start;
-  font-size: .8125rem;
-  font-weight: 400;
-  border-radius: var(--n-radius-sm);
-}
-.workspace-folder-entries > li > button > span { min-width: 0; overflow-wrap: anywhere; }
-.workspace-folder-entries > li > button > svg:first-child { color: var(--n-accent); }
-.workspace-folder-chevron { transform: rotate(-90deg); color: var(--n-faint); }
-[dir='rtl'] .workspace-folder-chevron { transform: rotate(90deg); }
-.workspace-folder-create { display: grid; gap: .75rem; padding: 1rem; border: 1px solid var(--n-border); border-radius: var(--n-radius); background: var(--n-raised); }
-.workspace-folder-create .n-input { min-height: 44px; }
-.workspace-folder-empty { display: grid; justify-items: center; align-content: center; gap: .75rem; min-height: 9rem; padding: 1.5rem 1rem; color: var(--n-faint); font-size: .8125rem; text-align: center; }
+.workspace-folder-dialog .n-dialog-header h2 { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.workspace-folder-dialog .n-dialog-header > button:first-child { justify-self: start; padding-inline: 8px; }
+.workspace-folder-dialog .n-dialog-header > button:last-child { justify-self: end; }
+.workspace-folder-dialog .n-button { min-height: 44px; font-size: 14px; }
+.workspace-folder-dialog .n-icon-button { width: 44px; height: 44px; }
+.workspace-folder-dialog .n-dialog-body { min-height: 0; padding: 12px 16px; overflow-y: auto; overscroll-behavior: contain; }
+.workspace-folder-dialog .n-dialog-footer { display: grid; grid-template-columns: minmax(0, 1fr); justify-content: stretch; flex-shrink: 0; gap: 12px; padding: 12px 16px; background: var(--n-surface); }
+.workspace-folder-browser { display: grid; gap: 8px; min-width: 0; }
+.workspace-folder-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.workspace-folder-toolbar h3 { color: var(--n-muted); font-size: 13px; font-weight: 500; }
+.workspace-folder-toolbar > .n-button { padding-inline: 8px; }
+.workspace-folder-entries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; list-style: none; margin: 0; padding: 3px; min-width: 0; }
+.workspace-folder-entry { display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: center; min-width: 0; border: 1px solid transparent; border-radius: var(--n-radius-sm); }
+.workspace-folder-entry[data-selected='true'] { border-color: var(--n-accent); background: var(--n-accent-subtle); }
+.workspace-folder-entry .workspace-folder-select { justify-content: flex-start; min-width: 0; text-align: start; padding: 10px; font-weight: 400; color: var(--n-text); }
+.workspace-folder-select > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.workspace-folder-select > svg { color: var(--n-muted); }
+.workspace-folder-entry[data-selected='true'] .workspace-folder-select > svg { color: var(--n-accent); }
+.workspace-folder-select small { display: block; margin-top: 2px; font-size: 12px; color: var(--n-muted); overflow-wrap: anywhere; }
+.workspace-folder-create { padding-block: 8px; min-width: 0; }
+.workspace-folder-create .n-field > label { font-size: 14px; }
+.workspace-folder-create .n-input { min-height: 44px; font-size: 16px; }
+.workspace-folder-create .n-field-hint { font-size: 12px; overflow-wrap: anywhere; }
+.workspace-folder-destination { display: grid; gap: 4px; min-width: 0; }
+.workspace-folder-destination .n-input { white-space: nowrap; font-size: 14px; min-height: 44px; }
+.workspace-folder-confirm { display: flex; justify-content: flex-end; gap: 8px; }
+.workspace-folder-confirm > .n-button--primary { min-width: 128px; }
+.workspace-folder-empty { padding-block: 16px; color: var(--n-muted); font-size: 14px; }
 .workspace-folder-next { justify-self: end; }
-.workspace-folder-browser .n-alert { padding: .75rem; flex-wrap: wrap; }
+.workspace-folder-browser .n-alert { padding: 12px; flex-wrap: wrap; }
 .workspace-folder-browser .n-alert > div { overflow-wrap: anywhere; }
 .workspace-folder-browser .n-alert-action { margin-inline-start: auto; }
 
 @media (max-width: 480px) {
-  .workspace-folder-dialog { --workspace-folder-max-height: calc(100dvh - 1rem); width: calc(100vw - 1rem); }
-  .workspace-folder-dialog .n-dialog-header { padding: .5rem .75rem; }
-  .workspace-folder-dialog .n-dialog-body { padding: .75rem; }
-  .workspace-folder-dialog .n-dialog-footer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); padding: .75rem; }
-  .workspace-folder-dialog .n-dialog-footer > .n-button { width: 100%; min-width: 0; }
-  /* Avoid mobile text-entry zoom without disabling user zoom. */
-  .workspace-folder-dialog .n-input { font-size: 1rem; }
-  .workspace-folder-create { padding: .75rem; }
+  .workspace-folder-dialog { --workspace-folder-max-height: calc(100dvh - 16px); width: calc(100vw - 16px); }
+  .workspace-folder-dialog .n-dialog-header { padding-inline: 8px; }
+  .workspace-folder-dialog .n-dialog-body, .workspace-folder-dialog .n-dialog-footer { padding: 12px; }
+  .workspace-folder-confirm { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+  .workspace-folder-confirm > .n-button { width: 100%; min-width: 0; }
 }
+
+.workspace-folder-entry .workspace-folder-select { position: relative; flex-direction: column; align-items: flex-start; gap: 4px; min-height: 72px; }
+.workspace-folder-select > span { flex: none; width: 100%; }
+.workspace-folder-select > svg:last-child:not(:first-child) { position: absolute; top: 8px; right: 8px; }
+
+.workspace-folder-control { display: flex; align-items: center; min-width: 0; border: 1px solid var(--color-border-strong); border-radius: 6px; background: var(--color-surface-raised); }
+.workspace-folder-control .workspace-folder-trigger { flex: 1; min-width: 0; border: 0; background: transparent; }
+.workspace-folder-control > .n-icon-button { flex-shrink: 0; margin-inline-end: 4px; }

@@ -19,10 +19,10 @@ function page(overrides: Partial<DirectoryPage> = {}): DirectoryPage {
   }
 }
 const clients: QueryClient[] = []
-function mount(onSelect = vi.fn<(path: string) => Promise<void>>().mockResolvedValue(undefined)) {
+function mount(onSelect = vi.fn<(path: string) => Promise<void>>().mockResolvedValue(undefined), selectionUnconfirmed = false, value = '') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } })
   clients.push(client)
-  render(<QueryClientProvider client={client}><WorkspaceFolderPicker disabled={false} value="" onSelect={onSelect} /></QueryClientProvider>)
+  render(<QueryClientProvider client={client}><WorkspaceFolderPicker disabled={false} value={value} onSelect={onSelect} selectionUnconfirmed={selectionUnconfirmed} /></QueryClientProvider>)
   return { client, onSelect }
 }
 function deferred() {
@@ -32,7 +32,8 @@ function deferred() {
 }
 async function openPicker(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: 'Project folder' }))
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Use this folder' })).toBeEnabled())
+  await user.click(await screen.findByRole('button', { name: 'Open Projects' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Select folder' })).toBeEnabled())
 }
 beforeEach(() => {
   setMockScenario('normal')
@@ -44,6 +45,30 @@ beforeEach(() => {
 afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear() })
 
 describe('WorkspaceFolderPicker Nocturne layout and interaction', () => {
+  it('opens Locations with the saved destination on top and updates it during browsing and Back', async () => {
+    const user = userEvent.setup()
+    const { onSelect } = mount(undefined, false, '/projects/Current')
+    await user.click(screen.getByRole('button', { name: 'Project folder' }))
+    expect(await screen.findByRole('list', { name: 'Locations' })).toBeVisible()
+    const destination = () => screen.getByRole('textbox', { name: 'Destination' })
+    expect(destination()).toHaveValue('/projects/Current')
+    expect(screen.queryByRole('list', { name: 'Folders' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled()
+    expect(screen.getByRole('dialog').querySelector('footer')).not.toContainElement(destination())
+    await user.click(screen.getByRole('button', { name: 'Open Projects' }))
+    expect(await screen.findByRole('list', { name: 'Folders' })).toBeVisible()
+    expect(destination()).toHaveValue('/projects')
+    await user.click(screen.getByRole('button', { name: 'Open Project' }))
+    await waitFor(() => expect(destination()).toHaveValue('/projects/Project'))
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    expect(await screen.findByRole('button', { name: 'Project' })).toBeVisible()
+    expect(destination()).toHaveValue('/projects')
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    expect(await screen.findByRole('list', { name: 'Locations' })).toBeVisible()
+    expect(destination()).toHaveValue('/projects/Current')
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
   it('uses a named folder list, a visible creation action, and a separate confirmation footer', async () => {
     const user = userEvent.setup()
     const { onSelect } = mount()
@@ -55,7 +80,7 @@ describe('WorkspaceFolderPicker Nocturne layout and interaction', () => {
     expect(within(dialog).getByRole('button', { name: 'Back' }).closest('header')).toContainElement(
       within(dialog).getByRole('heading', { name: 'Choose folder' }),
     )
-    const footer = within(dialog).getByRole('button', { name: 'Use this folder' }).closest('footer')
+    const footer = within(dialog).getByRole('button', { name: 'Select folder' }).closest('footer')
     expect(footer).toContainElement(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(footer).not.toContainElement(list)
     expect(within(dialog).queryByRole('combobox', { name: 'Location' })).not.toBeInTheDocument()
@@ -69,7 +94,7 @@ describe('WorkspaceFolderPicker Nocturne layout and interaction', () => {
     await openPicker(user)
     expect(screen.queryByText('Empty folder')).not.toBeInTheDocument()
     expect(screen.queryByText('No subfolders.')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Use this folder' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Select folder' })).toBeEnabled()
   })
 
   it.each(['Back', 'Escape'] as const)('returns focus to New folder after leaving the inline editor with %s', async (action) => {
@@ -114,18 +139,21 @@ describe('WorkspaceFolderPicker Nocturne layout and interaction', () => {
     const { onSelect } = mount()
     await openPicker(user)
     await user.click(screen.getByRole('button', { name: 'Next folders' }))
-    await user.click(await screen.findByRole('button', { name: 'Zeta' }))
+    await user.dblClick(await screen.findByRole('button', { name: 'Zeta' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Back' }))
     await screen.findByRole('button', { name: 'Zeta' })
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Location' }), archive.id)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Use this folder' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Locations' }))
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Open Archive' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Select folder' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    expect(await screen.findByRole('list', { name: 'Locations' })).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Back' }))
     expect(await screen.findByRole('button', { name: 'Zeta' })).toBeVisible()
-    expect(screen.getByRole('combobox', { name: 'Location' })).toHaveValue(root.id)
     await user.click(screen.getByRole('button', { name: 'Back' }))
     expect(await screen.findByRole('button', { name: 'Project' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
     expect(reads).toContainEqual({ rootId: root.id, path: root.path, cursor: 'page-2' })
     expect(onSelect).not.toHaveBeenCalled()
   })
@@ -142,15 +170,15 @@ describe('WorkspaceFolderPicker Nocturne layout and interaction', () => {
     await openPicker(user)
     await user.click(screen.getByRole('button', { name: 'New folder' }))
     await user.type(screen.getByRole('textbox', { name: 'Folder name' }), 'New project')
-    await user.click(screen.getByRole('button', { name: 'Create and use' }))
+    await user.click(screen.getByRole('button', { name: 'Create and select' }))
     await screen.findByText('Creation could not be confirmed. Retry with the same name.')
     expect(screen.getByRole('textbox', { name: 'Folder name' })).toBeDisabled()
     expect(screen.getByRole('textbox', { name: 'Folder name' })).toHaveValue('New project')
     expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Close dialog' })).toBeDisabled()
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Create and use' })).toBeEnabled())
-    await user.click(screen.getByRole('button', { name: 'Create and use' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create and select' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Create and select' }))
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith('/projects/New project'))
     expect(writes).toHaveLength(2)
     expect(writes[0]).toMatchObject({ parentPath: root.path, name: 'New project', commandId: expect.any(String) })
@@ -165,7 +193,7 @@ describe('WorkspaceFolderPicker Nocturne layout and interaction', () => {
     mount(onSelect)
     await openPicker(user)
     try {
-      await user.click(screen.getByRole('button', { name: 'Use this folder' }))
+      await user.click(screen.getByRole('button', { name: 'Select folder' }))
       expect(await screen.findByRole('button', { name: 'Saving…' })).toBeDisabled()
       expect(screen.getByRole('dialog')).toHaveAttribute('aria-busy', 'true')
       expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
@@ -183,12 +211,95 @@ describe('WorkspaceFolderPicker Nocturne layout and interaction', () => {
     const user = userEvent.setup()
     const { onSelect } = mount()
     await openPicker(user)
-    await user.click(screen.getByRole('button', { name: 'Project' }))
+    await user.dblClick(screen.getByRole('button', { name: 'Project' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
     await openPicker(user)
-    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Project' })).toBeVisible()
     expect(onSelect).not.toHaveBeenCalled()
   })
+
+  it('selects a child with one click without browsing, then confirms that exact destination', async () => {
+    const reads: string[] = []
+    server.use(http.get('/api/management/harnesses/directories', ({ request }) => {
+      reads.push(new URL(request.url).searchParams.get('path') ?? root.path)
+      return HttpResponse.json(page())
+    }))
+    const user = userEvent.setup()
+    const { onSelect } = mount()
+    await openPicker(user)
+    const folder = screen.getByRole('button', { name: 'Project' })
+    await user.click(folder)
+    expect(folder).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
+    expect(reads).toEqual([root.path, root.path])
+    expect(onSelect).not.toHaveBeenCalled()
+    expect(screen.getByRole('textbox', { name: 'Destination' })).toHaveValue('/projects/Project')
+    await user.click(screen.getByRole('button', { name: 'Select folder' }))
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith('/projects/Project'))
+    expect(onSelect).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('double-clicks into a folder without confirming it', async () => {
+    const user = userEvent.setup()
+    const { onSelect } = mount()
+    await openPicker(user)
+    await user.dblClick(screen.getByRole('button', { name: 'Project' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Project' })).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
+    expect(onSelect).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Select folder' }))
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith('/projects/Project'))
+  })
+
+  it('offers single-activation Open for touch and keyboard users', async () => {
+    const user = userEvent.setup()
+    const { onSelect } = mount()
+    await openPicker(user)
+    const folder = screen.getByRole('button', { name: 'Project' })
+    act(() => folder.focus())
+    await user.keyboard(' ')
+    expect(folder).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
+    await user.tab()
+    expect(screen.getByRole('button', { name: 'Open Project' })).toHaveFocus()
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Open Project' })).not.toBeInTheDocument())
+    expect(onSelect).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    expect(await screen.findByRole('button', { name: 'Project' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('does not change the candidate when focus moves to another row', async () => {
+    server.use(http.get('/api/management/harnesses/directories', () => HttpResponse.json(page({ directories: [
+      { name: 'Project', path: '/projects/Project' }, { name: 'Other', path: '/projects/Other' },
+    ] }))))
+    const user = userEvent.setup()
+    const { onSelect } = mount()
+    await openPicker(user)
+    await user.click(screen.getByRole('button', { name: 'Project' }))
+    act(() => screen.getByRole('button', { name: 'Other' }).focus())
+    expect(screen.getByRole('button', { name: 'Project' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Other' })).toHaveAttribute('aria-pressed', 'false')
+    await user.click(screen.getByRole('button', { name: 'Select folder' }))
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith('/projects/Project'))
+  })
+
+  it('keeps a selected folder editable after a definitive save rejection', async () => {
+    const onSelect = vi.fn<(path: string) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('Destination rejected.')).mockResolvedValue(undefined)
+    const user = userEvent.setup()
+    mount(onSelect)
+    await openPicker(user)
+    await user.click(screen.getByRole('button', { name: 'Project' }))
+    await user.click(screen.getByRole('button', { name: 'Select folder' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Destination rejected.')
+    expect(screen.getByRole('button', { name: 'Project' })).toHaveAttribute('aria-pressed', 'true')
+    await user.click(screen.getByRole('button', { name: 'Select folder' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(onSelect.mock.calls).toEqual([['/projects/Project'], ['/projects/Project']])
+  })
+
 })

@@ -1,61 +1,305 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
-import { ScopedMcpDetectionSchema } from '@graphql/contracts'
+import { useState, type ComponentProps } from 'react'
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ScopedMcpDetectionSchema, type AgentHarness, type McpDetection } from '@graphql/contracts'
+import { ManagedWorkspaceSchema } from '@graphql/contracts/management'
 
+import * as api from '../../shared/api/client'
 import { queryKeys } from '../../shared/api/query'
+import { renderWithRouter } from '../../test/renderWithRouter'
 import { McpDetectionSettings } from './McpDetectionSettings'
 
-afterEach(cleanup)
+// Keep the real Query observers, auth latch, router and Nocturne controls. Mock
+// only the existing HTTP-client boundary, not the component's request lifecycle.
+vi.mock('../../shared/api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../shared/api/client')>()
+  return { ...actual, getScopedMcpDetection: vi.fn(), getManagedWorkspace: vi.fn(), listManagedWorkspaces: vi.fn() }
+})
 
-describe('MCP detection settings', () => {
-  function seedWorkspace(client: QueryClient, workspaceId: string, workingDirectory: string) {
-    const value = {
-      workspace: { id: workspaceId, name: 'Test workspace', description: '' }, revision: 1, archivedAt: null,
-      executionLocation: { runnerId: 'runner-local', rootPath: workingDirectory }, locationRevision: 1,
-      locationValidation: { status: 'ready', checkedAt: '2026-09-16T00:00:00.000Z' },
-    }
-    client.setQueryData(queryKeys.managedWorkspaces, { items: [value], pageInfo: { nextCursor: null } })
-    client.setQueryData(queryKeys.managedWorkspace(workspaceId), value)
+// jsdom has no layout/scroll implementation; keep the real Combobox behavior.
+beforeEach(() => { HTMLElement.prototype.scrollIntoView ??= vi.fn() })
+
+const checkedAt = '2026-09-16T00:00:00.000Z'
+const clients: QueryClient[] = []
+const getDetection = vi.mocked(api.getScopedMcpDetection)
+const getWorkspace = vi.mocked(api.getManagedWorkspace)
+const listWorkspaces = vi.mocked(api.listManagedWorkspaces)
+
+function workspace(id = 'workspace-1', rootPath = '/srv/project') {
+  return ManagedWorkspaceSchema.parse({
+    workspace: { id, name: `Workspace ${id}`, description: '' }, revision: 1, archivedAt: null,
+    executionLocation: { runnerId: 'runner-local', rootPath }, locationRevision: 1,
+    locationValidation: { status: 'ready', checkedAt },
+  })
+}
+function detection(harness: AgentHarness = 'codex', state: McpDetection['state'] = 'connected', workingDirectory = '/srv/project') {
+  return ScopedMcpDetectionSchema.parse({
+    runnerId: 'runner-local', workingDirectory, providerVersion: '0.154.0', nativeFilters: {},
+    detection: { harness, serverName: 'graphql-app', state, checkedAt,
+      endpointMatches: state === 'not_detected' || state === 'check_failed' ? null : true,
+      credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN' },
+  })
+}
+function client() {
+  const value = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } })
+  clients.push(value)
+  value.setQueryData(queryKeys.managedWorkspace('workspace-1'), workspace())
+  return value
+}
+function seedConnections(value: QueryClient, state: McpDetection['state'] = 'connected') {
+  for (const harness of ['codex', 'opencode'] as const) value.setQueryData(queryKeys.mcpDetection('workspace-1', harness), detection(harness, state))
+}
+function mount(value: QueryClient, initial: ComponentProps<typeof McpDetectionSettings> = { workspaceId: 'workspace-1' }) {
+  let update: (next: ComponentProps<typeof McpDetectionSettings>) => void = () => { throw new Error('Panel has not mounted') }
+  function Host() {
+    const [props, setProps] = useState(initial)
+    update = setProps
+    return <QueryClientProvider client={value}><McpDetectionSettings {...props} /></QueryClientProvider>
   }
-  it('distinguishes connected evidence from an unknown failed check and scopes both to the runner', async () => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
-    const base = { runnerId: 'runner-local', workingDirectory: '/srv/project', providerVersion: '0.154.0', nativeFilters: {} }
-    seedWorkspace(client, 'workspace-1', '/srv/project')
-    client.setQueryData(queryKeys.mcpDetection('workspace-1', 'codex'), ScopedMcpDetectionSchema.parse({
-      ...base, detection: { harness: 'codex', serverName: 'graphql-app', state: 'connected', endpointMatches: true,
-        credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN', checkedAt: '2026-09-16T00:00:00.000Z' },
-    }))
-    client.setQueryData(queryKeys.mcpDetection('workspace-1', 'opencode'), ScopedMcpDetectionSchema.parse({
-      ...base, providerVersion: 'unknown', nativeFilters: { diagnostics: ['Inspector timed out'] },
-      detection: { harness: 'opencode', serverName: 'graphql-app', state: 'check_failed', endpointMatches: null,
-        credentialEnvironmentVariable: null, checkedAt: '2026-09-16T00:00:00.000Z', detail: 'CLI unavailable' },
-    }))
-    render(<QueryClientProvider client={client}><McpDetectionSettings workspaceId="workspace-1" /></QueryClientProvider>)
+  const rendered = renderWithRouter(<Host />)
+  clients.push(rendered.queryClient)
+  return { ...rendered, update: (next: ComponentProps<typeof McpDetectionSettings>) => act(() => update(next)) }
+}
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
+
+beforeEach(() => {
+  vi.resetAllMocks()
+  getDetection.mockImplementation(async (_id, harness) => detection(harness))
+  getWorkspace.mockImplementation(async (id) => workspace(id))
+  listWorkspaces.mockResolvedValue({ items: [workspace()], pageInfo: { nextCursor: null } })
+})
+afterEach(() => {
+  cleanup()
+  for (const value of clients.splice(0)) value.clear()
+  onlineManager.setOnline(true)
+  vi.restoreAllMocks()
+})
+
+describe('Workspace App MCP hierarchy', () => {
+  it('uses the current workspace automatically, without a list request or another selection', async () => {
+    const value = client()
+    mount(value)
+    expect(await screen.findByRole('heading', { name: 'App connections' })).toBeVisible()
+    await waitFor(() => expect(screen.getAllByText('Connected')).toHaveLength(2))
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    expect(listWorkspaces).not.toHaveBeenCalled()
+    expect(getDetection.mock.calls.map(([id, harness]) => [id, harness])).toEqual([
+      ['workspace-1', 'codex'], ['workspace-1', 'opencode'],
+    ])
+    expect(screen.queryByRole('button', { name: /save|confirm/i })).not.toBeInTheDocument()
+  })
+
+  it('leaves workspace selection in the unscoped harness preview only', async () => {
+    const value = client()
+    const user = userEvent.setup()
+    mount(value, { harness: 'codex' })
+    const picker = await screen.findByRole('combobox', { name: 'Workspace' })
+    expect(getDetection).not.toHaveBeenCalled()
+    await user.click(picker)
+    await user.click(await screen.findByRole('option', { name: /Workspace workspace-1/ }))
+    expect(await screen.findByText('Connected')).toBeVisible()
+    expect(screen.queryByRole('article', { name: 'OpenCode' })).not.toBeInTheDocument()
+    expect(getDetection.mock.calls.every(([, harness]) => harness === 'codex')).toBe(true)
+  })
+
+  it('preserves both provider reports and filters, without putting raw diagnostics in the main view', async () => {
+    const value = client()
+    const user = userEvent.setup()
+    value.setQueryData(queryKeys.mcpDetection('workspace-1', 'codex'), detection())
+    const failed = detection('opencode', 'check_failed')
+    failed.detection.detail = 'CLI unavailable'
+    failed.nativeFilters = { enabledTools: ['read_workspace'], disabledTools: ['write_workspace'], diagnostics: ['Inspector timed out'] }
+    value.setQueryData(queryKeys.mcpDetection('workspace-1', 'opencode'), failed)
+    mount(value)
     expect(await screen.findByText('Connected')).toBeVisible()
     expect(screen.getByText('Check failed')).toBeVisible()
-    expect(screen.getByText('CLI unavailable')).toBeVisible()
-    expect(screen.getAllByText(/runner-local/)).toHaveLength(2)
-    expect(screen.getAllByText('Connection details')).toHaveLength(2)
+    expect(screen.getByText('CLI unavailable')).not.toBeVisible()
+    const card = screen.getByRole('article', { name: 'OpenCode' })
+    await user.click(within(card).getByText('Details'))
+    for (const text of ['CLI unavailable', 'runner-local', '/srv/project', 'read_workspace', 'write_workspace', 'Inspector timed out']) {
+      expect(within(card).getByText(text)).toBeVisible()
+    }
   })
 
   it.each([
-    ['not_detected', 'Not configured'], ['misconfigured', 'Configuration mismatch'],
-    ['status_unavailable', 'Configured · health unknown'], ['connected', 'Connected'],
-    ['disabled', 'Disabled'], ['authentication_required', 'Sign-in required'],
-    ['broken', 'Connection failed'], ['check_failed', 'Check failed'],
-  ] as const)('renders the normalized %s state', async (state, label) => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
-    seedWorkspace(client, 'workspace-state', '/srv/state')
-    for (const harness of ['codex', 'opencode'] as const) client.setQueryData(
-      queryKeys.mcpDetection('workspace-state', harness),
-      ScopedMcpDetectionSchema.parse({
-        runnerId: 'runner-state', workingDirectory: '/srv/state', providerVersion: 'qualified', nativeFilters: {},
-        detection: { harness, serverName: 'graphql-app', state, endpointMatches: state === 'not_detected' || state === 'check_failed' ? null : true,
-          credentialEnvironmentVariable: null, checkedAt: '2026-09-16T00:00:00.000Z' },
-      }),
-    )
-    render(<QueryClientProvider client={client}><McpDetectionSettings workspaceId="workspace-state" /></QueryClientProvider>)
+    ['not_detected', 'Not set up'], ['misconfigured', 'Needs attention'],
+    ['status_unavailable', 'Not verified'], ['connected', 'Connected'],
+    ['disabled', 'Turned off'], ['authentication_required', 'Sign-in required'],
+    ['broken', 'Cannot connect'], ['check_failed', 'Check failed'],
+  ] as const)('keeps the %s state distinct', async (state, label) => {
+    const value = client()
+    seedConnections(value, state)
+    mount(value)
     expect((await screen.findAllByText(label))).toHaveLength(2)
+  })
+
+  it('checks again in place, blocks duplicate requests, and leaves the other provider alone', async () => {
+    const value = client()
+    seedConnections(value)
+    const pending = deferred<ReturnType<typeof detection>>()
+    getDetection.mockReturnValue(pending.promise)
+    const user = userEvent.setup()
+    mount(value)
+    const button = await screen.findByRole('button', { name: 'Check again for Codex' })
+    await user.dblClick(button)
+    expect(button).toBeDisabled()
+    expect(getDetection).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Check again for OpenCode' })).toBeEnabled()
+    await act(async () => pending.resolve(detection('codex', 'broken')))
+    await waitFor(() => expect(button).toBeEnabled())
+    expect(screen.getByText('Cannot connect')).toBeVisible()
+  })
+
+  it('keeps the last report on a network failure but never labels it as a current check', async () => {
+    const value = client()
+    seedConnections(value)
+    getDetection.mockRejectedValue(new Error('Connection timed out'))
+    const user = userEvent.setup()
+    mount(value, { workspaceId: 'workspace-1', harness: 'codex' })
+    await user.click(await screen.findByRole('button', { name: 'Check again for Codex' }))
+    expect(await screen.findByText('Last known: Connected')).toBeVisible()
+    expect(screen.queryByText('Connected', { exact: true })).not.toBeInTheDocument()
+    expect(screen.getByText('Couldn’t update. Showing the last check.')).toBeVisible()
+    await user.click(screen.getByText('Details'))
+    expect(screen.getByText('Connection timed out')).toBeVisible()
+    expect(screen.getByText('/srv/project')).toBeVisible()
+  })
+
+  it('does not hide a healthy provider when the other check fails', async () => {
+    const value = client()
+    getDetection.mockImplementation(async (_id, harness) => {
+      if (harness === 'codex') throw new Error('Codex check unavailable')
+      return detection(harness)
+    })
+    mount(value)
+    expect(await screen.findByText('Check failed')).toBeVisible()
+    expect(await screen.findByText('Connected')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Check again for Codex' })).toBeEnabled()
+  })
+
+  it('makes Details keyboard reachable without an icon-only mystery control', async () => {
+    const value = client()
+    seedConnections(value)
+    const user = userEvent.setup()
+    mount(value, { workspaceId: 'workspace-1', harness: 'codex' })
+    const check = await screen.findByRole('button', { name: 'Check again for Codex' })
+    await user.tab()
+    expect(check).toHaveFocus()
+    await user.tab()
+    expect(screen.getByText('Details').closest('summary')).toHaveFocus()
+  })
+
+  it('shows waiting, rather than an endless active check, when offline', async () => {
+    const value = client()
+    onlineManager.setOnline(false)
+    mount(value, { workspaceId: 'workspace-1', harness: 'codex' })
+    expect(await screen.findByText('Waiting for connection')).toBeVisible()
+    expect(getDetection).not.toHaveBeenCalled()
+  })
+})
+
+describe('Workspace App MCP scope and access', () => {
+  it('links straight to folder setup, and does not check providers before a folder exists', async () => {
+    const value = client()
+    value.setQueryData(queryKeys.managedWorkspace('workspace-1'), {
+      ...workspace(), executionLocation: null, locationValidation: { status: 'unconfigured' },
+    })
+    mount(value)
+    expect(await screen.findByRole('link', { name: 'Choose folder' })).toHaveAttribute('href', '/workspaces/workspace-1/settings/location')
+    expect(getDetection).not.toHaveBeenCalled()
+  })
+
+  it('offers access recovery, not an inaccessible setup form, for a restricted folder', async () => {
+    const value = client()
+    value.setQueryData(queryKeys.managedWorkspace('workspace-1'), {
+      ...workspace(), executionLocation: null, locationValidation: { status: 'restricted' },
+    })
+    mount(value)
+    expect(await screen.findByText('Folder access is restricted')).toBeVisible()
+    expect(screen.queryByRole('link', { name: /folder/i })).not.toBeInTheDocument()
+    expect(getDetection).not.toHaveBeenCalled()
+  })
+
+  it('keeps unavailable-folder diagnosis accessible without treating it as an unconfigured workspace', async () => {
+    const value = client()
+    value.setQueryData(queryKeys.managedWorkspace('workspace-1'), {
+      ...workspace(), locationValidation: { status: 'unavailable', error: { message: 'The folder was removed.' } },
+    })
+    const user = userEvent.setup()
+    mount(value)
+    expect(await screen.findByRole('link', { name: 'Change folder' })).toBeVisible()
+    await user.click(screen.getByText('Folder details'))
+    expect(screen.getByText('The folder was removed.')).toBeVisible()
+    expect(getDetection).not.toHaveBeenCalled()
+  })
+
+  it('automatically rechecks a changed folder instead of showing cached healthy evidence from the old folder', async () => {
+    const value = client()
+    value.setQueryData(queryKeys.managedWorkspace('workspace-1'), workspace('workspace-1', '/srv/new'))
+    value.setQueryData(queryKeys.mcpDetection('workspace-1', 'codex'), detection())
+    const pending = deferred<ReturnType<typeof detection>>()
+    getDetection.mockReturnValue(pending.promise)
+    mount(value, { workspaceId: 'workspace-1', harness: 'codex' })
+    await waitFor(() => expect(getDetection).toHaveBeenCalledTimes(1))
+    expect(screen.queryByText('Connected')).not.toBeInTheDocument()
+    expect(screen.queryByText('/srv/project')).not.toBeInTheDocument()
+    await act(async () => pending.resolve(detection('codex', 'connected', '/srv/new')))
+    expect(await screen.findByText('Connected')).toBeVisible()
+  })
+
+  it('does not carry a previous workspace’s report across navigation', async () => {
+    const value = client()
+    seedConnections(value)
+    value.setQueryData(queryKeys.managedWorkspace('workspace-2'), workspace('workspace-2', '/srv/second'))
+    const pending = deferred<ReturnType<typeof detection>>()
+    getDetection.mockReturnValue(pending.promise)
+    const view = mount(value, { workspaceId: 'workspace-1', harness: 'codex' })
+    expect(await screen.findByText('Connected')).toBeVisible()
+    view.update({ workspaceId: 'workspace-2', harness: 'codex' })
+    await waitFor(() => expect(getDetection).toHaveBeenCalled())
+    expect(screen.queryByText('Connected')).not.toBeInTheDocument()
+    expect(screen.queryByText('/srv/project')).not.toBeInTheDocument()
+    await act(async () => pending.resolve(detection('codex', 'broken', '/srv/second')))
+    expect(await screen.findByText('Cannot connect')).toBeVisible()
+  })
+
+  it.each([401, 403])('hides cached connection details when access is denied with %s', async (status) => {
+    const value = client()
+    seedConnections(value)
+    getDetection.mockRejectedValue(new api.ApiError({ code: status === 401 ? 'AUTH_REQUIRED' : 'FORBIDDEN', message: 'Access denied' }, status))
+    const user = userEvent.setup()
+    mount(value, { workspaceId: 'workspace-1', harness: 'codex' })
+    await user.click(await screen.findByRole('button', { name: 'Check again for Codex' }))
+    expect(await screen.findByText(status === 401 ? 'Sign in to check connections' : 'Connection access is restricted')).toBeVisible()
+    expect(screen.queryByText('Connected')).not.toBeInTheDocument()
+    expect(screen.queryByText('/srv/project')).not.toBeInTheDocument()
+    expect(screen.queryByText('Details')).not.toBeInTheDocument()
+    if (status === 401) expect(screen.getByRole('link', { name: 'Sign in' }).getAttribute('href')).toContain('/sign-in')
+    else expect(screen.queryByRole('link', { name: 'Sign in' })).not.toBeInTheDocument()
+  })
+
+  it('does not reveal an old report after a denial followed by a network error', async () => {
+    const value = client()
+    seedConnections(value)
+    getDetection.mockRejectedValueOnce(new api.ApiError({ code: 'FORBIDDEN', message: 'Denied' }, 403))
+      .mockRejectedValueOnce(new Error('Network unavailable'))
+      .mockResolvedValueOnce(detection())
+    const user = userEvent.setup()
+    mount(value, { workspaceId: 'workspace-1', harness: 'codex' })
+    await user.click(await screen.findByRole('button', { name: 'Check again for Codex' }))
+    expect(await screen.findByText('Connection access is restricted')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Check again for Codex' }))
+    await waitFor(() => expect(getDetection).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Check again for Codex' })).toBeEnabled())
+    expect(screen.queryByText('Connected')).not.toBeInTheDocument()
+    expect(screen.queryByText('/srv/project')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Check again for Codex' }))
+    expect(await screen.findByText('Connected')).toBeVisible()
   })
 })

@@ -24,6 +24,8 @@ const EnvironmentSchema = z.object({
 })
 
 export interface ApiConfig {
+  /** Trusted composition override for an isolated storage root; never a request field. */
+  workspaceStorageRoot?: string
   browserAuth?: BrowserAuthConfig
   host: string
   port: number

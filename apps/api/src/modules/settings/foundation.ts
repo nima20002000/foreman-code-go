@@ -1,5 +1,5 @@
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { realpath } from 'node:fs/promises'
+import { requireWorkspaceStoragePath, workspaceStorageRoot } from '../workspaces/storage.js'
 import { randomUUID } from 'node:crypto'
 
 import {
@@ -27,7 +27,7 @@ export interface VersionedSetting<T> { value: T; versionId: string | null; revis
 
 /** Versioned application defaults. Callers copy values; stored versions never mutate consumers. */
 export class PostgresFoundationSettingsRepository {
-  constructor(private readonly pool: pg.Pool) {}
+  constructor(private readonly pool: pg.Pool, private readonly projectRoot?: string) {}
 
   getAgentDefaults(client?: pg.ClientBase): Promise<VersionedSetting<AgentDefaults>> {
     return this.read(KEYS.agents, AgentDefaultsSchema, DEFAULT_AGENT_DEFAULTS, client).then((snapshot) => ({
@@ -42,11 +42,26 @@ export class PostgresFoundationSettingsRepository {
 
   getWorkspaceDefaults(client?: pg.ClientBase): Promise<VersionedSetting<WorkspaceDefaults>> {
     return this.read(KEYS.workspaces, WorkspaceDefaultsSchema, DEFAULT_WORKSPACE_DEFAULTS, client)
-      .then((snapshot) => ({ ...snapshot, value: { ...snapshot.value, parentPath: snapshot.value.parentPath ?? join(homedir(), 'Desktop') } }))
+      .then(async (snapshot) => {
+        let parentPath = snapshot.value.parentPath ?? this.projectRoot ?? workspaceStorageRoot()
+        if (this.projectRoot) {
+          try {
+            parentPath = await realpath(parentPath)
+            requireWorkspaceStoragePath(await realpath(this.projectRoot), parentPath)
+          }
+          catch { parentPath = this.projectRoot }
+        }
+        return { ...snapshot, value: { ...snapshot.value, parentPath } }
+      })
   }
 
-  updateWorkspaceDefaults(value: WorkspaceDefaults, expectedRevision: number, client?: pg.ClientBase) {
-    return this.write(KEYS.workspaces, WorkspaceDefaultsSchema.parse(value), expectedRevision, client)
+  async updateWorkspaceDefaults(value: WorkspaceDefaults, expectedRevision: number, client?: pg.ClientBase) {
+    const accepted = WorkspaceDefaultsSchema.parse(value)
+    if (this.projectRoot && accepted.parentPath) {
+      accepted.parentPath = await realpath(accepted.parentPath)
+      requireWorkspaceStoragePath(await realpath(this.projectRoot), accepted.parentPath)
+    }
+    return this.write(KEYS.workspaces, accepted, expectedRevision, client)
   }
 
   getWorkflowDefaults(client?: pg.ClientBase): Promise<VersionedSetting<WorkflowDefaults>> {

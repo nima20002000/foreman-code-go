@@ -50,7 +50,7 @@ export class HarnessDirectoryBrowser {
     const roots = await Promise.all(this.configuredRoots.map(async (path, index) => {
       let canonical: string
       try { canonical = await realpath(path) } catch { throw new DomainError('DIRECTORY_ROOT_UNAVAILABLE', 'An allowed folder is unavailable. Ask the server administrator to check its configured roots.', 503) }
-      return { id: String(index), label: basename(canonical) || canonical, path: canonical }
+      return { id: String(index), label: this.configuredRoots.length === 1 ? 'Workspaces' : basename(canonical) || canonical, path: canonical }
     }))
     if (!roots.length) return { roots, rootId: null, path: null, parent: null, directories: [], nextCursor: null }
     const root = input.rootId ? roots.find((item) => item.id === input.rootId) : roots[0]
@@ -77,15 +77,4 @@ export class HarnessDirectoryBrowser {
     return { roots, rootId: root.id, path, parent: path === root.path ? null : dirname(path), directories,
       nextCursor: after.length > directories.length ? directories.at(-1)!.name : null }
   }
-}
-
-/** Trusted server configuration only; browser requests cannot add browse roots. */
-export function configuredDirectoryRoots(workspaceRoot: string, raw?: string): string[] {
-  if (!raw) return [workspaceRoot]
-  let extra: unknown
-  try { extra = JSON.parse(raw) } catch { throw new Error('GRAPHQL_HARNESS_DIRECTORY_ROOTS must be a JSON array of absolute folder paths.') }
-  if (!Array.isArray(extra) || extra.length > 20 || extra.some((path) => typeof path !== 'string' || !isAbsolute(path) || path.includes('\0'))) {
-    throw new Error('GRAPHQL_HARNESS_DIRECTORY_ROOTS must contain at most 20 absolute folder paths.')
-  }
-  return [...new Set([workspaceRoot, ...extra as string[]].map((path) => resolve(path)))]
 }

@@ -150,6 +150,7 @@ export function useSetWorkspaceLocationMutation(workspaceId = 'unscoped') {
           locationRevision: result.value.locationRevision,
           locationValidation: { status: 'ready', checkedAt: result.value.validation.checkedAt },
         }) : current)
+      void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkspaces }).catch(() => undefined)
     },
   })
 }

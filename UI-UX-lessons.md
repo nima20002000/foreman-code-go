@@ -26,23 +26,29 @@ Read this file before changing UI or UX. It captures reusable design judgment: w
 
 **Lesson:** Defaults should remove unnecessary decisions, not silently make consequential ones.
 
-**Bad UX:** Adding an agent requires an advanced setup form, or automatically connects it to another agent and changes workflow meaning.
+**Bad UX:** Adding an agent requires an advanced setup form, automatically connects it to another agent and changes workflow meaning, or a workspace panel asks users to select the workspace they already opened.
 
 **Good UX:** A provider choice can add an agent with an accepted safe default, with advanced settings available afterward. Adding and connecting remain separate actions. Never silently assign reviewers, broaden permissions, or create relationships. In creation forms, show inherited defaults and preview consequential results such as the new folder path; apply changing defaults only to untouched fields, never to existing objects.
 
-**Protect it:** Check default creation, explicit relationships, preservation of touched fields and existing locations, and required provisioning authority.
+When the route already supplies scope, use it directly rather than repeating a preselected picker or requesting a global list. Keep a chooser only in a genuinely unscoped view; removing a redundant decision must not silently select another workspace.
+
+**Protect it:** Check default creation, explicit relationships, preservation of touched fields and existing locations, and required provisioning authority. In scoped panels, check automatic loading without a workspace-list request; in global previews, check explicit selection. `McpDetectionSettings.test.tsx` contains focused regression cases; running them is a separate verification step.
 
 ## 4. Make browsing reversible and confirmation decisive
 
-**Lesson:** Exploration must not commit a choice. Once the user confirms, redundant confirmations and ambiguous save boundaries undermine confidence.
+**Lesson:** Browsing, highlighting a candidate, and saving a destination are separate intentions. A folder picker must not make users enter a folder just to select it, and a polished modal must not obscure when persistence happens.
 
-**Bad UX:** Users must type an absolute path; Back selects a folder; Create and use requires another selection and another Save; a save failure causes retry to create the folder again.
+**Bad UX:** One click immediately opens a folder; a Locations dropdown competes with browsing; a failed save replaces the accepted destination on the settings page; Create requires another selection and another Save.
 
-**Good UX:** Offer a keyboard-accessible folder field that opens browsing, with a trailing folder icon rather than a duplicate Browse action. Identify the owning machine and restrict browsing to approved roots. Start at the selected allowed folder. Back restores the prior browsing location, including root/page changes, without changing the selection; without history it reaches the parent, stays available after navigation errors, and is disabled at the root. Reset transient history on reopen.
+**Good UX:** Make the destination field itself open one modal. A single click (or native keyboard activation) highlights a folder without opening it or writing anything. Double-click opens it. Provide a separate, labelled Open control for touch and keyboard users; never require double-clicking. Distinguish the browsing path from the highlighted destination, and show the exact candidate in a bordered, single-line Destination field at the top. Choosing no child means selecting the current browsed folder. Always open on the Locations view, initially showing the accepted destination above it. Present folders in two columns. The only destination root is durable app-managed workspace storage; Desktop and harness runtime storage are not choices. Enforce canonical-path and symlink boundaries in the shared API/MCP services, not just the UI.
 
-Use one New folder entry point and one Create and use confirmation while naming, with no duplicate cancel row. Preserve the name on failure and reject collisions. Make the commit boundary explicit: a draft picker changes only its owning form's draft; the workspace execution-location picker saves on confirmation and closes only after acknowledgement. Cancel preserves the prior value. Keep errors in the modal and lock conflicting actions while pending. If creation succeeded but saving failed, retry saving that same folder; uncertain retries retain command identity. A workspace location applies to its workflows without repeated setup.
+Keep Back at the top left. It restores the prior browsing location and page, updates the destination to that folder, and never saves; without history it reaches the parent, remains available after navigation errors, and stops at the approved root. Reset transient browsing state on reopen. A refresh must not steal focus. Avoid a redundant App host/Locations context block. Put a small Copy action beside the folder icon on the original Project folder field; copy the accepted path and acknowledge success.
 
-**Protect it:** Check drill-down/Back, cancellation, root boundaries, pagination, failed listings, keyboard activation, creation collisions, and partial-success retries. Existing coverage anchors include `WorkspaceExecutionLocationSettings.test.tsx`, folder-picker regressions, and authenticated Operator MCP folder permission/readback tests.
+Select folder is the one confirmation: the workspace execution-location picker saves in the modal, waits for acknowledgement, then closes and shows the accepted destination in the original settings field. Cancel leaves that accepted value untouched. A picker inside a larger creation form changes only that form's draft; it does not claim to save workspace settings. Keep validation, errors and retries beside the task. Keep conflicts explicit rather than silently resubmitting against a newer revision.
+
+Use one New folder entry point and one Create and select confirmation while naming. Preview the resulting path, preserve invalid names for correction and reject collisions. If creation succeeded but saving failed, retry saving that same folder, not creation. Unconfirmed writes retain their command identity and original revision, block conflicting actions, and remain retryable. A workspace location applies to its workflows without repeated setup.
+
+**Protect it:** Verify single-click selection without a directory request or write, double-click/Open browsing without saving, exact-path confirmation, Back across roots/pages, cancellation, no-selection/current-folder confirmation, empty and failed listings, keyboard focus, creation collisions, pending locks, conflicts and partial-success retries. Coverage anchors: `WorkspaceFolderPicker.test.tsx`, `WorkspaceExecutionLocationSettings.test.tsx`, `WorkspaceExecutionLocationSettings.selection.test.tsx`, and authenticated Operator MCP folder permission/readback tests. New regression cases and desktop/mobile checks must not be called verified until actually run.
 
 ## 5. Match controls to meaningful work
 
@@ -90,11 +96,11 @@ Show conflicts for deliberate reapply/discard, distinguishing server and local c
 
 **Lesson:** Users need consequences and context to make decisions; raw records and guessed details create false confidence.
 
-**Bad UI:** An approval leads with JSON and IDs, hides persistent policy effects, or treats missing change counts as zero.
+**Bad UI:** An approval leads with JSON and IDs, hides persistent policy effects, treats missing change counts as zero, or places a global queue in Settings when the user is working in one workspace.
 
-**Good UI:** Lead with readable names, requested operation, reviewer, scope, delivery status, and persistent/provider-wide effects; put technical payloads under details. Mark unavailable context as unknown. Correlate native change context only with exact recorded session/turn/item identity, using bounded redacted structure rather than patch contents or guessed targets. Separate monitoring from response permission, and Pending from Delivery problems and History. Use authoritative queue counts and show pending attention near its workflow.
+**Good UI:** Lead with readable names, requested operation, reviewer, scope, delivery status, and persistent/provider-wide effects; put technical payloads under details. Mark unavailable context as unknown. Correlate native change context only with exact recorded session/turn/item identity, using bounded redacted structure rather than patch contents or guessed targets. Separate monitoring from response permission, and Pending from Delivery problems and History. Use authoritative queue counts and show pending attention near its workflow. Enter the Approval Inbox from the selected workspace’s settings, not global application Settings. Keep list, detail, filter URLs and Back navigation bound to that workspace. An old global bookmark must ask the user to choose a workspace rather than silently guessing one or opening a wider queue. Navigation placement never changes read/respond permissions or Operator MCP scope.
 
-**Protect it:** Check missing context, response permissions, persistent choices, delivery failures, and counts beyond the first history page.
+**Protect it:** Check missing context, response permissions, persistent choices, delivery failures, counts beyond the first history page, workspace switching, foreign request deep links and the absence of an unscoped queue in global Settings. Route coverage belongs in `WorkspaceSectionRoutes.test.tsx`; retain the authenticated allowed/denied MCP checks.
 
 ## 10. Design loading, failure, and recovery as part of the task
 
@@ -104,7 +110,9 @@ Show conflicts for deliberate reapply/discard, distinguishing server and local c
 
 **Good UX:** Deliberately distinguish initial loading, empty success, stale usable data with refresh failure, hard error, pending retry, and acknowledged success. Gate a task on its selected workspace's actual prerequisites and offer setup/retry; another workspace's cached status cannot unlock it. Keep usable stale content and explain what remains available. Show structured save errors without dropping edits. Toasts acknowledge requested operations; inline status can describe the accepted current revision without competing with controls or hiding newer drafts.
 
-Diagnostics state exactly what was checked. Installation, qualification, authentication, policy, and execution readiness are distinct; a schema pass cannot imply all of them. Keep the last diagnostic report on refresh failure and allow independent status visibility without overwriting settings drafts.
+Diagnostics state exactly what was checked. Installation, qualification, authentication, policy, and execution readiness are distinct; a schema pass cannot imply all of them. Keep the last diagnostic report on ordinary refresh failure, label it as last known rather than current, and allow independent status visibility without overwriting settings drafts. Never reuse another runner or folder’s report as current evidence. An authorization denial is not an ordinary refresh failure: hide protected cached evidence until a successful authorized read, including after a later network failure.
+
+Keep public thinking summaries and native activity separate from the answer, collapsed behind individually labelled disclosures. Preserve disclosure state during updates and stop following the bottom when the reader opens details. Persist actual native operation identities and revisions so reconnects neither duplicate activity nor relabel older turns. Completion of a turn does not prove every tool succeeded: preserve failed, canceled, and unknown outcomes. Verify each supported harness with real tool, MCP, web, file, and subagent events; normalization tests alone cannot prove native delivery. Evidence: `operator-activity.test.ts`, `operator-chat.integration.test.ts`, and `OperatorActivityList.test.tsx`.
 
 **Protect it:** Check each applicable state and workspace switching. Existing anchors: `WorkspaceExecutionLocationSetup.test.tsx` and `HarnessCompatibilityPanel.test.tsx`.
 
@@ -134,9 +142,9 @@ Diagnostics state exactly what was checked. Installation, qualification, authent
 
 **Bad UI:** Matching dialogs dismiss differently, or an embedded feature brings a second heading, padding layer, and page container into Settings.
 
-**Good UI:** Shared primitives carry focus, keyboard, disabled/loading, validation, dismissal, status, and responsive behavior. Repair repeated behavior there while keeping business rules in features. Let the parent own page chrome through an embedded presentation or composition boundary. Preserve the established card treatment when showing workflow objects in another context; concise copy should not turn selectable objects into an undifferentiated text list. Place diagnostics in the settings section that owns them, with concise status and repair detail on demand.
+**Good UI:** Shared primitives carry focus, keyboard, disabled/loading, validation, dismissal, status, and responsive behavior. Repair repeated behavior there while keeping business rules in features. Let the parent own page chrome through an embedded presentation or composition boundary. Preserve the established card treatment when showing workflow objects in another context; concise copy should not turn selectable objects into an undifferentiated text list. Place diagnostics in the settings section that owns them, with concise status and repair detail on demand. Use one restrained type scale: readable body text, modest headings and secondary context that is still legible. Keep icons small and consistent, and reserve them for object identity or an action with a clear meaning. A fixed host label is context, not a large feature card. Workspace and workflow cards share the same spacing and name hierarchy; opening an object and its action menu remain separate targets. Lead each item with its readable name, short status, and a visible action; disclose raw paths, versions, filters, and diagnostic text on demand. Keep status and its action together, use icons with readable labels, and never add an enable or repair control unless the product contract actually supports that operation.
 
-**Protect it:** Check shared behavior across consumers and embedded versus standalone hierarchy, including the route placement of diagnostics.
+**Protect it:** Check shared behavior across consumers and embedded versus standalone hierarchy, including the route placement of diagnostics. Check long names, readable text at zoom, 44px touch controls, and one-column cards on narrow viewports instead of protecting incidental icon counts or pixel snapshots.
 
 ## 14. Preserve the whole layout contract
 

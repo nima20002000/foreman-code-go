@@ -15,12 +15,12 @@ import type { OperatorRequestContext } from '../types.js'
 
 export function registerWorkspaceTools(server: McpServer, context: OperatorRequestContext): void {
   if (operatorToolAvailable(context, 'workspace_folders_list')) server.registerTool('workspace_folders_list', {
-    description: 'Browse folders within configured Local Runner locations. Never follows links outside an allowed root. Use the returned path as parentPath for workspace_folder_create or workspace_create.',
+    description: 'Browse folders within the app-managed Workspaces location. Never follows links outside an allowed root. Use the returned path as parentPath for workspace_folder_create or workspace_create.',
     inputSchema: HarnessDirectoryBrowseInputSchema, outputSchema: HarnessDirectoryBrowseResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (input) => invokeOperatorTool(context, 'workspace_folders_list', () => context.services.harnessSettings!.directories.browse(context.principal, input)))
   if (operatorToolAvailable(context, 'workspace_folder_create')) server.registerTool('workspace_folder_create', {
-    description: 'Create one new folder inside a configured Local Runner location. Requires provisioning and location-read grants. Existing folders are never overwritten. Reuse commandId and input on retry. Does not assign a workspace location or grant harness access.',
+    description: 'Create one new folder inside the app-managed Workspaces location. Requires provisioning and location-read grants. Existing folders are never overwritten. Reuse commandId and input on retry. Does not assign a workspace location or grant harness access.',
     inputSchema: WorkspaceFolderCreateInputSchema, outputSchema: WorkspaceFolderCreateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (input) => invokeOperatorTool(context, 'workspace_folder_create', () => context.services.harnessSettings!.directories.create(context.principal, 'mcp', input)))
@@ -35,7 +35,7 @@ export function registerWorkspaceTools(server: McpServer, context: OperatorReque
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workspace_get', () => context.services.workspaces.get(context.principal, input.workspaceId)))
   if (operatorToolAvailable(context, 'workspace_create')) server.registerTool('workspace_create', {
-    description: 'Create a durable workspace. Read workspace_defaults_get and pass its parentPath (or an explicit override) to create parentPath/name and save it as the execution location inherited by all workflows. Folder creation requires workspace_locations:provision, workspace_locations:update and workspace_locations:read with global scope. Existing folders are rejected. Omitting parentPath creates an unconfigured workspace. Reuse commandId and the same input on an uncertain retry.', inputSchema: WorkspaceCreateInputSchema,
+    description: 'Create a durable workspace. Read workspace_defaults_get and pass its parentPath (or an explicit override) to create parentPath/name inside app-managed workspace storage and save it as the execution location inherited by all workflows. Folder creation requires workspace_locations:provision, workspace_locations:update and workspace_locations:read with global scope. Existing folders are rejected. Omitting parentPath creates an unconfigured workspace. Reuse commandId and the same input on an uncertain retry.', inputSchema: WorkspaceCreateInputSchema,
     outputSchema: ManagedWorkspaceCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (input) => invokeOperatorTool(context, 'workspace_create', () => context.services.workspaces.create(context.principal, 'mcp', input)))

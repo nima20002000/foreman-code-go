@@ -1,6 +1,8 @@
 import { loadEnvFile } from 'node:process'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, realpath } from 'node:fs/promises'
 
+import { workspaceStorageRoot } from './modules/workspaces/storage.js'
+import { pathsOverlap } from './modules/workspaces/filesystem.js'
 import { loadConfig } from './config.js'
 import { createCheckpointStore } from './infrastructure/checkpoints.js'
 import { createDatabase } from './infrastructure/database.js'
@@ -62,6 +64,11 @@ async function main() {
     await checkpoints.ping()
     stopIfClosing()
     await mkdir(config.harnesses.workspaceRoot, { recursive: true })
+    const projectRoot = config.workspaceStorageRoot ?? workspaceStorageRoot()
+    await mkdir(projectRoot, { recursive: true })
+    if (pathsOverlap(await realpath(projectRoot), await realpath(config.harnesses.workspaceRoot))) {
+      throw new Error('Workspace storage and harness runtime storage must be separate directories.')
+    }
     stopIfClosing()
     await initialize()
     stopIfClosing()

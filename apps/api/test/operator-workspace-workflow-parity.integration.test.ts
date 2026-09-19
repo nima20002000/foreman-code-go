@@ -30,8 +30,8 @@ it('provides authenticated Operator MCP parity for creation, defaults and worksp
   const clients: Client[] = []
   const access = new PostgresAccessService(pool)
   const commands = new PostgresCommandCoordinator(pool)
-  const locations = new WorkspaceLocationService(pool, commands)
-  const settings = new FoundationSettingsManagementService(new PostgresFoundationSettingsRepository(pool), commands)
+  const locations = new WorkspaceLocationService(pool, commands, undefined, 'runner-local', parentPath)
+  const settings = new FoundationSettingsManagementService(new PostgresFoundationSettingsRepository(pool, parentPath), commands)
   const services = {
     harnessSettings: { directories: new HarnessDirectoryBrowser([parentPath], pool), mcp: {} },
     commands, locations, settings, workspaces: new WorkspaceManagementService(pool, commands, locations),
@@ -73,6 +73,25 @@ it('provides authenticated Operator MCP parity for creation, defaults and worksp
     const workspaceId = workspace.workspace.id
     expect(workspace.executionLocation?.rootPath).toBe(join(parentPath, 'MCP Project'))
     expect(workspace.locationValidation.status).toBe('ready')
+    const outside = await client.callTool({ name: 'workspace_location_set', arguments: {
+      workspaceId, commandId: randomUUID(), expectedLocationRevision: workspace.locationRevision,
+      runnerId: 'runner-local', rootPath: tmpdir(),
+    } })
+    expect(outside.isError).toBe(true)
+    const outsideDefault = await client.callTool({ name: 'workspace_defaults_update', arguments: {
+      commandId: randomUUID(), expectedRevision: savedDefaults.revision,
+      value: { ...savedDefaults.value, parentPath: tmpdir() },
+    } })
+    expect(outsideDefault.isError).toBe(true)
+
+    const overview = await call('workspace_list', c.ManagedWorkspacePageSchema, {})
+    expect(overview.items.find((item) => item.workspace.id === workspaceId)?.executionLocation).toEqual(workspace.executionLocation)
+    const reader = await access.issue({ name: 'Metadata only', audience: 'operator',
+      grants: [{ actions: ['workspaces:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
+    const readerClient = await connect(reader.token)
+    const restrictedList = c.ManagedWorkspacePageSchema.parse((await readerClient.callTool({ name: 'workspace_list', arguments: {} })).structuredContent)
+    expect(restrictedList.items[0]?.locationValidation.status).toBe('restricted')
+    expect(restrictedList.items[0]?.executionLocation).toBeNull()
     expect((await call('workspace_create', c.ManagedWorkspaceCommandResultSchema, create)).replayed).toBe(true)
     expect(await readdir(parentPath)).toEqual(['MCP Project'])
     const listed = await call('workspace_folders_list', c.HarnessDirectoryBrowseResultSchema)

@@ -25,7 +25,7 @@ it('creates a ready project folder once, preserves defaults and rejects collisio
       grants: [{ actions: ['workspaces:create', 'workspaces:read', 'workspace_locations:read', 'workspace_locations:update', 'workspace_locations:provision'], scope: {} }],
     })).principal
     const defaults = new PostgresFoundationSettingsRepository(pool)
-    expect((await defaults.getWorkspaceDefaults()).value.parentPath).toBe(join(homedir(), 'Desktop'))
+    expect((await defaults.getWorkspaceDefaults()).value.parentPath).toBe(join(homedir(), '.local', 'share', 'graphql', 'workspaces'))
     await defaults.updateWorkspaceDefaults({ suggestedName: 'Project', description: '', parentPath }, 0)
     const commands = new PostgresCommandCoordinator(pool)
     const locations = new WorkspaceLocationService(pool, commands)

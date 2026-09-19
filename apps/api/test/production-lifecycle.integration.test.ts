@@ -68,6 +68,7 @@ beforeEach(async () => {
   const url = new URL(connectionString)
   url.searchParams.set('options', `-c search_path=${schema}`)
   config = loadConfig({ DATABASE_URL: url.toString(), DATABASE_POOL_MAX: '1', DATABASE_QUERY_TIMEOUT_MS: '5000', HARNESS_WORKSPACE_ROOT: root, HARNESS_TIMEOUT_MS: '5000', PORT: '4100' })
+  config.workspaceStorageRoot = project
   database = createDatabase(config.database)
   await database.migrate()
   await ensureAcceptanceSeed(database.pool)

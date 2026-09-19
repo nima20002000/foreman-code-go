@@ -1,0 +1,111 @@
+/* Local composition of Nocturne primitives. No new theme or global overrides. */
+.mcp-connections {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  margin-block-start: 8px;
+  padding-block-start: 22px;
+  border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+}
+.mcp-heading { display: grid; gap: 6px; }
+.mcp-heading-title { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.mcp-heading-title > svg { color: var(--n-accent); }
+.mcp-heading-title h2 { margin: 0; font-size: 1rem; font-weight: 650; letter-spacing: -.02em; }
+.mcp-heading p, .mcp-hint, .mcp-folder-notice p {
+  margin: 0;
+  color: color-mix(in srgb, currentColor 74%, transparent);
+  font-size: .8125rem;
+  line-height: 1.55;
+}
+.mcp-content { display: grid; gap: 14px; min-width: 0; }
+.mcp-pending { display: flex; align-items: center; gap: 8px; margin: 0; padding: 12px 0; font-size: .8125rem; }
+.mcp-connection-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  align-items: start;
+  gap: 12px;
+  min-width: 0;
+}
+.mcp-connection-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 18px 18px 0;
+  border: 1px solid color-mix(in srgb, currentColor 13%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, currentColor 2.5%, transparent);
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+.mcp-connection-card:hover, .mcp-connection-card:focus-within {
+  border-color: color-mix(in srgb, var(--n-accent, currentColor) 42%, transparent);
+}
+.mcp-provider-heading { display: flex; align-items: center; gap: 12px; }
+.mcp-provider-heading h3 { margin: 0; font-size: .9375rem; font-weight: 650; letter-spacing: -.015em; }
+.mcp-provider-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  border: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+.mcp-status { min-width: 0; }
+.mcp-status .n-badge { max-width: 100%; white-space: normal; }
+.mcp-status svg { flex-shrink: 0; }
+.mcp-card-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.mcp-card-actions:last-child { margin-bottom: 14px; }
+.mcp-checked { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: .75rem; color: color-mix(in srgb, currentColor 74%, transparent); }
+.mcp-connections .n-button { min-height: 44px; }
+.mcp-check-button { margin-inline-start: auto; }
+.mcp-connection-card > .n-alert { margin-bottom: 18px; }
+.mcp-connection-details { min-width: 0; margin-inline: -18px; border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent); font-size: .8125rem; }
+.mcp-connection-details > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 4px 18px;
+  border-radius: 0 0 14px 14px;
+  cursor: pointer;
+  list-style: none;
+  color: color-mix(in srgb, currentColor 80%, transparent);
+}
+.mcp-connection-details > summary::-webkit-details-marker { display: none; }
+.mcp-connection-details > summary > svg:last-child { margin-inline-start: auto; transition: transform 140ms ease; }
+.mcp-connection-details[open] > summary > svg:last-child { transform: rotate(180deg); }
+.mcp-connection-details > summary:hover { background: color-mix(in srgb, currentColor 4%, transparent); }
+.mcp-connections summary:focus-visible, .mcp-connections a:focus-visible {
+  outline: 2px solid var(--n-accent, currentColor);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+.mcp-details-content { display: grid; gap: 16px; padding: 8px 18px 18px; min-width: 0; }
+.mcp-facts { display: grid; gap: 10px; margin: 0; }
+.mcp-facts > div { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 12px; }
+.mcp-facts dt { color: color-mix(in srgb, currentColor 74%, transparent); }
+.mcp-facts dd { margin: 0; }
+.mcp-facts dd, .mcp-diagnostic, .mcp-tool-filters li, .mcp-location-details p { overflow-wrap: anywhere; white-space: pre-wrap; line-height: 1.55; }
+.mcp-diagnostic { margin: 0; padding: 10px 12px; border-radius: 8px; background: color-mix(in srgb, currentColor 4%, transparent); }
+.mcp-tool-filters h4 { margin: 0 0 6px; font-size: .8125rem; font-weight: 600; }
+.mcp-tool-filters ul { display: grid; gap: 6px; padding-inline-start: 18px; margin: 0; }
+.mcp-folder-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 16px; border: 1px dashed color-mix(in srgb, currentColor 20%, transparent); border-radius: 14px; }
+.mcp-folder-notice > div { flex: 1 1 180px; min-width: 0; }
+.mcp-folder-notice strong { font-size: .875rem; }
+.mcp-folder-notice p { margin-top: 4px; }
+.mcp-location-details { font-size: .8125rem; }
+.mcp-location-details > summary { width: fit-content; min-height: 44px; padding: 10px 4px; cursor: pointer; }
+@media (max-width: 480px) {
+  .mcp-folder-notice > a { width: 100%; justify-content: center; }
+  .mcp-connection-card { padding-inline: 14px; }
+  .mcp-connection-details { margin-inline: -14px; }
+  .mcp-connection-details > summary, .mcp-details-content { padding-inline: 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mcp-connections *, .mcp-connections *::before, .mcp-connections *::after { animation: none !important; transition: none !important; }
+}
+@media (forced-colors: active) {
+  .mcp-connection-card, .mcp-provider-icon, .mcp-folder-notice { border-color: CanvasText; }
+  .mcp-heading p, .mcp-hint, .mcp-checked, .mcp-facts dt, .mcp-connection-details > summary { color: CanvasText; }
+}
