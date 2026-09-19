@@ -4,11 +4,16 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { http, HttpResponse } from 'msw'
+import type { WorkspaceDetailsResponse } from '@graphql/contracts'
 
 import { routeTree } from '../app/router'
+import { queryKeys } from '../shared/api/query'
 import { setMockScenario } from '../shared/mocks/scenarios'
+import { server } from '../mocks/server'
 
 function renderWorkspace(initialEntry: string) {
   const queryClient = new QueryClient({
@@ -81,6 +86,40 @@ describe('WorkspaceRouteEntry integration', () => {
     expect(await screen.findByTestId('workflow-graph')).toBeInTheDocument()
     expect(screen.queryByTestId('agent-context-stale')).not.toBeInTheDocument()
     expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
+  })
+
+  it('opens the accepted new workflow while workspace details still serve the old list', async () => {
+    const user = userEvent.setup()
+    const { router, queryClient } = renderWorkspace('/workspaces/workspace-1?workflowId=workflow-content-pipeline')
+    expect(await screen.findByRole('region', { name: 'Research to review workflow graph' })).toBeVisible()
+
+    const oldDetails = queryClient.getQueryData<WorkspaceDetailsResponse>(queryKeys.workspaceDetails('workspace-1'))
+    if (!oldDetails) throw new Error('Workspace details were not loaded')
+    server.use(http.get('/api/workspaces/workspace-1', () => HttpResponse.json(oldDetails)))
+
+    await user.click(screen.getByRole('button', { name: 'New workflow' }))
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Draft workflow')
+    await user.click(screen.getByRole('button', { name: 'Create workflow' }))
+
+    const newLink = await screen.findByRole('link', { name: 'Draft workflow' })
+    const createdId = new URL(newLink.getAttribute('href')!, 'http://localhost').searchParams.get('workflowId')
+    expect(createdId).toBeTruthy()
+    await waitFor(() => expect(router.state.location.search.workflowId).toBe(createdId))
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: queryKeys.workspaceDetails('workspace-1'), type: 'active' })
+    })
+    expect(queryClient.getQueryData<WorkspaceDetailsResponse>(queryKeys.workspaceDetails('workspace-1'))?.workflows.some((item) => item.id === createdId)).toBe(false)
+    await waitFor(() => expect(router.state.location.search.workflowId).toBe(createdId))
+    expect(await screen.findByRole('region', { name: 'Draft workflow workflow graph' })).toBeVisible()
+  })
+
+  it('still replaces a genuinely unknown workflow selection', async () => {
+    const { router } = renderWorkspace('/workspaces/workspace-1?workflowId=workflow-missing&agentId=agent-researcher')
+
+    await waitFor(() => {
+      expect(router.state.location.search.workflowId).toBe('workflow-content-pipeline')
+      expect(router.state.location.search.agentId).toBeUndefined()
+    })
   })
 
   it('renders loading, error, 404 and empty workspace states', async () => {

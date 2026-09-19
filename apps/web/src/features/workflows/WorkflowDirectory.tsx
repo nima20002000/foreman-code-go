@@ -19,6 +19,8 @@ function WorkflowCardActions({ name, onRename, onRemove }: {
 }) {
   const [open, setOpen] = useState(false)
   const [nextName, setNextName] = useState(name)
+  const [nameError, setNameError] = useState<string>()
+  const nameInputRef = useRef<HTMLInputElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const surfaceRef = useRef<HTMLDivElement>(null)
   const close = useCallback(() => setOpen(false), [])
@@ -42,10 +44,23 @@ function WorkflowCardActions({ name, onRename, onRemove }: {
       </IconButton>
       {open ? (
         <div ref={surfaceRef} className="workflow-card-actions" role="dialog" aria-label={`${name} actions`}>
-          <TextField label="Name" value={nextName} onChange={(event) => setNextName(event.target.value)} />
+          <TextField
+            ref={nameInputRef}
+            label="Name"
+            value={nextName}
+            error={nameError}
+            onChange={(event) => {
+              setNextName(event.target.value)
+              if (nameError) setNameError(undefined)
+            }}
+          />
           <Button onClick={() => {
             const value = nextName.trim()
-            if (!value) return
+            if (!value) {
+              setNameError('Enter a workflow name.')
+              nameInputRef.current?.focus()
+              return
+            }
             onRename(value)
             close()
           }}>Rename</Button>

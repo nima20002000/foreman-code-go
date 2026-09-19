@@ -11,7 +11,9 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { UrlSearchSelectionSchema } from '@graphql/contracts'
+import { http, HttpResponse } from 'msw'
 
+import { server } from '../../mocks/server'
 import { setMockScenario } from '../../shared/mocks/scenarios'
 import { WorkflowNavigation } from './WorkflowNavigation'
 
@@ -146,6 +148,31 @@ describe('WorkflowNavigation', () => {
     const draftLink = screen.getByRole('link', { name: /Draft workflow/ })
     expect(draftLink).toBeVisible()
     expect(draftLink).not.toHaveTextContent('Session')
+  })
+
+  it('retries opening an accepted workflow without repeating Create when workspace details were unavailable', async () => {
+    server.use(http.get('/api/workspaces/workspace-1', () => HttpResponse.json({
+      error: { code: 'TEMPORARY', message: 'Workspace unavailable.' },
+    }, { status: 503 })))
+    const user = userEvent.setup()
+    const { router } = renderNavigation('workflow-content-pipeline')
+    await screen.findByRole('link', { name: 'Research to review' })
+
+    await user.click(screen.getByRole('button', { name: 'New workflow' }))
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Draft workflow')
+    await user.click(screen.getByRole('button', { name: 'Create workflow' }))
+
+    expect(await screen.findByText('Workflow created, but its graph could not be opened. Retry opening it.')).toHaveAttribute('role', 'alert')
+    expect(router.state.location.search.workflowId).toBeUndefined()
+    expect(screen.queryByRole('button', { name: 'Create workflow' })).not.toBeInTheDocument()
+    const newLink = await screen.findByRole('link', { name: 'Draft workflow' })
+    expect(newLink).toBeVisible()
+
+    server.resetHandlers()
+    await user.click(screen.getByRole('button', { name: 'Open workflow' }))
+    const createdId = new URL(newLink.getAttribute('href')!, 'http://localhost').searchParams.get('workflowId')
+    await waitFor(() => expect(router.state.location.search.workflowId).toBe(createdId))
+    expect(screen.getAllByRole('link', { name: 'Draft workflow' })).toHaveLength(1)
   })
 
   it('keeps inside presses open and dismisses the creation dialog from its backdrop', async () => {

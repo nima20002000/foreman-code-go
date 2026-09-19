@@ -36,6 +36,7 @@ Navigation became unstable when expansion, activation, routing, and drag behavio
 - Persist useful disclosure state, but do not let stale expanded sections compete with the current route.
 - Nested drag/reorder surfaces must not trigger parent reordering.
 - Linkable navigation belongs in the URL and needs stable deep links.
+- After an accepted create, make the new server object visible to the route's query projection before selecting it in the URL. A stale workspace list must not normalize that valid selection back to the old object; if opening fails, offer an Open retry without repeating Create.
 - Show one Back control targeting the immediate parent in the product hierarchy, not browser history. A harness or role detail returns to its overview; the overview returns to Settings. Keep this link available during loading/errors and send dirty navigation through the shared leave guard. Evidence: `SettingsExperienceRoutes` and browser checks of harness detail → Harnesses → Settings.
 
 Evidence: `1e31e31` (`fix: stabilize workspace navigation state`), `710cc2f` (`fix: keep one workspace active`), `35dc7c6` (`feat(settings): add workspace detail navigation`).
@@ -84,8 +85,9 @@ Settings fixes repeatedly came from the same root problem: forms treated mount/u
 - A failed save must keep the attempted values visible and editable.
 - Retaining a draft is not a substitute for warning before leaving it. Route changes, section switches, and panel dismissal must offer only Save and Discard as footer actions in the shared modal. A separate Keep editing button duplicates dismissal: closing the modal or pressing Escape cancels navigation and returns to the same editor with its draft unchanged. Resume the original destination only after the selected draft is resolved; reject repeated navigation while a decision is open.
 - Saving before leaving must await acknowledgement, preserve validation/conflict failures, retain newer edits, and prevent duplicate submissions. Never offer Discard for an in-flight or unconfirmed command. The close button and Escape keep edits and restore focus; refresh/tab close uses the browser warning.
-- Use a disabled Save button for a clean form and a success toast after acknowledgement. Keep errors near the form; do not leave a permanent success banner competing with the controls. Evidence: the shared unsaved-changes guard, browser-verified harness section/page navigation, Save continuation, Discard, and Escape behavior.
+- Use a disabled Save button for a clean form and a success toast after acknowledgement. Keep errors near the form; an inline confirmation may remain while the accepted revision is current, but it must not compete with the controls. Evidence: the shared unsaved-changes guard, browser-verified harness section/page navigation, Save continuation, Discard, and Escape behavior.
 - An uncertain request must not be silently re-sent as though it definitely failed.
+- Keep a failed pending message's reason with its exact durable request identity across reloads. Clear it on receipt, never auto-retry it, and keep both the reason and recovery controls readable.
 - Revision conflicts need explicit review. Show what changed on the server and what changed locally, then let the user reapply or discard deliberately.
 - Do not merge ordered arrays (for example permission rules) by index as though they were independent fields.
 - Provider-specific drafts may be cached for editing, but only the active provider configuration should be serialized.
@@ -110,6 +112,8 @@ The Start button was once vulnerable to becoming available again while a run was
 
 For destructive or expensive actions, protect against double submission with both UI state and an in-flight guard. Do not rely only on a button's current render.
 
+A terminal execution lifecycle is not a successful outcome. Node status and tone must use the durable result (`succeeded`, `failed`, or `canceled`) and rehydrate it after reload; a canceled run must never inherit a success label from `executionState=completed`.
+
 Evidence: `d92d49f`.
 
 ## 9. Approvals are decision-support UI, not a dump of backend records
@@ -125,6 +129,7 @@ The Approval Inbox improved when it stopped leading with IDs and raw JSON and st
 - Keep Pending, Delivery problems, and History conceptually separate.
 - Counts and filtered queues must be based on the authoritative dataset, not “whatever happened to be in the first page of history.”
 - Surface pending approvals near the workflow that needs attention so the user does not have to discover them by accident.
+- When a native approval omits a target, correlate only the exact session, turn, and item from already-recorded native events. Show bounded, redacted structural change context before the decision; do not guess a target or copy patch contents into the interaction. Native change formats vary, so never present guessed line counts as zero. Keep unavailable context explicitly unknown.
 
 Evidence: `94a235e`, `89ae09c` (`feat: show pending approval workflow badges`).
 
@@ -143,6 +148,7 @@ Blank space and generic failures made several surfaces harder to understand than
 
 Do not erase usable stale content just because a refresh failed. Error messages should say what remains available and what the user can do next.
 After a save, keep a visible success state even when the form becomes clean. A toast confirms the event; inline feedback confirms the current form state. Tests should assert that distinction and that newer unsaved edits remain visible.
+When a server rejects an executable graph with structured validation issues, show the actionable issue messages and retain the draft instead of reducing them to a generic save error.
 
 The Nocturne migration moved these states into shared `LoadingState`, `EmptyState`, `ErrorState`, `Alert`, and button-loading patterns so behavior stays consistent instead of each screen inventing its own version.
 
@@ -179,6 +185,7 @@ A number of fixes added or corrected focus return, stable `aria-controls`, inert
 - `aria-controls` should refer to a stable element ID, not disappear just because the controlled region is collapsed.
 - Reordering needs keyboard controls, not pointer-only drag behavior.
 - Validation should be attached to the field, expose the message via `aria-describedby`, and focus/reveal the first invalid field after submit/check.
+- Apply that same rule to secondary actions such as Rename: an empty name keeps the draft, focuses Name, and never sends a mutation.
 - Status cannot depend on color alone; pair color with text/icon/shape.
 - Respect reduced-motion preferences. Animation should explain change, not gate understanding.
 

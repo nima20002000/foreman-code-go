@@ -13,6 +13,7 @@ import { OperatorChatVisibilityProvider } from './visibility'
 import { useOperatorChatStore } from './operatorChatStore'
 import { summarizeOperatorConversation } from './operatorChatStatus'
 import { operatorState } from './pr17-test-fixtures'
+import { readPendingOperatorMessage } from './operatorOutbox'
 
 vi.mock('../../shared/api/client', async (original) => ({ ...await original<typeof import('../../shared/api/client')>(),
   getOperatorConversation: vi.fn(), sendOperatorMessage: vi.fn(),
@@ -74,6 +75,36 @@ describe('PR17 Operator interaction regressions', () => {
     textarea.focus()
     await user.tab()
     expect(screen.getByRole('button', { name: 'After chat' })).toHaveFocus()
+  })
+  it('keeps a rejected turn reason visible after reload without retrying it', async () => {
+    const originalLocks = Object.getOwnPropertyDescriptor(navigator, 'locks')
+    window.localStorage.clear()
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: {
+      request: async (_name: string, _options: LockOptions, work: (lock: Lock) => unknown) => work({ name: 'outbox', mode: 'exclusive' } as Lock),
+    } })
+    try {
+      const reason = 'Persistent Codex chat requires an explicit experimental opt-in outside production; this provider is not production-qualified.'
+      vi.mocked(getOperatorConversation).mockResolvedValue(operatorState({ turnState: 'idle', activeRequestId: null }))
+      vi.mocked(sendOperatorMessage).mockRejectedValue(new Error(reason))
+      useOperatorChatStore.setState({ open: true })
+      renderChat()
+      const textarea = await screen.findByRole('textbox', { name: 'Message' })
+      fireEvent.change(textarea, { target: { value: 'Audit ping. Do not call tools.' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+      await waitFor(() => expect(readPendingOperatorMessage('conversation-one').sendFailure).toBe(reason))
+      expect(screen.getByRole('alert')).toHaveTextContent(reason)
+      expect(sendOperatorMessage).toHaveBeenCalledTimes(1)
+
+      cleanup()
+      renderChat()
+      expect(await screen.findByRole('alert')).toHaveTextContent(reason)
+      expect(screen.getByRole('button', { name: 'Retry pending message' })).toBeEnabled()
+      expect(sendOperatorMessage).toHaveBeenCalledTimes(1)
+    } finally {
+      window.localStorage.clear()
+      if (originalLocks) Object.defineProperty(navigator, 'locks', originalLocks)
+      else Reflect.deleteProperty(navigator, 'locks')
+    }
   })
   it('closes the narrow history drawer after selecting a chat', async () => {
     vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })))

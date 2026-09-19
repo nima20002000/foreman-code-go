@@ -55,6 +55,18 @@ describe('PR17 approval presentation', () => {
     expect(detail.getByText('Technical details').closest('details')).not.toHaveAttribute('open')
     expect(detail.getByText('Workspace ID')).toBeInTheDocument()
   })
+  it('shows correlated native file-change context before the decision controls', () => {
+    const fileChange: DurableInteraction = { ...item, nativeRequestType: 'item/fileChange/requestApproval',
+      request: { turnId: 'turn-a', itemId: 'item-a' }, reviewContext: {
+        target: '/workspace/source.ts', changeSummary: '1 file; 1 added, 1 removed lines. Patch contents are not shown here.',
+      } }
+    api.detail.mockReturnValue({ data: { interaction: fileChange, canRespond: true }, isPending: false, isError: false })
+    render(<ApprovalInbox selectedInteractionId={fileChange.id} />)
+    const detail = within(screen.getByLabelText('Selected request details'))
+    expect(detail.getByText('Target:').parentElement).toHaveTextContent('/workspace/source.ts')
+    expect(detail.getByText('Proposed change:').parentElement).toHaveTextContent('1 added, 1 removed lines')
+    expect(detail.queryByText(/new secret value/)).not.toBeInTheDocument()
+  })
   it('does not misdescribe a user-assigned request when the viewer lacks permission', () => {
     api.detail.mockReturnValue({ data: { interaction: item, canRespond: false }, isPending: false, isError: false })
     render(<ApprovalInbox selectedInteractionId={item.id} />)
