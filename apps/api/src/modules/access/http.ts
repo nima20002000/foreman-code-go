@@ -11,6 +11,7 @@ import { appendAuthCookies, type BrowserAuthentication } from '../browser-auth/s
 declare module 'fastify' {
   interface FastifyRequest {
     operatorPrincipal?: ManagementPrincipal
+    operatorAuthentication?: 'browser' | 'bearer'
     reauthorizeOperator?: () => Promise<ManagementPrincipal>
     browserAccount?: { name: string; email: string }
   }
@@ -64,6 +65,14 @@ export function requirePrincipal(request: FastifyRequest): ManagementPrincipal {
   return request.operatorPrincipal
 }
 
+/** Browser-only actions depend on verified authentication, never cookie names. */
+export function requireBrowserSession(request: FastifyRequest): void {
+  requirePrincipal(request)
+  if (request.operatorAuthentication !== 'browser') {
+    throw new DomainError('MCP_BROWSER_REVIEW_REQUIRED', 'Review this change in the signed-in browser.', 403)
+  }
+}
+
 export function registerOperatorHttpSecurity(app: FastifyInstance, access: PostgresAccessService, browserAuth?: BrowserAuthentication): void {
   app.post<{ Body: unknown }>('/api/auth/enroll', async (request, reply) => {
     requireLocalRequest(request)
@@ -104,6 +113,7 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
       : browserAuth.authenticate(request, reply)
     const principal = await authenticate()
     request.operatorPrincipal = principal
+    request.operatorAuthentication = headerToken ? 'bearer' : 'browser'
     request.reauthorizeOperator = async () => {
       const current = await authenticate()
       requireAuthorization(current, actionFor(request))

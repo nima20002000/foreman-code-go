@@ -324,8 +324,8 @@ export function BrowsersSettingsRouteEntry() {
 export function WorkspaceLocationSettingsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/settings/location' })
   return <WorkspaceShell workspaceId={workspaceId} activeSection="settings" slots={{ main:
-    <SettingsDetailPage eyebrow={`Workspace · ${workspaceId}`} title="Execution location"
-      description="Agents start in this folder. Filesystem restrictions depend on the selected harness and future isolation support."
+    <SettingsDetailPage title="Execution location"
+      description="One project folder for every workflow in this workspace."
       backLink={<Link to="/workspaces/$workspaceId/settings" params={{ workspaceId }} className="settings-back-link" aria-label="Back to settings">
         <ArrowLeft aria-hidden="true" size={14} />Settings
       </Link>}>

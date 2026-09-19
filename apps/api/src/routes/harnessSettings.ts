@@ -1,20 +1,14 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify'
+import type { FastifyInstance } from 'fastify'
 import {
   HarnessOptionsInputSchema, HarnessOptionsResultSchema, HarnessMcpListInputSchema, HarnessMcpListResultSchema,
   HarnessMcpPlanInputSchema, HarnessMcpPlanResultSchema, HarnessMcpPlansResultSchema, HarnessMcpPlanSchema,
   HarnessMcpPlanGetInputSchema, HarnessMcpDecisionInputSchema,
   HarnessDirectoryBrowseInputSchema, HarnessDirectoryBrowseResultSchema,
 } from '@graphql/contracts/management'
-import { requirePrincipal } from '../modules/access/http.js'
+import { requireBrowserSession, requirePrincipal } from '../modules/access/http.js'
 import { requireAuthorization } from '../modules/access/policy.js'
 import { DomainError } from '../modules/errors.js'
 import type { OperatorServices } from '../mcp/operator/types.js'
-
-function requireBrowserReview(request: FastifyRequest, mutation = true): void {
-  if (request.headers.authorization || !/(?:^|;)\s*graphql_operator=/.test(request.headers.cookie ?? '') || (mutation && !request.headers.origin)) {
-    throw new DomainError('MCP_BROWSER_REVIEW_REQUIRED', 'Review this change in the signed-in browser.', 403)
-  }
-}
 
 export function registerHarnessSettingsRoutes(app: FastifyInstance, services: OperatorServices): void {
   app.get('/api/management/harnesses/:harness/options', async (request) => {
@@ -48,12 +42,12 @@ export function registerHarnessSettingsRoutes(app: FastifyInstance, services: Op
   app.get('/api/management/harnesses/mcp/plans/:planId', async (request) => HarnessMcpPlanSchema.parse(
     await settings().mcp.get(requirePrincipal(request), HarnessMcpPlanGetInputSchema.parse(request.params).planId)))
   app.post('/api/management/harnesses/mcp/decision', async (request) => {
-    requireBrowserReview(request)
+    requireBrowserSession(request)
     const input = HarnessMcpDecisionInputSchema.parse(request.body)
     return HarnessMcpPlanSchema.parse(await settings().mcp.decide(requirePrincipal(request), input.planId, input.approve))
   })
   app.get('/api/management/harnesses/directories', async (request) => {
-    requireBrowserReview(request, false)
+    requireBrowserSession(request)
     return HarnessDirectoryBrowseResultSchema.parse(await settings().directories.browse(requirePrincipal(request), HarnessDirectoryBrowseInputSchema.parse(request.query)))
   })
 }

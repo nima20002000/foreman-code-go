@@ -7,10 +7,9 @@ import {
   useManagedWorkspaceQuery,
   useReloadWorkspaceLocationMutation,
   useSetWorkspaceLocationMutation,
-  useValidateWorkspaceLocationMutation,
 } from '../../shared/api/query'
 import { locationMutationKey } from '../../shared/api/workspaceLocationCache'
-import { Alert, Button, LoadingState, SettingsSection, TextField } from '../../shared/ui/nocturne'
+import { Alert, Button, LoadingState, TextField } from '../../shared/ui/nocturne'
 import { ToastContext } from '../../shared/ui/nocturne/toastContext'
 import {
   acknowledgeLocationSave,
@@ -22,6 +21,8 @@ import {
   useWorkspaceLocationDraftStore,
 } from './workspaceLocationDraftStore'
 
+import { WorkspaceFolderPicker } from './WorkspaceFolderPicker'
+
 const RUNNER_ID = 'runner-local'
 
 function message(error: unknown): string {
@@ -32,7 +33,6 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
   const toasts = useContext(ToastContext)
   const queryClient = useQueryClient()
   const workspace = useManagedWorkspaceQuery(workspaceId)
-  const validate = useValidateWorkspaceLocationMutation(workspaceId)
   const save = useSetWorkspaceLocationMutation(workspaceId)
   const reload = useReloadWorkspaceLocationMutation(workspaceId)
   const busy = useIsMutating({ mutationKey: locationMutationKey(workspaceId) }) > 0
@@ -47,56 +47,27 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
   // A draft alone is not authority to write: the selected workspace must have
   // loaded its own saved record. Never render A's form while B is loading.
   if (!current) {
-    return <SettingsSection title="Execution location">
+    return <section className="workspace-location-form" aria-label="Project folder">
       {workspace.isError
         ? <Alert live tone="danger" title="Execution location could not be loaded." />
         : <LoadingState label="Loading execution location…" />}
-    </SettingsSection>
+    </section>
   }
   if (current.locationValidation.status === 'restricted') {
-    return <SettingsSection title="Execution location">
+    return <section className="workspace-location-form" aria-label="Project folder">
       <Alert live tone="danger" title="You do not have permission to read this workspace’s execution location." />
-    </SettingsSection>
+    </section>
   }
-  if (!draft) return <SettingsSection title="Execution location"><LoadingState label="Loading execution location…" /></SettingsSection>
+  if (!draft) return <section className="workspace-location-form" aria-label="Project folder"><LoadingState label="Loading execution location…" /></section>
 
   const conflict = locationDraftConflicts(draft, current.locationRevision)
   const archived = current.archivedAt !== null
   const writable = !busy && !archived
   const status = current.locationValidation.status
   const unavailableMessage = current.locationValidation.status === 'unavailable' ? current.locationValidation.error.message : 'validation failed'
-  const statusTone = conflict || draft.dirty ? 'warning' as const : status === 'ready' ? 'success' as const : status === 'unavailable' ? 'warning' as const : 'neutral' as const
-  const statusLabel = conflict
-    ? 'The saved location changed elsewhere. Your unsaved path is preserved; reload the saved location to resolve the conflict.'
-    : draft.dirty ? 'Unsaved location change.'
-      : status === 'ready' ? 'Ready on Local Runner.'
-        : status === 'unavailable' ? `Unavailable: ${unavailableMessage}`
-          : 'No execution location is configured. New runs are disabled.'
   const submittedDraft = () => {
     if (archived || queryClient.isMutating({ mutationKey: locationMutationKey(workspaceId) })) return undefined
     return locationDraftFor(useWorkspaceLocationDraftStore.getState(), workspaceId)
-  }
-
-  const validatePath = async () => {
-    const submitted = submittedDraft()
-    if (!submitted?.rootPath) return
-    update(workspaceId, (value) => value ? { ...value, notice: undefined } : value)
-    try {
-      const result = await validate.mutateAsync({ workspaceId, runnerId: RUNNER_ID, rootPath: submitted.rootPath, accessMode: 'read-only' })
-      if (result.workspaceId !== workspaceId) throw new Error('The validated location belongs to another workspace.')
-      update(workspaceId, (value) => value ? {
-        ...value,
-        rootPath: value.editVersion === submitted.editVersion ? result.location.rootPath : value.rootPath,
-        dirty: true,
-        notice: value.editVersion === submitted.editVersion
-          ? 'Location is valid on Local Runner.'
-          : 'The submitted location is valid. Your newer unsaved path was preserved.',
-      } : value)
-      toasts?.notify({ tone: 'success', title: 'Execution location validated', description: 'The folder is accessible on Local Runner.' })
-    } catch (error) {
-      update(workspaceId, (value) => value ? { ...value, notice: message(error) } : value)
-      toasts?.notify({ tone: 'danger', title: 'Could not validate location', description: message(error) })
-    }
   }
 
   const savePath = async () => {
@@ -145,35 +116,36 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
   }
 
   return (
-    <SettingsSection title="Execution location">
+    <section className="workspace-location-form" aria-label="Project folder">
       <UnsavedEditorGuard editor={{ label: 'execution location', dirty: draft.dirty, busy,
         saveDisabled: archived || conflict || !draft.rootPath,
         error: conflict ? 'The saved location changed. Keep editing to resolve the conflict.' : save.isError ? message(save.error) : undefined,
         save: savePath,
         discard: () => update(workspaceId, () => hydrateLocationDraft(undefined, current)),
       }} />
-      <p>Workspace: <strong>{current.workspace.name}</strong> ({workspaceId})</p>
-      <p>Agents start in this folder. Filesystem restrictions depend on the selected harness and future isolation support.</p>
       {archived ? <Alert live tone="danger" title="This workspace is archived. Its execution location cannot be edited." /> : null}
-      <TextField label="Runner" value="Local Runner" readOnly aria-label="Execution runner" />
-      <TextField label="Folder path" aria-label="Execution folder path" value={draft.rootPath} placeholder="/absolute/path/to/project" disabled={archived || reload.isPending}
-        onChange={(event) => {
-          const path = event.target.value
+      <div className="workspace-location-selection">
+        <TextField label="Project folder" aria-label="Execution folder path" value={draft.rootPath}
+          placeholder="No folder selected" disabled={archived || reload.isPending}
+          onChange={(event) => {
+            const path = event.target.value
+            update(workspaceId, (value) => value ? editLocationDraft(value, path) : value)
+          }} />
+        <WorkspaceFolderPicker key={workspaceId} disabled={!writable} onSelect={(path) => {
           update(workspaceId, (value) => value ? editLocationDraft(value, path) : value)
         }} />
-      <Alert live tone={statusTone} title={statusLabel} />
+      </div>
+      {conflict ? <Alert live tone="warning" title="The saved location changed elsewhere. Reload it to resolve the conflict." />
+        : status === 'unavailable' && !draft.dirty ? <Alert live tone="warning" title={unavailableMessage} /> : null}
       {draft.notice ? <p className="settings-save-status" role="status">{draft.notice}</p> : null}
       <div className="settings-location-actions">
-        <Button disabled={!writable || !draft.rootPath} onClick={() => void validatePath()}>
-          {validate.isPending ? 'Validating…' : 'Validate'}
-        </Button>
-        <Button disabled={!writable || !draft.dirty || !draft.rootPath || conflict} onClick={() => void savePath()}>
+        <Button variant="primary" disabled={!writable || !draft.dirty || !draft.rootPath || conflict} onClick={() => void savePath()}>
           {save.isPending ? 'Saving…' : 'Save location'}
         </Button>
         {conflict ? <Button disabled={busy} onClick={() => void reloadSaved()}>
           {reload.isPending ? 'Reloading…' : 'Reload saved location'}
         </Button> : null}
       </div>
-    </SettingsSection>
+    </section>
   )
 }

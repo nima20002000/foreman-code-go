@@ -57,6 +57,8 @@ The graph originally forced a configuration step just to add a default Codex/Ope
 
 **Project rule:** if a safe, valid project default already exists, let the common action use it directly. Do not force users through advanced configuration before they can perform the basic action. Advanced settings should remain discoverable and editable afterward.
 
+Folder selection should offer browsing before requiring a typed absolute path. Browse only the runner’s approved folders, show which machine owns them, and keep selection as a draft until Save. Cancel must preserve the prior draft; loading or failed listings must never be selectable. A workspace folder applies to all of its workflows, so do not ask again per workflow. Evidence: `WorkspaceExecutionLocationSettings.test.tsx` covers browsing, cancellation, errors, and saving the selected path.
+
 The shortcut must never invent unsafe permissions or hide a meaningful choice. “Use the default” is only valid when the default is already an accepted product configuration.
 
 Evidence: `6f78537` (`fix: add default harness agents in one step`).
@@ -208,7 +210,7 @@ Evidence: `b99d422`, `9afe3a5`.
 
 The Approval Inbox looked wrong when a full standalone page header/padding was rendered inside a Settings detail page that already provided its own header and layout.
 
-**Project rule:** reusable full-page features that can also be embedded need an explicit embedded presentation mode or a composition boundary that lets the parent own page chrome. Do not stack duplicate headings, max-width containers, or padding just because both layers are valid in isolation.
+**Project rule:** reusable full-page features that can also be embedded need an explicit embedded presentation mode or a composition boundary that lets the parent own page chrome. Do not stack duplicate headings, max-width containers, or padding just because both layers are valid in isolation. A single-purpose settings form should show only editable choices and relevant feedback: omit fixed runner fields, raw workspace IDs, repeated explanations, and separate validation actions when Save already validates. Evidence: the execution-location form keeps one folder field, browsing, Save, and conditional failure/conflict feedback.
 
 Place operational diagnostics inside the settings section that owns them. A provider compatibility check belongs under that provider's App connection tab, not as a second titled page above the Harnesses overview or every editor tab. Keep the status concise and disclose repair detail on demand; verify its route placement in a regression test.
 
