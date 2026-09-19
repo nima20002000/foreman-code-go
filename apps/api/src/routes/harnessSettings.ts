@@ -4,6 +4,7 @@ import {
   HarnessMcpPlanInputSchema, HarnessMcpPlanResultSchema, HarnessMcpPlansResultSchema, HarnessMcpPlanSchema,
   HarnessMcpPlanGetInputSchema, HarnessMcpDecisionInputSchema,
   HarnessDirectoryBrowseInputSchema, HarnessDirectoryBrowseResultSchema,
+  WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema,
 } from '@graphql/contracts/management'
 import { requireBrowserSession, requirePrincipal } from '../modules/access/http.js'
 import { requireAuthorization } from '../modules/access/policy.js'
@@ -45,6 +46,11 @@ export function registerHarnessSettingsRoutes(app: FastifyInstance, services: Op
     requireBrowserSession(request)
     const input = HarnessMcpDecisionInputSchema.parse(request.body)
     return HarnessMcpPlanSchema.parse(await settings().mcp.decide(requirePrincipal(request), input.planId, input.approve))
+  })
+  app.post('/api/management/harnesses/directories', async (request) => {
+    requireBrowserSession(request)
+    return WorkspaceFolderCreateResultSchema.parse(await settings().directories.create(
+      requirePrincipal(request), 'http', WorkspaceFolderCreateInputSchema.parse(request.body)))
   })
   app.get('/api/management/harnesses/directories', async (request) => {
     requireBrowserSession(request)

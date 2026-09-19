@@ -1,8 +1,9 @@
 import type pg from 'pg'
-import { opendir, realpath, lstat } from 'node:fs/promises'
+import { mkdir, opendir, realpath, lstat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { WorkspaceFolderCreateInputSchema, type WorkspaceFolderCreateInput, type ManagementPrincipal } from '@graphql/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
+import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 
 export function isInside(root: string, path: string): boolean {
@@ -10,9 +11,35 @@ export function isInside(root: string, path: string): boolean {
   return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`))
 }
 
-/** Browses directories only. It never grants access or follows a symlink out of an approved root. */
+/** Folder operations stay inside configured roots and never change harness permissions. */
 export class HarnessDirectoryBrowser {
   constructor(private readonly configuredRoots: readonly string[], private readonly pool: pg.Pool) {}
+  async create(principal: ManagementPrincipal, source: 'http' | 'mcp', input: WorkspaceFolderCreateInput) {
+    requireAuthorization(principal, 'workspace_locations:provision')
+    requireAuthorization(principal, 'workspace_locations:read')
+    const accepted = WorkspaceFolderCreateInputSchema.parse(input)
+    return new PostgresCommandCoordinator(this.pool).execute({
+      principal, source, operation: 'workspace.folder.create', commandId: accepted.commandId,
+      targetKey: 'workspace-folders', payload: accepted,
+      perform: async () => {
+        let parent: string
+        try { parent = await realpath(accepted.parentPath) } catch {
+          throw new DomainError('DIRECTORY_UNAVAILABLE', 'The parent folder is unavailable.', 404)
+        }
+        const roots = await Promise.all(this.configuredRoots.map((root) => realpath(root)))
+        if (!isAbsolute(accepted.parentPath) || !roots.some((root) => isInside(root, parent))) {
+          throw new DomainError('DIRECTORY_OUTSIDE_ROOT', 'Choose a parent inside an allowed location.', 403)
+        }
+        const path = resolve(parent, accepted.name)
+        try { await mkdir(path) } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new DomainError('DIRECTORY_EXISTS', 'A folder with this name already exists. Choose another name.', 409)
+          throw new DomainError('DIRECTORY_CREATE_FAILED', 'The folder could not be created. Check the parent folder permissions.', 422)
+        }
+        return { path, name: accepted.name }
+      },
+    })
+  }
+
   async browse(principal: ManagementPrincipal, input: {
     rootId?: string | undefined
     path?: string | undefined
@@ -20,8 +47,6 @@ export class HarnessDirectoryBrowser {
   }) {
     requireAuthorization(principal, 'harnesses:read')
     requireAuthorization(principal, 'workspace_locations:read')
-    const rootCredential = await this.pool.query("select 1 from management_principals where id=$1 and delegated_from is null and revoked_at is null and expires_at>now()", [principal.id])
-    if (rootCredential.rowCount !== 1) throw new DomainError('HUMAN_REQUIRED', 'Server-folder browsing requires a non-delegated browser credential.', 403)
     const roots = await Promise.all(this.configuredRoots.map(async (path, index) => {
       let canonical: string
       try { canonical = await realpath(path) } catch { throw new DomainError('DIRECTORY_ROOT_UNAVAILABLE', 'An allowed folder is unavailable. Ask the server administrator to check its configured roots.', 503) }

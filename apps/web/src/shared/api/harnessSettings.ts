@@ -4,6 +4,7 @@ import {
   HarnessOptionsResultSchema, HarnessConfigurationCheckResultSchema,
   HarnessMcpListResultSchema, HarnessMcpPlansResultSchema, HarnessMcpPlanResultSchema,
   HarnessMcpPlanInputSchema, HarnessMcpPlanSchema, HarnessDirectoryBrowseResultSchema,
+  WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema, type WorkspaceFolderCreateInput,
   type HarnessMcpPlanInput,
 } from '@graphql/contracts/management'
 import type { HarnessConfiguration } from '@graphql/contracts'
@@ -118,5 +119,16 @@ export function useHarnessDirectories(input: { rootId?: string; path?: string; c
       for (const [key, value] of Object.entries(input)) if (value !== undefined) query.set(key, value)
       return apiClient.request(`/api/management/harnesses/directories?${query}`, HarnessDirectoryBrowseResultSchema, { signal })
     },
+  })
+}
+
+
+export function useCreateWorkspaceFolder() {
+  const client = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: (input: WorkspaceFolderCreateInput) => apiClient.request('/api/management/harnesses/directories',
+      WorkspaceFolderCreateResultSchema, { method: 'POST', body: WorkspaceFolderCreateInputSchema.parse(input) }),
+    onSuccess: () => { void client.invalidateQueries({ queryKey: harnessSettingsKeys.root }).catch(() => undefined) },
   })
 }

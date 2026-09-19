@@ -1,6 +1,8 @@
 import type { McpServer } from '@modelcontextprotocol/server'
 
 import {
+  HarnessDirectoryBrowseInputSchema, HarnessDirectoryBrowseResultSchema,
+  WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema,
   WorkspaceArchiveInputSchema, WorkspaceCreateInputSchema, WorkspaceGetInputSchema,
   WorkspaceListInputSchema, WorkspaceUpdateInputSchema,
   ManagedWorkspaceCommandResultSchema, ManagedWorkspacePageSchema, ManagedWorkspaceSchema,
@@ -12,6 +14,16 @@ import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'
 
 export function registerWorkspaceTools(server: McpServer, context: OperatorRequestContext): void {
+  if (operatorToolAvailable(context, 'workspace_folders_list')) server.registerTool('workspace_folders_list', {
+    description: 'Browse folders within configured Local Runner locations. Never follows links outside an allowed root. Use the returned path as parentPath for workspace_folder_create or workspace_create.',
+    inputSchema: HarnessDirectoryBrowseInputSchema, outputSchema: HarnessDirectoryBrowseResultSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async (input) => invokeOperatorTool(context, 'workspace_folders_list', () => context.services.harnessSettings!.directories.browse(context.principal, input)))
+  if (operatorToolAvailable(context, 'workspace_folder_create')) server.registerTool('workspace_folder_create', {
+    description: 'Create one new folder inside a configured Local Runner location. Requires provisioning and location-read grants. Existing folders are never overwritten. Reuse commandId and input on retry. Does not assign a workspace location or grant harness access.',
+    inputSchema: WorkspaceFolderCreateInputSchema, outputSchema: WorkspaceFolderCreateResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async (input) => invokeOperatorTool(context, 'workspace_folder_create', () => context.services.harnessSettings!.directories.create(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_list')) server.registerTool('workspace_list', {
     description: 'List authorized workspaces with revisions and archive state.', inputSchema: WorkspaceListInputSchema,
     outputSchema: ManagedWorkspacePageSchema,

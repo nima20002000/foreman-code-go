@@ -60,3 +60,16 @@ export const HarnessDirectoryBrowseResultSchema = z.object({
   rootId: z.string().nullable(), path: z.string().nullable(), parent: z.string().nullable(),
   directories: z.array(z.object({ name: z.string(), path: z.string() }).strict()), nextCursor: z.string().nullable(),
 }).strict()
+
+export const WorkspaceFolderCreateInputSchema = z.object({
+  parentPath: Path, name: z.string().trim().min(1).max(200)
+    .refine((name) => name !== "." && name !== ".." && !name.startsWith(".")
+      && !name.includes("/") && !name.includes("\\")
+      && !Array.from(name).some((character) => character.charCodeAt(0) < 32),
+    "Use a folder name without slashes, a leading dot, or control characters."),
+  commandId: CommandId,
+}).strict()
+export type WorkspaceFolderCreateInput = z.infer<typeof WorkspaceFolderCreateInputSchema>
+export const WorkspaceFolderCreateResultSchema = z.object({
+  value: z.object({ path: Path, name: z.string() }).strict(), replayed: z.boolean(),
+}).strict()

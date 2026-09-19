@@ -9,7 +9,7 @@ import {
   useSetWorkspaceLocationMutation,
 } from '../../shared/api/query'
 import { locationMutationKey } from '../../shared/api/workspaceLocationCache'
-import { Alert, Button, LoadingState, TextField } from '../../shared/ui/nocturne'
+import { Alert, Button, LoadingState } from '../../shared/ui/nocturne'
 import { ToastContext } from '../../shared/ui/nocturne/toastContext'
 import {
   acknowledgeLocationSave,
@@ -72,7 +72,7 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
 
   const savePath = async () => {
     const submitted = submittedDraft()
-    if (!submitted?.dirty || !submitted.rootPath || locationDraftConflicts(submitted, current.locationRevision)) return
+    if (!submitted?.dirty || !submitted.rootPath || locationDraftConflicts(submitted, current.locationRevision)) return false
     update(workspaceId, (value) => value ? { ...value, notice: undefined } : value)
     try {
       // mutateAsync settles even after this route unmounts. Apply the result to
@@ -85,6 +85,7 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
         value, submitted.editVersion, result.value.executionLocation.rootPath, result.value.locationRevision,
       ) : value)
       toasts?.notify({ tone: 'success', title: 'Execution location saved', description: 'Future runs will use this folder.' })
+      return true
     } catch (error) {
       update(workspaceId, (value) => {
         if (!value) return value
@@ -98,6 +99,7 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
         }
       })
       toasts?.notify({ tone: 'danger', title: 'Execution location not saved', description: message(error) })
+      return false
     }
   }
 
@@ -120,28 +122,21 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
       <UnsavedEditorGuard editor={{ label: 'execution location', dirty: draft.dirty, busy,
         saveDisabled: archived || conflict || !draft.rootPath,
         error: conflict ? 'The saved location changed. Keep editing to resolve the conflict.' : save.isError ? message(save.error) : undefined,
-        save: savePath,
+        save: async () => { await savePath() },
         discard: () => update(workspaceId, () => hydrateLocationDraft(undefined, current)),
       }} />
       {archived ? <Alert live tone="danger" title="This workspace is archived. Its execution location cannot be edited." /> : null}
-      <div className="workspace-location-selection">
-        <TextField label="Project folder" aria-label="Execution folder path" value={draft.rootPath}
-          placeholder="No folder selected" disabled={archived || reload.isPending}
-          onChange={(event) => {
-            const path = event.target.value
-            update(workspaceId, (value) => value ? editLocationDraft(value, path) : value)
-          }} />
-        <WorkspaceFolderPicker key={workspaceId} disabled={!writable} onSelect={(path) => {
-          update(workspaceId, (value) => value ? editLocationDraft(value, path) : value)
-        }} />
-      </div>
+      <WorkspaceFolderPicker key={workspaceId} value={draft.rootPath} disabled={!writable || conflict} onSelect={async (path) => {
+        update(workspaceId, (value) => value ? editLocationDraft(value, path) : value)
+        if (!await savePath()) {
+          throw new Error(locationDraftFor(useWorkspaceLocationDraftStore.getState(), workspaceId)?.notice
+            ?? 'The saved location changed. Close this dialog and reload the saved location.')
+        }
+      }} />
       {conflict ? <Alert live tone="warning" title="The saved location changed elsewhere. Reload it to resolve the conflict." />
         : status === 'unavailable' && !draft.dirty ? <Alert live tone="warning" title={unavailableMessage} /> : null}
       {draft.notice ? <p className="settings-save-status" role="status">{draft.notice}</p> : null}
       <div className="settings-location-actions">
-        <Button variant="primary" disabled={!writable || !draft.dirty || !draft.rootPath || conflict} onClick={() => void savePath()}>
-          {save.isPending ? 'Saving…' : 'Save location'}
-        </Button>
         {conflict ? <Button disabled={busy} onClick={() => void reloadSaved()}>
           {reload.isPending ? 'Reloading…' : 'Reload saved location'}
         </Button> : null}

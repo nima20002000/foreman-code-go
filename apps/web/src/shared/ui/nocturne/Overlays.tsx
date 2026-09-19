@@ -20,6 +20,7 @@ export interface DialogProps {
   description?: string
   children: ReactNode
   footer?: ReactNode
+  headerLeading?: ReactNode
   size?: 'sm' | 'md' | 'lg' | 'xl' | 'full'
   variant?: 'dialog' | 'drawer' | 'sheet'
   side?: 'start' | 'end'
@@ -32,7 +33,7 @@ export interface DialogProps {
   className?: string
   onAfterClose?: () => void
 }
-export function Dialog({ open, onOpenChange, title, description, children, footer, size = 'md', variant = 'dialog', dismissible = true,
+export function Dialog({ open, onOpenChange, title, description, children, footer, headerLeading, size = 'md', variant = 'dialog', dismissible = true,
   closeOnOutsideClick = false, initialFocusRef, className, onAfterClose, side = 'end', role = 'dialog', busy = false, closeLabel = 'Close dialog' }: DialogProps) {
   const canDismiss = dismissible && !busy
   const ref = useRef<HTMLDialogElement>(null)
@@ -61,7 +62,7 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
     onClose={(event) => { if (!event.currentTarget.open) { if (open) onOpenChange(false); onAfterClose?.() } }}
     onPointerDown={(event) => { event.stopPropagation(); backdropDown.current = event.target === event.currentTarget }}
     onClick={(event) => { event.stopPropagation(); if (closeOnOutsideClick && canDismiss && backdropDown.current && event.target === event.currentTarget) onOpenChange(false); backdropDown.current = false }}>
-    <div className="n-dialog-inner"><header className="n-dialog-header"><div><h2 id={`${id}-title`} tabIndex={-1} ref={heading}>{title}</h2>
+    <div className="n-dialog-inner"><header className="n-dialog-header">{headerLeading}<div><h2 id={`${id}-title`} tabIndex={-1} ref={heading}>{title}</h2>
       {description && <p id={`${id}-description`}>{description}</p>}</div><IconButton label={closeLabel} variant="ghost" disabled={!canDismiss} onClick={() => onOpenChange(false)}><Icon name="close" /></IconButton></header>
       <div className="n-dialog-body">{children}</div>{footer && <footer className="n-dialog-footer">{footer}</footer>}
     </div>

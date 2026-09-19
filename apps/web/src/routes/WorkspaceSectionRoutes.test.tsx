@@ -192,7 +192,7 @@ describe('workspace section routes', () => {
 
     await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings/location'))
     expect(await screen.findByRole('heading', { name: 'Execution location', level: 1 })).toBeVisible()
-    expect(await screen.findByRole('textbox', { name: 'Execution folder path' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Project folder' })).toBeVisible()
     expect(screen.getByRole('link', { name: 'Back to settings' })).toHaveAttribute('href', '/workspaces/workspace-1/settings')
   })
 })

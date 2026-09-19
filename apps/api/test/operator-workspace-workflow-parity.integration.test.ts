@@ -16,6 +16,7 @@ import { FoundationSettingsManagementService } from '../src/modules/settings/man
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { WorkspaceManagementService } from '../src/modules/workspaces/management.js'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
+import { HarnessDirectoryBrowser } from '../src/modules/harnesses/directoryBrowser.js'
 import { GraphDraftService } from '../src/modules/graph-drafts/service.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
@@ -32,9 +33,10 @@ it('provides authenticated Operator MCP parity for creation, defaults and worksp
   const locations = new WorkspaceLocationService(pool, commands)
   const settings = new FoundationSettingsManagementService(new PostgresFoundationSettingsRepository(pool), commands)
   const services = {
+    harnessSettings: { directories: new HarnessDirectoryBrowser([parentPath], pool), mcp: {} },
     commands, locations, settings, workspaces: new WorkspaceManagementService(pool, commands, locations),
     workflows: new WorkflowManagementService(pool, commands), drafts: new GraphDraftService(pool, commands),
-  } as OperatorServices
+  } as unknown as OperatorServices
   const app = buildApp({ logger: false, readiness: {
     database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined },
   }, operator: { access, services } })
@@ -73,6 +75,16 @@ it('provides authenticated Operator MCP parity for creation, defaults and worksp
     expect(workspace.locationValidation.status).toBe('ready')
     expect((await call('workspace_create', c.ManagedWorkspaceCommandResultSchema, create)).replayed).toBe(true)
     expect(await readdir(parentPath)).toEqual(['MCP Project'])
+    const listed = await call('workspace_folders_list', c.HarnessDirectoryBrowseResultSchema)
+    expect(listed.path).toBe(parentPath)
+    const folderInput = { parentPath, name: 'Picker folder', commandId: randomUUID() }
+    const folder = await call('workspace_folder_create', c.WorkspaceFolderCreateResultSchema, folderInput)
+    expect(folder.value.path).toBe(join(parentPath, 'Picker folder'))
+    expect((await call('workspace_folder_create', c.WorkspaceFolderCreateResultSchema, folderInput)).replayed).toBe(true)
+    expect((await client.callTool({ name: 'workspace_folder_create', arguments: { ...folderInput, commandId: randomUUID() } })).isError).toBe(true)
+    expect((await client.callTool({ name: 'workspace_folder_create', arguments: { ...folderInput, parentPath: tmpdir(), commandId: randomUUID() } })).isError).toBe(true)
+    expect((await client.callTool({ name: 'workspace_folder_create', arguments: { ...folderInput, name: '../escape', commandId: randomUUID() } })).isError).toBe(true)
+    expect((await call('workspace_folders_list', c.HarnessDirectoryBrowseResultSchema)).directories.map((entry) => entry.name)).toContain('Picker folder')
     await call('workspace_update', c.ManagedWorkspaceCommandResultSchema, { workspaceId, commandId: randomUUID(), expectedRevision: workspace.revision, name: 'Renamed project' })
     expect((await call('workspace_get', c.ManagedWorkspaceSchema, { workspaceId })).workspace.name).toBe('Renamed project')
     const alternate = join(parentPath, 'alternate'); await mkdir(alternate)
@@ -106,6 +118,7 @@ it('provides authenticated Operator MCP parity for creation, defaults and worksp
     const restricted = await access.issue({ name: 'No provisioning', audience: 'operator',
       grants: [{ actions: ['workspaces:create'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
     const limited = await connect(restricted.token)
+    expect((await limited.listTools()).tools.map((tool) => tool.name)).not.toContain('workspace_folder_create')
     const denied = await limited.callTool({ name: 'workspace_create', arguments: { ...create, name: 'Denied', commandId: randomUUID() } })
     expect(denied.isError).toBe(true)
     expect(await readdir(parentPath)).not.toContain('Denied')

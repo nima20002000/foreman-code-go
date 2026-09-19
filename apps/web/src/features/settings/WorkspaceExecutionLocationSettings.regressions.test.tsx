@@ -1,14 +1,30 @@
+import { useState } from 'react'
 import type { ManagedWorkspace } from '@graphql/contracts/management'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { server } from '../../mocks/server'
 import { queryKeys } from '../../shared/api/query'
 import { WorkspaceExecutionLocationSettings } from './WorkspaceExecutionLocationSettings'
-import { useWorkspaceLocationDraftStore } from './workspaceLocationDraftStore'
+import { editLocationDraft, useWorkspaceLocationDraftStore } from './workspaceLocationDraftStore'
+
+// Isolate draft/Query race coverage from the folder browser, which has real UI tests.
+let selectedWorkspace = 'workspace-a'
+vi.mock('./WorkspaceFolderPicker', () => ({
+  WorkspaceFolderPicker: ({ value, disabled, onSelect }: { value: string; disabled: boolean; onSelect(path: string): Promise<void> }) => {
+    const [pending, setPending] = useState(false)
+    const dirty = useWorkspaceLocationDraftStore((state) => state.drafts[selectedWorkspace]?.dirty)
+    return <><input aria-label="Execution folder path" value={value} readOnly />
+      <button disabled={disabled || !dirty || pending} onClick={async () => {
+        setPending(true)
+        try { await onSelect(value) } catch { /* The real picker displays this error. */ }
+        finally { setPending(false) }
+      }}>{pending ? 'Saving…' : 'Save location'}</button></>
+  },
+}))
 
 const clients: QueryClient[] = []
 const checkedAt = '2026-09-15T00:00:00Z'
@@ -36,11 +52,12 @@ function mount(...saved: ManagedWorkspace[]) {
   const element = (id: string) => <QueryClientProvider client={client}>
     <WorkspaceExecutionLocationSettings workspaceId={id} />
   </QueryClientProvider>
+  selectedWorkspace = 'workspace-a'
   const rendered = render(element('workspace-a'))
-  return { ...rendered, client, navigate: (id: string) => rendered.rerender(element(id)) }
+  return { ...rendered, client, navigate: (id: string) => { selectedWorkspace = id; rendered.rerender(element(id)) } }
 }
 const pathInput = () => screen.getByRole('textbox', { name: 'Execution folder path' })
-const edit = (value: string) => fireEvent.change(pathInput(), { target: { value } })
+const edit = (value: string) => act(() => useWorkspaceLocationDraftStore.getState().update(selectedWorkspace, (draft) => draft ? editLocationDraft(draft, value) : draft))
 
 beforeEach(() => useWorkspaceLocationDraftStore.getState().reset())
 afterEach(() => {

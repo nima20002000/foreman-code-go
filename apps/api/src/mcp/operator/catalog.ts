@@ -1,6 +1,8 @@
 import type { ManagementAction, OperatorToolName } from '@graphql/contracts/management'
 
 export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; action: ManagementAction }> = [
+  { name: 'workspace_folders_list', action: 'workspace_locations:read' },
+  { name: 'workspace_folder_create', action: 'workspace_locations:provision' },
   { name: 'workspace_defaults_get', action: 'settings:read' },
   { name: 'workspace_defaults_update', action: 'settings:update' },
   { name: 'harness_mcp_servers_list', action: 'harnesses:read' },
