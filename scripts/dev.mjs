@@ -123,7 +123,7 @@ async function main() {
     console.log(`Using the GraphQL web server already running at ${webUrl}.`)
   } else {
     web = start('Web', ['--filter', '@graphql/web', 'dev'], {
-      env: { ...process.env, VITE_API_URL: apiUrl, VITE_ENABLE_MSW: 'false' },
+      env: { ...process.env, VITE_API_URL: apiUrl },
     })
   }
   await waitFor('Web', webUrl, webReady, web)

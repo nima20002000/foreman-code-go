@@ -209,8 +209,8 @@ export class ApiClient {
 
   constructor(options: ApiClientOptions = {}) {
     this.baseUrl = options.baseUrl ?? ''
-    // Do not bind the global fetch at module construction time: in tests MSW
-    // installs its interceptor during the setup hook after modules load.
+    // Do not bind the global fetch at module construction time: the unit-test
+    // interceptor starts during the setup hook after modules load.
     this.fetchImpl = options.fetch
   }
 

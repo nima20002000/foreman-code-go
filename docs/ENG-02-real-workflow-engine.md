@@ -5,7 +5,7 @@ their help output, and harmless authenticated probes.
 
 ## Real product path
 
-With `VITE_ENABLE_MSW=false`, the frontend's save, Start, and run-detail calls
+The frontend's save, Start, and run-detail calls
 use the Fastify API. Saving an executable workflow creates an immutable
 `WorkflowVersion`. Its `entryNodeId` is always the first item in the saved
 `nodes` array—the first Agent added—not the leftmost canvas position. A Run
@@ -86,7 +86,7 @@ available after API restart.
 corepack pnpm db:up
 cp apps/api/.env.example apps/api/.env
 corepack pnpm dev:api
-VITE_ENABLE_MSW=false corepack pnpm dev
+corepack pnpm dev
 corepack pnpm test:acceptance
 corepack pnpm db:down
 ```

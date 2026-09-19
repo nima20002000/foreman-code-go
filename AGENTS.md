@@ -17,7 +17,7 @@ redefine API/domain shapes locally or import server-only code.
 - Zustand owns local interaction state that is not shareable through the URL.
 - The URL owns navigation, selected views, filters, and other linkable state.
 - HTTP access must remain behind a small client boundary so MSW can provide
-  deterministic request handlers in tests and during the wireframe phase.
+  deterministic request handlers in unit tests. The browser always uses the real API.
 
 Do not duplicate one state source in another layer without a documented reason.
 

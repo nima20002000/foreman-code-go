@@ -45,7 +45,7 @@ corepack pnpm db:up
 cp apps/api/.env.example apps/api/.env
 corepack pnpm dev:api
 curl http://127.0.0.1:3000/health/ready
-VITE_ENABLE_MSW=false corepack pnpm dev
+corepack pnpm dev
 ```
 
 Run the destructive-free real harness acceptance gate while PostgreSQL is up:

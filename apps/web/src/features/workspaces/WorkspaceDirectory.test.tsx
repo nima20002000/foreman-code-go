@@ -15,7 +15,6 @@ afterEach(() => {
 describe('WorkspaceDirectory', () => {
   it('sends an unauthenticated browser to App access', async () => {
     vi.stubEnv('MODE', 'development')
-    vi.stubEnv('VITE_ENABLE_MSW', 'false')
     server.use(http.get('/api/management/workspaces', () => HttpResponse.json({
       error: { code: 'AUTH_REQUIRED', message: 'A bearer credential is required.' },
     }, { status: 401 })))

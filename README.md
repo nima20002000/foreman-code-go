@@ -2,8 +2,8 @@
 
 `graphql` is a pnpm TypeScript monorepo for an agent workspace. The project
 name is `graphql`; it is not a GraphQL protocol or query-engine implementation.
-The frontend can run either against deterministic MSW fixtures or the real
-local backend. The real path persists saved workflow versions and runs, then
+The browser uses the real local backend; MSW fixtures run only in unit tests.
+The backend persists saved workflow versions and runs, then
 uses LangGraph to coordinate native Codex and OpenCode headless sessions.
 
 ## Workspace
@@ -79,10 +79,8 @@ LangGraph checkpoint, closes the saver, reopens it, and proves the checkpoint
 is durable. `corepack pnpm db:down` stops the local service without deleting its named
 volume.
 
-The combined `dev` command uses the real backend through Vite's `/api` proxy.
-The standalone `dev:web` command can still run with browser fixtures in the
-checked-in web app; set `VITE_ENABLE_MSW=false` to use the real API there too.
-MSW also remains in the test harness. Configure an existing runner directory in Workspace
+Both `dev` and standalone `dev:web` use the real backend through Vite's `/api`
+proxy. MSW remains only in the unit-test harness. Configure an existing runner directory in Workspace
 Settings before Start. The Website workspace, saved workflow graph, Start action,
 and run status/result reads use the real backend.
 See [`docs/ENG-02-real-workflow-engine.md`](./docs/ENG-02-real-workflow-engine.md)

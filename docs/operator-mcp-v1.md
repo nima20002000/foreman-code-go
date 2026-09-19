@@ -32,7 +32,7 @@ The optional `--audience worker` flag creates a future Worker-audience credentia
 To enroll the browser, open Settings and paste the one-time-visible token into Operator access. The API validates it and sets a SameSite Strict, HttpOnly cookie. The token is not written to Vite configuration or localStorage. Real mode is enabled with:
 
 ```sh
-VITE_ENABLE_MSW=false corepack pnpm dev
+corepack pnpm dev
 ```
 
 ## Client configuration

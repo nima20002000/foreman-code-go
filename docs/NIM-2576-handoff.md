@@ -1,5 +1,8 @@
 # NIM-2576 handoff: `graphql` shell
 
+> Historical Phase 1 record. Its browser-mock setup and walkthrough no longer
+> apply: the browser now uses the real API, while MSW remains only in unit tests.
+
 Status: Phase 1 implementation and verification complete.
 
 ## Scope and naming
