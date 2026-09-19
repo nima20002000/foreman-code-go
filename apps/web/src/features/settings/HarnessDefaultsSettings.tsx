@@ -4,7 +4,6 @@ import { ManagementHarnessDefaultsSchema, type HarnessSettingsSection } from '@g
 import { Button, ErrorState, LoadingState } from '../../shared/ui/nocturne'
 import { useManagedHarnessCatalogQuery, useUpdateManagedHarnessDefaultsMutation } from '../../shared/api/query'
 import { HarnessConfigurationFields } from './HarnessConfigurationFields'
-import { HarnessFooterOptions } from './HarnessBasicFields'
 import { createHarnessEditor, prepareHarnessEditor, type HarnessEditor } from './harnessEditor'
 import { issuesAt, withValidationPath } from './fieldValidation'
 import { SettingsFormActions, SettingsFormFeedback } from './SettingsFormActions'
@@ -48,7 +47,7 @@ export function HarnessDefaultsSettings({ selectedHarness, section: selectedSect
   const section = selectedSection ?? localSection
   const choose = (next: Harness | undefined) => { setLocalHarness(next); setLocalSection('model'); onSelectHarness?.(next) }
   const navigateSection = (next: HarnessSettingsSection) => { setLocalSection(next); onSectionChange?.(next) }
-  if (harness) return <ProviderEditor key={harness} harness={harness} section={section} onSectionChange={navigateSection} onBack={() => choose(undefined)} />
+  if (harness) return <ProviderEditor showBack={!onSelectHarness} key={harness} harness={harness} section={section} onSectionChange={navigateSection} onBack={() => choose(undefined)} />
   if (query.isError || (query.isSuccess && !incoming)) return <ErrorState title="Harness defaults are unavailable"
     description={query.error?.message ?? 'The server returned an incomplete provider catalog.'} onRetry={() => void query.refetch()} />
   if (!incoming) return <LoadingState label="Loading harness defaults…" />
@@ -56,8 +55,8 @@ export function HarnessDefaultsSettings({ selectedHarness, section: selectedSect
     {(['codex', 'opencode'] as const).map((item) => <ProviderCard key={item} harness={item} value={incoming.value} onSelect={() => choose(item)} />)}
   </SettingsOverview>
 }
-function ProviderEditor({ harness, section, onSectionChange, onBack }: {
-  harness: Harness; section: HarnessSettingsSection; onSectionChange(section: HarnessSettingsSection): void; onBack(): void;
+function ProviderEditor({ harness, section, onSectionChange, onBack, showBack }: {
+  harness: Harness; section: HarnessSettingsSection; onSectionChange(section: HarnessSettingsSection): void; onBack(): void; showBack: boolean;
 }) {
   const { incoming, query } = useProviderDefaults()
   const form = useRevisionedForm<DefaultsEditor>(incoming ? { value: editable(incoming.value), revision: incoming.revision } : undefined, `settings:harnesses:${harness}`)
@@ -68,13 +67,11 @@ function ProviderEditor({ harness, section, onSectionChange, onBack }: {
   if (!draft && (query.isError || (query.isSuccess && !incoming))) return <ErrorState title="Harness defaults are unavailable" description={query.error?.message ?? 'The server returned an incomplete provider catalog.'} onRetry={() => void query.refetch()} />
   if (!draft) return <LoadingState label="Loading provider defaults…" />
   const update = (next: HarnessEditor) => form.setDraft((current) => current && ({ ...current, [harness]: next }))
-  return <div ref={(node) => { root.current = node }}><SettingsEditorLayout title={`${name} settings`} description="Provider preset for new configurations. Existing agents and sessions keep their settings."
+  return <div ref={(node) => { root.current = node }}><SettingsEditorLayout showBack={showBack} title={`${name} settings`} description="Provider preset for new configurations. Existing agents and sessions keep their settings."
     backLabel="All harnesses" onBack={onBack} section={section} onSectionChange={onSectionChange} connections
     feedback={<>{query.isError ? <p role="alert">Could not refresh. Your draft is kept. <Button size="sm" onClick={() => void query.refetch()}>Retry</Button></p> : null}<SettingsFormFeedback form={form} /></>}
     footer={section === 'connections' || section === 'workspace' ? null : <SettingsFormActions form={form} saveLabel={`Save ${name} preset`}
-      extra={<HarnessFooterOptions value={draft[harness].configuration} issues={issuesAt(form.issues ?? [], [harness])}
-        onChange={(configuration) => update({ ...draft[harness], configuration })} />}
-      onSave={() => void form.save(async (input) => {
+      onSave={() => form.save(async (input) => {
         const defaults = prepared(input.value)
         const response = await managedSave.mutateAsync({ defaults: ManagementHarnessDefaultsSchema.parse(defaults), expectedRevision: input.expectedRevision, commandId: input.commandId })
         return { value: editable(response.value.defaults), revision: response.value.revision }

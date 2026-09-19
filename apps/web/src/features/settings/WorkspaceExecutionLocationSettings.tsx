@@ -1,3 +1,4 @@
+import { UnsavedEditorGuard } from '../../shared/ui/unsavedChanges'
 import { useContext, useEffect } from 'react'
 import { useIsMutating, useQueryClient } from '@tanstack/react-query'
 
@@ -145,6 +146,12 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
 
   return (
     <SettingsSection title="Execution location">
+      <UnsavedEditorGuard editor={{ label: 'execution location', dirty: draft.dirty, busy,
+        saveDisabled: archived || conflict || !draft.rootPath,
+        error: conflict ? 'The saved location changed. Keep editing to resolve the conflict.' : save.isError ? message(save.error) : undefined,
+        save: savePath,
+        discard: () => update(workspaceId, () => hydrateLocationDraft(undefined, current)),
+      }} />
       <p>Workspace: <strong>{current.workspace.name}</strong> ({workspaceId})</p>
       <p>Agents start in this folder. Filesystem restrictions depend on the selected harness and future isolation support.</p>
       {archived ? <Alert live tone="danger" title="This workspace is archived. Its execution location cannot be edited." /> : null}

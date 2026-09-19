@@ -1,3 +1,4 @@
+import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
 import { useEffect, useRef, useState } from 'react'
 import {
   CodexSessionCompatibilitySchema, DEFAULT_HARNESS_DEFAULTS, legacyEffortForHarness,
@@ -9,7 +10,7 @@ import { Alert, Button, Icon, IconButton, Select, Textarea, TextField } from '..
 import { configuredHarness, initialModel } from '../agents/agentSettings'
 import { useHarnessDefaultsQuery } from '../../shared/api/query'
 import { HarnessConfigurationFields } from '../settings/HarnessConfigurationFields'
-import { HarnessBasicFields, HarnessFooterOptions } from '../settings/HarnessBasicFields'
+import { HarnessBasicFields } from '../settings/HarnessBasicFields'
 import { createHarnessEditor, prepareHarnessEditor, switchHarnessEditor } from '../settings/harnessEditor'
 import { FieldValidationError, fieldMessage, focusFirstInvalid, issuesAt, validationIssues, type FieldIssue } from '../settings/fieldValidation'
 import './agentSettingsPanel.css'
@@ -54,6 +55,7 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
     clearErrors()
   }
   const save = () => {
+    const previousSnapshot = initialSnapshot.current
     try {
       if (!name.trim()) throw new FieldValidationError([{ path: ['name'], message: 'Enter an agent name.' }])
       const nextConfiguration = (() => {
@@ -69,16 +71,21 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
           throw failure
         }
       })()
+      initialSnapshot.current = currentSnapshot
       onSave({ ...agent, name: name.trim(), harness: nextConfiguration.harness, model: nextConfiguration.model,
         effort: legacyEffortForHarness(nextConfiguration), fastMode: nextConfiguration.harness === 'codex' ? nextConfiguration.serviceTier === 'priority' : undefined,
         harnessConfiguration: nextConfiguration,
       }, prompt.trim() || undefined, executionPolicy)
     } catch (failure) {
+      initialSnapshot.current = previousSnapshot
       const nextIssues = validationIssues(failure)
       setIssues(nextIssues)
       setError(nextIssues.length ? 'Review the marked fields before saving.' : failure instanceof Error ? failure.message : 'Agent settings are invalid.')
     }
   }
+  const leave = useUnsavedChanges({ scope: 'surface', label: 'agent settings', get dirty() { return currentSnapshot !== initialSnapshot.current },
+    error, save, discard: () => { initialSnapshot.current = currentSnapshot; onClose() },
+  })
   return <div ref={root} className="agent-settings-panel">
     <header className="agent-settings-heading">
       <div className="agent-settings-title">
@@ -87,7 +94,7 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
       </div>
       <div className="agent-settings-header-actions">
       <Button size="sm" variant="primary" className="agent-settings-save" aria-label="Save agent settings" disabled={!isDirty} onClick={save} leading={<Icon name="check" size={13} />}>Save</Button>
-      <IconButton size="sm" variant="ghost" label="Close agent settings" onClick={onClose}><Icon name="close" size={15} /></IconButton>
+      <IconButton size="sm" variant="ghost" label="Close agent settings" onClick={() => void leave(onClose)}><Icon name="close" size={15} /></IconButton>
       </div>
     </header>
     {view === 'general' ? <div className="agent-settings-general">
@@ -111,7 +118,6 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
     {error ? <Alert tone="danger" live title={error} /> : null}
     <footer className="agent-settings-footer">
       {view === 'general' ? <Button size="sm" variant="ghost" className="agent-settings-advanced-link" onClick={() => setView('advanced')} trailing={<Icon name="chevron" size={13} />}>Advanced settings</Button> : null}
-      {view === 'general' ? <HarnessFooterOptions value={configuration} issues={issuesAt(issues, ['harness'])} onChange={updateConfiguration} /> : null}
       {onRemove ? <IconButton size="sm" variant="ghost" className="agent-settings-trash" label={`Remove ${agent.name} from workflow`} onClick={onRemove}><Icon name="minus" size={15} /></IconButton> : null}
     </footer>
   </div>

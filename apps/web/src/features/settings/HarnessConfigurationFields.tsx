@@ -6,7 +6,6 @@ import { useHarnessDefaultsQuery } from '../../shared/api/query'
 import { useAutomaticHarnessCheck, useRefreshNativeHarness } from '../../shared/api/harnessSettings'
 import { prepareHarnessEditor, resetHarnessEditor, switchHarnessEditor, type HarnessEditor } from './harnessEditor'
 import { focusFirstInvalid, type FieldIssue } from './fieldValidation'
-import { HarnessFooterOptions } from './HarnessBasicFields'
 import { HarnessSectionFields } from './HarnessSectionFields'
 import { harnessSections, sectionForHarnessIssue } from './settingsPresentation'
 import './harnessWorkbench.css'
@@ -71,7 +70,6 @@ export function HarnessConfigurationFields({ editor, onChange, routedApproval = 
       {allowHarnessChange && section === 'model' && presets?.[value.harness] ? <Button size="sm" variant="ghost" onClick={() => setResetChoice('saved')}>Use provider preset</Button> : null}
       {allowHarnessChange && section === 'model' ? <Button size="sm" variant="ghost" onClick={() => setResetChoice('builtin')}>Use built-in defaults</Button> : null}
     </div> : null}
-    {!frameless && !advancedOnly && section === 'model' ? <footer className="settings-inline-footer"><HarnessFooterOptions value={value} issues={issues} onChange={(configuration) => onChange({ ...editor, configuration })} /></footer> : null}
     <ConfirmDialog open={Boolean(resetChoice)} onOpenChange={(open) => { if (!open) setResetChoice(undefined) }} title={resetChoice === 'builtin' ? 'Use built-in defaults?' : 'Use the provider preset?'} description="This replaces only the selected harness draft. Other harness drafts are kept."
       confirmLabel="Use preset" onConfirm={() => {
         const preset = resetChoice === 'builtin' ? DEFAULT_HARNESS_DEFAULTS[value.harness] : presets?.[value.harness]

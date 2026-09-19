@@ -7,10 +7,10 @@ import { AccountAccess } from '../features/auth/AccountAccess'
 import { WorkspaceShell } from '../shared/ui/WorkspaceShell'
 import '../features/settings/settingsExperience.css'
 
-function SettingsShell({ children }: { children: ReactNode }) {
+function SettingsShell({ children, back }: { children: ReactNode; back?: ReactNode }) {
   return <WorkspaceShell workspaceId="workspace-1" activeGlobalSection="settings" slots={{ main:
     <div className="settings-page settings-experience n-theme">
-      <Link to="/settings" className="settings-back-link" aria-label="Back to settings"><span aria-hidden="true">←</span> Settings</Link>
+      {back ?? <Link to="/settings" className="settings-back-link" aria-label="Back to settings"><span aria-hidden="true">←</span> Settings</Link>}
       {children}
     </div>,
   }} />
@@ -18,7 +18,7 @@ function SettingsShell({ children }: { children: ReactNode }) {
 export function AgentSettingsRouteEntry() {
   const search = useSearch({ from: '/settings/agents' })
   const navigate = useNavigate({ from: '/settings/agents' })
-  return <SettingsShell><AgentDefaultsSettings selectedRole={search.role} section={search.section ?? 'model'}
+  return <SettingsShell back={search.role ? <Link to="/settings/agents" search={{}} className="settings-back-link" aria-label="Back to agents"><span aria-hidden="true">←</span> Agents</Link> : undefined}><AgentDefaultsSettings selectedRole={search.role} section={search.section ?? 'model'}
     onSelectRole={(role) => void navigate({ search: role ? { role, section: 'model' } : {} })}
     onSectionChange={(section) => {
       if (section === 'connections' || section === 'workspace') return
@@ -28,7 +28,7 @@ export function AgentSettingsRouteEntry() {
 export function HarnessSettingsRouteEntry() {
   const search = useSearch({ from: '/settings/harnesses' })
   const navigate = useNavigate({ from: '/settings/harnesses' })
-  return <SettingsShell><HarnessDefaultsSettings selectedHarness={search.harness} section={search.section ?? 'model'}
+  return <SettingsShell back={search.harness ? <Link to="/settings/harnesses" search={{}} className="settings-back-link" aria-label="Back to harnesses"><span aria-hidden="true">←</span> Harnesses</Link> : undefined}><HarnessDefaultsSettings selectedHarness={search.harness} section={search.section ?? 'model'}
     onSelectHarness={(harness) => void navigate({ search: harness ? { harness, section: 'model' } : {} })}
     onSectionChange={(section) => void navigate({ search: { ...search, section } })} /></SettingsShell>
 }

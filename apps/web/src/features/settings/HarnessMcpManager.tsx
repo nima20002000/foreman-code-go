@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react'
+import { UnsavedChangesContext, useUnsavedChanges } from '../../shared/ui/unsavedChanges'
+import { useContext, useRef, useState } from 'react'
 import {
   HarnessMcpChangeSchema, type HarnessMcpChange, type HarnessMcpPlan,
 } from '@graphql/contracts/management'
@@ -40,6 +41,13 @@ function ConnectionForm({ busy, onReview }: { busy: boolean; onReview(change: Ha
     setError(undefined)
     onReview(candidate.data)
   }
+  useUnsavedChanges({ scope: 'surface', label: 'new MCP connection',
+    dirty: Boolean(name || url || variable || executable || argumentsText || environment || transport !== 'remote'),
+    busy, saveDisabled: true, error: 'Keep editing and use Review connection to review this change before applying it.',
+    save: review, discard: () => {
+      setName(''); setUrl(''); setVariable(''); setExecutable(''); setArgumentsText(''); setEnvironment(''); setTransport('remote'); setError(undefined)
+    },
+  })
   return <div className="harness-form-stack">
     <TextField label="Server name" value={name} maxLength={80} autoComplete="off" onChange={(event) => setName(event.target.value)} />
     <Select label="Connection" value={transport} options={[{ value: 'remote', label: 'Remote · URL' }, { value: 'stdio', label: 'Local · installed program' }]}
@@ -59,6 +67,7 @@ function ConnectionForm({ busy, onReview }: { busy: boolean; onReview(change: Ha
 }
 
 function NativeMcpManager({ harness }: { harness: Harness }) {
+  const guard = useContext(UnsavedChangesContext)
   const servers = useNativeMcpServers(harness)
   const plans = useNativeMcpPlans(harness)
   const request = useRequestNativeMcpChange()
@@ -114,7 +123,7 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
         <Button size="sm" onClick={() => { decision.reset(); setActive(plan.id) }}>Review</Button></div>)}
     </section> : null}
     {plans.isError ? <p className="harness-muted" role="status">Change requests: {plans.error.message}</p> : null}
-    <Dialog open={adding} onOpenChange={setAdding} title={`Add ${harness === 'codex' ? 'Codex' : 'OpenCode'} MCP server`} size="md" busy={request.isPending}>
+    <Dialog open={adding} onOpenChange={(open) => { if (open) setAdding(true); else void (async () => { if (!guard || await guard.surfaces()) setAdding(false) })() }} title={`Add ${harness === 'codex' ? 'Codex' : 'OpenCode'} MCP server`} size="md" busy={request.isPending}>
       {adding ? <ConnectionForm busy={request.isPending} onReview={requestChange} /> : null}
       {request.isError ? <Alert tone="danger" title={request.error.message} /> : null}
     </Dialog>

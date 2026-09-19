@@ -7,7 +7,7 @@ import { AgentSettingsForm } from './AgentSettingsForm'
 import { WorkflowExecutionLimits } from './WorkflowExecutionLimits'
 
 vi.mock('../settings/HarnessConfigurationFields', () => ({ HarnessConfigurationFields: () => null }))
-vi.mock('../settings/HarnessBasicFields', () => ({ HarnessBasicFields: () => null, HarnessFooterOptions: () => null }))
+vi.mock('../settings/HarnessBasicFields', () => ({ HarnessBasicFields: () => null }))
 vi.mock('../../shared/api/query', () => ({ useHarnessDefaultsQuery: () => ({ data: { defaults: DEFAULT_HARNESS_DEFAULTS } }) }))
 afterEach(cleanup)
 describe('PR17 agent versus workflow scope', () => {

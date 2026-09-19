@@ -1,4 +1,5 @@
-import { useRef, useState, type FormEvent } from 'react'
+import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
+import { useRef, useState } from 'react'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 
@@ -27,13 +28,12 @@ export function NewWorkflowDialog({
   const [nameError, setNameError] = useState<string>()
   const nameInputRef = useRef<HTMLInputElement>(null)
   const inFlight = useRef(false)
+  const created = useRef(false)
   const attempt = useRef(new CommandAttempt<{ workspaceId: string; name: string; description?: string }>())
   const pending = createManagedWorkflow.isPending
   const uncertain = attempt.current.unresolved && !pending
-  const close = () => { if (!inFlight.current && !attempt.current.unresolved) onCancel() }
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
+  const create = async () => {
     if (inFlight.current) return
     const trimmedName = name.trim()
     if (!trimmedName) { setNameError('Enter a workflow name.'); nameInputRef.current?.focus(); return }
@@ -49,12 +49,20 @@ export function NewWorkflowDialog({
         queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflows(workspaceId) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) }),
       ]).catch(() => undefined)
+      created.current = true
+      setName(''); setDescription('')
       onCreated(workflow.id)
     } catch (error) {
       attempt.current.failed(error)
       if (sessionGeneration() === generation) setNameError(error instanceof Error ? error.message : 'The workflow could not be created.')
     } finally { inFlight.current = false }
   }
+
+  const leave = useUnsavedChanges({ scope: 'surface', label: 'new workflow', get dirty() { return !created.current && Boolean(name || description) },
+    get busy() { return inFlight.current && !created.current }, uncertain, error: nameError, save: create,
+    discard: () => { setName(''); setDescription(''); setNameError(undefined) },
+  })
+  const close = () => { if (!inFlight.current && !attempt.current.unresolved) void leave(onCancel) }
 
   return (
     <Dialog
@@ -66,7 +74,7 @@ export function NewWorkflowDialog({
       closeOnOutsideClick
       initialFocusRef={nameInputRef}
     >
-      <form className="new-workflow-form" aria-label="New workflow" noValidate onSubmit={handleSubmit}>
+      <form className="new-workflow-form" aria-label="New workflow" noValidate onSubmit={(event) => { event.preventDefault(); void create() }}>
         <p className="panel-kicker">Workspace workflow</p>
 
         <TextField

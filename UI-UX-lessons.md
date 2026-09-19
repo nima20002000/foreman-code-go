@@ -36,6 +36,7 @@ Navigation became unstable when expansion, activation, routing, and drag behavio
 - Persist useful disclosure state, but do not let stale expanded sections compete with the current route.
 - Nested drag/reorder surfaces must not trigger parent reordering.
 - Linkable navigation belongs in the URL and needs stable deep links.
+- Show one Back control targeting the immediate parent in the product hierarchy, not browser history. A harness or role detail returns to its overview; the overview returns to Settings. Keep this link available during loading/errors and send dirty navigation through the shared leave guard. Evidence: `SettingsExperienceRoutes` and browser checks of harness detail → Harnesses → Settings.
 
 Evidence: `1e31e31` (`fix: stabilize workspace navigation state`), `710cc2f` (`fix: keep one workspace active`), `35dc7c6` (`feat(settings): add workspace detail navigation`).
 
@@ -68,6 +69,7 @@ A save control that is always present suggests that something needs saving even 
 - Save/Discard controls should appear or enable only for meaningful unsaved changes.
 - Dirty state must include every change that affects what will be persisted, including nested agent settings or cleanup caused by removed entities.
 - Do not fabricate a draft just to make a control available.
+- Keep editable settings in their relevant form section, not in the Save/Discard footer. Binary preferences should use the shared switch, with their existing draft and validation semantics. Harness thinking and fast-mode controls belong in Model & speed; verify they remain keyboard accessible and mark the draft dirty there.
 - If an action depends on a clean/persisted state, explain what must be saved instead of exposing unrelated save buttons.
 
 Evidence: `4ab9e58` (`fix: show graph save controls only for changes`).
@@ -80,6 +82,9 @@ Settings fixes repeatedly came from the same root problem: forms treated mount/u
 
 - Unsaved edits should survive normal navigation-style unmount/remount when the user reasonably expects to come back.
 - A failed save must keep the attempted values visible and editable.
+- Retaining a draft is not a substitute for warning before leaving it. Route changes, section switches, and panel dismissal must offer Save, Discard, and Keep editing through the shared modal. Resume the original destination only after the selected draft is resolved; reject repeated navigation while a decision is open.
+- Saving before leaving must await acknowledgement, preserve validation/conflict failures, retain newer edits, and prevent duplicate submissions. Never offer Discard for an in-flight or unconfirmed command. Escape keeps edits and restores focus; refresh/tab close uses the browser warning.
+- Use a disabled Save button for a clean form and a success toast after acknowledgement. Keep errors near the form; do not leave a permanent success banner competing with the controls. Evidence: the shared unsaved-changes guard, browser-verified harness section/page navigation, Save continuation, Discard, and Escape behavior.
 - An uncertain request must not be silently re-sent as though it definitely failed.
 - Revision conflicts need explicit review. Show what changed on the server and what changed locally, then let the user reapply or discard deliberately.
 - Do not merge ordered arrays (for example permission rules) by index as though they were independent fields.
@@ -139,6 +144,10 @@ Blank space and generic failures made several surfaces harder to understand than
 Do not erase usable stale content just because a refresh failed. Error messages should say what remains available and what the user can do next.
 
 The Nocturne migration moved these states into shared `LoadingState`, `EmptyState`, `ErrorState`, `Alert`, and button-loading patterns so behavior stays consistent instead of each screen inventing its own version.
+
+A diagnostic result must describe exactly what was checked, not imply permission to execute. Show the observed installation separately from the qualified target; a passing schema check cannot stand in for authentication, policy, or execution qualification. Keep diagnostic status independently readable when configuration discovery fails, retain the last report on refresh failure, and never overwrite editable settings while retrying a check. Toasts should describe the requested operation and its real result, not announce every background poll.
+
+Uncommitted evidence: `HarnessCompatibilityPanel.test.tsx` covers separate installed/qualified versions, failure and stale-report visibility, read-only retry permissions, and requested-check toasts. These tests are written but unverified.
 
 Evidence: `9afe3a5` (`feat(web): complete Nocturne UI migration`), `94a235e`.
 

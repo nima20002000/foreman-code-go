@@ -4,7 +4,6 @@ import type { HarnessSettingsSection, SettingsAgentRole } from '@graphql/contrac
 import { Button, Checkbox, ErrorState, LoadingState } from '../../shared/ui/nocturne'
 import { useAgentDefaultsQuery, useUpdateAgentDefaultsMutation } from '../../shared/api/query'
 import { HarnessConfigurationFields } from './HarnessConfigurationFields'
-import { HarnessFooterOptions } from './HarnessBasicFields'
 import { createHarnessEditor, prepareHarnessEditor, type HarnessEditor } from './harnessEditor'
 import { issuesAt, withValidationPath } from './fieldValidation'
 import { SettingsFormActions, SettingsFormFeedback } from './SettingsFormActions'
@@ -44,7 +43,7 @@ export function AgentDefaultsSettings({ selectedRole, section: selectedSection, 
   const section = selectedSection ?? localSection
   const choose = (next: SettingsAgentRole | undefined) => { setLocalRole(next); setLocalSection('model'); onSelectRole?.(next) }
   const navigateSection = (next: HarnessSettingsSection) => { setLocalSection(next); onSectionChange?.(next) }
-  if (role) return <AgentTemplateEditor key={role} role={role} section={section} onSectionChange={navigateSection} onBack={() => choose(undefined)} />
+  if (role) return <AgentTemplateEditor showBack={!onSelectRole} key={role} role={role} section={section} onSectionChange={navigateSection} onBack={() => choose(undefined)} />
   if (query.isError) return <ErrorState title="Agent defaults are unavailable" description={query.error.message} onRetry={() => void query.refetch()} />
   if (!query.data) return <LoadingState label="Loading agent defaults…" />
   return <SettingsOverview title="Agents" description="Choose a role to edit its defaults.">
@@ -52,8 +51,8 @@ export function AgentDefaultsSettings({ selectedRole, section: selectedSection, 
   </SettingsOverview>
 }
 
-function AgentTemplateEditor({ role, section, onSectionChange, onBack }: {
-  role: SettingsAgentRole; section: HarnessSettingsSection; onSectionChange(section: HarnessSettingsSection): void; onBack(): void;
+function AgentTemplateEditor({ role, section, onSectionChange, onBack, showBack }: {
+  role: SettingsAgentRole; section: HarnessSettingsSection; onSectionChange(section: HarnessSettingsSection): void; onBack(): void; showBack: boolean;
 }) {
   const query = useAgentDefaultsQuery()
   const mutation = useUpdateAgentDefaultsMutation()
@@ -68,12 +67,11 @@ function AgentTemplateEditor({ role, section, onSectionChange, onBack }: {
   const info = rolePresentation[role]
   const update = (harness: HarnessEditor) => form.setDraft((value) => value && ({ ...value, [role]: { ...value[role], harness } }))
   return <div ref={(node) => { root.current = node }}>
-    <SettingsEditorLayout title={`${info.title} defaults`} description={info.scope} backLabel="All agents" onBack={onBack}
+    <SettingsEditorLayout showBack={showBack} title={`${info.title} defaults`} description={info.scope} backLabel="All agents" onBack={onBack}
       section={section} onSectionChange={onSectionChange}
       feedback={<>{query.isError ? <p role="alert">Could not refresh. Your draft is kept. <Button size="sm" onClick={() => void query.refetch()}>Retry</Button></p> : null}<SettingsFormFeedback form={form} /></>}
-      footer={<SettingsFormActions form={form} saveLabel={`Save ${info.title}`} extra={<HarnessFooterOptions value={current.configuration}
-        issues={issuesAt(form.issues ?? [], [role, 'harness'])} onChange={(configuration) => update({ ...current, configuration })} />}
-        onSave={() => void form.save(async (input) => {
+      footer={<SettingsFormActions form={form} saveLabel={`Save ${info.title}`}
+        onSave={() => form.save(async (input) => {
           const response = await mutation.mutateAsync({ ...input, value: prepared(input.value) })
           return { value: editable(response.value.value), revision: response.value.revision }
         }, (value) => { prepared(value); return value })} />}>

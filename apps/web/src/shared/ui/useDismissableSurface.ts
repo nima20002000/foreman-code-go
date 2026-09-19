@@ -61,6 +61,7 @@ export function useDismissableSurface({
 
     const closeOnEscape = (event: KeyboardEvent) => {
       if (!dismissOnEscape || event.key !== 'Escape') return
+      if (document.querySelector('dialog[open][aria-modal="true"]')) return
       event.preventDefault()
       onDismissRef.current('escape')
     }
@@ -69,6 +70,8 @@ export function useDismissableSurface({
       const target = event.target
       if (!(target instanceof Node)) return
       if (target instanceof Element && target.closest('dialog[open][aria-modal="true"]')) return
+      // Let navigation and panel triggers own the destination of a leave decision.
+      if (target instanceof Element && target.closest('a[href], button[aria-haspopup="dialog"]')) return
       if (surfaceRef.current?.contains(target)) return
       if (triggerRef?.current?.contains(target)) return
       onDismissRef.current('outside')

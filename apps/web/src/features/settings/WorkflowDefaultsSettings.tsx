@@ -31,7 +31,7 @@ export function WorkflowDefaultsSettings() {
       <Select label="Approval handler" value={draft.approvalHandler} error={handlerError} hint="Normal graph edges do not determine approval authority; workflow roles and settings do." options={approvalOptions}
         onChange={(event) => form.setDraft({ approvalHandler: event.target.value as WorkflowDefaults['approvalHandler'] })} />
     </div>
-    <SettingsFormActions form={form} saveLabel="Save workflow defaults" onSave={() => void form.save(async (input) => {
+    <SettingsFormActions form={form} saveLabel="Save workflow defaults" onSave={() => form.save(async (input) => {
       const response = await mutation.mutateAsync(input)
       return { value: response.value.value, revision: response.value.revision }
     }, (value) => WorkflowDefaultsSchema.parse(value))} />

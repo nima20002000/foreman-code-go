@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { changeCodexSandbox, type CodexHarnessConfiguration, type HarnessConfiguration } from '@graphql/contracts'
-import { Alert, Button, Checkbox, Combobox, ConfirmDialog, Select } from '../../shared/ui/nocturne'
+import { Alert, Button, Combobox, ConfirmDialog, Select, Switch } from '../../shared/ui/nocturne'
 import { useNativeHarnessOptions, useRefreshNativeHarness } from '../../shared/api/harnessSettings'
 import { fieldMessage, type FieldIssue } from './fieldValidation'
 import { nativeOptionsWithSaved, selectNativeModel, supportedEfforts } from './harnessModelSelection'
@@ -30,15 +30,20 @@ export function HarnessBasicFields({ value, onChange, issues = [], includeSandbo
       <Select label="Native Agent" value={value.nativeAgent} error={fieldMessage(issues, 'nativeAgent')}
         options={nativeOptionsWithSaved(query.data?.nativeAgents ?? [], value.nativeAgent)} onChange={(event) => onChange({ ...value, nativeAgent: event.target.value })} />
     </div>}
+    <HarnessModelOptions value={value} onChange={onChange} issues={issues} />
   </div>
 }
-export function HarnessFooterOptions({ value, onChange, issues = [] }: Props) {
+function HarnessModelOptions({ value, onChange, issues = [] }: Props) {
   const query = useNativeHarnessOptions(value.harness)
-  if (value.harness === 'opencode') return <Checkbox label="Show thinking" checked={value.thinking} onChange={(event) => onChange({ ...value, thinking: event.target.checked })} />
+  const errorId = useId()
+  if (value.harness === 'opencode') return <Switch label="Show thinking" checked={value.thinking} onChange={(event) => onChange({ ...value, thinking: event.target.checked })} />
   const supported = query.data?.models.find((item) => item.id === value.model)?.serviceTiers.includes('priority') === true
-  return <Checkbox label="Fast mode" checked={value.serviceTier === 'priority'} disabled={!supported && value.serviceTier !== 'priority'}
-    error={fieldMessage(issues, 'serviceTier') ?? (query.isSuccess && !supported && value.serviceTier === 'priority' ? 'Not offered by this model. Turn Fast mode off.' : undefined)}
+  const error = fieldMessage(issues, 'serviceTier') ?? (query.isSuccess && !supported && value.serviceTier === 'priority' ? 'Not offered by this model. Turn Fast mode off.' : undefined)
+  return <div><Switch label="Fast mode" checked={value.serviceTier === 'priority'} disabled={!supported && value.serviceTier !== 'priority'}
+    aria-invalid={error ? true : undefined} aria-describedby={error ? errorId : undefined}
     onChange={(event) => onChange({ ...value, serviceTier: event.target.checked ? 'priority' : 'standard' })} />
+    {error ? <span className="n-field-error" id={errorId}>{error}</span> : null}
+  </div>
 }
 
 export function HarnessSandboxField({ value, onChange, issues = [] }: {

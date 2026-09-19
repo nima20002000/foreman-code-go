@@ -32,7 +32,7 @@ export function WorkspaceDefaultsSettings() {
       <div className="settings-simple-row"><strong>Execution folders & runners</strong><p>Choose these for each workspace. Defaults never grant file access.</p>
         <Link to="/workspaces" className="settings-text-link">Open existing workspaces →</Link></div>
     </div>
-    <SettingsFormActions form={form} saveLabel="Save workspace defaults" onSave={() => void form.save(async (input) => {
+    <SettingsFormActions form={form} saveLabel="Save workspace defaults" onSave={() => form.save(async (input) => {
       const response = await mutation.mutateAsync({ ...input, value: WorkspaceDefaultsSchema.parse(input.value) })
       return { value: response.value.value, revision: response.value.revision }
     }, (value) => WorkspaceDefaultsSchema.parse(value))} />

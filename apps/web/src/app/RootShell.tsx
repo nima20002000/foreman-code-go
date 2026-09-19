@@ -1,3 +1,4 @@
+import { UnsavedChangesProvider } from '../shared/ui/UnsavedChangesProvider'
 import { Outlet, useLocation } from '@tanstack/react-router'
 import { RequireBrowserSession } from '../features/auth/RequireBrowserSession'
 
@@ -9,7 +10,7 @@ import { sessionIsSwitching } from '../shared/api/sessionBoundary'
 export function RootShell() {
   const { pathname } = useLocation()
   if (pathname === '/sign-in' || pathname === '/setup') return <Outlet />
-  return <RequireBrowserSession><AuthenticatedShell /></RequireBrowserSession>
+  return <RequireBrowserSession><UnsavedChangesProvider><AuthenticatedShell /></UnsavedChangesProvider></RequireBrowserSession>
 }
 
 function AuthenticatedShell() {

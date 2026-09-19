@@ -1,3 +1,5 @@
+import { ToastContext } from '../../shared/ui/nocturne/toastContext'
+import { UnsavedChangesContext, useUnsavedChanges } from '../../shared/ui/unsavedChanges'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Inbox } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
@@ -562,6 +564,11 @@ export function GraphEditor({
   managedAgentRevisions = {},
 }: GraphEditorProps) {
   const theme = useTheme()
+  const toasts = useContext(ToastContext)
+  const navigationGuard = useContext(UnsavedChangesContext)
+  const leaveSurface = useCallback(async (action: () => void) => {
+    if (!navigationGuard || await navigationGuard.surfaces()) action()
+  }, [navigationGuard])
   const queryClient = useQueryClient()
   const workflowKey = workflowDraftKey(workspaceId, workflow.id)
   const draft = useGraphDraftStore((state) => state.drafts[workflowKey])
@@ -573,6 +580,7 @@ export function GraphEditor({
   const saveLock = useRef(false)
   const agentOverrides = draft?.agentOverrides ?? EMPTY_AGENT_OVERRIDES
   const [notice, setNotice] = useState<{ kind: 'success' | 'error' | 'info'; text: string }>()
+  useEffect(() => { if (notice?.kind === 'success') toasts?.notify({ tone: 'success', title: notice.text }) }, [notice, toasts])
   const [activeRunId, setActiveRunId] = useState<string | undefined>(() => runFacts?.find((run) =>
     run.workflowId === workflow.id && run.executionState !== 'completed',
   )?.id)
@@ -592,9 +600,11 @@ export function GraphEditor({
   const workflowSettingsButtonRef = useRef<HTMLButtonElement>(null)
   const workflowSettingsRef = useRef<HTMLDivElement>(null)
   const closeWorkflowSettings = useCallback((reason: SurfaceDismissReason = 'escape') => {
-    setWorkflowSettingsOpen(false)
-    if (reason === 'escape') workflowSettingsButtonRef.current?.focus()
-  }, [])
+    void leaveSurface(() => {
+      setWorkflowSettingsOpen(false)
+      if (reason === 'escape') workflowSettingsButtonRef.current?.focus()
+    })
+  }, [leaveSurface])
   useDismissableSurface({ open: workflowSettingsOpen, onDismiss: closeWorkflowSettings,
     surfaceRef: workflowSettingsRef, triggerRef: workflowSettingsButtonRef })
   useEffect(() => {
@@ -614,9 +624,11 @@ export function GraphEditor({
   const positionUndoActiveRef = useRef(false)
   const agentPickerPresence = usePresence(agentPickerOpen)
   const openNodeMenu = useCallback((nodeId?: string) => {
-    if (nodeId) { setWorkflowSettingsOpen(false); setAgentPickerOpen(false) }
-    setOpenMenuNodeId(nodeId)
-  }, [])
+    void leaveSurface(() => {
+      if (nodeId) { setWorkflowSettingsOpen(false); setAgentPickerOpen(false) }
+      setOpenMenuNodeId(nodeId)
+    })
+  }, [leaveSurface])
   const nodeMenuValue = useMemo(
     () => ({ openMenuNodeId, setOpenMenuNodeId: openNodeMenu, workspaceId,
       workflowApprovalHandler: (draft?.workflow ?? workflow).approval?.handler }),
@@ -1117,6 +1129,12 @@ export function GraphEditor({
     executionLimitExceeded, isDirty, localAgents, managedBase, managedDraft, onPersisted,
     onSaveSession, queryClient, saveMutation, workspaceId, workflowKey])
 
+  useUnsavedChanges({ label: 'workflow graph', dirty: hasLocalChanges, busy: isSaving,
+    uncertain: managedSaveQueue.hasPending(workflowKey),
+    saveDisabled: executionLimitExceeded && !managedSaveQueue.hasPending(workflowKey),
+    error: notice?.kind === 'error' ? notice.text : undefined, save: handleSave, discard: handleDiscard,
+  }, (current, next) => current.pathname !== next.pathname || current.search.workflowId !== next.search.workflowId)
+
   const handleStart = useCallback(() => {
     if (onSaveSession) {
       setNotice({ kind: 'info', text: 'Save this workflow to the backend before starting it.' })
@@ -1431,7 +1449,7 @@ export function GraphEditor({
           <Toolbar label="Workflow controls">
             <Button ref={workflowSettingsButtonRef} variant="secondary" className="n-icon-button workflow-graph-add-agent" aria-label="Workflow settings" title="Workflow settings"
               aria-haspopup="dialog" aria-expanded={workflowSettingsOpen} aria-controls={workflowSettingsOpen ? 'workflow-settings-popover' : undefined}
-              onClick={() => { setAgentPickerOpen(false); setOpenMenuNodeId(undefined); setWorkflowSettingsOpen((open) => !open) }}><Icon name="settings" size={16} /></Button>
+              onClick={() => void leaveSurface(() => { setAgentPickerOpen(false); setOpenMenuNodeId(undefined); setWorkflowSettingsOpen((open) => !open) })}><Icon name="settings" size={16} /></Button>
             <Link to="/workspaces/$workspaceId/approvals" params={{ workspaceId }} search={{ workflowId: displayedWorkflow.id }} className="workflow-graph-add-agent" aria-label="Workflow Approval Inbox" title="Workflow Approval Inbox"><Inbox aria-hidden="true" size={16} /></Link>
             <Button
               variant="secondary"
@@ -1466,11 +1484,11 @@ export function GraphEditor({
               title="Add agent to graph"
               aria-haspopup="dialog"
               aria-expanded={agentPickerOpen}
-              onClick={() => {
+              onClick={() => void leaveSurface(() => {
                 setOpenMenuNodeId(undefined)
                 setWorkflowSettingsOpen(false)
                 setAgentPickerOpen(true)
-              }}
+              })}
             >
               <Icon name="plus" size={17} />
             </Button>
