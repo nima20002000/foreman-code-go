@@ -135,6 +135,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   inspectMcpConfiguration(directory: string, serverName: string, signal?: AbortSignal): Promise<NativeMcpEntryEvidence | undefined> {
     return inspectOpenCodeMcpConfiguration({
       binary: this.options.binary, workingDirectory: directory, serverName,
+      credentialEnvironmentVariable: this.options.credentialEnvironmentVariable ?? APP_CREDENTIAL_ENV,
       pure: this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true,
       ...(signal ? { signal } : {}),
     })

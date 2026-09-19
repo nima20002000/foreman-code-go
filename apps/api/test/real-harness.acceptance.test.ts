@@ -27,6 +27,12 @@ import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
+import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { WorkerCredentialService } from '../src/modules/access/workerCredentials.js'
+import { McpDetectionService, WorkerLaunchCredentialService, type ExecutionCredentialProvider } from '../src/modules/harnesses/mcpDetection.js'
+import { codexMcpInspectorAdapter } from '../src/modules/harnesses/codexMcpInspectorAdapter.js'
+import { openCodeMcpInspectorAdapter } from '../src/modules/harnesses/opencodeMcpInspectorAdapter.js'
 
 const connectionString =
   process.env.TEST_DATABASE_URL
@@ -61,23 +67,44 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
       const settings = new PostgresSettingsRepository(database.pool)
       const interactions = new PostgresInteractionRepository(database.pool)
       const budgets = new PostgresApprovalBudgetRepository(database.pool)
+      const registry = new NativeProcessRegistry(join(runtimeDirectory, 'native-process-registry'))
+      const endpoint = process.env.APP_MCP_ENDPOINT ?? 'http://127.0.0.1:3000/mcp/tools'
       const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
         const configuration = context.configuration.harness
         if (configuration.harness !== context.harness) throw new Error('Pinned harness configuration mismatch.')
-        if (configuration.harness === 'codex') return new CodexAppServerSessionManager('codex')
+        if (configuration.harness === 'codex') return new CodexAppServerSessionManager('codex', undefined, undefined, registry.scope(`execution:${context.executionId}`))
         return new OpenCodeNativeSessionManager({
           server: new ManagedOpenCodeServer({
             binary: 'opencode',
+            processRecovery: registry.scope(`execution:${context.executionId}`),
             workingDirectory: context.workingDirectory,
             ownerAgentId: context.agentId,
             ...(configuration.advanced ? { advancedConfiguration: configuration.advanced } : {}),
           }),
-          ownerAgentId: context.agentId,
+          ownerAgentId: context.agentId, expectedAppMcpEndpoint: endpoint,
         })
       })
-      const approvals = new ApprovalExecutionCoordinator(runs, interactions, budgets, managers, 300_000)
+      const workerCredentials = new WorkerCredentialService(database.pool, new PostgresAccessService(database.pool))
+      const credentials: ExecutionCredentialProvider = {
+        async prepare(input) {
+          const execution = await runs.getExecution(input.executionId)
+          const configuration = execution && await runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+          if (!execution || !configuration) throw new Error('Acceptance execution identity is missing.')
+          const { manager } = managers.resolve({ executionId: execution.id, agentId: execution.agentId,
+            harness: input.harness, workingDirectory: input.workingDirectory, configuration })
+          const inspector = manager instanceof CodexAppServerSessionManager ? codexMcpInspectorAdapter(manager)
+            : openCodeMcpInspectorAdapter(manager as OpenCodeNativeSessionManager)
+          return new WorkerLaunchCredentialService(new McpDetectionService(inspector, endpoint), workerCredentials, 'runner-local').prepare(input)
+        },
+        revoke: (credential) => workerCredentials.revoke(credential),
+        revokeForExecution: (id) => workerCredentials.revokeForExecution(id),
+        revokeForRun: (id, client) => workerCredentials.revokeForRun(id, client),
+        renew: (id, credential) => workerCredentials.renewForExecution(id, credential),
+      }
+      const approvals = new ApprovalExecutionCoordinator(runs, interactions, budgets, managers, 300_000, credentials,
+        undefined, (id, signal) => registry.closeOwner(`execution:${id}`, signal))
       const engine = new LangGraphWorkflowEngine(
-        runs, workflows, approvals, checkpoints.saver, runtimeDirectory, locations, undefined, interactions,
+        runs, workflows, approvals, checkpoints.saver, runtimeDirectory, locations, credentials, interactions,
       )
       app = buildApp({
         readiness: { database, checkpoints },
@@ -95,18 +122,18 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
       )
       const agents = [
         AgentSchema.parse({
-          id: agentIds[0], name: 'Researcher', harness: 'codex', model: 'gpt-5.6-luna', effort: 'low',
-          harnessConfiguration: { harness: 'codex', model: 'gpt-5.6-luna', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' },
+          id: agentIds[0], name: 'Researcher', harness: 'codex', model: 'gpt-5.6-luna', effort: 'high',
+          harnessConfiguration: { harness: 'codex', model: 'gpt-5.6-luna', reasoningEffort: 'high', sandbox: 'read-only', serviceTier: 'standard' },
           prompt: { system: 'Produce exactly three concise facts about honeybees. Use general knowledge only and return plain text.' }, assignedSkills: [],
         }),
         AgentSchema.parse({
-          id: agentIds[1], name: 'Summarizer', harness: 'opencode', model: 'opencode-go/deepseek-v4.1-flash', effort: 'max',
-          harnessConfiguration: { harness: 'opencode', model: 'opencode-go/deepseek-v4.1-flash', variant: 'max', nativeAgent: 'build', thinking: false, autoApprove: false },
+          id: agentIds[1], name: 'Summarizer', harness: 'opencode', model: 'opencode-go/gpt-5.6-luna', effort: 'high',
+          harnessConfiguration: { harness: 'opencode', model: 'opencode-go/gpt-5.6-luna', variant: 'high', nativeAgent: 'build', thinking: false, autoApprove: false },
           prompt: { system: 'Turn only the supplied prior result into a short factual summary. Do not research or use files.' }, assignedSkills: [],
         }),
         AgentSchema.parse({
-          id: agentIds[2], name: 'Reviewer', harness: 'codex', model: 'gpt-5.6-luna', effort: 'medium',
-          harnessConfiguration: { harness: 'codex', model: 'gpt-5.6-luna', reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard' },
+          id: agentIds[2], name: 'Reviewer', harness: 'codex', model: 'gpt-5.6-luna', effort: 'high',
+          harnessConfiguration: { harness: 'codex', model: 'gpt-5.6-luna', reasoningEffort: 'high', sandbox: 'read-only', serviceTier: 'standard' },
           prompt: { system: 'Review only the supplied summary and produce a polished final response. Do not research or use files.' }, assignedSkills: [],
         }),
       ]
@@ -162,7 +189,7 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
         await new Promise((resolve) => setTimeout(resolve, 1_000))
       }
 
-      expect(details?.run, JSON.stringify(details?.run.result)).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
+      expect(details?.run, JSON.stringify({ result: details?.run.result, executions: details?.executions.map((entry) => ({ state: entry.state, error: entry.result?.error })) })).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
       expect(details?.run.workflowVersionId).toBe(pinnedVersionId)
       expect(details?.executions).toHaveLength(3)
       const [first, second, third] = details?.executions ?? []
@@ -185,6 +212,10 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
         },
       })
       expect(details?.run.result?.output).toEqual(third?.result?.output)
+      for (const execution of details?.executions ?? []) expect(await registry.closeOwner(`execution:${execution.id}`)).toBe(true)
+      const activeCredentials = await database.pool.query(`select count(*) from worker_credential_bindings b
+        join management_principals p on p.id=b.principal_id where b.run_id=$1 and p.revoked_at is null`, [runId])
+      expect(Number(activeCredentials.rows[0].count)).toBe(0)
       expect(await checkpoints.saver.getTuple({
         configurable: { thread_id: runId },
       })).toBeDefined()

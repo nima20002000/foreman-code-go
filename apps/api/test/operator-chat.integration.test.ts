@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import {
-  DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, NativeHarnessEventSchema,
+  operatorChatSettings, DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, NativeHarnessEventSchema,
   type ExecutionResult, type NativeSessionReference,
 } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -123,6 +123,111 @@ afterEach(async () => {
 })
 
 describe('Operator chat persistence and native binding', () => {
+  it('keeps sidebar order tied to messages, not background status reconciliation', async () => {
+    const first = await chat.create(owner)
+    const second = await chat.create(owner)
+    await repository.beginTurn(first.id, { requestId: 'order-first', content: 'First topic' }, owner.id)
+    await repository.beginTurn(second.id, { requestId: 'order-second', content: 'Second topic' }, owner.id)
+    await repository.pending(first.id, 'order-first')
+    expect((await chat.summaries(owner)).map((entry) => entry.conversationId)).toEqual([second.id, first.id])
+    expect((await chat.summaries(owner, 1)).map((entry) => entry.conversationId)).toEqual([second.id])
+    expect(await chat.summaries(owner, undefined, true)).toEqual([])
+  })
+
+  it('persists activity monotonically, fences late events, and pages exact bigint identities', async () => {
+    const conversation = await chat.create(owner)
+    manager.autoFinish = false
+    await chat.send(conversation.id, { requestId: 'activity-request', content: 'Read the fixture' }, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'active')
+    await pool.query("select setval(pg_get_serial_sequence('operator_conversation_activity','sequence'),$1::bigint,false)", ['9007199254740993'])
+    const started = { id: 'native-read', requestId: 'activity-request', kind: 'file_read' as const, title: 'Read fixture', status: 'running' as const, input: 'fixture.txt' }
+    const first = await repository.activity.append(conversation.id, 'activity-request', started)
+    expect(first?.activity.sequence).toBe('9007199254740993')
+    const completed = { ...started, status: 'completed' as const, output: 'Read result' }
+    await repository.activity.append(conversation.id, 'activity-request', completed)
+    expect(await repository.activity.append(conversation.id, 'activity-request', started)).toBeUndefined()
+    expect(await repository.activity.append(conversation.id, 'activity-request', completed)).toBeUndefined()
+    const second = await repository.activity.append(conversation.id, 'activity-request', { ...started, id: 'native-command', kind: 'tool' })
+    const page = await chat.activityPage(conversation.id, owner, { limit: 1 })
+    expect(page.nextCursor).toBe(second?.activity.sequence)
+    const older = await chat.activityPage(conversation.id, owner, { limit: 1, before: page.nextCursor! })
+    expect(older.activities[0]).toMatchObject({ sequence: '9007199254740993', status: 'completed', output: 'Read result' })
+    expect(older.nextCursor).toBeNull()
+    manager.finish(nativeCorrelation(conversation.id, 'activity-request'))
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+    const final = await chat.get(conversation.id, owner)
+    expect(final.messages[0]?.requestId).toBe('activity-request')
+    expect(final.activities?.find((entry) => entry.id === 'native-command')?.status).toBe('unknown')
+    expect(await repository.activity.append(conversation.id, 'activity-request', completed)).toBeUndefined()
+    const other = (await access.issue({ name: 'activity other owner', audience: 'operator', grants: owner.grants, expiresAt: new Date(Date.now() + 600_000) })).principal
+    await expect(chat.activityPage(conversation.id, other, {})).rejects.toMatchObject({ code: 'CONVERSATION_NOT_FOUND' })
+  })
+
+  it('lists chats only after the first message and supports owner-scoped deletion and Undo', async () => {
+    const conversation = await chat.create(owner)
+    expect(await chat.summaries(owner)).toEqual([])
+    await chat.send(conversation.id, { requestId: 'visible-message', content: 'A named topic' }, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+    expect(await chat.summaries(owner)).toEqual([expect.objectContaining({ conversationId: conversation.id, title: 'A named topic' })])
+    const other = (await access.issue({ name: 'other', audience: 'operator', grants: owner.grants, expiresAt: new Date(Date.now() + 600_000) })).principal
+    await expect(chat.setDeleted(conversation.id, other, true)).rejects.toMatchObject({ code: 'CONVERSATION_NOT_FOUND' })
+    await chat.setDeleted(conversation.id, owner, true)
+    expect(await chat.summaries(owner)).toEqual([])
+    await expect(chat.get(conversation.id, owner)).rejects.toMatchObject({ code: 'CONVERSATION_NOT_FOUND' })
+    await expect(chat.send(conversation.id, { requestId: 'deleted', content: 'No' }, owner)).rejects.toMatchObject({ code: 'CONVERSATION_NOT_FOUND' })
+    await chat.setDeleted(conversation.id, owner, true)
+    await chat.setDeleted(conversation.id, owner, false)
+    expect((await chat.get(conversation.id, owner)).messages).toHaveLength(2)
+    expect(await chat.summaries(owner)).toHaveLength(1)
+  })
+
+  it('requires an active response to stop before a chat can be deleted', async () => {
+    const conversation = await chat.create(owner)
+    manager.autoFinish = false
+    await chat.send(conversation.id, { requestId: 'delete-busy', content: 'Running' }, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'active')
+    await expect(chat.setDeleted(conversation.id, owner, true)).rejects.toMatchObject({ code: 'CONVERSATION_TURN_ACTIVE' })
+    expect((await repository.active(conversation.id))?.deleted_at).toBeNull()
+    manager.finish(nativeCorrelation(conversation.id, 'delete-busy'))
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+  })
+
+  it('accepts next-message settings atomically, resumes the same harness, and binds retries to those settings', async () => {
+    const conversation = await chat.create(owner)
+    const first = { requestId: 'settings-first', content: 'First message', settings: operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.codex) }
+    await chat.send(conversation.id, first, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+    const before = await repository.active(conversation.id)
+    const settings = { ...first.settings, harness: 'codex' as const, model: 'gpt-5.4', reasoningEffort: 'high' as const, serviceTier: 'priority' as const, showThinking: true }
+    const next = { requestId: 'settings-second', content: 'Second message', settings }
+    await chat.send(conversation.id, next, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+    const state = await chat.get(conversation.id, owner)
+    expect(state.settings).toEqual(settings)
+    const after = await repository.active(conversation.id)
+    expect(after?.native_session_id).toBe(before?.native_session_id)
+    expect(after?.operator_configuration_version_id).not.toBe(before?.operator_configuration_version_id)
+    expect(manager.attachments).toBeGreaterThan(0)
+    const configured = await repository.configuration(after!.operator_configuration_version_id)
+    expect(configured?.harness).toMatchObject({ model: 'gpt-5.4', reasoningEffort: 'high', serviceTier: 'priority', sandbox: DEFAULT_HARNESS_DEFAULTS.codex.sandbox })
+    expect((await chat.send(conversation.id, next, owner)).replayed).toBe(true)
+    await expect(chat.send(conversation.id, { ...next, settings: { ...settings, reasoningEffort: 'low' } }, owner)).rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
+  })
+
+  it('does not change settings or interrupt a running turn', async () => {
+    const conversation = await chat.create(owner)
+    manager.autoFinish = false
+    await chat.send(conversation.id, { requestId: 'busy', content: 'Work' }, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'active')
+    const before = await repository.active(conversation.id)
+    await expect(chat.send(conversation.id, { requestId: 'blocked-settings', content: 'Next',
+      settings: { ...operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.codex), model: 'other-model' } }, owner)).rejects.toMatchObject({ code: 'CONVERSATION_TURN_ACTIVE' })
+    expect((await repository.active(conversation.id))?.operator_configuration_version_id).toBe(before?.operator_configuration_version_id)
+    expect(manager.disposals).toBe(0)
+    manager.finish(nativeCorrelation(conversation.id, 'busy'))
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+  })
+
   it('pins existing conversations while defaults advance the shared Operator configuration', async () => {
     const before = await chat.create(owner, 'Before defaults change')
     const settings = new PostgresFoundationSettingsRepository(pool)

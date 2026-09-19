@@ -1,8 +1,8 @@
 import {
-  CancelOperatorTurnRequestSchema, CancelOperatorTurnResponseSchema,
+  OperatorActivityPageSchema, OperatorActivityQuerySchema, DeleteOperatorConversationResponseSchema, CancelOperatorTurnRequestSchema, CancelOperatorTurnResponseSchema,
   CreateOperatorConversationRequestSchema, CreateOperatorConversationResponseSchema,
   GetOperatorConversationResponseSchema, ListOperatorConversationsResponseSchema,
-  ListOperatorConversationSummariesResponseSchema,
+  ListOperatorConversationSummariesResponseSchema, OperatorConversationSummariesQuerySchema,
   SendOperatorMessageRequestSchema, SendOperatorMessageResponseSchema,
   RespondOperatorInteractionRequestSchema,
   type OperatorConversationStreamEvent,
@@ -25,8 +25,18 @@ export function registerOperatorChatRoutes(app: FastifyInstance, chat: OperatorC
   const streams = new Map<() => void, string>()
   app.addHook('preClose', async () => { for (const stop of streams.keys()) stop(); streams.clear() })
 
-  app.get('/api/operator/conversations/summaries', async (request) =>
-    ListOperatorConversationSummariesResponseSchema.parse({ conversations: await chat.summaries(requirePrincipal(request)) }))
+  app.get('/api/operator/conversations/summaries', async (request) => {
+    const { limit } = OperatorConversationSummariesQuerySchema.parse(request.query)
+    const principal = requirePrincipal(request)
+    const [conversations, attention] = await Promise.all([
+      chat.summaries(principal, limit === undefined ? undefined : limit + 1),
+      limit === undefined ? undefined : chat.summaries(principal, undefined, true),
+    ])
+    return ListOperatorConversationSummariesResponseSchema.parse({
+      conversations: limit === undefined ? conversations : conversations.slice(0, limit),
+      ...(limit === undefined ? {} : { hasMore: conversations.length > limit, attention }),
+    })
+  })
   app.get('/api/operator/conversations', async (request) =>
     ListOperatorConversationsResponseSchema.parse({ conversations: await chat.list(requirePrincipal(request)) }))
   app.post<{ Body: unknown }>('/api/operator/conversations', async (request, reply) => {
@@ -34,11 +44,17 @@ export function registerOperatorChatRoutes(app: FastifyInstance, chat: OperatorC
     reply.code(201)
     return CreateOperatorConversationResponseSchema.parse({ conversation: await chat.create(requirePrincipal(request), input.title) })
   })
+  app.delete<{ Params: ConversationParams }>('/api/operator/conversations/:conversationId', async (request) =>
+    DeleteOperatorConversationResponseSchema.parse(await chat.setDeleted(request.params.conversationId, requirePrincipal(request), true)))
+  app.post<{ Params: ConversationParams }>('/api/operator/conversations/:conversationId/restore', async (request) =>
+    DeleteOperatorConversationResponseSchema.parse(await chat.setDeleted(request.params.conversationId, requirePrincipal(request), false)))
   app.get<{ Params: ConversationParams }>('/api/operator/conversations/:conversationId', async (request) =>
     GetOperatorConversationResponseSchema.parse(await chat.get(request.params.conversationId, requirePrincipal(request))))
   app.get<{ Params: ConversationParams; Querystring: unknown }>('/api/operator/conversations/:conversationId/history', async (request) =>
     OperatorConversationHistoryPageSchema.parse(await chat.history(request.params.conversationId, requirePrincipal(request),
       OperatorConversationHistoryQuerySchema.parse(request.query))))
+  app.get<{ Params: ConversationParams; Querystring: unknown }>('/api/operator/conversations/:conversationId/activity', async (request) =>
+    OperatorActivityPageSchema.parse(await chat.activityPage(request.params.conversationId, requirePrincipal(request), OperatorActivityQuerySchema.parse(request.query))))
   app.post<{ Params: ConversationParams; Body: unknown }>('/api/operator/conversations/:conversationId/messages', async (request, reply) => {
     const input = SendOperatorMessageRequestSchema.parse(request.body)
     const result = await chat.send(request.params.conversationId, input, requirePrincipal(request))

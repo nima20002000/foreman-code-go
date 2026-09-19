@@ -449,6 +449,18 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await assertCode(manager.createSession(changed), 'CODEX_MCP_POLICY_MISMATCH')
   })
 
+  it('accepts the native priority response for requested fast mode on start and resume', async () => {
+    await flag('native-priority-tier')
+    codex().serviceTier = 'priority'
+    const session = await manager.createSession(source)
+    await manager.dispose()
+    manager = makeManager()
+    await manager.attachSession(session, source)
+    assert.equal(((await wire('thread/resume')).at(-1)?.params as JsonObject).serviceTier, 'fast')
+    const native = await state(f.directory, session.nativeSessionId)
+    assert.equal(native.settings.serviceTier, 'priority')
+  })
+
   for (const setting of ['model', 'effort', 'fast']) it(`F26: rejects unsupported model catalog ${setting} before thread creation`, async () => {
     if (setting === 'model') codex().model = 'unavailable'
     if (setting === 'effort') codex().reasoningEffort = 'xhigh'

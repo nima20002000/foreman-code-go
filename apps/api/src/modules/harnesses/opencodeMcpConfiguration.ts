@@ -39,7 +39,9 @@ export async function inspectOpenCodeMcpConfiguration(input: {
   serverName: string
   signal?: AbortSignal
   pure?: boolean
+  credentialEnvironmentVariable?: string
 }): Promise<NativeMcpEntryEvidence | undefined> {
+  const credentialVariable = input.credentialEnvironmentVariable ?? APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
   const version = await runCommand(input.binary, ['--version'], input.workingDirectory, input.signal)
   if (version.exitCode !== 0 || (version.stdout || version.stderr).trim() !== QUALIFIED_OPENCODE_MCP_VERSION) {
     throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'OpenCode MCP inspection requires the qualified 1.18.31 binary.')
@@ -80,14 +82,15 @@ export async function inspectOpenCodeMcpConfiguration(input: {
   const marker = `graphql_probe_${randomBytes(32).toString('hex')}`
   const checked = await runCommand(input.binary, args, input.workingDirectory, input.signal, {
     expectedAgentId: owner,
-    beforeSpawn: async () => ({ agentId: owner, variables: { [APP_MCP_TOKEN_ENVIRONMENT_VARIABLE]: marker } }),
+    credentialAudience: credentialVariable === 'GRAPHQL_OPERATOR_MCP_TOKEN' ? 'operator' : 'worker',
+    beforeSpawn: async () => ({ agentId: owner, variables: { [credentialVariable]: marker } }),
   })
   const second = parseEntry(checked)
   const markedAuthorization = second ? authorization(second) : undefined
   if (!second || !markedAuthorization || !/^Bearer \[REDACTED\]$/i.test(markedAuthorization.value)
     || markedAuthorization.key !== initialAuthorization.key
     || !isDeepStrictEqual(withoutAuthorization(first), withoutAuthorization(second))) return common
-  return { ...common, credentialEnvironmentVariable: APP_MCP_TOKEN_ENVIRONMENT_VARIABLE }
+  return { ...common, credentialEnvironmentVariable: credentialVariable }
 }
 
 /** Configuration evidence only: never claims a pre-injection connection is healthy. */

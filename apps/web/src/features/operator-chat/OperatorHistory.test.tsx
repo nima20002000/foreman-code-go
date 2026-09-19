@@ -30,16 +30,16 @@ afterEach(() => {
 })
 function mount() {
   render(<QueryClientProvider client={client}><OperatorHistory /></QueryClientProvider>)
-  fireEvent.click(screen.getByRole('button', { name: 'Full history and accepted request IDs' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
 }
 describe('Operator history pagination and identity-switch isolation', () => {
-  it('loads older messages with the original opaque cursor and shows accepted request IDs without a resend control', async () => {
+  it('loads older messages with the original opaque cursor and hides receipt metadata without a resend control', async () => {
     vi.mocked(getOperatorConversationHistory).mockResolvedValueOnce(page('Recent command', '9007199254740994', '9007199254740994'))
       .mockResolvedValueOnce(page('Older command', '9007199254740993', null))
     mount()
     await screen.findByText('Recent command')
-    expect(screen.getByText('original-id')).toBeDefined()
-    fireEvent.click(screen.getByRole('button', { name: 'Load older messages' }))
+    expect(screen.queryByText('original-id')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
     await screen.findByText('Older command')
     expect(screen.getAllByTestId('history-message').map((node) => node.textContent)).toEqual(['Older command', 'Recent command'])
     expect(vi.mocked(getOperatorConversationHistory).mock.calls[1]?.[1]).toEqual({ before: '9007199254740994' })
@@ -55,7 +55,7 @@ describe('Operator history pagination and identity-switch isolation', () => {
     expect(client.getQueryData(['operator-chat', 'history', previousEpoch, 'chat'])).toBeUndefined()
     vi.mocked(getOperatorConversationHistory).mockRejectedValue(new Error('Conversation not found for this owner'))
     act(() => { useOperatorChatStore.getState().select('chat') })
-    fireEvent.click(screen.getByRole('button', { name: 'Full history and accepted request IDs' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
     await screen.findByRole('alert')
     expect(screen.queryByText('Old owner private command')).toBeNull()
   })

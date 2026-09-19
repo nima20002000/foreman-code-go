@@ -60,7 +60,7 @@ const settings = (params) => {
   const config = params.config || {}
   const workspace = config.sandbox_workspace_write || {}
   return {
-    model: params.model || 'test-model', modelProvider: 'openai', serviceTier: params.serviceTier === 'fast' ? 'fast' : null,
+    model: params.model || 'test-model', modelProvider: 'openai', serviceTier: flag('native-priority-tier') && params.serviceTier === 'fast' ? 'priority' : params.serviceTier === 'fast' ? 'fast' : null,
     cwd: params.cwd || process.cwd(), reasoningEffort: config.model_reasoning_effort || 'medium',
     approvalPolicy: params.approvalPolicy || 'on-request', approvalsReviewer: params.approvalsReviewer || 'user', instructionSources: [],
     sandbox: params.sandbox === 'danger-full-access' ? { type: 'dangerFullAccess' }

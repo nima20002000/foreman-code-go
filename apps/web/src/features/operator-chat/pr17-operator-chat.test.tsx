@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { OperatorConversationState } from '@graphql/contracts'
 import { getOperatorConversation, sendOperatorMessage } from '../../shared/api/client'
+import { subscribeOperatorChat } from '../../shared/api/operatorChatStream'
 import { listOperatorConversationSummaries } from '../../shared/api/operatorChatSummaries'
 import { useConversationDraftStore } from '../conversations'
 import { ConversationComposer } from '../conversations/ConversationComposer'
@@ -68,13 +69,13 @@ describe('PR17 Operator interaction regressions', () => {
     const textarea = await screen.findByRole('textbox', { name: 'Message' })
     expect(textarea).not.toBeDisabled()
     fireEvent.change(textarea, { target: { value: 'My next message' } })
-    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Stop response' })).toBeEnabled()
     expect(useConversationDraftStore.getState().drafts['conversation-one']).toBe('My next message')
     expect(sendOperatorMessage).not.toHaveBeenCalled()
     const user = userEvent.setup()
     textarea.focus()
     await user.tab()
-    expect(screen.getByRole('button', { name: 'After chat' })).toHaveFocus()
+    expect(screen.getByRole('button', { name: 'New chat' })).toHaveFocus()
   })
   it('keeps a rejected turn reason visible after reload without retrying it', async () => {
     const originalLocks = Object.getOwnPropertyDescriptor(navigator, 'locks')
@@ -106,13 +107,28 @@ describe('PR17 Operator interaction regressions', () => {
       else Reflect.deleteProperty(navigator, 'locks')
     }
   })
+  it('keeps streaming text visible until the persisted final reply replaces it', async () => {
+    useOperatorChatStore.setState({ open: true })
+    renderChat()
+    await screen.findByRole('textbox', { name: 'Message' })
+    const listeners = vi.mocked(subscribeOperatorChat).mock.calls.at(-1)![1]
+    act(() => listeners.event({ id: 1, type: 'delta', conversationId: 'conversation-one', data: { requestId: 'request-one', partId: 'answer', mode: 'append', text: 'Streaming reply' } }))
+    expect(screen.getByText('Streaming reply')).toBeInTheDocument()
+    vi.mocked(getOperatorConversation).mockImplementation(() => new Promise(() => {}))
+    act(() => listeners.event({ id: 2, type: 'message', conversationId: 'conversation-one', data: { requestId: 'request-one' } }))
+    expect(screen.getByText('Streaming reply')).toBeInTheDocument()
+    act(() => listeners.snapshot(operatorState({ revision: 2, turnState: 'idle', activeRequestId: null,
+      messages: [{ id: 'final', conversationId: 'conversation-one', role: 'assistant', content: 'Streaming reply' }] })))
+    expect(screen.getAllByText('Streaming reply')).toHaveLength(1)
+    expect(screen.queryByLabelText('Operator is typing')).not.toBeInTheDocument()
+  })
   it('closes the narrow history drawer after selecting a chat', async () => {
     vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })))
     useOperatorChatStore.setState({ open: true, historyOpen: true })
     renderChat()
     expect(useOperatorChatStore.getState().historyOpen).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: 'Open history' }))
-    fireEvent.click(await screen.findByRole('button', { name: /First conversation/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /^First conversation/ }))
     expect(useOperatorChatStore.getState().historyOpen).toBe(false)
     expect(screen.queryByRole('complementary', { name: 'Operator conversation history' })).not.toBeInTheDocument()
   })

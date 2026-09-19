@@ -939,6 +939,7 @@ export const OperatorConfigurationVersionSchema = z.object({
   operatorId: IdSchema,
   version: z.number().int().positive(),
   harness: HarnessConfigurationSchema,
+  showThinking: z.boolean().optional(),
   contentHash: z.string().startsWith("sha256:"),
   createdAt: TimestampSchema,
 }).strict();
@@ -991,6 +992,7 @@ export const MessageSchema = z
   .object({
     id: IdSchema,
     conversationId: IdSchema,
+    requestId: IdSchema.optional(),
     role: MessageRoleSchema,
     content: z.string(),
     ...OptionalTimestampFields,
@@ -1574,9 +1576,49 @@ export const OperatorConversationContextSchema = z.object({
   workflowId: IdSchema.optional(),
   runId: IdSchema.optional(),
 }).strict();
+/** Per-message model controls. Execution permissions remain server-owned. */
+export const OperatorChatSettingsSchema = z.discriminatedUnion("harness", [
+  z.object({ harness: z.literal("codex"), model: z.string().trim().min(1), reasoningEffort: AgentEffortSchema,
+    serviceTier: z.enum(["standard", "priority"]), showThinking: z.boolean() }).strict(),
+  z.object({ harness: z.literal("opencode"), model: z.string().trim().min(1), variant: z.string(),
+    showThinking: z.boolean() }).strict(),
+]);
+export type OperatorChatSettings = z.infer<typeof OperatorChatSettingsSchema>;
+export function operatorChatSettings(harness: HarnessConfiguration, showThinking = false): OperatorChatSettings {
+  return harness.harness === "codex"
+    ? { harness: "codex", model: harness.model, reasoningEffort: harness.reasoningEffort, serviceTier: harness.serviceTier, showThinking }
+    : { harness: "opencode", model: harness.model, variant: harness.variant, showThinking: harness.thinking };
+}
+export const OperatorActivityCursorSchema = z.string().regex(/^[1-9][0-9]{0,18}$/)
+  .refine((value) => value.length < 19 || value <= "9223372036854775807", "Invalid activity cursor");
+export const OperatorActivitySchema = z.object({
+  id: IdSchema,
+  requestId: IdSchema,
+  sequence: OperatorActivityCursorSchema,
+  revision: z.number().int().nonnegative(),
+  kind: z.enum(["thinking", "tool", "mcp", "web_search", "file_read", "file_write", "subagent"]),
+  title: z.string().max(240),
+  status: z.enum(["pending", "running", "completed", "failed", "canceled", "unknown"]),
+  input: z.string().max(16000).optional(),
+  output: z.string().max(24000).optional(),
+  truncated: z.boolean().optional(),
+}).strict();
+export type OperatorActivity = z.infer<typeof OperatorActivitySchema>;
+export const OperatorActivityPageSchema = z.object({
+  activities: z.array(OperatorActivitySchema), nextCursor: OperatorActivityCursorSchema.nullable(),
+}).strict();
+export const OperatorActivityQuerySchema = z.object({
+  before: OperatorActivityCursorSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+}).strict();
+export type OperatorActivityQuery = z.infer<typeof OperatorActivityQuerySchema>;
 export const OperatorConversationStateSchema = z.object({
   conversation: ConversationSchema,
+  settings: OperatorChatSettingsSchema.optional(),
+  hasEarlierMessages: z.boolean().optional(),
   messages: z.array(MessageSchema),
+  activities: z.array(OperatorActivitySchema).optional(),
+  activityNextCursor: OperatorActivityCursorSchema.nullable().optional(),
   turnState: z.enum(["idle", "starting", "active", "canceling", "uncertain", "error"]),
   revision: z.number().int().nonnegative().default(0),
   activeRequestId: IdSchema.nullable().default(null),
@@ -1595,11 +1637,17 @@ export const OperatorConversationSummarySchema = OperatorConversationStateSchema
   needsAttention: z.boolean(),
 }).strict();
 export type OperatorConversationSummary = z.infer<typeof OperatorConversationSummarySchema>;
+export const OperatorConversationSummariesQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(2147483646).optional(),
+}).strict();
 export const ListOperatorConversationSummariesResponseSchema = z.object({
+  hasMore: z.boolean().optional(),
+  attention: z.array(OperatorConversationSummarySchema).optional(),
   conversations: z.array(OperatorConversationSummarySchema),
 }).strict();
 
 export const CreateOperatorConversationRequestSchema = z.object({ title: z.string().trim().min(1).optional() }).strict();
+export const DeleteOperatorConversationResponseSchema = z.object({ conversationId: IdSchema }).strict();
 export const CreateOperatorConversationResponseSchema = z.object({ conversation: ConversationSchema }).strict();
 export const ListOperatorConversationsResponseSchema = z.object({ conversations: z.array(ConversationSchema) }).strict();
 export const GetOperatorConversationResponseSchema = OperatorConversationStateSchema;
@@ -1607,6 +1655,7 @@ export const SendOperatorMessageRequestSchema = z.object({
   requestId: IdSchema,
   content: z.string().trim().min(1),
   context: OperatorConversationContextSchema.optional(),
+  settings: OperatorChatSettingsSchema.optional(),
 }).strict();
 export const SendOperatorMessageResponseSchema = z.object({ state: OperatorConversationStateSchema, replayed: z.boolean() }).strict();
 export const CancelOperatorTurnRequestSchema = z.object({ requestId: IdSchema }).strict();
@@ -1619,7 +1668,7 @@ export const CancelOperatorTurnResponseSchema = z.object({ state: OperatorConver
 export const OperatorConversationStreamEventSchema = z.object({
   id: z.number().int().nonnegative(),
   conversationId: IdSchema,
-  type: z.enum(["snapshot", "delta", "message", "state", "error"]),
+  type: z.enum(["snapshot", "delta", "message", "state", "error", "activity"]),
   data: z.record(z.string(), z.unknown()),
 }).strict();
 export type OperatorConversationStreamEvent = z.infer<typeof OperatorConversationStreamEventSchema>;

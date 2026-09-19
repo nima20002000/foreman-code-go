@@ -628,6 +628,20 @@ export const migrations = [
   nativeEventSequenceMigration,
   harnessSettingsMigration,
   browserAuthMigration,
+  { version: 170019, sql: `alter table operator_conversations add column if not exists deleted_at timestamptz;` },
+  { version: 170020, sql: `
+    create table operator_conversation_activity (
+      sequence bigint generated always as identity primary key,
+      conversation_id text not null,
+      request_id text not null,
+      activity_id text not null,
+      revision bigint not null default 1,
+      record jsonb not null,
+      unique(conversation_id,request_id,activity_id),
+      foreign key(conversation_id,request_id) references operator_conversation_turns(conversation_id,request_id) on delete cascade
+    );
+    create index operator_activity_conversation_sequence on operator_conversation_activity(conversation_id,sequence desc);
+  ` },
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

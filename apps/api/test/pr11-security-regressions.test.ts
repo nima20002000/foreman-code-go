@@ -199,6 +199,16 @@ describe.skipIf(process.platform === 'win32')('PR #11 provider-native resolved c
     })
   })
 
+  it('proves the Operator token separately from worker credentials', async () => {
+    await fixture({ mcp: { 'graphql-operator': { type: 'remote', url: endpoint, oauth: false, headers: { Authorization: 'Bearer {env:GRAPHQL_OPERATOR_MCP_TOKEN}' } } } }, async (binary, workingDirectory) => {
+      const input = { binary, workingDirectory, serverName: 'graphql-operator' }
+      assert.equal((await inspectOpenCodeMcpConfiguration(input))?.credentialEnvironmentVariable, undefined)
+      const entry = await inspectOpenCodeMcpConfiguration({ ...input, credentialEnvironmentVariable: 'GRAPHQL_OPERATOR_MCP_TOKEN' })
+      assert.equal(entry?.credentialEnvironmentVariable, 'GRAPHQL_OPERATOR_MCP_TOKEN')
+      assert(!JSON.stringify(entry).includes('graphql_probe_'))
+    })
+  })
+
   it('rejects unrelated headers, static tokens, bare references, and OAuth mode', async () => {
     for (const config of [
       { oauth: false, headers: { 'X-Other': '{env:GRAPHQL_APP_MCP_TOKEN}' } },

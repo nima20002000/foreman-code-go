@@ -18,7 +18,7 @@
     "typecheck": "corepack pnpm --filter @graphql/contracts build && corepack pnpm -r --if-present typecheck",
     "lint": "corepack pnpm --filter @graphql/contracts build && corepack pnpm -r --if-present lint",
     "test": "corepack pnpm --filter @graphql/contracts build && corepack pnpm -r --workspace-concurrency=1 --if-present test",
-    "test:integration": "corepack pnpm --filter @graphql/contracts build && corepack pnpm --filter @graphql/api test:integration",
+    "test:integration": "corepack pnpm --filter @graphql/contracts build && node scripts/test-integration.mjs",
     "test:acceptance": "corepack pnpm --filter @graphql/contracts build && corepack pnpm --filter @graphql/api test:acceptance",
     "test:production": "node scripts/production-smoke.mjs",
     "build": "corepack pnpm -r --if-present build"

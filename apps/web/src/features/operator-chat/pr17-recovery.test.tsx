@@ -14,6 +14,7 @@ vi.mock('../../shared/api/operatorChatStream', () => ({ subscribeOperatorChat: (
 vi.mock('../../shared/api/sessionBoundary', () => ({ sessionGeneration: () => 1, sessionIsSwitching: () => false }))
 vi.mock('./useOperatorChatVisibility', () => ({ useOperatorChatVisibility: () => true }))
 vi.mock('./operatorOutbox', () => ({ readPendingOperatorMessage: () => ({}), reserveOperatorMessage: vi.fn(), acknowledgeOperatorMessage: vi.fn(), assertOperatorMessageReserved: vi.fn() }))
+vi.mock('./OperatorComposer', () => ({ OperatorComposer: ({ conversationId }: { conversationId: string }) => <div data-testid="composer">Composer for {conversationId}</div> }))
 vi.mock('../conversations', () => ({
   ConversationHistory: ({ messages }: { messages: { id: string; content: string }[] }) => <div>{messages.map((message) => <p key={message.id}>{message.content}</p>)}</div>,
   ConversationComposer: ({ conversationId }: { conversationId: string }) => <div data-testid="composer">Composer for {conversationId}</div>,
@@ -54,7 +55,7 @@ describe('PR17 Operator chat recovery', () => {
     mount()
     await act(async () => { await client.invalidateQueries({ queryKey: listKey }) })
     expect(await screen.findByText(/Previously loaded conversations are still shown/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Deployment investigation/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Deployment investigation/ })).toBeInTheDocument()
     api.list.mockResolvedValue({ conversations: [summary] })
     await userEvent.setup().click(screen.getByRole('button', { name: 'Retry history' }))
     expect(api.list).toHaveBeenCalledTimes(2)
@@ -71,17 +72,20 @@ describe('PR17 Operator chat recovery', () => {
     await userEvent.setup().click(screen.getByRole('button', { name: 'Retry conversation' }))
     expect(api.get).toHaveBeenCalledTimes(2)
   })
-  it('identifies and switches conversations even with history collapsed', async () => {
+  it('identifies the conversation and switches through the history sidebar', async () => {
     const second = { ...state, conversation: { ...state.conversation, id: 'c2', title: 'Release plan' }, messages: [] }
     useOperatorChatStore.setState({ historyOpen: false, selectedConversationId: 'c1' })
     client.setQueryData(listKey, { conversations: [summary, { ...summary, conversationId: 'c2', title: second.conversation.title }] })
     client.setQueryData(detailKey, state)
     client.setQueryData(['operator-chat', 'conversation', 'c2'], second)
     mount()
-    expect(screen.getByText('Operator · Deployment investigation')).toBeInTheDocument()
-    expect(screen.queryByLabelText('Operator conversation history')).not.toBeInTheDocument()
-    await userEvent.setup().selectOptions(screen.getByLabelText('Switch conversation'), 'c2')
-    expect(screen.getByText('Operator · Release plan')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Deployment investigation/ })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Operator conversation history')).toHaveAttribute('inert')
+    expect(screen.getByLabelText('Operator conversation history')).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.queryByLabelText('Switch conversation')).not.toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Open history' }))
+    await userEvent.setup().click(screen.getByRole('button', { name: /^Release plan/ }))
+    expect(screen.getByRole('button', { name: /^Release plan/ })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByTestId('composer')).toHaveTextContent('c2')
   })
   it('presents the native operation before collapsed technical JSON', () => {

@@ -40,7 +40,7 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
         || inspected.configured.url !== this.endpoint || inspected.configured.transport !== 'streamable_http'
         || inspected.configured.bearerTokenEnvironmentVariable !== OPERATOR_MCP_ENVIRONMENT_VARIABLE) this.invalidSetup()
     } else if (manager instanceof OpenCodeNativeSessionManager) {
-      const inspected = await manager.inspectNativeMcp(this.directory, signal)
+      const inspected = await manager.inspectNativeMcp(this.directory, signal, 'configuration')
       if (inspected.serverName !== 'graphql-operator' || inspected.endpoint !== this.endpoint
         || ['not_detected', 'disabled'].includes(inspected.nativeStatus)
         || inspected.credentialEnvironmentVariable !== OPERATOR_MCP_ENVIRONMENT_VARIABLE) this.invalidSetup()

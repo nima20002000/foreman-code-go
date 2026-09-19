@@ -10,10 +10,10 @@ export type ActionMenuItem =
   | (BaseItem & { kind: 'radio'; checked: boolean; onSelect: () => void })
   | (BaseItem & { kind: 'submenu'; items: readonly ActionMenuItem[] })
   | { id: string; kind: 'separator'; label?: string }
-export interface ActionMenuProps { label: string; items: readonly ActionMenuItem[]; triggerLabel?: string; icon?: IconName; disabled?: boolean; children?: ReactNode; className?: string }
+export interface ActionMenuProps { label: string; items: readonly ActionMenuItem[]; triggerLabel?: string; icon?: IconName; disabled?: boolean; children?: ReactNode; className?: string; width?: number }
 
 /** Nested actions/check/radio groups. Disabled items stay discoverable but never activate. */
-export function ActionMenu({ label, items, triggerLabel, icon = 'more', disabled, children, className }: ActionMenuProps) {
+export function ActionMenu({ label, items, triggerLabel, icon = 'more', disabled, children, className, width }: ActionMenuProps) {
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
@@ -37,20 +37,20 @@ export function ActionMenu({ label, items, triggerLabel, icon = 'more', disabled
       onClick={() => open ? close(false) : show()} onKeyDown={event => {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show(event.key === 'ArrowUp') }
       }}><Icon name={icon} size={16} />{triggerLabel && <><span>{triggerLabel}</span><Icon name="down" size={13} /></>}</button>
-    {open && <MenuLevel id={id} label={label} items={items} anchor={trigger} initial={first.current} onClose={close} onBack={() => close()} />}
+    {open && <MenuLevel width={width} id={id} label={label} items={items} anchor={trigger} initial={first.current} onClose={close} onBack={() => close()} />}
   </div>
 }
 export function ContextMenu(props: Omit<ActionMenuProps, 'triggerLabel'> & { children: ReactNode }) {
   return <ActionMenu {...props} />
 }
-function MenuLevel({ id, label, items, anchor, initial = 'first', onClose, onBack, nested = false }:
-  { id: string; label: string; items: readonly ActionMenuItem[]; anchor: RefObject<HTMLElement | null>; initial?: 'first' | 'last'; onClose: (restore?: boolean) => void; onBack: () => void; nested?: boolean }) {
+function MenuLevel({ id, label, items, anchor, initial = 'first', onClose, onBack, nested = false, width = 286 }:
+  { id: string; label: string; items: readonly ActionMenuItem[]; anchor: RefObject<HTMLElement | null>; initial?: 'first' | 'last'; onClose: (restore?: boolean) => void; onBack: () => void; nested?: boolean; width?: number }) {
   const surface = useRef<HTMLDivElement>(null)
   const refs = useRef<(HTMLButtonElement | null)[]>([])
   const [submenu, setSubmenu] = useState<string | null>(null)
   const submenuAnchor = useRef<HTMLButtonElement | null>(null)
   const typeahead = useRef({ text: '', at: 0 })
-  useFloatingSurface(true, anchor, surface, 286, nested ? 'start' : 'end', nested ? 'inline' : 'block')
+  useFloatingSurface(true, anchor, surface, width, nested ? 'start' : 'end', nested ? 'inline' : 'block')
   useEffect(() => {
     const buttons = refs.current.filter((node): node is HTMLButtonElement => Boolean(node))
     ;(initial === 'last' ? buttons.at(-1) : buttons[0])?.focus()
@@ -79,7 +79,7 @@ function MenuLevel({ id, label, items, anchor, initial = 'first', onClose, onBac
       const root = anchor.current?.closest('.n-action-menu')
       const scope = root?.closest('dialog') ?? document.body
       const candidates = Array.from(scope.querySelectorAll<HTMLElement>('button,a[href],input,select,textarea,[tabindex="0"]'))
-        .filter(el => !el.closest('[role="menu"],[hidden]') && !el.matches(':disabled') && el.getClientRects().length > 0)
+        .filter(el => !el.closest('[role="menu"],[hidden],[inert]') && !el.matches(':disabled') && el.getClientRects().length > 0)
       const button = root?.querySelector<HTMLElement>(':scope > button')
       const current = button ? candidates.indexOf(button) : -1
       onClose(false)

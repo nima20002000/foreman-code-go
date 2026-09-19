@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 import {
-  ConversationSchema, MessageSchema, OperatorConfigurationVersionSchema, OperatorConversationStateSchema,
+  HarnessConfigurationSchema, operatorChatSettings, ConversationSchema, MessageSchema, OperatorConfigurationVersionSchema, OperatorConversationStateSchema,
   OperatorConversationSummarySchema, type OperatorConversationSummary,
-  type Conversation, type ExecutionResult, type OperatorConfigurationVersion,
+  type HarnessConfiguration, type Conversation, type ExecutionResult, type OperatorConfigurationVersion,
   type OperatorConversationState, type PendingNativeInteraction, type SendOperatorMessageRequest,
 } from '@graphql/contracts'
 import {
@@ -12,6 +12,8 @@ import {
 } from '@graphql/contracts/operator-chat'
 import type pg from 'pg'
 
+import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
+import { PostgresSettingsRepository } from '../settings/postgres.js'
 import { DomainError } from '../errors.js'
 import { isOperatorReview, operatorConversationOwnerPredicate, PostgresOperatorReviewLifecycle } from './operatorReviewLifecycle.js'
 
@@ -19,6 +21,7 @@ export type TurnPhase = 'accepted' | 'creating' | 'ready' | 'submitting' | 'subm
 export interface ConversationRow {
   id: string
   record: unknown
+  deleted_at?: Date | null
   owner_principal_id: string | null
   operator_configuration_version_id: string
   harness: 'codex' | 'opencode'
@@ -43,7 +46,7 @@ export const OPERATOR_SNAPSHOT_MESSAGE_BYTES = 256 * 1024
 export const OPERATOR_HISTORY_PAGE_BYTES = 1024 * 1024
 
 export function commandPayload(input: SendOperatorMessageRequest) {
-  return { content: input.content, ...(input.context && Object.keys(input.context).length ? {
+  return { content: input.content, ...(input.settings ? { settings: input.settings } : {}), ...(input.context && Object.keys(input.context).length ? {
     context: Object.fromEntries(Object.entries(input.context).filter(([, value]) => value !== undefined).sort(([a], [b]) => a.localeCompare(b))),
   } : {}) }
 }
@@ -59,8 +62,9 @@ function conversation(row: ConversationRow): Conversation {
 
 /** SQL transitions are fenced by the accepted request, even under a delayed native response. */
 export class PostgresOperatorConversationRepository {
+  readonly activity: PostgresOperatorActivityRepository
   readonly reviews: PostgresOperatorReviewLifecycle
-  constructor(private readonly pool: pg.Pool) { this.reviews = new PostgresOperatorReviewLifecycle(pool) }
+  constructor(private readonly pool: pg.Pool) { this.activity = new PostgresOperatorActivityRepository(pool); this.reviews = new PostgresOperatorReviewLifecycle(pool) }
 
   async create(operatorId: string, configuration: OperatorConfigurationVersion, ownerId: string, title?: string, id: string = randomUUID()): Promise<Conversation> {
     if (!isOperatorReview(id)) return this.createWithQuery(this.pool, operatorId, configuration, ownerId, title, id)
@@ -90,11 +94,11 @@ export class PostgresOperatorConversationRepository {
 
   async list(ownerId: string): Promise<Conversation[]> {
     const result = await this.pool.query<ConversationRow>(
-      `select c.* from operator_conversations c where ${operatorConversationOwnerPredicate} order by c.updated_at desc,c.id`, [ownerId])
+      `select c.* from operator_conversations c where c.deleted_at is null and ${operatorConversationOwnerPredicate} order by c.updated_at desc,c.id`, [ownerId])
     return result.rows.map(conversation)
   }
 
-  async summaries(ownerId: string): Promise<OperatorConversationSummary[]> {
+  async summaries(ownerId: string, limit?: number, attentionOnly = false): Promise<OperatorConversationSummary[]> {
     // One small owner-filtered projection. Do not fetch message history or native request payloads.
     const result = await this.pool.query<{
       id: string; title: string | null; turn_state: OperatorConversationSummary['turnState'];
@@ -102,7 +106,11 @@ export class PostgresOperatorConversationRepository {
     }>(`select id,record->>'title' as title,turn_state,revision,active_request_id,
       coalesce(active_request_id is not null and pending_interaction is not null
         and response_delivery='offered' and not cancel_requested and record->>'status'='open', false) as needs_attention
-      from operator_conversations c where ${operatorConversationOwnerPredicate} order by updated_at desc,id`, [ownerId])
+      from operator_conversations c where c.deleted_at is null and ${operatorConversationOwnerPredicate}
+        and exists(select 1 from operator_conversation_messages m where m.conversation_id=c.id)
+        and (not $3::boolean or (active_request_id is not null and pending_interaction is not null
+          and response_delivery='offered' and not cancel_requested and record->>'status'='open'))
+        order by (select max(m.sequence) from operator_conversation_messages m where m.conversation_id=c.id) desc,id limit $2`, [ownerId, limit ?? null, attentionOnly])
     return result.rows.map((row) => OperatorConversationSummarySchema.parse({
       conversationId: row.id, ...(row.title === null ? {} : { title: row.title }),
       turnState: row.turn_state, revision: Number(row.revision), activeRequestId: row.active_request_id,
@@ -113,16 +121,29 @@ export class PostgresOperatorConversationRepository {
   async get(id: string, query: Queryable = this.pool): Promise<OperatorConversationState | undefined> {
     // One statement gives the bounded recent window and state the same MVCC
     // snapshot. Large/older messages remain accessible through history().
-    const result = await query.query<ConversationRow & { messages: unknown[] }>(`select c.*,
+    const result = await query.query<ConversationRow & { messages: unknown[]; activities: unknown[]; activity_cursor: string | null; message_count: string; configuration: unknown; chat_settings: unknown }>(`select c.*,
+      (select record from operator_configuration_versions where id=c.operator_configuration_version_id) as configuration,
+      (select t.payload->'settings' from operator_conversation_turns t join operator_conversation_messages m
+        on m.conversation_id=t.conversation_id and m.client_request_id=t.request_id
+        where t.conversation_id=c.id and t.payload ? 'settings' order by m.sequence desc limit 1) as chat_settings,
+      (select count(*) from operator_conversation_messages where conversation_id=c.id) as message_count,
+      coalesce((select jsonb_agg(a.record || jsonb_build_object('sequence',a.sequence::text,'revision',a.revision) order by a.sequence)
+        from (select record,sequence,revision from operator_conversation_activity where conversation_id=c.id order by sequence desc limit 100) a),'[]'::jsonb) as activities,
+      case when exists(select 1 from operator_conversation_activity where conversation_id=c.id order by sequence desc offset 100 limit 1)
+        then (select sequence::text from operator_conversation_activity where conversation_id=c.id order by sequence desc offset 99 limit 1) end as activity_cursor,
       coalesce((select jsonb_agg(retained.record order by retained.sequence) from (
         select recent.*,sum(octet_length(recent.record::text)) over (order by recent.sequence desc) as bytes
-        from (select m.record,m.sequence from operator_conversation_messages m
+        from (select m.record || case when m.client_request_id is null then '{}'::jsonb else jsonb_build_object('requestId',m.client_request_id) end as record,m.sequence from operator_conversation_messages m
           where m.conversation_id=c.id order by m.sequence desc limit $2) recent
         ) retained where retained.bytes<=$3),'[]'::jsonb) as messages
       from operator_conversations c where c.id=$1`, [id, OPERATOR_SNAPSHOT_MESSAGE_LIMIT, OPERATOR_SNAPSHOT_MESSAGE_BYTES])
     const row = result.rows[0]
     if (!row) return undefined
+    const configuration = OperatorConfigurationVersionSchema.parse(row.configuration)
     return OperatorConversationStateSchema.parse({ conversation: conversation(row), messages: row.messages,
+      activities: row.activities, activityNextCursor: row.activity_cursor,
+      hasEarlierMessages: Number(row.message_count) > row.messages.length,
+      settings: row.chat_settings ?? operatorChatSettings(configuration.harness, configuration.showThinking),
       turnState: row.turn_state, revision: Number(row.revision), activeRequestId: row.active_request_id,
       ...(row.last_error ? { error: row.last_error } : {}),
       ...(row.last_result ? { lastResult: row.last_result } : {}),
@@ -144,7 +165,7 @@ export class PostgresOperatorConversationRepository {
     }>(`with candidates as (
         select m.*,row_number() over (order by m.sequence desc) as ordinal,
           sum(octet_length(m.record::text)) over (order by m.sequence desc) as bytes
-        from (select sequence,record,client_request_id from operator_conversation_messages
+        from (select sequence,record || case when client_request_id is null then '{}'::jsonb else jsonb_build_object('requestId',client_request_id) end as record,client_request_id from operator_conversation_messages
           where conversation_id=$1 and ($2::bigint is null or sequence<$2::bigint)
           order by sequence desc limit ($3::integer+1)) m
       ), selected as (
@@ -170,8 +191,8 @@ export class PostgresOperatorConversationRepository {
       activeRequestId: row.active_request_id, entries: row.entries, nextCursor: row.next_cursor })
   }
 
-  async configuration(id: string): Promise<OperatorConfigurationVersion | undefined> {
-    const result = await this.pool.query<{ record: unknown }>('select record from operator_configuration_versions where id=$1', [id])
+  async configuration(id: string, query: Queryable = this.pool): Promise<OperatorConfigurationVersion | undefined> {
+    const result = await query.query<{ record: unknown }>('select record from operator_configuration_versions where id=$1', [id])
     return result.rows[0] ? OperatorConfigurationVersionSchema.parse(result.rows[0].record) : undefined
   }
   async active(id: string, query: Queryable = this.pool): Promise<ConversationRow | undefined> {
@@ -182,16 +203,45 @@ export class PostgresOperatorConversationRepository {
       'select * from operator_conversations where active_request_id is not null order by updated_at,id')).rows
   }
 
-  async beginTurn(id: string, input: SendOperatorMessageRequest, ownerId: string) {
+  async setDeleted(id: string, ownerId: string, deleted: boolean): Promise<void> {
     const client = await this.pool.connect()
     try {
       await client.query('begin')
       const row = (await client.query<ConversationRow>('select * from operator_conversations where id=$1 for update', [id])).rows[0]
       if (!row || row.owner_principal_id !== ownerId) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
+      if (row.active_request_id || !['idle', 'error'].includes(row.turn_state)) {
+        throw new DomainError('CONVERSATION_TURN_ACTIVE', 'Stop the response before deleting this chat.', 409)
+      }
+      if (Boolean(row.deleted_at) !== deleted) {
+        await client.query('update operator_conversations set deleted_at=case when $2 then now() else null end, revision=revision+1 where id=$1', [id, deleted])
+        if (deleted) await client.query(`update management_principals set revoked_at=coalesce(revoked_at,now())
+          where id in (select principal_id from operator_chat_credentials where conversation_id=$1)`, [id])
+      }
+      await client.query('commit')
+    } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
+    finally { client.release() }
+  }
+
+  async harnessForMessage(configuration: OperatorConfigurationVersion, input: SendOperatorMessageRequest): Promise<HarnessConfiguration> {
+    const settings = input.settings
+    if (!settings) return configuration.harness
+    const base = settings.harness === configuration.harness.harness ? configuration.harness
+      : (await new PostgresSettingsRepository(this.pool).getHarnessDefaults())[settings.harness]
+    return HarnessConfigurationSchema.parse(settings.harness === 'codex'
+      ? { ...base, model: settings.model, reasoningEffort: settings.reasoningEffort, serviceTier: settings.serviceTier }
+      : { ...base, model: settings.model, variant: settings.variant, thinking: settings.showThinking })
+  }
+
+  async beginTurn(id: string, input: SendOperatorMessageRequest, ownerId: string, harness?: HarnessConfiguration) {
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      const row = (await client.query<ConversationRow>('select * from operator_conversations where id=$1 for update', [id])).rows[0]
+      if (!row || row.deleted_at || row.owner_principal_id !== ownerId) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
       const prior = (await client.query<{ input_hash: string; payload: { content: string; context?: unknown }; retryable: boolean }>(
         'select input_hash,payload,retryable from operator_conversation_turns where conversation_id=$1 and request_id=$2', [id, input.requestId])).rows[0]
       if (prior && (prior.input_hash === 'legacy'
-        ? prior.payload.content !== input.content || Object.keys(input.context ?? {}).length > 0
+        ? prior.payload.content !== input.content || Object.keys(input.context ?? {}).length > 0 || Boolean(input.settings)
         : prior.input_hash !== commandHash(input))) {
         throw new DomainError('COMMAND_ID_CONFLICT', 'This request ID was already used with a different message or route context.', 409)
       }
@@ -202,11 +252,27 @@ export class PostgresOperatorConversationRepository {
         if (row.active_request_id || !['idle', 'error'].includes(row.turn_state)) {
           throw new DomainError('CONVERSATION_TURN_ACTIVE', 'This conversation has an active or uncertain turn.', 409)
         }
+        if (harness) {
+          const current = await this.configuration(row.operator_configuration_version_id, client)
+          if (!current) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Operator configuration was not found.', 409)
+          const showThinking = input.settings?.showThinking ?? current.showThinking ?? false
+          if (JSON.stringify(current.harness) !== JSON.stringify(harness) || showThinking !== (current.showThinking ?? false)) {
+            await client.query('select pg_advisory_xact_lock(hashtext($1))', ['application-operator'])
+            const versionRow = await client.query<{ version: number }>('select coalesce(max(version),0)+1 as version from operator_configuration_versions where operator_id=$1', [current.operatorId])
+            const next = OperatorConfigurationVersionSchema.parse({ ...current, id: randomUUID(), version: Number(versionRow.rows[0]!.version),
+              harness, showThinking, contentHash: `sha256:${createHash('sha256').update(JSON.stringify({ harness, showThinking })).digest('hex')}`, createdAt: new Date().toISOString() })
+            await client.query('insert into operator_configuration_versions (id,operator_id,version,record) values ($1,$2,$3,$4::jsonb)', [next.id,next.operatorId,next.version,JSON.stringify(next)])
+            await client.query(`update operator_conversations set operator_configuration_version_id=$2,harness=$3,
+              native_session_id=case when harness=$3 then native_session_id else null end,
+              provider_version=case when harness=$3 then provider_version else null end where id=$1`, [id,next.id,harness.harness])
+            row.record = { ...ConversationSchema.parse(row.record), operatorConfigurationVersionId: next.id }
+          }
+        }
         if (!prior) {
           await client.query(`insert into operator_conversation_turns (conversation_id,request_id,payload,input_hash)
             values ($1,$2,$3::jsonb,$4)`, [id, input.requestId, JSON.stringify(commandPayload(input)), commandHash(input)])
           const now = new Date().toISOString()
-          const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, role: 'user', content: input.content, createdAt: now, updatedAt: now })
+          const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, role: 'user', requestId: input.requestId, content: input.content, createdAt: now, updatedAt: now })
           await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,client_request_id,record)
             values ($1,$2,'user',$3,$4,$5::jsonb)`, [message.id, id, input.content, input.requestId, JSON.stringify(message)])
         }
@@ -290,12 +356,13 @@ export class PostgresOperatorConversationRepository {
           ? typeof output.text === 'string' ? output.text : typeof output.content === 'string' ? output.content : '' : ''
         if (content) {
           const now = new Date().toISOString()
-          const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, role: 'assistant', content, createdAt: now, updatedAt: now })
+          const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, role: 'assistant', requestId, content, createdAt: now, updatedAt: now })
           // A conflict is a correlation error, not a successful answer for a second request.
           await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,native_message_id,record)
             values ($1,$2,'assistant',$3,$4,$5::jsonb)`, [message.id, id, content, nativeMessageId, JSON.stringify(message)])
         }
       }
+      await this.activity.finish(id, requestId, result.outcome === 'canceled', client)
       await client.query('update operator_conversation_turns set result=$3::jsonb,retryable=$4 where conversation_id=$1 and request_id=$2',
         [id, requestId, JSON.stringify(result), retryable])
       await client.query(`update operator_conversations set active_request_id=null,active_native_turn_id=null,active_phase=null,

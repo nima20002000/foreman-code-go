@@ -1,31 +1,40 @@
+import { OperatorActivitySchema } from '@graphql/contracts'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { OperatorConversationState, OperatorConversationSummary, SendOperatorMessageRequest, RespondOperatorInteractionRequest } from '@graphql/contracts'
 
-import { ConversationComposer, useConversationDraftStore } from '../conversations'
+import { useConversationDraftStore } from '../conversations'
 import { ApprovalRequestSummary } from '../approvals/ApprovalRequestSummary'
 import { cancelOperatorTurn, createOperatorConversation, getOperatorConversation,
   sendOperatorMessage, respondOperatorInteraction } from '../../shared/api/client'
-import { listOperatorConversationSummaries } from '../../shared/api/operatorChatSummaries'
+import { deleteOperatorConversation, restoreOperatorConversation, listOperatorConversationSummaries } from '../../shared/api/operatorChatSummaries'
 import { subscribeOperatorChat, type OperatorChatConnection } from '../../shared/api/operatorChatStream'
+import { mergeOperatorActivity } from '../../shared/api/operatorActivity'
 import { useAccessFailureLatch } from '../../shared/api/useAccessFailureLatch'
 import { sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../shared/api/sessionBoundary'
 import { chatStoragePrefix, identityEpoch } from '../../shared/api/protectedChatStorage'
 import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
-import { Alert, Badge, Button, EmptyState, Icon, IconButton, LoadingState, Select } from '../../shared/ui/nocturne'
+import { ActionMenu, Alert, Badge, Button, EmptyState, Icon, IconButton, LoadingState } from '../../shared/ui/nocturne'
 import { isNarrowOperatorChat, operatorChatNarrowQuery, useOperatorChatStore } from './operatorChatStore'
 import { useOperatorChatVisibility } from './useOperatorChatVisibility'
 import { acknowledgeOperatorMessage, assertOperatorMessageReserved, readPendingOperatorMessage, recordOperatorMessageFailure, reserveOperatorMessage } from './operatorOutbox'
 import { projectOperatorText, type OperatorTextProjection } from './operatorTextProjection'
 import { newerOperatorSummaries, operatorNavigationStatus, operatorTurnStatus, summarizeOperatorConversation } from './operatorChatStatus'
 import { OperatorTranscript } from './OperatorTranscript'
+import { OperatorComposerSettings } from './OperatorComposerSettings'
+import { OperatorComposer } from './OperatorComposer'
+import { operatorResizeEdges, useOperatorChatResize } from './useOperatorChatResize'
 import './operatorChat.css'
 
 const listKey = ['operator-chat', 'summaries'] as const
 const detailKey = (id: string) => ['operator-chat', 'conversation', id] as const
 type Summaries = Awaited<ReturnType<typeof listOperatorConversationSummaries>>
 function newer(current: OperatorConversationState | undefined, next: OperatorConversationState): OperatorConversationState {
-  return current && current.revision > next.revision ? current : next
+  const accepted = current && current.revision > next.revision ? current : next
+  // A recent server window may move forward while this tab is reading earlier
+  // activity. Retain observed records in Query, merging only accepted revisions.
+  return { ...accepted, activities: mergeOperatorActivity(current?.activities ?? [], next.activities ?? []),
+    activityNextCursor: current?.activityNextCursor !== undefined ? current.activityNextCursor : next.activityNextCursor }
 }
 function currentSession(generation: number): boolean {
   return !sessionIsSwitching() && sessionGeneration() === generation
@@ -33,10 +42,18 @@ function currentSession(generation: number): boolean {
 
 export function OperatorChat({ settingsWarning }: { settingsWarning?: string } = {}) {
   const enabled = useOperatorChatVisibility()
+  const { panelRef, size, grip } = useOperatorChatResize()
+  const historyLimit = useRef(10)
+  const creating = useRef(false)
+  const deletedIds = useRef(new Set<string>())
+  const [removed, setRemoved] = useState<{ id: string; title: string }>()
   const queryClient = useQueryClient()
   const open = useOperatorChatStore((state) => state.open)
   const historyOpen = useOperatorChatStore((state) => state.historyOpen)
   const selectedId = useOperatorChatStore((state) => state.selectedConversationId)
+  const settingsDraft = useOperatorChatStore((state) => selectedId ? state.settingsDrafts[selectedId] : undefined)
+  const setSettingsDraft = useOperatorChatStore((state) => state.setSettingsDraft)
+  const clearSettingsDraft = useOperatorChatStore((state) => state.clearSettingsDraft)
   const setOpen = useOperatorChatStore((state) => state.setOpen)
   const setHistoryOpen = useOperatorChatStore((state) => state.setHistoryOpen)
   const select = useOperatorChatStore((state) => state.select)
@@ -56,13 +73,13 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
   const [preparingId, setPreparingId] = useState<string>()
   const list = useQuery({ queryKey: listKey, enabled, refetchInterval: 5_000,
     queryFn: async ({ signal }) => {
-      const next = await listOperatorConversationSummaries({ signal })
+      const next = await listOperatorConversationSummaries({ signal }, historyLimit.current)
       const current = queryClient.getQueryData<Summaries>(listKey)
-      const conversations = newerOperatorSummaries(current?.conversations, next.conversations).map((item) => {
+      const conversations = newerOperatorSummaries(current?.conversations, next.conversations.filter((item) => !deletedIds.current.has(item.conversationId))).map((item) => {
         const detail = queryClient.getQueryData<OperatorConversationState>(detailKey(item.conversationId))
         return detail && detail.revision > item.revision ? summarizeOperatorConversation(detail) : item
       })
-      return { conversations }
+      return { ...next, conversations }
     } })
   const listDenied = useAccessFailureLatch(list)
   const selected = useQuery({ queryKey: detailKey(selectedId ?? ''), enabled: enabled && open && !listDenied && Boolean(selectedId),
@@ -70,14 +87,19 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       const state = await getOperatorConversation(selectedId ?? '', { signal })
       return newer(queryClient.getQueryData<OperatorConversationState>(detailKey(selectedId ?? '')), state)
     }, refetchInterval: 3_000 })
+  useEffect(() => {
+    if (selectedId && selected.data?.settings && settingsDraft) clearSettingsDraft(selectedId, selected.data.settings)
+  }, [clearSettingsDraft, selected.data?.settings, selectedId, settingsDraft])
   const selectedDenied = useAccessFailureLatch(selected)
   const accessDenied = listDenied || selectedDenied
   const acceptState = useCallback((id: string, state: OperatorConversationState) => {
+    if (deletedIds.current.has(id)) return
     const accepted = newer(queryClient.getQueryData<OperatorConversationState>(detailKey(id)), state)
     queryClient.setQueryData(detailKey(id), accepted)
     const summary = summarizeOperatorConversation(accepted)
+    if (!accepted.messages.length && !accepted.hasEarlierMessages) return
     queryClient.setQueryData<Summaries>(listKey, (current) => current ? {
-      conversations: current.conversations.some((item) => item.conversationId === id)
+      ...current, conversations: current.conversations.some((item) => item.conversationId === id)
         ? current.conversations.map((item) => item.conversationId === id && summary.revision >= item.revision ? summary : item)
         : [summary, ...current.conversations],
     } : current)
@@ -135,6 +157,34 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       acceptState(variables.id, result.state); await invalidate(variables.id)
     } })
 
+  const remove = useMutation({
+    mutationFn: ({ id }: { id: string; title: string; generation: number }) => deleteOperatorConversation(id),
+    onSuccess: async (_result, input) => {
+      if (!currentSession(input.generation)) return
+      deletedIds.current.add(input.id)
+      await queryClient.cancelQueries({ queryKey: listKey })
+      await queryClient.cancelQueries({ queryKey: detailKey(input.id) })
+      queryClient.setQueryData<Summaries>(listKey, (current) => current && ({ ...current, conversations: current.conversations.filter((item) => item.conversationId !== input.id) }))
+      queryClient.removeQueries({ queryKey: detailKey(input.id) })
+      queryClient.removeQueries({ queryKey: ['operator-chat', 'activity', input.id] })
+      setRemoved({ id: input.id, title: input.title })
+      if (useOperatorChatStore.getState().selectedConversationId === input.id) {
+        select(queryClient.getQueryData<Summaries>(listKey)?.conversations[0]?.conversationId)
+      }
+      await queryClient.invalidateQueries({ queryKey: listKey })
+    },
+  })
+  const restore = useMutation({
+    mutationFn: ({ id }: { id: string; generation: number }) => restoreOperatorConversation(id),
+    onSuccess: async (_result, input) => {
+      if (!currentSession(input.generation)) return
+      deletedIds.current.delete(input.id)
+      setRemoved(undefined)
+      await queryClient.invalidateQueries({ queryKey: listKey })
+      select(input.id)
+    },
+  })
+
   useEffect(() => {
     const changed = (event: StorageEvent) => {
       if (event.key === null || event.key.startsWith(chatStoragePrefix)) refreshOutbox((value) => value + 1)
@@ -163,7 +213,15 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       connection: (state) => setConnection((current) => current?.id === selectedId && current.state === state ? current : { id: selectedId, state }),
       event: (event) => {
         const state = queryClient.getQueryData<OperatorConversationState>(detailKey(selectedId))
-        if (event.type === 'delta') {
+        if (event.type === 'activity') {
+          const activity = OperatorActivitySchema.safeParse(event.data.activity)
+          if (!activity.success || typeof event.data.revision !== 'number') { refresh(); return }
+          const value = activity.data
+          queryClient.setQueryData<OperatorConversationState>(detailKey(selectedId), (current) => current ? {
+            ...current, revision: Math.max(current.revision, Number(event.data.revision)),
+            activities: mergeOperatorActivity(current.activities ?? [], [value]),
+          } : current)
+        } else if (event.type === 'delta') {
           setPartial((current) => ({ conversationId: selectedId,
             value: projectOperatorText(current?.conversationId === selectedId ? current.value : undefined, state?.activeRequestId ?? null, event.data) }))
         } else {
@@ -175,9 +233,8 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
               && revision >= current.revision ? { ...current, revision, activeRequestId,
                 turnState: turnState as 'active' | 'canceling' } : current)
           }
-          if (event.type === 'message' || (event.type === 'state' && ['idle', 'error'].includes(String(event.data.turnState)))) {
-            setPartial((current) => current?.conversationId === selectedId && current.value?.requestId === event.data.requestId ? undefined : current)
-          }
+          // Keep the streamed reply until the authoritative snapshot contains its
+          // final replacement. Clearing here creates a visible blank during refetch.
           refresh()
         }
       },
@@ -186,6 +243,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
 
   if (!enabled || sessionIsSwitching()) return null
   const conversation = accessDenied ? undefined : selected.data
+  const settings = settingsDraft ?? conversation?.settings
   const active = Boolean(conversation && (conversation.activeRequestId || !['idle', 'error'].includes(conversation.turnState)))
   const archived = conversation?.conversation.status === 'archived'
   const requestId = conversation?.activeRequestId
@@ -195,13 +253,13 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
   const sendError = preparationError && preparationError.id === selectedId ? preparationError.message
     : scopedSendError ?? pending.sendFailure
   const partialText = partial?.value && partial.conversationId === selectedId && partial.value.requestId === requestId
-    ? Object.values(partial.value.parts).join('\n\n') : ''
+    ? Object.entries(partial.value.parts).filter(([id]) => !id.startsWith('thinking:')).map(([, text]) => text).join('\n\n') : ''
+  const thinkingText = settings?.showThinking && partial?.value && partial.conversationId === selectedId && partial.value.requestId === requestId
+    ? Object.entries(partial.value.parts).filter(([id]) => id.startsWith('thinking:')).map(([, text]) => text).join('\n\n') : ''
   const entries: OperatorConversationSummary[] = accessDenied ? [] : (list.data?.conversations ?? []).map((item) =>
     conversation?.conversation.id === item.conversationId && conversation.revision >= item.revision ? summarizeOperatorConversation(conversation) : item)
-  const selectedTitle = conversation?.conversation.title?.trim()
-    || entries.find((item) => item.conversationId === selectedId)?.title?.trim()
-    || (selectedId ? 'Untitled conversation' : 'New conversation')
-  const attention = entries.filter((item) => item.needsAttention)
+  const attention = accessDenied ? [] : newerOperatorSummaries(entries, list.data?.attention ?? entries)
+    .filter((item) => !deletedIds.current.has(item.conversationId) && item.needsAttention)
   const liveConnection = connection && connection.id === selectedId ? connection.state : 'connecting'
   const connectionState = selected.isError || selected.failureCount > 0
     ? 'reconnecting' : liveConnection
@@ -218,8 +276,23 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       else historyTriggerRef.current?.focus()
     })
   }
-  const createConversation = () => create.mutate({ generation: sessionGeneration() })
+  const createConversation = async () => {
+    if (creating.current || accessDenied) return
+    creating.current = true
+    try {
+      await create.mutateAsync({ generation: sessionGeneration() })
+      if (selectedId) {
+        const draft = useConversationDraftStore.getState().drafts[selectedId] ?? ''
+        if (/^\/n?e?w?$/.test(draft.trim())) clearDraft(selectedId, draft)
+      }
+    } catch { /* The mutation keeps the failure visible. */ }
+    finally { creating.current = false }
+  }
   const submit = async (content: string) => {
+    if (content.trim() === '/new') {
+      await createConversation()
+      return
+    }
     if (!selectedId || archived || active || accessDenied || pending.command || pending.error
       || reservations.current.has(selectedId) || (send.isPending && send.variables?.id === selectedId)) return
     const id = selectedId
@@ -227,7 +300,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
     const epoch = identityEpoch()
     reservations.current.add(id); setPreparingId(id)
     try {
-      const command = await reserveOperatorMessage(id, content, window.location.pathname + window.location.search)
+      const command = await reserveOperatorMessage(id, content, window.location.pathname + window.location.search, settings)
       if (!currentSession(generation) || epoch !== identityEpoch()) return
       setPreparationError(undefined)
       send.mutate({ id, command, generation, epoch })
@@ -240,54 +313,63 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       refreshOutbox((value) => value + 1)
     }
   }
+  function loadOlderChats() {
+    if (!list.data?.hasMore || list.isFetching || accessDenied) return
+    historyLimit.current += 10
+    void list.refetch()
+  }
   return <div className="operator-chat-root">
-    {open ? <section id={panelId} className="operator-chat" role="dialog" aria-modal={false} aria-label="Operator chat"
+    {open ? <section ref={panelRef} style={size} id={panelId} className="operator-chat" role="dialog" aria-modal={false} aria-label="Operator chat"
       onKeyDown={(event) => {
         if (event.key !== 'Escape') return
         event.preventDefault(); event.stopPropagation()
         if (historyOpen && isNarrowOperatorChat()) showHistory(false)
         else close()
       }}>
-      <header>
-        <IconButton ref={historyTriggerRef} label={historyOpen ? 'Collapse history' : 'Open history'} variant="ghost"
-          aria-expanded={historyOpen} aria-controls={historyOpen ? historyId : undefined} onClick={() => showHistory(!historyOpen)}><Icon name={historyOpen ? 'close' : 'menu'} /></IconButton>
-        <div className="operator-chat-identity"><strong title={selectedTitle}>Operator · {selectedTitle}{attention.length ? <Badge tone="warning" className="operator-chat-attention">{attention.length} need a decision</Badge> : null}</strong>
-          <Select label="Switch conversation" value={selectedId ?? ''} options={[
-            { value: '', label: 'Choose a conversation', disabled: true },
-            ...(selectedId && !entries.some((item) => item.conversationId === selectedId) ? [{ value: selectedId, label: selectedTitle }] : []),
-            ...entries.map((item) => ({ value: item.conversationId, label: item.title?.trim() || 'Untitled conversation' })),
-          ]} onChange={(event) => {
-            if (!event.target.value) return
-            select(event.target.value)
-            if (isNarrowOperatorChat()) showHistory(false)
-          }} />
-        </div>
-        <IconButton ref={closeRef} label="Close Operator chat" variant="ghost" onClick={close}><Icon name="close" /></IconButton>
-      </header>
+      {operatorResizeEdges.map((edge) => <button key={edge} type="button" className={`operator-chat-resize operator-chat-resize-${edge}`} {...grip(edge)} />)}
       {settingsWarning ? <Alert live tone="warning" title="Operator settings unavailable">{settingsWarning}</Alert> : null}
       {accessDenied ? <Alert live tone="danger" title="Operator access unavailable">Check your browser enrollment and permissions.</Alert> : null}
       {!accessDenied && list.isError ? <Alert live tone="warning" title="Conversation status could not be refreshed">Attention indicators may be stale.</Alert> : null}
+      <div className="operator-chat-navigation" data-history-open={historyOpen}>
+        <IconButton className="operator-history-toggle" ref={historyTriggerRef} label={historyOpen ? 'Collapse history' : 'Open history'} variant="ghost"
+          aria-expanded={historyOpen} aria-controls={historyId} onClick={() => showHistory(!historyOpen)}><Icon name="menu" /></IconButton>
+        <IconButton ref={closeRef} label="Close Operator chat" variant="ghost" className="operator-chat-close" onClick={close}><Icon name="close" /></IconButton>
+      </div>
       <div className={`operator-chat-body${historyOpen ? ' operator-chat-history-open' : ''}`}>
-        {historyOpen ? <aside ref={historyRef} id={historyId} aria-label="Operator conversation history">
-          <Button variant="primary" leading={<Icon name="plus" size={15} />} onClick={createConversation} disabled={create.isPending || accessDenied} loading={create.isPending}>New chat</Button>
+        <aside aria-hidden={!historyOpen} inert={!historyOpen} ref={historyRef} id={historyId} aria-label="Operator conversation history"
+          onScroll={(event) => { const node = event.currentTarget; if (node.scrollHeight - node.scrollTop - node.clientHeight < 72) loadOlderChats() }}>
+          <Button variant="ghost" className="operator-chat-new" leading={<Icon name="plus" size={14} />} onClick={() => void createConversation()} disabled={create.isPending || accessDenied}>New chat</Button>
+
           {list.isPending ? <LoadingState label="Loading conversation history…" rows={3} /> : null}
           {list.isError ? <Alert live tone="danger" title={list.data ? 'History refresh failed' : 'Conversation history could not be loaded'} action={<Button size="sm" disabled={list.isFetching} loading={list.isFetching} onClick={() => void list.refetch()}>Retry history</Button>}>{list.data ? 'Previously loaded conversations are still shown.' : 'Try the request again.'}</Alert> : null}
           {list.isSuccess && entries.length === 0 ? <EmptyState icon="history" title="No conversations yet. Start a new chat." description="The Operator will keep the conversation history here." /> : null}
-          <nav>{entries.map((item) => <Button variant="ghost" aria-current={item.conversationId === selectedId ? 'page' : undefined}
-            key={item.conversationId} onClick={() => {
-              select(item.conversationId)
-              if (isNarrowOperatorChat()) historyTriggerRef.current?.focus()
-            }}><span>{item.title ?? 'Conversation'}</span><small className={item.needsAttention ? 'operator-chat-attention' : undefined}>{operatorNavigationStatus(item)}</small></Button>)}</nav>
-        </aside> : null}
+          <nav aria-label="Conversations">{entries.map((item) => <div className="operator-chat-row" key={item.conversationId}>
+            <Button variant="ghost" className="operator-chat-row-select" aria-current={item.conversationId === selectedId ? 'page' : undefined}
+              onClick={() => { select(item.conversationId); if (isNarrowOperatorChat()) historyTriggerRef.current?.focus() }}
+              title={`${item.title ?? 'Conversation'} · ${operatorNavigationStatus(item)}`}>
+              <span className="operator-chat-title-clip"><span>{item.title ?? 'Conversation'}</span></span>
+              <span className={`operator-chat-state-dot${item.needsAttention ? ' needs-attention' : ''}`} aria-label={operatorNavigationStatus(item)} />
+            </Button>
+            <ActionMenu width={120} label={`Chat options: ${item.title ?? 'Conversation'}`} className="operator-chat-row-menu" items={[
+              { id: 'delete', label: 'Delete', danger: true,
+                disabled: Boolean(item.activeRequestId) || !['idle', 'error'].includes(item.turnState) || remove.isPending,
+                ...(item.activeRequestId ? { description: 'Stop the response before deleting.' } : {}),
+                onSelect: () => remove.mutate({ id: item.conversationId, title: item.title ?? 'Conversation', generation: sessionGeneration() }) },
+            ]} />
+          </div>)}</nav>
+          {list.data?.hasMore ? <button type="button" className="operator-chat-load-more" disabled={list.isFetching} onClick={loadOlderChats}>{list.isFetching ? 'Loading…' : 'Load older chats'}</button> : null}
+        </aside>
         <main className="operator-chat-main">
+          {remove.error instanceof Error ? <Alert live tone="danger" title="Chat could not be deleted">{remove.error.message}</Alert> : null}
+          {restore.error instanceof Error ? <Alert live tone="danger" title="Chat could not be restored">{restore.error.message}</Alert> : null}
           {create.error instanceof Error ? <Alert live tone="danger" title="Conversation could not be created">{create.error.message}</Alert> : null}
           {!selectedId && !accessDenied ? <Button variant="primary" leading={<Icon name="plus" size={15} />} onClick={createConversation} disabled={create.isPending} loading={create.isPending}>Start a new conversation</Button> : null}
           {selected.isLoading ? <LoadingState label="Loading conversation…" rows={4} /> : null}
           {selected.isError ? <Alert live tone="danger" title={conversation ? 'Conversation refresh failed' : 'Conversation could not be loaded'} action={<Button size="sm" disabled={selected.isFetching} loading={selected.isFetching} onClick={() => void selected.refetch()}>Retry conversation</Button>}>{conversation ? 'Previously loaded messages are still shown.' : 'Try the request again.'}</Alert> : null}
           {conversation ? <>
             {archived ? <Alert tone="warning" title="Conversation ended">This conversation is read-only. Its history and pending receipt remain available.</Alert> : null}
-            {conversation.messages.length === 0 && !active ? <p>No messages yet. Send a message to start this conversation.</p> : null}
-            <OperatorTranscript key={conversation.conversation.id} messages={conversation.messages} partialText={partialText} />
+            <OperatorTranscript key={conversation.conversation.id} conversationId={conversation.conversation.id} messages={conversation.messages} activities={conversation.activities} activityNextCursor={conversation.activityNextCursor}
+              activeRequestId={requestId} parts={partial && partial.conversationId === selectedId ? partial.value?.parts : undefined} partialText={partialText} thinkingText={thinkingText} hasEarlierMessages={conversation.hasEarlierMessages} working={['starting', 'active'].includes(conversation.turnState) && !conversation.pendingInteraction} />
             {conversation.pendingInteraction || conversation.error || pending.error || pending.command || sendError
               || (respondVariables?.id === selectedId && respond.error) || (cancelVariables?.id === selectedId && cancel.error) ? <div className="operator-chat-decision-area">
               {requestId && conversation.pendingInteraction ? <fieldset disabled={archived || (respond.isPending && respond.variables?.id === selectedId) || conversation.responseDelivery !== 'offered' || conversation.turnState === 'canceling'}>
@@ -314,17 +396,21 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
               }}>Retry pending message</Button> : null}
             </div> : null}
             <footer className="operator-chat-controls">
-              <div className="operator-chat-turn-actions">
+              {conversation.messages.length > 0 || conversation.hasEarlierMessages || conversation.activeRequestId || conversation.turnState !== 'idle' || connectionState !== 'connected' ? <div className="operator-chat-turn-actions">
                 <p role="status">{operatorTurnStatus(conversation, connectionState)}</p>
-                {requestId ? <Button className="operator-chat-cancel" variant="danger" size="sm" onClick={() => cancel.mutate({ id: conversation.conversation.id, requestId, generation: sessionGeneration() })}
-                  disabled={conversation.turnState === 'canceling' || (cancel.isPending && cancel.variables?.id === selectedId)}>{conversation.turnState === 'canceling' ? 'Cancel requested' : 'Cancel turn'}</Button> : null}
-              </div>
-              <ConversationComposer conversationId={conversation.conversation.id} sendDisabled={archived || active || preparingId === selectedId || Boolean(pending.error) || Boolean(pending.command)}
-                allowEditingWhileSending isSending={preparingId === selectedId || (send.isPending && send.variables?.id === selectedId)} onSubmit={submit} />
+              </div> : null}
+              <OperatorComposer context={settings ? <OperatorComposerSettings value={settings} disabled={Boolean(pending.command) || preparingId === selectedId}
+                onChange={(value) => setSettingsDraft(conversation.conversation.id, value)} /> : undefined}
+                onNewChat={() => void createConversation()} conversationId={conversation.conversation.id}
+                sendDisabled={archived || active || preparingId === selectedId || Boolean(pending.error) || Boolean(pending.command)}
+                isSending={preparingId === selectedId || (send.isPending && send.variables?.id === selectedId)} onSubmit={submit}
+                onCancel={requestId && conversation.turnState !== 'canceling' ? () => cancel.mutate({ id: conversation.conversation.id, requestId, generation: sessionGeneration() }) : undefined} />
             </footer>
           </> : null}
         </main>
       </div>
+      {removed ? <div className="operator-chat-undo" role="status">Chat deleted. <Button size="sm" variant="ghost" disabled={restore.isPending}
+        onClick={() => restore.mutate({ id: removed.id, generation: sessionGeneration() })}>Undo</Button></div> : null}
     </section> : null}
     <IconButton ref={launcherRef} className="operator-chat-launcher" variant="primary" label={attention.length ? `Open Operator chat, ${attention.length} conversation${attention.length === 1 ? '' : 's'} need your decision` : 'Open Operator chat'} hidden={open}
       aria-expanded={open} aria-controls={open ? panelId : undefined} aria-haspopup="dialog"

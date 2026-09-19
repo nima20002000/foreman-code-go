@@ -111,7 +111,8 @@ describe('F4/F5: durable review lifecycle and access predicates', () => {
     await repository.list('human-owner')
     await repository.summaries('human-owner')
     for (const call of query.mock.calls) {
-      expect(call).toEqual([expect.stringContaining("c.id='operator-review:' || i.id"), ['human-owner']])
+      expect(call[0]).toEqual(expect.stringContaining("c.id='operator-review:' || i.id"))
+      expect(call[1]?.[0]).toBe('human-owner')
       expect(String(call[0])).toContain('c.owner_principal_id=b.principal_id')
       expect(String(call[0])).toContain('b.owner_principal_id=$1')
     }

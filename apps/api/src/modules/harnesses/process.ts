@@ -28,10 +28,13 @@ export interface JsonlProcessResult {
   stderr: string
 }
 
+type ScopedCommandEnvironment = Pick<JsonlProcessOptions, 'beforeSpawn' | 'expectedAgentId'> & { credentialAudience?: 'worker' | 'operator' }
+
 type ProcessOptions = Pick<JsonlProcessOptions, 'binary' | 'args' | 'cwd' | 'stdin' | 'beforeSpawn' | 'expectedAgentId'> & {
   signal?: AbortSignal
   onSpawn?(process: ChildProcess): void
   environment?: NodeJS.ProcessEnv
+  credentialAudience?: 'worker' | 'operator'
 }
 type ProcessExit = Pick<JsonlProcessResult, 'exitCode' | 'exitSignal'>
 
@@ -82,10 +85,13 @@ async function runOwnedProcess<T>(
       throw new Error('Child process environment belongs to another Agent.')
     }
     const entries = Object.entries(scopedEnvironment.variables)
-    if (entries.length !== 1 || entries[0]?.[0] !== 'GRAPHQL_APP_MCP_TOKEN' || !entries[0][1]) {
-      throw new Error('Only the scoped GraphQL App MCP credential may be injected into an Agent process.')
+    const credentialName = options.credentialAudience === 'operator' ? 'GRAPHQL_OPERATOR_MCP_TOKEN' : 'GRAPHQL_APP_MCP_TOKEN'
+    if (entries.length !== 1 || entries[0]?.[0] !== credentialName || !entries[0][1]) {
+      throw new Error(options.credentialAudience === 'operator'
+        ? 'Only the scoped Operator MCP credential may be injected into this process.'
+        : 'Only the scoped GraphQL App MCP credential may be injected into an Agent process.')
     }
-    childEnvironment.GRAPHQL_APP_MCP_TOKEN = entries[0][1]
+    childEnvironment[credentialName] = entries[0][1]
     secrets.push(entries[0][1])
   }
   options.signal?.throwIfAborted()
@@ -237,10 +243,10 @@ export async function runCommand(
   args: string[],
   cwd: string,
   signal?: AbortSignal,
-  environmentOrScope?: NodeJS.ProcessEnv | Pick<JsonlProcessOptions, 'beforeSpawn' | 'expectedAgentId'>,
+  environmentOrScope?: NodeJS.ProcessEnv | ScopedCommandEnvironment,
 ): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
   const scoped = environmentOrScope && ('beforeSpawn' in environmentOrScope || 'expectedAgentId' in environmentOrScope)
-    ? environmentOrScope as Pick<JsonlProcessOptions, 'beforeSpawn' | 'expectedAgentId'>
+    ? environmentOrScope as ScopedCommandEnvironment
     : undefined
   const environment = environmentOrScope && !scoped ? environmentOrScope as NodeJS.ProcessEnv : undefined
   const deadline = AbortSignal.timeout(NATIVE_COMMAND_TIMEOUT_MS)

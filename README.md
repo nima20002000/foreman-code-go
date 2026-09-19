@@ -74,7 +74,9 @@ registry packages, with no exclusions and no missing-publish-time fallback.
 the application PostgreSQL pool and the LangGraph checkpoint saver. The API
 fails startup if either dependency cannot initialize.
 
-`corepack pnpm test:integration` requires the PostgreSQL service. It writes a real
+`corepack pnpm test:integration` requires the PostgreSQL service. By default it creates
+and removes a disposable database, keeping the running app's settings and data intact.
+Set `TEST_DATABASE_URL` to explicitly supply a dedicated test database. It writes a real
 LangGraph checkpoint, closes the saver, reopens it, and proves the checkpoint
 is durable. `corepack pnpm db:down` stops the local service without deleting its named
 volume.

@@ -1,4 +1,4 @@
-import { SendOperatorMessageRequestSchema, type SendOperatorMessageRequest } from '@graphql/contracts'
+import { SendOperatorMessageRequestSchema, type SendOperatorMessageRequest, type OperatorChatSettings } from '@graphql/contracts'
 import { protectedKey } from '../../shared/api/protectedChatStorage'
 import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal, SessionChangedError } from '../../shared/api/sessionBoundary'
 
@@ -55,7 +55,7 @@ async function exclusive<T>(id: string, work: (key: string) => T): Promise<T> {
 }
 
 /** Reserve once before submission. Every tab and every lost-response retry reuses that identity. */
-export function reserveOperatorMessage(id: string, content: string, route: string): Promise<SendOperatorMessageRequest> {
+export function reserveOperatorMessage(id: string, content: string, route: string, settings?: OperatorChatSettings): Promise<SendOperatorMessageRequest> {
   return exclusive(id, (key) => {
     const pending = readKey(key)
     if (pending.error) throw new Error(pending.error)
@@ -63,7 +63,7 @@ export function reserveOperatorMessage(id: string, content: string, route: strin
       if (pending.command.content !== content) throw new Error('Retry the previous pending message before sending a different command. Your new draft is preserved.')
       return pending.command // Includes the originally accepted route context.
     }
-    const command = SendOperatorMessageRequestSchema.parse({ requestId: crypto.randomUUID(), content, context: { route } })
+    const command = SendOperatorMessageRequestSchema.parse({ requestId: crypto.randomUUID(), content, context: { route }, ...(settings ? { settings } : {}) })
     window.localStorage.setItem(key, JSON.stringify(command))
     if (readKey(key).command?.requestId !== command.requestId) throw new Error('The pending command could not be saved. No message was sent.')
     return command

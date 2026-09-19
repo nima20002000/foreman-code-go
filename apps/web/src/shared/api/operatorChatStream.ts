@@ -42,7 +42,7 @@ export function subscribeOperatorChat(id: string, listeners: {
       listeners.connection?.('connected')
     } catch { refresh() }
   })
-  for (const type of ['delta', 'message', 'state', 'error']) source.addEventListener(type, (event: Event) => {
+  for (const type of ['delta', 'message', 'state', 'error', 'activity']) source.addEventListener(type, (event: Event) => {
     if (!valid()) return
     // A transport error has no payload. A provider's JSON "error" event is
     // still a live connection and must not be mistaken for a stopped run.

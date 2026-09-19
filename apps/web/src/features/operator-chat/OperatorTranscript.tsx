@@ -1,11 +1,27 @@
 import { useLayoutEffect, useRef, useState } from 'react'
-import type { Message } from '@graphql/contracts'
-import { Badge, Button, Icon, MessageBubble } from '../../shared/ui/nocturne'
-import { ConversationHistory } from '../conversations'
+import type { Message, OperatorActivity } from '@graphql/contracts'
+import { Button, Icon } from '../../shared/ui/nocturne'
+import { useInfiniteQuery } from '@tanstack/react-query'
+import { identityEpoch } from '../../shared/api/protectedChatStorage'
+import { getOperatorActivity, mergeOperatorActivity } from '../../shared/api/operatorActivity'
+import { OperatorMessages } from './OperatorMessages'
 import { OperatorHistory } from './OperatorHistory'
 
 /** Follow new output only while the reader is at the end of the transcript. */
-export function OperatorTranscript({ messages, partialText }: { messages: Message[]; partialText: string }) {
+export function OperatorTranscript({ messages, partialText, thinkingText = '', hasEarlierMessages = false, working = false,
+  conversationId, activities = [], activityNextCursor, activeRequestId, parts }: {
+  messages: Message[]; partialText: string; thinkingText?: string; hasEarlierMessages?: boolean; working?: boolean;
+  conversationId?: string; activities?: OperatorActivity[]; activityNextCursor?: string | null;
+  activeRequestId?: string | null; parts?: Record<string, string>;
+}) {
+  const earlierActivity = useInfiniteQuery({
+    queryKey: ['operator-chat', 'activity', conversationId ?? '', identityEpoch()],
+    queryFn: ({ pageParam, signal }) => getOperatorActivity(conversationId ?? '', pageParam ? { before: pageParam } : {}, { signal }),
+    initialPageParam: activityNextCursor ?? undefined,
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+    enabled: false, retry: false,
+  })
+  const entries = mergeOperatorActivity(...(earlierActivity.data?.pages.map((page) => page.activities) ?? []), activities)
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const followLatest = useRef(true)
@@ -21,7 +37,7 @@ export function OperatorTranscript({ messages, partialText }: { messages: Messag
     if (!scroll) return
     if (followLatest.current) { scroll.scrollTop = scroll.scrollHeight; setHasNewContent(false) }
     else setHasNewContent(true)
-  }, [messages, partialText])
+  }, [messages, partialText, thinkingText])
   useLayoutEffect(() => {
     if (typeof ResizeObserver === 'undefined' || !contentRef.current) return
     const observer = new ResizeObserver(() => {
@@ -40,11 +56,13 @@ export function OperatorTranscript({ messages, partialText }: { messages: Messag
         if (followLatest.current) setHasNewContent(false)
       }}>
       <div ref={contentRef}>
-        <OperatorHistory onBrowse={() => { followLatest.current = false }} />
-        <ConversationHistory messages={messages} />
-        {partialText ? <div className="operator-chat-partial" role="status" aria-label="Assistant response in progress">
-          <MessageBubble author="Operator" status={<Badge tone="accent">Working</Badge>}>{partialText}</MessageBubble>
-        </div> : null}
+        {(activityNextCursor && !earlierActivity.data) || earlierActivity.hasNextPage ? <Button size="sm" variant="ghost" disabled={earlierActivity.isFetching}
+          onClick={() => { followLatest.current = false; void earlierActivity.fetchNextPage() }}>Load earlier activity</Button> : null}
+        {earlierActivity.isError ? <p role="alert">Earlier activity could not be loaded. <Button size="sm" onClick={() => void earlierActivity.fetchNextPage()}>Retry activity</Button></p> : null}
+        {hasEarlierMessages ? <OperatorHistory recentMessages={messages} onBrowse={() => { followLatest.current = false }}
+          renderMessages={(older) => <OperatorMessages messages={older} activities={entries} onBrowse={() => { followLatest.current = false }} />} /> : null}
+        <OperatorMessages messages={messages} activities={entries} activeRequestId={activeRequestId} parts={parts}
+          working={working} partialText={partialText} thinkingText={thinkingText} onBrowse={() => { followLatest.current = false }} />
       </div>
     </div>
     {hasNewContent ? <Button size="sm" variant="secondary" className="operator-chat-jump" leading={<Icon name="down" size={14} />} onClick={jumpToLatest}>New output — Jump to latest</Button> : null}

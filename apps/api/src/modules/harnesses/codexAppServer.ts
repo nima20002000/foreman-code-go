@@ -218,7 +218,9 @@ function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'wor
     cwd: prepared.workingDirectory,
     runtimeWorkspaceRoots: [prepared.workingDirectory, ...draft.additionalWritableDirectories],
     approvalPolicy: draft.approvalPolicy, approvalsReviewer: draft.approvalsReviewer,
-    sandbox: value.sandbox, config: configOverrides(value), developerInstructions: instructions(prepared.input),
+    sandbox: value.sandbox, config: { ...configOverrides(value),
+      ...(prepared.input.kind === 'operator' ? { model_reasoning_summary: prepared.input.configuration.showThinking ? 'auto' : 'none' } : {}),
+    }, developerInstructions: instructions(prepared.input),
   }
 }
 function sameSet(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
@@ -948,7 +950,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       || normalize(String(response.cwd)) !== normalize(prepared.workingDirectory)
       || canonical(response.approvalPolicy) !== canonical(draft.approvalPolicy)
       || response.approvalsReviewer !== draft.approvalsReviewer || sandbox.type !== sandboxType
-      || (value.serviceTier === 'priority' ? response.serviceTier !== 'fast' : ![null, 'default'].includes(response.serviceTier as string | null))
+      || (value.serviceTier === 'priority' ? !['fast', 'priority'].includes(String(response.serviceTier)) : ![null, 'default'].includes(response.serviceTier as string | null))
     if (value.sandbox === 'workspace-write') {
       const roots = stringArray(sandbox.writableRoots) ?? []
       const requested = draft.additionalWritableDirectories.map((path) => normalize(path))
@@ -1207,6 +1209,14 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (turn.id !== runtime.activeTurnId || !Array.isArray(turn.items)) return
     if (!['inProgress', 'completed', 'failed', 'interrupted'].includes(String(turn.status))) return
     for (const value of turn.items) {
+      if (isObject(value) && text(value.id) && !['userMessage', 'agentMessage'].includes(String(value.type))) {
+        const fingerprint = createHash('sha256').update(canonical(['snapshot', turn.id, value])).digest('hex')
+        if (!runtime.seenNotifications.has(fingerprint)) {
+          runtime.seenNotifications.add(fingerprint)
+          if (runtime.seenNotifications.size > MAX_EVENTS) runtime.seenNotifications.delete(runtime.seenNotifications.values().next().value!)
+          this.record(runtime, 'item.snapshot', { threadId: runtime.session.nativeSessionId, turnId: turn.id, nativeTurnStatus: turn.status, item: value })
+        }
+      }
       if (!isObject(value) || value.type !== 'agentMessage' || typeof value.text !== 'string') continue
       runtime.lastAgentMessage = value.text
       runtime.lastAgentMessageId = text(value.id)
