@@ -1,282 +1,189 @@
 # UI/UX lessons
 
-This file is the project's accumulated UI/UX judgment.
+Read this file before changing UI or UX. It captures reusable design judgment: why an interaction fails, what works better, and how to protect that improvement. Examples illustrate principles; they are not an action history or a claim that every check below has just been run.
 
-It is **not a changelog**. Do not record every screen, component, commit, or visual tweak here. Record the reason a UI/UX problem happened, what the project learned from fixing it, and the rule future work should follow so the same class of problem does not return.
+## 1. Make persistence and state ownership unambiguous
 
-Before changing UI or UX, read this file. When a fix teaches a reusable lesson, update this file in the same change.
+**Lesson:** Users must be able to distinguish saved truth from edits and temporary interaction state. Competing sources of truth produce false success and lost work.
 
-## 1. The interface must reflect the real source of truth
+**Bad UX:** A rejected setting still looks saved, a refetch overwrites newer accepted values, or two workspaces appear active because local selection disagrees with the route.
 
-The UI has repeatedly become confusing when local presentation state looked more authoritative than the real product state.
+**Good UX:** TanStack Query owns server data and request lifecycle; the URL owns linkable navigation, filters, and selected views; local state/Zustand owns temporary interaction state. Keep drafts distinct from accepted values and reject stale revisions. After creation, make the accepted object available to the route's query projection before selecting it; if opening fails, retry Open without repeating Create.
 
-A saved server object, an editable draft, a URL selection, an in-flight request, and temporary local interaction state are different things. Do not blur them together just because one component can hold all of them.
+**Protect it:** Check rejected saves, stale refetches, reload/deep links, and creation followed by navigation. Accepted values and route selection must remain consistent.
 
-**Project rule:**
+## 2. Give each navigation gesture one meaning
 
-- TanStack Query data is server truth and request lifecycle state.
-- The URL owns linkable navigation, filters, selected views, and other state that should survive sharing/reload.
-- Zustand/local component state owns temporary interaction state only when it does not belong to the server or URL.
-- Never make a local override look persisted if the server rejected it.
-- Never let an older refetch replace a newer accepted revision in the UI.
+**Lesson:** Navigation, disclosure, and reordering are separate intentions. Combining them makes location and movement unpredictable.
 
-This lesson is behind fixes that preserved server-owned agent settings, retained failed edits without pretending they were saved, and protected newer revisions from stale query results.
+**Bad UX:** Expanding a workspace changes the route, dragging a child reorders its parent, or Back leads to an unrelated page from browser history.
 
-Evidence: `d92d49f` (`fix(web): persist agent settings and lock Start through accepted run completion`), `94a235e` (`fix PR17 usability findings 16 through 31`).
+**Good UX:** Separate disclosure from activation, derive active styling from the route, and isolate nested drag gestures. Preserve useful expansion without making expanded items look active. Give substantial settings tasks stable detail routes and one Back link to the immediate product parent, available during loading and errors. Send dirty navigation through the shared leave guard.
 
-## 2. Navigation has to answer one question clearly: “Where am I?”
+**Protect it:** Check one active workspace, independent expansion, nested reordering, direct detail links, and parent navigation with clean and dirty forms.
 
-Navigation became unstable when expansion, activation, routing, and drag behavior were mixed together. A workspace row that both navigated and expanded was ambiguous, multiple workspaces could look active at once, and nested drag gestures could accidentally arm parent reordering.
+## 3. Shorten the safe path without inventing intent
 
-**Project rule:**
+**Lesson:** Defaults should remove unnecessary decisions, not silently make consequential ones.
 
-- Active state must come from route/product context, not from a second competing selection state.
-- Only the current workspace should look active. Expanding a tree item is not the same as activating it.
-- Separate navigation actions from disclosure actions when one control would otherwise do two jobs.
-- Persist useful disclosure state, but do not let stale expanded sections compete with the current route.
-- Nested drag/reorder surfaces must not trigger parent reordering.
-- Linkable navigation belongs in the URL and needs stable deep links.
-- After an accepted create, make the new server object visible to the route's query projection before selecting it in the URL. A stale workspace list must not normalize that valid selection back to the old object; if opening fails, offer an Open retry without repeating Create.
-- Show one Back control targeting the immediate parent in the product hierarchy, not browser history. A harness or role detail returns to its overview; the overview returns to Settings. Keep this link available during loading/errors and send dirty navigation through the shared leave guard. Evidence: `SettingsExperienceRoutes` and browser checks of harness detail → Harnesses → Settings.
+**Bad UX:** Adding an agent requires an advanced setup form, or automatically connects it to another agent and changes workflow meaning.
 
-Evidence: `1e31e31` (`fix: stabilize workspace navigation state`), `710cc2f` (`fix: keep one workspace active`), `35dc7c6` (`feat(settings): add workspace detail navigation`).
+**Good UX:** A provider choice can add an agent with an accepted safe default, with advanced settings available afterward. Adding and connecting remain separate actions. Never silently assign reviewers, broaden permissions, or create relationships. In creation forms, show inherited defaults and preview consequential results such as the new folder path; apply changing defaults only to untouched fields, never to existing objects.
 
-## 3. Do not create relationships the user did not ask for
+**Protect it:** Check default creation, explicit relationships, preservation of touched fields and existing locations, and required provisioning authority.
 
-Adding two agents used to connect them automatically. That made a convenient guess on the user's behalf, but it changed workflow meaning without an explicit handoff action.
+## 4. Make browsing reversible and confirmation decisive
 
-**Project rule:** adding an object and connecting objects are separate intentions. New agents/nodes should be added in a neutral state unless the user explicitly chose a relationship or the product contract guarantees one.
+**Lesson:** Exploration must not commit a choice. Once the user confirms, redundant confirmations and ambiguous save boundaries undermine confidence.
 
-This applies beyond graph edges: do not silently assign reviewers, permissions, defaults with side effects, or cross-object relationships just because they are common.
+**Bad UX:** Users must type an absolute path; Back selects a folder; Create and use requires another selection and another Save; a save failure causes retry to create the folder again.
 
-Evidence: `3ecdde0` (`fix: keep added agents disconnected`).
+**Good UX:** Offer a keyboard-accessible folder field that opens browsing, with a trailing folder icon rather than a duplicate Browse action. Identify the owning machine and restrict browsing to approved roots. Start at the selected allowed folder. Back restores the prior browsing location, including root/page changes, without changing the selection; without history it reaches the parent, stays available after navigation errors, and is disabled at the root. Reset transient history on reopen.
 
-## 4. Make the common safe path short; keep advanced configuration available after it
+Use one New folder entry point and one Create and use confirmation while naming, with no duplicate cancel row. Preserve the name on failure and reject collisions. Make the commit boundary explicit: a draft picker changes only its owning form's draft; the workspace execution-location picker saves on confirmation and closes only after acknowledgement. Cancel preserves the prior value. Keep errors in the modal and lock conflicting actions while pending. If creation succeeded but saving failed, retry saving that same folder; uncertain retries retain command identity. A workspace location applies to its workflows without repeated setup.
 
-The graph originally forced a configuration step just to add a default Codex/OpenCode agent. The fix made the provider choice itself add the default profile in one action. Advanced settings still exist, but they are no longer a toll booth in front of the common path.
+**Protect it:** Check drill-down/Back, cancellation, root boundaries, pagination, failed listings, keyboard activation, creation collisions, and partial-success retries. Existing coverage anchors include `WorkspaceExecutionLocationSettings.test.tsx`, folder-picker regressions, and authenticated Operator MCP folder permission/readback tests.
 
-**Project rule:** if a safe, valid project default already exists, let the common action use it directly. Do not force users through advanced configuration before they can perform the basic action. Advanced settings should remain discoverable and editable afterward.
+## 5. Match controls to meaningful work
 
-Folder selection should offer browsing before requiring a typed absolute path. Browse only the runner’s approved folders, show which machine owns them, and keep selection as a draft until Save. Cancel must preserve the prior draft; loading or failed listings must never be selectable. A workspace folder applies to all of its workflows, so do not ask again per workflow. Evidence: `WorkspaceExecutionLocationSettings.test.tsx` covers browsing, cancellation, errors, and saving the selected path.
+**Lesson:** Controls communicate available actions and unfinished work. Redundant or misplaced controls obscure both.
 
-Workspace creation should collect the name and show the inherited parent location together, previewing the new folder before submission. Copy defaults only into untouched fields; changes to defaults must not relocate existing workspaces. Create and save the location in the same operation, preserve command identity on uncertain retries, and reject existing folders rather than silently adopting their contents. Creating a folder still requires explicit provisioning authority. Evidence: `workspace-creation-location.integration.test.ts` covers creation, replay, collisions, traversal, permissions, and unchanged existing locations; `WorkspaceDefaultsSettings.test.tsx` covers saved parent locations.
+**Bad UI:** A clean graph shows Save/Discard, preferences sit in the action footer, or a form repeats fixed IDs and a separate validation step that confirmation already performs.
 
-The shortcut must never invent unsafe permissions or hide a meaningful choice. “Use the default” is only valid when the default is already an accepted product configuration.
+**Good UI:** Graph Save/Discard appears only for actual local edits or a publishable shared draft, never initial hydration. A persistent settings Save button is disabled when clean. Include nested edits and removal cleanup in dirty detection. Put preferences in their relevant section, use the shared switch for binary choices, and keep footers for actions. Show editable choices and relevant feedback; explain save prerequisites where the dependent action lives.
 
-Evidence: `6f78537` (`fix: add default harness agents in one step`).
+**Protect it:** Check clean/dirty transitions, nested edits, removed entities, and keyboard-accessible preferences. Never fabricate a draft merely to enable an action.
 
-## 5. Controls should appear because there is something meaningful to do
+## 6. Preserve drafts and resolve leaving deliberately
 
-A save control that is always present suggests that something needs saving even when nothing changed. It also hides which edits actually make a workflow dirty.
+**Lesson:** Navigation, refetches, and failed requests do not mean the user intended to abandon work.
 
-**Project rule:**
+**Bad UX:** A failed save resets fields, switching sections loses edits, or leaving during an uncertain save offers Discard as though nothing may have persisted.
 
-- Save/Discard controls should appear or enable only for meaningful unsaved changes.
-- Dirty state must include every change that affects what will be persisted, including nested agent settings or cleanup caused by removed entities.
-- Do not fabricate a draft just to make a control available.
-- Keep editable settings in their relevant form section, not in the Save/Discard footer. Binary preferences should use the shared switch, with their existing draft and validation semantics. Harness thinking and fast-mode controls belong in Model & speed; verify they remain keyboard accessible and mark the draft dirty there.
-- If an action depends on a clean/persisted state, explain what must be saved instead of exposing unrelated save buttons.
+**Good UX:** Preserve expected drafts across unmount/remount and keep failed values editable. The shared leave dialog offers Save and Discard; closing it or pressing Escape keeps editing and restores focus without a redundant Keep editing button. Resume the original destination only after resolution, block repeated navigation while deciding, and await save acknowledgement. Preserve validation failures and newer edits; never offer Discard for in-flight or unconfirmed commands. Use the browser warning for refresh/tab close.
 
-Evidence: `4ab9e58` (`fix: show graph save controls only for changes`).
+Show conflicts for deliberate reapply/discard, distinguishing server and local changes; do not merge ordered rules by index. Cache provider drafts only for editing and serialize only the active provider. Keep failed-message reasons attached to their durable request identity across reloads, clearing them on receipt without automatic retry.
 
-## 6. Preserve user work across navigation, failures, and conflicts
+**Protect it:** Check navigation, dismissal/Escape, focus return, remounts, failed saves, conflicts, uncertain requests, and edits made while saving.
 
-Settings fixes repeatedly came from the same root problem: forms treated mount/unmount, save failures, refetches, or revision conflicts as permission to throw away the user's draft.
+## 7. Validate at the right commitment boundary
 
-**Project rule:**
+**Lesson:** An incomplete editing step can be legitimate even when it is not executable. Premature final validation prevents users from reaching a valid configuration.
 
-- Unsaved edits should survive normal navigation-style unmount/remount when the user reasonably expects to come back.
-- A failed save must keep the attempted values visible and editable.
-- Retaining a draft is not a substitute for warning before leaving it. Route changes, section switches, and panel dismissal must offer only Save and Discard as footer actions in the shared modal. A separate Keep editing button duplicates dismissal: closing the modal or pressing Escape cancels navigation and returns to the same editor with its draft unchanged. Resume the original destination only after the selected draft is resolved; reject repeated navigation while a decision is open.
-- Saving before leaving must await acknowledgement, preserve validation/conflict failures, retain newer edits, and prevent duplicate submissions. Never offer Discard for an in-flight or unconfirmed command. The close button and Escape keep edits and restore focus; refresh/tab close uses the browser warning.
-- Use a disabled Save button for a clean form and a success toast after acknowledgement. Keep errors near the form; an inline confirmation may remain while the accepted revision is current, but it must not compete with the controls. Evidence: the shared unsaved-changes guard, browser-verified harness section/page navigation, Save continuation, Discard, and Escape behavior.
-- An uncertain request must not be silently re-sent as though it definitely failed.
-- Keep a failed pending message's reason with its exact durable request identity across reloads. Clear it on receipt, never auto-retry it, and keep both the reason and recovery controls readable.
-- Revision conflicts need explicit review. Show what changed on the server and what changed locally, then let the user reapply or discard deliberately.
-- Do not merge ordered arrays (for example permission rules) by index as though they were independent fields.
-- Provider-specific drafts may be cached for editing, but only the active provider configuration should be serialized.
+**Bad UX:** Choosing orchestrator approval is impossible until an orchestrator is already selected, or an invalid-graph warning persists throughout ordinary editing.
 
-Evidence: `6295a01` (`fix: preserve settings drafts and mobile approvals`), `d92d49f`, `94a235e`.
+**Good UX:** Allow intermediate states through a draft contract and enforce the stricter accepted contract at save/run. After submission, show actionable structured errors near the relevant fields, retain the draft, and keep retry available. Focus/reveal the first invalid field and associate its error using `aria-describedby`; secondary actions such as Rename follow the same rule and send no mutation for an empty name.
 
-## 7. Editable drafts and accepted executable configuration are different contracts
+**Protect it:** Check incomplete-to-valid editing, invalid submission, field focus, retained input, and executable validation at acceptance.
 
-Approval settings exposed a UX problem when validation required a final orchestrator choice too early. Users need to be able to choose “orchestrator” first and designate the exact agent next; the intermediate draft is incomplete but still valid as an editing state.
+## 8. Follow durable operations through to their actual outcome
 
-**Project rule:** do not make every intermediate editing state satisfy the final executable schema. Use a draft contract for forms and a stricter accepted contract at the save/run boundary. Validate the final requirement at the moment it becomes product truth.
+**Lesson:** A click finishing is not an operation finishing, and completion is not necessarily success.
 
-This keeps forms usable without weakening execution safety.
+**Bad UX:** Start becomes available while a run is queued, a canceled run turns green after reload, or an uncertain request is resent as a new command.
 
-Evidence: `e67e191` (`fix: separate draft and accepted approval settings`).
+**Good UX:** Lock conflicting actions throughout loading, queued, running, and unresolved states. Use both UI state and an in-flight guard against duplicate expensive/destructive submissions. Restore durable succeeded/failed/canceled outcomes after reload. Preserve command identity on uncertain retries; creation and location persistence must share an operation contract that cannot silently adopt an existing folder.
 
-## 8. Long-running actions must follow the durable lifecycle, not the click lifecycle
+**Protect it:** Check double clicks, status loading, queueing, cancellation, reload, uncertain retries, and partial failures. Existing creation coverage: `workspace-creation-location.integration.test.ts`.
 
-The Start button was once vulnerable to becoming available again while a run was still loading/queued, and cancellation/recovery states were not fully surfaced.
+## 9. Present decisions in human terms with honest scope
 
-**Project rule:** button state must follow the durable operation lifecycle. Once an action is accepted, keep conflicting actions locked until the product says the operation is actually complete, canceled, failed, or otherwise safe to retry. Initial status loading and queued states count as active states.
+**Lesson:** Users need consequences and context to make decisions; raw records and guessed details create false confidence.
 
-For destructive or expensive actions, protect against double submission with both UI state and an in-flight guard. Do not rely only on a button's current render.
+**Bad UI:** An approval leads with JSON and IDs, hides persistent policy effects, or treats missing change counts as zero.
 
-A terminal execution lifecycle is not a successful outcome. Node status and tone must use the durable result (`succeeded`, `failed`, or `canceled`) and rehydrate it after reload; a canceled run must never inherit a success label from `executionState=completed`.
+**Good UI:** Lead with readable names, requested operation, reviewer, scope, delivery status, and persistent/provider-wide effects; put technical payloads under details. Mark unavailable context as unknown. Correlate native change context only with exact recorded session/turn/item identity, using bounded redacted structure rather than patch contents or guessed targets. Separate monitoring from response permission, and Pending from Delivery problems and History. Use authoritative queue counts and show pending attention near its workflow.
 
-Evidence: `d92d49f`.
+**Protect it:** Check missing context, response permissions, persistent choices, delivery failures, and counts beyond the first history page.
 
-## 9. Approvals are decision-support UI, not a dump of backend records
+## 10. Design loading, failure, and recovery as part of the task
 
-The Approval Inbox improved when it stopped leading with IDs and raw JSON and started showing human names, the operation being requested, the workflow, the assigned reviewer, response scope, delivery state, and warnings about persistent/provider-wide effects.
+**Lesson:** Blank or misleadingly usable surfaces leave users to discover missing prerequisites and invent recovery steps.
 
-**Project rule:**
+**Bad UX:** An unusable board sits beneath a warning, a refresh failure erases useful data, or every background poll produces a toast.
 
-- Put the information needed for the decision first; put raw IDs and provider payloads under technical details.
-- Show readable workspace/workflow/agent names when available. If unavailable, say that honestly instead of showing a misleading placeholder as though it were a real name.
-- Explain what each approval choice applies to and whether it changes persistent policy or other pending requests.
-- A monitoring view and permission to respond are separate capabilities. Never infer response authority from the fact that a user can see a request.
-- Keep Pending, Delivery problems, and History conceptually separate.
-- Counts and filtered queues must be based on the authoritative dataset, not “whatever happened to be in the first page of history.”
-- Surface pending approvals near the workflow that needs attention so the user does not have to discover them by accident.
-- When a native approval omits a target, correlate only the exact session, turn, and item from already-recorded native events. Show bounded, redacted structural change context before the decision; do not guess a target or copy patch contents into the interaction. Native change formats vary, so never present guessed line counts as zero. Keep unavailable context explicitly unknown.
+**Good UX:** Deliberately distinguish initial loading, empty success, stale usable data with refresh failure, hard error, pending retry, and acknowledged success. Gate a task on its selected workspace's actual prerequisites and offer setup/retry; another workspace's cached status cannot unlock it. Keep usable stale content and explain what remains available. Show structured save errors without dropping edits. Toasts acknowledge requested operations; inline status can describe the accepted current revision without competing with controls or hiding newer drafts.
 
-Evidence: `94a235e`, `89ae09c` (`feat: show pending approval workflow badges`).
+Diagnostics state exactly what was checked. Installation, qualification, authentication, policy, and execution readiness are distinct; a schema pass cannot imply all of them. Keep the last diagnostic report on refresh failure and allow independent status visibility without overwriting settings drafts.
 
-## 10. Loading, empty, error, stale, and retry states are part of the design
+**Protect it:** Check each applicable state and workspace switching. Existing anchors: `WorkspaceExecutionLocationSetup.test.tsx` and `HarnessCompatibilityPanel.test.tsx`.
 
-Blank space and generic failures made several surfaces harder to understand than the underlying backend failure required.
+## 11. Adapt the interaction to the viewport
 
-**Project rule:** every server-backed surface should deliberately handle:
+**Lesson:** Narrow screens need usable task flows, not merely compressed desktop geometry.
 
-- initial loading;
-- empty success;
-- refresh failure while existing data is still useful;
-- hard error with no usable data;
-- retry/in-flight feedback;
-- success/acknowledgement when it matters.
+**Bad UI:** Two panes squeeze each other, primary actions overflow, or a tall popover leaves its confirmation unreachable.
 
-When a workspace prerequisite is required to enter a task, show that prerequisite as the main empty/error state before rendering the task. A warning layered above an unusable board makes the board appear available and leaves the user to discover the block at Start. Keep the board hidden while its execution folder is unconfigured, unavailable, restricted, or still loading; give a direct setup path or retry as appropriate. A cached status from another workspace must never open the selected workspace's board. Evidence: `WorkspaceExecutionLocationSetup.test.tsx` covers those states and the ready layout.
+**Good UI:** Collapse navigation when needed, turn selection/detail panes into a deliberate one-column flow, wrap or widen actions, and bound scrolling panels to the viewport. Move focus into opened detail and return it to the originating item on close.
 
-Do not erase usable stale content just because a refresh failed. Error messages should say what remains available and what the user can do next.
-After a save, keep a visible success state even when the form becomes clean. A toast confirms the event; inline feedback confirms the current form state. Tests should assert that distinction and that newer unsaved edits remain visible.
-When a server rejects an executable graph with structured validation issues, show the actionable issue messages and retain the draft instead of reducing them to a generic save error.
-Graph Save/Discard controls should reflect an actual local edit or a publishable shared draft, not initial hydration. Do not keep an invalid-graph warning on screen while the user is editing; show the specific problem after Save is attempted, preserve the edit, and keep Save available for a retry. Only offer “Discard local edits” when local edits exist.
+**Protect it:** Check narrow-screen collision, scrolling, action reachability, and focus transitions rather than CSS snapshots alone.
 
-The Nocturne migration moved these states into shared `LoadingState`, `EmptyState`, `ErrorState`, `Alert`, and button-loading patterns so behavior stays consistent instead of each screen inventing its own version.
+## 12. Make keyboard, focus, and status behavior coherent
 
-A diagnostic result must describe exactly what was checked, not imply permission to execute. Show the observed installation separately from the qualified target; a passing schema check cannot stand in for authentication, policy, or execution qualification. Keep diagnostic status independently readable when configuration discovery fails, retain the last report on refresh failure, and never overwrite editable settings while retrying a check. Toasts should describe the requested operation and its real result, not announce every background poll.
+**Lesson:** A visible control is not usable if users cannot reach, operate, or understand it without a pointer or color cues.
 
-Evidence: `HarnessCompatibilityPanel.test.tsx` covers separate installed/qualified versions, failure and stale-report visibility, read-only retry permissions, and requested-check toasts.
+**Bad UX:** Focus disappears on dialog close, hidden panels remain tabbable, or drag is the only way to reorder.
 
-Evidence: `9afe3a5` (`feat(web): complete Nocturne UI migration`), `94a235e`.
+**Good UX:** Focus the useful starting control on open and return focus to the surviving trigger on close. Make hidden content inert, keep `aria-controls` targets stable, offer keyboard reordering, and label controls visibly. Pair status color with text/icon/shape and respect reduced motion; animation must not gate understanding.
 
-## 11. Responsive behavior must be designed as a different interaction layout, not just narrower CSS
+**Protect it:** Check keyboard-only completion, focus return, hidden content, stable relationships, and status readability without color or motion.
 
-Mobile fixes were needed because desktop structures remained technically present but became awkward or unreachable on narrow screens.
+## 13. Share interaction behavior and assign visual ownership
 
-**Project rule:**
+**Lesson:** Visual consistency alone does not prevent inconsistent interactions; composing full pages can also duplicate their visual hierarchy.
 
-- Collapse navigation automatically when entering phone widths when that gives the main task enough room.
-- Two-pane selection/detail layouts should become an intentional one-column flow on narrow screens.
-- When opening detail on mobile, move focus to the detail. When closing it, return focus to the item that opened it when possible.
-- Important actions should wrap or become full-width when horizontal space disappears.
-- Long settings panels and popovers need bounded height and scrolling rather than overflowing the viewport.
-- Test narrow viewports for collision and reachability, not only for CSS snapshots.
+**Bad UI:** Matching dialogs dismiss differently, or an embedded feature brings a second heading, padding layer, and page container into Settings.
 
-Evidence: `6295a01`, `94a235e`.
+**Good UI:** Shared primitives carry focus, keyboard, disabled/loading, validation, dismissal, status, and responsive behavior. Repair repeated behavior there while keeping business rules in features. Let the parent own page chrome through an embedded presentation or composition boundary. Place diagnostics in the settings section that owns them, with concise status and repair detail on demand.
 
-## 12. Focus and keyboard behavior are product behavior
+**Protect it:** Check shared behavior across consumers and embedded versus standalone hierarchy, including the route placement of diagnostics.
 
-A number of fixes added or corrected focus return, stable `aria-controls`, inert hidden panels, keyboard reordering, visible labels, and dialog behavior. These are not cleanup details; they determine whether the interface has a coherent interaction model.
+## 14. Preserve the whole layout contract
 
-**Project rule:**
+**Lesson:** A full-height editor depends on its ancestors, not just its own dimensions.
 
-- Opening a dialog/drawer/popover should place focus at the useful starting control.
-- Closing it should return focus to the trigger when that trigger still exists.
-- Hidden/collapsed interactive content must not remain keyboard reachable. Use `inert`/equivalent behavior where appropriate.
-- `aria-controls` should refer to a stable element ID, not disappear just because the controlled region is collapsed.
-- Reordering needs keyboard controls, not pointer-only drag behavior.
-- Validation should be attached to the field, expose the message via `aria-describedby`, and focus/reveal the first invalid field after submit/check.
-- Apply that same rule to secondary actions such as Rename: an empty name keeps the draft, focuses Name, and never sends a mutation.
-- Status cannot depend on color alone; pair color with text/icon/shape.
-- Respect reduced-motion preferences. Animation should explain change, not gate understanding.
+**Bad UI:** Adding a prerequisite wrapper collapses the graph, and arbitrary canvas heights hide the cause.
 
-Evidence: `1e31e31`, `94a235e`, `b99d422` (`feat(web): adopt Nocturne UI foundation`).
+**Good UI:** Keep the flex column/grow/shrink contract intact between shell and editor, including `min-width: 0` and `min-height: 0` where overflow must shrink inside the viewport. Inspect the ancestor chain when wrappers introduce collapse or overflow.
 
-## 13. Reusable UI primitives should encode behavior, not only visual style
+**Protect it:** Check editor height and internal scrolling with prerequisite/loading wrappers and narrow viewports; assert meaningful layout constraints rather than incidental class lists.
 
-The Nocturne work was most valuable where it replaced one-off behavior with consistent components: dialogs, drawers, menus, fields, alerts, loading/error/empty states, status badges, buttons, tooltips, command UI, and workflow primitives.
+## 15. Keep hidden configuration compatible and honest
 
-**Project rule:** a design-system component is not “done” because it looks consistent. It should also carry the project's expected focus, keyboard, disabled, loading, validation, dismissal, status, and responsive behavior.
+**Lesson:** Hidden values and invented fallbacks can make the saved result contradict the visible choices.
 
-When fixing a repeated interaction problem, prefer repairing the shared primitive when the same behavior exists in multiple consumers. Keep feature-specific semantics in the feature instead of making the design system know business rules.
+**Bad UX:** Switching sandbox mode retains incompatible permissions, or failed provider discovery silently supplies built-in options as though they came from the provider.
 
-Evidence: `b99d422`, `9afe3a5`.
+**Good UX:** Deliberately clear or normalize incompatible dependent fields when the controlling choice changes, explaining consequential effects nearby. Distinguish cached editable drafts from serialized active configuration. When authoritative options are unavailable, explain the failure and require an explicit fallback choice.
 
-## 14. Embedded surfaces must not duplicate page chrome
+**Protect it:** Check controlling-choice changes, switching back, serialized values, discovery failure, and explicit fallback selection.
 
-The Approval Inbox looked wrong when a full standalone page header/padding was rendered inside a Settings detail page that already provided its own header and layout.
+## 16. Label demonstrations by their real effect
 
-**Project rule:** reusable full-page features that can also be embedded need an explicit embedded presentation mode or a composition boundary that lets the parent own page chrome. Do not stack duplicate headings, max-width containers, or padding just because both layers are valid in isolation. A single-purpose settings form should show only editable choices and relevant feedback: omit fixed runner fields, raw workspace IDs, repeated explanations, and separate validation actions when Save already validates. Evidence: the execution-location form keeps one folder field, browsing, Save, and conditional failure/conflict feedback.
+**Lesson:** Polish can make simulated actions look authoritative.
 
-Place operational diagnostics inside the settings section that owns them. A provider compatibility check belongs under that provider's App connection tab, not as a second titled page above the Harnesses overview or every editor tab. Keep the status concise and disclose repair detail on demand; verify its route placement in a regression test.
+**Bad UX:** A preview Save or sample run implies that it changed production settings or operated real agents.
 
-Evidence: `fcbf550` (`fix(settings): align approval inbox layout`).
+**Good UX:** Clearly label preview environments, data, actions, and results so replay, demo notifications, and simulated saves cannot be mistaken for persisted work.
 
-## 15. Give complex settings their own route and clear way back
+**Protect it:** Check the environment label and action feedback together, including success states.
 
-Workspace settings became easier to navigate when execution location and browser settings stopped sharing one overloaded page state and became dedicated detail routes with a clear “Back to settings” path.
+## 17. Test the user promise behind the fix
 
-**Project rule:** if a settings area has enough content or state to be a task of its own, give it a stable route. The overview should help users choose a destination; the detail page should focus on that task and preserve a clear return path.
+**Lesson:** Markup can remain stable while behavior breaks, or change harmlessly while a brittle test fails.
 
-Do not simulate detail navigation with hidden local tabs when the state should be linkable, refreshable, and shareable.
+**Bad verification:** A snapshot passes even though edits disappear, two workspaces look active, or keyboard focus is stranded.
 
-Evidence: `35dc7c6`.
+**Good verification:** Assert the reason the change matters using roles, accessible names, route state, focus, persisted/draft values, and necessary layout contracts. For critical product capabilities, also protect Operator MCP parity with authenticated allowed/denied calls and persisted readback; UI coverage alone cannot establish that contract.
 
-## 16. Full-height workspaces need an unbroken flex/min-size contract
+**Protect it:** A regression check should fail when the harmful behavior returns and make the resulting user problem clear.
 
-The workflow graph lost its intended height when an execution-location wrapper was inserted without becoming part of the flex column chain. The child was correct, but an ancestor stopped allowing it to grow/shrink.
+## How to maintain these lessons
 
-**Project rule:** for full-height editors/canvases, every wrapper between the shell and the editor must preserve the layout contract: appropriate `display:flex`, `flex:1`, direction, and `min-width:0` / `min-height:0` where overflow needs to shrink inside the viewport.
+Update this file only when a change teaches a reusable principle or adds meaningful evidence to one. Do not submit every action, screen edit, implementation detail, or commit as a new lesson.
 
-When a canvas suddenly collapses or overflows after adding a wrapper, inspect the ancestor chain before changing the canvas itself.
+Use the existing structure: **Lesson** (cause and durable rule), **Bad UX/UI** (concrete failure), **Good UX/UI** (better behavior and why), and **Protect it** (observable regression criterion, with a focused evidence pointer when useful). These examples are contrasts, not a chronological before/after report.
 
-Evidence: `fa60dc0` (`fix workflow graph execution wrapper layout`).
+Merge by underlying cause. Add a section only when it changes future design or verification decisions. Keep important distinctions between server truth, drafts, URL state, and local interaction. Cover relevant clean/dirty, loading, empty, error, conflict, pending, success, narrow-screen, keyboard, and focus states without copying the entire checklist into every lesson.
 
-## 17. Configuration changes must remove incompatible hidden state
-
-Provider and sandbox settings can make previously valid nested fields meaningless or unsafe. Keeping those values hidden in the draft can cause surprising behavior when the user saves or switches back later.
-
-**Project rule:** when a controlling choice makes dependent settings invalid, clear or normalize the incompatible dependent state deliberately and explain the consequence near the control when it is important. Do not silently retain permissions that the newly selected mode cannot honor.
-
-Likewise, if provider presets/options fail to load, do not silently substitute built-in values and make them look authoritative. Tell the user the real source is unavailable and require an explicit fallback choice.
-
-Evidence: `94a235e`, `e90c6e1` (`fix: harden workflow settings and approval UI`).
-
-## 18. Demo and preview UI must be unmistakably non-production
-
-The UI toolkit intentionally labels preview data and preview actions so a polished demo cannot be mistaken for a real run or a saved backend change.
-
-**Project rule:** if a component showcase, preview, fixture, or offline lab contains actions that look real, label the environment and the result clearly. Replay controls, preview saves, sample runs, and demo notifications must not imply that they operated real agents or changed production settings.
-
-Evidence: `b99d422`.
-
-## 19. Tests should protect the UX reason, not incidental markup
-
-The useful UI regression tests in the history assert things such as: exactly one workspace is active; failed edits stay visible; Save controls do not appear when clean; mobile focus moves to the detail; nested drags do not reorder a parent; hidden content is not interactive; and a full-height wrapper remains a flex column.
-
-**Project rule:** write tests around the product promise that caused the fix. Prefer roles, accessible names, route state, focus, persisted/draft state, and meaningful layout contracts over brittle class snapshots or exact internal markup.
-
-A test should make it obvious why reverting the behavior would hurt the user.
-
-Evidence: the regression coverage added with `1e31e31`, `710cc2f`, `4ab9e58`, `6295a01`, `d92d49f`, `94a235e`, `fa60dc0`.
-
----
-
-## How future agents should update this file
-
-When a UI/UX fix teaches something reusable, update this file before handing off the work.
-
-1. Identify the underlying reason the old behavior was wrong. Avoid “button moved left” or “changed padding” unless the spacing problem reveals a broader layout rule.
-2. Find an existing lesson with the same cause and add the new evidence there. Create a new lesson only when future design decisions would change because of it.
-3. State a durable project rule in plain language.
-4. Add the relevant regression-test idea or behavior that should prevent the mistake from returning.
-5. Add commit evidence when a commit already exists. If the change is not committed yet, name the affected behavior/files and let the integration agent replace that with the final commit reference if useful.
-6. Keep the file about lessons. Do not append a chronological “what changed today” section.
-
-The goal is that each round of UI work starts with more project-specific judgment than the last one.
+Keep evidence subordinate to the principle: a relevant test or observed behavior is useful; a growing list of commits and files is not. Do not claim a suggested check has passed without running it. Preserve evidence-based rules, reconcile contradictions when behavior changes, and omit cosmetic edits that teach nothing reusable.

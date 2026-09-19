@@ -37,22 +37,38 @@ Before doing UI or UX work in `apps/web`, read the root `UI-UX-lessons.md` file.
 Treat it as project-specific design and interaction guidance learned from earlier
 fixes, not as optional background reading.
 
-When a UI/UX fix reveals a reusable lesson, update `UI-UX-lessons.md` in the same
-change. Record the reason the old behavior failed, the durable rule future work
-should follow, and the evidence that protects the behavior. Do not turn the file
-into a changelog of screens, commits, or cosmetic edits.
+When a UI/UX change reveals a reusable lesson, update `UI-UX-lessons.md` in the
+same change. Extract the design reasoning behind the implementation; do not
+record an action history, screen-by-screen changes, or a list of commits.
+
+Each lesson should explain:
+
+- **Lesson:** why the old approach failed and the durable rule for future work.
+- **Bad UX/UI:** a concrete example of the confusing interaction or visual design.
+- **Good UX/UI:** a contrasting example that shows how the rule improves it.
+- **Protect it:** observable behavior to verify, with a focused test/evidence pointer
+  when useful. Distinguish suggested checks from verification actually performed.
+
+For example, “added Back to the folder picker” is an implementation log.
+“Browsing must be reversible without committing a selection: bad UX changes the
+saved folder on Back; good UX restores the browsing location and leaves the
+selection untouched” is a reusable lesson.
 
 When updating the lessons file:
 
-- Merge new evidence into an existing lesson when the underlying cause is the same.
-- Add a new lesson only when it changes how future UI/UX work should be designed or tested.
+- Merge by underlying cause; add a new lesson only when it changes future design
+  or verification decisions. Do not append an entry for every action.
+- Preserve useful existing evidence and rules while removing chronological
+  narration, redundant examples, and implementation detail that teaches no principle.
+- Reconcile outdated or contradictory guidance instead of accumulating both versions.
 - Preserve the distinction between server truth, editable drafts, URL-owned state,
   and local interaction state.
 - Include the important states for the changed interaction: clean/dirty, loading,
   empty, error, conflict, pending/in-flight, success, narrow viewport, keyboard,
   and focus behavior when relevant.
-- Prefer tests that protect the reason for the fix rather than snapshots of incidental markup.
+- Prefer tests that protect the reason for the fix rather than incidental markup.
 - Do not rewrite an evidence-based lesson just to match a personal design preference.
+- If a change teaches no new reusable lesson, do not add filler to this file.
 
 A UI/UX task is not complete if it repeats a known failure documented in
 `UI-UX-lessons.md`, or if it introduces a new reusable lesson and leaves that
