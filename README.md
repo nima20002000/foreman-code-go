@@ -32,9 +32,6 @@ semantics, UX decisions, backend handoff boundary, and verification record, see
 ```sh
 corepack pnpm install
 corepack pnpm dev
-corepack pnpm db:up
-cp apps/api/.env.example apps/api/.env
-corepack pnpm dev:api
 corepack pnpm typecheck
 corepack pnpm lint
 corepack pnpm test
@@ -42,6 +39,26 @@ corepack pnpm test:integration
 corepack pnpm test:acceptance
 corepack pnpm build
 ```
+
+`corepack pnpm dev` starts the local stack: it creates `apps/api/.env` from the
+example if missing, starts and waits for the Compose PostgreSQL service, builds
+and watches contracts, then starts the API and Vite. It verifies the API and web
+addresses before reporting them. If either server is already running, it reuses
+that server; an unrelated process on either port is reported as a conflict.
+Ctrl-C stops only the processes started by this command. PostgreSQL stays up.
+For individual processes, use `corepack pnpm dev:api` or
+`corepack pnpm dev:web` after `corepack pnpm db:up`.
+
+The API port is `PORT` in `apps/api/.env` (3000 in the example, also the config
+default). Vite uses port 5173 and proxies `/api` to the API. The startup command
+passes the configured API port to Vite. The API and Vite run on the host; Docker
+Compose runs only PostgreSQL, bound to `127.0.0.1:5432`. Its named volume keeps
+application records and LangGraph checkpoints across `db:down` and restarts.
+The API applies database migrations during startup.
+
+The real API requires browser access. If Workspaces asks you to connect, open
+Settings → App access, create a token with the local credential command shown
+there, and connect this browser. Startup never issues a token automatically.
 
 The repository pins pnpm 11.27.0 and rejects plain `npm install`. pnpm enforces
 a strict 2,880-minute (48-hour) minimum release age for direct and transitive
@@ -56,21 +73,12 @@ LangGraph checkpoint, closes the saver, reopens it, and proves the checkpoint
 is durable. `corepack pnpm db:down` stops the local service without deleting its named
 volume.
 
-The checked-in browser mock starts by default during development so the
-wireframe shell always has deterministic data. It runs only together with
-Vite's development flag and is never a production fallback; a real backend must
-provide the HTTP boundary when the app is built or deployed.
-
-Set `VITE_ENABLE_MSW=false` to disable the mocks when running Vite against a
-real API:
-
-```sh
-VITE_ENABLE_MSW=false corepack pnpm dev
-```
-
-With MSW disabled, configure an existing runner directory in Workspace
+The combined `dev` command uses the real backend through Vite's `/api` proxy.
+The standalone `dev:web` command can still run with browser fixtures in the
+checked-in web app; set `VITE_ENABLE_MSW=false` to use the real API there too.
+MSW also remains in the test harness. Configure an existing runner directory in Workspace
 Settings before Start. The Website workspace, saved workflow graph, Start action,
-and run status/result reads use the real backend through Vite's `/api` proxy.
+and run status/result reads use the real backend.
 See [`docs/ENG-02-real-workflow-engine.md`](./docs/ENG-02-real-workflow-engine.md)
 for the qualified harness contract and acceptance workflow.
 

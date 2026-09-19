@@ -1,8 +1,10 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it } from 'vitest'
+import { HttpResponse, http } from 'msw'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { renderWithRouter } from '../../test/renderWithRouter'
+import { server } from '../../mocks/server'
 import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
 import { writeLocalAgents } from '../agents/localAgents'
 import { useSessionWorkflowStore } from '../workflows/sessionWorkflowStore'
@@ -11,6 +13,7 @@ import { WorkspaceDirectory } from './WorkspaceDirectory'
 import { useWorkspaceSessionStore } from './workspaceSessionStore'
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   useWorkspaceSessionStore.getState().reset()
   useSessionWorkflowStore.getState().clearSessionWorkflows()
   useAgentDirectoryStore.getState().reset()
@@ -19,6 +22,19 @@ afterEach(() => {
 })
 
 describe('WorkspaceDirectory', () => {
+  it('sends an unauthenticated browser to App access', async () => {
+    vi.stubEnv('MODE', 'development')
+    vi.stubEnv('VITE_ENABLE_MSW', 'false')
+    server.use(http.get('/api/management/workspaces', () => HttpResponse.json({
+      error: { code: 'AUTH_REQUIRED', message: 'A bearer credential is required.' },
+    }, { status: 401 })))
+    renderWithRouter(<WorkspaceDirectory />)
+
+    expect(await screen.findByRole('link', { name: 'Open App access' }))
+      .toHaveAttribute('href', '/settings/operator-access')
+    expect(screen.queryByText('Workspaces unavailable')).not.toBeInTheDocument()
+  })
+
   it('lists server and session workspaces as simple cards', async () => {
     const scratch = useWorkspaceSessionStore.getState().createWorkspace('Scratch')
     renderWithRouter(<WorkspaceDirectory />)

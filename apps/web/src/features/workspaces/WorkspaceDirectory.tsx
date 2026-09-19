@@ -10,6 +10,7 @@ import {
   useUpdateManagedWorkspaceMutation, useWorkspaceDetailsQuery,
 } from '../../shared/api/query'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
+import { ApiError } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { Alert, Button, Card, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField } from '../../shared/ui/nocturne'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
@@ -146,6 +147,7 @@ export function WorkspaceDirectory() {
   }
   const failed = realMode ? managedQuery.isError : workspaceQuery.isError && hiddenWorkspaceIds.length === 0
   const loading = realMode ? managedQuery.isPending : workspaceQuery.isPending
+  const needsAccess = realMode && failed && ApiError.is(managedQuery.error) && managedQuery.error.status === 401
   return (
     <section className="workspace-directory n-theme" aria-label="Workspaces">
       <PageHeader
@@ -153,8 +155,11 @@ export function WorkspaceDirectory() {
         title="Workspaces"
         description={realMode ? 'Open, rename or archive a durable workspace.' : 'Open a workspace or remove it from this frontend session.'}
       />
-      {realMode && failed ? <ErrorState title="Workspaces unavailable" description="The workspace list could not be loaded."
-        onRetry={() => void managedQuery.refetch()} /> : workspaces.length > 0 ? (
+      {needsAccess ? <EmptyState icon="warning" title="Connect this browser"
+        description="App access is required to load workspaces."
+        action={<Link to="/settings/operator-access" className="n-button n-button--primary">Open App access</Link>} />
+        : realMode && failed ? <ErrorState title="Workspaces unavailable" description="The workspace list could not be loaded."
+          onRetry={() => void managedQuery.refetch()} /> : workspaces.length > 0 ? (
         <ul className="workspace-card-list" data-testid="workspace-card-list">
           {workspaces.map((workspace) => <li key={workspace.id}>
             <Card className="workspace-card" data-testid={`workspace-card-${workspace.id}`}>

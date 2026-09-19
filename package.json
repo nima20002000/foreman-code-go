@@ -10,7 +10,8 @@
   },
   "scripts": {
     "preinstall": "node scripts/require-pnpm.mjs",
-    "dev": "corepack pnpm --filter @graphql/contracts build && corepack pnpm --parallel --filter @graphql/contracts --filter @graphql/web dev",
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "corepack pnpm --filter @graphql/contracts build && corepack pnpm --parallel --filter @graphql/contracts --filter @graphql/web dev",
     "dev:api": "corepack pnpm --filter @graphql/contracts build && corepack pnpm --parallel --filter @graphql/contracts --filter @graphql/api dev",
     "db:up": "docker compose up -d --wait postgres",
     "db:down": "docker compose down",
