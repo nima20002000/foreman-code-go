@@ -6,6 +6,7 @@ import { AgentsDirectory } from '../features/agents'
 import { McpDetectionSettings, WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
 import { ApprovalInbox } from '../features/approvals'
 import { WorkflowDirectory } from '../features/workflows'
+import { WorkspaceWorkflowList } from '../features/workflows/WorkspaceWorkflowList'
 import { Badge, Card, EmptyState, Icon, PageHeader, SettingsSection, type IconName } from '../shared/ui/nocturne'
 import { WorkspaceShell, type WorkspaceSection } from '../shared/ui/WorkspaceShell'
 import {
@@ -137,8 +138,8 @@ export function SettingsRouteEntry() {
             <PageHeader
               eyebrow={`Workspace · ${workspaceId}`}
               title="Settings"
-              description="Configure workspace-level preferences and connected capabilities."
             />
+            <WorkspaceWorkflowList workspaceId={workspaceId} />
             <ul className="settings-card-list">
               <li>
                 <Card className="settings-card">
