@@ -49,7 +49,7 @@ describe('owner browser authentication', () => {
       }),
       http.post('*/api/auth/logout', () => HttpResponse.json({ signedOut: true })),
     )
-    const input = { name: 'Owner', email: 'owner@example.test', password: 'long-owner-password', setupSecret: 's'.repeat(48) }
+    const input = { email: 'owner@example.test', password: 'long-owner-password' }
     expect(await browserAuthClient.setupStatus()).toEqual({ state: 'ready' })
     expect(await browserAuthClient.setup(input)).toEqual({ created: true })
     expect(await browserAuthClient.signIn({ email: input.email, password: input.password })).toEqual({ signedIn: true })
@@ -85,12 +85,12 @@ describe('owner browser authentication', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe('/sign-in'))
     expect(screen.queryByText('Private workspace content')).not.toBeInTheDocument()
   })
-  it('shows one-time setup only when enabled, never a public role or grant selector', async () => {
+  it('shows email and password setup only when enabled', async () => {
     server.use(http.get('*/api/auth/setup', () => HttpResponse.json({ state: 'ready' })))
     mount('/setup')
-    expect(await screen.findByLabelText('One-time setup secret')).toBeVisible()
+    expect(await screen.findByLabelText('Email')).toBeVisible()
     expect(screen.getByLabelText('Password')).toHaveAttribute('autocomplete', 'new-password')
-    expect(screen.queryByLabelText(/role|grant|principal/i)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/name|secret|role|grant|principal/i)).not.toBeInTheDocument()
   })
   it('shows rejected sign-in as an auth error and clears the password field', async () => {
     server.use(http.get('*/api/auth/setup', () => HttpResponse.json({ state: 'complete' })),

@@ -5,10 +5,8 @@ const PasswordSchema = z.string().min(12).max(128);
 
 /** No caller-supplied role, principal ID, grants, or callback URL is accepted. */
 export const OwnerSetupRequestSchema = z.object({
-  name: z.string().trim().min(1).max(200),
   email: EmailSchema,
   password: PasswordSchema,
-  setupSecret: z.string().min(32).max(256),
 }).strict();
 export type OwnerSetupRequest = z.infer<typeof OwnerSetupRequestSchema>;
 
@@ -16,7 +14,7 @@ export const OwnerSetupStatusSchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("complete") }).strict(),
   z.object({ state: z.literal("ready") }).strict(),
   z.object({ state: z.literal("locked"), reason: z.enum([
-    "setup-disabled", "existing-installation", "inconsistent-owner",
+    "existing-installation", "inconsistent-owner",
   ]) }).strict(),
 ]);
 export type OwnerSetupStatus = z.infer<typeof OwnerSetupStatusSchema>;

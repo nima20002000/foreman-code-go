@@ -19,27 +19,26 @@ when browser auth is entirely unconfigured, for existing non-browser callers.
 1. Install dependencies with the existing Corepack/pnpm workflow. Do not change the
    48-hour release-age settings or add exclusions. The exact new dependency is
    `better-auth@1.7.5`; regenerate and commit the workspace lockfile locally.
-2. Generate TWO DIFFERENT secrets using the following command twice:
+2. Generate a persistent session-signing secret:
 
    ```sh
    node -e 'console.log(require("node:crypto").randomBytes(48).toString("base64url"))'
    ```
 
 3. Add the following fields to the existing, private `apps/api/.env`, preserving
-   its other values. Substitute the generated secrets; the angle-bracket values
+   its other values. Substitute the generated secret; the angle-bracket value
    below are documentation placeholders, not usable configuration:
 
    ```dotenv
-   BETTER_AUTH_SECRET=<first-generated-secret>
+   BETTER_AUTH_SECRET=<persistent-random-secret>
    BETTER_AUTH_URL=http://127.0.0.1:5173
-   OWNER_SETUP_SECRET=<second-generated-secret>
    ```
 
    `corepack pnpm dev` already loads `apps/api/.env`. For a separate local test
    database, set `GRAPHQL_API_ENV_FILE` to an absolute path to a private env file.
    Keep `BETTER_AUTH_SECRET`
    stable across restarts so existing cookies remain valid. Never use a `VITE_`
-   variable for either secret, expose it in a URL, or commit the private `.env`.
+   variable for the secret, expose it in a URL, or commit the private `.env`.
    Direct `dev:api`/production starts need the same environment supplied by their
    existing launcher; those commands do not gain a new implicit dotenv loader.
 
@@ -77,11 +76,10 @@ when browser auth is entirely unconfigured, for existing non-browser callers.
    `corepack pnpm dev` flow. The dev launcher may reuse an already-running API,
    so simply starting a second launcher will not reload that process's code or
    environment. No SSH, router or VPS changes are required or included.
-6. Open `http://127.0.0.1:5173/setup`, enter the one-time setup secret, your name,
-   email and a password of at least 12 characters. After creation, sign in with
-   email and password. No application bearer token is shown or stored in browser
-   JavaScript. Remove `OWNER_SETUP_SECRET` from the server environment afterward
-   and restart the API. The owner stays registered; setup does not reopen.
+6. Open `http://127.0.0.1:5173/setup` and enter your email and a password of at
+   least 12 characters. After creation, sign in with the same credentials. No
+   application bearer token is shown or stored in browser JavaScript. Setup
+   closes permanently after the first owner is created.
 
 Use one exact browser origin consistently. `127.0.0.1` and `localhost` are different
 origins and cookie hosts, as are different ports. A custom supported loopback
@@ -93,8 +91,11 @@ stack. No wildcard trusted origins or trust-proxy changes are introduced.
 
 ## Bootstrap and session guarantees
 
-Setup always requires proof from the private server configuration, even on a new
-installation. Account creation, the Better Auth credential-password record, the
+Setup requires an exact local Origin and is available only before an owner exists.
+There is no setup secret to enter or configure. This makes first-run setup simple,
+but any local client with access to the app could claim a fresh installation before
+its intended owner. Keep the local machine and browser under your control until
+setup is complete. Account creation, the Better Auth credential-password record, the
 Operator authority record (fresh installations only) and the singleton owner link
 are committed in one PostgreSQL transaction. An advisory lock serializes setup;
 a table lock protects the existing-installation decision against concurrent CLI
@@ -114,8 +115,8 @@ registers no Better Auth catch-all endpoint: only setup status, owner setup and
 email/password sign-in are public, matched by exact path and HTTP method.
 `POST /api/auth/sign-up/email` always rejects registration. The app does not expose
 password reset, account deletion, email changes, OAuth or user invitation APIs.
-No verified-email claim is made: ownership comes from the private setup secret,
-not an email-delivery verification service.
+No verified-email claim is made: ownership comes from completing the one-time
+local setup, not an email-delivery verification service.
 
 Sign-out first asks Better Auth to verify the signed session, then requires a
 successful PostgreSQL deletion of that session before reporting success. This is

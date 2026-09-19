@@ -20,9 +20,8 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
 const config: BrowserAuthConfig = {
   origin: 'http://localhost:5173', secret: 'browser-test-session-secret-'.repeat(3),
-  setupSecret: 'browser-test-bootstrap-secret-'.repeat(3),
 }
-const owner = { name: 'Owner', email: 'owner@example.test', password: 'a-long-owner-test-password', setupSecret: config.setupSecret! }
+const owner = { email: 'owner@example.test', password: 'a-long-owner-test-password' }
 const headers = { host: 'localhost:3000', origin: config.origin }
 function cookies(value: string | string[] | undefined): string {
   return (Array.isArray(value) ? value : value ? [value] : []).map((part) => part.split(';')[0]).join('; ')
@@ -84,10 +83,11 @@ describe('Better Auth owner browser lifecycle (PostgreSQL)', () => {
     expect((await server.inject({ method: 'GET', url: '/api/auth/session', headers })).statusCode).toBe(401)
   }), 30_000)
 
-  it('requires explicit setup proof, rejects public registration and allows one owner only', async () => withDatabase(async ({ app, pool }) => {
+  it('accepts email and password once, rejects other origins and public registration', async () => withDatabase(async ({ app, pool }) => {
     const server = app()
     expect((await server.inject({ method: 'GET', url: '/api/auth/setup', headers })).json()).toEqual({ state: 'ready' })
-    expect((await server.inject({ method: 'POST', url: '/api/auth/setup', headers, payload: { ...owner, setupSecret: 'wrong'.repeat(10) } })).statusCode).toBe(403)
+    expect((await server.inject({ method: 'POST', url: '/api/auth/setup', headers: { ...headers, origin: 'http://localhost:9999' }, payload: owner })).statusCode).toBe(403)
+    expect((await server.inject({ method: 'POST', url: '/api/auth/setup', headers, payload: { ...owner, name: 'Admin' } })).statusCode).toBe(400)
     expect((await server.inject({ method: 'POST', url: '/api/auth/sign-up/email', headers, payload: owner })).statusCode).toBe(403)
     expect((await pool.query('select * from browser_auth_user')).rowCount).toBe(0)
     await setup(server)
@@ -146,7 +146,7 @@ describe('Better Auth owner browser lifecycle (PostgreSQL)', () => {
     const restored = app()
     const session = await restored.inject({ method: 'GET', url: '/api/auth/session', headers: { ...headers, cookie } })
     expect(session.statusCode).toBe(200)
-    expect(session.json().account).toEqual({ name: owner.name, email: owner.email })
+    expect(session.json().account).toEqual({ name: owner.email, email: owner.email })
     expect(session.headers['cache-control']).toBe('no-store')
     const read = await restored.inject({ method: 'GET', url: '/api/management/settings/workspaces', headers: { ...headers, cookie } })
     expect(read.statusCode).toBe(200)
@@ -202,13 +202,12 @@ describe('Better Auth owner browser lifecycle (PostgreSQL)', () => {
     expect((await server.inject({ method: 'GET', url: '/api/auth/session', headers: { ...headers, cookie } })).statusCode).toBe(401)
   }), 30_000)
 
-  it('leaves setup closed when its secret is removed and applies a persistent attempt limit', async () => withDatabase(async ({ app }) => {
-    const disabled = app({ setupSecret: undefined })
-    expect((await disabled.inject({ method: 'POST', url: '/api/auth/setup', headers, payload: owner })).statusCode).toBe(403)
+  it('applies a persistent setup attempt limit', async () => withDatabase(async ({ app }) => {
     const server = app()
+    const second = app()
     // Both application instances share the same PostgreSQL attempt budget.
-    for (let attempt = 0; attempt < 4; attempt++) {
-      expect((await server.inject({ method: 'POST', url: '/api/auth/setup', headers, payload: { ...owner, setupSecret: 'wrong'.repeat(10) } })).statusCode).toBe(403)
+    for (let attempt = 0; attempt < 5; attempt++) {
+      expect((await second.inject({ method: 'POST', url: '/api/auth/setup', headers, payload: { ...owner, email: 'invalid' } })).statusCode).toBe(400)
     }
     expect((await server.inject({ method: 'POST', url: '/api/auth/setup', headers, payload: owner })).statusCode).toBe(429)
   }), 30_000)

@@ -1,4 +1,4 @@
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
 import {
   ManagementActionSchema, OwnerSetupRequestSchema,
@@ -98,7 +98,6 @@ export class BrowserAuthentication {
     const row = state.rows[0]!
     if (row.owner) return { state: 'complete' }
     if (row.users) return { state: 'locked', reason: 'inconsistent-owner' }
-    if (!this.config.setupSecret) return { state: 'locked', reason: 'setup-disabled' }
     if (row.credentials && !this.config.ownerPrincipalId) return { state: 'locked', reason: 'existing-installation' }
     return { state: 'ready' }
   }
@@ -124,10 +123,6 @@ export class BrowserAuthentication {
 
   async createOwner(value: unknown): Promise<void> {
     const input = OwnerSetupRequestSchema.parse(value)
-    if (!this.config.setupSecret) throw new DomainError('OWNER_SETUP_DISABLED', 'Owner setup is disabled on the server.', 403)
-    if (!timingSafeEqual(digest(input.setupSecret), digest(this.config.setupSecret))) {
-      throw new DomainError('OWNER_SETUP_DENIED', 'The setup secret is invalid.', 403)
-    }
     // Hash before taking database locks. This is Better Auth's own password format.
     const password = await hashPassword(input.password)
     const client = await this.pool.connect()
@@ -152,7 +147,7 @@ export class BrowserAuthentication {
         const existing = await client.query('select 1 from management_principals limit 1')
         if (existing.rowCount) throw new DomainError('OWNER_PRINCIPAL_REQUIRED', 'This installation already has credentials. Select its owner principal in the server configuration.', 409)
         const issued = await this.access.issue({
-          name: input.name,
+          name: input.email,
           audience: 'operator',
           grants: [{ actions: [...ManagementActionSchema.options], scope: {} }],
           expiresAt: new Date(Date.now() + 3650 * DAY * 1000),
@@ -161,8 +156,9 @@ export class BrowserAuthentication {
         // This principal is a durable authority record; its generated bearer secret is never exposed or stored.
       }
       const userId = randomUUID()
+      // Better Auth requires a name; reuse the email until profiles are editable.
       await client.query(`insert into browser_auth_user (id, name, email) values ($1, $2, $3)`,
-        [userId, input.name, input.email])
+        [userId, input.email, input.email])
       await client.query(`insert into browser_auth_account (id, "userId", "accountId", "providerId", password)
         values ($1, $2, $2, 'credential', $3)`, [randomUUID(), userId, password])
       await client.query('insert into browser_auth_owner (singleton, user_id, principal_id) values (true, $1, $2)',

@@ -75,7 +75,7 @@ export function SignInRoute() {
       <button type="submit" disabled={mutation.isPending}>{mutation.isPending ? 'Signing in…' : 'Sign in'}</button>
     </form>
     {status.data?.state === 'ready' ? <Link to="/setup" search={{ returnTo: search.returnTo }}>Set up the owner account</Link> : null}
-    {status.data?.state === 'locked' ? <p className="auth-note">Owner setup is locked. The server owner must enable setup and select the existing Operator principal when required.</p> : null}
+    {status.data?.state === 'locked' ? <p className="auth-note">Owner setup is locked. Existing installations must select the owner Operator principal on the server.</p> : null}
     {status.isError ? <div role="alert"><p>Browser authentication could not be checked. Verify the server configuration.</p>
       <button type="button" onClick={() => void status.refetch()}>Check again</button></div> : null}
     <p className="auth-note">CLI and MCP bearer credentials still work. Browser sign-in does not change your Codex or OpenCode account.</p>
@@ -86,17 +86,15 @@ export function OwnerSetupRoute() {
   const search = useSearch({ from: '/setup' })
   const toasts = useContext(ToastContext)
   const status = useOwnerSetupStatus()
-  const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [setupSecret, setSetupSecret] = useState('')
   const mutation = useMutation({ retry: false,
     mutationFn: (input: OwnerSetupRequest) => browserAuthClient.setup(input),
     onSuccess: () => {
-      setPassword(''); setSetupSecret('')
+      setPassword('')
       window.location.replace(`/sign-in?notice=owner-created&returnTo=${encodeURIComponent(safeAuthReturnTo(search.returnTo))}`)
     },
-    onError: () => { setPassword(''); setSetupSecret(''); void status.refetch() },
+    onError: () => { setPassword(''); void status.refetch() },
   })
   useEffect(() => {
     if (mutation.error) toasts?.notify({ tone: 'danger', title: 'Owner setup failed',
@@ -104,26 +102,21 @@ export function OwnerSetupRoute() {
   }, [mutation.error, toasts])
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!mutation.isPending) mutation.mutate({ name, email, password, setupSecret })
+    if (!mutation.isPending) mutation.mutate({ email, password })
   }
   if (status.data?.state === 'complete') return <Navigate to="/sign-in" search={{ returnTo: search.returnTo }} replace />
   return <main className="auth-screen"><section className="auth-card" aria-labelledby="owner-setup-title">
     <div className="auth-brand">GraphQL · First-time setup</div><h1 id="owner-setup-title">Create the owner account</h1>
-    <p>This can be done once. Public registration stays closed.</p>
+    <p>Use your email and a password to create the local owner account.</p>
     {status.isPending ? <p role="status">Checking owner setup…</p> : null}
     {status.isError ? <div><ErrorMessage error={status.error} /><button type="button" onClick={() => void status.refetch()}>Try again</button></div> : null}
-    {status.data?.state === 'locked' ? <p role="alert">Setup is locked. Configure OWNER_SETUP_SECRET on the server. Existing installations also require an explicitly selected OWNER_OPERATOR_PRINCIPAL_ID. Do not delete existing accounts or credentials to reopen setup.</p> : null}
+    {status.data?.state === 'locked' ? <p role="alert">Setup is locked. Existing installations require an explicitly selected OWNER_OPERATOR_PRINCIPAL_ID on the server. Do not delete existing accounts or credentials to reopen setup.</p> : null}
     {status.data?.state === 'ready' ? <form onSubmit={submit} aria-label="Set up owner">
-      <label htmlFor="owner-name">Name</label><input id="owner-name" autoComplete="name" required maxLength={200}
-        value={name} onChange={(event) => setName(event.target.value)} disabled={mutation.isPending} />
       <label htmlFor="owner-email">Email</label><input id="owner-email" type="email" autoComplete="username" required maxLength={254}
         value={email} onChange={(event) => setEmail(event.target.value)} disabled={mutation.isPending} />
       <label htmlFor="owner-password">Password</label><input id="owner-password" type="password" autoComplete="new-password" required minLength={12} maxLength={128}
         aria-describedby="password-help" value={password} onChange={(event) => setPassword(event.target.value)} disabled={mutation.isPending} />
       <p id="password-help" className="auth-note">Use at least 12 characters. Keep it in your password manager.</p>
-      <label htmlFor="owner-secret">One-time setup secret</label><input id="owner-secret" type="password" autoComplete="off" required minLength={32} maxLength={256}
-        value={setupSecret} onChange={(event) => setSetupSecret(event.target.value)} disabled={mutation.isPending} />
-      <p className="auth-note">Use OWNER_SETUP_SECRET from the API server configuration, not an Operator bearer token.</p>
       <ErrorMessage error={mutation.error} />
       <button type="submit" disabled={mutation.isPending}>{mutation.isPending ? 'Creating owner…' : 'Create owner account'}</button>
     </form> : null}

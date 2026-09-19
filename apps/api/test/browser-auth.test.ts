@@ -10,9 +10,9 @@ describe('browser authentication configuration', () => {
     expect(() => readBrowserAuthConfig({ BETTER_AUTH_URL: 'http://localhost:5173' })).toThrow()
     expect(() => readBrowserAuthConfig({ BETTER_AUTH_SECRET: 'short' })).toThrow()
   })
-  it('uses an exact loopback origin and separate bootstrap secret', () => {
+  it('uses an exact loopback origin without a setup secret', () => {
     expect(readBrowserAuthConfig({ BETTER_AUTH_SECRET: secret })?.origin).toBe('http://127.0.0.1:5173')
-    expect(() => readBrowserAuthConfig({ BETTER_AUTH_SECRET: secret, OWNER_SETUP_SECRET: secret })).toThrow()
+    expect(readBrowserAuthConfig({ BETTER_AUTH_SECRET: secret, OWNER_SETUP_SECRET: secret })).toEqual(readBrowserAuthConfig({ BETTER_AUTH_SECRET: secret }))
     for (const origin of ['https://example.com', 'http://localhost:5173/path', 'http://localhost:5173?x=1', 'http://user@localhost:5173']) {
       expect(() => readBrowserAuthConfig({ BETTER_AUTH_SECRET: secret, BETTER_AUTH_URL: origin })).toThrow()
     }

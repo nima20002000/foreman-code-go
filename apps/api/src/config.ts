@@ -1,5 +1,8 @@
 import { z } from 'zod'
+import { createRequire } from 'node:module'
 import { readBrowserAuthConfig, type BrowserAuthConfig } from './modules/browser-auth/config.js'
+
+const bundledCodexBinary = createRequire(import.meta.url).resolve('@openai/codex/bin/codex.js')
 
 const databaseSchemaName = z
   .string()
@@ -62,7 +65,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
     harnesses: {
       workspaceRoot: parsed.HARNESS_WORKSPACE_ROOT,
       timeoutMs: parsed.HARNESS_TIMEOUT_MS,
-      codexBinary: parsed.CODEX_BINARY,
+      codexBinary: parsed.CODEX_BINARY === 'codex' ? bundledCodexBinary : parsed.CODEX_BINARY,
       openCodeBinary: parsed.OPENCODE_BINARY,
     },
   }

@@ -21,7 +21,7 @@ export function AccountAccess() {
       <section aria-labelledby="account-identity-heading">
         <h2 id="account-identity-heading">Your profile</h2>
         <dl className="account-facts">
-          <div><dt>Name</dt><dd>{account?.name ?? principal.name}</dd></div>
+          {account?.name && account.name !== account.email ? <div><dt>Name</dt><dd>{account.name}</dd></div> : null}
           <div><dt>Email</dt><dd>{account?.email ?? 'Not available for this session'}</dd></div>
         </dl>
       </section>

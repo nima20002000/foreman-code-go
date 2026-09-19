@@ -3,9 +3,9 @@ import { OwnerSetupRequestSchema, safeAuthReturnTo } from './browserAuth.js'
 
 describe('browser auth contracts', () => {
   it('rejects caller-supplied authority and normalizes owner email', () => {
-    const input = { name: 'Owner', email: ' OWNER@EXAMPLE.TEST ', password: 'long-test-password', setupSecret: 's'.repeat(48) }
+    const input = { email: ' OWNER@EXAMPLE.TEST ', password: 'long-test-password' }
     expect(OwnerSetupRequestSchema.parse(input).email).toBe('owner@example.test')
-    for (const field of ['grants', 'role', 'principalId', 'callbackURL']) {
+    for (const field of ['name', 'setupSecret', 'grants', 'role', 'principalId', 'callbackURL']) {
       expect(OwnerSetupRequestSchema.safeParse({ ...input, [field]: 'admin' }).success).toBe(false)
     }
   })
