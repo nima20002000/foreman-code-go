@@ -22,8 +22,6 @@
 }
 
 .workspace-location-form { display: grid; gap: 16px; max-width: 40rem; min-width: 0; }
-.workspace-folder-field { display: grid; gap: 8px; min-width: 0; }
-.workspace-folder-field > label { font-size: 14px; font-weight: 500; }
 .workspace-folder-trigger {
   box-sizing: border-box;
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -31,11 +29,6 @@
   border-radius: var(--n-radius-sm); color: var(--n-text); background: var(--n-canvas);
   text-align: start; font: 400 14px/1.5 var(--n-font); cursor: pointer;
 }
-.workspace-folder-trigger > span { min-width: 0; overflow-wrap: anywhere; }
-.workspace-folder-trigger > svg { flex-shrink: 0; color: var(--n-muted); }
-.workspace-folder-trigger:hover:not(:disabled) { border-color: var(--n-accent); }
-.workspace-folder-trigger:focus-visible { outline: 2px solid var(--n-focus); outline-offset: 3px; }
-.workspace-folder-trigger:disabled { opacity: .5; cursor: not-allowed; }
 
 /* One scrolling body; navigation and confirmation never scroll away. */
 .workspace-folder-dialog {
@@ -62,17 +55,14 @@
 .workspace-folder-toolbar h3 { color: var(--n-muted); font-size: 13px; font-weight: 500; }
 .workspace-folder-toolbar > .n-button { padding-inline: 8px; }
 .workspace-folder-entries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; list-style: none; margin: 0; padding: 3px; min-width: 0; }
-.workspace-folder-entry { display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: center; min-width: 0; border: 1px solid transparent; border-radius: var(--n-radius-sm); }
+.workspace-folder-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; min-width: 0; border: 1px solid transparent; border-radius: var(--n-radius-sm); }
+.workspace-folder-entry .n-action-menu > button { border: 0; background: transparent; width: 32px; min-width: 32px; height: 44px; }
 .workspace-folder-entry[data-selected='true'] { border-color: var(--n-accent); background: var(--n-accent-subtle); }
 .workspace-folder-entry .workspace-folder-select { justify-content: flex-start; min-width: 0; text-align: start; padding: 10px; font-weight: 400; color: var(--n-text); }
 .workspace-folder-select > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .workspace-folder-select > svg { color: var(--n-muted); }
 .workspace-folder-entry[data-selected='true'] .workspace-folder-select > svg { color: var(--n-accent); }
 .workspace-folder-select small { display: block; margin-top: 2px; font-size: 12px; color: var(--n-muted); overflow-wrap: anywhere; }
-.workspace-folder-create { padding-block: 8px; min-width: 0; }
-.workspace-folder-create .n-field > label { font-size: 14px; }
-.workspace-folder-create .n-input { min-height: 44px; font-size: 16px; }
-.workspace-folder-create .n-field-hint { font-size: 12px; overflow-wrap: anywhere; }
 .workspace-folder-destination { display: grid; gap: 4px; min-width: 0; }
 .workspace-folder-destination .n-input { white-space: nowrap; font-size: 14px; min-height: 44px; }
 .workspace-folder-confirm { display: flex; justify-content: flex-end; gap: 8px; }
@@ -91,10 +81,29 @@
   .workspace-folder-confirm > .n-button { width: 100%; min-width: 0; }
 }
 
-.workspace-folder-entry .workspace-folder-select { position: relative; flex-direction: column; align-items: flex-start; gap: 4px; min-height: 72px; }
-.workspace-folder-select > span { flex: none; width: 100%; }
-.workspace-folder-select > svg:last-child:not(:first-child) { position: absolute; top: 8px; right: 8px; }
+.workspace-folder-entry .workspace-folder-select { position: relative; flex-direction: row; align-items: center; gap: 8px; min-height: 52px; }
+.workspace-folder-select > svg { flex-shrink: 0; }
 
-.workspace-folder-control { display: flex; align-items: center; min-width: 0; border: 1px solid var(--color-border-strong); border-radius: 6px; background: var(--color-surface-raised); }
-.workspace-folder-control .workspace-folder-trigger { flex: 1; min-width: 0; border: 0; background: transparent; }
-.workspace-folder-control > .n-icon-button { flex-shrink: 0; margin-inline-end: 4px; }
+
+
+.workspace-folder-name-editor { padding: 10px; min-width: 0; min-height: 52px; display: flex; align-items: center; gap: 8px; }
+.workspace-folder-name-editor > svg { flex-shrink: 0; }
+.workspace-folder-name-editor .n-field { flex: 1; min-width: 0; gap: 4px; }
+.workspace-folder-name-editor .n-input { min-width: 0; min-height: 0; height: auto; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; font: inherit; line-height: 1.5; }
+.workspace-folder-name-editor .n-input:focus-visible { outline: none; box-shadow: none; }
+.workspace-folder-name-editor .n-field > label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.workspace-folder-name-editor .n-field-error { font-size: 12px; }
+
+
+/* Keep the supplied notice styling; the card itself is the picker control. */
+.workspace-location-card { position: relative; min-width: 0; }
+.workspace-location-card[data-copy='true'] { padding-inline-end: 60px; }
+.workspace-location-card p[dir='ltr'] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-location-card .workspace-location-choose { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; border-radius: inherit; background: transparent; cursor: pointer; }
+.workspace-location-card .workspace-location-choose:hover { background: color-mix(in srgb, currentColor 3%, transparent); }
+.workspace-location-card .workspace-location-choose:focus-visible { outline: 2px solid var(--n-accent); outline-offset: 3px; }
+.workspace-location-card .workspace-location-choose:disabled { cursor: default; }
+.workspace-location-card:has(.workspace-location-choose:disabled) { opacity: .6; }
+.workspace-location-card > .n-icon-button { position: absolute; top: 8px; right: 8px; z-index: 1; }
+
+.workspace-folder-actions { display: flex; align-items: center; gap: 8px; }

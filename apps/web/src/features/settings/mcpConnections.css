@@ -86,7 +86,7 @@
 .mcp-facts > div { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 12px; }
 .mcp-facts dt { color: color-mix(in srgb, currentColor 74%, transparent); }
 .mcp-facts dd { margin: 0; }
-.mcp-facts dd, .mcp-diagnostic, .mcp-tool-filters li, .mcp-location-details p { overflow-wrap: anywhere; white-space: pre-wrap; line-height: 1.55; }
+.mcp-facts dd, .mcp-diagnostic, .mcp-tool-filters li { overflow-wrap: anywhere; white-space: pre-wrap; line-height: 1.55; }
 .mcp-diagnostic { margin: 0; padding: 10px 12px; border-radius: 8px; background: color-mix(in srgb, currentColor 4%, transparent); }
 .mcp-tool-filters h4 { margin: 0 0 6px; font-size: .8125rem; font-weight: 600; }
 .mcp-tool-filters ul { display: grid; gap: 6px; padding-inline-start: 18px; margin: 0; }
@@ -94,8 +94,6 @@
 .mcp-folder-notice > div { flex: 1 1 180px; min-width: 0; }
 .mcp-folder-notice strong { font-size: .875rem; }
 .mcp-folder-notice p { margin-top: 4px; }
-.mcp-location-details { font-size: .8125rem; }
-.mcp-location-details > summary { width: fit-content; min-height: 44px; padding: 10px 4px; cursor: pointer; }
 @media (max-width: 480px) {
   .mcp-folder-notice > a { width: 100%; justify-content: center; }
   .mcp-connection-card { padding-inline: 14px; }

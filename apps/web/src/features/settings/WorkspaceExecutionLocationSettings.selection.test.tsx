@@ -33,17 +33,17 @@ async function chooseChild() {
   const user = userEvent.setup()
   const field = await screen.findByRole('button', { name: 'Project folder' })
   await user.click(field)
-  await user.click(await screen.findByRole('button', { name: 'Open Projects' }))
   await user.click(await screen.findByRole('button', { name: 'Child' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Select location' })).toBeEnabled())
   return { user, field }
 }
 beforeEach(() => {
   useWorkspaceLocationDraftStore.getState().reset()
   server.use(
     http.get('/api/management/workspaces/workspace-select', () => HttpResponse.json(saved)),
-    http.get('/api/management/harnesses/directories', () => HttpResponse.json({
-      roots: [{ id: 'projects', label: 'Projects', path: '/projects' }], rootId: 'projects', path: '/projects',
-      parent: null, nextCursor: null, directories: [{ name: 'Child', path: '/projects/Child' }],
+    http.get('/api/management/harnesses/directories', ({ request }) => HttpResponse.json({
+      roots: [{ id: 'projects', label: 'Projects', path: '/projects' }], rootId: 'projects', path: new URL(request.url).searchParams.get('path') ?? '/projects',
+      parent: new URL(request.url).searchParams.get('path') === '/projects/Child' ? '/projects' : null, nextCursor: null, directories: [{ name: 'Child', path: '/projects/Child' }],
     })),
   )
 })
@@ -53,6 +53,8 @@ describe('destination confirmation owns persistence', () => {
   it('copies the accepted destination without opening the picker', async () => {
     const user = userEvent.setup()
     mount()
+    await screen.findByRole('button', { name: 'Project folder' })
+    expect(screen.queryByText('Change folder')).not.toBeInTheDocument()
     await user.click(await screen.findByRole('button', { name: 'Copy folder path' }))
     expect(await navigator.clipboard.readText()).toBe('/projects')
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -65,11 +67,11 @@ describe('destination confirmation owns persistence', () => {
     }))
     mount()
     const { user, field } = await chooseChild()
-    expect(field).toHaveTextContent('/projects')
-    expect(field).not.toHaveTextContent('/projects/Child')
+    expect(field.parentElement).toHaveTextContent('/projects')
+    expect(field.parentElement).not.toHaveTextContent('/projects/Child')
     expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(field).toHaveTextContent('/projects')
+    expect(field.parentElement).toHaveTextContent('/projects')
     expect(field).toHaveFocus()
     expect(writes).toEqual([])
     expect(useWorkspaceLocationDraftStore.getState().drafts['workspace-select']?.dirty).toBe(false)
@@ -87,15 +89,15 @@ describe('destination confirmation owns persistence', () => {
     client.setQueryData(queryKeys.managedWorkspaces, { items: [saved], pageInfo: { nextCursor: null } })
     const { user, field } = await chooseChild()
     try {
-      await user.click(screen.getByRole('button', { name: 'Select folder' }))
+      await user.click(screen.getByRole('button', { name: 'Select location' }))
       await waitFor(() => expect(writes).toHaveLength(1))
-      expect(field).not.toHaveTextContent('/projects/Child')
+      expect(field.parentElement).not.toHaveTextContent('/projects/Child')
       const dialog = screen.getByRole('dialog')
       expect(within(dialog).getByRole('button', { name: 'Saving…' })).toBeDisabled()
       expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled()
     } finally { await act(async () => { release(); await gate }) }
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(field).toHaveTextContent('/projects/Child')
+    expect(field.parentElement).toHaveTextContent('/projects/Child')
     expect(field).toHaveFocus()
     expect(client.getQueryState(queryKeys.managedWorkspaces)?.isInvalidated).toBe(true)
     expect(writes[0]).toMatchObject({ rootPath: '/projects/Child', expectedLocationRevision: 1, commandId: expect.any(String) })
@@ -107,11 +109,11 @@ describe('destination confirmation owns persistence', () => {
     }, { status: 422 })))
     mount()
     const { user, field } = await chooseChild()
-    await user.click(screen.getByRole('button', { name: 'Select folder' }))
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Destination unavailable.')
-    expect(field).not.toHaveTextContent('/projects/Child')
+    expect(field.parentElement).not.toHaveTextContent('/projects/Child')
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(field).toHaveTextContent('/projects')
+    expect(field.parentElement).toHaveTextContent('/projects')
     expect(useWorkspaceLocationDraftStore.getState().drafts['workspace-select']?.dirty).toBe(false)
   })
 
@@ -125,18 +127,18 @@ describe('destination confirmation owns persistence', () => {
     }))
     mount()
     const { user, field } = await chooseChild()
-    await user.click(screen.getByRole('button', { name: 'Select folder' }))
-    await screen.findByText('Saving could not be confirmed. Retry Select folder to resolve the same request.')
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
+    await screen.findByText('Saving could not be confirmed. Retry Select location to resolve the same request.')
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Close dialog' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'New folder' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Open Child' })).toBeDisabled()
-    expect(field).not.toHaveTextContent('/projects/Child')
-    await user.click(screen.getByRole('button', { name: 'Select folder' }))
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled()
+    expect(field.parentElement).not.toHaveTextContent('/projects/Child')
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(writes).toHaveLength(2)
     expect(writes[1]).toEqual(writes[0])
-    expect(field).toHaveTextContent('/projects/Child')
+    expect(field.parentElement).toHaveTextContent('/projects/Child')
   })
 
   it('accepts the already-saved ready folder without a redundant write', async () => {
@@ -148,8 +150,8 @@ describe('destination confirmation owns persistence', () => {
     const user = userEvent.setup()
     const field = await screen.findByRole('button', { name: 'Project folder' })
     await user.click(field)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Select folder' })).toBeEnabled())
-    await user.click(screen.getByRole('button', { name: 'Select folder' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Select location' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(writes).toBe(0)
     expect(field).toHaveFocus()

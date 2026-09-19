@@ -144,13 +144,9 @@ export function SettingsRouteEntry() {
               title="Settings"
             />
             <ul className="settings-card-list">
-              <li>
-                <Card className="settings-card">
-                  <Link to="/workspaces/$workspaceId/settings/location" params={{ workspaceId }} className="settings-card-open">
-                    <SettingsCardBody icon="folder" title="Execution location" description="Where agents run" />
-                  </Link>
-                </Card>
-              </li>
+              {workspace.data?.locationValidation.status === 'ready' ? <li>
+                <WorkspaceExecutionLocationSettings workspaceId={workspaceId} presentation="tile" />
+              </li> : null}
               <li>
                 <Card className="settings-card">
                   <Link to="/workspaces/$workspaceId/approvals" params={{ workspaceId }} search={{}} className="settings-card-open">
@@ -326,11 +322,10 @@ export function BrowsersSettingsRouteEntry() {
 export function WorkspaceLocationSettingsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/settings/location' })
   return <WorkspaceShell workspaceId={workspaceId} activeSection="settings" slots={{ main:
-    <SettingsDetailPage title="Execution location"
-      description="The folder used by this workspace’s workflows."
-      backLink={<Link to="/workspaces/$workspaceId/settings" params={{ workspaceId }} className="settings-back-link" aria-label="Back to settings">
+    <div className="settings-page workspace-detail n-theme">
+      <Link to="/workspaces/$workspaceId/settings" params={{ workspaceId }} className="settings-back-link" aria-label="Back to settings">
         <ArrowLeft aria-hidden="true" size={14} />Settings
-      </Link>}>
-      <WorkspaceExecutionLocationSettings key={workspaceId} workspaceId={workspaceId} />
-    </SettingsDetailPage> }} />
+      </Link>
+      <WorkspaceExecutionLocationSettings key={workspaceId} workspaceId={workspaceId} presentation="card" />
+    </div> }} />
 }

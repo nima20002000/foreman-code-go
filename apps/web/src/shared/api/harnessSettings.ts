@@ -5,11 +5,14 @@ import {
   HarnessMcpListResultSchema, HarnessMcpPlansResultSchema, HarnessMcpPlanResultSchema,
   HarnessMcpPlanInputSchema, HarnessMcpPlanSchema, HarnessDirectoryBrowseResultSchema,
   WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema, type WorkspaceFolderCreateInput,
+  WorkspaceFolderUndoInputSchema, WorkspaceFolderUndoResultSchema, type WorkspaceFolderUndoInput,
+  WorkspaceFolderRenameInputSchema, WorkspaceFolderRenameResultSchema, type WorkspaceFolderRenameInput,
   type HarnessMcpPlanInput,
 } from '@graphql/contracts/management'
 import type { HarnessConfiguration } from '@graphql/contracts'
 import { apiClient } from './client'
 import { sessionGeneration, sessionSignal, sessionIsSwitching } from './sessionBoundary'
+import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema, type WorkspaceFolderDeleteInput } from '@graphql/contracts/management'
 
 // Each abort rotates the existing session controller synchronously. Re-arm after rotation.
 function subscribeSession(changed: () => void) {
@@ -130,5 +133,36 @@ export function useCreateWorkspaceFolder() {
     mutationFn: (input: WorkspaceFolderCreateInput) => apiClient.request('/api/management/harnesses/directories',
       WorkspaceFolderCreateResultSchema, { method: 'POST', body: WorkspaceFolderCreateInputSchema.parse(input) }),
     onSuccess: () => { void client.invalidateQueries({ queryKey: harnessSettingsKeys.root }).catch(() => undefined) },
+  })
+}
+
+
+export function useRenameWorkspaceFolder() {
+  const client = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: (input: WorkspaceFolderRenameInput) => apiClient.request('/api/management/harnesses/directories/rename',
+      WorkspaceFolderRenameResultSchema, { method: 'POST', body: WorkspaceFolderRenameInputSchema.parse(input) }),
+    onSuccess: () => { void client.invalidateQueries({ queryKey: harnessSettingsKeys.root }).catch(() => undefined) },
+  })
+}
+
+export function useUndoWorkspaceFolder() {
+  const client = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: (input: WorkspaceFolderUndoInput) => apiClient.request('/api/management/harnesses/directories/undo',
+      WorkspaceFolderUndoResultSchema, { method: 'POST', body: WorkspaceFolderUndoInputSchema.parse(input) }),
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: harnessSettingsKeys.root }) },
+  })
+}
+
+export function useDeleteWorkspaceFolders() {
+  const client = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: (input: WorkspaceFolderDeleteInput) => apiClient.request('/api/management/harnesses/directories/delete',
+      WorkspaceFolderDeleteResultSchema, { method: 'POST', body: WorkspaceFolderDeleteInputSchema.parse(input) }),
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: harnessSettingsKeys.root }) },
   })
 }

@@ -2,7 +2,8 @@ import type { McpServer } from '@modelcontextprotocol/server'
 
 import {
   HarnessDirectoryBrowseInputSchema, HarnessDirectoryBrowseResultSchema,
-  WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema,
+  WorkspaceFolderUndoInputSchema, WorkspaceFolderUndoResultSchema,
+  WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema, WorkspaceFolderRenameInputSchema, WorkspaceFolderRenameResultSchema,
   WorkspaceArchiveInputSchema, WorkspaceCreateInputSchema, WorkspaceGetInputSchema,
   WorkspaceListInputSchema, WorkspaceUpdateInputSchema,
   ManagedWorkspaceCommandResultSchema, ManagedWorkspacePageSchema, ManagedWorkspaceSchema,
@@ -12,15 +13,31 @@ import {
 import { invokeOperatorTool } from '../invoke.js'
 import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'
+import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema } from '@graphql/contracts/management'
 
 export function registerWorkspaceTools(server: McpServer, context: OperatorRequestContext): void {
+  if (operatorToolAvailable(context, 'workspace_folders_delete')) server.registerTool('workspace_folders_delete', {
+    description: 'Delete selected empty folders inside workspace storage. Never removes the storage root, contents, workspace destinations or defaults. Returns deleted paths and per-folder failures. Reuse commandId and paths after an uncertain result.',
+    inputSchema: WorkspaceFolderDeleteInputSchema, outputSchema: WorkspaceFolderDeleteResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  }, async (input) => invokeOperatorTool(context, 'workspace_folders_delete', () => context.services.harnessSettings!.directories.deleteFolders(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_folders_list')) server.registerTool('workspace_folders_list', {
     description: 'Browse folders within the app-managed Workspaces location. Never follows links outside an allowed root. Use the returned path as parentPath for workspace_folder_create or workspace_create.',
     inputSchema: HarnessDirectoryBrowseInputSchema, outputSchema: HarnessDirectoryBrowseResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (input) => invokeOperatorTool(context, 'workspace_folders_list', () => context.services.harnessSettings!.directories.browse(context.principal, input)))
+  if (operatorToolAvailable(context, 'workspace_folder_undo')) server.registerTool('workspace_folder_undo', {
+    description: 'Undo creation of your new empty, unassigned folder, including after naming it. Requires the original creationCommandId. Never deletes contents or arbitrary paths. Reuse commandId on retry.',
+    inputSchema: WorkspaceFolderUndoInputSchema, outputSchema: WorkspaceFolderUndoResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  }, async (input) => invokeOperatorTool(context, 'workspace_folder_undo', () => context.services.harnessSettings!.directories.undoCreated(context.principal, 'mcp', input)))
+  if (operatorToolAvailable(context, 'workspace_folder_rename')) server.registerTool('workspace_folder_rename', {
+    description: 'Rename an empty, unused folder inside workspace storage. Supply its path, or your creationCommandId to retain creation-undo support across naming. Existing targets are never replaced. Workspace destinations and defaults cannot be renamed. Reuse commandId on retry.',
+    inputSchema: WorkspaceFolderRenameInputSchema, outputSchema: WorkspaceFolderRenameResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async (input) => invokeOperatorTool(context, 'workspace_folder_rename', () => context.services.harnessSettings!.directories.renameCreated(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_folder_create')) server.registerTool('workspace_folder_create', {
-    description: 'Create one new folder inside the app-managed Workspaces location. Requires provisioning and location-read grants. Existing folders are never overwritten. Reuse commandId and input on retry. Does not assign a workspace location or grant harness access.',
+    description: 'Create one new folder; omit name for an available New folder name. Creates inside the app-managed Workspaces location. Requires provisioning and location-read grants. Existing folders are never overwritten. Reuse commandId and input on retry. Does not assign a workspace location or grant harness access.',
     inputSchema: WorkspaceFolderCreateInputSchema, outputSchema: WorkspaceFolderCreateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (input) => invokeOperatorTool(context, 'workspace_folder_create', () => context.services.harnessSettings!.directories.create(context.principal, 'mcp', input)))

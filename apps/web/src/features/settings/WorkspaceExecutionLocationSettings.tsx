@@ -30,7 +30,9 @@ function message(error: unknown): string {
   return error instanceof ApiError ? error.message : error instanceof Error ? error.message : 'The location request failed.'
 }
 
-function LocationSettings({ workspaceId }: { workspaceId: string }) {
+type Props = { workspaceId: string; presentation?: 'field' | 'card' | 'tile'; onSaved?: () => void }
+
+function LocationSettings({ workspaceId, presentation = 'field', onSaved }: Props) {
   const toasts = useContext(ToastContext)
   const queryClient = useQueryClient()
   const workspace = useManagedWorkspaceQuery(workspaceId)
@@ -92,7 +94,8 @@ function LocationSettings({ workspaceId }: { workspaceId: string }) {
       update(workspaceId, (value) => value ? acknowledgeLocationSave(
         value, submitted.editVersion, result.value.executionLocation.rootPath, result.value.locationRevision,
       ) : value)
-      toasts?.notify({ tone: 'success', title: 'Execution location saved', description: 'Future runs will use this folder.' })
+      toasts?.notify({ tone: 'success', title: 'Folder saved' })
+      onSaved?.()
       return true
     } catch (error) {
       operation.attempt.failed(error)
@@ -143,7 +146,10 @@ function LocationSettings({ workspaceId }: { workspaceId: string }) {
         discard: () => update(workspaceId, () => hydrateLocationDraft(undefined, current)),
       }} />
       {archived ? <Alert live tone="danger" title="This workspace is archived. Its execution location cannot be edited." /> : null}
-      <WorkspaceFolderPicker key={workspaceId} value={draft.rootPath} copyValue={current.executionLocation?.rootPath ?? ''}
+      <WorkspaceFolderPicker key={workspaceId}
+        label={presentation === 'tile' ? 'Execution location' : presentation === 'card' ? 'Choose workspace folder' : 'Project folder'}
+        description="App connections are checked from this folder."
+        value={draft.rootPath} copyValue={current.executionLocation?.rootPath ?? ''}
         disabled={!writable || (conflict && !operation.attempt.unresolved)} selectionUnconfirmed={operation.attempt.unresolved && !busy} onSelect={async (path) => {
         // The modal owns its candidate. Only acknowledgement changes the page's destination.
         if (!await savePath(path)) {
@@ -163,7 +169,7 @@ function LocationSettings({ workspaceId }: { workspaceId: string }) {
   )
 }
 
-export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceId: string }) {
+export function WorkspaceExecutionLocationSettings({ workspaceId, presentation, onSaved }: Props) {
   const epoch = useHarnessSessionEpoch()
-  return <LocationSettings key={`${epoch}:${workspaceId}`} workspaceId={workspaceId} />
+  return <LocationSettings key={`${epoch}:${workspaceId}`} workspaceId={workspaceId} presentation={presentation} onSaved={onSaved} />
 }

@@ -205,13 +205,14 @@ describe('Workspace App MCP hierarchy', () => {
 })
 
 describe('Workspace App MCP scope and access', () => {
-  it('links straight to folder setup, and does not check providers before a folder exists', async () => {
+  it('opens the folder picker directly, and does not check providers before a folder exists', async () => {
     const value = client()
     value.setQueryData(queryKeys.managedWorkspace('workspace-1'), {
       ...workspace(), executionLocation: null, locationValidation: { status: 'unconfigured' },
     })
     mount(value)
-    expect(await screen.findByRole('link', { name: 'Choose folder' })).toHaveAttribute('href', '/workspaces/workspace-1/settings/location')
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Choose workspace folder' }))
+    expect(await screen.findByRole('dialog', { name: 'Choose folder' })).toBeVisible()
     expect(getDetection).not.toHaveBeenCalled()
   })
 
@@ -231,11 +232,10 @@ describe('Workspace App MCP scope and access', () => {
     value.setQueryData(queryKeys.managedWorkspace('workspace-1'), {
       ...workspace(), locationValidation: { status: 'unavailable', error: { message: 'The folder was removed.' } },
     })
-    const user = userEvent.setup()
     mount(value)
-    expect(await screen.findByRole('link', { name: 'Change folder' })).toBeVisible()
-    await user.click(screen.getByText('Folder details'))
-    expect(screen.getByText('The folder was removed.')).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Choose workspace folder' })).toBeVisible()
+    expect(await screen.findByText('The folder was removed.')).toBeVisible()
+    expect(screen.getAllByText('The folder was removed.')).toHaveLength(1)
     expect(getDetection).not.toHaveBeenCalled()
   })
 

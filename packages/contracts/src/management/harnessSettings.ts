@@ -61,15 +61,46 @@ export const HarnessDirectoryBrowseResultSchema = z.object({
   directories: z.array(z.object({ name: z.string(), path: z.string() }).strict()), nextCursor: z.string().nullable(),
 }).strict()
 
+export const WorkspaceFolderNameSchema = z.string().trim().min(1).max(200)
+  .refine((name) => name !== "." && name !== ".." && !name.startsWith(".")
+    && !name.includes("/") && !name.includes("\\")
+    && !Array.from(name).some((character) => character.charCodeAt(0) < 32),
+  "Use a folder name without slashes, a leading dot, or control characters.")
 export const WorkspaceFolderCreateInputSchema = z.object({
-  parentPath: Path, name: z.string().trim().min(1).max(200)
-    .refine((name) => name !== "." && name !== ".." && !name.startsWith(".")
-      && !name.includes("/") && !name.includes("\\")
-      && !Array.from(name).some((character) => character.charCodeAt(0) < 32),
-    "Use a folder name without slashes, a leading dot, or control characters."),
+  parentPath: Path,
+  name: WorkspaceFolderNameSchema.optional().describe("Omit to create an available New folder name automatically."),
   commandId: CommandId,
 }).strict()
 export type WorkspaceFolderCreateInput = z.infer<typeof WorkspaceFolderCreateInputSchema>
 export const WorkspaceFolderCreateResultSchema = z.object({
   value: z.object({ path: Path, name: z.string() }).strict(), replayed: z.boolean(),
+}).strict()
+export const WorkspaceFolderRenameInputSchema = z.object({
+  creationCommandId: CommandId.optional(),
+  path: Path.optional(),
+  name: WorkspaceFolderNameSchema,
+  commandId: CommandId,
+}).strict().refine((value) => Boolean(value.creationCommandId) !== Boolean(value.path), 'Provide a creation command or a folder path.')
+export type WorkspaceFolderRenameInput = z.infer<typeof WorkspaceFolderRenameInputSchema>
+export const WorkspaceFolderRenameResultSchema = WorkspaceFolderCreateResultSchema
+
+export const WorkspaceFolderUndoInputSchema = z.object({
+  creationCommandId: CommandId,
+  commandId: CommandId,
+}).strict()
+export type WorkspaceFolderUndoInput = z.infer<typeof WorkspaceFolderUndoInputSchema>
+export const WorkspaceFolderUndoResultSchema = z.object({
+  value: z.object({ path: Path }).strict(), replayed: z.boolean(),
+}).strict()
+
+export const WorkspaceFolderDeleteInputSchema = z.object({
+  paths: z.array(Path).min(1).max(100).refine((paths) => new Set(paths).size === paths.length, 'Choose each folder once.'),
+  commandId: CommandId,
+}).strict()
+export type WorkspaceFolderDeleteInput = z.infer<typeof WorkspaceFolderDeleteInputSchema>
+export const WorkspaceFolderDeleteResultSchema = z.object({
+  value: z.object({
+    deleted: z.array(Path),
+    failed: z.array(z.object({ path: Path, message: z.string() }).strict()),
+  }).strict(), replayed: z.boolean(),
 }).strict()

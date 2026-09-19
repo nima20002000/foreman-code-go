@@ -129,10 +129,10 @@ export function operatorToolRequirements(name: OperatorToolName): Requirement[] 
   if (name === 'run_start') scope = 'workflow'
   if (name === 'operator_get_capabilities') scope = 'caller'
   if (['harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_change_get'].includes(name)) scope = 'global'
-  if (['workspace_folders_list', 'workspace_folder_create'].includes(name)) scope = 'global'
+  if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) scope = 'global'
   const result: Requirement[] = [{action:entry.action,scope}]
   if (name === 'workspace_folders_list') result.push({action:'harnesses:read',scope:'global'})
-  if (name === 'workspace_folder_create') result.push({action:'workspace_locations:read',scope:'global'})
+  if (['workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) result.push({action:'workspace_locations:read',scope:'global'})
   if (name === 'harness_mcp_change_request') result.push({action:'harnesses:read',scope:'global'})
   if (['run_start','harness_mcp_detection_get','workspace_location_provision','run_resume','run_retry'].includes(name)) result.push({action:'workspace_locations:read',scope:'workspace'})
   if (name === 'workspace_location_provision') result.push({action:'workspace_locations:update',scope:'workspace'})
@@ -168,7 +168,7 @@ function intersect(left: ManagementScope, right: ManagementScope): ManagementSco
 export function operatorToolAvailable(context: OperatorRequestContext, name: OperatorToolName, resource?: AuthorizedResource): boolean {
   if (!OPERATOR_TOOL_ACTIONS.some((entry)=>entry.name===name)) return false
   const service = context.services
-  if (['workspace_folders_list', 'workspace_folder_create'].includes(name) && !service.harnessSettings) return false
+  if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name) && !service.harnessSettings) return false
   if (['harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_change_get'].includes(name) && !service.harnessSettings) return false
   if (name.startsWith('interaction_') && !service.interactions) return false
   if (['agent_defaults_get','agent_defaults_update','workflow_defaults_get','workflow_defaults_update','workspace_defaults_get','workspace_defaults_update'].includes(name) && !service.settings) return false

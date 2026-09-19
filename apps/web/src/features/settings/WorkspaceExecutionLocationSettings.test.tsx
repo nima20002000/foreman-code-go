@@ -17,6 +17,16 @@ function mount() {
 beforeEach(() => {
   useWorkspaceLocationDraftStore.getState().reset()
   setMockScenario('normal')
+  server.use(
+    http.post('/api/management/harnesses/directories', async ({ request }) => {
+      const body = await request.json() as { parentPath: string; name?: string }
+      return HttpResponse.json({ value: { name: body.name ?? 'New folder', path: body.parentPath + '/' + (body.name ?? 'New folder') }, replayed: false })
+    }),
+    http.post('/api/management/harnesses/directories/rename', async ({ request }) => {
+      const body = await request.json() as { name: string }
+      return HttpResponse.json({ value: { name: body.name, path: '/projects/' + body.name }, replayed: false })
+    }),
+  )
   server.use(http.get('/api/management/harnesses/directories', ({ request }) => {
     const path = new URL(request.url).searchParams.get('path') ?? '/projects'
     return HttpResponse.json({
@@ -36,16 +46,15 @@ describe('workspace execution folder picker', () => {
     expect(screen.queryByRole('button', { name: 'Choose folder' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Save location' })).not.toBeInTheDocument()
     await user.click(field)
-    await user.click(await screen.findByRole('button', { name: /^Open projects$/i }))
     await user.click(await screen.findByRole('button', { name: 'My project' }))
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Destination' })).toHaveValue('/projects/My project'))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Select folder' })).toBeEnabled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Select location' })).toBeEnabled())
     expect(screen.queryByText('No subfolders.')).not.toBeInTheDocument()
     expect(screen.queryByText('My project', { selector: 'strong' })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Select folder' }))
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
     expect(await screen.findByText('Execution location saved. Future runs use this folder.')).toBeVisible()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(field).toHaveTextContent('/projects/My project')
+    expect(field.parentElement).toHaveTextContent('/projects/My project')
     expect(field).toHaveFocus()
     expect(useWorkspaceLocationDraftStore.getState().drafts['workspace-1']?.dirty).toBe(false)
   })
@@ -54,17 +63,16 @@ describe('workspace execution folder picker', () => {
     const user = userEvent.setup()
     mount()
     await user.click(await screen.findByRole('button', { name: 'Project folder' }))
-    await user.click(await screen.findByRole('button', { name: /^Open projects$/i }))
     const back = await screen.findByRole('button', { name: 'Back' })
-    expect(back).toBeEnabled()
+    expect(back).toBeDisabled()
     expect(back.closest('header')).toContainElement(screen.getByRole('heading', { name: 'Choose folder' }))
-    await user.dblClick(screen.getByRole('button', { name: 'My project' }))
+    await user.click(screen.getByRole('button', { name: 'My project' }))
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Destination' })).toHaveValue('/projects/My project'))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Select folder' })).toBeEnabled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Select location' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Back' }))
     expect(await screen.findByRole('button', { name: 'My project' })).toBeVisible()
     expect(screen.getByRole('textbox', { name: 'Destination' })).toHaveFocus()
-    expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled()
     expect(useWorkspaceLocationDraftStore.getState().drafts['workspace-1']?.rootPath).toBe('')
   })
 
@@ -80,12 +88,11 @@ describe('workspace execution folder picker', () => {
     const user = userEvent.setup()
     mount()
     await user.click(await screen.findByRole('button', { name: 'Project folder' }))
-    await user.click(await screen.findByRole('button', { name: /^Open projects$/i }))
-    await user.dblClick(await screen.findByRole('button', { name: 'Unavailable' }))
+    await user.click(await screen.findByRole('button', { name: 'Unavailable' }))
     expect(await screen.findByText('Folder unavailable.')).toBeVisible()
     expect(screen.getByRole('textbox', { name: 'Destination' })).toHaveFocus()
     expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'Select folder' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Select location' })).toBeDisabled()
   })
 
   it('creates and saves a folder in one confirmation', async () => {
@@ -93,18 +100,18 @@ describe('workspace execution folder picker', () => {
     server.use(http.post('/api/management/harnesses/directories', async ({ request }) => {
       const input = await request.json() as { name: string; parentPath: string }
       requests.push(input)
-      return HttpResponse.json({ value: { name: input.name, path: input.parentPath + '/' + input.name }, replayed: false })
+      return HttpResponse.json({ value: { name: 'New folder', path: input.parentPath + '/New folder' }, replayed: false })
     }))
     const user = userEvent.setup()
     mount()
     await user.click(await screen.findByRole('button', { name: 'Project folder' }))
-    await user.click(await screen.findByRole('button', { name: /^Open projects$/i }))
     await user.click(await screen.findByRole('button', { name: 'New folder' }))
-    expect(screen.getByRole('textbox', { name: 'Folder name' })).toHaveFocus()
-    await user.type(screen.getByRole('textbox', { name: 'Folder name' }), 'New project')
-    await user.click(screen.getByRole('button', { name: 'Create and select' }))
+    expect(await screen.findByRole('textbox', { name: 'Folder name' })).toHaveFocus()
+    await user.clear(await screen.findByRole('textbox', { name: 'Folder name' }))
+    await user.type(await screen.findByRole('textbox', { name: 'Folder name' }), 'New project')
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
     expect(await screen.findByText('Execution location saved. Future runs use this folder.')).toBeVisible()
-    expect(requests).toEqual([expect.objectContaining({ name: 'New project', parentPath: '/projects', commandId: expect.any(String) })])
+    expect(requests).toEqual([expect.objectContaining({ parentPath: '/projects', commandId: expect.any(String) })])
     expect(useWorkspaceLocationDraftStore.getState().drafts['workspace-1']?.rootPath).toBe('/projects/New project')
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(await screen.findByText('Execution location saved. Future runs use this folder.')).toBeVisible()
@@ -117,11 +124,10 @@ describe('workspace execution folder picker', () => {
     const user = userEvent.setup()
     mount()
     await user.click(await screen.findByRole('button', { name: 'Project folder' }))
-    await user.click(await screen.findByRole('button', { name: /^Open projects$/i }))
-    await user.click(await screen.findByRole('button', { name: 'Select folder' }))
+    await user.click(await screen.findByRole('button', { name: 'Select location' }))
     expect(await screen.findByRole('dialog')).toBeVisible()
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Folder no longer exists.'))
-    expect(screen.getByRole('button', { name: 'Select folder' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Select location' })).toBeEnabled()
   })
 
   it('retries saving the newly created folder without creating it again', async () => {
@@ -143,31 +149,31 @@ describe('workspace execution folder picker', () => {
     const user = userEvent.setup()
     mount()
     await user.click(await screen.findByRole('button', { name: 'Project folder' }))
-    await user.click(await screen.findByRole('button', { name: /^Open projects$/i }))
     await user.click(await screen.findByRole('button', { name: 'New folder' }))
-    await user.type(screen.getByRole('textbox', { name: 'Folder name' }), 'Project')
-    await user.click(screen.getByRole('button', { name: 'Create and select' }))
+    await user.clear(await screen.findByRole('textbox', { name: 'Folder name' }))
+    await user.type(await screen.findByRole('textbox', { name: 'Folder name' }), 'Project')
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Try saving again.')
-    await user.click(screen.getByRole('button', { name: 'Select folder' }))
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
     expect(await screen.findByText('Execution location saved. Future runs use this folder.')).toBeVisible()
     expect(creates).toBe(1)
     expect(saves).toBe(2)
   })
 
   it('keeps duplicate folder errors next to the name and preserves it', async () => {
-    server.use(http.post('/api/management/harnesses/directories', () => HttpResponse.json({
+    server.use(http.post('/api/management/harnesses/directories/rename', () => HttpResponse.json({
       error: { code: 'DIRECTORY_EXISTS', message: 'A folder with this name already exists.' },
     }, { status: 409 })))
     const user = userEvent.setup()
     mount()
     await user.click(await screen.findByRole('button', { name: 'Project folder' }))
-    await user.click(await screen.findByRole('button', { name: /^Open projects$/i }))
     await user.click(await screen.findByRole('button', { name: 'New folder' }))
-    await user.type(screen.getByRole('textbox', { name: 'Folder name' }), 'Existing')
-    await user.click(screen.getByRole('button', { name: 'Create and select' }))
+    await user.clear(await screen.findByRole('textbox', { name: 'Folder name' }))
+    await user.type(await screen.findByRole('textbox', { name: 'Folder name' }), 'Existing')
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
     expect(await screen.findByText('A folder with this name already exists.')).toBeVisible()
-    expect(screen.getByRole('textbox', { name: 'Folder name' })).toHaveValue('Existing')
-    expect(screen.getByRole('button', { name: 'Create and select' })).toBeEnabled()
+    expect(await screen.findByRole('textbox', { name: 'Folder name' })).toHaveValue('Existing')
+    expect(screen.getByRole('button', { name: 'Select location' })).toBeEnabled()
   })
 
   it('cancels browsing without changing the saved location', async () => {
@@ -175,10 +181,9 @@ describe('workspace execution folder picker', () => {
     mount()
     const field = await screen.findByRole('button', { name: 'Project folder' })
     await user.click(field)
-    await user.click(await screen.findByRole('button', { name: /^Open projects$/i }))
     await user.click(await screen.findByRole('button', { name: 'My project' }))
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(field).toHaveTextContent('Choose a folder')
+    expect(field.parentElement).toHaveTextContent('Choose a workspace folder')
     expect(field).toHaveFocus()
   })
 })

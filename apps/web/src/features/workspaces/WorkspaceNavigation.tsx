@@ -267,9 +267,7 @@ function NewWorkspaceControl() {
               aria-invalid={nameError ? true : undefined}
               aria-describedby={nameError ? 'new-workspace-name-error' : undefined}
             />
-            <TextField label="Location" value={parentPath} disabled={createManagedWorkspace.isPending || uncertain}
-              onChange={(event) => { touched.current.parentPath = true; setParentPath(event.target.value) }} />
-            <WorkspaceFolderPicker disabled={createManagedWorkspace.isPending || uncertain} onSelect={(path) => {
+            <WorkspaceFolderPicker value={parentPath} label="Location" disabled={createManagedWorkspace.isPending || uncertain} onSelect={(path) => {
               touched.current.parentPath = true; setParentPath(path)
             }} />
             {parentPath && name.trim() ? <p className="workspace-create-path">Folder: {parentPath.replace(/\/$/, '')}/{name.trim()}</p> : null}

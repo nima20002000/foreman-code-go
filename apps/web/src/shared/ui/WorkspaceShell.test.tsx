@@ -1,5 +1,7 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { http, HttpResponse } from 'msw'
+import { server } from '../../mocks/server'
 
 import { renderWithRouter } from '../../test/renderWithRouter'
 import {
@@ -14,17 +16,22 @@ describe('WorkspaceShell', () => {
   })
 
   it('prefills the parent location and previews a folder for the entered name', async () => {
+    server.use(http.get('/api/management/harnesses/directories', () => HttpResponse.json({
+      roots: [{ id: 'projects', label: 'Projects', path: '/projects' }], rootId: 'projects', path: '/projects',
+      parent: null, directories: [], nextCursor: null,
+    })))
     const user = userEvent.setup()
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
     await user.click(await screen.findByRole('button', { name: 'New workspace' }))
-    const location = await screen.findByRole('textbox', { name: 'Location' })
-    await waitFor(() => expect(location).toHaveValue('/home/test/.local/share/graphql/workspaces'))
+    const location = await screen.findByRole('button', { name: 'Location' })
+    await waitFor(() => expect(location.parentElement).toHaveTextContent('/home/test/.local/share/graphql/workspaces'))
     const name = screen.getByRole('textbox', { name: 'Name' })
     await user.clear(name)
     await user.type(name, 'My Project')
     expect(screen.getByText('Folder: /home/test/.local/share/graphql/workspaces/My Project')).toBeVisible()
-    await user.clear(location)
-    await user.type(location, '/projects')
+    await user.click(location)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Select location' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
     expect(screen.getByText('Folder: /projects/My Project')).toBeVisible()
   })
 

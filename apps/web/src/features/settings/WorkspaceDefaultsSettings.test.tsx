@@ -16,18 +16,24 @@ beforeEach(resetSettingsExperienceFixtures)
 afterEach(()=>{cleanup();clearRevisionedFormPersistence();for(const client of clients.splice(0))client.clear()})
 describe('Workspace defaults',()=>{
   it('saves creation suggestions through the shared API without showing a default root grant',async()=>{
+    server.use(http.get('/api/management/harnesses/directories', () => HttpResponse.json({
+      roots: [{ id: 'projects', label: 'Projects', path: '/projects' }], rootId: 'projects', path: '/projects',
+      parent: null, directories: [], nextCursor: null,
+    })))
     const client=new QueryClient({defaultOptions:{queries:{retry:false}}});clients.push(client)
     render(<QueryClientProvider client={client}><ToastProvider><WorkspaceDefaultsSettings /></ToastProvider></QueryClientProvider>)
     const user=userEvent.setup();const name=await screen.findByRole('textbox',{name:'Suggested workspace name'})
     await user.clear(name);await user.type(name,'New project')
     const description=screen.getByRole('textbox',{name:'Starting description'});await user.type(description,'A shared project workspace.')
-    const location=screen.getByRole('textbox',{name:'Default location'});await user.clear(location);await user.type(location,'/projects')
+    const location=screen.getByRole('button',{name:'Default location'});await user.click(location)
+    await waitFor(()=>expect(screen.getByRole('button',{name:'Select location'})).toBeEnabled())
+    await user.click(screen.getByRole('button',{name:'Select location'}))
     await user.click(screen.getByRole('button',{name:'Save workspace defaults'}))
     await waitFor(()=>expect(screen.getByRole('button',{name:'Save workspace defaults'})).toBeDisabled())
     expect(await screen.findByText('Changes saved to the server')).toBeVisible()
     expect(screen.getByText('Changes are saved to the server.')).toBeVisible()
     expect(screen.getByText('Workspace defaults saved')).toBeVisible()
-    expect(location).toHaveValue('/projects')
+    expect(location.parentElement).toHaveTextContent('/projects')
     expect(name).toHaveValue('New project');expect(description).toHaveValue('A shared project workspace.')
     expect(screen.queryByLabelText(/Root path|Sandbox|Runner/)).not.toBeInTheDocument()
   })

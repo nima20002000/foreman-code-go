@@ -4,12 +4,14 @@ import {
   HarnessMcpPlanInputSchema, HarnessMcpPlanResultSchema, HarnessMcpPlansResultSchema, HarnessMcpPlanSchema,
   HarnessMcpPlanGetInputSchema, HarnessMcpDecisionInputSchema,
   HarnessDirectoryBrowseInputSchema, HarnessDirectoryBrowseResultSchema,
-  WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema,
+  WorkspaceFolderUndoInputSchema, WorkspaceFolderUndoResultSchema,
+  WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema, WorkspaceFolderRenameInputSchema, WorkspaceFolderRenameResultSchema,
 } from '@graphql/contracts/management'
 import { requireBrowserSession, requirePrincipal } from '../modules/access/http.js'
 import { requireAuthorization } from '../modules/access/policy.js'
 import { DomainError } from '../modules/errors.js'
 import type { OperatorServices } from '../mcp/operator/types.js'
+import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema } from '@graphql/contracts/management'
 
 export function registerHarnessSettingsRoutes(app: FastifyInstance, services: OperatorServices): void {
   app.get('/api/management/harnesses/:harness/options', async (request) => {
@@ -46,6 +48,21 @@ export function registerHarnessSettingsRoutes(app: FastifyInstance, services: Op
     requireBrowserSession(request)
     const input = HarnessMcpDecisionInputSchema.parse(request.body)
     return HarnessMcpPlanSchema.parse(await settings().mcp.decide(requirePrincipal(request), input.planId, input.approve))
+  })
+  app.post('/api/management/harnesses/directories/delete', async (request) => {
+    requireBrowserSession(request)
+    return WorkspaceFolderDeleteResultSchema.parse(await settings().directories.deleteFolders(
+      requirePrincipal(request), 'http', WorkspaceFolderDeleteInputSchema.parse(request.body)))
+  })
+  app.post('/api/management/harnesses/directories/undo', async (request) => {
+    requireBrowserSession(request)
+    return WorkspaceFolderUndoResultSchema.parse(await settings().directories.undoCreated(
+      requirePrincipal(request), 'http', WorkspaceFolderUndoInputSchema.parse(request.body)))
+  })
+  app.post('/api/management/harnesses/directories/rename', async (request) => {
+    requireBrowserSession(request)
+    return WorkspaceFolderRenameResultSchema.parse(await settings().directories.renameCreated(
+      requirePrincipal(request), 'http', WorkspaceFolderRenameInputSchema.parse(request.body)))
   })
   app.post('/api/management/harnesses/directories', async (request) => {
     requireBrowserSession(request)

@@ -1,16 +1,18 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import type { AgentHarness } from '@graphql/contracts'
 import { Alert, Badge, Button, Combobox, Icon } from '../../shared/ui/nocturne'
 import { useManagedWorkspacesQuery, useManagedWorkspaceQuery } from '../../shared/api/query'
 import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
 import { useProtectedAccessError } from '../auth/useProtectedAccessError'
+import { WorkspaceExecutionLocationSettings } from './WorkspaceExecutionLocationSettings'
 import { McpAccessNotice, McpConnectionCard } from './McpConnectionCard'
 import './mcpConnections.css'
 
 type Props = { workspaceId?: string; harness?: AgentHarness }
 
 function WorkspaceEvidence({ workspaceId, harness, returnTo }: Props & { workspaceId: string; returnTo: string }) {
+  const contentRef = useRef<HTMLDivElement>(null)
   const query = useManagedWorkspaceQuery(workspaceId)
   const accessError = useProtectedAccessError(query)
   const current = query.data?.workspace.id === workspaceId ? query.data : undefined
@@ -26,7 +28,7 @@ function WorkspaceEvidence({ workspaceId, harness, returnTo }: Props & { workspa
   const location = current.executionLocation
   const status = current.locationValidation.status
   const ready = Boolean(location) && status === 'ready'
-  return <div className="mcp-content">
+  return <div className="mcp-content" ref={contentRef} tabIndex={-1}>
     {query.isError ? <Alert tone="warning" title="Workspace details couldn't update" action={retry}>
       Showing the last saved location.
     </Alert> : null}
@@ -36,17 +38,7 @@ function WorkspaceEvidence({ workspaceId, harness, returnTo }: Props & { workspa
         workspaceId={workspaceId} harness={provider} location={location} returnTo={returnTo} />)}
     </div> : status === 'restricted' ? <Alert tone="warning" title="Folder access is restricted" action={retry}>
       Ask the workspace owner for access, then try again.
-    </Alert> : <div className="mcp-folder-notice">
-      <span className="mcp-provider-icon"><Icon name="folder" size={22} /></span>
-      <div><strong>{status === 'unavailable' ? 'The workspace folder is unavailable' : 'Choose a workspace folder'}</strong>
-        <p>App connections are checked from this folder.</p></div>
-      <Link className="n-button n-button--secondary n-button--sm" to="/workspaces/$workspaceId/settings/location" params={{ workspaceId }}>
-        <Icon name="folder" size={16} />{status === 'unavailable' ? 'Change folder' : 'Choose folder'}
-      </Link>
-    </div>}
-    {current.locationValidation.status === 'unavailable' ? <details className="mcp-location-details"><summary>Folder details</summary>
-      <p>{current.locationValidation.error.message}</p>
-    </details> : null}
+    </Alert> : <WorkspaceExecutionLocationSettings workspaceId={workspaceId} presentation="card" onSaved={() => contentRef.current?.focus()} />}
   </div>
 }
 

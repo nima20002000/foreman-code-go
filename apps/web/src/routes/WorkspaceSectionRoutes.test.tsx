@@ -209,16 +209,14 @@ describe('workspace section routes', () => {
     expect(screen.getByRole('link', { name: /Browsers/ })).toBeVisible()
   })
 
-  it('opens workspace execution location on its dedicated Settings page', async () => {
+  it('opens the workspace folder picker without navigating away from Settings', async () => {
     const user = userEvent.setup()
     const { router } = renderRoute('/workspaces/workspace-1/settings')
 
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
-    await user.click(screen.getByRole('link', { name: /Execution location/ }))
+    await user.click(await screen.findByRole('button', { name: /Execution location|Choose workspace folder/ }))
 
-    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings/location'))
-    expect(await screen.findByRole('heading', { name: 'Execution location', level: 1 })).toBeVisible()
-    expect(await screen.findByRole('button', { name: 'Project folder' })).toBeVisible()
-    expect(screen.getByRole('link', { name: 'Back to settings' })).toHaveAttribute('href', '/workspaces/workspace-1/settings')
+    expect(await screen.findByRole('dialog', { name: 'Choose folder' })).toBeVisible()
+    expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings')
   })
 })

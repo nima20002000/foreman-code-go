@@ -29,10 +29,10 @@ export function WorkspaceDefaultsSettings() {
         onChange={(event) => form.setDraft({ ...draft, suggestedName: event.target.value })} />
       <Textarea label="Starting description" rows={4} maxLength={10_000} value={draft.description} error={fieldMessage(form.issues ?? [], 'description')}
         placeholder="Optional context for new workspaces" onChange={(event) => form.setDraft({ ...draft, description: event.target.value })} />
-      <TextField label="Default location" value={draft.parentPath ?? ''} error={fieldMessage(form.issues ?? [], 'parentPath')}
-        onChange={(event) => form.setDraft({ ...draft, parentPath: event.target.value })}
-        hint="New workspaces get their own folder here." />
-      <WorkspaceFolderPicker disabled={form.isSaving || form.uncertain} onSelect={(parentPath) => form.setDraft({ ...draft, parentPath })} />
+      <WorkspaceFolderPicker value={draft.parentPath ?? ''} label="Default location"
+        description="New workspaces get their own folder here."
+        disabled={form.isSaving || form.uncertain} onSelect={(parentPath) => form.setDraft({ ...draft, parentPath })} />
+      {fieldMessage(form.issues ?? [], 'parentPath') ? <p role="alert">{fieldMessage(form.issues ?? [], 'parentPath')}</p> : null}
     </div>
     <SettingsFormActions form={form} saveLabel="Save workspace defaults" onSave={() => form.save(async (input) => {
       const response = await mutation.mutateAsync({ ...input, value: WorkspaceDefaultsSchema.parse(input.value) })

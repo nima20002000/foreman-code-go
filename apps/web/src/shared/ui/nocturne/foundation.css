@@ -242,12 +242,13 @@
 .n-empty p { color: var(--n-muted); max-width: 310px; font-size: 12px; }
 .n-empty .n-button { margin-top: 5px; }
 .n-error-state .n-empty-icon { color: var(--n-danger); background: var(--n-danger-subtle); }
-.n-toasts { position: fixed; left: 20px; top: var(--n-toast-offset, 20px); bottom: auto; z-index: 900; width: min(390px, calc(100vw - 32px)); display: grid; gap: 10px; padding: 0; margin: 0; list-style: none; max-height: 50dvh; overflow-y: auto; }
-.n-toast { display: flex; align-items: start; gap: 11px; border: 1px solid var(--n-border-strong); border-radius: 10px; background: var(--n-raised); box-shadow: var(--n-shadow); padding: 14px; animation: n-appear 160ms var(--n-ease); }
-.n-toast > div { flex: 1; min-width: 0; }
-.n-toast strong { font-size: 12px; font-weight: 600; }
-.n-toast p { color: var(--n-muted); font-size: 11px; margin-top: 4px; overflow-wrap: anywhere; }
-.n-toast-icon { color: var(--n-tone, var(--n-info)); margin-top: 2px; }
+.n-toasts { position: fixed; right: 20px; left: auto; top: var(--n-toast-offset, 20px); z-index: 900; width: min(360px, calc(100vw - 32px)); display: grid; gap: 8px; padding: 0; margin: 0; list-style: none; max-height: 50dvh; overflow-y: auto; pointer-events: none; }
+.n-toast { display: grid; grid-template-columns: 20px minmax(0, 1fr) 28px; align-items: start; gap: 10px; border: 1px solid var(--n-border-strong); border-radius: var(--n-radius); background: var(--n-surface); box-shadow: 0 8px 24px #0003; padding: 12px; pointer-events: auto; animation: n-appear 160ms var(--n-ease); }
+.n-toast > div { min-width: 0; }
+.n-toast strong { display: block; font-size: 13px; line-height: 1.5; font-weight: 550; overflow-wrap: anywhere; }
+.n-toast p { color: var(--n-muted); font-size: 12px; line-height: 1.5; margin: 2px 0 0; overflow-wrap: anywhere; }
+.n-toast-icon { display: flex; color: var(--n-tone, var(--n-info)); padding-top: 2px; }
+.n-toast > .n-icon-button { width: 28px; min-height: 28px; height: 28px; margin-top: -3px; }
 /* Layout and data */
 .n-surface, .n-card { background: var(--n-surface); border: 1px solid var(--n-border); border-radius: var(--n-radius-lg); min-width: 0; }
 .n-card-header { display: flex; align-items: start; justify-content: space-between; gap: 16px; padding: 20px 20px 17px; border-bottom: 1px solid var(--n-border); }
@@ -372,7 +373,7 @@ button.n-node:disabled { opacity: .55; cursor: not-allowed; }
   .n-dialog { max-height: calc(100dvh - 24px); width: calc(100vw - 24px); }
   .n-drawer { width: 100vw; max-height: 100dvh; }
   .n-dialog-header, .n-dialog-body, .n-dialog-footer { padding: 18px; }
-  .n-toasts { top: var(--n-toast-offset, 16px); bottom: auto; left: 16px; }
+  .n-toasts { top: var(--n-toast-offset, 16px); right: 16px; left: auto; }
   .n-command-group { display: none; }
 }
 @media (pointer: coarse) {

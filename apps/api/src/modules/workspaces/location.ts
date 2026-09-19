@@ -184,6 +184,10 @@ export class WorkspaceLocationService {
         if (revision !== input.expectedLocationRevision) {
           throw new DomainError('LOCATION_REVISION_CONFLICT', 'The workspace location changed since it was read.', 409, { currentLocationRevision: revision })
         }
+        let folderPath: string
+        try { folderPath = await withFilesystemDeadline((check) => check(() => realpath(input.rootPath))) }
+        catch (error) { throw locationError(error, input.rootPath) }
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [`workspace-folder:${folderPath}`])
         const accepted = await this.validatePath(input.workspaceId, input.runnerId, input.rootPath, 'read-only')
         const nextRevision = revision + 1
         await client.query(
