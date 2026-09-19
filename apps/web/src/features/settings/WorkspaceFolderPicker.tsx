@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { useCreateWorkspaceFolder, useHarnessDirectories, useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
 import { WorkspaceFolderCreateInputSchema } from '@graphql/contracts/management'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
-import { Button, Dialog, Icon, LoadingState, Select, TextField } from '../../shared/ui/nocturne'
+import { Button, Dialog, Icon, IconButton, LoadingState, Select, TextField } from '../../shared/ui/nocturne'
 import './workspaceLocation.css'
 
 type Props = { disabled: boolean; onSelect(path: string): void | Promise<void>; value?: string; label?: string }
@@ -107,13 +107,12 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder' }: P
           disabled={query.isFetching || locked || creating} options={data.roots.map((root) => ({ value: root.id, label: root.path }))}
           onChange={(event) => navigateFolder({ rootId: event.target.value })} /> : null}
         {data?.path || history.length || location.path ? <div className="workspace-folder-current-row">
-          <span ref={pathRef} tabIndex={-1} className="workspace-folder-current">
-            <strong>{(data?.path ?? location.path)?.split('/').filter(Boolean).at(-1) ?? '/'}</strong>
-            <span>{data?.path ?? location.path}</span>
+          <span ref={pathRef} tabIndex={-1} className="workspace-folder-current" title={data?.path ?? location.path}>
+            {data?.path ?? location.path}
           </span>
-          {!creating && data?.path ? <Button ref={newFolderRef} size="sm" variant="ghost"
-            disabled={query.isError || query.isFetching || locked} leading={<Icon name="plus" />}
-            onClick={() => { setName(''); setError(undefined); setCreating(true) }}>New folder</Button> : null}
+          {!creating && data?.path ? <IconButton ref={newFolderRef} label="New folder" size="sm" variant="ghost"
+            disabled={query.isError || query.isFetching || locked}
+            onClick={() => { setName(''); setError(undefined); setCreating(true) }}><Icon name="plus" /></IconButton> : null}
         </div> : null}
         {data?.path ? creating ? <div className="workspace-folder-create">
           <TextField ref={nameRef} label="Folder name" value={name} error={error} disabled={locked}
@@ -128,8 +127,8 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder' }: P
           ? <div role="alert"><p>{query.error.message}</p><Button onClick={() => void query.refetch()}>Retry</Button></div>
           : data?.roots.length === 0
             ? <p>No folders are available to browse.</p>
-            : data?.directories.length === 0 ? <p>No subfolders.</p> : null)}
-        {!creating && !query.isError && !query.isFetching ? <div className="workspace-folder-entries">
+            : null)}
+        {!creating && !query.isError && !query.isFetching && Boolean(data?.directories.length) ? <div className="workspace-folder-entries">
           {data?.directories.map((entry) => <Button key={entry.path} disabled={locked || creating} variant="ghost" leading={<Icon name="folder" />} trailing={<span aria-hidden="true">›</span>}
             onClick={() => { if (data.rootId) navigateFolder({ rootId: data.rootId, path: entry.path }) }}>
             {entry.name}
