@@ -775,7 +775,7 @@ export function GraphEditor({
   const needsAgentBeforeSave = Boolean(managedDraft && displayedWorkflow.nodes.length === 0 && !hasPendingSave)
   const isDirty = hasLocalChanges || hasUnpublishedChanges || hasPendingSave
   const showGraphActions = hasLocalChanges || (hasUnpublishedChanges && !needsAgentBeforeSave) || hasPendingSave
-  const saveDisabled = isSaving || needsAgentBeforeSave || (executionLimitExceeded && !hasPendingSave)
+  const saveDisabled = isSaving
   const recordUndo = useCallback(() => {
     undoStackRef.current.push({ workflow: displayedWorkflow, agentOverrides, managedBase, cloneSources: draft?.cloneSources })
     if (undoStackRef.current.length > 100) undoStackRef.current.shift()
@@ -1033,7 +1033,11 @@ export function GraphEditor({
   }, [discardDraft, onClearAgent, workflowKey])
 
   const handleSave = useCallback(async () => {
-    if (!isDirty || needsAgentBeforeSave || saveLock.current || managedSaveQueue.isRunning(workflowKey)) return
+    if (!isDirty || saveLock.current || managedSaveQueue.isRunning(workflowKey)) return
+    if (needsAgentBeforeSave) {
+      setNotice({ kind: 'error', text: 'Add an Agent before saving this workflow.' })
+      return
+    }
     if (executionLimitExceeded && !managedSaveQueue.hasPending(workflowKey)) {
       setNotice({ kind: 'error', text: 'Review the execution limit before saving this graph.' })
       return
@@ -1158,7 +1162,6 @@ export function GraphEditor({
 
   useUnsavedChanges({ label: 'workflow graph', dirty: hasLocalChanges, busy: isSaving,
     uncertain: managedSaveQueue.hasPending(workflowKey),
-    saveDisabled: needsAgentBeforeSave || (executionLimitExceeded && !hasPendingSave),
     error: notice?.kind === 'error' ? notice.text : undefined, save: handleSave, discard: handleDiscard,
   }, (current, next) => current.pathname !== next.pathname || current.search.workflowId !== next.search.workflowId)
 
@@ -1565,9 +1568,9 @@ export function GraphEditor({
         {showGraphActions ? (
           <div className="workflow-graph-actions">
             <Toolbar label="Graph actions">
-              <Button variant="secondary" onClick={handleDiscard} disabled={!hasLocalChanges || isSaving}>
+              {hasLocalChanges ? <Button variant="secondary" onClick={handleDiscard} disabled={isSaving}>
                 {managedDraft ? 'Discard local edits' : 'Discard'}
-              </Button>
+              </Button> : null}
               <Button variant="primary" onClick={handleSave} disabled={saveDisabled}>
                 {isSaving ? 'Saving…' : 'Save graph'}
               </Button>
@@ -1576,10 +1579,7 @@ export function GraphEditor({
         ) : null}
 
         <div className="workflow-graph-notifications" data-testid="workflow-graph-notifications">
-          {hasLocalChanges && !needsAgentBeforeSave ? <Alert live title="Unsaved graph changes. Use Save graph to persist applied agent and workflow settings." /> : null}
           {hasPendingSave && !managedSaving ? <Alert live tone="warning" title="The previous save is unresolved. Retry Save graph before discarding local edits or starting." /> : null}
-          {needsAgentBeforeSave ? <Alert live tone="warning" title={hasLocalChanges ? 'Unsaved graph changes. Add an Agent before saving.' : 'Add an Agent before saving this workflow.'} /> : null}
-          {hasUnpublishedChanges && !needsAgentBeforeSave ? <Alert live tone="warning" title="The shared draft has unpublished changes. Save graph before starting it." /> : null}
           {runQuery.data?.run.executionLocation ? (
             <Alert live title={`Run location: ${runQuery.data.run.executionLocation.rootPath}`} />
           ) : null}

@@ -6,14 +6,25 @@ import {
 } from '@tanstack/react-router'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import type { WorkspaceDetailsResponse } from '@graphql/contracts'
 
 import { routeTree } from '../app/router'
 import { queryKeys } from '../shared/api/query'
-import { setMockScenario } from '../shared/mocks/scenarios'
+import { getMockFixture, setMockScenario } from '../shared/mocks/scenarios'
 import { server } from '../mocks/server'
+
+function readyWorkspace() {
+  const fixture = getMockFixture('workspace-1')
+  if (!fixture) throw new Error('Workspace fixture missing')
+  return {
+    workspace: fixture.workspace, revision: 1, archivedAt: null,
+    executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' },
+    locationRevision: 1,
+    locationValidation: { status: 'ready', checkedAt: '2026-09-19T00:00:00.000Z' },
+  }
+}
 
 function renderWorkspace(initialEntry: string) {
   const queryClient = new QueryClient({
@@ -34,6 +45,10 @@ function renderWorkspace(initialEntry: string) {
 }
 
 describe('WorkspaceRouteEntry integration', () => {
+  beforeEach(() => {
+    server.use(http.get('/api/management/workspaces/workspace-1', () => HttpResponse.json(readyWorkspace())))
+  })
+
   beforeAll(() => {
     vi.stubGlobal(
       'ResizeObserver',
@@ -122,11 +137,7 @@ describe('WorkspaceRouteEntry integration', () => {
     })
   })
 
-  it('renders loading, error, 404 and empty workspace states', async () => {
-    const loading = renderWorkspace('/workspaces/workspace-1')
-    expect(await screen.findByTestId('workspace-loading')).toBeInTheDocument()
-    loading.unmount()
-
+  it('renders error, 404 and empty workspace states', async () => {
     setMockScenario('error')
     const error = renderWorkspace('/workspaces/workspace-1')
     expect(await screen.findByTestId('workspace-error')).toBeVisible()

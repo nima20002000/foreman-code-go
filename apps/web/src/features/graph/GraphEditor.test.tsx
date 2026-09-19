@@ -258,7 +258,7 @@ describe('GraphEditor persistence boundary', () => {
       expect.objectContaining({ source: 'step-one', target: 'step-two' }),
     ])
     expect(screen.queryByText(/is the connection source/)).not.toBeInTheDocument()
-    expect(screen.getByText('Unsaved graph changes. Use Save graph to persist applied agent and workflow settings.')).toBeVisible()
+    expect(screen.queryByText(/Unsaved graph changes/)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save graph' })).toBeEnabled()
     expect(onSelectAgent).toHaveBeenNthCalledWith(1, 'agent-one')
     expect(onSelectAgent).toHaveBeenNthCalledWith(2, 'agent-two')
@@ -571,7 +571,7 @@ describe('GraphEditor persistence boundary', () => {
     const actions = screen.getByLabelText('Graph actions')
     expect(canvas).toContainElement(actions)
     expect(document.querySelector('.workflow-graph-toolbar')).not.toBeInTheDocument()
-    expect(screen.getByText('Unsaved graph changes. Use Save graph to persist applied agent and workflow settings.')).toBeVisible()
+    expect(screen.queryByText(/Unsaved graph changes/)).not.toBeInTheDocument()
     expect(screen.queryByText('Saved definition')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Discard' }))

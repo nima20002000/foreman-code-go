@@ -18,7 +18,6 @@ vi.mock('../src/infrastructure/checkpoints.js', () => ({ createCheckpointStore: 
   setup: async () => undefined, ping: async () => undefined,
   close: async () => { state.calls.push('checkpoints closed') },
 }) }))
-vi.mock('../src/infrastructure/seed.js', () => ({ ensureAcceptanceSeed: async () => undefined }))
 vi.mock('../src/production.js', () => ({ buildProductionApp: () => ({
   app: state.app,
   initialize: async () => undefined,

@@ -146,9 +146,12 @@ Blank space and generic failures made several surfaces harder to understand than
 - retry/in-flight feedback;
 - success/acknowledgement when it matters.
 
+When a workspace prerequisite is required to enter a task, show that prerequisite as the main empty/error state before rendering the task. A warning layered above an unusable board makes the board appear available and leaves the user to discover the block at Start. Keep the board hidden while its execution folder is unconfigured, unavailable, restricted, or still loading; give a direct setup path or retry as appropriate. A cached status from another workspace must never open the selected workspace's board. Evidence: `WorkspaceExecutionLocationSetup.test.tsx` covers those states and the ready layout.
+
 Do not erase usable stale content just because a refresh failed. Error messages should say what remains available and what the user can do next.
 After a save, keep a visible success state even when the form becomes clean. A toast confirms the event; inline feedback confirms the current form state. Tests should assert that distinction and that newer unsaved edits remain visible.
 When a server rejects an executable graph with structured validation issues, show the actionable issue messages and retain the draft instead of reducing them to a generic save error.
+Graph Save/Discard controls should reflect an actual local edit or a publishable shared draft, not initial hydration. Do not keep an invalid-graph warning on screen while the user is editing; show the specific problem after Save is attempted, preserve the edit, and keep Save available for a retry. Only offer “Discard local edits” when local edits exist.
 
 The Nocturne migration moved these states into shared `LoadingState`, `EmptyState`, `ErrorState`, `Alert`, and button-loading patterns so behavior stays consistent instead of each screen inventing its own version.
 

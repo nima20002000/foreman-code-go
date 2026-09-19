@@ -4,7 +4,6 @@ import { mkdir } from 'node:fs/promises'
 import { loadConfig } from './config.js'
 import { createCheckpointStore } from './infrastructure/checkpoints.js'
 import { createDatabase } from './infrastructure/database.js'
-import { ensureAcceptanceSeed } from './infrastructure/seed.js'
 import { buildProductionApp } from './production.js'
 
 async function main() {
@@ -57,8 +56,6 @@ async function main() {
     await database.ping()
     stopIfClosing()
     await database.migrate()
-    stopIfClosing()
-    await ensureAcceptanceSeed(database.pool)
     stopIfClosing()
     await checkpoints.setup()
     stopIfClosing()

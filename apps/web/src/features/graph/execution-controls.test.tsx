@@ -68,7 +68,7 @@ it('does not offer Save for a clean published graph', () => {
   expect(screen.queryByRole('button', { name: 'Discard local edits' })).not.toBeInTheDocument()
 })
 
-it('guides a fresh empty workflow to add an Agent, then offers Save for a meaningful shared draft', () => {
+it('does not nag or show local-edit controls for an untouched shared draft', () => {
   const emptyWorkflow = { ...workflow, nodes: [], edges: [] }
   const emptyDraft: GraphDraft = { ...savedDraft, revision: 0, publishedRevision: undefined,
     baseWorkflowVersionId: null, graph: emptyWorkflow }
@@ -77,15 +77,30 @@ it('guides a fresh empty workflow to add an Agent, then offers Save for a meanin
   </QueryClientProvider>)
 
   expect(screen.queryByRole('button', { name: 'Save graph' })).not.toBeInTheDocument()
-  expect(screen.getByText('Add an Agent before saving this workflow.')).toBeVisible()
-  expect(screen.queryByText('The shared draft has unpublished changes. Save graph before starting it.')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Discard local edits' })).not.toBeInTheDocument()
+  expect(screen.queryByText('Add an Agent before saving this workflow.')).not.toBeInTheDocument()
 
   view.rerender(<QueryClientProvider client={client}>
     <GraphEditor workspaceId={workflow.workspaceId} workflow={workflow} agents={agents}
       managedDraft={{ ...emptyDraft, revision: 1, graph: workflow }} />
   </QueryClientProvider>)
   expect(screen.getByRole('button', { name: 'Save graph' })).toBeEnabled()
-  expect(screen.getByText('The shared draft has unpublished changes. Save graph before starting it.')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Discard local edits' })).not.toBeInTheDocument()
+  expect(screen.queryByText('The shared draft has unpublished changes. Save graph before starting it.')).not.toBeInTheDocument()
+})
+
+it('explains an empty graph only after Save is attempted and keeps the edit', async () => {
+  const key = workflowDraftKey(workflow.workspaceId, workflow.id)
+  const emptyWorkflow = { ...workflow, nodes: [], edges: [] }
+  act(() => useGraphDraftStore.getState().updateDraft(key, workflow, () => emptyWorkflow, [], captureManagedBase(savedDraft, agents, {})))
+  editor(savedDraft)
+
+  expect(screen.getByRole('button', { name: 'Save graph' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Discard local edits' })).toBeEnabled()
+  expect(screen.queryByText('Add an Agent before saving this workflow.')).not.toBeInTheDocument()
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Save graph' }))
+  expect(screen.getByRole('alert')).toHaveTextContent('Add an Agent before saving this workflow.')
+  expect(getGraphDraft(key)?.workflow.nodes).toEqual([])
 })
 
 it('keeps Save available to retry an uncertain managed publication', async () => {
@@ -184,12 +199,14 @@ it('shows a canceled execution after remount without a success tone', async () =
   expect(screen.getByRole('button', { name: 'Start workflow' })).toBeEnabled()
 })
 
-it('explains the fourth-step safety limit and requires an explicit operator change before Save', async () => {
+it('explains the fourth-step safety limit when Save is attempted', async () => {
   editor()
   const user = userEvent.setup()
   await user.click(screen.getByRole('button', { name: 'Add agent to graph' }))
   await user.click(await screen.findByRole('button', { name: 'Orchestrator' }))
-  expect(screen.getByRole('button', { name: 'Save graph' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Save graph' })).toBeEnabled()
+  await user.click(screen.getByRole('button', { name: 'Save graph' }))
+  expect(screen.getByRole('alert')).toHaveTextContent('Review the execution limit before saving this graph.')
   expect(getGraphDraft(workflowDraftKey(workflow.workspaceId, workflow.id))?.workflow.executionPolicy?.maxNodeExecutions).toBe(3)
   await user.click(screen.getByRole('button', { name: 'Workflow settings' }))
   const limit = screen.getByRole('spinbutton', { name: 'Maximum node executions' })

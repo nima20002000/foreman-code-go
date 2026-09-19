@@ -1,9 +1,23 @@
 import { screen } from '@testing-library/react'
+import { http, HttpResponse } from 'msw'
 
 import { renderWithRouter } from '../test/renderWithRouter'
+import { server } from '../mocks/server'
+import { getMockFixture } from '../shared/mocks/scenarios'
 import { WorkspaceRouteView, WorkspaceSelection } from './WorkspaceRoute'
 
 describe('WorkspaceRoute', () => {
+  beforeEach(() => {
+    const fixture = getMockFixture('workspace-1')
+    if (!fixture) throw new Error('Workspace fixture missing')
+    server.use(http.get('/api/management/workspaces/workspace-1', () => HttpResponse.json({
+      workspace: fixture.workspace, revision: 1, archivedAt: null,
+      executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' },
+      locationRevision: 1,
+      locationValidation: { status: 'ready', checkedAt: '2026-09-19T00:00:00.000Z' },
+    })))
+  })
+
   it('keeps the graph neutral when no agent is selected', async () => {
     renderWithRouter(<WorkspaceSelection workspaceId="workspace-1" />)
 
@@ -25,6 +39,13 @@ describe('WorkspaceRoute', () => {
       />,
     )
     expect(await screen.findByTestId('workspace-error')).toHaveTextContent('Request failed')
+  })
+
+  it('shows a missing workspace error before checking its execution folder', async () => {
+    renderWithRouter(<WorkspaceRouteView workspaceId="missing" state="not-found" />)
+
+    expect(await screen.findByTestId('workspace-not-found')).toBeVisible()
+    expect(screen.queryByText('Execution folder could not be checked')).not.toBeInTheDocument()
   })
 
   it('marks the workflows destination active for the graph route', async () => {

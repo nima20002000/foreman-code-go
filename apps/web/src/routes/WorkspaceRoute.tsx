@@ -114,7 +114,7 @@ export function WorkspaceRouteView({
   }
 
   resolvedSlots.graph = (
-    <WorkspaceExecutionLocationSetup workspaceId={workspaceId} enabled>
+    <WorkspaceExecutionLocationSetup workspaceId={workspaceId} enabled={state !== 'loading' && state !== 'error' && state !== 'not-found'}>
       {resolvedSlots.graph}
     </WorkspaceExecutionLocationSetup>
   )
