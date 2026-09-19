@@ -39,7 +39,7 @@ describe('Harness overview and draft regressions',()=>{
     const sandbox=screen.getByRole('combobox',{name:'Sandbox'});await user.selectOptions(sandbox,'workspace-write');await user.click(screen.getByRole('button',{name:'Save Codex preset'}))
     await waitFor(()=>expect(saveDefaults).toHaveBeenCalledOnce());await user.selectOptions(sandbox,'read-only')
     const submitted=saveDefaults.mock.calls[0]![0];await act(async()=>{resolve({defaults:submitted.defaults});await pending})
-    expect(screen.getByText('Saved submitted changes. Newer edits remain unsaved.')).toBeVisible();expect(sandbox).toHaveValue('read-only')
+    expect(screen.getByText('Earlier changes saved; newer edits are unsaved.')).toBeVisible();expect(sandbox).toHaveValue('read-only')
   })
   it('does not replace a local provider draft after a server refresh',async()=>{
     const client=renderSettings();const user=userEvent.setup();await user.click(await screen.findByRole('button',{name:'Edit Codex defaults'}));await user.click(screen.getByRole('button',{name:'Access & approvals'}))

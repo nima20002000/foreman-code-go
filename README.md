@@ -56,9 +56,15 @@ Compose runs only PostgreSQL, bound to `127.0.0.1:5432`. Its named volume keeps
 application records and LangGraph checkpoints across `db:down` and restarts.
 The API applies database migrations during startup.
 
-The real API requires browser access. If Workspaces asks you to connect, open
-Settings → App access, create a token with the local credential command shown
-there, and connect this browser. Startup never issues a token automatically.
+The real API requires browser access. Configure the private auth values in
+`apps/api/.env` as described in [`docs/browser-auth.md`](./docs/browser-auth.md),
+complete the one-time owner setup at `/setup`, then sign in. The Account link
+beside the theme control opens your profile and sign-out controls. Startup never
+creates an owner or grants access implicitly.
+
+For a separate local test installation, set `GRAPHQL_API_ENV_FILE` to an absolute
+path before `corepack pnpm dev`; the API and credential CLI use that file instead
+of `apps/api/.env`.
 
 The repository pins pnpm 11.27.0 and rejects plain `npm install`. pnpm enforces
 a strict 2,880-minute (48-hour) minimum release age for direct and transitive

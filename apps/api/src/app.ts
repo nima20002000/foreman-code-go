@@ -15,6 +15,8 @@ import type { AppMcpServices } from './mcp/app/types.js'
 import { registerOperatorMcp } from './mcp/operator/transport.js'
 import type { OperatorServices } from './mcp/operator/types.js'
 import { registerOperatorHttpSecurity } from './modules/access/http.js'
+import { registerBrowserAuthRoutes } from './modules/browser-auth/routes.js'
+import type { BrowserAuthentication } from './modules/browser-auth/service.js'
 import type { PostgresAccessService } from './modules/access/postgres.js'
 import { DomainError } from './modules/errors.js'
 import type { McpDetectionService } from './modules/harnesses/mcpDetection.js'
@@ -29,6 +31,7 @@ export interface ReadinessDependencies {
 }
 
 export interface BuildAppOptions {
+  browserAuth?: BrowserAuthentication
   readiness: ReadinessDependencies
   readinessTimeoutMs?: number
   product?: ProductServices
@@ -107,7 +110,8 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     return response
   })
 
-  if (options.operator) registerOperatorHttpSecurity(app, options.operator.access)
+  if (options.operator) registerBrowserAuthRoutes(app, options.browserAuth)
+  if (options.operator) registerOperatorHttpSecurity(app, options.operator.access, options.browserAuth)
   if (options.operator) registerManagementRoutes(app, options.operator.services)
   if (options.operator && options.mcpDetection) registerMcpDetectionRoute(app, options.mcpDetection.pool, options.mcpDetection.service)
   if (options.operator && options.product?.interactions) registerUserInteractions(app, options.operator.access, options.product.interactions)

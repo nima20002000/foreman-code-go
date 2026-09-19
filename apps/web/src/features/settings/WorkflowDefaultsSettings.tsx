@@ -1,7 +1,7 @@
 import { WorkflowDefaultsSchema, type WorkflowDefaults } from '@graphql/contracts'
 
 import { useUpdateWorkflowDefaultsMutation, useWorkflowDefaultsQuery } from '../../shared/api/query'
-import { Alert, Button, LoadingState, Select, SettingsSection } from '../../shared/ui/nocturne'
+import { Alert, Button, LoadingState, Select } from '../../shared/ui/nocturne'
 import { fieldMessage } from './fieldValidation'
 import { SettingsFormActions, SettingsFormFeedback } from './SettingsFormActions'
 import { useSettingsValidation } from './useSettingsValidation'
@@ -23,16 +23,17 @@ export function WorkflowDefaultsSettings() {
   const draft = form.draft
   if (query.isError && !draft) return <Alert live tone="danger" title={`Workflow defaults are unavailable. ${query.error.message}`} action={<Button onClick={() => void query.refetch()}>Retry</Button>} />
   if (!draft) return <LoadingState label="Loading workflow defaults…" />
-  return <SettingsSection title="Workflow defaults">
-    <div ref={(node) => { root.current = node }}>
-      {query.isError ? <div className="settings-form-feedback"><Alert live tone="danger" title="The refresh failed. Your draft is preserved." action={<Button onClick={() => void query.refetch()}>Retry refresh</Button>} /></div> : null}
-      <SettingsFormFeedback form={form} />
+  return <section className="settings-editor-page" aria-label="Workflow defaults">
+    {query.isError ? <div className="settings-form-feedback"><Alert live tone="danger" title="The refresh failed. Your draft is preserved." action={<Button onClick={() => void query.refetch()}>Retry refresh</Button>} /></div> : null}
+    <SettingsFormFeedback form={form} />
+    <div ref={(node) => { root.current = node }} className="settings-editor-content settings-single-column">
+      <header className="settings-section-heading"><h2>Approval routing</h2><p>Choose who handles approval requests in new workflows.</p></header>
       <Select label="Approval handler" value={draft.approvalHandler} error={handlerError} hint="Normal graph edges do not determine approval authority; workflow roles and settings do." options={approvalOptions}
         onChange={(event) => form.setDraft({ approvalHandler: event.target.value as WorkflowDefaults['approvalHandler'] })} />
     </div>
-    <SettingsFormActions form={form} onSave={() => void form.save(async (input) => {
+    <SettingsFormActions form={form} saveLabel="Save workflow defaults" onSave={() => void form.save(async (input) => {
       const response = await mutation.mutateAsync(input)
       return { value: response.value.value, revision: response.value.revision }
     }, (value) => WorkflowDefaultsSchema.parse(value))} />
-  </SettingsSection>
+  </section>
 }

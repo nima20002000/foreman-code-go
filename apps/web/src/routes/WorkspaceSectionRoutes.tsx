@@ -213,13 +213,14 @@ export function GlobalSettingsRouteEntry() {
       activeGlobalSection="settings"
       slots={{
         main: (
-          <div className="settings-page">
+          <div className="settings-page settings-hub">
             <PageHeader
               eyebrow="GraphQL"
               title="Settings"
               description="Configure application preferences and connected capabilities."
             />
-            <ul className="settings-card-list">
+            <h2 className="settings-group-heading" id="settings-defaults-heading">Defaults</h2>
+            <ul className="settings-card-list" aria-labelledby="settings-defaults-heading">
               <li>
                 <Card className="settings-card">
                   <Link to="/settings/workspaces" className="settings-card-open">
@@ -248,17 +249,13 @@ export function GlobalSettingsRouteEntry() {
                   </Link>
                 </Card>
               </li>
+            </ul>
+            <h2 className="settings-group-heading" id="settings-operations-heading">Operations</h2>
+            <ul className="settings-card-list" aria-labelledby="settings-operations-heading">
               <li>
                 <Card className="settings-card">
                   <Link to="/approvals" className="settings-card-open">
                     <SettingsCardBody icon="shield" title="Approval Inbox" description="Global review queue and delivery history" />
-                  </Link>
-                </Card>
-              </li>
-              <li>
-                <Card className="settings-card">
-                  <Link to="/settings/operator-access" className="settings-card-open">
-                    <SettingsCardBody icon="lock" title="App access" description="Connect this browser and review its permissions" />
                   </Link>
                 </Card>
               </li>

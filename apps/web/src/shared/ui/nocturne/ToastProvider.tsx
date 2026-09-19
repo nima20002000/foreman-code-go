@@ -1,20 +1,27 @@
-import { useState, useCallback, useMemo, useRef, useId, type ReactNode } from 'react'
+import { useState, useCallback, useEffect, useMemo, useRef, useId, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ToastContext, type ToastInput } from './toastContext'
 import { Icon } from './Icon'
 import { IconButton, Button } from './Button'
 
-/** Notifications persist until dismissed. Actionable/error messages never disappear on a timer. */
+/** Successful notifications clear automatically; actionable/error messages stay until dismissed. */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<(ToastInput & { id: string })[]>([])
   const prefix = useId()
   const sequence = useRef(0)
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>())
+  const dismiss = useCallback((id: string) => {
+    clearTimeout(timers.current.get(id))
+    timers.current.delete(id)
+    setToasts((previous) => previous.filter((toast) => toast.id !== id))
+  }, [])
   const notify = useCallback((toast: ToastInput) => {
     const id = `${prefix}-${++sequence.current}`
     setToasts((previous) => [...previous, { ...toast, id }])
+    if (toast.tone === 'success') timers.current.set(id, setTimeout(() => dismiss(id), 6000))
     return id
-  }, [prefix])
-  const dismiss = useCallback((id: string) => setToasts((previous) => previous.filter((toast) => toast.id !== id)), [])
+  }, [dismiss, prefix])
+  useEffect(() => () => { for (const timer of timers.current.values()) clearTimeout(timer) }, [])
   const value = useMemo(() => ({ notify, dismiss }), [notify, dismiss])
   return <ToastContext.Provider value={value}>{children}{typeof document !== 'undefined' && createPortal(
     <ol className="n-theme n-toasts" aria-label="Notifications" aria-live="polite" aria-relevant="additions">

@@ -11,7 +11,7 @@ async function main() {
   // loadEnvFile is available at the declared Node 22.0 runtime baseline, unlike
   // --env-file-if-exists. Missing local configuration is normal in production.
   try {
-    loadEnvFile()
+    loadEnvFile(process.env.GRAPHQL_API_ENV_FILE)
   } catch (error) {
     if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) {
       throw error

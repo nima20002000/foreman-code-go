@@ -4,10 +4,11 @@ import { access, copyFile, chmod } from 'node:fs/promises'
 import { createConnection } from 'node:net'
 import { loadEnvFile } from 'node:process'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const apiEnv = join(root, 'apps/api/.env')
+const customApiEnv = process.env.GRAPHQL_API_ENV_FILE
+const apiEnv = customApiEnv ?? join(root, 'apps/api/.env')
 const children = []
 let stopping = false
 
@@ -72,14 +73,17 @@ async function waitFor(name, url, accepts, child) {
 }
 
 async function main() {
+  if (customApiEnv && !isAbsolute(customApiEnv)) throw new Error('GRAPHQL_API_ENV_FILE must be an absolute path.')
   try {
     await access(apiEnv)
   } catch (error) {
     if (error.code !== 'ENOENT') throw error
+    if (customApiEnv) throw new Error(`GRAPHQL_API_ENV_FILE does not exist: ${apiEnv}`)
     await copyFile(join(root, 'apps/api/.env.example'), apiEnv, constants.COPYFILE_EXCL)
     await chmod(apiEnv, 0o600)
     console.log('Created apps/api/.env from the local example.')
   }
+  process.env.GRAPHQL_API_ENV_FILE = apiEnv
   loadEnvFile(apiEnv)
   const port = Number(process.env.PORT ?? 3000)
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be a valid TCP port.')
@@ -131,7 +135,7 @@ async function main() {
   // dev:api and dev:web already own a contracts watcher when one is reused.
   if (api && web) start('Contracts watcher', ['--filter', '@graphql/contracts', 'dev'])
   console.log(`GraphQL ready: ${webUrl} (API ${apiUrl}).`)
-  console.log(`If this browser is not connected, open ${webUrl}/settings/operator-access.`)
+  console.log(`Sign in at ${webUrl}/sign-in. First-owner setup: ${webUrl}/setup.`)
   const ended = await Promise.race(children.map(({ exited }) => exited))
   if (!stopping) {
     console.error(`${ended.name} stopped (exit ${ended.code ?? ended.signal}).`)

@@ -3,6 +3,7 @@ import { z } from "zod";
 export * from "./extensions.js";
 export * from "./harnessSettings.js";
 export * from "./settingsExperience.js";
+export * from "./browserAuth.js";
 
 import {
   AgentSchema,
@@ -125,6 +126,7 @@ export const BrowserAccessSessionSchema = z.object({
     id: IdSchema, name: z.string().min(1), expiresAt: TimestampSchema,
     grants: z.array(ManagementGrantSchema),
   }).strict(),
+  account: z.object({ name: z.string().min(1), email: z.string().email() }).strict().optional(),
 }).strict();
 export const BrowserAccessLogoutSchema = z.object({ signedOut: z.literal(true) }).strict();
 

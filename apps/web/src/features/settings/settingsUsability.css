@@ -3,6 +3,10 @@
 .settings-save-actions { position: sticky; bottom: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; padding: 1rem 0; border-top: 1px solid var(--color-border); background: var(--color-surface); }
 .settings-save-actions > p { flex: 1 1 12rem; margin: 0; }
 .settings-form-feedback { margin-block: 1rem; }
+.settings-save-actions > .settings-save-state { flex: 1 1 12rem; width: fit-content; padding: .5rem .75rem; border-radius: .5rem; font-weight: 600; }
+.settings-save-state[data-tone='success'] { color: var(--n-success); background: var(--n-success-subtle); }
+.settings-save-state[data-tone='warning'] { color: var(--n-warning); background: var(--n-warning-subtle); }
+.settings-save-state[data-tone='danger'] { color: var(--n-danger); background: var(--n-danger-subtle); }
 .settings-defaults-conflict pre { max-height: 16rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .settings-defaults-conflict-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; }
 .settings-field-error { display: block; color: var(--color-text-strong); font-size: .875rem; line-height: 1.5; }

@@ -41,8 +41,18 @@ describe('WorkspaceShell', () => {
     }
     expect(screen.getByRole('link', { name: 'Terminal' })).toHaveAttribute('href', '/terminal')
     expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings')
+    const account = screen.getByRole('link', { name: 'Account' })
+    expect(account).toHaveAttribute('href', '/account')
+    expect(account.parentElement).toContainElement(screen.getByRole('button', { name: /Switch to .* theme/ }))
     expect(screen.queryByRole('link', { name: 'Browsers' })).not.toBeInTheDocument()
     expect(screen.queryByText('Unavailable')).not.toBeInTheDocument()
+  })
+
+  it('marks Account as the selected footer destination', async () => {
+    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" activeGlobalSection="account" />)
+    await screen.findByTestId('workspace-shell')
+    expect(screen.getByRole('link', { name: 'Account' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
   })
 
   it('expands and collapses the nested submenu from the parent control', async () => {

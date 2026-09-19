@@ -72,6 +72,7 @@ import {
   type WorkspaceDetailsResponse,
 } from '@graphql/contracts'
 import { z } from 'zod'
+import { notifyAuthenticationRequired } from './authEvents'
 import { collectManagementPages, managementPageUrl } from './managementPaging'
 import {
   assertSession, sessionGeneration, sessionSignal, sessionIsSwitching, SessionChangedError,
@@ -220,7 +221,7 @@ export class ApiClient {
   ): Promise<T> {
     const { body, method = 'GET', headers, signal, ...init } = options
     const generation = sessionGeneration()
-    const authRequest = path === '/api/auth/enroll' || path === '/api/auth/logout'
+    const authRequest = ['/api/auth/enroll', '/api/auth/logout', '/api/auth/setup', '/api/auth/sign-in/email'].includes(path)
     if (sessionIsSwitching() && !authRequest) throw new SessionChangedError()
     const requestSignal = signal ? AbortSignal.any([signal, sessionSignal()]) : sessionSignal()
     const requestHeaders = new Headers(headers)
@@ -230,6 +231,7 @@ export class ApiClient {
     let response: Response
     try {
       response = await (this.fetchImpl ?? globalThis.fetch)(resolveRequestUrl(this.baseUrl, path), {
+        credentials: 'same-origin',
         ...init,
         method,
         headers: requestHeaders,
@@ -260,6 +262,8 @@ export class ApiClient {
     assertSession(generation)
     requestSignal.throwIfAborted()
     if (!response.ok) {
+      if (response.status === 401 && !path.startsWith('/api/auth/') && !path.startsWith('/api/user/')
+        && !requestHeaders.has('Authorization')) notifyAuthenticationRequired()
       const parsedError = ApiErrorResponseSchema.safeParse(payload)
       if (parsedError.success) throw new ApiError(parsedError.data.error, response.status)
       throw new ApiError(

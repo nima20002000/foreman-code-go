@@ -2,10 +2,13 @@ import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { HttpResponse, http } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WorkspaceDefaultsSettings } from './WorkspaceDefaultsSettings'
 import { clearRevisionedFormPersistence } from './revisionedForm'
 import { resetSettingsExperienceFixtures } from '../../shared/mocks/settingsExperienceHandlers'
+import { server } from '../../mocks/server'
+import { ToastProvider } from '../../shared/ui/nocturne'
 
 vi.mock('@tanstack/react-router', () => ({ Link: ({ to, children }: { to: string; children: ReactNode }) => <a href={to}>{children}</a> }))
 const clients: QueryClient[]=[]
@@ -14,13 +17,33 @@ afterEach(()=>{cleanup();clearRevisionedFormPersistence();for(const client of cl
 describe('Workspace defaults',()=>{
   it('saves creation suggestions through the shared API without showing a default root grant',async()=>{
     const client=new QueryClient({defaultOptions:{queries:{retry:false}}});clients.push(client)
-    render(<QueryClientProvider client={client}><WorkspaceDefaultsSettings /></QueryClientProvider>)
+    render(<QueryClientProvider client={client}><ToastProvider><WorkspaceDefaultsSettings /></ToastProvider></QueryClientProvider>)
     const user=userEvent.setup();const name=await screen.findByRole('textbox',{name:'Suggested workspace name'})
     await user.clear(name);await user.type(name,'New project')
     const description=screen.getByRole('textbox',{name:'Starting description'});await user.type(description,'A shared project workspace.')
     await user.click(screen.getByRole('button',{name:'Save workspace defaults'}))
     await waitFor(()=>expect(screen.getByRole('button',{name:'Save workspace defaults'})).toBeDisabled())
+    expect(await screen.findByText('Changes saved to the server')).toBeVisible()
+    expect(screen.getByText('Workspace defaults saved to the server.')).toBeVisible()
+    expect(screen.getByText('Workspace defaults saved')).toBeVisible()
     expect(name).toHaveValue('New project');expect(description).toHaveValue('A shared project workspace.')
     expect(screen.queryByLabelText(/Root path|Sandbox|Runner/)).not.toBeInTheDocument()
+  })
+
+  it('shows a save failure and keeps the unsaved edit', async () => {
+    server.use(http.put('/api/management/settings/workspaces', () => HttpResponse.json({
+      error: { code: 'SAVE_REJECTED', message: 'The server rejected the change.' },
+    }, { status: 400 })))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
+    render(<QueryClientProvider client={client}><ToastProvider><WorkspaceDefaultsSettings /></ToastProvider></QueryClientProvider>)
+    const user = userEvent.setup()
+    const name = await screen.findByRole('textbox', { name: 'Suggested workspace name' })
+    await user.clear(name); await user.type(name, 'Unsaved project')
+    await user.click(screen.getByRole('button', { name: 'Save workspace defaults' }))
+    expect(await screen.findByText('Changes were not saved')).toBeVisible()
+    expect(screen.getByText('Could not save workspace defaults')).toBeVisible()
+    expect(screen.getByText(/The server rejected the change. Your edits are still here./)).toBeVisible()
+    expect(screen.getByText('Not saved. Your edits are still here.')).toBeVisible()
+    expect(name).toHaveValue('Unsaved project')
   })
 })

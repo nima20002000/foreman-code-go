@@ -6,8 +6,10 @@ import {
 } from '@tanstack/react-router'
 import { ApprovalInboxSearchSchema, UrlSearchSelectionSchema } from '@graphql/contracts'
 import { RootShell } from './RootShell'
+import { BrowserAuthSearchSchema } from '@graphql/contracts/management'
+import { SignInRoute, OwnerSetupRoute } from '../features/auth/AuthRoutes'
 import { AgentSettingsSearchSchema, HarnessSettingsSearchSchema } from '@graphql/contracts/management'
-import { WorkspaceDefaultsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
+import { AccountRouteEntry, WorkspaceDefaultsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
 
 import { WorkspaceRouteEntry } from '../routes/WorkspaceRouteEntry'
 import {
@@ -109,6 +111,11 @@ const globalSettingsRoute = createRoute({
   path: '/settings',
   component: GlobalSettingsRouteEntry,
 })
+const accountRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/account',
+  component: AccountRouteEntry,
+})
 const harnessSettingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/harnesses',
@@ -149,7 +156,22 @@ const workspaceApprovalsRoute = createRoute({
   component: WorkspaceApprovalsRouteEntry,
 })
 
+const signInRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/sign-in',
+  validateSearch: BrowserAuthSearchSchema,
+  component: SignInRoute,
+})
+const ownerSetupRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/setup',
+  validateSearch: BrowserAuthSearchSchema,
+  component: OwnerSetupRoute,
+})
+
 export const routeTree = rootRoute.addChildren([
+  signInRoute,
+  ownerSetupRoute,
   indexRoute,
   workspacesRoute,
   workspaceRoute,
@@ -164,6 +186,7 @@ export const routeTree = rootRoute.addChildren([
   workspaceLocationSettingsRoute,
   globalTerminalRoute,
   globalSettingsRoute,
+  accountRoute,
   harnessSettingsRoute,
   agentSettingsRoute,
   workflowSettingsRoute,

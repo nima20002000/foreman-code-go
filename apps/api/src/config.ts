@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { readBrowserAuthConfig, type BrowserAuthConfig } from './modules/browser-auth/config.js'
 
 const databaseSchemaName = z
   .string()
@@ -22,6 +23,7 @@ const EnvironmentSchema = z.object({
 })
 
 export interface ApiConfig {
+  browserAuth?: BrowserAuthConfig
   host: string
   port: number
   readinessTimeoutMs: number
@@ -44,7 +46,9 @@ export interface ApiConfig {
 
 export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
   const parsed = EnvironmentSchema.parse(environment)
+  const browserAuth = readBrowserAuthConfig(environment)
   return {
+    ...(browserAuth ? { browserAuth } : {}),
     host: parsed.HOST,
     port: parsed.PORT,
     readinessTimeoutMs: parsed.READINESS_TIMEOUT_MS,

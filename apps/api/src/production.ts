@@ -16,6 +16,7 @@ import type { createDatabase } from './infrastructure/database.js'
 import { OperatorRuntimeOwner } from './infrastructure/operatorRuntimeOwner.js'
 import { RuntimeShutdown } from './infrastructure/runtimeShutdown.js'
 import { PostgresAccessService } from './modules/access/postgres.js'
+import { BrowserAuthentication } from './modules/browser-auth/service.js'
 import { WorkerCredentialService } from './modules/access/workerCredentials.js'
 import {
   ensureOperatorRuntimeDirectory,
@@ -261,6 +262,7 @@ export function buildProductionApp(
     provisioningRoot: process.env.GRAPHQL_WORKSPACE_PROVISIONING_ROOT,
   })
   const app = buildApp({
+    ...(config.browserAuth ? { browserAuth: new BrowserAuthentication(database.pool, access, config.browserAuth) } : {}),
     readiness: { database, checkpoints },
     readinessTimeoutMs: config.readinessTimeoutMs,
     product: { workspaces, workflows, runs, settings, foundationSettings, engine, interactions, chat },

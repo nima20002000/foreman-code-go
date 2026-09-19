@@ -31,7 +31,7 @@
 .settings-section-heading h2 { font-size: 17px; font-weight: 600; letter-spacing: -.02em; margin: 0; }
 .settings-section-heading > p { color: var(--n-muted); font-size: 12px; line-height: 1.6; margin: 0; }
 .settings-editor-page .settings-save-actions { position: sticky; bottom: 0; z-index: 3; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 16px 20px; margin: 0; border: 1px solid var(--n-border); border-radius: 10px; background: var(--n-surface); box-shadow: 0 -6px 20px #0001; }
-.settings-editor-page .settings-save-actions > p { margin: 0; margin-inline-end: auto; color: var(--n-muted); font-size: 12px; }
+.settings-editor-page .settings-save-actions > p { margin: 0; margin-inline-end: auto; }
 .settings-editor-page .settings-footer-options { margin-inline-end: auto; }
 .settings-editor-page .settings-footer-options .n-check-field { margin: 0; }
 .settings-editor-page .settings-simple-row { padding-top: 20px; border-top: 1px solid var(--n-border); }

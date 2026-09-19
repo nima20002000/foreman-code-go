@@ -1,5 +1,6 @@
-import type { ReactNode } from 'react'
+import { useContext, useEffect, useRef, type ReactNode } from 'react'
 import { Alert, Button } from '../../shared/ui/nocturne'
+import { ToastContext } from '../../shared/ui/nocturne/toastContext'
 import type { SettingsChange } from './revisionedFormChanges'
 import './settingsUsability.css'
 
@@ -39,16 +40,49 @@ export function SettingsFormFeedback({ form }: { form: SettingsFormState }) {
       </Alert>
     </div> : null}
     {form.uncertain ? <div className="settings-form-feedback"><Alert live tone="warning" title="The previous save may have committed. Retry resolves that exact command; edits made afterward remain unsaved. Discard and reapply are unavailable until its outcome is known." /></div> : null}
-    {form.error ? <div className="settings-form-feedback"><Alert live tone="danger" title={form.error} /></div> : null}
+    {form.error && !form.conflicted && !form.uncertain ? <div className="settings-form-feedback"><Alert live tone="danger" title="Changes were not saved">
+      {form.error} Your edits are still here.
+    </Alert></div> : null}
+    {form.savedRevision !== undefined && !form.error && !form.uncertain ? <div className="settings-form-feedback">
+      <Alert live tone={form.isDirty ? 'warning' : 'success'} title={form.isDirty ? 'Earlier changes saved' : 'Changes saved to the server'}>
+        {form.isDirty ? 'Newer edits are still unsaved.' : 'Your saved settings are ready to use.'}
+      </Alert>
+    </div> : null}
   </>
 }
 
 export function SettingsFormActions({ form, onSave, saveLabel = 'Save defaults', extra }: { form: SettingsFormState; onSave(): void; saveLabel?: string; extra?: ReactNode }) {
+  const subject = saveLabel.replace(/^Save /, '')
+  const subjectTitle = subject.charAt(0).toUpperCase() + subject.slice(1)
+  const toasts = useContext(ToastContext)
+  const previous = useRef({ revision: form.savedRevision, error: form.error, uncertain: form.uncertain,
+    conflicted: form.conflicted, saving: form.isSaving })
+  useEffect(() => {
+    const before = previous.current
+    if (toasts) {
+      if (form.uncertain && !before.uncertain) toasts.notify({ tone: 'warning', title: 'Save not confirmed',
+        description: 'Retry the original save to learn whether it committed.' })
+      else if (form.conflicted && !before.conflicted) toasts.notify({ tone: 'warning', title: `${subjectTitle} changed elsewhere`,
+        description: 'Review the changes before saving again.' })
+      else if (form.error && !form.conflicted && (form.error !== before.error || before.saving)) {
+        toasts.notify({ tone: 'danger', title: `Could not save ${subject}`, description: form.error })
+      } else if (form.savedRevision !== undefined && form.savedRevision !== before.revision) {
+        toasts.notify({ tone: 'success', title: `${subjectTitle} saved`,
+          description: form.isDirty ? 'Newer edits are still unsaved.' : 'Changes are saved to the server.' })
+      }
+    }
+    previous.current = { revision: form.savedRevision, error: form.error, uncertain: form.uncertain,
+      conflicted: form.conflicted, saving: form.isSaving }
+  }, [form.savedRevision, form.error, form.uncertain, form.conflicted, form.isSaving, form.isDirty, subject, subjectTitle, toasts])
+  const status = form.isSaving ? 'Saving…' : form.uncertain ? 'Save unconfirmed. Retry the original save.'
+    : form.error ? 'Not saved. Your edits are still here.'
+      : form.savedRevision !== undefined ? form.isDirty ? 'Earlier changes saved; newer edits are unsaved.' : `${subjectTitle} saved to the server.`
+        : form.isDirty ? 'Unsaved changes.' : 'No unsaved changes.'
+  const tone = form.error ? 'danger' : form.uncertain || form.isDirty ? 'warning'
+    : form.savedRevision !== undefined ? 'success' : 'neutral'
   return <footer className="settings-save-actions">
     {extra ? <div className="settings-footer-options">{extra}</div> : null}
-    <p role="status" aria-live="polite">{form.isSaving ? 'Saving…' : form.savedRevision !== undefined
-      ? form.isDirty ? 'Saved submitted changes. Newer edits remain unsaved.' : 'Saved.'
-      : form.isDirty ? 'Unsaved changes.' : 'No unsaved changes.'}</p>
+    <p className="settings-save-state" data-tone={tone} role="status" aria-live="polite">{status}</p>
     {!form.conflicted ? <Button disabled={!form.isDirty || form.isSaving || form.uncertain} onClick={form.reset}>Discard changes</Button> : null}
     <Button variant="primary" disabled={form.isSaving || (!form.isDirty && !form.uncertain) || (form.conflicted && !form.uncertain)} onClick={onSave}>
       {form.isSaving ? 'Saving…' : form.uncertain ? 'Retry original save' : saveLabel}

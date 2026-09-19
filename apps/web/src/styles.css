@@ -477,10 +477,18 @@ h1 {
   gap: 0.75rem;
 }
 
+.sidebar-account-row { display: flex; align-items: center; gap: .25rem; min-width: 0; }
+.sidebar-account-link { display: flex; flex: 1; align-items: center; gap: .6rem; min-width: 0; min-height: 2.75rem;
+  padding: .55rem .625rem; border-radius: 6px; color: var(--color-text-muted); font-size: .75rem;
+  font-weight: 600; text-decoration: none; }
+.sidebar-account-link:hover, .sidebar-account-link:focus-visible { background: var(--color-surface-subtle); color: var(--color-text-strong); }
+.sidebar-account-link-active { background: var(--color-surface-subtle); color: var(--color-text-strong); }
+.sidebar-account-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .sidebar-footer .theme-toggle {
   width: 2.75rem;
   height: 2.75rem;
-  justify-self: start;
+  flex: 0 0 2.75rem;
   border-color: transparent;
   color: var(--color-text-muted);
   background: transparent;
@@ -555,6 +563,10 @@ h1 {
 .workspace-shell-navigation-collapsed .theme-toggle {
   justify-self: center;
 }
+
+.workspace-shell-navigation-collapsed .sidebar-account-row { flex-direction: column; }
+.workspace-shell-navigation-collapsed .sidebar-account-link { flex: 0 0 2.75rem; width: 2.75rem; justify-content: center; padding: 0; }
+.workspace-shell-navigation-collapsed .sidebar-account-label { display: none; }
 
 .shell-header {
   display: flex;
@@ -740,6 +752,10 @@ h1 {
   margin: 0 auto;
   padding: clamp(1.25rem, 3vw, 2.5rem);
 }
+
+.settings-hub { gap: 1rem; }
+.settings-hub .settings-group-heading { margin: 1.25rem 0 0; color: var(--color-text-muted);
+  font-size: .75rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
 
 .settings-page header h1 {
   margin: 0.25rem 0 0;

@@ -31,8 +31,8 @@ export const settingsExperienceHandlers = [
     receipts.set(input.data.commandId, { input: payload, result: structuredClone(defaults) })
     return HttpResponse.json(WorkspaceDefaultsUpdateResultSchema.parse({ value: defaults, replayed: false }))
   }),
-  http.get('/api/auth/session', () => failure() ?? HttpResponse.json(BrowserAccessSessionSchema.parse({ principal: {
+  http.get('/api/auth/session', () => HttpResponse.json(BrowserAccessSessionSchema.parse({ principal: {
     id: 'principal-preview', name: 'Preview browser (simulated)', expiresAt: '2099-01-01T00:00:00Z',
     grants: [{ actions: ['settings:read', 'harnesses:read'], scope: {} }],
-  } }), { headers: { 'Cache-Control': 'no-store' } })),
+  }, account: { name: 'Preview Operator', email: 'preview@example.test' } }), { headers: { 'Cache-Control': 'no-store' } })),
 ]

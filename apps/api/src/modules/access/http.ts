@@ -5,11 +5,14 @@ import { BrowserAccessSessionSchema, type ManagementPrincipal } from '@graphql/c
 import { hasAction, requireAuthorization } from './policy.js'
 import { bearerToken, type PostgresAccessService } from './postgres.js'
 import { DomainError } from '../errors.js'
+import { isPublicBrowserAuthRequest } from '../browser-auth/routes.js'
+import { appendAuthCookies, type BrowserAuthentication } from '../browser-auth/service.js'
 
 declare module 'fastify' {
   interface FastifyRequest {
     operatorPrincipal?: ManagementPrincipal
     reauthorizeOperator?: () => Promise<ManagementPrincipal>
+    browserAccount?: { name: string; email: string }
   }
 }
 
@@ -61,36 +64,48 @@ export function requirePrincipal(request: FastifyRequest): ManagementPrincipal {
   return request.operatorPrincipal
 }
 
-export function registerOperatorHttpSecurity(app: FastifyInstance, access: PostgresAccessService): void {
+export function registerOperatorHttpSecurity(app: FastifyInstance, access: PostgresAccessService, browserAuth?: BrowserAuthentication): void {
   app.post<{ Body: unknown }>('/api/auth/enroll', async (request, reply) => {
     requireLocalRequest(request)
+    if (browserAuth) throw new DomainError('BROWSER_TOKEN_ENROLLMENT_DISABLED', 'Sign in with the owner account. CLI and MCP bearer credentials remain supported.', 403)
     const input = z.object({ token: z.string().trim().min(1) }).strict().parse(request.body)
     const principal = await access.authenticate(input.token, 'operator')
     reply.header('set-cookie', `${COOKIE_NAME}=${encodeURIComponent(input.token)}; HttpOnly; SameSite=Strict; Path=/`)
     return { principal: { id: principal.id, name: principal.name, expiresAt: principal.expiresAt } }
   })
 
-  app.addHook('preHandler', async (request) => {
+  app.addHook('preHandler', async (request, reply) => {
     const path = request.url.split('?')[0]
-    if (!path?.startsWith('/api/') || path === '/api/auth/enroll' || path.startsWith('/api/user/')) return
+    if (!path?.startsWith('/api/') || path === '/api/auth/enroll' || path.startsWith('/api/user/') || isPublicBrowserAuthRequest(request)) return
     requireLocalRequest(request)
+    reply.header('cache-control', 'no-store')
     // Clearing a stale session must not depend on authenticating that session.
     if (path === '/api/auth/logout' && request.method === 'POST') {
+      browserAuth?.requireMutationOrigin(request)
       if (!request.headers.origin) {
         throw new DomainError('CSRF_ORIGIN_REQUIRED', 'Logout requires a trusted Origin header.', 403)
       }
       return
     }
     const headerToken = bearerToken(request.headers.authorization)
-    const browserToken = headerToken ? undefined : cookieToken(request.headers.cookie)
-    if (!headerToken && browserToken && !['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !request.headers.origin) {
-      throw new DomainError('CSRF_ORIGIN_REQUIRED', 'Browser mutations require a trusted Origin header.', 403)
+    if (request.headers.authorization !== undefined && !headerToken) {
+      throw new DomainError('AUTH_INVALID', 'The Authorization header is invalid.', 401)
     }
-    const token = headerToken ?? browserToken
-    const principal = await access.authenticate(token, 'operator')
+    const browserToken = headerToken || browserAuth ? undefined : cookieToken(request.headers.cookie)
+    if (!headerToken && !['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
+      if (browserAuth) browserAuth.requireMutationOrigin(request)
+      else if (browserToken && !request.headers.origin) {
+        throw new DomainError('CSRF_ORIGIN_REQUIRED', 'Browser mutations require a trusted Origin header.', 403)
+      }
+    }
+    // Explicit bearer credentials always win; invalid credentials never fall back to a cookie.
+    const authenticate = () => headerToken || !browserAuth
+      ? access.authenticate(headerToken ?? browserToken, 'operator')
+      : browserAuth.authenticate(request, reply)
+    const principal = await authenticate()
     request.operatorPrincipal = principal
     request.reauthorizeOperator = async () => {
-      const current = await access.authenticate(token, 'operator')
+      const current = await authenticate()
       requireAuthorization(current, actionFor(request))
       return current
     }
@@ -125,13 +140,15 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
     const principal = requirePrincipal(request)
     reply.header('cache-control', 'no-store')
     reply.header('vary', 'Cookie, Authorization')
-    return BrowserAccessSessionSchema.parse({ principal: {
+    return BrowserAccessSessionSchema.parse({ ...(request.browserAccount ? { account: request.browserAccount } : {}), principal: {
       id: principal.id, name: principal.name, expiresAt: principal.expiresAt, grants: principal.grants,
     } })
   })
 
-  app.post('/api/auth/logout', async (_request, reply) => {
-    reply.header('set-cookie', `${COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`)
+  app.post('/api/auth/logout', async (request, reply) => {
+    if (browserAuth) await browserAuth.signOut(request, reply)
+    appendAuthCookies(reply, [`${COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`])
+    reply.header('cache-control', 'no-store')
     return { signedOut: true }
   })
 }

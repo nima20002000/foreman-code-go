@@ -55,7 +55,7 @@ export type WorkspaceSection =
   | 'terminal'
   | 'settings'
 
-export type GlobalNavigationSection = 'terminal' | 'settings'
+export type GlobalNavigationSection = 'terminal' | 'settings' | 'account'
 
 export type WorkspaceNavigationEntry = Pick<Workspace, 'id' | 'name'>
 
@@ -639,7 +639,7 @@ export function WorkspaceNavigation({
         {...globalReorder.containerProps}
       >
         {globalReorder.orderedIds.map((section) => {
-          const item = globalLinkBySection.get(section as GlobalNavigationSection)
+          const item = globalLinkBySection.get(section as (typeof globalLinks)[number]['section'])
           if (!item) return null
           const active = activeGlobalSection === item.section
           return (

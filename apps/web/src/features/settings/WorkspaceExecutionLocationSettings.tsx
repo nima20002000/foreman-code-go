@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useContext, useEffect } from 'react'
 import { useIsMutating, useQueryClient } from '@tanstack/react-query'
 
 import { ApiError } from '../../shared/api/client'
@@ -10,6 +10,7 @@ import {
 } from '../../shared/api/query'
 import { locationMutationKey } from '../../shared/api/workspaceLocationCache'
 import { Alert, Button, LoadingState, SettingsSection, TextField } from '../../shared/ui/nocturne'
+import { ToastContext } from '../../shared/ui/nocturne/toastContext'
 import {
   acknowledgeLocationSave,
   editLocationDraft,
@@ -27,6 +28,7 @@ function message(error: unknown): string {
 }
 
 export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceId: string }) {
+  const toasts = useContext(ToastContext)
   const queryClient = useQueryClient()
   const workspace = useManagedWorkspaceQuery(workspaceId)
   const validate = useValidateWorkspaceLocationMutation(workspaceId)
@@ -89,8 +91,10 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
           ? 'Location is valid on Local Runner.'
           : 'The submitted location is valid. Your newer unsaved path was preserved.',
       } : value)
+      toasts?.notify({ tone: 'success', title: 'Execution location validated', description: 'The folder is accessible on Local Runner.' })
     } catch (error) {
       update(workspaceId, (value) => value ? { ...value, notice: message(error) } : value)
+      toasts?.notify({ tone: 'danger', title: 'Could not validate location', description: message(error) })
     }
   }
 
@@ -108,6 +112,7 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
       update(workspaceId, (value) => value ? acknowledgeLocationSave(
         value, submitted.editVersion, result.value.executionLocation.rootPath, result.value.locationRevision,
       ) : value)
+      toasts?.notify({ tone: 'success', title: 'Execution location saved', description: 'Future runs will use this folder.' })
     } catch (error) {
       update(workspaceId, (value) => {
         if (!value) return value
@@ -120,6 +125,7 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
           notice: message(error),
         }
       })
+      toasts?.notify({ tone: 'danger', title: 'Execution location not saved', description: message(error) })
     }
   }
 
@@ -130,8 +136,10 @@ export function WorkspaceExecutionLocationSettings({ workspaceId }: { workspaceI
       const saved = await reload.mutateAsync({ workspaceId })
       if (saved.workspace.id !== workspaceId) throw new Error('The reloaded location belongs to another workspace.')
       update(workspaceId, (value) => value ? reloadLocationDraft(value, submitted.editVersion, saved) : value)
+      toasts?.notify({ tone: 'info', title: 'Saved location reloaded' })
     } catch (error) {
       update(workspaceId, (value) => value ? { ...value, notice: `${message(error)} Your local edit was preserved.` } : value)
+      toasts?.notify({ tone: 'danger', title: 'Could not reload location', description: message(error) })
     }
   }
 

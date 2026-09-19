@@ -1,4 +1,5 @@
-import { Outlet } from '@tanstack/react-router'
+import { Outlet, useLocation } from '@tanstack/react-router'
+import { RequireBrowserSession } from '../features/auth/RequireBrowserSession'
 
 import { OperatorChat, OperatorChatVisibilityProvider } from '../features/operator-chat'
 import { useAgentDefaultsQuery } from '../shared/api/query'
@@ -6,6 +7,12 @@ import { useAccessFailureLatch } from '../shared/api/useAccessFailureLatch'
 import { sessionIsSwitching } from '../shared/api/sessionBoundary'
 
 export function RootShell() {
+  const { pathname } = useLocation()
+  if (pathname === '/sign-in' || pathname === '/setup') return <Outlet />
+  return <RequireBrowserSession><AuthenticatedShell /></RequireBrowserSession>
+}
+
+function AuthenticatedShell() {
   const defaults = useAgentDefaultsQuery()
   // Query retains the last confirmed value during transient refresh failures.
   // The enrollment boundary clears this cache before another identity can use it.

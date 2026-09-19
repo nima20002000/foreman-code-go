@@ -143,6 +143,18 @@ describe('workspace section routes', () => {
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
   })
 
+  it('opens the profile from Account and redirects the old App access URL', async () => {
+    const account = renderRoute('/account')
+    expect(await screen.findByRole('heading', { name: 'Profile', level: 1 })).toBeVisible()
+    expect(screen.getByText('preview@example.test')).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Account' })).toHaveAttribute('aria-current', 'page')
+    account.unmount()
+
+    const legacy = renderRoute('/settings/operator-access')
+    await waitFor(() => expect(legacy.router.state.location.pathname).toBe('/account'))
+    expect(await screen.findByRole('heading', { name: 'Profile', level: 1 })).toBeVisible()
+  })
+
   it('renders the global Approval Inbox as a Settings detail page', async () => {
     const { router } = renderRoute('/approvals')
 

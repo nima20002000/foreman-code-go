@@ -22,6 +22,7 @@ const shellDestinationPaths = [
   '/workspaces/$workspaceId/settings',
   '/terminal',
   '/settings',
+  '/account',
 ] as const
 
 /** Renders UI that uses router-aware links inside a minimal in-memory router. */

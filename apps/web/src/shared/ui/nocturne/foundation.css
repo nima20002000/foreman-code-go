@@ -1,5 +1,5 @@
 /* NOCTURNE · GraphQL UI toolkit. Semantic tokens + scoped components. No remote assets. */
-:root, .n-theme {
+:root {
   --n-canvas: #0e0f14;
   --n-sidebar: #111219;
   --n-surface: #161820;

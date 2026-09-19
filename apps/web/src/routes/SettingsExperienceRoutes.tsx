@@ -1,9 +1,9 @@
-import { Link, useNavigate, useSearch } from '@tanstack/react-router'
+import { Link, Navigate, useNavigate, useSearch } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 import { AgentDefaultsSettings } from '../features/settings/AgentDefaultsSettings'
 import { HarnessDefaultsSettings } from '../features/settings/HarnessDefaultsSettings'
 import { WorkspaceDefaultsSettings } from '../features/settings/WorkspaceDefaultsSettings'
-import { OperatorAccessSettings } from '../features/settings/OperatorAccessSettings'
+import { AccountAccess } from '../features/auth/AccountAccess'
 import { WorkspaceShell } from '../shared/ui/WorkspaceShell'
 import '../features/settings/settingsExperience.css'
 
@@ -36,5 +36,11 @@ export function WorkspaceDefaultsSettingsRouteEntry() {
   return <SettingsShell><WorkspaceDefaultsSettings /></SettingsShell>
 }
 export function OperatorAccessSettingsRouteEntry() {
-  return <SettingsShell><OperatorAccessSettings /></SettingsShell>
+  return <Navigate to="/account" replace />
+}
+
+export function AccountRouteEntry() {
+  return <WorkspaceShell workspaceId="workspace-1" activeGlobalSection="account" slots={{ main:
+    <div className="settings-page settings-experience n-theme"><AccountAccess /></div>,
+  }} />
 }

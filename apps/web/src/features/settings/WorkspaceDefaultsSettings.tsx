@@ -1,4 +1,6 @@
 import { Link } from '@tanstack/react-router'
+import { ProtectedAccessError } from '../auth/ProtectedAccessError'
+import { useProtectedAccessError } from '../auth/useProtectedAccessError'
 import { WorkspaceDefaultsSchema, type WorkspaceDefaults } from '@graphql/contracts/management'
 import { Button, ErrorState, LoadingState, TextField, Textarea } from '../../shared/ui/nocturne'
 import { useWorkspaceDefaultsQuery, useUpdateWorkspaceDefaultsMutation } from '../../shared/api/settingsExperience'
@@ -13,6 +15,8 @@ export function WorkspaceDefaultsSettings() {
   const mutation = useUpdateWorkspaceDefaultsMutation()
   const form = useRevisionedForm<WorkspaceDefaults>(query.data ? { value: query.data.value, revision: query.data.revision } : undefined, 'settings:workspaces')
   const root = useSettingsValidation(form.issues)
+  const accessError = useProtectedAccessError(query, mutation.error)
+  if (accessError) return <ProtectedAccessError error={accessError} />
   if (query.isError && !form.draft) return <ErrorState title="Workspace defaults are unavailable" description={query.error.message} onRetry={() => void query.refetch()} />
   const draft = form.draft
   if (!draft) return <LoadingState label="Loading workspace defaults…" />

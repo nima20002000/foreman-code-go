@@ -11,7 +11,7 @@ import { parseCredentialArguments } from './operatorCredentialArguments.js'
 
 async function main() {
   const input = parseCredentialArguments(process.argv.slice(2))
-  try { loadEnvFile() } catch (error) {
+  try { loadEnvFile(process.env.GRAPHQL_API_ENV_FILE) } catch (error) {
     if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error
   }
   const config = loadConfig(process.env)

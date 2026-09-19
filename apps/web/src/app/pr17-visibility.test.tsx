@@ -7,7 +7,9 @@ let defaults: {
   data?: { value: { operator: { uiEnabled: boolean } } }; error: unknown; failureReason: unknown;
   isSuccess: boolean; isError: boolean; failureCount: number; dataUpdatedAt: number
 }
-vi.mock('@tanstack/react-router', () => ({ Outlet: () => null }))
+vi.mock('@tanstack/react-router', () => ({ Outlet: () => null, useLocation: () => ({ pathname: '/workspaces' }) }))
+// These existing tests isolate Operator visibility; browser auth has its own route-level tests.
+vi.mock('../features/auth/RequireBrowserSession', () => ({ RequireBrowserSession: ({ children }: { children: ReactNode }) => children }))
 vi.mock('../shared/api/query', () => ({ useAgentDefaultsQuery: () => defaults }))
 vi.mock('../features/operator-chat', () => ({
   OperatorChatVisibilityProvider: ({ enabled, children }: { enabled: boolean; children: ReactNode }) => enabled ? children : null,
