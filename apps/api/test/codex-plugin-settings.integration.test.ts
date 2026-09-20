@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, expect, it } from 'vitest'
@@ -8,7 +11,7 @@ import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { CodexPluginSettingsService } from '../src/modules/harnesses/codexPluginSettings.js'
-import { fingerprint } from '../src/modules/harnesses/nativeMcpCommon.js'
+import { normalizeCodexPluginCatalog } from '../src/modules/harnesses/codexPluginCatalog.js'
 import type { CodexPluginAdapter } from '../src/modules/harnesses/codexPlugins.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
@@ -27,11 +30,15 @@ it('lists and reads Codex plugins through authenticated MCP while browser-only c
   let changes = 0
   let failChange = false
   const nativeMcp = { linear: { url: 'https://mcp.linear.app/mcp/readonly' } }
+  const home = await mkdtemp(join(tmpdir(), 'plugin-settings-test-'))
+  const file = join(home, 'config.toml'); await writeFile(file, '')
   const adapter: CodexPluginAdapter = {
-    list: async () => ({ installed: installed ? [{ ...item, installed: true, enabled: true }] : [],
-      available: installed ? [] : [item], revision: fingerprint({ installed }) }),
+    recoveryIdentity: 'integration-writer',
+    list: async () => normalizeCodexPluginCatalog({ installed: installed ? [{ ...item, installed: true, enabled: true, source: { source: 'remote', id: 'notes' } }] : [],
+      available: installed ? [] : [{ ...item, source: { source: 'remote', id: 'notes' } }] },
+      { file, userConfig: { mcp_servers: nativeMcp, plugins: installed ? { [item.pluginId]: { enabled: true } } : {} } }, 'complete'),
     detail: async (plugin) => plugin.installed ? { status: 'known', skills: ['summarize'], hooks: [], mcpServers: ['notes'], apps: [] } : { status: 'unknown' },
-    change: async (_id, action) => { changes++; if (failChange) throw new Error('native response unavailable'); installed = action === 'install' },
+    change: async (_id, action) => { changes++; if (failChange) throw new Error('native response unavailable'); installed = action === 'install'; return { acknowledged: true, version: installed ? '1.0.0' : null } },
   }
   const access = new PostgresAccessService(pool)
   const commands = new PostgresCommandCoordinator(pool)
@@ -67,7 +74,7 @@ it('lists and reads Codex plugins through authenticated MCP while browser-only c
     expect(CodexPluginDetailResultSchema.parse((await allowed.callTool({ name: 'codex_plugin_get',
       arguments: { pluginId: item.pluginId } })).structuredContent).contents).toEqual({ status: 'unknown' })
     const before = await list('available')
-    const input = { pluginId: item.pluginId, action: 'install' as const, expectedRevision: before.revision, commandId: randomUUID() }
+    const input = { pluginId: item.pluginId, action: 'install' as const, expectedRevision: before.revision, artifactIdentity: (await plugins.get(owner.principal, item.pluginId)).artifactIdentity, commandId: randomUUID() }
     expect((await app.inject({ method: 'POST', url: '/api/management/harnesses/codex/plugins/change',
       headers: { authorization: `Bearer ${owner.token}` }, payload: input })).statusCode).toBe(403)
     await expect(plugins.change(delegated.principal, input)).rejects.toThrow('signed-in owner')
@@ -77,7 +84,7 @@ it('lists and reads Codex plugins through authenticated MCP while browser-only c
     expect((await list('installed')).items).toMatchObject([{ pluginId: item.pluginId, installed: true }])
     expect(CodexPluginDetailResultSchema.parse((await allowed.callTool({ name: 'codex_plugin_get',
       arguments: { pluginId: item.pluginId } })).structuredContent).contents).toEqual({ status: 'known', skills: ['summarize'], hooks: [], mcpServers: ['notes'], apps: [] })
-    const removal = { pluginId: item.pluginId, action: 'remove' as const, expectedRevision: (await list('installed')).revision, commandId: randomUUID() }
+    const removal = { pluginId: item.pluginId, action: 'remove' as const, expectedRevision: (await list('installed')).revision, artifactIdentity: (await plugins.get(owner.principal, item.pluginId)).artifactIdentity, commandId: randomUUID() }
     expect((await plugins.change(owner.principal, removal)).status).toBe('applied')
     expect((await list('available')).items).toHaveLength(1)
     expect(nativeMcp.linear.url).toBe('https://mcp.linear.app/mcp/readonly')
@@ -87,7 +94,7 @@ it('lists and reads Codex plugins through authenticated MCP while browser-only c
     expect((await plugins.change(owner.principal, uncertainInput)).status).toBe('uncertain')
     expect(changes).toBe(3)
   } finally {
-    await plugins.shutdown(); await app.close(); await pool.end()
+    await plugins.shutdown(); await app.close(); await pool.end(); await rm(home, { recursive: true, force: true })
     await admin.query(`drop schema if exists "${schema}" cascade`); await admin.end()
   }
 })

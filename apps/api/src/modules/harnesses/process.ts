@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import type { Readable } from 'node:stream'
+import { nativeOutputCollector } from './nativeCommandOutput.js'
 import { spawnNativeProcess, stopRecoveredChild, type NativeProcessRecovery } from './recovery/processRegistry.js'
 
 import type { ChildProcessEnvironment, NativeEventInput } from './port.js'
@@ -35,6 +36,7 @@ type ProcessOptions = Pick<JsonlProcessOptions, 'binary' | 'args' | 'cwd' | 'std
   onSpawn?(process: ChildProcess): void
   environment?: NodeJS.ProcessEnv
   credentialAudience?: 'worker' | 'operator'
+  recovery?: NativeProcessRecovery
 }
 type ProcessExit = Pick<JsonlProcessResult, 'exitCode' | 'exitSignal'>
 
@@ -95,12 +97,9 @@ async function runOwnedProcess<T>(
     secrets.push(entries[0][1])
   }
   options.signal?.throwIfAborted()
-  const child = spawn(options.binary, options.args, {
-    cwd: options.cwd,
-    env: childEnvironment,
-    detached: process.platform !== 'win32',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: true,
+  const child = spawnNativeProcess(options.binary, options.args, {
+    cwd: options.cwd, env: childEnvironment,
+    ...(options.recovery ? { recovery: options.recovery } : {}),
   })
   const closed = new Promise<ProcessExit>((resolve) => {
     child.once('close', (exitCode, exitSignal) => resolve({ exitCode, exitSignal }))
@@ -115,6 +114,20 @@ async function runOwnedProcess<T>(
   const stop = (): Promise<void> => {
     if (!shutdown) {
       shutdown = (async () => {
+        if (options.recovery) {
+          // Never release a registered writer through PID/group-only cleanup.
+          // Pipe disposal also lets canceled readers finish when recovery remains uncertain.
+          try {
+            if (!await stopRecoveredChild(child)) throw new Error('Native command recovery ownership is missing.')
+            await closed // Drain normal acknowledgement output before releasing ownership.
+            ownedProcesses.delete(child)
+            options.signal?.removeEventListener('abort', abort)
+          } catch (error) {
+            child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy()
+            throw error
+          }
+          return
+        }
         let killError: unknown
         const send = async (signal: NodeJS.Signals) => {
           try { await signalTree(child, signal) } catch (error) { killError ??= error }
@@ -139,7 +152,7 @@ async function runOwnedProcess<T>(
     }
     return shutdown
   }
-  const abort = () => { void stop() }
+  const abort = () => { void stop().catch(() => undefined) }
   ownedProcesses.set(child, stop)
   options.signal?.addEventListener('abort', abort, { once: true })
   // A root that exits normally must not leave descendants holding our pipes open.
@@ -237,13 +250,19 @@ export async function runJsonlProcess(options: JsonlProcessOptions): Promise<Jso
   })
 }
 
-/** A model-free native inspection command. Scoped injection remains owner checked. */
+export interface NativeCommandOptions {
+  maxOutputBytes?: number
+  recovery?: NativeProcessRecovery
+}
+
+/** Model-free native commands. Mutations must supply durable recovery ownership. */
 export async function runCommand(
   binary: string,
   args: string[],
   cwd: string,
   signal?: AbortSignal,
   environmentOrScope?: NodeJS.ProcessEnv | ScopedCommandEnvironment,
+  options: NativeCommandOptions = {},
 ): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
   const scoped = environmentOrScope && ('beforeSpawn' in environmentOrScope || 'expectedAgentId' in environmentOrScope)
     ? environmentOrScope as ScopedCommandEnvironment
@@ -251,13 +270,11 @@ export async function runCommand(
   const environment = environmentOrScope && !scoped ? environmentOrScope as NodeJS.ProcessEnv : undefined
   const deadline = AbortSignal.timeout(NATIVE_COMMAND_TIMEOUT_MS)
   const combined = signal ? AbortSignal.any([signal, deadline]) : deadline
-  const result = await runOwnedProcess({ binary, args, cwd, signal: combined, ...scoped, ...(environment ? { environment } : {}) }, async (child, secrets) => {
-    const collect = async (stream: Readable) => {
-      stream.setEncoding('utf8')
-      let text = ''
-      for await (const chunk of stream) text += String(chunk)
-      return redactSecretText(text, secrets)
-    }
+  const limit = options.maxOutputBytes ?? 8_000_000
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 32_000_000) throw new Error('Invalid native command output limit.')
+  const result = await runOwnedProcess({ binary, args, cwd, signal: combined, ...scoped,
+    ...(options.recovery ? { recovery: options.recovery } : {}), ...(environment ? { environment } : {}) }, async (child, secrets) => {
+    const collect = nativeOutputCollector(limit, (text) => redactSecretText(text, secrets))
     const [stdout = '', stderr = ''] = await settleReaders(child, [collect(child.stdout), collect(child.stderr)])
     return { stdout, stderr }
   })

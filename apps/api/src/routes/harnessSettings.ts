@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import { pluginHttpRead } from './pluginReadCancellation.js'
 import {
   HarnessOptionsInputSchema, HarnessOptionsResultSchema, HarnessMcpListInputSchema, HarnessMcpListResultSchema,
   HarnessMcpManagedInputSchema, HarnessMcpPlanInputSchema, HarnessMcpPlanResultSchema, HarnessMcpPlansResultSchema, HarnessMcpPlanSchema,
@@ -7,7 +8,7 @@ import {
   WorkspaceFolderUndoInputSchema, WorkspaceFolderUndoResultSchema,
   WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema, WorkspaceFolderRenameInputSchema, WorkspaceFolderRenameResultSchema,
   CodexPluginListInputSchema, CodexPluginListResultSchema, CodexPluginGetInputSchema, CodexPluginDetailResultSchema,
-  CodexPluginChangeInputSchema, CodexPluginChangeResultSchema,
+  CodexPluginChangeInputSchema, CodexPluginChangeResultSchema, CodexPluginOperationsResultSchema, CodexPluginReconcileInputSchema,
 } from '@graphql/contracts/management'
 import { requireBrowserSession, requirePrincipal } from '../modules/access/http.js'
 import { requireAuthorization } from '../modules/access/policy.js'
@@ -34,15 +35,29 @@ export function registerHarnessSettingsRoutes(app: FastifyInstance, services: Op
     if (!services.harnessSettings) throw new DomainError('HARNESS_SETTINGS_UNAVAILABLE', 'Native connection management is unavailable.', 503)
     return services.harnessSettings
   }
-  app.get('/api/management/harnesses/codex/plugins', async (request) => {
+  app.get('/api/management/harnesses/codex/plugins', async (request, reply) => {
     const plugins = settings().plugins
     if (!plugins) throw new DomainError('CODEX_PLUGINS_UNAVAILABLE', 'Codex plugin management is unavailable.', 503)
-    return CodexPluginListResultSchema.parse(await plugins.list(requirePrincipal(request), CodexPluginListInputSchema.parse(request.query)))
+    return pluginHttpRead(request, reply, async (signal) => CodexPluginListResultSchema.parse(
+      await plugins.list(requirePrincipal(request), CodexPluginListInputSchema.parse(request.query), signal)))
   })
-  app.get('/api/management/harnesses/codex/plugins/:pluginId', async (request) => {
+  app.get('/api/management/harnesses/codex/plugins/:pluginId', async (request, reply) => {
     const plugins = settings().plugins
     if (!plugins) throw new DomainError('CODEX_PLUGINS_UNAVAILABLE', 'Codex plugin management is unavailable.', 503)
-    return CodexPluginDetailResultSchema.parse(await plugins.get(requirePrincipal(request), CodexPluginGetInputSchema.parse(request.params).pluginId))
+    return pluginHttpRead(request, reply, async (signal) => CodexPluginDetailResultSchema.parse(
+      await plugins.get(requirePrincipal(request), CodexPluginGetInputSchema.parse(request.params).pluginId, signal)))
+  })
+  app.get('/api/management/harnesses/codex/plugins/operations', async (request) => {
+    requireBrowserSession(request)
+    const plugins = settings().plugins
+    if (!plugins) throw new DomainError('CODEX_PLUGINS_UNAVAILABLE', 'Codex plugin management is unavailable.', 503)
+    return CodexPluginOperationsResultSchema.parse(await plugins.operations(requirePrincipal(request)))
+  })
+  app.post('/api/management/harnesses/codex/plugins/reconcile', async (request) => {
+    requireBrowserSession(request)
+    const plugins = settings().plugins
+    if (!plugins) throw new DomainError('CODEX_PLUGINS_UNAVAILABLE', 'Codex plugin management is unavailable.', 503)
+    return CodexPluginChangeResultSchema.parse(await plugins.reconcile(requirePrincipal(request), CodexPluginReconcileInputSchema.parse(request.body)))
   })
   app.post('/api/management/harnesses/codex/plugins/change', async (request) => {
     requireBrowserSession(request)

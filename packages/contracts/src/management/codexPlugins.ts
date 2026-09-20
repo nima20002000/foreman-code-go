@@ -9,6 +9,9 @@ export const CodexPluginSummarySchema = z.object({
   installed: z.boolean(), enabled: z.boolean(), sourceType: z.enum(['local', 'git', 'git-subdir', 'remote', 'other']),
   installPolicy: z.enum(['NOT_AVAILABLE', 'AVAILABLE', 'INSTALLED_BY_DEFAULT']),
   authPolicy: z.enum(['ON_INSTALL', 'ON_USE']),
+  // An unlisted local/configuration record is evidence to inspect, not proof of installation.
+  verification: z.enum(['catalog', 'unverified']).optional(),
+  unavailableReason: z.string().optional(),
 }).strict()
 export type CodexPluginSummary = z.infer<typeof CodexPluginSummarySchema>
 
@@ -20,11 +23,14 @@ export type CodexPluginListInput = z.infer<typeof CodexPluginListInputSchema>
 export const CodexPluginListResultSchema = z.object({
   items: z.array(CodexPluginSummarySchema), total: z.number().int().nonnegative(), nextOffset: z.number().int().nonnegative().nullable(),
   revision: Revision, checkedAt: z.string().datetime({ offset: true }),
+  catalogStatus: z.enum(['complete', 'partial']).default('partial'),
+  inventoryStatus: z.enum(['complete', 'unknown']).default('unknown'),
 }).strict()
 export type CodexPluginListResult = z.infer<typeof CodexPluginListResultSchema>
 
 export const CodexPluginGetInputSchema = z.object({ pluginId: PluginId }).strict()
 export const CodexPluginDetailResultSchema = z.object({ plugin: CodexPluginSummarySchema,
+  revision: Revision, artifactIdentity: Revision,
   contents: z.discriminatedUnion('status', [
     z.object({ status: z.literal('known'), skills: z.array(z.string()), hooks: z.array(z.string()), mcpServers: z.array(z.string()), apps: z.array(z.string()) }).strict(),
     z.object({ status: z.literal('unknown') }).strict(),
@@ -33,8 +39,19 @@ export const CodexPluginDetailResultSchema = z.object({ plugin: CodexPluginSumma
 export type CodexPluginDetailResult = z.infer<typeof CodexPluginDetailResultSchema>
 
 export const CodexPluginChangeInputSchema = z.object({ pluginId: PluginId, action: z.enum(['install', 'remove']),
-  expectedRevision: Revision, commandId: CommandId }).strict()
+  expectedRevision: Revision, artifactIdentity: Revision.optional(), commandId: CommandId }).strict()
 export type CodexPluginChangeInput = z.infer<typeof CodexPluginChangeInputSchema>
 export const CodexPluginChangeResultSchema = z.object({ pluginId: PluginId, action: z.enum(['install', 'remove']),
-  status: z.enum(['applied', 'uncertain']), message: z.string() }).strict()
+  status: z.enum(['applied', 'not_applied', 'reconciled', 'uncertain']), message: z.string(), nativeFailure: z.string().optional(), observedRevision: Revision.optional() }).strict()
 export type CodexPluginChangeResult = z.infer<typeof CodexPluginChangeResultSchema>
+export const CodexPluginReconcileInputSchema = z.object({ commandId: CommandId, requestedBy: z.string().uuid().optional(),
+  expectedRevision: Revision.optional(), acceptObservedState: z.boolean().default(false),
+}).strict().refine((input) => !input.acceptObservedState || Boolean(input.expectedRevision), { message: 'Keeping observed state requires its reviewed revision.' })
+export type CodexPluginReconcileInput = z.infer<typeof CodexPluginReconcileInputSchema>
+export const CodexPluginOperationSchema = z.object({
+  requestedBy: z.string().uuid(), commandId: CommandId,
+  // Receipts created before recovery ownership was added cannot reconstruct the reviewed input.
+  input: CodexPluginChangeInputSchema.nullable(), result: CodexPluginChangeResultSchema,
+}).strict()
+export type CodexPluginOperation = z.infer<typeof CodexPluginOperationSchema>
+export const CodexPluginOperationsResultSchema = z.object({ items: z.array(CodexPluginOperationSchema).max(100) }).strict()

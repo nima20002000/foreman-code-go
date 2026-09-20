@@ -1,89 +1,183 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, expect, it } from 'vitest'
 import { routeTree } from '../../app/router'
 import { server } from '../../mocks/server'
+import { harnessSettingsKeys } from '../../shared/api/harnessSettings'
 
 const revision = 'sha256:' + 'a'.repeat(64)
+const artifactIdentity = 'sha256:' + 'b'.repeat(64)
 const checkedAt = '2026-09-20T00:00:00.000Z'
 const base = { pluginId: 'notes@trusted', name: 'notes', marketplaceName: 'trusted', version: '1.0.0',
-  enabled: true, sourceType: 'remote', installPolicy: 'AVAILABLE', authPolicy: 'ON_INSTALL' }
+  enabled: true, sourceType: 'remote', installPolicy: 'AVAILABLE', authPolicy: 'ON_INSTALL', verification: 'catalog' }
 const clients: QueryClient[] = []
 afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()); sessionStorage.clear() })
-function mount(path: string) {
+function mount(path: string, reuse?: QueryClient) {
   const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [path] }) })
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); clients.push(client)
+  const client = reuse ?? new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  if (!reuse) clients.push(client)
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
-  return router
+  return { router, client }
 }
-
-it('keeps Plugins in Codex settings and discovers, installs, and removes with honest contents', async () => {
+const listPayload = (installed = false, currentRevision = revision) => ({ items: [{ ...base, installed }], total: 1, nextOffset: null,
+  revision: currentRevision, checkedAt, catalogStatus: 'complete', inventoryStatus: 'unknown' })
+const detailPayload = (installed = false, currentRevision = revision) => ({ plugin: { ...base, installed }, revision: currentRevision, artifactIdentity,
+  contents: installed ? { status: 'known', skills: ['summarize'], hooks: [], mcpServers: ['notes-mcp'], apps: [] } : { status: 'unknown' } })
+function reads() {
+  server.use(
+    http.get('/api/management/harnesses/codex/plugins', () => HttpResponse.json(listPayload())),
+    http.get('/api/management/harnesses/codex/plugins/operations', () => HttpResponse.json({ items: [] })),
+    http.get('/api/management/harnesses/codex/plugins/:pluginId', () => HttpResponse.json(detailPayload())),
+  )
+}
+async function openPlugin() {
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: 'View notes plugin, available' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Install plugin' })).toBeEnabled())
+  return user
+}
+it('discovers, installs, and removes using the exact reviewed snapshot', async () => {
   let installed = false
-  const changes: string[] = []
+  const changes: Array<Record<string, unknown>> = []
   server.use(
     http.get('/api/management/harnesses/codex/plugins', ({ request }) => {
-      const view = new URL(request.url).searchParams.get('view')
-      const items = (view === 'installed') === installed ? [{ ...base, installed }] : []
-      return HttpResponse.json({ items, total: items.length, nextOffset: null, revision, checkedAt })
+      const visible = (new URL(request.url).searchParams.get('view') === 'installed') === installed
+      const payload = listPayload(installed)
+      return HttpResponse.json({ ...payload, items: visible ? payload.items : [], total: visible ? 1 : 0 })
     }),
-    http.get('/api/management/harnesses/codex/plugins/:pluginId', () => HttpResponse.json({ plugin: { ...base, installed },
-      contents: installed ? { status: 'known', skills: ['summarize'], hooks: [], mcpServers: ['notes-mcp'], apps: [] } : { status: 'unknown' } })),
+    http.get('/api/management/harnesses/codex/plugins/operations', () => HttpResponse.json({ items: [] })),
+    http.get('/api/management/harnesses/codex/plugins/:pluginId', () => HttpResponse.json(detailPayload(installed))),
     http.post('/api/management/harnesses/codex/plugins/change', async ({ request }) => {
-      const input = await request.json() as { action: string }
-      changes.push(input.action)
+      const input = await request.json() as Record<string, unknown>; changes.push(input)
       installed = input.action === 'install'
       return HttpResponse.json({ pluginId: base.pluginId, action: input.action, status: 'applied', message: installed ? 'Installed in Codex.' : 'Removed from Codex.' })
     }),
   )
   const user = userEvent.setup()
-  const router = mount('/settings/harnesses?harness=codex&section=plugins')
-  expect(await screen.findByRole('heading', { name: 'Plugins', level: 2 })).toBeVisible()
-  expect(screen.getByRole('button', { name: 'Installed' })).toBeVisible()
-  await user.click(screen.getByRole('button', { name: 'Discover' }))
-  const card = await screen.findByRole('button', { name: 'View notes plugin, available' })
-  await user.click(card)
-  expect(await screen.findByRole('dialog', { name: 'notes plugin' })).toHaveTextContent('Bundle contents unavailable')
-  expect(router.state.location.search.pluginId).toBe(base.pluginId)
+  const { router } = mount('/settings/harnesses?harness=codex&section=plugins')
+  await user.click(await screen.findByRole('button', { name: 'Discover' }))
+  await openPlugin()
+  expect(screen.getByRole('dialog', { name: 'notes plugin' })).toHaveTextContent('Bundle contents unavailable')
   await user.click(screen.getByRole('button', { name: 'Install plugin' }))
-  const installedCard = await screen.findByRole('button', { name: 'View notes plugin, installed' })
-  expect(installedCard).toBeVisible()
+  const card = await screen.findByRole('button', { name: 'View notes plugin, installed' })
   expect(screen.getByRole('dialog', { name: 'notes plugin' })).toHaveTextContent('summarize')
-  expect(screen.getByRole('dialog', { name: 'notes plugin' })).toHaveTextContent('None included')
   await user.click(screen.getByRole('button', { name: /^Close$/ }))
-  await waitFor(() => expect(installedCard).toHaveFocus())
-  await user.click(installedCard)
+  await waitFor(() => expect(card).toHaveFocus())
+  await user.click(card)
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Remove plugin' })).toBeEnabled())
   await user.click(screen.getByRole('button', { name: 'Remove plugin' }))
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'notes plugin' })).not.toBeInTheDocument())
-  expect(changes).toEqual(['install', 'remove'])
+  expect(changes.map((input) => input.action)).toEqual(['install', 'remove'])
+  for (const input of changes) expect(input).toMatchObject({ expectedRevision: revision, artifactIdentity })
+  expect(changes[0]?.commandId).not.toBe(changes[1]?.commandId)
   expect(router.state.location.search.pluginId).toBeUndefined()
 })
-
-it('does not expose the Codex Plugins section in OpenCode settings', async () => {
-  const router = mount('/settings/harnesses?harness=opencode&section=plugins')
+it('does not expose Codex Plugins in OpenCode settings', async () => {
+  const { router } = mount('/settings/harnesses?harness=opencode&section=plugins')
   expect(await screen.findByRole('heading', { name: 'OpenCode settings' })).toBeVisible()
   await waitFor(() => expect(router.state.location.search.section).toBe('model'))
   expect(screen.queryByRole('button', { name: 'Plugins' })).not.toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Save OpenCode preset' })).toBeInTheDocument()
 })
-
-it('keeps an unconfirmed install inspectable and blocks a second change until refresh', async () => {
-  let changes = 0
-  server.use(
-    http.get('/api/management/harnesses/codex/plugins', () => HttpResponse.json({ items: [{ ...base, installed: false }], total: 1,
-      nextOffset: null, revision, checkedAt })),
-    http.get('/api/management/harnesses/codex/plugins/:pluginId', () => HttpResponse.json({ plugin: { ...base, installed: false }, contents: { status: 'unknown' } })),
-    http.post('/api/management/harnesses/codex/plugins/change', () => { changes++; return HttpResponse.json({ pluginId: base.pluginId, action: 'install', status: 'uncertain', message: 'Inspect native catalog.' }) }),
-  )
-  const user = userEvent.setup()
-  mount('/settings/harnesses?harness=codex&section=plugins&pluginView=available')
-  await user.click(await screen.findByRole('button', { name: 'View notes plugin, available' }))
+it('retains a lost command through Refresh and panel remount, then retries its exact payload', async () => {
+  reads()
+  const requests: Array<Record<string, unknown>> = []
+  server.use(http.post('/api/management/harnesses/codex/plugins/change', async ({ request }) => {
+    const input = await request.json() as Record<string, unknown>; requests.push(input)
+    return requests.length === 1 ? HttpResponse.error()
+      : HttpResponse.json({ pluginId: base.pluginId, action: 'install', status: 'uncertain', message: 'The original write remains unresolved.' })
+  }))
+  const { client } = mount('/settings/harnesses?harness=codex&section=plugins&pluginView=available')
+  const user = await openPlugin()
   await user.click(screen.getByRole('button', { name: 'Install plugin' }))
-  expect(await screen.findByRole('dialog', { name: 'notes plugin' })).toHaveTextContent('The install or removal may have completed.')
+  await screen.findByRole('button', { name: 'Retry original request' })
+  await user.click(screen.getByRole('button', { name: /^Close$/ }))
+  await user.click(screen.getByRole('button', { name: /^Refresh$/ }))
+  expect(await screen.findByRole('button', { name: 'Retry original request' })).toBeEnabled()
+  cleanup()
+  mount('/settings/harnesses?harness=codex&section=plugins&pluginView=available', client)
+  await user.click(await screen.findByRole('button', { name: 'Retry original request' }))
+  await waitFor(() => expect(requests).toHaveLength(2))
+  expect(requests[1]).toEqual(requests[0])
+  await user.click(await screen.findByRole('button', { name: 'View notes plugin, available' }))
   expect(screen.getByRole('button', { name: 'Install plugin' })).toBeDisabled()
-  expect(changes).toBe(1)
-  await user.click(screen.getByRole('button', { name: 'Refresh list' }))
+})
+it('does not turn Refresh into reconciliation and never executes another install during reconciliation', async () => {
+  reads()
+  let writes = 0; let reconciliations = 0
+  server.use(
+    http.post('/api/management/harnesses/codex/plugins/change', () => { writes++; return HttpResponse.json({ pluginId: base.pluginId, action: 'install', status: 'uncertain', message: 'The install or removal may have completed.' }) }),
+    http.post('/api/management/harnesses/codex/plugins/reconcile', () => { reconciliations++; return HttpResponse.json({ pluginId: base.pluginId, action: 'install', status: 'reconciled', message: 'Current state recorded without another write.' }) }),
+  )
+  mount('/settings/harnesses?harness=codex&section=plugins&pluginView=available')
+  const user = await openPlugin()
+  await user.click(screen.getByRole('button', { name: 'Install plugin' }))
+  await screen.findByRole('button', { name: 'Reconcile original request' })
+  await user.click(screen.getByRole('button', { name: /^Close$/ }))
+  await user.click(screen.getByRole('button', { name: /^Refresh$/ }))
+  expect(writes).toBe(1); expect(reconciliations).toBe(0)
+  await user.click(await screen.findByRole('button', { name: 'Reconcile original request' }))
+  await waitFor(() => expect(reconciliations).toBe(1))
+  expect(writes).toBe(1)
+})
+it('rehydrates an unresolved server receipt after a fresh page lifetime', async () => {
+  reads()
+  const input = { pluginId: base.pluginId, action: 'remove', commandId: '00000000-0000-4000-8000-000000000001', expectedRevision: revision, artifactIdentity }
+  server.use(http.get('/api/management/harnesses/codex/plugins/operations', () => HttpResponse.json({ items: [{
+    requestedBy: '00000000-0000-4000-8000-000000000002', commandId: input.commandId, input,
+    result: { pluginId: base.pluginId, action: 'remove', status: 'uncertain', message: 'Earlier removal remains unresolved.' },
+  }] })))
+  mount('/settings/harnesses?harness=codex&section=plugins&pluginView=available')
+  expect(await screen.findByRole('button', { name: 'Reconcile original request' })).toBeVisible()
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: 'View notes plugin, available' }))
+  expect(await screen.findByRole('button', { name: 'Install plugin' })).toBeDisabled()
+})
+it('does not combine newer list revisions with delayed old details', async () => {
+  reads()
+  const { client } = mount('/settings/harnesses?harness=codex&section=plugins&pluginView=available')
+  await openPlugin()
+  const next = 'sha256:' + 'c'.repeat(64)
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  server.use(
+    http.get('/api/management/harnesses/codex/plugins', () => HttpResponse.json(listPayload(false, next))),
+    http.get('/api/management/harnesses/codex/plugins/operations', () => HttpResponse.json({ items: [] })),
+    http.get('/api/management/harnesses/codex/plugins/:pluginId', async () => { await gate; return HttpResponse.json(detailPayload(false, next)) }),
+  )
+  const refreshing = client.invalidateQueries({ queryKey: harnessSettingsKeys.root })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Install plugin' })).toBeDisabled())
+  release(); await refreshing
   await waitFor(() => expect(screen.getByRole('button', { name: 'Install plugin' })).toBeEnabled())
+})
+it.each(['list', 'detail'])('keeps protected content hidden through success → 403 → 503 for %s', async (target) => {
+  reads()
+  const { client } = mount('/settings/harnesses?harness=codex&section=plugins&pluginView=available')
+  await openPlugin()
+  for (const status of [403, 503]) {
+    server.use(http.get('/api/management/harnesses/codex/plugins/operations', () => HttpResponse.json({ items: [] })),
+      http.get(target === 'list' ? '/api/management/harnesses/codex/plugins' : '/api/management/harnesses/codex/plugins/:pluginId', () => HttpResponse.json({ error: { code: status === 403 ? 'ACCESS_DENIED' : 'UNAVAILABLE', message: 'Unavailable' } }, { status })))
+    await client.invalidateQueries({ queryKey: harnessSettingsKeys.root })
+    expect(await screen.findByText('Plugin access unavailable')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Install plugin' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /View notes plugin/ })).not.toBeInTheDocument()
+    expect(within(screen.getByRole('dialog', { name: 'Plugin details' })).queryByText('trusted')).not.toBeInTheDocument()
+  }
+  reads(); await client.invalidateQueries({ queryKey: harnessSettingsKeys.root })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Install plugin' })).toBeEnabled())
+})
+it('debounces rapid typing before starting another catalog read', async () => {
+  reads()
+  const queries: string[] = []
+  server.use(http.get('/api/management/harnesses/codex/plugins', ({ request }) => {
+    queries.push(new URL(request.url).searchParams.get('query') ?? '')
+    return HttpResponse.json(listPayload())
+  }))
+  mount('/settings/harnesses?harness=codex&section=plugins&pluginView=available')
+  await screen.findByRole('button', { name: 'View notes plugin, available' })
+  await userEvent.setup().type(screen.getByRole('searchbox', { name: 'Search plugins' }), 'notes')
+  await waitFor(() => expect(queries.at(-1)).toBe('notes'))
+  expect(queries.filter(Boolean)).toEqual(['notes'])
 })

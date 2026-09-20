@@ -104,7 +104,8 @@ export function buildProductionApp(
   const operatorMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/operator`
   const harnessSettings = {
     directories: new HarnessDirectoryBrowser([projectRoot], database.pool),
-    plugins: new CodexPluginSettingsService(database.pool, new NativeCodexPlugins(config.harnesses.codexBinary, config.harnesses.workspaceRoot)),
+    plugins: new CodexPluginSettingsService(database.pool, new NativeCodexPlugins(config.harnesses.codexBinary, config.harnesses.workspaceRoot,
+      processRegistry.scope('settings:plugins:codex')), () => processRegistry.closeOwner('settings:plugins:codex')),
     mcp: new HarnessMcpSettingsService(database.pool, commands, {
       codex: new CodexMcpConnections(config.harnesses.codexBinary, config.harnesses.workspaceRoot, processRegistry.scope('settings:mcp:codex')),
       opencode: new OpenCodeMcpConnections(config.harnesses.openCodeBinary, config.harnesses.workspaceRoot, processRegistry.scope('settings:mcp:opencode')),
@@ -361,6 +362,8 @@ export function buildProductionApp(
       await chatAuthority.revokeOrphanedCredentials()
       assertOpen()
       await harnessSettings.mcp.recover()
+      assertOpen()
+      await harnessSettings.plugins.recover()
       assertOpen()
       // Optional discovery warmups used to block startup on native auth/network.
       // Qualification still runs at every existing on-demand configuration/execution gate.

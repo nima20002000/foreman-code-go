@@ -16,12 +16,12 @@ export function registerHarnessMcpTools(server: McpServer, context: OperatorRequ
     description: 'List installed or available Codex plugins with search and pagination. Native Codex is the source of truth. Plugin installation and removal are human-only because plugins can add hooks, skills, and external access.',
     inputSchema: CodexPluginListInputSchema, outputSchema: CodexPluginListResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, (input) => invokeOperatorTool(context, 'codex_plugins_list', () => context.services.harnessSettings!.plugins!.list(context.principal, input)))
+  }, (input, extra) => invokeOperatorTool(context, 'codex_plugins_list', () => context.services.harnessSettings!.plugins!.list(context.principal, input, extra.mcpReq.signal)))
   if (context.services.harnessSettings?.plugins && operatorToolAvailable(context, 'codex_plugin_get')) server.registerTool('codex_plugin_get', {
-    description: 'Read a Codex plugin and its verified bundled skills, hooks, and MCP server names when package contents are locally available. Unknown means the bundle cannot be inspected before installation. Plugin installation and removal require the signed-in human browser.',
+    description: 'Read a Codex plugin and its verified bundled skills, hooks, and MCP server names when package contents are locally available. Unknown means bundle contents could not be verified, including unavailable, unreadable, or unsupported local contents. Plugin installation and removal require the signed-in human browser.',
     inputSchema: CodexPluginGetInputSchema, outputSchema: CodexPluginDetailResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, (input) => invokeOperatorTool(context, 'codex_plugin_get', () => context.services.harnessSettings!.plugins!.get(context.principal, input.pluginId)))
+  }, (input, extra) => invokeOperatorTool(context, 'codex_plugin_get', () => context.services.harnessSettings!.plugins!.get(context.principal, input.pluginId, extra.mcpReq.signal)))
   if (operatorToolAvailable(context, 'harness_mcp_servers_list')) server.registerTool('harness_mcp_servers_list', {
     description: 'List native user/inherited MCP connections for Codex or OpenCode. Returns no tokens or secret arguments. Configuration evidence is not live connection health.',
     inputSchema: HarnessMcpListInputSchema, outputSchema: HarnessMcpListResultSchema,

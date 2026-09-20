@@ -10,6 +10,7 @@ import { assertChange, assertManagedChange, expectedMcpUserFingerprint, managedC
   publicMcpList, type NativeMcpAdapter } from './nativeMcpCommon.js'
 import { NativeMcpNotSubmittedError } from './nativeMcpDelivery.js'
 import { qualificationError } from './qualificationErrors.js'
+import { assertNoUnresolvedPluginWrites, lockNativeConfigurationFile } from './nativeSettingsWrites.js'
 
 type Harness = 'codex' | 'opencode'
 type Row = { id: string; harness: Harness; revision: string; change: unknown; managed_preset: HarnessMcpManagedPreset | null;
@@ -163,6 +164,7 @@ export class HarnessMcpSettingsService {
       let destroyed = false
       let marked = false
       let adapterEntered = false
+      let unlockFile: (() => Promise<void>) | undefined
       let selected: HarnessMcpPlan | undefined
       try {
         await this.liveUser(client, principal)
@@ -175,11 +177,13 @@ export class HarnessMcpSettingsService {
         if (selected.status !== 'pending') return selected // Never replay an uncertain or settled write.
         if (approve && Date.parse(selected.expiresAt) <= Date.now()) throw new DomainError('MCP_PLAN_EXPIRED', 'This review expired. Reject it and prepare a new change.', 409)
         if (approve) {
+          await assertNoUnresolvedPluginWrites(client)
           const unsettled = await client.query("select 1 from harness_mcp_change_plans where id<>$1 and status in ('submitting','uncertain') limit 1", [id])
           if (unsettled.rowCount) throw new DomainError('MCP_RECONCILIATION_REQUIRED', 'An earlier native write is unresolved. Use Reconcile on that request before applying another change.', 409)
         }
         const snapshot = approve ? await this.adapters[selected.harness].read(signal) : undefined
         if (snapshot && snapshot.revision !== selected.revision) throw new DomainError('REVISION_CONFLICT', 'Native configuration changed after this review was prepared. Reject it and prepare a new change.', 409)
+        if (snapshot) unlockFile = await lockNativeConfigurationFile(client, snapshot.file)
         const managed = approve ? this.managed(selected) : undefined
         const expected = snapshot ? expectedMcpUserFingerprint(snapshot, selected.change, managed) : null
         await client.query('begin')
@@ -229,6 +233,7 @@ export class HarnessMcpSettingsService {
         }
         throw qualificationError(error)
       } finally {
+        try { await unlockFile?.() } catch { destroyed = true }
         if (locked) {
           try { await client.query("select pg_advisory_unlock(hashtext('graphql:harness-mcp-settings'))") }
           catch { destroyed = true }

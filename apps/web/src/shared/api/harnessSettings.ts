@@ -10,10 +10,12 @@ import {
   WorkspaceFolderRenameInputSchema, WorkspaceFolderRenameResultSchema, type WorkspaceFolderRenameInput,
   type HarnessMcpPlanInput, type HarnessMcpManagedInput,
   CodexPluginListResultSchema, CodexPluginDetailResultSchema, CodexPluginChangeInputSchema, CodexPluginChangeResultSchema,
-  type CodexPluginListInput, type CodexPluginChangeInput,
+  type CodexPluginListInput, type CodexPluginChangeInput, type CodexPluginChangeResult, type CodexPluginReconcileInput,
+  CodexPluginOperationsResultSchema, CodexPluginReconcileInputSchema,
 } from '@graphql/contracts/management'
 import type { HarnessConfiguration } from '@graphql/contracts'
 import { apiClient } from './client'
+import { reservePluginOperation, restorePluginOperation, pluginOperationFailed, pluginOperationSucceeded, terminalPluginResult, type PluginOperation } from './codexPluginOperation'
 import { sessionGeneration, sessionSignal, sessionIsSwitching, SessionChangedError } from './sessionBoundary'
 import { managedMcpFailed, managedMcpSucceeded, reserveManagedMcpOperation, terminalMcpPlan, type ManagedMcpOperation } from './managedMcpOperation'
 import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema, type WorkspaceFolderDeleteInput } from '@graphql/contracts/management'
@@ -45,9 +47,9 @@ export const harnessSettingsKeys = {
   plugin: (pluginId: string) => [...harnessSettingsKeys.root, sessionGeneration(), 'codex-plugin', pluginId] as const,
 }
 
-export function useCodexPlugins(input: CodexPluginListInput) {
+export function useCodexPlugins(input: CodexPluginListInput, enabled = true) {
   useHarnessSessionEpoch()
-  return useQuery({ queryKey: harnessSettingsKeys.plugins(input), enabled: !sessionIsSwitching(), retry: false,
+  return useQuery({ queryKey: harnessSettingsKeys.plugins(input), enabled: enabled && !sessionIsSwitching(), retry: false, refetchOnWindowFocus: false,
     queryFn: ({ signal }) => apiClient.request(`/api/management/harnesses/codex/plugins?${new URLSearchParams({
       view: input.view, query: input.query, offset: String(input.offset), limit: String(input.limit),
     })}`, CodexPluginListResultSchema, { signal }) })
@@ -58,13 +60,98 @@ export function useCodexPlugin(pluginId: string | undefined) {
     queryFn: ({ signal }) => apiClient.request(`/api/management/harnesses/codex/plugins/${encodeURIComponent(pluginId!)}`,
       CodexPluginDetailResultSchema, { signal }) })
 }
+/** Operation identity belongs to the access session, not a mounted settings panel. */
 export function useChangeCodexPlugin() {
   const client = useQueryClient()
-  return useMutation({ retry: false,
-    mutationFn: (input: CodexPluginChangeInput) => apiClient.request('/api/management/harnesses/codex/plugins/change',
-      CodexPluginChangeResultSchema, { method: 'POST', body: CodexPluginChangeInputSchema.parse(input) }),
-    onSettled: async () => { await client.invalidateQueries({ queryKey: harnessSettingsKeys.root }) },
+  const epoch = useHarnessSessionEpoch()
+  const key = [...harnessSettingsKeys.root, epoch, 'plugin-operation'] as const
+  const operationsKey = [...harnessSettingsKeys.root, epoch, 'plugin-operations'] as const
+  type State = { operation: PluginOperation | null; settled: string[] }
+  const saved = useQuery<State>({ queryKey: key, queryFn: () => ({ operation: null, settled: [] }),
+    enabled: false, initialData: { operation: null, settled: [] }, staleTime: Infinity, gcTime: Infinity })
+  const operations = useQuery({ queryKey: operationsKey, enabled: !sessionIsSwitching(), retry: false,
+    refetchOnWindowFocus: false,
+    queryFn: ({ signal }) => apiClient.request('/api/management/harnesses/codex/plugins/operations', CodexPluginOperationsResultSchema, { signal }) })
+  const currentSession = () => epoch === sessionGeneration() && !sessionIsSwitching()
+  const state = () => client.getQueryData<State>(key) ?? { operation: null, settled: [] }
+  const identity = (value: { commandId: string; requestedBy?: string }) => `${value.requestedBy ?? ''}:${value.commandId}`
+  const update = (id: string, transform: (current: PluginOperation) => PluginOperation | null, terminal = false) => {
+    if (!currentSession()) return
+    client.setQueryData<State>(key, (previous) => {
+      const value = previous ?? { operation: null, settled: [] }
+      if (value.operation?.commandId !== id) return value
+      const operation = transform(value.operation)
+      return { operation, settled: terminal ? [...value.settled, identity(value.operation), id] : value.settled }
+    })
+  }
+  useEffect(() => {
+    if (epoch !== sessionGeneration() || sessionIsSwitching() || !operations.isSuccess) return
+    const records = operations.data.items
+    client.setQueryData<State>([...harnessSettingsKeys.root, epoch, 'plugin-operation'], (previous) => {
+      const value = previous ?? { operation: null, settled: [] }
+      // Merge server ownership into a locally retained command, never replace its payload.
+      if (value.operation) {
+        const matching = records.find((item) => item.commandId === value.operation?.commandId)
+        return matching && !value.operation.requestedBy
+          ? { ...value, operation: { ...value.operation, requestedBy: matching.requestedBy } } : value
+      }
+      const next = records.find((item) => !value.settled.includes(identity(item)) && !value.settled.includes(item.commandId))
+      return next ? { ...value, operation: restorePluginOperation(next) } : value
+    })
+  }, [client, epoch, operations.data, operations.isSuccess])
+  const invalidate = async () => {
+    if (currentSession()) await client.invalidateQueries({ queryKey: harnessSettingsKeys.root })
+  }
+  const settle = (result: CodexPluginChangeResult, id: string) => {
+    update(id, (current) => pluginOperationSucceeded(current, result), terminalPluginResult(result))
+    if (currentSession() && terminalPluginResult(result)) client.setQueryData(operationsKey,
+      (previous: { items: Array<{ commandId: string }> } | undefined) => previous ? { ...previous, items: previous.items.filter((item) => item.commandId !== id) } : previous)
+  }
+  const mutation = useMutation({ retry: false,
+    mutationFn: (input: CodexPluginChangeInput) => {
+      if (!currentSession()) throw new SessionChangedError()
+      if (JSON.stringify(state().operation?.input) !== JSON.stringify(input)) throw new Error('The original plugin request is no longer reserved.')
+      return apiClient.request('/api/management/harnesses/codex/plugins/change', CodexPluginChangeResultSchema,
+        { method: 'POST', body: CodexPluginChangeInputSchema.parse(input) })
+    },
+    // These callbacks still run after the panel unmounts.
+    onSuccess: (result, input) => settle(result, input.commandId),
+    onError: (error, input) => update(input.commandId, (current) => pluginOperationFailed(current, error)),
+    onSettled: invalidate,
   })
+  const reconciliation = useMutation({ retry: false,
+    mutationFn: (input: CodexPluginReconcileInput) => {
+      if (!currentSession() || state().operation?.commandId !== input.commandId) throw new SessionChangedError()
+      return apiClient.request('/api/management/harnesses/codex/plugins/reconcile', CodexPluginChangeResultSchema,
+        { method: 'POST', body: CodexPluginReconcileInputSchema.parse(input) })
+    },
+    onSuccess: (result, input) => settle(result, input.commandId),
+    onError: (error, input) => update(input.commandId, (current) => ({ ...current, phase: 'review', error: error.message })),
+    onSettled: invalidate,
+  })
+  const start = (draft: Omit<CodexPluginChangeInput, 'commandId'>) => {
+    if (!currentSession() || state().operation || !operations.isSuccess || operations.isFetching) return
+    if (operations.data.items.some((item) => !state().settled.includes(item.commandId))) return
+    const input = CodexPluginChangeInputSchema.parse({ ...draft, commandId: crypto.randomUUID() })
+    client.setQueryData<State>(key, { ...state(), operation: reservePluginOperation(input) })
+    mutation.mutate(input)
+  }
+  const retry = () => {
+    const current = state().operation
+    if (!currentSession() || !current?.input || current.requestedBy || current.phase === 'sending' || reconciliation.isPending) return
+    update(current.commandId, (value) => ({ ...value, phase: 'sending' }))
+    mutation.mutate(current.input)
+  }
+  const reconcile = (acceptObservedState = false) => {
+    const current = state().operation
+    if (!currentSession() || !current || current.phase === 'sending' || reconciliation.isPending) return
+    const revision = current.result?.observedRevision
+    if (acceptObservedState && !revision) return
+    reconciliation.mutate({ commandId: current.commandId, ...(current.requestedBy ? { requestedBy: current.requestedBy } : {}),
+      acceptObservedState, ...(acceptObservedState && revision ? { expectedRevision: revision } : {}) })
+  }
+  return { ...mutation, operation: saved.data.operation, operations, start, retry, reconcile,
+    reconciliation, busy: saved.data.operation?.phase === 'sending' || reconciliation.isPending }
 }
 
 export function useNativeHarnessOptions(harness: Harness) {
