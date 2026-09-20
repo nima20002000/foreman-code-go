@@ -149,6 +149,7 @@ export function WorkspaceRouteEntry() {
       workspaceId={workspaceId}
       selectedAgentId={agentId}
       activeWorkflowId={workflow?.id}
+      lastRunId={details.runs.find((run) => run.workflowId === workflow?.id)?.id}
       state={state}
       slots={{
         workspace: <WorkspaceHeader details={details} />,

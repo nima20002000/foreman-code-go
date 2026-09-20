@@ -406,12 +406,6 @@ function HandoffEdge({
   targetY,
   sourcePosition,
   targetPosition,
-  label,
-  labelStyle,
-  labelShowBg,
-  labelBgStyle,
-  labelBgPadding,
-  labelBgBorderRadius,
   style,
   markerStart,
   markerEnd,
@@ -434,14 +428,6 @@ function HandoffEdge({
         className="n-flow-base workflow-graph-edge-path"
         id={id}
         path={edgePath}
-        label={label}
-        labelX={labelX}
-        labelY={labelY}
-        labelStyle={labelStyle}
-        labelShowBg={labelShowBg}
-        labelBgStyle={labelBgStyle}
-        labelBgPadding={labelBgPadding}
-        labelBgBorderRadius={labelBgBorderRadius}
         style={style}
         markerStart={markerStart}
         markerEnd={markerEnd}
@@ -1522,12 +1508,6 @@ export function GraphEditor({
             >
               <Icon name="plus" size={17} />
             </Button>
-            {runQuery.data?.run.executionLocation ? <span className="workflow-graph-run-location"
-              aria-label={`Run location: ${runQuery.data.run.executionLocation.rootPath}`}
-              title={`Run location: ${runQuery.data.run.executionLocation.rootPath}`}>
-              <Icon name="folder" size={12} />
-              <span>…/{runQuery.data.run.executionLocation.rootPath.split(/[\\/]/).filter(Boolean).slice(-2).join('/')}</span>
-            </span> : null}
           </Toolbar>
         </div>
 

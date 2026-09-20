@@ -92,23 +92,6 @@
   background: var(--graph-subtle);
 }
 
-.workflow-graph-run-location {
-  display: inline-flex;
-  max-width: 9rem;
-  min-height: 1.5rem;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.2rem 0.4rem;
-  border: 1px solid var(--graph-line-strong);
-  border-radius: 3px;
-  color: var(--graph-muted);
-  background: var(--graph-panel);
-  font-size: 0.6875rem;
-  line-height: 1;
-}
-
-.workflow-graph-run-location span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-
 .workflow-graph-run:disabled {
   cursor: wait;
   opacity: 0.55;
@@ -732,23 +715,30 @@
   z-index: 2;
   width: 10px;
   height: 10px;
-  border: 2px solid var(--n-canvas);
-  background: var(--n-border-strong);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--n-border-strong) 45%, transparent);
+  border: 0;
+  background: transparent;
 }
 
 /* One handle per side serves every connection on that side. */
 .workflow-agent-node .workflow-agent-node-handle {
-  transition:
-    background var(--motion-duration-fast) ease,
-    border-color var(--motion-duration-fast) ease;
+  display: grid;
+  place-items: center;
 }
 
-.workflow-agent-node:hover .workflow-agent-node-handle,
-.workflow-agent-node .workflow-agent-node-handle.connectionindicator {
-  border-color: var(--n-canvas);
+.workflow-agent-node .workflow-agent-node-handle::after {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--n-border-strong);
+  content: '';
+  opacity: 0.55;
+  transition: background var(--motion-duration-fast) ease, opacity var(--motion-duration-fast) ease;
+}
+
+.workflow-agent-node:hover .workflow-agent-node-handle::after,
+.workflow-agent-node .workflow-agent-node-handle.connectionindicator::after {
   background: var(--n-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--n-accent) 18%, transparent);
+  opacity: 1;
 }
 
 .workflow-graph-state {
