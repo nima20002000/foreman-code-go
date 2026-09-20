@@ -32,7 +32,7 @@ describe('Operator MCP permission boundaries', () => {
   })
   it('has unique tool names and does not expose Operator self-approval', () => {
     expect(new Set(OPERATOR_TOOL_ACTIONS.map(t=>t.name)).size).toBe(OPERATOR_TOOL_ACTIONS.length)
-    expect(OPERATOR_TOOL_ACTIONS.some(t=>t.name === 'operator_chat_respond')).toBe(false)
+    expect(OPERATOR_TOOL_ACTIONS.some(t=>t.name.startsWith('operator_chat_respond'))).toBe(false)
   })
   it('does not turn cross-handler visibility into response authority', () => {
     const interaction={id:'i',workspaceId:'w',workflowId:'f',runId:'r',approval:{handler:'user'},status:'pending'} as DurableInteraction
