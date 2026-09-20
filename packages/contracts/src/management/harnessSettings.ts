@@ -30,6 +30,11 @@ export const HarnessMcpChangeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('enable'), name: Name, enabled: z.boolean() }).strict(),
 ])
 export type HarnessMcpChange = z.infer<typeof HarnessMcpChangeSchema>
+export const HarnessMcpManagedPresetSchema = z.enum(['operator', 'linear'])
+export type HarnessMcpManagedPreset = z.infer<typeof HarnessMcpManagedPresetSchema>
+export const HarnessMcpManagedInputSchema = z.object({ harness: Harness, preset: HarnessMcpManagedPresetSchema,
+  installed: z.boolean(), commandId: CommandId, expectedRevision: Revision }).strict()
+export type HarnessMcpManagedInput = z.infer<typeof HarnessMcpManagedInputSchema>
 export const HarnessMcpListInputSchema = z.object({ harness: Harness }).strict()
 export const HarnessMcpServerSummarySchema = z.object({
   name: z.string(), transport: z.enum(['remote', 'stdio', 'unknown']), label: z.string(), enabled: z.boolean(),
@@ -37,6 +42,8 @@ export const HarnessMcpServerSummarySchema = z.object({
 }).strict()
 export const HarnessMcpListResultSchema = z.object({
   harness: Harness, revision: Revision, servers: z.array(HarnessMcpServerSummarySchema),
+  presets: z.object({ operator: z.enum(['missing', 'installed', 'mismatch', 'inherited']),
+    linear: z.enum(['missing', 'installed', 'mismatch', 'inherited']) }).strict().optional(),
   checkedAt: z.string().datetime({ offset: true }), scope: z.literal('native-user'),
 }).strict()
 export type HarnessMcpList = z.infer<typeof HarnessMcpListResultSchema>
@@ -44,6 +51,7 @@ export const HarnessMcpPlanInputSchema = z.object({ harness: Harness, commandId:
 export type HarnessMcpPlanInput = z.infer<typeof HarnessMcpPlanInputSchema>
 export const HarnessMcpPlanSchema = z.object({
   id: z.string().uuid(), harness: Harness, revision: Revision, change: HarnessMcpChangeSchema,
+  managedPreset: HarnessMcpManagedPresetSchema.nullable().optional(),
   requestedBy: z.string(), status: z.enum(['pending', 'submitting', 'applied', 'rejected', 'failed', 'uncertain']),
   createdAt: z.string().datetime({ offset: true }), expiresAt: z.string().datetime({ offset: true }),
   error: z.string().nullable(),

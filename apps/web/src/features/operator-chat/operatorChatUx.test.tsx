@@ -1,14 +1,19 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, operatorChatSettings } from '@graphql/contracts'
+import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, operatorChatSettings } from '@graphql/contracts'
+import { http, HttpResponse } from 'msw'
+import { server } from '../../mocks/server'
+import { getManagedAgentDefaults } from '../../shared/api/client'
+import { queryKeys } from '../../shared/api/query'
 import { OperatorComposerSettings } from './OperatorComposerSettings'
 import { OperatorChat } from './OperatorChat'
 import { OperatorChatVisibilityProvider } from './visibility'
 import { useOperatorChatStore } from './operatorChatStore'
 import { operatorState } from './pr17-test-fixtures'
 import { summarizeOperatorConversation } from './operatorChatStatus'
-import { parseChatPreferences, protectedKey } from '../../shared/api/protectedChatStorage'
+import { parseChatPreferences } from '../../shared/api/protectedChatStorage'
+import { clearRevisionedFormPersistence } from '../settings/revisionedForm'
 import { useConversationDraftStore } from '../conversations'
 
 const api = vi.hoisted(() => ({ create: vi.fn(), get: vi.fn(), list: vi.fn(), send: vi.fn(), remove: vi.fn(), restore: vi.fn() }))
@@ -20,10 +25,11 @@ vi.mock('../../shared/api/harnessSettings', () => ({ useNativeHarnessOptions: ()
   { id: 'model-a', name: 'Model A', reasoningEfforts: ['low', 'high'], serviceTiers: ['standard', 'priority'], variants: ['high'] },
   { id: 'model-b', name: 'Model B', reasoningEfforts: ['low'], serviceTiers: ['standard'], variants: [] },
 ] } }) }))
-vi.mock('../../shared/api/query', () => ({ useHarnessDefaultsQuery: () => ({ data: { defaults: DEFAULT_HARNESS_DEFAULTS } }) }))
+vi.mock('../../shared/api/query', async (original) => ({ ...await original<typeof import('../../shared/api/query')>(), useHarnessDefaultsQuery: () => ({ data: { defaults: DEFAULT_HARNESS_DEFAULTS } }) }))
 let client: QueryClient
 beforeEach(() => {
   vi.clearAllMocks(); window.localStorage.clear()
+  clearRevisionedFormPersistence()
   useConversationDraftStore.getState().clearAllDrafts()
   useOperatorChatStore.setState({ open: true, historyOpen: true, selectedConversationId: 'conversation-one' })
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -36,6 +42,79 @@ beforeEach(() => {
 afterEach(() => { cleanup(); client.clear(); vi.restoreAllMocks() })
 function chat() { render(<QueryClientProvider client={client}><OperatorChatVisibilityProvider enabled><OperatorChat /></OperatorChatVisibilityProvider></QueryClientProvider>) }
 describe('Operator chat UX', () => {
+  it('keeps saved settings usable on refresh failure and hides them after access is denied', async () => {
+    chat()
+    const input = await screen.findByRole('textbox', { name: 'Message' })
+    fireEvent.change(input, { target: { value: 'Hello' } })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    server.use(http.get('/api/management/settings/agents', () => HttpResponse.json({ code: 'UNAVAILABLE', message: 'Offline' }, { status: 503 })))
+    await client.invalidateQueries({ queryKey: queryKeys.agentDefaults })
+    expect(await screen.findByText('Could not refresh Operator settings')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled()
+    server.use(http.get('/api/management/settings/agents', () => HttpResponse.json({ code: 'ACCESS_DENIED', message: 'Denied' }, { status: 403 })))
+    await client.invalidateQueries({ queryKey: queryKeys.agentDefaults })
+    expect(await screen.findByText('Operator settings access unavailable')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /Agent settings:/ })).not.toBeInTheDocument()
+  })
+  it('blocks OpenCode chat until its Operator MCP installation has been checked successfully', async () => {
+    let configured = false
+    server.use(
+      http.get('/api/management/settings/agents', () => HttpResponse.json({ revision: 1, versionId: null,
+        value: { ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness: DEFAULT_HARNESS_DEFAULTS.opencode } } })),
+      http.get('/api/operator/setup', () => HttpResponse.json({ harness: 'opencode', status: configured ? 'configured' : 'setup_required',
+        endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() })),
+    )
+    chat()
+    expect(await screen.findByText('Install Operator MCP in OpenCode first')).toBeVisible()
+    const input = await screen.findByRole('textbox', { name: 'Message' })
+    fireEvent.change(input, { target: { value: 'Hello' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    expect(api.send).not.toHaveBeenCalled()
+    expect(screen.getByRole('link', { name: 'Open Harness Settings' })).toHaveAttribute('href', '/settings/harnesses?harness=opencode&section=connections')
+    configured = true
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    expect(screen.queryByText('Install Operator MCP in OpenCode first')).not.toBeInTheDocument()
+  })
+
+  it('saves chat model and effort to shared Operator defaults and restores them in a future chat', async () => {
+    chat()
+    fireEvent.click(await screen.findByRole('button', { name: /Agent settings:/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Choose model/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Model A/ }))
+    await waitFor(async () => expect((await getManagedAgentDefaults()).value.operator.harness.model).toBe('model-a'))
+    await waitFor(() => expect(screen.getByRole('slider', { name: 'Effort' })).toBeEnabled())
+    fireEvent.change(screen.getByRole('slider', { name: 'Effort' }), { target: { value: '1' } })
+    await waitFor(async () => expect((await getManagedAgentDefaults()).value.operator.harness).toMatchObject({ model: 'model-a', reasoningEffort: 'high' }))
+    cleanup(); client.clear(); clearRevisionedFormPersistence()
+    client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    useOperatorChatStore.getState().select('future-chat')
+    api.get.mockResolvedValue(operatorState({ conversation: { ...operatorState().conversation, id: 'future-chat' }, turnState: 'idle', activeRequestId: null }))
+    chat()
+    fireEvent.click(await screen.findByRole('button', { name: 'Agent settings: Model A, high' }))
+  })
+
+  it('retains an uncertain settings save and retries the same revision and command before allowing send', async () => {
+    const before = await getManagedAgentDefaults()
+    const requests: Record<string, unknown>[] = []
+    server.use(http.put('/api/management/settings/agents', async ({ request }) => {
+      const input = await request.json() as Record<string, unknown>; requests.push(input)
+      return requests.length === 1 ? HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Save outcome unknown' } }, { status: 503 })
+        : HttpResponse.json({ replayed: true, value: { ...before, revision: before.revision + 1, value: input.value } })
+    }))
+    chat()
+    fireEvent.click(await screen.findByRole('button', { name: /Agent settings:/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Choose model/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Model A/ }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'Hello' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry settings save' }))
+    await waitFor(() => expect(requests).toHaveLength(2))
+    expect(requests[1]).toEqual(requests[0])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+  })
+
   it('handles /new locally even while a turn is running, without sending it to the agent', async () => {
     api.get.mockResolvedValue(operatorState())
     chat()
@@ -112,15 +191,9 @@ describe('Operator chat UX', () => {
     chat()
     expect(await screen.findByLabelText('Operator is typing')).toBeInTheDocument()
   })
-  it('persists unsent agent settings and clears only the acknowledged selection', () => {
+  it('ignores legacy per-conversation settings so saved Operator defaults remain authoritative', () => {
     const settings = operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.codex, true)
-    useOperatorChatStore.getState().setSettingsDraft('conversation-one', settings)
-    const saved = parseChatPreferences(JSON.parse(localStorage.getItem(protectedKey('ui'))!))
-    expect(saved.settingsDrafts?.['conversation-one']).toEqual(settings)
-    useOperatorChatStore.getState().clearSettingsDraft('conversation-one', { ...settings, model: 'old-model' })
-    expect(useOperatorChatStore.getState().settingsDrafts['conversation-one']).toEqual(settings)
-    useOperatorChatStore.getState().clearSettingsDraft('conversation-one', settings)
-    expect(useOperatorChatStore.getState().settingsDrafts['conversation-one']).toBeUndefined()
+    expect(parseChatPreferences({ open: true, settingsDrafts: { 'conversation-one': settings } })).toEqual({ open: true })
   })
 
   it('normalizes unsupported effort and fast mode when changing models', () => {
@@ -136,5 +209,20 @@ describe('Operator chat UX', () => {
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ showThinking: true }))
     fireEvent.click(screen.getByRole('button', { name: 'OpenCode' }))
     expect(onChange).toHaveBeenLastCalledWith(operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.opencode))
+  })
+  it('returns keyboard focus to effort after an automatic settings save', () => {
+    const onChange = vi.fn()
+    const value = { harness: 'codex' as const, model: 'model-a', reasoningEffort: 'high' as const,
+      serviceTier: 'standard' as const, showThinking: false }
+    const view = render(<QueryClientProvider client={client}><OperatorComposerSettings disabled={false} onChange={onChange} value={value} /></QueryClientProvider>)
+    fireEvent.click(screen.getByRole('button', { name: /Agent settings:/ }))
+    const slider = screen.getByRole('slider', { name: 'Effort' })
+    slider.focus()
+    fireEvent.change(slider, { target: { value: '0' } })
+    expect(onChange).toHaveBeenCalledWith({ ...value, reasoningEffort: 'low' })
+    view.rerender(<QueryClientProvider client={client}><OperatorComposerSettings disabled onChange={onChange} value={{ ...value, reasoningEffort: 'low' }} /></QueryClientProvider>)
+    slider.blur()
+    view.rerender(<QueryClientProvider client={client}><OperatorComposerSettings disabled={false} onChange={onChange} value={{ ...value, reasoningEffort: 'low' }} /></QueryClientProvider>)
+    expect(slider).toHaveFocus()
   })
 })

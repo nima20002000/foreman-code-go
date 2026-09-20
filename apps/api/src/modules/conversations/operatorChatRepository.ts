@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 import {
-  HarnessConfigurationSchema, operatorChatSettings, ConversationSchema, MessageSchema, OperatorConfigurationVersionSchema, OperatorConversationStateSchema,
+  applyOperatorChatSettings, operatorChatSettings, ConversationSchema, MessageSchema, OperatorConfigurationVersionSchema, OperatorConversationStateSchema,
   OperatorConversationSummarySchema, type OperatorConversationSummary,
   type HarnessConfiguration, type Conversation, type ExecutionResult, type OperatorConfigurationVersion,
   type OperatorConversationState, type PendingNativeInteraction, type SendOperatorMessageRequest,
@@ -227,9 +227,7 @@ export class PostgresOperatorConversationRepository {
     if (!settings) return configuration.harness
     const base = settings.harness === configuration.harness.harness ? configuration.harness
       : (await new PostgresSettingsRepository(this.pool).getHarnessDefaults())[settings.harness]
-    return HarnessConfigurationSchema.parse(settings.harness === 'codex'
-      ? { ...base, model: settings.model, reasoningEffort: settings.reasoningEffort, serviceTier: settings.serviceTier }
-      : { ...base, model: settings.model, variant: settings.variant, thinking: settings.showThinking })
+    return applyOperatorChatSettings(base, settings)
   }
 
   async beginTurn(id: string, input: SendOperatorMessageRequest, ownerId: string, harness?: HarnessConfiguration) {

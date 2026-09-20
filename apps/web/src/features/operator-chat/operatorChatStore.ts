@@ -1,4 +1,3 @@
-import type { OperatorChatSettings } from '@graphql/contracts'
 import { create } from 'zustand'
 import { identityChangedEvent, parseChatPreferences, protectedKey } from '../../shared/api/protectedChatStorage'
 import { sessionIsSwitching } from '../../shared/api/sessionBoundary'
@@ -13,9 +12,6 @@ interface OperatorChatUiState {
   open: boolean
   historyOpen: boolean
   selectedConversationId?: string
-  settingsDrafts: Record<string, OperatorChatSettings>
-  setSettingsDraft(id: string, value: OperatorChatSettings): void
-  clearSettingsDraft(id: string, expected: OperatorChatSettings): void
   setOpen(open: boolean): void
   setHistoryOpen(open: boolean): void
   select(id: string | undefined): void
@@ -25,7 +21,7 @@ function savedState() {
   try { return parseChatPreferences(JSON.parse(window.localStorage.getItem(protectedKey('ui')) ?? '{}')) } catch { return {} }
 }
 const initial = typeof window === 'undefined' ? {} : savedState()
-function persist(state: Pick<OperatorChatUiState, 'open' | 'historyOpen' | 'selectedConversationId' | 'settingsDrafts'>) {
+function persist(state: Pick<OperatorChatUiState, 'open' | 'historyOpen' | 'selectedConversationId'>) {
   if (sessionIsSwitching()) return
   try { window.localStorage.setItem(protectedKey('ui'), JSON.stringify(state)) } catch { /* Preferences are optional. */ }
 }
@@ -33,16 +29,6 @@ export const useOperatorChatStore = create<OperatorChatUiState>((set) => ({
   open: initial.open ?? false,
   historyOpen: isNarrowOperatorChat() ? false : initial.historyOpen ?? true,
   selectedConversationId: initial.selectedConversationId,
-  settingsDrafts: initial.settingsDrafts ?? {},
-  setSettingsDraft: (id, value) => { if (!sessionIsSwitching()) set((state) => {
-    const settingsDrafts = { ...state.settingsDrafts, [id]: value }
-    persist({ ...state, settingsDrafts }); return { settingsDrafts }
-  }) },
-  clearSettingsDraft: (id, expected) => { if (!sessionIsSwitching()) set((state) => {
-    if (JSON.stringify(state.settingsDrafts[id]) !== JSON.stringify(expected)) return state
-    const settingsDrafts = { ...state.settingsDrafts }; delete settingsDrafts[id]
-    persist({ ...state, settingsDrafts }); return { settingsDrafts }
-  }) },
   setOpen: (open) => { if (!sessionIsSwitching()) set((state) => {
     const next = { open, historyOpen: isNarrowOperatorChat() ? false : state.historyOpen }
     persist({ ...state, ...next }); return next
@@ -52,6 +38,6 @@ export const useOperatorChatStore = create<OperatorChatUiState>((set) => ({
     const next = { selectedConversationId, historyOpen: isNarrowOperatorChat() ? false : state.historyOpen }
     persist({ ...state, ...next }); return next
   }) },
-  reset: () => set({ open: false, historyOpen: !isNarrowOperatorChat(), selectedConversationId: undefined, settingsDrafts: {} }),
+  reset: () => set({ open: false, historyOpen: !isNarrowOperatorChat(), selectedConversationId: undefined }),
 }))
 if (typeof window !== 'undefined') window.addEventListener(identityChangedEvent, () => useOperatorChatStore.getState().reset())

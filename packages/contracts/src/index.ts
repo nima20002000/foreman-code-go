@@ -311,7 +311,7 @@ export const AgentDefaultsSchema = z.object({
   orchestrator: AgentTemplateSchema.safeExtend({ role: z.literal("orchestrator"), boardAddable: z.literal(true) }),
   coder: AgentTemplateSchema.safeExtend({ role: z.literal("coder"), boardAddable: z.literal(true) }),
   operator: AgentTemplateSchema.safeExtend({
-    role: z.literal("operator"), boardAddable: z.literal(false), uiEnabled: z.boolean(),
+    role: z.literal("operator"), boardAddable: z.literal(false), uiEnabled: z.boolean(), showThinking: z.boolean().optional(),
   }),
 }).strict();
 export type AgentDefaults = z.infer<typeof AgentDefaultsSchema>;
@@ -375,7 +375,7 @@ export const DEFAULT_AGENT_DEFAULTS: AgentDefaults = AgentDefaultsSchema.parse({
     harness: { ...DEFAULT_HARNESS_DEFAULTS.codex },
   },
   operator: {
-    role: "operator", boardAddable: false, uiEnabled: true,
+    role: "operator", boardAddable: false, uiEnabled: true, showThinking: true,
     harness: { ...DEFAULT_HARNESS_DEFAULTS.codex },
   },
 });
@@ -1589,6 +1589,20 @@ export function operatorChatSettings(harness: HarnessConfiguration, showThinking
     ? { harness: "codex", model: harness.model, reasoningEffort: harness.reasoningEffort, serviceTier: harness.serviceTier, showThinking }
     : { harness: "opencode", model: harness.model, variant: harness.variant, showThinking: harness.thinking };
 }
+/** Apply chat controls without replacing the accepted execution permissions. */
+export function applyOperatorChatSettings(base: HarnessConfiguration, settings: OperatorChatSettings): HarnessConfiguration {
+  if (base.harness !== settings.harness) throw new Error("Select the matching harness defaults before applying chat settings.");
+  return HarnessConfigurationSchema.parse(settings.harness === "codex"
+    ? { ...base, model: settings.model, reasoningEffort: settings.reasoningEffort, serviceTier: settings.serviceTier }
+    : { ...base, model: settings.model, variant: settings.variant, thinking: settings.showThinking });
+}
+export const OperatorChatSetupSchema = z.object({
+  harness: z.enum(["codex", "opencode"]),
+  status: z.enum(["configured", "setup_required"]),
+  endpoint: z.string().url(),
+  checkedAt: TimestampSchema,
+}).strict();
+export type OperatorChatSetup = z.infer<typeof OperatorChatSetupSchema>;
 export const OperatorActivityCursorSchema = z.string().regex(/^[1-9][0-9]{0,18}$/)
   .refine((value) => value.length < 19 || value <= "9223372036854775807", "Invalid activity cursor");
 export const OperatorActivitySchema = z.object({

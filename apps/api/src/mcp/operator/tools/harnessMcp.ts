@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/server'
 import {
   HarnessMcpListInputSchema, HarnessMcpListResultSchema, HarnessMcpPlanInputSchema, HarnessMcpPlanResultSchema,
-  HarnessMcpPlanGetInputSchema, HarnessMcpPlanSchema,
+  HarnessMcpManagedInputSchema, HarnessMcpPlanGetInputSchema, HarnessMcpPlanSchema,
 } from '@graphql/contracts/management'
 import type { OperatorRequestContext } from '../types.js'
 import { operatorToolAvailable } from '../availability.js'
@@ -21,6 +21,11 @@ export function registerHarnessMcpTools(server: McpServer, context: OperatorRequ
     inputSchema: HarnessMcpPlanInputSchema, outputSchema: HarnessMcpPlanResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, (input) => invokeOperatorTool(context, 'harness_mcp_change_request', () => service.plan(context.principal, 'mcp', input)))
+  if (operatorToolAvailable(context, 'harness_mcp_managed_request')) server.registerTool('harness_mcp_managed_request', {
+    description: 'Request installation or removal of the exact server-managed Operator MCP or read-only Linear MCP preset for Codex or OpenCode, using the native list revision and a stable commandId. A signed-in human must apply the request in Harness Settings. This tool cannot approve its own MCP access or change a mismatched/inherited entry.',
+    inputSchema: HarnessMcpManagedInputSchema, outputSchema: HarnessMcpPlanResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, (input) => invokeOperatorTool(context, 'harness_mcp_managed_request', () => service.planManaged(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'harness_mcp_change_get')) server.registerTool('harness_mcp_change_get', {
     description: 'Read your own MCP change request. Pending requires human review; uncertain must be inspected, never resubmitted as a delivery retry.',
     inputSchema: HarnessMcpPlanGetInputSchema, outputSchema: HarnessMcpPlanSchema,

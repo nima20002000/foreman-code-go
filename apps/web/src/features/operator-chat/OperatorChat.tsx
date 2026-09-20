@@ -17,6 +17,10 @@ import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
 import { ActionMenu, Alert, Badge, Button, EmptyState, Icon, IconButton, LoadingState } from '../../shared/ui/nocturne'
 import { isNarrowOperatorChat, operatorChatNarrowQuery, useOperatorChatStore } from './operatorChatStore'
 import { useOperatorChatVisibility } from './useOperatorChatVisibility'
+import { useOperatorSettings } from './useOperatorSettings'
+import { useOperatorChatSetup } from '../../shared/api/operatorChatSetup'
+import { OperatorSetupNotice } from './OperatorSetupNotice'
+import { SettingsFormFeedback } from '../settings/SettingsFormActions'
 import { acknowledgeOperatorMessage, assertOperatorMessageReserved, readPendingOperatorMessage, recordOperatorMessageFailure, reserveOperatorMessage } from './operatorOutbox'
 import { projectOperatorText, type OperatorTextProjection } from './operatorTextProjection'
 import { newerOperatorSummaries, operatorNavigationStatus, operatorTurnStatus, summarizeOperatorConversation } from './operatorChatStatus'
@@ -51,9 +55,9 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
   const open = useOperatorChatStore((state) => state.open)
   const historyOpen = useOperatorChatStore((state) => state.historyOpen)
   const selectedId = useOperatorChatStore((state) => state.selectedConversationId)
-  const settingsDraft = useOperatorChatStore((state) => selectedId ? state.settingsDrafts[selectedId] : undefined)
-  const setSettingsDraft = useOperatorChatStore((state) => state.setSettingsDraft)
-  const clearSettingsDraft = useOperatorChatStore((state) => state.clearSettingsDraft)
+  const preferences = useOperatorSettings(enabled && open)
+  const preferencesDenied = useAccessFailureLatch(preferences.query)
+  const setup = useOperatorChatSetup(enabled && open, preferences.query.data?.revision)
   const setOpen = useOperatorChatStore((state) => state.setOpen)
   const setHistoryOpen = useOperatorChatStore((state) => state.setHistoryOpen)
   const select = useOperatorChatStore((state) => state.select)
@@ -87,9 +91,6 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       const state = await getOperatorConversation(selectedId ?? '', { signal })
       return newer(queryClient.getQueryData<OperatorConversationState>(detailKey(selectedId ?? '')), state)
     }, refetchInterval: 3_000 })
-  useEffect(() => {
-    if (selectedId && selected.data?.settings && settingsDraft) clearSettingsDraft(selectedId, selected.data.settings)
-  }, [clearSettingsDraft, selected.data?.settings, selectedId, settingsDraft])
   const selectedDenied = useAccessFailureLatch(selected)
   const accessDenied = listDenied || selectedDenied
   const acceptState = useCallback((id: string, state: OperatorConversationState) => {
@@ -243,7 +244,9 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
 
   if (!enabled || sessionIsSwitching()) return null
   const conversation = accessDenied ? undefined : selected.data
-  const settings = settingsDraft ?? conversation?.settings
+  const settings = preferencesDenied ? undefined : preferences.settings
+  const setupReady = setup.isSuccess && setup.data.status === 'configured' && setup.data.harness === settings?.harness
+  const settingsReady = Boolean(preferences.query.data) && !preferencesDenied && !preferences.form.isDirty && !preferences.form.isSaving && !preferences.form.uncertain
   const active = Boolean(conversation && (conversation.activeRequestId || !['idle', 'error'].includes(conversation.turnState)))
   const archived = conversation?.conversation.status === 'archived'
   const requestId = conversation?.activeRequestId
@@ -254,7 +257,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
     : scopedSendError ?? pending.sendFailure
   const partialText = partial?.value && partial.conversationId === selectedId && partial.value.requestId === requestId
     ? Object.entries(partial.value.parts).filter(([id]) => !id.startsWith('thinking:')).map(([, text]) => text).join('\n\n') : ''
-  const thinkingText = settings?.showThinking && partial?.value && partial.conversationId === selectedId && partial.value.requestId === requestId
+  const thinkingText = conversation?.settings?.showThinking && partial?.value && partial.conversationId === selectedId && partial.value.requestId === requestId
     ? Object.entries(partial.value.parts).filter(([id]) => id.startsWith('thinking:')).map(([, text]) => text).join('\n\n') : ''
   const entries: OperatorConversationSummary[] = accessDenied ? [] : (list.data?.conversations ?? []).map((item) =>
     conversation?.conversation.id === item.conversationId && conversation.revision >= item.revision ? summarizeOperatorConversation(conversation) : item)
@@ -293,7 +296,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       await createConversation()
       return
     }
-    if (!selectedId || archived || active || accessDenied || pending.command || pending.error
+    if (!setupReady || !settingsReady || !selectedId || archived || active || accessDenied || pending.command || pending.error
       || reservations.current.has(selectedId) || (send.isPending && send.variables?.id === selectedId)) return
     const id = selectedId
     const generation = sessionGeneration()
@@ -360,6 +363,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
           {list.data?.hasMore ? <button type="button" className="operator-chat-load-more" disabled={list.isFetching} onClick={loadOlderChats}>{list.isFetching ? 'Loading…' : 'Load older chats'}</button> : null}
         </aside>
         <main className="operator-chat-main">
+          <OperatorSetupNotice data={setup.data} checking={setup.isFetching || setup.isPending} failed={setup.isError} onRetry={() => void setup.refetch()} />
           {remove.error instanceof Error ? <Alert live tone="danger" title="Chat could not be deleted">{remove.error.message}</Alert> : null}
           {restore.error instanceof Error ? <Alert live tone="danger" title="Chat could not be restored">{restore.error.message}</Alert> : null}
           {create.error instanceof Error ? <Alert live tone="danger" title="Conversation could not be created">{create.error.message}</Alert> : null}
@@ -390,19 +394,29 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
                 {pending.error ? <Alert live tone="danger" title="Pending message unavailable">{pending.error}</Alert> : null}
                 {sendError ? <Alert live tone="danger" title="Message could not be sent">{sendError}</Alert> : null}
               </div>
-              {pending.command ? <Button disabled={send.isPending && send.variables?.id === selectedId} loading={send.isPending && send.variables?.id === selectedId} onClick={() => {
+              {pending.command ? <Button disabled={!setupReady || (send.isPending && send.variables?.id === selectedId)} loading={send.isPending && send.variables?.id === selectedId} onClick={() => {
                 setPreparationError(undefined)
                 send.mutate({ id: conversation.conversation.id, command: pending.command!, generation: sessionGeneration(), epoch: identityEpoch() })
               }}>Retry pending message</Button> : null}
             </div> : null}
             <footer className="operator-chat-controls">
+              {preferences.query.isError ? <Alert tone={preferencesDenied ? 'danger' : 'warning'} title={preferencesDenied ? 'Operator settings access unavailable' : 'Could not refresh Operator settings'}
+                action={<Button size="sm" onClick={() => void preferences.query.refetch()}>Retry settings</Button>}>
+                {preferencesDenied ? 'Check your browser enrollment and permissions.' : preferences.query.data ? 'Last saved settings are still available.' : preferences.query.error.message}
+              </Alert> : null}
+              {preferences.form.isSaving ? <p role="status">Saving Operator settings…</p> : null}
+              {!preferences.form.isSaving && (preferences.form.isDirty || preferences.form.error || preferences.form.conflicted || preferences.form.uncertain) ? <div>
+                <SettingsFormFeedback form={preferences.form} />
+                <Button size="sm" disabled={preferences.form.isSaving || (preferences.form.conflicted && !preferences.form.uncertain)} onClick={() => void preferences.save()}>Retry settings save</Button>
+                {!preferences.form.uncertain ? <Button size="sm" disabled={preferences.form.isSaving} onClick={preferences.form.reset}>Discard settings changes</Button> : null}
+              </div> : null}
               {conversation.messages.length > 0 || conversation.hasEarlierMessages || conversation.activeRequestId || conversation.turnState !== 'idle' || connectionState !== 'connected' ? <div className="operator-chat-turn-actions">
                 <p role="status">{operatorTurnStatus(conversation, connectionState)}</p>
               </div> : null}
-              <OperatorComposer context={settings ? <OperatorComposerSettings value={settings} disabled={Boolean(pending.command) || preparingId === selectedId}
-                onChange={(value) => setSettingsDraft(conversation.conversation.id, value)} /> : undefined}
+              <OperatorComposer context={settings ? <OperatorComposerSettings value={settings} disabled={Boolean(pending.command) || preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain}
+                onChange={preferences.change} /> : undefined}
                 onNewChat={() => void createConversation()} conversationId={conversation.conversation.id}
-                sendDisabled={archived || active || preparingId === selectedId || Boolean(pending.error) || Boolean(pending.command)}
+                sendDisabled={!setupReady || !settingsReady || archived || active || preparingId === selectedId || Boolean(pending.error) || Boolean(pending.command)}
                 isSending={preparingId === selectedId || (send.isPending && send.variables?.id === selectedId)} onSubmit={submit}
                 onCancel={requestId && conversation.turnState !== 'canceling' ? () => cancel.mutate({ id: conversation.conversation.id, requestId, generation: sessionGeneration() }) : undefined} />
             </footer>

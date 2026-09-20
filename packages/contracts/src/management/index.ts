@@ -554,9 +554,10 @@ export const InteractionRespondResultSchema = z.object({
 }).strict();
 
 export const OperatorToolNameSchema = z.enum([
+  "operator_mcp_setup_get",
   "workspace_defaults_get",
   "workspace_defaults_update",
-  "harness_mcp_servers_list", "harness_mcp_change_request", "harness_mcp_change_get",
+  "harness_mcp_servers_list", "harness_mcp_change_request", "harness_mcp_managed_request", "harness_mcp_change_get",
   "harness_configuration_check",
   "harness_options_get",
   "harness_mcp_detection_get",

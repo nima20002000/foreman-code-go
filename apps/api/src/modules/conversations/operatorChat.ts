@@ -1,11 +1,12 @@
 import { constants } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { access, mkdir, realpath } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 
 import {
   CodexSessionCompatibilitySchema, ConversationSchema, OperatorConversationStreamEventSchema, SendOperatorMessageRequestSchema,
   type NativeHarnessEvent, type OperatorActivityQuery, type OperatorConfigurationVersion, type OperatorConversationStreamEvent, type NativeSessionReference,
-  type ExecutionResult, type SendOperatorMessageRequest, type RespondOperatorInteractionRequest,
+  type ExecutionResult, type SendOperatorMessageRequest, type RespondOperatorInteractionRequest, type OperatorChatSetup,
 } from '@graphql/contracts'
 import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
 import type { OperatorConversationHistoryQuery } from '@graphql/contracts/operator-chat'
@@ -64,6 +65,7 @@ export interface NativeManagerResolver {
 export interface OperatorChatAuthority {
   current(principalId: string): Promise<ManagementPrincipal>
   assertConfiguration(configuration: OperatorConfigurationVersion): void
+  setup(manager: NativeHarnessSessionManager, signal: AbortSignal): Promise<OperatorChatSetup>
   prepare(manager: NativeHarnessSessionManager, configuration: OperatorConfigurationVersion, conversationId: string,
     principalId: string, signal: AbortSignal): Promise<ChildProcessEnvironment>
   release(conversationId: string): Promise<void>
@@ -113,6 +115,7 @@ export class OperatorChatService {
   private reconciliation: Promise<void> | undefined
   private closing = false
   private shutdownTask: Promise<void> | undefined
+  private setupCheck: { configurationId: string; promise: Promise<OperatorChatSetup> } | undefined
 
   constructor(
     private readonly repository: PostgresOperatorConversationRepository,
@@ -137,6 +140,22 @@ export class OperatorChatService {
       CodexSessionCompatibilitySchema.parse({ configuration: configuration.harness, requiresResume: true })
     }
     this.authority.assertConfiguration(configuration)
+  }
+  async setup(principal: ManagementPrincipal): Promise<OperatorChatSetup> {
+    this.assertOpen(); requireAuthorization(principal, 'harnesses:read')
+    const configuration = await this.operators.inspectionConfiguration()
+    const configurationId = `${configuration.id}:${configuration.contentHash}`
+    if (this.setupCheck?.configurationId === configurationId) return this.setupCheck.promise
+    const check = (async () => {
+      const id = `operator-setup:${randomUUID()}`
+      const manager = this.managers(configuration, id)
+      try { return await this.authority.setup(manager, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)])) }
+      finally { try { await manager.dispose?.() } finally { this.managers.release?.(id) } }
+    })()
+    this.setupCheck = { configurationId, promise: check }
+    this.accepting.add(check)
+    void check.finally(() => { if (this.setupCheck?.promise === check) this.setupCheck = undefined; this.accepting.delete(check) }).catch(() => undefined)
+    return check
   }
   async assertAccess(id: string, principal: ManagementPrincipal, action: ManagementAction = 'operator_chat:read', includeDeleted = false) {
     requireAuthorization(principal, action)
@@ -254,7 +273,12 @@ export class OperatorChatService {
     await this.assertReviewActive(id)
     signal.throwIfAborted()
     const existing = this.runtimes.get(id)
-    if (existing?.session) { existing.configuration = configuration; return existing }
+    if (existing?.session) {
+      if ((await this.authority.setup(existing.manager, signal)).status !== 'configured') {
+        throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable the graphql-operator MCP connection in the selected harness before chatting.', 409)
+      }
+      existing.configuration = configuration; return existing
+    }
     const runtime: Runtime = existing ?? { manager: this.managers(configuration, id) }
     runtime.configuration = configuration
     this.runtimes.set(id, runtime) // Includes managers still starting; shutdown must see them.

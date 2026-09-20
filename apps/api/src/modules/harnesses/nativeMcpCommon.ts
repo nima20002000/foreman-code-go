@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
-import type { HarnessMcpChange, HarnessMcpConnection, HarnessMcpList } from '@graphql/contracts/management'
+import type { HarnessMcpChange, HarnessMcpConnection, HarnessMcpList, HarnessMcpManagedPreset } from '@graphql/contracts/management'
 import { canonical } from './codexProtocol.js'
 import { DomainError } from '../errors.js'
 export type JsonObject = Record<string, unknown>
@@ -10,7 +10,50 @@ export interface NativeMcpSnapshot { harness: 'codex' | 'opencode'; revision: st
 export interface NativeMcpAdapter {
   read(signal: AbortSignal): Promise<NativeMcpSnapshot>
   /** Called once after the durable submitting marker. Must never replay an uncertain write. */
-  apply(snapshot: NativeMcpSnapshot, change: HarnessMcpChange, signal: AbortSignal): Promise<void>
+  apply(snapshot: NativeMcpSnapshot, change: HarnessMcpChange, signal: AbortSignal,
+    managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): Promise<void>
+}
+export const LINEAR_MCP_ENDPOINT = 'https://mcp.linear.app/mcp/readonly'
+export function managedName(preset: HarnessMcpManagedPreset): string { return preset === 'operator' ? 'graphql-operator' : 'linear' }
+export function managedChange(preset: HarnessMcpManagedPreset, installed: boolean, endpoint: string): HarnessMcpChange {
+  const name = managedName(preset)
+  return installed ? { kind: 'add', name, connection: { transport: 'remote', url: preset === 'operator' ? endpoint : LINEAR_MCP_ENDPOINT } }
+    : { kind: 'remove', name }
+}
+function managedNativeConnection(snapshot: NativeMcpSnapshot, preset: HarnessMcpManagedPreset, endpoint: string): JsonObject {
+  const url = preset === 'operator' ? endpoint : LINEAR_MCP_ENDPOINT
+  return nativeConnection(snapshot.harness, { transport: 'remote', url,
+    ...(preset === 'operator' ? { bearerTokenEnvironmentVariable: 'GRAPHQL_OPERATOR_MCP_TOKEN' } : {}) })
+}
+export function managedStatus(snapshot: NativeMcpSnapshot, preset: HarnessMcpManagedPreset, endpoint: string) {
+  const name = managedName(preset)
+  if (!Object.hasOwn(snapshot.effective, name) && !Object.hasOwn(snapshot.user, name)) return 'missing' as const
+  if (!Object.hasOwn(snapshot.user, name)) return 'inherited' as const
+  const entry = record(snapshot.user[name])
+  const effective = record(snapshot.effective[name])
+  if (effective.url !== entry.url) return 'inherited' as const
+  const url = entry.url
+  if (entry.enabled === false || effective.enabled === false) return 'mismatch' as const
+  if (entry.command !== undefined || (snapshot.harness === 'opencode' && entry.type !== 'remote')) return 'mismatch' as const
+  if (preset === 'linear') return url === LINEAR_MCP_ENDPOINT || url === 'https://mcp.linear.app/mcp'
+    ? 'installed' as const : 'mismatch' as const
+  if (url !== endpoint) return 'mismatch' as const
+  return snapshot.harness === 'codex'
+    ? entry.bearer_token_env_var === 'GRAPHQL_OPERATOR_MCP_TOKEN' ? 'installed' as const : 'mismatch' as const
+    : entry.oauth === false && record(entry.headers).Authorization === 'Bearer {env:GRAPHQL_OPERATOR_MCP_TOKEN}'
+      ? 'installed' as const : 'mismatch' as const
+}
+export function assertManagedChange(snapshot: NativeMcpSnapshot, change: HarnessMcpChange,
+  preset: HarnessMcpManagedPreset, endpoint: string): void {
+  const install = change.kind === 'add'
+  if (fingerprint(change) !== fingerprint(managedChange(preset, install, endpoint))) {
+    throw new DomainError('MCP_PRESET_INVALID', 'The requested MCP preset does not match the server-managed connection.', 409)
+  }
+  const status = managedStatus(snapshot, preset, endpoint)
+  if (install && status !== 'missing' && !(preset === 'operator' && status === 'mismatch')) {
+    throw new DomainError('MCP_SERVER_EXISTS', 'This MCP server already has a native configuration. Inspect it before changing the preset.', 409)
+  }
+  if (!install && status !== 'installed') throw new DomainError('MCP_PRESET_MISMATCH', 'Only the matching user-owned preset can be removed here.', 409)
 }
 export function protectedServer(name: string, entry: unknown): boolean {
   if (/^(graphql[-_]|__)/i.test(name) || ['graphql', 'app', 'operator'].includes(name.toLowerCase())) return true
@@ -40,7 +83,12 @@ export function nativeConnection(harness: 'codex' | 'opencode', input: HarnessMc
     : { type: 'local', command: [input.executable, ...input.arguments], enabled: true,
       environment: Object.fromEntries(input.environmentVariables.map((name) => [name, `{env:${name}}`])) }
 }
-export function replacement(snapshot: NativeMcpSnapshot, change: HarnessMcpChange): JsonObject | undefined {
+export function replacement(snapshot: NativeMcpSnapshot, change: HarnessMcpChange,
+  managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): JsonObject | undefined {
+  if (managed) {
+    assertManagedChange(snapshot, change, managed.preset, managed.endpoint)
+    return change.kind === 'add' ? managedNativeConnection(snapshot, managed.preset, managed.endpoint) : undefined
+  }
   assertChange(snapshot, change)
   if (change.kind === 'remove') return undefined
   if (change.kind === 'add') return nativeConnection(snapshot.harness, change.connection)

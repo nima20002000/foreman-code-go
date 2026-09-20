@@ -184,6 +184,8 @@ function managedWorkflow(workflow: WorkflowDefinition) {
 
 export const handlers: RequestHandler[] = [
   ...settingsExperienceHandlers,
+  http.get('/api/operator/setup', () => HttpResponse.json({ harness: getMockAgentDefaults().value.operator.harness.harness,
+    status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() })),
   http.get('/api/operator/conversations/summaries', () => HttpResponse.json({
     conversations: operatorConversations.map((item) => ({
       conversationId: item.id, title: item.title, turnState: 'idle', revision: 0,

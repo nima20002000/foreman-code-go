@@ -2,7 +2,7 @@ import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { lstat, open, realpath, rename, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { HarnessMcpChange } from '@graphql/contracts/management'
+import type { HarnessMcpChange, HarnessMcpManagedPreset } from '@graphql/contracts/management'
 import { DomainError } from '../errors.js'
 import { ManagedOpenCodeServer } from './opencodeTransport.js'
 import { parseConfigObject } from './opencodeProtocol.js'
@@ -48,8 +48,9 @@ export class OpenCodeMcpConnections implements NativeMcpAdapter {
     const user = record(userConfig.mcp)
     return { harness: 'opencode', effective, user, userConfig, file, version: fingerprint(source), revision: fingerprint([source, effective, file]) }
   }
-  async apply(snapshot: NativeMcpSnapshot, change: HarnessMcpChange, signal: AbortSignal): Promise<void> {
-    const next = replacement(snapshot, change)
+  async apply(snapshot: NativeMcpSnapshot, change: HarnessMcpChange, signal: AbortSignal,
+    managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): Promise<void> {
+    const next = replacement(snapshot, change, managed)
     const lockPath = `${snapshot.file}.graphql-mcp.lock`
     let lock
     try { lock = await open(lockPath, 'wx', 0o600) } catch { throw new DomainError('MCP_CONFIG_BUSY', 'Native configuration is locked. A crashed writer requires an administrator to reconcile its lock.', 409) }

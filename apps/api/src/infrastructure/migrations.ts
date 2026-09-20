@@ -642,6 +642,10 @@ export const migrations = [
     );
     create index operator_activity_conversation_sequence on operator_conversation_activity(conversation_id,sequence desc);
   ` },
+  { version: 170021, sql: `
+    alter table harness_mcp_change_plans add column managed_preset text
+      check (managed_preset in ('operator', 'linear'));
+  ` },
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

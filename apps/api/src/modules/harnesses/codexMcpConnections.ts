@@ -1,7 +1,7 @@
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { backupNativeUserFile, readNativeUserFile } from './nativeConfigFiles.js'
 import { runCommand } from './process.js'
-import type { HarnessMcpChange } from '@graphql/contracts/management'
+import type { HarnessMcpChange, HarnessMcpManagedPreset } from '@graphql/contracts/management'
 import { DomainError } from '../errors.js'
 import { CodexStdioTransport } from './codexStdioTransport.js'
 import { assertCodexUnchanged, qualifyCodex, QUALIFIED_CODEX_VERSION } from './codexProtocol.js'
@@ -52,8 +52,9 @@ export class CodexMcpConnections implements NativeMcpAdapter {
       revision: fingerprint([userLayer.version, effective, file]) }
   }
   read(signal: AbortSignal): Promise<NativeMcpSnapshot> { return this.control((transport, binary, environment) => this.inspect(transport, binary, environment, signal), signal) }
-  async apply(snapshot: NativeMcpSnapshot, change: HarnessMcpChange, signal: AbortSignal): Promise<void> {
-    const next = replacement(snapshot, change)
+  async apply(snapshot: NativeMcpSnapshot, change: HarnessMcpChange, signal: AbortSignal,
+    managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): Promise<void> {
+    const next = replacement(snapshot, change, managed)
     await this.control(async (transport, binary, environment) => {
       const current = await this.inspect(transport, binary, environment, signal)
       if (current.revision !== snapshot.revision) throw new DomainError('REVISION_CONFLICT', 'Native MCP configuration changed. Refresh and review a new change.', 409)

@@ -3,11 +3,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   HarnessOptionsResultSchema, HarnessConfigurationCheckResultSchema,
   HarnessMcpListResultSchema, HarnessMcpPlansResultSchema, HarnessMcpPlanResultSchema,
+  HarnessMcpManagedInputSchema,
   HarnessMcpPlanInputSchema, HarnessMcpPlanSchema, HarnessDirectoryBrowseResultSchema,
   WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema, type WorkspaceFolderCreateInput,
   WorkspaceFolderUndoInputSchema, WorkspaceFolderUndoResultSchema, type WorkspaceFolderUndoInput,
   WorkspaceFolderRenameInputSchema, WorkspaceFolderRenameResultSchema, type WorkspaceFolderRenameInput,
-  type HarnessMcpPlanInput,
+  type HarnessMcpPlanInput, type HarnessMcpManagedInput,
 } from '@graphql/contracts/management'
 import type { HarnessConfiguration } from '@graphql/contracts'
 import { apiClient } from './client'
@@ -112,6 +113,18 @@ export function useDecideNativeMcpChange() {
         client.invalidateQueries({ queryKey: ['workbench', 'management', 'harnesses'] }),
       ])
     },
+  })
+}
+export function useApplyManagedMcpChange() {
+  const client = useQueryClient()
+  return useMutation({ retry: false,
+    mutationFn: (input: HarnessMcpManagedInput) => apiClient.request('/api/management/harnesses/mcp/managed', HarnessMcpPlanSchema,
+      { method: 'POST', body: HarnessMcpManagedInputSchema.parse(input) }),
+    onSettled: async () => { await Promise.all([
+      client.invalidateQueries({ queryKey: harnessSettingsKeys.root }),
+      client.invalidateQueries({ queryKey: ['operator-chat', 'setup'] }),
+      client.invalidateQueries({ queryKey: ['workbench', 'management', 'harnesses'] }),
+    ]) },
   })
 }
 export function useHarnessDirectories(input: { rootId?: string; path?: string; cursor?: string }, enabled: boolean) {
