@@ -1522,6 +1522,12 @@ export function GraphEditor({
             >
               <Icon name="plus" size={17} />
             </Button>
+            {runQuery.data?.run.executionLocation ? <span className="workflow-graph-run-location"
+              aria-label={`Run location: ${runQuery.data.run.executionLocation.rootPath}`}
+              title={`Run location: ${runQuery.data.run.executionLocation.rootPath}`}>
+              <Icon name="folder" size={12} />
+              <span>…/{runQuery.data.run.executionLocation.rootPath.split(/[\\/]/).filter(Boolean).slice(-2).join('/')}</span>
+            </span> : null}
           </Toolbar>
         </div>
 
@@ -1580,9 +1586,6 @@ export function GraphEditor({
 
         <div className="workflow-graph-notifications" data-testid="workflow-graph-notifications">
           {hasPendingSave && !managedSaving ? <Alert live tone="warning" title="The previous save is unresolved. Retry Save graph before discarding local edits or starting." /> : null}
-          {runQuery.data?.run.executionLocation ? (
-            <Alert live title={`Run location: ${runQuery.data.run.executionLocation.rootPath}`} />
-          ) : null}
           {notice ? (
             <Alert
               live
