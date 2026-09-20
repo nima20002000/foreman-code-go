@@ -1,5 +1,5 @@
 import {
-  OperatorChatSetupSchema, OperatorActivityPageSchema, OperatorActivityQuerySchema, DeleteOperatorConversationResponseSchema, CancelOperatorTurnRequestSchema, CancelOperatorTurnResponseSchema,
+  OperatorChatSetupSchema, OperatorChatSetupQuerySchema, OperatorActivityPageSchema, OperatorActivityQuerySchema, DeleteOperatorConversationResponseSchema, CancelOperatorTurnRequestSchema, CancelOperatorTurnResponseSchema,
   CreateOperatorConversationRequestSchema, CreateOperatorConversationResponseSchema,
   GetOperatorConversationResponseSchema, ListOperatorConversationsResponseSchema,
   ListOperatorConversationSummariesResponseSchema, OperatorConversationSummariesQuerySchema,
@@ -25,7 +25,8 @@ export function registerOperatorChatRoutes(app: FastifyInstance, chat: OperatorC
   const streams = new Map<() => void, string>()
   app.addHook('preClose', async () => { for (const stop of streams.keys()) stop(); streams.clear() })
 
-  app.get('/api/operator/setup', async (request) => OperatorChatSetupSchema.parse(await chat.setup(requirePrincipal(request))))
+  app.get('/api/operator/setup', async (request) => OperatorChatSetupSchema.parse(
+    await chat.setup(requirePrincipal(request), OperatorChatSetupQuerySchema.parse(request.query))))
 
   app.get('/api/operator/conversations/summaries', async (request) => {
     const { limit } = OperatorConversationSummariesQuerySchema.parse(request.query)

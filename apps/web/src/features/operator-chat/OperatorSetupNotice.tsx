@@ -13,7 +13,7 @@ export function OperatorSetupNotice({ data, checking, failed, onRetry }: {
     action={<><a className="n-button n-button--secondary n-button--sm"
       href={`/settings/harnesses?harness=${data.harness}&section=connections`}>Open Harness Settings</a>
       <Button size="sm" disabled={checking} loading={checking} onClick={onRetry}>Check again</Button></>}>
-    <p>Operator chat needs the enabled graphql-operator connection to use the app’s tools.</p>
+    <p>{data.reason ?? "Operator chat needs the enabled graphql-operator connection to use the app’s tools."}</p>
     <p>Add Operator MCP for {name} in Harness Settings, then check again. No token entry is needed.</p>
   </Alert>
 }

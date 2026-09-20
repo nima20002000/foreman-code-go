@@ -32,12 +32,22 @@ export class PostgresOperatorRepository {
   constructor(private readonly pool: pg.Pool) {}
 
   /** Read-only inspection must not create an Operator before a conversation exists. */
-  async inspectionConfiguration(): Promise<OperatorConfigurationVersion> {
-    const found = await this.pool.query<{ record: unknown }>(
-      `select c.record from application_operators o join operator_configuration_versions c
+  async inspectionConfiguration(expectedDefaultsRevision?: number): Promise<OperatorConfigurationVersion> {
+    const found = await this.pool.query<{ record: unknown; defaults_revision: string | number }>(
+      `select c.record,coalesce((select revision from application_settings where key='agent-defaults-v1'),0) as defaults_revision
+       from application_operators o join operator_configuration_versions c
        on c.id=o.current_configuration_version_id where o.id=$1`, [OPERATOR_ID])
-    if (found.rows[0]) return OperatorConfigurationVersionSchema.parse(found.rows[0].record)
-    const defaults = (await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults()).value.operator
+    if (found.rows[0]) {
+      if (expectedDefaultsRevision !== undefined && Number(found.rows[0].defaults_revision) !== expectedDefaultsRevision) {
+        throw new DomainError('OPERATOR_DEFAULTS_CHANGED', 'Operator defaults changed. Refresh the saved settings before sending.', 409)
+      }
+      return OperatorConfigurationVersionSchema.parse(found.rows[0].record)
+    }
+    const snapshot = await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults()
+    if (expectedDefaultsRevision !== undefined && snapshot.revision !== expectedDefaultsRevision) {
+      throw new DomainError('OPERATOR_DEFAULTS_CHANGED', 'Operator defaults changed. Refresh the saved settings before sending.', 409)
+    }
+    const defaults = snapshot.value.operator
     return OperatorConfigurationVersionSchema.parse({ id: `${OPERATOR_ID}-inspection`, operatorId: OPERATOR_ID, version: 1,
       harness: defaults.harness, showThinking: defaults.showThinking ?? false, contentHash: hash(defaults.harness),
       createdAt: new Date().toISOString() })

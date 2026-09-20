@@ -12,7 +12,11 @@ Read this file before changing UI or UX. It captures reusable design judgment: w
 
 Controls for the same application agent share saved defaults across chat and Settings. Save chat model, harness, effort, and thinking changes through the same revisioned service; show saving, failure, and conflicts without treating a local selection as accepted. Future chats inherit saved values. Running responses keep their immutable configuration, and uncertain message retries keep their original settings. Protect cross-surface readback and future-chat inheritance, including a lost save response retried with the original command. Evidence: `operatorChatUx.test.tsx` and `operator-chat.integration.test.ts`.
 
-**Protect it:** Check rejected saves, stale refetches, reload/deep links, and creation followed by navigation. Accepted values and route selection must remain consistent.
+Once an operation has been accepted, retain its exact command and configuration across panel changes. A later busy response does not erase acceptance. Retry the original operation, not a fresh interpretation of current defaults. New-work setup checks must not block rejection or observation of existing work.
+
+Repair is not permission reset: keep native tool restrictions and approval policies. Read-only labels require evidence about the effective connection, not just a familiar name or user-file URL. An uncertain write needs an explicit, audited reconciliation action that does not repeat the write; a Refresh button must not imply that it resolves uncertainty.
+
+**Protect it:** Check rejected saves, stale refetches, reload/deep links, and creation followed by navigation. Accepted values and route selection must remain consistent. Exercise cross-harness pending retries, panel remounts after a lost response, and explicit reconciliation separately. The added PR18 regression tests are verification targets, not a claim that the full suite has run.
 
 ## 2. Give each navigation gesture one meaning
 

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_HARNESS_DEFAULTS, type OperatorConfigurationVersion } from '@graphql/contracts'
 import { PostgresOperatorChatAuthority } from '../src/modules/conversations/operatorChatAuthority.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
@@ -10,6 +11,19 @@ const signal = new AbortController().signal
 afterEach(() => vi.restoreAllMocks())
 
 describe('Operator chat installation evidence', () => {
+  it('blocks an accepted OpenCode Operator disable switch but permits disabling another server', async () => {
+    const manager = Object.assign(Object.create(OpenCodeNativeSessionManager.prototype), { harness: 'opencode' }) as OpenCodeNativeSessionManager
+    const inspect = vi.spyOn(manager, 'inspectNativeMcp').mockResolvedValue({ serverName: 'graphql-operator', endpoint,
+      transport: 'streamable-http', nativeStatus: 'status_unavailable', credentialEnvironmentVariable: 'GRAPHQL_OPERATOR_MCP_TOKEN' } as never)
+    const base = DEFAULT_HARNESS_DEFAULTS.opencode
+    const configuration = { harness: { ...base, advanced: { ...base.advanced,
+      mcp: { ...base.advanced?.mcp, serverEnabled: { 'graphql-operator': false } } } } } as OperatorConfigurationVersion
+    expect(await authority.setup(manager, signal, configuration)).toMatchObject({ status: 'setup_required', reason: expect.stringContaining('disable') })
+    expect(inspect).not.toHaveBeenCalled()
+    const unrelated = { harness: { ...base, advanced: { ...base.advanced!,
+      mcp: { serverEnabled: { linear: false } } } } } as OperatorConfigurationVersion
+    expect(await authority.setup(manager, signal, unrelated)).toMatchObject({ status: 'configured' })
+  })
   const evidence = { cwd: '/operator', providerVersion: 'test', serverName: 'graphql-operator',
     transport: 'streamable-http', endpoint, credentialEnvironmentVariable: 'GRAPHQL_OPERATOR_MCP_TOKEN',
     nativeStatus: 'status_unavailable', endpointMatches: true, baseConfigurationFilters: [], policyScope: 'base_configuration_only' } as const

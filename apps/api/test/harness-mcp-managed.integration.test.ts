@@ -29,7 +29,8 @@ it('requests exact Operator and Linear presets through authenticated MCP, then a
       const next = replacement(snapshot, change, managed)
       const user = { ...snapshot.user }
       if (next) user[change.name] = next; else delete user[change.name]
-      snapshots[harness] = { ...snapshot, user, effective: structuredClone(user), revision: fingerprint(user) }
+      snapshots[harness] = { ...snapshot, user, effective: structuredClone(user), revision: fingerprint(user),
+        credentialReferences: user['graphql-operator'] ? { 'graphql-operator': 'GRAPHQL_OPERATOR_MCP_TOKEN' } : {} }
     },
   })
   const adapters = { codex: adapter('codex'), opencode: adapter('opencode') }
