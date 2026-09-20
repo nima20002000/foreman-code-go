@@ -20,7 +20,7 @@ const interaction: PendingNativeInteraction = {
 }
 
 describe('Operator approval card', () => {
-  it('shows the destination and native decisions without raw provider JSON', async () => {
+  it('shows a compact destination with visible scope and expandable native details', async () => {
     const onSelect = vi.fn()
     render(<OperatorApprovalCard interaction={interaction} disabled={false} onSelect={onSelect} />)
     const card = screen.getByLabelText('Operator approval request')
@@ -38,6 +38,48 @@ describe('Operator approval card', () => {
     expect(onSelect).toHaveBeenCalledWith('reject')
     await userEvent.setup().click(within(card).getByText('Request details'))
     expect(within(card).getByText('MCP tool call through the connected provider')).toBeVisible()
-    expect(within(card).getByText('Changes persistent native policy for future requests.')).toBeVisible()
+    expect(within(card).getByText(/Scope: Persistent native configuration/)).toBeVisible()
+    expect(within(card).getByLabelText('Full approval request')).toBeVisible()
   })
+})
+
+
+describe('PR19: approval scope and reading interaction', () => {
+  it.each(['request', 'turn', 'session', 'provider_instance', 'project', 'persistent_config'] as const)(
+    'shows %s scope without hover and associates it with the decision button', (persistence) => {
+      const choice = { ...option('scope', 'approve_once', 'Approve scope', persistence), scopeSummary: 'Provider-specific restriction.',
+        affectsOtherPendingRequests: true, interruptsCurrentTurn: true }
+      const { unmount } = render(<OperatorApprovalCard interaction={{ ...interaction, responseOptions: [choice] }} disabled={false} onSelect={vi.fn()} />)
+      const button = screen.getByRole('button', { name: 'Allow once' })
+      const description = document.getElementById(button.getAttribute('aria-describedby')!)!
+      expect(description).toBeVisible()
+      expect(description).toHaveTextContent('Provider-specific restriction.')
+      expect(description).toHaveTextContent('Scope:')
+      expect(description).toHaveTextContent('Also affects other pending requests.')
+      expect(description).toHaveTextContent('Interrupts the current turn.')
+      if (persistence === 'provider_instance') expect(description).toHaveTextContent('including other sessions')
+      unmount()
+    },
+  )
+  it('marks opening details as reading and never promises an unknown sandbox', async () => {
+    const onBrowse = vi.fn()
+    const request = { command: 'inspect-workspace', cwd: '/workspace', unusualProviderField: { permittedPaths: ['/workspace/src'] } }
+    const { unmount } = render(<OperatorApprovalCard interaction={{ ...interaction,
+      nativeRequestType: 'item/commandExecution/requestApproval', request }} disabled={false} onSelect={vi.fn()} onBrowse={onBrowse} />)
+    await userEvent.setup().click(screen.getByText('Request details'))
+    expect(onBrowse).toHaveBeenCalledOnce()
+    expect(screen.getByLabelText('Full approval request')).toHaveTextContent('unusualProviderField')
+    expect(screen.queryByText(/in the agent sandbox/)).not.toBeInTheDocument()
+    unmount()
+  })
+})
+
+
+it('keeps a turn-interrupting MCP cancellation visible rather than treating it as a duplicate decline', () => {
+  const cancel = { ...option('interrupt', 'cancel', 'Stop current turn', 'turn'), interruptsCurrentTurn: true }
+  const view = render(<OperatorApprovalCard interaction={{ ...interaction, responseOptions: [cancel] }} disabled={false} onSelect={vi.fn()} />)
+  expect(screen.getByRole('button', { name: 'Stop current turn' })).toBeVisible()
+  const describedBy = screen.getByRole('button', { name: 'Stop current turn' }).getAttribute('aria-describedby')!
+  expect(document.getElementById(describedBy)?.textContent).toMatch(/interrupt.*turn/i)
+  view.unmount()
 })

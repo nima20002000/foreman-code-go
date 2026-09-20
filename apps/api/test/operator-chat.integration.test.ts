@@ -147,7 +147,7 @@ describe('Operator chat persistence and native binding', () => {
     await settings.updateAgentDefaults({ ...defaults.value, operator: { ...defaults.value.operator,
       harness: DEFAULT_HARNESS_DEFAULTS.opencode } }, defaults.revision)
     const first = await chat.send(source.id, { requestId: 'empty-switch', content: 'First message.',
-      settings: operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.opencode) }, owner)
+      settings: operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.opencode), defaultsRevision: defaults.revision + 1, configurationVersionId: source.operatorConfigurationVersionId }, owner)
     expect(first.state.conversation.id).toBe(source.id)
     expect(first.state.handoff).toBeUndefined()
     await waitFor(async () => (await chat.get(source.id, owner)).turnState === 'idle')
@@ -194,7 +194,7 @@ describe('Operator chat persistence and native binding', () => {
       permissionRules: [{ permission: 'shell', pattern: '*', effect: 'deny' as const }] } }
     await settings.updateAgentDefaults({ ...defaults.value, operator: { ...defaults.value.operator, harness: target } }, defaults.revision)
     const input = { requestId: 'fork-turn', content: 'Continue with OpenCode.',
-      settings: operatorChatSettings(target), forkExpectedRevision: before.revision }
+      settings: operatorChatSettings(target), forkExpectedRevision: before.revision, defaultsRevision: defaults.revision + 1, configurationVersionId: source.operatorConfigurationVersionId }
     const first = await chat.send(source.id, input, owner)
     expect(first.replayed).toBe(false)
     expect(first.state.conversation.id).toBe('operator-fork:fork-turn')
@@ -262,7 +262,7 @@ describe('Operator chat persistence and native binding', () => {
       const changed = await client.callTool({ name: 'agent_defaults_update', arguments: { commandId: randomUUID(), expectedRevision: defaults.revision,
         value: { ...defaults.value, operator: { ...defaults.value.operator, harness: target } } } })
       expect(changed.isError).not.toBe(true)
-      const request = { requestId: 'mcp-fork', content: 'Continue with OpenCode.', settings: operatorChatSettings(target), forkExpectedRevision: source.revision }
+      const request = { requestId: 'mcp-fork', content: 'Continue with OpenCode.', settings: operatorChatSettings(target), forkExpectedRevision: source.revision, defaultsRevision: defaults.revision + 1, configurationVersionId: source.conversation.operatorConfigurationVersionId }
       const fork = (await client.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } })).structuredContent as { state: OperatorConversationState; replayed: boolean }
       expect(fork.state.handoff?.parentConversationId).toBe(sourceId)
       expect(fork.state.conversation.id).toBe('operator-fork:mcp-fork')

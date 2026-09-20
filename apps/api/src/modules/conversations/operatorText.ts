@@ -35,11 +35,21 @@ export function nativeAssistantText(event: NativeHarnessEvent, partKinds = new M
 }
 
 export function completedNativeAssistantMessage(event: NativeHarnessEvent, harness: 'codex' | 'opencode'):
-  { id: string; text: string } | undefined {
+  { id: string; text: string; parentMessageId?: string; complete?: boolean } | undefined {
   if (harness === 'codex' && event.type === 'item.completed') {
     const item = object(event.payload.item)
     if (item.type === 'agentMessage' && typeof item.id === 'string' && typeof item.text === 'string' && item.text) {
       return { id: item.id, text: item.text }
+    }
+  }
+  if (harness === 'opencode' && event.type === 'message.part.updated') {
+    const part = object(event.payload.part)
+    if (part.type === 'text' && part.ignored !== true && typeof part.id === 'string'
+      && typeof part.messageID === 'string' && typeof part.text === 'string') {
+      // Reserve the text part's position as soon as its full snapshot appears,
+      // even if empty. Later snapshots update it without moving it past tools.
+      return { id: part.id, parentMessageId: part.messageID, text: part.text,
+        complete: typeof object(part.time).end === 'number' || event.payload.nativeMessageCompleted === true }
     }
   }
   return undefined

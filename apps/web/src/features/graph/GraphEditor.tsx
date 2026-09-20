@@ -396,7 +396,7 @@ const nodeTypes = { agent: AgentNode }
  * edge group so hover and keyboard focus on the edge itself reveal it, and it
  * is rendered in a foreignObject so screen readers get a real button.
  */
-function HandoffEdge({
+export function HandoffEdge({
   id,
   source,
   target,
@@ -406,6 +406,12 @@ function HandoffEdge({
   targetY,
   sourcePosition,
   targetPosition,
+  label,
+  labelStyle,
+  labelShowBg,
+  labelBgStyle,
+  labelBgPadding,
+  labelBgBorderRadius,
   style,
   markerStart,
   markerEnd,
@@ -428,6 +434,14 @@ function HandoffEdge({
         className="n-flow-base workflow-graph-edge-path"
         id={id}
         path={edgePath}
+        label={label}
+        labelX={labelX}
+        labelY={labelY}
+        labelStyle={labelStyle}
+        labelShowBg={labelShowBg}
+        labelBgStyle={labelBgStyle}
+        labelBgPadding={labelBgPadding}
+        labelBgBorderRadius={labelBgBorderRadius}
         style={style}
         markerStart={markerStart}
         markerEnd={markerEnd}
@@ -443,7 +457,7 @@ function HandoffEdge({
         <Button
           variant="secondary"
           className="workflow-graph-edge-remove"
-          aria-label={`Remove connection from ${source} to ${target}`}
+          aria-label={`Remove connection from ${source} to ${target}${typeof label === 'string' && label ? `: ${label}` : ''}`}
           title="Remove connection"
           onClick={(event) => {
             event.stopPropagation()

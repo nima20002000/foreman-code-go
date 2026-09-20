@@ -20,7 +20,7 @@ import { useOperatorSettings } from './useOperatorSettings'
 import { useOperatorChatSetup } from '../../shared/api/operatorChatSetup'
 import { OperatorSetupNotice } from './OperatorSetupNotice'
 import { SettingsFormFeedback } from '../settings/SettingsFormActions'
-import { acknowledgeOperatorMessage, assertOperatorMessageReserved, discardDefinitivelyRejectedOperatorMessage,
+import { acknowledgeOperatorMessage, assertOperatorMessageReserved, beginOperatorMessageAttempt, discardDefinitivelyRejectedOperatorMessage,
   readPendingOperatorMessage, recordOperatorMessageFailure, reserveOperatorMessage } from './operatorOutbox'
 import { projectOperatorActivity, projectOperatorText, type OperatorTextProjection } from './operatorTextProjection'
 import { newerOperatorSummaries, operatorNavigationStatus, operatorTurnStatus, summarizeOperatorConversation } from './operatorChatStatus'
@@ -53,6 +53,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
   const creating = useRef(false)
   const deletedIds = useRef(new Set<string>())
   const [removed, setRemoved] = useState<{ id: string; title: string }>()
+  const [handoffNotice, setHandoffNotice] = useState<{ id: string; epoch: string }>()
   const [closing, setClosing] = useState(false)
   const queryClient = useQueryClient()
   const open = useOperatorChatStore((state) => state.open)
@@ -110,20 +111,37 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
   const invalidate = async (id: string) => { await Promise.all([
     queryClient.invalidateQueries({ queryKey: detailKey(id) }), queryClient.invalidateQueries({ queryKey: listKey }),
   ]) }
-  const create = useMutation({ mutationFn: (input: { generation: number }) => {
+  const create = useMutation({ mutationFn: (input: { generation: number; navigationGeneration: number }) => {
     if (!currentSession(input.generation)) throw new SessionChangedError()
     return createOperatorConversation()
   },
     onSuccess: async ({ conversation }, input) => {
       if (!currentSession(input.generation)) return
-      select(conversation.id)
-      if (isNarrowOperatorChat()) historyTriggerRef.current?.focus()
+      if (useOperatorChatStore.getState().navigationGeneration === input.navigationGeneration) {
+        select(conversation.id)
+        if (isNarrowOperatorChat()) historyTriggerRef.current?.focus()
+      }
       await queryClient.invalidateQueries({ queryKey: listKey })
     } })
   const send = useMutation({
-    mutationFn: ({ id, command, generation, epoch }: { id: string; command: SendOperatorMessageRequest; generation: number; epoch: string }) => {
+    mutationFn: async (input: { id: string; command: SendOperatorMessageRequest; generation: number; epoch: string; navigationGeneration: number; recoverFirst?: boolean; attemptId?: string }) => {
+      const { id, command, generation, epoch } = input
+      if (!currentSession(generation) || epoch !== identityEpoch()) throw new SessionChangedError()
+      // Persist the in-flight attempt across tabs before crossing the HTTP boundary.
+      input.attemptId = await beginOperatorMessageAttempt(id, command)
+      refreshOutbox((value) => value + 1)
       if (!currentSession(generation) || epoch !== identityEpoch()) throw new SessionChangedError()
       assertOperatorMessageReserved(id, command)
+      if (input.recoverFirst) {
+        try { return await sendOperatorMessage(id, { ...command, recovery: 'receipt' }) }
+        catch (error) {
+          if (!ApiError.is(error) || error.code !== 'OPERATOR_RECEIPT_NOT_FOUND') throw error
+          // A read-only miss is not an abandonment receipt. Reuse the original
+          // command identity if new admission is still needed.
+          if (!currentSession(generation) || epoch !== identityEpoch()) throw new SessionChangedError()
+          assertOperatorMessageReserved(id, command)
+        }
+      }
       return sendOperatorMessage(id, command)
     },
     onSuccess: async (result, input) => {
@@ -140,14 +158,18 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       }
       refreshOutbox((value) => value + 1)
       acceptState(targetId, result.state)
-      if (targetId !== input.id && acknowledged) select(targetId)
+      if (targetId !== input.id && acknowledged) {
+        const navigation = useOperatorChatStore.getState()
+        if (navigation.selectedConversationId === input.id && navigation.navigationGeneration === input.navigationGeneration) select(targetId)
+        else setHandoffNotice({ id: targetId, epoch: input.epoch })
+      }
       await invalidate(targetId)
     },
     onError: async (error, input) => {
       if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
       try { await recordOperatorMessageFailure(input.id, input.command.requestId,
         error instanceof Error ? error.message : 'Message delivery failed.', ApiError.is(error)
-          && ['INVALID_REQUEST', 'CONVERSATION_REVISION_CONFLICT'].includes(error.code)) } catch { /* The current error remains visible. */ }
+          && ['INVALID_REQUEST', 'CONVERSATION_REVISION_CONFLICT'].includes(error.code), input.attemptId) } catch { /* The current error remains visible. */ }
       if (currentSession(input.generation) && input.epoch === identityEpoch()) refreshOutbox((value) => value + 1)
     },
     // A later 4xx cannot prove an earlier lost delivery was not accepted.
@@ -221,7 +243,11 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
   }, [setHistoryOpen])
   useEffect(() => {
     if (!enabled || !open || !selectedId || accessDenied) return
-    const refresh = () => { void queryClient.invalidateQueries({ queryKey: detailKey(selectedId) }); void queryClient.invalidateQueries({ queryKey: listKey }) }
+    const refresh = () => {
+      void queryClient.invalidateQueries({ queryKey: detailKey(selectedId) })
+      void queryClient.invalidateQueries({ queryKey: listKey })
+      void queryClient.invalidateQueries({ queryKey: ['operator-chat', 'history', identityEpoch(), selectedId] })
+    }
     return subscribeOperatorChat(selectedId, {
       snapshot: (state) => acceptState(selectedId, state),
       reconnect: refresh,
@@ -305,7 +331,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
     if (creating.current || accessDenied) return
     creating.current = true
     try {
-      await create.mutateAsync({ generation: sessionGeneration() })
+      await create.mutateAsync({ generation: sessionGeneration(), navigationGeneration: useOperatorChatStore.getState().beginNavigation() })
       if (selectedId) {
         const draft = useConversationDraftStore.getState().drafts[selectedId] ?? ''
         if (/^\/n?e?w?$/.test(draft.trim())) clearDraft(selectedId, draft)
@@ -323,13 +349,16 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
     const id = selectedId
     const generation = sessionGeneration()
     const epoch = identityEpoch()
+    const navigationGeneration = useOperatorChatStore.getState().navigationGeneration
     reservations.current.add(id); setPreparingId(id)
     try {
       const command = await reserveOperatorMessage(id, content, window.location.pathname + window.location.search, settings,
-        pendingHandoff ? conversation.revision : undefined)
+        pendingHandoff ? conversation.revision : undefined,
+        { configurationVersionId: conversation?.conversation.operatorConfigurationVersionId,
+          defaultsRevision: preferences.query.data?.revision })
       if (!currentSession(generation) || epoch !== identityEpoch()) return
       setPreparationError(undefined)
-      send.mutate({ id, command, generation, epoch })
+      send.mutate({ id, command, generation, epoch, navigationGeneration })
     } catch (error) {
       if (currentSession(generation) && epoch === identityEpoch()) setPreparationError({ id,
         message: error instanceof Error ? error.message : 'Message preparation failed.' })
@@ -387,6 +416,8 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
           {list.data?.hasMore ? <button type="button" className="operator-chat-load-more" disabled={list.isFetching} onClick={loadOlderChats}>{list.isFetching ? 'Loading…' : 'Load older chats'}</button> : null}
         </aside>
         <main className="operator-chat-main">
+          {handoffNotice && handoffNotice.epoch === identityEpoch() ? <p role="status">Your continued chat is ready. <Button size="sm" variant="ghost"
+            onClick={() => { select(handoffNotice.id); setHandoffNotice(undefined) }}>Open continued chat</Button></p> : null}
           <OperatorSetupNotice data={setup.data} checking={setup.isFetching || setup.isPending} failed={setup.isError} onRetry={() => void setup.refetch()} />
           {remove.error instanceof Error ? <Alert live tone="danger" title="Chat could not be deleted">{remove.error.message}</Alert> : null}
           {restore.error instanceof Error ? <Alert live tone="danger" title="Chat could not be restored">{restore.error.message}</Alert> : null}
@@ -401,7 +432,8 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
             <OperatorTranscript key={conversation.conversation.id} conversationId={conversation.conversation.id} messages={conversation.messages} activities={conversation.activities} activityNextCursor={conversation.activityNextCursor}
               activeRequestId={requestId} parts={partial && partial.conversationId === selectedId ? partial.value?.parts : undefined} partialText={partialText} thinkingText={thinkingText} hasEarlierMessages={conversation.hasEarlierMessages} working={['starting', 'active'].includes(conversation.turnState) && !conversation.pendingInteraction}
               timeline={partial && partial.conversationId === selectedId ? partial.value : undefined}
-              approval={requestId && conversation.pendingInteraction ? <OperatorApprovalCard interaction={conversation.pendingInteraction}
+              approvalRevision={requestId && conversation.pendingInteraction ? JSON.stringify([requestId, conversation.pendingInteraction]) : undefined}
+              approval={requestId && conversation.pendingInteraction ? (onBrowse) => <OperatorApprovalCard interaction={conversation.pendingInteraction!} onBrowse={onBrowse}
                 disabled={Boolean(archived || (respond.isPending && respond.variables?.id === selectedId) || conversation.responseDelivery !== 'offered' || conversation.turnState === 'canceling')}
                 onSelect={(optionId) => respond.mutate({ id: conversation.conversation.id, generation: sessionGeneration(),
                   input: { requestId, nativeRequestId: conversation.pendingInteraction!.turn.nativeRequestId!, optionId } })} /> : undefined} />
@@ -415,17 +447,19 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
                 {pending.error ? <Alert live tone="danger" title="Pending message unavailable">{pending.error}</Alert> : null}
                 {sendError ? <Alert live tone="danger" title="Message could not be sent">{sendError}</Alert> : null}
               </div>
-              {pending.command ? <Button disabled={!setupReady || (send.isPending && send.variables?.id === selectedId)} loading={send.isPending && send.variables?.id === selectedId} onClick={() => {
+              {pending.command ? <Button disabled={send.isPending && send.variables?.id === selectedId} loading={send.isPending && send.variables?.id === selectedId} onClick={() => {
                 setPreparationError(undefined)
-                send.mutate({ id: conversation.conversation.id, command: pending.command!, generation: sessionGeneration(), epoch: identityEpoch() })
+                send.mutate({ id: conversation.conversation.id, command: pending.command!, generation: sessionGeneration(), epoch: identityEpoch(), recoverFirst: true, navigationGeneration: useOperatorChatStore.getState().navigationGeneration })
               }}>Retry pending message</Button> : null}
-              {pending.command && pending.definitiveFailure ? <Button variant="ghost" onClick={() => {
+              {pending.command && pending.definitiveFailure ? <Button variant="ghost" disabled={pending.inFlight || (send.isPending && send.variables?.id === selectedId)} onClick={() => {
                 void discardDefinitivelyRejectedOperatorMessage(conversation.conversation.id, pending.command!.requestId).then((discarded) => {
                   if (discarded) { send.reset(); setPreparationError(undefined); refreshOutbox((value) => value + 1) }
-                })
+                }).catch((error: unknown) => setPreparationError({ id: conversation.conversation.id,
+                  message: error instanceof Error ? error.message : 'The saved attempt could not be cleared.' }))
               }}>Clear rejected attempt and keep draft</Button> : null}
             </div> : null}
             <footer className="operator-chat-controls">
+              <p className="operator-chat-handoff">Access edits apply to new chats and harness handoffs. This chat keeps its pinned access policy.</p>
               {pendingHandoff ? <p className="operator-chat-handoff" role="status">Your next message starts {settings!.harness === 'opencode' ? 'an OpenCode' : 'a Codex'} chat with prior conversation context.</p> : null}
               {preferences.query.isError ? <Alert tone="danger" title="Operator settings unavailable" action={<Button size="sm" onClick={() => void preferences.query.refetch()}>Retry settings</Button>}>{preferences.query.error.message}</Alert> : null}
               {preferences.form.isSaving ? <p role="status">Saving Operator settings…</p> : null}
@@ -439,7 +473,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
               </div> : null}
               <OperatorComposer context={settings ? <OperatorComposerSettings value={settings} disabled={Boolean(pending.command) || preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain || preferences.query.isError}
                 onChange={preferences.change} /> : undefined}
-                access={preferences.harness ? <OperatorAccessPicker value={preferences.harness} disabled={preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain || preferences.query.isError}
+                access={preferences.harness ? <OperatorAccessPicker value={preferences.harness} disabled={Boolean(pending.command) || preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain || preferences.query.isError}
                   saving={preferences.form.isSaving} saveError={preferences.form.error}
                   onChange={preferences.changeAccess} /> : undefined}
                 onNewChat={() => void createConversation()} conversationId={conversation.conversation.id}

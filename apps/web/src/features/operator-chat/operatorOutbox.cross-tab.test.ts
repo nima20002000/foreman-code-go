@@ -60,7 +60,7 @@ describe('F12: cross-tab durable Operator reservations', () => {
     expect(right).toEqual(left)
     expect(right.context?.route).toBe('/original-route')
     expect(nextId).toBe(1)
-    expect(JSON.parse(window.localStorage.getItem(key())!)).toEqual(left)
+    expect(JSON.parse(window.localStorage.getItem(key())!).request).toEqual(left)
   })
 
   it('reproduces the competing empty-read race without allowing a losing request to be submitted', async () => {
@@ -96,7 +96,7 @@ describe('F12: cross-tab durable Operator reservations', () => {
     expect(await reloaded.reserveOperatorMessage('conversation-one', recovered.content, '/new-route')).toEqual(submitted)
     reloaded.assertOperatorMessageReserved('conversation-one', recovered)
     expect(nextId).toBe(1)
-    expect(Object.keys(JSON.parse(window.localStorage.getItem(key())!)).sort()).toEqual(['content', 'context', 'requestId'])
+    expect(Object.keys(JSON.parse(window.localStorage.getItem(key())!)).sort()).toEqual(['ledger', 'request', 'version'])
   })
 
   it('keeps a failed delivery reason with its pending request until acknowledgement', async () => {
@@ -104,7 +104,7 @@ describe('F12: cross-tab durable Operator reservations', () => {
     const command = await first.reserveOperatorMessage('conversation-one', 'Check the status.', '/original')
     await first.recordOperatorMessageFailure('conversation-one', command.requestId, 'Provider is not production-qualified.')
     const reloaded = await tab()
-    expect(reloaded.readPendingOperatorMessage('conversation-one')).toEqual({ command,
+    expect(reloaded.readPendingOperatorMessage('conversation-one')).toMatchObject({ command,
       sendFailure: 'Provider is not production-qualified.' })
     await reloaded.recordOperatorMessageFailure('conversation-one', 'different-request', 'Wrong reason')
     expect(reloaded.readPendingOperatorMessage('conversation-one').sendFailure).toBe('Provider is not production-qualified.')
@@ -116,7 +116,8 @@ describe('F12: cross-tab durable Operator reservations', () => {
   it('clears only a definitive contract rejection so a fresh fork revision can be reserved', async () => {
     const outbox = await tab()
     const rejected = await outbox.reserveOperatorMessage('conversation-one', 'Continue.', '/chat', undefined, 4)
-    await outbox.recordOperatorMessageFailure('conversation-one', rejected.requestId, 'The request does not match its shared contract.')
+    const attempt = await outbox.beginOperatorMessageAttempt('conversation-one', rejected)
+    await outbox.recordOperatorMessageFailure('conversation-one', rejected.requestId, 'The request does not match its shared contract.', true, attempt)
     expect(outbox.readPendingOperatorMessage('conversation-one').definitiveFailure).toBe(true)
     expect(await outbox.discardDefinitivelyRejectedOperatorMessage('conversation-one', rejected.requestId)).toBe(true)
     const fresh = await outbox.reserveOperatorMessage('conversation-one', 'Continue.', '/chat', undefined, 5)
@@ -130,10 +131,11 @@ describe('F12: cross-tab durable Operator reservations', () => {
   it('removes the clear option if a later retry might have been accepted', async () => {
     const outbox = await tab()
     const command = await outbox.reserveOperatorMessage('conversation-one', 'Continue.', '/chat')
-    await outbox.recordOperatorMessageFailure('conversation-one', command.requestId, 'The request does not match its shared contract.', true)
+    const attempt = await outbox.beginOperatorMessageAttempt('conversation-one', command)
+    await outbox.recordOperatorMessageFailure('conversation-one', command.requestId, 'The request does not match its shared contract.', true, attempt)
     expect(outbox.readPendingOperatorMessage('conversation-one').definitiveFailure).toBe(true)
     await outbox.recordOperatorMessageFailure('conversation-one', command.requestId, 'Connection lost after retry.')
-    expect(outbox.readPendingOperatorMessage('conversation-one').definitiveFailure).toBeUndefined()
+    expect(outbox.readPendingOperatorMessage('conversation-one').definitiveFailure).toBe(false)
     expect(await outbox.discardDefinitivelyRejectedOperatorMessage('conversation-one', command.requestId)).toBe(false)
   })
 
@@ -194,5 +196,63 @@ describe('F12: cross-tab durable Operator reservations', () => {
     window.localStorage.setItem(key(), '{unreadable')
     await expect(first.reserveOperatorMessage('conversation-one', 'Do not overwrite.', '/')).rejects.toThrow('storage')
     expect(window.localStorage.getItem(key())).toBe('{unreadable')
+  })
+})
+
+
+describe('PR19: command-lifetime uncertainty', () => {
+  it('fences a previously rejected command during a retry in a different tab', async () => {
+    const first = await tab(), second = await tab()
+    const command = await first.reserveOperatorMessage('conversation-one', 'Continue.', '/a')
+    const rejected = await first.beginOperatorMessageAttempt('conversation-one', command)
+    await first.recordOperatorMessageFailure('conversation-one', command.requestId, 'INVALID_REQUEST', true, rejected)
+    expect(first.readPendingOperatorMessage('conversation-one').definitiveFailure).toBe(true)
+    const retry = await second.beginOperatorMessageAttempt('conversation-one', command)
+    expect(first.readPendingOperatorMessage('conversation-one').inFlight).toBe(true)
+    expect(await first.discardDefinitivelyRejectedOperatorMessage('conversation-one', command.requestId)).toBe(false)
+    await second.recordOperatorMessageFailure('conversation-one', command.requestId, 'Response lost.', false, retry)
+    const later = await first.beginOperatorMessageAttempt('conversation-one', command)
+    await first.recordOperatorMessageFailure('conversation-one', command.requestId, 'Old server rejected the contract.', true, later)
+    expect(await second.discardDefinitivelyRejectedOperatorMessage('conversation-one', command.requestId)).toBe(false)
+    expect(second.readPendingOperatorMessage('conversation-one').command).toEqual(command)
+  })
+  it('does not infer rejection from a legacy error string or saved latest-error flag', async () => {
+    const outbox = await tab()
+    const command = await outbox.reserveOperatorMessage('conversation-one', 'Continue.', '/a')
+    window.localStorage.setItem(key(), JSON.stringify({ command, definitiveFailure: true,
+      sendFailure: 'The request does not match its shared contract.' }))
+    expect(outbox.readPendingOperatorMessage('conversation-one').ledger?.uncertain).toBe(true)
+    const attempt = await outbox.beginOperatorMessageAttempt('conversation-one', command)
+    await outbox.recordOperatorMessageFailure('conversation-one', command.requestId, 'INVALID_REQUEST', true, attempt)
+    expect(await outbox.discardDefinitivelyRejectedOperatorMessage('conversation-one', command.requestId)).toBe(false)
+  })
+  it('keeps a closed tab’s unsettled attempt fenced after another server rejects a retry', async () => {
+    const first = await tab()
+    const command = await first.reserveOperatorMessage('conversation-one', 'Possibly accepted.', '/a')
+    await first.beginOperatorMessageAttempt('conversation-one', command)
+    // No response or catch ran before the first document closed.
+    const reloaded = await tab()
+    const retry = await reloaded.beginOperatorMessageAttempt('conversation-one', command)
+    await reloaded.recordOperatorMessageFailure('conversation-one', command.requestId, 'INVALID_REQUEST', true, retry)
+    expect(await reloaded.discardDefinitivelyRejectedOperatorMessage('conversation-one', command.requestId)).toBe(false)
+    expect(await reloaded.acknowledgeOperatorMessage('conversation-one', command.requestId)).toBe(true)
+  })
+  it('keeps the v2 envelope unreadable to the unsafe old command-envelope reader', async () => {
+    const outbox = await tab()
+    await outbox.reserveOperatorMessage('conversation-one', 'Continue.', '/a')
+    const saved = JSON.parse(window.localStorage.getItem(key())!)
+    const { SendOperatorMessageRequestSchema } = await import('@graphql/contracts')
+    expect(SendOperatorMessageRequestSchema.safeParse(saved.command ?? saved).success).toBe(false)
+    expect(outbox.readPendingOperatorMessage('conversation-one').command?.content).toBe('Continue.')
+  })
+  it('preserves the reserved configuration and defaults revision in both tabs', async () => {
+    const first = await tab(), second = await tab()
+    const command = await first.reserveOperatorMessage('conversation-one', 'Continue.', '/a', undefined, 8,
+      { configurationVersionId: 'operator-v1', defaultsRevision: 3 })
+    const retry = await second.reserveOperatorMessage('conversation-one', 'Continue.', '/b', undefined, 9,
+      { configurationVersionId: 'operator-v2', defaultsRevision: 4 })
+    expect(retry).toEqual(command)
+    expect(retry.configurationVersionId).toBe('operator-v1')
+    expect(retry.defaultsRevision).toBe(3)
   })
 })

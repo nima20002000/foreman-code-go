@@ -13,7 +13,6 @@ import {
 import type pg from 'pg'
 
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
-import { PostgresSettingsRepository } from '../settings/postgres.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { DomainError } from '../errors.js'
 import { isOperatorReview, operatorConversationOwnerPredicate, PostgresOperatorReviewLifecycle } from './operatorReviewLifecycle.js'
@@ -74,6 +73,8 @@ function handoffContext(previous: string | null, inheritedOmitted: number, messa
 
 export function commandPayload(input: SendOperatorMessageRequest) {
   return { content: input.content, ...(input.settings ? { settings: input.settings } : {}),
+    ...(input.configurationVersionId === undefined ? {} : { configurationVersionId: input.configurationVersionId }),
+    ...(input.defaultsRevision === undefined ? {} : { defaultsRevision: input.defaultsRevision }),
     ...(input.forkExpectedRevision === undefined ? {} : { forkExpectedRevision: input.forkExpectedRevision }),
     ...(input.context && Object.keys(input.context).length ? {
     context: Object.fromEntries(Object.entries(input.context).filter(([, value]) => value !== undefined).sort(([a], [b]) => a.localeCompare(b))),
@@ -150,11 +151,8 @@ export class PostgresOperatorConversationRepository {
   async get(id: string, query: Queryable = this.pool): Promise<OperatorConversationState | undefined> {
     // One statement gives the bounded recent window and state the same MVCC
     // snapshot. Large/older messages remain accessible through history().
-    const result = await query.query<ConversationRow & { messages: unknown[]; activities: unknown[]; activity_cursor: string | null; message_count: string; configuration: unknown; chat_settings: unknown }>(`select c.*,
+    const result = await query.query<ConversationRow & { messages: unknown[]; activities: unknown[]; activity_cursor: string | null; message_count: string; configuration: unknown }>(`select c.*,
       (select record from operator_configuration_versions where id=c.operator_configuration_version_id) as configuration,
-      (select t.payload->'settings' from operator_conversation_turns t join operator_conversation_messages m
-        on m.conversation_id=t.conversation_id and m.client_request_id=t.request_id
-        where t.conversation_id=c.id and t.payload ? 'settings' order by m.sequence desc limit 1) as chat_settings,
       (select count(*) from operator_conversation_messages where conversation_id=c.id) as message_count,
       coalesce((select jsonb_agg(a.record || jsonb_build_object('sequence',a.sequence::text,'revision',a.revision) order by a.sequence)
         from (select record,sequence,revision from operator_conversation_activity where conversation_id=c.id order by sequence desc limit 100) a),'[]'::jsonb) as activities,
@@ -176,7 +174,7 @@ export class PostgresOperatorConversationRepository {
       } } : {}),
       activities: row.activities, activityNextCursor: row.activity_cursor,
       hasEarlierMessages: Number(row.message_count) > row.messages.length,
-      settings: row.chat_settings ?? operatorChatSettings(configuration.harness, configuration.showThinking),
+      settings: operatorChatSettings(configuration.harness, configuration.showThinking),
       turnState: row.turn_state, revision: Number(row.revision), activeRequestId: row.active_request_id,
       ...(row.last_error ? { error: row.last_error } : {}),
       ...(row.last_result ? { lastResult: row.last_result } : {}),
@@ -259,6 +257,23 @@ export class PostgresOperatorConversationRepository {
   async hasTurn(id: string, requestId: string): Promise<boolean> {
     return (await this.pool.query('select 1 from operator_conversation_turns where conversation_id=$1 and request_id=$2', [id, requestId])).rowCount === 1
   }
+  async handoffInitialized(id: string, nativeSessionId: string): Promise<boolean> {
+    const evidence = await this.pool.query<{ initialized: boolean; legacy_uncertain: boolean }>(`select
+      exists(select 1 from operator_conversation_turns t where t.conversation_id=c.id
+        and t.payload->>'handoffContextSessionId'=$2)
+      or exists(select 1 from operator_conversation_turns t where t.conversation_id=c.id and t.request_id=c.fork_request_id
+        and (t.result->>'outcome'='succeeded' or exists(select 1 from operator_conversation_messages m
+          where m.conversation_id=c.id and m.record->>'requestId'=t.request_id and m.role='assistant'
+            and m.native_message_id is not null))) as initialized,
+      exists(select 1 from operator_conversation_turns t where t.conversation_id=c.id and t.request_id=c.fork_request_id
+        and not (t.payload ? 'acceptedConfigurationVersionId') and t.result is not null and not t.retryable) as legacy_uncertain
+      from operator_conversations c where c.id=$1 and c.native_session_id=$2`, [id, nativeSessionId])
+    const row = evidence.rows[0]
+    if (row?.initialized) return true
+    if (row?.legacy_uncertain) throw new DomainError('OPERATOR_HANDOFF_INITIALIZATION_UNKNOWN',
+      'This older native session has no reliable handoff-delivery receipt. Verify its native history before continuing; inherited context will not be replayed speculatively.', 409)
+    return false
+  }
   async hasMessages(id: string): Promise<boolean> {
     return (await this.pool.query('select 1 from operator_conversation_messages where conversation_id=$1 limit 1', [id])).rowCount === 1
   }
@@ -292,15 +307,21 @@ export class PostgresOperatorConversationRepository {
   async harnessForMessage(configuration: OperatorConfigurationVersion, input: SendOperatorMessageRequest): Promise<HarnessConfiguration> {
     const settings = input.settings
     if (!settings) return configuration.harness
-    const operatorDefault = (await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults()).value.operator.harness
-    const base = operatorDefault.harness === settings.harness ? operatorDefault
-      : settings.harness === configuration.harness.harness ? configuration.harness
-        : (await new PostgresSettingsRepository(this.pool).getHarnessDefaults())[settings.harness]
-    return applyOperatorChatSettings(base, settings)
+    // A chat owns its policy. Editing application defaults never mutates an
+    // existing native session, including OpenCode's equality-checked policy.
+    if (settings.harness === configuration.harness.harness) return applyOperatorChatSettings(configuration.harness, settings)
+    const defaults = await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults()
+    if (input.defaultsRevision === undefined || input.defaultsRevision !== defaults.revision) {
+      throw new DomainError('CONVERSATION_REVISION_CONFLICT', 'Operator defaults changed before this handoff. Review the current defaults before sending a new command.', 409)
+    }
+    if (defaults.value.operator.harness.harness !== settings.harness) {
+      throw new DomainError('CONVERSATION_REVISION_CONFLICT', 'The selected handoff harness no longer matches the reviewed defaults.', 409)
+    }
+    return applyOperatorChatSettings(defaults.value.operator.harness, settings)
   }
 
   /** The first cross-harness message and its child are one durable, idempotent admission. */
-  async beginForkTurn(sourceId: string, input: SendOperatorMessageRequest, ownerId: string, harness: HarnessConfiguration) {
+  async beginForkTurn(sourceId: string, input: SendOperatorMessageRequest, ownerId: string, harness: HarnessConfiguration, expectedConfigurationId?: string) {
     const childId = `operator-fork:${input.requestId}`
     const client = await this.pool.connect()
     try {
@@ -313,6 +334,10 @@ export class PostgresOperatorConversationRepository {
           throw new DomainError('COMMAND_ID_CONFLICT', 'The fork request ID belongs to another conversation.', 409)
         await client.query('commit')
         return this.beginTurn(childId, input, ownerId)
+      }
+      if ((input.configurationVersionId !== undefined && input.configurationVersionId !== source.operator_configuration_version_id)
+        || (expectedConfigurationId !== undefined && expectedConfigurationId !== source.operator_configuration_version_id)) {
+        throw new DomainError('CONVERSATION_REVISION_CONFLICT', 'The source configuration changed before admission. Review the conversation before sending a new command.', 409)
       }
       if (conversation(source).status === 'archived') throw new DomainError('CONVERSATION_ARCHIVED', 'This conversation is read-only.', 409)
       await this.reviews.assertActive(sourceId, client)
@@ -349,7 +374,7 @@ export class PostgresOperatorConversationRepository {
       [childId,current.operatorId,next.id,harness.harness,ownerId,JSON.stringify(record),sourceId,input.requestId,source.harness,sourceSequence,context.omitted,
         context.text])
       await client.query(`insert into operator_conversation_turns (conversation_id,request_id,payload,input_hash)
-        values ($1,$2,$3::jsonb,$4)`, [childId,input.requestId,JSON.stringify(commandPayload(input)),commandHash(input)])
+        values ($1,$2,$3::jsonb,$4)`, [childId,input.requestId,JSON.stringify({ ...commandPayload(input), acceptedConfigurationVersionId: next.id }),commandHash(input)])
       const message = MessageSchema.parse({ id: randomUUID(), conversationId: childId, role: 'user', requestId: input.requestId,
         content: input.content, createdAt: now, updatedAt: now })
       await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,client_request_id,record)
@@ -362,25 +387,44 @@ export class PostgresOperatorConversationRepository {
     finally { client.release() }
   }
 
-  async beginTurn(id: string, input: SendOperatorMessageRequest, ownerId: string, harness?: HarnessConfiguration) {
+  async beginTurn(id: string, input: SendOperatorMessageRequest, ownerId: string, harness?: HarnessConfiguration, expectedConfigurationId?: string, receiptOnly = false) {
     const client = await this.pool.connect()
     try {
       await client.query('begin')
       const row = (await client.query<ConversationRow>('select * from operator_conversations where id=$1 for update', [id])).rows[0]
       if (!row || row.deleted_at || row.owner_principal_id !== ownerId) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
-      const prior = (await client.query<{ input_hash: string; payload: { content: string; context?: unknown }; retryable: boolean }>(
+      const prior = (await client.query<{ input_hash: string; payload: { content: string; context?: unknown; acceptedConfigurationVersionId?: string }; retryable: boolean }>(
         'select input_hash,payload,retryable from operator_conversation_turns where conversation_id=$1 and request_id=$2', [id, input.requestId])).rows[0]
       if (prior && (prior.input_hash === 'legacy'
         ? prior.payload.content !== input.content || Object.keys(input.context ?? {}).length > 0 || Boolean(input.settings)
         : prior.input_hash !== commandHash(input))) {
         throw new DomainError('COMMAND_ID_CONFLICT', 'This request ID was already used with a different message or route context.', 409)
       }
-      const replayed = Boolean(prior && (!prior.retryable || row.active_request_id))
+      if (receiptOnly && !prior) throw new DomainError('OPERATOR_RECEIPT_NOT_FOUND', 'No receipt is currently visible for this command.', 404)
+      const replayed = Boolean(prior && (receiptOnly || !prior.retryable || row.active_request_id))
       if (!replayed) {
         if (conversation(row).status === 'archived') throw new DomainError('CONVERSATION_ARCHIVED', 'This conversation is read-only.', 409)
         await this.reviews.assertActive(id, client)
         if (row.active_request_id || !['idle', 'error'].includes(row.turn_state)) {
           throw new DomainError('CONVERSATION_TURN_ACTIVE', 'This conversation has an active or uncertain turn.', 409)
+        }
+        if (!prior && ((input.configurationVersionId !== undefined && input.configurationVersionId !== row.operator_configuration_version_id)
+          || (expectedConfigurationId !== undefined && expectedConfigurationId !== row.operator_configuration_version_id))) {
+          throw new DomainError('CONVERSATION_REVISION_CONFLICT', 'The conversation configuration changed before admission. Review it before sending a new command.', 409)
+        }
+        if (prior) {
+          // No inference from the latest chat/defaults is safe for an old receipt.
+          const acceptedId = prior.payload.acceptedConfigurationVersionId
+          if (!acceptedId) throw new DomainError('OPERATOR_RETRY_CONFIGURATION_UNKNOWN', 'This older receipt has no frozen execution configuration. It remains saved and will not be relaunched automatically.', 409)
+          const accepted = await this.configuration(acceptedId, client)
+          const current = await this.configuration(row.operator_configuration_version_id, client)
+          if (!accepted || !current || accepted.operatorId !== current.operatorId || accepted.harness.harness !== row.harness) {
+            throw new DomainError('OPERATOR_RETRY_CONFIGURATION_UNKNOWN', 'The receipt execution configuration is unavailable or incompatible with this conversation.', 409)
+          }
+          row.operator_configuration_version_id = accepted.id
+          row.record = { ...ConversationSchema.parse(row.record), operatorConfigurationVersionId: accepted.id }
+          await client.query('update operator_conversations set operator_configuration_version_id=$2 where id=$1', [id, accepted.id])
+          harness = undefined // Retry the immutable receipt, never reinterpret its controls.
         }
         if (harness && harness.harness !== row.harness
           && (await client.query('select 1 from operator_conversation_messages where conversation_id=$1 limit 1', [id])).rowCount)
@@ -398,12 +442,13 @@ export class PostgresOperatorConversationRepository {
             await client.query(`update operator_conversations set operator_configuration_version_id=$2,harness=$3,
               native_session_id=case when harness=$3 then native_session_id else null end,
               provider_version=case when harness=$3 then provider_version else null end where id=$1`, [id,next.id,harness.harness])
+            row.operator_configuration_version_id = next.id
             row.record = { ...ConversationSchema.parse(row.record), operatorConfigurationVersionId: next.id }
           }
         }
         if (!prior) {
           await client.query(`insert into operator_conversation_turns (conversation_id,request_id,payload,input_hash)
-            values ($1,$2,$3::jsonb,$4)`, [id, input.requestId, JSON.stringify(commandPayload(input)), commandHash(input)])
+            values ($1,$2,$3::jsonb,$4)`, [id, input.requestId, JSON.stringify({ ...commandPayload(input), acceptedConfigurationVersionId: row.operator_configuration_version_id }), commandHash(input)])
           const now = new Date().toISOString()
           const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, role: 'user', requestId: input.requestId, content: input.content, createdAt: now, updatedAt: now })
           await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,client_request_id,record)
@@ -427,9 +472,16 @@ export class PostgresOperatorConversationRepository {
     } finally { client.release() }
   }
 
-  async phase(id: string, requestId: string, phase: TurnPhase): Promise<boolean> {
-    const result = await this.pool.query(`update operator_conversations set active_phase=$3,revision=revision+1,updated_at=now()
-      where id=$1 and active_request_id=$2 and not cancel_requested and record->>'status' is distinct from 'archived'`, [id, requestId, phase])
+  async phase(id: string, requestId: string, phase: TurnPhase, handoffContextIncluded = false): Promise<boolean> {
+    const result = await this.pool.query(`with transitioned as (
+      update operator_conversations set active_phase=$3,revision=revision+1,updated_at=now()
+        where id=$1 and active_request_id=$2 and not cancel_requested and record->>'status' is distinct from 'archived'
+        returning id
+    ), prepared as (
+      update operator_conversation_turns t set payload=t.payload || jsonb_build_object('handoffContextIncluded',$4::boolean)
+        from transitioned c where t.conversation_id=c.id and t.request_id=$2 and $3='submitting'
+        returning t.request_id
+    ) select id from transitioned`, [id, requestId, phase, handoffContextIncluded])
     return result.rowCount === 1
   }
   async bind(id: string, requestId: string, version: string, nativeId: string): Promise<void> {
@@ -439,9 +491,21 @@ export class PostgresOperatorConversationRepository {
     if (result.rowCount !== 1) throw new DomainError('NATIVE_SESSION_BINDING_UNCERTAIN', 'Native binding ownership was lost.', 409)
   }
   async submitted(id: string, requestId: string, nativeTurnId: string): Promise<boolean> {
-    const result = await this.pool.query(`update operator_conversations set active_native_turn_id=$3,active_phase='submitted',
-      turn_state=case when cancel_requested then 'canceling' else 'active' end,revision=revision+1,updated_at=now()
-      where id=$1 and active_request_id=$2 and (active_native_turn_id is null or active_native_turn_id=$3)`, [id, requestId, nativeTurnId])
+    // ACK evidence and handoff initialization commit in one SQL statement. An
+    // uncertain ACK stays fenced by the active turn and is recovered here too.
+    const result = await this.pool.query(`with acknowledged as (
+      update operator_conversations set active_native_turn_id=$3,active_phase='submitted',
+        turn_state=case when cancel_requested then 'canceling' else 'active' end,revision=revision+1,updated_at=now()
+        where id=$1 and active_request_id=$2 and (active_native_turn_id is null or active_native_turn_id=$3)
+        returning id,native_session_id,handoff_context,fork_request_id
+    ), initialized as (
+      update operator_conversation_turns t set payload=t.payload || jsonb_build_object('handoffContextSessionId',a.native_session_id)
+        from acknowledged a where t.conversation_id=a.id and t.request_id=$2
+          and a.handoff_context is not null and a.native_session_id is not null
+          and (t.payload->>'handoffContextIncluded'='true'
+            or (not (t.payload ? 'handoffContextIncluded') and t.request_id=a.fork_request_id))
+      returning t.request_id
+    ) select id from acknowledged`, [id, requestId, nativeTurnId])
     return result.rowCount === 1
   }
   async requestCancel(id: string, requestId: string): Promise<boolean> {
@@ -474,27 +538,56 @@ export class PostgresOperatorConversationRepository {
     await this.pool.query(`update operator_conversations set response_delivery='uncertain',revision=revision+1,updated_at=now()
       where id=$1 and active_request_id=$2 and response_delivery='submitted'`, [id, requestId])
   }
-  /** Persist a completed public provider message once, with its activity position. */
-  async appendAssistantMessage(id: string, requestId: string, nativeMessageId: string, content: string): Promise<boolean> {
-    if (!content) return false
+  /** Codex messages are immutable; OpenCode public parts keep their first position while streaming. */
+  async appendAssistantMessage(id: string, requestId: string, nativeMessageId: string, content: string,
+    nativePart?: { parentMessageId: string; complete: boolean }, precedingActivityId?: string | null): Promise<boolean> {
+    if (!content && !nativePart) return false
     const client = await this.pool.connect()
     try {
       await client.query('begin')
       const row = (await client.query<ConversationRow>('select * from operator_conversations where id=$1 for update', [id])).rows[0]
       if (!row || row.active_request_id !== requestId) { await client.query('commit'); return false }
-      const prior = await client.query<{ content: string }>(
-        'select content from operator_conversation_messages where conversation_id=$1 and native_message_id=$2', [id,nativeMessageId])
-      if (prior.rows[0]) {
-        if (prior.rows[0].content !== content) throw new DomainError('NATIVE_MESSAGE_CONFLICT', 'A completed provider message changed after persistence.', 409)
-        await client.query('commit'); return false
+      const prior = (await client.query<{ record: unknown }>(
+        'select record from operator_conversation_messages where conversation_id=$1 and native_message_id=$2', [id,nativeMessageId])).rows[0]
+      const existing = prior ? MessageSchema.parse(prior.record) : undefined
+      if (existing && (existing.requestId !== requestId || existing.nativeParentMessageId !== nativePart?.parentMessageId)) {
+        throw new DomainError('NATIVE_MESSAGE_CONFLICT', 'The provider message identity belongs to another request or parent.', 409)
       }
-      const activity = await client.query<{ sequence: string }>(
-        'select coalesce(max(sequence),0)::text as sequence from operator_conversation_activity where conversation_id=$1 and request_id=$2', [id,requestId])
-      const now = new Date().toISOString()
-      const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, requestId, role: 'assistant', content,
-        nativeMessageId, afterActivitySequence: activity.rows[0]!.sequence, createdAt: now, updatedAt: now })
-      await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,native_message_id,record)
-        values ($1,$2,'assistant',$3,$4,$5::jsonb)`, [message.id,id,content,nativeMessageId,JSON.stringify(message)])
+      // History provides an explicit predecessor, not the latest activity from a
+      // later live snapshot. This also repairs a boundary after a stream gap.
+      const activity = precedingActivityId === null ? '0' : precedingActivityId !== undefined
+        ? (await client.query<{ sequence: string }>(`select sequence::text from operator_conversation_activity
+            where conversation_id=$1 and request_id=$2 and activity_id=$3`, [id,requestId,precedingActivityId])).rows[0]?.sequence
+        : existing?.afterActivitySequence ?? (await client.query<{ sequence: string }>(
+            'select coalesce(max(sequence),0)::text as sequence from operator_conversation_activity where conversation_id=$1 and request_id=$2', [id,requestId])).rows[0]?.sequence
+      if (activity === undefined) throw new Error('The public message activity predecessor was not persisted.')
+      if (existing) {
+        if (!nativePart || existing.nativeMessageComplete !== false) {
+          if (existing.content !== content && (!nativePart || nativePart.complete)) {
+            throw new DomainError('NATIVE_MESSAGE_CONFLICT', 'A completed provider message changed after persistence.', 409)
+          }
+          // A late incomplete snapshot must never replace a completed part.
+          if (precedingActivityId === undefined || existing.afterActivitySequence === activity) { await client.query('commit'); return false }
+        } else if (!nativePart.complete && !content.startsWith(existing.content)) {
+          await client.query('commit'); return false // Older partial snapshot; await complete native evidence.
+        }
+        const mutable = nativePart && existing.nativeMessageComplete === false
+        const message = MessageSchema.parse({ ...existing,
+          ...(mutable ? { content, nativeMessageComplete: nativePart.complete } : {}),
+          afterActivitySequence: activity, updatedAt: new Date().toISOString() })
+        if (message.content === existing.content && message.nativeMessageComplete === existing.nativeMessageComplete
+          && message.afterActivitySequence === existing.afterActivitySequence) { await client.query('commit'); return false }
+        await client.query('update operator_conversation_messages set content=$3,record=$4::jsonb where conversation_id=$1 and native_message_id=$2',
+          [id,nativeMessageId,message.content,JSON.stringify(message)])
+      } else {
+        const now = new Date().toISOString()
+        const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, requestId, role: 'assistant', content,
+          nativeMessageId, afterActivitySequence: activity,
+          ...(nativePart ? { nativeParentMessageId: nativePart.parentMessageId, nativeMessageComplete: nativePart.complete } : {}),
+          createdAt: now, updatedAt: now })
+        await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,native_message_id,record)
+          values ($1,$2,'assistant',$3,$4,$5::jsonb)`, [message.id,id,content,nativeMessageId,JSON.stringify(message)])
+      }
       await client.query('update operator_conversations set revision=revision+1,updated_at=now() where id=$1', [id])
       await client.query('commit')
       return true
@@ -514,7 +607,11 @@ export class PostgresOperatorConversationRepository {
         const output = result.output
         const content = typeof output === 'string' ? output : output && typeof output === 'object' && !Array.isArray(output)
           ? typeof output.text === 'string' ? output.text : typeof output.content === 'string' ? output.content : '' : ''
-        const prior = await client.query('select 1 from operator_conversation_messages where conversation_id=$1 and native_message_id=$2', [id,nativeMessageId])
+        // OpenCode's terminal result repeats the text of its already persisted
+        // native parts. A real parent message ID must not create a second answer.
+        const prior = await client.query(`select 1 from operator_conversation_messages
+          where conversation_id=$1 and (native_message_id=$2 or
+            (record->>'nativeParentMessageId'=$2 and record->>'requestId'=$3)) limit 1`, [id,nativeMessageId,requestId])
         if (content && !prior.rowCount) {
           const activity = await client.query<{ sequence: string }>(
             'select coalesce(max(sequence),0)::text as sequence from operator_conversation_activity where conversation_id=$1 and request_id=$2', [id,requestId])

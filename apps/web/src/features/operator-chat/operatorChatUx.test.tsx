@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, operatorChatSettings } from '@graphql/contracts'
 import { http, HttpResponse } from 'msw'
@@ -295,4 +295,88 @@ describe('Operator chat UX', () => {
     view.rerender(<QueryClientProvider client={client}><OperatorComposerSettings disabled={false} onChange={onChange} value={{ ...value, reasoningEffort: 'low' }} /></QueryClientProvider>)
     expect(slider).toHaveFocus()
   })
+})
+
+
+async function withPr19Locks(work: () => Promise<void>) {
+  const original = Object.getOwnPropertyDescriptor(navigator, 'locks')
+  let tail: Promise<unknown> = Promise.resolve()
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: {
+    request: (_name: string, options: LockOptions, callback: (lock: Lock) => unknown) => {
+      const next = tail.catch(() => undefined).then(() => {
+        options.signal?.throwIfAborted()
+        return callback({ name: 'graphql.operator-outbox.v1', mode: 'exclusive' } as Lock)
+      })
+      tail = next
+      return next
+    },
+  } })
+  try { await work() }
+  finally { if (original) Object.defineProperty(navigator, 'locks', original); else Reflect.deleteProperty(navigator, 'locks') }
+}
+
+describe('PR19 receipt recovery and navigation fencing', () => {
+  it('recovers a saved Codex receipt while current OpenCode setup is unavailable, without a new command identity', async () => withPr19Locks(async () => {
+    const outbox = await import('./operatorOutbox')
+    const command = await outbox.reserveOperatorMessage('conversation-one', 'Already accepted.', '/original',
+      operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.codex), undefined, { configurationVersionId: 'original-config', defaultsRevision: 1 })
+    const attempt = await outbox.beginOperatorMessageAttempt('conversation-one', command)
+    await outbox.recordOperatorMessageFailure('conversation-one', command.requestId, 'Response lost.', false, attempt)
+    server.use(
+      http.get('/api/management/settings/agents', () => HttpResponse.json({ revision: 8, versionId: null,
+        value: { ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness: DEFAULT_HARNESS_DEFAULTS.opencode } } })),
+      http.get('/api/operator/setup', () => HttpResponse.json({ harness: 'opencode', status: 'setup_required',
+        endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() })),
+    )
+    api.send.mockResolvedValue({ replayed: true, state: operatorState({ turnState: 'idle', activeRequestId: null,
+      messages: [{ id: 'accepted-message', conversationId: 'conversation-one', requestId: command.requestId, role: 'user', content: command.content }] }) })
+    chat()
+    const retry = await screen.findByRole('button', { name: 'Retry pending message' })
+    expect(retry).toBeEnabled()
+    expect(await screen.findByRole('button', { name: /Operator access:/ })).toBeDisabled()
+    fireEvent.click(retry)
+    await waitFor(() => expect(api.send).toHaveBeenCalledWith('conversation-one', { ...command, recovery: 'receipt' }))
+    await waitFor(() => expect(outbox.readPendingOperatorMessage('conversation-one').command).toBeUndefined())
+    expect(api.send).toHaveBeenCalledTimes(1)
+  }))
+
+  it.each(['another chat', 'new chat', 'away and back'] as const)('does not steal selection after navigating to %s during a delayed handoff response', async (destination) => withPr19Locks(async () => {
+    const source = operatorState({ revision: 7, turnState: 'idle', activeRequestId: null,
+      conversation: { ...operatorState().conversation, operatorConfigurationVersionId: 'source-config' },
+      settings: operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.codex),
+      messages: [{ id: 'old-message', conversationId: 'conversation-one', requestId: 'old-turn', role: 'assistant', content: 'Earlier answer' }] })
+    const before = await getManagedAgentDefaults()
+    await updateManagedAgentDefaults({ commandId: `pr19-handoff-${destination}`, expectedRevision: before.revision,
+      value: { ...before.value, operator: { ...before.value.operator, harness: DEFAULT_HARNESS_DEFAULTS.opencode } } })
+    api.get.mockImplementation(async (id: string) => id === 'conversation-one' ? source : operatorState({
+      conversation: { ...source.conversation, id }, turnState: 'idle', activeRequestId: null, messages: [] }))
+    api.list.mockResolvedValue({ conversations: [summarizeOperatorConversation(source)] })
+    let resolve!: (value: unknown) => void
+    api.send.mockImplementation(() => new Promise((done) => { resolve = done }))
+    chat()
+    const composer = within(await screen.findByRole('form', { name: 'Conversation composer' }))
+    fireEvent.change(composer.getByRole('textbox', { name: 'Message' }), { target: { value: 'Continue here' } })
+    await waitFor(() => expect(composer.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    fireEvent.click(composer.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(api.send).toHaveBeenCalledTimes(1))
+    const command = api.send.mock.calls[0]![1]
+    expect(command.configurationVersionId).toBe('source-config')
+    expect(command.defaultsRevision).toBe(before.revision + 1)
+    if (destination === 'new chat') {
+      fireEvent.click(composer.getByRole('button', { name: 'New chat' }))
+      await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('new-chat'))
+    } else act(() => {
+      useOperatorChatStore.getState().select('another-chat')
+      if (destination === 'away and back') useOperatorChatStore.getState().select('conversation-one')
+    })
+    const selected = useOperatorChatStore.getState().selectedConversationId
+    const childId = `operator-fork:${command.requestId}`
+    await act(async () => resolve({ replayed: false, state: operatorState({
+      conversation: { ...source.conversation, id: childId }, revision: 1, activeRequestId: null, turnState: 'idle',
+      messages: [{ id: 'child-message', conversationId: childId, requestId: command.requestId, role: 'user', content: command.content }],
+    }) }))
+    expect(await screen.findByRole('button', { name: 'Open continued chat' })).toBeVisible()
+    expect(useOperatorChatStore.getState().selectedConversationId).toBe(selected)
+    expect(api.send).toHaveBeenCalledTimes(1)
+  }))
 })

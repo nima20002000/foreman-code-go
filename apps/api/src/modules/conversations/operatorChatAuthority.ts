@@ -2,6 +2,7 @@ import type pg from 'pg'
 import type { OperatorChatSetup, OperatorConfigurationVersion } from '@graphql/contracts'
 import { requireAuthorization } from '../access/policy.js'
 import { currentOperatorAuthority } from '../access/runAuthority.js'
+import { operatorChatGrants } from '../access/operatorChatDelegation.js'
 import { PostgresOperatorReviewLifecycle } from './operatorReviewLifecycle.js'
 import type { PostgresAccessService } from '../access/postgres.js'
 import { CodexAppServerSessionManager } from '../harnesses/codexAppServer.js'
@@ -76,11 +77,7 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
       if (conversation.rowCount !== 1) throw new DomainError('OPERATOR_REVIEW_ENDED', 'The conversation is no longer open.', 409)
       await reviews.assertActive(conversationId, client)
       signal.throwIfAborted()
-      const grants = owner.grants.map((grant) => ({ ...grant, actions: [
-        ...grant.actions.filter((action) => !action.startsWith('operator_chat:') && action !== 'operator_handoff:read'),
-        ...(grant.actions.includes('operator_chat:read') ? ['operator_handoff:read' as const] : []),
-      ] }))
-        .filter((grant) => grant.actions.length > 0)
+      const grants = operatorChatGrants(owner.grants)
       if (!grants.length) throw new DomainError('ACCESS_DENIED', 'This principal has no management authority to delegate to the Operator.', 403)
       issued = await this.access.issue({ name: `operator-chat:${conversationId}`, audience: 'operator', grants,
         expiresAt: new Date(owner.expiresAt) }, client)

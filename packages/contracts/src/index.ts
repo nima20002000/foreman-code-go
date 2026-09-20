@@ -994,6 +994,9 @@ export const MessageSchema = z
     conversationId: IdSchema,
     requestId: IdSchema.optional(),
     nativeMessageId: IdSchema.optional(),
+    /** OpenCode text-part identity is nativeMessageId; this is its assistant message. */
+    nativeParentMessageId: IdSchema.optional(),
+    nativeMessageComplete: z.boolean().optional(),
     afterActivitySequence: z.string().regex(/^[0-9]+$/).optional(),
     role: MessageRoleSchema,
     content: z.string(),
@@ -1675,6 +1678,12 @@ export const SendOperatorMessageRequestSchema = z.object({
   context: OperatorConversationContextSchema.optional(),
   settings: OperatorChatSettingsSchema.optional(),
   forkExpectedRevision: z.number().int().nonnegative().optional(),
+  /** The pinned configuration observed before reserving this command. */
+  configurationVersionId: IdSchema.optional(),
+  /** Required for a new cross-harness admission; never consulted for a receipt replay. */
+  defaultsRevision: z.number().int().nonnegative().optional(),
+  /** Read an existing receipt without creating or relaunching native work. Not part of command identity. */
+  recovery: z.literal("receipt").optional(),
 }).strict();
 export const SendOperatorMessageResponseSchema = z.object({ state: OperatorConversationStateSchema, replayed: z.boolean() }).strict();
 export const CancelOperatorTurnRequestSchema = z.object({ requestId: IdSchema }).strict();
