@@ -103,12 +103,11 @@ export function CodexPluginManager() {
       {catalog.catalogStatus === 'partial' ? <Alert tone="warning" title="Catalog incomplete">Some sources could not be checked. Missing discovery entries do not prove a plugin was removed.</Alert> : null}
       {view === 'installed' && catalog.inventoryStatus === 'unknown' ? <p className="harness-muted">Codex does not expose a complete installed inventory here. Unlisted local records need verification; absence from this list is not proof of removal.</p> : null}
       <p className="harness-muted" role="status">{catalog.total} {view === 'installed' ? 'installation' : 'discovery'} {catalog.total === 1 ? 'record' : 'records'}{query ? ` matching “${query}”` : ''}</p>
-      {catalog.items.length ? <ul className="codex-plugin-grid">{catalog.items.map((item) => <li key={item.pluginId}>
-        <button type="button" className="codex-plugin-card" data-plugin-id={item.pluginId} aria-label={`View ${item.name} plugin, ${label(item).toLowerCase()}`}
+      {catalog.items.length ? <ul className={`codex-plugin-grid${view === 'available' ? ' codex-plugin-grid--available' : ''}`}>{catalog.items.map((item) => <li key={item.pluginId}>
+        <button type="button" className={`codex-plugin-card${view === 'available' ? ' codex-plugin-card--available' : ''}`} data-plugin-id={item.pluginId} aria-label={`View ${item.name} plugin, ${label(item).toLowerCase()}`}
           onClick={(event) => { lastTrigger.current = event.currentTarget; lastPluginId.current = item.pluginId; move({ pluginId: item.pluginId }) }}>
-          <span className="codex-plugin-icon" aria-hidden="true"><Icon name="spark" size={17} /></span>
-          <span className="codex-plugin-identity"><strong>{item.name}</strong><small>{item.marketplaceName}</small></span>
-          <span className="codex-plugin-state">{label(item)}</span>
+          <span className="codex-plugin-identity"><strong>{item.name}</strong>{view === 'installed' ? <small>{item.marketplaceName}</small> : null}</span>
+          {view === 'installed' ? <span className="codex-plugin-state">{label(item)}</span> : null}
         </button>
       </li>)}</ul> : <p className="harness-empty">{query ? 'No records match this search.' : 'No plugin records were returned by the inspected sources.'}</p>}
       {catalog.total > 24 ? <div className="codex-plugins-pages">
@@ -143,7 +142,8 @@ export function CodexPluginManager() {
           <div><strong>MCP servers</strong><span>{reviewed.contents.mcpServers.length ? reviewed.contents.mcpServers.join(', ') : 'None included'}</span></div>
           <div><strong>Apps</strong><span>{reviewed.contents.apps.length ? reviewed.contents.apps.join(', ') : 'None included'}</span></div>
           <div><strong>Hooks</strong><span>{reviewed.contents.hooks.length ? reviewed.contents.hooks.join(', ') : 'None included'}</span></div>
-        </div> : <Alert tone="warning" title="Bundle contents unavailable">Verified bundle contents are unavailable. This can mean missing, unreadable, oversized, or unsupported files—not an empty bundle.</Alert>}
+        </div> : plugin.installed ? <Alert tone="warning" title="Bundle contents unavailable">Verified bundle contents are unavailable. This can mean missing, unreadable, oversized, or unsupported files—not an empty bundle.</Alert>
+          : <p className="harness-muted">Bundle contents can be checked after installation.</p>}
         {plugin.installed && plugin.installPolicy === 'INSTALLED_BY_DEFAULT' ? <p className="harness-muted">Codex installed this plugin by default; it cannot be removed here.</p> : null}
         <p className="harness-muted">Removing a plugin removes its bundled capabilities. Separately configured MCP connections remain in MCP connections.</p>
       </div> : null}
