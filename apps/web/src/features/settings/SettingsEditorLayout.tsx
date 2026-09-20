@@ -25,18 +25,18 @@ export function SettingsChoice({ title, description, summary, onSelect, draftSta
 
 /** One page heading, one section navigation, one content surface. No card-inside-card editor. */
 export function SettingsEditorLayout({ title, description, backLabel, onBack, section, onSectionChange,
-  connections = false, children, feedback, footer, showBack = true,
+  connections = false, plugins = false, children, feedback, footer, showBack = true,
 }: {
   title: string; description: string; backLabel: string; onBack(): void;
   section: HarnessSettingsSection; onSectionChange(section: HarnessSettingsSection): void;
-  showBack?: boolean; connections?: boolean; children: ReactNode; feedback?: ReactNode; footer: ReactNode;
+  showBack?: boolean; connections?: boolean; plugins?: boolean; children: ReactNode; feedback?: ReactNode; footer: ReactNode;
 }) {
   const guard = useContext(UnsavedChangesContext)
   const leave = async (action: () => void) => { if (!guard || await guard.request()) action() }
   const titleRef = useRef<HTMLHeadingElement>(null)
   const sectionRef = useRef<HTMLHeadingElement>(null)
   const first = useRef(true)
-  const sections = harnessSections.filter((entry) => connections || !['connections', 'workspace'].includes(entry.id))
+  const sections = harnessSections.filter((entry) => (connections || !['connections', 'workspace'].includes(entry.id)) && (plugins || entry.id !== 'plugins'))
   const active = sections.find((entry) => entry.id === section) ?? sections[0]!
   useEffect(() => { titleRef.current?.focus() }, [title])
   useEffect(() => {

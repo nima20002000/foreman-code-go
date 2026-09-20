@@ -8,6 +8,8 @@ import { buildApp } from './app.js'
 import { createOperatorExtensions } from './mcp/operator/extensions.js'
 import { NativeConfigurationService } from './modules/harnesses/nativeConfiguration.js'
 import { HarnessMcpSettingsService } from './modules/harnesses/mcpSettings.js'
+import { CodexPluginSettingsService } from './modules/harnesses/codexPluginSettings.js'
+import { NativeCodexPlugins } from './modules/harnesses/codexPlugins.js'
 import { workspaceStorageRoot } from './modules/workspaces/storage.js'
 import { HarnessDirectoryBrowser } from './modules/harnesses/directoryBrowser.js'
 import { CodexMcpConnections } from './modules/harnesses/codexMcpConnections.js'
@@ -102,6 +104,8 @@ export function buildProductionApp(
   const operatorMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/operator`
   const harnessSettings = {
     directories: new HarnessDirectoryBrowser([projectRoot], database.pool),
+    plugins: new CodexPluginSettingsService(database.pool, new NativeCodexPlugins(config.harnesses.codexBinary, config.harnesses.workspaceRoot,
+      processRegistry.scope('settings:plugins:codex')), () => processRegistry.closeOwner('settings:plugins:codex')),
     mcp: new HarnessMcpSettingsService(database.pool, commands, {
       codex: new CodexMcpConnections(config.harnesses.codexBinary, config.harnesses.workspaceRoot, processRegistry.scope('settings:mcp:codex')),
       opencode: new OpenCodeMcpConnections(config.harnesses.openCodeBinary, config.harnesses.workspaceRoot, processRegistry.scope('settings:mcp:opencode')),
@@ -296,6 +300,7 @@ export function buildProductionApp(
     stop: [
       { name: 'harness compatibility diagnostics', run: () => harnessCompatibility.close() },
       { name: 'native MCP settings', run: () => harnessSettings.mcp.shutdown() },
+      { name: 'Codex plugin settings', run: () => harnessSettings.plugins.shutdown() },
       { name: 'harness qualification checks', run: () => Promise.all([harnessCatalog.shutdownChecks(), nativeConfigurations.shutdownChecks()]).then(() => undefined) },
       { name: 'workflow triggers', run: () => operatorExtensions.triggers.shutdown() },
       { name: 'Operator chat', run: () => chat.shutdown() },
@@ -357,6 +362,8 @@ export function buildProductionApp(
       await chatAuthority.revokeOrphanedCredentials()
       assertOpen()
       await harnessSettings.mcp.recover()
+      assertOpen()
+      await harnessSettings.plugins.recover()
       assertOpen()
       // Optional discovery warmups used to block startup on native auth/network.
       // Qualification still runs at every existing on-demand configuration/execution gate.

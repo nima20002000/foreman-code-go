@@ -8,6 +8,7 @@ import { getManagedAgentDefaults } from '../../shared/api/client'
 import { queryKeys } from '../../shared/api/query'
 import { OperatorComposerSettings } from './OperatorComposerSettings'
 import { OperatorChat } from './OperatorChat'
+import { configuredOperatorSetup, unconfiguredOperatorSetup } from './operatorSetupTestFixture'
 import { OperatorChatVisibilityProvider } from './visibility'
 import { useOperatorChatStore } from './operatorChatStore'
 import { operatorState } from './pr17-test-fixtures'
@@ -62,8 +63,7 @@ describe('Operator chat UX', () => {
     server.use(
       http.get('/api/management/settings/agents', () => HttpResponse.json({ revision: 1, versionId: null,
         value: { ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness: DEFAULT_HARNESS_DEFAULTS.opencode } } })),
-      http.get('/api/operator/setup', () => HttpResponse.json({ harness: 'opencode', status: configured ? 'configured' : 'setup_required',
-        configurationVersionId: 'operator-config', endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() })),
+      http.get('/api/operator/setup', () => HttpResponse.json(configured ? configuredOperatorSetup('opencode') : unconfiguredOperatorSetup('opencode'))),
     )
     chat()
     expect(await screen.findByText('Install Operator MCP in OpenCode first')).toBeVisible()
@@ -77,6 +77,27 @@ describe('Operator chat UX', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
     expect(screen.queryByText('Install Operator MCP in OpenCode first')).not.toBeInTheDocument()
+  })
+
+  it('does not enable Send for configured setup without an accepted configuration ID', async () => {
+    let inspected = false
+    server.use(
+      http.get('/api/management/settings/agents', () => HttpResponse.json({ revision: 1, versionId: null,
+        value: { ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness: DEFAULT_HARNESS_DEFAULTS.opencode } } })),
+      http.get('/api/operator/setup', () => { inspected = true; return HttpResponse.json({ ...configuredOperatorSetup('opencode'), configurationVersionId: undefined }) }),
+    )
+    chat()
+    const input = await screen.findByRole('textbox', { name: 'Message' })
+    fireEvent.change(input, { target: { value: 'Hello' } })
+    await waitFor(() => {
+      expect(inspected).toBe(true)
+      const setup = client.getQueryCache().findAll({ queryKey: ['operator-chat', 'setup'] })
+      expect(setup.length).toBeGreaterThan(0)
+      expect(setup.some((query) => query.state.fetchStatus === 'idle' && query.state.status === 'success')).toBe(true)
+    })
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(api.send).not.toHaveBeenCalled()
   })
 
   it('saves chat model and effort to shared Operator defaults and restores them in a future chat', async () => {

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export * from "./extensions.js";
 export * from "./harnessSettings.js";
+export * from "./codexPlugins.js";
 export * from "./settingsExperience.js";
 export * from "./browserAuth.js";
 
@@ -558,6 +559,7 @@ export const OperatorToolNameSchema = z.enum([
   "workspace_defaults_get",
   "workspace_defaults_update",
   "harness_mcp_servers_list", "harness_mcp_change_request", "harness_mcp_managed_request", "harness_mcp_change_get",
+  "codex_plugins_list", "codex_plugin_get",
   "harness_configuration_check",
   "harness_options_get",
   "harness_mcp_detection_get",
