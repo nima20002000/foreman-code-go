@@ -544,7 +544,8 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         if (!configuration) throw new DomainError('AGENT_CONFIGURATION_NOT_FOUND', `Configuration '${configurationVersionId}' was not found.`, 500)
         return configuration
       }))
-      for (const configuration of configurations) assertNativeWorkflowConfiguration(configuration.harness, run.approval)
+      for (const configuration of configurations) assertNativeWorkflowConfiguration(configuration.harness, run.approval,
+        run.approval?.handler === 'orchestrator' && configuration.agentId === run.approval.designatedOrchestratorAgentId)
       if (run.approval) validateWorkflowApproval(version.definition, run.approval, configurations.map((configuration) => ({
         id: configuration.agentId, productRole: configuration.productRole, harnessConfiguration: configuration.harness,
       })))

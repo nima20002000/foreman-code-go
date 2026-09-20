@@ -226,7 +226,10 @@ export function buildProductionApp(
     new PostgresOperatorConversationRepository(database.pool), operators,
     resolveOperatorManager, operatorWorkingDirectory, chatAuthority,
   )
-  const reviews = new AutomaticReviewService(database.pool, runs, approvals, chat, access, locations, rollout)
+  const reviews = new AutomaticReviewService(database.pool, runs, approvals, chat, access, locations, rollout,
+    async (runId) => {
+      if (await engine.cancel(runId)) await engine.finishRunLifecycle(runId, 'The assigned review failed.')
+    })
   reviewLifecycle.current = reviews
   const operatorServices = {
     operatorChat: chat,

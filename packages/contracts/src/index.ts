@@ -240,10 +240,17 @@ export type ApprovalHandler = z.infer<typeof ApprovalHandlerSchema>;
 export const HarnessWorkflowCompatibilitySchema = z.object({
   configuration: HarnessConfigurationSchema,
   workflowApprovalHandler: ApprovalHandlerSchema.optional(),
+  designatedOrchestrator: z.boolean().default(false),
 }).strict().superRefine((value, context) => {
   if (!value.workflowApprovalHandler) return;
-  if (value.configuration.harness === "codex" && value.configuration.advanced?.approvalsReviewer === "auto_review") {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "approvalsReviewer"], message: "native auto review conflicts with GraphQL-routed approval" });
+  if (value.configuration.harness === "codex" && value.configuration.advanced?.approvalsReviewer === "auto_review"
+    && value.workflowApprovalHandler !== "orchestrator") {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "approvalsReviewer"], message: "native auto review conflicts with this workflow approval handler" });
+  }
+  if (value.configuration.harness === "codex" && value.designatedOrchestrator
+    && value.configuration.advanced?.approvalsReviewer === "auto_review"
+    && value.configuration.advanced.approvalPolicy !== "on-request") {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "approvalPolicy"], message: "Codex automatic review requires on-request approval" });
   }
   // Saved records can omit Advanced settings. Both explicit and defaulted
   // representations must obey the same workflow approval boundary.
@@ -261,8 +268,9 @@ export const HarnessWorkflowCompatibilitySchema = z.object({
 export function validateHarnessWorkflowCompatibility(
   configuration: HarnessConfiguration,
   workflowApprovalHandler?: ApprovalHandler,
+  designatedOrchestrator = false,
 ): HarnessConfiguration {
-  return HarnessWorkflowCompatibilitySchema.parse({ configuration, workflowApprovalHandler }).configuration;
+  return HarnessWorkflowCompatibilitySchema.parse({ configuration, workflowApprovalHandler, designatedOrchestrator }).configuration;
 }
 
 /** Editable selection. Orchestrator designation may remain incomplete until executable save. */

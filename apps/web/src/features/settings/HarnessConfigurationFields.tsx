@@ -11,11 +11,11 @@ import { harnessSections, sectionForHarnessIssue } from './settingsPresentation'
 import './harnessWorkbench.css'
 import './settingsExperience.css'
 
-export function HarnessConfigurationFields({ editor, onChange, routedApproval = false, requiresResume = false,
+export function HarnessConfigurationFields({ editor, onChange, routedApproval = false, allowAutoReview = false, requiresResume = false,
   allowHarnessChange = true, compact = false, advancedOnly = false, workspaceId, harnessDefaults, issues = [],
   section: selectedSection, onSectionChange, frameless = false,
 }: {
-  editor: HarnessEditor; onChange(editor: HarnessEditor): void; routedApproval?: boolean; requiresResume?: boolean;
+  editor: HarnessEditor; onChange(editor: HarnessEditor): void; routedApproval?: boolean; allowAutoReview?: boolean; requiresResume?: boolean;
   allowHarnessChange?: boolean; compact?: boolean; advancedOnly?: boolean; workspaceId?: string;
   harnessDefaults?: HarnessDefaults; issues?: readonly FieldIssue[];
   section?: HarnessSettingsSection; onSectionChange?(section: HarnessSettingsSection): void; frameless?: boolean;
@@ -61,7 +61,7 @@ export function HarnessConfigurationFields({ editor, onChange, routedApproval = 
         action={<Button size="sm" onClick={() => void presetsQuery.refetch()}>Retry</Button>}>Your draft is kept. Presets were not replaced.</Alert> : null}
     </> : null}
     <HarnessSectionFields editor={editor} onChange={onChange} section={section} issues={issues}
-      routedApproval={routedApproval} requiresResume={requiresResume} workspaceId={workspaceId} />
+      routedApproval={routedApproval} allowAutoReview={allowAutoReview} requiresResume={requiresResume} workspaceId={workspaceId} />
     {check.current && check.result.isError ? <Alert live tone="danger" title={check.result.error.message} /> : null}
     {refresh.isError ? <Alert live tone="danger" title={refresh.error.message} /> : null}
     {issues.length ? <p className="n-field-error" role="alert">{[...new Set(issues.map((issue) => issue.message))].join(' ')}</p> : null}

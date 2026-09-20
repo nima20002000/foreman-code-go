@@ -39,7 +39,7 @@ const executionStateLabels: Record<AgentExecutionState, string> = {
 }
 
 export function executionStateLabel(state?: AgentExecutionState): string {
-  return state ? executionStateLabels[state] : 'State unavailable'
+  return state ? executionStateLabels[state] : 'Idle'
 }
 
 function fallbackPosition(index: number): XYPosition {

@@ -326,7 +326,7 @@ describe.each(['http', 'mcp'] as const)('PR8 managed %s acceptance', (source) =>
       const firstDefaults = await templates.updateWorkflowDefaults({ approvalHandler:'orchestrator' },0)
       const cases = [
         ['missing','WORKFLOW_APPROVAL_INCOMPLETE'], ['wrong-workflow','APPROVAL_ORCHESTRATOR_WRONG_WORKFLOW'],
-        ['missing-coder','APPROVAL_DISTINCT_CODER_REQUIRED'], ['auto-review','WORKFLOW_HARNESS_APPROVAL_CONFLICT'],
+        ['missing-coder','APPROVAL_DISTINCT_CODER_REQUIRED'], ['reviewer-no-auto','APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED'],
       ] as const
       for (const [scenario,code] of cases) {
         const initial = await create(scenario)
@@ -339,16 +339,12 @@ describe.each(['http', 'mcp'] as const)('PR8 managed %s acceptance', (source) =>
           { type:'edge.connect',edgeId:'handoff',sourceNodeId:'first',targetNodeId:'second' },
         ]
         const orchestratorConfiguration = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
-        orchestratorConfiguration.advanced!.approvalPolicy = 'never'
+        orchestratorConfiguration.advanced!.approvalPolicy = 'on-request'
+        orchestratorConfiguration.advanced!.approvalsReviewer = scenario === 'reviewer-no-auto' ? 'user' : 'auto_review'
         operations.push({ type:'agent.configure',agentId:orchestrator,expectedAgentRevision:0,configuration:orchestratorConfiguration })
         if (scenario !== 'missing') operations.push({ type:'workflow.set_approval',approval:{
           handler:'orchestrator',designatedOrchestratorAgentId:scenario === 'wrong-workflow' ? 'other-workflow-agent':orchestrator,
         } })
-        if (scenario === 'auto-review') {
-          const configuration = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
-          configuration.advanced!.approvalsReviewer = 'auto_review'
-          operations.push({ type:'agent.configure',agentId:coder,expectedAgentRevision:0,configuration })
-        }
         const draft = await apply(initial.draft,operations)
         const validation = await call('graph_validate',{ workspaceId,workflowId:draft.workflowId,draftId:draft.id })
         expect(validation).toMatchObject({ valid:false,issues:[{ code }] })
@@ -359,12 +355,16 @@ describe.each(['http', 'mcp'] as const)('PR8 managed %s acceptance', (source) =>
       const orchestrator = `orchestrator-${randomUUID()}`
       const coder = `coder-${randomUUID()}`
       const orchestratorConfiguration = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
-      orchestratorConfiguration.advanced!.approvalPolicy = 'never'
+      orchestratorConfiguration.advanced!.approvalPolicy = 'on-request'
+      orchestratorConfiguration.advanced!.approvalsReviewer = 'auto_review'
+      const coderConfiguration = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
+      coderConfiguration.advanced!.approvalsReviewer = 'auto_review'
       const draft = await apply(initial.draft,[
         { type:'agent.add_from_template',template:'orchestrator',agentId:orchestrator,nodeId:'first',name:'Orchestrator' },
         { type:'agent.add_from_template',template:'coder',agentId:coder,nodeId:'second',name:'Coder' },
         { type:'edge.connect',edgeId:'handoff',sourceNodeId:'first',targetNodeId:'second' },
         { type:'agent.configure',agentId:orchestrator,expectedAgentRevision:0,configuration:orchestratorConfiguration },
+        { type:'agent.configure',agentId:coder,expectedAgentRevision:0,configuration:coderConfiguration },
         { type:'workflow.set_approval',approval:{ handler:'orchestrator',designatedOrchestratorAgentId:orchestrator } },
       ])
       const published = await save(draft)
@@ -383,7 +383,15 @@ describe.each(['http', 'mcp'] as const)('PR8 managed %s acceptance', (source) =>
         expectedLocationRevision:1,commandId:randomUUID(),input:{},
       })).rejects.toThrow('WORKFLOW_APPROVAL_SNAPSHOT_INVALID')
       await pool.query('update workflow_versions set record=$2::jsonb where id=$1',[published.version.id,JSON.stringify(published.version)])
-      const changed = await apply(published.draft,[{ type:'workflow.set_approval',approval:{ handler:'user' } }])
+      const userOrchestrator = structuredClone(orchestratorConfiguration)
+      userOrchestrator.advanced!.approvalsReviewer = 'user'
+      const userCoder = structuredClone(coderConfiguration)
+      userCoder.advanced!.approvalsReviewer = 'user'
+      const changed = await apply(published.draft,[
+        { type:'agent.configure',agentId:orchestrator,expectedAgentRevision:1,configuration:userOrchestrator },
+        { type:'agent.configure',agentId:coder,expectedAgentRevision:1,configuration:userCoder },
+        { type:'workflow.set_approval',approval:{ handler:'user' } },
+      ])
       await save(changed)
       await templates.updateWorkflowDefaults({ approvalHandler:'operator' },firstDefaults.revision)
       expect((await runs.getForWorkspace(workspaceId,started.run.id))!.approval).toEqual(expectedApproval)

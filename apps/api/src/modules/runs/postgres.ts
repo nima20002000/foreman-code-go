@@ -145,7 +145,8 @@ export class PostgresRunRepository implements RunRepository {
       }))
       // Decide approval authority before persisting/queuing any native work.
       // Old saved records are never silently migrated to an automatic mode.
-      for (const configuration of configurations) assertNativeWorkflowConfiguration(configuration.harness, approval)
+      for (const configuration of configurations) assertNativeWorkflowConfiguration(configuration.harness, approval,
+        approval?.handler === 'orchestrator' && configuration.agentId === approval.designatedOrchestratorAgentId)
       if (approval) validateWorkflowApproval(version.definition, approval, configurations.map((configuration) => ({
         id: configuration.agentId, productRole: configuration.productRole, harnessConfiguration: configuration.harness,
       })))

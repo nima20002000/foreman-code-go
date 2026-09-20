@@ -173,6 +173,7 @@ const HANDLE_POSITIONS: Record<GraphHandleSide, Position> = {
 type NodeMenuContextValue = {
   workspaceId?: string
   workflowApprovalHandler?: ApprovalHandler
+  designatedOrchestratorAgentId?: string
   openMenuNodeId?: string
   setOpenMenuNodeId: (nodeId?: string) => void
 }
@@ -184,15 +185,14 @@ type NodeMenuContextValue = {
 const NodeMenuContext = createContext<NodeMenuContextValue | undefined>(undefined)
 
 function agentNodeTone(data: GraphNode['data']): Tone {
-  if (data.runActive && data.runState === 'completed' && data.agent.productRole === 'orchestrator') {
-    if (['leased', 'submitted', 'acknowledged', 'uncertain'].includes(data.reviewState ?? '')) return 'accent'
-    if (['blocked_busy', 'blocked_disconnected', 'failed'].includes(data.reviewState ?? '')) return 'warning'
+  if (data.runActive && data.agent.productRole === 'orchestrator'
+    && ['leased', 'submitted', 'acknowledged', 'uncertain'].includes(data.reviewState ?? '')) return 'accent'
+  if (data.runActive && data.agent.productRole === 'orchestrator'
+    && ['blocked_busy', 'blocked_disconnected', 'failed'].includes(data.reviewState ?? '')) return 'warning'
+  if (data.runActive) {
+    if (data.runState === 'waiting') return 'warning'
+    if (data.runState === 'queued' || data.runState === 'starting' || data.runState === 'running') return 'accent'
     return 'neutral'
-  }
-  if (data.runState === 'completed') {
-    if (data.runOutcome === 'failed') return 'danger'
-    if (data.runOutcome === 'canceled') return 'neutral'
-    return data.runOutcome === 'succeeded' ? 'success' : 'neutral'
   }
   if (data.executionState === 'auth_required' || data.executionState === 'waiting_browser' || data.runState === 'waiting') return 'warning'
   if (data.executionState === 'interrupted' || data.executionState === 'disconnected') return 'danger'
@@ -202,17 +202,18 @@ function agentNodeTone(data: GraphNode['data']): Tone {
 }
 
 function agentNodeStatus(data: GraphNode['data']): string {
-  if (data.runActive && data.runState === 'completed' && data.agent.productRole === 'orchestrator') {
-    if (['leased', 'submitted', 'acknowledged', 'uncertain'].includes(data.reviewState ?? '')) return 'Working'
-    if (['blocked_busy', 'blocked_disconnected', 'failed'].includes(data.reviewState ?? '')) return 'Waiting'
+  if (data.runActive) {
+    if (data.agent.productRole === 'orchestrator'
+      && ['leased', 'submitted', 'acknowledged', 'uncertain'].includes(data.reviewState ?? '')) return 'Working'
+    if (data.agent.productRole === 'orchestrator'
+      && ['blocked_busy', 'blocked_disconnected', 'failed'].includes(data.reviewState ?? '')) return 'Waiting'
+    if (data.runState === 'waiting') return 'Waiting'
+    if (['queued', 'starting', 'running'].includes(data.runState ?? '')) return 'Working'
     return 'Idle'
   }
-  if (data.runState === 'completed') {
-    if (data.runOutcome === 'canceled') return 'Canceled'
-    if (data.runOutcome === 'failed') return 'Failed'
-    if (data.runOutcome === 'succeeded') return 'Completed'
-  }
-  return data.runState?.replaceAll('_', ' ') ?? data.executionStateLabel
+  if (data.executionState === 'working') return 'Working'
+  if (['waiting_browser', 'auth_required', 'interrupted', 'disconnected'].includes(data.executionState ?? '')) return 'Waiting'
+  return 'Idle'
 }
 
 function agentNodeSubtitle(data: GraphNode['data']): string {
@@ -378,6 +379,8 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
           <AgentSettingsForm
             workspaceId={nodeMenu?.workspaceId}
             workflowApprovalHandler={nodeMenu?.workflowApprovalHandler}
+            designatedOrchestrator={nodeMenu?.workflowApprovalHandler === 'orchestrator'
+              && nodeMenu.designatedOrchestratorAgentId === data.agentId}
             agent={data.agent}
             initialPrompt={data.initialPrompt}
             executionPolicy={data.executionPolicy}
@@ -610,11 +613,10 @@ export function GraphEditor({
   const agentOverrides = draft?.agentOverrides ?? EMPTY_AGENT_OVERRIDES
   const [notice, setNotice] = useState<{ kind: 'success' | 'error' | 'info'; text: string }>()
   useEffect(() => { if (notice?.kind === 'success') toasts?.notify({ tone: 'success', title: notice.text }) }, [notice, toasts])
-  const [activeRunId, setActiveRunId] = useState<string | undefined>(() => runFacts?.find((run) =>
-    run.workflowId === workflow.id && run.executionState !== 'completed',
-  )?.id)
-  const displayedRunId = activeRunId ?? runFacts?.find((run) => run.workflowId === workflow.id)?.id
-  const startLock = useRef(Boolean(activeRunId))
+  const [activeRunId, setActiveRunId] = useState<string>()
+  const liveRunId = runFacts?.find((run) => run.workflowId === workflow.id && run.executionState !== 'completed')?.id
+  const displayedRunId = liveRunId ?? activeRunId
+  const startLock = useRef(false)
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
   const [workflowSettingsOpen, setWorkflowSettingsOpen] = useState(false)
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => new Set())
@@ -661,7 +663,8 @@ export function GraphEditor({
   }, [leaveSurface])
   const nodeMenuValue = useMemo(
     () => ({ openMenuNodeId, setOpenMenuNodeId: openNodeMenu, workspaceId,
-      workflowApprovalHandler: (draft?.workflow ?? workflow).approval?.handler }),
+      workflowApprovalHandler: (draft?.workflow ?? workflow).approval?.handler,
+      designatedOrchestratorAgentId: (draft?.workflow ?? workflow).approval?.designatedOrchestratorAgentId }),
     [openMenuNodeId, openNodeMenu, workspaceId, draft?.workflow, workflow],
   )
   const saveMutation = useSaveGraphMutation()
@@ -680,18 +683,19 @@ export function GraphEditor({
     enabled: Boolean(displayedRunId),
     refetchInterval: (query) => query.state.data?.run.executionState === 'completed' ? false : 1_000,
   })
+  const liveRunData = runQuery.data?.run.executionState === 'completed' ? undefined : runQuery.data
   const runStatesByNodeId = useMemo(
-    () => new Map(runQuery.data?.executions.map((execution) => [execution.workflowNodeId, execution.state]) ?? []),
-    [runQuery.data?.executions],
+    () => new Map(liveRunData?.executions.map((execution) => [execution.workflowNodeId, execution.state]) ?? []),
+    [liveRunData?.executions],
   )
   const runOutcomesByNodeId = useMemo(
-    () => new Map(runQuery.data?.executions.flatMap((execution) => execution.result
+    () => new Map(liveRunData?.executions.flatMap((execution) => execution.result
       ? [[execution.workflowNodeId, execution.result.outcome] as const] : []) ?? []),
-    [runQuery.data?.executions],
+    [liveRunData?.executions],
   )
   const reviewStatesByAgentId = useMemo(() => {
     const latest = new Map<string, { sequence: number; state: NonNullable<GraphNode['data']['reviewState']> }>()
-    for (const activity of runQuery.data?.activity ?? []) {
+    for (const activity of liveRunData?.activity ?? []) {
       if (activity.kind !== 'review_job_state') continue
       const { reviewerAgentId, state } = activity.payload
       if (typeof reviewerAgentId !== 'string' || typeof state !== 'string') continue
@@ -700,12 +704,13 @@ export function GraphEditor({
       latest.set(reviewerAgentId, { sequence: activity.sequence, state: state as NonNullable<GraphNode['data']['reviewState']> })
     }
     return new Map([...latest].map(([agentId, item]) => [agentId, item.state]))
-  }, [runQuery.data?.activity])
+  }, [liveRunData?.activity])
 
   useEffect(() => {
     const run = runQuery.data?.run
     if (!run || run.id !== activeRunId || run.executionState !== 'completed') return
     startLock.current = false
+    setActiveRunId(undefined)
     void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) })
     if (run.outcome === 'succeeded') {
       setNotice({ kind: 'success', text: 'Workflow completed with a durable result.' })
@@ -784,9 +789,8 @@ export function GraphEditor({
   }
   const executionLimitExceeded = !onSaveSession && executionPolicy.maxNodeExecutions < displayedWorkflow.nodes.length
   const managedLocationReady = !managedDraft || managedWorkspace.data?.locationValidation.status === 'ready'
-  const startDisabled = startRunMutation.isPending || startManagedRun.isPending || !managedLocationReady
-    || Boolean(activeRunId && runQuery.data?.run.executionState !== 'completed')
-  const runActive = Boolean(activeRunId && runQuery.data?.run.executionState !== 'completed')
+  const runActive = Boolean(displayedRunId && (!runQuery.data || runQuery.data.run.executionState !== 'completed'))
+  const startDisabled = startRunMutation.isPending || startManagedRun.isPending || !managedLocationReady || runActive
   const hasUnsavedAgentSettings = displayedWorkflow.nodes.some((node) => {
     const local = localAgents.find((agent) => agent.id === node.agentId)
     const persisted = agents.find((agent) => agent.id === node.agentId)
@@ -964,7 +968,7 @@ export function GraphEditor({
         selectedNodeIds,
         runStatesByNodeId,
         runOutcomesByNodeId,
-        runActive: Boolean(runQuery.data && runQuery.data.run.executionState !== 'completed'),
+        runActive: Boolean(liveRunData),
         reviewStatesByAgentId,
         onSelectAgent: selectAgent,
         onOpenNodeSettings: openNodeSettings,
@@ -972,11 +976,11 @@ export function GraphEditor({
         onRemoveNode: removeGraphNode,
         onSaveNodeSettings: saveNodeSettings,
         onResizeNode: resizeGraphNode,
-        runFacts,
+        runFacts: runFacts?.filter((run) => run.executionState !== 'completed'),
         enteringNodeIds,
       },
     ),
-    [catalogAgents, displayedWorkflow, enteringNodeIds, openNodeSettings, removeGraphEdge, removeGraphNode, resizeGraphNode, runFacts, runOutcomesByNodeId, runStatesByNodeId, runQuery.data, reviewStatesByAgentId, saveNodeSettings, selectAgent, selectedAgentId, selectedNodeIds],
+    [catalogAgents, displayedWorkflow, enteringNodeIds, openNodeSettings, removeGraphEdge, removeGraphNode, resizeGraphNode, runFacts, runOutcomesByNodeId, runStatesByNodeId, liveRunData, reviewStatesByAgentId, saveNodeSettings, selectAgent, selectedAgentId, selectedNodeIds],
   )
 
   const visibleNodes = useMemo(() => {
@@ -1514,19 +1518,19 @@ export function GraphEditor({
               aria-label={runActive ? 'Cancel workflow' : 'Start workflow'}
               title={runActive ? 'Cancel workflow' : needsAgentBeforeSave ? 'Add an Agent before starting this workflow' : managedLocationReady ? 'Start workflow' : 'Set a valid workspace execution location first'}
               disabled={runActive ? cancelRunMutation.isPending || stopManagedRun.isPending : startDisabled || (Boolean(managedDraft) && (isDirty || isSaving))}
-              onClick={runActive && activeRunId
+              onClick={runActive && displayedRunId
                 ? () => managedDraft
-                  ? stopManagedRun.mutate({ workspaceId, runId: activeRunId, commandId: crypto.randomUUID() }, {
+                  ? stopManagedRun.mutate({ workspaceId, runId: displayedRunId, commandId: crypto.randomUUID() }, {
                       onSuccess: (result) => {
                         setNotice({ kind: result.status === 'not_owner' ? 'error' : 'info', text:
                           result.status === 'not_owner' ? 'This API does not own the running process. Stop was not accepted; use its active owner.' :
                             result.status === 'already_terminal' ? 'The run record is already terminal. Native process exit has not been verified.' :
                               'Cancellation was requested. Native process exit has not yet been verified.' })
-                        void queryClient.invalidateQueries({ queryKey: queryKeys.run(workspaceId, activeRunId) })
+                        void queryClient.invalidateQueries({ queryKey: queryKeys.run(workspaceId, displayedRunId) })
                       },
                       onError: (error) => setNotice({ kind: 'error', text: graphErrorMessage(error, 'The run could not be canceled.') }),
                     })
-                  : cancelRunMutation.mutate({ workspaceId, runId: activeRunId }, {
+                  : cancelRunMutation.mutate({ workspaceId, runId: displayedRunId }, {
                       onError: (error) => setNotice({ kind: 'error', text: graphErrorMessage(error, 'The run could not be canceled.') }),
                     })
                 : handleStart}
@@ -1584,7 +1588,7 @@ export function GraphEditor({
             onChange={(event) => applyBoardChange((saved) => ({ ...saved, approval: { handler: 'orchestrator', designatedOrchestratorAgentId: event.target.value || undefined } }))}
           /> : null}
           {displayedWorkflow.approval?.handler === 'orchestrator' ? <Alert tone="info" title="Automatic review setup">
-            Use an OpenCode Orchestrator with a tool-capable model, a deny-default policy, and explicit allow rules for graphql-app_interaction_get and graphql-app_interaction_respond. Codex cannot respond automatically with its required noninteractive bootstrap policy.
+            A Codex Orchestrator needs Ask when needed and Codex automatic review. An OpenCode Orchestrator needs a deny-default policy with explicit allow rules for graphql-app_interaction_get and graphql-app_interaction_respond.
           </Alert> : null}
           {!hasDistinctCoder || workflowOrchestrators.length === 0 ? <Alert live tone="warning" title="Orchestrator handling requires one Orchestrator and a distinct Coder on this board." /> : null}
           <WorkflowExecutionLimits
@@ -1690,7 +1694,7 @@ export function WorkflowGraph({ workspaceId, workflowId, selectedAgentId, onSele
   const managedContextQuery = useManagedGraphContextQuery(workspaceId, workflowId)
   const managedAgentsQuery = { ...managedContextQuery, data: managedContextQuery.data?.agents }
   const managedDraftQuery = { ...managedContextQuery, data: managedContextQuery.data?.draft }
-  const workspaceQuery = useWorkspaceDetailsQuery(workspaceId)
+  const workspaceQuery = useWorkspaceDetailsQuery(workspaceId, { refetchInterval: 1_000 })
 
   if (workspaceQuery.isPending || managedAgentsQuery.isPending || managedDraftQuery.isPending) {
     return (

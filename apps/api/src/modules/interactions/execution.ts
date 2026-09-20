@@ -722,7 +722,9 @@ export class ApprovalExecutionCoordinator {
     let signal = AbortSignal.any([input.signal, credentialFailure.signal])
     let stopRenewal: (() => Promise<void>) | undefined
     signal.throwIfAborted()
-    assertNativeWorkflowConfiguration(input.request.configuration.harness, input.approval)
+    assertNativeWorkflowConfiguration(input.request.configuration.harness, input.approval,
+      input.approval?.handler === 'orchestrator'
+        && input.request.configuration.agentId === input.approval.designatedOrchestratorAgentId)
     const ensured = await this.runs.ensureExecution(input.candidate, input.owner)
     let execution = ensured.execution
     let context: NativeManagerResolutionContext | undefined

@@ -23,7 +23,8 @@ export class AutomaticReviewService {
   private shutdownTask: Promise<void> | undefined
   constructor(private readonly pool: pg.Pool, private readonly runs: PostgresRunRepository,
     native: InteractionNativeRuntime, private readonly chat: OperatorChatService, private readonly access: PostgresAccessService,
-    private readonly locations: WorkspaceLocationService, private readonly rollout: NativeRollout) {
+    private readonly locations: WorkspaceLocationService, private readonly rollout: NativeRollout,
+    private readonly stopFailedRun?: (runId: string) => Promise<void>) {
     this.coordination = new PostgresInteractionCoordinationRepository(pool)
     this.dispatcher = new ReviewerDispatcher(this.coordination, native)
   }
@@ -97,6 +98,11 @@ export class AutomaticReviewService {
       interactionId: job.interactionId, reviewJobId: job.id, state: job.state,
       ...(job.error ? { error: job.error } : {}),
     }, interaction.executionId)
+    const current = job ?? await this.coordination.findReviewJob(interaction.id, reviewerId)
+    if (current?.state === 'failed' && current.cleanup?.completedAt
+      && await this.coordination.isReviewPending(interaction.id, reviewerId)) {
+      await this.stopFailedRun?.(run.id)
+    }
   }
   /** Run Stop/terminal hook; callers need not know Operator-chat runtime internals. */
   stopRun(runId: string, reason = 'The Run stopped or completed.'): Promise<void> {

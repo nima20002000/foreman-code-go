@@ -15,11 +15,13 @@ export function validateReviewerBootstrap(
     throw new DomainError('APPROVAL_REVIEWER_BOOTSTRAP_ORDER',
       'The designated Orchestrator must appear once as the entry step, before every Coder. A downstream or repeated reviewer cannot handle bootstrap approvals.', 409)
   }
-  // A Codex reviewer with approvalPolicy=never cannot call the destructive
-  // interaction_respond App MCP tool; on-request would need another reviewer.
   if (configuration?.harness === 'codex') {
-    throw new DomainError('APPROVAL_CODEX_REVIEW_UNSUPPORTED',
-      'Codex cannot automatically respond to its assigned App MCP approval under the required noninteractive bootstrap policy. Choose an OpenCode Orchestrator with explicit App MCP tool grants, or another approval handler.', 409)
+    if (configuration.advanced?.approvalPolicy !== 'on-request'
+      || configuration.advanced.approvalsReviewer !== 'auto_review') {
+      throw new DomainError('APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED',
+        'A Codex Orchestrator needs Ask when needed and Codex automatic review to respond to App MCP approval requests without a person.', 409)
+    }
+    return
   }
   const rules = configuration?.harness === 'opencode' ? configuration.advanced?.permissionRules : undefined
   const noninteractive = configuration?.harness === 'opencode' && !configuration.autoApprove

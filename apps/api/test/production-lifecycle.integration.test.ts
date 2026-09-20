@@ -39,6 +39,7 @@ type ProviderSession = { input: WorkflowNativeSessionStart; pending: PendingNati
 type Connection = { id: string; events: NativeHarnessEvent[]; token: string; sessionId: string }
 let sessions: Map<string, ProviderSession>, connections: WeakMap<object, Connection>
 let repeatedApproval = false
+let reviewNoDecision = false
 let native: { starts: string[]; attaches: number; responses: number; inspections: number; closes: number }
 
 function event(manager: object, type: string, payload: Record<string, unknown>) {
@@ -94,7 +95,7 @@ beforeEach(async () => {
   runs = new PostgresRunRepository(database.pool, workflows, new WorkspaceLocationService(database.pool, new PostgresCommandCoordinator(database.pool), root))
   interactions = new PostgresInteractionRepository(database.pool)
   access = new PostgresAccessService(database.pool)
-  sessions = new Map(); connections = new WeakMap(); repeatedApproval = false
+  sessions = new Map(); connections = new WeakMap(); repeatedApproval = false; reviewNoDecision = false
   native = { starts: [], attaches: 0, responses: 0, inspections: 0, closes: 0 }
   // Only the native provider transport is doubled. Credentials, ownership,
   // lanes, delivery, budgets, checkpoints, HTTP and MCP use production wiring.
@@ -128,7 +129,9 @@ beforeEach(async () => {
     if (input.clientCorrelationId.startsWith('review-')) {
       const interactionId = /interaction (\S+)\./.exec(input.prompt)![1]!
       const interaction = (await interactions.get(interactionId))!
-      await mcp(connections.get(this)!.token, { interactionId, optionId: interaction.responseOptions[0]!.optionId, expectedRevision: interaction.revision })
+      if (!reviewNoDecision) await mcp(connections.get(this)!.token, {
+        interactionId, optionId: interaction.responseOptions[0]!.optionId, expectedRevision: interaction.revision,
+      })
       saved.turns.set(input.clientCorrelationId, { outcome: 'succeeded', output: { text: 'review result' } })
     } else if (saved.input.request.workflowNodeId === 'orchestrator') saved.turns.set(input.clientCorrelationId, success)
     else {
@@ -302,6 +305,20 @@ it('automatically wakes an idle Orchestrator to approve a later Worker request t
     grants: [{ actions: ['interactions:read'], scope: { runIds: ['another-run'] } }],
     expiresAt: new Date(Date.now() + 60_000) })
   expect((await operatorGet(denied.token, pending.id)).isError).toBe(true)
+}, 20_000)
+
+it('settles a waiting Run when its assigned Orchestrator finishes without a decision', async () => {
+  vi.stubEnv('GRAPHQL_OPENCODE_PARITY_QUALIFIED', '1')
+  reviewNoDecision = true
+  const { run, pending } = await start('orchestrator')
+  await production.initialize()
+  await production.reconcile(() => undefined)
+  await vi.waitFor(async () => expect((await runs.get(run.id))?.executionState).toBe('completed'), { timeout: 10_000 })
+  expect((await runs.get(run.id))?.outcome).toBe('canceled')
+  expect((await interactions.get(pending.id))?.status).toBe('canceled')
+  const result = await database.pool.query<{ state: string; code: string }>(
+    "select state,record->'error'->>'code' as code from review_jobs where interaction_id=$1", [pending.id])
+  expect(result.rows[0]).toMatchObject({ state: 'failed', code: 'REVIEW_NO_DECISION' })
 }, 20_000)
 
 it('reviews through the completed Orchestrator session, survives restart and settles a lost acknowledgement while the next Worker waits', async () => {

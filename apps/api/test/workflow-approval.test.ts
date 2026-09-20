@@ -50,14 +50,20 @@ describe('workflow approval authority', () => {
       .toThrowError(expect.objectContaining({ code: 'APPROVAL_REVIEWER_BOOTSTRAP_INTERACTIVE' }))
   })
 
-  it('rejects Codex and missing App MCP grants before an automatic Run starts', () => {
+  it('requires Codex automatic review or explicit OpenCode App MCP grants before a Run starts', () => {
     const approval = { handler: 'orchestrator' as const, designatedOrchestratorAgentId: 'agent-orchestrator' }
     const codex = agents.map((agent) => agent.id !== 'agent-orchestrator' ? agent : { ...agent,
       harnessConfiguration: { harness: 'codex' as const, model: 'test-model', reasoningEffort: 'medium' as const,
         sandbox: 'read-only' as const, serviceTier: 'standard' as const,
         advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'never' as const } } })
     expect(() => validateWorkflowApproval(definition, approval, codex))
-      .toThrowError(expect.objectContaining({ code: 'APPROVAL_CODEX_REVIEW_UNSUPPORTED' }))
+      .toThrowError(expect.objectContaining({ code: 'APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED' }))
+    const codexAuto = agents.map((agent) => agent.id !== 'agent-orchestrator' ? agent : { ...agent,
+      harnessConfiguration: { harness: 'codex' as const, model: 'gpt-5.6-luna', reasoningEffort: 'high' as const,
+        sandbox: 'read-only' as const, serviceTier: 'standard' as const,
+        advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'on-request' as const,
+          approvalsReviewer: 'auto_review' as const } } })
+    expect(() => validateWorkflowApproval(definition, approval, codexAuto)).not.toThrow()
     const missing = agents.map((agent) => agent.id !== 'agent-orchestrator' ? agent : { ...agent,
       harnessConfiguration: { ...agent.harnessConfiguration!, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
         permissionRules: [{ permission: '*', pattern: '*', effect: 'deny' as const }] } } })
