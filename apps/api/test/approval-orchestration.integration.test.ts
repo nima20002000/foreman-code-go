@@ -7,7 +7,6 @@ import { join } from 'node:path'
 import {
   CODEX_APPROVAL_OPTIONS_FIXTURE,
   AgentSchema,
-  DEFAULT_CODEX_ADVANCED_CONFIGURATION,
   DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
   DurableInteractionSchema,
   NATIVE_INTERACTION_FIXTURES,
@@ -382,8 +381,13 @@ it('delivers an Orchestrator App MCP response to native execution, resumes the r
     await pool.query('update agents set record=$2::jsonb where id=$1', [agentId, JSON.stringify(agent)])
     await pool.query("update agent_configuration_versions set record=jsonb_set(record,'{productRole}',to_jsonb($2::text)) where agent_id=$1", [agentId, productRole])
   }
-  await pool.query("update agent_configuration_versions set record=jsonb_set(record,'{harness,advanced}',$1::jsonb,true) where agent_id='agent-reviewer'",
-    [JSON.stringify({ ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'never' })])
+  await pool.query("update agent_configuration_versions set record=jsonb_set(record,'{harness}',$1::jsonb,true) where agent_id='agent-reviewer'",
+    [JSON.stringify({ harness: 'opencode', model: 'opencode-go/gpt-5.6-luna', variant: 'high', nativeAgent: 'build', thinking: false,
+      autoApprove: false, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: [
+        { permission: '*', pattern: '*', effect: 'deny' },
+        { permission: 'graphql-app_interaction_get', pattern: '*', effect: 'allow' },
+        { permission: 'graphql-app_interaction_respond', pattern: '*', effect: 'allow' },
+      ] } })])
   const saved = await workflows.get('workspace-1', 'workflow-content-pipeline')
   if (!saved) throw new Error('seed missing')
   await workflows.save('workspace-1', {

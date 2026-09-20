@@ -28,11 +28,7 @@ function WorkflowNavigationItem({
       <Link
         to="/workspaces/$workspaceId"
         params={{ workspaceId }}
-        search={(previous) => {
-          const next = { ...previous, workflowId: workflow.id }
-          delete next.agentId
-          return next
-        }}
+        search={{ workflowId: workflow.id }}
         className={`nav-item workflow-navigation-item${active ? ' nav-item-active' : ''}`}
         aria-current={active ? 'page' : undefined}
         title={workflow.name}

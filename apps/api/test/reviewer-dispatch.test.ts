@@ -10,6 +10,7 @@ import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart } f
 import { PostgresInteractionCoordinationRepository, type WriterFence } from '../src/modules/interactions/coordination.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { ReviewerDispatcher } from '../src/modules/interactions/reviewer.js'
+import type { ReviewerNativeRuntime } from '../src/modules/interactions/reviewerRuntime.js'
 import { reviewTurnEvidence } from '../src/modules/interactions/reviewerEvidence.js'
 import { LeaseGuard, ownedEvents, SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
 
@@ -38,6 +39,7 @@ class CoordinationFake {
   failJobRenewal = false
   failLaneRenewal = false
   pending = true
+  delivered = false
   readonly nativeEvents: NativeHarnessEvent[] = []
 
   async appendReviewNativeEvent(_job: ReviewJob, event: NativeHarnessEvent) {
@@ -55,11 +57,13 @@ class CoordinationFake {
   async getReviewJobContext() { return this.context }
   async nextReviewJob() {
     if (!this.job || ['completed', 'failed'].includes(this.job.state)
-      || (this.job.leaseExpiresAt && Date.parse(this.job.leaseExpiresAt) > Date.now())) return undefined
+      || (this.job.leaseExpiresAt && Date.parse(this.job.leaseExpiresAt) > Date.now())
+      || (this.job.retryAfter && Date.parse(this.job.retryAfter) > Date.now())) return undefined
     return clone(this.job)
   }
   async reviewJobAgents() { return await this.nextReviewJob() ? ['reviewer'] : [] }
   async isReviewPending() { return this.pending }
+  async reviewDecisionDelivered() { return this.delivered }
   async claimReviewJob(_id: string, owner: string, token: string, expires: string) {
     const current = await this.nextReviewJob()
     // Recheck after the await, just as the SQL update holds the row lock.
@@ -67,7 +71,7 @@ class CoordinationFake {
       throw new DomainError('REVIEW_JOB_NOT_CLAIMABLE', 'owned', 409)
     }
     this.job = { ...current, state: ['submitted', 'acknowledged', 'uncertain'].includes(current.state) ? current.state : 'leased',
-      attempt: current.attempt + 1, leaseOwner: owner, leaseToken: token, leaseExpiresAt: expires }
+      attempt: current.attempt + 1, leaseOwner: owner, leaseToken: token, leaseExpiresAt: expires, retryAfter: undefined }
     return clone(this.job)
   }
   async assertReviewJobLease(_id: string, token: string) {
@@ -82,7 +86,7 @@ class CoordinationFake {
     return this.job!.leaseExpiresAt = new Date(Date.now() + ms).toISOString()
   }
   async transitionReviewJob(id: string, token: string, state: ReviewJob['state'], fields: {
-    providerTurnOrMessageId?: string; writerFence?: WriterFence; releaseLease?: boolean; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']
+    providerTurnOrMessageId?: string; writerFence?: WriterFence; releaseLease?: boolean; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']; retryAfter?: string
   } = {}) {
     await this.assertReviewJobLease(id, token)
     if (fields.writerFence) await this.assertLaneLease(fields.writerFence.id, fields.writerFence.token)
@@ -90,7 +94,8 @@ class CoordinationFake {
     this.job = { ...this.job!, state, updatedAt: new Date().toISOString(),
       ...(fields.providerTurnOrMessageId ? { providerTurnOrMessageId: fields.providerTurnOrMessageId } : {}),
       ...(fields.error ? { error: fields.error } : {}),
-      ...(fields.cleanup ? { cleanup: fields.cleanup } : {}) }
+      ...(fields.cleanup ? { cleanup: fields.cleanup } : {}),
+      ...(fields.retryAfter ? { retryAfter: fields.retryAfter } : {}) }
     if (state === 'submitted') this.job.submittedAt = new Date().toISOString()
     if (state === 'acknowledged') this.job.acknowledgedAt = new Date().toISOString()
     if (state === 'completed') this.job.completedAt = new Date().toISOString()
@@ -103,6 +108,7 @@ class CoordinationFake {
     if (lane.ownerAgentId !== this.lane.ownerAgentId) throw new DomainError('SESSION_LANE_OWNER_CONFLICT', 'wrong owner', 409)
     return clone(this.lane)
   }
+  async getLane() { return clone(this.lane) }
   async claimLane(_id: string, revision: number, owner: string, token: string, expires: string, correlationId: string) {
     if (revision !== this.lane.revision || (this.lane.leaseExpiresAt && Date.parse(this.lane.leaseExpiresAt) > Date.now())) {
       throw new DomainError('SESSION_LANE_BUSY', 'busy', 409)
@@ -149,7 +155,7 @@ function fixture(ms = 30_000) {
     createSession: async () => session,
     attachSession: async () => { attached++; return session },
     startTurn: async function* (_session: NativeSessionReference, input: { clientCorrelationId: string }) {
-      started++; yield startEvent(input.clientCorrelationId); yield endEvent()
+      started++; yield startEvent(input.clientCorrelationId); coordination.pending = false; yield endEvent()
     },
     reconcile: async () => { reconciled++; return idleHistory() },
     pending: async () => undefined,
@@ -158,7 +164,7 @@ function fixture(ms = 30_000) {
     cancel: async () => { canceled++; return true },
     close: async () => undefined,
   } as unknown as NativeHarnessSessionManager
-  const runtime = { attachInteraction: async () => ({ manager, session }), attachOwnedSession: async () => ({ manager, session }) }
+  const runtime: ReviewerNativeRuntime = { attachInteraction: async () => ({ manager, session }), attachOwnedSession: async () => ({ manager, session }) }
   const dispatcher = new ReviewerDispatcher(coordination.asRepository(), runtime, ms)
   return { coordination, manager, runtime, dispatcher, counts: () => ({ started, attached, reconciled, canceled, responded }) }
 }
@@ -192,6 +198,77 @@ test('does not submit a review after the interaction is decided or canceled', as
   assert.equal(f.counts().started, 0)
 })
 
+test('a missing saved cgroup boundary blocks review permanently without replaying native work', async () => {
+  const f = fixture(); await enqueue(f)
+  f.runtime.attachOwnedSession = async () => { throw Object.assign(new Error('missing native boundary'), {
+    code: 'ENOENT', path: '/sys/fs/cgroup/test/graphql-native-12345678-1234-1234-1234-123456789abc',
+  }) }
+  const result = await f.dispatcher.dispatchNext('reviewer', 'worker')
+  assert.equal(result?.state, 'failed')
+  assert.equal(result?.error?.code, 'REVIEW_NATIVE_CLOSURE_UNCONFIRMED')
+  assert.equal(await f.dispatcher.dispatchNext('reviewer', 'worker'), undefined)
+  assert.equal(f.counts().started, 0)
+})
+
+test('a transient reviewer attachment failure delays its next attempt', async () => {
+  const f = fixture(); await enqueue(f)
+  f.runtime.attachOwnedSession = async () => { throw new Error('transport unavailable') }
+  const result = await f.dispatcher.dispatchNext('reviewer', 'worker')
+  assert.equal(result?.state, 'blocked_disconnected')
+  assert.ok(Date.parse(result.retryAfter!) > Date.now())
+  assert.equal(await f.dispatcher.dispatchNext('reviewer', 'worker'), undefined)
+  assert.equal(f.counts().started, 0)
+})
+
+test('fresh review verifies the completed workflow turn after a failed preflight left a review correlation', async () => {
+  const f = fixture(); const job = await enqueue(f)
+  f.coordination.lane = { ...f.coordination.lane, observedStatus: 'disconnected',
+    correlationId: job.correlationId, currentTurnOrMessageId: 'completed-workflow-turn' }
+  let attachedCorrelation: string | undefined
+  let attachedTurn: string | undefined
+  let inspectedCorrelation: string | undefined
+  f.runtime.attachOwnedSession = async (context) => {
+    attachedCorrelation = context.correlationId
+    attachedTurn = context.nativeTurnId
+    return { manager: f.manager, session }
+  }
+  f.manager.reconcile = async (_session, correlation) => {
+    inspectedCorrelation ??= correlation
+    return idleHistory()
+  }
+  assert.equal((await f.dispatcher.dispatchNext('reviewer', 'worker'))?.state, 'completed')
+  assert.equal(attachedCorrelation, 'execution:reviewer-execution')
+  assert.equal(attachedTurn, 'completed-workflow-turn')
+  assert.equal(inspectedCorrelation, 'execution:reviewer-execution')
+  assert.equal(f.counts().started, 1)
+})
+
+test('a terminal reviewer turn without a decision fails visibly and is never replayed', async () => {
+  const f = fixture(); await enqueue(f)
+  f.manager.startTurn = async function* (_session, input) {
+    yield startEvent(input.clientCorrelationId)
+    yield endEvent()
+  }
+  const result = await f.dispatcher.dispatchNext('reviewer', 'worker')
+  assert.equal(result?.state, 'failed')
+  assert.equal(result?.error?.code, 'REVIEW_NO_DECISION')
+  assert.equal(f.counts().started, 0)
+  assert.equal(await f.dispatcher.dispatchNext('reviewer', 'worker'), undefined)
+})
+
+test('a delivered decision survives Run completion during reviewer turn cleanup', async () => {
+  const f = fixture(); await enqueue(f)
+  f.manager.startTurn = async function* (_session, input) {
+    yield startEvent(input.clientCorrelationId)
+    f.coordination.pending = false
+    f.coordination.delivered = true
+    throw new DomainError('REVIEWER_AUTHORITY_LOST', 'The Run completed.', 409)
+  }
+  const result = await f.dispatcher.dispatchNext('reviewer', 'worker')
+  assert.equal(result?.state, 'completed')
+  assert.equal(result?.error, undefined)
+})
+
 test('iterator exhaustion and unrelated events are not acknowledgement or completion', async () => {
   const f = fixture(); await enqueue(f)
   f.manager.startTurn = async function* () { yield event('thread.started', { threadId: session.nativeSessionId }) }
@@ -223,6 +300,7 @@ for (const state of ['submitted', 'acknowledged', 'uncertain', 'blocked_disconne
     const f = fixture(); const job = await enqueue(f)
     f.coordination.job = { ...job, state, submittedAt: job.createdAt,
       leaseExpiresAt: new Date(Date.now() - 100).toISOString(), leaseToken: 'old' }
+    f.coordination.pending = false
     f.coordination.lane.observedStatus = 'uncertain'
     f.manager.reconcile = async (_session, correlation) => {
       assert.equal(correlation, job.correlationId)
@@ -274,7 +352,7 @@ test('reviewer and normal workflow turn share active lane; long turns renew both
   const began = new Promise<void>((resolve) => { started = resolve })
   f.manager.startTurn = async function* (_session, input) {
     yield startEvent(input.clientCorrelationId); started()
-    await delay(400); yield endEvent()
+    await delay(400); f.coordination.pending = false; yield endEvent()
   }
   const task = f.dispatcher.dispatchNext('reviewer', 'worker')
   await began

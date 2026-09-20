@@ -20,6 +20,7 @@ it('round-trips claimed and renewed lane leases through PostgreSQL and the share
     const expiry = new Date(Date.now() + 60_000).toISOString()
     const claimed = await repository.claimLane(lane.id, lane.revision, 'owner', 'token', expiry, 'turn')
     expect(claimed.leaseExpiresAt).toBe(expiry)
+    expect(claimed.correlationId).toBeUndefined()
     await repository.renewLane(lane.id, 'token', 60_000)
     const renewed = NativeSessionLaneSchema.parse((await pool.query('select record from native_session_lanes where id=$1', [lane.id])).rows[0].record)
     expect(Date.parse(renewed.leaseExpiresAt!)).toBeGreaterThan(Date.now())

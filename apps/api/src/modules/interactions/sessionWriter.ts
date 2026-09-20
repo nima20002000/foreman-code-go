@@ -205,7 +205,8 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   }
 
   async requireIdle(manager: NativeHarnessSessionManager, session: NativeSessionReference,
-    correlationId: string, lease: SessionWriteLease, signal: AbortSignal = lease.guard.signal): Promise<void> {
+    correlationId: string, lease: SessionWriteLease, signal: AbortSignal = lease.guard.signal,
+    preflightCorrelationId?: string): Promise<void> {
     const previous = lease.previous
     await lease.guard.check()
     signal.throwIfAborted()
@@ -214,7 +215,10 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       return
     }
     lease.observedStatus = 'disconnected'
-    const history = await lease.guard.wait(manager.reconcile(session, previous.correlationId ?? correlationId, signal), signal)
+    // A fresh reviewer rechecks the completed workflow turn before binding its
+    // own correlation; a failed earlier preflight may have left a stale label.
+    const observedCorrelationId = preflightCorrelationId ?? previous.correlationId ?? correlationId
+    const history = await lease.guard.wait(manager.reconcile(session, observedCorrelationId, signal), signal)
     await lease.guard.check()
     signal.throwIfAborted()
     // Idle lanes clear their correlation but can retain the last provider ID.
@@ -222,7 +226,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     // This preflight observes availability only; it never completes the new turn.
     const unresolved = previous.observedStatus !== 'idle' || Boolean(previous.correlationId)
     const evidence = reviewTurnEvidence(session, history,
-      previous.correlationId ?? (!unresolved ? history.correlationId : undefined) ?? correlationId,
+      preflightCorrelationId ?? previous.correlationId ?? (!unresolved ? history.correlationId : undefined) ?? correlationId,
       unresolved ? previous.currentTurnOrMessageId : undefined)
     if (history.pendingInteraction || history.pendingInteractions.length || evidence.nativeBusy || evidence.identityConflict
       || (previous.observedStatus !== 'idle' && !evidence.nativeIdle)) {

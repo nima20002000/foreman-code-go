@@ -184,6 +184,11 @@ type NodeMenuContextValue = {
 const NodeMenuContext = createContext<NodeMenuContextValue | undefined>(undefined)
 
 function agentNodeTone(data: GraphNode['data']): Tone {
+  if (data.runActive && data.runState === 'completed' && data.agent.productRole === 'orchestrator') {
+    if (['leased', 'submitted', 'acknowledged', 'uncertain'].includes(data.reviewState ?? '')) return 'accent'
+    if (['blocked_busy', 'blocked_disconnected', 'failed'].includes(data.reviewState ?? '')) return 'warning'
+    return 'neutral'
+  }
   if (data.runState === 'completed') {
     if (data.runOutcome === 'failed') return 'danger'
     if (data.runOutcome === 'canceled') return 'neutral'
@@ -197,6 +202,11 @@ function agentNodeTone(data: GraphNode['data']): Tone {
 }
 
 function agentNodeStatus(data: GraphNode['data']): string {
+  if (data.runActive && data.runState === 'completed' && data.agent.productRole === 'orchestrator') {
+    if (['leased', 'submitted', 'acknowledged', 'uncertain'].includes(data.reviewState ?? '')) return 'Working'
+    if (['blocked_busy', 'blocked_disconnected', 'failed'].includes(data.reviewState ?? '')) return 'Waiting'
+    return 'Idle'
+  }
   if (data.runState === 'completed') {
     if (data.runOutcome === 'canceled') return 'Canceled'
     if (data.runOutcome === 'failed') return 'Failed'
@@ -295,6 +305,7 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
       data-agent-id={data.agentId}
       data-execution-state={data.executionState ?? 'unknown'}
       data-run-state={data.runState ?? 'idle'}
+      data-review-state={data.reviewState ?? 'none'}
     >
       <NodeResizer
         isVisible={selected}
@@ -325,8 +336,10 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
         tone={agentNodeTone(data)}
         icon={agentNodeIcon(data)}
         selected={selected}
-        working={data.runState === 'starting' || data.runState === 'running' || data.executionState === 'working'}
-        meta={data.stepLabel}
+        working={data.runState === 'starting' || data.runState === 'running' || data.executionState === 'working'
+          || (data.runActive && data.runState === 'completed' && data.agent.productRole === 'orchestrator'
+            && ['leased', 'submitted', 'acknowledged', 'uncertain'].includes(data.reviewState ?? ''))}
+        meta={data.runActive && data.runState === 'completed' ? `${data.stepLabel} completed` : data.stepLabel}
         ariaLabel={`${data.label} agent, ${data.stepLabel}`}
         onSelect={(event) => data.onSelect?.(
           data.agentId,
@@ -676,6 +689,18 @@ export function GraphEditor({
       ? [[execution.workflowNodeId, execution.result.outcome] as const] : []) ?? []),
     [runQuery.data?.executions],
   )
+  const reviewStatesByAgentId = useMemo(() => {
+    const latest = new Map<string, { sequence: number; state: NonNullable<GraphNode['data']['reviewState']> }>()
+    for (const activity of runQuery.data?.activity ?? []) {
+      if (activity.kind !== 'review_job_state') continue
+      const { reviewerAgentId, state } = activity.payload
+      if (typeof reviewerAgentId !== 'string' || typeof state !== 'string') continue
+      if (!['pending', 'leased', 'submitted', 'acknowledged', 'completed', 'blocked_busy', 'blocked_disconnected', 'uncertain', 'failed'].includes(state)
+        || (latest.get(reviewerAgentId)?.sequence ?? -1) >= activity.sequence) continue
+      latest.set(reviewerAgentId, { sequence: activity.sequence, state: state as NonNullable<GraphNode['data']['reviewState']> })
+    }
+    return new Map([...latest].map(([agentId, item]) => [agentId, item.state]))
+  }, [runQuery.data?.activity])
 
   useEffect(() => {
     const run = runQuery.data?.run
@@ -939,6 +964,8 @@ export function GraphEditor({
         selectedNodeIds,
         runStatesByNodeId,
         runOutcomesByNodeId,
+        runActive: Boolean(runQuery.data && runQuery.data.run.executionState !== 'completed'),
+        reviewStatesByAgentId,
         onSelectAgent: selectAgent,
         onOpenNodeSettings: openNodeSettings,
         onRemoveEdge: removeGraphEdge,
@@ -949,7 +976,7 @@ export function GraphEditor({
         enteringNodeIds,
       },
     ),
-    [catalogAgents, displayedWorkflow, enteringNodeIds, openNodeSettings, removeGraphEdge, removeGraphNode, resizeGraphNode, runFacts, runOutcomesByNodeId, runStatesByNodeId, saveNodeSettings, selectAgent, selectedAgentId, selectedNodeIds],
+    [catalogAgents, displayedWorkflow, enteringNodeIds, openNodeSettings, removeGraphEdge, removeGraphNode, resizeGraphNode, runFacts, runOutcomesByNodeId, runStatesByNodeId, runQuery.data, reviewStatesByAgentId, saveNodeSettings, selectAgent, selectedAgentId, selectedNodeIds],
   )
 
   const visibleNodes = useMemo(() => {
@@ -1556,6 +1583,9 @@ export function GraphEditor({
             ]}
             onChange={(event) => applyBoardChange((saved) => ({ ...saved, approval: { handler: 'orchestrator', designatedOrchestratorAgentId: event.target.value || undefined } }))}
           /> : null}
+          {displayedWorkflow.approval?.handler === 'orchestrator' ? <Alert tone="info" title="Automatic review setup">
+            Use an OpenCode Orchestrator with a tool-capable model, a deny-default policy, and explicit allow rules for graphql-app_interaction_get and graphql-app_interaction_respond. Codex cannot respond automatically with its required noninteractive bootstrap policy.
+          </Alert> : null}
           {!hasDistinctCoder || workflowOrchestrators.length === 0 ? <Alert live tone="warning" title="Orchestrator handling requires one Orchestrator and a distinct Coder on this board." /> : null}
           <WorkflowExecutionLimits
             key={`${displayedWorkflow.id}:${executionPolicy.maxNodeExecutions}:${executionPolicy.maxParallelism}`}

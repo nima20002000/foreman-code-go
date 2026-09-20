@@ -636,6 +636,7 @@ export const ReviewJobSchema = z.object({
   leaseToken: IdSchema.optional(),
   leaseExpiresAt: TimestampSchema.optional(),
   correlationId: IdSchema,
+  retryAfter: TimestampSchema.optional(),
   cleanup: ReviewCleanupSchema.optional(),
   error: z.object({ code: z.string().trim().min(1), message: z.string().trim().min(1) }).strict().optional(),
   createdAt: TimestampSchema,
@@ -645,6 +646,10 @@ export const ReviewJobSchema = z.object({
   updatedAt: TimestampSchema,
 }).strict();
 export type ReviewJob = z.infer<typeof ReviewJobSchema>;
+export const ReviewStatusSchema = ReviewJobSchema.pick({
+  state: true, attempt: true, error: true, retryAfter: true, updatedAt: true,
+});
+export type ReviewStatus = z.infer<typeof ReviewStatusSchema>;
 
 /** An Agent is a separately addressable worker; workflow nodes reference it by agentId. */
 export const AgentSchema = z
@@ -1713,6 +1718,7 @@ export type OperatorConversationStreamEvent = z.infer<typeof OperatorConversatio
 
 export const GetInteractionResponseSchema = z.object({
   interaction: DurableInteractionSchema,
+  review: ReviewStatusSchema.optional(),
   /** Monitoring permission, independent of the interaction's assigned handler. */
   canRespond: z.boolean().optional(),
 }).strict();

@@ -193,8 +193,8 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
         return ListInteractionsResponseSchema.parse(await interactions.listVisible(requirePrincipal(request), input))
       })
       app.get<{ Params: { interactionId: string } }>('/api/management/interactions/:interactionId', async (request) => {
-        const interaction = await interactions.getVisible(requirePrincipal(request), request.params.interactionId)
-        return GetInteractionResponseSchema.parse({ interaction, canRespond: false })
+        const detail = await interactions.reviewStatusVisible(requirePrincipal(request), request.params.interactionId)
+        return GetInteractionResponseSchema.parse({ ...detail, canRespond: false })
       })
     }
     app.get<{ Querystring: unknown }>('/api/interactions', async (request) => {

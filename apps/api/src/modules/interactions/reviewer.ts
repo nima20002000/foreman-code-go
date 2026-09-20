@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { ReviewJobSchema, type DurableInteraction, type PendingNativeInteraction, type NativeSessionReference, type ReviewJob } from '@graphql/contracts'
 
 import { DomainError } from '../errors.js'
+import { HarnessExecutionError } from '../harnesses/errors.js'
 import { nativePersistenceRedactor } from './nativePersistence.js'
 import type { ReviewCredentialMaintenance, ReviewerNativeRuntime } from './reviewerRuntime.js'
 import { PostgresInteractionCoordinationRepository } from './coordination.js'
@@ -131,10 +132,13 @@ export class ReviewerDispatcher {
           error: { code: 'REVIEW_NO_LONGER_PENDING', message: 'The interaction no longer needs this review.' },
         })
       }
+      const priorLane = !recovering ? await guard.wait(this.coordination.getLane(job.provider, job.nativeSessionId)) : undefined
+      const workflowCorrelationId = `execution:${executionId}`
       const attached = await guard.wait(this.nativeRuntime.attachOwnedSession({
         harness: job.provider, agentId: job.reviewerAgentId, ...ownerContext, purpose: 'reviewer',
-        correlationId: job.correlationId,
-        ...(job.providerTurnOrMessageId ? { nativeTurnId: job.providerTurnOrMessageId } : {}),
+        correlationId: recovering ? job.correlationId : workflowCorrelationId,
+        ...((recovering ? job.providerTurnOrMessageId : priorLane?.currentTurnOrMessageId)
+          ? { nativeTurnId: recovering ? job.providerTurnOrMessageId : priorLane?.currentTurnOrMessageId } : {}),
       }, { harness: job.provider, providerVersion, nativeSessionId: job.nativeSessionId }, guard.signal))
       await guard.check()
       if (attached.session.harness !== job.provider || attached.session.nativeSessionId !== job.nativeSessionId
@@ -151,7 +155,7 @@ export class ReviewerDispatcher {
         let workSignal = lane.guard.signal
         const check = async () => { await guard.check(); await lane.guard.check() }
         const transition = async (state: ReviewJob['state'], fields: {
-          providerTurnOrMessageId?: string; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']; releaseLease?: boolean
+          providerTurnOrMessageId?: string; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']; releaseLease?: boolean; retryAfter?: string
         } = {}) => {
           await check()
           job = await this.coordination.transitionReviewJob(job.id, jobToken, state, {
@@ -229,7 +233,7 @@ export class ReviewerDispatcher {
               return await transition('failed', { error: { code: 'REVIEW_NO_LONGER_PENDING', message: 'The interaction no longer needs this review.' } })
             }
             // Refresh native evidence while exclusively owned; never bounce a cached lane status.
-            await writer.requireIdle(manager, session, job.correlationId, lane, workSignal)
+            await writer.requireIdle(manager, session, job.correlationId, lane, workSignal, workflowCorrelationId)
             await check()
             workSignal.throwIfAborted()
             await this.coordination.bindLaneTurn(lane.fence, job.correlationId)
@@ -284,6 +288,10 @@ export class ReviewerDispatcher {
             }
             return await approvalFailure(pending, [...requests.values()])
           }
+          if (evidence.terminal && await this.coordination.isReviewPending(job.interactionId, job.reviewerAgentId)) {
+            return await failReview({ code: 'REVIEW_NO_DECISION',
+              message: 'The Orchestrator finished its review without responding to the assigned interaction.' })
+          }
           lane.observedStatus = evidence.nativeIdle ? 'idle' : evidence.nativeBusy || evidence.acknowledged ? 'busy' : 'uncertain'
           await maintenance?.stop()
           return await transition(evidence.terminal ? 'completed' : evidence.acknowledged ? 'acknowledged' : 'uncertain', {
@@ -295,6 +303,11 @@ export class ReviewerDispatcher {
           if (isLeaseLost(rawError) || guard.signal.aborted || lane.guard.signal.aborted) throw error
           if (job.cleanup) return await transition('failed', { releaseLease: true })
           if (isLeaseLost(workSignal.reason)) throw workSignal.reason
+          if (submitted && await this.coordination.reviewDecisionDelivered(job.interactionId, job.reviewerAgentId)) {
+            await maintenance?.stop()
+            lane.observedStatus = 'uncertain'
+            return await transition('completed', { releaseLease: true })
+          }
           if ((workSignal.aborted && workSignal.reason instanceof DomainError && workSignal.reason.code === 'REVIEWER_CREDENTIAL_LOST')
             || (rawError instanceof DomainError && ['REVIEWER_CREDENTIAL_LOST', 'REVIEWER_AUTHORITY_LOST'].includes(rawError.code))) {
             return await failReview({ code: 'REVIEWER_CREDENTIAL_LOST',
@@ -307,7 +320,11 @@ export class ReviewerDispatcher {
           if (!submitted) {
             const busy = error instanceof DomainError && error.code === 'SESSION_LANE_BUSY'
             if (!busy) lane.observedStatus = 'disconnected'
-            return await transition(busy ? 'blocked_busy' : 'blocked_disconnected')
+            return await transition(busy ? 'blocked_busy' : 'blocked_disconnected', {
+              error: { code: busy ? 'REVIEW_SESSION_BUSY' : 'REVIEW_SESSION_DISCONNECTED',
+                message: error instanceof Error ? error.message : 'The reviewer session could not begin its turn.' },
+              retryAfter: new Date(Date.now() + Math.min(60_000, 5_000 * 2 ** Math.min(job.attempt, 4))).toISOString(),
+            })
           }
           const rejected = submitting && tracker.processedEvents === 0 && !acknowledged && definitelyRejected(rawError)
           lane.observedStatus = rejected ? 'idle' : 'uncertain'
@@ -325,13 +342,26 @@ export class ReviewerDispatcher {
       await guard.check()
       if (job.cleanup) return this.coordination.transitionReviewJob(job.id, jobToken, 'failed', { releaseLease: true })
       const busy = error instanceof DomainError && error.code === 'SESSION_LANE_BUSY'
+      const causeCode = error instanceof DomainError ? error.code
+        : error instanceof HarnessExecutionError ? error.result.error?.code : undefined
+      const nativeBoundaryMissing = ((rawError as NodeJS.ErrnoException)?.code === 'ENOENT'
+        && typeof (rawError as NodeJS.ErrnoException).path === 'string'
+        && /^\/sys\/fs\/cgroup\/.*\/graphql-native-[0-9a-f-]{36}$/.test((rawError as NodeJS.ErrnoException).path!))
+        || (error instanceof Error && /^ENOENT: no such file or directory, open '\/sys\/fs\/cgroup\/.*\/graphql-native-[0-9a-f-]{36}'$/.test(error.message))
       // Even an old uncertain record without submittedAt must never become fresh work on attach failure.
       const mayHaveSubmitted = recovering || Boolean(job.submittedAt || job.acknowledgedAt || job.providerTurnOrMessageId)
       return this.coordination.transitionReviewJob(job.id, jobToken,
         mayHaveSubmitted ? (job.acknowledgedAt || job.providerTurnOrMessageId ? 'acknowledged' : 'uncertain')
-          : busy ? 'blocked_busy' : 'blocked_disconnected', {
+          : nativeBoundaryMissing ? 'failed' : busy ? 'blocked_busy' : 'blocked_disconnected', {
           releaseLease: true,
-          error: { code: busy ? 'REVIEW_SESSION_BUSY' : 'REVIEW_SESSION_DISCONNECTED', message: 'The existing reviewer session could not be exclusively attached.' },
+          error: nativeBoundaryMissing ? {
+            code: 'REVIEW_NATIVE_CLOSURE_UNCONFIRMED',
+            message: 'The saved native process boundary disappeared without durable closure evidence. Stop this Run and start a new one; the reviewer session cannot be safely reattached.',
+          } : { code: busy ? 'REVIEW_SESSION_BUSY' : 'REVIEW_SESSION_DISCONNECTED',
+            message: `The existing reviewer session could not be exclusively attached${causeCode ? ` (${causeCode})` : ''}.` },
+          ...(!mayHaveSubmitted && nativeBoundaryMissing ? {} : {
+            retryAfter: new Date(Date.now() + Math.min(60_000, 5_000 * 2 ** Math.min(job.attempt, 4))).toISOString(),
+          }),
         })
     } finally {
       await guard.stop()

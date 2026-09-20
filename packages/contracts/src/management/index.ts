@@ -16,6 +16,7 @@ import {
   GetRunResponseSchema,
   ExecutionLocationSchema,
   RunActivitySchema,
+  ReviewStatusSchema,
   IdSchema,
   RunInputSchema,
   TimestampSchema,
@@ -550,6 +551,7 @@ export const ManagedInteractionPageSchema = z.object({
 }).strict();
 export const ManagedInteractionSchema = z.object({ interaction: DurableInteractionSchema,
   canRespond: z.boolean().optional(), canRetryDelivery: z.boolean().optional(), handler: ApprovalHandlerSchema.optional(),
+  review: ReviewStatusSchema.optional(),
 }).strict();
 export const InteractionRespondResultSchema = z.object({
   value: DurableInteractionSchema, replayed: z.boolean(),

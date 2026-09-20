@@ -27,7 +27,7 @@ export function registerInteractionTools(server: McpServer, context: OperatorReq
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'interaction_list', () => service.list(context.principal, input)))
   if (operatorToolAvailable(context, 'interaction_get')) server.registerTool('interaction_get', {
-    description: 'Read one authorized native interaction and its handler-specific response permissions.',
+    description: 'Read one authorized native interaction, its reviewer job status, and handler-specific response permissions.',
     inputSchema: InteractionGetInputSchema, outputSchema: ManagedInteractionSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'interaction_get', () => service.get(context.principal, input.interactionId)))

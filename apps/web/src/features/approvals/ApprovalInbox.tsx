@@ -57,6 +57,7 @@ function ApprovalDetail({ interactionId, workspaceId, workflowId, onClear }: {
   if (detail.isError) return <article className="approval-detail"><ErrorState title="Request unavailable" description={detail.error.message} onRetry={() => void detail.refetch()} retrying={detail.isFetching} /></article>
   if (detail.isPending || !detail.data) return <article className="approval-detail"><LoadingState label="Loading request…" rows={4} /></article>
   const selected = detail.data.interaction
+  const review = detail.data.review
   if (selected.id !== interactionId || !interactionMatchesScope(selected, { workspaceId, workflowId })) {
     return <article className="approval-detail"><ErrorState title="Request outside this Inbox" description="This request is outside the selected Inbox scope." /><Button onClick={onClear}>Clear selection</Button></article>
   }
@@ -66,6 +67,14 @@ function ApprovalDetail({ interactionId, workspaceId, workflowId, onClear }: {
   return <article className="approval-detail">
     <header><div><p className="panel-kicker">{selected.harness === 'codex' ? 'Codex' : 'OpenCode'} permission request</p><h2>{summarizeApprovalRequest(selected.request, selected.nativeRequestType).operation}</h2></div><StateBadge state={selected.status} /></header>
     <ApprovalNames interaction={selected} />
+    {selected.status === 'pending' && review ? <Alert live tone={review.state === 'failed' ? 'danger' : 'warning'}
+      title={review.state === 'failed' ? 'Orchestrator review stopped'
+        : review.state === 'completed' ? 'Orchestrator finished without a decision'
+        : ['blocked_busy', 'blocked_disconnected'].includes(review.state) ? 'Orchestrator connection unavailable'
+          : ['leased', 'submitted', 'acknowledged', 'uncertain'].includes(review.state) ? 'Orchestrator reviewing' : 'Waiting for Orchestrator'}>
+      {review.error?.message ?? (review.state === 'completed' ? 'This request is still pending. Stop this Run and start a new one after correcting the reviewer configuration.'
+        : review.retryAfter ? `The system will retry after ${new Date(review.retryAfter).toLocaleTimeString()}.` : 'The assigned Orchestrator has not made a decision yet.')}
+    </Alert> : null}
     <ApprovalRequestSummary request={selected.request} nativeRequestType={selected.nativeRequestType} reviewContext={selected.reviewContext} />
     <details className="approval-request"><summary>Technical details</summary>
       <dl className="approval-context">

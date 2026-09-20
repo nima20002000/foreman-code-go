@@ -192,6 +192,17 @@ export class InteractionService {
     return interaction
   }
 
+  async reviewStatusVisible(principal: ManagementPrincipal, id: string) {
+    const interaction = await this.getVisible(principal, id)
+    const reviewerId = interaction.approval.designatedOrchestratorAgentId
+    if (interaction.approval.handler !== 'orchestrator' || !reviewerId) return { interaction }
+    const job = await this.interactions.coordination.findReviewJob(id, reviewerId)
+    if (!job) return { interaction }
+    const { state, attempt, error, retryAfter, updatedAt } = job
+    return { interaction, review: { state, attempt, updatedAt,
+      ...(error ? { error } : {}), ...(retryAfter ? { retryAfter } : {}) } }
+  }
+
   async listVisible(principal: ManagementPrincipal, input: {
     workspaceId?: string | undefined; workflowId?: string | undefined; runId?: string | undefined;
     handler?: DurableInteraction['approval']['handler'] | undefined;

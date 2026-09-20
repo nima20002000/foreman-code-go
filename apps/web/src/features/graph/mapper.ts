@@ -238,6 +238,8 @@ export function workflowToGraph(
         initialPrompt: workflowNode.initialPrompt,
         runState,
         runOutcome,
+        runActive: options.runActive,
+        reviewState: options.reviewStatesByAgentId?.get(workflowNode.agentId),
         executionPolicy,
         workflowNodeCount: workflow.nodes.length,
         entering: options.enteringNodeIds?.has(workflowNode.id),

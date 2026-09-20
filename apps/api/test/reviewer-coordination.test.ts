@@ -29,6 +29,7 @@ test('queue selection and claiming both include every recoverable state and chec
       assert.ok(sql.includes(`'${state}'`), state)
     }
     assert.match(sql, /leaseExpiresAt.*clock_timestamp\(\)/s)
+    assert.match(sql, /retryAfter.*clock_timestamp\(\)/s)
   }
   assert.equal(f.released(), true)
 })

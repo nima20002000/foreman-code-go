@@ -8,7 +8,8 @@ import { appendNativeEvent } from '../runs/nativeEvents.js'
 // A submitted job may have reached the provider even when no acknowledgement was saved.
 const recoverableJob = `(state in ('pending','leased','blocked_busy','blocked_disconnected','submitted','acknowledged','uncertain')
     or (state='failed' and record->'cleanup' is not null and record->'cleanup'->>'completedAt' is null))
-  and (record->>'leaseExpiresAt' is null or (record->>'leaseExpiresAt')::timestamptz <= clock_timestamp())`
+  and (record->>'leaseExpiresAt' is null or (record->>'leaseExpiresAt')::timestamptz <= clock_timestamp())
+  and (record->>'retryAfter' is null or (record->>'retryAfter')::timestamptz <= clock_timestamp())`
 
 export interface WriterFence { id: string; token: string }
 
@@ -123,7 +124,8 @@ export class PostgresInteractionCoordinationRepository {
       if (!current) throw new DomainError('REVIEW_JOB_NOT_CLAIMABLE', 'The review job is already owned or completed.', 409)
       const next = ReviewJobSchema.parse({
         ...current, state: ['submitted', 'acknowledged', 'uncertain', 'failed'].includes(current.state) ? current.state : 'leased', attempt: current.attempt + 1, leaseOwner: input.owner,
-        leaseToken: input.token, leaseExpiresAt: input.expiresAt, updatedAt: new Date().toISOString(), error: current.cleanup ? current.error : undefined,
+        leaseToken: input.token, leaseExpiresAt: input.expiresAt, retryAfter: undefined,
+        updatedAt: new Date().toISOString(), error: current.cleanup ? current.error : undefined,
       })
       await client.query(
         `update review_jobs set state=$3,revision=revision+1,record=$2::jsonb,updated_at=now() where id=$1`,
@@ -159,6 +161,16 @@ export class PostgresInteractionCoordinationRepository {
     return result.rowCount === 1
   }
 
+  async reviewDecisionDelivered(interactionId: string, reviewerAgentId: string): Promise<boolean> {
+    const result = await this.queryConnection.query(
+      `select id from durable_interactions where id=$1 and status='delivered'
+       and record->>'deliveryState'='delivered'
+       and record->'approval'->>'handler'='orchestrator'
+       and record->'approval'->>'designatedOrchestratorAgentId'=$2`, [interactionId, reviewerAgentId],
+    )
+    return result.rowCount === 1
+  }
+
   async assertReviewJobLease(id: string, token: string): Promise<void> {
     const result = await this.queryConnection.query(
       `select id from review_jobs where id=$1 and record->>'leaseToken'=$2
@@ -181,7 +193,7 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async transitionReviewJob(id: string, leaseToken: string, state: ReviewJob['state'], fields: {
-    providerTurnOrMessageId?: string; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']; writerFence?: WriterFence; releaseLease?: boolean
+    providerTurnOrMessageId?: string; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']; writerFence?: WriterFence; releaseLease?: boolean; retryAfter?: string
   } = {}, expected?: { revision: number; fence: number }): Promise<ReviewJob> {
     const client = await this.pool.connect()
     try {
@@ -233,6 +245,7 @@ export class PostgresInteractionCoordinationRepository {
         ...(fields.providerTurnOrMessageId ? { providerTurnOrMessageId: fields.providerTurnOrMessageId } : {}),
         ...(fields.error && !current.cleanup ? { error: fields.error } : {}),
         ...(fields.cleanup ? { cleanup: fields.cleanup } : {}),
+        ...(fields.retryAfter ? { retryAfter: fields.retryAfter } : {}),
         ...(releases ? { leaseOwner: undefined, leaseToken: undefined, leaseExpiresAt: undefined } : {}),
       })
       const updated = await client.query(
@@ -284,17 +297,19 @@ export class PostgresInteractionCoordinationRepository {
 
   async claimLane(id: string, expectedRevision: number, owner: string, token: string, leaseExpiresAt: string, correlationId: string): Promise<NativeSessionLane> {
     const input = leaseInput(id, owner, token, leaseExpiresAt)
-    const correlation = IdSchema.parse(correlationId)
+    IdSchema.parse(correlationId)
+    // Lease ownership precedes idle preflight. bindLaneTurn publishes a new
+    // correlation only after that preflight succeeds.
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new DomainError('REVISION_INVALID', 'Expected revision must be a nonnegative integer.', 400)
     const result = await this.queryConnection.query<{ record: unknown }>(
       `update native_session_lanes set revision=revision+1, updated_at=now(),
-         record=jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(record,
+         record=jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(record,
            '{revision}', to_jsonb((revision+1)::bigint)), '{leaseOwner}', to_jsonb($3::text)),
            '{leaseToken}', to_jsonb($4::text)), '{leaseExpiresAt}', to_jsonb(to_char($5::timestamptz at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))),
-           '{correlationId}', to_jsonb($6::text)), '{observedStatus}', '"busy"'::jsonb)
+           '{observedStatus}', '"busy"'::jsonb)
        where id=$1 and revision=$2 and $5::timestamptz > clock_timestamp() and (
          record->>'leaseExpiresAt' is null or (record->>'leaseExpiresAt')::timestamptz <= clock_timestamp())
-       returning record`, [input.id, expectedRevision, input.owner, input.token, input.expiresAt, correlation],
+       returning record`, [input.id, expectedRevision, input.owner, input.token, input.expiresAt],
     )
     if (!result.rows[0]) throw new DomainError('SESSION_LANE_BUSY', 'The native session lane is busy or stale.', 409)
     return NativeSessionLaneSchema.parse(result.rows[0].record)
