@@ -3,7 +3,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { ManagedAgentDefaultsSchema, AgentDefaultsUpdateResultSchema } from '@graphql/contracts/management'
 import {
   operatorChatSettings, DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, NativeHarnessEventSchema,
-  type ExecutionResult, type NativeSessionReference,
+  type ExecutionResult, type NativeSessionReference, type OperatorConversationState,
 } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import pg from 'pg'
@@ -26,8 +26,10 @@ const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:
 
 /** Only provider I/O is fake: these tests exercise real migrations, SQL, grants and service transitions. */
 class ChatManager implements NativeHarnessSessionManager {
-  readonly harness = 'codex' as const
+  constructor(readonly harness: 'codex' | 'opencode' = 'codex') {}
   sessions = 0; turns = 0; attachments = 0; closes = 0; disposals = 0
+  prompts: string[] = []
+  publicMessages: string[] = []
   autoFinish = true; failAttach = false; cancelAcknowledged = true
   private readonly histories = new Map<string, NativeHistory>()
   private readonly active = new Map<string, string>()
@@ -45,12 +47,17 @@ class ChatManager implements NativeHarnessSessionManager {
   }
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal) {
     this.turns++
+    this.prompts.push(input.prompt)
     const correlation = input.clientCorrelationId
     const nativeTurnId = `turn-${this.turns}`
     this.active.set(session.nativeSessionId, correlation)
     this.histories.set(correlation, { correlationId: correlation, nativeTurnId, events: [], pendingInteractions: [] })
     await input.onSubmitted?.(nativeTurnId)
     yield NativeHarnessEventSchema.parse({ sequence: this.turns, type: 'assistant.delta', occurredAt: new Date().toISOString(), payload: { text: 'partial' } })
+    for (const [index, text] of this.publicMessages.entries()) yield NativeHarnessEventSchema.parse({
+      sequence: this.turns * 100 + index, type: 'item.completed', occurredAt: new Date().toISOString(),
+      payload: { turnId: nativeTurnId, item: { id: `commentary-${index}`, type: 'agentMessage', text, phase: 'commentary' } },
+    })
     if (this.autoFinish) this.finish(correlation)
     else if (!this.histories.get(correlation)?.terminalResult) await new Promise<void>((resolve) => {
       const done = () => { signal?.removeEventListener('abort', done); this.releases.delete(correlation); resolve() }
@@ -129,6 +136,156 @@ afterEach(async () => {
 })
 
 describe('Operator chat persistence and native binding', () => {
+  it('changes harness in an empty conversation without a fork or inherited context', async () => {
+    const openCode = new ChatManager('opencode')
+    chat = new OperatorChatService(repository, operators,
+      (configuration) => configuration.harness.harness === 'opencode' ? openCode : manager,
+      '/tmp/graphql-test-operator', authority)
+    const source = await chat.create(owner)
+    const settings = new PostgresFoundationSettingsRepository(pool)
+    const defaults = await settings.getAgentDefaults()
+    await settings.updateAgentDefaults({ ...defaults.value, operator: { ...defaults.value.operator,
+      harness: DEFAULT_HARNESS_DEFAULTS.opencode } }, defaults.revision)
+    const first = await chat.send(source.id, { requestId: 'empty-switch', content: 'First message.',
+      settings: operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.opencode), defaultsRevision: defaults.revision + 1, configurationVersionId: source.operatorConfigurationVersionId }, owner)
+    expect(first.state.conversation.id).toBe(source.id)
+    expect(first.state.handoff).toBeUndefined()
+    await waitFor(async () => (await chat.get(source.id, owner)).turnState === 'idle')
+    expect(openCode.prompts).toEqual(['First message.'])
+  })
+  it('keeps completed public messages through an active turn and final reconciliation', async () => {
+    manager.autoFinish = false
+    manager.publicMessages = ['I will create the folder.', 'The read-only sandbox blocked that attempt.']
+    const conversation = await chat.create(owner)
+    await chat.send(conversation.id, { requestId: 'commentary-turn', content: 'Create a folder.' }, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).messages.filter((message) => message.role === 'assistant').length === 2)
+    manager.finish(nativeCorrelation(conversation.id, 'commentary-turn'))
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+    const messages = (await chat.get(conversation.id, owner)).messages.filter((message) => message.role === 'assistant')
+    expect(messages.map((message) => message.content)).toEqual([
+      'I will create the folder.', 'The read-only sandbox blocked that attempt.', 'final answer',
+    ])
+    expect(messages.map((message) => message.nativeMessageId)).toEqual(['commentary-0', 'commentary-1', 'answer:turn-1'])
+  })
+  it('forks the first cross-harness message with frozen context and idempotent retry', async () => {
+    manager.publicMessages = ['First agent update.', 'Second agent update.']
+    const openCode = new ChatManager('opencode')
+    chat = new OperatorChatService(repository, operators,
+      (configuration) => configuration.harness.harness === 'opencode' ? openCode : manager,
+      '/tmp/graphql-test-operator', authority)
+    const source = await chat.create(owner)
+    await chat.send(source.id, { requestId: 'source-turn', content: 'Please inspect the release.' }, owner)
+    await waitFor(async () => (await chat.get(source.id, owner)).turnState === 'idle')
+    manager.publicMessages = []
+    for (const [role, content] of [['tool', 'TOOL_RESULT_MUST_NOT_TRANSFER'], ['system', 'SYSTEM_TEXT_MUST_NOT_TRANSFER']] as const) {
+      const id = randomUUID()
+      await pool.query(`insert into operator_conversation_messages (id,conversation_id,role,content,record)
+        values ($1,$2,$3,$4,$5::jsonb)`, [id,source.id,role,content,JSON.stringify({ id, conversationId: source.id, role, content })])
+    }
+    await pool.query(`insert into operator_conversation_activity (conversation_id,request_id,activity_id,record)
+      values ($1,$2,$3,$4::jsonb)`, [source.id,'source-turn','mcp-result',JSON.stringify({
+      id: 'mcp-result', requestId: 'source-turn', kind: 'mcp', title: 'MCP call', status: 'completed',
+      input: 'MCP_INPUT_MUST_NOT_TRANSFER', output: 'MCP_OUTPUT_MUST_NOT_TRANSFER',
+    })])
+    const before = await chat.get(source.id, owner)
+    const settings = new PostgresFoundationSettingsRepository(pool)
+    const defaults = await settings.getAgentDefaults()
+    const target = { ...DEFAULT_HARNESS_DEFAULTS.opencode, advanced: { ...DEFAULT_HARNESS_DEFAULTS.opencode.advanced!,
+      permissionRules: [{ permission: 'shell', pattern: '*', effect: 'deny' as const }] } }
+    await settings.updateAgentDefaults({ ...defaults.value, operator: { ...defaults.value.operator, harness: target } }, defaults.revision)
+    const input = { requestId: 'fork-turn', content: 'Continue with OpenCode.',
+      settings: operatorChatSettings(target), forkExpectedRevision: before.revision, defaultsRevision: defaults.revision + 1, configurationVersionId: source.operatorConfigurationVersionId }
+    const first = await chat.send(source.id, input, owner)
+    expect(first.replayed).toBe(false)
+    expect(first.state.conversation.id).toBe('operator-fork:fork-turn')
+    expect(first.state.handoff).toMatchObject({ parentConversationId: source.id, sourceHarness: 'codex', omittedMessages: 0 })
+    await waitFor(async () => (await chat.get(first.state.conversation.id, owner)).turnState === 'idle')
+    const prompt = openCode.prompts[0]!
+    expect(prompt).toContain('Please inspect the release.')
+    const history = ['User: "Please inspect the release."', 'Assistant: "First agent update."',
+      'Assistant: "Second agent update."', 'Assistant: "final answer"']
+    expect(history.map((line) => prompt.indexOf(line))).toEqual([...history.map((line) => prompt.indexOf(line))].sort((a, b) => a - b))
+    expect(history.every((line) => prompt.includes(line))).toBe(true)
+    for (const excluded of ['TOOL_RESULT_MUST_NOT_TRANSFER', 'SYSTEM_TEXT_MUST_NOT_TRANSFER',
+      'MCP_INPUT_MUST_NOT_TRANSFER', 'MCP_OUTPUT_MUST_NOT_TRANSFER']) expect(prompt).not.toContain(excluded)
+    expect(openCode.prompts[0]).toContain('Current user message:\nContinue with OpenCode.')
+    expect((await repository.configuration(first.state.conversation.operatorConfigurationVersionId!))?.harness).toMatchObject({
+      harness: 'opencode', advanced: { permissionRules: [{ permission: 'shell', pattern: '*', effect: 'deny' }] },
+    })
+    expect((await chat.get(source.id, owner)).conversation.operatorConfigurationVersionId).toBe(before.conversation.operatorConfigurationVersionId)
+    expect((await chat.send(source.id, input, owner)).replayed).toBe(true)
+    expect((await repository.list(owner.id)).filter((item) => item.id === first.state.conversation.id)).toHaveLength(1)
+    await chat.send(source.id, { requestId: 'return-to-parent', content: 'Continue with Codex.' }, owner)
+    await waitFor(async () => (await chat.get(source.id, owner)).turnState === 'idle')
+    expect(manager.sessions).toBe(1)
+    const reader = (await access.issue({ name: 'Fork history reader', audience: 'operator',
+      grants: [{ actions: ['operator_handoff:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })).principal
+    await pool.query('insert into operator_chat_credentials(principal_id,conversation_id) values ($1,$2)', [reader.id,first.state.conversation.id])
+    const older = await chat.handoffHistory(reader)
+    expect(older.sourceConversationId).toBe(source.id)
+    expect(older.messages.map((message) => message.content)).toContain('Please inspect the release.')
+    expect(older.messages.map((message) => message.content)).not.toContain('Continue with Codex.')
+    expect(older.messages.map((message) => message.content)).not.toContain('TOOL_RESULT_MUST_NOT_TRANSFER')
+    await expect(chat.handoffHistory(reader, 'unrelated-chat')).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+    await expect(chat.send(source.id, { ...input, requestId: 'stale-fork', forkExpectedRevision: before.revision - 1 }, owner))
+      .rejects.toMatchObject({ code: 'CONVERSATION_REVISION_CONFLICT' })
+  })
+  it('offers the same fork through authenticated MCP with persisted readback and denied callers', async () => {
+    const openCode = new ChatManager('opencode')
+    chat = new OperatorChatService(repository, operators,
+      (configuration) => configuration.harness.harness === 'opencode' ? openCode : manager,
+      '/tmp/graphql-test-operator', authority)
+    const service = new FoundationSettingsManagementService(new PostgresFoundationSettingsRepository(pool),
+      new PostgresCommandCoordinator(pool), { qualifyConfiguration: async () => ({} as never) }, operators)
+    const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access, services: { settings: service, operatorChat: chat, commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
+    const clients: Client[] = []
+    try {
+      const address = await app.listen({ host: '127.0.0.1', port: 0 })
+      async function connect(actions: ManagementPrincipal['grants'][number]['actions']) {
+        const issued = await access.issue({ name: 'Fork MCP caller', audience: 'operator', grants: [{ actions, scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
+        const client = new Client({ name: 'fork-mcp', version: '1' }); clients.push(client)
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => issued.token } }))
+        return client
+      }
+      const client = await connect(['operator_chat:read', 'operator_chat:write', 'settings:read', 'settings:update', 'harnesses:read'])
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['operator_chat_create', 'operator_chat_get', 'operator_chat_send']))
+      const created = (await client.callTool({ name: 'operator_chat_create', arguments: {} })).structuredContent as { conversation: { id: string } }
+      const sourceId = created.conversation.id
+      await client.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId,
+        request: { requestId: 'mcp-source', content: 'Remember the release details.' } } })
+      const get = async (id: string) => (await client.callTool({ name: 'operator_chat_get', arguments: { conversationId: id } })).structuredContent as OperatorConversationState
+      await waitFor(async () => (await get(sourceId)).turnState === 'idle')
+      const source = await get(sourceId)
+      const defaults = (await client.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent as { revision: number; value: typeof DEFAULT_AGENT_DEFAULTS }
+      const target = { ...DEFAULT_HARNESS_DEFAULTS.opencode }
+      const changed = await client.callTool({ name: 'agent_defaults_update', arguments: { commandId: randomUUID(), expectedRevision: defaults.revision,
+        value: { ...defaults.value, operator: { ...defaults.value.operator, harness: target } } } })
+      expect(changed.isError).not.toBe(true)
+      const request = { requestId: 'mcp-fork', content: 'Continue with OpenCode.', settings: operatorChatSettings(target), forkExpectedRevision: source.revision, defaultsRevision: defaults.revision + 1, configurationVersionId: source.conversation.operatorConfigurationVersionId }
+      const fork = (await client.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } })).structuredContent as { state: OperatorConversationState; replayed: boolean }
+      expect(fork.state.handoff?.parentConversationId).toBe(sourceId)
+      expect(fork.state.conversation.id).toBe('operator-fork:mcp-fork')
+      await waitFor(async () => (await get(fork.state.conversation.id)).turnState === 'idle')
+      expect((await get(fork.state.conversation.id)).messages.some((message) => message.content === 'Continue with OpenCode.')).toBe(true)
+      expect((await get(sourceId)).conversation.operatorConfigurationVersionId).toBe(source.conversation.operatorConfigurationVersionId)
+      expect(((await client.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } })).structuredContent as { replayed: boolean }).replayed).toBe(true)
+      const delegated = await access.issue({ name: 'Bound handoff reader', audience: 'operator',
+        grants: [{ actions: ['operator_handoff:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
+      await pool.query('insert into operator_chat_credentials(principal_id,conversation_id) values ($1,$2)',
+        [delegated.principal.id,fork.state.conversation.id])
+      const reader = new Client({ name: 'handoff-reader', version: '1' }); clients.push(reader)
+      await reader.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => delegated.token } }))
+      expect((await reader.listTools()).tools.map((tool) => tool.name)).toContain('operator_handoff_history_get')
+      expect((await reader.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_chat_send')
+      const history = (await reader.callTool({ name: 'operator_handoff_history_get', arguments: {} })).structuredContent as { messages: Array<{ content: string }> }
+      expect(history.messages.map((message) => message.content)).toContain('Remember the release details.')
+      expect((await reader.callTool({ name: 'operator_handoff_history_get', arguments: { sourceConversationId: 'unrelated-chat' } })).isError).toBe(true)
+      const denied = await connect(['operator_chat:read'])
+      expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_chat_send')
+      await expect(denied.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } })).rejects.toThrow('not found')
+    } finally { for (const client of clients) await client.close(); await app.close() }
+  })
   it('checks the Operator MCP setup without creating an Operator or a conversation', async () => {
     expect(await chat.setup(owner)).toMatchObject({ harness: 'codex', status: 'configured' })
     expect((await pool.query('select id from application_operators')).rowCount).toBe(0)
@@ -156,10 +313,11 @@ describe('Operator chat persistence and native binding', () => {
       const before = await read()
       const input = { commandId: randomUUID(), expectedRevision: before.revision, value: { ...before.value,
         operator: { ...before.value.operator, showThinking: true,
-          harness: { ...DEFAULT_HARNESS_DEFAULTS.codex, model: 'gpt-5.4', reasoningEffort: 'high', serviceTier: 'priority' } } } }
+          harness: { ...DEFAULT_HARNESS_DEFAULTS.codex, model: 'gpt-5.4', reasoningEffort: 'high', sandbox: 'workspace-write', serviceTier: 'priority' } } } }
       const accepted = AgentDefaultsUpdateResultSchema.parse((await client.callTool({ name: 'agent_defaults_update', arguments: input })).structuredContent)
       expect(accepted.replayed).toBe(false)
       expect((await read()).value.operator).toEqual(accepted.value.value.operator)
+      expect((await read()).value.operator.harness).toMatchObject({ sandbox: 'workspace-write' })
       const conversation = await chat.create(owner)
       expect((await chat.get(conversation.id, owner)).settings).toEqual({ harness: 'codex', model: 'gpt-5.4', reasoningEffort: 'high', serviceTier: 'priority', showThinking: true })
       expect(AgentDefaultsUpdateResultSchema.parse((await client.callTool({ name: 'agent_defaults_update', arguments: input })).structuredContent).replayed).toBe(true)

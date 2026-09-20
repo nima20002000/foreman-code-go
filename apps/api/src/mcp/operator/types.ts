@@ -18,7 +18,7 @@ import type { FoundationSettingsManagementService } from '../../modules/settings
 import type { OperatorInteractionService } from '../../modules/interactions/operator.js'
 
 export interface OperatorServices {
-  operatorChat?: Pick<OperatorChatService, 'setup'>
+  operatorChat?: Pick<OperatorChatService, 'setup' | 'create' | 'get' | 'send' | 'handoffHistory'>
   harnessSettings?: { mcp: HarnessMcpSettingsService; directories: HarnessDirectoryBrowser; plugins?: CodexPluginSettingsService }
   extensions?: OperatorExtensions
   workerToolsMcpImplemented?: boolean

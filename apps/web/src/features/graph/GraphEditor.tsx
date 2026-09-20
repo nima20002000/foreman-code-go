@@ -457,7 +457,7 @@ function HandoffEdge({
         <Button
           variant="secondary"
           className="workflow-graph-edge-remove"
-          aria-label={`Remove connection from ${source} to ${target}`}
+          aria-label={`Remove connection from ${source} to ${target}${typeof label === 'string' && label ? `: ${label}` : ''}`}
           title="Remove connection"
           onClick={(event) => {
             event.stopPropagation()
@@ -1580,9 +1580,6 @@ export function GraphEditor({
 
         <div className="workflow-graph-notifications" data-testid="workflow-graph-notifications">
           {hasPendingSave && !managedSaving ? <Alert live tone="warning" title="The previous save is unresolved. Retry Save graph before discarding local edits or starting." /> : null}
-          {runQuery.data?.run.executionLocation ? (
-            <Alert live title={`Run location: ${runQuery.data.run.executionLocation.rootPath}`} />
-          ) : null}
           {notice ? (
             <Alert
               live

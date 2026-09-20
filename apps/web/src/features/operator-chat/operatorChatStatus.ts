@@ -28,9 +28,9 @@ export function operatorTurnStatus(state: OperatorConversationState, connection:
         : state.turnState === 'uncertain' ? 'The previous turn may still be running.'
           : state.activeRequestId || ['active', 'starting'].includes(state.turnState) ? 'Operator is working…'
             : state.turnState === 'error' ? 'The turn failed.'
-              : state.lastResult ? 'Turn finished. The server confirmed a final result.' : 'Ready for your message.'
+              : state.lastResult ? '' : 'Ready for your message.'
   return connection === 'connected' ? status
-    : `${connection === 'unavailable' ? 'Live updates unavailable. Polling for changes.' : 'Reconnecting to live updates.'} Information may be stale. ${status}`
+    : `${connection === 'unavailable' ? 'Live updates unavailable. Polling for changes.' : 'Reconnecting to live updates.'} Information may be stale.${status ? ` ${status}` : ''}`
 }
 
 /** Late summary polls cannot undo a decision already acknowledged by a newer revision. */

@@ -29,6 +29,8 @@ export function memoryConversation(configuration: OperatorConfigurationVersion, 
     operatorConfigurationVersionId: configuration.id, status: 'open', title: 'Test conversation', createdAt: now.toISOString(), updatedAt: now.toISOString() }
   const row: ConversationRow = { id, operator_configuration_version_id: configuration.id,
     harness: configuration.harness.harness, owner_principal_id: ownerId, record: conversation,
+    parent_conversation_id: null, fork_request_id: null, handoff_source_harness: null,
+    handoff_source_sequence: null, handoff_omitted_messages: 0, handoff_context: null,
     native_session_id: null, provider_version: null, active_request_id: null, active_native_turn_id: null,
     active_phase: null, turn_state: 'idle', cancel_requested: false, last_error: null, revision: 0,
     pending_interaction: null, response_delivery: null, last_result: null, updated_at: now }
@@ -42,6 +44,9 @@ export function memoryConversation(configuration: OperatorConfigurationVersion, 
     ...(row.last_result ? { lastResult: row.last_result } : {}) })
   const repository = {
     active: async () => structuredClone(row), get: async () => state(), configuration: async () => configuration,
+    hasTurn: async (_id: string, requestId: string) => receipts.has(requestId),
+    hasMessages: async () => false,
+    harnessForMessage: async () => configuration.harness,
     unfinished: async () => row.active_request_id ? [structuredClone(row)] : [],
     beginTurn: async (_id: string, input: SendOperatorMessageRequest, executionOwner: string) => {
       if (executionOwner !== ownerId) throw new Error('Execution owner changed.')

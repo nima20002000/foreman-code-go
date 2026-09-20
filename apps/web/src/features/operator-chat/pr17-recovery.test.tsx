@@ -88,7 +88,7 @@ describe('PR17 Operator chat recovery', () => {
     expect(screen.getByRole('button', { name: /^Release plan/ })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByTestId('composer')).toHaveTextContent('c2')
   })
-  it('presents the native operation before collapsed technical JSON', () => {
+  it('presents the native operation in the transcript with collapsed details', () => {
     useOperatorChatStore.setState({ selectedConversationId: 'c1' })
     client.setQueryData(detailKey, { ...state, turnState: 'active', activeRequestId: 'request-1', responseDelivery: 'offered', pendingInteraction: {
       session: { harness: 'codex', providerVersion: 'test', nativeSessionId: 'native-session' },
@@ -98,6 +98,7 @@ describe('PR17 Operator chat recovery', () => {
     mount()
     expect(screen.getByRole('heading', { name: 'Run a command' })).toBeInTheDocument()
     expect(screen.getByText('pnpm test')).toBeInTheDocument()
-    expect(screen.getByText('Technical details').closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByText('Request details').closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByLabelText('Operator transcript')).toContainElement(screen.getByLabelText('Operator approval request'))
   })
 })

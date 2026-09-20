@@ -6,6 +6,7 @@ import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
+import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
 
 it('pins the full cross-harness Operator configuration and preserves it on exact retries', async () => {
   const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
@@ -24,9 +25,13 @@ it('pins the full cross-harness Operator configuration and preserves it on exact
       advanced: { ...DEFAULT_HARNESS_DEFAULTS.opencode.advanced!,
         permissionRules: [{ permission: 'bash', pattern: '*', effect: 'deny' as const }],
         mcp: { serverEnabled: { unrelated: false } } } }
-    await operators.update(intended, initial.configuration.id)
-    const input = { requestId: randomUUID(), content: 'Inspect without writes', settings: operatorChatSettings(intended) }
-    const accepted = await repository.beginTurn(conversation.id, input, principal.id)
+    const defaults = new PostgresFoundationSettingsRepository(pool)
+    const saved = await defaults.getAgentDefaults()
+    const updated = await defaults.updateAgentDefaults({ ...saved.value, operator: { ...saved.value.operator, harness: intended } }, saved.revision)
+    const input = { requestId: randomUUID(), content: 'Inspect without writes', settings: operatorChatSettings(intended),
+      configurationVersionId: initial.configuration.id, defaultsRevision: updated.revision }
+    const harness = await repository.harnessForMessage(initial.configuration, input)
+    const accepted = await repository.beginTurn(conversation.id, input, principal.id, harness, initial.configuration.id)
     const pin = accepted.state.conversation.operatorConfigurationVersionId!
     expect((await repository.configuration(pin))?.harness).toEqual(intended)
     expect(await repository.acceptedConfiguration(conversation.id, input.requestId)).toMatchObject({ id: pin, harness: intended })

@@ -15,10 +15,12 @@ function subscribeIdentity(listener: () => void) {
 }
 
 /** This is server state, not an outbox. Session changes still erase local plaintext. */
-export function OperatorHistory({ onBrowse, recentMessages = [], renderMessages }: { onBrowse?: () => void; recentMessages?: Message[]; renderMessages?: (messages: Message[]) => ReactNode }) {
-  const id = useOperatorChatStore((state) => state.selectedConversationId)
+export function OperatorHistory({ conversationId, onBrowse, recentMessages = [], renderMessages }: { conversationId?: string; onBrowse?: () => void; recentMessages?: Message[]; renderMessages?: (messages: Message[]) => ReactNode }) {
+  const selectedId = useOperatorChatStore((state) => state.selectedConversationId)
+  const id = conversationId ?? selectedId
   const epoch = useSyncExternalStore(subscribeIdentity, identityEpoch, () => 'server')
-  if (!id || sessionIsSwitching()) return null
+  if (sessionIsSwitching()) return null
+  if (!id) return renderMessages?.([]) ?? null
   return <OwnedHistory key={`${epoch}:${id}`} id={id} epoch={epoch} onBrowse={onBrowse} recentMessages={recentMessages} renderMessages={renderMessages} />
 }
 
@@ -55,6 +57,6 @@ function OwnedHistory({ id, epoch, onBrowse, recentMessages, renderMessages }: {
       {history.isFetching ? 'Loading…' : 'Load earlier messages'}
     </Button> : null}
     {history.isError ? <p role="alert">Earlier messages could not be loaded. <Button size="sm" onClick={() => void history.refetch()}>Retry history</Button></p> : null}
-    {messages.length ? renderMessages ? renderMessages(messages) : <ConversationHistory messages={messages} /> : null}
+    {renderMessages ? renderMessages(messages) : messages.length ? <ConversationHistory messages={messages} /> : null}
   </section>
 }

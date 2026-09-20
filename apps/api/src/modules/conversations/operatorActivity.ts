@@ -34,7 +34,7 @@ export function openCodeTurnEvents(sessionId: string, turnId: () => string | nul
     if (!event.type.startsWith('message.')) return true
     const info = object(event.payload.info)
     if (event.type === 'message.updated') {
-      if (info.sessionID === sessionId && info.parentID === turnId() && typeof info.id === 'string') messages.add(info.id)
+      if (info.role === 'assistant' && info.sessionID === sessionId && info.parentID === turnId() && typeof info.id === 'string') messages.add(info.id)
       return false
     }
     const part = object(event.payload.part)
@@ -109,11 +109,25 @@ export function operatorActivity(event: NativeHarnessEvent, harness: AgentHarnes
 export function currentOperatorHistory(history: NativeHistory, harness: AgentHarness): NativeHarnessEvent[] {
   if (!history.nativeTurnId) return []
   if (harness === 'codex') return history.events.filter((event) => event.payload.turnId === history.nativeTurnId)
-  const messages = new Set([history.nativeTurnId])
+  const messages = new Map<string, boolean>()
   for (const event of history.events) {
     const info = object(event.payload.info)
-    if (info.parentID === history.nativeTurnId && typeof info.id === 'string') messages.add(info.id)
+    if (info.role === 'assistant' && info.summary !== true && info.parentID === history.nativeTurnId && typeof info.id === 'string') {
+      messages.set(info.id, typeof object(info.time).completed === 'number' || Boolean(history.terminalResult))
+    }
   }
-  return history.events.filter((event) => messages.has(string(object(event.payload.part).messageID)))
-    .sort((a, b) => a.occurredAt.localeCompare(b.occurredAt))
+  const parts = new Map<string, NativeHarnessEvent>()
+  for (const event of history.events.filter((entry) => messages.has(string(object(entry.payload.part).messageID)))
+    .sort((a, b) => a.occurredAt.localeCompare(b.occurredAt))) {
+    const part = object(event.payload.part)
+    if (typeof part.id !== 'string') continue
+    const prior = parts.get(part.id)
+    // Keep first insertion order while replacing a partial snapshot by the
+    // newest full snapshot. A completed text part cannot be downgraded.
+    const priorPart = object(prior?.payload.part)
+    if (typeof object(priorPart.time).end === 'number' && typeof object(part.time).end !== 'number') continue
+    parts.set(part.id, event)
+  }
+  return [...parts.values()].map((event) => ({ ...event, payload: { ...event.payload,
+    nativeMessageCompleted: messages.get(string(object(event.payload.part).messageID)) === true } }))
 }

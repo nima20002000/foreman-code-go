@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import type { Message, OperatorActivity } from '@graphql/contracts'
 import { OperatorMessages } from './OperatorMessages'
+import { projectOperatorActivity, projectOperatorText } from './operatorTextProjection'
 
 const user: Message = { id: 'user', conversationId: 'chat', requestId: 'turn', role: 'user', content: 'Read the file' }
 const thinking: OperatorActivity = { id: 'native-thought', requestId: 'turn', sequence: '1', revision: 1, kind: 'thinking', title: 'Thinking', status: 'running', output: 'Checking the requested file.' }
@@ -33,5 +34,66 @@ describe('Operator message ownership', () => {
     render(<OperatorMessages messages={[user]} activities={[{ ...thinking, requestId: 'older' }]} activeRequestId="turn" working onBrowse={() => {}} />)
     expect(screen.queryByRole('button', { name: 'Thinking' })).not.toBeInTheDocument()
     expect(screen.getByRole('status', { name: 'Operator is typing' })).toBeInTheDocument()
+  })
+
+  it('keeps live answer text between the tool calls that surround it', () => {
+    const first = { ...tool, id: 'read', sequence: '2', status: 'completed' as const, title: 'Read file' }
+    const second = { ...tool, id: 'write', sequence: '3', status: 'running' as const, title: 'Write file' }
+    let stream = projectOperatorActivity(undefined, 'turn', 'turn', first.id)
+    stream = projectOperatorText(stream, 'turn', { requestId: 'turn', partId: 'answer', mode: 'append', text: 'First answer.' })
+    stream = projectOperatorActivity(stream, 'turn', 'turn', second.id)
+    stream = projectOperatorText(stream, 'turn', { requestId: 'turn', partId: 'answer', mode: 'append', text: ' More answer.' })
+    stream = projectOperatorText(stream, 'turn', { requestId: 'turn', partId: 'answer', mode: 'replace', text: 'First answer. More answer.' })
+    const view = render(<OperatorMessages messages={[user]} activities={[first, second]} activeRequestId="turn" working
+      partialText="First answer. More answer." timeline={stream} onBrowse={() => {}} />)
+    const assistant = screen.getByRole('article', { name: 'Message from Assistant' })
+    expect([...assistant.querySelectorAll('.operator-tool-activity, .operator-answer')].map((item) => item.textContent)).toEqual([
+      expect.stringContaining('Read file'), 'First answer.', expect.stringContaining('Write file'), ' More answer.',
+    ])
+    view.rerender(<OperatorMessages messages={[user, { id: 'saved', conversationId: 'chat', requestId: 'turn', role: 'assistant', content: 'First answer. More answer.' }]}
+      activities={[first, second]} timeline={stream} onBrowse={() => {}} />)
+    expect([...screen.getByRole('article', { name: 'Message from Assistant' }).querySelectorAll('.operator-tool-activity, .operator-answer')]
+      .map((item) => item.textContent)).toEqual([
+      expect.stringContaining('Read file'), 'First answer.', expect.stringContaining('Write file'), ' More answer.',
+    ])
+  })
+
+  it('keeps completed commentary and tools in order after the final answer replaces streaming state', () => {
+    const first = { ...tool, id: 'create', sequence: '1', status: 'completed' as const, title: 'Create folder' }
+    const second = { ...tool, id: 'verify', sequence: '2', status: 'completed' as const, title: 'Verify folder' }
+    const assistant = (id: string, content: string, afterActivitySequence: string): Message => ({
+      id, conversationId: 'chat', requestId: 'turn', role: 'assistant', content,
+      nativeMessageId: id, afterActivitySequence,
+    })
+    render(<OperatorMessages messages={[user, assistant('comment-1', 'Creating the folder.', '0'),
+      assistant('comment-2', 'The first attempt was blocked.', '1'), assistant('final', 'Created and verified.', '2')]}
+      activities={[first, second]} onBrowse={() => {}} />)
+    const ordered = [...screen.getByRole('list', { name: 'Conversation history' }).querySelectorAll('.operator-tool-activity, .operator-answer')]
+      .map((item) => item.textContent)
+    expect(ordered).toEqual(['Creating the folder.', expect.stringContaining('Create folder'),
+      'The first attempt was blocked.', expect.stringContaining('Verify folder'), 'Created and verified.'])
+  })
+
+  it('replaces a live commentary segment with its persisted message without duplicating or dropping it', () => {
+    let stream = projectOperatorText(undefined, 'turn', { requestId: 'turn', partId: 'native-comment', mode: 'append', text: 'I will create it.' })
+    stream = projectOperatorActivity(stream, 'turn', 'turn', 'create')
+    const create = { ...tool, id: 'create', sequence: '1', status: 'running' as const, title: 'Create folder' }
+    const view = render(<OperatorMessages messages={[user]} activities={[create]} activeRequestId="turn" working
+      partialText="I will create it." timeline={stream} onBrowse={() => {}} />)
+    expect(screen.getAllByText('I will create it.')).toHaveLength(1)
+    const saved: Message = { id: 'saved-comment', conversationId: 'chat', requestId: 'turn', role: 'assistant',
+      content: 'I will create it.', nativeMessageId: 'native-comment', afterActivitySequence: '0' }
+    view.rerender(<OperatorMessages messages={[user, saved]} activities={[create]} activeRequestId="turn" working
+      partialText="" timeline={stream} onBrowse={() => {}} />)
+    expect(screen.getAllByText('I will create it.')).toHaveLength(1)
+    const articles = screen.getAllByRole('article', { name: 'Message from Assistant' })
+    expect(within(articles[0]).getByText('I will create it.')).toBeVisible()
+    expect(within(articles[1]).getByText('Read · Create folder')).toBeVisible()
+  })
+
+  it('does not add blank lines to the top of a new streamed answer bubble', () => {
+    let stream = projectOperatorText(undefined, 'turn', { requestId: 'turn', partId: 'first', mode: 'append', text: 'First update.' })
+    stream = projectOperatorText(stream, 'turn', { requestId: 'turn', partId: 'second', mode: 'append', text: 'Second update.' })
+    expect(stream?.timeline.filter((item) => item.kind === 'text').map((item) => item.text)).toEqual(['First update.', 'Second update.'])
   })
 })

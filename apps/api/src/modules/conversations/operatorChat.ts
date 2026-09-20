@@ -19,7 +19,7 @@ import { withFilesystemDeadline } from '../workspaces/filesystem.js'
 import { nativeCorrelation, PostgresOperatorConversationRepository, type ConversationRow } from './operatorChatRepository.js'
 import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { currentOperatorHistory, openCodeTurnEvents, operatorActivity } from './operatorActivity.js'
-import { nativeAssistantText } from './operatorText.js'
+import { completedNativeAssistantMessage, nativeAssistantText } from './operatorText.js'
 import { isOperatorReview } from './operatorReviewLifecycle.js'
 
 export { PostgresOperatorConversationRepository } from './operatorChatRepository.js'
@@ -152,7 +152,7 @@ export class OperatorChatService {
     if (input.configurationVersionId && !configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'The pending command configuration is unavailable.', 409)
     // Legacy pending payloads did not include a pin. Prefer their matching idle
     // conversation configuration, never a different current harness's defaults.
-    if (!configuration && row && input.requestId && (!input.harness || input.harness === row.harness)) {
+    if (!configuration && row && (!input.harness || input.harness === row.harness)) {
       configuration = await this.repository.configuration(row.operator_configuration_version_id)
     }
     configuration ??= await this.operators.inspectionConfiguration(input.expectedDefaultsRevision)
@@ -223,6 +223,11 @@ export class OperatorChatService {
     return page
   }
 
+  async handoffHistory(principal: ManagementPrincipal, sourceConversationId?: string, before?: string) {
+    this.assertOpen(); requireAuthorization(principal, 'operator_handoff:read')
+    return this.repository.handoffHistory(principal.id, sourceConversationId, before)
+  }
+
   async activityPage(id: string, principal: ManagementPrincipal, input: Partial<OperatorActivityQuery>) {
     await this.assertAccess(id, principal)
     return this.repository.activity.page(id, input)
@@ -238,6 +243,14 @@ export class OperatorChatService {
     const accepted = await this.repository.activity.append(id, requestId, safe)
     if (accepted) this.events.publish(id, 'activity', accepted)
   }
+  private async recordAssistantMessage(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, precedingActivityId?: string | null) {
+    const message = completedNativeAssistantMessage(event, runtime.manager.harness)
+    if (message && await this.repository.appendAssistantMessage(id, requestId, message.id, message.text,
+      message.parentMessageId ? { parentMessageId: message.parentMessageId, complete: message.complete === true } : undefined,
+      precedingActivityId)) {
+      this.events.publish(id, 'message', { requestId, nativeMessageId: message.id })
+    }
+  }
 
   send(id: string, value: SendOperatorMessageRequest, principal: ManagementPrincipal) {
     this.assertOpen()
@@ -252,36 +265,62 @@ export class OperatorChatService {
   private async accept(id: string, value: SendOperatorMessageRequest, principal: ManagementPrincipal, controller: AbortController) {
     const input = SendOperatorMessageRequestSchema.parse(value)
     const row = await this.assertAccess(id, principal, 'operator_chat:write')
+    // Resolve receipts before reading mutable defaults or validating a native
+    // installation. A recovered receipt is not a request for a new native turn.
+    const sourceReceipt = await this.repository.hasTurn(id, input.requestId)
+    const childId = `operator-fork:${input.requestId}`
+    const child = sourceReceipt ? undefined : await this.repository.active(childId)
+    const childReceipt = child?.parent_conversation_id === id && child.owner_principal_id === row.owner_principal_id
+      && child.fork_request_id === input.requestId && await this.repository.hasTurn(childId, input.requestId)
+    const receiptId = sourceReceipt ? id : childReceipt ? childId : undefined
+    if (input.recovery === 'receipt') {
+      if (!receiptId) throw new DomainError('OPERATOR_RECEIPT_NOT_FOUND', 'No receipt is currently visible for this command.', 404)
+      // This branch cannot call validate, setup, prepare, or runTurn, even for
+      // a retryable receipt. A missing receipt is not evidence of non-delivery.
+      return this.control(receiptId, () => this.repository.beginTurn(receiptId, input, row.owner_principal_id!, undefined, undefined, true))
+    }
     if (ConversationSchema.parse(row.record).status === 'archived') {
       throw new DomainError('CONVERSATION_ARCHIVED', 'This conversation is read-only.', 409)
     }
-    return this.control(id, async () => {
+    const configuration = receiptId ? undefined : await this.repository.configuration(row.operator_configuration_version_id)
+    if (!receiptId && !configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Pinned Operator configuration was not found.', 409)
+    const harness = configuration ? await this.repository.harnessForMessage(configuration, input) : undefined
+    const fork = Boolean(harness && harness.harness !== row.harness && await this.repository.hasMessages(id))
+    const admit = () => this.control(id, async () => {
       this.assertOpen(); controller.signal.throwIfAborted()
-      // Access ownership and execution authority are intentionally different for reviews.
       requireAuthorization(await this.authority.current(row.owner_principal_id!), 'operator_chat:write')
-      const begun = await this.repository.beginTurn(id, input, row.owner_principal_id!, undefined, (value) => this.validate(value))
+      const begun = receiptId
+        ? await this.repository.beginTurn(receiptId, input, row.owner_principal_id!, undefined, undefined, false,
+            (accepted) => this.validate(accepted))
+        : fork
+          ? await this.repository.beginForkTurn(id, input, row.owner_principal_id!, harness!, configuration!.id,
+              (accepted) => this.validate(accepted))
+          : await this.repository.beginTurn(id, input, row.owner_principal_id!, input.settings ? harness : undefined,
+              configuration!.id, false, (accepted) => this.validate(accepted))
       if (begun.replayed) return begun
+      const targetId = begun.state.conversation.id
       const acceptedId = begun.state.conversation.operatorConfigurationVersionId!
-      if (acceptedId !== this.runtimes.get(id)?.configuration?.id && this.runtimes.has(id)) {
-        try { await this.release(id) }
-        catch (error) {
-          await this.repository.finish(id, input.requestId, failure(error), undefined, true)
-          throw error
-        }
-      }
-      const configuration = await this.repository.configuration(acceptedId)
-      if (!configuration) throw new Error('Accepted Operator configuration disappeared.')
-      if (this.closing || controller.signal.aborted) {
-        await this.repository.finish(id, input.requestId, failure(new Error('Operator chat stopped before native submission.')), undefined, true)
-        throw new DomainError('OPERATOR_CHAT_CLOSING', 'Operator chat stopped before submission; this request can be retried.', 503)
+      let accepted: OperatorConfigurationVersion
+      try {
+        const saved = await this.repository.configuration(acceptedId)
+        if (!saved) throw new Error('Accepted Operator configuration disappeared.')
+        accepted = saved
+        this.validate(accepted)
+        const resident = this.runtimes.get(targetId)
+        if (resident && resident.configuration?.id !== accepted.id) await this.release(targetId)
+        if (this.closing || controller.signal.aborted) throw new Error('Operator chat stopped before native submission.')
+      } catch (error) {
+        await this.repository.finish(targetId, input.requestId, failure(error), undefined, true)
+        throw error
       }
       const taskController = new AbortController()
-      const promise = this.runTurn(id, input, configuration!, row.owner_principal_id!, taskController.signal)
-        .finally(() => { if (this.tasks.get(id)?.promise === promise) this.tasks.delete(id) })
-      this.tasks.set(id, { requestId: input.requestId, controller: taskController, promise })
-      void promise.catch(() => undefined) // The durable request remains fenced if error persistence itself fails.
+      const promise = this.runTurn(targetId, input, accepted, row.owner_principal_id!, taskController.signal)
+        .finally(() => { if (this.tasks.get(targetId)?.promise === promise) this.tasks.delete(targetId) })
+      this.tasks.set(targetId, { requestId: input.requestId, controller: taskController, promise })
+      void promise.catch(() => undefined) // Persistence failure leaves the accepted identity fenced.
       return begun
     })
+    return fork || childReceipt ? this.control(childId, admit) : admit()
   }
 
   private async runtime(id: string, row: ConversationRow, configuration: OperatorConfigurationVersion, signal: AbortSignal): Promise<Runtime> {
@@ -388,7 +427,9 @@ export class OperatorChatService {
       await this.assertReviewActive(id)
       requireAuthorization(await this.authority.current(ownerId), 'operator_chat:write')
       signal.throwIfAborted(); this.assertOpen()
-      if (!await this.repository.phase(id, input.requestId, 'submitting')) {
+      const includeHandoff = Boolean(row.handoff_context
+        && !await this.repository.handoffInitialized(id, runtime.session.nativeSessionId))
+      if (!await this.repository.phase(id, input.requestId, 'submitting', includeHandoff)) {
         await this.control(id, () => this.complete(id, input.requestId, { outcome: 'canceled' })); return
       }
       signal.throwIfAborted(); this.assertOpen()
@@ -400,7 +441,7 @@ export class OperatorChatService {
       let submittedTurnId = row.active_native_turn_id
       const currentEvent = openCodeTurnEvents(runtime.session.nativeSessionId, () => submittedTurnId)
       for await (const event of runtime.manager.startTurn(runtime.session, {
-        prompt: `${input.content}${hint}`, clientCorrelationId: correlationId,
+        prompt: `${includeHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${input.content}${hint}`, clientCorrelationId: correlationId,
         onSubmitted: async (nativeTurnId) => {
           submittedTurnId = nativeTurnId
           // A callback is native evidence even when saving its identity fails.
@@ -442,6 +483,7 @@ export class OperatorChatService {
         submitted = true
         if (runtime.manager.harness === 'opencode' && !currentEvent(event)) continue
         await this.recordActivity(id, input.requestId, runtime, event)
+        await this.recordAssistantMessage(id, input.requestId, runtime, event)
         for (const delta of nativeAssistantText(event, partKinds)) this.events.publish(id, 'delta', { ...delta, requestId: input.requestId })
         if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
           const pending = await runtime.manager.pending(runtime.session, signal)
@@ -512,7 +554,16 @@ export class OperatorChatService {
       return
     }
     if (!await this.repository.submitted(id, requestId, history.nativeTurnId)) return
-    for (const event of currentOperatorHistory(history, runtime.manager.harness)) await this.recordActivity(id, requestId, runtime, event)
+    let precedingActivityId: string | null = null
+    const showThinking = runtime.configuration?.harness.harness === 'opencode'
+      ? runtime.configuration.harness.thinking : runtime.configuration?.showThinking === true
+    for (const event of currentOperatorHistory(history, runtime.manager.harness)) {
+      await this.recordActivity(id, requestId, runtime, event)
+      const change = operatorActivity(event, runtime.manager.harness, requestId)
+      if (change && (change.kind !== 'thinking' || showThinking)) precedingActivityId = change.id
+      await this.recordAssistantMessage(id, requestId, runtime, event,
+        runtime.manager.harness === 'opencode' ? precedingActivityId : undefined)
+    }
     const pending = history.pendingInteraction ?? history.pendingInteractions[0]
     await this.repository.pending(id, requestId, pending)
     if (history.terminalResult && !pending) {

@@ -2,7 +2,8 @@ import type { ReactNode } from 'react'
 
 import { WorkspaceExecutionLocationSetup } from '../features/settings/WorkspaceExecutionLocationSetup'
 import { NewWorkflowAction } from '../features/workflows/NewWorkflowAction'
-import { Alert, EmptyState, ErrorState, LoadingState } from '../shared/ui/nocturne'
+import { Alert, EmptyState, ErrorState, Icon, LoadingState } from '../shared/ui/nocturne'
+import { useRunQuery } from '../shared/api/query'
 import '../features/workflows/workflows.css'
 
 import {
@@ -16,6 +17,7 @@ export interface WorkspaceRouteViewProps {
   workspaceId: string
   selectedAgentId?: string
   activeWorkflowId?: string
+  lastRunId?: string
   state?: WorkspaceRouteState
   stateMessage?: string
   slots?: WorkspaceShellSlots
@@ -23,6 +25,16 @@ export interface WorkspaceRouteViewProps {
 
 function DefaultWorkspaceSlot({ workspaceId }: { workspaceId: string }) {
   return <strong>{workspaceId}</strong>
+}
+
+function WorkflowRunLocation({ workspaceId, runId }: { workspaceId: string; runId: string }) {
+  const run = useRunQuery(workspaceId, runId)
+  const path = run.data?.run.executionLocation?.rootPath
+  if (!path) return null
+  return <span className="workspace-board-run-location" aria-label={`Run location: ${path}`} title={`Run location: ${path}`}>
+    <Icon name="folder" size={12} />
+    <span>…/{path.split(/[\\/]/).filter(Boolean).slice(-2).join('/')}</span>
+  </span>
 }
 
 function DefaultGraphSlot({
@@ -98,6 +110,7 @@ export function WorkspaceRouteView({
   workspaceId,
   selectedAgentId,
   activeWorkflowId,
+  lastRunId,
   state = 'ready',
   stateMessage,
   slots,
@@ -118,7 +131,10 @@ export function WorkspaceRouteView({
   resolvedSlots.graph = (
     <WorkspaceExecutionLocationSetup workspaceId={workspaceId} enabled={state !== 'loading' && state !== 'error' && state !== 'not-found'}>
       {state === 'ready' ? <div className="workspace-board">
-        <div className="workspace-board-actions" data-testid="workspace-board-actions"><NewWorkflowAction workspaceId={workspaceId} variant="secondary" /></div>
+        <div className="workspace-board-actions" data-testid="workspace-board-actions">
+          {lastRunId ? <WorkflowRunLocation workspaceId={workspaceId} runId={lastRunId} /> : null}
+          <NewWorkflowAction workspaceId={workspaceId} variant="secondary" />
+        </div>
         {resolvedSlots.graph}
       </div> : resolvedSlots.graph}
     </WorkspaceExecutionLocationSetup>
@@ -137,6 +153,7 @@ export interface WorkspaceSelectionProps {
   workspaceId: string
   selectedAgentId?: string
   activeWorkflowId?: string
+  lastRunId?: string
   state?: WorkspaceRouteState
   stateMessage?: string
   slots?: WorkspaceShellSlots

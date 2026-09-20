@@ -12,6 +12,7 @@ import type pg from 'pg'
 import { DomainError } from '../errors.js'
 import { requireActiveWorkerBinding } from './workerLifecycle.js'
 import { intersectGrants } from './operatorDelegation.js'
+import { operatorChatGrants } from './operatorChatDelegation.js'
 import { currentOperatorAuthority } from './runAuthority.js'
 import { requireActiveOperatorReviewCredential } from '../conversations/operatorReviewLifecycle.js'
 
@@ -77,7 +78,17 @@ export class PostgresAccessService {
     if (row.delegated_from) {
       if (audience === 'operator') await requireActiveOperatorReviewCredential(this.pool, row.id)
       const parent = await this.currentOperator(row.delegated_from)
-      principal.grants = intersectGrants(principal.grants, parent.grants)
+      // A name, requested action, or arbitrary delegated token is not evidence
+      // of this translation. Require the issuance-time conversation binding.
+      const chat = audience === 'operator' ? (await this.pool.query<{
+        owner_principal_id: string | null; deleted_at: Date | null; status: string | null;
+      }>(`select c.owner_principal_id,c.deleted_at,c.record->>'status' as status
+        from operator_chat_credentials credential join operator_conversations c on c.id=credential.conversation_id
+        where credential.principal_id=$1`, [row.id])).rows[0] : undefined
+      if (chat && (chat.owner_principal_id !== row.delegated_from || chat.deleted_at || chat.status !== 'open')) {
+        throw new DomainError('AUTH_REVOKED', 'The delegated chat is no longer owned and open.', 401)
+      }
+      principal.grants = intersectGrants(principal.grants, chat ? operatorChatGrants(parent.grants) : parent.grants)
       principal.expiresAt = new Date(Math.min(Date.parse(principal.expiresAt), Date.parse(parent.expiresAt))).toISOString()
     }
     return principal

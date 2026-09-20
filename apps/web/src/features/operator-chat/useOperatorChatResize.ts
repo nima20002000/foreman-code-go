@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react'
+import { isNarrowOperatorChat } from './operatorChatStore'
 
 export const operatorResizeEdges = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'] as const
 type Edge = typeof operatorResizeEdges[number]
@@ -9,6 +10,7 @@ export function useOperatorChatResize() {
   const panelRef = useRef<HTMLElement>(null)
   const [box, setBox] = useState<Box>()
   const drag = useRef<{ edge: Edge; x: number; y: number; box: Box } | undefined>(undefined)
+  const moving = useRef<{ x: number; y: number; box: Box } | undefined>(undefined)
   const move = (start: Box, edge: Edge, dx: number, dy: number) => {
     const minimumWidth = Math.min(420, window.innerWidth - 16)
     const minimumHeight = Math.min(320, window.innerHeight - 16)
@@ -33,6 +35,38 @@ export function useOperatorChatResize() {
     return rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : undefined
   }
   return { panelRef, size: box ? { position: 'fixed', ...box } as CSSProperties : undefined,
+    moveGrip: {
+      'aria-label': 'Move Operator chat',
+      'aria-description': 'Drag or use arrow keys to move the chat.',
+      onPointerDown(event: PointerEvent<HTMLButtonElement>) {
+        if (isNarrowOperatorChat()) return
+        const start = readBox()
+        if (!start) return
+        event.preventDefault()
+        moving.current = { x: event.clientX, y: event.clientY, box: start }
+        event.currentTarget.setPointerCapture(event.pointerId)
+      },
+      onPointerMove(event: PointerEvent<HTMLButtonElement>) {
+        const start = moving.current
+        if (!start) return
+        setBox({ ...start.box,
+          left: Math.max(8, Math.min(start.box.left + event.clientX - start.x, window.innerWidth - start.box.width - 8)),
+          top: Math.max(8, Math.min(start.box.top + event.clientY - start.y, window.innerHeight - start.box.height - 8)),
+        })
+      },
+      onPointerUp() { moving.current = undefined },
+      onPointerCancel() { moving.current = undefined },
+      onKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+        if (isNarrowOperatorChat() || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
+        event.preventDefault()
+        const start = readBox()
+        if (!start) return
+        setBox({ ...start,
+          left: Math.max(8, Math.min(start.left + (event.key === 'ArrowLeft' ? -32 : event.key === 'ArrowRight' ? 32 : 0), window.innerWidth - start.width - 8)),
+          top: Math.max(8, Math.min(start.top + (event.key === 'ArrowUp' ? -32 : event.key === 'ArrowDown' ? 32 : 0), window.innerHeight - start.height - 8)),
+        })
+      },
+    },
     grip: (edge: Edge) => ({
       'aria-label': edge === 'nw' ? 'Resize Operator chat' : `Resize Operator chat from ${labels[edge]}`,
       onPointerDown(event: PointerEvent<HTMLButtonElement>) {

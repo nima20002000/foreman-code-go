@@ -12,6 +12,8 @@ interface OperatorChatUiState {
   open: boolean
   historyOpen: boolean
   selectedConversationId?: string
+  navigationGeneration: number
+  beginNavigation(): number
   setOpen(open: boolean): void
   setHistoryOpen(open: boolean): void
   select(id: string | undefined): void
@@ -23,21 +25,27 @@ function savedState() {
 const initial = typeof window === 'undefined' ? {} : savedState()
 function persist(state: Pick<OperatorChatUiState, 'open' | 'historyOpen' | 'selectedConversationId'>) {
   if (sessionIsSwitching()) return
-  try { window.localStorage.setItem(protectedKey('ui'), JSON.stringify(state)) } catch { /* Preferences are optional. */ }
+  try { window.localStorage.setItem(protectedKey('ui'), JSON.stringify({ open: state.open, historyOpen: state.historyOpen, selectedConversationId: state.selectedConversationId })) } catch { /* Preferences are optional. */ }
 }
 export const useOperatorChatStore = create<OperatorChatUiState>((set) => ({
   open: initial.open ?? false,
-  historyOpen: isNarrowOperatorChat() ? false : initial.historyOpen ?? true,
+  historyOpen: false,
   selectedConversationId: initial.selectedConversationId,
+  navigationGeneration: 0,
+  beginNavigation: () => {
+    let generation = 0
+    set((state) => { generation = state.navigationGeneration + 1; return { navigationGeneration: generation } })
+    return generation
+  },
   setOpen: (open) => { if (!sessionIsSwitching()) set((state) => {
-    const next = { open, historyOpen: isNarrowOperatorChat() ? false : state.historyOpen }
+    const next = { open, historyOpen: false }
     persist({ ...state, ...next }); return next
   }) },
   setHistoryOpen: (historyOpen) => { if (!sessionIsSwitching()) set((state) => { persist({ ...state, historyOpen }); return { historyOpen } }) },
   select: (selectedConversationId) => { if (!sessionIsSwitching()) set((state) => {
-    const next = { selectedConversationId, historyOpen: isNarrowOperatorChat() ? false : state.historyOpen }
+    const next = { selectedConversationId, navigationGeneration: state.navigationGeneration + 1, historyOpen: isNarrowOperatorChat() ? false : state.historyOpen }
     persist({ ...state, ...next }); return next
   }) },
-  reset: () => set({ open: false, historyOpen: !isNarrowOperatorChat(), selectedConversationId: undefined }),
+  reset: () => set((state) => ({ open: false, historyOpen: false, selectedConversationId: undefined, navigationGeneration: state.navigationGeneration + 1 })),
 }))
 if (typeof window !== 'undefined') window.addEventListener(identityChangedEvent, () => useOperatorChatStore.getState().reset())

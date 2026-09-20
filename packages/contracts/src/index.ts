@@ -993,6 +993,11 @@ export const MessageSchema = z
     id: IdSchema,
     conversationId: IdSchema,
     requestId: IdSchema.optional(),
+    nativeMessageId: IdSchema.optional(),
+    /** OpenCode text-part identity is nativeMessageId; this is its assistant message. */
+    nativeParentMessageId: IdSchema.optional(),
+    nativeMessageComplete: z.boolean().optional(),
+    afterActivitySequence: z.string().regex(/^[0-9]+$/).optional(),
     role: MessageRoleSchema,
     content: z.string(),
     ...OptionalTimestampFields,
@@ -1639,6 +1644,8 @@ export type OperatorActivityQuery = z.infer<typeof OperatorActivityQuerySchema>;
 export const OperatorConversationStateSchema = z.object({
   conversation: ConversationSchema,
   settings: OperatorChatSettingsSchema.optional(),
+  handoff: z.object({ parentConversationId: IdSchema, sourceHarness: z.enum(['codex', 'opencode']),
+    sourceMessageSequence: z.string().regex(/^[0-9]+$/), omittedMessages: z.number().int().nonnegative() }).strict().optional(),
   hasEarlierMessages: z.boolean().optional(),
   messages: z.array(MessageSchema),
   activities: z.array(OperatorActivitySchema).optional(),
@@ -1680,8 +1687,13 @@ export const SendOperatorMessageRequestSchema = z.object({
   content: z.string().trim().min(1),
   context: OperatorConversationContextSchema.optional(),
   settings: OperatorChatSettingsSchema.optional(),
-  /** Immutable, server-created Operator configuration selected before reservation. */
+  forkExpectedRevision: z.number().int().nonnegative().optional(),
+  /** The pinned configuration observed before reserving this command. */
   configurationVersionId: IdSchema.optional(),
+  /** Required for a new cross-harness admission; never consulted for a receipt replay. */
+  defaultsRevision: z.number().int().nonnegative().optional(),
+  /** Read an existing receipt without creating or relaunching native work. Not part of command identity. */
+  recovery: z.literal("receipt").optional(),
 }).strict();
 export const SendOperatorMessageResponseSchema = z.object({ state: OperatorConversationStateSchema, replayed: z.boolean() }).strict();
 export const CancelOperatorTurnRequestSchema = z.object({ requestId: IdSchema }).strict();

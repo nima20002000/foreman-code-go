@@ -648,6 +648,18 @@ export const migrations = [
       check (managed_preset in ('operator', 'linear'));
   ` },
   pr18RecoveryMigration,
+  { version: 170023, sql: `
+    alter table operator_conversations
+      add column parent_conversation_id text references operator_conversations(id),
+      add column fork_request_id text,
+      add column handoff_source_harness text,
+      add column handoff_source_sequence bigint,
+      add column handoff_omitted_messages integer not null default 0,
+      add column handoff_context text;
+    create unique index operator_conversations_fork_request_idx
+      on operator_conversations(parent_conversation_id,fork_request_id)
+      where parent_conversation_id is not null;
+  ` },
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

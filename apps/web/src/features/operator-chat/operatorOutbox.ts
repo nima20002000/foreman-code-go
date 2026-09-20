@@ -5,31 +5,81 @@ import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal, Se
 const outboxLock = 'graphql.operator-outbox.v1'
 const storageError = 'Durable message storage is unavailable. Sending is disabled to avoid repeating a command after a lost response.'
 
-type PendingMessage = { command?: SendOperatorMessageRequest; error?: string; sendFailure?: string }
+type AttemptLedger = { uncertain: boolean; rejected: number; inFlight: string[] }
+type PendingMessage = { command?: SendOperatorMessageRequest; error?: string; sendFailure?: string;
+  definitiveFailure?: boolean; inFlight?: boolean; ledger?: AttemptLedger }
 
 function readKey(key: string): PendingMessage {
   try {
     const value = window.localStorage.getItem(key)
     if (value === null) return {}
     const saved = JSON.parse(value)
-    const command = SendOperatorMessageRequestSchema.safeParse(saved?.command ?? saved)
-    if (command.success && (saved?.command === undefined || typeof saved?.sendFailure === 'string')) {
-      return { command: command.data, ...(typeof saved?.sendFailure === 'string' ? { sendFailure: saved.sendFailure } : {}) }
-    }
-    return { error: 'The saved pending command is invalid. Recover its receipt before sending another command.' }
+    const current = saved?.version === 2
+    const command = SendOperatorMessageRequestSchema.safeParse(current ? saved.request : saved?.command ?? saved)
+    if (!command.success) return { error: 'The saved pending command is invalid. Recover its receipt before sending another command.' }
+    // A pre-upgrade record has no attempt history. Neither its last error nor a
+    // matching error message can establish that an earlier attempt was rejected.
+    const ledger: AttemptLedger = current ? saved.ledger : { uncertain: true, rejected: 0, inFlight: [] }
+    if (!ledger || typeof ledger.uncertain !== 'boolean' || !Number.isSafeInteger(ledger.rejected) || ledger.rejected < 0
+      || !Array.isArray(ledger.inFlight) || !ledger.inFlight.every((id: unknown) => typeof id === 'string' && id.length > 0)
+      || new Set(ledger.inFlight).size !== ledger.inFlight.length) return { error: storageError }
+    return { command: command.data, ledger, inFlight: ledger.inFlight.length > 0,
+      definitiveFailure: !ledger.uncertain && ledger.rejected > 0 && ledger.inFlight.length === 0,
+      ...(typeof saved?.sendFailure === 'string' ? { sendFailure: saved.sendFailure } : {}) }
   } catch { return { error: storageError } }
+}
+
+function writeKey(key: string, command: SendOperatorMessageRequest, ledger: AttemptLedger, sendFailure?: string): void {
+  // Deliberately not a v1 `command` envelope: older tabs must fail closed rather
+  // than discard a v2 command using their last-error/message-string heuristic.
+  const value = JSON.stringify({ version: 2, request: command, ledger, ...(sendFailure ? { sendFailure } : {}) })
+  window.localStorage.setItem(key, value)
+  if (window.localStorage.getItem(key) !== value) throw new Error(storageError)
 }
 
 export function readPendingOperatorMessage(id: string): PendingMessage {
   try { return readKey(protectedKey('outbox', id)) } catch { return { error: storageError } }
 }
 
-/** Keep a failed delivery reason with the exact pending command across reloads. */
-export function recordOperatorMessageFailure(id: string, requestId: string, message: string): Promise<void> {
+/** Persist the attempt before HTTP. Clearing in any tab observes this fence. */
+export function beginOperatorMessageAttempt(id: string, command: SendOperatorMessageRequest): Promise<string> {
+  return exclusive(id, (key) => {
+    const pending = readKey(key)
+    if (pending.error) throw new Error(pending.error)
+    if (!pending.command || JSON.stringify(pending.command) !== JSON.stringify(SendOperatorMessageRequestSchema.parse(command))) {
+      throw new Error('The pending message changed or was acknowledged in another tab. Recover its receipt before retrying.')
+    }
+    const attemptId = crypto.randomUUID()
+    const ledger = pending.ledger!
+    writeKey(key, pending.command, { ...ledger, inFlight: [...ledger.inFlight, attemptId] }, pending.sendFailure)
+    return attemptId
+  })
+}
+
+/** A definitive rejection only settles this attempt, never previous uncertainty. */
+export function recordOperatorMessageFailure(id: string, requestId: string, message: string, definitive = false,
+  attemptId?: string): Promise<void> {
   return exclusive(id, (key) => {
     const pending = readKey(key)
     if (pending.error || pending.command?.requestId !== requestId) return
-    window.localStorage.setItem(key, JSON.stringify({ command: pending.command, sendFailure: message }))
+    const ledger = pending.ledger!
+    if (attemptId && !ledger.inFlight.includes(attemptId)) return
+    const rejected = Boolean(attemptId && definitive)
+    writeKey(key, pending.command, {
+      uncertain: ledger.uncertain || !rejected,
+      rejected: ledger.rejected + (rejected ? 1 : 0),
+      inFlight: ledger.inFlight.filter((id) => id !== attemptId),
+    }, message)
+  })
+}
+
+/** Only a fully tracked lifetime of pre-admission rejections can be abandoned. */
+export function discardDefinitivelyRejectedOperatorMessage(id: string, requestId: string): Promise<boolean> {
+  return exclusive(id, (key) => {
+    const pending = readKey(key)
+    if (pending.error || pending.command?.requestId !== requestId || !pending.definitiveFailure) return false
+    window.localStorage.removeItem(key)
+    return true
   })
 }
 
@@ -55,18 +105,18 @@ async function exclusive<T>(id: string, work: (key: string) => T): Promise<T> {
 }
 
 /** Reserve once before submission. Every tab and every lost-response retry reuses that identity. */
-export function reserveOperatorMessage(id: string, content: string, route: string, settings?: OperatorChatSettings, configurationVersionId?: string): Promise<SendOperatorMessageRequest> {
+export function reserveOperatorMessage(id: string, content: string, route: string, settings?: OperatorChatSettings,
+  forkExpectedRevision?: number, binding?: Pick<SendOperatorMessageRequest, 'configurationVersionId' | 'defaultsRevision'>): Promise<SendOperatorMessageRequest> {
   return exclusive(id, (key) => {
     const pending = readKey(key)
     if (pending.error) throw new Error(pending.error)
     if (pending.command) {
       if (pending.command.content !== content) throw new Error('Retry the previous pending message before sending a different command. Your new draft is preserved.')
-      return pending.command // Includes the originally accepted route context.
+      return pending.command // Includes the originally accepted route context and configuration binding.
     }
-    const command = SendOperatorMessageRequestSchema.parse({ requestId: crypto.randomUUID(), content, context: { route }, ...(settings ? { settings } : {}),
-      ...(configurationVersionId ? { configurationVersionId } : {}) })
-    window.localStorage.setItem(key, JSON.stringify(command))
-    if (readKey(key).command?.requestId !== command.requestId) throw new Error('The pending command could not be saved. No message was sent.')
+    const command = SendOperatorMessageRequestSchema.parse({ requestId: crypto.randomUUID(), content, context: { route },
+      ...(settings ? { settings } : {}), ...(forkExpectedRevision === undefined ? {} : { forkExpectedRevision }), ...binding })
+    writeKey(key, command, { uncertain: false, rejected: 0, inFlight: [] })
     return command
   })
 }

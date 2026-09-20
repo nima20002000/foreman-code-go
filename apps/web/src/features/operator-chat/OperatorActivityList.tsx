@@ -21,6 +21,12 @@ export function OperatorActivityList({ entries, activeRequestId, parts, onBrowse
         if (!text) return null
         return <OperatorThinking key={`${entry.requestId}:${entry.id}`} text={text} onBrowse={onBrowse} />
       }
+      if (entry.kind === 'mcp') {
+        if (entry.status === 'completed') return null
+        return <div key={`${entry.requestId}:${entry.id}`} className="operator-mcp-activity" role="status">
+          MCP tool call{statuses[entry.status] ? ` · ${statuses[entry.status]}` : ''}
+        </div>
+      }
       return <div key={`${entry.requestId}:${entry.id}`} className="operator-tool-activity" data-activity-kind={entry.kind}
         onClickCapture={(event) => { if ((event.target as HTMLElement).closest('summary')) onBrowse() }}>
         <details className="operator-activity-disclosure">
