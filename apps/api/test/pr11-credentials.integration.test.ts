@@ -12,6 +12,7 @@ import { WorkerCredentialService, type IssuedWorkerCredential } from '../src/mod
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
+import { seedOrchestratorApproval } from './helpers/seedOrchestratorApproval.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
 const token = (credential: IssuedWorkerCredential) => credential.environment.variables.GRAPHQL_APP_MCP_TOKEN!
@@ -24,6 +25,7 @@ async function database(perform: (pool: pg.Pool) => Promise<void>) {
   try {
     await applyApplicationMigrations(pool)
     await ensureAcceptanceSeed(pool)
+    await seedOrchestratorApproval(pool)
     await perform(pool)
   } finally {
     await pool.end()
@@ -44,7 +46,7 @@ async function identities(pool: pg.Pool) {
     [run.id, run.workspaceId, run.workflowId, run.workflowVersionId, run.executionState, JSON.stringify(run)])
   const executions = await Promise.all(['developer', 'reviewer'].map(async (role) => {
     const execution = HarnessExecutionSchema.parse({
-      id: `execution-${role}-${suffix}`, runId: run.id, workflowNodeId: `node-${role}`, agentId: `agent-${role}`,
+      id: `execution-${role}-${suffix}`, runId: run.id, workflowNodeId: role === 'developer' ? 'node-developer' : 'node-reviewer', agentId: `agent-${role}`,
       agentConfigurationVersionId: `agent-${role}-config-v1`, attempt: 1, input: {}, state: 'starting', createdAt: new Date().toISOString(),
     })
     await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,accepted,record) values($1,$2,$3,$4,1,false,$5::jsonb)`,

@@ -1,9 +1,11 @@
-import { IdSchema, TimestampSchema, NativeSessionLaneSchema, NativeSessionReferenceSchema, ReviewJobSchema, type NativeHarnessEvent, type NativeSessionReference, type NativeSessionLane, type ReviewJob } from '@graphql/contracts'
+import { DurableInteractionSchema, type DurableInteraction, IdSchema, TimestampSchema, NativeSessionLaneSchema, NativeSessionReferenceSchema, ReviewJobSchema, type NativeHarnessEvent, type NativeSessionReference, type NativeSessionLane, type ReviewJob } from '@graphql/contracts'
 import type pg from 'pg'
 
 import { interactionConnection } from './connection.js'
 import { DomainError } from '../errors.js'
 import { appendNativeEvent } from '../runs/nativeEvents.js'
+import { assertOrchestratorGraphAuthority } from './graphAuthority.js'
+import { pendingReviewCleanup } from './reviewPolicy.js'
 
 // A submitted job may have reached the provider even when no acknowledgement was saved.
 const recoverableJob = `(state in ('pending','leased','blocked_busy','blocked_disconnected','submitted','acknowledged','uncertain')
@@ -29,6 +31,60 @@ export class PostgresInteractionCoordinationRepository {
   constructor(private readonly pool: pg.Pool) {}
 
   private get queryConnection() { return interactionConnection.getStore() ?? this.pool }
+
+  assertOrchestratorConnection(interaction: DurableInteraction, executionId: string) {
+    return assertOrchestratorGraphAuthority(this.queryConnection, interaction, { executionId })
+  }
+
+  async assertReviewConnection(job: ReviewJob): Promise<void> {
+    const result = await this.queryConnection.query<{ record: unknown; execution_id: string | null }>(
+      `select i.record, j.execution_id from review_jobs j
+       join durable_interactions i on i.id=j.interaction_id where j.id=$1`, [job.id],
+    )
+    const row = result.rows[0]
+    const interaction = DurableInteractionSchema.safeParse(row?.record)
+    if (!row?.execution_id || !interaction.success || interaction.data.id !== job.interactionId
+      || interaction.data.approval.designatedOrchestratorAgentId !== job.reviewerAgentId) {
+      throw new DomainError('INTERACTION_ACCESS_DENIED', 'The saved review assignment is unavailable.', 403)
+    }
+    await this.assertOrchestratorConnection(interaction.data, row.execution_id)
+  }
+
+  async reviewRunStopped(reviewJobId: string): Promise<boolean> {
+    const result = await this.queryConnection.query(
+      `select 1 from review_jobs j join harness_executions e on e.id=j.execution_id
+       join runs r on r.id=e.run_id where j.id=$1 and (r.execution_state in ('completed','interrupted')
+         or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending))`, [reviewJobId],
+    )
+    return result.rowCount === 1
+  }
+
+  async hasUnsettledReview(executionId: string): Promise<boolean> {
+    const result = await this.queryConnection.query(
+      `select 1 from review_jobs where execution_id=$1 and state<>'completed'
+       and (state<>'failed' or record->'cleanup'->>'completedAt' is null) limit 1`, [executionId],
+    )
+    return result.rowCount === 1
+  }
+
+  /** Called only AFTER Run Stop confirms all native closures and credential cleanup. */
+  async finishStoppedReviews(runId: string, credentialsRequired: boolean, client?: pg.ClientBase): Promise<void> {
+    await (client ?? this.queryConnection).query(
+      `update review_jobs j set state='failed',revision=revision+1,updated_at=clock_timestamp(),
+       record=(j.record - 'leaseOwner' - 'leaseToken' - 'leaseExpiresAt' - 'retryAfter') ||
+         jsonb_build_object('state','failed','updatedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+           'error',coalesce(j.record->'error',jsonb_build_object('code','REVIEW_RUN_STOPPED','message','The Run stopped before the native review finished.')),
+           'cleanup',coalesce(j.record->'cleanup','{}'::jsonb) || jsonb_build_object(
+             'nativeState',case when j.record->'cleanup'->>'nativeState' in ('terminal','closed','not_started')
+               then j.record->'cleanup'->>'nativeState' else 'closed' end,
+             'credentialState',case when j.record->'cleanup'->>'credentialState' in ('revoked','not_required')
+               then j.record->'cleanup'->>'credentialState' when $2 then 'revoked' else 'not_required' end,
+             'interruptState',coalesce(j.record->'cleanup'->>'interruptState','not_sent'),
+             'completedAt',coalesce(j.record->'cleanup'->>'completedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))))
+       from harness_executions e where j.execution_id=e.id and e.run_id=$1
+         and j.state<>'completed' and j.record->'cleanup'->>'completedAt' is null`, [runId, credentialsRequired],
+    )
+  }
 
   async bindWorkflowSession(executionId: string, session: NativeSessionReference): Promise<void> {
     const result = await this.queryConnection.query(
@@ -212,6 +268,11 @@ export class PostgresInteractionCoordinationRepository {
       if (current.providerTurnOrMessageId && fields.providerTurnOrMessageId
         && current.providerTurnOrMessageId !== fields.providerTurnOrMessageId) {
         throw new DomainError('REVIEW_JOB_IDENTITY_CONFLICT', 'The review job is already bound to another provider turn or message.', 409)
+      }
+      // Every terminal failure has a recovery owner. Missing ACKs and failed
+      // attachment never constitute native closure evidence.
+      if (state === 'failed' && !current.cleanup && !fields.cleanup) {
+        fields = { ...fields, cleanup: pendingReviewCleanup() }
       }
       if ((fields.cleanup && state !== 'failed') || (current.cleanup && state !== 'failed')
         || (fields.cleanup?.nativeState === 'not_started'

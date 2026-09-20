@@ -45,7 +45,7 @@ import '@xyflow/react/dist/style.css'
 import { useQueryClient } from '@tanstack/react-query'
 
 import {
-  DEFAULT_AGENT_DEFAULTS, type AgentDefaults, type ApprovalHandler,
+  DEFAULT_AGENT_DEFAULTS, isLiveRunState, requiresRunRecovery, runRefetchInterval, type AgentDefaults, type ApprovalHandler,
 } from '@graphql/contracts'
 import type {
   Agent,
@@ -185,35 +185,11 @@ type NodeMenuContextValue = {
 const NodeMenuContext = createContext<NodeMenuContextValue | undefined>(undefined)
 
 function agentNodeTone(data: GraphNode['data']): Tone {
-  if (data.runActive && data.agent.productRole === 'orchestrator'
-    && ['leased', 'submitted', 'acknowledged', 'uncertain'].includes(data.reviewState ?? '')) return 'accent'
-  if (data.runActive && data.agent.productRole === 'orchestrator'
-    && ['blocked_busy', 'blocked_disconnected', 'failed'].includes(data.reviewState ?? '')) return 'warning'
-  if (data.runActive) {
-    if (data.runState === 'waiting') return 'warning'
-    if (data.runState === 'queued' || data.runState === 'starting' || data.runState === 'running') return 'accent'
-    return 'neutral'
-  }
-  if (data.executionState === 'auth_required' || data.executionState === 'waiting_browser' || data.runState === 'waiting') return 'warning'
-  if (data.executionState === 'interrupted' || data.executionState === 'disconnected') return 'danger'
-  if (data.executionState === 'working' || data.runState === 'queued' || data.runState === 'starting' || data.runState === 'running') return 'accent'
-  if (data.executionState === 'available') return 'success'
-  return 'neutral'
+  return data.liveActivity?.state === 'working' ? 'accent' : data.liveActivity?.state === 'waiting' ? 'warning' : 'neutral'
 }
 
 function agentNodeStatus(data: GraphNode['data']): string {
-  if (data.runActive) {
-    if (data.agent.productRole === 'orchestrator'
-      && ['leased', 'submitted', 'acknowledged', 'uncertain'].includes(data.reviewState ?? '')) return 'Working'
-    if (data.agent.productRole === 'orchestrator'
-      && ['blocked_busy', 'blocked_disconnected', 'failed'].includes(data.reviewState ?? '')) return 'Waiting'
-    if (data.runState === 'waiting') return 'Waiting'
-    if (['queued', 'starting', 'running'].includes(data.runState ?? '')) return 'Working'
-    return 'Idle'
-  }
-  if (data.executionState === 'working') return 'Working'
-  if (['waiting_browser', 'auth_required', 'interrupted', 'disconnected'].includes(data.executionState ?? '')) return 'Waiting'
-  return 'Idle'
+  return data.liveActivity?.state === 'working' ? 'Working' : data.liveActivity?.state === 'waiting' ? 'Waiting' : 'Idle'
 }
 
 function agentNodeSubtitle(data: GraphNode['data']): string {
@@ -221,7 +197,7 @@ function agentNodeSubtitle(data: GraphNode['data']): string {
   const harnessLabel = harness === 'opencode' ? 'OpenCode'
     : harness === 'codex' ? 'Codex'
       : data.agent.harnessSummary?.label ?? 'Agent'
-  const responsibility = data.role ?? data.agent.productRole ?? data.stepLabel
+  const responsibility = data.role ?? data.agent.productRole ?? 'Agent'
   return `${harnessLabel} · ${responsibility}`
 }
 
@@ -293,7 +269,7 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
           statusLabel={agentNodeStatus(data)}
           tone={agentNodeTone(data)}
           icon={agentNodeIcon(data)}
-          meta={data.stepLabel}
+          meta={data.liveActivity?.action?.label}
         />
       </div>
     )
@@ -301,12 +277,13 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
 
   return (
     <article
-      className={`workflow-agent-node${selected ? ' workflow-agent-node-selected' : ''}${data.runState === 'starting' || data.runState === 'running' || data.runState === 'waiting' ? ' workflow-agent-node-active' : ''}${data.entering ? ' workflow-agent-node-entering' : ''}`}
+      className={`workflow-agent-node${selected ? ' workflow-agent-node-selected' : ''}${data.liveActivity && data.liveActivity.state !== 'idle' ? ' workflow-agent-node-active' : ''}${data.entering ? ' workflow-agent-node-entering' : ''}`}
       data-testid={`agent-node-${data.agentId}`}
       data-agent-id={data.agentId}
-      data-execution-state={data.executionState ?? 'unknown'}
-      data-run-state={data.runState ?? 'idle'}
-      data-review-state={data.reviewState ?? 'none'}
+      data-workflow-node-id={data.workflowNodeId}
+      data-execution-state={data.liveActivity?.state ?? 'idle'}
+      data-run-state={data.liveActivity?.state ?? 'idle'}
+      data-live-event={data.liveActivity?.event?.id ?? ''}
     >
       <NodeResizer
         isVisible={selected}
@@ -337,11 +314,9 @@ function AgentNode({ data, selected, isConnectable }: NodeProps<GraphNode>) {
         tone={agentNodeTone(data)}
         icon={agentNodeIcon(data)}
         selected={selected}
-        working={data.runState === 'starting' || data.runState === 'running' || data.executionState === 'working'
-          || (data.runActive && data.runState === 'completed' && data.agent.productRole === 'orchestrator'
-            && ['leased', 'submitted', 'acknowledged', 'uncertain'].includes(data.reviewState ?? ''))}
-        meta={data.runActive && data.runState === 'completed' ? `${data.stepLabel} completed` : data.stepLabel}
-        ariaLabel={`${data.label} agent, ${data.stepLabel}`}
+        working={data.liveActivity?.state === 'working'}
+        meta={data.liveActivity?.action?.label}
+        ariaLabel={`${data.label} agent, ${data.stepLabel}, ${agentNodeStatus(data)}${data.liveActivity?.action ? `, ${data.liveActivity.action.label}` : ''}`}
         onSelect={(event) => data.onSelect?.(
           data.agentId,
           data.workflowNodeId,
@@ -613,10 +588,14 @@ export function GraphEditor({
   const agentOverrides = draft?.agentOverrides ?? EMPTY_AGENT_OVERRIDES
   const [notice, setNotice] = useState<{ kind: 'success' | 'error' | 'info'; text: string }>()
   useEffect(() => { if (notice?.kind === 'success') toasts?.notify({ tone: 'success', title: notice.text }) }, [notice, toasts])
-  const [activeRunId, setActiveRunId] = useState<string>()
-  const liveRunId = runFacts?.find((run) => run.workflowId === workflow.id && run.executionState !== 'completed')?.id
-  const displayedRunId = liveRunId ?? activeRunId
+  const [startedRun, setStartedRun] = useState<{ scope: string; id: string }>()
+  const activeRunId = startedRun?.scope === workflowKey ? startedRun.id : undefined
+  const workflowRuns = runFacts?.filter((run) => run.workspaceId === workspaceId && run.workflowId === workflow.id)
+  const liveRunId = workflowRuns?.find((run) => isLiveRunState(run.executionState))?.id
+  const recoveryRunId = workflowRuns?.find(requiresRunRecovery)?.id
+  const displayedRunId = activeRunId ?? liveRunId ?? recoveryRunId
   const startLock = useRef(false)
+  useEffect(() => { startLock.current = false }, [workflowKey])
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
   const [workflowSettingsOpen, setWorkflowSettingsOpen] = useState(false)
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => new Set())
@@ -681,43 +660,38 @@ export function GraphEditor({
   const cancelRunMutation = useCancelRunMutation()
   const runQuery = useRunQuery(workspaceId, displayedRunId ?? '', {
     enabled: Boolean(displayedRunId),
-    refetchInterval: (query) => query.state.data?.run.executionState === 'completed' ? false : 1_000,
+    refetchInterval: (query) => runRefetchInterval(query.state.data),
   })
-  const liveRunData = runQuery.data?.run.executionState === 'completed' ? undefined : runQuery.data
-  const runStatesByNodeId = useMemo(
-    () => new Map(liveRunData?.executions.map((execution) => [execution.workflowNodeId, execution.state]) ?? []),
-    [liveRunData?.executions],
+  const liveRunData = runQuery.data && runQuery.data.run.id === displayedRunId
+    && runQuery.data.run.workspaceId === workspaceId && runQuery.data.run.workflowId === workflow.id
+    && ['queued', 'running', 'waiting'].includes(runQuery.data.run.executionState)
+    && runQuery.data.liveActivity?.active
+    && runQuery.data.liveActivity.runId === displayedRunId
+    && runQuery.data.liveActivity.workflowVersionId === runQuery.data.run.workflowVersionId ? runQuery.data : undefined
+  const liveActivitiesByNodeId = useMemo(
+    () => new Map(liveRunData?.liveActivity?.nodes.map((node) => [node.workflowNodeId, node]) ?? []),
+    [liveRunData?.liveActivity],
   )
-  const runOutcomesByNodeId = useMemo(
-    () => new Map(liveRunData?.executions.flatMap((execution) => execution.result
-      ? [[execution.workflowNodeId, execution.result.outcome] as const] : []) ?? []),
-    [liveRunData?.executions],
-  )
-  const reviewStatesByAgentId = useMemo(() => {
-    const latest = new Map<string, { sequence: number; state: NonNullable<GraphNode['data']['reviewState']> }>()
-    for (const activity of liveRunData?.activity ?? []) {
-      if (activity.kind !== 'review_job_state') continue
-      const { reviewerAgentId, state } = activity.payload
-      if (typeof reviewerAgentId !== 'string' || typeof state !== 'string') continue
-      if (!['pending', 'leased', 'submitted', 'acknowledged', 'completed', 'blocked_busy', 'blocked_disconnected', 'uncertain', 'failed'].includes(state)
-        || (latest.get(reviewerAgentId)?.sequence ?? -1) >= activity.sequence) continue
-      latest.set(reviewerAgentId, { sequence: activity.sequence, state: state as NonNullable<GraphNode['data']['reviewState']> })
+  useEffect(() => {
+    if (activeRunId && runQuery.data?.run.id === activeRunId
+      && !['queued', 'running', 'waiting'].includes(runQuery.data.run.executionState)) {
+      startLock.current = false
+      setStartedRun((current) => current?.scope === workflowKey && current.id === activeRunId ? undefined : current)
     }
-    return new Map([...latest].map(([agentId, item]) => [agentId, item.state]))
-  }, [liveRunData?.activity])
+  }, [activeRunId, runQuery.data?.run.id, runQuery.data?.run.executionState, workflowKey])
 
   useEffect(() => {
     const run = runQuery.data?.run
     if (!run || run.id !== activeRunId || run.executionState !== 'completed') return
     startLock.current = false
-    setActiveRunId(undefined)
+    setStartedRun(undefined)
     void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) })
     if (run.outcome === 'succeeded') {
       setNotice({ kind: 'success', text: 'Workflow completed with a durable result.' })
     } else {
       setNotice({
         kind: 'error',
-        text: run.result?.error?.message ?? `Workflow finished with outcome ${run.outcome}.`,
+        text: run.stopCause?.error.message ?? run.result?.error?.message ?? `Workflow finished with outcome ${run.outcome}.`,
       })
     }
   }, [activeRunId, queryClient, runQuery.data, workspaceId])
@@ -789,8 +763,15 @@ export function GraphEditor({
   }
   const executionLimitExceeded = !onSaveSession && executionPolicy.maxNodeExecutions < displayedWorkflow.nodes.length
   const managedLocationReady = !managedDraft || managedWorkspace.data?.locationValidation.status === 'ready'
-  const runActive = Boolean(displayedRunId && (!runQuery.data || runQuery.data.run.executionState !== 'completed'))
-  const startDisabled = startRunMutation.isPending || startManagedRun.isPending || !managedLocationReady || runActive
+  const runActive = Boolean(displayedRunId && (runQuery.data
+    ? isLiveRunState(runQuery.data.run.executionState) : displayedRunId !== recoveryRunId))
+  const recoveryRequired = Boolean(recoveryRunId || (runQuery.data
+    && (runQuery.data.run.executionState === 'interrupted' || runQuery.data.cleanupPending)))
+  const stopAvailable = runActive || recoveryRequired
+  const stopRunId = runActive ? displayedRunId : recoveryRunId ?? displayedRunId
+  const stopCause = runQuery.data ? runQuery.data.run.stopCause
+    : (displayedRunId ? workflowRuns?.find((run) => run.id === displayedRunId)?.stopCause : workflowRuns?.[0]?.stopCause)
+  const startDisabled = startRunMutation.isPending || startManagedRun.isPending || !managedLocationReady || runActive || recoveryRequired
   const hasUnsavedAgentSettings = displayedWorkflow.nodes.some((node) => {
     const local = localAgents.find((agent) => agent.id === node.agentId)
     const persisted = agents.find((agent) => agent.id === node.agentId)
@@ -966,26 +947,25 @@ export function GraphEditor({
       {
         selectedAgentId,
         selectedNodeIds,
-        runStatesByNodeId,
-        runOutcomesByNodeId,
         runActive: Boolean(liveRunData),
-        reviewStatesByAgentId,
+        liveActivitiesByNodeId,
         onSelectAgent: selectAgent,
         onOpenNodeSettings: openNodeSettings,
         onRemoveEdge: removeGraphEdge,
         onRemoveNode: removeGraphNode,
         onSaveNodeSettings: saveNodeSettings,
         onResizeNode: resizeGraphNode,
-        runFacts: runFacts?.filter((run) => run.executionState !== 'completed'),
+        runFacts: runFacts?.filter((run) => run.workflowId === workflow.id && ['queued', 'running', 'waiting'].includes(run.executionState ?? '')),
         enteringNodeIds,
       },
     ),
-    [catalogAgents, displayedWorkflow, enteringNodeIds, openNodeSettings, removeGraphEdge, removeGraphNode, resizeGraphNode, runFacts, runOutcomesByNodeId, runStatesByNodeId, liveRunData, reviewStatesByAgentId, saveNodeSettings, selectAgent, selectedAgentId, selectedNodeIds],
+    [catalogAgents, displayedWorkflow, enteringNodeIds, openNodeSettings, removeGraphEdge, removeGraphNode, resizeGraphNode, runFacts, liveRunData, liveActivitiesByNodeId, saveNodeSettings, selectAgent, selectedAgentId, selectedNodeIds, workflow.id],
   )
 
   const visibleNodes = useMemo(() => {
     const currentIds = new Set(graph.nodes.map((node) => node.id))
-    return [...graph.nodes, ...departing.nodes.filter((node) => !currentIds.has(node.id))]
+    return [...graph.nodes, ...departing.nodes.filter((node) => !currentIds.has(node.id))
+      .map((node) => ({ ...node, data: { ...node.data, liveActivity: undefined } }))]
   }, [departing.nodes, graph.nodes])
 
   const visibleEdges = useMemo(() => {
@@ -1211,7 +1191,7 @@ export function GraphEditor({
     setNotice(undefined)
     const callbacks = {
       onSuccess: ({ run }: { run: { id: string } }) => {
-        setActiveRunId(run.id)
+        setStartedRun({ scope: workflowKey, id: run.id })
         void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) })
         setNotice({ kind: 'info' as const, text: `Run ${run.id} was queued.` })
       },
@@ -1456,6 +1436,29 @@ export function GraphEditor({
       aria-label={`${displayedWorkflow.name} workflow graph`}
       onKeyDown={handleGraphKeyDown}
     >
+      {recoveryRequired ? <Alert live tone="warning" title="Workflow needs recovery">
+        <p>An interrupted Run or unfinished native cleanup needs attention. Interrupted Runs are not shown as live work. Stop any remaining native work and finish cleanup before starting another Run.</p>
+        {recoveryRunId && recoveryRunId !== stopRunId ? <Button
+          disabled={stopManagedRun.isPending || cancelRunMutation.isPending}
+          onClick={() => {
+            const onError = (error: Error) => setNotice({ kind: 'error' as const, text: graphErrorMessage(error, 'Recovery Stop failed.') })
+            if (managedDraft) stopManagedRun.mutate({ workspaceId, runId: recoveryRunId, commandId: crypto.randomUUID() }, {
+              onError,
+              onSuccess: (result) => {
+                setNotice({ kind: result.status === 'not_owner' ? 'error' : 'info', text: result.status === 'not_owner'
+                  ? 'Stop was not accepted by this API. Use the active owner.' : 'Stop requested. Native cleanup is not yet confirmed.' })
+                void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) })
+              },
+            })
+            else cancelRunMutation.mutate({ workspaceId, runId: recoveryRunId }, { onError })
+          }}>Stop recovery Run</Button> : null}
+      </Alert> : null}
+      {stopCause ? <Alert tone="danger" title="Orchestrator review failed">
+        <p>{stopCause.error.message}</p>
+        <p>Finish any pending cleanup, then correct the reviewer settings before starting a new Run.</p>
+        <Link to="/workspaces/$workspaceId/approvals" params={{ workspaceId }}
+          search={{ workflowId: workflow.id, interactionId: stopCause.interactionId, approvalView: 'history' }}>Open failed review</Link>
+      </Alert> : null}
       <div className="workflow-graph-canvas" data-testid="workflow-graph-canvas" ref={canvasRef}>
         <NodeMenuContext.Provider value={nodeMenuValue}>
         <ReactFlow
@@ -1515,27 +1518,27 @@ export function GraphEditor({
             <Button
               variant="secondary"
               className="n-icon-button workflow-graph-run"
-              aria-label={runActive ? 'Cancel workflow' : 'Start workflow'}
-              title={runActive ? 'Cancel workflow' : needsAgentBeforeSave ? 'Add an Agent before starting this workflow' : managedLocationReady ? 'Start workflow' : 'Set a valid workspace execution location first'}
-              disabled={runActive ? cancelRunMutation.isPending || stopManagedRun.isPending : startDisabled || (Boolean(managedDraft) && (isDirty || isSaving))}
-              onClick={runActive && displayedRunId
+              aria-label={stopAvailable ? runActive ? 'Cancel workflow' : 'Stop workflow for recovery' : 'Start workflow'}
+              title={stopAvailable ? runActive ? 'Cancel workflow' : 'Stop this Run to finish recovery' : needsAgentBeforeSave ? 'Add an Agent before starting this workflow' : managedLocationReady ? 'Start workflow' : 'Set a valid workspace execution location first'}
+              disabled={stopAvailable ? cancelRunMutation.isPending || stopManagedRun.isPending : startDisabled || (Boolean(managedDraft) && (isDirty || isSaving))}
+              onClick={stopAvailable && stopRunId
                 ? () => managedDraft
-                  ? stopManagedRun.mutate({ workspaceId, runId: displayedRunId, commandId: crypto.randomUUID() }, {
+                  ? stopManagedRun.mutate({ workspaceId, runId: stopRunId, commandId: crypto.randomUUID() }, {
                       onSuccess: (result) => {
                         setNotice({ kind: result.status === 'not_owner' ? 'error' : 'info', text:
                           result.status === 'not_owner' ? 'This API does not own the running process. Stop was not accepted; use its active owner.' :
                             result.status === 'already_terminal' ? 'The run record is already terminal. Native process exit has not been verified.' :
                               'Cancellation was requested. Native process exit has not yet been verified.' })
-                        void queryClient.invalidateQueries({ queryKey: queryKeys.run(workspaceId, displayedRunId) })
+                        void queryClient.invalidateQueries({ queryKey: queryKeys.run(workspaceId, stopRunId) })
                       },
                       onError: (error) => setNotice({ kind: 'error', text: graphErrorMessage(error, 'The run could not be canceled.') }),
                     })
-                  : cancelRunMutation.mutate({ workspaceId, runId: displayedRunId }, {
+                  : cancelRunMutation.mutate({ workspaceId, runId: stopRunId }, {
                       onError: (error) => setNotice({ kind: 'error', text: graphErrorMessage(error, 'The run could not be canceled.') }),
                     })
                 : handleStart}
             >
-              {runActive ? <Icon name="stop" size={14} /> : <Icon name="play" size={16} />}
+              {stopAvailable ? <Icon name="stop" size={14} /> : <Icon name="play" size={16} />}
             </Button>
             <Button
               ref={addAgentButtonRef}
@@ -1588,7 +1591,7 @@ export function GraphEditor({
             onChange={(event) => applyBoardChange((saved) => ({ ...saved, approval: { handler: 'orchestrator', designatedOrchestratorAgentId: event.target.value || undefined } }))}
           /> : null}
           {displayedWorkflow.approval?.handler === 'orchestrator' ? <Alert tone="info" title="Automatic review setup">
-            A Codex Orchestrator needs Ask when needed and Codex automatic review. An OpenCode Orchestrator needs a deny-default policy with explicit allow rules for graphql-app_interaction_get and graphql-app_interaction_respond.
+            Every node using routed approval needs a direct edge to the designated Orchestrator. Native Codex self-review remains a separate per-node setting. A Codex Orchestrator needs Ask when needed and Codex automatic review. An OpenCode Orchestrator needs a deny-default policy with explicit allow rules for graphql-app_interaction_get and graphql-app_interaction_respond.
           </Alert> : null}
           {!hasDistinctCoder || workflowOrchestrators.length === 0 ? <Alert live tone="warning" title="Orchestrator handling requires one Orchestrator and a distinct Coder on this board." /> : null}
           <WorkflowExecutionLimits

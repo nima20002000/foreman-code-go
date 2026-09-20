@@ -228,7 +228,9 @@ export function buildProductionApp(
   )
   const reviews = new AutomaticReviewService(database.pool, runs, approvals, chat, access, locations, rollout,
     async (runId) => {
-      if (await engine.cancel(runId)) await engine.finishRunLifecycle(runId, 'The assigned review failed.')
+      // AutomaticReviewService committed the exact review cause and durable Stop
+      // intent first. A process restart or failed closure cannot lose that cause.
+      if (await engine.cancel(runId)) await engine.finishRunLifecycle(runId, 'The assigned Orchestrator review failed; see the Run stop cause.')
     })
   reviewLifecycle.current = reviews
   const operatorServices = {

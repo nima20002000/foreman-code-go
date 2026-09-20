@@ -54,6 +54,7 @@ import {
   type RequestOptions,
 } from './client'
 import { keepLatestWorkspaceLocation, locationMutationKey, shareManagedWorkspace } from './workspaceLocationCache'
+import { keepLatestRunResponse } from './runLiveCache'
 
 /**
  * Query keys deliberately carry every scope identity used by the endpoint.
@@ -438,7 +439,19 @@ export function useRunQuery(
   return useQuery({
     ...options,
     queryKey: queryKeys.run(workspaceId, runId),
-    queryFn: ({ signal }) => getRun({ workspaceId, runId }, { signal }),
+    queryFn: async ({ signal }) => {
+      const result = await getRun({ workspaceId, runId }, { signal })
+      if (result.run.workspaceId !== workspaceId || result.run.id !== runId
+        || (result.liveActivity && (result.liveActivity.runId !== runId
+          || result.liveActivity.workspaceId !== workspaceId || result.liveActivity.workflowId !== result.run.workflowId
+          || result.liveActivity.workflowVersionId !== result.run.workflowVersionId))) {
+        throw new Error('The Run response does not match the requested workspace and Run.')
+      }
+      return result
+    },
+    structuralSharing: (current, incoming) => keepLatestRunResponse(
+      current as GetRunResponse | undefined, incoming as GetRunResponse,
+    ),
   })
 }
 

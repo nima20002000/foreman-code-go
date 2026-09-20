@@ -9,7 +9,7 @@ const definition = {
   nodes: [
     { id: 'node-orchestrator', agentId: 'agent-orchestrator', name: 'Orchestrator' },
     { id: 'node-coder', agentId: 'agent-coder', name: 'Coder' },
-  ], edges: [],
+  ], edges: [{ id: 'direct', source: 'node-orchestrator', target: 'node-coder' }],
 }
 const agents = [
   { id: 'agent-orchestrator', name: 'O', role: 'anything', productRole: 'orchestrator' as const,
@@ -24,6 +24,40 @@ const agents = [
 ]
 
 describe('workflow approval authority', () => {
+
+  it('requires a direct edge for each routed requesting occurrence, not transitive membership', () => {
+    const approval = { handler: 'orchestrator' as const, designatedOrchestratorAgentId: 'agent-orchestrator' }
+    const bridge = { id: 'bridge', agentId: 'agent-bridge', name: 'Bridge' }
+    const allAgents = [...agents, { id: 'agent-bridge', productRole: 'coder' as const }]
+    const chain = { ...definition, nodes: [...definition.nodes, bridge], edges: [
+      { id: 'first', source: 'node-orchestrator', target: 'bridge' },
+      { id: 'second', source: 'bridge', target: 'node-coder' },
+    ] }
+    expect(() => validateWorkflowApproval(chain, approval, allAgents))
+      .toThrowError(expect.objectContaining({ code: 'APPROVAL_DIRECT_CONNECTION_REQUIRED' }))
+    expect(() => validateWorkflowApproval({ ...definition, edges: [] }, approval, agents))
+      .toThrowError(expect.objectContaining({ code: 'APPROVAL_DIRECT_CONNECTION_REQUIRED' }))
+    expect(() => validateWorkflowApproval({ ...chain, edges: [...chain.edges, definition.edges[0]!] }, approval, allAgents)).not.toThrow()
+    const repeated = { ...definition, nodes: [...definition.nodes, { id: 'other-coder', agentId: 'agent-coder', name: 'Other occurrence' }] }
+    expect(() => validateWorkflowApproval(repeated, approval, agents))
+      .toThrowError(expect.objectContaining({ code: 'APPROVAL_DIRECT_CONNECTION_REQUIRED' }))
+  })
+
+  it('keeps explicit native Codex self-review local while another node routes directly', () => {
+    const approval = { handler: 'orchestrator' as const, designatedOrchestratorAgentId: 'agent-orchestrator' }
+    const native = { id: 'native-worker', productRole: 'coder' as const, harnessConfiguration: {
+      harness: 'codex' as const, model: 'test-model', sandbox: 'read-only' as const,
+      reasoningEffort: 'medium' as const, serviceTier: 'standard' as const,
+      advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalsReviewer: 'auto_review' as const, approvalPolicy: 'on-request' as const },
+    } }
+    const mixed = { ...definition, nodes: [...definition.nodes, { id: 'native-node', agentId: native.id, name: 'Native self-review' }],
+      edges: [...definition.edges, { id: 'indirect-native', source: 'node-coder', target: 'native-node' }] }
+    expect(() => validateWorkflowApproval(mixed, approval, [...agents, native])).not.toThrow()
+    expect(() => validateWorkflowApproval(mixed, approval, [...agents, { ...native, harnessConfiguration: { ...native.harnessConfiguration,
+      advanced: { ...native.harnessConfiguration.advanced, approvalsReviewer: 'user' as const } } }]))
+      .toThrowError(expect.objectContaining({ code: 'APPROVAL_DIRECT_CONNECTION_REQUIRED' }))
+  })
+
   it('rejects an incomplete Orchestrator selection at executable validation', () => {
     expect(() => validateWorkflowApproval(definition, { handler: 'orchestrator' }, agents))
       .toThrowError(expect.objectContaining({ code: 'WORKFLOW_APPROVAL_INCOMPLETE' }))

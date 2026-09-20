@@ -15,7 +15,7 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_list', () => context.services.runs.list(context.principal, input)))
   if (operatorToolAvailable(context, 'run_get')) server.registerTool('run_get', {
-    description: 'Read an authorized run, result and execution attempts.', inputSchema: RunGetInputSchema,
+    description: 'Read an authorized Run, result, execution attempts and liveActivity from one backend snapshot. Each exact workflow node has a coherent Working, Waiting or Idle state and a safe event-backed action. liveActivity uses the Run’s saved workflow version, decimal event identities and an event count; terminal Runs have no live actions. Includes persisted automatic Stop causes and cleanup status; a canceled outcome does not hide reviewer failure.', inputSchema: RunGetInputSchema,
     outputSchema: RunDetailsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_get', () => context.services.runs.get(context.principal, input.workspaceId, input.runId)))
@@ -25,7 +25,7 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_events_list', () => context.services.runs.events(context.principal, input)))
   if (operatorToolAvailable(context, 'run_start')) server.registerTool('run_start', {
-    description: 'Durably accept one run of an explicit current saved workflow version.', inputSchema: RunStartInputSchema,
+    description: 'Durably accept one run of an explicit current saved workflow version. Nodes using routed Orchestrator approval require direct edges. Interrupted Runs and pending native cleanup must be stopped/resolved first.', inputSchema: RunStartInputSchema,
     outputSchema: RunStartResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_start', () => context.services.runs.start(context.principal, 'mcp', input)))

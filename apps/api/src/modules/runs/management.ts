@@ -14,6 +14,7 @@ import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { authorizedPage } from '../access/authorizedPage.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
+import { assertWorkflowRecovered } from './recoveryPolicy.js'
 import type { LangGraphWorkflowEngine } from './engine.js'
 import type { PostgresRunRepository } from './postgres.js'
 import { validateExecutableTopology } from './topology.js'
@@ -106,6 +107,7 @@ export class RunManagementService {
       targetKey: `workflow:${input.workflowId}:version:${input.workflowVersionId}`, payload: input,
       perform: async (client) => {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.workspaceId}`])
+        await assertWorkflowRecovered(client, input.workspaceId, input.workflowId)
         if (input.triggerJobId) await assertTriggerDispatch(client, principal, {...input, triggerJobId: input.triggerJobId})
         const parents = await client.query<{
           workspace_archived_at: Date | null; workflow_archived_at: Date | null; current_version_id: string | null

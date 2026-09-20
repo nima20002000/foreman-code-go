@@ -129,6 +129,7 @@ export class InteractionService {
 
       let attached
       try {
+        await this.interactions.assertOrchestratorConnection(claim.interaction)
         attached = await this.nativeRuntime.attachInteraction(claim.interaction, signal)
         signal.throwIfAborted()
         if (attached.manager.harness !== claim.interaction.harness
@@ -145,7 +146,10 @@ export class InteractionService {
       return await this.interactions.delivery.finish(claim, async (current, writeSignal) => {
         const option = current.responseOptions.find((candidate) => candidate.optionId === current.selectedOptionId)
         if (!option) throw new DomainError('INTERACTION_OPTION_INVALID', 'The durable response option is unavailable.', 409)
-        try { await this.nativeRuntime.validateInteraction?.(current, writeSignal) }
+        try {
+          await this.interactions.assertOrchestratorConnection(current)
+          await this.nativeRuntime.validateInteraction?.(current, writeSignal)
+        }
         catch (error) { return { state: 'failed', error: message(error) } }
         // Only this try/catch classifies native errors. Database commit failures
         // and graph-resume failures must never turn a delivered response into a retry.
@@ -199,7 +203,8 @@ export class InteractionService {
     const job = await this.interactions.coordination.findReviewJob(id, reviewerId)
     if (!job) return { interaction }
     const { state, attempt, error, retryAfter, updatedAt } = job
-    return { interaction, review: { state, attempt, updatedAt,
+    return { interaction, review: { state, attempt, updatedAt, reviewJobId: job.id,
+      cleanupPending: state === 'failed' && !job.cleanup?.completedAt,
       ...(error ? { error } : {}), ...(retryAfter ? { retryAfter } : {}) } }
   }
 
@@ -222,6 +227,8 @@ export class InteractionService {
   async respond(responder: InteractionResponder, input: { interactionId: string; optionId: string; expectedRevision: number; commandId?: string }) {
     const current = await this.get(input.interactionId)
     assertResponder(current, responder)
+    await this.interactions.assertOrchestratorConnection(current,
+      responder.kind === 'orchestrator' && responder.principal ? { principalId: responder.principal.id } : {})
     if (current.status === 'canceled') throw new DomainError('INTERACTION_CANCELED', 'This interaction was canceled and cannot be retried.', 409)
     const option = current.responseOptions.find((candidate) => candidate.optionId === input.optionId)
     if (!option) throw new DomainError('INTERACTION_OPTION_INVALID', 'The response option is not valid for this interaction.', 409)

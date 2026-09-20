@@ -15,6 +15,13 @@ export function nativeLanes(): PostgresInteractionCoordinationRepository {
     return lane
   }
   return {
+    async assertReviewConnection() {},
+    async reviewRunStopped() { return false },
+    async finishStoppedReviews() {},
+    async getLane(harness: NativeSessionLane['harness'], nativeSessionId: string) {
+      const lane = [...lanes.values()].find((item) => item.harness === harness && item.nativeSessionId === nativeSessionId)
+      return lane && structuredClone(lane)
+    },
     async bindWorkflowSession(id: string, session: NativeSessionReference) { sessions.set(id, { session, finalized: false }) },
     async finalizeWorkflowSession(id: string) { const saved = sessions.get(id); if (saved) saved.finalized = true },
     async workflowSession(id: string) { return sessions.get(id) },

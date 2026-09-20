@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { seedInteractionOwners } from './helpers/interactionOwners.js'
+import { routedApprovalFixture } from './helpers/routedApprovalFixture.js'
 import { mkdtemp, realpath, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
   CODEX_APPROVAL_OPTIONS_FIXTURE,
+  GetRunResponseSchema,
   AgentSchema,
   DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
   DurableInteractionSchema,
@@ -42,6 +44,7 @@ import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/inte
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
+import { RunManagementService } from '../src/modules/runs/management.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
@@ -467,51 +470,174 @@ it('delivers an Orchestrator App MCP response to native execution, resumes the r
   } finally { await client.close() }
 })
 
-it('keeps a busy designated reviewer pending and fences one idle-session dispatch across workers', async () => {
+it.each(['direct', 'transitive', 'unconnected', 'same_agent_other_node'] as const)(
+  'enforces exact-node %s authority over authenticated App MCP, Operator MCP and HTTP with persisted readback', async (topology) => {
+    const fixture = await routedApprovalFixture(pool, root, projectRoot, topology)
+    const { run, runs, interactions, service, commands, reviewer, reviewerId, reviewerSession, requester, manager } = fixture
+    const access = new PostgresAccessService(pool)
+    const workers = new WorkerCredentialService(pool, access)
+    const allowed = await workers.issueForReviewer(reviewer.id)
+    const denied = await workers.issueForExecution(requester.id)
+    const operator = await access.issue({ name: 'Topology verification operator', audience: 'operator',
+      expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['interactions:read', 'interactions:respond', 'runs:read'],
+        scope: { workspaceIds: [run.workspaceId], workflowIds: [run.workflowId], runIds: [run.id] } }],
+    })
+    let nativeReviewAttaches = 0
+    const dispatcher = new ReviewerDispatcher(interactions.coordination, {
+      attachInteraction: async () => { throw new Error('No model review may start in this test') },
+      attachOwnedSession: async () => { nativeReviewAttaches += 1; throw new Error('No model review may start in this test') },
+    })
+    const reviewContext = { executionId: reviewer.id, workingDirectory: projectRoot }
+    if (topology === 'direct') {
+      const job = await dispatcher.enqueue(fixture.interaction, reviewerId, reviewerSession, reviewContext)
+      await interactions.coordination.claimReviewJob(job.id, 'test-owner', 'test-fence', new Date(Date.now() + 60_000).toISOString())
+    } else {
+      await expect(dispatcher.enqueue(fixture.interaction, reviewerId, reviewerSession, reviewContext))
+        .rejects.toMatchObject({ code: 'INTERACTION_ACCESS_DENIED' })
+      expect((await pool.query('select id from review_jobs where interaction_id=$1', [fixture.interaction.id])).rowCount).toBe(0)
+      // Explicitly seed a pre-upgrade queued job to exercise recovery, not only enqueue.
+      await interactions.coordination.ensureReviewJob({
+        id: `legacy-${run.id}`, interactionId: fixture.interaction.id, reviewerAgentId: reviewerId,
+        attempt: 0, state: 'pending', provider: reviewerSession.harness, nativeSessionId: reviewerSession.nativeSessionId,
+        correlationId: `legacy-correlation-${run.id}`, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      }, { ...reviewContext, providerVersion: reviewerSession.providerVersion })
+      await expect(dispatcher.dispatchNext(reviewerId, 'test-owner')).rejects.toMatchObject({ code: 'INTERACTION_ACCESS_DENIED' })
+      expect(await interactions.coordination.findReviewJob(fixture.interaction.id, reviewerId)).toMatchObject({ state: 'pending', attempt: 0 })
+    }
+    expect(nativeReviewAttaches).toBe(0)
+    // get() has no engine side effects. Throwing unused ports prevent accidental execution.
+    const readOnlyEngine = { start: async () => { throw new Error('read-only fixture') },
+      cancel: async () => { throw new Error('read-only fixture') } } as never
+    const runManagement = new RunManagementService(pool, commands, runs, readOnlyEngine, fixture.locations)
+    app = buildApp({
+      readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
+      appMcp: { access, interactions: new PostgresAppInteractionService(pool, interactions, commands, service) },
+      product: { interactions: service } as never,
+      operator: { access, services: { interactions: new OperatorInteractionService(service, interactions), runs: runManagement, commands } as never },
+    })
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    const clients: Client[] = []
+    async function connect(path: string, token: string) {
+      const client = new Client({ name: 'topology-boundary-proof', version: '1.0.0' })
+      clients.push(client)
+      await client.connect(new StreamableHTTPClientTransport(new URL(path, address), { authProvider: { token: async () => token } }))
+      return client
+    }
+    try {
+      const readClient = await connect('/mcp/operator', operator.token)
+      const reviewerClient = await connect('/mcp/tools', allowed.environment.variables.GRAPHQL_APP_MCP_TOKEN!)
+      const deniedClient = await connect('/mcp/tools', denied.environment.variables.GRAPHQL_APP_MCP_TOKEN!)
+      const request = { interactionId: fixture.interaction.id,
+        optionId: fixture.interaction.responseOptions.find((option) => option.semantic === 'approve_once')!.optionId,
+        expectedRevision: fixture.interaction.revision }
+      const before = await interactions.get(request.interactionId)
+      expect((await deniedClient.listTools()).tools.some((tool) => tool.name === 'interaction_respond')).toBe(false)
+      const deniedAttempt = await deniedClient.callTool({ name: 'interaction_respond', arguments: request })
+        .catch((error: unknown) => {
+          expect(error).toMatchObject({ code: expect.any(Number) })
+          expect([-32601, -32602]).toContain((error as { code: number }).code)
+          return { isError: true }
+        })
+      expect(deniedAttempt.isError).toBe(true)
+      const httpDenied = await app.inject({ method: 'POST', url: `/api/interactions/${request.interactionId}/respond`,
+        headers: { authorization: `Bearer ${operator.token}` }, payload: request })
+      expect(httpDenied.statusCode).toBe(404)
+      const operatorDenied = await readClient.callTool({ name: 'interaction_respond', arguments: { ...request, commandId: randomUUID() } })
+      expect(operatorDenied.isError).toBe(true)
+      expect(await interactions.get(request.interactionId)).toEqual(before)
+      expect(manager.counters.deliveries).toBe(0)
+      const read = await readClient.callTool({ name: 'run_get', arguments: { workspaceId: run.workspaceId, runId: run.id } })
+      expect(read.isError).not.toBe(true)
+      const live = GetRunResponseSchema.parse(read.structuredContent).liveActivity!
+      expect(live.workflowVersionId).toBe(run.workflowVersionId)
+      expect(live.nodes.find((node) => node.workflowNodeId === 'worker')).toMatchObject({ state: 'waiting',
+        action: { kind: 'waiting_approval', label: 'Waiting for Luna’s approval…' } })
+      if (topology === 'direct') expect(live.nodes.find((node) => node.workflowNodeId === 'review')).toMatchObject({
+        state: 'working', action: { kind: 'reviewing_request', label: 'Reviewing Worker’s request…' },
+      })
+      if (topology === 'direct') {
+        const stale = await reviewerClient.callTool({ name: 'interaction_respond', arguments: { ...request, expectedRevision: 999 } })
+        expect(stale.isError).toBe(true)
+        expect(await interactions.get(request.interactionId)).toEqual(before)
+        expect(manager.counters.deliveries).toBe(0)
+      }
+      const response = await reviewerClient.callTool({ name: 'interaction_respond', arguments: request })
+      if (topology === 'direct') {
+        expect(response.isError).not.toBe(true)
+        expect(manager.counters.deliveries).toBe(1)
+        const persisted = await readClient.callTool({ name: 'interaction_get', arguments: { interactionId: request.interactionId } })
+        expect(persisted.isError).not.toBe(true)
+        expect((persisted.structuredContent as { interaction: { deliveryState: string } }).interaction.deliveryState).toBe('delivered')
+        expect(await interactions.get(request.interactionId)).toMatchObject({ deliveryState: 'delivered' })
+        // Exact idempotent replay cannot produce another native response.
+        const replay = await reviewerClient.callTool({ name: 'interaction_respond', arguments: request })
+        expect(replay.isError).not.toBe(true)
+        expect(manager.counters.deliveries).toBe(1)
+      } else {
+        expect(response.isError).toBe(true)
+        expect(JSON.stringify(response)).toContain('INTERACTION_ACCESS_DENIED')
+        const persisted = await readClient.callTool({ name: 'interaction_get', arguments: { interactionId: request.interactionId } })
+        expect((persisted.structuredContent as { interaction: unknown }).interaction).toEqual(before)
+        expect(await interactions.get(request.interactionId)).toEqual(before)
+        expect(manager.counters.deliveries).toBe(0)
+        expect(nativeReviewAttaches).toBe(0)
+      }
+      // Persist terminal state, then read through the authenticated MCP boundary.
+      const terminal = { ...run, executionState: 'completed', outcome: 'canceled',
+        result: { outcome: 'canceled' }, finishedAt: new Date().toISOString() }
+      await pool.query("update runs set execution_state='completed',record=$2::jsonb where id=$1", [run.id, JSON.stringify(terminal)])
+      const terminalRead = await readClient.callTool({ name: 'run_get', arguments: { workspaceId: run.workspaceId, runId: run.id } })
+      const terminalLive = GetRunResponseSchema.parse(terminalRead.structuredContent).liveActivity!
+      expect(terminalLive.active).toBe(false)
+      expect(terminalLive.nodes.every((node) => node.state === 'idle' && node.action === null)).toBe(true)
+    } finally {
+      await Promise.allSettled(clients.map((client) => client.close()))
+      await dispatcher.shutdown()
+    }
+  },
+)
+
+it('retains storage-only non-Orchestrator interaction fixtures without granting review authority', async () => {
+  const fixture = { ...NATIVE_INTERACTION_FIXTURES.codex, approval: { handler: 'user' as const } }
+  await seedInteractionOwners(pool, fixture)
   const interactions = new PostgresInteractionRepository(pool)
+  expect((await interactions.create(fixture)).created).toBe(true)
+  await expect(interactions.assertOrchestratorConnection(fixture)).resolves.toBeUndefined()
+})
+
+it('keeps a busy designated reviewer pending and fences one idle-session dispatch across workers', async () => {
+  const first = await routedApprovalFixture(pool, root, projectRoot, 'direct')
+  const second = await routedApprovalFixture(pool, root, projectRoot, 'direct')
   const coordination = new PostgresInteractionCoordinationRepository(pool)
-  await seedInteractionOwners(pool, NATIVE_INTERACTION_FIXTURES.codex)
-  const first = await interactions.create({
-    ...NATIVE_INTERACTION_FIXTURES.codex, id: 'review-interaction-busy',
-    nativeSessionId: 'requester-busy', nativeRequestId: 'request-busy',
-    approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'reviewer-busy' },
-  })
-  const second = await interactions.create({
-    ...NATIVE_INTERACTION_FIXTURES.codex, id: 'review-interaction-idle',
-    nativeSessionId: 'requester-idle', nativeRequestId: 'request-idle',
-    approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'reviewer-idle' },
-  })
   const now = new Date().toISOString()
   await coordination.ensureLane({
-    id: 'lane-busy', harness: 'codex', nativeSessionId: 'reviewer-busy-session', ownerAgentId: 'reviewer-busy',
-    observedStatus: 'busy', connectionGeneration: 1, observedAt: now, revision: 0,
+    id: 'lane-busy', harness: first.reviewerSession.harness, nativeSessionId: first.reviewerSession.nativeSessionId,
+    ownerAgentId: first.reviewerId, observedStatus: 'busy', connectionGeneration: 1, observedAt: now, revision: 0,
   })
   await coordination.ensureLane({
-    id: 'lane-idle', harness: 'codex', nativeSessionId: 'reviewer-idle-session', ownerAgentId: 'reviewer-idle',
-    observedStatus: 'idle', connectionGeneration: 1, observedAt: now, revision: 0,
+    id: 'lane-idle', harness: second.reviewerSession.harness, nativeSessionId: second.reviewerSession.nativeSessionId,
+    ownerAgentId: second.reviewerId, observedStatus: 'idle', connectionGeneration: 1, observedAt: now, revision: 0,
   })
   const manager = new ReviewNativeManager()
   await coordination.claimLane('lane-busy', 0, 'active-writer', 'busy-token', new Date(Date.now() + 60_000).toISOString(), 'busy-turn')
-  const reviewRuntime = {
+  const dispatcher = new ReviewerDispatcher(coordination, {
     attachInteraction: async () => { throw new Error('not used') },
     attachOwnedSession: async (_context: unknown, session: NativeSessionReference) => ({ manager, session }),
-  }
-  const dispatcher = new ReviewerDispatcher(coordination, reviewRuntime)
-  await dispatcher.enqueue(first.interaction, 'reviewer-busy', {
-    harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'reviewer-busy-session',
-  }, { executionId: 'reviewer-busy-execution', workingDirectory: projectRoot })
-  const idleJob = await dispatcher.enqueue(second.interaction, 'reviewer-idle', {
-    harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'reviewer-idle-session',
-  }, { executionId: 'reviewer-idle-execution', workingDirectory: projectRoot })
-
-  expect(await dispatcher.dispatchNext('reviewer-busy', 'worker-a')).toMatchObject({ state: 'blocked_busy' })
-  expect(manager.reviewTurns).toBe(0)
-  const claims = await Promise.allSettled([
-    coordination.claimReviewJob(idleJob.id, 'worker-a', 'token-a', new Date(Date.now() + 30_000).toISOString()),
-    coordination.claimReviewJob(idleJob.id, 'worker-b', 'token-b', new Date(Date.now() + 30_000).toISOString()),
-  ])
-  expect(claims.filter((item) => item.status === 'fulfilled')).toHaveLength(1)
-  expect(claims.filter((item) => item.status === 'rejected')).toHaveLength(1)
+  })
+  try {
+    await dispatcher.enqueue(first.interaction, first.reviewerId, first.reviewerSession,
+      { executionId: first.reviewer.id, workingDirectory: projectRoot })
+    const idleJob = await dispatcher.enqueue(second.interaction, second.reviewerId, second.reviewerSession,
+      { executionId: second.reviewer.id, workingDirectory: projectRoot })
+    expect(await dispatcher.dispatchNext(first.reviewerId, 'worker-a')).toMatchObject({ state: 'blocked_busy' })
+    expect(manager.reviewTurns).toBe(0)
+    const claims = await Promise.allSettled([
+      coordination.claimReviewJob(idleJob.id, 'worker-a', 'token-a', new Date(Date.now() + 30_000).toISOString()),
+      coordination.claimReviewJob(idleJob.id, 'worker-b', 'token-b', new Date(Date.now() + 30_000).toISOString()),
+    ])
+    expect(claims.filter((item) => item.status === 'fulfilled')).toHaveLength(1)
+    expect(claims.filter((item) => item.status === 'rejected')).toHaveLength(1)
+  } finally { await dispatcher.shutdown() }
 })
 
 it('lists, reads and responds to an Operator-assigned request through authenticated MCP', async () => {

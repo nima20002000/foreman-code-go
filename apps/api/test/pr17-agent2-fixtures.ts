@@ -20,6 +20,9 @@ export function reviewCoordination(initial = reviewJob()) {
     currentTurnOrMessageId: initial.providerTurnOrMessageId, connectionGeneration: 0, observedAt: new Date().toISOString(), revision: 0 }
   const transitions: ReviewJob[] = []
   const value = {
+    async assertReviewConnection() {},
+    async reviewRunStopped() { return false },
+    async getLane() { return structuredClone(lane) },
     async nextReviewJob() { return job.cleanup?.completedAt ? undefined : structuredClone(job) },
     async claimReviewJob(_id: string, owner: string, token: string, expires: string) {
       job = { ...job, attempt: job.attempt + 1, leaseToken: token, leaseOwner: owner, leaseExpiresAt: expires }

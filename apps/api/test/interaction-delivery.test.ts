@@ -51,6 +51,7 @@ function harness() {
     harness: record.harness, providerVersion: record.providerVersion, nativeSessionId: record.nativeSessionId,
   }
   const repository = {
+    assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'node-reviewer' }),
     get: async () => structuredClone(record),
     decide: async (input: { optionId: string; expectedRevision: number }) => {
       if (record.selectedOptionId) return { interaction: structuredClone(record), replayed: true }

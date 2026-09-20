@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
 import {
-  GetRunResponseSchema,
   HarnessExecutionSchema,
   RunActivitySchema,
   WorkflowRunSchema,
@@ -17,8 +16,10 @@ import {
   type WorkflowRunSummary,
 } from '@graphql/contracts'
 import type pg from 'pg'
+import { readRunDetails } from './liveSnapshot.js'
 
 import { DomainError } from '../errors.js'
+import { assertWorkflowRecovered } from './recoveryPolicy.js'
 import type { RunRepository, RunStateUpdate } from './port.js'
 import { acceptedRunApproval } from '../workflows/approval.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
@@ -138,6 +139,7 @@ export class PostgresRunRepository implements RunRepository {
     try {
       await client.query('begin')
       await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${workspaceId}`])
+      await assertWorkflowRecovered(client, workspaceId, workflowId)
       const configurations = await Promise.all(Object.values(version.agentConfigurationVersionIds).map(async (id) => {
         const configuration = await this.workflows.getAgentConfiguration(id)
         if (!configuration) throw new DomainError('AGENT_CONFIGURATION_NOT_FOUND', `Configuration '${id}' was not found.`, 409)
@@ -372,19 +374,16 @@ export class PostgresRunRepository implements RunRepository {
   }
 
   async getDetails(workspaceId: string, runId: string): Promise<GetRunResponse | undefined> {
-    const run = await this.getForWorkspace(workspaceId, runId)
-    if (!run) return undefined
-    return GetRunResponseSchema.parse({
-      run,
-      executions: await this.listExecutions(runId),
-      activity: await this.listActivity(runId),
-    })
+    return readRunDetails(this.pool, workspaceId, runId)
   }
 
   async listSummaries(workspaceId: string): Promise<WorkflowRunSummary[]> {
-    const result = await this.pool.query<{ record: unknown }>(
-      'select record from runs where workspace_id = $1 order by created_at desc limit 20',
-      [workspaceId],
+    const result = await this.pool.query<{ record: unknown; cleanup_pending: boolean }>(
+      `select r.record,exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as cleanup_pending
+       from runs r where r.workspace_id=$1 and (r.execution_state<>'completed'
+         or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending)
+         or r.id in (select recent.id from runs recent where recent.workspace_id=$1 order by recent.created_at desc,recent.id desc limit 20))
+       order by r.created_at desc,r.id desc`, [workspaceId],
     )
     return result.rows.map((row) => {
       const run = WorkflowRunSchema.parse(row.record)
@@ -397,6 +396,8 @@ export class PostgresRunRepository implements RunRepository {
         outcome: run.outcome,
         authRequired: false,
         browserWait: null,
+        cleanupPending: row.cleanup_pending,
+        ...(run.stopCause ? { stopCause: run.stopCause } : {}),
         runnerHealth: { status: 'healthy', checkedAt: new Date().toISOString() },
         ...(run.startedAt ? { startedAt: run.startedAt } : {}),
         ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}),

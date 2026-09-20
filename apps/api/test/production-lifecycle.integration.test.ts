@@ -213,7 +213,8 @@ async function start(handler: 'user' | 'orchestrator', twoWorkers = false) {
     { id: 'worker-a', agentId: 'agent-reviewer', name: 'Worker A' },
     ...(twoWorkers ? [{ id: 'worker-b', agentId: 'agent-reviewer', name: 'Worker B' }] : [])]
   await workflows.save('workspace-1', { ...saved, requiredAgentCount: 2, nodes,
-    edges: nodes.slice(1).map((node, index) => ({ id: `edge-${index}`, source: nodes[index]!.id, target: node.id })),
+    edges: nodes.slice(1).map((node, index) => ({ id: `edge-${index}`, source: nodes[index]!.id, target: node.id }))
+      .concat(twoWorkers ? [{ id: 'approval-worker-b', source: 'orchestrator', target: 'worker-b' }] : []),
     approval: { handler, ...(handler === 'orchestrator' ? { designatedOrchestratorAgentId: 'agent-researcher' } : {}) },
     executionPolicy: { maxParallelism: 1, maxNodeExecutions: nodes.length },
   })

@@ -95,7 +95,8 @@ function fixture(harness: AgentHarness = 'codex', started = true) {
     recordActivity: vi.fn(async () => undefined),
     appendNativeEvent: vi.fn(async () => undefined),
   }
-  const interactions = { cancelPendingForExecution: vi.fn(async () => undefined), coordination: nativeLanes(), getForExecution: vi.fn(async () => undefined) }
+  const interactions = { cancelPendingForExecution: vi.fn(async () => undefined), coordination: nativeLanes(),
+    assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'node-reviewer' }), getForExecution: vi.fn(async () => undefined) }
   const coordinator = new ApprovalExecutionCoordinator(runs as never, interactions as never, budgets as never, resolver, 60_000, credentials)
   const observe = () => coordinator.ensureObserve({
     candidate: execution, request, approval: { handler: 'user' }, workflowId: 'workflow-1', graphThreadId: 'thread-1',

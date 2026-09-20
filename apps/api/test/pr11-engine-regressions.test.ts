@@ -102,7 +102,8 @@ async function createFixture() {
     revalidateRunAuthorization: async () => { if (revokedAuthority) throw new DomainError('AUTH_REVOKED', 'revoked', 401) },
     revalidateSnapshot: async () => { if (changedDirectory) throw new DomainError('WORKSPACE_LOCATION_CHANGED', 'changed', 409) },
   }
-  const interactions = { coordination: nativeLanes(), getForExecution: async () => undefined, cancelPendingForExecution: async () => undefined,
+  const interactions = { coordination: nativeLanes(), assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'node-reviewer' }),
+    getForExecution: async () => undefined, cancelPendingForExecution: async () => undefined,
     cancelPendingForRun: async () => undefined }
   const budgets = { ensure: async () => undefined, remaining: async () => 300_000, assertActive: async () => undefined,
     finish: async () => undefined, stop: async () => undefined }

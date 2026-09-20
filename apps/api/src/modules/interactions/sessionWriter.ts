@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { reviewPreflightIdentity } from './reviewPolicy.js'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 
 import type { NativeHarnessEvent, NativeSessionLane, NativeSessionReference } from '@graphql/contracts'
@@ -215,19 +216,16 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       return
     }
     lease.observedStatus = 'disconnected'
-    // A fresh reviewer rechecks the completed workflow turn before binding its
-    // own correlation; a failed earlier preflight may have left a stale label.
-    const observedCorrelationId = preflightCorrelationId ?? previous.correlationId ?? correlationId
-    const history = await lease.guard.wait(manager.reconcile(session, observedCorrelationId, signal), signal)
+    // An unresolved native identity is an inseparable correlation/provider pair.
+    // Only an unbound lane may fall back to the completed workflow correlation.
+    const identity = reviewPreflightIdentity(previous, preflightCorrelationId ?? correlationId)
+    const history = await lease.guard.wait(manager.reconcile(session, identity.correlationId, signal), signal)
     await lease.guard.check()
     signal.throwIfAborted()
     // Idle lanes clear their correlation but can retain the last provider ID.
     // That finished identity must not be bound to the NEXT review's correlation.
     // This preflight observes availability only; it never completes the new turn.
-    const unresolved = previous.observedStatus !== 'idle' || Boolean(previous.correlationId)
-    const evidence = reviewTurnEvidence(session, history,
-      preflightCorrelationId ?? previous.correlationId ?? (!unresolved ? history.correlationId : undefined) ?? correlationId,
-      unresolved ? previous.currentTurnOrMessageId : undefined)
+    const evidence = reviewTurnEvidence(session, history, identity.correlationId, identity.nativeTurnId)
     if (history.pendingInteraction || history.pendingInteractions.length || evidence.nativeBusy || evidence.identityConflict
       || (previous.observedStatus !== 'idle' && !evidence.nativeIdle)) {
       lease.observedStatus = evidence.nativeBusy ? 'busy' : 'uncertain'
@@ -351,6 +349,15 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   attachSession(session: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
     return this.withLane(session, `attach-${randomUUID()}`, signal, async (manager, lease) => {
       lease.operation = 'attach'
+      // Control/close/attach lane leases are local operations, not a native
+      // turn identity to fence a later recovery attachment against.
+      if (input.correlationId && lease.previous.correlationId
+        && !/^(?:control|close|attach)-/.test(lease.previous.correlationId)
+        && (input.correlationId !== lease.previous.correlationId
+          || (input.nativeTurnId && lease.previous.currentTurnOrMessageId
+            && input.nativeTurnId !== lease.previous.currentTurnOrMessageId))) {
+        throw new DomainError('SESSION_LANE_BUSY', 'The native lane identity changed before attachment. Recheck its saved identity pair.', 409)
+      }
       // Preserve the actual attach lifetime so Stop can observe a late native
       // connection. A local abort is not evidence that the provider stopped.
       const attached = await manager.attachSession(session, input, lease.guard.signal)

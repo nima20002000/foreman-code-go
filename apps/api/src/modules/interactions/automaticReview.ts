@@ -9,6 +9,9 @@ import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
 import { PostgresInteractionCoordinationRepository } from './coordination.js'
 import { ReviewerDispatcher } from './reviewer.js'
+import { assertOrchestratorGraphAuthority } from './graphAuthority.js'
+import { DomainError } from '../errors.js'
+import { requestReviewFailureStop } from './reviewFailureLifecycle.js'
 import type { InteractionNativeRuntime } from './runtimePorts.js'
 
 /** Drives durable, explicitly assigned reviewers; never fabricates a board Agent or grants. */
@@ -37,6 +40,9 @@ export class AutomaticReviewService {
   private async poll() {
     let reviewError: unknown
     try { await this.chat.reconcileReviewLifetimes() } catch (error) { reviewError = error }
+    // Failures remain discoverable after their interaction was delivered/canceled,
+    // and after restart. Stop is requested even while native cleanup is uncertain.
+    await this.reconcileFailedReviews()
     await this.dispatcher.reconcile(() => undefined)
     let after = ''
     while (!this.closing) {
@@ -63,6 +69,31 @@ export class AutomaticReviewService {
     }
     if (reviewError) throw reviewError
   }
+  private async stopFailedJob(reviewJobId: string): Promise<void> {
+    const runId = await requestReviewFailureStop(this.pool, { reviewJobId })
+    if (runId) await this.stopFailedRun?.(runId)
+  }
+
+  private async reconcileFailedReviews(): Promise<void> {
+    let after = ''
+    while (!this.closing) {
+      const page = await this.pool.query<{ id: string }>(
+        `select j.id from review_jobs j join durable_interactions i on i.id=j.interaction_id
+         join runs r on r.id=i.run_id where j.id>$1 and j.state='failed'
+           and (r.execution_state<>'completed' or j.record->'cleanup'->>'completedAt' is null)
+         order by j.id limit 50`, [after],
+      )
+      if (!page.rows.length) return
+      for (const row of page.rows) {
+        after = row.id
+        if (this.closing) return
+        // One unavailable native boundary must not starve other Runs' cleanup.
+        try { await this.stopFailedJob(row.id) }
+        catch (error) { this.lastErrors.set(`failure:${row.id}`, error instanceof Error ? error.message : 'Review cleanup failed.') }
+      }
+    }
+  }
+
   private async schedule(interaction: DurableInteraction): Promise<void> {
     const run = await this.runs.get(interaction.runId)
     if (!run || run.executionState !== 'waiting' || !run.authorizationPrincipalId) return
@@ -76,8 +107,21 @@ export class AutomaticReviewService {
     }
     const reviewerId = interaction.approval.designatedOrchestratorAgentId
     if (!reviewerId || reviewerId === interaction.requestingAgentId) throw new Error('Automatic review requires a different designated Orchestrator.')
+    let connection: Awaited<ReturnType<typeof assertOrchestratorGraphAuthority>>
+    try { connection = await assertOrchestratorGraphAuthority(this.pool, interaction) }
+    catch (error) {
+      if (error instanceof DomainError && error.code === 'INTERACTION_ACCESS_DENIED') {
+        // A pre-upgrade invalid wait must not repeatedly dispatch or wait forever.
+        const failedRunId = await requestReviewFailureStop(this.pool, {
+          interactionId: interaction.id, errorCode: 'APPROVAL_DIRECT_CONNECTION_REQUIRED',
+        })
+        if (failedRunId) await this.stopFailedRun?.(failedRunId)
+      }
+      throw error
+    }
     const versionId = run.agentConfigurationVersionIds[reviewerId]
     const execution = (await this.runs.listExecutions(run.id)).filter((item) => item.agentId === reviewerId
+      && item.workflowNodeId === connection?.orchestratorNodeId
       && item.agentConfigurationVersionId === versionId && item.state === 'completed' && item.nativeSessionId && item.workingDirectory).at(-1)
     if (!execution?.nativeSessionId || !execution.workingDirectory) throw new Error('The designated Orchestrator needs an existing completed native session in this Run. No replacement reviewer was created.')
     const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
@@ -94,15 +138,11 @@ export class AutomaticReviewService {
     await this.dispatcher.enqueue(interaction, reviewerId, session, { executionId: execution.id, workingDirectory: execution.workingDirectory })
     if (this.closing) return
     const job = await this.dispatcher.dispatchNext(reviewerId, this.workerId)
-    if (job) await this.runs.recordActivity(interaction.runId, 'backend', 'review_job_state', {
-      interactionId: job.interactionId, reviewJobId: job.id, state: job.state,
-      ...(job.error ? { error: job.error } : {}),
-    }, interaction.executionId)
-    const current = job ?? await this.coordination.findReviewJob(interaction.id, reviewerId)
-    if (current?.state === 'failed' && current.cleanup?.completedAt
-      && await this.coordination.isReviewPending(interaction.id, reviewerId)) {
-      await this.stopFailedRun?.(run.id)
-    }
+    // Transactional review events already carry the actual job's Run/execution.
+    // A reviewer-wide dispatch can select another interaction, possibly in another Run.
+    if (job?.state === 'failed') await this.stopFailedJob(job.id)
+    const current = await this.coordination.findReviewJob(interaction.id, reviewerId)
+    if (current?.state === 'failed' && current.id !== job?.id) await this.stopFailedJob(current.id)
   }
   /** Run Stop/terminal hook; callers need not know Operator-chat runtime internals. */
   stopRun(runId: string, reason = 'The Run stopped or completed.'): Promise<void> {

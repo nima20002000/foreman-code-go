@@ -15,6 +15,8 @@ import { lockActiveWorkerPrincipal, requireActiveWorkerBinding } from '../access
 import { PostgresInteractionDeliveryRepository } from './deliveryPostgres.js'
 import { requireAuthorization } from '../access/policy.js'
 import { appendNativeEvent } from '../runs/nativeEvents.js'
+import { assertOrchestratorGraphAuthority } from './graphAuthority.js'
+import { interactionConnection } from './connection.js'
 import {
   assertDeliveryLease, assertInteractionRevision, interactionTransaction, lockInteraction,
   type DeliveryFailure, type InteractionLease, type LockedInteraction, type ReconciliationEvidence,
@@ -54,6 +56,13 @@ export class PostgresInteractionRepository {
   constructor(private readonly pool: pg.Pool) {
     this.delivery = new PostgresInteractionDeliveryRepository(pool)
     this.coordination = new PostgresInteractionCoordinationRepository(pool)
+  }
+
+  assertOrchestratorConnection(
+    interaction: Parameters<typeof assertOrchestratorGraphAuthority>[1],
+    reviewer: Parameters<typeof assertOrchestratorGraphAuthority>[2] = {},
+  ) {
+    return assertOrchestratorGraphAuthority(interactionConnection.getStore() ?? this.pool, interaction, reviewer)
   }
 
   async create(input: DurableInteraction): Promise<{ interaction: DurableInteraction; created: boolean }> {
@@ -211,6 +220,7 @@ export class PostgresInteractionRepository {
           workspaceId: current.workspaceId, workflowId: current.workflowId, runId: current.runId,
         })
       }
+      await assertOrchestratorGraphAuthority(client, current, principal ? { principalId: principal.id } : {})
       if (current.status === 'canceled') throw new DomainError('INTERACTION_CANCELED', 'The interaction was canceled.', 409)
       if (current.status !== 'pending') {
         if (current.selectedOptionId === input.optionId) {
