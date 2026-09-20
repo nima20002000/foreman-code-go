@@ -9,6 +9,8 @@ import {
   WorkspaceFolderUndoInputSchema, WorkspaceFolderUndoResultSchema, type WorkspaceFolderUndoInput,
   WorkspaceFolderRenameInputSchema, WorkspaceFolderRenameResultSchema, type WorkspaceFolderRenameInput,
   type HarnessMcpPlanInput, type HarnessMcpManagedInput,
+  CodexPluginListResultSchema, CodexPluginDetailResultSchema, CodexPluginChangeInputSchema, CodexPluginChangeResultSchema,
+  type CodexPluginListInput, type CodexPluginChangeInput,
 } from '@graphql/contracts/management'
 import type { HarnessConfiguration } from '@graphql/contracts'
 import { apiClient } from './client'
@@ -39,6 +41,30 @@ export const harnessSettingsKeys = {
   check: (snapshot: string) => [...harnessSettingsKeys.root, 'check', sessionGeneration(), snapshot] as const,
   mcp: (harness: Harness) => [...harnessSettingsKeys.root, sessionGeneration(), harness, 'mcp'] as const,
   plans: (harness: Harness) => [...harnessSettingsKeys.root, sessionGeneration(), harness, 'plans'] as const,
+  plugins: (input: CodexPluginListInput) => [...harnessSettingsKeys.root, sessionGeneration(), 'codex-plugins', input] as const,
+  plugin: (pluginId: string) => [...harnessSettingsKeys.root, sessionGeneration(), 'codex-plugin', pluginId] as const,
+}
+
+export function useCodexPlugins(input: CodexPluginListInput) {
+  useHarnessSessionEpoch()
+  return useQuery({ queryKey: harnessSettingsKeys.plugins(input), enabled: !sessionIsSwitching(), retry: false,
+    queryFn: ({ signal }) => apiClient.request(`/api/management/harnesses/codex/plugins?${new URLSearchParams({
+      view: input.view, query: input.query, offset: String(input.offset), limit: String(input.limit),
+    })}`, CodexPluginListResultSchema, { signal }) })
+}
+export function useCodexPlugin(pluginId: string | undefined) {
+  useHarnessSessionEpoch()
+  return useQuery({ queryKey: harnessSettingsKeys.plugin(pluginId ?? ''), enabled: Boolean(pluginId) && !sessionIsSwitching(), retry: false,
+    queryFn: ({ signal }) => apiClient.request(`/api/management/harnesses/codex/plugins/${encodeURIComponent(pluginId!)}`,
+      CodexPluginDetailResultSchema, { signal }) })
+}
+export function useChangeCodexPlugin() {
+  const client = useQueryClient()
+  return useMutation({ retry: false,
+    mutationFn: (input: CodexPluginChangeInput) => apiClient.request('/api/management/harnesses/codex/plugins/change',
+      CodexPluginChangeResultSchema, { method: 'POST', body: CodexPluginChangeInputSchema.parse(input) }),
+    onSettled: async () => { await client.invalidateQueries({ queryKey: harnessSettingsKeys.root }) },
+  })
 }
 
 export function useNativeHarnessOptions(harness: Harness) {

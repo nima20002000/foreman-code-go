@@ -32,7 +32,7 @@ export function HarnessConfigurationFields({ editor, onChange, routedApproval = 
   const refresh = useRefreshNativeHarness(value.harness)
   let candidate: HarnessConfiguration | undefined
   try { candidate = prepareHarnessEditor(editor) } catch { /* Incomplete drafts are validated on Save, never sent as valid configurations. */ }
-  const configurationSection = section !== 'connections' && section !== 'workspace'
+  const configurationSection = section !== 'connections' && section !== 'workspace' && section !== 'plugins'
   const check = useAutomaticHarnessCheck(configurationSection ? candidate : undefined)
   const issuePath = issues[0]?.path.join('.') ?? ''
   useEffect(() => {
@@ -44,7 +44,7 @@ export function HarnessConfigurationFields({ editor, onChange, routedApproval = 
     return () => cancelAnimationFrame(frame)
   }, [issuePath])
   const status = check.current && check.result.isFetching ? 'Checking…' : check.current && check.result.isSuccess ? 'Ready' : ''
-  const sections = harnessSections.filter((entry) => (!compact || !['connections', 'workspace'].includes(entry.id)) && (!advancedOnly || entry.id !== 'model'))
+  const sections = harnessSections.filter((entry) => entry.id !== 'plugins' && (!compact || !['connections', 'workspace'].includes(entry.id)) && (!advancedOnly || entry.id !== 'model'))
   return <div className={`harness-workbench${frameless ? ' harness-workbench--page' : ''}`} ref={root} role="group" aria-label={value.harness === 'codex' ? 'Codex' : 'OpenCode'}>
     {!frameless ? <nav className="harness-section-nav" aria-label="Harness sections">{sections.map((item) => <Button key={item.id} size="sm"
       variant={section === item.id ? 'secondary' : 'ghost'} aria-pressed={section === item.id} onClick={() => {

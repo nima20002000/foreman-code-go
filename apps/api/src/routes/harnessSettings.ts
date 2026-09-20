@@ -6,6 +6,8 @@ import {
   HarnessDirectoryBrowseInputSchema, HarnessDirectoryBrowseResultSchema,
   WorkspaceFolderUndoInputSchema, WorkspaceFolderUndoResultSchema,
   WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema, WorkspaceFolderRenameInputSchema, WorkspaceFolderRenameResultSchema,
+  CodexPluginListInputSchema, CodexPluginListResultSchema, CodexPluginGetInputSchema, CodexPluginDetailResultSchema,
+  CodexPluginChangeInputSchema, CodexPluginChangeResultSchema,
 } from '@graphql/contracts/management'
 import { requireBrowserSession, requirePrincipal } from '../modules/access/http.js'
 import { requireAuthorization } from '../modules/access/policy.js'
@@ -32,6 +34,22 @@ export function registerHarnessSettingsRoutes(app: FastifyInstance, services: Op
     if (!services.harnessSettings) throw new DomainError('HARNESS_SETTINGS_UNAVAILABLE', 'Native connection management is unavailable.', 503)
     return services.harnessSettings
   }
+  app.get('/api/management/harnesses/codex/plugins', async (request) => {
+    const plugins = settings().plugins
+    if (!plugins) throw new DomainError('CODEX_PLUGINS_UNAVAILABLE', 'Codex plugin management is unavailable.', 503)
+    return CodexPluginListResultSchema.parse(await plugins.list(requirePrincipal(request), CodexPluginListInputSchema.parse(request.query)))
+  })
+  app.get('/api/management/harnesses/codex/plugins/:pluginId', async (request) => {
+    const plugins = settings().plugins
+    if (!plugins) throw new DomainError('CODEX_PLUGINS_UNAVAILABLE', 'Codex plugin management is unavailable.', 503)
+    return CodexPluginDetailResultSchema.parse(await plugins.get(requirePrincipal(request), CodexPluginGetInputSchema.parse(request.params).pluginId))
+  })
+  app.post('/api/management/harnesses/codex/plugins/change', async (request) => {
+    requireBrowserSession(request)
+    const plugins = settings().plugins
+    if (!plugins) throw new DomainError('CODEX_PLUGINS_UNAVAILABLE', 'Codex plugin management is unavailable.', 503)
+    return CodexPluginChangeResultSchema.parse(await plugins.change(requirePrincipal(request), CodexPluginChangeInputSchema.parse(request.body)))
+  })
   app.get('/api/management/harnesses/:harness/mcp', async (request) => {
     const { harness } = HarnessMcpListInputSchema.parse(request.params)
     return HarnessMcpListResultSchema.parse(await settings().mcp.list(requirePrincipal(request), harness))
