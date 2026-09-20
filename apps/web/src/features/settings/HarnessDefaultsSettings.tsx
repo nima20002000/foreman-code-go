@@ -12,6 +12,7 @@ import { useSettingsValidation } from './useSettingsValidation'
 import { useRevisionedForm, useSettingsDraftStatus } from './revisionedForm'
 import { SettingsChoice, SettingsEditorLayout, SettingsOverview } from './SettingsEditorLayout'
 import { harnessSummary } from './settingsPresentation'
+import { CodexPluginManager } from './CodexPluginManager'
 
 type Harness = 'codex' | 'opencode'
 type DefaultsEditor = { codex: HarnessEditor; opencode: HarnessEditor }
@@ -69,16 +70,16 @@ function ProviderEditor({ harness, section, onSectionChange, onBack, showBack }:
   if (!draft) return <LoadingState label="Loading provider defaults…" />
   const update = (next: HarnessEditor) => form.setDraft((current) => current && ({ ...current, [harness]: next }))
   return <div ref={(node) => { root.current = node }}><SettingsEditorLayout showBack={showBack} title={`${name} settings`} description="Provider preset for new configurations. Existing agents and sessions keep their settings."
-    backLabel="All harnesses" onBack={onBack} section={section} onSectionChange={onSectionChange} connections
+    backLabel="All harnesses" onBack={onBack} section={harness === 'opencode' && section === 'plugins' ? 'model' : section} onSectionChange={onSectionChange} connections plugins={harness === 'codex'}
     feedback={<>{query.isError ? <p role="alert">Could not refresh. Your draft is kept. <Button size="sm" onClick={() => void query.refetch()}>Retry</Button></p> : null}<SettingsFormFeedback form={form} /></>}
-    footer={section === 'connections' || section === 'workspace' ? null : <SettingsFormActions form={form} saveLabel={`Save ${name} preset`}
+    footer={section === 'connections' || section === 'workspace' || section === 'plugins' ? null : <SettingsFormActions form={form} saveLabel={`Save ${name} preset`}
       onSave={() => form.save(async (input) => {
         const defaults = prepared(input.value)
         const response = await managedSave.mutateAsync({ defaults: ManagementHarnessDefaultsSchema.parse(defaults), expectedRevision: input.expectedRevision, commandId: input.commandId })
         return { value: editable(response.value.defaults), revision: response.value.revision }
       }, (value) => { ManagementHarnessDefaultsSchema.parse(prepared(value)); return value })} />}>
     {section === 'workspace' ? <HarnessCompatibilityPanel harness={harness} /> : null}
-    <HarnessConfigurationFields allowHarnessChange={false} editor={draft[harness]} onChange={update} issues={issuesAt(form.issues ?? [], [harness])}
-      section={section} onSectionChange={onSectionChange} frameless />
+    {section === 'plugins' && harness === 'codex' ? <CodexPluginManager /> : <HarnessConfigurationFields allowHarnessChange={false} editor={draft[harness]} onChange={update} issues={issuesAt(form.issues ?? [], [harness])}
+      section={harness === 'opencode' && section === 'plugins' ? 'model' : section} onSectionChange={onSectionChange} frameless />}
   </SettingsEditorLayout></div>
 }

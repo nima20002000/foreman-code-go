@@ -1,6 +1,7 @@
 import type { OperatorExtensions } from './extensions.js'
 import type { HarnessMcpSettingsService } from '../../modules/harnesses/mcpSettings.js'
 import type { HarnessDirectoryBrowser } from '../../modules/harnesses/directoryBrowser.js'
+import type { CodexPluginSettingsService } from '../../modules/harnesses/codexPluginSettings.js'
 import type { OperatorChatService } from '../../modules/conversations/operatorChat.js'
 
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -18,7 +19,7 @@ import type { OperatorInteractionService } from '../../modules/interactions/oper
 
 export interface OperatorServices {
   operatorChat?: Pick<OperatorChatService, 'setup' | 'create' | 'get' | 'send' | 'handoffHistory'>
-  harnessSettings?: { mcp: HarnessMcpSettingsService; directories: HarnessDirectoryBrowser }
+  harnessSettings?: { mcp: HarnessMcpSettingsService; directories: HarnessDirectoryBrowser; plugins?: CodexPluginSettingsService }
   extensions?: OperatorExtensions
   workerToolsMcpImplemented?: boolean
   workspaces: WorkspaceManagementService

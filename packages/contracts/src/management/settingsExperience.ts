@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const SettingsAgentRoleSchema = z.enum(["operator", "orchestrator", "coder"]);
 export type SettingsAgentRole = z.infer<typeof SettingsAgentRoleSchema>;
-export const HarnessSettingsSectionSchema = z.enum(["model", "permissions", "session", "tools", "connections", "workspace"]);
+export const HarnessSettingsSectionSchema = z.enum(["model", "permissions", "session", "tools", "connections", "plugins", "workspace"]);
 export type HarnessSettingsSection = z.infer<typeof HarnessSettingsSectionSchema>;
 export const AgentSettingsSearchSchema = z.object({
   role: SettingsAgentRoleSchema.optional().catch(undefined),
@@ -11,6 +11,10 @@ export const AgentSettingsSearchSchema = z.object({
 export const HarnessSettingsSearchSchema = z.object({
   harness: z.enum(["codex", "opencode"]).optional().catch(undefined),
   section: HarnessSettingsSectionSchema.optional().catch(undefined),
+  pluginView: z.enum(['installed', 'available']).optional().catch(undefined),
+  pluginQuery: z.string().max(100).optional().catch(undefined),
+  pluginOffset: z.coerce.number().int().min(0).optional().catch(undefined),
+  pluginId: z.string().max(240).optional().catch(undefined),
 });
 
 /** Creation suggestions only. A template never grants filesystem or runner access. */

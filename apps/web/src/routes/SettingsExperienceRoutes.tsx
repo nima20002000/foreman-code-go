@@ -1,5 +1,5 @@
 import { Link, Navigate, useNavigate, useSearch } from '@tanstack/react-router'
-import type { ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import { AgentDefaultsSettings } from '../features/settings/AgentDefaultsSettings'
 import { HarnessDefaultsSettings } from '../features/settings/HarnessDefaultsSettings'
 import { WorkspaceDefaultsSettings } from '../features/settings/WorkspaceDefaultsSettings'
@@ -21,14 +21,17 @@ export function AgentSettingsRouteEntry() {
   return <SettingsShell back={search.role ? <Link to="/settings/agents" search={{}} className="settings-back-link" aria-label="Back to agents"><span aria-hidden="true">←</span> Agents</Link> : undefined}><AgentDefaultsSettings selectedRole={search.role} section={search.section ?? 'model'}
     onSelectRole={(role) => void navigate({ search: role ? { role, section: 'model' } : {} })}
     onSectionChange={(section) => {
-      if (section === 'connections' || section === 'workspace') return
+      if (section === 'connections' || section === 'workspace' || section === 'plugins') return
       void navigate({ search: { ...search, section } })
     }} /></SettingsShell>
 }
 export function HarnessSettingsRouteEntry() {
   const search = useSearch({ from: '/settings/harnesses' })
   const navigate = useNavigate({ from: '/settings/harnesses' })
-  return <SettingsShell back={search.harness ? <Link to="/settings/harnesses" search={{}} className="settings-back-link" aria-label="Back to harnesses"><span aria-hidden="true">←</span> Harnesses</Link> : undefined}><HarnessDefaultsSettings selectedHarness={search.harness} section={search.section ?? 'model'}
+  useEffect(() => {
+    if (search.harness === 'opencode' && search.section === 'plugins') void navigate({ search: { harness: 'opencode', section: 'model' }, replace: true })
+  }, [search.harness, search.section, navigate])
+  return <SettingsShell back={search.harness ? <Link to="/settings/harnesses" search={{}} className="settings-back-link" aria-label="Back to harnesses"><span aria-hidden="true">←</span> Harnesses</Link> : undefined}><HarnessDefaultsSettings selectedHarness={search.harness} section={search.harness === 'opencode' && search.section === 'plugins' ? 'model' : search.section ?? 'model'}
     onSelectHarness={(harness) => void navigate({ search: harness ? { harness, section: 'model' } : {} })}
     onSectionChange={(section) => void navigate({ search: { ...search, section } })} /></SettingsShell>
 }
