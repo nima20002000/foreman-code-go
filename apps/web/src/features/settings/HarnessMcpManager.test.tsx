@@ -35,15 +35,19 @@ it.each(['codex', 'opencode'] as const)('adds and removes Operator and Linear MC
   render(<QueryClientProvider client={client}><HarnessMcpManager harness={harness} /></QueryClientProvider>)
   for (const [name, label] of [['graphql-operator', 'Operator MCP'], ['linear', 'Linear MCP']] as const) {
     fireEvent.click(await screen.findByRole('button', { name: `Add ${label}` }))
-    const card = await screen.findByRole('button', { name: `View details for ${name}` })
+    const card = await screen.findByRole('button', { name: `View details for ${name}, Enabled` })
+    card.focus()
     fireEvent.click(card)
-    expect(screen.getByRole('dialog', { name: `${name} MCP details` })).toBeVisible()
+    const dialog = screen.getByRole('dialog', { name: `${name} MCP details` })
+    expect(dialog).toBeVisible()
     expect(screen.getByText(name === 'linear' ? 'https://mcp.linear.app/mcp/readonly' : 'http://127.0.0.1:3000/mcp/operator')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: /^Close$/ }))
+    fireEvent.pointerDown(dialog)
+    fireEvent.click(dialog)
+    expect(dialog).not.toBeVisible()
+    expect(card).toHaveFocus()
+    fireEvent.click(card)
     expect(screen.queryByRole('dialog', { name: 'Review MCP change' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: `MCP actions for ${name}` }))
-    await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Remove server' })).not.toHaveAttribute('aria-disabled', 'true'))
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Remove server' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove server' }))
     await waitFor(() => expect(screen.getByRole('button', { name: `Add ${label}` })).toBeEnabled())
   }
   expect(calls.map(({ preset, installed }) => [preset, installed])).toEqual([
@@ -84,20 +88,21 @@ it('keeps protected and inherited servers inspectable while explaining why remov
   )
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
   render(<QueryClientProvider client={client}><HarnessMcpManager harness="codex" /></QueryClientProvider>)
-  const card = await screen.findByRole('button', { name: 'View details for graphql-app' })
+  const card = await screen.findByRole('button', { name: 'View details for graphql-app, Enabled' })
   card.focus()
   fireEvent.click(card)
   expect(screen.getByRole('dialog', { name: 'graphql-app MCP details' })).toHaveTextContent('http://127.0.0.1:3000/mcp/tools')
   fireEvent.click(screen.getByRole('button', { name: /^Close$/ }))
   expect(card).toHaveFocus()
   for (const name of ['graphql-app', 'shared-tools']) {
-    fireEvent.click(screen.getByRole('button', { name: `MCP actions for ${name}` }))
-    expect(screen.getByRole('menuitem', { name: 'Remove server' })).toHaveAttribute('aria-disabled', 'true')
-    fireEvent.keyDown(screen.getByRole('menu', { name: `MCP actions for ${name}` }), { key: 'Escape' })
+    fireEvent.click(screen.getByRole('button', { name: `View details for ${name}, ${name === 'graphql-app' ? 'Enabled' : 'Inherited'}` }))
+    expect(screen.getByRole('button', { name: 'Remove server' })).toBeDisabled()
+    expect(screen.getByRole('dialog', { name: `${name} MCP details` })).toHaveTextContent(name === 'graphql-app' ? 'App-managed connection cannot be removed here.' : 'Edit this inherited connection at its source.')
+    fireEvent.click(screen.getByRole('button', { name: /^Close$/ }))
   }
 })
 
-it('keeps native enablement behind the existing review flow in the card menu', async () => {
+it('keeps native enablement behind the existing review flow in the details dialog', async () => {
   let planned: { change: { kind: string; enabled: boolean } } | undefined
   server.use(
     http.get('/api/management/harnesses/codex/mcp', () => HttpResponse.json({ harness: 'codex', revision, checkedAt, scope: 'native-user',
@@ -112,8 +117,8 @@ it('keeps native enablement behind the existing review flow in the card menu', a
   )
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
   render(<QueryClientProvider client={client}><HarnessMcpManager harness="codex" /></QueryClientProvider>)
-  fireEvent.click(await screen.findByRole('button', { name: 'MCP actions for mytools' }))
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Disable' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'View details for mytools, Enabled' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Disable' }))
   expect(await screen.findByRole('dialog', { name: 'Review MCP change' })).toBeVisible()
   expect(planned?.change).toMatchObject({ kind: 'enable', enabled: false })
 })

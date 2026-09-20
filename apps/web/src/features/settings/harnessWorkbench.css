@@ -30,15 +30,15 @@
 .harness-workspace-evidence { border-top: 1px solid color-mix(in srgb,currentColor 12%,transparent); padding-top: 20px; }
 .harness-server-list, .harness-folder-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
 .harness-server-list { grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; }
-.harness-server-list > li { position: relative; min-width: 0; min-height: 106px; border: 1px solid color-mix(in srgb,currentColor 12%,transparent); border-radius: 10px; }
-.harness-server-open { display: grid; grid-template-columns: 34px minmax(0,1fr); grid-template-rows: auto 1fr; gap: 8px 10px; width: 100%; min-height: 106px; padding: 12px 52px 12px 12px; border: 0; border-radius: 10px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.harness-server-list > li { position: relative; min-width: 0; min-height: 64px; border: 1px solid color-mix(in srgb,currentColor 12%,transparent); border-radius: 10px; }
+.harness-server-open { display: grid; grid-template-columns: 24px minmax(0,1fr) 10px; align-items: center; gap: 8px; width: 100%; min-height: 64px; padding: 10px; border: 0; border-radius: 10px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .harness-server-open:hover { background: color-mix(in srgb,currentColor 5%,transparent); }
 .harness-server-open:focus-visible { outline: 2px solid var(--n-accent,#91adff); outline-offset: -2px; }
-.harness-server-open > .n-badge { grid-column: 1/-1; align-self: end; justify-self: start; }
-.harness-server-list > li > .harness-server-menu { position: absolute; top: 8px; right: 8px; }
-.harness-server-list > li > .harness-server-menu > button { min-width: 36px; width: 36px; min-height: 36px; height: 36px; padding: 0; }
-.harness-server-symbol { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: color-mix(in srgb,currentColor 7%,transparent); }
-.harness-server-name { min-width: 0; display: grid; gap: 4px; align-self: center; }
+.harness-server-status { width: 8px; height: 8px; border-radius: 50%; justify-self: end; background: var(--n-success); box-shadow: 0 0 0 3px color-mix(in srgb,var(--n-success) 15%,transparent); }
+.harness-server-status[data-status='disabled'] { background: var(--n-danger); box-shadow: 0 0 0 3px color-mix(in srgb,var(--n-danger) 15%,transparent); }
+.harness-server-status[data-status='attention'] { background: var(--n-warning); box-shadow: 0 0 0 3px color-mix(in srgb,var(--n-warning) 15%,transparent); }
+.harness-server-symbol { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; background: color-mix(in srgb,currentColor 7%,transparent); font-size: 14px; line-height: 1; }
+.harness-server-name { min-width: 0; }
 .harness-server-name strong { white-space: normal; overflow-wrap: anywhere; }
 .harness-folder-list > li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px 6px 12px; border-radius: 8px; background: color-mix(in srgb,currentColor 4%,transparent); }
 .harness-folder-list > li > span, .harness-folder-path > span { overflow-wrap: anywhere; font-size: .8rem; min-width: 0; }
@@ -84,7 +84,6 @@
 }
 @container (max-width: 480px) {
   .harness-server-list, .harness-preset-actions { grid-template-columns: minmax(0,1fr); }
-  .harness-server-list > li > .harness-server-menu > button { min-width: 44px; width: 44px; min-height: 44px; height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) { .harness-advanced-content { animation: none; } }
 @media (forced-colors: active) { .harness-config-card, .harness-policy-row, .harness-server-list > li { border: 1px solid CanvasText; } }
