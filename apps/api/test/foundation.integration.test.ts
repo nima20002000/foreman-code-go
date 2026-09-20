@@ -30,7 +30,7 @@ describe('HAP-01 durable foundation', () => {
     try {
       await applyApplicationMigrations(pool)
       await applyApplicationMigrations(pool)
-      expect((await pool.query<{ version: number }>('select version from application_migrations order by version')).rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 100, 400, 401, 500, 501, 502, 503, 507, 508, 509, 700, 701, 800, 1701, 1702, 170017, 170018, 170019, 170020, 170021])
+      expect((await pool.query<{ version: number }>('select version from application_migrations order by version')).rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 100, 400, 401, 500, 501, 502, 503, 507, 508, 509, 700, 701, 800, 1701, 1702, 170017, 170018, 170019, 170020, 170021, 170022])
       await ensureAcceptanceSeed(pool)
 
       const settings = new PostgresFoundationSettingsRepository(pool)

@@ -30,7 +30,8 @@ describe('native MCP settings reads', () => {
     expect(() => assertManagedChange(snapshot, { kind: 'add', name: 'graphql-operator', connection: { transport: 'remote', url: 'https://other.test/mcp' } },
       'operator', endpoint)).toThrow('does not match')
     const installed = replacement(snapshot, add, { preset: 'operator', endpoint })!
-    const current = { ...snapshot, user: { 'graphql-operator': installed }, effective: { 'graphql-operator': installed } }
+    const current = { ...snapshot, user: { 'graphql-operator': installed }, effective: { 'graphql-operator': installed },
+      credentialReferences: { 'graphql-operator': 'GRAPHQL_OPERATOR_MCP_TOKEN' } }
     expect(managedStatus(current, 'operator', endpoint)).toBe('installed')
     expect(() => replacement(current, managedEnableChange('operator', false))).toThrow('Application MCP connections are managed')
     expect(managedStatus({ ...current, effective: { 'graphql-operator': { url: 'https://override.test/mcp' } } },
@@ -55,9 +56,10 @@ describe('native MCP settings reads', () => {
     expect(() => replacement({ ...inactive, effective: { 'graphql-operator': { ...disabled, url: 'https://override.test/mcp' } } },
       managedEnableChange('operator', true), { preset: 'operator', endpoint })).toThrow('matching user-owned preset')
     expect(managedChange('linear', true, endpoint)).toMatchObject({ kind: 'add', connection: { url: LINEAR_MCP_ENDPOINT } })
-    expect(managedStatus({ ...snapshot, effective: { linear: { url: 'https://mcp.linear.app/mcp' } },
+    expect(managedStatus({ ...snapshot, effective: { linear: harness === 'codex' ? { url: 'https://mcp.linear.app/mcp' }
+      : { type: 'remote', url: 'https://mcp.linear.app/mcp' } },
       user: { linear: harness === 'codex' ? { url: 'https://mcp.linear.app/mcp' }
-        : { type: 'remote', url: 'https://mcp.linear.app/mcp' } } }, 'linear', endpoint)).toBe('installed')
+        : { type: 'remote', url: 'https://mcp.linear.app/mcp' } } }, 'linear', endpoint)).toBe('mismatch')
   })
   it.each(['codex', 'opencode'] as const)('shares simultaneous %s reads instead of starting competing native processes', async (harness) => {
     const snapshot: NativeMcpSnapshot = { harness, revision: 'revision', effective: {}, user: {},

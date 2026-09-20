@@ -57,7 +57,7 @@ export type HarnessMcpPlanInput = z.infer<typeof HarnessMcpPlanInputSchema>
 export const HarnessMcpPlanSchema = z.object({
   id: z.string().uuid(), harness: Harness, revision: Revision, change: HarnessMcpChangeSchema,
   managedPreset: HarnessMcpManagedPresetSchema.nullable().optional(),
-  requestedBy: z.string(), status: z.enum(['pending', 'submitting', 'applied', 'rejected', 'failed', 'uncertain']),
+  requestedBy: z.string(), status: z.enum(['pending', 'submitting', 'applied', 'rejected', 'failed', 'uncertain', 'reconciled']),
   createdAt: z.string().datetime({ offset: true }), expiresAt: z.string().datetime({ offset: true }),
   error: z.string().nullable(),
 }).strict()
@@ -66,6 +66,12 @@ export const HarnessMcpPlanResultSchema = z.object({ value: HarnessMcpPlanSchema
 export const HarnessMcpPlansResultSchema = z.object({ items: z.array(HarnessMcpPlanSchema) }).strict()
 export const HarnessMcpPlanGetInputSchema = z.object({ planId: z.string().uuid() }).strict()
 export const HarnessMcpDecisionInputSchema = z.object({ planId: z.string().uuid(), approve: z.boolean() }).strict()
+/** Explicit browser-owner settlement; never authorizes another native write. */
+export const HarnessMcpReconcileInputSchema = z.object({
+  planId: z.string().uuid(), commandId: CommandId, expectedRevision: Revision,
+  acceptObservedState: z.boolean().default(false),
+}).strict()
+export type HarnessMcpReconcileInput = z.infer<typeof HarnessMcpReconcileInputSchema>
 export const HarnessDirectoryBrowseInputSchema = z.object({ rootId: z.string().min(1).optional(), path: Path.optional(),
   cursor: z.string().max(4096).optional() }).strict()
 export const HarnessDirectoryBrowseResultSchema = z.object({

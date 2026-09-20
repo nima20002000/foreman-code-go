@@ -1,9 +1,9 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import {
   HarnessOptionsResultSchema, HarnessConfigurationCheckResultSchema,
   HarnessMcpListResultSchema, HarnessMcpPlansResultSchema, HarnessMcpPlanResultSchema,
-  HarnessMcpManagedInputSchema,
+  HarnessMcpManagedInputSchema, HarnessMcpReconcileInputSchema, type HarnessMcpReconcileInput, type HarnessMcpPlan,
   HarnessMcpPlanInputSchema, HarnessMcpPlanSchema, HarnessDirectoryBrowseResultSchema,
   WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema, type WorkspaceFolderCreateInput,
   WorkspaceFolderUndoInputSchema, WorkspaceFolderUndoResultSchema, type WorkspaceFolderUndoInput,
@@ -12,7 +12,8 @@ import {
 } from '@graphql/contracts/management'
 import type { HarnessConfiguration } from '@graphql/contracts'
 import { apiClient } from './client'
-import { sessionGeneration, sessionSignal, sessionIsSwitching } from './sessionBoundary'
+import { sessionGeneration, sessionSignal, sessionIsSwitching, SessionChangedError } from './sessionBoundary'
+import { managedMcpFailed, managedMcpSucceeded, reserveManagedMcpOperation, terminalMcpPlan, type ManagedMcpOperation } from './managedMcpOperation'
 import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema, type WorkspaceFolderDeleteInput } from '@graphql/contracts/management'
 
 // Each abort rotates the existing session controller synchronously. Re-arm after rotation.
@@ -104,9 +105,11 @@ export function useRequestNativeMcpChange() {
 }
 export function useDecideNativeMcpChange() {
   const client = useQueryClient()
+  const epoch = useHarnessSessionEpoch()
   return useMutation({ retry: false,
     mutationFn: (input: { planId: string; approve: boolean }) => apiClient.request('/api/management/harnesses/mcp/decision', HarnessMcpPlanSchema,
       { method: 'POST', body: input }),
+    onSuccess: (plan) => settleManagedOperation(client, epoch, plan),
     onSettled: async () => {
       await Promise.all([
         client.invalidateQueries({ queryKey: harnessSettingsKeys.root }),
@@ -115,12 +118,72 @@ export function useDecideNativeMcpChange() {
     },
   })
 }
-export function useApplyManagedMcpChange() {
+const managedOperationKey = (harness: Harness, epoch: number) => [...harnessSettingsKeys.root, epoch, harness, 'managed-operation'] as const
+type ManagedStart = HarnessMcpManagedInput extends infer Input ? Input extends { commandId: string; harness: Harness }
+  ? Omit<Input, 'commandId' | 'harness'> : never : never
+function settleManagedOperation(client: QueryClient, epoch: number, plan: HarnessMcpPlan) {
+  if (!terminalMcpPlan(plan) || epoch !== sessionGeneration() || sessionIsSwitching()) return
+  const key = managedOperationKey(plan.harness, epoch)
+  const current = client.getQueryData<ManagedMcpOperation | null>(key)
+  if (current?.plan?.id === plan.id) client.setQueryData(key, null)
+}
+
+/** Query-client/session lifetime, not the mounted harness panel's lifetime. */
+export function useApplyManagedMcpChange(harness: Harness, observedPlans?: HarnessMcpPlan[]) {
   const client = useQueryClient()
+  const epoch = useHarnessSessionEpoch()
+  const key = managedOperationKey(harness, epoch)
+  const stored = useQuery<ManagedMcpOperation | null>({ queryKey: key, queryFn: () => null,
+    enabled: false, initialData: null, staleTime: Infinity, gcTime: Infinity })
+  useEffect(() => {
+    for (const plan of observedPlans ?? []) settleManagedOperation(client, epoch, plan)
+  }, [client, epoch, observedPlans])
+  const currentSession = () => epoch === sessionGeneration() && !sessionIsSwitching()
+  const update = (input: HarnessMcpManagedInput, transform: (value: ManagedMcpOperation) => ManagedMcpOperation | null) => {
+    if (!currentSession()) return
+    client.setQueryData<ManagedMcpOperation | null>(key, (current) => current?.input.commandId === input.commandId ? transform(current) : current ?? null)
+  }
+  const mutation = useMutation({ retry: false,
+    mutationFn: (input: HarnessMcpManagedInput) => {
+      if (!currentSession()) throw new SessionChangedError()
+      const saved = client.getQueryData<ManagedMcpOperation | null>(key)
+      if (!saved || JSON.stringify(saved.input) !== JSON.stringify(input)) throw new Error('The original MCP operation is no longer reserved.')
+      return apiClient.request('/api/management/harnesses/mcp/managed', HarnessMcpPlanSchema,
+        { method: 'POST', body: HarnessMcpManagedInputSchema.parse(input) })
+    },
+    // Hook-level callbacks run even if a panel unmounts before HTTP settles.
+    onSuccess: (plan, input) => update(input, (current) => managedMcpSucceeded(current, plan)),
+    onError: (error, input) => update(input, (current) => managedMcpFailed(current, error)),
+    onSettled: async () => { if (currentSession()) await Promise.all([
+      client.invalidateQueries({ queryKey: harnessSettingsKeys.root }),
+      client.invalidateQueries({ queryKey: ['operator-chat', 'setup'] }),
+      client.invalidateQueries({ queryKey: ['workbench', 'management', 'harnesses'] }),
+    ]) },
+  })
+  const start = (value: ManagedStart) => {
+    if (!currentSession()) return
+    if (client.getQueryData<ManagedMcpOperation | null>(key)) return // Never replace an unresolved operation.
+    const input = HarnessMcpManagedInputSchema.parse({ ...value, harness, commandId: crypto.randomUUID() })
+    client.setQueryData(key, reserveManagedMcpOperation(input))
+    mutation.mutate(input)
+  }
+  const retry = () => {
+    const current = client.getQueryData<ManagedMcpOperation | null>(key)
+    if (!currentSession() || !current || current.phase === 'sending' || current.phase === 'review') return
+    client.setQueryData(key, { ...current, phase: 'sending' })
+    mutation.mutate(current.input) // The original revision, payload and ID survive every panel remount.
+  }
+  return { ...mutation, operation: stored.data, start, retry }
+}
+
+export function useReconcileNativeMcpChange() {
+  const client = useQueryClient()
+  const epoch = useHarnessSessionEpoch()
   return useMutation({ retry: false,
-    mutationFn: (input: HarnessMcpManagedInput) => apiClient.request('/api/management/harnesses/mcp/managed', HarnessMcpPlanSchema,
-      { method: 'POST', body: HarnessMcpManagedInputSchema.parse(input) }),
-    onSettled: async () => { await Promise.all([
+    mutationFn: (input: HarnessMcpReconcileInput) => apiClient.request('/api/management/harnesses/mcp/reconcile', HarnessMcpPlanResultSchema,
+      { method: 'POST', body: HarnessMcpReconcileInputSchema.parse(input) }),
+    onSuccess: (result) => settleManagedOperation(client, epoch, result.value),
+    onSettled: async () => { if (epoch === sessionGeneration() && !sessionIsSwitching()) await Promise.all([
       client.invalidateQueries({ queryKey: harnessSettingsKeys.root }),
       client.invalidateQueries({ queryKey: ['operator-chat', 'setup'] }),
       client.invalidateQueries({ queryKey: ['workbench', 'management', 'harnesses'] }),

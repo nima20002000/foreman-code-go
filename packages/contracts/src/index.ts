@@ -1596,11 +1596,21 @@ export function applyOperatorChatSettings(base: HarnessConfiguration, settings: 
     ? { ...base, model: settings.model, reasoningEffort: settings.reasoningEffort, serviceTier: settings.serviceTier }
     : { ...base, model: settings.model, variant: settings.variant, thinking: settings.showThinking });
 }
+export const OperatorChatSetupQuerySchema = z.object({
+  conversationId: IdSchema.optional(),
+  requestId: IdSchema.optional(),
+  configurationVersionId: IdSchema.optional(),
+  harness: z.enum(["codex", "opencode"]).optional(),
+  expectedDefaultsRevision: z.coerce.number().int().nonnegative().optional(),
+}).strict().refine((value) => !value.requestId || Boolean(value.conversationId), "A request needs its conversation.");
+export type OperatorChatSetupQuery = z.infer<typeof OperatorChatSetupQuerySchema>;
 export const OperatorChatSetupSchema = z.object({
   harness: z.enum(["codex", "opencode"]),
   status: z.enum(["configured", "setup_required"]),
   endpoint: z.string().url(),
   checkedAt: TimestampSchema,
+  configurationVersionId: IdSchema.optional(),
+  reason: z.string().optional(),
 }).strict();
 export type OperatorChatSetup = z.infer<typeof OperatorChatSetupSchema>;
 export const OperatorActivityCursorSchema = z.string().regex(/^[1-9][0-9]{0,18}$/)
@@ -1670,6 +1680,8 @@ export const SendOperatorMessageRequestSchema = z.object({
   content: z.string().trim().min(1),
   context: OperatorConversationContextSchema.optional(),
   settings: OperatorChatSettingsSchema.optional(),
+  /** Immutable, server-created Operator configuration selected before reservation. */
+  configurationVersionId: IdSchema.optional(),
 }).strict();
 export const SendOperatorMessageResponseSchema = z.object({ state: OperatorConversationStateSchema, replayed: z.boolean() }).strict();
 export const CancelOperatorTurnRequestSchema = z.object({ requestId: IdSchema }).strict();

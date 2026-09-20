@@ -5,10 +5,13 @@ import { randomUUID } from 'node:crypto'
 import type { HarnessMcpChange, HarnessMcpManagedPreset } from '@graphql/contracts/management'
 import { DomainError } from '../errors.js'
 import { ManagedOpenCodeServer } from './opencodeTransport.js'
+import { inspectOpenCodeMcpConfiguration } from './opencodeMcpConfiguration.js'
 import { parseConfigObject } from './opencodeProtocol.js'
 import { editJsoncMcp } from './jsoncMcpEditor.js'
 import { backupNativeUserFile, readNativeUserFile, syncNativeConfigDirectory } from './nativeConfigFiles.js'
 import { fingerprint, record, replacement, type NativeMcpAdapter, type NativeMcpSnapshot } from './nativeMcpCommon.js'
+import { withNativeMcpDelivery } from './nativeMcpDelivery.js'
+import { inspectOpenCodeMcpSources } from './openCodeMcpSources.js'
 
 /** Only the native user file is edited, byte-preserving outside the selected MCP member. */
 export class OpenCodeMcpConnections implements NativeMcpAdapter {
@@ -28,7 +31,6 @@ export class OpenCodeMcpConnections implements NativeMcpAdapter {
   }
   private async userFile(directory: string): Promise<string> {
     if (await realpath(directory) !== resolve(directory)) throw new DomainError('MCP_CONFIG_SYMLINK', 'Linked native configuration directories are read-only in this manager.', 409)
-    // Native precedence: opencode.jsonc overrides opencode.json, which overrides legacy config.json.
     for (const name of ['opencode.jsonc', 'opencode.json', 'config.json']) {
       const file = join(directory, name)
       try {
@@ -44,40 +46,65 @@ export class OpenCodeMcpConnections implements NativeMcpAdapter {
     const { configDirectory, effective } = await this.inspect(signal)
     const file = await this.userFile(configDirectory)
     const source = await this.contents(file)
-    const userConfig = parseConfigObject(source)
+    const userConfig = source.trim() ? parseConfigObject(source) : {}
     const user = record(userConfig.mcp)
-    return { harness: 'opencode', effective, user, userConfig, file, version: fingerprint(source), revision: fingerprint([source, effective, file]) }
+    const credentialReferences: Record<string, string> = {}
+    if (Object.hasOwn(user, 'graphql-operator') && Object.hasOwn(effective, 'graphql-operator')) {
+      const evidence = await inspectOpenCodeMcpConfiguration({ binary: this.binary, workingDirectory: this.directory,
+        serverName: 'graphql-operator', credentialEnvironmentVariable: 'GRAPHQL_OPERATOR_MCP_TOKEN', signal })
+      const entry = record(effective['graphql-operator'])
+      if (!evidence || evidence.endpoint !== entry.url
+        || (evidence.transport === 'streamable-http') !== (entry.type === 'remote')
+        || evidence.enabled !== (entry.enabled !== false)) {
+        throw new DomainError('REVISION_CONFLICT', 'OpenCode configuration changed while credential provenance was inspected.', 409)
+      }
+      if (evidence.credentialEnvironmentVariable) credentialReferences['graphql-operator'] = evidence.credentialEnvironmentVariable
+    }
+    const sources = await inspectOpenCodeMcpSources(this.directory, configDirectory, file, user, signal)
+    const confirmedSources = await inspectOpenCodeMcpSources(this.directory, configDirectory, file, user, signal)
+    if (sources.revision !== confirmedSources.revision) {
+      throw new DomainError('REVISION_CONFLICT', 'OpenCode configuration sources changed while inspected.', 409)
+    }
+    if (await this.contents(file) !== source || await this.userFile(configDirectory) !== file) {
+      throw new DomainError('REVISION_CONFLICT', 'Native configuration changed while it was inspected.', 409)
+    }
+    return { harness: 'opencode', effective, user, userConfig, file, ownership: sources.ownership, credentialReferences,
+      version: fingerprint(source), revision: fingerprint([source, effective, file, credentialReferences, sources.revision]) }
   }
   async apply(snapshot: NativeMcpSnapshot, change: HarnessMcpChange, signal: AbortSignal,
     managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): Promise<void> {
-    const next = replacement(snapshot, change, managed)
-    const lockPath = `${snapshot.file}.graphql-mcp.lock`
-    let lock
-    try { lock = await open(lockPath, 'wx', 0o600) } catch { throw new DomainError('MCP_CONFIG_BUSY', 'Native configuration is locked. A crashed writer requires an administrator to reconcile its lock.', 409) }
-    const temporary = `${snapshot.file}.graphql-mcp-${randomUUID()}.tmp`
-    try {
-      await lock.writeFile(JSON.stringify({ pid: process.pid, at: new Date().toISOString() }))
-      const current = await this.read(signal)
-      if (current.revision !== snapshot.revision || current.file !== snapshot.file) throw new DomainError('REVISION_CONFLICT', 'Native MCP configuration changed. Refresh and review a new change.', 409)
-      const source = await this.contents(current.file)
-      if (fingerprint(source) !== current.version) throw new DomainError('REVISION_CONFLICT', 'The native configuration changed while it was being read.', 409)
-      const updated = editJsoncMcp(source, change.name, next)
-      const expected = { ...current.user }
-      if (next === undefined) delete expected[change.name]; else expected[change.name] = next
-      if (fingerprint(parseConfigObject(updated)) !== fingerprint({ ...current.userConfig, mcp: expected })) throw new Error('MCP edit verification failed.')
-      await backupNativeUserFile(current.file, source)
-      const handle = await open(temporary, 'wx', 0o600)
-      try { await handle.writeFile(updated); await handle.sync() } finally { await handle.close() }
-      signal.throwIfAborted()
-      if (fingerprint(await this.contents(current.file)) !== current.version) throw new DomainError('REVISION_CONFLICT', 'A native editor changed this file. Nothing was overwritten.', 409)
-      await rename(temporary, current.file)
-      await syncNativeConfigDirectory(current.file)
-      const written = await readNativeUserFile(current.file)
-      if (written !== updated) throw new DomainError('MCP_WRITE_UNCONFIRMED', 'The native write could not be confirmed. Do not retry it automatically.', 409)
-    } finally {
-      try { await rm(temporary, { force: true }) } finally {
-        try { await lock.close() } finally { await rm(lockPath, { force: true }) }
+    return withNativeMcpDelivery(async (writing) => {
+      const next = replacement(snapshot, change, managed)
+      const lockPath = `${snapshot.file}.graphql-mcp.lock`
+      let lock
+      try { lock = await open(lockPath, 'wx', 0o600) } catch { throw new DomainError('MCP_CONFIG_BUSY', 'Native configuration is locked. A crashed writer requires an administrator to reconcile its lock.', 409) }
+      const temporary = `${snapshot.file}.graphql-mcp-${randomUUID()}.tmp`
+      try {
+        await lock.writeFile(JSON.stringify({ pid: process.pid, at: new Date().toISOString() }))
+        const current = await this.read(signal)
+        if (current.revision !== snapshot.revision || current.file !== snapshot.file) throw new DomainError('REVISION_CONFLICT', 'Native MCP configuration changed. Refresh and review a new change.', 409)
+        const source = await this.contents(current.file)
+        if (fingerprint(source) !== current.version) throw new DomainError('REVISION_CONFLICT', 'The native configuration changed while it was being read.', 409)
+        const updated = editJsoncMcp(source, change.name, next)
+        const expected = { ...current.user }
+        if (next === undefined) delete expected[change.name]; else expected[change.name] = next
+        if (fingerprint(parseConfigObject(updated)) !== fingerprint({ ...current.userConfig, mcp: expected })) throw new Error('MCP edit verification failed.')
+        await backupNativeUserFile(current.file, source)
+        const handle = await open(temporary, 'wx', 0o600)
+        try { await handle.writeFile(updated); await handle.sync() } finally { await handle.close() }
+        signal.throwIfAborted()
+        if (fingerprint(await this.contents(current.file)) !== current.version) throw new DomainError('REVISION_CONFLICT', 'A native editor changed this file. Nothing was overwritten.', 409)
+        // The backup and temporary file are not a delivered configuration change.
+        writing()
+        await rename(temporary, current.file)
+        await syncNativeConfigDirectory(current.file)
+        const written = await readNativeUserFile(current.file)
+        if (written !== updated) throw new DomainError('MCP_WRITE_UNCONFIRMED', 'The native write could not be confirmed. Do not retry it automatically.', 409)
+      } finally {
+        try { await rm(temporary, { force: true }) } finally {
+          try { await lock.close() } finally { await rm(lockPath, { force: true }) }
+        }
       }
-    }
+    })
   }
 }

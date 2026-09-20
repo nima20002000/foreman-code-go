@@ -19,6 +19,7 @@ import { isNarrowOperatorChat, operatorChatNarrowQuery, useOperatorChatStore } f
 import { useOperatorChatVisibility } from './useOperatorChatVisibility'
 import { useOperatorSettings } from './useOperatorSettings'
 import { useOperatorChatSetup } from '../../shared/api/operatorChatSetup'
+import { pendingOperatorSetupTarget } from '../../shared/api/operatorSetupTarget'
 import { OperatorSetupNotice } from './OperatorSetupNotice'
 import { SettingsFormFeedback } from '../settings/SettingsFormActions'
 import { acknowledgeOperatorMessage, assertOperatorMessageReserved, readPendingOperatorMessage, recordOperatorMessageFailure, reserveOperatorMessage } from './operatorOutbox'
@@ -57,7 +58,6 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
   const selectedId = useOperatorChatStore((state) => state.selectedConversationId)
   const preferences = useOperatorSettings(enabled && open)
   const preferencesDenied = useAccessFailureLatch(preferences.query)
-  const setup = useOperatorChatSetup(enabled && open, preferences.query.data?.revision)
   const setOpen = useOperatorChatStore((state) => state.setOpen)
   const setHistoryOpen = useOperatorChatStore((state) => state.setHistoryOpen)
   const select = useOperatorChatStore((state) => state.select)
@@ -93,6 +93,12 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
     }, refetchInterval: 3_000 })
   const selectedDenied = useAccessFailureLatch(selected)
   const accessDenied = listDenied || selectedDenied
+  const pending = selectedId && !accessDenied && enabled && !sessionIsSwitching() ? readPendingOperatorMessage(selectedId) : {}
+  const setup = useOperatorChatSetup(enabled && open && !pending.command, preferences.query.data?.revision,
+    { ...(selectedId ? { conversationId: selectedId } : {}), ...(preferences.settings ? { harness: preferences.settings.harness } : {}) })
+  const retrySetup = useOperatorChatSetup(enabled && open && Boolean(pending.command) && !accessDenied, undefined,
+    pendingOperatorSetupTarget(selectedId, pending.command))
+  const shownSetup = pending.command ? retrySetup : setup
   const acceptState = useCallback((id: string, state: OperatorConversationState) => {
     if (deletedIds.current.has(id)) return
     const accepted = newer(queryClient.getQueryData<OperatorConversationState>(detailKey(id)), state)
@@ -246,11 +252,13 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
   const conversation = accessDenied ? undefined : selected.data
   const settings = preferencesDenied ? undefined : preferences.settings
   const setupReady = setup.isSuccess && setup.data.status === 'configured' && setup.data.harness === settings?.harness
+    && Boolean(setup.data.configurationVersionId)
+  const retrySetupReady = retrySetup.isSuccess && retrySetup.data.status === 'configured'
+    && (!pending.command?.settings || retrySetup.data.harness === pending.command.settings.harness)
   const settingsReady = Boolean(preferences.query.data) && !preferencesDenied && !preferences.form.isDirty && !preferences.form.isSaving && !preferences.form.uncertain
   const active = Boolean(conversation && (conversation.activeRequestId || !['idle', 'error'].includes(conversation.turnState)))
   const archived = conversation?.conversation.status === 'archived'
   const requestId = conversation?.activeRequestId
-  const pending = selectedId && !accessDenied ? readPendingOperatorMessage(selectedId) : {}
   const scopedSendError = send.variables?.id === selectedId && send.variables?.command.requestId === pending.command?.requestId
     && send.error instanceof Error ? send.error.message : undefined
   const sendError = preparationError && preparationError.id === selectedId ? preparationError.message
@@ -303,7 +311,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
     const epoch = identityEpoch()
     reservations.current.add(id); setPreparingId(id)
     try {
-      const command = await reserveOperatorMessage(id, content, window.location.pathname + window.location.search, settings)
+      const command = await reserveOperatorMessage(id, content, window.location.pathname + window.location.search, settings, setup.data?.configurationVersionId)
       if (!currentSession(generation) || epoch !== identityEpoch()) return
       setPreparationError(undefined)
       send.mutate({ id, command, generation, epoch })
@@ -363,7 +371,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
           {list.data?.hasMore ? <button type="button" className="operator-chat-load-more" disabled={list.isFetching} onClick={loadOlderChats}>{list.isFetching ? 'Loading…' : 'Load older chats'}</button> : null}
         </aside>
         <main className="operator-chat-main">
-          <OperatorSetupNotice data={setup.data} checking={setup.isFetching || setup.isPending} failed={setup.isError} onRetry={() => void setup.refetch()} />
+          <OperatorSetupNotice data={shownSetup.data} checking={shownSetup.isFetching || shownSetup.isPending} failed={shownSetup.isError} onRetry={() => void shownSetup.refetch()} />
           {remove.error instanceof Error ? <Alert live tone="danger" title="Chat could not be deleted">{remove.error.message}</Alert> : null}
           {restore.error instanceof Error ? <Alert live tone="danger" title="Chat could not be restored">{restore.error.message}</Alert> : null}
           {create.error instanceof Error ? <Alert live tone="danger" title="Conversation could not be created">{create.error.message}</Alert> : null}
@@ -394,7 +402,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
                 {pending.error ? <Alert live tone="danger" title="Pending message unavailable">{pending.error}</Alert> : null}
                 {sendError ? <Alert live tone="danger" title="Message could not be sent">{sendError}</Alert> : null}
               </div>
-              {pending.command ? <Button disabled={!setupReady || (send.isPending && send.variables?.id === selectedId)} loading={send.isPending && send.variables?.id === selectedId} onClick={() => {
+              {pending.command ? <Button disabled={!retrySetupReady || (send.isPending && send.variables?.id === selectedId)} loading={send.isPending && send.variables?.id === selectedId} onClick={() => {
                 setPreparationError(undefined)
                 send.mutate({ id: conversation.conversation.id, command: pending.command!, generation: sessionGeneration(), epoch: identityEpoch() })
               }}>Retry pending message</Button> : null}

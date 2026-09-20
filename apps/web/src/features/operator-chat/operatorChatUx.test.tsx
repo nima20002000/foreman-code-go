@@ -63,7 +63,7 @@ describe('Operator chat UX', () => {
       http.get('/api/management/settings/agents', () => HttpResponse.json({ revision: 1, versionId: null,
         value: { ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness: DEFAULT_HARNESS_DEFAULTS.opencode } } })),
       http.get('/api/operator/setup', () => HttpResponse.json({ harness: 'opencode', status: configured ? 'configured' : 'setup_required',
-        endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() })),
+        configurationVersionId: 'operator-config', endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() })),
     )
     chat()
     expect(await screen.findByText('Install Operator MCP in OpenCode first')).toBeVisible()

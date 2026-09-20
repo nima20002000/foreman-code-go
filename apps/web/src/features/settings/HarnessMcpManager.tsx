@@ -1,16 +1,15 @@
 import { UnsavedChangesContext, useUnsavedChanges } from '../../shared/ui/unsavedChanges'
-import { useContext, useRef, useState } from 'react'
+import { useContext, useEffect, useRef, useState } from 'react'
 import {
-  HarnessMcpChangeSchema, type HarnessMcpChange, type HarnessMcpPlan, type HarnessMcpManagedPreset, type HarnessMcpManagedInput,
+  HarnessMcpChangeSchema, type HarnessMcpChange, type HarnessMcpPlan, type HarnessMcpManagedPreset, type HarnessMcpReconcileInput,
 } from '@graphql/contracts/management'
-import { Alert, Button, Dialog, Icon, Select, StatusBadge, Textarea, TextField } from '../../shared/ui/nocturne'
+import { Alert, Button, Checkbox, Dialog, Icon, Select, StatusBadge, Textarea, TextField } from '../../shared/ui/nocturne'
 import {
-  useNativeMcpServers, useNativeMcpPlans, useRequestNativeMcpChange, useDecideNativeMcpChange, useApplyManagedMcpChange, useHarnessSessionEpoch,
+  useNativeMcpServers, useNativeMcpPlans, useRequestNativeMcpChange, useDecideNativeMcpChange, useApplyManagedMcpChange, useHarnessSessionEpoch, useReconcileNativeMcpChange,
 } from '../../shared/api/harnessSettings'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 
 type Harness = 'codex' | 'opencode'
-type ManagedDraft = HarnessMcpManagedInput extends infer Input ? Input extends { commandId: string } ? Omit<Input, 'commandId'> : never : never
 const words = { add: 'Add', remove: 'Remove', enable: 'Update' }
 function ChangeDetails({ change }: { change: HarnessMcpChange }) {
   return <dl className="harness-change-details"><div><dt>Server</dt><dd>{change.name}</dd></div>
@@ -74,9 +73,12 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
   const plans = useNativeMcpPlans(harness)
   const request = useRequestNativeMcpChange()
   const decision = useDecideNativeMcpChange()
-  const managed = useApplyManagedMcpChange()
-  const managedAttempt = useRef(new CommandAttempt<ManagedDraft>())
-  const [managedInput, setManagedInput] = useState<HarnessMcpManagedInput>()
+  const otherPlans = useNativeMcpPlans(harness === 'codex' ? 'opencode' : 'codex')
+  const managed = useApplyManagedMcpChange(harness, plans.data?.items)
+  const reconciliation = useReconcileNativeMcpChange()
+  const reconciliationAttempts = useRef(new Map<string, CommandAttempt<Omit<HarnessMcpReconcileInput, 'commandId'>>>())
+  const [reconcileInputs, setReconcileInputs] = useState<Record<string, HarnessMcpReconcileInput>>({})
+  const [observedAcceptance, setObservedAcceptance] = useState<Record<string, boolean>>({})
   const [adding, setAdding] = useState(false)
   const [active, setActive] = useState<string>()
   const [detailsName, setDetailsName] = useState<string>()
@@ -84,7 +86,13 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
   const [feedback, setFeedback] = useState<string>()
   // A failed HTTP response may hide a committed plan. Reuse the same receipt ID on retry.
   const command = useRef<{ signature: string; id: string } | undefined>(undefined)
-  const selected = decision.data?.id === active ? decision.data : plans.data?.items.find((plan) => plan.id === active) ?? (created?.id === active ? created : undefined)
+  const allPlans = [...(plans.data?.items ?? []), ...(otherPlans.data?.items ?? [])]
+  const managedPlan = managed.operation?.plan
+  const selected = decision.data?.id === active ? decision.data : allPlans.find((plan) => plan.id === active)
+    ?? (created?.id === active ? created : managedPlan?.id === active ? managedPlan : undefined)
+  const reconcileInput = selected ? reconcileInputs[selected.id] : undefined
+  const acceptObservedState = selected ? observedAcceptance[selected.id] ?? false : false
+  const inspection = useNativeMcpServers(selected?.harness ?? harness, Boolean(active))
   const expired = Boolean(selected && Date.parse(selected.expiresAt) <= Date.now())
   const requestChange = (change: HarnessMcpChange) => {
     if (!servers.data || request.isPending) return
@@ -104,38 +112,45 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
       if (result.status === 'rejected') setActive(undefined)
     } })
   }
-  const submitManaged = (input: HarnessMcpManagedInput) => {
-    setFeedback(undefined)
-    managed.mutate(input, { onSuccess: (result) => {
-      managedAttempt.current.succeeded()
-      setManagedInput(undefined)
-      setCreated(result)
-      if (result.status === 'applied') {
-        if ('installed' in input && !input.installed) setDetailsName(undefined)
-        const action = 'enabled' in input ? input.enabled ? 'enabled in' : 'disabled in' : input.installed ? 'added to' : 'removed from'
-        setFeedback(`${input.preset === 'operator' ? 'Operator MCP' : 'Linear MCP'} ${action} ${harness === 'codex' ? 'Codex' : 'OpenCode'}. New sessions use the updated connections.`)
-      }
-    }, onError: (error) => { managedAttempt.current.failed(error) } })
-  }
   const manage = (preset: HarnessMcpManagedPreset, change: { installed: boolean } | { enabled: boolean }) => {
-    if (!servers.data || managed.isPending) return
-    const input = managedAttempt.current.input({ harness, preset, ...change, expectedRevision: servers.data.revision })
-    setManagedInput(input)
-    submitManaged(input)
+    if (!servers.data || managed.isPending || managed.operation) return
+    setFeedback(undefined)
+    managed.start({ preset, ...change, expectedRevision: servers.data.revision })
   }
-  const retryManaged = () => {
-    if (!managedInput || managed.isPending) return
-    submitManaged(managedInput)
+  const reconcile = () => {
+    if (!selected || !inspection.data || reconciliation.isPending) return
+    const attempt = reconciliationAttempts.current.get(selected.id) ?? new CommandAttempt<Omit<HarnessMcpReconcileInput, 'commandId'>>()
+    reconciliationAttempts.current.set(selected.id, attempt)
+    const clearInput = () => setReconcileInputs((current) => Object.fromEntries(Object.entries(current).filter(([id]) => id !== selected.id)))
+    const input = reconcileInput ?? attempt.input({
+      planId: selected.id, expectedRevision: inspection.data.revision, acceptObservedState })
+    if (input.planId !== selected.id) return
+    setReconcileInputs((current) => ({ ...current, [selected.id]: input }))
+    reconciliation.mutate(input, { onSuccess: (result) => {
+      attempt.succeeded(); clearInput()
+      setObservedAcceptance((current) => ({ ...current, [selected.id]: false }))
+      setCreated(result.value); setActive(undefined)
+      setFeedback(result.value.status === 'applied' ? 'The intended settings were confirmed. No native write was repeated.'
+        : 'The current settings were recorded. The original write will not be repeated.')
+    }, onError: (error) => {
+      attempt.failed(error)
+      if (!attempt.unresolved) clearInput()
+    } })
   }
   const presets = servers.data?.presets
   const details = servers.data?.servers.find((server) => server.name === detailsName)
   const detailsPreset = details?.name === 'graphql-operator' && ['installed', 'disabled'].includes(presets?.operator ?? '') ? 'operator'
     : details?.name === 'linear' && ['installed', 'disabled'].includes(presets?.linear ?? '') ? 'linear' : undefined
   const detailsRemovable = Boolean(details && (detailsPreset || details.editable))
-  const outstanding = plans.data?.items.filter((plan) => ['pending', 'submitting', 'uncertain'].includes(plan.status)) ?? []
-  const managedBusy = managed.isPending || Boolean(managedInput && managed.isError && managedAttempt.current.unresolved)
+  const outstanding = allPlans.filter((plan) => ['submitting', 'uncertain'].includes(plan.status)
+    || (plan.harness === harness && plan.status === 'pending'))
+  const managedBusy = managed.isPending || Boolean(managed.operation)
     || outstanding.some((plan) => plan.status === 'submitting' || plan.status === 'uncertain')
   const detailsBusy = managedBusy || request.isPending || decision.isPending || servers.isFetching || servers.isError
+  useEffect(() => {
+    if (managed.data?.status === 'applied' && managed.data.change.kind === 'remove' && managed.data.change.name === detailsName) setDetailsName(undefined)
+    if (managed.operation && managed.operation.phase !== 'sending' && detailsName) setDetailsName(undefined)
+  }, [managed.data, managed.operation, detailsName])
   return <section className="harness-mcp-manager" aria-label={`${harness} MCP connections`}>
     <div className="harness-section-heading"><div><h4>MCP servers</h4><p className="harness-muted">Native user configuration · changes apply to new sessions.</p></div>
       <div className="harness-inline-actions"><Button size="sm" disabled={servers.isFetching} onClick={() => void servers.refetch()}>Refresh</Button>
@@ -143,9 +158,12 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
     {servers.isPending ? <p role="status">Reading configured servers…</p> : null}
     {servers.isError ? <Alert tone="danger" title={servers.error.message} /> : null}
     {request.isError ? <Alert live tone="danger" title={request.error.message} /> : null}
-    {managed.isError ? <Alert live tone="danger" title={managedAttempt.current.unresolved ? 'MCP change could not be confirmed' : 'MCP change was not applied'}>{managed.error.message}
-      {managedInput && managedAttempt.current.unresolved ? <Button size="sm" onClick={retryManaged}>Retry original change</Button> : null}</Alert> : null}
-    {managed.data?.status === 'uncertain' ? <Alert live tone="warning" title="MCP change needs inspection">The native write may have succeeded. Refresh the server list before making another change.</Alert> : null}
+    {managed.operation ? <Alert live tone="warning" title={managed.operation.phase === 'sending' ? 'Applying original MCP change' : 'MCP change needs attention'}>
+      {managed.operation.error ?? (managed.operation.phase === 'sending' ? 'Waiting for the native result.' : 'Review the accepted request before making another change.')}
+      {managed.operation.phase === 'retry' ? <Button size="sm" onClick={managed.retry}>Retry original change</Button> : null}
+      {managed.operation.plan ? <Button size="sm" onClick={() => { decision.reset(); setActive(managed.operation!.plan!.id) }}>Review original change</Button> : null}
+    </Alert> : managed.isError ? <Alert live tone="danger" title="MCP change was not accepted">{managed.error.message}</Alert> : null}
+    {managed.data?.status === 'applied' ? <p role="status" className="harness-success">Connection settings saved. New sessions will use them.</p> : null}
     {feedback ? <p role="status" className="harness-success">{feedback}</p> : null}
     {presets ? <div className="harness-preset-actions" aria-label="Suggested MCP servers">
       {(['operator', 'linear'] as const).map((preset) => {
@@ -155,9 +173,9 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
         return <div key={preset} className="harness-preset-row"><div><strong>{label}</strong>
           <small>{status === 'missing' ? preset === 'operator' ? 'Local app tools for Operator chat.' : 'Read-only Linear connection; sign in with the harness after adding.'
             : status === 'inherited' ? 'Configured outside this user profile. Edit it at its source.'
-              : preset === 'operator' ? 'Replace this mismatched entry with the app’s Operator MCP connection.' : 'Existing configuration differs from this preset. Inspect it before changing.'}</small></div>
-          {status === 'missing' || (preset === 'operator' && status === 'mismatch') ? <Button size="sm" disabled={managedBusy || servers.isFetching || servers.isError} loading={managed.isPending && managed.variables?.preset === preset}
-            onClick={() => manage(preset, { installed: true })}>{status === 'mismatch' ? 'Repair' : 'Add'} {label}</Button> : <StatusBadge tone="warning" label={status === 'inherited' ? 'Inherited' : 'Needs attention'} />}
+              : preset === 'operator' ? 'Repair the endpoint or enable this entry while keeping its tool and approval policies.' : 'This is not the verified read-only preset. Conversion changes its endpoint; native sign-in remains separate.'}</small></div>
+          {status === 'missing' || (status === 'mismatch' && (preset === 'operator' || !servers.data?.servers.find((server) => server.name === 'linear')?.protected)) ? <Button size="sm" disabled={managedBusy || servers.isFetching || servers.isError} loading={managed.isPending && managed.variables?.preset === preset}
+            onClick={() => manage(preset, { installed: true })}>{status === 'mismatch' ? preset === 'linear' ? 'Convert to read-only' : 'Repair' : 'Add'} {label}</Button> : <StatusBadge tone="warning" label={status === 'inherited' ? 'Inherited' : 'Needs attention'} />}
         </div>
       })}
     </div> : null}
@@ -176,9 +194,11 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
     })}</ul>
     {outstanding.length ? <section className="harness-pending-plans" aria-label="MCP change requests"><h4>Change requests</h4>
       {outstanding.map((plan) => {
-        const applying = managed.isPending && plan.managedPreset === managed.variables?.preset
-          && plan.change.kind === ('enabled' in (managed.variables ?? {}) ? 'enable' : managed.variables && 'installed' in managed.variables && managed.variables.installed ? 'add' : 'remove')
-        return <div key={plan.id} className="harness-plan-row"><span>{words[plan.change.kind]} <strong>{plan.change.name}</strong><small>{applying ? 'Awaiting native confirmation' : plan.status === 'pending' && Date.parse(plan.expiresAt) <= Date.now() ? 'Expired' : plan.status}</small></span>
+        const operation = managed.operation
+        const kind = operation && ('enabled' in operation.input ? 'enable' : operation.input.installed ? 'add' : 'remove')
+        const applying = operation?.phase === 'sending' && plan.harness === harness && plan.managedPreset === operation.input.preset
+          && plan.change.kind === kind
+        return <div key={plan.id} className="harness-plan-row"><span>{plan.harness === harness ? '' : `${plan.harness} · `}{words[plan.change.kind]} <strong>{plan.change.name}</strong><small>{applying ? 'Awaiting native confirmation' : plan.status === 'pending' && Date.parse(plan.expiresAt) <= Date.now() ? 'Expired' : plan.status}</small></span>
           {applying ? <span role="status">Applying…</span> : <Button size="sm" onClick={() => { decision.reset(); setActive(plan.id) }}>Review</Button>}</div>
       })}
     </section> : null}
@@ -187,14 +207,26 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
       {adding ? <ConnectionForm busy={request.isPending} onReview={requestChange} /> : null}
       {request.isError ? <Alert tone="danger" title={request.error.message} /> : null}
     </Dialog>
-    <Dialog open={Boolean(active)} onOpenChange={(open) => { if (!open) setActive(undefined) }} title="Review MCP change" size="md" busy={decision.isPending}
-      footer={selected?.status === 'pending' && !expired ? <><Button disabled={decision.isPending} onClick={() => decide(false)}>Reject</Button>
-        <Button variant={selected.change.kind === 'remove' ? 'danger' : 'primary'} disabled={decision.isPending} onClick={() => decide(true)}>{decision.isPending ? 'Applying…' : 'Approve and apply'}</Button></> : <Button onClick={() => setActive(undefined)}>Close</Button>}>
+    <Dialog open={Boolean(active)} onOpenChange={(open) => { if (!open) setActive(undefined) }} title="Review MCP change" size="md" busy={decision.isPending || reconciliation.isPending}
+      footer={selected?.status === 'pending' ? <><Button disabled={decision.isPending} onClick={() => decide(false)}>Reject</Button>
+        <Button variant={selected.change.kind === 'remove' ? 'danger' : 'primary'} disabled={decision.isPending || expired} onClick={() => decide(true)}>{decision.isPending ? 'Applying…' : 'Approve and apply'}</Button></>
+        : selected && ['submitting', 'uncertain'].includes(selected.status) ? <>
+          <Button disabled={inspection.isFetching || reconciliation.isPending} onClick={() => void inspection.refetch()}>Refresh inspection</Button>
+          <Button variant="primary" disabled={!inspection.data || inspection.isError || inspection.isFetching || reconciliation.isPending} onClick={reconcile}>
+            {reconciliation.isPending ? 'Reconciling…' : 'Reconcile without rewriting'}</Button>
+        </> : <Button onClick={() => setActive(undefined)}>Close</Button>}>
       {selected ? <div className="harness-form-stack"><p>{selected.harness === 'codex' ? 'Codex' : 'OpenCode'} · native user configuration</p><ChangeDetails change={selected.change} />
         <p className="harness-access-warning">A server may run programs or send data to its endpoint. Only approve a connection you trust.</p>
         <span className="harness-muted">Requested by {selected.requestedBy}</span>
-        {selected.status !== 'pending' || expired ? <Alert tone={selected.status === 'applied' ? 'success' : 'warning'} title={expired && selected.status === 'pending' ? 'Request expired. Create a new request.' : `Change ${selected.status}`}>
-          {selected.error ?? (selected.status === 'uncertain' ? 'The write may have completed. Inspect the native configuration before requesting another change.' : null)}</Alert> : null}
+        {selected.status !== 'pending' || expired ? <Alert tone={selected.status === 'applied' ? 'success' : 'warning'} title={expired && selected.status === 'pending' ? 'Request expired. Reject it before preparing a new request.' : `Change ${selected.status}`}>
+          {selected.error ?? (selected.status === 'uncertain' ? 'The write may have completed. Reconcile it without rewriting; Refresh alone does not settle this request.' : null)}</Alert> : null}
+        {selected && ['submitting', 'uncertain'].includes(selected.status) ? <>
+          <p>Reconciliation closes the old request without sending its native write again. It first checks the current configuration and any owned writer process.</p>
+          <Checkbox label="Keep the current native configuration even if the original result cannot be proven" checked={acceptObservedState}
+            disabled={Boolean(reconcileInput) || reconciliation.isPending} onChange={(event) => setObservedAcceptance((current) => ({ ...current, [selected.id]: event.target.checked }))} />
+          {inspection.isError ? <Alert tone="danger" title={inspection.error.message} /> : null}
+          {reconciliation.isError ? <Alert tone="danger" live title={reconciliation.error.message} /> : null}
+        </> : null}
         {decision.isError ? <Alert tone="danger" live title={decision.error.message} /> : null}
       </div> : <p role="status">Loading request…</p>}
     </Dialog>
