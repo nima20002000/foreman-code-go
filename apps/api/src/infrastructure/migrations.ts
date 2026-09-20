@@ -1,5 +1,6 @@
 import type pg from 'pg'
 import { harnessSettingsMigration } from './harnessSettingsMigration.js'
+import { pr18RecoveryMigration } from './pr18RecoveryMigration.js'
 import { browserAuthMigration } from './browserAuthMigration.js'
 
 import { lifecycleMigration } from './lifecycleMigration.js'
@@ -642,6 +643,11 @@ export const migrations = [
     );
     create index operator_activity_conversation_sequence on operator_conversation_activity(conversation_id,sequence desc);
   ` },
+  { version: 170021, sql: `
+    alter table harness_mcp_change_plans add column managed_preset text
+      check (managed_preset in ('operator', 'linear'));
+  ` },
+  pr18RecoveryMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

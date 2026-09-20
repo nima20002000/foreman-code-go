@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import type { OperatorConfigurationVersion } from '@graphql/contracts'
+import type { OperatorChatSetup, OperatorConfigurationVersion } from '@graphql/contracts'
 import { requireAuthorization } from '../access/policy.js'
 import { currentOperatorAuthority } from '../access/runAuthority.js'
 import { PostgresOperatorReviewLifecycle } from './operatorReviewLifecycle.js'
@@ -21,6 +21,38 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
   current(principalId: string) { return this.access.currentOperator(principalId) }
   assertConfiguration(configuration: OperatorConfigurationVersion) { this.rollout.assertChat(configuration) }
 
+  async setup(manager: NativeHarnessSessionManager, signal: AbortSignal, configuration?: OperatorConfigurationVersion): Promise<OperatorChatSetup> {
+    const result = { harness: manager.harness, endpoint: this.endpoint, checkedAt: new Date().toISOString() }
+    if (configuration?.harness.harness === 'opencode'
+      && configuration.harness.advanced?.mcp.serverEnabled['graphql-operator'] === false) {
+      return { ...result, status: 'setup_required',
+        reason: 'The selected Operator settings disable graphql-operator. Enable that connection in Operator advanced settings before sending a new message.' }
+    }
+    if (manager instanceof CodexAppServerSessionManager) {
+      try {
+        const inspected = await manager.inspectMcpConfiguration(this.directory, signal)
+        const configured = inspected.serverName === 'graphql-operator' && inspected.configured.enabled
+          && inspected.configured.url === this.endpoint && inspected.configured.transport === 'streamable_http'
+          && inspected.configured.bearerTokenEnvironmentVariable === OPERATOR_MCP_ENVIRONMENT_VARIABLE
+        return { ...result, status: configured ? 'configured' : 'setup_required' }
+      } catch (error) {
+        if (error && typeof error === 'object' && 'result' in error
+          && (error.result as { error?: { code?: string } })?.error?.code === 'CODEX_MCP_NOT_CONFIGURED') {
+          return { ...result, status: 'setup_required' }
+        }
+        throw error
+      }
+    }
+    if (manager instanceof OpenCodeNativeSessionManager) {
+      const inspected = await manager.inspectNativeMcp(this.directory, signal, 'configuration')
+      const configured = inspected.serverName === 'graphql-operator' && inspected.endpoint === this.endpoint
+        && inspected.transport === 'streamable-http' && !['not_detected', 'disabled'].includes(inspected.nativeStatus)
+        && inspected.credentialEnvironmentVariable === OPERATOR_MCP_ENVIRONMENT_VARIABLE
+      return { ...result, status: configured ? 'configured' : 'setup_required' }
+    }
+    this.invalidSetup()
+  }
+
   async prepare(manager: NativeHarnessSessionManager, configuration: OperatorConfigurationVersion, conversationId: string,
     principalId: string, signal: AbortSignal): Promise<ChildProcessEnvironment> {
     const principal = await this.current(principalId)
@@ -28,23 +60,13 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
     const reviews = new PostgresOperatorReviewLifecycle(this.pool)
     await reviews.assertActive(conversationId)
     signal.throwIfAborted()
+    if ((await this.setup(manager, signal, configuration)).status !== 'configured') this.invalidSetup()
     const cached = this.credentials.get(conversationId)
     if (cached) {
       if (cached.ownerId !== principalId) throw new DomainError('ACCESS_DENIED', 'A native credential cannot change owners.', 403)
       return cached.environment
     }
     this.assertConfiguration(configuration)
-    if (manager instanceof CodexAppServerSessionManager) {
-      const inspected = await manager.inspectMcpConfiguration(this.directory, signal)
-      if (inspected.serverName !== 'graphql-operator' || !inspected.configured.enabled
-        || inspected.configured.url !== this.endpoint || inspected.configured.transport !== 'streamable_http'
-        || inspected.configured.bearerTokenEnvironmentVariable !== OPERATOR_MCP_ENVIRONMENT_VARIABLE) this.invalidSetup()
-    } else if (manager instanceof OpenCodeNativeSessionManager) {
-      const inspected = await manager.inspectNativeMcp(this.directory, signal, 'configuration')
-      if (inspected.serverName !== 'graphql-operator' || inspected.endpoint !== this.endpoint
-        || ['not_detected', 'disabled'].includes(inspected.nativeStatus)
-        || inspected.credentialEnvironmentVariable !== OPERATOR_MCP_ENVIRONMENT_VARIABLE) this.invalidSetup()
-    } else this.invalidSetup()
     signal.throwIfAborted()
     const client = await this.pool.connect()
     let issued: Awaited<ReturnType<PostgresAccessService['issue']>> | undefined
@@ -84,7 +106,7 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
     }
   }
   private invalidSetup(): never {
-    throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Configure graphql-operator at the accepted /mcp/operator endpoint using GRAPHQL_OPERATOR_MCP_TOKEN. Native configuration was not rewritten.', 409)
+    throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable the graphql-operator MCP connection in the selected harness before chatting. Use the app endpoint and GRAPHQL_OPERATOR_MCP_TOKEN environment reference.', 409)
   }
   async release(conversationId: string): Promise<void> {
     this.credentials.delete(conversationId)

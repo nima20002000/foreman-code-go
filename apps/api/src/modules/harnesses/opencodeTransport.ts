@@ -132,13 +132,15 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
     return redactKnownSecrets(value, secrets)
   }
 
-  inspectMcpConfiguration(directory: string, serverName: string, signal?: AbortSignal): Promise<NativeMcpEntryEvidence | undefined> {
-    return inspectOpenCodeMcpConfiguration({
+  async inspectMcpConfiguration(directory: string, serverName: string, signal?: AbortSignal): Promise<NativeMcpEntryEvidence | undefined> {
+    const evidence = await inspectOpenCodeMcpConfiguration({
       binary: this.options.binary, workingDirectory: directory, serverName,
       credentialEnvironmentVariable: this.options.credentialEnvironmentVariable ?? APP_CREDENTIAL_ENV,
       pure: this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true,
       ...(signal ? { signal } : {}),
     })
+    return evidence && this.advancedConfiguration?.mcp.serverEnabled[serverName] === false
+      ? { ...evidence, enabled: false, status: 'disabled' } : evidence
   }
 
   async ensure(signal?: AbortSignal): Promise<void> {

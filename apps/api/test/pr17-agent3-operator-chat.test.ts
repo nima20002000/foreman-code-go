@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type NativeSessionReference, type OperatorConfigurationVersion, type PendingNativeInteraction } from '@graphql/contracts'
-import { OperatorChatService } from '../src/modules/conversations/operatorChat.js'
+import { OperatorChatService, type OperatorChatAuthority } from '../src/modules/conversations/operatorChat.js'
 import { nativeCorrelation, type ConversationRow } from '../src/modules/conversations/operatorChatRepository.js'
 import type { NativeSessionStart, NativeTurnInput } from '../src/modules/harnesses/port.js'
 import type { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
@@ -54,8 +54,9 @@ function fixture() {
   }
   repository.responseUncertain = async () => { if (row.response_delivery === 'submitted') row.response_delivery = 'uncertain' }
   repository.responseFailed = async () => { row.response_delivery = 'offered' }
-  const authority = {
+  const authority: OperatorChatAuthority = {
     current: async () => current, assertConfiguration() {},
+    setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() }),
     prepare: async () => { prepared++; return { agentId: configuration.operatorId, variables: {} } },
     release: async () => {},
   }

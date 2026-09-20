@@ -17,6 +17,11 @@ import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
 import { ActionMenu, Alert, Badge, Button, EmptyState, Icon, IconButton, LoadingState } from '../../shared/ui/nocturne'
 import { isNarrowOperatorChat, operatorChatNarrowQuery, useOperatorChatStore } from './operatorChatStore'
 import { useOperatorChatVisibility } from './useOperatorChatVisibility'
+import { useOperatorSettings } from './useOperatorSettings'
+import { useOperatorChatSetup } from '../../shared/api/operatorChatSetup'
+import { pendingOperatorSetupTarget } from '../../shared/api/operatorSetupTarget'
+import { OperatorSetupNotice } from './OperatorSetupNotice'
+import { SettingsFormFeedback } from '../settings/SettingsFormActions'
 import { acknowledgeOperatorMessage, assertOperatorMessageReserved, readPendingOperatorMessage, recordOperatorMessageFailure, reserveOperatorMessage } from './operatorOutbox'
 import { projectOperatorText, type OperatorTextProjection } from './operatorTextProjection'
 import { newerOperatorSummaries, operatorNavigationStatus, operatorTurnStatus, summarizeOperatorConversation } from './operatorChatStatus'
@@ -51,9 +56,8 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
   const open = useOperatorChatStore((state) => state.open)
   const historyOpen = useOperatorChatStore((state) => state.historyOpen)
   const selectedId = useOperatorChatStore((state) => state.selectedConversationId)
-  const settingsDraft = useOperatorChatStore((state) => selectedId ? state.settingsDrafts[selectedId] : undefined)
-  const setSettingsDraft = useOperatorChatStore((state) => state.setSettingsDraft)
-  const clearSettingsDraft = useOperatorChatStore((state) => state.clearSettingsDraft)
+  const preferences = useOperatorSettings(enabled && open)
+  const preferencesDenied = useAccessFailureLatch(preferences.query)
   const setOpen = useOperatorChatStore((state) => state.setOpen)
   const setHistoryOpen = useOperatorChatStore((state) => state.setHistoryOpen)
   const select = useOperatorChatStore((state) => state.select)
@@ -87,11 +91,14 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       const state = await getOperatorConversation(selectedId ?? '', { signal })
       return newer(queryClient.getQueryData<OperatorConversationState>(detailKey(selectedId ?? '')), state)
     }, refetchInterval: 3_000 })
-  useEffect(() => {
-    if (selectedId && selected.data?.settings && settingsDraft) clearSettingsDraft(selectedId, selected.data.settings)
-  }, [clearSettingsDraft, selected.data?.settings, selectedId, settingsDraft])
   const selectedDenied = useAccessFailureLatch(selected)
   const accessDenied = listDenied || selectedDenied
+  const pending = selectedId && !accessDenied && enabled && !sessionIsSwitching() ? readPendingOperatorMessage(selectedId) : {}
+  const setup = useOperatorChatSetup(enabled && open && !pending.command, preferences.query.data?.revision,
+    { ...(selectedId ? { conversationId: selectedId } : {}), ...(preferences.settings ? { harness: preferences.settings.harness } : {}) })
+  const retrySetup = useOperatorChatSetup(enabled && open && Boolean(pending.command) && !accessDenied, undefined,
+    pendingOperatorSetupTarget(selectedId, pending.command))
+  const shownSetup = pending.command ? retrySetup : setup
   const acceptState = useCallback((id: string, state: OperatorConversationState) => {
     if (deletedIds.current.has(id)) return
     const accepted = newer(queryClient.getQueryData<OperatorConversationState>(detailKey(id)), state)
@@ -243,18 +250,22 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
 
   if (!enabled || sessionIsSwitching()) return null
   const conversation = accessDenied ? undefined : selected.data
-  const settings = settingsDraft ?? conversation?.settings
+  const settings = preferencesDenied ? undefined : preferences.settings
+  const setupReady = setup.isSuccess && setup.data.status === 'configured' && setup.data.harness === settings?.harness
+    && Boolean(setup.data.configurationVersionId)
+  const retrySetupReady = retrySetup.isSuccess && retrySetup.data.status === 'configured'
+    && (!pending.command?.settings || retrySetup.data.harness === pending.command.settings.harness)
+  const settingsReady = Boolean(preferences.query.data) && !preferencesDenied && !preferences.form.isDirty && !preferences.form.isSaving && !preferences.form.uncertain
   const active = Boolean(conversation && (conversation.activeRequestId || !['idle', 'error'].includes(conversation.turnState)))
   const archived = conversation?.conversation.status === 'archived'
   const requestId = conversation?.activeRequestId
-  const pending = selectedId && !accessDenied ? readPendingOperatorMessage(selectedId) : {}
   const scopedSendError = send.variables?.id === selectedId && send.variables?.command.requestId === pending.command?.requestId
     && send.error instanceof Error ? send.error.message : undefined
   const sendError = preparationError && preparationError.id === selectedId ? preparationError.message
     : scopedSendError ?? pending.sendFailure
   const partialText = partial?.value && partial.conversationId === selectedId && partial.value.requestId === requestId
     ? Object.entries(partial.value.parts).filter(([id]) => !id.startsWith('thinking:')).map(([, text]) => text).join('\n\n') : ''
-  const thinkingText = settings?.showThinking && partial?.value && partial.conversationId === selectedId && partial.value.requestId === requestId
+  const thinkingText = conversation?.settings?.showThinking && partial?.value && partial.conversationId === selectedId && partial.value.requestId === requestId
     ? Object.entries(partial.value.parts).filter(([id]) => id.startsWith('thinking:')).map(([, text]) => text).join('\n\n') : ''
   const entries: OperatorConversationSummary[] = accessDenied ? [] : (list.data?.conversations ?? []).map((item) =>
     conversation?.conversation.id === item.conversationId && conversation.revision >= item.revision ? summarizeOperatorConversation(conversation) : item)
@@ -293,14 +304,14 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       await createConversation()
       return
     }
-    if (!selectedId || archived || active || accessDenied || pending.command || pending.error
+    if (!setupReady || !settingsReady || !selectedId || archived || active || accessDenied || pending.command || pending.error
       || reservations.current.has(selectedId) || (send.isPending && send.variables?.id === selectedId)) return
     const id = selectedId
     const generation = sessionGeneration()
     const epoch = identityEpoch()
     reservations.current.add(id); setPreparingId(id)
     try {
-      const command = await reserveOperatorMessage(id, content, window.location.pathname + window.location.search, settings)
+      const command = await reserveOperatorMessage(id, content, window.location.pathname + window.location.search, settings, setup.data?.configurationVersionId)
       if (!currentSession(generation) || epoch !== identityEpoch()) return
       setPreparationError(undefined)
       send.mutate({ id, command, generation, epoch })
@@ -360,6 +371,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
           {list.data?.hasMore ? <button type="button" className="operator-chat-load-more" disabled={list.isFetching} onClick={loadOlderChats}>{list.isFetching ? 'Loading…' : 'Load older chats'}</button> : null}
         </aside>
         <main className="operator-chat-main">
+          <OperatorSetupNotice data={shownSetup.data} checking={shownSetup.isFetching || shownSetup.isPending} failed={shownSetup.isError} onRetry={() => void shownSetup.refetch()} />
           {remove.error instanceof Error ? <Alert live tone="danger" title="Chat could not be deleted">{remove.error.message}</Alert> : null}
           {restore.error instanceof Error ? <Alert live tone="danger" title="Chat could not be restored">{restore.error.message}</Alert> : null}
           {create.error instanceof Error ? <Alert live tone="danger" title="Conversation could not be created">{create.error.message}</Alert> : null}
@@ -390,19 +402,29 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
                 {pending.error ? <Alert live tone="danger" title="Pending message unavailable">{pending.error}</Alert> : null}
                 {sendError ? <Alert live tone="danger" title="Message could not be sent">{sendError}</Alert> : null}
               </div>
-              {pending.command ? <Button disabled={send.isPending && send.variables?.id === selectedId} loading={send.isPending && send.variables?.id === selectedId} onClick={() => {
+              {pending.command ? <Button disabled={!retrySetupReady || (send.isPending && send.variables?.id === selectedId)} loading={send.isPending && send.variables?.id === selectedId} onClick={() => {
                 setPreparationError(undefined)
                 send.mutate({ id: conversation.conversation.id, command: pending.command!, generation: sessionGeneration(), epoch: identityEpoch() })
               }}>Retry pending message</Button> : null}
             </div> : null}
             <footer className="operator-chat-controls">
+              {preferences.query.isError ? <Alert tone={preferencesDenied ? 'danger' : 'warning'} title={preferencesDenied ? 'Operator settings access unavailable' : 'Could not refresh Operator settings'}
+                action={<Button size="sm" onClick={() => void preferences.query.refetch()}>Retry settings</Button>}>
+                {preferencesDenied ? 'Check your browser enrollment and permissions.' : preferences.query.data ? 'Last saved settings are still available.' : preferences.query.error.message}
+              </Alert> : null}
+              {preferences.form.isSaving ? <p role="status">Saving Operator settings…</p> : null}
+              {!preferences.form.isSaving && (preferences.form.isDirty || preferences.form.error || preferences.form.conflicted || preferences.form.uncertain) ? <div>
+                <SettingsFormFeedback form={preferences.form} />
+                <Button size="sm" disabled={preferences.form.isSaving || (preferences.form.conflicted && !preferences.form.uncertain)} onClick={() => void preferences.save()}>Retry settings save</Button>
+                {!preferences.form.uncertain ? <Button size="sm" disabled={preferences.form.isSaving} onClick={preferences.form.reset}>Discard settings changes</Button> : null}
+              </div> : null}
               {conversation.messages.length > 0 || conversation.hasEarlierMessages || conversation.activeRequestId || conversation.turnState !== 'idle' || connectionState !== 'connected' ? <div className="operator-chat-turn-actions">
                 <p role="status">{operatorTurnStatus(conversation, connectionState)}</p>
               </div> : null}
-              <OperatorComposer context={settings ? <OperatorComposerSettings value={settings} disabled={Boolean(pending.command) || preparingId === selectedId}
-                onChange={(value) => setSettingsDraft(conversation.conversation.id, value)} /> : undefined}
+              <OperatorComposer context={settings ? <OperatorComposerSettings value={settings} disabled={Boolean(pending.command) || preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain}
+                onChange={preferences.change} /> : undefined}
                 onNewChat={() => void createConversation()} conversationId={conversation.conversation.id}
-                sendDisabled={archived || active || preparingId === selectedId || Boolean(pending.error) || Boolean(pending.command)}
+                sendDisabled={!setupReady || !settingsReady || archived || active || preparingId === selectedId || Boolean(pending.error) || Boolean(pending.command)}
                 isSending={preparingId === selectedId || (send.isPending && send.variables?.id === selectedId)} onSubmit={submit}
                 onCancel={requestId && conversation.turnState !== 'canceling' ? () => cancel.mutate({ id: conversation.conversation.id, requestId, generation: sessionGeneration() }) : undefined} />
             </footer>

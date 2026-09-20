@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/server'
 import {
   HarnessMcpListInputSchema, HarnessMcpListResultSchema, HarnessMcpPlanInputSchema, HarnessMcpPlanResultSchema,
-  HarnessMcpPlanGetInputSchema, HarnessMcpPlanSchema,
+  HarnessMcpManagedInputSchema, HarnessMcpPlanGetInputSchema, HarnessMcpPlanSchema,
 } from '@graphql/contracts/management'
 import type { OperatorRequestContext } from '../types.js'
 import { operatorToolAvailable } from '../availability.js'
@@ -21,8 +21,13 @@ export function registerHarnessMcpTools(server: McpServer, context: OperatorRequ
     inputSchema: HarnessMcpPlanInputSchema, outputSchema: HarnessMcpPlanResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, (input) => invokeOperatorTool(context, 'harness_mcp_change_request', () => service.plan(context.principal, 'mcp', input)))
+  if (operatorToolAvailable(context, 'harness_mcp_managed_request')) server.registerTool('harness_mcp_managed_request', {
+    description: 'Request installation, removal, disabling, or enabling of the exact Operator MCP or read-only Linear MCP preset. Supply either installed or enabled, the native revision, and a stable commandId. A signed-in human applies it in Harness Settings. Safe Operator repairs preserve native tool and approval policies; a standard Linear endpoint can be explicitly converted to read-only. Customized and inherited entries cannot be changed here. This tool cannot approve or reconcile its own native writes.',
+    inputSchema: HarnessMcpManagedInputSchema, outputSchema: HarnessMcpPlanResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, (input) => invokeOperatorTool(context, 'harness_mcp_managed_request', () => service.planManaged(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'harness_mcp_change_get')) server.registerTool('harness_mcp_change_get', {
-    description: 'Read your own MCP change request. Pending requires human review; uncertain must be inspected, never resubmitted as a delivery retry.',
+    description: 'Read your own MCP change request. Pending requires human review. For uncertain writes, ask the signed-in owner to use Reconcile in MCP Settings. Refresh alone does not resolve them. Never resubmit an uncertain native write.',
     inputSchema: HarnessMcpPlanGetInputSchema, outputSchema: HarnessMcpPlanSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, (input) => invokeOperatorTool(context, 'harness_mcp_change_get', () => service.get(context.principal, input.planId)))

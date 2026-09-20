@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { ManagedAgentDefaultsSchema, AgentDefaultsUpdateResultSchema } from '@graphql/contracts/management'
 import {
   operatorChatSettings, DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, NativeHarnessEventSchema,
   type ExecutionResult, type NativeSessionReference,
@@ -16,6 +18,9 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
 import { FoundationSettingsManagementService } from '../src/modules/settings/management.js'
+import { buildApp } from '../src/app.js'
+import type { OperatorServices } from '../src/mcp/operator/types.js'
+import { DomainError } from '../src/modules/errors.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2603'
 
@@ -105,12 +110,13 @@ beforeEach(async () => {
   await applyApplicationMigrations(pool)
   access = new PostgresAccessService(pool)
   owner = (await access.issue({ name: 'chat owner', audience: 'operator',
-    grants: [{ actions: ['operator_chat:read', 'operator_chat:write', 'operator_chat:cancel', 'operator_chat:respond', 'settings:update'], scope: {} }],
+    grants: [{ actions: ['operator_chat:read', 'operator_chat:write', 'operator_chat:cancel', 'operator_chat:respond', 'settings:update', 'harnesses:read'], scope: {} }],
     expiresAt: new Date(Date.now() + 600_000) })).principal
   operators = new PostgresOperatorRepository(pool)
   repository = new PostgresOperatorConversationRepository(pool)
   manager = new ChatManager()
   authority = { current: (id) => access.currentOperator(id), assertConfiguration() {},
+    setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() }),
     prepare: async (_manager, configuration) => ({ agentId: configuration.operatorId, variables: {} }), release: async () => {} }
   chat = new OperatorChatService(repository, operators, () => manager, '/tmp/graphql-test-operator', authority)
 }, 30_000)
@@ -123,6 +129,62 @@ afterEach(async () => {
 })
 
 describe('Operator chat persistence and native binding', () => {
+  it('checks the Operator MCP setup without creating an Operator or a conversation', async () => {
+    expect(await chat.setup(owner)).toMatchObject({ harness: 'codex', status: 'configured' })
+    expect((await pool.query('select id from application_operators')).rowCount).toBe(0)
+    expect((await pool.query('select id from operator_conversations')).rowCount).toBe(0)
+  })
+  it('shares saved chat defaults with future sessions through authenticated MCP, preserving conflicts and denied callers', async () => {
+    const settings = new PostgresFoundationSettingsRepository(pool)
+    const commands = new PostgresCommandCoordinator(pool)
+    const service = new FoundationSettingsManagementService(settings, commands,
+      { qualifyConfiguration: async () => ({} as never) }, operators)
+    const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access, services: { settings: service, operatorChat: chat, commands } as unknown as OperatorServices } })
+    const clients: Client[] = []
+    try {
+      const address = await app.listen({ host: '127.0.0.1', port: 0 })
+      async function connect(actions: ManagementPrincipal['grants'][number]['actions']) {
+        const issued = await access.issue({ name: 'Settings parity', audience: 'operator', grants: [{ actions, scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
+        const client = new Client({ name: 'settings-parity', version: '1' }); clients.push(client)
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => issued.token } }))
+        return client
+      }
+      const client = await connect(['settings:read', 'settings:update', 'harnesses:read'])
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toContain('operator_mcp_setup_get')
+      const read = async () => ManagedAgentDefaultsSchema.parse((await client.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent)
+      const before = await read()
+      const input = { commandId: randomUUID(), expectedRevision: before.revision, value: { ...before.value,
+        operator: { ...before.value.operator, showThinking: true,
+          harness: { ...DEFAULT_HARNESS_DEFAULTS.codex, model: 'gpt-5.4', reasoningEffort: 'high', serviceTier: 'priority' } } } }
+      const accepted = AgentDefaultsUpdateResultSchema.parse((await client.callTool({ name: 'agent_defaults_update', arguments: input })).structuredContent)
+      expect(accepted.replayed).toBe(false)
+      expect((await read()).value.operator).toEqual(accepted.value.value.operator)
+      const conversation = await chat.create(owner)
+      expect((await chat.get(conversation.id, owner)).settings).toEqual({ harness: 'codex', model: 'gpt-5.4', reasoningEffort: 'high', serviceTier: 'priority', showThinking: true })
+      expect(AgentDefaultsUpdateResultSchema.parse((await client.callTool({ name: 'agent_defaults_update', arguments: input })).structuredContent).replayed).toBe(true)
+      expect((await client.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } })).isError).toBe(true)
+      expect((await client.callTool({ name: 'operator_mcp_setup_get', arguments: {} })).structuredContent).toMatchObject({ status: 'configured', harness: 'codex' })
+      const denied = await connect(['settings:read'])
+      expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_mcp_setup_get')
+      await expect(denied.callTool({ name: 'operator_mcp_setup_get', arguments: {} })).rejects.toThrow('not found')
+      await expect(denied.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } })).rejects.toThrow('not found')
+      expect((await read()).revision).toBe(accepted.value.revision)
+    } finally { for (const client of clients) await client.close(); await app.close() }
+  })
+
+  it('blocks an existing native session when its Operator MCP installation is removed', async () => {
+    const conversation = await chat.create(owner)
+    await chat.send(conversation.id, { requestId: 'before-removal', content: 'Hello' }, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+    const turns = manager.turns
+    authority.setup = async () => ({ harness: 'codex', status: 'setup_required', endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() })
+    authority.prepare = async () => { throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable Operator MCP first.', 409) }
+    await chat.send(conversation.id, { requestId: 'after-removal', content: 'Continue' }, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'error')
+    expect(manager.turns).toBe(turns)
+    expect((await chat.get(conversation.id, owner)).error).toContain('Install and enable')
+  })
   it('keeps sidebar order tied to messages, not background status reconciliation', async () => {
     const first = await chat.create(owner)
     const second = await chat.create(owner)

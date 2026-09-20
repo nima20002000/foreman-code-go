@@ -10,7 +10,7 @@ const states: Record<McpDetection['state'], { label: string; hint?: string; tone
   connected: { label: 'Connected', tone: 'success', icon: 'check' },
   not_detected: { label: 'Not set up', hint: 'App MCP was not found for this workspace.', tone: 'neutral', icon: 'plus' },
   misconfigured: { label: 'Needs attention', hint: 'The connection settings do not match this workspace.', tone: 'warning', icon: 'warning' },
-  status_unavailable: { label: 'Not verified', hint: 'Configured, but the connection could not be verified.', tone: 'info', icon: 'info' },
+  status_unavailable: { label: 'Setup found', hint: 'Native settings match. To verify live use, run a workflow that calls an App MCP tool, then check its completed tool activity in Runs.', tone: 'info', icon: 'info' },
   disabled: { label: 'Turned off', hint: 'App MCP is disabled in this provider’s configuration.', tone: 'neutral', icon: 'pause' },
   authentication_required: { label: 'Sign-in required', hint: 'The App MCP connection needs authentication.', tone: 'warning', icon: 'lock' },
   broken: { label: 'Cannot connect', hint: 'The last connection attempt failed.', tone: 'danger', icon: 'warning' },
@@ -53,8 +53,8 @@ export function McpConnectionCard({ workspaceId, harness, location, returnTo }: 
         : query.isFetching ? 'Checking the updated workspace folder.' : 'This report doesn’t match the workspace. Check again.'
         : state?.hint ?? (!result && query.isError ? 'Couldn’t check this connection. Try again.' : undefined)
   const check = <Button size="sm" className="mcp-check-button" loading={query.isFetching} loadingLabel="Checking…"
-    aria-label={`Check again for ${name}`} leading={<Icon name="refresh" size={15} />}
-    onClick={() => void refetch({ cancelRefetch: false })}>Check again</Button>
+    aria-label={`Check setup for ${name}`} leading={<Icon name="refresh" size={15} />}
+    onClick={() => void refetch({ cancelRefetch: false })}>Check setup</Button>
 
   return <article className="mcp-connection-card" aria-labelledby={headingId}>
     <div className="mcp-provider-heading">

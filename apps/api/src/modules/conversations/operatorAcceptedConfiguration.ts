@@ -1,0 +1,64 @@
+import { createHash, randomUUID } from 'node:crypto'
+import type pg from 'pg'
+import { applyOperatorChatSettings, OperatorConfigurationVersionSchema,
+  type HarnessConfiguration, type OperatorConfigurationVersion, type SendOperatorMessageRequest } from '@graphql/contracts'
+import { DomainError } from '../errors.js'
+
+type Queryable = Pick<pg.PoolClient, 'query'>
+async function version(query: Queryable, id: string): Promise<OperatorConfigurationVersion> {
+  const result = await query.query<{ record: unknown }>('select record from operator_configuration_versions where id=$1', [id])
+  if (!result.rows[0]) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'The selected Operator configuration no longer exists.', 409)
+  return OperatorConfigurationVersionSchema.parse(result.rows[0].record)
+}
+
+/** Full saved template, never generic per-provider defaults. This method does no writes. */
+export async function operatorMessageBase(query: Queryable, current: OperatorConfigurationVersion,
+  input: SendOperatorMessageRequest): Promise<OperatorConfigurationVersion> {
+  let selected = current
+  if (input.configurationVersionId) selected = await version(query, input.configurationVersionId)
+  else if (input.settings) {
+    const found = await query.query<{ record: unknown }>(`select c.record from application_operators o
+      join operator_configuration_versions c on c.id=o.current_configuration_version_id where o.id=$1`, [current.operatorId])
+    if (!found.rows[0]) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Saved Operator defaults are unavailable. Refresh Settings before sending.', 409)
+    selected = OperatorConfigurationVersionSchema.parse(found.rows[0].record)
+    // Pre-upgrade outbox commands have no explicit pin. Preserve their original
+    // same-harness conversation template when newer global defaults switched away.
+    if (selected.harness.harness !== input.settings.harness && current.harness.harness === input.settings.harness) selected = current
+  }
+  if (selected.operatorId !== current.operatorId) throw new DomainError('OPERATOR_CONFIGURATION_CONFLICT', 'The configuration belongs to a different Operator.', 409)
+  if (input.settings && input.settings.harness !== selected.harness.harness) {
+    throw new DomainError('OPERATOR_DEFAULTS_CHANGED', 'The saved Operator harness changed. Refresh its settings before reserving a new message; an existing command will not be rewritten.', 409)
+  }
+  return selected
+}
+
+/** Called only after the conversation lock, receipt comparison and idle admission check. */
+export async function acceptOperatorConfiguration(query: Queryable, current: OperatorConfigurationVersion,
+  input: SendOperatorMessageRequest, prior: { operator_configuration_version_id: string | null } | undefined,
+  suppliedHarness?: HarnessConfiguration, validate?: (configuration: OperatorConfigurationVersion) => void,
+): Promise<OperatorConfigurationVersion> {
+  if (prior) {
+    if (!prior.operator_configuration_version_id) throw new DomainError('OPERATOR_RETRY_CONFIGURATION_UNKNOWN',
+      'This older retry has no recorded execution configuration. Its payload is retained, but it cannot be relaunched with guessed permissions. Review the original request before sending a new message.', 409)
+    const accepted = await version(query, prior.operator_configuration_version_id)
+    if (accepted.operatorId !== current.operatorId) throw new DomainError('OPERATOR_CONFIGURATION_CONFLICT', 'The accepted configuration belongs to a different Operator.', 409)
+    validate?.(accepted)
+    return accepted
+  }
+  const base = await operatorMessageBase(query, current, input)
+  const harness = suppliedHarness ?? (input.settings ? applyOperatorChatSettings(base.harness, input.settings) : base.harness)
+  const showThinking = input.settings?.showThinking ?? base.showThinking ?? false
+  if (JSON.stringify(base.harness) === JSON.stringify(harness) && showThinking === (base.showThinking ?? false)) {
+    validate?.(base)
+    return base
+  }
+  const candidate = { ...base, harness, showThinking }
+  validate?.(candidate)
+  await query.query('select pg_advisory_xact_lock(hashtext($1))', ['application-operator'])
+  const latest = await query.query<{ version: number }>('select coalesce(max(version),0)+1 as version from operator_configuration_versions where operator_id=$1', [base.operatorId])
+  const accepted = OperatorConfigurationVersionSchema.parse({ ...candidate, id: randomUUID(), version: Number(latest.rows[0]!.version),
+    contentHash: `sha256:${createHash('sha256').update(JSON.stringify({ harness, showThinking })).digest('hex')}`, createdAt: new Date().toISOString() })
+  await query.query('insert into operator_configuration_versions (id,operator_id,version,record) values ($1,$2,$3,$4::jsonb)',
+    [accepted.id, accepted.operatorId, accepted.version, JSON.stringify(accepted)])
+  return accepted
+}

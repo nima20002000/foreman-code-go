@@ -80,6 +80,7 @@ beforeEach(async () => {
     return manager
   }, '/tmp/graphql-agent1-tests', {
     current: (id) => access.currentOperator(id), assertConfiguration() {},
+    setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() }),
     prepare: async (_manager, configuration) => ({ agentId: configuration.operatorId, variables: {} }),
     release: async (id) => { await pool.query(`update management_principals set revoked_at=coalesce(revoked_at,now())
       where id in (select principal_id from operator_chat_credentials where conversation_id=$1)`, [id]) },

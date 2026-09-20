@@ -66,6 +66,14 @@ describe('Nocturne interactions', () => {
     await userEvent.click(screen.getByRole('combobox'))
     expect(screen.getByRole('listbox')).toBeVisible()
   })
+  it('keeps the model picker closed when its label outside the field is clicked', async () => {
+    render(<Combobox label="Model" value="luna" options={[{ value: 'luna', label: 'Luna' }, { value: 'sol', label: 'Sol' }]} onValueChange={vi.fn()} />)
+    await userEvent.click(screen.getByText('Model'))
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('combobox', { name: 'Model' })).not.toHaveFocus()
+    await userEvent.click(screen.getByRole('combobox', { name: 'Model' }))
+    expect(screen.getByRole('listbox', { name: 'Model' })).toBeVisible()
+  })
   it('skips disabled options using ArrowDown', async () => {
     render(<HarnessPicker />)
     await userEvent.click(screen.getByRole('combobox')); await userEvent.keyboard('{ArrowDown}{Enter}')

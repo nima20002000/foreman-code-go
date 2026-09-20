@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify'
 import {
   HarnessOptionsInputSchema, HarnessOptionsResultSchema, HarnessMcpListInputSchema, HarnessMcpListResultSchema,
-  HarnessMcpPlanInputSchema, HarnessMcpPlanResultSchema, HarnessMcpPlansResultSchema, HarnessMcpPlanSchema,
-  HarnessMcpPlanGetInputSchema, HarnessMcpDecisionInputSchema,
+  HarnessMcpManagedInputSchema, HarnessMcpPlanInputSchema, HarnessMcpPlanResultSchema, HarnessMcpPlansResultSchema, HarnessMcpPlanSchema,
+  HarnessMcpPlanGetInputSchema, HarnessMcpDecisionInputSchema, HarnessMcpReconcileInputSchema,
   HarnessDirectoryBrowseInputSchema, HarnessDirectoryBrowseResultSchema,
   WorkspaceFolderUndoInputSchema, WorkspaceFolderUndoResultSchema,
   WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema, WorkspaceFolderRenameInputSchema, WorkspaceFolderRenameResultSchema,
@@ -42,8 +42,17 @@ export function registerHarnessSettingsRoutes(app: FastifyInstance, services: Op
   })
   app.post('/api/management/harnesses/mcp/plans', async (request) => HarnessMcpPlanResultSchema.parse(
     await settings().mcp.plan(requirePrincipal(request), 'http', HarnessMcpPlanInputSchema.parse(request.body))))
+  app.post('/api/management/harnesses/mcp/managed', async (request) => {
+    requireBrowserSession(request)
+    return HarnessMcpPlanSchema.parse(await settings().mcp.applyManaged(requirePrincipal(request), HarnessMcpManagedInputSchema.parse(request.body)))
+  })
   app.get('/api/management/harnesses/mcp/plans/:planId', async (request) => HarnessMcpPlanSchema.parse(
     await settings().mcp.get(requirePrincipal(request), HarnessMcpPlanGetInputSchema.parse(request.params).planId)))
+  app.post('/api/management/harnesses/mcp/reconcile', async (request) => {
+    requireBrowserSession(request)
+    return HarnessMcpPlanResultSchema.parse(await settings().mcp.reconcile(
+      requirePrincipal(request), HarnessMcpReconcileInputSchema.parse(request.body)))
+  })
   app.post('/api/management/harnesses/mcp/decision', async (request) => {
     requireBrowserSession(request)
     const input = HarnessMcpDecisionInputSchema.parse(request.body)

@@ -82,6 +82,9 @@ function AgentTemplateEditor({ role, section, onSectionChange, onBack, showBack 
         hint="Show or hide the chat interface. This does not revoke the Operator’s access."
         checked={draft.operator.uiEnabled} onChange={(event) => form.setDraft((value) => value && ({ ...value,
           operator: { ...value.operator, uiEnabled: event.target.checked } }))} /></div> : null}
+      {role === 'operator' && section === 'model' && current.configuration.harness === 'codex' ? <div className="settings-simple-row"><Checkbox label="Show thinking"
+        checked={draft.operator.showThinking ?? false} onChange={(event) => form.setDraft((value) => value && ({ ...value,
+          operator: { ...value.operator, showThinking: event.target.checked } }))} /></div> : null}
     </SettingsEditorLayout>
   </div>
 }
