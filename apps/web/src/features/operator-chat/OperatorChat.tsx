@@ -4,7 +4,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { OperatorConversationState, OperatorConversationSummary, SendOperatorMessageRequest, RespondOperatorInteractionRequest } from '@graphql/contracts'
 
 import { useConversationDraftStore } from '../conversations'
-import { ApprovalRequestSummary } from '../approvals/ApprovalRequestSummary'
 import { cancelOperatorTurn, createOperatorConversation, getOperatorConversation,
   sendOperatorMessage, respondOperatorInteraction } from '../../shared/api/client'
 import { deleteOperatorConversation, restoreOperatorConversation, listOperatorConversationSummaries } from '../../shared/api/operatorChatSummaries'
@@ -13,7 +12,6 @@ import { mergeOperatorActivity } from '../../shared/api/operatorActivity'
 import { useAccessFailureLatch } from '../../shared/api/useAccessFailureLatch'
 import { sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../shared/api/sessionBoundary'
 import { chatStoragePrefix, identityEpoch } from '../../shared/api/protectedChatStorage'
-import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
 import { ActionMenu, Alert, Badge, Button, EmptyState, Icon, IconButton, LoadingState } from '../../shared/ui/nocturne'
 import { isNarrowOperatorChat, operatorChatNarrowQuery, useOperatorChatStore } from './operatorChatStore'
 import { useOperatorChatVisibility } from './useOperatorChatVisibility'
@@ -21,6 +19,7 @@ import { acknowledgeOperatorMessage, assertOperatorMessageReserved, readPendingO
 import { projectOperatorText, type OperatorTextProjection } from './operatorTextProjection'
 import { newerOperatorSummaries, operatorNavigationStatus, operatorTurnStatus, summarizeOperatorConversation } from './operatorChatStatus'
 import { OperatorTranscript } from './OperatorTranscript'
+import { OperatorApprovalCard } from './OperatorApprovalCard'
 import { OperatorComposerSettings } from './OperatorComposerSettings'
 import { OperatorComposer } from './OperatorComposer'
 import { operatorResizeEdges, useOperatorChatResize } from './useOperatorChatResize'
@@ -369,20 +368,14 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
           {conversation ? <>
             {archived ? <Alert tone="warning" title="Conversation ended">This conversation is read-only. Its history and pending receipt remain available.</Alert> : null}
             <OperatorTranscript key={conversation.conversation.id} conversationId={conversation.conversation.id} messages={conversation.messages} activities={conversation.activities} activityNextCursor={conversation.activityNextCursor}
-              activeRequestId={requestId} parts={partial && partial.conversationId === selectedId ? partial.value?.parts : undefined} partialText={partialText} thinkingText={thinkingText} hasEarlierMessages={conversation.hasEarlierMessages} working={['starting', 'active'].includes(conversation.turnState) && !conversation.pendingInteraction} />
+              activeRequestId={requestId} parts={partial && partial.conversationId === selectedId ? partial.value?.parts : undefined} partialText={partialText} thinkingText={thinkingText} hasEarlierMessages={conversation.hasEarlierMessages} working={['starting', 'active'].includes(conversation.turnState) && !conversation.pendingInteraction}
+              approval={requestId && conversation.pendingInteraction ? <OperatorApprovalCard interaction={conversation.pendingInteraction}
+                disabled={Boolean(archived || (respond.isPending && respond.variables?.id === selectedId) || conversation.responseDelivery !== 'offered' || conversation.turnState === 'canceling')}
+                onSelect={(optionId) => respond.mutate({ id: conversation.conversation.id, generation: sessionGeneration(),
+                  input: { requestId, nativeRequestId: conversation.pendingInteraction!.turn.nativeRequestId!, optionId } })} /> : undefined} />
             {conversation.pendingInteraction || conversation.error || pending.error || pending.command || sendError
               || (respondVariables?.id === selectedId && respond.error) || (cancelVariables?.id === selectedId && cancel.error) ? <div className="operator-chat-decision-area">
-              {requestId && conversation.pendingInteraction ? <fieldset disabled={archived || (respond.isPending && respond.variables?.id === selectedId) || conversation.responseDelivery !== 'offered' || conversation.turnState === 'canceling'}>
-                <legend>Operator permission request</legend>
-                <ApprovalRequestSummary request={conversation.pendingInteraction.request} nativeRequestType={conversation.pendingInteraction.nativeRequestType} />
-                <details><summary>Technical details</summary><pre className="operator-chat-approval-details">{JSON.stringify(conversation.pendingInteraction.request, null, 2)}</pre></details>
-                {conversation.pendingInteraction.responseOptions.map((option) => <div key={option.optionId}>
-                  <Button variant={option.semantic === 'reject' || option.semantic === 'cancel' ? 'danger' : 'secondary'} aria-describedby={`${panelId}-scope-${encodeURIComponent(option.optionId)}`} onClick={() => respond.mutate({ id: conversation.conversation.id, generation: sessionGeneration(),
-                    input: { requestId, nativeRequestId: conversation.pendingInteraction!.turn.nativeRequestId!, optionId: option.optionId } })}>{option.label}</Button>
-                  <p id={`${panelId}-scope-${encodeURIComponent(option.optionId)}`}>{approvalOptionScope(option)}{option.scopeSummary ? ` ${option.scopeSummary}` : ''}</p>
-                </div>)}
-                {conversation.responseDelivery !== 'offered' ? <Alert tone="warning" title="Response delivery is being reconciled">It will not be sent twice.</Alert> : null}
-              </fieldset> : null}
+              {conversation.pendingInteraction && conversation.responseDelivery !== 'offered' ? <Alert tone="warning" title="Response delivery is being reconciled">It will not be sent twice.</Alert> : null}
               <div className="operator-chat-feedback">
                 {conversation.error ? <Alert live tone="danger" title="Operator turn failed">{conversation.error}</Alert> : null}
                 {respondVariables && respondVariables.id === selectedId && respondVariables.input.requestId === requestId && respond.error instanceof Error ? <Alert live tone="danger" title="Approval response failed">{respond.error.message}</Alert> : null}

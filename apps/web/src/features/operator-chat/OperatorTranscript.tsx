@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { Message, OperatorActivity } from '@graphql/contracts'
 import { Button, Icon } from '../../shared/ui/nocturne'
 import { useInfiniteQuery } from '@tanstack/react-query'
@@ -9,10 +9,11 @@ import { OperatorHistory } from './OperatorHistory'
 
 /** Follow new output only while the reader is at the end of the transcript. */
 export function OperatorTranscript({ messages, partialText, thinkingText = '', hasEarlierMessages = false, working = false,
-  conversationId, activities = [], activityNextCursor, activeRequestId, parts }: {
+  conversationId, activities = [], activityNextCursor, activeRequestId, parts, approval }: {
   messages: Message[]; partialText: string; thinkingText?: string; hasEarlierMessages?: boolean; working?: boolean;
   conversationId?: string; activities?: OperatorActivity[]; activityNextCursor?: string | null;
   activeRequestId?: string | null; parts?: Record<string, string>;
+  approval?: ReactNode;
 }) {
   const earlierActivity = useInfiniteQuery({
     queryKey: ['operator-chat', 'activity', conversationId ?? '', identityEpoch()],
@@ -37,7 +38,7 @@ export function OperatorTranscript({ messages, partialText, thinkingText = '', h
     if (!scroll) return
     if (followLatest.current) { scroll.scrollTop = scroll.scrollHeight; setHasNewContent(false) }
     else setHasNewContent(true)
-  }, [messages, partialText, thinkingText])
+  }, [messages, partialText, thinkingText, approval])
   useLayoutEffect(() => {
     if (typeof ResizeObserver === 'undefined' || !contentRef.current) return
     const observer = new ResizeObserver(() => {
@@ -63,6 +64,7 @@ export function OperatorTranscript({ messages, partialText, thinkingText = '', h
           renderMessages={(older) => <OperatorMessages messages={older} activities={entries} onBrowse={() => { followLatest.current = false }} />} /> : null}
         <OperatorMessages messages={messages} activities={entries} activeRequestId={activeRequestId} parts={parts}
           working={working} partialText={partialText} thinkingText={thinkingText} onBrowse={() => { followLatest.current = false }} />
+        {approval}
       </div>
     </div>
     {hasNewContent ? <Button size="sm" variant="secondary" className="operator-chat-jump" leading={<Icon name="down" size={14} />} onClick={jumpToLatest}>New output — Jump to latest</Button> : null}
