@@ -83,7 +83,9 @@ export class NativeCodexPlugins implements CodexPluginAdapter {
     if (current.revision !== reviewed.revision) throw new DomainError('REVISION_CONFLICT', 'The plugin source or native settings changed. Review the new details.', 409)
     await backupNativeUserFile(current.configuration.file, await readNativeUserFile(current.configuration.file))
     const result = await this.command(['plugin', action === 'install' ? 'add' : 'remove', pluginId, '--json'], signal, true)
-    if (result.exitCode !== 0) throw new DomainError('CODEX_PLUGIN_NATIVE_FAILED', 'Codex reported a failed plugin change. Reconcile the original request before another write.', 409)
+    // The persistent guardian terminates after its native child exits, so its
+    // exitCode can be null even when Codex emitted a complete acknowledgement.
+    if (result.exitCode !== 0 && result.exitCode !== null) throw new DomainError('CODEX_PLUGIN_NATIVE_FAILED', 'Codex reported a failed plugin change. Reconcile the original request before another write.', 409)
     try { return validatePluginMutation(JSON.parse(result.stdout), pluginId, action) }
     catch { throw new DomainError('CODEX_PLUGIN_RESULT_INVALID', 'Codex did not return a valid acknowledgement for this plugin.', 502) }
   }
