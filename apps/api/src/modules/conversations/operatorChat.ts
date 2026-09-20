@@ -1,11 +1,12 @@
 import { constants } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { access, mkdir, realpath } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 
 import {
   CodexSessionCompatibilitySchema, ConversationSchema, OperatorConversationStreamEventSchema, SendOperatorMessageRequestSchema,
   type NativeHarnessEvent, type OperatorActivityQuery, type OperatorConfigurationVersion, type OperatorConversationStreamEvent, type NativeSessionReference,
-  type ExecutionResult, type SendOperatorMessageRequest, type RespondOperatorInteractionRequest,
+  type ExecutionResult, type SendOperatorMessageRequest, type RespondOperatorInteractionRequest, type OperatorChatSetup,
 } from '@graphql/contracts'
 import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
 import type { OperatorConversationHistoryQuery } from '@graphql/contracts/operator-chat'
@@ -18,7 +19,7 @@ import { withFilesystemDeadline } from '../workspaces/filesystem.js'
 import { nativeCorrelation, PostgresOperatorConversationRepository, type ConversationRow } from './operatorChatRepository.js'
 import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { currentOperatorHistory, openCodeTurnEvents, operatorActivity } from './operatorActivity.js'
-import { nativeAssistantText } from './operatorText.js'
+import { completedNativeAssistantMessage, nativeAssistantText } from './operatorText.js'
 import { isOperatorReview } from './operatorReviewLifecycle.js'
 
 export { PostgresOperatorConversationRepository } from './operatorChatRepository.js'
@@ -64,6 +65,7 @@ export interface NativeManagerResolver {
 export interface OperatorChatAuthority {
   current(principalId: string): Promise<ManagementPrincipal>
   assertConfiguration(configuration: OperatorConfigurationVersion): void
+  setup(manager: NativeHarnessSessionManager, signal: AbortSignal): Promise<OperatorChatSetup>
   prepare(manager: NativeHarnessSessionManager, configuration: OperatorConfigurationVersion, conversationId: string,
     principalId: string, signal: AbortSignal): Promise<ChildProcessEnvironment>
   release(conversationId: string): Promise<void>
@@ -113,6 +115,7 @@ export class OperatorChatService {
   private reconciliation: Promise<void> | undefined
   private closing = false
   private shutdownTask: Promise<void> | undefined
+  private setupCheck: { configurationId: string; promise: Promise<OperatorChatSetup> } | undefined
 
   constructor(
     private readonly repository: PostgresOperatorConversationRepository,
@@ -137,6 +140,22 @@ export class OperatorChatService {
       CodexSessionCompatibilitySchema.parse({ configuration: configuration.harness, requiresResume: true })
     }
     this.authority.assertConfiguration(configuration)
+  }
+  async setup(principal: ManagementPrincipal): Promise<OperatorChatSetup> {
+    this.assertOpen(); requireAuthorization(principal, 'harnesses:read')
+    const configuration = await this.operators.inspectionConfiguration()
+    const configurationId = `${configuration.id}:${configuration.contentHash}`
+    if (this.setupCheck?.configurationId === configurationId) return this.setupCheck.promise
+    const check = (async () => {
+      const id = `operator-setup:${randomUUID()}`
+      const manager = this.managers(configuration, id)
+      try { return await this.authority.setup(manager, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)])) }
+      finally { try { await manager.dispose?.() } finally { this.managers.release?.(id) } }
+    })()
+    this.setupCheck = { configurationId, promise: check }
+    this.accepting.add(check)
+    void check.finally(() => { if (this.setupCheck?.promise === check) this.setupCheck = undefined; this.accepting.delete(check) }).catch(() => undefined)
+    return check
   }
   async assertAccess(id: string, principal: ManagementPrincipal, action: ManagementAction = 'operator_chat:read', includeDeleted = false) {
     requireAuthorization(principal, action)
@@ -185,6 +204,11 @@ export class OperatorChatService {
     return page
   }
 
+  async handoffHistory(principal: ManagementPrincipal, sourceConversationId?: string, before?: string) {
+    this.assertOpen(); requireAuthorization(principal, 'operator_handoff:read')
+    return this.repository.handoffHistory(principal.id, sourceConversationId, before)
+  }
+
   async activityPage(id: string, principal: ManagementPrincipal, input: Partial<OperatorActivityQuery>) {
     await this.assertAccess(id, principal)
     return this.repository.activity.page(id, input)
@@ -199,6 +223,12 @@ export class OperatorChatService {
     const safe = nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {})).value(change)
     const accepted = await this.repository.activity.append(id, requestId, safe)
     if (accepted) this.events.publish(id, 'activity', accepted)
+  }
+  private async recordAssistantMessage(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent) {
+    const message = completedNativeAssistantMessage(event, runtime.manager.harness)
+    if (message && await this.repository.appendAssistantMessage(id, requestId, message.id, message.text)) {
+      this.events.publish(id, 'message', { requestId, nativeMessageId: message.id })
+    }
   }
 
   send(id: string, value: SendOperatorMessageRequest, principal: ManagementPrincipal) {
@@ -219,42 +249,53 @@ export class OperatorChatService {
     }
     let configuration = await this.repository.configuration(row.operator_configuration_version_id)
     if (!configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Pinned Operator configuration was not found.', 409)
-    const harness = input.settings ? await this.repository.harnessForMessage(configuration, input) : configuration.harness
+    const harness = input.settings && !await this.repository.hasTurn(id, input.requestId)
+      ? await this.repository.harnessForMessage(configuration, input) : configuration.harness
     this.validate({ ...configuration, harness })
-    return this.control(id, async () => {
+    const fork = harness.harness !== row.harness && await this.repository.hasMessages(id)
+    const admit = () => this.control(id, async () => {
       this.assertOpen(); controller.signal.throwIfAborted()
       // Access ownership and execution authority are intentionally different for reviews.
       requireAuthorization(await this.authority.current(row.owner_principal_id!), 'operator_chat:write')
-      const begun = await this.repository.beginTurn(id, input, row.owner_principal_id!, input.settings ? harness : undefined)
+      const begun = fork
+        ? await this.repository.beginForkTurn(id, input, row.owner_principal_id!, harness)
+        : await this.repository.beginTurn(id, input, row.owner_principal_id!, input.settings ? harness : undefined)
       if (begun.replayed) return begun
+      const targetId = begun.state.conversation.id
       const acceptedId = begun.state.conversation.operatorConfigurationVersionId!
       if (acceptedId !== configuration!.id) {
-        try { await this.release(id) }
+        try { if (!fork) await this.release(id) }
         catch (error) {
-          await this.repository.finish(id, input.requestId, failure(error), undefined, true)
+          await this.repository.finish(targetId, input.requestId, failure(error), undefined, true)
           throw error
         }
         configuration = await this.repository.configuration(acceptedId)
         if (!configuration) throw new Error('Accepted Operator configuration disappeared.')
       }
       if (this.closing || controller.signal.aborted) {
-        await this.repository.finish(id, input.requestId, failure(new Error('Operator chat stopped before native submission.')), undefined, true)
+        await this.repository.finish(targetId, input.requestId, failure(new Error('Operator chat stopped before native submission.')), undefined, true)
         throw new DomainError('OPERATOR_CHAT_CLOSING', 'Operator chat stopped before submission; this request can be retried.', 503)
       }
       const taskController = new AbortController()
-      const promise = this.runTurn(id, input, configuration!, row.owner_principal_id!, taskController.signal)
-        .finally(() => { if (this.tasks.get(id)?.promise === promise) this.tasks.delete(id) })
-      this.tasks.set(id, { requestId: input.requestId, controller: taskController, promise })
+      const promise = this.runTurn(targetId, input, configuration!, row.owner_principal_id!, taskController.signal)
+        .finally(() => { if (this.tasks.get(targetId)?.promise === promise) this.tasks.delete(targetId) })
+      this.tasks.set(targetId, { requestId: input.requestId, controller: taskController, promise })
       void promise.catch(() => undefined) // The durable request remains fenced if error persistence itself fails.
       return begun
     })
+    return fork ? this.control(`operator-fork:${input.requestId}`, admit) : admit()
   }
 
   private async runtime(id: string, row: ConversationRow, configuration: OperatorConfigurationVersion, signal: AbortSignal): Promise<Runtime> {
     await this.assertReviewActive(id)
     signal.throwIfAborted()
     const existing = this.runtimes.get(id)
-    if (existing?.session) { existing.configuration = configuration; return existing }
+    if (existing?.session) {
+      if ((await this.authority.setup(existing.manager, signal)).status !== 'configured') {
+        throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable the graphql-operator MCP connection in the selected harness before chatting.', 409)
+      }
+      existing.configuration = configuration; return existing
+    }
     const runtime: Runtime = existing ?? { manager: this.managers(configuration, id) }
     runtime.configuration = configuration
     this.runtimes.set(id, runtime) // Includes managers still starting; shutdown must see them.
@@ -347,7 +388,7 @@ export class OperatorChatService {
       let submittedTurnId = row.active_native_turn_id
       const currentEvent = openCodeTurnEvents(runtime.session.nativeSessionId, () => submittedTurnId)
       for await (const event of runtime.manager.startTurn(runtime.session, {
-        prompt: `${input.content}${hint}`, clientCorrelationId: correlationId,
+        prompt: `${row.handoff_context && row.fork_request_id === input.requestId ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${input.content}${hint}`, clientCorrelationId: correlationId,
         onSubmitted: async (nativeTurnId) => {
           submittedTurnId = nativeTurnId
           // A callback is native evidence even when saving its identity fails.
@@ -389,6 +430,7 @@ export class OperatorChatService {
         submitted = true
         if (runtime.manager.harness === 'opencode' && !currentEvent(event)) continue
         await this.recordActivity(id, input.requestId, runtime, event)
+        await this.recordAssistantMessage(id, input.requestId, runtime, event)
         for (const delta of nativeAssistantText(event, partKinds)) this.events.publish(id, 'delta', { ...delta, requestId: input.requestId })
         if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
           const pending = await runtime.manager.pending(runtime.session, signal)
@@ -459,7 +501,10 @@ export class OperatorChatService {
       return
     }
     if (!await this.repository.submitted(id, requestId, history.nativeTurnId)) return
-    for (const event of currentOperatorHistory(history, runtime.manager.harness)) await this.recordActivity(id, requestId, runtime, event)
+    for (const event of currentOperatorHistory(history, runtime.manager.harness)) {
+      await this.recordActivity(id, requestId, runtime, event)
+      await this.recordAssistantMessage(id, requestId, runtime, event)
+    }
     const pending = history.pendingInteraction ?? history.pendingInteractions[0]
     await this.repository.pending(id, requestId, pending)
     if (history.terminalResult && !pending) {

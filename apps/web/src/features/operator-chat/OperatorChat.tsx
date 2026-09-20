@@ -6,6 +6,7 @@ import type { OperatorConversationState, OperatorConversationSummary, SendOperat
 import { useConversationDraftStore } from '../conversations'
 import { cancelOperatorTurn, createOperatorConversation, getOperatorConversation,
   sendOperatorMessage, respondOperatorInteraction } from '../../shared/api/client'
+import { ApiError } from '../../shared/api/client'
 import { deleteOperatorConversation, restoreOperatorConversation, listOperatorConversationSummaries } from '../../shared/api/operatorChatSummaries'
 import { subscribeOperatorChat, type OperatorChatConnection } from '../../shared/api/operatorChatStream'
 import { mergeOperatorActivity } from '../../shared/api/operatorActivity'
@@ -15,12 +16,18 @@ import { chatStoragePrefix, identityEpoch } from '../../shared/api/protectedChat
 import { ActionMenu, Alert, Badge, Button, EmptyState, Icon, IconButton, LoadingState } from '../../shared/ui/nocturne'
 import { isNarrowOperatorChat, operatorChatNarrowQuery, useOperatorChatStore } from './operatorChatStore'
 import { useOperatorChatVisibility } from './useOperatorChatVisibility'
-import { acknowledgeOperatorMessage, assertOperatorMessageReserved, readPendingOperatorMessage, recordOperatorMessageFailure, reserveOperatorMessage } from './operatorOutbox'
-import { projectOperatorText, type OperatorTextProjection } from './operatorTextProjection'
+import { useOperatorSettings } from './useOperatorSettings'
+import { useOperatorChatSetup } from '../../shared/api/operatorChatSetup'
+import { OperatorSetupNotice } from './OperatorSetupNotice'
+import { SettingsFormFeedback } from '../settings/SettingsFormActions'
+import { acknowledgeOperatorMessage, assertOperatorMessageReserved, discardDefinitivelyRejectedOperatorMessage,
+  readPendingOperatorMessage, recordOperatorMessageFailure, reserveOperatorMessage } from './operatorOutbox'
+import { projectOperatorActivity, projectOperatorText, type OperatorTextProjection } from './operatorTextProjection'
 import { newerOperatorSummaries, operatorNavigationStatus, operatorTurnStatus, summarizeOperatorConversation } from './operatorChatStatus'
 import { OperatorTranscript } from './OperatorTranscript'
 import { OperatorApprovalCard } from './OperatorApprovalCard'
 import { OperatorComposerSettings } from './OperatorComposerSettings'
+import { OperatorAccessPicker } from './OperatorAccessPicker'
 import { OperatorComposer } from './OperatorComposer'
 import { operatorResizeEdges, useOperatorChatResize } from './useOperatorChatResize'
 import './operatorChat.css'
@@ -41,18 +48,18 @@ function currentSession(generation: number): boolean {
 
 export function OperatorChat({ settingsWarning }: { settingsWarning?: string } = {}) {
   const enabled = useOperatorChatVisibility()
-  const { panelRef, size, grip } = useOperatorChatResize()
+  const { panelRef, size, grip, moveGrip } = useOperatorChatResize()
   const historyLimit = useRef(10)
   const creating = useRef(false)
   const deletedIds = useRef(new Set<string>())
   const [removed, setRemoved] = useState<{ id: string; title: string }>()
+  const [closing, setClosing] = useState(false)
   const queryClient = useQueryClient()
   const open = useOperatorChatStore((state) => state.open)
   const historyOpen = useOperatorChatStore((state) => state.historyOpen)
   const selectedId = useOperatorChatStore((state) => state.selectedConversationId)
-  const settingsDraft = useOperatorChatStore((state) => selectedId ? state.settingsDrafts[selectedId] : undefined)
-  const setSettingsDraft = useOperatorChatStore((state) => state.setSettingsDraft)
-  const clearSettingsDraft = useOperatorChatStore((state) => state.clearSettingsDraft)
+  const preferences = useOperatorSettings(enabled && open)
+  const setup = useOperatorChatSetup(enabled && open, preferences.query.data?.revision)
   const setOpen = useOperatorChatStore((state) => state.setOpen)
   const setHistoryOpen = useOperatorChatStore((state) => state.setHistoryOpen)
   const select = useOperatorChatStore((state) => state.select)
@@ -86,9 +93,6 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       const state = await getOperatorConversation(selectedId ?? '', { signal })
       return newer(queryClient.getQueryData<OperatorConversationState>(detailKey(selectedId ?? '')), state)
     }, refetchInterval: 3_000 })
-  useEffect(() => {
-    if (selectedId && selected.data?.settings && settingsDraft) clearSettingsDraft(selectedId, selected.data.settings)
-  }, [clearSettingsDraft, selected.data?.settings, selectedId, settingsDraft])
   const selectedDenied = useAccessFailureLatch(selected)
   const accessDenied = listDenied || selectedDenied
   const acceptState = useCallback((id: string, state: OperatorConversationState) => {
@@ -124,8 +128,10 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
     },
     onSuccess: async (result, input) => {
       if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
+      const targetId = result.state.conversation.id
+      let acknowledged = false
       try {
-        const acknowledged = await acknowledgeOperatorMessage(input.id, input.command.requestId)
+        acknowledged = await acknowledgeOperatorMessage(input.id, input.command.requestId)
         if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
         if (acknowledged) clearDraft(input.id, input.command.content)
       } catch (error) {
@@ -133,13 +139,15 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
         setPreparationError({ id: input.id, message: error instanceof Error ? error.message : 'The message receipt could not be saved.' })
       }
       refreshOutbox((value) => value + 1)
-      acceptState(input.id, result.state)
-      await invalidate(input.id)
+      acceptState(targetId, result.state)
+      if (targetId !== input.id && acknowledged) select(targetId)
+      await invalidate(targetId)
     },
     onError: async (error, input) => {
       if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
       try { await recordOperatorMessageFailure(input.id, input.command.requestId,
-        error instanceof Error ? error.message : 'Message delivery failed.') } catch { /* The current error remains visible. */ }
+        error instanceof Error ? error.message : 'Message delivery failed.', ApiError.is(error)
+          && ['INVALID_REQUEST', 'CONVERSATION_REVISION_CONFLICT'].includes(error.code)) } catch { /* The current error remains visible. */ }
       if (currentSession(input.generation) && input.epoch === identityEpoch()) refreshOutbox((value) => value + 1)
     },
     // A later 4xx cannot prove an earlier lost delivery was not accepted.
@@ -196,6 +204,14 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
     if (enabled && open) closeRef.current?.focus()
   }, [enabled, open])
   useEffect(() => {
+    if (!closing || open) return
+    const timer = window.setTimeout(() => {
+      setClosing(false)
+      window.requestAnimationFrame(() => launcherRef.current?.focus())
+    }, 180)
+    return () => window.clearTimeout(timer)
+  }, [closing, open])
+  useEffect(() => {
     if (typeof window.matchMedia !== 'function') return
     const media = window.matchMedia(operatorChatNarrowQuery)
     const change = () => { if (media.matches) setHistoryOpen(false) }
@@ -220,6 +236,9 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
             ...current, revision: Math.max(current.revision, Number(event.data.revision)),
             activities: mergeOperatorActivity(current.activities ?? [], [value]),
           } : current)
+          setPartial((current) => ({ conversationId: selectedId,
+            value: projectOperatorActivity(current?.conversationId === selectedId ? current.value : undefined,
+              state?.activeRequestId ?? null, value.requestId, value.id) }))
         } else if (event.type === 'delta') {
           setPartial((current) => ({ conversationId: selectedId,
             value: projectOperatorText(current?.conversationId === selectedId ? current.value : undefined, state?.activeRequestId ?? null, event.data) }))
@@ -242,7 +261,11 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
 
   if (!enabled || sessionIsSwitching()) return null
   const conversation = accessDenied ? undefined : selected.data
-  const settings = settingsDraft ?? conversation?.settings
+  const settings = preferences.settings
+  const pendingHandoff = Boolean(settings && conversation?.settings && settings.harness !== conversation.settings.harness
+    && (conversation.messages.length > 0 || conversation.hasEarlierMessages))
+  const setupReady = setup.isSuccess && setup.data.status === 'configured' && setup.data.harness === settings?.harness
+  const settingsReady = preferences.query.isSuccess && !preferences.form.isDirty && !preferences.form.isSaving && !preferences.form.uncertain
   const active = Boolean(conversation && (conversation.activeRequestId || !['idle', 'error'].includes(conversation.turnState)))
   const archived = conversation?.conversation.status === 'archived'
   const requestId = conversation?.activeRequestId
@@ -251,9 +274,11 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
     && send.error instanceof Error ? send.error.message : undefined
   const sendError = preparationError && preparationError.id === selectedId ? preparationError.message
     : scopedSendError ?? pending.sendFailure
+  const savedNativeMessages = new Set(conversation?.messages.filter((message) => message.requestId === requestId && message.nativeMessageId)
+    .map((message) => message.nativeMessageId))
   const partialText = partial?.value && partial.conversationId === selectedId && partial.value.requestId === requestId
-    ? Object.entries(partial.value.parts).filter(([id]) => !id.startsWith('thinking:')).map(([, text]) => text).join('\n\n') : ''
-  const thinkingText = settings?.showThinking && partial?.value && partial.conversationId === selectedId && partial.value.requestId === requestId
+    ? Object.entries(partial.value.parts).filter(([id]) => !id.startsWith('thinking:') && !savedNativeMessages.has(id)).map(([, text]) => text).join('\n\n') : ''
+  const thinkingText = conversation?.settings?.showThinking && partial?.value && partial.conversationId === selectedId && partial.value.requestId === requestId
     ? Object.entries(partial.value.parts).filter(([id]) => id.startsWith('thinking:')).map(([, text]) => text).join('\n\n') : ''
   const entries: OperatorConversationSummary[] = accessDenied ? [] : (list.data?.conversations ?? []).map((item) =>
     conversation?.conversation.id === item.conversationId && conversation.revision >= item.revision ? summarizeOperatorConversation(conversation) : item)
@@ -262,11 +287,12 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
   const liveConnection = connection && connection.id === selectedId ? connection.state : 'connecting'
   const connectionState = selected.isError || selected.failureCount > 0
     ? 'reconnecting' : liveConnection
+  const turnStatus = conversation ? operatorTurnStatus(conversation, connectionState) : ''
   const respondVariables = respond.variables
   const cancelVariables = cancel.variables
   const close = () => {
+    setClosing(true)
     setOpen(false)
-    window.requestAnimationFrame(() => launcherRef.current?.focus())
   }
   const showHistory = (next: boolean) => {
     setHistoryOpen(next)
@@ -292,14 +318,15 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       await createConversation()
       return
     }
-    if (!selectedId || archived || active || accessDenied || pending.command || pending.error
+    if (!setupReady || !settingsReady || !selectedId || archived || active || accessDenied || pending.command || pending.error
       || reservations.current.has(selectedId) || (send.isPending && send.variables?.id === selectedId)) return
     const id = selectedId
     const generation = sessionGeneration()
     const epoch = identityEpoch()
     reservations.current.add(id); setPreparingId(id)
     try {
-      const command = await reserveOperatorMessage(id, content, window.location.pathname + window.location.search, settings)
+      const command = await reserveOperatorMessage(id, content, window.location.pathname + window.location.search, settings,
+        pendingHandoff ? conversation.revision : undefined)
       if (!currentSession(generation) || epoch !== identityEpoch()) return
       setPreparationError(undefined)
       send.mutate({ id, command, generation, epoch })
@@ -318,7 +345,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
     void list.refetch()
   }
   return <div className="operator-chat-root">
-    {open ? <section ref={panelRef} style={size} id={panelId} className="operator-chat" role="dialog" aria-modal={false} aria-label="Operator chat"
+    {open || closing ? <section ref={panelRef} style={size} id={panelId} className="operator-chat" data-state={open ? 'open' : 'closing'} role="dialog" aria-modal={false} aria-label="Operator chat" aria-hidden={closing} inert={closing}
       onKeyDown={(event) => {
         if (event.key !== 'Escape') return
         event.preventDefault(); event.stopPropagation()
@@ -332,6 +359,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       <div className="operator-chat-navigation" data-history-open={historyOpen}>
         <IconButton className="operator-history-toggle" ref={historyTriggerRef} label={historyOpen ? 'Collapse history' : 'Open history'} variant="ghost"
           aria-expanded={historyOpen} aria-controls={historyId} onClick={() => showHistory(!historyOpen)}><Icon name="menu" /></IconButton>
+        <button type="button" className="operator-chat-move" title="Drag to move Operator chat" {...moveGrip}><span aria-hidden="true" /></button>
         <IconButton ref={closeRef} label="Close Operator chat" variant="ghost" className="operator-chat-close" onClick={close}><Icon name="close" /></IconButton>
       </div>
       <div className={`operator-chat-body${historyOpen ? ' operator-chat-history-open' : ''}`}>
@@ -359,6 +387,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
           {list.data?.hasMore ? <button type="button" className="operator-chat-load-more" disabled={list.isFetching} onClick={loadOlderChats}>{list.isFetching ? 'Loading…' : 'Load older chats'}</button> : null}
         </aside>
         <main className="operator-chat-main">
+          <OperatorSetupNotice data={setup.data} checking={setup.isFetching || setup.isPending} failed={setup.isError} onRetry={() => void setup.refetch()} />
           {remove.error instanceof Error ? <Alert live tone="danger" title="Chat could not be deleted">{remove.error.message}</Alert> : null}
           {restore.error instanceof Error ? <Alert live tone="danger" title="Chat could not be restored">{restore.error.message}</Alert> : null}
           {create.error instanceof Error ? <Alert live tone="danger" title="Conversation could not be created">{create.error.message}</Alert> : null}
@@ -367,8 +396,11 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
           {selected.isError ? <Alert live tone="danger" title={conversation ? 'Conversation refresh failed' : 'Conversation could not be loaded'} action={<Button size="sm" disabled={selected.isFetching} loading={selected.isFetching} onClick={() => void selected.refetch()}>Retry conversation</Button>}>{conversation ? 'Previously loaded messages are still shown.' : 'Try the request again.'}</Alert> : null}
           {conversation ? <>
             {archived ? <Alert tone="warning" title="Conversation ended">This conversation is read-only. Its history and pending receipt remain available.</Alert> : null}
+            {conversation.handoff ? <p className="operator-chat-handoff">Continued from <button type="button" onClick={() => select(conversation.handoff!.parentConversationId)}>{conversation.handoff.sourceHarness} chat</button>
+              {conversation.handoff.omittedMessages ? ` · ${conversation.handoff.omittedMessages} older messages omitted from agent context` : ''}</p> : null}
             <OperatorTranscript key={conversation.conversation.id} conversationId={conversation.conversation.id} messages={conversation.messages} activities={conversation.activities} activityNextCursor={conversation.activityNextCursor}
               activeRequestId={requestId} parts={partial && partial.conversationId === selectedId ? partial.value?.parts : undefined} partialText={partialText} thinkingText={thinkingText} hasEarlierMessages={conversation.hasEarlierMessages} working={['starting', 'active'].includes(conversation.turnState) && !conversation.pendingInteraction}
+              timeline={partial && partial.conversationId === selectedId ? partial.value : undefined}
               approval={requestId && conversation.pendingInteraction ? <OperatorApprovalCard interaction={conversation.pendingInteraction}
                 disabled={Boolean(archived || (respond.isPending && respond.variables?.id === selectedId) || conversation.responseDelivery !== 'offered' || conversation.turnState === 'canceling')}
                 onSelect={(optionId) => respond.mutate({ id: conversation.conversation.id, generation: sessionGeneration(),
@@ -383,19 +415,35 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
                 {pending.error ? <Alert live tone="danger" title="Pending message unavailable">{pending.error}</Alert> : null}
                 {sendError ? <Alert live tone="danger" title="Message could not be sent">{sendError}</Alert> : null}
               </div>
-              {pending.command ? <Button disabled={send.isPending && send.variables?.id === selectedId} loading={send.isPending && send.variables?.id === selectedId} onClick={() => {
+              {pending.command ? <Button disabled={!setupReady || (send.isPending && send.variables?.id === selectedId)} loading={send.isPending && send.variables?.id === selectedId} onClick={() => {
                 setPreparationError(undefined)
                 send.mutate({ id: conversation.conversation.id, command: pending.command!, generation: sessionGeneration(), epoch: identityEpoch() })
               }}>Retry pending message</Button> : null}
+              {pending.command && pending.definitiveFailure ? <Button variant="ghost" onClick={() => {
+                void discardDefinitivelyRejectedOperatorMessage(conversation.conversation.id, pending.command!.requestId).then((discarded) => {
+                  if (discarded) { send.reset(); setPreparationError(undefined); refreshOutbox((value) => value + 1) }
+                })
+              }}>Clear rejected attempt and keep draft</Button> : null}
             </div> : null}
             <footer className="operator-chat-controls">
-              {conversation.messages.length > 0 || conversation.hasEarlierMessages || conversation.activeRequestId || conversation.turnState !== 'idle' || connectionState !== 'connected' ? <div className="operator-chat-turn-actions">
-                <p role="status">{operatorTurnStatus(conversation, connectionState)}</p>
+              {pendingHandoff ? <p className="operator-chat-handoff" role="status">Your next message starts {settings!.harness === 'opencode' ? 'an OpenCode' : 'a Codex'} chat with prior conversation context.</p> : null}
+              {preferences.query.isError ? <Alert tone="danger" title="Operator settings unavailable" action={<Button size="sm" onClick={() => void preferences.query.refetch()}>Retry settings</Button>}>{preferences.query.error.message}</Alert> : null}
+              {preferences.form.isSaving ? <p role="status">Saving Operator settings…</p> : null}
+              {!preferences.form.isSaving && (preferences.form.isDirty || preferences.form.error || preferences.form.conflicted || preferences.form.uncertain) ? <div>
+                <SettingsFormFeedback form={preferences.form} />
+                <Button size="sm" disabled={preferences.form.isSaving || (preferences.form.conflicted && !preferences.form.uncertain)} onClick={() => void preferences.save()}>Retry settings save</Button>
+                {!preferences.form.uncertain ? <Button size="sm" disabled={preferences.form.isSaving} onClick={preferences.form.reset}>Discard settings changes</Button> : null}
               </div> : null}
-              <OperatorComposer context={settings ? <OperatorComposerSettings value={settings} disabled={Boolean(pending.command) || preparingId === selectedId}
-                onChange={(value) => setSettingsDraft(conversation.conversation.id, value)} /> : undefined}
+              {turnStatus && (conversation.messages.length > 0 || conversation.hasEarlierMessages || conversation.activeRequestId || conversation.turnState !== 'idle' || connectionState !== 'connected') ? <div className="operator-chat-turn-actions">
+                <p role="status">{turnStatus}</p>
+              </div> : null}
+              <OperatorComposer context={settings ? <OperatorComposerSettings value={settings} disabled={Boolean(pending.command) || preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain || preferences.query.isError}
+                onChange={preferences.change} /> : undefined}
+                access={preferences.harness ? <OperatorAccessPicker value={preferences.harness} disabled={preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain || preferences.query.isError}
+                  saving={preferences.form.isSaving} saveError={preferences.form.error}
+                  onChange={preferences.changeAccess} /> : undefined}
                 onNewChat={() => void createConversation()} conversationId={conversation.conversation.id}
-                sendDisabled={archived || active || preparingId === selectedId || Boolean(pending.error) || Boolean(pending.command)}
+                sendDisabled={!setupReady || !settingsReady || archived || active || preparingId === selectedId || Boolean(pending.error) || Boolean(pending.command)}
                 isSending={preparingId === selectedId || (send.isPending && send.variables?.id === selectedId)} onSubmit={submit}
                 onCancel={requestId && conversation.turnState !== 'canceling' ? () => cancel.mutate({ id: conversation.conversation.id, requestId, generation: sessionGeneration() }) : undefined} />
             </footer>
@@ -405,7 +453,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       {removed ? <div className="operator-chat-undo" role="status">Chat deleted. <Button size="sm" variant="ghost" disabled={restore.isPending}
         onClick={() => restore.mutate({ id: removed.id, generation: sessionGeneration() })}>Undo</Button></div> : null}
     </section> : null}
-    <IconButton ref={launcherRef} className="operator-chat-launcher" variant="primary" label={attention.length ? `Open Operator chat, ${attention.length} conversation${attention.length === 1 ? '' : 's'} need your decision` : 'Open Operator chat'} hidden={open}
+    <IconButton ref={launcherRef} className="operator-chat-launcher" variant="primary" label={attention.length ? `Open Operator chat, ${attention.length} conversation${attention.length === 1 ? '' : 's'} need your decision` : 'Open Operator chat'} hidden={open || closing}
       aria-expanded={open} aria-controls={open ? panelId : undefined} aria-haspopup="dialog"
       aria-description={settingsWarning ?? (list.isError ? 'Conversation status may be stale.' : undefined)}
       title={settingsWarning ?? (list.isError ? 'Conversation status may be stale' : 'Open Operator chat')}

@@ -1,6 +1,11 @@
 import type { ManagementAction, OperatorToolName } from '@graphql/contracts/management'
 
 export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; action: ManagementAction }> = [
+  { name: 'operator_mcp_setup_get', action: 'harnesses:read' },
+  { name: 'operator_chat_create', action: 'operator_chat:write' },
+  { name: 'operator_chat_get', action: 'operator_chat:read' },
+  { name: 'operator_chat_send', action: 'operator_chat:write' },
+  { name: 'operator_handoff_history_get', action: 'operator_handoff:read' },
   { name: 'workspace_folders_list', action: 'workspace_locations:read' },
   { name: 'workspace_folder_undo', action: 'workspace_locations:provision' },
   { name: 'workspace_folders_delete', action: 'workspace_locations:provision' },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { nativeAssistantText } from '../src/modules/conversations/operatorText.js'
+import { completedNativeAssistantMessage, nativeAssistantText } from '../src/modules/conversations/operatorText.js'
 
 describe('operator thinking presentation', () => {
   it('keeps provider reasoning summaries separate from assistant response text', () => {
@@ -9,5 +9,14 @@ describe('operator thinking presentation', () => {
     expect(nativeAssistantText({ sequence: 2, type: 'message.part.updated', occurredAt: new Date().toISOString(),
       payload: { part: { id: 'r2', type: 'reasoning', text: 'Checking the result.' } } }))
       .toEqual([{ partId: 'thinking:r2', text: 'Checking the result.', mode: 'replace' }])
+  })
+  it('persists completed Codex commentary but lets OpenCode persist its final message once', () => {
+    const occurredAt = new Date().toISOString()
+    expect(completedNativeAssistantMessage({ sequence: 3, type: 'item.completed', occurredAt,
+      payload: { item: { id: 'commentary-1', type: 'agentMessage', text: 'Checking the folder.' } } }, 'codex'))
+      .toEqual({ id: 'commentary-1', text: 'Checking the folder.' })
+    expect(completedNativeAssistantMessage({ sequence: 4, type: 'message.part.updated', occurredAt,
+      payload: { part: { id: 'part-1', messageID: 'message-1', type: 'text', text: 'Done.', time: { end: 1 } } } }, 'opencode'))
+      .toBeUndefined()
   })
 })

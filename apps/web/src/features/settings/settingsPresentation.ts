@@ -3,7 +3,7 @@ import type { HarnessSettingsSection, SettingsAgentRole } from '@graphql/contrac
 
 export const agentRoleOrder: readonly SettingsAgentRole[] = ['operator', 'orchestrator', 'coder']
 export const rolePresentation: Record<SettingsAgentRole, { title: string; description: string; scope: string }> = {
-  operator: { title: 'Operator', description: 'Your app-wide assistant.', scope: 'Applies to new Operator conversations. Active conversations keep their accepted settings.' },
+  operator: { title: 'Operator', description: 'Your app-wide assistant.', scope: 'Shared with Operator chat. Changes apply to future chats and the next message; running responses keep their accepted settings.' },
   orchestrator: { title: 'Orchestrator', description: 'Coordinates work and reviews requests.', scope: 'Used when creating Orchestrator agents. Existing agents and runs do not change.' },
   coder: { title: 'Coder', description: 'Carries out tasks in your workflows.', scope: 'Used when creating Coder agents. Existing agents and runs do not change.' },
 }

@@ -16,6 +16,7 @@ function fixture() {
   const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: configuration.operatorId })
   const chat = new OperatorChatService(memory.repository, {} as PostgresOperatorRepository, () => manager, '/workspace/project', {
     current: async () => operator(), assertConfiguration() {},
+    setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() }),
     prepare: async () => ({ agentId: configuration.operatorId, variables: {} }), release: async () => {},
   })
   return { ...memory, server, manager, chat, owner: operator() }

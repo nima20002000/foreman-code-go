@@ -6,13 +6,15 @@ import { identityEpoch } from '../../shared/api/protectedChatStorage'
 import { getOperatorActivity, mergeOperatorActivity } from '../../shared/api/operatorActivity'
 import { OperatorMessages } from './OperatorMessages'
 import { OperatorHistory } from './OperatorHistory'
+import type { OperatorTextProjection } from './operatorTextProjection'
 
 /** Follow new output only while the reader is at the end of the transcript. */
 export function OperatorTranscript({ messages, partialText, thinkingText = '', hasEarlierMessages = false, working = false,
-  conversationId, activities = [], activityNextCursor, activeRequestId, parts, approval }: {
+  conversationId, activities = [], activityNextCursor, activeRequestId, parts, timeline, approval }: {
   messages: Message[]; partialText: string; thinkingText?: string; hasEarlierMessages?: boolean; working?: boolean;
   conversationId?: string; activities?: OperatorActivity[]; activityNextCursor?: string | null;
   activeRequestId?: string | null; parts?: Record<string, string>;
+  timeline?: OperatorTextProjection;
   approval?: ReactNode;
 }) {
   const earlierActivity = useInfiniteQuery({
@@ -38,7 +40,7 @@ export function OperatorTranscript({ messages, partialText, thinkingText = '', h
     if (!scroll) return
     if (followLatest.current) { scroll.scrollTop = scroll.scrollHeight; setHasNewContent(false) }
     else setHasNewContent(true)
-  }, [messages, partialText, thinkingText, approval])
+  }, [messages, partialText, thinkingText, timeline, approval])
   useLayoutEffect(() => {
     if (typeof ResizeObserver === 'undefined' || !contentRef.current) return
     const observer = new ResizeObserver(() => {
@@ -63,7 +65,7 @@ export function OperatorTranscript({ messages, partialText, thinkingText = '', h
         {hasEarlierMessages ? <OperatorHistory recentMessages={messages} onBrowse={() => { followLatest.current = false }}
           renderMessages={(older) => <OperatorMessages messages={older} activities={entries} onBrowse={() => { followLatest.current = false }} />} /> : null}
         <OperatorMessages messages={messages} activities={entries} activeRequestId={activeRequestId} parts={parts}
-          working={working} partialText={partialText} thinkingText={thinkingText} onBrowse={() => { followLatest.current = false }} />
+          timeline={timeline} working={working} partialText={partialText} thinkingText={thinkingText} onBrowse={() => { followLatest.current = false }} />
         {approval}
       </div>
     </div>

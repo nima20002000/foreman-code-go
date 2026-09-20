@@ -124,11 +124,11 @@ export function operatorToolRequirements(name: OperatorToolName): Requirement[] 
   const entry = OPERATOR_TOOL_ACTIONS.find((item) => item.name === name)!
   const extended = extensions[name]
   let scope: ScopeKind = extended?.scope ?? 'resource'
-  if (['harness_list','harness_get','harness_defaults_update','agent_defaults_get','agent_defaults_update','workflow_defaults_get','workflow_defaults_update','workspace_defaults_get','workspace_defaults_update','workspace_create'].includes(name)) scope = 'global'
+  if (['harness_list','harness_get','harness_defaults_update','agent_defaults_get','agent_defaults_update','workflow_defaults_get','workflow_defaults_update','workspace_defaults_get','workspace_defaults_update','workspace_create','operator_chat_create','operator_chat_get','operator_chat_send','operator_handoff_history_get'].includes(name)) scope = 'global'
   if (['workflow_create','workspace_get','workspace_update','workspace_archive','workspace_location_validate','workspace_location_set','agent_get'].includes(name)) scope = 'workspace'
   if (name === 'run_start') scope = 'workflow'
   if (name === 'operator_get_capabilities') scope = 'caller'
-  if (['harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_change_get'].includes(name)) scope = 'global'
+  if (['operator_mcp_setup_get', 'harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_change_get'].includes(name)) scope = 'global'
   if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) scope = 'global'
   const result: Requirement[] = [{action:entry.action,scope}]
   if (name === 'workspace_folders_list') result.push({action:'harnesses:read',scope:'global'})
@@ -168,6 +168,8 @@ function intersect(left: ManagementScope, right: ManagementScope): ManagementSco
 export function operatorToolAvailable(context: OperatorRequestContext, name: OperatorToolName, resource?: AuthorizedResource): boolean {
   if (!OPERATOR_TOOL_ACTIONS.some((entry)=>entry.name===name)) return false
   const service = context.services
+  if ((name === 'operator_mcp_setup_get' || name.startsWith('operator_chat_') || name === 'operator_handoff_history_get')
+    && !service.operatorChat) return false
   if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name) && !service.harnessSettings) return false
   if (['harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_change_get'].includes(name) && !service.harnessSettings) return false
   if (name.startsWith('interaction_') && !service.interactions) return false

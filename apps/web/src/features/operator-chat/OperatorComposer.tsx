@@ -2,8 +2,8 @@ import { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Icon, IconButton } from '../../shared/ui/nocturne'
 import { useConversationDraftStore } from '../conversations'
 
-export function OperatorComposer({ conversationId, context, sendDisabled = false, isSending = false, onSubmit, onNewChat, onCancel }: {
-  conversationId: string; context?: ReactNode; sendDisabled?: boolean; isSending?: boolean;
+export function OperatorComposer({ conversationId, context, access, sendDisabled = false, isSending = false, onSubmit, onNewChat, onCancel }: {
+  conversationId: string; context?: ReactNode; access?: ReactNode; sendDisabled?: boolean; isSending?: boolean;
   onSubmit(content: string): void; onNewChat(): void; onCancel?: () => void;
 }) {
   const value = useConversationDraftStore((state) => state.drafts[conversationId] ?? '')
@@ -47,6 +47,7 @@ export function OperatorComposer({ conversationId, context, sendDisabled = false
       }} />
     <div className="operator-composer-toolbar">
       <IconButton label="New chat" variant="ghost" onClick={onNewChat} disabled={isSending}><Icon name="plus" size={17} /></IconButton>
+      {access}
       <div className="operator-composer-model">{context}</div>
       {onCancel ? <IconButton label="Stop response" onClick={onCancel} className="operator-composer-send"><Icon name="stop" size={15} /></IconButton>
         : <IconButton label="Send message" type="submit" disabled={cannotSend} className="operator-composer-send" loading={isSending}><Icon name="arrow" className="operator-send-arrow" size={17} /></IconButton>}

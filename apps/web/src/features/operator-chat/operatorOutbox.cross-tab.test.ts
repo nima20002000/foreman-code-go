@@ -113,6 +113,30 @@ describe('F12: cross-tab durable Operator reservations', () => {
     expect(first.readPendingOperatorMessage('conversation-one')).toEqual({})
   })
 
+  it('clears only a definitive contract rejection so a fresh fork revision can be reserved', async () => {
+    const outbox = await tab()
+    const rejected = await outbox.reserveOperatorMessage('conversation-one', 'Continue.', '/chat', undefined, 4)
+    await outbox.recordOperatorMessageFailure('conversation-one', rejected.requestId, 'The request does not match its shared contract.')
+    expect(outbox.readPendingOperatorMessage('conversation-one').definitiveFailure).toBe(true)
+    expect(await outbox.discardDefinitivelyRejectedOperatorMessage('conversation-one', rejected.requestId)).toBe(true)
+    const fresh = await outbox.reserveOperatorMessage('conversation-one', 'Continue.', '/chat', undefined, 5)
+    expect(fresh.requestId).not.toBe(rejected.requestId)
+    expect(fresh.forkExpectedRevision).toBe(5)
+    await outbox.recordOperatorMessageFailure('conversation-one', fresh.requestId, 'Network outcome unknown.')
+    expect(await outbox.discardDefinitivelyRejectedOperatorMessage('conversation-one', fresh.requestId)).toBe(false)
+    expect(outbox.readPendingOperatorMessage('conversation-one').command?.requestId).toBe(fresh.requestId)
+  })
+
+  it('removes the clear option if a later retry might have been accepted', async () => {
+    const outbox = await tab()
+    const command = await outbox.reserveOperatorMessage('conversation-one', 'Continue.', '/chat')
+    await outbox.recordOperatorMessageFailure('conversation-one', command.requestId, 'The request does not match its shared contract.', true)
+    expect(outbox.readPendingOperatorMessage('conversation-one').definitiveFailure).toBe(true)
+    await outbox.recordOperatorMessageFailure('conversation-one', command.requestId, 'Connection lost after retry.')
+    expect(outbox.readPendingOperatorMessage('conversation-one').definitiveFailure).toBeUndefined()
+    expect(await outbox.discardDefinitivelyRejectedOperatorMessage('conversation-one', command.requestId)).toBe(false)
+  })
+
   it('does not show a failed request reason after enrollment rotation', async () => {
     const first = await tab()
     const command = await first.reserveOperatorMessage('conversation-one', 'Check the status.', '/original')

@@ -31,6 +31,18 @@ function hash(value: HarnessConfiguration) { return `sha256:${createHash('sha256
 export class PostgresOperatorRepository {
   constructor(private readonly pool: pg.Pool) {}
 
+  /** Read-only inspection must not create an Operator before a conversation exists. */
+  async inspectionConfiguration(): Promise<OperatorConfigurationVersion> {
+    const found = await this.pool.query<{ record: unknown }>(
+      `select c.record from application_operators o join operator_configuration_versions c
+       on c.id=o.current_configuration_version_id where o.id=$1`, [OPERATOR_ID])
+    if (found.rows[0]) return OperatorConfigurationVersionSchema.parse(found.rows[0].record)
+    const defaults = (await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults()).value.operator
+    return OperatorConfigurationVersionSchema.parse({ id: `${OPERATOR_ID}-inspection`, operatorId: OPERATOR_ID, version: 1,
+      harness: defaults.harness, showThinking: defaults.showThinking ?? false, contentHash: hash(defaults.harness),
+      createdAt: new Date().toISOString() })
+  }
+
   async ensure(supplied?: pg.ClientBase): Promise<{ operator: OperatorAgent; configuration: OperatorConfigurationVersion }> {
     return inTransaction(this.pool, supplied, (client) => this.ensureWithClient(client))
   }
@@ -45,10 +57,11 @@ export class PostgresOperatorRepository {
       return { operator: OperatorAgentSchema.parse(found.rows[0].record), configuration: OperatorConfigurationVersionSchema.parse(found.rows[0].configuration) }
     }
     const createdAt = new Date().toISOString()
-    const harness = (await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults(client)).value.operator.harness
+    const defaults = (await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults(client)).value.operator
+    const harness = defaults.harness
     const configuration = OperatorConfigurationVersionSchema.parse({
       id: `${OPERATOR_ID}-config-v1-${randomUUID()}`, operatorId: OPERATOR_ID, version: 1,
-      harness, contentHash: hash(harness), createdAt,
+      harness, showThinking: defaults.showThinking ?? false, contentHash: hash(harness), createdAt,
     })
     const operator = OperatorAgentSchema.parse({
       id: OPERATOR_ID, role: 'operator', name: 'Operator', currentConfigurationVersionId: configuration.id,
@@ -71,7 +84,7 @@ export class PostgresOperatorRepository {
     return inTransaction(this.pool, supplied, (client) => this.updateWithClient(client, harness, expectedConfigurationVersionId))
   }
 
-  async updateWithClient(client: pg.ClientBase, harness: HarnessConfiguration, expectedConfigurationVersionId: string) {
+  async updateWithClient(client: pg.ClientBase, harness: HarnessConfiguration, expectedConfigurationVersionId: string, showThinking = false) {
       await client.query('select pg_advisory_xact_lock(hashtext($1))', ['application-operator'])
       const row = await client.query<{ record: unknown; current_configuration_version_id: string }>(
         'select record, current_configuration_version_id from application_operators where id = $1 for update', [OPERATOR_ID],
@@ -85,7 +98,7 @@ export class PostgresOperatorRepository {
       const createdAt = new Date().toISOString()
       const configuration = OperatorConfigurationVersionSchema.parse({
         id: `${OPERATOR_ID}-config-v${version}-${randomUUID()}`, operatorId: OPERATOR_ID, version,
-        harness, contentHash: hash(harness), createdAt,
+        harness, showThinking, contentHash: `sha256:${createHash('sha256').update(JSON.stringify({ harness: canonical(harness), showThinking })).digest('hex')}`, createdAt,
       })
       await client.query('insert into operator_configuration_versions (id, operator_id, version, record) values ($1,$2,$3,$4::jsonb)', [configuration.id, OPERATOR_ID, version, JSON.stringify(configuration)])
       const next = OperatorAgentSchema.parse({ ...operator, currentConfigurationVersionId: configuration.id, updatedAt: createdAt })

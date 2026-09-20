@@ -2,7 +2,7 @@ import type { NativeHarnessEvent } from '@graphql/contracts'
 
 type ObjectValue = Record<string, unknown>
 function object(value: unknown): ObjectValue { return value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectValue : {} }
-/** Presentation-only. These events never become authoritative persisted assistant messages. */
+/** Deltas are presentation-only; completed public message items are persisted separately. */
 export function nativeAssistantText(event: NativeHarnessEvent, partKinds = new Map<string, string>()): Array<{ partId: string; text: string; mode: 'append' | 'replace' }> {
   const payload = event.payload
   const method = typeof payload.nativeMethod === 'string' ? payload.nativeMethod : event.type
@@ -32,4 +32,15 @@ export function nativeAssistantText(event: NativeHarnessEvent, partKinds = new M
     return [{ partId: String(part.id ?? 'assistant'), text: part.text, mode: 'replace' }]
   }
   return []
+}
+
+export function completedNativeAssistantMessage(event: NativeHarnessEvent, harness: 'codex' | 'opencode'):
+  { id: string; text: string } | undefined {
+  if (harness === 'codex' && event.type === 'item.completed') {
+    const item = object(event.payload.item)
+    if (item.type === 'agentMessage' && typeof item.id === 'string' && typeof item.text === 'string' && item.text) {
+      return { id: item.id, text: item.text }
+    }
+  }
+  return undefined
 }

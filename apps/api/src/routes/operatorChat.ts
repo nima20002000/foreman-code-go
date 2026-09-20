@@ -1,5 +1,5 @@
 import {
-  OperatorActivityPageSchema, OperatorActivityQuerySchema, DeleteOperatorConversationResponseSchema, CancelOperatorTurnRequestSchema, CancelOperatorTurnResponseSchema,
+  OperatorChatSetupSchema, OperatorActivityPageSchema, OperatorActivityQuerySchema, DeleteOperatorConversationResponseSchema, CancelOperatorTurnRequestSchema, CancelOperatorTurnResponseSchema,
   CreateOperatorConversationRequestSchema, CreateOperatorConversationResponseSchema,
   GetOperatorConversationResponseSchema, ListOperatorConversationsResponseSchema,
   ListOperatorConversationSummariesResponseSchema, OperatorConversationSummariesQuerySchema,
@@ -24,6 +24,8 @@ const MAX_BOOTSTRAP_EVENTS = 128
 export function registerOperatorChatRoutes(app: FastifyInstance, chat: OperatorChatService): void {
   const streams = new Map<() => void, string>()
   app.addHook('preClose', async () => { for (const stop of streams.keys()) stop(); streams.clear() })
+
+  app.get('/api/operator/setup', async (request) => OperatorChatSetupSchema.parse(await chat.setup(requirePrincipal(request))))
 
   app.get('/api/operator/conversations/summaries', async (request) => {
     const { limit } = OperatorConversationSummariesQuerySchema.parse(request.query)

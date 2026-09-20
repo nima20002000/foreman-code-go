@@ -5,7 +5,8 @@ import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal, Se
 const outboxLock = 'graphql.operator-outbox.v1'
 const storageError = 'Durable message storage is unavailable. Sending is disabled to avoid repeating a command after a lost response.'
 
-type PendingMessage = { command?: SendOperatorMessageRequest; error?: string; sendFailure?: string }
+type PendingMessage = { command?: SendOperatorMessageRequest; error?: string; sendFailure?: string; definitiveFailure?: boolean }
+const legacyContractFailure = 'The request does not match its shared contract.'
 
 function readKey(key: string): PendingMessage {
   try {
@@ -14,7 +15,8 @@ function readKey(key: string): PendingMessage {
     const saved = JSON.parse(value)
     const command = SendOperatorMessageRequestSchema.safeParse(saved?.command ?? saved)
     if (command.success && (saved?.command === undefined || typeof saved?.sendFailure === 'string')) {
-      return { command: command.data, ...(typeof saved?.sendFailure === 'string' ? { sendFailure: saved.sendFailure } : {}) }
+      return { command: command.data, ...(typeof saved?.sendFailure === 'string' ? { sendFailure: saved.sendFailure,
+        ...(saved.definitiveFailure === true || saved.sendFailure === legacyContractFailure ? { definitiveFailure: true } : {}) } : {}) }
     }
     return { error: 'The saved pending command is invalid. Recover its receipt before sending another command.' }
   } catch { return { error: storageError } }
@@ -25,11 +27,22 @@ export function readPendingOperatorMessage(id: string): PendingMessage {
 }
 
 /** Keep a failed delivery reason with the exact pending command across reloads. */
-export function recordOperatorMessageFailure(id: string, requestId: string, message: string): Promise<void> {
+export function recordOperatorMessageFailure(id: string, requestId: string, message: string, definitive = false): Promise<void> {
   return exclusive(id, (key) => {
     const pending = readKey(key)
     if (pending.error || pending.command?.requestId !== requestId) return
-    window.localStorage.setItem(key, JSON.stringify({ command: pending.command, sendFailure: message }))
+    window.localStorage.setItem(key, JSON.stringify({ command: pending.command, sendFailure: message,
+      ...(definitive ? { definitiveFailure: true } : {}) }))
+  })
+}
+
+/** A known pre-admission contract rejection can be abandoned without reusing its stale payload. */
+export function discardDefinitivelyRejectedOperatorMessage(id: string, requestId: string): Promise<boolean> {
+  return exclusive(id, (key) => {
+    const pending = readKey(key)
+    if (pending.error || pending.command?.requestId !== requestId || !pending.definitiveFailure) return false
+    window.localStorage.removeItem(key)
+    return true
   })
 }
 
@@ -55,7 +68,8 @@ async function exclusive<T>(id: string, work: (key: string) => T): Promise<T> {
 }
 
 /** Reserve once before submission. Every tab and every lost-response retry reuses that identity. */
-export function reserveOperatorMessage(id: string, content: string, route: string, settings?: OperatorChatSettings): Promise<SendOperatorMessageRequest> {
+export function reserveOperatorMessage(id: string, content: string, route: string, settings?: OperatorChatSettings,
+  forkExpectedRevision?: number): Promise<SendOperatorMessageRequest> {
   return exclusive(id, (key) => {
     const pending = readKey(key)
     if (pending.error) throw new Error(pending.error)
@@ -63,7 +77,8 @@ export function reserveOperatorMessage(id: string, content: string, route: strin
       if (pending.command.content !== content) throw new Error('Retry the previous pending message before sending a different command. Your new draft is preserved.')
       return pending.command // Includes the originally accepted route context.
     }
-    const command = SendOperatorMessageRequestSchema.parse({ requestId: crypto.randomUUID(), content, context: { route }, ...(settings ? { settings } : {}) })
+    const command = SendOperatorMessageRequestSchema.parse({ requestId: crypto.randomUUID(), content, context: { route },
+      ...(settings ? { settings } : {}), ...(forkExpectedRevision === undefined ? {} : { forkExpectedRevision }) })
     window.localStorage.setItem(key, JSON.stringify(command))
     if (readKey(key).command?.requestId !== command.requestId) throw new Error('The pending command could not be saved. No message was sent.')
     return command

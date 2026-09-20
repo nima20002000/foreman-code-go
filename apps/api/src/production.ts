@@ -225,6 +225,7 @@ export function buildProductionApp(
   const reviews = new AutomaticReviewService(database.pool, runs, approvals, chat, access, locations, rollout)
   reviewLifecycle.current = reviews
   const operatorServices = {
+    operatorChat: chat,
     workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings),
     locations,
     workflows: new WorkflowManagementService(database.pool, commands),

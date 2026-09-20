@@ -36,3 +36,13 @@ export const OperatorConversationHistoryPageSchema = z.object({
   nextCursor: OperatorHistoryCursorSchema.nullable(),
 }).strict();
 export type OperatorConversationHistoryPage = z.infer<typeof OperatorConversationHistoryPageSchema>;
+
+/** Read-only, text-only source history for a credential bound to a forked Operator chat. */
+export const OperatorHandoffHistoryPageSchema = z.object({
+  sourceConversationId: IdSchema,
+  parentConversationId: IdSchema.optional(),
+  messages: z.array(z.object({ sequence: OperatorHistoryCursorSchema,
+    role: z.enum(['user', 'assistant']), content: z.string() }).strict()).max(50),
+  nextCursor: OperatorHistoryCursorSchema.nullable(),
+}).strict();
+export type OperatorHandoffHistoryPage = z.infer<typeof OperatorHandoffHistoryPageSchema>;

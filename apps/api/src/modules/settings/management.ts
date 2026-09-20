@@ -79,11 +79,13 @@ export class FoundationSettingsManagementService {
         }
         const operators = this.operators
         const operatorChanged = !isDeepStrictEqual(withAdvancedDefaults(previous.value.operator.harness), withAdvancedDefaults(value.operator.harness))
+          || (previous.value.operator.showThinking ?? false) !== (value.operator.showThinking ?? false)
         const current = operatorChanged ? await operators?.ensureWithClient(client) : undefined
         const result = await this.settings.updateManagedAgentDefaults(client, value, input.expectedRevision)
-        if (operators && current && !isDeepStrictEqual(current.configuration.harness, value.operator.harness)) {
+        if (operators && current && (!isDeepStrictEqual(current.configuration.harness, value.operator.harness)
+          || (current.configuration.showThinking ?? false) !== (value.operator.showThinking ?? false))) {
           await operators.updateWithClient(
-            client, value.operator.harness, current.operator.currentConfigurationVersionId,
+            client, value.operator.harness, current.operator.currentConfigurationVersionId, value.operator.showThinking ?? false,
           )
         }
         return result

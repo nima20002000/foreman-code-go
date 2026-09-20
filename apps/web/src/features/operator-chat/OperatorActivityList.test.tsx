@@ -16,7 +16,7 @@ describe('Operator activity disclosures', () => {
     expect(screen.queryByRole('button', { name: 'Thinking' })).not.toBeInTheDocument()
     expect(screen.queryByText(/Waiting for the reasoning/)).not.toBeInTheDocument()
   })
-  it.each(['tool', 'mcp', 'web_search', 'file_read', 'file_write', 'subagent'] as const)('expands %s independently and stays open through a final update', async (kind) => {
+  it.each(['tool', 'web_search', 'file_read', 'file_write', 'subagent'] as const)('expands %s independently and stays open through a final update', async (kind) => {
     const onBrowse = vi.fn()
     const value = activity(kind)
     const view = render(<OperatorActivityList entries={[value]} onBrowse={onBrowse} />)
@@ -33,6 +33,16 @@ describe('Operator activity disclosures', () => {
     expect(screen.queryByText('Done')).not.toBeInTheDocument()
   })
 
+  it('shows only a generic MCP call while it is active and hides it after completion', () => {
+    const value = { ...activity('mcp'), title: 'cua_repl · js', input: 'Private tool arguments', output: 'Private tool output' }
+    const view = render(<OperatorActivityList entries={[value]} onBrowse={vi.fn()} />)
+    expect(screen.getByRole('status')).toHaveTextContent('MCP tool call · Running')
+    expect(screen.queryByText(/cua_repl|Private tool/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('group')).not.toBeInTheDocument()
+    view.rerender(<OperatorActivityList entries={[{ ...value, status: 'completed' }]} onBrowse={vi.fn()} />)
+    expect(screen.queryByText(/MCP tool call/)).not.toBeInTheDocument()
+  })
+
   it('keeps thinking separate from tools and preserves the toggle through persistence', async () => {
     const value = { ...activity('thinking'), id: 'reasoning', output: '' }
     const view = render(<OperatorActivityList entries={[value, activity('mcp', '9007199254740994')]} activeRequestId="request"
@@ -42,7 +52,7 @@ describe('Operator activity disclosures', () => {
     view.rerender(<OperatorActivityList entries={[{ ...value, revision: 2, status: 'completed', output: 'Saved reasoning summary' }, activity('mcp', '9007199254740994')]} onBrowse={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Thinking' })).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('region', { name: 'Thinking summary' })).toHaveTextContent('Saved reasoning summary')
-    expect(screen.getByText(/mcp operation/).closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByText('MCP tool call · Running')).toBeVisible()
   })
 
   it('keeps the newest accepted item revision and sorts opaque sequences without rounding', () => {
