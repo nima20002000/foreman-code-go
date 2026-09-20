@@ -2,12 +2,24 @@ import { describe, expect, it, vi } from 'vitest'
 import { ManagementActionSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import { HarnessMcpSettingsService } from '../src/modules/harnesses/mcpSettings.js'
 import type { NativeMcpSnapshot } from '../src/modules/harnesses/nativeMcpCommon.js'
-import { assertManagedChange, LINEAR_MCP_ENDPOINT, managedChange, managedStatus, nativeConnection, replacement } from '../src/modules/harnesses/nativeMcpCommon.js'
+import { assertManagedChange, LINEAR_MCP_ENDPOINT, managedChange, managedStatus, nativeConnection, publicMcpList, replacement } from '../src/modules/harnesses/nativeMcpCommon.js'
 
 const principal: ManagementPrincipal = { id: 'owner', name: 'Owner', audience: 'operator',
   expiresAt: '2099-01-01T00:00:00Z', revokedAt: null, grants: [{ actions: [...ManagementActionSchema.options], scope: {} }] }
 
 describe('native MCP settings reads', () => {
+  it('shows safe remote endpoint paths in details without exposing URL credentials', () => {
+    const snapshot: NativeMcpSnapshot = { harness: 'codex', revision: 'revision', file: '/tmp/native', version: 'v', userConfig: {}, user: {},
+      effective: { linear: { url: 'https://mcp.linear.app/mcp/readonly', enabled: true },
+        safe: { url: 'https://example.com/mcp', enabled: true },
+        unsafe: { url: 'https://user:password@example.com/mcp?token=secret', enabled: true } } }
+    const list = publicMcpList(snapshot)
+    expect(list.servers.find((server) => server.name === 'linear')?.endpoint).toBe('https://mcp.linear.app/mcp/readonly')
+    expect(list.servers.find((server) => server.name === 'safe')?.endpoint).toBeUndefined()
+    expect(list.servers.find((server) => server.name === 'unsafe')?.endpoint).toBeUndefined()
+    expect(JSON.stringify(list)).not.toContain('password')
+    expect(JSON.stringify(list)).not.toContain('secret')
+  })
   it.each(['codex', 'opencode'] as const)('limits %s one-click Operator writes to the exact local endpoint and credential reference', (harness) => {
     const endpoint = 'http://127.0.0.1:3000/mcp/operator'
     const snapshot: NativeMcpSnapshot = { harness, revision: 'revision', effective: {}, user: {}, userConfig: {}, file: '/tmp/native', version: 'v' }

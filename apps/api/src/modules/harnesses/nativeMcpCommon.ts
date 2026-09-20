@@ -104,10 +104,18 @@ export function publicMcpList(snapshot: NativeMcpSnapshot): HarnessMcpList {
       const remote = typeof entry.url === 'string'
       let label = local ? 'Local program' : 'Native connection'
       if (local) { const command = Array.isArray(entry.command) ? entry.command[0] : entry.command; if (typeof command === 'string') label = basename(command) }
-      if (remote) { try { const url = new URL(String(entry.url)); label = url.origin } catch { label = 'Remote connection' } }
+      let endpoint: string | undefined
+      if (remote) { try {
+        const url = new URL(String(entry.url))
+        label = url.origin
+        if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash
+          && ((name === 'graphql-app' && url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && url.pathname === '/mcp/tools')
+            || (name === 'graphql-operator' && url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && url.pathname === '/mcp/operator')
+            || (name === 'linear' && url.protocol === 'https:' && url.hostname === 'mcp.linear.app' && ['/mcp', '/mcp/readonly'].includes(url.pathname)))) endpoint = url.toString()
+      } catch { label = 'Remote connection' } }
       const locked = protectedServer(name, entry) || protectedServer(name, snapshot.user[name])
       const owned = Object.hasOwn(snapshot.user, name)
-      return { name, label, transport: remote ? 'remote' : local ? 'stdio' : 'unknown', enabled: entry.enabled !== false,
+      return { name, label, ...(endpoint ? { endpoint } : {}), transport: remote ? 'remote' : local ? 'stdio' : 'unknown', enabled: entry.enabled !== false,
         origin: owned ? 'user' : 'inherited', protected: locked, editable: owned && !locked }
     }) }
 }

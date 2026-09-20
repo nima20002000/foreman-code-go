@@ -3,7 +3,7 @@ import { useContext, useRef, useState } from 'react'
 import {
   HarnessMcpChangeSchema, type HarnessMcpChange, type HarnessMcpPlan, type HarnessMcpManagedPreset, type HarnessMcpManagedInput,
 } from '@graphql/contracts/management'
-import { Alert, Button, Checkbox, Dialog, Select, StatusBadge, Textarea, TextField } from '../../shared/ui/nocturne'
+import { ActionMenu, Alert, Button, Dialog, Select, StatusBadge, Textarea, TextField, type ActionMenuItem } from '../../shared/ui/nocturne'
 import {
   useNativeMcpServers, useNativeMcpPlans, useRequestNativeMcpChange, useDecideNativeMcpChange, useApplyManagedMcpChange, useHarnessSessionEpoch,
 } from '../../shared/api/harnessSettings'
@@ -78,6 +78,7 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
   const [managedInput, setManagedInput] = useState<HarnessMcpManagedInput>()
   const [adding, setAdding] = useState(false)
   const [active, setActive] = useState<string>()
+  const [detailsName, setDetailsName] = useState<string>()
   const [created, setCreated] = useState<HarnessMcpPlan>()
   const [feedback, setFeedback] = useState<string>()
   // A failed HTTP response may hide a committed plan. Reuse the same receipt ID on retry.
@@ -122,6 +123,7 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
     submitManaged(managedInput)
   }
   const presets = servers.data?.presets
+  const details = servers.data?.servers.find((server) => server.name === detailsName)
   const outstanding = plans.data?.items.filter((plan) => ['pending', 'submitting', 'uncertain'].includes(plan.status)) ?? []
   const managedBusy = managed.isPending || Boolean(managedInput && managed.isError && managedAttempt.current.unresolved)
     || outstanding.some((plan) => plan.status === 'submitting' || plan.status === 'uncertain')
@@ -151,22 +153,28 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
       })}
     </div> : null}
     {servers.data?.servers.length === 0 ? <div className="harness-empty">No servers configured. Add a connection to give this harness more tools.</div> : null}
-    <ul className="harness-server-list">{servers.data?.servers.map((server) => <li key={server.name}>
-      <span className="harness-server-symbol" aria-hidden="true">{server.transport === 'remote' ? '↗' : '⌘'}</span>
-      <div className="harness-server-name"><strong>{server.name}</strong><small>{server.label}</small>
-        {server.name === 'linear' && presets?.linear === 'installed' ? <details className="harness-mcp-auth"><summary>Sign in</summary>
-          <p>Run <code>{harness === 'codex' ? 'codex mcp login linear' : 'opencode mcp auth linear'}</code>. Removing this connection keeps the harness’s saved sign-in.</p>
-        </details> : null}</div>
-      <StatusBadge tone={server.enabled ? 'info' : 'neutral'} label={server.enabled ? 'Configured' : 'Disabled'} />
-      {presets && ((server.name === 'graphql-operator' && presets.operator === 'installed') || (server.name === 'linear' && presets.linear === 'installed')) ? <Button size="sm" variant="ghost"
-        disabled={managedBusy || servers.isFetching || servers.isError} loading={managed.isPending && managed.variables?.installed === false && managed.variables?.preset === (server.name === 'linear' ? 'linear' : 'operator')}
-        onClick={() => manage(server.name === 'linear' ? 'linear' : 'operator', false)}>Remove {server.name === 'linear' ? 'Linear MCP' : 'Operator MCP'}</Button>
-        : server.protected ? <span className="harness-muted">App-managed</span> : server.editable ? <div className="harness-inline-actions">
-        <Checkbox label={`Enable ${server.name}`} checked={server.enabled} disabled={request.isPending}
-          onChange={(event) => requestChange({ kind: 'enable', name: server.name, enabled: event.target.checked })} />
-        <Button size="sm" variant="ghost" disabled={request.isPending} aria-label={`Remove MCP server ${server.name}`} onClick={() => requestChange({ kind: 'remove', name: server.name })}>Remove</Button>
-      </div> : <span className="harness-muted">Inherited</span>}
-    </li>)}</ul>
+    <ul className="harness-server-list">{servers.data?.servers.map((server) => {
+      const preset = server.name === 'graphql-operator' && presets?.operator === 'installed' ? 'operator'
+        : server.name === 'linear' && presets?.linear === 'installed' ? 'linear' : undefined
+      const canRemove = Boolean(preset || server.editable)
+      const busy = managedBusy || request.isPending || decision.isPending || servers.isFetching || servers.isError
+      const items: ActionMenuItem[] = [
+        { id: 'details', label: 'View details', onSelect: () => setDetailsName(server.name) },
+        ...(server.editable ? [{ id: 'enable', label: server.enabled ? 'Disable' : 'Enable', disabled: busy,
+          onSelect: () => requestChange({ kind: 'enable', name: server.name, enabled: !server.enabled }) } satisfies ActionMenuItem] : []),
+        { id: 'remove', label: 'Remove server', danger: true, disabled: !canRemove || busy,
+          ...(!canRemove ? { description: server.protected ? 'App-managed connection.' : 'Edit this inherited connection at its source.' } : {}),
+          onSelect: () => preset ? manage(preset, false) : requestChange({ kind: 'remove', name: server.name }) },
+      ]
+      return <li key={server.name}>
+        <button type="button" className="harness-server-open" aria-label={`View details for ${server.name}`} onClick={() => setDetailsName(server.name)}>
+          <span className="harness-server-symbol" aria-hidden="true">{server.transport === 'remote' ? '↗' : '⌘'}</span>
+          <span className="harness-server-name"><strong>{server.name}</strong></span>
+          <StatusBadge tone={server.enabled ? 'info' : 'neutral'} label={server.enabled ? 'Configured' : 'Disabled'} />
+        </button>
+        <ActionMenu label={`MCP actions for ${server.name}`} className="harness-server-menu" width={190} items={items} />
+      </li>
+    })}</ul>
     {outstanding.length ? <section className="harness-pending-plans" aria-label="MCP change requests"><h4>Change requests</h4>
       {outstanding.map((plan) => {
         const applying = managed.isPending && plan.managedPreset === managed.variables?.preset
@@ -190,6 +198,26 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
           {selected.error ?? (selected.status === 'uncertain' ? 'The write may have completed. Inspect the native configuration before requesting another change.' : null)}</Alert> : null}
         {decision.isError ? <Alert tone="danger" live title={decision.error.message} /> : null}
       </div> : <p role="status">Loading request…</p>}
+    </Dialog>
+    <Dialog open={Boolean(detailsName)} onOpenChange={(open) => { if (!open) setDetailsName(undefined) }}
+      title={details ? `${details.name} MCP details` : 'MCP server unavailable'} size="md"
+      footer={<Button onClick={() => setDetailsName(undefined)}>Close</Button>}>
+      {details ? <div className="harness-form-stack">
+        <StatusBadge tone={details.enabled ? 'info' : 'neutral'} label={details.enabled ? 'Configured' : 'Disabled'} />
+        <dl className="harness-change-details">
+          <div><dt>Harness</dt><dd>{harness === 'codex' ? 'Codex' : 'OpenCode'}</dd></div>
+          <div><dt>Native name</dt><dd><code>{details.name}</code></dd></div>
+          <div><dt>Connection</dt><dd>{details.transport === 'remote' ? 'Remote MCP' : details.transport === 'stdio' ? 'Local program' : 'Native connection'}</dd></div>
+          <div><dt>{details.transport === 'remote' ? 'Host' : 'Program'}</dt><dd>{details.label}</dd></div>
+          {details.endpoint ? <div><dt>Endpoint</dt><dd><code>{details.endpoint}</code></dd></div> : null}
+          <div><dt>Configuration</dt><dd>{details.origin === 'inherited' ? 'Inherited from another configuration source' : details.protected ? 'App-managed user configuration' : 'Native user configuration'}</dd></div>
+        </dl>
+        {details.transport === 'remote' && !details.endpoint ? <p className="harness-muted">Only the host is shown here. Native URLs can contain private credentials; inspect their configuration source for the full address.</p> : null}
+        <p className="harness-muted">Configured means the native entry exists; a live tool call is needed to verify the connection.</p>
+        {details.name === 'linear' && presets?.linear === 'installed' ? <p className="harness-muted">
+          Sign in with <code>{harness === 'codex' ? 'codex mcp login linear' : 'opencode mcp auth linear'}</code>. Removing this connection keeps the harness’s saved sign-in.
+        </p> : null}
+      </div> : <p role="status">This server is no longer in the native list. Refresh to see current connections.</p>}
     </Dialog>
   </section>
 }

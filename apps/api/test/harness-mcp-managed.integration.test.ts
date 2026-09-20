@@ -76,7 +76,10 @@ it('requests exact Operator and Linear presets through authenticated MCP, then a
         const applied = await mcp.decide(owner.principal, request.value.id, true)
         expect(applied.status).toBe('applied')
         expect(HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_change_get', arguments: { planId: applied.id } })).structuredContent).status).toBe('applied')
-        expect((await listed(harness)).presets?.[preset]).toBe('installed')
+        const installedList = await listed(harness)
+        expect(installedList.presets?.[preset]).toBe('installed')
+        expect(installedList.servers.find((server) => server.name === (preset === 'operator' ? 'graphql-operator' : 'linear'))?.endpoint)
+          .toBe(preset === 'operator' ? endpoint : 'https://mcp.linear.app/mcp/readonly')
         if (preset === 'operator') expect(JSON.stringify((await listed(harness)).servers)).not.toContain('GRAPHQL_OPERATOR_MCP_TOKEN')
         const removal = { harness, preset, installed: false, expectedRevision: (await listed(harness)).revision, commandId: randomUUID() }
         const removePlan = HarnessMcpPlanResultSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: removal })).structuredContent)

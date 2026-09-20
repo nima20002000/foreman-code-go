@@ -38,6 +38,7 @@ export type HarnessMcpManagedInput = z.infer<typeof HarnessMcpManagedInputSchema
 export const HarnessMcpListInputSchema = z.object({ harness: Harness }).strict()
 export const HarnessMcpServerSummarySchema = z.object({
   name: z.string(), transport: z.enum(['remote', 'stdio', 'unknown']), label: z.string(), enabled: z.boolean(),
+  endpoint: z.string().url().optional(),
   origin: z.enum(['user', 'inherited']), protected: z.boolean(), editable: z.boolean(),
 }).strict()
 export const HarnessMcpListResultSchema = z.object({

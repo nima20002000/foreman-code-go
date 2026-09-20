@@ -16,6 +16,7 @@ it.each(['codex', 'opencode'] as const)('adds and removes Operator and Linear MC
   server.use(
     http.get(`/api/management/harnesses/${harness}/mcp`, () => HttpResponse.json({ harness, revision, checkedAt, scope: 'native-user',
       servers: [...installed].map((name) => ({ name, transport: 'remote', label: name === 'linear' ? 'mcp.linear.app' : '127.0.0.1:3000',
+        endpoint: name === 'linear' ? 'https://mcp.linear.app/mcp/readonly' : 'http://127.0.0.1:3000/mcp/operator',
         enabled: true, origin: 'user', protected: name === 'graphql-operator', editable: name === 'linear' })),
       presets: { operator: installed.has('graphql-operator') ? 'installed' : 'missing', linear: installed.has('linear') ? 'installed' : 'missing' },
     })),
@@ -32,11 +33,17 @@ it.each(['codex', 'opencode'] as const)('adds and removes Operator and Linear MC
   )
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
   render(<QueryClientProvider client={client}><HarnessMcpManager harness={harness} /></QueryClientProvider>)
-  for (const [, label] of [['operator', 'Operator MCP'], ['linear', 'Linear MCP']] as const) {
+  for (const [name, label] of [['graphql-operator', 'Operator MCP'], ['linear', 'Linear MCP']] as const) {
     fireEvent.click(await screen.findByRole('button', { name: `Add ${label}` }))
-    await waitFor(() => expect(screen.getByRole('button', { name: `Remove ${label}` })).toBeEnabled())
+    const card = await screen.findByRole('button', { name: `View details for ${name}` })
+    fireEvent.click(card)
+    expect(screen.getByRole('dialog', { name: `${name} MCP details` })).toBeVisible()
+    expect(screen.getByText(name === 'linear' ? 'https://mcp.linear.app/mcp/readonly' : 'http://127.0.0.1:3000/mcp/operator')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: /^Close$/ }))
     expect(screen.queryByRole('dialog', { name: 'Review MCP change' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: `Remove ${label}` }))
+    fireEvent.click(screen.getByRole('button', { name: `MCP actions for ${name}` }))
+    await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Remove server' })).not.toHaveAttribute('aria-disabled', 'true'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remove server' }))
     await waitFor(() => expect(screen.getByRole('button', { name: `Add ${label}` })).toBeEnabled())
   }
   expect(calls.map(({ preset, installed }) => [preset, installed])).toEqual([
@@ -64,4 +71,49 @@ it('keeps the original command identity when a one-click response is uncertain',
   fireEvent.click(await screen.findByRole('button', { name: 'Retry original change' }))
   await waitFor(() => expect(inputs).toHaveLength(2))
   expect(inputs[1]?.commandId).toBe(inputs[0]?.commandId)
+})
+
+it('keeps protected and inherited servers inspectable while explaining why removal is unavailable', async () => {
+  server.use(
+    http.get('/api/management/harnesses/codex/mcp', () => HttpResponse.json({ harness: 'codex', revision, checkedAt, scope: 'native-user',
+      servers: [
+        { name: 'graphql-app', transport: 'remote', label: '127.0.0.1:3000', endpoint: 'http://127.0.0.1:3000/mcp/tools', enabled: true, origin: 'user', protected: true, editable: false },
+        { name: 'shared-tools', transport: 'stdio', label: 'tools', enabled: true, origin: 'inherited', protected: false, editable: false },
+      ], presets: { operator: 'missing', linear: 'missing' } })),
+    http.get('/api/management/harnesses/codex/mcp/plans', () => HttpResponse.json({ items: [] })),
+  )
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
+  render(<QueryClientProvider client={client}><HarnessMcpManager harness="codex" /></QueryClientProvider>)
+  const card = await screen.findByRole('button', { name: 'View details for graphql-app' })
+  card.focus()
+  fireEvent.click(card)
+  expect(screen.getByRole('dialog', { name: 'graphql-app MCP details' })).toHaveTextContent('http://127.0.0.1:3000/mcp/tools')
+  fireEvent.click(screen.getByRole('button', { name: /^Close$/ }))
+  expect(card).toHaveFocus()
+  for (const name of ['graphql-app', 'shared-tools']) {
+    fireEvent.click(screen.getByRole('button', { name: `MCP actions for ${name}` }))
+    expect(screen.getByRole('menuitem', { name: 'Remove server' })).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.keyDown(screen.getByRole('menu', { name: `MCP actions for ${name}` }), { key: 'Escape' })
+  }
+})
+
+it('keeps native enablement behind the existing review flow in the card menu', async () => {
+  let planned: { change: { kind: string; enabled: boolean } } | undefined
+  server.use(
+    http.get('/api/management/harnesses/codex/mcp', () => HttpResponse.json({ harness: 'codex', revision, checkedAt, scope: 'native-user',
+      servers: [{ name: 'mytools', transport: 'stdio', label: 'mytools', enabled: true, origin: 'user', protected: false, editable: true }],
+      presets: { operator: 'missing', linear: 'missing' } })),
+    http.get('/api/management/harnesses/codex/mcp/plans', () => HttpResponse.json({ items: [] })),
+    http.post('/api/management/harnesses/mcp/plans', async ({ request }) => {
+      planned = await request.json() as typeof planned
+      return HttpResponse.json({ value: { id: crypto.randomUUID(), harness: 'codex', revision, change: planned?.change,
+        requestedBy: 'owner', status: 'pending', createdAt: checkedAt, expiresAt: '2099-01-01T00:00:00.000Z', error: null }, replayed: false })
+    }),
+  )
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
+  render(<QueryClientProvider client={client}><HarnessMcpManager harness="codex" /></QueryClientProvider>)
+  fireEvent.click(await screen.findByRole('button', { name: 'MCP actions for mytools' }))
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Disable' }))
+  expect(await screen.findByRole('dialog', { name: 'Review MCP change' })).toBeVisible()
+  expect(planned?.change).toMatchObject({ kind: 'enable', enabled: false })
 })
