@@ -5,7 +5,7 @@ import { HarnessMcpManagedInputSchema, HarnessMcpPlanInputSchema, HarnessMcpPlan
 import { requireAuthorization } from '../access/policy.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
-import { assertChange, assertManagedChange, managedChange, managedStatus, publicMcpList, type NativeMcpAdapter } from './nativeMcpCommon.js'
+import { assertChange, assertManagedChange, managedChange, managedEnableChange, managedStatus, publicMcpList, type NativeMcpAdapter } from './nativeMcpCommon.js'
 import { qualificationError } from './qualificationErrors.js'
 
 type Harness = 'codex' | 'opencode'
@@ -86,7 +86,8 @@ export class HarnessMcpSettingsService {
     const input = HarnessMcpManagedInputSchema.parse(raw)
     if (!this.operatorEndpoint) throw new DomainError('MCP_PRESET_UNAVAILABLE', 'Managed MCP presets are unavailable.', 503)
     return this.createPlan(principal, source, { harness: input.harness, commandId: input.commandId,
-      expectedRevision: input.expectedRevision, change: managedChange(input.preset, input.installed, this.operatorEndpoint) }, input.preset)
+      expectedRevision: input.expectedRevision, change: 'enabled' in input ? managedEnableChange(input.preset, input.enabled)
+        : managedChange(input.preset, input.installed, this.operatorEndpoint) }, input.preset)
   }
   private async createPlan(principal: ManagementPrincipal, source: 'http' | 'mcp', input: HarnessMcpPlanInput,
     managedPreset?: HarnessMcpManagedPreset) {

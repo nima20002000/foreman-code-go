@@ -32,8 +32,12 @@ export const HarnessMcpChangeSchema = z.discriminatedUnion('kind', [
 export type HarnessMcpChange = z.infer<typeof HarnessMcpChangeSchema>
 export const HarnessMcpManagedPresetSchema = z.enum(['operator', 'linear'])
 export type HarnessMcpManagedPreset = z.infer<typeof HarnessMcpManagedPresetSchema>
-export const HarnessMcpManagedInputSchema = z.object({ harness: Harness, preset: HarnessMcpManagedPresetSchema,
-  installed: z.boolean(), commandId: CommandId, expectedRevision: Revision }).strict()
+const HarnessMcpManagedBase = z.object({ harness: Harness, preset: HarnessMcpManagedPresetSchema,
+  commandId: CommandId, expectedRevision: Revision })
+export const HarnessMcpManagedInputSchema = z.union([
+  HarnessMcpManagedBase.extend({ installed: z.boolean() }).strict(),
+  HarnessMcpManagedBase.extend({ enabled: z.boolean() }).strict(),
+])
 export type HarnessMcpManagedInput = z.infer<typeof HarnessMcpManagedInputSchema>
 export const HarnessMcpListInputSchema = z.object({ harness: Harness }).strict()
 export const HarnessMcpServerSummarySchema = z.object({
@@ -43,8 +47,8 @@ export const HarnessMcpServerSummarySchema = z.object({
 }).strict()
 export const HarnessMcpListResultSchema = z.object({
   harness: Harness, revision: Revision, servers: z.array(HarnessMcpServerSummarySchema),
-  presets: z.object({ operator: z.enum(['missing', 'installed', 'mismatch', 'inherited']),
-    linear: z.enum(['missing', 'installed', 'mismatch', 'inherited']) }).strict().optional(),
+  presets: z.object({ operator: z.enum(['missing', 'installed', 'disabled', 'mismatch', 'inherited']),
+    linear: z.enum(['missing', 'installed', 'disabled', 'mismatch', 'inherited']) }).strict().optional(),
   checkedAt: z.string().datetime({ offset: true }), scope: z.literal('native-user'),
 }).strict()
 export type HarnessMcpList = z.infer<typeof HarnessMcpListResultSchema>

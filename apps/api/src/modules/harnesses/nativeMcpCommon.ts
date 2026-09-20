@@ -20,6 +20,9 @@ export function managedChange(preset: HarnessMcpManagedPreset, installed: boolea
   return installed ? { kind: 'add', name, connection: { transport: 'remote', url: preset === 'operator' ? endpoint : LINEAR_MCP_ENDPOINT } }
     : { kind: 'remove', name }
 }
+export function managedEnableChange(preset: HarnessMcpManagedPreset, enabled: boolean): HarnessMcpChange {
+  return { kind: 'enable', name: managedName(preset), enabled }
+}
 function managedNativeConnection(snapshot: NativeMcpSnapshot, preset: HarnessMcpManagedPreset, endpoint: string): JsonObject {
   const url = preset === 'operator' ? endpoint : LINEAR_MCP_ENDPOINT
   return nativeConnection(snapshot.harness, { transport: 'remote', url,
@@ -33,27 +36,28 @@ export function managedStatus(snapshot: NativeMcpSnapshot, preset: HarnessMcpMan
   const effective = record(snapshot.effective[name])
   if (effective.url !== entry.url) return 'inherited' as const
   const url = entry.url
-  if (entry.enabled === false || effective.enabled === false) return 'mismatch' as const
   if (entry.command !== undefined || (snapshot.harness === 'opencode' && entry.type !== 'remote')) return 'mismatch' as const
-  if (preset === 'linear') return url === LINEAR_MCP_ENDPOINT || url === 'https://mcp.linear.app/mcp'
-    ? 'installed' as const : 'mismatch' as const
-  if (url !== endpoint) return 'mismatch' as const
-  return snapshot.harness === 'codex'
-    ? entry.bearer_token_env_var === 'GRAPHQL_OPERATOR_MCP_TOKEN' ? 'installed' as const : 'mismatch' as const
-    : entry.oauth === false && record(entry.headers).Authorization === 'Bearer {env:GRAPHQL_OPERATOR_MCP_TOKEN}'
-      ? 'installed' as const : 'mismatch' as const
+  const matches = preset === 'linear' ? url === LINEAR_MCP_ENDPOINT || url === 'https://mcp.linear.app/mcp'
+    : url === endpoint && (snapshot.harness === 'codex' ? entry.bearer_token_env_var === 'GRAPHQL_OPERATOR_MCP_TOKEN'
+      : entry.oauth === false && record(entry.headers).Authorization === 'Bearer {env:GRAPHQL_OPERATOR_MCP_TOKEN}')
+  if (!matches) return 'mismatch' as const
+  return entry.enabled === false || effective.enabled === false ? 'disabled' as const : 'installed' as const
 }
 export function assertManagedChange(snapshot: NativeMcpSnapshot, change: HarnessMcpChange,
   preset: HarnessMcpManagedPreset, endpoint: string): void {
-  const install = change.kind === 'add'
-  if (fingerprint(change) !== fingerprint(managedChange(preset, install, endpoint))) {
+  const expected = change.kind === 'enable' ? managedEnableChange(preset, change.enabled)
+    : managedChange(preset, change.kind === 'add', endpoint)
+  if (fingerprint(change) !== fingerprint(expected)) {
     throw new DomainError('MCP_PRESET_INVALID', 'The requested MCP preset does not match the server-managed connection.', 409)
   }
   const status = managedStatus(snapshot, preset, endpoint)
-  if (install && status !== 'missing' && !(preset === 'operator' && status === 'mismatch')) {
+  if (change.kind === 'add' && status !== 'missing' && !(preset === 'operator' && status === 'mismatch')) {
     throw new DomainError('MCP_SERVER_EXISTS', 'This MCP server already has a native configuration. Inspect it before changing the preset.', 409)
   }
-  if (!install && status !== 'installed') throw new DomainError('MCP_PRESET_MISMATCH', 'Only the matching user-owned preset can be removed here.', 409)
+  if (change.kind === 'remove' && status !== 'installed' && status !== 'disabled')
+    throw new DomainError('MCP_PRESET_MISMATCH', 'Only the matching user-owned preset can be removed here.', 409)
+  if (change.kind === 'enable' && status !== (change.enabled ? 'disabled' : 'installed'))
+    throw new DomainError('MCP_PRESET_MISMATCH', 'Only a matching user-owned preset can be enabled or disabled here.', 409)
 }
 export function protectedServer(name: string, entry: unknown): boolean {
   if (/^(graphql[-_]|__)/i.test(name) || ['graphql', 'app', 'operator'].includes(name.toLowerCase())) return true
@@ -87,7 +91,8 @@ export function replacement(snapshot: NativeMcpSnapshot, change: HarnessMcpChang
   managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): JsonObject | undefined {
   if (managed) {
     assertManagedChange(snapshot, change, managed.preset, managed.endpoint)
-    return change.kind === 'add' ? managedNativeConnection(snapshot, managed.preset, managed.endpoint) : undefined
+    return change.kind === 'add' ? managedNativeConnection(snapshot, managed.preset, managed.endpoint)
+      : change.kind === 'enable' ? { ...record(snapshot.user[change.name]), enabled: change.enabled } : undefined
   }
   assertChange(snapshot, change)
   if (change.kind === 'remove') return undefined

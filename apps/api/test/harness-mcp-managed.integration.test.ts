@@ -81,6 +81,24 @@ it('requests exact Operator and Linear presets through authenticated MCP, then a
         expect(installedList.servers.find((server) => server.name === (preset === 'operator' ? 'graphql-operator' : 'linear'))?.endpoint)
           .toBe(preset === 'operator' ? endpoint : 'https://mcp.linear.app/mcp/readonly')
         if (preset === 'operator') expect(JSON.stringify((await listed(harness)).servers)).not.toContain('GRAPHQL_OPERATOR_MCP_TOKEN')
+        const name = preset === 'operator' ? 'graphql-operator' : 'linear'
+        const original = structuredClone(snapshots[harness].user[name])
+        for (const enabled of [false, true]) {
+          const toggle = { harness, preset, enabled, expectedRevision: (await listed(harness)).revision, commandId: randomUUID() }
+          const togglePlan = HarnessMcpPlanResultSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: toggle })).structuredContent)
+          expect(togglePlan.value.change).toEqual({ kind: 'enable', name, enabled })
+          expect((await mcp.decide(owner.principal, togglePlan.value.id, true)).status).toBe('applied')
+          const toggled = await listed(harness)
+          expect(toggled.presets?.[preset]).toBe(enabled ? 'installed' : 'disabled')
+          expect(toggled.servers.find((server) => server.name === name)?.enabled).toBe(enabled)
+          expect(snapshots[harness].user[name]).toEqual({ ...original as object, enabled })
+          if (!enabled) {
+            const disabledRemoval = { harness, preset, installed: false, expectedRevision: toggled.revision, commandId: randomUUID() }
+            const disabledPlan = HarnessMcpPlanResultSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: disabledRemoval })).structuredContent)
+            expect(disabledPlan.value.change.kind).toBe('remove')
+            expect((await mcp.decide(owner.principal, disabledPlan.value.id, false)).status).toBe('rejected')
+          }
+        }
         const removal = { harness, preset, installed: false, expectedRevision: (await listed(harness)).revision, commandId: randomUUID() }
         const removePlan = HarnessMcpPlanResultSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: removal })).structuredContent)
         expect((await mcp.decide(owner.principal, removePlan.value.id, true)).status).toBe('applied')
