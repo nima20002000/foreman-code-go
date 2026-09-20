@@ -49,13 +49,16 @@ describe('PR #11 production composition and HTTP detection', () => {
 
   it('accepts workspace-scoped detection authority and denies another workspace', async () => {
     let calls = 0
+    let phase: string | undefined
     const service = new McpDetectionService({ inspect: async (input) => {
       calls += 1
+      phase = input.phase
       return { ...input, providerVersion: '0.154.0', inspectedAt: new Date().toISOString() }
     } }, 'http://127.0.0.1:3000/mcp/tools')
     const f = route(service)
     await f.handler(f.request, f.reply)
     assert.equal(calls, 1)
+    assert.equal(phase, 'configuration')
     f.request.params.workspaceId = 'workspace-other'
     await assert.rejects(f.handler(f.request, f.reply))
     assert.equal(calls, 1)

@@ -129,7 +129,7 @@ describe('Workspace App MCP hierarchy', () => {
 
   it.each([
     ['not_detected', 'Not set up'], ['misconfigured', 'Needs attention'],
-    ['status_unavailable', 'Not verified'], ['connected', 'Connected'],
+    ['status_unavailable', 'Setup found'], ['connected', 'Connected'],
     ['disabled', 'Turned off'], ['authentication_required', 'Sign-in required'],
     ['broken', 'Cannot connect'], ['check_failed', 'Check failed'],
   ] as const)('keeps the %s state distinct', async (state, label) => {
@@ -139,6 +139,15 @@ describe('Workspace App MCP hierarchy', () => {
     expect((await screen.findAllByText(label))).toHaveLength(2)
   })
 
+  it('explains that matching setup still needs a live run to verify the App MCP call', async () => {
+    const value = client()
+    seedConnections(value, 'status_unavailable')
+    mount(value)
+    expect((await screen.findAllByText('Setup found'))).toHaveLength(2)
+    expect(screen.getAllByText('Native settings match. To verify live use, run a workflow that calls an App MCP tool, then check its completed tool activity in Runs.')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: 'Check setup for Codex' })).toBeEnabled()
+  })
+
   it('checks again in place, blocks duplicate requests, and leaves the other provider alone', async () => {
     const value = client()
     seedConnections(value)
@@ -146,11 +155,11 @@ describe('Workspace App MCP hierarchy', () => {
     getDetection.mockReturnValue(pending.promise)
     const user = userEvent.setup()
     mount(value)
-    const button = await screen.findByRole('button', { name: 'Check again for Codex' })
+    const button = await screen.findByRole('button', { name: 'Check setup for Codex' })
     await user.dblClick(button)
     expect(button).toBeDisabled()
     expect(getDetection).toHaveBeenCalledTimes(1)
-    expect(screen.getByRole('button', { name: 'Check again for OpenCode' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Check setup for OpenCode' })).toBeEnabled()
     await act(async () => pending.resolve(detection('codex', 'broken')))
     await waitFor(() => expect(button).toBeEnabled())
     expect(screen.getByText('Cannot connect')).toBeVisible()
@@ -162,7 +171,7 @@ describe('Workspace App MCP hierarchy', () => {
     getDetection.mockRejectedValue(new Error('Connection timed out'))
     const user = userEvent.setup()
     mount(value, { workspaceId: 'workspace-1', harness: 'codex' })
-    await user.click(await screen.findByRole('button', { name: 'Check again for Codex' }))
+    await user.click(await screen.findByRole('button', { name: 'Check setup for Codex' }))
     expect(await screen.findByText('Last known: Connected')).toBeVisible()
     expect(screen.queryByText('Connected', { exact: true })).not.toBeInTheDocument()
     expect(screen.getByText('Couldn’t update. Showing the last check.')).toBeVisible()
@@ -180,7 +189,7 @@ describe('Workspace App MCP hierarchy', () => {
     mount(value)
     expect(await screen.findByText('Check failed')).toBeVisible()
     expect(await screen.findByText('Connected')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Check again for Codex' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Check setup for Codex' })).toBeEnabled()
   })
 
   it('makes Details keyboard reachable without an icon-only mystery control', async () => {
@@ -188,7 +197,7 @@ describe('Workspace App MCP hierarchy', () => {
     seedConnections(value)
     const user = userEvent.setup()
     mount(value, { workspaceId: 'workspace-1', harness: 'codex' })
-    const check = await screen.findByRole('button', { name: 'Check again for Codex' })
+    const check = await screen.findByRole('button', { name: 'Check setup for Codex' })
     await user.tab()
     expect(check).toHaveFocus()
     await user.tab()
@@ -275,7 +284,7 @@ describe('Workspace App MCP scope and access', () => {
     getDetection.mockRejectedValue(new api.ApiError({ code: status === 401 ? 'AUTH_REQUIRED' : 'FORBIDDEN', message: 'Access denied' }, status))
     const user = userEvent.setup()
     mount(value, { workspaceId: 'workspace-1', harness: 'codex' })
-    await user.click(await screen.findByRole('button', { name: 'Check again for Codex' }))
+    await user.click(await screen.findByRole('button', { name: 'Check setup for Codex' }))
     expect(await screen.findByText(status === 401 ? 'Sign in to check connections' : 'Connection access is restricted')).toBeVisible()
     expect(screen.queryByText('Connected')).not.toBeInTheDocument()
     expect(screen.queryByText('/srv/project')).not.toBeInTheDocument()
@@ -292,14 +301,14 @@ describe('Workspace App MCP scope and access', () => {
       .mockResolvedValueOnce(detection())
     const user = userEvent.setup()
     mount(value, { workspaceId: 'workspace-1', harness: 'codex' })
-    await user.click(await screen.findByRole('button', { name: 'Check again for Codex' }))
+    await user.click(await screen.findByRole('button', { name: 'Check setup for Codex' }))
     expect(await screen.findByText('Connection access is restricted')).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Check again for Codex' }))
+    await user.click(screen.getByRole('button', { name: 'Check setup for Codex' }))
     await waitFor(() => expect(getDetection).toHaveBeenCalledTimes(2))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Check again for Codex' })).toBeEnabled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Check setup for Codex' })).toBeEnabled())
     expect(screen.queryByText('Connected')).not.toBeInTheDocument()
     expect(screen.queryByText('/srv/project')).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Check again for Codex' }))
+    await user.click(screen.getByRole('button', { name: 'Check setup for Codex' }))
     expect(await screen.findByText('Connected')).toBeVisible()
   })
 })

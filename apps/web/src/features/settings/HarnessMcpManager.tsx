@@ -154,7 +154,9 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
     <ul className="harness-server-list">{servers.data?.servers.map((server) => <li key={server.name}>
       <span className="harness-server-symbol" aria-hidden="true">{server.transport === 'remote' ? '↗' : '⌘'}</span>
       <div className="harness-server-name"><strong>{server.name}</strong><small>{server.label}</small>
-        {server.name === 'linear' && presets?.linear === 'installed' ? <small className="harness-auth-note">Sign in: {harness === 'codex' ? 'codex mcp login linear' : 'opencode mcp auth linear'}. Removing this connection keeps the harness’s saved sign-in.</small> : null}</div>
+        {server.name === 'linear' && presets?.linear === 'installed' ? <details className="harness-mcp-auth"><summary>Sign in</summary>
+          <p>Run <code>{harness === 'codex' ? 'codex mcp login linear' : 'opencode mcp auth linear'}</code>. Removing this connection keeps the harness’s saved sign-in.</p>
+        </details> : null}</div>
       <StatusBadge tone={server.enabled ? 'info' : 'neutral'} label={server.enabled ? 'Configured' : 'Disabled'} />
       {presets && ((server.name === 'graphql-operator' && presets.operator === 'installed') || (server.name === 'linear' && presets.linear === 'installed')) ? <Button size="sm" variant="ghost"
         disabled={managedBusy || servers.isFetching || servers.isError} loading={managed.isPending && managed.variables?.installed === false && managed.variables?.preset === (server.name === 'linear' ? 'linear' : 'operator')}
