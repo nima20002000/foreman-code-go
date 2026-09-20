@@ -396,7 +396,7 @@ const nodeTypes = { agent: AgentNode }
  * edge group so hover and keyboard focus on the edge itself reveal it, and it
  * is rendered in a foreignObject so screen readers get a real button.
  */
-export function HandoffEdge({
+function HandoffEdge({
   id,
   source,
   target,

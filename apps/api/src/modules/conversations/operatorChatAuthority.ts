@@ -22,8 +22,13 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
   current(principalId: string) { return this.access.currentOperator(principalId) }
   assertConfiguration(configuration: OperatorConfigurationVersion) { this.rollout.assertChat(configuration) }
 
-  async setup(manager: NativeHarnessSessionManager, signal: AbortSignal): Promise<OperatorChatSetup> {
+  async setup(manager: NativeHarnessSessionManager, signal: AbortSignal, configuration?: OperatorConfigurationVersion): Promise<OperatorChatSetup> {
     const result = { harness: manager.harness, endpoint: this.endpoint, checkedAt: new Date().toISOString() }
+    if (configuration?.harness.harness === 'opencode'
+      && configuration.harness.advanced?.mcp.serverEnabled['graphql-operator'] === false) {
+      return { ...result, status: 'setup_required',
+        reason: 'The selected Operator settings disable graphql-operator. Enable that connection in Operator advanced settings before sending a new message.' }
+    }
     if (manager instanceof CodexAppServerSessionManager) {
       try {
         const inspected = await manager.inspectMcpConfiguration(this.directory, signal)
@@ -56,7 +61,7 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
     const reviews = new PostgresOperatorReviewLifecycle(this.pool)
     await reviews.assertActive(conversationId)
     signal.throwIfAborted()
-    if ((await this.setup(manager, signal)).status !== 'configured') this.invalidSetup()
+    if ((await this.setup(manager, signal, configuration)).status !== 'configured') this.invalidSetup()
     const cached = this.credentials.get(conversationId)
     if (cached) {
       if (cached.ownerId !== principalId) throw new DomainError('ACCESS_DENIED', 'A native credential cannot change owners.', 403)

@@ -5,6 +5,7 @@ import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, operatorChatSettings 
 import { http, HttpResponse } from 'msw'
 import { server } from '../../mocks/server'
 import { getManagedAgentDefaults, updateManagedAgentDefaults } from '../../shared/api/client'
+import { queryKeys } from '../../shared/api/query'
 import { OperatorComposerSettings } from './OperatorComposerSettings'
 import { OperatorChat } from './OperatorChat'
 import { OperatorChatVisibilityProvider } from './visibility'
@@ -41,13 +42,28 @@ beforeEach(() => {
 afterEach(() => { cleanup(); client.clear(); vi.restoreAllMocks() })
 function chat() { render(<QueryClientProvider client={client}><OperatorChatVisibilityProvider enabled><OperatorChat /></OperatorChatVisibilityProvider></QueryClientProvider>) }
 describe('Operator chat UX', () => {
+  it('keeps saved settings usable on refresh failure and hides them after access is denied', async () => {
+    chat()
+    const input = await screen.findByRole('textbox', { name: 'Message' })
+    fireEvent.change(input, { target: { value: 'Hello' } })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    server.use(http.get('/api/management/settings/agents', () => HttpResponse.json({ code: 'UNAVAILABLE', message: 'Offline' }, { status: 503 })))
+    await client.invalidateQueries({ queryKey: queryKeys.agentDefaults })
+    expect(await screen.findByText('Could not refresh Operator settings')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled()
+    server.use(http.get('/api/management/settings/agents', () => HttpResponse.json({ code: 'ACCESS_DENIED', message: 'Denied' }, { status: 403 })))
+    await client.invalidateQueries({ queryKey: queryKeys.agentDefaults })
+    expect(await screen.findByText('Operator settings access unavailable')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /Agent settings:/ })).not.toBeInTheDocument()
+  })
   it('blocks OpenCode chat until its Operator MCP installation has been checked successfully', async () => {
     let configured = false
     server.use(
       http.get('/api/management/settings/agents', () => HttpResponse.json({ revision: 1, versionId: null,
         value: { ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness: DEFAULT_HARNESS_DEFAULTS.opencode } } })),
       http.get('/api/operator/setup', () => HttpResponse.json({ harness: 'opencode', status: configured ? 'configured' : 'setup_required',
-        endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() })),
+        configurationVersionId: 'operator-config', endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() })),
     )
     chat()
     expect(await screen.findByText('Install Operator MCP in OpenCode first')).toBeVisible()
@@ -78,7 +94,7 @@ describe('Operator chat UX', () => {
     api.get.mockResolvedValue(operatorState({ conversation: { ...operatorState().conversation, id: 'future-chat' }, turnState: 'idle', activeRequestId: null }))
     chat()
     fireEvent.click(await screen.findByRole('button', { name: 'Agent settings: Model A, high' }))
-    expect(screen.queryByRole('switch', { name: 'Show thinking' })).not.toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Show thinking' })).toBeInTheDocument()
   })
 
   it('saves the Codex sandbox to Operator defaults and keeps it for a new chat', async () => {
@@ -276,7 +292,7 @@ describe('Operator chat UX', () => {
     fireEvent.click(screen.getByRole('button', { name: /Model A Choose model/ }))
     fireEvent.click(screen.getByRole('button', { name: /Model B model-b/ }))
     expect(onChange).toHaveBeenCalledWith({ harness: 'codex', model: 'model-b', reasoningEffort: 'low', serviceTier: 'standard', showThinking: false })
-    expect(screen.queryByRole('switch', { name: 'Show thinking' })).not.toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Show thinking' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'OpenCode' }))
     expect(onChange).toHaveBeenLastCalledWith(operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.opencode))
   })

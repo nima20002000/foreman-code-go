@@ -27,11 +27,11 @@ const wrap = (content: ReactNode) => <QueryClientProvider client={client}>{conte
 describe('PR19: persisted transcript boundaries', () => {
   it.each(['failed', 'canceled', 'failed after approval'])('keeps the terminal activity tail visible: %s', () => {
     const view = render(<OperatorMessages messages={[first]} activities={[tool]} activeRequestId={null} onBrowse={() => {}} />)
-    expect(screen.getByText('Read fixture')).toBeVisible()
+    expect(screen.getByText('Tool · Read fixture')).toBeVisible()
     expect(view.container.textContent!.indexOf('Before the tool.')).toBeLessThan(view.container.textContent!.indexOf('Read fixture'))
     view.unmount()
     render(<OperatorMessages messages={[{ ...first }]} activities={[{ ...tool }]} activeRequestId={null} onBrowse={() => {}} />)
-    expect(screen.getByText('Read fixture')).toBeVisible()
+    expect(screen.getByText('Tool · Read fixture')).toBeVisible()
   })
   it('preserves text/tool/text while active, completed with real IDs, and reloaded without stream state', () => {
     const timeline: OperatorTextProjection = { requestId: 'request', parts: { 'part-a': first.content, 'part-b': last.content }, timeline: [
@@ -43,7 +43,7 @@ describe('PR19: persisted transcript boundaries', () => {
       const text = view.container.textContent!
       expect(text.indexOf(first.content)).toBeLessThan(text.indexOf('Read fixture'))
       expect(text.indexOf('Read fixture')).toBeLessThan(text.indexOf(last.content))
-      expect(screen.getAllByText('Read fixture')).toHaveLength(1)
+      expect(screen.getAllByText('Tool · Read fixture')).toHaveLength(1)
     }
     assertOrder()
     view.rerender(<OperatorMessages messages={[first, last]} activities={[tool]} activeRequestId={null} timeline={timeline} onBrowse={() => {}} />)
@@ -61,8 +61,8 @@ describe('PR19: persisted transcript boundaries', () => {
       hasEarlierMessages partialText="" />))
     fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
     await screen.findByText(first.content)
-    await waitFor(() => expect(screen.getAllByText('Earlier operation')).toHaveLength(1))
-    expect(screen.getAllByText('Later operation')).toHaveLength(1)
+    await waitFor(() => expect(screen.getAllByText('Tool · Earlier operation')).toHaveLength(1))
+    expect(screen.getAllByText('Tool · Later operation')).toHaveLength(1)
     expect(screen.getAllByRole('list', { name: 'Conversation history' })).toHaveLength(1)
   })
   it('ignores a new React element for the same approval while the reader is above the bottom', () => {

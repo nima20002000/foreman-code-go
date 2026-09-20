@@ -6,7 +6,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path'
 import {
   CodexSessionCompatibilitySchema, ConversationSchema, OperatorConversationStreamEventSchema, SendOperatorMessageRequestSchema,
   type NativeHarnessEvent, type OperatorActivityQuery, type OperatorConfigurationVersion, type OperatorConversationStreamEvent, type NativeSessionReference,
-  type ExecutionResult, type SendOperatorMessageRequest, type RespondOperatorInteractionRequest, type OperatorChatSetup,
+  type ExecutionResult, type SendOperatorMessageRequest, type RespondOperatorInteractionRequest, type OperatorChatSetup, type OperatorChatSetupQuery,
 } from '@graphql/contracts'
 import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
 import type { OperatorConversationHistoryQuery } from '@graphql/contracts/operator-chat'
@@ -65,7 +65,7 @@ export interface NativeManagerResolver {
 export interface OperatorChatAuthority {
   current(principalId: string): Promise<ManagementPrincipal>
   assertConfiguration(configuration: OperatorConfigurationVersion): void
-  setup(manager: NativeHarnessSessionManager, signal: AbortSignal): Promise<OperatorChatSetup>
+  setup(manager: NativeHarnessSessionManager, signal: AbortSignal, configuration?: OperatorConfigurationVersion): Promise<OperatorChatSetup>
   prepare(manager: NativeHarnessSessionManager, configuration: OperatorConfigurationVersion, conversationId: string,
     principalId: string, signal: AbortSignal): Promise<ChildProcessEnvironment>
   release(conversationId: string): Promise<void>
@@ -76,6 +76,8 @@ interface Runtime {
   session?: NativeSessionReference
   environment?: ChildProcessEnvironment
   disposal?: Promise<void>
+  /** Dummy-credential attachment: inspection/responses only, never launch another turn. */
+  observationOnly?: boolean
 }
 function failure(error: unknown): ExecutionResult {
   const provider = error && typeof error === 'object' && 'result' in error
@@ -141,16 +143,33 @@ export class OperatorChatService {
     }
     this.authority.assertConfiguration(configuration)
   }
-  async setup(principal: ManagementPrincipal): Promise<OperatorChatSetup> {
+  async setup(principal: ManagementPrincipal, input: OperatorChatSetupQuery = {}): Promise<OperatorChatSetup> {
     this.assertOpen(); requireAuthorization(principal, 'harnesses:read')
-    const configuration = await this.operators.inspectionConfiguration()
-    const configurationId = `${configuration.id}:${configuration.contentHash}`
+    const row = input.conversationId ? await this.assertAccess(input.conversationId, principal) : undefined
+    const accepted = row && input.requestId ? await this.repository.acceptedConfiguration(row.id, input.requestId) : undefined
+    let configuration = accepted ?? (input.configurationVersionId
+      ? await this.repository.configuration(input.configurationVersionId) : undefined)
+    if (input.configurationVersionId && !configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'The pending command configuration is unavailable.', 409)
+    // Legacy pending payloads did not include a pin. Prefer their matching idle
+    // conversation configuration, never a different current harness's defaults.
+    if (!configuration && row && (!input.harness || input.harness === row.harness)) {
+      configuration = await this.repository.configuration(row.operator_configuration_version_id)
+    }
+    configuration ??= await this.operators.inspectionConfiguration(input.expectedDefaultsRevision)
+    if ((input.harness && configuration.harness.harness !== input.harness)
+      || (row && configuration.operatorId !== 'application-operator')) {
+      throw new DomainError('OPERATOR_CONFIGURATION_CONFLICT', 'The requested message configuration does not match its Operator harness.', 409)
+    }
+    const selected = configuration
+    const configurationId = `${selected.id}:${selected.contentHash}`
     if (this.setupCheck?.configurationId === configurationId) return this.setupCheck.promise
     const check = (async () => {
       const id = `operator-setup:${randomUUID()}`
-      const manager = this.managers(configuration, id)
-      try { return await this.authority.setup(manager, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)])) }
-      finally { try { await manager.dispose?.() } finally { this.managers.release?.(id) } }
+      const manager = this.managers(selected, id)
+      try {
+        const result = await this.authority.setup(manager, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)]), selected)
+        return { ...result, ...(selected.id === 'application-operator-inspection' ? {} : { configurationVersionId: selected.id }) }
+      } finally { try { await manager.dispose?.() } finally { this.managers.release?.(id) } }
     })()
     this.setupCheck = { configurationId, promise: check }
     this.accepting.add(check)
@@ -260,6 +279,9 @@ export class OperatorChatService {
       // a retryable receipt. A missing receipt is not evidence of non-delivery.
       return this.control(receiptId, () => this.repository.beginTurn(receiptId, input, row.owner_principal_id!, undefined, undefined, true))
     }
+    if (ConversationSchema.parse(row.record).status === 'archived') {
+      throw new DomainError('CONVERSATION_ARCHIVED', 'This conversation is read-only.', 409)
+    }
     const configuration = receiptId ? undefined : await this.repository.configuration(row.operator_configuration_version_id)
     if (!receiptId && !configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Pinned Operator configuration was not found.', 409)
     const harness = configuration ? await this.repository.harnessForMessage(configuration, input) : undefined
@@ -268,10 +290,13 @@ export class OperatorChatService {
       this.assertOpen(); controller.signal.throwIfAborted()
       requireAuthorization(await this.authority.current(row.owner_principal_id!), 'operator_chat:write')
       const begun = receiptId
-        ? await this.repository.beginTurn(receiptId, input, row.owner_principal_id!)
+        ? await this.repository.beginTurn(receiptId, input, row.owner_principal_id!, undefined, undefined, false,
+            (accepted) => this.validate(accepted))
         : fork
-          ? await this.repository.beginForkTurn(id, input, row.owner_principal_id!, harness!, configuration!.id)
-          : await this.repository.beginTurn(id, input, row.owner_principal_id!, input.settings ? harness : undefined, configuration!.id)
+          ? await this.repository.beginForkTurn(id, input, row.owner_principal_id!, harness!, configuration!.id,
+              (accepted) => this.validate(accepted))
+          : await this.repository.beginTurn(id, input, row.owner_principal_id!, input.settings ? harness : undefined,
+              configuration!.id, false, (accepted) => this.validate(accepted))
       if (begun.replayed) return begun
       const targetId = begun.state.conversation.id
       const acceptedId = begun.state.conversation.operatorConfigurationVersionId!
@@ -301,9 +326,10 @@ export class OperatorChatService {
   private async runtime(id: string, row: ConversationRow, configuration: OperatorConfigurationVersion, signal: AbortSignal): Promise<Runtime> {
     await this.assertReviewActive(id)
     signal.throwIfAborted()
+    if (this.runtimes.get(id)?.observationOnly) await this.release(id)
     const existing = this.runtimes.get(id)
     if (existing?.session) {
-      if ((await this.authority.setup(existing.manager, signal)).status !== 'configured') {
+      if ((await this.authority.setup(existing.manager, signal, configuration)).status !== 'configured') {
         throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable the graphql-operator MCP connection in the selected harness before chatting.', 409)
       }
       existing.configuration = configuration; return existing
@@ -323,6 +349,16 @@ export class OperatorChatService {
       }, signal)
     }
     return runtime
+  }
+
+  /** No setup check, delegated credential issuance, new session, or new prompt. */
+  private async observationRuntime(id: string, row: ConversationRow, configuration: OperatorConfigurationVersion,
+    signal: AbortSignal): Promise<Runtime> {
+    await this.assertReviewActive(id)
+    signal.throwIfAborted()
+    const resident = this.runtimes.get(id)
+    if (resident?.session) { resident.configuration = configuration; return resident }
+    return this.cleanupRuntime(id, row, configuration, signal)
   }
 
   /** Existing owned work can be inspected/stopped without authority to launch new work. */
@@ -349,6 +385,9 @@ export class OperatorChatService {
         ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}),
       }, signal)
     }
+    runtime.configuration = configuration
+    // A detached, dummy-credential attach cannot be reused to launch another turn.
+    runtime.observationOnly = true
     // OpenCode history reads can consume automatic permissions. Stop that local
     // responder before any cleanup read, including immediately after reattachment.
     if (configuration.harness.harness === 'opencode'
@@ -605,10 +644,10 @@ export class OperatorChatService {
       }
       const configuration = await this.repository.configuration(row.operator_configuration_version_id)
       if (!configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Pinned Operator configuration was not found.', 409)
-      const runtime = await this.runtime(id, row, configuration, this.lifetime.signal)
       const owner = await this.authority.current(row.owner_principal_id!)
       requireAuthorization(owner, 'operator_chat:write')
       requireAuthorization(owner, 'operator_chat:respond')
+      const runtime = await this.observationRuntime(id, row, configuration, this.lifetime.signal)
       if (!runtime.session || !await this.repository.claimResponse(id, input.requestId, input.nativeRequestId)) {
         throw new DomainError('NATIVE_RESPONSE_UNCERTAIN', 'A response was already submitted. Reconcile it before retrying.', 409)
       }
@@ -708,11 +747,11 @@ export class OperatorChatService {
           const configuration = await this.repository.configuration(row.operator_configuration_version_id)
           if (!configuration) throw new Error('Pinned Operator configuration was not found.')
           const cleanup = !isOperatorReview(row.id) && (revoked || row.cancel_requested)
-          if (!cleanup) this.validate(configuration)
+          // Existing-turn observation is not new-work qualification. Native attach still verifies its protocol.
           const signal = isOperatorReview(row.id) ? this.lifetime.signal
             : AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(5_000)])
           const runtime = cleanup ? await this.cleanupRuntime(row.id, row, configuration, signal)
-            : await this.runtime(row.id, row, configuration, signal)
+            : await this.observationRuntime(row.id, row, configuration, signal)
           if (cleanup && row.active_native_turn_id) await this.interrupt(row.id, row, runtime)
           await this.observe(row.id, requestId, runtime, signal)
         } catch (error) {

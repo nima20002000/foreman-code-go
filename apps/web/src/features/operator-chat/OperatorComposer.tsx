@@ -13,7 +13,7 @@ export function OperatorComposer({ conversationId, context, access, sendDisabled
   const [dismissed, setDismissed] = useState(false)
   const commandsOpen = !dismissed && /^\/n?e?w?$/.test(value.trim())
   const isNew = value.trim() === '/new'
-  const cannotSend = isSending || (!isNew && sendDisabled) || !value.trim()
+  const cannotSend = (!isNew && (isSending || sendDisabled)) || !value.trim()
   useLayoutEffect(() => {
     if (!input.current) return
     input.current.style.height = '0px'
@@ -41,12 +41,12 @@ export function OperatorComposer({ conversationId, context, access, sendDisabled
         if (commandsOpen && ['ArrowDown', 'ArrowUp', 'Tab'].includes(event.key)) { event.preventDefault(); setDraft(conversationId, '/new'); return }
         if (event.key === 'Enter' && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
           event.preventDefault()
-          if (commandsOpen && !isSending) onNewChat()
+          if (commandsOpen) onNewChat()
           else send()
         }
       }} />
     <div className="operator-composer-toolbar">
-      <IconButton label="New chat" variant="ghost" onClick={onNewChat} disabled={isSending}><Icon name="plus" size={17} /></IconButton>
+      <IconButton label="New chat" variant="ghost" onClick={onNewChat}><Icon name="plus" size={17} /></IconButton>
       {access}
       <div className="operator-composer-model">{context}</div>
       {onCancel ? <IconButton label="Stop response" onClick={onCancel} className="operator-composer-send"><Icon name="stop" size={15} /></IconButton>

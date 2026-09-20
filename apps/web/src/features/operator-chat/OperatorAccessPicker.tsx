@@ -22,7 +22,7 @@ export function OperatorAccessPicker({ value, disabled, saving = false, saveErro
   const [error, setError] = useState<string>()
   const root = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
-  const closeTimer = useRef<ReturnType<typeof setTimeout>>()
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const id = useId()
   const label = value.harness === 'codex'
     ? sandboxChoices.find((choice) => choice.value === value.sandbox)?.label ?? value.sandbox

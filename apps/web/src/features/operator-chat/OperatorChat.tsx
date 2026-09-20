@@ -18,6 +18,7 @@ import { isNarrowOperatorChat, operatorChatNarrowQuery, useOperatorChatStore } f
 import { useOperatorChatVisibility } from './useOperatorChatVisibility'
 import { useOperatorSettings } from './useOperatorSettings'
 import { useOperatorChatSetup } from '../../shared/api/operatorChatSetup'
+import { pendingOperatorSetupTarget } from '../../shared/api/operatorSetupTarget'
 import { OperatorSetupNotice } from './OperatorSetupNotice'
 import { SettingsFormFeedback } from '../settings/SettingsFormActions'
 import { acknowledgeOperatorMessage, assertOperatorMessageReserved, beginOperatorMessageAttempt, discardDefinitivelyRejectedOperatorMessage,
@@ -60,7 +61,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
   const historyOpen = useOperatorChatStore((state) => state.historyOpen)
   const selectedId = useOperatorChatStore((state) => state.selectedConversationId)
   const preferences = useOperatorSettings(enabled && open)
-  const setup = useOperatorChatSetup(enabled && open, preferences.query.data?.revision)
+  const preferencesDenied = useAccessFailureLatch(preferences.query)
   const setOpen = useOperatorChatStore((state) => state.setOpen)
   const setHistoryOpen = useOperatorChatStore((state) => state.setHistoryOpen)
   const select = useOperatorChatStore((state) => state.select)
@@ -96,6 +97,12 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
     }, refetchInterval: 3_000 })
   const selectedDenied = useAccessFailureLatch(selected)
   const accessDenied = listDenied || selectedDenied
+  const pending = selectedId && !accessDenied && enabled && !sessionIsSwitching() ? readPendingOperatorMessage(selectedId) : {}
+  const setup = useOperatorChatSetup(enabled && open && !pending.command, preferences.query.data?.revision,
+    { ...(selectedId ? { conversationId: selectedId } : {}), ...(preferences.settings ? { harness: preferences.settings.harness } : {}) })
+  const retrySetup = useOperatorChatSetup(enabled && open && Boolean(pending.command) && !accessDenied, undefined,
+    pendingOperatorSetupTarget(selectedId, pending.command))
+  const shownSetup = pending.command ? retrySetup : setup
   const acceptState = useCallback((id: string, state: OperatorConversationState) => {
     if (deletedIds.current.has(id)) return
     const accepted = newer(queryClient.getQueryData<OperatorConversationState>(detailKey(id)), state)
@@ -287,15 +294,15 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
 
   if (!enabled || sessionIsSwitching()) return null
   const conversation = accessDenied ? undefined : selected.data
-  const settings = preferences.settings
+  const settings = preferencesDenied ? undefined : preferences.settings
   const pendingHandoff = Boolean(settings && conversation?.settings && settings.harness !== conversation.settings.harness
     && (conversation.messages.length > 0 || conversation.hasEarlierMessages))
   const setupReady = setup.isSuccess && setup.data.status === 'configured' && setup.data.harness === settings?.harness
-  const settingsReady = preferences.query.isSuccess && !preferences.form.isDirty && !preferences.form.isSaving && !preferences.form.uncertain
+    && Boolean(setup.data.configurationVersionId)
+  const settingsReady = Boolean(preferences.query.data) && !preferencesDenied && !preferences.form.isDirty && !preferences.form.isSaving && !preferences.form.uncertain
   const active = Boolean(conversation && (conversation.activeRequestId || !['idle', 'error'].includes(conversation.turnState)))
   const archived = conversation?.conversation.status === 'archived'
   const requestId = conversation?.activeRequestId
-  const pending = selectedId && !accessDenied ? readPendingOperatorMessage(selectedId) : {}
   const scopedSendError = send.variables?.id === selectedId && send.variables?.command.requestId === pending.command?.requestId
     && send.error instanceof Error ? send.error.message : undefined
   const sendError = preparationError && preparationError.id === selectedId ? preparationError.message
@@ -353,7 +360,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
     reservations.current.add(id); setPreparingId(id)
     try {
       const command = await reserveOperatorMessage(id, content, window.location.pathname + window.location.search, settings,
-        pendingHandoff ? conversation.revision : undefined,
+        pendingHandoff ? conversation?.revision : undefined,
         { configurationVersionId: conversation?.conversation.operatorConfigurationVersionId,
           defaultsRevision: preferences.query.data?.revision })
       if (!currentSession(generation) || epoch !== identityEpoch()) return
@@ -418,7 +425,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
         <main className="operator-chat-main">
           {handoffNotice && handoffNotice.epoch === identityEpoch() ? <p role="status">Your continued chat is ready. <Button size="sm" variant="ghost"
             onClick={() => { select(handoffNotice.id); setHandoffNotice(undefined) }}>Open continued chat</Button></p> : null}
-          <OperatorSetupNotice data={setup.data} checking={setup.isFetching || setup.isPending} failed={setup.isError} onRetry={() => void setup.refetch()} />
+          <OperatorSetupNotice data={shownSetup.data} checking={shownSetup.isFetching || shownSetup.isPending} failed={shownSetup.isError} onRetry={() => void shownSetup.refetch()} />
           {remove.error instanceof Error ? <Alert live tone="danger" title="Chat could not be deleted">{remove.error.message}</Alert> : null}
           {restore.error instanceof Error ? <Alert live tone="danger" title="Chat could not be restored">{restore.error.message}</Alert> : null}
           {create.error instanceof Error ? <Alert live tone="danger" title="Conversation could not be created">{create.error.message}</Alert> : null}
@@ -461,7 +468,10 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
             <footer className="operator-chat-controls">
               <p className="operator-chat-handoff">Access edits apply to new chats and harness handoffs. This chat keeps its pinned access policy.</p>
               {pendingHandoff ? <p className="operator-chat-handoff" role="status">Your next message starts {settings!.harness === 'opencode' ? 'an OpenCode' : 'a Codex'} chat with prior conversation context.</p> : null}
-              {preferences.query.isError ? <Alert tone="danger" title="Operator settings unavailable" action={<Button size="sm" onClick={() => void preferences.query.refetch()}>Retry settings</Button>}>{preferences.query.error.message}</Alert> : null}
+              {preferences.query.isError ? <Alert tone={preferencesDenied ? 'danger' : 'warning'} title={preferencesDenied ? 'Operator settings access unavailable' : 'Could not refresh Operator settings'}
+                action={<Button size="sm" onClick={() => void preferences.query.refetch()}>Retry settings</Button>}>
+                {preferencesDenied ? 'Check your browser enrollment and permissions.' : preferences.query.data ? 'Last saved settings are still available.' : preferences.query.error.message}
+              </Alert> : null}
               {preferences.form.isSaving ? <p role="status">Saving Operator settings…</p> : null}
               {!preferences.form.isSaving && (preferences.form.isDirty || preferences.form.error || preferences.form.conflicted || preferences.form.uncertain) ? <div>
                 <SettingsFormFeedback form={preferences.form} />

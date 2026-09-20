@@ -15,6 +15,7 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'workspace_defaults_update', action: 'settings:update' },
   { name: 'harness_mcp_servers_list', action: 'harnesses:read' },
   { name: 'harness_mcp_change_request', action: 'harnesses:update' },
+  { name: 'harness_mcp_managed_request', action: 'harnesses:update' },
   { name: 'harness_mcp_change_get', action: 'harnesses:read' },
   { name: 'harness_configuration_check', action: 'harnesses:read' },
   { name: 'harness_options_get', action: 'harnesses:read' },

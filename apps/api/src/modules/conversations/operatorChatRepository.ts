@@ -320,8 +320,16 @@ export class PostgresOperatorConversationRepository {
     return applyOperatorChatSettings(defaults.value.operator.harness, settings)
   }
 
+  async acceptedConfiguration(id: string, requestId: string): Promise<OperatorConfigurationVersion | undefined> {
+    const found = await this.pool.query<{ operator_configuration_version_id: string | null }>(
+      'select operator_configuration_version_id from operator_conversation_turns where conversation_id=$1 and request_id=$2', [id, requestId])
+    const pinned = found.rows[0]?.operator_configuration_version_id
+    return pinned ? this.configuration(pinned) : undefined
+  }
+
   /** The first cross-harness message and its child are one durable, idempotent admission. */
-  async beginForkTurn(sourceId: string, input: SendOperatorMessageRequest, ownerId: string, harness: HarnessConfiguration, expectedConfigurationId?: string) {
+  async beginForkTurn(sourceId: string, input: SendOperatorMessageRequest, ownerId: string, harness: HarnessConfiguration,
+    expectedConfigurationId?: string, validate?: (configuration: OperatorConfigurationVersion) => void) {
     const childId = `operator-fork:${input.requestId}`
     const client = await this.pool.connect()
     try {
@@ -333,7 +341,7 @@ export class PostgresOperatorConversationRepository {
         if (existing.parent_conversation_id !== sourceId || existing.owner_principal_id !== ownerId || existing.fork_request_id !== input.requestId)
           throw new DomainError('COMMAND_ID_CONFLICT', 'The fork request ID belongs to another conversation.', 409)
         await client.query('commit')
-        return this.beginTurn(childId, input, ownerId)
+        return this.beginTurn(childId, input, ownerId, undefined, undefined, false, validate)
       }
       if ((input.configurationVersionId !== undefined && input.configurationVersionId !== source.operator_configuration_version_id)
         || (expectedConfigurationId !== undefined && expectedConfigurationId !== source.operator_configuration_version_id)) {
@@ -361,6 +369,7 @@ export class PostgresOperatorConversationRepository {
       const showThinking = input.settings?.showThinking ?? current.showThinking ?? false
       const next = OperatorConfigurationVersionSchema.parse({ ...current, id: randomUUID(), version: Number(version.rows[0]!.version),
         harness, showThinking, contentHash: `sha256:${createHash('sha256').update(JSON.stringify({ harness, showThinking })).digest('hex')}`, createdAt: new Date().toISOString() })
+      validate?.(next)
       await client.query('insert into operator_configuration_versions (id,operator_id,version,record) values ($1,$2,$3,$4::jsonb)', [next.id,next.operatorId,next.version,JSON.stringify(next)])
       const now = new Date().toISOString()
       const parentTitle = conversation(source).title ?? 'Conversation'
@@ -373,8 +382,8 @@ export class PostgresOperatorConversationRepository {
         values ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$8,'accepted','starting',1)`,
       [childId,current.operatorId,next.id,harness.harness,ownerId,JSON.stringify(record),sourceId,input.requestId,source.harness,sourceSequence,context.omitted,
         context.text])
-      await client.query(`insert into operator_conversation_turns (conversation_id,request_id,payload,input_hash)
-        values ($1,$2,$3::jsonb,$4)`, [childId,input.requestId,JSON.stringify({ ...commandPayload(input), acceptedConfigurationVersionId: next.id }),commandHash(input)])
+      await client.query(`insert into operator_conversation_turns (conversation_id,request_id,payload,input_hash,operator_configuration_version_id)
+        values ($1,$2,$3::jsonb,$4,$5)`, [childId,input.requestId,JSON.stringify({ ...commandPayload(input), acceptedConfigurationVersionId: next.id }),commandHash(input),next.id])
       const message = MessageSchema.parse({ id: randomUUID(), conversationId: childId, role: 'user', requestId: input.requestId,
         content: input.content, createdAt: now, updatedAt: now })
       await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,client_request_id,record)
@@ -387,16 +396,17 @@ export class PostgresOperatorConversationRepository {
     finally { client.release() }
   }
 
-  async beginTurn(id: string, input: SendOperatorMessageRequest, ownerId: string, harness?: HarnessConfiguration, expectedConfigurationId?: string, receiptOnly = false) {
+  async beginTurn(id: string, input: SendOperatorMessageRequest, ownerId: string, harness?: HarnessConfiguration,
+    expectedConfigurationId?: string, receiptOnly = false, validate?: (configuration: OperatorConfigurationVersion) => void) {
     const client = await this.pool.connect()
     try {
       await client.query('begin')
       const row = (await client.query<ConversationRow>('select * from operator_conversations where id=$1 for update', [id])).rows[0]
       if (!row || row.deleted_at || row.owner_principal_id !== ownerId) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
-      const prior = (await client.query<{ input_hash: string; payload: { content: string; context?: unknown; acceptedConfigurationVersionId?: string }; retryable: boolean }>(
-        'select input_hash,payload,retryable from operator_conversation_turns where conversation_id=$1 and request_id=$2', [id, input.requestId])).rows[0]
+      const prior = (await client.query<{ input_hash: string; payload: { content: string; context?: unknown; acceptedConfigurationVersionId?: string }; retryable: boolean; operator_configuration_version_id: string | null }>(
+        'select input_hash,payload,retryable,operator_configuration_version_id from operator_conversation_turns where conversation_id=$1 and request_id=$2', [id, input.requestId])).rows[0]
       if (prior && (prior.input_hash === 'legacy'
-        ? prior.payload.content !== input.content || Object.keys(input.context ?? {}).length > 0 || Boolean(input.settings)
+        ? prior.payload.content !== input.content || Object.keys(input.context ?? {}).length > 0 || Boolean(input.settings) || Boolean(input.configurationVersionId)
         : prior.input_hash !== commandHash(input))) {
         throw new DomainError('COMMAND_ID_CONFLICT', 'This request ID was already used with a different message or route context.', 409)
       }
@@ -414,13 +424,14 @@ export class PostgresOperatorConversationRepository {
         }
         if (prior) {
           // No inference from the latest chat/defaults is safe for an old receipt.
-          const acceptedId = prior.payload.acceptedConfigurationVersionId
+          const acceptedId = prior.operator_configuration_version_id ?? prior.payload.acceptedConfigurationVersionId
           if (!acceptedId) throw new DomainError('OPERATOR_RETRY_CONFIGURATION_UNKNOWN', 'This older receipt has no frozen execution configuration. It remains saved and will not be relaunched automatically.', 409)
           const accepted = await this.configuration(acceptedId, client)
           const current = await this.configuration(row.operator_configuration_version_id, client)
           if (!accepted || !current || accepted.operatorId !== current.operatorId || accepted.harness.harness !== row.harness) {
             throw new DomainError('OPERATOR_RETRY_CONFIGURATION_UNKNOWN', 'The receipt execution configuration is unavailable or incompatible with this conversation.', 409)
           }
+          validate?.(accepted)
           row.operator_configuration_version_id = accepted.id
           row.record = { ...ConversationSchema.parse(row.record), operatorConfigurationVersionId: accepted.id }
           await client.query('update operator_conversations set operator_configuration_version_id=$2 where id=$1', [id, accepted.id])
@@ -438,17 +449,23 @@ export class PostgresOperatorConversationRepository {
             const versionRow = await client.query<{ version: number }>('select coalesce(max(version),0)+1 as version from operator_configuration_versions where operator_id=$1', [current.operatorId])
             const next = OperatorConfigurationVersionSchema.parse({ ...current, id: randomUUID(), version: Number(versionRow.rows[0]!.version),
               harness, showThinking, contentHash: `sha256:${createHash('sha256').update(JSON.stringify({ harness, showThinking })).digest('hex')}`, createdAt: new Date().toISOString() })
+            validate?.(next)
             await client.query('insert into operator_configuration_versions (id,operator_id,version,record) values ($1,$2,$3,$4::jsonb)', [next.id,next.operatorId,next.version,JSON.stringify(next)])
             await client.query(`update operator_conversations set operator_configuration_version_id=$2,harness=$3,
               native_session_id=case when harness=$3 then native_session_id else null end,
               provider_version=case when harness=$3 then provider_version else null end where id=$1`, [id,next.id,harness.harness])
             row.operator_configuration_version_id = next.id
             row.record = { ...ConversationSchema.parse(row.record), operatorConfigurationVersionId: next.id }
-          }
+          } else validate?.(current)
+        }
+        if (!prior && !harness) {
+          const current = await this.configuration(row.operator_configuration_version_id, client)
+          if (!current) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Operator configuration was not found.', 409)
+          validate?.(current)
         }
         if (!prior) {
-          await client.query(`insert into operator_conversation_turns (conversation_id,request_id,payload,input_hash)
-            values ($1,$2,$3::jsonb,$4)`, [id, input.requestId, JSON.stringify({ ...commandPayload(input), acceptedConfigurationVersionId: row.operator_configuration_version_id }), commandHash(input)])
+          await client.query(`insert into operator_conversation_turns (conversation_id,request_id,payload,input_hash,operator_configuration_version_id)
+            values ($1,$2,$3::jsonb,$4,$5)`, [id, input.requestId, JSON.stringify({ ...commandPayload(input), acceptedConfigurationVersionId: row.operator_configuration_version_id }), commandHash(input),row.operator_configuration_version_id])
           const now = new Date().toISOString()
           const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, role: 'user', requestId: input.requestId, content: input.content, createdAt: now, updatedAt: now })
           await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,client_request_id,record)

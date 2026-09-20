@@ -93,6 +93,7 @@ export function OperatorComposerSettings({ value, onChange, disabled }: {
           disabled={disabled || value.harness !== 'codex' || (!fastSupported && value.serviceTier !== 'priority')}
           onChange={(event) => { if (value.harness === 'codex') update({ ...value, serviceTier: event.target.checked ? 'priority' : 'standard' }) }} />
         {value.harness === 'opencode' ? <small>Fast mode is not available in OpenCode.</small> : null}
+        <Switch label="Show thinking" checked={value.showThinking} disabled={disabled} onChange={(event) => update({ ...value, showThinking: event.target.checked })} />
         {catalog.isPending ? <small role="status">Loading models…</small> : null}
         {catalog.isError || defaults.isError ? <div role="alert">Settings unavailable. <Button size="sm" onClick={() => { void catalog.refetch(); void defaults.refetch() }}>Retry</Button></div> : null}
       </>}

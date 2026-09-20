@@ -153,6 +153,7 @@ export interface WorkspaceSelectionProps {
   workspaceId: string
   selectedAgentId?: string
   activeWorkflowId?: string
+  lastRunId?: string
   state?: WorkspaceRouteState
   stateMessage?: string
   slots?: WorkspaceShellSlots

@@ -10,13 +10,13 @@ describe('operator thinking presentation', () => {
       payload: { part: { id: 'r2', type: 'reasoning', text: 'Checking the result.' } } }))
       .toEqual([{ partId: 'thinking:r2', text: 'Checking the result.', mode: 'replace' }])
   })
-  it('persists completed Codex commentary but lets OpenCode persist its final message once', () => {
+  it('persists completed Codex commentary and OpenCode text parts with stable identities', () => {
     const occurredAt = new Date().toISOString()
     expect(completedNativeAssistantMessage({ sequence: 3, type: 'item.completed', occurredAt,
       payload: { item: { id: 'commentary-1', type: 'agentMessage', text: 'Checking the folder.' } } }, 'codex'))
       .toEqual({ id: 'commentary-1', text: 'Checking the folder.' })
     expect(completedNativeAssistantMessage({ sequence: 4, type: 'message.part.updated', occurredAt,
       payload: { part: { id: 'part-1', messageID: 'message-1', type: 'text', text: 'Done.', time: { end: 1 } } } }, 'opencode'))
-      .toBeUndefined()
+      .toEqual({ id: 'part-1', parentMessageId: 'message-1', text: 'Done.', complete: true })
   })
 })

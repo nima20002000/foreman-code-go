@@ -146,7 +146,8 @@ describe('PR19 durable admission, authentication and native-session regressions'
     await repository.finish(conversation.id, 'second', { outcome: 'canceled' })
     const retried = await repository.beginTurn(conversation.id, request, owner.id)
     expect(retried.state.conversation.operatorConfigurationVersionId).toBe(acceptedId)
-    expect(retried.state.settings).toEqual(operatorChatSettings(configuration.harness, configuration.showThinking))
+    const acceptedConfiguration = (await repository.configuration(acceptedId))!
+    expect(retried.state.settings).toEqual(operatorChatSettings(acceptedConfiguration.harness, acceptedConfiguration.showThinking))
     const receipt = await pool.query<{ payload: { acceptedConfigurationVersionId: string } }>('select payload from operator_conversation_turns where conversation_id=$1 and request_id=$2', [conversation.id, request.requestId])
     expect(receipt.rows[0]!.payload.acceptedConfigurationVersionId).toBe(acceptedId)
   })

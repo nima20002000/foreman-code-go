@@ -40,7 +40,7 @@ export function Combobox({ label, value, options, onValueChange, placeholder = '
     setQuery('')
   }
   return <div className="n-field n-combobox" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) { setOpen(false); setQuery('') } }}>
-    <label htmlFor={id}>{label}</label>
+    <label htmlFor={id} onClick={(event) => event.preventDefault()}>{label}</label>
     {name && <input type="hidden" name={name} value={value} disabled={disabled} />}
     <div className="n-input-wrap" data-invalid={Boolean(error)}><span className="n-input-leading"><Icon name="search" size={16} /></span>
       <input ref={input} id={id} className="n-input" role="combobox" autoComplete="off" aria-autocomplete="list" aria-expanded={expanded} aria-controls={expanded ? `${id}-list` : undefined}

@@ -37,7 +37,7 @@ export function registerMcpDetectionRoute(
         const location = ExecutionLocationSchema.parse(raw)
         return ScopedMcpDetectionSchema.parse(await detection.inspect({
           harness: params.harness, runnerId: location.runnerId, workingDirectory: location.rootPath,
-          signal: controller.signal,
+          signal: controller.signal, phase: 'configuration',
         }))
       } finally {
         request.raw.removeListener('aborted', abandoned)

@@ -96,6 +96,10 @@ export function buildProductionApp(
   const nativeConfigurations = new NativeConfigurationService(
     config.harnesses.codexBinary, config.harnesses.openCodeBinary, config.harnesses.workspaceRoot,
   )
+  const endpointHost = config.host === '0.0.0.0' ? '127.0.0.1'
+    : config.host === '::' || config.host === '::1' ? '[::1]' : config.host
+  const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/tools`
+  const operatorMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/operator`
   const harnessSettings = {
     directories: new HarnessDirectoryBrowser([projectRoot], database.pool),
     mcp: new HarnessMcpSettingsService(database.pool, commands, {
@@ -103,11 +107,8 @@ export function buildProductionApp(
       opencode: new OpenCodeMcpConnections(config.harnesses.openCodeBinary, config.harnesses.workspaceRoot, processRegistry.scope('settings:mcp:opencode')),
     }, () => { harnessCatalog.invalidateChecks(); nativeConfigurations.invalidateOptions() }, async () => {
       await Promise.all([processRegistry.closeOwner('settings:mcp:codex'), processRegistry.closeOwner('settings:mcp:opencode')])
-    }),
+    }, operatorMcpEndpoint),
   }
-  const endpointHost = config.host === '0.0.0.0' ? '127.0.0.1'
-    : config.host === '::' || config.host === '::1' ? '[::1]' : config.host
-  const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/tools`
   const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
     const configuration = context.configuration.harness
     if (configuration.harness !== context.harness) {
@@ -184,7 +185,6 @@ export function buildProductionApp(
     repository, budgets, approvals, (interaction) => engine.resumeInteraction(interaction), responseJournal,
   )
   const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
-  const operatorMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/operator`
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
   const resolveOperatorManager: NativeManagerResolver = (configuration, conversationId) => {
     const existing = operatorManagers.get(conversationId)

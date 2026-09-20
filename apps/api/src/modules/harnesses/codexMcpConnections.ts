@@ -1,11 +1,19 @@
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { backupNativeUserFile, readNativeUserFile } from './nativeConfigFiles.js'
 import { runCommand } from './process.js'
-import type { HarnessMcpChange } from '@graphql/contracts/management'
+import type { HarnessMcpChange, HarnessMcpManagedPreset } from '@graphql/contracts/management'
 import { DomainError } from '../errors.js'
 import { CodexStdioTransport } from './codexStdioTransport.js'
 import { assertCodexUnchanged, qualifyCodex, QUALIFIED_CODEX_VERSION } from './codexProtocol.js'
 import { fingerprint, record, replacement, type NativeMcpAdapter, type NativeMcpSnapshot } from './nativeMcpCommon.js'
+import { withNativeMcpDelivery } from './nativeMcpDelivery.js'
+
+/** A second definition can survive user-entry removal, even when its current values are identical. */
+export function codexMcpOwnership(layers: unknown[], userLayer: Record<string, unknown>, user: Record<string, unknown>) {
+  const otherLayers = layers.map(record).filter((layer) => layer !== userLayer && !layer.disabledReason)
+  return Object.fromEntries(Object.keys(user).map((name) => [name,
+    !otherLayers.some((layer) => Object.hasOwn(record(record(layer.config).mcp_servers), name))]))
+}
 
 /** No workflow/Operator credentials, thread, model turn or legacy exec invocation. */
 export class CodexMcpConnections implements NativeMcpAdapter {
@@ -29,8 +37,8 @@ export class CodexMcpConnections implements NativeMcpAdapter {
     }
     const userConfig = record(userLayer.config)
     const user = record(userConfig.mcp_servers)
-    // ConfigReadResponse.config can omit untyped keys. Native `mcp list` supplies
-    // resolved connections; this diagnostic is not agent execution via `exec`.
+    // ConfigReadResponse.config can omit untyped keys. Native mcp list exposes
+    // resolved transport/auth references; neither values nor layer order imply ownership.
     const listing = await runCommand(binary, ['mcp', 'list', '--json'], this.directory, signal, environment)
     if (listing.exitCode !== 0) throw new DomainError('MCP_CONFIG_UNAVAILABLE', 'Codex could not list its native MCP connections.', 503)
     const payload: unknown = JSON.parse(listing.stdout)
@@ -48,24 +56,30 @@ export class CodexMcpConnections implements NativeMcpAdapter {
     const after = record(await transport.request('config/read', { includeLayers: true, cwd: this.directory }, signal))
     if (fingerprint(result.layers) !== fingerprint(after.layers)) throw new DomainError('REVISION_CONFLICT', 'Native configuration changed while it was inspected.', 409)
     const file = String(record(userLayer.name).file)
-    return { harness: 'codex', user, userConfig, effective, file, version: userLayer.version,
-      revision: fingerprint([userLayer.version, effective, file]) }
+    const ownership = codexMcpOwnership(result.layers, userLayer, user)
+    return { harness: 'codex', user, userConfig, effective, file, version: userLayer.version, ownership,
+      revision: fingerprint([userLayer.version, effective, file, result.layers]) }
   }
   read(signal: AbortSignal): Promise<NativeMcpSnapshot> { return this.control((transport, binary, environment) => this.inspect(transport, binary, environment, signal), signal) }
-  async apply(snapshot: NativeMcpSnapshot, change: HarnessMcpChange, signal: AbortSignal): Promise<void> {
-    const next = replacement(snapshot, change)
-    await this.control(async (transport, binary, environment) => {
-      const current = await this.inspect(transport, binary, environment, signal)
-      if (current.revision !== snapshot.revision) throw new DomainError('REVISION_CONFLICT', 'Native MCP configuration changed. Refresh and review a new change.', 409)
-      // Private recovery copy before the native write; never returned to the browser or MCP client.
-      const source = await readNativeUserFile(current.file)
-      await backupNativeUserFile(current.file, source)
-      await transport.request('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${change.name}`, value: next ?? null, mergeStrategy: 'replace' }],
-        expectedVersion: current.version, filePath: current.file, reloadUserConfig: true }, signal)
-      const after = await this.inspect(transport, binary, environment, signal)
-      const expected = { ...current.user }
-      if (next === undefined) delete expected[change.name]; else expected[change.name] = next
-      if (fingerprint({ ...current.userConfig, mcp_servers: expected }) !== fingerprint({ ...after.userConfig, mcp_servers: after.user })) throw new DomainError('MCP_WRITE_UNCONFIRMED', 'The native write could not be confirmed. Do not retry it automatically.', 409)
-    }, signal)
+  async apply(snapshot: NativeMcpSnapshot, change: HarnessMcpChange, signal: AbortSignal,
+    managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): Promise<void> {
+    return withNativeMcpDelivery(async (writing) => {
+      const next = replacement(snapshot, change, managed)
+      await this.control(async (transport, binary, environment) => {
+        const current = await this.inspect(transport, binary, environment, signal)
+        if (current.revision !== snapshot.revision) throw new DomainError('REVISION_CONFLICT', 'Native MCP configuration changed. Refresh and review a new change.', 409)
+        const source = await readNativeUserFile(current.file)
+        await backupNativeUserFile(current.file, source)
+        signal.throwIfAborted()
+        // Exactly one irreversible native operation. A later error is uncertain.
+        writing()
+        await transport.request('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${change.name}`, value: next ?? null, mergeStrategy: 'replace' }],
+          expectedVersion: current.version, filePath: current.file, reloadUserConfig: true }, signal)
+        const after = await this.inspect(transport, binary, environment, signal)
+        const expected = { ...current.user }
+        if (next === undefined) delete expected[change.name]; else expected[change.name] = next
+        if (fingerprint({ ...current.userConfig, mcp_servers: expected }) !== fingerprint({ ...after.userConfig, mcp_servers: after.user })) throw new DomainError('MCP_WRITE_UNCONFIRMED', 'The native write could not be confirmed. Do not retry it automatically.', 409)
+      }, signal)
+    })
   }
 }

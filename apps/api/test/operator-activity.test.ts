@@ -9,9 +9,9 @@ describe('Operator native activity projection', () => {
   it('filters live and replayed OpenCode parts by current parent turn and root session', () => {
     const accepts = openCodeTurnEvents('root', () => 'current')
     for (const info of [
-      { id: 'old', sessionID: 'root', parentID: 'previous' },
-      { id: 'child', sessionID: 'child-session', parentID: 'current' },
-      { id: 'answer', sessionID: 'root', parentID: 'current' },
+      { id: 'old', role: 'assistant', sessionID: 'root', parentID: 'previous' },
+      { id: 'child', role: 'assistant', sessionID: 'child-session', parentID: 'current' },
+      { id: 'answer', role: 'assistant', sessionID: 'root', parentID: 'current' },
     ]) accepts(event('message.updated', { info }))
     expect(accepts(event('message.part.updated', { part: { messageID: 'old' } }))).toBe(false)
     expect(accepts(event('message.part.updated', { part: { messageID: 'child' } }))).toBe(false)
@@ -61,13 +61,13 @@ describe('Operator native activity projection', () => {
 
   it('does not attach previous turns or other sessions to the current OpenCode request', () => {
     const events = [
-      event('message.updated', { info: { id: 'new-answer', parentID: 'new-request' } }),
-      event('message.updated', { info: { id: 'old-answer', parentID: 'old-request' } }),
+      event('message.updated', { info: { id: 'new-answer', role: 'assistant', parentID: 'new-request' } }),
+      event('message.updated', { info: { id: 'old-answer', role: 'assistant', parentID: 'old-request' } }),
       event('message.part.updated', { part: { messageID: 'old-answer', id: 'old-tool' } }),
       event('message.part.updated', { part: { messageID: 'new-answer', id: 'new-tool' } }),
     ]
     const selected = currentOperatorHistory({ nativeTurnId: 'new-request', events, pendingInteractions: [] }, 'opencode')
-    expect(selected).toEqual([events[3]])
+    expect(selected).toEqual([{ ...events[3], payload: { ...events[3]!.payload, nativeMessageCompleted: false } }])
     expect(currentOperatorHistory({ nativeTurnId: 'right-turn', events: [event('item.snapshot', { turnId: 'wrong-turn' })], pendingInteractions: [] }, 'codex')).toEqual([])
   })
 })

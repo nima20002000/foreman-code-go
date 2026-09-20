@@ -35,6 +35,7 @@ const paths = {
   history: 'M3 3v6h6M3 9a9 9 0 1 1 1 10M12 7v5l4 2',
   external: 'M14 3h7v7m0-7L10 14M10 3H3v18h18v-7',
   minus: 'M5 12h14',
+  trash: 'M4 7h16M9 7V4h6v3m3 0-1 14H7L6 7m4 4v6m4-6v6',
   maximize: 'M3 9V3h6m6 0h6v6m0 6v6h-6m-6 0H3v-6',
   menu: 'M3 6h18M3 12h18M3 18h18',
 } as const
