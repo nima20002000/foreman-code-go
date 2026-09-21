@@ -25,9 +25,6 @@ vi.mock('@tanstack/react-router', async () => {
 const base = NATIVE_INTERACTION_FIXTURES.codex
 const humanA: DurableInteraction = { ...base, id: 'human-a', requestingAgentId: 'agent-a', approval: { handler: 'user' } }
 const humanB: DurableInteraction = { ...base, id: 'human-b', requestingAgentId: 'agent-b', approval: { handler: 'user' }, request: { path: '/tmp/file', permission: 'write' } }
-const deliveryFailed: DurableInteraction = { ...base, id: 'human-delivery-failed', requestingAgentId: 'agent-a', approval: { handler: 'user' },
-  status: 'delivery_failed', deliveryState: 'failed', selectedOptionId: base.responseOptions[0]!.optionId,
-  nativeRequestType: 'permission.asked', request: { path: '/tmp/retry', permission: 'external_directory' } }
 const orchestrator: DurableInteraction = { ...base, id: 'agent-review', requestingAgentId: 'agent-c', approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'agent-o' } }
 const queue = (items: DurableInteraction[]) => ({
   data: { pages: [{ items, nextCursor: null }] }, isPending: false, isError: false, isFetching: false,
@@ -36,10 +33,11 @@ const queue = (items: DurableInteraction[]) => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
-  useApprovalInboxStore.setState({ open: false, sidebarOpen: true, workspaceId: '', workflowId: undefined, interactionId: undefined })
-  api.list.mockImplementation(({ status }) => queue(status === 'pending' ? [humanA, humanB, orchestrator] : status === 'delivery_failed' ? [deliveryFailed] : []))
+  useApprovalInboxStore.setState({ open: false, workspaceId: '', workflowId: undefined, interactionId: undefined })
+  api.list.mockReturnValue(queue([humanA, humanB, orchestrator]))
   api.workspace.mockReturnValue({ data: { workspace: { id: base.workspaceId, name: 'Workspace' }, workflows: [{ id: base.workflowId, name: 'Workflow' }], agents: [
-    { id: 'agent-a', name: 'Builder' }, { id: 'agent-b', name: 'Tester' }, { id: 'agent-c', name: 'Orchestrator worker' },
+    { id: 'agent-a', name: 'Builder', role: 'Coder', harness: 'codex', model: 'gpt-5', status: 'waiting', description: 'Builds the implementation.' },
+    { id: 'agent-b', name: 'Tester' }, { id: 'agent-c', name: 'Orchestrator worker' },
   ] }, isError: false })
   api.detail.mockImplementation((id: string) => ({ data: { interaction: id === humanB.id ? humanB : humanA, canRespond: true }, isPending: false, isError: false, isFetching: false, refetch: vi.fn() }))
   userApi.detail.mockReturnValue({ data: { interaction: humanA, canRespond: true }, isPending: false, isError: false, refetch: vi.fn() })
@@ -48,18 +46,20 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('floating human approval inbox', () => {
-  it('stays on the board, groups only human requests by agent, and collapses its sidebar', async () => {
+  it('stays on the board, shows all pending human requests, and opens a minimal agent profile', async () => {
     const user = userEvent.setup()
     useApprovalInboxStore.getState().openInbox({ workspaceId: base.workspaceId, workflowId: base.workflowId })
     render(<ApprovalInbox />)
     const panel = screen.getByRole('dialog', { name: 'Human approval inbox' })
-    expect(within(panel).getByRole('button', { name: /Builder/ })).toBeVisible()
-    expect(within(panel).getByRole('button', { name: /Tester/ })).toBeVisible()
+    expect(within(panel).getByRole('button', { name: 'View agent: Builder' })).toBeVisible()
+    expect(within(panel).getByRole('button', { name: 'View agent: Tester' })).toBeVisible()
     expect(within(panel).queryByText('Orchestrator worker')).not.toBeInTheDocument()
-    expect([...new Set(api.list.mock.calls.map(([input]) => input.status))]).toEqual(['pending', 'decided', 'delivery_pending', 'delivery_failed'])
     expect(api.list).toHaveBeenCalledWith({ workspaceId: base.workspaceId, workflowId: base.workflowId, status: 'pending', limit: 100 }, true)
-    await user.click(within(panel).getByRole('button', { name: 'Close agent sidebar' }))
-    expect(within(panel).getByRole('button', { name: 'Open agent sidebar' })).toHaveAttribute('aria-expanded', 'false')
+    expect(within(panel).queryByRole('button', { name: /Refresh/ })).not.toBeInTheDocument()
+    await user.click(within(panel).getByRole('button', { name: 'View agent: Builder' }))
+    const profile = await screen.findByRole('dialog', { name: 'Builder' })
+    expect(profile).toHaveTextContent('Coder · Codex · gpt-5')
+    expect(profile).toHaveTextContent('Builds the implementation.')
     expect(useApprovalInboxStore.getState().open).toBe(true)
   })
 
@@ -67,26 +67,18 @@ describe('floating human approval inbox', () => {
     const user = userEvent.setup()
     useApprovalInboxStore.getState().openInbox({ workspaceId: base.workspaceId })
     render(<ApprovalInbox />)
-    const row = screen.getByRole('button', { name: /pnpm test/ }).closest('li')!
-    await user.click(within(row).getByRole('button', { name: 'Approve' }))
+    const row = screen.getAllByRole('button', { name: 'Run a command' })[0]!.closest('li')!
+    await user.click(within(row).getByRole('button', { name: 'Accept' }))
     expect(userApi.mutate).toHaveBeenCalledWith({ interactionId: humanA.id, optionId: 'codex-approve-once', expectedRevision: humanA.revision }, expect.any(Object))
     expect(within(row).getByRole('button', { name: 'Reject' })).toHaveAttribute('title', expect.stringContaining('This request only'))
-  })
-
-  it('keeps a human delivery failure visible while the agent is waiting', () => {
-    useApprovalInboxStore.getState().openInbox({ workspaceId: base.workspaceId })
-    render(<ApprovalInbox />)
-    const row = screen.getByRole('button', { name: /Access an external directory/ }).closest('li')!
-    expect(within(row).getByRole('button', { name: 'Retry' })).toBeVisible()
-    expect(within(row).queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
-    expect(within(row).queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument()
+    expect(within(row).queryByText('/project')).not.toBeInTheDocument()
   })
 
   it('opens details in a separate centered dialog and outside-click closes only the detail', async () => {
     const user = userEvent.setup()
     useApprovalInboxStore.getState().openInbox({ workspaceId: base.workspaceId })
     render(<ApprovalInbox />)
-    await user.click(screen.getByRole('button', { name: /pnpm test/ }))
+    await user.click(screen.getAllByRole('button', { name: 'Run a command' })[0]!)
     const detail = await screen.findByRole('dialog', { name: 'Run a command' })
     expect(detail).toBeVisible()
     expect(within(detail).getByText(/Requested by/)).toHaveTextContent('Builder')

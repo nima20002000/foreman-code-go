@@ -4,34 +4,26 @@
 .approval-inbox-panel[data-state='closing'] { animation: approval-inbox-close 180ms ease-in both; }
 @keyframes approval-inbox-open { from { opacity: 0; transform: translateY(-8px) scale(.98); } to { opacity: 1; transform: none; } }
 @keyframes approval-inbox-close { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-8px) scale(.98); } }
-.approval-inbox-move { position: absolute; z-index: 3; top: 0; left: 0; right: 4rem; height: 2.35rem; border: 0; background: transparent; cursor: grab; touch-action: none; }
+.approval-inbox-move { position: absolute; z-index: 3; top: 0; left: 0; right: 2.25rem; height: 2.35rem; border: 0; background: transparent; cursor: grab; touch-action: none; }
 .approval-inbox-move:active { cursor: grabbing; }
 .approval-inbox-move:focus-visible { outline: 1px solid var(--color-accent); outline-offset: -2px; border-radius: .3rem; }
 .approval-inbox-controls { position: absolute; z-index: 5; top: .25rem; right: .25rem; display: flex; gap: .1rem; }
-.approval-inbox-controls .n-icon-button, .approval-sidebar-toggle { width: 1.75rem; height: 1.75rem; min-height: 1.75rem; padding: .3rem; }
-.approval-sidebar-toggle { position: absolute; z-index: 5; top: .3rem; left: .3rem; transition: transform 180ms cubic-bezier(.16,1,.3,1); }
-.approval-sidebar-toggle-open { transform: translateX(5.25rem) rotate(180deg); }
+.approval-inbox-controls .n-icon-button { width: 1.75rem; height: 1.75rem; min-height: 1.75rem; padding: .3rem; }
 .approval-inbox-body { display: flex; min-width: 0; min-height: 0; width: 100%; overflow: hidden; border-radius: inherit; }
-.approval-inbox-body aside { display: flex; flex: 0 0 6.5rem; min-width: 0; flex-direction: column; overflow: auto; padding: 2.35rem .35rem .35rem; border-right: 1px solid var(--color-border); scrollbar-width: none; }
-.approval-inbox-body aside::-webkit-scrollbar, .approval-inbox-body main::-webkit-scrollbar { display: none; }
-.approval-inbox-body aside[data-state='open'] { animation: approval-sidebar-open 180ms cubic-bezier(.16,1,.3,1) both; }
-.approval-inbox-body aside[data-state='closing'] { animation: approval-sidebar-close 180ms ease-in both; }
-@keyframes approval-sidebar-open { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
-@keyframes approval-sidebar-close { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateX(-10px); } }
-.approval-inbox-body aside > button { display: flex; align-items: center; justify-content: space-between; gap: .3rem; width: 100%; min-height: 1.75rem; padding: .25rem .4rem; border: 0; border-radius: .4rem; background: transparent; color: var(--color-text); font: inherit; font-size: .68rem; text-align: left; cursor: pointer; }
-.approval-inbox-body aside > button:is(:hover, :focus-visible), .approval-inbox-body aside > button[aria-current='true'] { background: var(--color-surface-subtle); }
-.approval-inbox-body aside > button span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .approval-inbox-body main { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; gap: .25rem; overflow: auto; padding: 2.35rem .35rem .35rem; scrollbar-width: none; }
+.approval-inbox-body main::-webkit-scrollbar { display: none; }
 .approval-request-list { display: flex; flex-direction: column; gap: .25rem; margin: 0; padding: 0; list-style: none; }
-.approval-request-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: stretch; min-width: 0; border: 1px solid var(--color-border); border-radius: .5rem; background: var(--color-surface-raised); }
+.approval-request-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .25rem; min-width: 0; padding: .25rem; border: 1px solid var(--color-border); border-radius: .55rem; background: var(--color-surface-raised); }
 .approval-request-row:is(:hover, :focus-within) { border-color: var(--color-border-strong); }
-.approval-row-actions { position: relative; display: flex; align-items: center; justify-content: center; gap: .15rem; padding: .2rem; border-right: 1px solid var(--color-border); }
-.approval-row-actions .n-button { min-width: 3.25rem; min-height: 1.35rem; padding: .1rem .3rem; border-radius: .3rem; font-size: .6rem; }
+.approval-agent-button { display: grid; place-items: center; width: 1.65rem; height: 1.65rem; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+.approval-agent-button:is(:hover, :focus-visible) { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.approval-agent-button .n-avatar { width: 1.55rem; height: 1.55rem; }
+.approval-row-actions { position: relative; display: flex; align-items: center; justify-content: flex-end; gap: .15rem; }
+.approval-row-actions .n-button { min-width: auto; min-height: 1.45rem; padding: .1rem .35rem; border-radius: .35rem; font-size: .6rem; }
 .approval-row-error { position: absolute; z-index: 2; left: .4rem; top: calc(100% + .25rem); width: 15rem; padding: .45rem; border: 1px solid var(--color-error-border); border-radius: .45rem; background: var(--color-surface-raised); color: var(--color-error-text); font-size: .7rem; box-shadow: 0 8px 24px #0003; }
-.approval-request-open { display: grid; gap: .1rem; min-width: 0; padding: .35rem .45rem; border: 0; border-radius: 0 .5rem .5rem 0; background: transparent; color: var(--color-text); font: inherit; text-align: left; cursor: pointer; }
+.approval-request-open { display: block; min-width: 0; padding: .3rem .2rem; overflow: hidden; border: 0; border-radius: .35rem; background: transparent; color: var(--color-text); font: inherit; text-align: left; cursor: pointer; }
 .approval-request-open:is(:hover, :focus-visible) { background: var(--color-surface-subtle); outline: 0; }
-.approval-request-open strong { font-size: .7rem; }
-.approval-request-open span { min-width: 0; overflow: hidden; color: var(--color-text-muted); font-size: .62rem; text-overflow: ellipsis; white-space: nowrap; }
+.approval-request-open strong { display: block; overflow: hidden; font-size: .7rem; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .approval-empty { margin: auto; color: color-mix(in srgb, var(--color-text-muted) 82%, transparent); font-size: .64rem; letter-spacing: .01em; }
 .approval-inbox-resize { position: absolute; z-index: 10; border: 0; padding: 0; background: transparent; touch-action: none; }
 .approval-inbox-resize:focus-visible { outline: 1px solid var(--color-accent); outline-offset: -2px; }
@@ -60,13 +52,14 @@
 .approval-actions button small, .approval-history p { max-width: 25rem; color: var(--color-text-muted); font-size: .68rem; }
 .approval-actions button:first-child small { color: inherit; opacity: .8; }
 .approval-warning { flex-basis: 100%; margin: .25rem 0 0; color: var(--color-warning-text); font-size: .75rem; }
+.approval-agent-dialog .n-dialog-body { padding-top: .6rem; }
+.approval-agent-profile { display: grid; justify-items: center; gap: .45rem; text-align: center; }
+.approval-agent-profile p { margin: 0; color: var(--color-text-muted); font-size: .78rem; line-height: 1.45; }
+.approval-agent-profile p:first-of-type { color: var(--color-text); }
 @media (max-width: 640px) {
   .approval-inbox-root { inset: .5rem; }
   .approval-inbox-panel { position: fixed !important; left: .5rem !important; top: .5rem !important; width: calc(100vw - 1rem) !important; height: calc(100dvh - 1rem) !important; }
   .approval-inbox-resize, .approval-inbox-move { display: none; }
-  .approval-sidebar-toggle-open { transform: translateX(calc(100vw - 4rem)) rotate(180deg); }
-  .approval-inbox-body aside { position: absolute; inset: 0; z-index: 3; width: 100%; border: 0; background: var(--color-surface); }
   .approval-inbox-body main { padding: 2.35rem .35rem .35rem; }
-  .approval-request-row { grid-template-columns: auto minmax(0, 1fr); }
 }
-@media (prefers-reduced-motion: reduce) { .approval-inbox-panel, .approval-inbox-body aside { animation: none; } .approval-sidebar-toggle { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .approval-inbox-panel { animation: none; } }
