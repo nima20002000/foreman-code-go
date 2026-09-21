@@ -6,26 +6,27 @@ import { NATIVE_INTERACTION_FIXTURES } from '@graphql/contracts'
 import { queryKeys } from '../../shared/api/query'
 import { ApprovalInbox } from './ApprovalInbox'
 
-const { respond } = vi.hoisted(() => ({ respond: vi.fn() }))
+const { respond, userDetail, userResponse } = vi.hoisted(() => ({ respond: vi.fn(), userDetail: vi.fn(), userResponse: vi.fn() }))
 vi.mock('../../shared/api/query', async () => {
   const actual = await vi.importActual<typeof import('../../shared/api/query')>('../../shared/api/query')
   return { ...actual, useRespondToInteractionMutation: () => useMutation({ mutationFn: respond }) }
 })
+vi.mock('../../shared/api/userApprovals', () => ({ useUserInteractionQuery: userDetail, useUserInteractionResponse: userResponse }))
 
 afterEach(() => cleanup())
 
 describe('Approval Inbox', () => {
-  it('requires a separate User credential instead of responding with Operator authority', async () => {
+  it('shows User response choices from the signed-in browser session', async () => {
     const interaction = { ...NATIVE_INTERACTION_FIXTURES.opencode, approval: { handler: 'user' as const } }
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
     client.setQueryData(queryKeys.interactions(undefined, undefined, undefined), { items: [interaction], nextCursor: null })
     client.setQueryData(queryKeys.interaction(interaction.id), { interaction, canRespond: true })
+    userDetail.mockReturnValue({ data: { interaction, canRespond: true }, isPending: false, isError: false, refetch: vi.fn() })
+    userResponse.mockReturnValue({ mutate: vi.fn(), isPending: false, isError: false })
     respond.mockResolvedValue({ interaction: { ...interaction, status: 'delivery_pending' }, replayed: false })
     render(<QueryClientProvider client={client}><ApprovalInbox selectedInteractionId={interaction.id} /></QueryClientProvider>)
-    expect(await screen.findByLabelText('User bearer credential')).toBeVisible()
-    expect(screen.queryByRole('button', { name: /Approve once/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Allow for this session/ })).not.toBeInTheDocument()
-    expect(screen.getByText(/Operator session is only used for monitoring/i)).toBeVisible()
+    expect(await screen.findByRole('button', { name: /Approve once/ })).toBeVisible()
+    expect(screen.queryByLabelText('User bearer credential')).not.toBeInTheDocument()
     expect(respond).not.toHaveBeenCalled()
   })
 

@@ -7,7 +7,9 @@ import { ApprovalInboxSearchSchema, NATIVE_INTERACTION_FIXTURES, type DurableInt
 import { ApprovalInbox } from './ApprovalInbox'
 
 const api = vi.hoisted(() => ({ list: vi.fn(), detail: vi.fn(), response: vi.fn(), context: vi.fn() }))
+const userApi = vi.hoisted(() => ({ detail: vi.fn(), response: vi.fn() }))
 vi.mock('../../shared/api/query', () => ({ useInfiniteInteractionsQuery: api.list, useInteractionQuery: api.detail, useRespondToInteractionMutation: api.response, useWorkspaceDetailsQuery: api.context }))
+vi.mock('../../shared/api/userApprovals', () => ({ useUserInteractionQuery: userApi.detail, useUserInteractionResponse: userApi.response }))
 vi.mock('@tanstack/react-router', async () => {
   const React = await vi.importActual<typeof import('react')>('react')
   return { Link: ({ children, params, search }: { children: import('react').ReactNode; params: { workspaceId: string }; search: { workflowId: string } }) =>
@@ -22,6 +24,8 @@ beforeEach(() => {
   api.list.mockImplementation(({ status }) => queue(status === 'pending' ? [item] : []))
   api.detail.mockReturnValue({ data: { interaction: item, canRespond: true }, isPending: false, isError: false, refetch: vi.fn() })
   api.response.mockReturnValue({ mutate: vi.fn(), isPending: false, isError: false })
+  userApi.detail.mockReturnValue({ data: { interaction: item, canRespond: true }, isPending: false, isError: false, refetch: vi.fn() })
+  userApi.response.mockReturnValue({ mutate: vi.fn(), isPending: false, isError: false })
   api.context.mockReturnValue({ data: { workspace: { id: item.workspaceId, name: 'Product workspace' }, agents: [{ id: item.requestingAgentId, name: 'Build coder' }], workflows: [{ id: item.workflowId, name: 'Release checks' }] }, isError: false })
 })
 afterEach(cleanup)
@@ -69,8 +73,9 @@ describe('PR17 approval presentation', () => {
   })
   it('does not misdescribe a user-assigned request when the viewer lacks permission', () => {
     api.detail.mockReturnValue({ data: { interaction: item, canRespond: false }, isPending: false, isError: false })
+    userApi.detail.mockReturnValue({ data: { interaction: item, canRespond: false }, isPending: false, isError: false, refetch: vi.fn() })
     render(<ApprovalInbox selectedInteractionId={item.id} />)
-    expect(screen.getByText(/your current access does not include permission/)).toBeInTheDocument()
+    expect(screen.getByText(/signed-in account can view this request but cannot respond/)).toBeInTheDocument()
     expect(screen.queryByText(/assigned to operator/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Approve once/ })).not.toBeInTheDocument()
   })

@@ -1,5 +1,5 @@
-import { useEffect, useId, useRef, useState } from 'react'
-import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useRef, useState } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { DurableInteraction } from '@graphql/contracts'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { sessionSignal } from '../../shared/api/sessionBoundary'
@@ -24,7 +24,7 @@ function AuthenticatedResponse({ expected, credential, onChanged }: {
   if (interaction.id !== expected.id || interaction.workspaceId !== expected.workspaceId
     || interaction.workflowId !== expected.workflowId || interaction.runId !== expected.runId
     || interaction.approval.handler !== 'user') return <p role="alert">The User response does not match this request.</p>
-  if (detail.data.canRespond !== true) return <p>This User credential can view the request but cannot respond.</p>
+  if (detail.data.canRespond !== true) return <p>Your signed-in account can view this request but cannot respond.</p>
   const send = (optionId: string) => {
     if (inFlight.current || credential.signal.aborted) return
     const input = retryInput ?? { interactionId: interaction.id, optionId, expectedRevision: interaction.revision }
@@ -59,48 +59,14 @@ function AuthenticatedResponse({ expected, credential, onChanged }: {
 }
 
 function UserApprovalResponseContent({ interaction, onChanged }: { interaction: DurableInteraction; onChanged(): void }) {
-  const id = useId()
-  const client = useQueryClient()
-  const [credential, setCredential] = useState<(UserApprovalCredential & { controller: AbortController })>()
-  const [error, setError] = useState('')
-  useEffect(() => {
-    if (!credential) return
-    const clear = () => setCredential(undefined)
-    credential.signal.addEventListener('abort', clear, { once: true })
-    if (credential.signal.aborted) clear()
-    return () => {
-      credential.signal.removeEventListener('abort', clear)
-      credential.controller.abort()
-      void client.cancelQueries({ queryKey: ['user-approval', credential.id] })
-      client.removeQueries({ queryKey: ['user-approval', credential.id] })
-    }
-  }, [client, credential])
-  return <section aria-labelledby={`${id}-title`}>
-    <h3 id={`${id}-title`}>User approval access</h3>
-    {credential ? <>
-      <AuthenticatedResponse key={credential.id} expected={interaction} credential={credential} onChanged={onChanged} />
-      <button type="button" onClick={() => setCredential(undefined)}>Forget User credential</button>
-    </> : <form onSubmit={(event) => {
-      event.preventDefault()
-      const form = event.currentTarget
-      const token = String(new FormData(form).get('userCredential') ?? '').trim()
-      if (!token || /\s/.test(token)) { setError('Enter a User bearer credential without spaces.'); return }
-      const controller = new AbortController()
-      setCredential({ id: crypto.randomUUID(), token, controller, signal: AbortSignal.any([controller.signal, sessionSignal()]) })
-      setError('')
-      form.reset()
-    }}>
-      <p>Use a separate User credential to approve this request. Your Operator session is only used for monitoring. This credential is kept in memory and forgotten when you leave this request.</p>
-      <label htmlFor={`${id}-token`}>User bearer credential</label>
-      <input id={`${id}-token`} name="userCredential" type="password" required autoComplete="off" spellCheck={false} aria-describedby={`${id}-error`} />
-      <button type="submit">Verify User access</button>
-      <p id={`${id}-error`} role={error ? 'alert' : undefined}>{error}</p>
-    </form>}
+  const [credential] = useState<UserApprovalCredential>(() => ({ id: 'browser-user', signal: sessionSignal() }))
+  return <section aria-label="User approval access">
+    <AuthenticatedResponse expected={interaction} credential={credential} onChanged={onChanged} />
   </section>
 }
 
 export function UserApprovalResponse(props: { interaction: DurableInteraction; onChanged(): void }) {
-  // Keep responses made with the separate User credential out of the Operator cache.
+  // Keep User approval request state out of the broader Operator cache.
   const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }))
   useEffect(() => () => client.clear(), [client])
   return <QueryClientProvider client={client}><UserApprovalResponseContent {...props} /></QueryClientProvider>

@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto'
 import Fastify, { type FastifyInstance } from 'fastify'
 import pg from 'pg'
 import { z } from 'zod'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { NATIVE_INTERACTION_FIXTURES } from '@graphql/contracts'
 import { ManagementActionSchema, ManagedWorkspaceDefaultsSchema } from '@graphql/contracts/management'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -15,6 +16,8 @@ import { PostgresFoundationSettingsRepository } from '../src/modules/settings/fo
 import { FoundationSettingsManagementService } from '../src/modules/settings/management.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { registerWorkspaceDefaultsRoutes } from '../src/routes/workspaceDefaults.js'
+import { registerUserInteractions } from '../src/routes/userInteractions.js'
+import type { InteractionService } from '../src/modules/interactions/service.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
@@ -188,6 +191,35 @@ describe('Better Auth owner browser lifecycle (PostgreSQL)', () => {
     await access.revoke(principalId)
     expect((await server.inject({ method: 'GET', url: '/api/auth/session', headers: { ...headers, cookie } })).statusCode).toBe(403)
     expect((await server.inject({ method: 'POST', url: '/api/auth/logout', headers: { ...headers, cookie } })).statusCode).toBe(200)
+  }), 30_000)
+
+  it('lets the signed-in owner answer User approvals without minting a second bearer', async () => withDatabase(async ({ app, access }) => {
+    const server = app()
+    const interaction = { ...NATIVE_INTERACTION_FIXTURES.codex, approval: { handler: 'user' as const } }
+    const respond = vi.fn(async (actor: { kind: string; principal?: { id: string; audience: string; grants: unknown[] } }) => {
+      expect(actor.kind).toBe('user')
+      expect(actor.principal).toMatchObject({ audience: 'user', grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: {} }] })
+      return { interaction: { ...interaction, status: 'delivered' as const, deliveryState: 'delivered' as const,
+        revision: 1, selectedOptionId: interaction.responseOptions[0]!.optionId,
+        selectedSemantic: interaction.responseOptions[0]!.semantic, nativeResponse: null,
+        decidedAt: new Date().toISOString(), deliveredAt: new Date().toISOString() }, replayed: false }
+    })
+    registerUserInteractions(server, access, { get: async () => interaction, respond } as unknown as InteractionService)
+    await setup(server)
+    const cookie = cookies((await signIn(server)).headers['set-cookie'])
+    const url = `/api/user/interactions/${interaction.id}`
+    const detail = await server.inject({ method: 'GET', url, headers: { ...headers, cookie } })
+    expect(detail.statusCode, detail.body).toBe(200)
+    expect(detail.json().canRespond).toBe(true)
+    const payload = { interactionId: interaction.id, optionId: interaction.responseOptions[0]!.optionId, expectedRevision: interaction.revision }
+    expect((await server.inject({ method: 'POST', url: `${url}/respond`, headers: { host: headers.host, cookie }, payload })).statusCode).toBe(403)
+    expect((await server.inject({ method: 'POST', url: `${url}/respond`, headers: { ...headers, origin: 'https://foreign.example', cookie }, payload })).statusCode).toBe(403)
+    const operator = await access.issue({ name: 'Operator cannot impersonate User', audience: 'operator',
+      grants: [{ actions: ['interactions:respond'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
+    expect((await server.inject({ method: 'POST', url: `${url}/respond`, headers: { ...headers, authorization: `Bearer ${operator.token}` }, payload })).statusCode).toBe(403)
+    const accepted = await server.inject({ method: 'POST', url: `${url}/respond`, headers: { ...headers, cookie }, payload })
+    expect(accepted.statusCode, accepted.body).toBe(200)
+    expect(respond).toHaveBeenCalledTimes(1)
   }), 30_000)
 
   it('does not turn backend failures into an invalid-password response and expires sessions durably', async () => withDatabase(async ({ app, pool }) => {

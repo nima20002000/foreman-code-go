@@ -85,9 +85,23 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
 
   app.addHook('preHandler', async (request, reply) => {
     const path = request.url.split('?')[0]
-    if (!path?.startsWith('/api/') || path === '/api/auth/enroll' || path.startsWith('/api/user/') || isPublicBrowserAuthRequest(request)) return
+    if (!path?.startsWith('/api/') || path === '/api/auth/enroll' || isPublicBrowserAuthRequest(request)) return
     requireLocalRequest(request)
     reply.header('cache-control', 'no-store')
+    if (path.startsWith('/api/user/')) {
+      const headerToken = bearerToken(request.headers.authorization)
+      if (request.headers.authorization !== undefined && !headerToken) {
+        throw new DomainError('AUTH_INVALID', 'The Authorization header is invalid.', 401)
+      }
+      // Explicit User bearer credentials remain isolated and are authenticated
+      // by the route. With no header, a verified owner browser session supplies
+      // the first-party human identity without minting another secret.
+      if (headerToken || !browserAuth) return
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) browserAuth.requireMutationOrigin(request)
+      request.operatorPrincipal = await browserAuth.authenticate(request, reply)
+      request.operatorAuthentication = 'browser'
+      return
+    }
     // Clearing a stale session must not depend on authenticating that session.
     if (path === '/api/auth/logout' && request.method === 'POST') {
       browserAuth?.requireMutationOrigin(request)

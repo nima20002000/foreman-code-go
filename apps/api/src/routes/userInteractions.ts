@@ -3,6 +3,7 @@ import {
   RespondToInteractionResponseSchema,
 } from '@graphql/contracts'
 import { InteractionListInputSchema } from '@graphql/contracts/management'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 
 import { requireLocalRequest } from '../modules/access/http.js'
@@ -12,8 +13,12 @@ import { DomainError } from '../modules/errors.js'
 import type { InteractionService } from '../modules/interactions/service.js'
 
 export function registerUserInteractions(app: FastifyInstance, access: PostgresAccessService, interactions: InteractionService): void {
-  const authenticate = (request: FastifyRequest) => {
+  const authenticate = (request: FastifyRequest): Promise<ManagementPrincipal> | ManagementPrincipal => {
     requireLocalRequest(request)
+    if (request.operatorAuthentication === 'browser' && request.operatorPrincipal) {
+      const owner = request.operatorPrincipal
+      return { ...owner, audience: 'user', grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: {} }] }
+    }
     return access.authenticate(bearerToken(request.headers.authorization), 'user')
   }
   app.get<{ Querystring: Record<string, unknown> }>('/api/user/interactions', async (request) => {

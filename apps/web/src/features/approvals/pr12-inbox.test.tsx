@@ -5,10 +5,12 @@ import { NATIVE_INTERACTION_FIXTURES, type DurableInteraction } from '@graphql/c
 import { ApprovalInbox } from './ApprovalInbox'
 
 const api = vi.hoisted(() => ({ list: vi.fn(), detail: vi.fn(), response: vi.fn() }))
+const userApi = vi.hoisted(() => ({ detail: vi.fn(), response: vi.fn() }))
 vi.mock('../../shared/api/query', () => ({
   useInfiniteInteractionsQuery: api.list, useInteractionQuery: api.detail, useRespondToInteractionMutation: api.response,
   useWorkspaceDetailsQuery: () => ({ data: undefined }),
 }))
+vi.mock('../../shared/api/userApprovals', () => ({ useUserInteractionQuery: userApi.detail, useUserInteractionResponse: userApi.response }))
 const interaction: DurableInteraction = { ...NATIVE_INTERACTION_FIXTURES.opencode, approval: { handler: 'user' } }
 const nextPage = vi.fn(); const mutate = vi.fn()
 beforeEach(() => {
@@ -16,6 +18,8 @@ beforeEach(() => {
   api.list.mockReturnValue({ data: { pages: [{ items: [], nextCursor: null, pendingCount: 117 }] }, isPending: false, isError: false, refetch: vi.fn(), fetchNextPage: nextPage })
   api.detail.mockReturnValue({ data: { interaction, canRespond: true }, isError: false, isPending: false, refetch: vi.fn() })
   api.response.mockReturnValue({ mutate, isPending: false, isError: false })
+  userApi.detail.mockReturnValue({ data: { interaction, canRespond: true }, isError: false, isPending: false, refetch: vi.fn() })
+  userApi.response.mockReturnValue({ mutate, isPending: false, isError: false })
 })
 afterEach(cleanup)
 
@@ -46,12 +50,13 @@ describe('PR12 Approval Inbox', () => {
     expect(screen.getByText(/Read-only monitoring/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Approve once' })).toBeNull()
   })
-  it.each(['failed', 'uncertain'] as const)('requires User reauthentication before recovering %s delivery', (deliveryState) => {
+  it.each(['failed', 'uncertain'] as const)('offers signed-in User recovery for %s delivery', (deliveryState) => {
     const optionId = interaction.responseOptions[0]!.optionId
     api.detail.mockReturnValue({ data: { interaction: { ...interaction, status: deliveryState === 'failed' ? 'delivery_failed' : 'delivery_pending', deliveryState, selectedOptionId: optionId }, canRespond: true }, isError: false, isPending: false })
+    userApi.detail.mockReturnValue({ data: { interaction: { ...interaction, status: deliveryState === 'failed' ? 'delivery_failed' : 'delivery_pending', deliveryState, selectedOptionId: optionId }, canRespond: true }, isError: false, isPending: false, refetch: vi.fn() })
     render(<ApprovalInbox selectedInteractionId={interaction.id} />)
-    expect(screen.getByLabelText('User bearer credential')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: deliveryState === 'failed' ? 'Retry selected response' : 'Reconcile delivery' })).toBeNull()
+    expect(screen.queryByLabelText('User bearer credential')).toBeNull()
+    expect(screen.getByRole('button', { name: deliveryState === 'failed' ? 'Retry original choice' : 'Reconcile delivery' })).toBeTruthy()
     expect(mutate).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: /^Reject/ })).toBeNull()
   })

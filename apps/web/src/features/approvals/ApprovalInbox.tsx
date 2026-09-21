@@ -64,7 +64,9 @@ function ApprovalDetail({ interactionId, workspaceId, workflowId, onClear }: {
   }
   const selectedOption = selected.responseOptions.find((option) => option.optionId === selected.selectedOptionId)
   const selectedLabel = selectedOption?.label
-  const readOnlyReason = approvalReadOnlyReason(selected, false)
+  // User authority is resolved by the browser-session User endpoint below;
+  // the Operator detail route is intentionally read-only for this handler.
+  const readOnlyReason = selected.approval.handler === 'user' ? undefined : approvalReadOnlyReason(selected, false)
   return <article className="approval-detail">
     <header><div><p className="panel-kicker">{selected.harness === 'codex' ? 'Codex' : 'OpenCode'} permission request</p><h2>{summarizeApprovalRequest(selected.request, selected.nativeRequestType).operation}</h2></div><StateBadge state={selected.status} /></header>
     <ApprovalNames interaction={selected} />
