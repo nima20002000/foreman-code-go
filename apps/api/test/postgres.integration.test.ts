@@ -48,6 +48,10 @@ describe('PostgreSQL infrastructure', () => {
         );
         create table agents (id text primary key, workspace_id text not null references workspaces(id));
         create table workflows (id text primary key, workspace_id text not null references workspaces(id));
+        create table workflow_versions (
+          id text primary key, workspace_id text not null, workflow_id text not null, version integer not null,
+          entry_node_id text not null, record jsonb not null, created_at timestamptz not null default now()
+        );
         create table management_principals (
           id text primary key, name text not null, audience text not null,
           token_hash text not null unique, grants jsonb not null, expires_at timestamptz not null,

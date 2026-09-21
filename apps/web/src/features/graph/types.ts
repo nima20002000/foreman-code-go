@@ -21,6 +21,8 @@ export type GraphNodeData = {
   agentId: string
   agent: Agent
   label: string
+  /** Static label only; volatile harness health stays out of the topology. */
+  harnessLabel?: string
   role?: string
   description?: string
   executionState?: AgentExecutionState
@@ -57,6 +59,8 @@ export type GraphNode = Node<GraphNodeData, 'agent'>
 export type GraphHandleSide = 'top' | 'right' | 'bottom' | 'left'
 
 export type GraphEdgeData = {
+  /** Disposable renderer-only copy of a removed connection. */
+  departing?: boolean
   /** This is a visual explanation, not a permission or execution contract. */
   explanation: string
   onRemove?: (edgeId: string) => void

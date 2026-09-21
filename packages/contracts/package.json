@@ -12,6 +12,10 @@
       "types": "./dist/operatorChat.d.ts",
       "import": "./dist/operatorChat.js"
     },
+    "./wave25": {
+      "types": "./dist/wave25/index.d.ts",
+      "import": "./dist/wave25/index.js"
+    },
     "./management": {
       "types": "./dist/management/index.d.ts",
       "import": "./dist/management/index.js"
