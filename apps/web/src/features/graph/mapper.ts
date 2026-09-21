@@ -39,7 +39,7 @@ const executionStateLabels: Record<AgentExecutionState, string> = {
 }
 
 export function executionStateLabel(state?: AgentExecutionState): string {
-  return state ? executionStateLabels[state] : 'State unavailable'
+  return state ? executionStateLabels[state] : 'Idle'
 }
 
 function fallbackPosition(index: number): XYPosition {
@@ -204,6 +204,7 @@ export function workflowToGraph(
     const agent = agentsById.get(workflowNode.agentId)
       ?? { id: workflowNode.agentId, name: workflowNode.name ?? workflowNode.label ?? workflowNode.agentId }
     const state = agentState(agent)
+    const liveActivity = options.runActive ? options.liveActivitiesByNodeId?.get(workflowNode.id) : undefined
     const runState = options.runStatesByNodeId?.get(workflowNode.id)
     const runOutcome = options.runOutcomesByNodeId?.get(workflowNode.id)
     const size = clampNodeSize(
@@ -238,6 +239,9 @@ export function workflowToGraph(
         initialPrompt: workflowNode.initialPrompt,
         runState,
         runOutcome,
+        runActive: options.runActive,
+        liveActivity: liveActivity?.agentId === workflowNode.agentId ? liveActivity : undefined,
+        reviewState: options.reviewStatesByAgentId?.get(workflowNode.agentId),
         executionPolicy,
         workflowNodeCount: workflow.nodes.length,
         entering: options.enteringNodeIds?.has(workflowNode.id),

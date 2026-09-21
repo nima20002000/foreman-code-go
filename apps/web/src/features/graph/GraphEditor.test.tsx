@@ -240,7 +240,7 @@ describe('GraphEditor persistence boundary', () => {
     expect(getGraphDraft(key)?.workflow.nodes[0]?.initialPrompt).toBe('Investigate this first.')
     expect(readDeletedAgentIds(workflow.workspaceId)).toEqual([])
     expect(screen.getByRole('button', { name: 'Discard' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'Researcher agent, Step 1' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Researcher agent, Step 1, Idle' })).toBeVisible()
     await waitFor(() => expect(trigger).toHaveFocus())
 
   })
@@ -251,8 +251,8 @@ describe('GraphEditor persistence boundary', () => {
     const onSelectAgent = vi.fn()
     renderEditor({ workflow: disconnectedWorkflow, onSelectAgent })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Researcher agent, Step 1' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Developer agent, Step 2' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Researcher agent, Step 1, Idle' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Developer agent, Step 2, Idle' }))
 
     expect(getGraphDraft(key)?.workflow.edges).toEqual([
       expect.objectContaining({ source: 'step-one', target: 'step-two' }),
@@ -268,8 +268,8 @@ describe('GraphEditor persistence boundary', () => {
     const disconnectedWorkflow = { ...workflow, edges: [] }
     const key = workflowDraftKey(workflow.workspaceId, workflow.id)
     renderEditor({ workflow: disconnectedWorkflow })
-    const researcher = screen.getByRole('button', { name: 'Researcher agent, Step 1' })
-    const developer = screen.getByRole('button', { name: 'Developer agent, Step 2' })
+    const researcher = screen.getByRole('button', { name: 'Researcher agent, Step 1, Idle' })
+    const developer = screen.getByRole('button', { name: 'Developer agent, Step 2, Idle' })
 
     fireEvent.click(researcher, { ctrlKey: true })
     fireEvent.click(developer, { ctrlKey: true })
@@ -284,15 +284,15 @@ describe('GraphEditor persistence boundary', () => {
 
     fireEvent.keyDown(screen.getByTestId('workflow-graph'), { key: 'z', ctrlKey: true })
     expect(getGraphDraft(key)).toBeUndefined()
-    expect(screen.getByRole('button', { name: 'Researcher agent, Step 1' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Developer agent, Step 2' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Researcher agent, Step 1, Idle' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Developer agent, Step 2, Idle' })).toBeVisible()
   })
 
   it('copies and pastes selected agents with their internal connection and independent identities', () => {
     const key = workflowDraftKey(workflow.workspaceId, workflow.id)
     renderEditor()
-    const researcher = screen.getByRole('button', { name: 'Researcher agent, Step 1' })
-    const developer = screen.getByRole('button', { name: 'Developer agent, Step 2' })
+    const researcher = screen.getByRole('button', { name: 'Researcher agent, Step 1, Idle' })
+    const developer = screen.getByRole('button', { name: 'Developer agent, Step 2, Idle' })
 
     fireEvent.click(researcher, { ctrlKey: true })
     fireEvent.click(developer, { ctrlKey: true })
@@ -312,13 +312,13 @@ describe('GraphEditor persistence boundary', () => {
 
   it('does not remove a selected agent while Delete is used inside its settings fields', () => {
     renderEditor()
-    const researcher = screen.getByRole('button', { name: 'Researcher agent, Step 1' })
+    const researcher = screen.getByRole('button', { name: 'Researcher agent, Step 1, Idle' })
     fireEvent.click(researcher)
     fireEvent.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
     const name = screen.getByRole('textbox', { name: 'Name' })
 
     fireEvent.keyDown(name, { key: 'Delete' })
-    expect(screen.getByRole('button', { name: 'Researcher agent, Step 1' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Researcher agent, Step 1, Idle' })).toBeVisible()
   })
 
   it('persists the explicit Codex sandbox selected for one board agent', async () => {
@@ -341,9 +341,9 @@ describe('GraphEditor persistence boundary', () => {
     const key = workflowDraftKey(workflow.workspaceId, workflow.id)
     renderEditor({ workflow: disconnectedWorkflow })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Researcher agent, Step 1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Researcher agent, Step 1, Idle' }))
     fireEvent.click(document.querySelector('.react-flow__pane') as HTMLElement)
-    fireEvent.click(screen.getByRole('button', { name: 'Developer agent, Step 2' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Developer agent, Step 2, Idle' }))
 
     expect(getGraphDraft(key)).toBeUndefined()
   })
@@ -365,8 +365,8 @@ describe('GraphEditor persistence boundary', () => {
   it('does not duplicate an existing click connection and keeps explicit handles available', async () => {
     const onClearAgent = vi.fn()
     renderEditor({ onClearAgent })
-    const researcher = screen.getByRole('button', { name: 'Researcher agent, Step 1' })
-    const developer = screen.getByRole('button', { name: 'Developer agent, Step 2' })
+    const researcher = screen.getByRole('button', { name: 'Researcher agent, Step 1, Idle' })
+    const developer = screen.getByRole('button', { name: 'Developer agent, Step 2, Idle' })
 
     fireEvent.click(researcher)
     fireEvent.click(researcher)
@@ -512,7 +512,7 @@ describe('GraphEditor persistence boundary', () => {
     expect(getGraphDraft(key)?.workflow.nodes.map((node) => node.id)).toEqual(['step-two', 'step-three'])
     expect(getGraphDraft(key)?.workflow.edges.map((edge) => edge.id)).toEqual(['edge-two'])
     expect(readDeletedAgentIds(workflow.workspaceId)).toEqual([])
-    expect(screen.getByRole('button', { name: 'Researcher again agent, Step 2' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Researcher again agent, Step 2, Idle' })).toBeVisible()
 
     await user.click(screen.getByRole('button', { name: 'Discard' }))
     expect(getGraphDraft(key)).toBeUndefined()
@@ -529,7 +529,7 @@ describe('GraphEditor persistence boundary', () => {
     useGraphDraftStore.getState().clearAllDrafts()
     renderEditor()
     expect(screen.queryByRole('button', { name: /Researcher agent/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Developer agent, Step 1' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Developer agent, Step 1, Idle' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Save graph' })).toBeEnabled()
   })
 
@@ -713,7 +713,7 @@ describe('GraphEditor dirty-state gating', () => {
     expect(screen.queryByRole('button', { name: 'Save graph' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Researcher agent, Step 1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Researcher agent, Step 1, Idle' }))
     expect(screen.queryByRole('button', { name: 'Save graph' })).not.toBeInTheDocument()
 
     fireEvent.click(document.querySelector('.react-flow__pane') as HTMLElement)

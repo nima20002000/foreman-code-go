@@ -40,8 +40,8 @@ export class OperatorInteractionService {
     return {pendingCount: page.pendingCount, pendingByWorkflow: page.pendingByWorkflow}
   }
   async get(principal: ManagementPrincipal, interactionId: string) {
-    const interaction = await this.service.getVisible(principal, interactionId)
-    return {interaction, ...operatorResponseAccess(principal, interaction)}
+    const detail = await this.service.reviewStatusVisible(principal, interactionId)
+    return {...detail, ...operatorResponseAccess(principal, detail.interaction)}
   }
   async respond(principal: ManagementPrincipal, input: {
     interactionId: string; optionId: string; expectedRevision: number; commandId: string

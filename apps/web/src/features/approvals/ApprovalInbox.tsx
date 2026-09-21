@@ -9,6 +9,7 @@ import { interactionMatchesScope } from './approvalState'
 import { UserApprovalResponse } from './UserApprovalResponse'
 import { approvalReadOnlyReason, approvalStatuses, summarizeApprovalRequest } from './approvalPresentation'
 import { ApprovalRequestSummary } from './ApprovalRequestSummary'
+import { ReviewStatusNotice } from './ReviewStatusNotice'
 import './approvals.css'
 
 export interface ApprovalInboxProps {
@@ -57,6 +58,7 @@ function ApprovalDetail({ interactionId, workspaceId, workflowId, onClear }: {
   if (detail.isError) return <article className="approval-detail"><ErrorState title="Request unavailable" description={detail.error.message} onRetry={() => void detail.refetch()} retrying={detail.isFetching} /></article>
   if (detail.isPending || !detail.data) return <article className="approval-detail"><LoadingState label="Loading request…" rows={4} /></article>
   const selected = detail.data.interaction
+  const review = detail.data.review
   if (selected.id !== interactionId || !interactionMatchesScope(selected, { workspaceId, workflowId })) {
     return <article className="approval-detail"><ErrorState title="Request outside this Inbox" description="This request is outside the selected Inbox scope." /><Button onClick={onClear}>Clear selection</Button></article>
   }
@@ -66,6 +68,7 @@ function ApprovalDetail({ interactionId, workspaceId, workflowId, onClear }: {
   return <article className="approval-detail">
     <header><div><p className="panel-kicker">{selected.harness === 'codex' ? 'Codex' : 'OpenCode'} permission request</p><h2>{summarizeApprovalRequest(selected.request, selected.nativeRequestType).operation}</h2></div><StateBadge state={selected.status} /></header>
     <ApprovalNames interaction={selected} />
+    {review ? <ReviewStatusNotice review={review} interaction={selected} /> : null}
     <ApprovalRequestSummary request={selected.request} nativeRequestType={selected.nativeRequestType} reviewContext={selected.reviewContext} />
     <details className="approval-request"><summary>Technical details</summary>
       <dl className="approval-context">

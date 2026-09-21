@@ -38,6 +38,7 @@ function harness() {
   let attempt = 0
   const control = {
     stopped: false, completedRun: false, timeout: false, crashCommit: false,
+    reviewState: 'completed' as 'acknowledged' | 'completed',
     resumeState: 'absent' as 'absent' | 'required' | 'completed' | 'canceled',
     resumeError: undefined as string | undefined,
     attemptState: undefined as NativeDeliveryOutcome['state'] | 'submitted' | undefined,
@@ -51,6 +52,8 @@ function harness() {
     harness: record.harness, providerVersion: record.providerVersion, nativeSessionId: record.nativeSessionId,
   }
   const repository = {
+    assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'node-reviewer' }),
+    coordination: { findReviewJob: async () => ({ state: control.reviewState }) },
     get: async () => structuredClone(record),
     decide: async (input: { optionId: string; expectedRevision: number }) => {
       if (record.selectedOptionId) return { interaction: structuredClone(record), replayed: true }
@@ -159,6 +162,26 @@ it('keeps native delivery proven when graph resume fails and recovers without an
   await h.service().recover({ limit: 10 })
   assert.equal(h.control.resumeState, 'completed')
   assert.equal(h.calls.sends, 1)
+})
+
+it('resumes an orchestrator-approved Worker only after the reviewer turn completes', async () => {
+  const h = harness()
+  h.change({ approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'agent-reviewer' } })
+  h.control.reviewState = 'acknowledged'
+  const current = h.get()
+  await h.service().respond({ kind: 'orchestrator', authority: {
+    agentId: 'agent-reviewer', workspaceId: current.workspaceId, workflowId: current.workflowId,
+  } }, { interactionId: current.id, optionId: 'opaque-option', expectedRevision: current.revision })
+  assert.equal(h.get().deliveryState, 'pending')
+  assert.equal(h.calls.sends, 0)
+  assert.equal(h.calls.resumes, 0)
+  assert.equal(h.control.resumeState, 'absent')
+  h.control.reviewState = 'completed'
+  await h.service().recover({ limit: 10 })
+  assert.equal(h.get().deliveryState, 'delivered')
+  assert.equal(h.calls.sends, 1)
+  assert.equal(h.calls.resumes, 1)
+  assert.equal(h.control.resumeState, 'completed')
 })
 
 it('does not treat RUN_NOT_RESUMABLE as a successful graph handoff (#7/#8)', async () => {

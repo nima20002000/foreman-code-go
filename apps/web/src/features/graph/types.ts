@@ -3,6 +3,8 @@ import type {
   AgentExecutionState,
   HarnessExecutionState,
   RunOutcome,
+  RunNodeLiveActivity,
+  ReviewStatus,
   WorkflowDefinition,
   WorkflowExecutionPolicy,
   WorkflowRunSummary,
@@ -28,6 +30,9 @@ export type GraphNodeData = {
   initialPrompt?: string
   runState?: HarnessExecutionState
   runOutcome?: RunOutcome
+  runActive?: boolean
+  reviewState?: ReviewStatus['state']
+  liveActivity?: RunNodeLiveActivity
   executionPolicy: WorkflowExecutionPolicy
   workflowNodeCount: number
   /** Renderer-only marker for a node that is animating out after removal. */
@@ -69,6 +74,9 @@ export type GraphMapperOptions = {
   selectedNodeIds?: ReadonlySet<string>
   runStatesByNodeId?: ReadonlyMap<string, HarnessExecutionState>
   runOutcomesByNodeId?: ReadonlyMap<string, RunOutcome>
+  runActive?: boolean
+  reviewStatesByAgentId?: ReadonlyMap<string, ReviewStatus['state']>
+  liveActivitiesByNodeId?: ReadonlyMap<string, RunNodeLiveActivity>
   onSelectAgent?: (agentId: string, workflowNodeId: string, additive: boolean) => void
   onOpenNodeSettings?: (agentId: string, workflowNodeId: string) => void
   onRemoveNode?: (workflowNodeId: string) => void

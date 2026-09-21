@@ -5,6 +5,7 @@ import {
   DurableInteractionSchema,
   RespondToInteractionRequestSchema,
   RespondToInteractionResponseSchema,
+  WorkflowVersionSchema, WorkflowRunSchema, HarnessExecutionSchema, directApprovalConnection,
 } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
@@ -83,18 +84,44 @@ export class PostgresAppInteractionService implements AppInteractionService {
   async canRespond(principal: ManagementPrincipal): Promise<boolean> {
     if (!this.orchestration) return false
     if (!hasWorkerAction(principal, 'interactions:respond')) return false
-    const scope = workerScope(principal)
-    const result = await this.pool.query<{ record: unknown }>(
-      `select record from runs
-       where ($1::text[] is null or workspace_id = any($1))
-         and ($2::text[] is null or workflow_id = any($2))
-         and ($3::text[] is null or id = any($3))
-         and record->'approval'->>'handler' = 'orchestrator'
-         and record->'approval'->>'designatedOrchestratorAgentId' = $4
-       limit 1`,
-      [scope.workspaceIds ?? null, scope.workflowIds ?? null, scope.runIds ?? null, principal.agentId],
+    workerScope(principal)
+    const scopes = workerScopesForAction(principal, 'interactions:respond')
+    // Discovery uses the same exact reviewer occurrence as its bound credential.
+    // No pending request is required: the entry node discovers tools before handoff.
+    const result = await this.pool.query<{ run: unknown; version: unknown; execution: unknown; node_id: string }>(
+      `select r.record as run,v.record as version,e.record as execution,e.workflow_node_id as node_id
+       from worker_credential_bindings b join harness_executions e on e.id=b.execution_id
+         and e.run_id=b.run_id and e.agent_id=b.agent_id
+       join runs r on r.id=e.run_id
+       join workflow_versions v on v.id=r.workflow_version_id and v.workspace_id=r.workspace_id and v.workflow_id=r.workflow_id
+       join agent_configuration_versions c on c.id=(r.record->'agentConfigurationVersionIds'->>$2)
+         and c.workspace_id=r.workspace_id and c.agent_id=e.agent_id
+       where b.principal_id=$1 and b.agent_id=$2 and b.revoked_at is null
+         and c.record->>'productRole'='orchestrator'
+         and r.execution_state in ('queued','running','waiting')
+         and exists (select 1 from jsonb_to_recordset($3::jsonb)
+           as response_grant("workspaceIds" text[],"workflowIds" text[],"runIds" text[])
+           where r.workspace_id=any(response_grant."workspaceIds")
+             and r.workflow_id=any(response_grant."workflowIds") and r.id=any(response_grant."runIds"))`,
+      [principal.id, principal.agentId, JSON.stringify(scopes)],
     )
-    return result.rowCount === 1
+    return result.rows.some((row) => {
+      const run = WorkflowRunSchema.safeParse(row.run)
+      const version = WorkflowVersionSchema.safeParse(row.version)
+      const execution = HarnessExecutionSchema.safeParse(row.execution)
+      if (!run.success || !version.success || !execution.success) return false
+      const r = run.data, v = version.data, e = execution.data
+      if (r.workflowVersionId !== v.id || r.workspaceId !== v.workspaceId || r.workflowId !== v.workflowId
+        || v.definition.id !== r.workflowId || v.definition.workspaceId !== r.workspaceId
+        || e.runId !== r.id || e.agentId !== principal.agentId || e.workflowNodeId !== row.node_id
+        || e.agentConfigurationVersionId !== r.agentConfigurationVersionIds[e.agentId]
+        || e.agentConfigurationVersionId !== v.agentConfigurationVersionIds[e.agentId]
+        || [r.approval, v.approval, v.definition.approval].some((approval) =>
+          approval?.handler !== 'orchestrator' || approval.designatedOrchestratorAgentId !== e.agentId)) return false
+      return v.definition.nodes.some((requester) => directApprovalConnection(
+        v.definition, requester.id, requester.agentId, e.agentId,
+      )?.orchestratorNodeId === e.workflowNodeId)
+    })
   }
 
   async list(principal: ManagementPrincipal, input: unknown) {

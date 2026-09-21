@@ -1,14 +1,17 @@
-import { IdSchema, TimestampSchema, NativeSessionLaneSchema, NativeSessionReferenceSchema, ReviewJobSchema, type NativeHarnessEvent, type NativeSessionReference, type NativeSessionLane, type ReviewJob } from '@graphql/contracts'
+import { DurableInteractionSchema, type DurableInteraction, IdSchema, TimestampSchema, NativeSessionLaneSchema, NativeSessionReferenceSchema, ReviewJobSchema, type NativeHarnessEvent, type NativeSessionReference, type NativeSessionLane, type ReviewJob } from '@graphql/contracts'
 import type pg from 'pg'
 
 import { interactionConnection } from './connection.js'
 import { DomainError } from '../errors.js'
 import { appendNativeEvent } from '../runs/nativeEvents.js'
+import { assertOrchestratorGraphAuthority } from './graphAuthority.js'
+import { pendingReviewCleanup } from './reviewPolicy.js'
 
 // A submitted job may have reached the provider even when no acknowledgement was saved.
 const recoverableJob = `(state in ('pending','leased','blocked_busy','blocked_disconnected','submitted','acknowledged','uncertain')
     or (state='failed' and record->'cleanup' is not null and record->'cleanup'->>'completedAt' is null))
-  and (record->>'leaseExpiresAt' is null or (record->>'leaseExpiresAt')::timestamptz <= clock_timestamp())`
+  and (record->>'leaseExpiresAt' is null or (record->>'leaseExpiresAt')::timestamptz <= clock_timestamp())
+  and (record->>'retryAfter' is null or (record->>'retryAfter')::timestamptz <= clock_timestamp())`
 
 export interface WriterFence { id: string; token: string }
 
@@ -28,6 +31,60 @@ export class PostgresInteractionCoordinationRepository {
   constructor(private readonly pool: pg.Pool) {}
 
   private get queryConnection() { return interactionConnection.getStore() ?? this.pool }
+
+  assertOrchestratorConnection(interaction: DurableInteraction, executionId: string) {
+    return assertOrchestratorGraphAuthority(this.queryConnection, interaction, { executionId })
+  }
+
+  async assertReviewConnection(job: ReviewJob): Promise<void> {
+    const result = await this.queryConnection.query<{ record: unknown; execution_id: string | null }>(
+      `select i.record, j.execution_id from review_jobs j
+       join durable_interactions i on i.id=j.interaction_id where j.id=$1`, [job.id],
+    )
+    const row = result.rows[0]
+    const interaction = DurableInteractionSchema.safeParse(row?.record)
+    if (!row?.execution_id || !interaction.success || interaction.data.id !== job.interactionId
+      || interaction.data.approval.designatedOrchestratorAgentId !== job.reviewerAgentId) {
+      throw new DomainError('INTERACTION_ACCESS_DENIED', 'The saved review assignment is unavailable.', 403)
+    }
+    await this.assertOrchestratorConnection(interaction.data, row.execution_id)
+  }
+
+  async reviewRunStopped(reviewJobId: string): Promise<boolean> {
+    const result = await this.queryConnection.query(
+      `select 1 from review_jobs j join harness_executions e on e.id=j.execution_id
+       join runs r on r.id=e.run_id where j.id=$1 and (r.execution_state in ('completed','interrupted')
+         or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending))`, [reviewJobId],
+    )
+    return result.rowCount === 1
+  }
+
+  async hasUnsettledReview(executionId: string): Promise<boolean> {
+    const result = await this.queryConnection.query(
+      `select 1 from review_jobs where execution_id=$1 and state<>'completed'
+       and (state<>'failed' or record->'cleanup'->>'completedAt' is null) limit 1`, [executionId],
+    )
+    return result.rowCount === 1
+  }
+
+  /** Called only AFTER Run Stop confirms all native closures and credential cleanup. */
+  async finishStoppedReviews(runId: string, credentialsRequired: boolean, client?: pg.ClientBase): Promise<void> {
+    await (client ?? this.queryConnection).query(
+      `update review_jobs j set state='failed',revision=revision+1,updated_at=clock_timestamp(),
+       record=(j.record - 'leaseOwner' - 'leaseToken' - 'leaseExpiresAt' - 'retryAfter') ||
+         jsonb_build_object('state','failed','updatedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+           'error',coalesce(j.record->'error',jsonb_build_object('code','REVIEW_RUN_STOPPED','message','The Run stopped before the native review finished.')),
+           'cleanup',coalesce(j.record->'cleanup','{}'::jsonb) || jsonb_build_object(
+             'nativeState',case when j.record->'cleanup'->>'nativeState' in ('terminal','closed','not_started')
+               then j.record->'cleanup'->>'nativeState' else 'closed' end,
+             'credentialState',case when j.record->'cleanup'->>'credentialState' in ('revoked','not_required')
+               then j.record->'cleanup'->>'credentialState' when $2 then 'revoked' else 'not_required' end,
+             'interruptState',coalesce(j.record->'cleanup'->>'interruptState','not_sent'),
+             'completedAt',coalesce(j.record->'cleanup'->>'completedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))))
+       from harness_executions e where j.execution_id=e.id and e.run_id=$1
+         and j.state<>'completed' and j.record->'cleanup'->>'completedAt' is null`, [runId, credentialsRequired],
+    )
+  }
 
   async bindWorkflowSession(executionId: string, session: NativeSessionReference): Promise<void> {
     const result = await this.queryConnection.query(
@@ -123,7 +180,8 @@ export class PostgresInteractionCoordinationRepository {
       if (!current) throw new DomainError('REVIEW_JOB_NOT_CLAIMABLE', 'The review job is already owned or completed.', 409)
       const next = ReviewJobSchema.parse({
         ...current, state: ['submitted', 'acknowledged', 'uncertain', 'failed'].includes(current.state) ? current.state : 'leased', attempt: current.attempt + 1, leaseOwner: input.owner,
-        leaseToken: input.token, leaseExpiresAt: input.expiresAt, updatedAt: new Date().toISOString(), error: current.cleanup ? current.error : undefined,
+        leaseToken: input.token, leaseExpiresAt: input.expiresAt, retryAfter: undefined,
+        updatedAt: new Date().toISOString(), error: current.cleanup ? current.error : undefined,
       })
       await client.query(
         `update review_jobs set state=$3,revision=revision+1,record=$2::jsonb,updated_at=now() where id=$1`,
@@ -159,6 +217,16 @@ export class PostgresInteractionCoordinationRepository {
     return result.rowCount === 1
   }
 
+  async reviewDecisionDelivered(interactionId: string, reviewerAgentId: string): Promise<boolean> {
+    const result = await this.queryConnection.query(
+      `select id from durable_interactions where id=$1 and status='delivered'
+       and record->>'deliveryState'='delivered'
+       and record->'approval'->>'handler'='orchestrator'
+       and record->'approval'->>'designatedOrchestratorAgentId'=$2`, [interactionId, reviewerAgentId],
+    )
+    return result.rowCount === 1
+  }
+
   async assertReviewJobLease(id: string, token: string): Promise<void> {
     const result = await this.queryConnection.query(
       `select id from review_jobs where id=$1 and record->>'leaseToken'=$2
@@ -181,7 +249,7 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async transitionReviewJob(id: string, leaseToken: string, state: ReviewJob['state'], fields: {
-    providerTurnOrMessageId?: string; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']; writerFence?: WriterFence; releaseLease?: boolean
+    providerTurnOrMessageId?: string; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']; writerFence?: WriterFence; releaseLease?: boolean; retryAfter?: string
   } = {}, expected?: { revision: number; fence: number }): Promise<ReviewJob> {
     const client = await this.pool.connect()
     try {
@@ -200,6 +268,11 @@ export class PostgresInteractionCoordinationRepository {
       if (current.providerTurnOrMessageId && fields.providerTurnOrMessageId
         && current.providerTurnOrMessageId !== fields.providerTurnOrMessageId) {
         throw new DomainError('REVIEW_JOB_IDENTITY_CONFLICT', 'The review job is already bound to another provider turn or message.', 409)
+      }
+      // Every terminal failure has a recovery owner. Missing ACKs and failed
+      // attachment never constitute native closure evidence.
+      if (state === 'failed' && !current.cleanup && !fields.cleanup) {
+        fields = { ...fields, cleanup: pendingReviewCleanup() }
       }
       if ((fields.cleanup && state !== 'failed') || (current.cleanup && state !== 'failed')
         || (fields.cleanup?.nativeState === 'not_started'
@@ -233,6 +306,7 @@ export class PostgresInteractionCoordinationRepository {
         ...(fields.providerTurnOrMessageId ? { providerTurnOrMessageId: fields.providerTurnOrMessageId } : {}),
         ...(fields.error && !current.cleanup ? { error: fields.error } : {}),
         ...(fields.cleanup ? { cleanup: fields.cleanup } : {}),
+        ...(fields.retryAfter ? { retryAfter: fields.retryAfter } : {}),
         ...(releases ? { leaseOwner: undefined, leaseToken: undefined, leaseExpiresAt: undefined } : {}),
       })
       const updated = await client.query(
@@ -284,17 +358,19 @@ export class PostgresInteractionCoordinationRepository {
 
   async claimLane(id: string, expectedRevision: number, owner: string, token: string, leaseExpiresAt: string, correlationId: string): Promise<NativeSessionLane> {
     const input = leaseInput(id, owner, token, leaseExpiresAt)
-    const correlation = IdSchema.parse(correlationId)
+    IdSchema.parse(correlationId)
+    // Lease ownership precedes idle preflight. bindLaneTurn publishes a new
+    // correlation only after that preflight succeeds.
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new DomainError('REVISION_INVALID', 'Expected revision must be a nonnegative integer.', 400)
     const result = await this.queryConnection.query<{ record: unknown }>(
       `update native_session_lanes set revision=revision+1, updated_at=now(),
-         record=jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(record,
+         record=jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(record,
            '{revision}', to_jsonb((revision+1)::bigint)), '{leaseOwner}', to_jsonb($3::text)),
            '{leaseToken}', to_jsonb($4::text)), '{leaseExpiresAt}', to_jsonb(to_char($5::timestamptz at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))),
-           '{correlationId}', to_jsonb($6::text)), '{observedStatus}', '"busy"'::jsonb)
+           '{observedStatus}', '"busy"'::jsonb)
        where id=$1 and revision=$2 and $5::timestamptz > clock_timestamp() and (
          record->>'leaseExpiresAt' is null or (record->>'leaseExpiresAt')::timestamptz <= clock_timestamp())
-       returning record`, [input.id, expectedRevision, input.owner, input.token, input.expiresAt, correlation],
+       returning record`, [input.id, expectedRevision, input.owner, input.token, input.expiresAt],
     )
     if (!result.rows[0]) throw new DomainError('SESSION_LANE_BUSY', 'The native session lane is busy or stale.', 409)
     return NativeSessionLaneSchema.parse(result.rows[0].record)
@@ -367,7 +443,11 @@ export class PostgresInteractionCoordinationRepository {
         observedAt: new Date().toISOString(), connectionGeneration: observed.connectionGeneration ?? current.connectionGeneration,
         ...(observed.currentTurnOrMessageId ? { currentTurnOrMessageId: observed.currentTurnOrMessageId } : { currentTurnOrMessageId: undefined }),
         leaseOwner: undefined, leaseToken: undefined, leaseExpiresAt: undefined,
-        correlationId: observed.observedStatus === 'idle' ? undefined : current.correlationId,
+        // A retained provider turn ID is useful only with the correlation that
+        // owns it. Keep the completed pair for the next idle preflight; a lane
+        // with no provider identity may become fully unbound.
+        correlationId: observed.observedStatus === 'idle' && !observed.currentTurnOrMessageId
+          ? undefined : current.correlationId,
       })
       const updated = await client.query(
         `update native_session_lanes set revision=$2,record=$3::jsonb,updated_at=now()

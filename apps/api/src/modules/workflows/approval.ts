@@ -1,5 +1,6 @@
 import {
   AcceptedWorkflowApprovalConfigurationSchema,
+  directApprovalConnection,
   type AcceptedWorkflowApprovalConfiguration,
   type Agent,
   type WorkflowApprovalConfiguration,
@@ -10,7 +11,7 @@ import {
 import { DomainError } from '../errors.js'
 import { validateReviewerBootstrap } from './reviewerBootstrap.js'
 
-/** Validate accepted authority from durable Agent records, never display role strings or graph edges. */
+/** Role/designation checks. Each routed request additionally needs a direct edge in its Run version. */
 export function validateWorkflowApproval(
   definition: WorkflowDefinition,
   approval: WorkflowApprovalConfiguration,
@@ -35,6 +36,18 @@ export function validateWorkflowApproval(
     throw new DomainError('APPROVAL_DISTINCT_CODER_REQUIRED', 'Orchestrator-handled workflows require a distinct Coder.', 409)
   }
   validateReviewerBootstrap(definition, accepted.data, durable.get(designatedId)?.harnessConfiguration)
+  for (const node of definition.nodes) {
+    if (node.agentId === designatedId) continue
+    const configuration = durable.get(node.agentId)?.harnessConfiguration
+    // Explicit native Codex self-review is per node, not a workflow-wide bypass.
+    if (configuration?.harness === 'codex' && configuration.advanced?.approvalPolicy === 'on-request'
+      && configuration.advanced.approvalsReviewer === 'auto_review') continue
+    if (!directApprovalConnection(definition, node.id, node.agentId, designatedId)) {
+      throw new DomainError('APPROVAL_DIRECT_CONNECTION_REQUIRED',
+        'Every node using routed approval needs a direct edge to the designated Orchestrator. A transitive path does not grant approval authority.',
+        409, { workflowNodeId: node.id })
+    }
+  }
   return accepted.data
 }
 

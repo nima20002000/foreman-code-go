@@ -226,7 +226,12 @@ export function buildProductionApp(
     new PostgresOperatorConversationRepository(database.pool), operators,
     resolveOperatorManager, operatorWorkingDirectory, chatAuthority,
   )
-  const reviews = new AutomaticReviewService(database.pool, runs, approvals, chat, access, locations, rollout)
+  const reviews = new AutomaticReviewService(database.pool, runs, approvals, chat, access, locations, rollout,
+    async (runId) => {
+      // AutomaticReviewService committed the exact review cause and durable Stop
+      // intent first. A process restart or failed closure cannot lose that cause.
+      if (await engine.cancel(runId)) await engine.finishRunLifecycle(runId, 'The assigned Orchestrator review failed; see the Run stop cause.')
+    })
   reviewLifecycle.current = reviews
   const operatorServices = {
     operatorChat: chat,

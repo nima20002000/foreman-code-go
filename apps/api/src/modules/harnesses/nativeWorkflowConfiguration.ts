@@ -12,11 +12,12 @@ import { DomainError } from '../errors.js'
 export function assertNativeWorkflowConfiguration(
   configuration: HarnessConfiguration,
   approval?: WorkflowApprovalConfiguration,
+  designatedOrchestrator = false,
 ): void {
   if (approval && !AcceptedWorkflowApprovalConfigurationSchema.safeParse(approval).success) {
     throw new DomainError('WORKFLOW_APPROVAL_INCOMPLETE', 'Reopen and save the workflow with complete approval settings before starting it.', 409)
   }
-  try { validateHarnessWorkflowCompatibility(configuration, approval?.handler) }
+  try { validateHarnessWorkflowCompatibility(configuration, approval?.handler, designatedOrchestrator) }
   catch {
     throw new DomainError('WORKFLOW_HARNESS_APPROVAL_CONFLICT', 'The Agent configuration is invalid or native automatic handling conflicts with routed workflow approval. Reopen and save the Agent and workflow settings.', 409)
   }

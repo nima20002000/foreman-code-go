@@ -34,7 +34,8 @@ function configuration(agentId: string, productRole: 'orchestrator' | 'coder', h
 }
 function executable() {
   const orchestratorHarness = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
-  orchestratorHarness.advanced!.approvalPolicy = 'never'
+  orchestratorHarness.advanced!.approvalPolicy = 'on-request'
+  orchestratorHarness.advanced!.approvalsReviewer = 'auto_review'
   return {
     id: 'version', version: 1, createdAt: now,
     configurations: [configuration('orchestrator', 'orchestrator', orchestratorHarness), configuration('coder', 'coder')],
@@ -65,19 +66,21 @@ describe('PR8 executable approval acceptance', () => {
     ['wrong workflow', 'APPROVAL_ORCHESTRATOR_WRONG_WORKFLOW'],
     ['wrong role', 'APPROVAL_ORCHESTRATOR_ROLE_REQUIRED'],
     ['no coder', 'APPROVAL_DISTINCT_CODER_REQUIRED'],
-    ['native review', 'WORKFLOW_HARNESS_APPROVAL_CONFLICT'],
   ])('rejects %s', (scenario, code) => {
     const input = executable()
     if (scenario === 'missing designation') input.definition.approval = { handler: 'orchestrator' }
     if (scenario === 'wrong workflow') input.definition.approval!.designatedOrchestratorAgentId = 'elsewhere'
     if (scenario === 'wrong role') input.configurations[0]!.productRole = 'coder'
     if (scenario === 'no coder') input.configurations[1]!.productRole = 'orchestrator'
-    if (scenario === 'native review') {
-      const harness = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
-      harness.advanced!.approvalsReviewer = 'auto_review'
-      input.configurations[1] = configuration('coder', 'coder', harness)
-    }
     expect(() => buildExecutableWorkflowVersion(input)).toThrow(expect.objectContaining({ code }))
+  })
+
+  it('allows a self-reviewed Codex Coder in an Orchestrator-routed workflow', () => {
+    const input = executable()
+    const selfReviewed = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
+    selfReviewed.advanced!.approvalsReviewer = 'auto_review'
+    input.configurations[1] = configuration('coder', 'coder', selfReviewed)
+    expect(() => buildExecutableWorkflowVersion(input)).not.toThrow()
   })
 
   it('rejects missing or mismatched configured snapshots but retains true legacy versions', () => {

@@ -10,6 +10,7 @@ import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart } f
 import { PostgresInteractionCoordinationRepository, type WriterFence } from '../src/modules/interactions/coordination.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { ReviewerDispatcher } from '../src/modules/interactions/reviewer.js'
+import type { ReviewerNativeRuntime } from '../src/modules/interactions/reviewerRuntime.js'
 import { reviewTurnEvidence } from '../src/modules/interactions/reviewerEvidence.js'
 import { LeaseGuard, ownedEvents, SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
 
@@ -38,7 +39,16 @@ class CoordinationFake {
   failJobRenewal = false
   failLaneRenewal = false
   pending = true
+  delivered = false
+  runStopped = false
+  async reviewRunStopped() { return this.runStopped }
   readonly nativeEvents: NativeHarnessEvent[] = []
+  // Scheduler-only policy port. Real immutable-graph checks live in the authenticated DB integration tests.
+  graphAllowed = true
+  async assertOrchestratorConnection() {
+    if (!this.graphAllowed) throw new DomainError('INTERACTION_ACCESS_DENIED', 'Not directly connected.', 403)
+  }
+  async assertReviewConnection() { await this.assertOrchestratorConnection() }
 
   async appendReviewNativeEvent(_job: ReviewJob, event: NativeHarnessEvent) {
     assert.equal(_job.id, this.job?.id)
@@ -54,20 +64,23 @@ class CoordinationFake {
   async findReviewJob() { return this.job && clone(this.job) }
   async getReviewJobContext() { return this.context }
   async nextReviewJob() {
-    if (!this.job || ['completed', 'failed'].includes(this.job.state)
-      || (this.job.leaseExpiresAt && Date.parse(this.job.leaseExpiresAt) > Date.now())) return undefined
+    if (!this.job || this.job.state === 'completed'
+      || (this.job.state === 'failed' && (!this.job.cleanup || this.job.cleanup.completedAt))
+      || (this.job.leaseExpiresAt && Date.parse(this.job.leaseExpiresAt) > Date.now())
+      || (this.job.retryAfter && Date.parse(this.job.retryAfter) > Date.now())) return undefined
     return clone(this.job)
   }
   async reviewJobAgents() { return await this.nextReviewJob() ? ['reviewer'] : [] }
   async isReviewPending() { return this.pending }
+  async reviewDecisionDelivered() { return this.delivered }
   async claimReviewJob(_id: string, owner: string, token: string, expires: string) {
     const current = await this.nextReviewJob()
     // Recheck after the await, just as the SQL update holds the row lock.
     if (!current || (this.job?.leaseExpiresAt && Date.parse(this.job.leaseExpiresAt) > Date.now())) {
       throw new DomainError('REVIEW_JOB_NOT_CLAIMABLE', 'owned', 409)
     }
-    this.job = { ...current, state: ['submitted', 'acknowledged', 'uncertain'].includes(current.state) ? current.state : 'leased',
-      attempt: current.attempt + 1, leaseOwner: owner, leaseToken: token, leaseExpiresAt: expires }
+    this.job = { ...current, state: ['submitted', 'acknowledged', 'uncertain', 'failed'].includes(current.state) ? current.state : 'leased',
+      attempt: current.attempt + 1, leaseOwner: owner, leaseToken: token, leaseExpiresAt: expires, retryAfter: undefined }
     return clone(this.job)
   }
   async assertReviewJobLease(_id: string, token: string) {
@@ -82,7 +95,7 @@ class CoordinationFake {
     return this.job!.leaseExpiresAt = new Date(Date.now() + ms).toISOString()
   }
   async transitionReviewJob(id: string, token: string, state: ReviewJob['state'], fields: {
-    providerTurnOrMessageId?: string; writerFence?: WriterFence; releaseLease?: boolean; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']
+    providerTurnOrMessageId?: string; writerFence?: WriterFence; releaseLease?: boolean; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']; retryAfter?: string
   } = {}) {
     await this.assertReviewJobLease(id, token)
     if (fields.writerFence) await this.assertLaneLease(fields.writerFence.id, fields.writerFence.token)
@@ -90,7 +103,8 @@ class CoordinationFake {
     this.job = { ...this.job!, state, updatedAt: new Date().toISOString(),
       ...(fields.providerTurnOrMessageId ? { providerTurnOrMessageId: fields.providerTurnOrMessageId } : {}),
       ...(fields.error ? { error: fields.error } : {}),
-      ...(fields.cleanup ? { cleanup: fields.cleanup } : {}) }
+      ...(fields.cleanup ? { cleanup: fields.cleanup } : {}),
+      ...(fields.retryAfter ? { retryAfter: fields.retryAfter } : {}) }
     if (state === 'submitted') this.job.submittedAt = new Date().toISOString()
     if (state === 'acknowledged') this.job.acknowledgedAt = new Date().toISOString()
     if (state === 'completed') this.job.completedAt = new Date().toISOString()
@@ -103,12 +117,14 @@ class CoordinationFake {
     if (lane.ownerAgentId !== this.lane.ownerAgentId) throw new DomainError('SESSION_LANE_OWNER_CONFLICT', 'wrong owner', 409)
     return clone(this.lane)
   }
+  async getLane() { return clone(this.lane) }
   async claimLane(_id: string, revision: number, owner: string, token: string, expires: string, correlationId: string) {
     if (revision !== this.lane.revision || (this.lane.leaseExpiresAt && Date.parse(this.lane.leaseExpiresAt) > Date.now())) {
       throw new DomainError('SESSION_LANE_BUSY', 'busy', 409)
     }
     this.lane = { ...this.lane, revision: revision + 1, leaseOwner: owner, leaseToken: token,
-      leaseExpiresAt: expires, correlationId, observedStatus: 'busy' }
+      leaseExpiresAt: expires, observedStatus: 'busy' }
+    void correlationId
     return clone(this.lane)
   }
   async assertLaneLease(_id: string, token: string) {
@@ -131,7 +147,7 @@ class CoordinationFake {
     await this.assertLaneLease(id, token)
     this.lane = { ...this.lane, ...observed, revision: this.lane.revision + 1 }
     delete this.lane.leaseOwner; delete this.lane.leaseToken; delete this.lane.leaseExpiresAt
-    if (observed.observedStatus === 'idle') delete this.lane.correlationId
+    if (observed.observedStatus === 'idle' && !observed.currentTurnOrMessageId) delete this.lane.correlationId
     return clone(this.lane)
   }
 }
@@ -149,7 +165,7 @@ function fixture(ms = 30_000) {
     createSession: async () => session,
     attachSession: async () => { attached++; return session },
     startTurn: async function* (_session: NativeSessionReference, input: { clientCorrelationId: string }) {
-      started++; yield startEvent(input.clientCorrelationId); yield endEvent()
+      started++; yield startEvent(input.clientCorrelationId); coordination.pending = false; yield endEvent()
     },
     reconcile: async () => { reconciled++; return idleHistory() },
     pending: async () => undefined,
@@ -158,13 +174,181 @@ function fixture(ms = 30_000) {
     cancel: async () => { canceled++; return true },
     close: async () => undefined,
   } as unknown as NativeHarnessSessionManager
-  const runtime = { attachInteraction: async () => ({ manager, session }), attachOwnedSession: async () => ({ manager, session }) }
+  const runtime: ReviewerNativeRuntime = { attachInteraction: async () => ({ manager, session }), attachOwnedSession: async () => ({ manager, session }) }
   const dispatcher = new ReviewerDispatcher(coordination.asRepository(), runtime, ms)
   return { coordination, manager, runtime, dispatcher, counts: () => ({ started, attached, reconciled, canceled, responded }) }
 }
 async function enqueue(f: ReturnType<typeof fixture>) {
   return f.dispatcher.enqueue(interaction, 'reviewer', session, f.coordination.context)
 }
+
+test('rejects an unconnected request before persisting or dispatching a review', async () => {
+  const f = fixture(); f.coordination.graphAllowed = false
+  await assert.rejects(enqueue(f), { code: 'INTERACTION_ACCESS_DENIED' })
+  assert.equal(f.coordination.job, undefined)
+  assert.equal(f.counts().started, 0)
+})
+
+test('rechecks topology on recovery before claiming an older queued review', async () => {
+  const f = fixture(); await enqueue(f); f.coordination.graphAllowed = false
+  await assert.rejects(f.dispatcher.dispatchNext('reviewer', 'worker'), { code: 'INTERACTION_ACCESS_DENIED' })
+  assert.equal(f.coordination.job?.state, 'pending')
+  assert.equal(f.counts().started, 0)
+  assert.equal(f.counts().attached, 0)
+})
+
+
+test('post-delivery disconnect remains recoverable and only matching terminal history completes it', async () => {
+  const f = fixture(); await enqueue(f)
+  let submissions = 0
+  f.manager.startTurn = async function* (_session, input) {
+    submissions++
+    yield startEvent(input.clientCorrelationId)
+    f.coordination.pending = false
+    f.coordination.delivered = true
+    throw new Error('stream disconnected after decision delivery')
+  }
+  const first = await f.dispatcher.dispatchNext('reviewer', 'worker')
+  assert.equal(first?.state, 'uncertain')
+  assert.equal(first?.completedAt, undefined)
+  assert.equal(first?.providerTurnOrMessageId, 'native-turn')
+  assert.equal(f.coordination.lane.observedStatus, 'uncertain')
+  // A session-idle event alone is not completion of the exact review.
+  delete f.coordination.job!.retryAfter
+  f.manager.reconcile = async () => idleHistory()
+  assert.equal((await f.dispatcher.dispatchNext('reviewer', 'recovery-1'))?.state, 'acknowledged')
+  f.manager.reconcile = async () => history([endEvent()])
+  assert.equal((await f.dispatcher.dispatchNext('reviewer', 'recovery-2'))?.state, 'completed')
+  assert.equal(submissions, 1)
+  assert.equal(f.counts().responded, 0)
+  assert.equal(f.coordination.delivered, true)
+})
+
+for (const failure of ['credential', 'identity'] as const) {
+  test(`post-delivery ${failure} failure stays failed with cleanup instead of successful completion`, async () => {
+    const f = fixture(); await enqueue(f)
+    const credential = new AbortController()
+    let revoked = 0, submissions = 0
+    f.runtime.maintainReviewCredential = async (_executionId, _session, signal) => ({
+      principalId: 'captured-principal', signal: AbortSignal.any([signal, credential.signal]),
+      stop: async () => undefined, invalidate: async () => { revoked++ },
+    })
+    f.manager.startTurn = async function* (_session, input) {
+      submissions++
+      yield startEvent(input.clientCorrelationId)
+      f.coordination.pending = false; f.coordination.delivered = true
+      if (failure === 'credential') {
+        credential.abort(new DomainError('REVIEWER_CREDENTIAL_LOST', 'credential maintenance failed', 409))
+        credential.signal.throwIfAborted()
+      }
+      throw new DomainError('REVIEW_JOB_IDENTITY_CONFLICT', 'conflicting native identity', 409)
+    }
+    f.manager.reconcile = async () => history()
+    const result = await f.dispatcher.dispatchNext('reviewer', 'worker')
+    assert.equal(result?.state, 'failed')
+    assert.equal(result?.error?.code, failure === 'credential' ? 'REVIEWER_CREDENTIAL_LOST' : 'REVIEW_JOB_IDENTITY_CONFLICT')
+    assert.equal(result?.cleanup?.nativeState, 'pending')
+    assert.equal(result?.cleanup?.completedAt, undefined)
+    assert.equal(revoked, 1)
+    assert.equal(submissions, 1)
+    assert.equal(f.counts().responded, 0)
+    if (failure === 'identity') assert.equal(f.counts().canceled, 0)
+    assert.ok(await f.coordination.nextReviewJob())
+  })
+}
+
+test('a terminal Run moves an unsettled post-delivery review into closure-only recovery after restart', async () => {
+  const f = fixture(); const job = await enqueue(f)
+  f.coordination.job = { ...job, state: 'uncertain', submittedAt: job.createdAt, providerTurnOrMessageId: 'native-turn' }
+  f.coordination.runStopped = true
+  f.coordination.delivered = true; f.coordination.pending = false
+  let attaches = 0, cleanupReads = 0
+  f.runtime.attachOwnedSession = async () => { attaches++; return { manager: f.manager, session } }
+  f.runtime.recoverReviewCleanup = async () => { cleanupReads++; return { manager: f.manager, resident: false, closed: false } }
+  const restarted = new ReviewerDispatcher(f.coordination.asRepository(), f.runtime)
+  const result = await restarted.dispatchNext('reviewer', 'after-restart')
+  assert.equal(result?.state, 'failed')
+  assert.equal(result?.error?.code, 'REVIEW_RUN_STOPPED')
+  assert.equal(result?.cleanup?.nativeState, 'pending')
+  assert.equal(attaches, 0)
+  await restarted.dispatchNext('reviewer', 'cleanup')
+  assert.equal(cleanupReads, 1)
+  assert.equal(f.coordination.job?.cleanup?.completedAt, undefined)
+  assert.equal(f.counts().started, 0)
+  await restarted.shutdown()
+})
+
+for (const harness of ['codex', 'opencode'] as const) {
+  for (const attachMode of ['resident', 'reattach'] as const) {
+    test(`${harness} ${attachMode} uses A's saved pair to settle preflight before starting B`, async () => {
+      const f = fixture()
+      const reference: NativeSessionReference = { harness, providerVersion: harness === 'codex' ? '0.154.0' : '1.18.31', nativeSessionId: 'sequential-review' }
+      const oldCorrelation = 'review-A'
+      const oldProvider = harness === 'codex' ? 'native-A' : `msg_${createHash('sha256').update(oldCorrelation).digest('hex').slice(0, 24)}`
+      const oldEvents = harness === 'codex'
+        ? [event('thread.reconciled', { thread: { id: reference.nativeSessionId, status: 'idle', turns: [
+            { id: oldProvider, clientUserMessageId: oldCorrelation, status: 'completed' },
+          ] } })]
+        : [event('message.updated', { info: { id: 'assistant-A', sessionID: reference.nativeSessionId,
+            role: 'assistant', parentID: oldProvider, finish: 'stop', time: { completed: 1 } } }),
+          event('session.status', { sessionID: reference.nativeSessionId, status: { type: 'idle' } })]
+      f.coordination.lane = { ...f.coordination.lane, harness, nativeSessionId: reference.nativeSessionId,
+        observedStatus: 'uncertain', correlationId: oldCorrelation, currentTurnOrMessageId: oldProvider }
+      const reconciled: string[] = []
+      let submissions = 0, attached = 0
+      const manager: NativeHarnessSessionManager = { ...f.manager, harness,
+        attachSession: async (_session, input) => {
+          attached++
+          assert.equal(input.correlationId, oldCorrelation)
+          assert.equal(input.nativeTurnId, oldProvider)
+          return reference
+        },
+        reconcile: async (_session, correlation) => {
+          reconciled.push(correlation)
+          return correlation === oldCorrelation ? history(oldEvents) : history()
+        },
+        startTurn: async function* (_session, input) {
+          submissions++
+          assert.notEqual(input.clientCorrelationId, oldCorrelation)
+          f.coordination.pending = false
+          if (harness === 'codex') {
+            yield event('turn.started', { threadId: reference.nativeSessionId, turnId: 'native-B', clientCorrelationId: input.clientCorrelationId })
+            yield event('turn/completed', { threadId: reference.nativeSessionId, turn: { id: 'native-B', status: 'completed' } })
+          } else {
+            const id = `msg_${createHash('sha256').update(input.clientCorrelationId).digest('hex').slice(0, 24)}`
+            await input.onSubmitted?.(id)
+            yield event('message.updated', { info: { id: 'assistant-B', sessionID: reference.nativeSessionId,
+              role: 'assistant', parentID: id, time: { completed: 2 }, finish: 'stop' } })
+          }
+        },
+      }
+      f.runtime.attachOwnedSession = async (context) => {
+        assert.equal(context.correlationId, oldCorrelation)
+        assert.equal(context.nativeTurnId, oldProvider)
+        if (attachMode === 'reattach') {
+          const owner = new SingleWriterSessionManager(manager, f.coordination.asRepository(), 'reviewer')
+          await owner.attachSession(reference, { kind: 'workflow', correlationId: context.correlationId,
+            nativeTurnId: context.nativeTurnId } as NativeSessionStart)
+        }
+        return { manager, session: reference }
+      }
+      await f.dispatcher.enqueue(interaction, 'reviewer', reference, f.coordination.context)
+      assert.equal((await f.dispatcher.dispatchNext('reviewer', 'worker'))?.state, 'completed')
+      assert.equal(reconciled[0], oldCorrelation)
+      assert.equal(submissions, 1)
+      assert.equal(attached, attachMode === 'reattach' ? 1 : 0)
+    })
+  }
+}
+
+test('a changed unresolved lane pair refuses stale reattachment before any native call', async () => {
+  const f = fixture()
+  f.coordination.lane = { ...f.coordination.lane, observedStatus: 'uncertain', correlationId: 'new-owner', currentTurnOrMessageId: 'new-turn' }
+  const writer = new SingleWriterSessionManager(f.manager, f.coordination.asRepository(), 'reviewer')
+  await assert.rejects(writer.attachSession(session, { kind: 'workflow', correlationId: 'old-owner', nativeTurnId: 'old-turn' } as NativeSessionStart),
+    { code: 'SESSION_LANE_BUSY' })
+  assert.equal(f.counts().attached, 0)
+})
 
 for (const status of ['busy', 'disconnected', 'uncertain'] as const) {
   test(`refreshes stale ${status} native lane before dispatch`, async () => {
@@ -190,6 +374,94 @@ test('does not submit a review after the interaction is decided or canceled', as
   const f = fixture(); await enqueue(f); f.coordination.pending = false
   assert.equal((await f.dispatcher.dispatchNext('reviewer', 'worker'))?.state, 'failed')
   assert.equal(f.counts().started, 0)
+})
+
+test('a missing saved cgroup boundary blocks review permanently without replaying native work', async () => {
+  const f = fixture(); await enqueue(f)
+  f.runtime.attachOwnedSession = async () => { throw Object.assign(new Error('missing native boundary'), {
+    code: 'ENOENT', path: '/sys/fs/cgroup/test/graphql-native-12345678-1234-1234-1234-123456789abc',
+  }) }
+  const result = await f.dispatcher.dispatchNext('reviewer', 'worker')
+  assert.equal(result?.state, 'failed')
+  assert.equal(result?.error?.code, 'REVIEW_NATIVE_CLOSURE_UNCONFIRMED')
+  assert.equal(result?.cleanup?.nativeState, 'pending')
+  assert.equal(result?.cleanup?.completedAt, undefined)
+  f.runtime.recoverReviewCleanup = async () => ({ manager: f.manager, resident: false, closed: false })
+  const restarted = new ReviewerDispatcher(f.coordination.asRepository(), f.runtime)
+  assert.equal((await restarted.dispatchNext('reviewer', 'cleanup-worker'))?.state, 'failed')
+  assert.equal(f.coordination.job?.cleanup?.completedAt, undefined)
+  assert.equal(f.counts().started, 0)
+  await restarted.shutdown()
+})
+
+test('a transient reviewer attachment failure delays its next attempt', async () => {
+  const f = fixture(); await enqueue(f)
+  f.runtime.attachOwnedSession = async () => { throw new Error('transport unavailable') }
+  const result = await f.dispatcher.dispatchNext('reviewer', 'worker')
+  assert.equal(result?.state, 'blocked_disconnected')
+  assert.ok(Date.parse(result.retryAfter!) > Date.now())
+  assert.equal(await f.dispatcher.dispatchNext('reviewer', 'worker'), undefined)
+  assert.equal(f.counts().started, 0)
+})
+
+test('fresh review preserves the unresolved previous review pair at attachment and preflight', async () => {
+  const f = fixture(); await enqueue(f)
+  f.coordination.lane = { ...f.coordination.lane, observedStatus: 'uncertain',
+    correlationId: 'review-A', currentTurnOrMessageId: 'native-A' }
+  let attachedCorrelation: string | undefined
+  let attachedTurn: string | undefined
+  const inspected: string[] = []
+  f.runtime.attachOwnedSession = async (context) => {
+    attachedCorrelation = context.correlationId
+    attachedTurn = context.nativeTurnId
+    return { manager: f.manager, session }
+  }
+  f.manager.reconcile = async (_session, correlation) => {
+    inspected.push(correlation)
+    return correlation === 'review-A' ? history([event('thread.reconciled', { thread: {
+      id: session.nativeSessionId, status: 'idle', turns: [{ id: 'native-A', clientUserMessageId: 'review-A', status: 'completed' }],
+    } })]) : idleHistory()
+  }
+  assert.equal((await f.dispatcher.dispatchNext('reviewer', 'worker'))?.state, 'completed')
+  assert.equal(attachedCorrelation, 'review-A')
+  assert.equal(attachedTurn, 'native-A')
+  assert.equal(inspected[0], 'review-A')
+  assert.equal(f.counts().started, 1)
+})
+
+test('a terminal reviewer turn without a decision fails visibly and is never replayed', async () => {
+  const f = fixture(); await enqueue(f)
+  f.manager.startTurn = async function* (_session, input) {
+    yield startEvent(input.clientCorrelationId)
+    yield endEvent()
+  }
+  const result = await f.dispatcher.dispatchNext('reviewer', 'worker')
+  assert.equal(result?.state, 'failed')
+  assert.equal(result?.error?.code, 'REVIEW_NO_DECISION')
+  assert.ok(result?.cleanup)
+  assert.equal(f.counts().started, 0)
+  f.runtime.recoverReviewCleanup = async () => ({ manager: f.manager, resident: false, closed: false })
+  const recovered = await f.dispatcher.dispatchNext('reviewer', 'worker')
+  assert.equal(recovered?.state, 'failed')
+  assert.equal(recovered?.cleanup?.completedAt, undefined)
+  assert.equal(f.counts().started, 0)
+})
+
+test('delivered decision does not hide authority loss or falsely settle the native review', async () => {
+  const f = fixture(); await enqueue(f)
+  f.manager.startTurn = async function* (_session, input) {
+    yield startEvent(input.clientCorrelationId)
+    f.coordination.pending = false
+    f.coordination.delivered = true
+    throw new DomainError('REVIEWER_AUTHORITY_LOST', 'The Run completed.', 409)
+  }
+  const result = await f.dispatcher.dispatchNext('reviewer', 'worker')
+  assert.equal(result?.state, 'failed')
+  assert.equal(result?.error?.code, 'REVIEWER_CREDENTIAL_LOST')
+  assert.equal(result?.cleanup?.nativeState, 'pending')
+  assert.equal(result?.cleanup?.completedAt, undefined)
+  assert.equal(f.coordination.delivered, true)
+  assert.equal(f.counts().responded, 0)
 })
 
 test('iterator exhaustion and unrelated events are not acknowledgement or completion', async () => {
@@ -223,6 +495,7 @@ for (const state of ['submitted', 'acknowledged', 'uncertain', 'blocked_disconne
     const f = fixture(); const job = await enqueue(f)
     f.coordination.job = { ...job, state, submittedAt: job.createdAt,
       leaseExpiresAt: new Date(Date.now() - 100).toISOString(), leaseToken: 'old' }
+    f.coordination.pending = false
     f.coordination.lane.observedStatus = 'uncertain'
     f.manager.reconcile = async (_session, correlation) => {
       assert.equal(correlation, job.correlationId)
@@ -274,7 +547,7 @@ test('reviewer and normal workflow turn share active lane; long turns renew both
   const began = new Promise<void>((resolve) => { started = resolve })
   f.manager.startTurn = async function* (_session, input) {
     yield startEvent(input.clientCorrelationId); started()
-    await delay(400); yield endEvent()
+    await delay(400); f.coordination.pending = false; yield endEvent()
   }
   const task = f.dispatcher.dispatchNext('reviewer', 'worker')
   await began
@@ -422,13 +695,14 @@ test('known native turn identity cannot be replaced by a second turn with the sa
 
 function queueFixture() {
   const f = fixture()
-  let executions = [{ state: 'completed', id: 'reviewer-execution', agentId: 'reviewer', nativeSessionId: session.nativeSessionId,
+  let executions = [{ state: 'completed', id: 'reviewer-execution', agentId: 'reviewer', workflowNodeId: 'reviewer-node', nativeSessionId: session.nativeSessionId,
     agentConfigurationVersionId: 'pinned-reviewer-config', workingDirectory: '/accepted', runtimeDirectory: '/runtime' }]
   const configuration = { id: 'pinned-reviewer-config', agentId: 'reviewer', productRole: 'orchestrator', harness: { harness: 'codex' } }
   const resolvedContexts: unknown[] = []
   const runs = { listExecutions: async (runId: string) => { assert.equal(runId, interaction.runId); return executions },
     getExecutionConfiguration: async () => configuration }
-  const repository = { coordination: Object.assign(f.coordination.asRepository(), { workflowSession: async () => ({ session, finalized: true }) }), list: async () => [interaction] }
+  const repository = { coordination: Object.assign(f.coordination.asRepository(), { workflowSession: async () => ({ session, finalized: true }) }),
+    assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'reviewer-node' }), list: async () => [interaction] }
   type Args = ConstructorParameters<typeof ApprovalExecutionCoordinator>
   const coordinator = new ApprovalExecutionCoordinator(runs as unknown as Args[0], repository as unknown as Args[1],
     {} as Args[2], { resolve: (context) => { resolvedContexts.push(context); return { manager: f.manager, processState: 'resident' } } }, 30_000)

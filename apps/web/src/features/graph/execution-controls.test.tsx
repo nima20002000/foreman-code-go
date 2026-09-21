@@ -170,7 +170,7 @@ it('locks Start after 202 while details are delayed or queued; unlocks only at c
   await waitFor(() => expect(screen.getByRole('button', { name: 'Start workflow' })).toBeEnabled())
 })
 
-it('shows a canceled execution after remount without a success tone', async () => {
+it('keeps a canceled historical execution out of live node state after remount', async () => {
   const canceledRun: WorkflowRun = {
     ...run, executionState: 'completed', outcome: 'canceled', result: { outcome: 'canceled' },
     finishedAt: '2026-09-14T00:01:00.000Z',
@@ -191,11 +191,12 @@ it('shows a canceled execution after remount without a success tone', async () =
   </QueryClientProvider>)
 
   const first = renderCanceled()
-  expect(screen.getByText('Canceled').closest('[data-tone]')).toHaveAttribute('data-tone', 'neutral')
+  expect(screen.getAllByText('Idle').every((badge) => badge.closest('[data-tone]')?.getAttribute('data-tone') === 'neutral')).toBe(true)
+  expect(screen.queryByText('Canceled')).not.toBeInTheDocument()
   first.unmount()
   renderCanceled()
 
-  expect(screen.getByText('Canceled').closest('[data-tone]')).toHaveAttribute('data-tone', 'neutral')
+  expect(screen.getAllByText('Idle').every((badge) => badge.closest('[data-tone]')?.getAttribute('data-tone') === 'neutral')).toBe(true)
   expect(screen.getByRole('button', { name: 'Start workflow' })).toBeEnabled()
 })
 

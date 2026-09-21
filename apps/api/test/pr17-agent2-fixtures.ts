@@ -20,6 +20,9 @@ export function reviewCoordination(initial = reviewJob()) {
     currentTurnOrMessageId: initial.providerTurnOrMessageId, connectionGeneration: 0, observedAt: new Date().toISOString(), revision: 0 }
   const transitions: ReviewJob[] = []
   const value = {
+    async assertReviewConnection() {},
+    async reviewRunStopped() { return false },
+    async getLane() { return structuredClone(lane) },
     async nextReviewJob() { return job.cleanup?.completedAt ? undefined : structuredClone(job) },
     async claimReviewJob(_id: string, owner: string, token: string, expires: string) {
       job = { ...job, attempt: job.attempt + 1, leaseToken: token, leaseOwner: owner, leaseExpiresAt: expires }
@@ -55,7 +58,7 @@ export function reviewCoordination(initial = reviewJob()) {
     async releaseLane(_id: string, token: string, fields: { observedStatus: NativeSessionLane['observedStatus']; currentTurnOrMessageId?: string }) {
       assert.equal(token, lane.leaseToken)
       lane = { ...lane, ...fields }
-      if (fields.observedStatus === 'idle') delete lane.correlationId
+      if (fields.observedStatus === 'idle' && !fields.currentTurnOrMessageId) delete lane.correlationId
       delete lane.leaseToken; delete lane.leaseOwner; delete lane.leaseExpiresAt
       return structuredClone(lane)
     },

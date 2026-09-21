@@ -23,7 +23,7 @@ const readAnnotations = {
 export async function createAppMcpServer(context: AppRequestContext): Promise<McpServer> {
   const server = new McpServer({ name: 'graphql-app', version: '1.0.0' })
   server.registerTool('context_get', {
-    description: 'Return this authenticated GraphQL Agent identity, immutable scope, and current App capabilities.',
+    description: 'Return this authenticated GraphQL Agent identity, immutable scope, and current App capabilities. Response capability requires a directly connected requester in the saved Run graph; every decision also checks the exact request, role and credential.',
     inputSchema: z.object({}).strict(),
     outputSchema: AppContextSchema,
     annotations: readAnnotations,
@@ -46,7 +46,7 @@ export async function createAppMcpServer(context: AppRequestContext): Promise<Mc
 
   if (await context.interactions.canRespond(context.principal)) {
     server.registerTool('interaction_respond', {
-      description: 'Choose an opaque server-generated response option for an authorized pending interaction.',
+      description: 'Respond using a server-generated option only as the designated Orchestrator directly connected to the exact requesting node in the Run’s immutable workflow version. A transitive path or shared Agent ID is insufficient. Your own native automatic review only authorizes this App MCP call; it does not decide the Worker request.',
       inputSchema: RespondToInteractionRequestSchema,
       outputSchema: RespondToInteractionResponseSchema,
       annotations: {

@@ -10,9 +10,9 @@ import { HarnessMcpPolicies } from './HarnessMcpPolicies'
 import { HarnessMcpManager } from './HarnessMcpManager'
 import { McpDetectionSettings } from './McpDetectionSettings'
 
-export function HarnessSectionFields({ editor, onChange, section, issues = [], routedApproval = false, requiresResume = false, workspaceId }: {
+export function HarnessSectionFields({ editor, onChange, section, issues = [], routedApproval = false, allowAutoReview = false, requiresResume = false, workspaceId }: {
   editor: HarnessEditor; onChange(editor: HarnessEditor): void; section: HarnessSettingsSection;
-  issues?: readonly FieldIssue[]; routedApproval?: boolean; requiresResume?: boolean; workspaceId?: string;
+  issues?: readonly FieldIssue[]; routedApproval?: boolean; allowAutoReview?: boolean; requiresResume?: boolean; workspaceId?: string;
 }) {
   const value = withAdvancedDefaults(editor.configuration)
   const error = (path: string) => fieldMessage(issues, path)
@@ -30,8 +30,9 @@ export function HarnessSectionFields({ editor, onChange, section, issues = [], r
                   options={[{ value: 'on-request', label: 'Ask when needed' }, { value: 'never', label: 'Never request escalation' }]}
                   onChange={(event) => codex({ ...value.advanced!, approvalPolicy: event.target.value as CodexAdvancedConfiguration['approvalPolicy'] })} />
                 <Select label="Approval reviewer" value={value.advanced!.approvalsReviewer} error={error('advanced.approvalsReviewer')}
-                  options={[{ value: 'user', label: 'User / app routing' }, { value: 'auto_review', label: 'Codex automatic review', disabled: routedApproval }]}
-                  hint={routedApproval ? 'This workflow uses app approval routing.' : undefined}
+                  options={[{ value: 'user', label: 'User / app routing' }, { value: 'auto_review', label: 'Codex automatic review', disabled: routedApproval && !allowAutoReview }]}
+                  hint={allowAutoReview ? 'Codex reviews this Agent’s native requests. Other Agents keep their own approval settings.'
+                    : routedApproval ? 'This workflow uses app approval routing.' : undefined}
                   onChange={(event) => codex({ ...value.advanced!, approvalsReviewer: event.target.value as CodexAdvancedConfiguration['approvalsReviewer'] })} />
               </div>
               {value.sandbox === 'workspace-write' ? <>

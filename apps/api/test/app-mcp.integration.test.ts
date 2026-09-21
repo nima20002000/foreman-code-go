@@ -19,6 +19,7 @@ import { WorkerCredentialService } from '../src/modules/access/workerCredentials
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
+import { seedOrchestratorApproval } from './helpers/seedOrchestratorApproval.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL
   ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2600'
@@ -48,6 +49,7 @@ describe('App MCP real transport and PostgreSQL policy', () => {
     })
     await database.migrate()
     await ensureAcceptanceSeed(database.pool)
+    await seedOrchestratorApproval(database.pool)
     const access = new PostgresAccessService(database.pool)
     const commands = new PostgresCommandCoordinator(database.pool)
     const interactions = new PostgresInteractionRepository(database.pool)
@@ -98,7 +100,7 @@ describe('App MCP real transport and PostgreSQL policy', () => {
       ['wrongReviewer', 'agent-researcher', 'agent-researcher-config-v1'],
     ] as const) {
       const execution = HarnessExecutionSchema.parse({
-        id: executionIds[key], runId, workflowNodeId: `node-${key}`, agentId,
+        id: executionIds[key], runId, workflowNodeId: key === 'coder' ? 'node-developer' : key === 'orchestrator' ? 'node-reviewer' : 'node-researcher', agentId,
         agentConfigurationVersionId: configId, attempt: 1, input: {}, state: 'starting',
         createdAt: new Date().toISOString(), startedAt: new Date().toISOString(),
       })

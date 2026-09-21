@@ -15,6 +15,13 @@ export function nativeLanes(): PostgresInteractionCoordinationRepository {
     return lane
   }
   return {
+    async assertReviewConnection() {},
+    async reviewRunStopped() { return false },
+    async finishStoppedReviews() {},
+    async getLane(harness: NativeSessionLane['harness'], nativeSessionId: string) {
+      const lane = [...lanes.values()].find((item) => item.harness === harness && item.nativeSessionId === nativeSessionId)
+      return lane && structuredClone(lane)
+    },
     async bindWorkflowSession(id: string, session: NativeSessionReference) { sessions.set(id, { session, finalized: false }) },
     async finalizeWorkflowSession(id: string) { const saved = sessions.get(id); if (saved) saved.finalized = true },
     async workflowSession(id: string) { return sessions.get(id) },
@@ -49,7 +56,7 @@ export function nativeLanes(): PostgresInteractionCoordinationRepository {
       const lane = owned(id, token)
       Object.assign(lane, observed, { revision: lane.revision + 1 })
       delete lane.leaseToken; delete lane.leaseExpiresAt; delete lane.leaseOwner
-      if (observed.observedStatus === 'idle') delete lane.correlationId
+      if (observed.observedStatus === 'idle' && !observed.currentTurnOrMessageId) delete lane.correlationId
       return structuredClone(lane)
     },
   } as unknown as PostgresInteractionCoordinationRepository

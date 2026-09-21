@@ -146,6 +146,7 @@ function fixture(harness: AgentHarness = 'codex') {
   } as unknown as PostgresRunRepository
   const interactions = {
     coordination: nativeLanes(),
+    assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'node-reviewer' }),
     async create(input: DurableInteraction) {
       const existing = [...records.values()].find((item) => item.harness === input.harness
         && item.nativeSessionId === input.nativeSessionId && item.nativeRequestId === input.nativeRequestId)

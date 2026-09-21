@@ -1,7 +1,13 @@
 import { z } from "zod";
+import { RunLiveActivitySchema } from "./runLiveActivity.js";
+import { RunStopCauseSchema } from "./runStopCause.js";
+export * from "./runStopCause.js";
+export * from "./runState.js";
+export * from "./runLiveActivity.js";
 
 export * from "./harnessEditing.js";
 export * from "./harnessCompatibility.js";
+export * from "./approvalTopology.js";
 
 /** A non-empty identifier. IDs are intentionally unbranded at the API boundary. */
 export const IdSchema = z.string().trim().min(1);
@@ -240,10 +246,17 @@ export type ApprovalHandler = z.infer<typeof ApprovalHandlerSchema>;
 export const HarnessWorkflowCompatibilitySchema = z.object({
   configuration: HarnessConfigurationSchema,
   workflowApprovalHandler: ApprovalHandlerSchema.optional(),
+  designatedOrchestrator: z.boolean().default(false),
 }).strict().superRefine((value, context) => {
   if (!value.workflowApprovalHandler) return;
-  if (value.configuration.harness === "codex" && value.configuration.advanced?.approvalsReviewer === "auto_review") {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "approvalsReviewer"], message: "native auto review conflicts with GraphQL-routed approval" });
+  if (value.configuration.harness === "codex" && value.configuration.advanced?.approvalsReviewer === "auto_review"
+    && value.workflowApprovalHandler !== "orchestrator") {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "approvalsReviewer"], message: "native auto review conflicts with this workflow approval handler" });
+  }
+  if (value.configuration.harness === "codex" && value.designatedOrchestrator
+    && value.configuration.advanced?.approvalsReviewer === "auto_review"
+    && value.configuration.advanced.approvalPolicy !== "on-request") {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "approvalPolicy"], message: "Codex automatic review requires on-request approval" });
   }
   // Saved records can omit Advanced settings. Both explicit and defaulted
   // representations must obey the same workflow approval boundary.
@@ -261,8 +274,9 @@ export const HarnessWorkflowCompatibilitySchema = z.object({
 export function validateHarnessWorkflowCompatibility(
   configuration: HarnessConfiguration,
   workflowApprovalHandler?: ApprovalHandler,
+  designatedOrchestrator = false,
 ): HarnessConfiguration {
-  return HarnessWorkflowCompatibilitySchema.parse({ configuration, workflowApprovalHandler }).configuration;
+  return HarnessWorkflowCompatibilitySchema.parse({ configuration, workflowApprovalHandler, designatedOrchestrator }).configuration;
 }
 
 /** Editable selection. Orchestrator designation may remain incomplete until executable save. */
@@ -636,6 +650,7 @@ export const ReviewJobSchema = z.object({
   leaseToken: IdSchema.optional(),
   leaseExpiresAt: TimestampSchema.optional(),
   correlationId: IdSchema,
+  retryAfter: TimestampSchema.optional(),
   cleanup: ReviewCleanupSchema.optional(),
   error: z.object({ code: z.string().trim().min(1), message: z.string().trim().min(1) }).strict().optional(),
   createdAt: TimestampSchema,
@@ -645,6 +660,10 @@ export const ReviewJobSchema = z.object({
   updatedAt: TimestampSchema,
 }).strict();
 export type ReviewJob = z.infer<typeof ReviewJobSchema>;
+export const ReviewStatusSchema = ReviewJobSchema.pick({
+  state: true, attempt: true, error: true, retryAfter: true, updatedAt: true,
+}).extend({ cleanupPending: z.boolean().optional(), reviewJobId: IdSchema.optional() });
+export type ReviewStatus = z.infer<typeof ReviewStatusSchema>;
 
 /** An Agent is a separately addressable worker; workflow nodes reference it by agentId. */
 export const AgentSchema = z
@@ -1118,6 +1137,8 @@ export const WorkflowRunSchema = z
     executionLocation: RunExecutionLocationSchema.optional(),
     /** Operator authority rechecked before queued and later node execution. */
     authorizationPrincipalId: IdSchema.optional(),
+    /** Automatic Stop cause; does not imply confirmed native closure. */
+    stopCause: RunStopCauseSchema.optional(),
     agentConfigurationVersionIds: z.record(IdSchema, IdSchema),
     /** Immutable accepted approval assignment; absent only for legacy Runs. */
     approval: AcceptedWorkflowApprovalConfigurationSchema.optional(),
@@ -1282,6 +1303,8 @@ export const WorkflowRunSummarySchema = z
     authRequired: z.boolean(),
     browserWait: BrowserWaitSchema.nullable(),
     runnerHealth: RunnerHealthSchema,
+    cleanupPending: z.boolean().optional(),
+    stopCause: RunStopCauseSchema.optional(),
     startedAt: TimestampSchema.optional(),
     finishedAt: TimestampSchema.optional(),
   })
@@ -1402,6 +1425,8 @@ export const GetRunResponseSchema = z
     run: WorkflowRunSchema,
     executions: z.array(HarnessExecutionSchema),
     activity: z.array(RunActivitySchema),
+    liveActivity: RunLiveActivitySchema.optional(),
+    cleanupPending: z.boolean().optional(),
   })
   .strict();
 export type GetRunResponse = z.infer<typeof GetRunResponseSchema>;
@@ -1713,6 +1738,7 @@ export type OperatorConversationStreamEvent = z.infer<typeof OperatorConversatio
 
 export const GetInteractionResponseSchema = z.object({
   interaction: DurableInteractionSchema,
+  review: ReviewStatusSchema.optional(),
   /** Monitoring permission, independent of the interaction's assigned handler. */
   canRespond: z.boolean().optional(),
 }).strict();

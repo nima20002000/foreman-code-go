@@ -132,6 +132,7 @@ function fixture(items: HarnessExecution[]) {
   }
   const interactions = {
     coordination: nativeLanes(),
+    assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'node-reviewer' }),
     getForExecution: async (id: string) => pending.get(id),
     create: async (item: DurableInteraction) => { pending.set(item.executionId, item); return { interaction: item, created: true } },
     cancelPendingForExecution: async () => undefined,
@@ -361,6 +362,7 @@ function engineFixture(approvals: ApprovalExecutionCoordinator) {
   const pendingInteraction = { ...interaction(nativeExecution), id: 'interaction-1', graphInterruptId: undefined }
   Object.assign(runs, { getExecution: async () => nativeExecution })
   const interactions = {
+    assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'node-reviewer' }),
     get: async () => pendingInteraction,
     bindGraphInterrupt: async (_id: string, graphInterruptId: string) => ({ ...pendingInteraction, graphInterruptId }),
   }

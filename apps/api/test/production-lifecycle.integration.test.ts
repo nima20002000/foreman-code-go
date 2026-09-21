@@ -1,9 +1,9 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, realpath, rename, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { CODEX_APPROVAL_OPTIONS_FIXTURE, DEFAULT_CODEX_ADVANCED_CONFIGURATION, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction } from '@graphql/contracts'
+import { CODEX_APPROVAL_OPTIONS_FIXTURE, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction } from '@graphql/contracts'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import pg from 'pg'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -15,6 +15,7 @@ import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { WorkerCredentialService } from '../src/modules/access/workerCredentials.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
+import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import type { NativeHistory, WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
@@ -36,16 +37,19 @@ const retired: Array<ReturnType<typeof buildProductionApp>> = []
 const success: ExecutionResult = { outcome: 'succeeded', output: { text: 'workflow result' } }
 type ProviderSession = { input: WorkflowNativeSessionStart; pending: PendingNativeInteraction[]; turns: Map<string, ExecutionResult | undefined>; asks: number }
 type Connection = { id: string; events: NativeHarnessEvent[]; token: string; sessionId: string }
-let sessions: Map<string, ProviderSession>, connections: WeakMap<CodexAppServerSessionManager, Connection>
+let sessions: Map<string, ProviderSession>, connections: WeakMap<object, Connection>
 let repeatedApproval = false
+let reviewNoDecision = false
 let native: { starts: string[]; attaches: number; responses: number; inspections: number; closes: number }
 
-function event(manager: CodexAppServerSessionManager, type: string, payload: Record<string, unknown>) {
+function event(manager: object, type: string, payload: Record<string, unknown>) {
   const local = connections.get(manager)!
   const value = { connectionId: local.id, sequence: local.events.length, type, payload, occurredAt: new Date().toISOString() }
   local.events.push(value)
   return value
 }
+const providerId = (manager: { harness: 'codex' | 'opencode' }, correlation: string) => manager.harness === 'opencode'
+  ? `msg_${createHash('sha256').update(correlation).digest('hex').slice(0, 24)}` : correlation
 function ask(reference: NativeSessionReference, suffix: number): PendingNativeInteraction {
   return { session: reference, turn: { nativeTurnId: 'workflow-turn', nativeRequestId: `ask-${reference.nativeSessionId}-${suffix}` },
     nativeRequestType: 'item/commandExecution/requestApproval', request: { command: 'test' }, responseOptions: CODEX_APPROVAL_OPTIONS_FIXTURE }
@@ -56,6 +60,13 @@ async function mcp(token: string, input: Record<string, unknown>) {
   try {
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/tools', address), { authProvider: { token: async () => token } }))
     return await client.callTool({ name: 'interaction_respond', arguments: input })
+  } finally { await client.close() }
+}
+async function operatorGet(token: string, interactionId: string) {
+  const client = new Client({ name: 'production-operator-readback', version: '1.0' })
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => token } }))
+    return await client.callTool({ name: 'interaction_get', arguments: { interactionId } })
   } finally { await client.close() }
 }
 
@@ -84,7 +95,7 @@ beforeEach(async () => {
   runs = new PostgresRunRepository(database.pool, workflows, new WorkspaceLocationService(database.pool, new PostgresCommandCoordinator(database.pool), root))
   interactions = new PostgresInteractionRepository(database.pool)
   access = new PostgresAccessService(database.pool)
-  sessions = new Map(); connections = new WeakMap(); repeatedApproval = false
+  sessions = new Map(); connections = new WeakMap(); repeatedApproval = false; reviewNoDecision = false
   native = { starts: [], attaches: 0, responses: 0, inspections: 0, closes: 0 }
   // Only the native provider transport is doubled. Credentials, ownership,
   // lanes, delivery, budgets, checkpoints, HTTP and MCP use production wiring.
@@ -97,7 +108,7 @@ beforeEach(async () => {
   })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockImplementation(async function (this: CodexAppServerSessionManager, input) {
     if (input.kind === 'operator') throw new Error('Unexpected Operator launch')
-    const reference = { harness: 'codex' as const, providerVersion: '0.154.0', nativeSessionId: `session-${input.request.executionId}` }
+    const reference = { harness: this.harness, providerVersion: this.harness === 'codex' ? '0.154.0' : '1.18.31', nativeSessionId: `session-${input.request.executionId}` }
     sessions.set(reference.nativeSessionId, { input, pending: [], turns: new Map(), asks: 0 })
     connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.GRAPHQL_APP_MCP_TOKEN!, sessionId: reference.nativeSessionId })
     return reference
@@ -111,13 +122,16 @@ beforeEach(async () => {
   })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'startTurn').mockImplementation(async function* (this: CodexAppServerSessionManager, reference, input) {
     native.starts.push(input.clientCorrelationId)
+    const turnId = providerId(this, input.clientCorrelationId)
     const saved = sessions.get(reference.nativeSessionId)!
     saved.turns.set(input.clientCorrelationId, undefined)
-    yield event(this, 'turn.started', { threadId: reference.nativeSessionId, turnId: input.clientCorrelationId, clientCorrelationId: input.clientCorrelationId })
+    yield event(this, 'turn.started', { threadId: reference.nativeSessionId, turnId, clientCorrelationId: input.clientCorrelationId })
     if (input.clientCorrelationId.startsWith('review-')) {
       const interactionId = /interaction (\S+)\./.exec(input.prompt)![1]!
       const interaction = (await interactions.get(interactionId))!
-      await mcp(connections.get(this)!.token, { interactionId, optionId: interaction.responseOptions[0]!.optionId, expectedRevision: interaction.revision })
+      if (!reviewNoDecision) await mcp(connections.get(this)!.token, {
+        interactionId, optionId: interaction.responseOptions[0]!.optionId, expectedRevision: interaction.revision,
+      })
       saved.turns.set(input.clientCorrelationId, { outcome: 'succeeded', output: { text: 'review result' } })
     } else if (saved.input.request.workflowNodeId === 'orchestrator') saved.turns.set(input.clientCorrelationId, success)
     else {
@@ -125,16 +139,17 @@ beforeEach(async () => {
       yield event(this, 'interaction.pending', { nativeRequestId: saved.pending[0]!.turn.nativeRequestId })
       return
     }
-    yield event(this, 'turn.completed', { threadId: reference.nativeSessionId, turnId: input.clientCorrelationId })
+    yield event(this, 'turn.completed', { threadId: reference.nativeSessionId, turnId })
   })
-  const history = function (manager: CodexAppServerSessionManager, reference: NativeSessionReference, correlationId?: string): NativeHistory {
+  const history = function (manager: CodexAppServerSessionManager | OpenCodeNativeSessionManager, reference: NativeSessionReference, correlationId?: string): NativeHistory {
     const saved = sessions.get(reference.nativeSessionId)!
     const result = correlationId ? saved.turns.get(correlationId) : undefined
     if (correlationId) event(manager, 'thread.reconciled', { thread: { id: reference.nativeSessionId,
-      status: saved.pending.length ? 'active' : 'idle', turns: [...saved.turns].map(([id, value]) => ({ id, clientUserMessageId: id, status: value ? 'completed' : 'inProgress' })) } })
+      status: saved.pending.length ? 'active' : 'idle', turns: [...saved.turns].map(([id, value]) => ({ id: providerId(manager, id), clientUserMessageId: id, status: value ? 'completed' : 'inProgress' })) } })
+    if (manager.harness === 'opencode' && !saved.pending.length) event(manager, 'session.idle', { sessionID: reference.nativeSessionId })
     return { events: [...connections.get(manager)!.events], pendingInteractions: [...saved.pending],
-      ...(result && correlationId ? { correlationId, nativeTurnId: correlationId,
-        terminalResult: result, terminalTurn: { correlationId, providerId: correlationId, result } } : {}) }
+      ...(result && correlationId ? { correlationId, nativeTurnId: providerId(manager, correlationId),
+        terminalResult: result, terminalTurn: { correlationId, providerId: providerId(manager, correlationId), result } } : {}) }
   }
   vi.spyOn(CodexAppServerSessionManager.prototype, 'history').mockImplementation(async function (this: CodexAppServerSessionManager, reference) { return history(this, reference) })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'reconcile').mockImplementation(async function (this: CodexAppServerSessionManager, reference, correlation) { return history(this, reference, correlation) })
@@ -154,6 +169,16 @@ beforeEach(async () => {
   })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'cancel').mockResolvedValue(true)
   vi.spyOn(CodexAppServerSessionManager.prototype, 'close').mockImplementation(async () => { native.closes++ })
+  vi.spyOn(OpenCodeNativeSessionManager.prototype, 'inspectNativeMcp').mockImplementation(async (cwd) => {
+    native.inspections++
+    return { cwd, providerVersion: '1.18.31', serverName: 'graphql-app', nativeStatus: 'connected', transport: 'streamable-http',
+      endpoint: 'http://127.0.0.1:4100/mcp/tools', credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN',
+      endpointMatches: true, baseConfigurationFilters: [], policyScope: 'base_configuration_only' }
+  })
+  for (const method of ['createSession', 'attachSession', 'startTurn', 'history', 'reconcile', 'pending', 'respond', 'cancel', 'close'] as const) {
+    vi.spyOn(OpenCodeNativeSessionManager.prototype, method).mockImplementation(CodexAppServerSessionManager.prototype[method] as never)
+  }
+  vi.spyOn(OpenCodeNativeSessionManager.prototype, 'dispose').mockResolvedValue()
   vi.spyOn(ReviewerDispatcher.prototype, 'reconcile').mockResolvedValue() // manually drive the real dispatcher between crash boundaries
   production = buildProductionApp(config, database, checkpoints, false)
   address = await production.app.listen({ host: '127.0.0.1', port: 0 })
@@ -169,20 +194,27 @@ afterEach(async () => {
   await admin?.end()
   await rm(root, { recursive: true, force: true }); await rm(project, { recursive: true, force: true })
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
 })
 
 async function start(handler: 'user' | 'orchestrator', twoWorkers = false) {
   const workflows = new PostgresWorkflowRepository(database.pool)
   const saved = (await workflows.get('workspace-1', 'workflow-content-pipeline'))!
   if (handler === 'orchestrator') {
-    await database.pool.query("update agent_configuration_versions set record=jsonb_set(record,'{harness,advanced}',$1::jsonb,true) where agent_id='agent-researcher'",
-      [JSON.stringify({ ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'never' })])
+    await database.pool.query("update agent_configuration_versions set record=jsonb_set(record,'{harness}',$1::jsonb,true) where agent_id='agent-researcher'",
+      [JSON.stringify({ harness: 'opencode', model: 'opencode-go/gpt-5.6-luna', variant: 'high', nativeAgent: 'build', thinking: false,
+        autoApprove: false, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: [
+          { permission: '*', pattern: '*', effect: 'deny' },
+          { permission: 'graphql-app_interaction_get', pattern: '*', effect: 'allow' },
+          { permission: 'graphql-app_interaction_respond', pattern: '*', effect: 'allow' },
+        ] } })])
   }
   const nodes = [{ id: 'orchestrator', agentId: 'agent-researcher', name: 'Orchestrator' },
     { id: 'worker-a', agentId: 'agent-reviewer', name: 'Worker A' },
     ...(twoWorkers ? [{ id: 'worker-b', agentId: 'agent-reviewer', name: 'Worker B' }] : [])]
   await workflows.save('workspace-1', { ...saved, requiredAgentCount: 2, nodes,
-    edges: nodes.slice(1).map((node, index) => ({ id: `edge-${index}`, source: nodes[index]!.id, target: node.id })),
+    edges: nodes.slice(1).map((node, index) => ({ id: `edge-${index}`, source: nodes[index]!.id, target: node.id }))
+      .concat(twoWorkers ? [{ id: 'approval-worker-b', source: 'orchestrator', target: 'worker-b' }] : []),
     approval: { handler, ...(handler === 'orchestrator' ? { designatedOrchestratorAgentId: 'agent-researcher' } : {}) },
     executionPolicy: { maxParallelism: 1, maxNodeExecutions: nodes.length },
   })
@@ -241,6 +273,54 @@ for (const change of ['location', 'authority'] as const) it(`rejects a waiting c
     expect(untouched?.status).toBe('pending')
   } finally { if (change === 'location') { await rm(project, { recursive: true }); await rename(`${project}-old`, project) } }
 })
+
+it('automatically wakes an idle Orchestrator to approve a later Worker request through MCP', async () => {
+  vi.stubEnv('GRAPHQL_OPENCODE_PARITY_QUALIFIED', '1')
+  const { run, issuer, pending } = await start('orchestrator')
+  const worker = await new WorkerCredentialService(database.pool, access).issueForExecution(pending.executionId)
+  await expect(mcp(worker.environment.variables.GRAPHQL_APP_MCP_TOKEN!, {
+    interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision,
+  })).rejects.toThrow()
+  await production.initialize()
+  await production.reconcile(() => undefined)
+  try {
+    await vi.waitFor(async () => expect((await runs.get(run.id))?.outcome).toBe('succeeded'), { timeout: 10_000 })
+  } catch (error) {
+    const jobs = await database.pool.query('select state,record->\'error\' as error from review_jobs where interaction_id=$1', [pending.id])
+    const activity = await runs.listActivity(run.id)
+    throw new Error(JSON.stringify({ jobs: jobs.rows, reviewEvents: activity.filter((event) => event.kind === 'review_job_state').slice(-3) }), { cause: error })
+  }
+  expect((await interactions.get(pending.id))?.deliveryState).toBe('delivered')
+  expect((await runs.getExecution(pending.executionId))?.state).toBe('completed')
+  await vi.waitFor(async () => {
+    const result = await database.pool.query<{ state: string }>('select state from review_jobs where interaction_id=$1', [pending.id])
+    expect(result.rows[0]?.state).toBe('completed')
+  }, { timeout: 5_000 })
+  expect(native.starts.filter((correlation) => correlation.startsWith('review-'))).toHaveLength(1)
+  expect(native.responses).toBe(1)
+  const readback = await operatorGet(issuer.token, pending.id)
+  expect(readback.isError).not.toBe(true)
+  expect((readback.structuredContent as { review: { state: string }; interaction: { deliveryState: string } }).review.state).toBe('completed')
+  expect((readback.structuredContent as { interaction: { deliveryState: string } }).interaction.deliveryState).toBe('delivered')
+  const denied = await access.issue({ name: 'Out-of-scope operator', audience: 'operator',
+    grants: [{ actions: ['interactions:read'], scope: { runIds: ['another-run'] } }],
+    expiresAt: new Date(Date.now() + 60_000) })
+  expect((await operatorGet(denied.token, pending.id)).isError).toBe(true)
+}, 20_000)
+
+it('settles a waiting Run when its assigned Orchestrator finishes without a decision', async () => {
+  vi.stubEnv('GRAPHQL_OPENCODE_PARITY_QUALIFIED', '1')
+  reviewNoDecision = true
+  const { run, pending } = await start('orchestrator')
+  await production.initialize()
+  await production.reconcile(() => undefined)
+  await vi.waitFor(async () => expect((await runs.get(run.id))?.executionState).toBe('completed'), { timeout: 10_000 })
+  expect((await runs.get(run.id))?.outcome).toBe('canceled')
+  expect((await interactions.get(pending.id))?.status).toBe('canceled')
+  const result = await database.pool.query<{ state: string; code: string }>(
+    "select state,record->'error'->>'code' as code from review_jobs where interaction_id=$1", [pending.id])
+  expect(result.rows[0]).toMatchObject({ state: 'failed', code: 'REVIEW_NO_DECISION' })
+}, 20_000)
 
 it('reviews through the completed Orchestrator session, survives restart and settles a lost acknowledgement while the next Worker waits', async () => {
   repeatedApproval = true

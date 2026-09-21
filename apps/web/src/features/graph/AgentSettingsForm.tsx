@@ -16,7 +16,7 @@ import { FieldValidationError, fieldMessage, focusFirstInvalid, issuesAt, valida
 import './agentSettingsPanel.css'
 
 export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onClose, onRemove, onSave,
-  executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 }, workspaceId, workflowApprovalHandler,
+  executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 }, workspaceId, workflowApprovalHandler, designatedOrchestrator = false,
 }: {
   agent: Agent
   initialPrompt?: string
@@ -28,6 +28,7 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
   workflowNodeCount?: number
   workspaceId?: string
   workflowApprovalHandler?: ApprovalHandler
+  designatedOrchestrator?: boolean
 }) {
   const [name, setName] = useState(agent.name)
   const [prompt, setPrompt] = useState(initialPrompt ?? '')
@@ -61,7 +62,7 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
       const nextConfiguration = (() => {
         try {
           const next = prepareHarnessEditor(editor)
-          validateHarnessWorkflowCompatibility(next, workflowApprovalHandler)
+          validateHarnessWorkflowCompatibility(next, workflowApprovalHandler, designatedOrchestrator)
           if (next.harness === 'codex' && workflowApprovalHandler) CodexSessionCompatibilitySchema.parse({ configuration: next, requiresResume: true })
           return next
         } catch (failure) {
@@ -112,7 +113,7 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
       </div>
     </div> : <div className="agent-settings-advanced-view">
       <Textarea label="Initial prompt" aria-label="Initial prompt" className="agent-settings-prompt" rows={3} value={prompt} onChange={(event) => { setPrompt(event.target.value); clearErrors() }} />
-      <HarnessConfigurationFields editor={editor} issues={issuesAt(issues, ['harness'])} onChange={(next) => { setEditor(next); clearErrors() }} allowHarnessChange={false} harnessDefaults={providerDefaults} workspaceId={workspaceId} routedApproval={Boolean(workflowApprovalHandler)} compact advancedOnly />
+      <HarnessConfigurationFields editor={editor} issues={issuesAt(issues, ['harness'])} onChange={(next) => { setEditor(next); clearErrors() }} allowHarnessChange={false} harnessDefaults={providerDefaults} workspaceId={workspaceId} routedApproval={Boolean(workflowApprovalHandler)} allowAutoReview={workflowApprovalHandler === 'orchestrator'} compact advancedOnly />
       <p className="settings-help">Save updates this graph draft. Use Save graph to persist it.</p>
     </div>}
     {error ? <Alert tone="danger" live title={error} /> : null}

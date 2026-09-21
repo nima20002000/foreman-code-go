@@ -177,10 +177,11 @@ export class ApprovalExecutionCoordinator {
     if (interaction.status !== 'pending' || interaction.approval.handler !== 'orchestrator') return
     const agentId = interaction.approval.designatedOrchestratorAgentId
     if (!agentId || agentId === interaction.requestingAgentId) return
+    const connection = await this.interactions.assertOrchestratorConnection(interaction)
     if (await this.interactions.coordination.findReviewJob(interaction.id, agentId)) return
     const candidates = (await this.runs.listExecutions(interaction.runId))
-      .filter((execution) => execution.agentId === agentId && execution.nativeSessionId
-        && execution.workingDirectory && execution.runtimeDirectory)
+      .filter((execution) => execution.agentId === agentId && execution.workflowNodeId === connection?.orchestratorNodeId
+        && execution.nativeSessionId && execution.workingDirectory && execution.runtimeDirectory)
     // No guessing between attempts/sessions. The pending interaction remains the recovery source.
     if (candidates.length !== 1) return
     const execution = candidates[0]!
@@ -667,7 +668,8 @@ export class ApprovalExecutionCoordinator {
               const native = await this.interactions.coordination.workflowSession(execution.id)
               // Workflow finalization was published only after native closure.
               // A later reviewer credential is evidence of a new review lifetime.
-              if (native?.finalized && !native.reviewerActive) return undefined
+              if (native?.finalized && !native.reviewerActive
+                && !await this.interactions.coordination.hasUnsettledReview(execution.id)) return undefined
             }
             const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
             signal.throwIfAborted()
@@ -703,6 +705,9 @@ export class ApprovalExecutionCoordinator {
         }), owner))
       }
       if (failures.length) throw new AggregateError(failures, 'Run cleanup was incomplete; native closure must not be assumed.')
+      // Publish cleanup evidence only after every sibling's native closure and
+      // revocation succeeded. A failed Stop keeps the durable intent retryable.
+      await this.interactions.coordination.finishStoppedReviews(runId, Boolean(this.credentials), owner?.client)
       this.pendingCleanupRuns.delete(runId)
     })().finally(() => { this.cancellations.delete(runId) })
     this.cancellations.set(runId, task)
@@ -722,7 +727,9 @@ export class ApprovalExecutionCoordinator {
     let signal = AbortSignal.any([input.signal, credentialFailure.signal])
     let stopRenewal: (() => Promise<void>) | undefined
     signal.throwIfAborted()
-    assertNativeWorkflowConfiguration(input.request.configuration.harness, input.approval)
+    assertNativeWorkflowConfiguration(input.request.configuration.harness, input.approval,
+      input.approval?.handler === 'orchestrator'
+        && input.request.configuration.agentId === input.approval.designatedOrchestratorAgentId)
     const ensured = await this.runs.ensureExecution(input.candidate, input.owner)
     let execution = ensured.execution
     let context: NativeManagerResolutionContext | undefined
@@ -840,6 +847,10 @@ export class ApprovalExecutionCoordinator {
             'NATIVE_APPROVAL_HANDLER_MISSING',
             'The native execution asked for a decision but this workflow has no routed approval handler. Reopen and save the workflow or Agent configuration. The request was not automatically approved.', 409,
           )
+          await this.interactions.assertOrchestratorConnection({
+            workspaceId: request.workspaceId, workflowId: input.workflowId, runId: execution.runId,
+            executionId: execution.id, requestingAgentId: execution.agentId, approval: input.approval,
+          })
           this.assertSessionIdentity(session!, pending.session)
           if (!pending.turn.nativeRequestId) throw new Error('Native approval request is missing its stable request identity.')
           const now = new Date().toISOString()

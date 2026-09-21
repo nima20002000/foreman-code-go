@@ -55,7 +55,9 @@ export async function readAgentForReuse(client: pg.ClientBase, principal: Manage
 export function authorizeAgentConfiguration(principal: ManagementPrincipal, workspaceId: string, configuration: HarnessConfiguration, assignedSkills: Agent['assignedSkills']): void {
   if (configuration.harness === 'codex' && configuration.sandbox === 'danger-full-access') requireAuthorization(principal,'harnesses:update',{workspaceId})
   if (assignedSkills?.length) requireAuthorization(principal,'skills:read',{workspaceId})
-  validateHarnessWorkflowCompatibility(configuration,'user')
+  // An Agent may be configured before its workflow assigns approval authority.
+  // Each executable workflow validates the immutable configuration in context.
+  validateHarnessWorkflowCompatibility(configuration)
   if (configuration.harness === 'codex') CodexSessionCompatibilitySchema.parse({configuration,requiresResume:true})
 }
 

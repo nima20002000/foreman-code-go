@@ -1,6 +1,8 @@
 import type pg from 'pg'
 import { harnessSettingsMigration } from './harnessSettingsMigration.js'
 import { pr18RecoveryMigration } from './pr18RecoveryMigration.js'
+import { runLiveActivityMigration } from './runLiveActivityMigration.js'
+import { reviewFailureLifecycleMigration } from './reviewFailureLifecycleMigration.js'
 import { browserAuthMigration } from './browserAuthMigration.js'
 
 import { lifecycleMigration } from './lifecycleMigration.js'
@@ -660,6 +662,8 @@ export const migrations = [
       on operator_conversations(parent_conversation_id,fork_request_id)
       where parent_conversation_id is not null;
   ` },
+  runLiveActivityMigration,
+  reviewFailureLifecycleMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

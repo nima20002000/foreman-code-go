@@ -84,7 +84,7 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
     streamError?: Error; cancelError?: Error; closeError?: Error; attachError?: Error
     pending?: PendingNativeInteraction; lostJob: boolean; reviewPending: boolean; canceled: boolean
     countOnly: boolean; eventCount: number; validations: number
-  } = { lostJob: false, reviewPending: true, canceled: false, countOnly: false, eventCount: 0, validations: 0 }
+  } = { lostJob: false, reviewPending: !options.recovering, canceled: false, countOnly: false, eventCount: 0, validations: 0 }
   const silence = deferred()
   const starts: NativeTurnInput[] = []
   const attaches: NativeSessionStart[] = []
@@ -112,6 +112,7 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
         yield event('item.delta', { text: `${secret} ${historicalSecret}` }, i + 1)
       }
       if (options.silent) await silence.promise
+      hooks.reviewPending = false
       history = terminal(input.clientCorrelationId)
     },
     async pending() { return hooks.pending },
@@ -235,7 +236,10 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
   return { dispatcher, runtime, coordination, manager, saved, hooks, starts, attaches, cancellations, prepared, renewed, revoked,
     owner, run, credential, configuration, finish: () => silence.resolve(),
     get responses() { return responds }, get execution() { return execution }, get job() { return job },
-    setHistory(value: NativeHistory) { history = value },
+    setHistory(value: NativeHistory) {
+      history = value
+      if (value.terminalTurn && !value.pendingInteraction && value.pendingInteractions.length === 0) hooks.reviewPending = false
+    },
     setJob(value: Partial<ReviewJob>) { job = { ...job, ...value } },
     attach(signal?: AbortSignal) { return runtime.attachOwnedSession({ harness: session.harness, agentId: execution.agentId,
       executionId: execution.id, workingDirectory: execution.workingDirectory!, purpose: 'reviewer', correlationId }, session, signal) },

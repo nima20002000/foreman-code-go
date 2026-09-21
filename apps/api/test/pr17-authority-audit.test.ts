@@ -42,7 +42,9 @@ for (const revoked of [true, false]) it(`F03: production App service retains tra
     await input.beforeCommit(client, value)
     return value
   })
-  const repository = { get: async () => structuredClone(record), decide, delivery: { claim: async () => undefined } } as unknown as PostgresInteractionRepository
+  const repository = { get: async () => structuredClone(record), decide,
+    assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'node-reviewer' }),
+    delivery: { claim: async () => undefined } } as unknown as PostgresInteractionRepository
   const budgets = { assertActive: async () => undefined } as unknown as PostgresApprovalBudgetRepository
   const attach = vi.fn()
   const native = { attachInteraction: attach } as unknown as InteractionNativeRuntime

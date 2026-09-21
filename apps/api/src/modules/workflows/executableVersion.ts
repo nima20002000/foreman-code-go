@@ -41,7 +41,8 @@ export function buildExecutableWorkflowVersion(input: {
   const selection = graph.approval ?? input.previousDefinition?.approval ?? input.initialApproval
   if (selection) {
     for (const agentId of referenced) {
-      try { validateHarnessWorkflowCompatibility(byAgent.get(agentId)!.harness, selection.handler) }
+      try { validateHarnessWorkflowCompatibility(byAgent.get(agentId)!.harness, selection.handler,
+        selection.handler === 'orchestrator' && agentId === selection.designatedOrchestratorAgentId) }
       catch { throw new DomainError('WORKFLOW_HARNESS_APPROVAL_CONFLICT', `Agent '${agentId}' uses native automatic review that conflicts with workflow approval.`, 409) }
     }
   }
