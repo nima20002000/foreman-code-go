@@ -4,7 +4,7 @@ import { useInfiniteInteractionsQuery, useInteractionQuery, useWorkspaceDetailsQ
 import { sessionSignal } from '../../shared/api/sessionBoundary'
 import { useUserInteractionResponse, type UserApprovalCredential } from '../../shared/api/userApprovals'
 import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
-import { Alert, Badge, Button, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState } from '../../shared/ui/nocturne'
+import { Alert, Badge, Button, Dialog, ErrorState, Icon, IconButton, LoadingState } from '../../shared/ui/nocturne'
 import { usePresence } from '../../shared/ui/usePresence'
 import { interactionMatchesScope } from './approvalState'
 import { UserApprovalResponse } from './UserApprovalResponse'
@@ -67,12 +67,15 @@ function RequestRow({ interaction, onOpen, onChanged }: { interaction: DurableIn
     <button type="button" className="approval-request-open" onClick={onOpen} aria-haspopup="dialog">
       <strong>{summary.operation}</strong>
       <span>{summary.command ?? summary.target ?? summary.explanation ?? 'Open request details'}</span>
-      <small>{interaction.harness === 'codex' ? 'Codex' : 'OpenCode'} · {new Date(interaction.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>
     </button>
   </li>
 }
 
-function ApprovalInboxPanel({ open, exiting }: { open: boolean; exiting: boolean }) {
+function ApprovalInboxPanel({ open, exiting, resize }: {
+  open: boolean
+  exiting: boolean
+  resize: ReturnType<typeof useApprovalInboxResize>
+}) {
   const sidebarOpen = useApprovalInboxStore((state) => state.sidebarOpen)
   const workspaceId = useApprovalInboxStore((state) => state.workspaceId)
   const workflowId = useApprovalInboxStore((state) => state.workflowId)
@@ -80,7 +83,8 @@ function ApprovalInboxPanel({ open, exiting }: { open: boolean; exiting: boolean
   const closeInbox = useApprovalInboxStore((state) => state.closeInbox)
   const setSidebarOpen = useApprovalInboxStore((state) => state.setSidebarOpen)
   const selectInteraction = useApprovalInboxStore((state) => state.selectInteraction)
-  const { panelRef, style, moveGrip, grip } = useApprovalInboxResize()
+  const sidebarPresence = usePresence(sidebarOpen)
+  const { panelRef, style, moveGrip, grip } = resize
   const queue = useInfiniteInteractionsQuery({ workspaceId: workspaceId || undefined, workflowId, status: 'pending', limit: 100 }, open && Boolean(workspaceId))
   const workspace = useWorkspaceDetailsQuery(workspaceId, { enabled: open && Boolean(workspaceId), retry: false })
   const [selectedAgentId, setSelectedAgentId] = useState<string>()
@@ -108,24 +112,24 @@ function ApprovalInboxPanel({ open, exiting }: { open: boolean; exiting: boolean
       aria-hidden={exiting} inert={exiting}
       onKeyDown={(event) => { if (event.key === 'Escape' && !interactionId) closeInbox() }}>
       {approvalResizeEdges.map((edge) => <button key={edge} type="button" className={`approval-inbox-resize approval-inbox-resize-${edge}`} {...grip(edge)} />)}
-      <div className="approval-inbox-navigation">
-        <IconButton label={sidebarOpen ? 'Close agent sidebar' : 'Open agent sidebar'} variant="ghost" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(!sidebarOpen)}><Icon name="menu" /></IconButton>
-        <button type="button" className="approval-inbox-move" title="Drag to move approval inbox" {...moveGrip}><span aria-hidden="true" /></button>
+      <button type="button" className="approval-inbox-move" title="Drag to move approval inbox" {...moveGrip} />
+      <div className="approval-inbox-controls">
+        <IconButton label="Refresh approval requests" variant="ghost" disabled={queue.isFetching} onClick={refetch}><Icon name="refresh" /></IconButton>
         <IconButton label="Close approval inbox" variant="ghost" onClick={closeInbox}><Icon name="close" /></IconButton>
       </div>
-      <div className={`approval-inbox-body${sidebarOpen ? ' approval-inbox-sidebar-open' : ''}`}>
-        <aside aria-label="Agents with human approval requests" aria-hidden={!sidebarOpen} inert={!sidebarOpen}>
-          <p>Agents</p>
+      <IconButton className={`approval-sidebar-toggle${sidebarOpen ? ' approval-sidebar-toggle-open' : ''}`}
+        label={sidebarOpen ? 'Close agent sidebar' : 'Open agent sidebar'} variant="ghost" aria-expanded={sidebarOpen}
+        onClick={() => setSidebarOpen(!sidebarOpen)}><Icon name="chevron" /></IconButton>
+      <div className="approval-inbox-body">
+        {sidebarPresence.mounted ? <aside data-state={sidebarPresence.exiting ? 'closing' : 'open'} aria-label="Agents with human approval requests" aria-hidden={!sidebarOpen} inert={!sidebarOpen}>
           {agentIds.map((agentId) => <button key={agentId} type="button" aria-current={selectedAgentId === agentId ? 'true' : undefined} onClick={() => setSelectedAgentId(agentId)}>
             <span>{agentName(agentId)}</span><Badge tone="accent">{interactions.filter((item) => item.requestingAgentId === agentId).length}</Badge>
           </button>)}
-        </aside>
+        </aside> : null}
         <main>
-          <header><div><p className="panel-kicker">Human review</p><h2>{selectedAgentId ? agentName(selectedAgentId) : 'Approval requests'}</h2></div>
-            <IconButton label="Refresh approval requests" variant="ghost" disabled={queue.isFetching} onClick={refetch}><Icon name="refresh" /></IconButton></header>
           {queue.isError ? <ErrorState title="Requests unavailable" description={queue.error.message} onRetry={refetch} retrying={queue.isFetching} /> : null}
           {queue.isPending ? <LoadingState label="Loading human approvals…" rows={4} /> : null}
-          {!queue.isPending && !queue.isError && interactions.length === 0 ? <EmptyState icon="shield" title="No human approvals waiting" description="Requests assigned to agents or the Operator are not shown here." /> : null}
+          {!queue.isPending && !queue.isError && interactions.length === 0 ? <p className="approval-empty">No requests yet.</p> : null}
           {selectedRequests.length ? <ol className="approval-request-list">{selectedRequests.map((interaction) => <RequestRow key={interaction.id} interaction={interaction} onChanged={refetch} onOpen={() => selectInteraction(interaction.id)} />)}</ol> : null}
           {queue.hasNextPage ? <Button size="sm" disabled={queue.isFetchingNextPage} loading={queue.isFetchingNextPage} onClick={() => void queue.fetchNextPage()}>Load more</Button> : null}
           {queue.isFetchNextPageError ? <Alert live tone="danger" title="More requests could not be loaded">Try Load more again.</Alert> : null}
@@ -143,5 +147,6 @@ function ApprovalInboxPanel({ open, exiting }: { open: boolean; exiting: boolean
 export function ApprovalInbox() {
   const open = useApprovalInboxStore((state) => state.open)
   const presence = usePresence(open)
-  return presence.mounted ? <ApprovalInboxPanel open={open} exiting={presence.exiting} /> : null
+  const resize = useApprovalInboxResize()
+  return presence.mounted ? <ApprovalInboxPanel open={open} exiting={presence.exiting} resize={resize} /> : null
 }

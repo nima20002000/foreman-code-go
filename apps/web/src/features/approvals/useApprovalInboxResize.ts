@@ -16,7 +16,7 @@ export function useApprovalInboxResize() {
     return rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : undefined
   }
   const resize = (start: Box, edge: Edge, dx: number, dy: number) => {
-    const minimumWidth = Math.min(360, window.innerWidth - 16)
+    const minimumWidth = Math.min(280, window.innerWidth - 16)
     const minimumHeight = Math.min(180, window.innerHeight - 16)
     let left = start.left, top = start.top, right = left + start.width, bottom = top + start.height
     if (edge.includes('w')) left = Math.max(8, Math.min(left + dx, right - minimumWidth))
