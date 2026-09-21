@@ -65,7 +65,7 @@ function laneView(lane: Lane, review: boolean, nameForReviewer: (agentId: string
   const pending = lane.pending.entries().next().value as [string, { handler: string; reviewer?: string; decided: boolean }] | undefined
   if (pending) return { state: 'waiting',
     action: nodeAction(pending[1].decided ? 'waiting_delivery' : 'waiting_approval',
-      pending[1].reviewer ? nameForReviewer(pending[1].reviewer) : pending[1].handler === 'operator' ? 'Operator' : undefined),
+      pending[1].reviewer ? nameForReviewer(pending[1].reviewer) : undefined),
     cause: `interaction:${pending[0]}:${pending[1].decided}` }
   if (review) {
     if (lane.state === 'failed') return lane.cleanupPending

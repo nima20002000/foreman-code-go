@@ -44,6 +44,7 @@ for (const revoked of [true, false]) it(`F03: production App service retains tra
   })
   const repository = { get: async () => structuredClone(record), decide,
     assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'node-reviewer' }),
+    coordination: { findReviewJob: async () => ({ state: 'completed' }) },
     delivery: { claim: async () => undefined } } as unknown as PostgresInteractionRepository
   const budgets = { assertActive: async () => undefined } as unknown as PostgresApprovalBudgetRepository
   const attach = vi.fn()
@@ -98,7 +99,7 @@ function authorityDatabase() {
 
 it('F04: chat release cannot revoke the Run snapshot, but human-owner revocation still can', async () => {
   const h = authorityDatabase()
-  const accepted = await acceptRunAuthority(h.db, h.caller, true)
+  const accepted = await acceptRunAuthority(h.db, h.caller)
   assert.equal(accepted.callerId, 'chat')
   assert.equal(accepted.ownerId, 'owner')
   await bindRunAuthority(h.db, 'run', accepted)
@@ -112,7 +113,7 @@ it('F04: chat release cannot revoke the Run snapshot, but human-owner revocation
 
 it('F04: both the accepted grant ceiling and the owner’s current narrower permissions apply', async () => {
   const h = authorityDatabase()
-  const accepted = await acceptRunAuthority(h.db, h.caller, false)
+  const accepted = await acceptRunAuthority(h.db, h.caller)
   await bindRunAuthority(h.db, 'run', accepted)
   h.rows.get('owner')!.grants = [{ actions: ['runs:start', 'runs:stop'], scope: { workspaceIds: ['workspace', 'another'] } }]
   const current = await currentOperatorAuthority(h.db, accepted.principal.id)

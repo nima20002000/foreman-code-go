@@ -537,25 +537,12 @@ export const InteractionListInputSchema = z.object({
   ...ManagementPageInputSchema.omit({ includeArchived: true }).shape,
 }).strict();
 export const InteractionGetInputSchema = z.object({ interactionId: IdSchema }).strict();
-export const InteractionRespondInputSchema = z.object({
-  interactionId: IdSchema, optionId: IdSchema, expectedRevision: ExpectedRevisionSchema, ...MutationFields,
-}).strict();
-export const InteractionResponseAccessSchema = z.object({
-  canRespond: z.boolean(), canRetryDelivery: z.boolean(), handler: ApprovalHandlerSchema,
-}).strict();
 export const ManagedInteractionPageSchema = z.object({
   items: z.array(DurableInteractionSchema), pageInfo: ManagementPageInfoSchema,
   pendingCount: z.number().int().nonnegative().optional(),
   pendingByWorkflow: z.record(z.string(), z.number().int().nonnegative()).optional(),
-  responseAccess: z.record(z.string(), InteractionResponseAccessSchema).optional(),
 }).strict();
-export const ManagedInteractionSchema = z.object({ interaction: DurableInteractionSchema,
-  canRespond: z.boolean().optional(), canRetryDelivery: z.boolean().optional(), handler: ApprovalHandlerSchema.optional(),
-  review: ReviewStatusSchema.optional(),
-}).strict();
-export const InteractionRespondResultSchema = z.object({
-  value: DurableInteractionSchema, replayed: z.boolean(),
-}).strict();
+export const ManagedInteractionSchema = z.object({ interaction: DurableInteractionSchema, review: ReviewStatusSchema.optional() }).strict();
 
 export const OperatorToolNameSchema = z.enum([
   "operator_mcp_setup_get",
@@ -602,7 +589,7 @@ export const OperatorToolNameSchema = z.enum([
   "agent_list", "agent_get", "graph_draft_open", "graph_draft_get", "graph_draft_apply",
   "graph_validate", "graph_save", "graph_draft_discard", "run_list", "run_get",
   "run_events_list", "run_start", "run_stop",
-  "interaction_list", "interaction_get", "interaction_respond",
+  "interaction_list", "interaction_get",
 ]);
 export type OperatorToolName = z.infer<typeof OperatorToolNameSchema>;
 

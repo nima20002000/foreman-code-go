@@ -15,7 +15,6 @@ import type pg from 'pg'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { DomainError } from '../errors.js'
-import { isOperatorReview, operatorConversationOwnerPredicate, PostgresOperatorReviewLifecycle } from './operatorReviewLifecycle.js'
 
 export type TurnPhase = 'accepted' | 'creating' | 'ready' | 'submitting' | 'submitted'
 export interface ConversationRow {
@@ -93,19 +92,10 @@ function conversation(row: ConversationRow): Conversation {
 /** SQL transitions are fenced by the accepted request, even under a delayed native response. */
 export class PostgresOperatorConversationRepository {
   readonly activity: PostgresOperatorActivityRepository
-  readonly reviews: PostgresOperatorReviewLifecycle
-  constructor(private readonly pool: pg.Pool) { this.activity = new PostgresOperatorActivityRepository(pool); this.reviews = new PostgresOperatorReviewLifecycle(pool) }
+  constructor(private readonly pool: pg.Pool) { this.activity = new PostgresOperatorActivityRepository(pool) }
 
   async create(operatorId: string, configuration: OperatorConfigurationVersion, ownerId: string, title?: string, id: string = randomUUID()): Promise<Conversation> {
-    if (!isOperatorReview(id)) return this.createWithQuery(this.pool, operatorId, configuration, ownerId, title, id)
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
-      await this.reviews.lockAdmission(id.slice('operator-review:'.length), ownerId, client)
-      const value = await this.createWithQuery(client, operatorId, configuration, ownerId, title, id)
-      await client.query('commit')
-      return value
-    } catch (error) { await client.query('rollback').catch(() => undefined); throw error } finally { client.release() }
+    return this.createWithQuery(this.pool, operatorId, configuration, ownerId, title, id)
   }
 
   private async createWithQuery(query: Queryable, operatorId: string, configuration: OperatorConfigurationVersion,
@@ -124,7 +114,7 @@ export class PostgresOperatorConversationRepository {
 
   async list(ownerId: string): Promise<Conversation[]> {
     const result = await this.pool.query<ConversationRow>(
-      `select c.* from operator_conversations c where c.deleted_at is null and ${operatorConversationOwnerPredicate} order by c.updated_at desc,c.id`, [ownerId])
+      `select c.* from operator_conversations c where c.deleted_at is null and c.owner_principal_id=$1 order by c.updated_at desc,c.id`, [ownerId])
     return result.rows.map(conversation)
   }
 
@@ -136,7 +126,7 @@ export class PostgresOperatorConversationRepository {
     }>(`select id,record->>'title' as title,turn_state,revision,active_request_id,
       coalesce(active_request_id is not null and pending_interaction is not null
         and response_delivery='offered' and not cancel_requested and record->>'status'='open', false) as needs_attention
-      from operator_conversations c where c.deleted_at is null and ${operatorConversationOwnerPredicate}
+      from operator_conversations c where c.deleted_at is null and c.owner_principal_id=$1
         and exists(select 1 from operator_conversation_messages m where m.conversation_id=c.id)
         and (not $3::boolean or (active_request_id is not null and pending_interaction is not null
           and response_delivery='offered' and not cancel_requested and record->>'status'='open'))
@@ -348,7 +338,6 @@ export class PostgresOperatorConversationRepository {
         throw new DomainError('CONVERSATION_REVISION_CONFLICT', 'The source configuration changed before admission. Review the conversation before sending a new command.', 409)
       }
       if (conversation(source).status === 'archived') throw new DomainError('CONVERSATION_ARCHIVED', 'This conversation is read-only.', 409)
-      await this.reviews.assertActive(sourceId, client)
       if (source.active_request_id || !['idle', 'error'].includes(source.turn_state)) throw new DomainError('CONVERSATION_TURN_ACTIVE', 'Finish the current turn before switching harnesses.', 409)
       if (input.forkExpectedRevision === undefined || input.forkExpectedRevision !== Number(source.revision))
         throw new DomainError('CONVERSATION_REVISION_CONFLICT', 'The conversation changed before the handoff. Refresh it and review the latest messages.', 409)
@@ -414,7 +403,6 @@ export class PostgresOperatorConversationRepository {
       const replayed = Boolean(prior && (receiptOnly || !prior.retryable || row.active_request_id))
       if (!replayed) {
         if (conversation(row).status === 'archived') throw new DomainError('CONVERSATION_ARCHIVED', 'This conversation is read-only.', 409)
-        await this.reviews.assertActive(id, client)
         if (row.active_request_id || !['idle', 'error'].includes(row.turn_state)) {
           throw new DomainError('CONVERSATION_TURN_ACTIVE', 'This conversation has an active or uncertain turn.', 409)
         }

@@ -2,13 +2,11 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 
 import { DurableInteractionSchema, type DurableInteraction, type HarnessNativeEvent } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
 import { it } from 'vitest'
 
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
-import { OperatorInteractionService } from '../src/modules/interactions/operator.js'
 import { InteractionService } from '../src/modules/interactions/service.js'
 import type { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
 import type { InteractionNativeRuntime } from '../src/modules/interactions/runtimePorts.js'
@@ -21,18 +19,14 @@ function interaction(): DurableInteraction {
     runId: 'run-1', executionId: 'execution-1', requestingAgentId: 'agent-1',
     harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'native-session-1',
     nativeRequestId: 'native-request-1', nativeRequestType: 'approval', graphThreadId: 'thread-1',
-    graphInterruptId: 'interrupt-1', request: { command: ['echo', 'test'] }, approval: { handler: 'operator' },
+    graphInterruptId: 'interrupt-1', request: { command: ['echo', 'test'] }, approval: { handler: 'user' },
     responseOptions: [{ optionId: 'opaque-option-1', semantic: 'approve_once', label: 'Approve once',
       persistence: 'request', affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false }],
     status: 'pending', deliveryState: 'not_started', createdAt: '2026-09-16T00:00:00.000Z', updatedAt: '2026-09-16T00:00:00.000Z',
   })
 }
 
-const principal: ManagementPrincipal = {
-  id: 'operator-1', name: 'Operator', audience: 'operator', revokedAt: null,
-  expiresAt: '2099-01-01T00:00:00.000Z', grants: [{ actions: ['interactions:respond'], scope: { workspaceIds: ['workspace-1'] } }],
-}
-const response = { interactionId: 'interaction-1', optionId: 'opaque-option-1', expectedRevision: 0, commandId: 'command-0001' }
+const response = { interactionId: 'interaction-1', optionId: 'opaque-option-1', expectedRevision: 0 }
 
 /** Models transaction rollback, not PostgreSQL locking; concurrency is covered by the integration suite. */
 class DecisionStore {
@@ -84,87 +78,9 @@ class DecisionStore {
 function decide(store: DecisionStore, overrides: Partial<Parameters<PostgresInteractionRepository['decide']>[0]> = {}) {
   return new PostgresInteractionRepository(store.pool).decide({
     id: response.interactionId, optionId: response.optionId, expectedRevision: 0,
-    nativeResponse: { optionId: response.optionId }, command: { principal, commandId: response.commandId }, ...overrides,
+    nativeResponse: { optionId: response.optionId }, ...overrides,
   })
 }
-
-it('resolves and authorizes the exact Operator target before calling the decision service', async () => {
-  for (const kind of ['missing', 'wrong-handler', 'wrong-scope', 'expired', 'revoked', 'worker'] as const) {
-    const store = new DecisionStore()
-    if (kind === 'missing') store.record = undefined
-    if (kind === 'wrong-handler') store.record!.approval = { handler: 'user' }
-    let calls = 0
-    const service = { respond: async () => { calls += 1; throw new Error('must not dispatch') } } as unknown as InteractionService
-    const caller = kind === 'wrong-scope' ? { ...principal, grants: [{ actions: ['interactions:respond' as const], scope: { workspaceIds: ['other'] } }] }
-      : kind === 'expired' ? { ...principal, expiresAt: '2000-01-01T00:00:00.000Z' }
-        : kind === 'revoked' ? { ...principal, revokedAt: '2026-01-01T00:00:00.000Z' }
-          : kind === 'worker' ? { ...principal, audience: 'worker' as const, agentId: 'agent-1' } : principal
-    await assert.rejects(new OperatorInteractionService(service, new PostgresInteractionRepository(store.pool)).respond(caller, response))
-    assert.equal(calls, 0, kind)
-    assert.equal(store.receipts.size, 0, kind)
-    assert.equal(store.queries.some((sql) => sql.startsWith('insert')), false, kind)
-  }
-})
-
-it('reauthorizes inside the locked decision transaction before receipt insertion', async () => {
-  const store = new DecisionStore()
-  await assert.rejects(decide(store, { command: { principal: { ...principal, grants: [] }, commandId: response.commandId } }), { code: 'ACCESS_DENIED' })
-  assert.equal(store.receipts.size, 0)
-  assert.equal(store.queries.some((sql) => sql.startsWith('insert')), false)
-  assert.equal(store.queries.at(-1), 'rollback')
-  assert.equal(store.released, 1)
-})
-
-it('does not bind receipts for missing, stale, invalid-option or canceled decisions', async () => {
-  for (const kind of ['missing', 'stale', 'option', 'canceled'] as const) {
-    const store = new DecisionStore()
-    if (kind === 'missing') store.record = undefined
-    if (kind === 'canceled') store.record!.status = 'canceled'
-    await assert.rejects(decide(store, kind === 'stale' ? { expectedRevision: 10 } : kind === 'option' ? { optionId: 'forged' } : {}))
-    assert.equal(store.receipts.size, 0, kind)
-    assert.equal(store.updates, 0, kind)
-  }
-})
-
-it('rolls the command receipt back when the decision update fails', async () => {
-  const store = new DecisionStore()
-  store.failUpdate = true
-  await assert.rejects(decide(store), /database write failed/)
-  assert.equal(store.receipts.size, 0)
-  assert.equal(store.record!.status, 'pending')
-  assert.equal(store.queries.at(-1), 'rollback')
-})
-
-it('replays the same authorized command without creating another decision', async () => {
-  const store = new DecisionStore()
-  assert.equal((await decide(store)).replayed, false)
-  assert.equal((await decide(store)).replayed, true)
-  assert.equal(store.receipts.size, 1)
-  assert.equal(store.updates, 1)
-  assert.equal(store.record!.nativeSessionId, interaction().nativeSessionId)
-  assert.equal(store.record!.nativeRequestId, interaction().nativeRequestId)
-  await assert.rejects(decide(store, { command: { principal: { ...principal, grants: [] }, commandId: response.commandId } }), { code: 'ACCESS_DENIED' })
-  assert.equal(store.updates, 1)
-})
-
-it('rejects reuse of a command for another target and rolls back its decision', async () => {
-  const store = new DecisionStore()
-  store.receipts.set(`${principal.id}:${response.commandId}`, { interaction_id: 'other-interaction', option_id: response.optionId })
-  await assert.rejects(decide(store), { code: 'COMMAND_ID_REUSED' })
-  assert.equal(store.record!.status, 'pending')
-  assert.equal(store.updates, 0)
-})
-
-it('validates command identity on an already delivered same-option replay before graph recovery', async () => {
-  const store = new DecisionStore()
-  await decide(store)
-  store.record = { ...store.record!, status: 'delivered', deliveryState: 'delivered', deliveredAt: '2026-09-16T00:00:00.000Z' }
-  store.receipts.set(`${principal.id}:conflicting-command`, { interaction_id: 'other-interaction', option_id: response.optionId })
-  const service = new InteractionService(new PostgresInteractionRepository(store.pool),
-    {} as PostgresApprovalBudgetRepository, {} as InteractionNativeRuntime,
-    async () => { throw new Error('must not resume an invalid command') })
-  await assert.rejects(service.respond({ kind: 'operator', principal }, { ...response, commandId: 'conflicting-command' }), { code: 'COMMAND_ID_REUSED' })
-})
 
 it('never allows an unfenced, expired, or superseded worker to write a claimed delivery', () => {
   const lease = { owner: 'worker-1', token: 'token-1', fence: 1, expiresAt: '2099-01-01T00:00:00.000Z' }
@@ -247,14 +163,14 @@ function deliveryService(attachError?: Error, graphError?: Error) {
 
 it('keeps attachment failure details instead of persisting an unexplained failed flag', async () => {
   const { service, outcomes, graphErrors } = deliveryService(new Error('native session is unavailable'))
-  await service.respond({ kind: 'operator', principal }, response)
+  await service.respond({ kind: 'user' }, response)
   assert.deepEqual(outcomes, [{ state: 'failed', error: 'native session is unavailable' }])
   assert.deepEqual(graphErrors, [])
 })
 
 it('does not relabel delivered native work as failed when graph resume throws', async () => {
   const { service, outcomes, graphErrors } = deliveryService(undefined, new Error('checkpoint unavailable'))
-  const result = await service.respond({ kind: 'operator', principal }, response)
+  const result = await service.respond({ kind: 'user' }, response)
   assert.equal(result.interaction.deliveryState, 'delivered')
   assert.deepEqual(outcomes, [{ state: 'delivered' }])
   assert.deepEqual(graphErrors, ['checkpoint unavailable'])
@@ -282,7 +198,7 @@ it('keeps every applied migration byte-for-byte and composes HAP-04 and HAP-05 m
     return { rows: [], rowCount: 0 }
   } }) } as unknown as pg.Pool
   await applyApplicationMigrations(pool)
-  assert.deepEqual([...observed.keys()], [...Object.keys(expected).map(Number), 503, 507, 508, 509, 700, 701, 800, 1701, 1702, 170017, 170018, 170019, 170020, 170021, 170022, 170023, 170024, 170025])
+  assert.deepEqual([...observed.keys()], [...Object.keys(expected).map(Number), 503, 507, 508, 509, 700, 701, 800, 1701, 1702, 170017, 170018, 170019, 170020, 170021, 170022, 170023, 170024, 170025, 170026])
   for (const [version, hash] of Object.entries(expected)) assert.equal(observed.get(Number(version)), hash, `migration ${version}`)
   assert.equal(observed.get(170021), '5d91e223036ef21375b5d67916956121b4ed4ca5de702a545650a1ef054b2e6a')
   assert.equal(observed.get(170022), '8cc94ebe79fb52b2bce61655d2d2a57a7c2bb766752594f21b4b08d0d71bfa20')

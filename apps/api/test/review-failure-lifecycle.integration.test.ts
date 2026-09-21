@@ -17,7 +17,6 @@ import { OperatorInteractionService } from '../src/modules/interactions/operator
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
 import type { InteractionNativeRuntime } from '../src/modules/interactions/runtimePorts.js'
-import type { OperatorChatService } from '../src/modules/conversations/operatorChat.js'
 import type { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import type { NativeRollout } from '../src/modules/harnesses/nativeRollout.js'
 import { routedApprovalFixture } from './helpers/routedApprovalFixture.js'
@@ -56,7 +55,6 @@ const noNative: InteractionNativeRuntime = {
 type Fixture = Awaited<ReturnType<typeof routedApprovalFixture>>
 function scheduler(f: Fixture, access: PostgresAccessService, stop: (runId: string) => Promise<void>) {
   const service = new AutomaticReviewService(pool, f.runs, noNative,
-    { reconcileReviewLifetimes: async () => undefined } as unknown as OperatorChatService, access,
     { revalidateRunAuthorization: async () => undefined } as unknown as WorkspaceLocationService,
     { enabled: () => true } as unknown as NativeRollout, stop)
   schedulers.push(service)
@@ -135,7 +133,7 @@ it('scheduling B while the reviewer dispatches failed A stops only A and persist
   const denied = await access.issue({ name: 'Only B', audience: 'operator', expiresAt: new Date(Date.now() + 60000),
     grants: [{ actions: ['runs:read'], scope: { runIds: [runB.id] } }] })
   app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
-    operator: { access, services: { commands: f.commands, interactions: new OperatorInteractionService(f.service, f.interactions),
+    operator: { access, services: { commands: f.commands, interactions: new OperatorInteractionService(f.service),
       runs: new RunManagementService(pool, f.commands, f.runs, {} as never, f.locations) } as never } })
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
   const reader = await connect(address, operator.token)

@@ -20,7 +20,18 @@
 - [x] Remove the agent sidebar and manual refresh control.
 - [x] Render every pending human request as one compact message: agent icon, request label, Accept, Reject.
 - [x] Open a minimal real-agent profile modal from the agent icon.
-- [x] Keep request details available from the request label without adding row metadata.
+- [x] ~~Keep request details available from the request label without adding row metadata.~~ Superseded: the label is inert and the info icon owns hover details.
 - [x] Remove the broken Retry action from the approval inbox.
 - [x] Create and verify a fresh live pending request after cleaning up the stale demo run.
 - [x] Show the live pending human-approval count on the board inbox icon; hide the badge at zero.
+- [x] Replace the agent-profile modal with a compact hover/focus profile card; clicking the avatar does nothing.
+- [x] Replace the literal `!` with a small raw info icon after Reject; use a normal pointer and keep its hover card inside the inbox.
+
+## Remove Operator workflow approval
+
+- [x] Remove `operator` from shared workflow/default/interaction handler contracts.
+- [x] Remove Operator from workflow and workflow-default UI choices.
+- [x] Remove Operator-only interaction HTTP routes and Operator MCP response tooling.
+- [x] Remove automatic Operator review dispatch, Run authority expansion, and review-chat lifecycle code.
+- [x] Migrate persisted Operator selections to User and remove Operator-review records and response receipts.
+- [x] Preserve User approval and designated-Orchestrator App MCP workflows.

@@ -2,7 +2,6 @@ import { ToastContext } from '../../shared/ui/nocturne/toastContext'
 import { UnsavedChangesContext, useUnsavedChanges } from '../../shared/ui/unsavedChanges'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Inbox } from 'lucide-react'
-import { Link } from '@tanstack/react-router'
 import { createPortal } from 'react-dom'
 import { AgentSettingsForm } from './AgentSettingsForm'
 import { WorkflowExecutionLimits } from './WorkflowExecutionLimits'
@@ -1582,10 +1581,9 @@ export function GraphEditor({
               { value: '', label: 'Select handler', disabled: true },
               { value: 'user', label: 'User' },
               { value: 'orchestrator', label: 'Orchestrator', disabled: !hasDistinctCoder || workflowOrchestrators.length === 0 },
-              { value: 'operator', label: 'Operator' },
             ]}
             onChange={(event) => {
-              const handler = event.target.value as 'user' | 'orchestrator' | 'operator'
+              const handler = event.target.value as 'user' | 'orchestrator'
               applyBoardChange((saved) => ({ ...saved, approval: handler === 'orchestrator'
                 ? { handler, ...(saved.approval?.handler === 'orchestrator' && saved.approval.designatedOrchestratorAgentId ? { designatedOrchestratorAgentId: saved.approval.designatedOrchestratorAgentId } : {}) }
                 : { handler } }))

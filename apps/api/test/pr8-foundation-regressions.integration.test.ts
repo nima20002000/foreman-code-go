@@ -393,9 +393,9 @@ describe.each(['http', 'mcp'] as const)('PR8 managed %s acceptance', (source) =>
         { type:'workflow.set_approval',approval:{ handler:'user' } },
       ])
       await save(changed)
-      await templates.updateWorkflowDefaults({ approvalHandler:'operator' },firstDefaults.revision)
+      await templates.updateWorkflowDefaults({ approvalHandler:'user' },firstDefaults.revision)
       expect((await runs.getForWorkspace(workspaceId,started.run.id))!.approval).toEqual(expectedApproval)
-      expect((await create('Later workflow')).workflow.approval).toEqual({ handler:'operator' })
+      expect((await create('Later workflow')).workflow.approval).toEqual({ handler:'user' })
       // The direct repository save also preserves approval when an old client omits it.
       const current = (await services.workflows.get(principal,workspaceId,draft.workflowId)).workflow
       const omitted:WorkflowDefinition = { ...current,approval:undefined }

@@ -1,3 +1,0 @@
-.approval-request-summary { display: grid; gap: .35rem; margin-block: .75rem; padding: .75rem; border-radius: .55rem; background: var(--color-surface-subtle); font-size: .82rem; line-height: 1.45; overflow-wrap: anywhere; }
-.approval-request-summary :is(p, strong) { margin: 0; }
-.approval-request-summary code { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8rem; }

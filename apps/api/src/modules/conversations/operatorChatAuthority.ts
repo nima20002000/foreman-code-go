@@ -3,7 +3,6 @@ import type { OperatorChatSetup, OperatorConfigurationVersion } from '@graphql/c
 import { requireAuthorization } from '../access/policy.js'
 import { currentOperatorAuthority } from '../access/runAuthority.js'
 import { operatorChatGrants } from '../access/operatorChatDelegation.js'
-import { PostgresOperatorReviewLifecycle } from './operatorReviewLifecycle.js'
 import type { PostgresAccessService } from '../access/postgres.js'
 import { CodexAppServerSessionManager } from '../harnesses/codexAppServer.js'
 import { OpenCodeNativeSessionManager } from '../harnesses/opencodeServer.js'
@@ -58,8 +57,6 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
     principalId: string, signal: AbortSignal): Promise<ChildProcessEnvironment> {
     const principal = await this.current(principalId)
     requireAuthorization(principal, 'operator_chat:write')
-    const reviews = new PostgresOperatorReviewLifecycle(this.pool)
-    await reviews.assertActive(conversationId)
     signal.throwIfAborted()
     if ((await this.setup(manager, signal, configuration)).status !== 'configured') this.invalidSetup()
     const cached = this.credentials.get(conversationId)
@@ -80,7 +77,6 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
       const conversation = await client.query(`select id from operator_conversations
         where id=$1 and owner_principal_id=$2 and record->>'status'='open' for share`, [conversationId, principalId])
       if (conversation.rowCount !== 1) throw new DomainError('OPERATOR_REVIEW_ENDED', 'The conversation is no longer open.', 409)
-      await reviews.assertActive(conversationId, client)
       signal.throwIfAborted()
       const grants = operatorChatGrants(owner.grants)
       if (!grants.length) throw new DomainError('ACCESS_DENIED', 'This principal has no management authority to delegate to the Operator.', 403)

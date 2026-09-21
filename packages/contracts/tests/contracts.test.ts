@@ -74,11 +74,12 @@ describe("neutral product contracts", () => {
     }).success).toBe(true);
     expect(WorkflowApprovalConfigurationSchema.safeParse({ handler: "orchestrator" }).success).toBe(true);
     expect(AcceptedWorkflowApprovalConfigurationSchema.safeParse({ handler: "orchestrator" }).success).toBe(false);
-    for (const handler of ["user", "operator"] as const) {
+    for (const handler of ["user"] as const) {
       expect(WorkflowApprovalConfigurationSchema.safeParse({ handler, designatedOrchestratorAgentId: "agent-1" }).success).toBe(false);
       expect(AcceptedWorkflowApprovalConfigurationSchema.safeParse({ handler, designatedOrchestratorAgentId: "agent-1" }).success).toBe(false);
       expect(AcceptedWorkflowApprovalConfigurationSchema.safeParse({ handler }).success).toBe(true);
     }
+    expect(WorkflowApprovalConfigurationSchema.safeParse({ handler: "operator" }).success).toBe(false);
     expect(CODEX_APPROVAL_OPTIONS_FIXTURE.some((option) => option.semantic === "allow_session")).toBe(true);
     expect(OPENCODE_APPROVAL_OPTIONS_FIXTURE.some((option) => option.semantic === "allow_session")).toBe(false);
     expect(OPENCODE_APPROVAL_OPTIONS_FIXTURE.find((option) => option.semantic === "reject")?.affectsOtherPendingRequests).toBe(true);

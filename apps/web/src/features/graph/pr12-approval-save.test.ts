@@ -10,7 +10,7 @@ const workflow: WorkflowDefinition = { id: 'w', workspaceId: 's', name: 'Workflo
 const shared: GraphDraft = { id: 'd', workspaceId: 's', workflowId: 'w', revision: 0, baseWorkflowVersionId: 'v1', publishedRevision: 0, graph: workflow, stagedAgents: [], updatedByPrincipalId: 'p', updatedAt: '2026-09-16T00:00:00.000Z' }
 beforeEach(() => useGraphDraftStore.getState().clearAllDrafts())
 describe('PR12 approval dirty/save protocol', () => {
-  it.each(['user', 'operator', 'orchestrator'] as const)('transmits %s approval as a graph operation', (handler) => {
+  it.each(['user', 'orchestrator'] as const)('transmits %s approval as a graph operation', (handler) => {
     const base = { ...workflow, approval: undefined }
     const next = { ...workflow, approval: handler === 'orchestrator' ? { handler, designatedOrchestratorAgentId: 'o1' } : { handler } }
     expect(sameEditableGraph(base, next)).toBe(false)
@@ -24,10 +24,10 @@ describe('PR12 approval dirty/save protocol', () => {
   it('keeps approval-only dirty state and newer edits after a save acknowledgment', () => {
     const key = workflowDraftKey('s', 'w'); const store = useGraphDraftStore.getState()
     const base = captureManagedBase(shared, [], {})
-    store.updateDraft(key, workflow, (value) => ({ ...value, approval: { handler: 'operator' } }), [], base)
+    store.updateDraft(key, workflow, (value) => ({ ...value, approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'o1' } }), [], base)
     const sent = structuredClone(getGraphDraft(key)!)
     store.setManagedSaving(key, true)
-    expect(sent.workflow.approval?.handler).toBe('operator')
+    expect(sent.workflow.approval?.handler).toBe('orchestrator')
     store.updateDraft(key, workflow, (value) => ({ ...value, approval: { handler: 'user' } }), [], base)
     expect(getGraphDraft(key)?.workflow.approval?.handler).toBe('user')
     const saved = { ...sent.workflow, version: 2 }

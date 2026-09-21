@@ -14,6 +14,7 @@ const definition = {
 const run = {
   id: 'run', workspaceId: 'workspace', workflowId: 'workflow', workflowVersionId: 'version',
   agentConfigurationVersionIds: { orchestrator: 'orchestrator-v1', coder: 'coder-v1' },
+  executionCondition: { kind: 'manual' },
   approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'orchestrator' },
   executionState: 'running', outcome: 'pending', input: {}, createdAt: at,
 } as WorkflowRun

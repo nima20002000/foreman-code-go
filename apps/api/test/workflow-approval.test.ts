@@ -105,7 +105,7 @@ describe('workflow approval authority', () => {
       .toThrowError(expect.objectContaining({ code: 'APPROVAL_REVIEWER_APP_MCP_REQUIRED' }))
     const overridden = agents.map((agent) => agent.id !== 'agent-orchestrator' ? agent : { ...agent,
       harnessConfiguration: { ...agent.harnessConfiguration!, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
-        permissionRules: [...agents[0]!.harnessConfiguration.advanced.permissionRules,
+        permissionRules: [...agents[0]!.harnessConfiguration!.advanced!.permissionRules,
           { permission: 'graphql-app_*', pattern: '*', effect: 'deny' as const }] } } })
     expect(() => validateWorkflowApproval(definition, approval, overridden))
       .toThrowError(expect.objectContaining({ code: 'APPROVAL_REVIEWER_APP_MCP_REQUIRED' }))

@@ -21,7 +21,7 @@ function code(expected: string) {
   return (error: unknown) => { assert.equal((error as { code?: string }).code, expected); return true }
 }
 
-for (const handler of ['user', 'operator', 'orchestrator'] as const) {
+for (const handler of ['user', 'orchestrator'] as const) {
   const approval: WorkflowApprovalConfiguration = { handler,
     ...(handler === 'orchestrator' ? { designatedOrchestratorAgentId: 'reviewer' } : {}) }
   it(`keeps ${handler} routing per Agent while checking explicit Codex self-review`, () => {

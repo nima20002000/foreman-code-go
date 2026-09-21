@@ -291,12 +291,12 @@ export function GlobalApprovalsRouteEntry() {
 
 export function WorkspaceApprovalsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/approvals' })
-  const { workflowId, interactionId } = useSearch({ from: '/workspaces/$workspaceId/approvals' })
+  const { workflowId } = useSearch({ from: '/workspaces/$workspaceId/approvals' })
   const navigate = useNavigate({ from: '/workspaces/$workspaceId/approvals' })
   useEffect(() => {
-    useApprovalInboxStore.getState().openInbox({ workspaceId, workflowId, interactionId })
+    useApprovalInboxStore.getState().openInbox({ workspaceId, workflowId })
     void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, search: workflowId ? { workflowId } : {}, replace: true })
-  }, [interactionId, navigate, workflowId, workspaceId])
+  }, [navigate, workflowId, workspaceId])
   return null
 }
 

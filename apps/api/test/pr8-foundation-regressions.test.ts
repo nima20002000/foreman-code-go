@@ -95,7 +95,7 @@ describe('PR8 executable approval acceptance', () => {
     harness.autoApprove = true
     if (advanced) harness.advanced!.permissionHandling = 'native_auto'
     else delete harness.advanced
-    for (const handler of ['user', 'operator', 'orchestrator']) {
+    for (const handler of ['user', 'orchestrator']) {
       expect(HarnessWorkflowCompatibilitySchema.safeParse({ configuration: harness, workflowApprovalHandler: handler }).success).toBe(false)
     }
     expect(HarnessWorkflowCompatibilitySchema.safeParse({ configuration: harness }).success).toBe(true)

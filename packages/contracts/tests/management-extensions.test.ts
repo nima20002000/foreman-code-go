@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   AgentCreateInputSchema, AgentUpdateInputSchema, GraphDraftOperationSchema,
-  InteractionRespondInputSchema, LocationProvisionInputSchema, RunRetryInputSchema,
+  LocationProvisionInputSchema, RunRetryInputSchema,
   WorkflowTriggerUpdateInputSchema,
 } from '../src/management/index.js'
 
@@ -46,7 +46,6 @@ describe('management extension contracts', () => {
   })
   it('keeps retry and general-question contracts separate from approval semantics', () => {
     expect(RunRetryInputSchema.safeParse({workspaceId:'w',runId:'r',commandId,workflowVersionId:'v1',expectedLocationRevision:0,nodeId:'n'}).success).toBe(false)
-    expect(InteractionRespondInputSchema.safeParse({interactionId:'i',commandId,expectedRevision:0,answer:'yes'}).success).toBe(false)
   })
   it('rejects sub-minute schedules and cron-like unimplemented fields', () => {
     const input={workspaceId:'w',workflowId:'f',commandId,expectedRevision:0,workflowVersionId:'v1',expectedLocationRevision:1,enabled:true,

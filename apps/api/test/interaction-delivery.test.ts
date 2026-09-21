@@ -330,7 +330,7 @@ it('settles an unacknowledged graph handoff for a terminal Run without touching 
 it('still checks responder authority on delivered replays (#28)', async () => {
   const h = harness()
   await h.respond()
-  h.change({ approval: { handler: 'operator' } })
+  h.change({ approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'reviewer' } })
   await assert.rejects(h.respond(), (error: unknown) => error instanceof DomainError && error.code === 'INTERACTION_ACCESS_DENIED')
 })
 

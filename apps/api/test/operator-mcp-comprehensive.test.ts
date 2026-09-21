@@ -4,9 +4,7 @@ import { firstScheduleAt, dueSchedule } from '../src/modules/workflows/triggerTi
 import { codexModelOptions, openCodeOptions, harnessSettingSupport } from '../src/modules/harnesses/operatorOptions.js'
 import { operatorToolAvailable } from '../src/mcp/operator/availability.js'
 import { OPERATOR_TOOL_ACTIONS } from '../src/mcp/operator/catalog.js'
-import { operatorResponseAccess } from '../src/modules/interactions/operator.js'
 import type { OperatorRequestContext } from '../src/mcp/operator/types.js'
-import type { DurableInteraction } from '@graphql/contracts'
 
 const owner: ManagementPrincipal = {id:'owner',name:'Owner',audience:'operator',expiresAt:'2099-01-01T00:00:00Z',revokedAt:null,
   grants:[{actions:[...ManagementActionSchema.options],scope:{}}]}
@@ -33,10 +31,7 @@ describe('Operator MCP permission boundaries', () => {
   it('has unique tool names and does not expose Operator self-approval', () => {
     expect(new Set(OPERATOR_TOOL_ACTIONS.map(t=>t.name)).size).toBe(OPERATOR_TOOL_ACTIONS.length)
     expect(OPERATOR_TOOL_ACTIONS.some(t=>t.name.startsWith('operator_chat_respond'))).toBe(false)
-  })
-  it('does not turn cross-handler visibility into response authority', () => {
-    const interaction={id:'i',workspaceId:'w',workflowId:'f',runId:'r',approval:{handler:'user'},status:'pending'} as DurableInteraction
-    expect(operatorResponseAccess(owner,interaction)).toEqual({canRespond:false,canRetryDelivery:false,handler:'user'})
+    expect(OPERATOR_TOOL_ACTIONS.map(t=>String(t.name))).not.toContain('interaction_respond')
   })
 })
 

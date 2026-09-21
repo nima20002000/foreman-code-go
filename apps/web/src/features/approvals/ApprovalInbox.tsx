@@ -1,47 +1,18 @@
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import type { Agent, DurableInteraction } from '@graphql/contracts'
-import { useInfiniteInteractionsQuery, useInteractionQuery, useWorkspaceDetailsQuery } from '../../shared/api/query'
+import { useInfiniteInteractionsQuery, useWorkspaceDetailsQuery } from '../../shared/api/query'
 import { sessionSignal } from '../../shared/api/sessionBoundary'
 import { useUserInteractionResponse, type UserApprovalCredential } from '../../shared/api/userApprovals'
 import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
-import { Alert, Avatar, Button, Dialog, ErrorState, Icon, IconButton, LoadingState } from '../../shared/ui/nocturne'
+import { Alert, Avatar, Button, ErrorState, Icon, IconButton, LoadingState } from '../../shared/ui/nocturne'
 import { usePresence } from '../../shared/ui/usePresence'
 import { interactionMatchesScope } from './approvalState'
-import { UserApprovalResponse } from './UserApprovalResponse'
 import { summarizeApprovalRequest } from './approvalPresentation'
-import { ApprovalRequestSummary } from './ApprovalRequestSummary'
 import { approvalResizeEdges, useApprovalInboxResize } from './useApprovalInboxResize'
 import { useApprovalInboxStore } from './approvalInboxStore'
 import './approvals.css'
 
 const credential = (): UserApprovalCredential => ({ id: 'browser-user', signal: sessionSignal() })
-
-function ApprovalContext({ interaction }: { interaction: DurableInteraction }) {
-  const query = useWorkspaceDetailsQuery(interaction.workspaceId, { retry: false })
-  const context = !query.isError && query.data?.workspace.id === interaction.workspaceId ? query.data : undefined
-  const agent = context?.agents.find((item) => item.id === interaction.requestingAgentId)?.name ?? 'Unknown agent'
-  const workflow = context?.workflows.find((item) => item.id === interaction.workflowId)?.name
-  return <p className="approval-detail-context">Requested by <strong>{agent}</strong>{workflow ? ` in ${workflow}` : ''} · {interaction.harness === 'codex' ? 'Codex' : 'OpenCode'}</p>
-}
-
-function ApprovalDetail({ interactionId, workspaceId, workflowId, onChanged }: {
-  interactionId: string; workspaceId: string; workflowId?: string; onChanged(): void
-}) {
-  const detail = useInteractionQuery(interactionId)
-  if (detail.isError) return <ErrorState title="Request unavailable" description={detail.error.message} onRetry={() => void detail.refetch()} retrying={detail.isFetching} />
-  if (detail.isPending || !detail.data) return <LoadingState label="Loading request…" rows={4} />
-  const selected = detail.data.interaction
-  if (selected.id !== interactionId || selected.approval.handler !== 'user' || !interactionMatchesScope(selected, { workspaceId, workflowId })) {
-    return <ErrorState title="Request unavailable here" description="This is not a human approval request in the current board scope." />
-  }
-  const selectedOption = selected.responseOptions.find((option) => option.optionId === selected.selectedOptionId)
-  return <article className="approval-detail">
-    <ApprovalContext interaction={selected} />
-    <ApprovalRequestSummary request={selected.request} nativeRequestType={selected.nativeRequestType} reviewContext={selected.reviewContext} />
-    <UserApprovalResponse key={selected.id} interaction={selected} onChanged={() => { void detail.refetch(); onChanged() }} />
-    {selected.selectedOptionId ? <div className="approval-history"><h3>Recorded choice</h3><p><strong>{selectedOption?.label ?? selected.selectedOptionId}</strong>{selected.decidedAt ? ` · ${new Date(selected.decidedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}` : ''}</p>{selectedOption ? <p>{approvalOptionScope(selectedOption)}</p> : null}</div> : null}
-  </article>
-}
 
 function QuickApprovalActions({ interaction, onChanged }: { interaction: DurableInteraction; onChanged(): void }) {
   const [userCredential] = useState(credential)
@@ -60,32 +31,46 @@ function QuickApprovalActions({ interaction, onChanged }: { interaction: Durable
   </div>
 }
 
-function RequestRow({ interaction, agent, onOpen, onAgent, onChanged }: {
+function AgentProfileDisclosure({ agent }: { agent?: Agent }) {
+  const id = useId()
+  const name = agent?.name ?? 'Unknown agent'
+  const harness = agent?.harness === 'opencode' ? 'OpenCode' : agent?.harness === 'codex' ? 'Codex' : undefined
+  return <span className="approval-agent-disclosure">
+    <button type="button" className="approval-agent-button" aria-label={`Agent profile: ${name}`} aria-describedby={id}>
+      <Avatar name={name} size="sm" />
+    </button>
+    <span id={id} role="tooltip" className="approval-hover-card approval-agent-hover-card">
+      <strong>{name}</strong>
+      <span>{[agent?.role ?? agent?.productRole, harness, agent?.model].filter(Boolean).join(' · ') || 'Agent'}</span>
+      {agent?.description ? <small>{agent.description}</small> : null}
+    </span>
+  </span>
+}
+
+function RequestDetailDisclosure({ interaction }: { interaction: DurableInteraction }) {
+  const id = useId()
+  const summary = summarizeApprovalRequest(interaction.request, interaction.nativeRequestType)
+  return <span className="approval-request-disclosure">
+    <button type="button" className="approval-request-info" aria-label={`More details: ${summary.operation}`} aria-describedby={id}><Icon name="info" size={12} /></button>
+    <span id={id} role="tooltip" className="approval-hover-card approval-request-hover-card">
+      <strong>{summary.operation}</strong>
+      <code>{summary.command ?? summary.target ?? summary.explanation ?? 'No additional details supplied.'}</code>
+    </span>
+  </span>
+}
+
+function RequestRow({ interaction, agent, onChanged }: {
   interaction: DurableInteraction
   agent?: Agent
-  onOpen(): void
-  onAgent(): void
   onChanged(): void
 }) {
   const summary = summarizeApprovalRequest(interaction.request, interaction.nativeRequestType)
   return <li className="approval-request-row">
-    <button type="button" className="approval-agent-button" aria-label={`View agent: ${agent?.name ?? 'Unknown agent'}`} onClick={onAgent}>
-      <Avatar name={agent?.name ?? '?'} size="sm" />
-    </button>
-    <button type="button" className="approval-request-open" onClick={onOpen} aria-haspopup="dialog">
-      <strong>{summary.operation}</strong>
-    </button>
+    <AgentProfileDisclosure agent={agent} />
+    <span className="approval-request-label">{summary.operation}</span>
     <QuickApprovalActions interaction={interaction} onChanged={onChanged} />
+    <RequestDetailDisclosure interaction={interaction} />
   </li>
-}
-
-function AgentProfile({ agent }: { agent: Agent }) {
-  const harness = agent.harness === 'opencode' ? 'OpenCode' : agent.harness === 'codex' ? 'Codex' : undefined
-  return <div className="approval-agent-profile">
-    <Avatar name={agent.name} size="lg" />
-    <p>{[agent.role ?? agent.productRole, harness, agent.model].filter(Boolean).join(' · ') || 'Agent'}</p>
-    {agent.description ? <p>{agent.description}</p> : null}
-  </div>
 }
 
 function ApprovalInboxPanel({ open, exiting, resize }: {
@@ -95,32 +80,26 @@ function ApprovalInboxPanel({ open, exiting, resize }: {
 }) {
   const workspaceId = useApprovalInboxStore((state) => state.workspaceId)
   const workflowId = useApprovalInboxStore((state) => state.workflowId)
-  const interactionId = useApprovalInboxStore((state) => state.interactionId)
   const closeInbox = useApprovalInboxStore((state) => state.closeInbox)
-  const selectInteraction = useApprovalInboxStore((state) => state.selectInteraction)
   const { panelRef, style, moveGrip, grip } = resize
   const scope = { workspaceId: workspaceId || undefined, workflowId, limit: 100 }
   const queue = useInfiniteInteractionsQuery({ ...scope, status: 'pending' }, open && Boolean(workspaceId))
   const workspace = useWorkspaceDetailsQuery(workspaceId, { enabled: open && Boolean(workspaceId), retry: false })
-  const [profileAgentId, setProfileAgentId] = useState<string>()
-  const pages = queue.data?.pages ?? []
   const interactions = useMemo(() => {
     const byId = new Map<string, DurableInteraction>()
-    for (const page of pages) for (const item of page.items) {
+    for (const page of queue.data?.pages ?? []) for (const item of page.items) {
       if (item.status !== 'pending' || item.approval.handler !== 'user' || !interactionMatchesScope(item, { workspaceId, workflowId })) continue
       const current = byId.get(item.id)
       if (!current || item.revision >= current.revision) byId.set(item.id, item)
     }
     return [...byId.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id))
-  }, [pages, workspaceId, workflowId])
+  }, [queue.data?.pages, workspaceId, workflowId])
   const refetch = () => void queue.refetch()
-  const selectedInteraction = interactions.find((item) => item.id === interactionId)
-  const profileAgent = workspace.data?.agents.find((agent) => agent.id === profileAgentId)
   const agentFor = (interaction: DurableInteraction) => workspace.data?.agents.find((agent) => agent.id === interaction.requestingAgentId)
   return <div className="approval-inbox-root">
     <section ref={panelRef} style={style} className="approval-inbox-panel" data-state={exiting ? 'closing' : 'open'} role="dialog" aria-modal="false" aria-label="Human approval inbox"
       aria-hidden={exiting} inert={exiting}
-      onKeyDown={(event) => { if (event.key === 'Escape' && !interactionId) closeInbox() }}>
+      onKeyDown={(event) => { if (event.key === 'Escape') closeInbox() }}>
       {approvalResizeEdges.map((edge) => <button key={edge} type="button" className={`approval-inbox-resize approval-inbox-resize-${edge}`} {...grip(edge)} />)}
       <button type="button" className="approval-inbox-move" title="Drag to move approval inbox" {...moveGrip} />
       <div className="approval-inbox-controls">
@@ -132,21 +111,12 @@ function ApprovalInboxPanel({ open, exiting, resize }: {
           {queue.isPending ? <LoadingState label="Loading human approvals…" rows={4} /> : null}
           {!queue.isPending && !queue.isError && interactions.length === 0 ? <p className="approval-empty">No requests yet.</p> : null}
           {interactions.length ? <ol className="approval-request-list">{interactions.map((interaction) => <RequestRow key={interaction.id} interaction={interaction}
-            agent={agentFor(interaction)} onAgent={() => setProfileAgentId(interaction.requestingAgentId)} onChanged={refetch} onOpen={() => selectInteraction(interaction.id)} />)}</ol> : null}
+            agent={agentFor(interaction)} onChanged={refetch} />)}</ol> : null}
           {queue.hasNextPage ? <Button size="sm" disabled={queue.isFetchingNextPage} loading={queue.isFetchingNextPage} onClick={() => void queue.fetchNextPage()}>Load more</Button> : null}
           {queue.isFetchNextPageError ? <Alert live tone="danger" title="More requests could not be loaded">Try Load more again.</Alert> : null}
         </main>
       </div>
     </section>
-    <Dialog open={Boolean(interactionId)} onOpenChange={(next) => { if (!next) selectInteraction(undefined) }}
-      title={selectedInteraction ? summarizeApprovalRequest(selectedInteraction.request, selectedInteraction.nativeRequestType).operation : 'Approval request'}
-      size="md" closeOnOutsideClick className="approval-detail-dialog">
-      {interactionId ? <ApprovalDetail interactionId={interactionId} workspaceId={workspaceId} workflowId={workflowId} onChanged={refetch} /> : null}
-    </Dialog>
-    <Dialog open={Boolean(profileAgent)} onOpenChange={(next) => { if (!next) setProfileAgentId(undefined) }}
-      title={profileAgent?.name ?? 'Agent'} size="sm" closeOnOutsideClick className="approval-agent-dialog">
-      {profileAgent ? <AgentProfile agent={profileAgent} /> : null}
-    </Dialog>
   </div>
 }
 

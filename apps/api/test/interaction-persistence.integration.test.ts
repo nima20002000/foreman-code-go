@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 
 import { DurableInteractionSchema, ReviewJobSchema, type DurableInteraction } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
 import pg from 'pg'
 import { afterEach, beforeEach, it } from 'vitest'
 
@@ -19,25 +18,20 @@ let schema: string
 let repository: PostgresInteractionRepository
 let recovery: PostgresInteractionRecoveryRepository
 
-const principal: ManagementPrincipal = {
-  id: 'operator-1', name: 'Operator', audience: 'operator', revokedAt: null,
-  expiresAt: '2099-01-01T00:00:00.000Z', grants: [{ actions: ['interactions:respond'], scope: { workspaceIds: ['workspace-1'] } }],
-}
 function interaction(id = 'interaction-1'): DurableInteraction {
   return DurableInteractionSchema.parse({
     id, revision: 0, workspaceId: 'workspace-1', workflowId: 'workflow-1', runId: 'run-1',
     executionId: 'execution-1', requestingAgentId: 'agent-1', harness: 'codex', providerVersion: '0.154.0',
     nativeSessionId: 'native-session-1', nativeRequestId: `native-request-${id}`, nativeRequestType: 'approval',
-    graphThreadId: 'thread-1', graphInterruptId: `interrupt-${id}`, request: {}, approval: { handler: 'operator' },
+    graphThreadId: 'thread-1', graphInterruptId: `interrupt-${id}`, request: {}, approval: { handler: 'user' },
     responseOptions: [{ optionId: `option-${id}`, semantic: 'approve_once', label: 'Approve once', persistence: 'request',
       affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false }],
     status: 'pending', deliveryState: 'not_started', createdAt: '2026-09-16T00:00:00.000Z', updatedAt: '2026-09-16T00:00:00.000Z',
   })
 }
-function decide(current: DurableInteraction, commandId = 'command-0001', caller = principal) {
+function decide(current: DurableInteraction) {
   return repository.decide({ id: current.id, optionId: current.responseOptions[0]!.optionId,
-    expectedRevision: current.revision, nativeResponse: { optionId: current.responseOptions[0]!.optionId },
-    command: { principal: caller, commandId } })
+    expectedRevision: current.revision, nativeResponse: { optionId: current.responseOptions[0]!.optionId } })
 }
 
 beforeEach(async () => {
@@ -67,38 +61,6 @@ afterEach(async () => {
   await pool?.end()
   await admin?.query(`drop schema if exists "${schema}" cascade`)
   await admin?.end()
-})
-
-it('commits one receipt and typed decision under concurrent identical commands', async () => {
-  const current = (await repository.create(interaction())).interaction
-  const decisions = await Promise.all([decide(current), decide(current)])
-  assert.deepEqual(decisions.map((item) => item.replayed).sort(), [false, true])
-  const receipts = await pool.query('select * from interaction_command_receipts')
-  assert.equal(receipts.rowCount, 1)
-  assert.equal(receipts.rows[0]!.decision_revision, '1')
-  assert.ok(receipts.rows[0]!.authorized_at)
-  const activity = await pool.query("select kind from run_activity where kind in ('interaction_pending','interaction_decided') order by sequence")
-  assert.deepEqual(activity.rows.map((row) => row.kind), ['interaction_pending', 'interaction_decided'])
-})
-
-it('leaves no receipt for denied, nonexistent, stale, or rolled-back decisions', async () => {
-  const current = (await repository.create(interaction())).interaction
-  await assert.rejects(decide(current, 'denied-0001', { ...principal, grants: [] }), { code: 'ACCESS_DENIED' })
-  await assert.rejects(decide({ ...current, id: 'missing' }, 'missing-0001'), { code: 'INTERACTION_NOT_FOUND' })
-  await assert.rejects(decide({ ...current, revision: 99 }, 'stale-0001'), { code: 'REVISION_CONFLICT' })
-  await pool.query("alter table durable_interactions add constraint injected_failure check (status <> 'delivery_pending')")
-  await assert.rejects(decide(current, 'rollback-0001'))
-  assert.equal((await pool.query('select * from interaction_command_receipts')).rowCount, 0)
-  assert.equal((await repository.get(current.id))!.status, 'pending')
-  assert.equal((await pool.query("select * from run_activity where kind='interaction_decided'")).rowCount, 0)
-})
-
-it('does not allow a reused command to decide another interaction', async () => {
-  const first = (await repository.create(interaction())).interaction
-  const second = (await repository.create(interaction('interaction-2'))).interaction
-  await decide(first)
-  await assert.rejects(decide(second), { code: 'COMMAND_ID_REUSED' })
-  assert.equal((await repository.get(second.id))!.status, 'pending')
 })
 
 async function submittedDelivery() {
@@ -248,5 +210,5 @@ it('recovers reviewer ownership without replaying or replacing submission identi
 it('applies the additive migration once and preserves the original HAP versions', async () => {
   await applyApplicationMigrations(pool)
   const applied = await pool.query('select version from application_migrations order by version')
-  assert.deepEqual(applied.rows.map((row) => row.version), [1, 2, 3, 4, 100, 400, 401, 500, 501, 502, 503, 507, 508, 509, 700, 701, 800, 1701, 1702, 170017, 170018, 170019, 170020, 170021, 170022, 170023, 170024, 170025])
+  assert.deepEqual(applied.rows.map((row) => row.version), [1, 2, 3, 4, 100, 400, 401, 500, 501, 502, 503, 507, 508, 509, 700, 701, 800, 1701, 1702, 170017, 170018, 170019, 170020, 170021, 170022, 170023, 170024, 170025, 170026])
 })

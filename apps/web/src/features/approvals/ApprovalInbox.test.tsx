@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NATIVE_INTERACTION_FIXTURES, type DurableInteraction } from '@graphql/contracts'
@@ -33,7 +33,7 @@ const queue = (items: DurableInteraction[]) => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
-  useApprovalInboxStore.setState({ open: false, workspaceId: '', workflowId: undefined, interactionId: undefined })
+  useApprovalInboxStore.setState({ open: false, workspaceId: '', workflowId: undefined })
   api.list.mockReturnValue(queue([humanA, humanB, orchestrator]))
   api.workspace.mockReturnValue({ data: { workspace: { id: base.workspaceId, name: 'Workspace' }, workflows: [{ id: base.workflowId, name: 'Workflow' }], agents: [
     { id: 'agent-a', name: 'Builder', role: 'Coder', harness: 'codex', model: 'gpt-5', status: 'waiting', description: 'Builds the implementation.' },
@@ -46,22 +46,22 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('floating human approval inbox', () => {
-  it('stays on the board, shows all pending human requests, and opens a minimal agent profile', async () => {
+  it('stays on the board, shows all pending human requests, and exposes profile details on the avatar', async () => {
     const user = userEvent.setup()
-    useApprovalInboxStore.setState({ interactionId: 'stale-request' })
     useApprovalInboxStore.getState().openInbox({ workspaceId: base.workspaceId, workflowId: base.workflowId })
-    expect(useApprovalInboxStore.getState().interactionId).toBeUndefined()
     render(<ApprovalInbox />)
     const panel = screen.getByRole('dialog', { name: 'Human approval inbox' })
-    expect(within(panel).getByRole('button', { name: 'View agent: Builder' })).toBeVisible()
-    expect(within(panel).getByRole('button', { name: 'View agent: Tester' })).toBeVisible()
+    const builder = within(panel).getByRole('button', { name: 'Agent profile: Builder' })
+    expect(builder).toBeVisible()
+    expect(within(panel).getByRole('button', { name: 'Agent profile: Tester' })).toBeVisible()
     expect(within(panel).queryByText('Orchestrator worker')).not.toBeInTheDocument()
     expect(api.list).toHaveBeenCalledWith({ workspaceId: base.workspaceId, workflowId: base.workflowId, status: 'pending', limit: 100 }, true)
     expect(within(panel).queryByRole('button', { name: /Refresh/ })).not.toBeInTheDocument()
-    await user.click(within(panel).getByRole('button', { name: 'View agent: Builder' }))
-    const profile = await screen.findByRole('dialog', { name: 'Builder' })
+    const profile = document.getElementById(builder.getAttribute('aria-describedby')!)!
     expect(profile).toHaveTextContent('Coder · Codex · gpt-5')
     expect(profile).toHaveTextContent('Builds the implementation.')
+    await user.click(builder)
+    expect(screen.queryByRole('dialog', { name: 'Builder' })).not.toBeInTheDocument()
     expect(useApprovalInboxStore.getState().open).toBe(true)
   })
 
@@ -69,27 +69,19 @@ describe('floating human approval inbox', () => {
     const user = userEvent.setup()
     useApprovalInboxStore.getState().openInbox({ workspaceId: base.workspaceId })
     render(<ApprovalInbox />)
-    const row = screen.getAllByRole('button', { name: 'Run a command' })[0]!.closest('li')!
+    const row = screen.getAllByText('Run a command')[0]!.closest('li')!
     await user.click(within(row).getByRole('button', { name: 'Accept' }))
     expect(userApi.mutate).toHaveBeenCalledWith({ interactionId: humanA.id, optionId: 'codex-approve-once', expectedRevision: humanA.revision }, expect.any(Object))
     expect(within(row).getByRole('button', { name: 'Reject' })).toHaveAttribute('title', expect.stringContaining('This request only'))
     expect(within(row).queryByText('/project')).not.toBeInTheDocument()
   })
 
-  it('opens details in a separate centered dialog and outside-click closes only the detail', async () => {
-    const user = userEvent.setup()
+  it('keeps the request label inert and exposes command details from the exclamation control', () => {
     useApprovalInboxStore.getState().openInbox({ workspaceId: base.workspaceId })
     render(<ApprovalInbox />)
-    await user.click(screen.getAllByRole('button', { name: 'Run a command' })[0]!)
-    const detail = await screen.findByRole('dialog', { name: 'Run a command' })
-    expect(detail).toBeVisible()
-    expect(within(detail).getByText(/Requested by/)).toHaveTextContent('Builder')
-    expect(within(detail).queryByText('Technical details')).not.toBeInTheDocument()
-    expect(within(detail).queryByText('Workspace ID')).not.toBeInTheDocument()
-    fireEvent.pointerDown(detail)
-    fireEvent.click(detail)
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Run a command' })).not.toBeInTheDocument())
-    expect(screen.getByRole('dialog', { name: 'Human approval inbox' })).toBeVisible()
-    expect(useApprovalInboxStore.getState().open).toBe(true)
+    expect(screen.getAllByText('Run a command')[0]!.tagName).toBe('SPAN')
+    const info = screen.getAllByRole('button', { name: 'More details: Run a command' })[0]!
+    expect(document.getElementById(info.getAttribute('aria-describedby')!)).toHaveTextContent('pnpm test')
+    expect(screen.queryByRole('dialog', { name: 'Run a command' })).not.toBeInTheDocument()
   })
 })

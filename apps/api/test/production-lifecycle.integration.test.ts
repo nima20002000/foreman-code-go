@@ -245,7 +245,7 @@ it('answers a production User approval through its own authenticated API while e
   expect(list.statusCode, list.body).toBe(200)
   expect(list.json().items.map((item: { id: string }) => item.id)).toEqual([pending.id])
   expect((await production.app.inject({ method: 'GET', url: `/api/user/interactions/${pending.id}`, headers })).statusCode).toBe(200)
-  expect((await production.app.inject({ method: 'GET', url: `/api/interactions/${pending.id}`, headers: { authorization: `Bearer ${issuer.token}` } })).statusCode).toBe(404)
+  expect(production.app.hasRoute({ method: 'GET', url: '/api/interactions/:interactionId' })).toBe(false)
   const response = await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${human.token}` }, payload })
   expect(response.statusCode, response.body).toBe(200)
   expect(response.json().interaction.deliveryState).toBe('delivered')

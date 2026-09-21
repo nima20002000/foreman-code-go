@@ -161,7 +161,7 @@ export class RunManagementService {
         const executionLocation = await this.locations.snapshot(
           client, input.workspaceId, input.expectedLocationRevision, requiredLocationAccess(configurations),
         )
-        const authority = await acceptRunAuthority(client, principal, approval?.handler === 'operator')
+        const authority = await acceptRunAuthority(client, principal)
         requireAuthorization(authority.principal, 'runs:start', { workspaceId: input.workspaceId, workflowId: input.workflowId })
         requireAuthorization(authority.principal, 'workspace_locations:read', { workspaceId: input.workspaceId })
         const run = WorkflowRunSchema.parse({
