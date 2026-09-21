@@ -48,7 +48,9 @@ afterEach(cleanup)
 describe('floating human approval inbox', () => {
   it('stays on the board, shows all pending human requests, and opens a minimal agent profile', async () => {
     const user = userEvent.setup()
+    useApprovalInboxStore.setState({ interactionId: 'stale-request' })
     useApprovalInboxStore.getState().openInbox({ workspaceId: base.workspaceId, workflowId: base.workflowId })
+    expect(useApprovalInboxStore.getState().interactionId).toBeUndefined()
     render(<ApprovalInbox />)
     const panel = screen.getByRole('dialog', { name: 'Human approval inbox' })
     expect(within(panel).getByRole('button', { name: 'View agent: Builder' })).toBeVisible()

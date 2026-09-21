@@ -23,3 +23,4 @@
 - [x] Keep request details available from the request label without adding row metadata.
 - [x] Remove the broken Retry action from the approval inbox.
 - [x] Create and verify a fresh live pending request after cleaning up the stale demo run.
+- [x] Show the live pending human-approval count on the board inbox icon; hide the badge at zero.

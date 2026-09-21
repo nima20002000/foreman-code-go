@@ -16,7 +16,7 @@ interface ApprovalInboxUiState extends ApprovalInboxScope {
 export const useApprovalInboxStore = create<ApprovalInboxUiState>((set) => ({
   open: false,
   workspaceId: '',
-  openInbox: (scope) => set({ ...scope, open: true }),
+  openInbox: (scope) => set({ ...scope, interactionId: scope.interactionId, open: true }),
   closeInbox: () => set({ open: false, interactionId: undefined }),
   selectInteraction: (interactionId) => set({ interactionId }),
 }))
