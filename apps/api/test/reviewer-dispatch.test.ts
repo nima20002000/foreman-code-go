@@ -727,7 +727,7 @@ test('queue recovery reuses an existing durable job without rebinding to a later
   const f = queueFixture()
   await f.coordinator.enqueueReview(interaction)
   const first = clone(f.coordination.job)
-  f.setExecutions([{ state: 'completed', id: 'replacement', agentId: 'reviewer', nativeSessionId: 'replacement-session',
+  f.setExecutions([{ state: 'completed', id: 'replacement', agentId: 'reviewer', workflowNodeId: 'review-node', nativeSessionId: 'replacement-session',
     agentConfigurationVersionId: 'replacement-config', workingDirectory: '/different', runtimeDirectory: '/runtime' }])
   await f.coordinator.enqueueReview(interaction)
   assert.deepEqual(f.coordination.job, first)

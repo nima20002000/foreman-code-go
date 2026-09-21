@@ -3,7 +3,7 @@ import { it } from 'vitest'
 import { HarnessWorkflowCompatibilitySchema, OpenCodeHarnessConfigurationSchema } from '@graphql/contracts'
 import { configuration, advanced } from './opencode-fixtures.js'
 
-for (const handler of ['user', 'orchestrator', 'operator'] as const) {
+for (const handler of ['user', 'orchestrator'] as const) {
   it(`[F03] legacy autoApprove with omitted Advanced settings conflicts with ${handler} routing`, () => {
     assert.equal(HarnessWorkflowCompatibilitySchema.safeParse({
       configuration: { ...configuration(), autoApprove: true }, workflowApprovalHandler: handler,

@@ -1,9 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { DurableInteractionSchema, type DurableInteraction } from '@graphql/contracts'
 import type pg from 'pg'
-import { requireAuthorization } from '../access/policy.js'
-import type { PostgresAccessService } from '../access/postgres.js'
-import type { OperatorChatService } from '../conversations/operatorChat.js'
 import type { NativeRollout } from '../harnesses/nativeRollout.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
@@ -25,8 +22,7 @@ export class AutomaticReviewService {
   private closing = false
   private shutdownTask: Promise<void> | undefined
   constructor(private readonly pool: pg.Pool, private readonly runs: PostgresRunRepository,
-    native: InteractionNativeRuntime, private readonly chat: OperatorChatService, private readonly access: PostgresAccessService,
-    private readonly locations: WorkspaceLocationService, private readonly rollout: NativeRollout,
+    native: InteractionNativeRuntime, private readonly locations: WorkspaceLocationService, private readonly rollout: NativeRollout,
     private readonly stopFailedRun?: (runId: string) => Promise<void>) {
     this.coordination = new PostgresInteractionCoordinationRepository(pool)
     this.dispatcher = new ReviewerDispatcher(this.coordination, native)
@@ -38,8 +34,6 @@ export class AutomaticReviewService {
     return this.polling
   }
   private async poll() {
-    let reviewError: unknown
-    try { await this.chat.reconcileReviewLifetimes() } catch (error) { reviewError = error }
     // Failures remain discoverable after their interaction was delivered/canceled,
     // and after restart. Stop is requested even while native cleanup is uncertain.
     await this.reconcileFailedReviews()
@@ -47,7 +41,7 @@ export class AutomaticReviewService {
     let after = ''
     while (!this.closing) {
       const result = await this.pool.query<{ id: string; record: unknown }>(`select id,record from durable_interactions
-        where id>$1 and status='pending' and record->'approval'->>'handler' in ('orchestrator','operator')
+        where id>$1 and status='pending' and record->'approval'->>'handler'='orchestrator'
         order by id limit 50`, [after])
       if (!result.rows.length) break
       for (const row of result.rows) {
@@ -67,7 +61,6 @@ export class AutomaticReviewService {
         void task.catch(() => undefined)
       }
     }
-    if (reviewError) throw reviewError
   }
   private async stopFailedJob(reviewJobId: string): Promise<void> {
     const runId = await requestReviewFailureStop(this.pool, { reviewJobId })
@@ -99,12 +92,6 @@ export class AutomaticReviewService {
     if (!run || run.executionState !== 'waiting' || !run.authorizationPrincipalId) return
     await this.locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId)
     if (this.closing) return
-    if (interaction.approval.handler === 'operator') {
-      const principal = await this.access.currentOperator(run.authorizationPrincipalId)
-      requireAuthorization(principal, 'interactions:respond', { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id })
-      await this.chat.reviewInteraction(interaction.id, principal)
-      return
-    }
     const reviewerId = interaction.approval.designatedOrchestratorAgentId
     if (!reviewerId || reviewerId === interaction.requestingAgentId) throw new Error('Automatic review requires a different designated Orchestrator.')
     let connection: Awaited<ReturnType<typeof assertOrchestratorGraphAuthority>>
@@ -144,11 +131,6 @@ export class AutomaticReviewService {
     const current = await this.coordination.findReviewJob(interaction.id, reviewerId)
     if (current?.state === 'failed' && current.id !== job?.id) await this.stopFailedJob(current.id)
   }
-  /** Run Stop/terminal hook; callers need not know Operator-chat runtime internals. */
-  stopRun(runId: string, reason = 'The Run stopped or completed.'): Promise<void> {
-    return this.chat.stopRunReviews(runId, reason)
-  }
-
   shutdown(): Promise<void> {
     this.closing = true
     this.shutdownTask ??= Promise.allSettled([

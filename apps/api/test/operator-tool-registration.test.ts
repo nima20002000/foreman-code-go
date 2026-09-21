@@ -28,7 +28,6 @@ const actionTools: Array<[ManagementAction, OperatorToolName[]]> = [
   ['harnesses:read', ['harness_get', 'harness_list']],
   ['harnesses:update', ['harness_defaults_update']],
   ['interactions:read', ['interaction_get', 'interaction_list', 'interaction_summary']],
-  ['interactions:respond', ['interaction_respond']],
   ['runs:read', ['run_events_list', 'run_get', 'run_list']],
   ['runs:stop', ['run_stop']],
   ['settings:read', ['agent_defaults_get', 'workflow_defaults_get', 'workspace_defaults_get']],

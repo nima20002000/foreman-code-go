@@ -176,14 +176,9 @@ export function buildProductionApp(
     runs, repository, budgets, managers, config.harnesses.timeoutMs, launchCredentials, validateContinuation,
     (executionId, signal) => processRegistry.closeOwner(`execution:${executionId}`, signal),
   )
-  const reviewLifecycle: { current?: AutomaticReviewService } = {}
   const engine = new LangGraphWorkflowEngine(
     runs, workflows, approvals, checkpoints.saver, config.harnesses.workspaceRoot,
     locations, launchCredentials, repository,
-    (runId, reason) => {
-      if (!reviewLifecycle.current) throw new Error('Automatic review lifecycle is not initialized.')
-      return reviewLifecycle.current.stopRun(runId, reason)
-    },
   )
   const interactions = new InteractionService(
     repository, budgets, approvals, (interaction) => engine.resumeInteraction(interaction), responseJournal,
@@ -226,13 +221,12 @@ export function buildProductionApp(
     new PostgresOperatorConversationRepository(database.pool), operators,
     resolveOperatorManager, operatorWorkingDirectory, chatAuthority,
   )
-  const reviews = new AutomaticReviewService(database.pool, runs, approvals, chat, access, locations, rollout,
+  const reviews = new AutomaticReviewService(database.pool, runs, approvals, locations, rollout,
     async (runId) => {
       // AutomaticReviewService committed the exact review cause and durable Stop
       // intent first. A process restart or failed closure cannot lose that cause.
       if (await engine.cancel(runId)) await engine.finishRunLifecycle(runId, 'The assigned Orchestrator review failed; see the Run stop cause.')
     })
-  reviewLifecycle.current = reviews
   const operatorServices = {
     operatorChat: chat,
     workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings),
@@ -244,7 +238,7 @@ export function buildProductionApp(
     settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators),
     runs: new RunManagementService(database.pool, commands, runs, engine, locations),
     commands,
-    interactions: new OperatorInteractionService(interactions, repository),
+    interactions: new OperatorInteractionService(interactions),
   }
   const detection = new McpDetectionService({
     async inspect(input) {

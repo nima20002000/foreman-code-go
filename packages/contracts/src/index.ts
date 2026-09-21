@@ -240,7 +240,7 @@ export function projectHarnessEffort(configuration: HarnessConfiguration): Agent
   return effort.success ? effort.data : undefined;
 }
 
-export const ApprovalHandlerSchema = z.enum(["user", "orchestrator", "operator"]);
+export const ApprovalHandlerSchema = z.enum(["user", "orchestrator"]);
 export type ApprovalHandler = z.infer<typeof ApprovalHandlerSchema>;
 
 export const HarnessWorkflowCompatibilitySchema = z.object({

@@ -13,13 +13,14 @@ describe.skipIf(!enabled)('PR12 authorized Inbox pagination in PostgreSQL', () =
     await client.connect()
     await client.query('create temporary table durable_interactions (id text primary key, workspace_id text, workflow_id text, run_id text, status text, record jsonb)')
     repository = new PostgresInteractionRepository({ query: client.query.bind(client) } as unknown as pg.Pool)
-    const add = async (id: string, workspaceId: string, workflowId: string, handler: 'user' | 'operator', runId = id) => {
-      const record: DurableInteraction = { ...NATIVE_INTERACTION_FIXTURES.opencode, id, workspaceId, workflowId, runId, approval: { handler } }
+    const add = async (id: string, workspaceId: string, workflowId: string, handler: 'user' | 'orchestrator', runId = id) => {
+      const record: DurableInteraction = { ...NATIVE_INTERACTION_FIXTURES.opencode, id, workspaceId, workflowId, runId,
+        approval: handler === 'orchestrator' ? { handler, designatedOrchestratorAgentId: 'reviewer' } : { handler } }
       await client.query('insert into durable_interactions values ($1,$2,$3,$4,$5,$6::jsonb)', [id, workspaceId, workflowId, runId, 'pending', JSON.stringify(record)])
     }
     for (let i = 0; i < 105; ++i) await add(`a-${String(i).padStart(3, '0')}`, 'other', 'other-flow', 'user')
     await add('z-001', 'target', 'target-flow', 'user', 'allowed-run')
-    await add('z-002', 'target', 'target-flow', 'operator')
+    await add('z-002', 'target', 'target-flow', 'orchestrator')
   })
   afterAll(async () => { if (client) await client.end() })
   it('filters workspace authorization before LIMIT and counts every permitted pending request', async () => {
@@ -38,7 +39,7 @@ describe.skipIf(!enabled)('PR12 authorized Inbox pagination in PostgreSQL', () =
   it('keeps handler filtering distinct from read-only monitoring', async () => {
     const scope = { workspaceId: 'target', scopes: [{ workspaceIds: ['target'] }] }
     expect((await repository.list({ ...scope, handler: 'user', limit: 100 })).map((item) => item.id)).toEqual(['z-001'])
-    expect((await repository.list({ ...scope, limit: 100 })).map((item) => item.approval.handler)).toEqual(['user', 'operator'])
+    expect((await repository.list({ ...scope, limit: 100 })).map((item) => item.approval.handler)).toEqual(['user', 'orchestrator'])
     expect(await repository.list({ scopes: [], limit: 100 })).toEqual([])
     expect((await repository.pendingCounts({ scopes: [] })).pendingCount).toBe(0)
   })

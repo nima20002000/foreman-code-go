@@ -2,7 +2,6 @@ import { ToastContext } from '../../shared/ui/nocturne/toastContext'
 import { UnsavedChangesContext, useUnsavedChanges } from '../../shared/ui/unsavedChanges'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Inbox } from 'lucide-react'
-import { Link } from '@tanstack/react-router'
 import { createPortal } from 'react-dom'
 import { AgentSettingsForm } from './AgentSettingsForm'
 import { WorkflowExecutionLimits } from './WorkflowExecutionLimits'
@@ -64,6 +63,7 @@ import {
   useSaveGraphMutation,
   useManagedGraphContextQuery,
   useManagedWorkspaceQuery,
+  useInteractionsQuery,
   useStartManagedRunMutation,
   useStopManagedRunMutation,
   useStartWorkflowRunMutation,
@@ -71,6 +71,7 @@ import {
   queryKeys,
 } from '../../shared/api/query'
 import { useCancelRunMutation } from '../../shared/api/runActions'
+import { useApprovalInboxStore } from '../approvals'
 import { ApiError, applyManagedGraphDraft, saveManagedGraphDraft } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { managedSaveQueue } from './managedSave'
@@ -555,6 +556,19 @@ function nextCopiedAgentId(agent: Agent): string {
 function isEditableKeyboardTarget(target: EventTarget | null): boolean {
   return target instanceof Element
     && Boolean(target.closest('input, textarea, select, [contenteditable="true"]'))
+}
+
+function HumanApprovalInboxButton({ workspaceId, workflowId }: { workspaceId: string; workflowId: string }) {
+  const approvals = useInteractionsQuery({ workspaceId, workflowId, status: 'pending', limit: 100 })
+  const count = approvals.data?.items.filter((interaction) => interaction.approval.handler === 'user').length ?? 0
+  const label = approvals.data?.nextCursor ? `${count}+` : String(count)
+  const accessibleCount = count ? `, ${label} pending human approval request${count === 1 ? '' : 's'}` : ''
+  return <Button variant="secondary" className="n-icon-button workflow-graph-add-agent workflow-approval-inbox"
+    aria-label={`Open human approval inbox${accessibleCount}`} title={count ? `${label} pending human approval request${count === 1 ? '' : 's'}` : 'Human approval inbox'}
+    onClick={() => useApprovalInboxStore.getState().openInbox({ workspaceId, workflowId })}>
+    <Inbox aria-hidden="true" size={16} />
+    {count ? <span className="workflow-approval-inbox-badge" aria-hidden="true">{label}</span> : null}
+  </Button>
 }
 
 export function GraphEditor({
@@ -1456,8 +1470,7 @@ export function GraphEditor({
       {stopCause ? <Alert tone="danger" title="Orchestrator review failed">
         <p>{stopCause.error.message}</p>
         <p>Finish any pending cleanup, then correct the reviewer settings before starting a new Run.</p>
-        <Link to="/workspaces/$workspaceId/approvals" params={{ workspaceId }}
-          search={{ workflowId: workflow.id, interactionId: stopCause.interactionId, approvalView: 'history' }}>Open failed review</Link>
+        <span>Review ID: {stopCause.interactionId}</span>
       </Alert> : null}
       <div className="workflow-graph-canvas" data-testid="workflow-graph-canvas" ref={canvasRef}>
         <NodeMenuContext.Provider value={nodeMenuValue}>
@@ -1514,7 +1527,7 @@ export function GraphEditor({
             <Button ref={workflowSettingsButtonRef} variant="secondary" className="n-icon-button workflow-graph-add-agent" aria-label="Workflow settings" title="Workflow settings"
               aria-haspopup="dialog" aria-expanded={workflowSettingsOpen} aria-controls={workflowSettingsOpen ? 'workflow-settings-popover' : undefined}
               onClick={() => void leaveSurface(() => { setAgentPickerOpen(false); setOpenMenuNodeId(undefined); setWorkflowSettingsOpen((open) => !open) })}><Icon name="settings" size={16} /></Button>
-            <Link to="/workspaces/$workspaceId/approvals" params={{ workspaceId }} search={{ workflowId: displayedWorkflow.id }} className="workflow-graph-add-agent" aria-label="Workflow Approval Inbox" title="Workflow Approval Inbox"><Inbox aria-hidden="true" size={16} /></Link>
+            <HumanApprovalInboxButton workspaceId={workspaceId} workflowId={displayedWorkflow.id} />
             <Button
               variant="secondary"
               className="n-icon-button workflow-graph-run"
@@ -1568,10 +1581,9 @@ export function GraphEditor({
               { value: '', label: 'Select handler', disabled: true },
               { value: 'user', label: 'User' },
               { value: 'orchestrator', label: 'Orchestrator', disabled: !hasDistinctCoder || workflowOrchestrators.length === 0 },
-              { value: 'operator', label: 'Operator' },
             ]}
             onChange={(event) => {
-              const handler = event.target.value as 'user' | 'orchestrator' | 'operator'
+              const handler = event.target.value as 'user' | 'orchestrator'
               applyBoardChange((saved) => ({ ...saved, approval: handler === 'orchestrator'
                 ? { handler, ...(saved.approval?.handler === 'orchestrator' && saved.approval.designatedOrchestratorAgentId ? { designatedOrchestratorAgentId: saved.approval.designatedOrchestratorAgentId } : {}) }
                 : { handler } }))

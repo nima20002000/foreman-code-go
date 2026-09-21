@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from './client'
 
 /** Token stays in component memory, never in query keys, URLs, browser storage or mutation variables. */
-export interface UserApprovalCredential { id: string; token: string; signal: AbortSignal }
+export interface UserApprovalCredential { id: string; token?: string; signal: AbortSignal }
 export type UserApprovalResponseInput = Parameters<typeof apiClient.respondToUserInteraction>[1]
 
 export function useUserInteractionQuery(interactionId: string, credential: UserApprovalCredential) {

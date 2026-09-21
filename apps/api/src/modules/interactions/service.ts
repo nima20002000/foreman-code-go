@@ -3,7 +3,6 @@ import type { NativeResponseJournal } from '../harnesses/recovery/responseJourna
 
 import type { DurableInteraction } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { ManagementAction } from '@graphql/contracts/management'
 
 import { canUserInteract } from '../access/userPolicy.js'
 import { hasAction, requireAuthorization } from '../access/policy.js'
@@ -16,7 +15,6 @@ import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence, type NativeDel
 
 export type InteractionResponder =
   | { kind: 'user'; principal?: ManagementPrincipal }
-  | { kind: 'operator'; principal: ManagementPrincipal }
   | { kind: 'orchestrator'; authority: WorkerInteractionAuthority; principal?: ManagementPrincipal;
       beforeCommit?: NonNullable<Parameters<PostgresInteractionRepository['decide']>[0]['beforeCommit']> }
 
@@ -27,20 +25,11 @@ function assertResponder(interaction: DurableInteraction, responder: Interaction
     }
     return
   }
-  if (responder.kind === 'orchestrator') {
-    if (responder.principal && (responder.principal.audience !== 'worker'
-      || responder.principal.agentId !== responder.authority.agentId)) {
-      throw new DomainError('INTERACTION_ACCESS_DENIED', 'The authenticated worker does not own this reviewer authority.', 403)
-    }
-    assertOrchestratorInteractionAuthority(interaction, responder.authority)
-    return
+  if (responder.principal && (responder.principal.audience !== 'worker'
+    || responder.principal.agentId !== responder.authority.agentId)) {
+    throw new DomainError('INTERACTION_ACCESS_DENIED', 'The authenticated worker does not own this reviewer authority.', 403)
   }
-  if (interaction.approval.handler !== 'operator') {
-    throw new DomainError('INTERACTION_ACCESS_DENIED', 'The interaction is assigned to a different handler.', 403)
-  }
-  requireAuthorization(responder.principal, 'interactions:respond' as ManagementAction, {
-    workspaceId: interaction.workspaceId, workflowId: interaction.workflowId, runId: interaction.runId,
-  })
+  assertOrchestratorInteractionAuthority(interaction, responder.authority)
 }
 
 function deliveryCertainty(error: unknown): 'definite' | 'uncertain' {
@@ -250,13 +239,10 @@ export class InteractionService {
     }
     const workerDecision = responder.kind === 'orchestrator' && responder.principal
       ? { principal: responder.principal, ...(responder.beforeCommit ? { beforeCommit: responder.beforeCommit } : {}) } : {}
-    if (current.selectedOptionId === input.optionId
-      && ((responder.kind === 'operator' && input.commandId) || (responder.kind === 'orchestrator' && responder.principal))) {
+    if (current.selectedOptionId === input.optionId && responder.kind === 'orchestrator' && responder.principal) {
       // Replays revalidate the live worker binding under the same parent locks as Stop.
       await this.interactions.decide({ id: current.id, optionId: input.optionId, expectedRevision: input.expectedRevision,
-        nativeResponse: current.nativeResponse, ...workerDecision,
-        ...(responder.kind === 'operator' && input.commandId
-          ? { command: { principal: responder.principal, commandId: input.commandId } } : {}) })
+        nativeResponse: current.nativeResponse, ...workerDecision })
     }
     if (current.selectedOptionId === input.optionId && current.deliveryState === 'delivered') {
       // Authorization still applies, but completed replays do not consult the
@@ -272,14 +258,10 @@ export class InteractionService {
     await this.nativeRuntime.validateInteraction?.(current)
     await this.budgets.assertActive(current.executionId)
     const nativeResponse = { optionId: option.optionId, semantic: option.semantic }
-    const auditReference = responder.kind === 'operator' ? responder.principal.id
-      : responder.kind === 'orchestrator' ? responder.principal?.id ?? responder.authority.agentId : responder.principal?.id
+    const auditReference = responder.kind === 'orchestrator' ? responder.principal?.id ?? responder.authority.agentId : responder.principal?.id
     const decision = await this.interactions.decide({
       id: current.id, optionId: option.optionId, expectedRevision: input.expectedRevision,
       nativeResponse, ...workerDecision, ...(auditReference ? { auditReference } : {}),
-      ...(responder.kind === 'operator' && input.commandId ? {
-        command: { principal: responder.principal, commandId: input.commandId },
-      } : {}),
     })
     const interaction = await this.deliver(decision.interaction.id)
     await this.resumeDelivered(interaction)

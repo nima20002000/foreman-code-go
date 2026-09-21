@@ -10,7 +10,6 @@ import { useRevisionedForm } from './revisionedForm'
 const approvalOptions = [
   { value: 'orchestrator', label: 'Orchestrator' },
   { value: 'user', label: 'User' },
-  { value: 'operator', label: 'Operator' },
 ] as const
 
 export function WorkflowDefaultsSettings() {

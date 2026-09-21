@@ -289,7 +289,8 @@ export class ApiClient {
     return parsed.data
   }
 
-  private userApprovalOptions(token: string, options: RequestOptions = {}): RequestOptions {
+  private userApprovalOptions(token: string | undefined, options: RequestOptions = {}): RequestOptions {
+    if (token === undefined) return { ...options, credentials: 'same-origin' }
     const accepted = token.trim()
     if (!accepted || /\s/.test(accepted)) throw new ApiError({ code: 'USER_CREDENTIAL_REQUIRED', message: 'Enter a valid User bearer credential, not an Operator session.' }, 401)
     const headers = new Headers(options.headers)
@@ -298,12 +299,12 @@ export class ApiClient {
     return { ...options, headers, credentials: 'omit' }
   }
 
-  getUserInteraction(interactionId: string, token: string, options?: RequestOptions) {
+  getUserInteraction(interactionId: string, token?: string, options?: RequestOptions) {
     return this.request(`/api/user/interactions/${toPath(interactionId)}`, GetInteractionResponseSchema,
       this.userApprovalOptions(token, options))
   }
 
-  respondToUserInteraction(token: string, input: z.infer<typeof RespondToInteractionRequestSchema>, options?: RequestOptions) {
+  respondToUserInteraction(token: string | undefined, input: z.infer<typeof RespondToInteractionRequestSchema>, options?: RequestOptions) {
     const request = parseRequest(RespondToInteractionRequestSchema, input)
     return this.request(`/api/user/interactions/${toPath(request.interactionId)}/respond`, RespondToInteractionResponseSchema,
       { ...this.userApprovalOptions(token, options), method: 'POST', body: request })

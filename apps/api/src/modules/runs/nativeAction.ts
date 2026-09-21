@@ -81,7 +81,11 @@ const labels: Record<RunNodeActionKind, string> = {
 export function safeNodeName(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const name = value.trim()
-  if (!name || name.length > 64 || /[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/u.test(name)
+  const unsafeControl = [...name].some((character) => {
+    const code = character.codePointAt(0) ?? 0
+    return code <= 0x1f || code === 0x7f || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069)
+  })
+  if (!name || name.length > 64 || unsafeControl
     || /(?:opm_|sk-|bearer\b|token\b|secret\b|password\b|https?:|[/\\=@])/i.test(name)
     || /[A-Za-z0-9_-]{28,}/.test(name)) return undefined
   return name

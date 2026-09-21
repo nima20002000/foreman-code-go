@@ -11,7 +11,17 @@ function fixture() {
 }
 
 describe('PR17 explicit User approval HTTP boundary', () => {
-  it('uses the User route and explicit bearer, never the Operator browser cookie', async () => {
+  it('uses the signed-in browser session without a second bearer', async () => {
+    const { interaction, client, fetcher } = fixture()
+    const result = await client.getUserInteraction(interaction.id)
+    expect(result.canRespond).toBe(true)
+    const [url, options] = fetcher.mock.calls[0]!
+    expect(String(url)).toBe(`http://localhost/api/user/interactions/${encodeURIComponent(interaction.id)}`)
+    expect(options?.credentials).toBe('same-origin')
+    expect(new Headers(options?.headers).has('Authorization')).toBe(false)
+  })
+
+  it('keeps an explicitly supplied User bearer isolated from browser cookies', async () => {
     const { interaction, client, fetcher } = fixture()
     const result = await client.getUserInteraction(interaction.id, 'fixture-human-token', { credentials: 'include' })
     expect(result.canRespond).toBe(true)
@@ -33,7 +43,7 @@ describe('PR17 explicit User approval HTTP boundary', () => {
     expect(String(url)).not.toContain('fixture-human-token')
   })
 
-  it('does not issue a request without a separately supplied valid token', () => {
+  it('rejects malformed explicitly supplied tokens', () => {
     const { interaction, client, fetcher } = fixture()
     expect(() => client.getUserInteraction(interaction.id, '')).toThrow()
     expect(() => client.getUserInteraction(interaction.id, 'Bearer token-with-prefix')).toThrow()

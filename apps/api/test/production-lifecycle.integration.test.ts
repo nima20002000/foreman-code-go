@@ -245,7 +245,7 @@ it('answers a production User approval through its own authenticated API while e
   expect(list.statusCode, list.body).toBe(200)
   expect(list.json().items.map((item: { id: string }) => item.id)).toEqual([pending.id])
   expect((await production.app.inject({ method: 'GET', url: `/api/user/interactions/${pending.id}`, headers })).statusCode).toBe(200)
-  expect((await production.app.inject({ method: 'GET', url: `/api/interactions/${pending.id}`, headers: { authorization: `Bearer ${issuer.token}` } })).statusCode).toBe(404)
+  expect(production.app.hasRoute({ method: 'GET', url: '/api/interactions/:interactionId' })).toBe(false)
   const response = await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${human.token}` }, payload })
   expect(response.statusCode, response.body).toBe(200)
   expect(response.json().interaction.deliveryState).toBe('delivered')
@@ -282,6 +282,11 @@ it('automatically wakes an idle Orchestrator to approve a later Worker request t
     interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision,
   })).rejects.toThrow()
   await production.initialize()
+  await production.reconcile(() => undefined)
+  await vi.waitFor(async () => {
+    const result = await database.pool.query<{ state: string }>('select state from review_jobs where interaction_id=$1', [pending.id])
+    expect(result.rows[0]?.state).toBe('completed')
+  }, { timeout: 5_000 })
   await production.reconcile(() => undefined)
   try {
     await vi.waitFor(async () => expect((await runs.get(run.id))?.outcome).toBe('succeeded'), { timeout: 10_000 })
@@ -329,12 +334,14 @@ it('reviews through the completed Orchestrator session, survives restart and set
   expect(orchestrator.state).toBe('completed')
   await expect(new WorkerCredentialService(database.pool, access).issueForExecution(orchestrator.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_INACTIVE' })
   expect((await runtime().reviewers.dispatchNext('agent-researcher', 'first-approval'))?.state).toBe('completed')
+  await production.reconcile(() => undefined)
   const secondAsk = (await interactions.list({ runId: run.id, status: 'pending', limit: 10 }))[0]!
   expect(secondAsk.executionId).toBe(pending.executionId)
   expect(secondAsk.nativeRequestId).not.toBe(pending.nativeRequestId)
   const finish = vi.spyOn(PostgresInteractionDeliveryRepository.prototype, 'finishGraphResume').mockRejectedValueOnce(new Error('acknowledgement lost'))
   const firstJob = await runtime().reviewers.dispatchNext('agent-researcher', 'test-worker')
   expect(firstJob?.state).toBe('completed')
+  await production.reconcile(() => undefined)
   finish.mockRestore()
   expect((await runs.getExecution(pending.executionId))?.state).toBe('completed')
   expect((await runs.get(run.id))?.executionState).toBe('waiting')
@@ -353,6 +360,7 @@ it('reviews through the completed Orchestrator session, survives restart and set
   expect((await database.pool.query('select state from interaction_graph_resumes where interaction_id=$1', [secondAsk.id])).rows[0].state).toBe('resumed')
   expect((await database.pool.query('select active_started_at,active_elapsed_ms from approval_execution_state where execution_id=$1', [pending.executionId])).rows[0]).toEqual(budget)
   expect((await runtime().reviewers.dispatchNext('agent-researcher', 'after-restart'))?.state).toBe('completed')
+  await production.reconcile(report)
   expect((await runs.get(run.id))?.outcome).toBe('succeeded')
   expect(native.responses).toBe(3)
   expect(native.starts.filter((id) => id.startsWith('execution:'))).toHaveLength(3)
@@ -414,18 +422,15 @@ it('closes an idle retained reviewer when a later authorized App response comple
   repeatedApproval = true
   const { run } = await start('orchestrator')
   expect((await runtime().reviewers.dispatchNext('agent-researcher', 'first-review'))?.state).toBe('completed')
+  await production.reconcile(() => undefined)
   expect((await runs.get(run.id))?.executionState).toBe('waiting')
   const orchestrator = (await runs.listExecutions(run.id)).find((item) => item.agentId === 'agent-researcher')!
-  const reviewer = await new WorkerCredentialService(database.pool, access).issueForReviewer(orchestrator.id)
-  const pending = (await interactions.list({ runId: run.id, status: 'pending', limit: 10 }))[0]!
-  const response = await mcp(reviewer.environment.variables.GRAPHQL_APP_MCP_TOKEN!, {
-    interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision,
-  })
-  expect(response.isError).not.toBe(true)
+  expect((await runtime().reviewers.dispatchNext('agent-researcher', 'later-review'))?.state).toBe('completed')
+  await production.reconcile(() => undefined)
   expect((await runs.get(run.id))?.outcome).toBe('succeeded')
   expect(runtime().residentRunIds()).not.toContain(run.id)
   const attachments = native.attaches
-  expect((await runtime().reviewers.dispatchNext('agent-researcher', 'obsolete-review'))?.state).toBe('failed')
+  expect(await runtime().reviewers.dispatchNext('agent-researcher', 'obsolete-review')).toBeUndefined()
   expect(native.attaches).toBe(attachments)
   expect((await database.pool.query('select count(*)::int as count from worker_credential_bindings where execution_id=$1 and revoked_at is null', [orchestrator.id])).rows[0].count).toBe(0)
 })

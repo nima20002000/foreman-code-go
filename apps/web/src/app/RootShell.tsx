@@ -3,6 +3,7 @@ import { Outlet, useLocation } from '@tanstack/react-router'
 import { RequireBrowserSession } from '../features/auth/RequireBrowserSession'
 
 import { OperatorChat, OperatorChatVisibilityProvider } from '../features/operator-chat'
+import { ApprovalInbox } from '../features/approvals'
 import { useAgentDefaultsQuery } from '../shared/api/query'
 import { useAccessFailureLatch } from '../shared/api/useAccessFailureLatch'
 import { sessionIsSwitching } from '../shared/api/sessionBoundary'
@@ -21,5 +22,5 @@ function AuthenticatedShell() {
   const enabled = !sessionIsSwitching() && !denied && defaults.data?.value.operator.uiEnabled === true
   const settingsWarning = enabled && (defaults.isError || defaults.failureCount > 0)
     ? 'Settings could not be refreshed. Showing the last confirmed Operator setting for this session.' : undefined
-  return <OperatorChatVisibilityProvider enabled={enabled}><Outlet /><OperatorChat settingsWarning={settingsWarning} /></OperatorChatVisibilityProvider>
+  return <OperatorChatVisibilityProvider enabled={enabled}><Outlet /><ApprovalInbox /><OperatorChat settingsWarning={settingsWarning} /></OperatorChatVisibilityProvider>
 }

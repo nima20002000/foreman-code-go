@@ -13,7 +13,6 @@ import { DomainError } from '../errors.js'
 import { requireRespondableInteraction } from '../access/appPolicy.js'
 import { lockActiveWorkerPrincipal, requireActiveWorkerBinding } from '../access/workerLifecycle.js'
 import { PostgresInteractionDeliveryRepository } from './deliveryPostgres.js'
-import { requireAuthorization } from '../access/policy.js'
 import { appendNativeEvent } from '../runs/nativeEvents.js'
 import { assertOrchestratorGraphAuthority } from './graphAuthority.js'
 import { interactionConnection } from './connection.js'
@@ -22,7 +21,6 @@ import {
   type DeliveryFailure, type InteractionLease, type LockedInteraction, type ReconciliationEvidence,
 } from './persistence.js'
 
-interface OperatorDecisionCommand { principal: ManagementPrincipal; commandId: string }
 type DecisionResult = { interaction: DurableInteraction; replayed: boolean }
 interface DeliveryUpdate {
   lease?: InteractionLease
@@ -190,7 +188,6 @@ export class PostgresInteractionRepository {
 
   async decide(input: {
     id: string; optionId: string; expectedRevision: number; nativeResponse: unknown; auditReference?: string
-    command?: OperatorDecisionCommand
     principal?: ManagementPrincipal
     beforeCommit?(client: pg.PoolClient, result: DecisionResult): Promise<void>
   }): Promise<DecisionResult> {
@@ -214,17 +211,10 @@ export class PostgresInteractionRepository {
         requireRespondableInteraction(principal, current)
         if (current.runId !== targetRunId) throw new DomainError('INTERACTION_NOT_FOUND', 'The interaction was not found.', 404)
       }
-      if (input.command) {
-        if (current.approval.handler !== 'operator') throw new DomainError('INTERACTION_ACCESS_DENIED', 'The interaction is assigned to a different handler.', 403)
-        requireAuthorization(input.command.principal, 'interactions:respond', {
-          workspaceId: current.workspaceId, workflowId: current.workflowId, runId: current.runId,
-        })
-      }
       await assertOrchestratorGraphAuthority(client, current, principal ? { principalId: principal.id } : {})
       if (current.status === 'canceled') throw new DomainError('INTERACTION_CANCELED', 'The interaction was canceled.', 409)
       if (current.status !== 'pending') {
         if (current.selectedOptionId === input.optionId) {
-          if (input.command) await this.bindCommand(client, input.command, current)
           const result = { interaction: current, replayed: true }
           await input.beforeCommit?.(client, result)
           if (principal) await requireActiveWorkerBinding(client, principal.id)
@@ -242,11 +232,9 @@ export class PostgresInteractionRepository {
         ...current, revision: current.revision + 1, status: 'delivery_pending',
         selectedOptionId: option.optionId, selectedSemantic: option.semantic,
         nativeResponse: principal ? { optionId: option.optionId, semantic: option.semantic } : response, deliveryState: 'pending',
-        ...(input.command ? { auditReference: input.command.principal.id }
-          : input.auditReference ? { auditReference: input.auditReference } : {}),
+        ...(input.auditReference ? { auditReference: input.auditReference } : {}),
         decidedAt: now, updatedAt: now,
       })
-      if (input.command) await this.bindCommand(client, input.command, next)
       const updated = await client.query(
         `update durable_interactions set status=$2, revision=$3, record=$4::jsonb, updated_at=now()
          where id=$1 and revision=$5`, [next.id, next.status, next.revision, JSON.stringify(next), current.revision],
@@ -506,24 +494,4 @@ export class PostgresInteractionRepository {
     for (const event of events) await appendNativeEvent(this.pool, { ...event, executionId: current.executionId })
   }
 
-  private async bindCommand(client: pg.ClientBase, command: OperatorDecisionCommand, interaction: DurableInteraction): Promise<void> {
-    const input = [command.principal.id, command.commandId, interaction.id, interaction.selectedOptionId, interaction.revision]
-    const inserted = await client.query(
-      `insert into interaction_command_receipts (principal_id,command_id,interaction_id,option_id,decision_revision,authorized_at)
-       values ($1,$2,$3,$4,$5,now()) on conflict do nothing`, input,
-    )
-    if (inserted.rowCount === 1) return
-    const current = await client.query<{ interaction_id: string; option_id: string }>(
-      'select interaction_id,option_id from interaction_command_receipts where principal_id=$1 and command_id=$2 for update',
-      [command.principal.id, command.commandId],
-    )
-    if (current.rows[0]?.interaction_id !== interaction.id || current.rows[0]?.option_id !== interaction.selectedOptionId) {
-      throw new DomainError('COMMAND_ID_REUSED', 'The command id is already bound to different input.', 409)
-    }
-    await client.query(
-      `update interaction_command_receipts set decision_revision=coalesce(decision_revision,$3),
-         authorized_at=coalesce(authorized_at,now()) where principal_id=$1 and command_id=$2`,
-      [command.principal.id, command.commandId, interaction.revision],
-    )
-  }
 }

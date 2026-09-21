@@ -30,7 +30,7 @@ export function validateReviewerBootstrap(
     && (rules ?? []).every((rule, index) => rule.effect !== 'ask' && (index === 0 || rule.permission !== '*'))
   if (!noninteractive) {
     throw new DomainError('APPROVAL_REVIEWER_BOOTSTRAP_INTERACTIVE',
-      'The initial Orchestrator cannot review its own approval. Choose an OpenCode deny-default policy with no ask rules, or select a User/Operator workflow handler. No settings were changed automatically.', 409)
+      'The initial Orchestrator cannot review its own approval. Choose an OpenCode deny-default policy with no ask rules, or select the User workflow handler. No settings were changed automatically.', 409)
   }
   // OpenCode V1 exposes the hyphenated server name in its permission action.
   // These final rules cannot be shadowed by a later wildcard deny.

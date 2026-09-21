@@ -64,7 +64,7 @@ export interface AcceptedRunAuthority {
 
 /** Called inside run.start's command transaction. No bearer token is created or returned. */
 export async function acceptRunAuthority(
-  client: pg.PoolClient, caller: ManagementPrincipal, needsOperatorReview: boolean,
+  client: pg.PoolClient, caller: ManagementPrincipal,
 ): Promise<AcceptedRunAuthority> {
   const initial = await row(client, caller.id)
   principal(initial)
@@ -77,12 +77,7 @@ export async function acceptRunAuthority(
   if ((liveRow!.delegated_from ?? caller.id) !== parentId) throw new DomainError('AUTH_INVALID', 'The caller authority changed during Run admission.', 401)
   const parent = await currentOperatorAuthority(client, parentId)
   if (parent.owner.id !== initialParent.owner.id) throw new DomainError('AUTH_INVALID', 'The root Run owner changed.', 401)
-  let grants = intersectGrants(intersectGrants(caller.grants, live.grants), parent.principal.grants)
-  // These backend-only controls let the human's accepted Operator reviewer use
-  // its own chat runtime. Native delegation still removes all operator_chat actions.
-  if (needsOperatorReview) grants = [...grants, ...parent.owner.grants.map((grant) => ({ ...grant,
-    actions: grant.actions.filter((action) => action.startsWith('operator_chat:')),
-  })).filter((grant) => grant.actions.length > 0)]
+  const grants = intersectGrants(intersectGrants(caller.grants, live.grants), parent.principal.grants)
   const expiresAt = new Date(Math.min(Date.parse(caller.expiresAt), Date.parse(live.expiresAt),
     Date.parse(parent.principal.expiresAt), Date.parse(parent.owner.expiresAt))).toISOString()
   const accepted = ManagementPrincipalSchema.parse({ id: `run-authority-${randomUUID()}`,

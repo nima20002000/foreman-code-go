@@ -92,6 +92,25 @@
   background: var(--graph-subtle);
 }
 
+.workflow-approval-inbox { position: relative; }
+.workflow-approval-inbox-badge {
+  position: absolute;
+  top: -0.35rem;
+  right: -0.35rem;
+  display: grid;
+  min-width: 1rem;
+  height: 1rem;
+  place-items: center;
+  padding-inline: 0.2rem;
+  border: 1px solid var(--graph-panel);
+  border-radius: 999px;
+  color: var(--color-accent-contrast);
+  background: var(--color-accent);
+  font-size: 0.6rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .workflow-graph-run:disabled {
   cursor: wait;
   opacity: 0.55;

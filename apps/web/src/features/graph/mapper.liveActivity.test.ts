@@ -4,6 +4,7 @@ import type { Agent, WorkflowDefinition, RunNodeLiveActivity } from '@graphql/co
 import { workflowToGraph } from './mapper'
 
 const workflow = { id: 'workflow', workspaceId: 'workspace', name: 'Workflow', requiredAgentCount: 2,
+  executionCondition: { kind: 'manual' as const },
   nodes: [{ id: 'first', agentId: 'same-agent' }, { id: 'second', agentId: 'same-agent' }], edges: [],
 } as WorkflowDefinition
 const agents = [{ id: 'same-agent', name: 'Agent', status: 'working' }] as unknown as Agent[]

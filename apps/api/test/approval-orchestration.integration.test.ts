@@ -10,7 +10,6 @@ import {
   GetRunResponseSchema,
   AgentSchema,
   DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
-  DurableInteractionSchema,
   NATIVE_INTERACTION_FIXTURES,
   NativeHarnessEventSchema,
   ReviewJobSchema,
@@ -18,7 +17,6 @@ import {
   type NativeHarnessEvent,
   type NativeSessionReference,
   type PendingNativeInteraction,
-  type ApprovalResponseOption,
   type AgentConfigurationVersion,
 } from '@graphql/contracts'
 import pg from 'pg'
@@ -51,7 +49,6 @@ import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { DeterministicNativeSessionManager } from '../src/testing/deterministicNativeSession.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
 let schema: string
@@ -145,15 +142,6 @@ class ReviewNativeManager extends SelectiveNativeManager {
   }
 }
 
-class UncertainOnceNativeManager extends DeterministicNativeSessionManager {
-  responseAttempts = 0
-  override async respond(session: NativeSessionReference, nativeRequestId: string, option: ApprovalResponseOption) {
-    this.responseAttempts += 1
-    if (this.responseAttempts === 1) throw Object.assign(new Error('transport lost after write'), { certainty: 'uncertain' as const })
-    return super.respond(session, nativeRequestId, option)
-  }
-}
-
 class FailingAttachNativeManager extends SelectiveNativeManager {
   constructor(private readonly failAfterStart: boolean) { super(new Set(), 'codex') }
   override async attachSession(session: NativeSessionReference, input: NativeSessionStart) {
@@ -236,12 +224,12 @@ it('interrupts and resumes the same durable native execution without repeating p
   expect(manager.counters).toEqual({ nodeEntries: 2, sessions: 2, attaches: 0, sideEffects: 2, deliveries: 0 })
 
   const anonymousList = await app.inject({ method: 'GET', url: '/api/interactions?limit=10' })
-  expect(anonymousList.statusCode).toBe(401)
+  expect(anonymousList.statusCode).toBe(404)
   const anonymousResponse = await app.inject({
     method: 'POST', url: `/api/interactions/${pending.id}/respond`,
     payload: { interactionId: pending.id, optionId: 'codex-approve-once', expectedRevision: pending.revision },
   })
-  expect(anonymousResponse.statusCode).toBe(401)
+  expect(anonymousResponse.statusCode).toBe(404)
   expect(manager.counters.deliveries).toBe(0)
 
   // User-handler native behavior is tested at the trusted service boundary.
@@ -525,7 +513,7 @@ it.each(['direct', 'transitive', 'unconnected', 'same_agent_other_node'] as cons
       readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
       appMcp: { access, interactions: new PostgresAppInteractionService(pool, interactions, commands, service) },
       product: { interactions: service } as never,
-      operator: { access, services: { interactions: new OperatorInteractionService(service, interactions), runs: runManagement, commands } as never },
+      operator: { access, services: { interactions: new OperatorInteractionService(service), runs: runManagement, commands } as never },
     })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const clients: Client[] = []
@@ -551,11 +539,9 @@ it.each(['direct', 'transitive', 'unconnected', 'same_agent_other_node'] as cons
           return { isError: true }
         })
       expect(deniedAttempt.isError).toBe(true)
-      const httpDenied = await app.inject({ method: 'POST', url: `/api/interactions/${request.interactionId}/respond`,
-        headers: { authorization: `Bearer ${operator.token}` }, payload: request })
-      expect(httpDenied.statusCode).toBe(404)
-      const operatorDenied = await readClient.callTool({ name: 'interaction_respond', arguments: { ...request, commandId: randomUUID() } })
-      expect(operatorDenied.isError).toBe(true)
+      expect(app.hasRoute({ method: 'POST', url: '/api/interactions/:interactionId/respond' })).toBe(false)
+      await expect(readClient.callTool({ name: 'interaction_respond', arguments: { ...request, commandId: randomUUID() } }))
+        .rejects.toThrow('Tool interaction_respond not found')
       expect(await interactions.get(request.interactionId)).toEqual(before)
       expect(manager.counters.deliveries).toBe(0)
       const read = await readClient.callTool({ name: 'run_get', arguments: { workspaceId: run.workspaceId, runId: run.id } })
@@ -653,143 +639,6 @@ it('keeps a busy designated reviewer pending and fences one idle-session dispatc
     expect(claims.filter((item) => item.status === 'fulfilled')).toHaveLength(1)
     expect(claims.filter((item) => item.status === 'rejected')).toHaveLength(1)
   } finally { await dispatcher.shutdown() }
-})
-
-it('lists, reads and responds to an Operator-assigned request through authenticated MCP', async () => {
-  const workflows = new PostgresWorkflowRepository(pool)
-  const locations = new WorkspaceLocationService(pool, new PostgresCommandCoordinator(pool), root)
-  const runs = new PostgresRunRepository(pool, workflows, locations)
-  const run = await runs.createForWorkflow('workspace-1', 'workflow-content-pipeline', {}, 1)
-  const configuration = await workflows.getAgentConfiguration('agent-reviewer-config-v1')
-  if (!configuration) throw new Error('configuration missing')
-  const execution = {
-    id: 'operator-execution', runId: run.id, workflowNodeId: 'operator-node', agentId: 'agent-reviewer',
-    agentConfigurationVersionId: configuration.id, attempt: 1, input: {}, state: 'waiting' as const,
-    createdAt: new Date().toISOString(), nativeSessionId: 'codex-fixture-session',
-    workingDirectory: projectRoot, runtimeDirectory: root,
-  }
-  await runs.ensureExecution(execution)
-  const interactions = new PostgresInteractionRepository(pool)
-  const created = await interactions.create({
-    ...NATIVE_INTERACTION_FIXTURES.codex, id: 'operator-interaction', runId: run.id,
-    nativeSessionId: execution.nativeSessionId,
-    executionId: execution.id, requestingAgentId: execution.agentId, approval: { handler: 'operator' },
-  })
-  const budgets = new PostgresApprovalBudgetRepository(pool)
-  await budgets.ensure(execution.id, run.id, 10_000)
-  await budgets.beginWait(execution.id)
-  const manager = new DeterministicNativeSessionManager('codex')
-  const session = await manager.attachSession({
-    harness: 'codex', providerVersion: '0.154.0', nativeSessionId: execution.nativeSessionId,
-  }, { request: {
-    executionId: execution.id, runId: run.id, workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId,
-    workingDirectory: projectRoot, runtimeDirectory: root, configuration, input: {},
-  } })
-  for await (const event of manager.startTurn(session, { prompt: 'fixture', clientCorrelationId: 'operator-proof' })) { void event; break }
-  const pendingNative = (await manager.pending(session))!
-  const rebound = DurableInteractionSchema.parse({
-    ...created.interaction,
-    nativeRequestId: pendingNative.turn.nativeRequestId,
-    nativeRequestType: pendingNative.nativeRequestType,
-    request: pendingNative.request,
-    responseOptions: pendingNative.responseOptions,
-  })
-  await pool.query('update durable_interactions set native_request_id=$2,record=$3::jsonb where id=$1',
-    [rebound.id, rebound.nativeRequestId, JSON.stringify(rebound)])
-  const managerResolver = { resolve: () => ({ manager, processState: 'resident' as const }) }
-  const runtime = new ApprovalExecutionCoordinator(runs, interactions, budgets, managerResolver, 10_000)
-  const service = new InteractionService(interactions, budgets, runtime, async () => undefined)
-  const operatorInteractions = new OperatorInteractionService(service, interactions)
-  const access = new PostgresAccessService(pool)
-  const issued = await access.issue({
-    name: 'Approval operator', audience: 'operator', expiresAt: new Date(Date.now() + 60_000),
-    grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: { runIds: [run.id] } }],
-  })
-  const commands = new PostgresCommandCoordinator(pool)
-  app = buildApp({
-    readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
-    operator: { access, services: { interactions: operatorInteractions, commands } as never },
-  })
-  const address = await app.listen({ host: '127.0.0.1', port: 0 })
-  const client = new Client({ name: 'approval-operator-proof', version: '1.0.0' })
-  await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), {
-    authProvider: { token: async () => issued.token },
-  }))
-  try {
-    expect((await client.listTools()).tools.map((tool) => tool.name).sort()).toEqual([
-      'interaction_get', 'interaction_list', 'interaction_respond', 'interaction_summary',
-    ])
-    const listed = await client.callTool({ name: 'interaction_list', arguments: { runId: run.id, limit: 10 } })
-    expect((listed.structuredContent as { items: unknown[] }).items).toHaveLength(1)
-    await pool.query(
-      "update approval_execution_state set approval_wait_started_at=now()-interval '7 days' where execution_id=$1",
-      [execution.id],
-    )
-    const responded = await client.callTool({ name: 'interaction_respond', arguments: {
-      interactionId: created.interaction.id, optionId: 'codex-approve-once', expectedRevision: 0,
-      commandId: `respond-${randomUUID()}`,
-    } })
-    expect(responded.isError).not.toBe(true)
-    expect((responded.structuredContent as { value: { deliveryState: string } }).value.deliveryState).toBe('delivered')
-    expect(manager.counters.deliveries).toBe(1)
-    const missing = await interactions.create({
-      ...NATIVE_INTERACTION_FIXTURES.codex, id: 'operator-interaction-missing-session', runId: run.id,
-      executionId: execution.id, requestingAgentId: execution.agentId,
-      nativeRequestId: 'missing-native-request', approval: { handler: 'operator' },
-    })
-    const missingService = new InteractionService(interactions, budgets, {
-      attachInteraction: async () => { throw new Error('persisted native session is unavailable') },
-      attachOwnedSession: async () => { throw new Error('persisted native session is unavailable') },
-    }, async () => undefined)
-    const blocked = await missingService.respond({ kind: 'operator', principal: issued.principal }, {
-      interactionId: missing.interaction.id, optionId: 'codex-approve-once', expectedRevision: 0,
-    })
-    expect(blocked.interaction).toMatchObject({ status: 'delivery_failed', deliveryState: 'failed' })
-    expect(manager.counters).toMatchObject({ attaches: 1, deliveries: 1 })
-    const uncertainManager = new UncertainOnceNativeManager('opencode')
-    const uncertainSession = await uncertainManager.createSession({ request: {
-      executionId: execution.id, runId: run.id, workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId,
-      workingDirectory: projectRoot, runtimeDirectory: root, configuration, input: {},
-    } })
-    for await (const event of uncertainManager.startTurn(uncertainSession, { prompt: 'fixture', clientCorrelationId: 'uncertain-proof' })) { void event; break }
-    const uncertain = await interactions.create({
-      ...NATIVE_INTERACTION_FIXTURES.opencode, id: 'operator-interaction-uncertain', runId: run.id,
-      nativeSessionId: uncertainSession.nativeSessionId,
-      executionId: execution.id, requestingAgentId: execution.agentId, approval: { handler: 'operator' },
-    })
-    const uncertainService = new InteractionService(interactions, budgets, {
-      attachInteraction: async (interaction) => ({
-        manager: uncertainManager,
-        session: { harness: interaction.harness, providerVersion: interaction.providerVersion, nativeSessionId: interaction.nativeSessionId },
-      }),
-      attachOwnedSession: async (_context, session) => ({ manager: uncertainManager, session }),
-    }, async () => undefined)
-    const firstAttempt = await uncertainService.respond({ kind: 'operator', principal: issued.principal }, {
-      interactionId: uncertain.interaction.id, optionId: 'opencode-approve-once', expectedRevision: 0,
-    })
-    expect(firstAttempt.interaction.deliveryState).toBe('uncertain')
-    const reconciled = await uncertainService.respond({ kind: 'operator', principal: issued.principal }, {
-      interactionId: uncertain.interaction.id, optionId: 'opencode-approve-once', expectedRevision: 0,
-    })
-    expect(reconciled.interaction.deliveryState).toBe('uncertain')
-    expect(uncertainManager.responseAttempts).toBe(1)
-    const retried = await uncertainService.respond({ kind: 'operator', principal: issued.principal }, {
-      interactionId: uncertain.interaction.id, optionId: 'opencode-approve-once', expectedRevision: 0,
-    })
-    expect(retried.interaction.deliveryState).toBe('uncertain')
-    expect(uncertainManager.responseAttempts).toBe(1)
-    const stopped = await interactions.create({
-      ...NATIVE_INTERACTION_FIXTURES.codex, id: 'operator-interaction-stopped', runId: run.id,
-      executionId: execution.id, requestingAgentId: execution.agentId,
-      nativeRequestId: 'stopped-native-request', approval: { handler: 'operator' },
-    })
-    await runtime.cancelRun(run.id)
-    expect(await interactions.get(stopped.interaction.id)).toMatchObject({ status: 'canceled' })
-    await expect(service.respond({ kind: 'operator', principal: issued.principal }, {
-      interactionId: stopped.interaction.id, optionId: 'codex-approve-once', expectedRevision: 0,
-    })).rejects.toMatchObject({ code: 'INTERACTION_CANCELED' })
-    expect(manager.counters.cancellations).toBe(1)
-  } finally { await client.close() }
 })
 
 it('evicts a failed provider so retry preflights a fresh Agent-scoped manager and token', async () => {

@@ -83,5 +83,4 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'run_stop', action: 'runs:stop' },
   { name: 'interaction_list', action: 'interactions:read' },
   { name: 'interaction_get', action: 'interactions:read' },
-  { name: 'interaction_respond', action: 'interactions:respond' },
 ]
