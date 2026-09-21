@@ -11,3 +11,6 @@
 - [x] Preserve the panel's last position and size after closing and reopening it.
 - [x] Make `No requests yet.` smaller, restrained, and correctly centered in the request area.
 - [x] Keep Refresh and Close anchored at the panel's top-right even when there are no agents or requests.
+- [x] Replace the ambiguous refresh glyph with a recognizable refresh icon.
+- [x] Keep human approval-delivery failures visible while their agent is waiting, with a compact recovery action.
+- [x] Verify the panel against a live waiting agent and real interaction record.

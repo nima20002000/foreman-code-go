@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { DurableInteraction } from '@graphql/contracts'
+import { RefreshCw } from 'lucide-react'
 import { useInfiniteInteractionsQuery, useInteractionQuery, useWorkspaceDetailsQuery } from '../../shared/api/query'
 import { sessionSignal } from '../../shared/api/sessionBoundary'
 import { useUserInteractionResponse, type UserApprovalCredential } from '../../shared/api/userApprovals'
@@ -50,11 +51,14 @@ function QuickApprovalActions({ interaction, onChanged }: { interaction: Durable
     ?? interaction.responseOptions.find((option) => option.semantic === 'allow_turn')
   const reject = interaction.responseOptions.find((option) => option.semantic === 'reject')
     ?? interaction.responseOptions.find((option) => option.semantic === 'cancel')
+  const recorded = interaction.responseOptions.find((option) => option.optionId === interaction.selectedOptionId)
   const send = (optionId: string) => response.mutate({ interactionId: interaction.id, optionId, expectedRevision: interaction.revision }, { onSuccess: onChanged })
   return <div className="approval-row-actions" aria-label={`Respond to ${summarizeApprovalRequest(interaction.request, interaction.nativeRequestType).operation}`}>
-    {approve ? <Button size="sm" disabled={response.isPending} loading={response.isPending && response.variables?.optionId === approve.optionId}
+    {interaction.status !== 'pending' && recorded ? <Button size="sm" disabled={response.isPending} loading={response.isPending}
+      title="Retry or verify delivery of the recorded choice" onClick={() => send(recorded.optionId)}>{interaction.status === 'delivery_failed' ? 'Retry' : 'Check'}</Button> : null}
+    {interaction.status === 'pending' && approve ? <Button size="sm" disabled={response.isPending} loading={response.isPending && response.variables?.optionId === approve.optionId}
       title={approvalOptionScope(approve)} onClick={() => send(approve.optionId)}>Approve</Button> : null}
-    {reject ? <Button size="sm" variant="ghost" disabled={response.isPending} loading={response.isPending && response.variables?.optionId === reject.optionId}
+    {interaction.status === 'pending' && reject ? <Button size="sm" variant="ghost" disabled={response.isPending} loading={response.isPending && response.variables?.optionId === reject.optionId}
       title={`${reject.scopeSummary ? `${reject.scopeSummary}. ` : ''}${approvalOptionScope(reject)}`} onClick={() => send(reject.optionId)}>Reject</Button> : null}
     {response.isError ? <span role="alert" className="approval-row-error">{response.error.message}</span> : null}
   </div>
@@ -85,14 +89,21 @@ function ApprovalInboxPanel({ open, exiting, resize }: {
   const selectInteraction = useApprovalInboxStore((state) => state.selectInteraction)
   const sidebarPresence = usePresence(sidebarOpen)
   const { panelRef, style, moveGrip, grip } = resize
-  const queue = useInfiniteInteractionsQuery({ workspaceId: workspaceId || undefined, workflowId, status: 'pending', limit: 100 }, open && Boolean(workspaceId))
+  const scope = { workspaceId: workspaceId || undefined, workflowId, limit: 100 }
+  const queues = [
+    useInfiniteInteractionsQuery({ ...scope, status: 'pending' }, open && Boolean(workspaceId)),
+    useInfiniteInteractionsQuery({ ...scope, status: 'decided' }, open && Boolean(workspaceId)),
+    useInfiniteInteractionsQuery({ ...scope, status: 'delivery_pending' }, open && Boolean(workspaceId)),
+    useInfiniteInteractionsQuery({ ...scope, status: 'delivery_failed' }, open && Boolean(workspaceId)),
+  ]
   const workspace = useWorkspaceDetailsQuery(workspaceId, { enabled: open && Boolean(workspaceId), retry: false })
   const [selectedAgentId, setSelectedAgentId] = useState<string>()
-  const pages = queue.data?.pages ?? []
+  const pages = queues.flatMap((queue) => queue.data?.pages ?? [])
   const interactions = useMemo(() => {
     const byId = new Map<string, DurableInteraction>()
     for (const page of pages) for (const item of page.items) {
-      if (item.status !== 'pending' || item.approval.handler !== 'user' || !interactionMatchesScope(item, { workspaceId, workflowId })) continue
+      if (!['pending', 'decided', 'delivery_pending', 'delivery_failed'].includes(item.status)
+        || item.approval.handler !== 'user' || !interactionMatchesScope(item, { workspaceId, workflowId })) continue
       const current = byId.get(item.id)
       if (!current || item.revision >= current.revision) byId.set(item.id, item)
     }
@@ -103,7 +114,10 @@ function ApprovalInboxPanel({ open, exiting, resize }: {
     if (!open) return
     if (!selectedAgentId || !agentIds.includes(selectedAgentId)) setSelectedAgentId(agentIds[0])
   }, [agentIds, open, selectedAgentId])
-  const refetch = () => void queue.refetch()
+  const refetch = () => { for (const queue of queues) void queue.refetch() }
+  const isError = queues.some((queue) => queue.isError)
+  const isPending = queues.some((queue) => queue.isPending)
+  const isFetching = queues.some((queue) => queue.isFetching)
   const selectedRequests = interactions.filter((item) => item.requestingAgentId === selectedAgentId)
   const selectedInteraction = interactions.find((item) => item.id === interactionId)
   const agentName = (agentId: string) => workspace.data?.agents.find((agent) => agent.id === agentId)?.name ?? 'Unknown agent'
@@ -114,7 +128,7 @@ function ApprovalInboxPanel({ open, exiting, resize }: {
       {approvalResizeEdges.map((edge) => <button key={edge} type="button" className={`approval-inbox-resize approval-inbox-resize-${edge}`} {...grip(edge)} />)}
       <button type="button" className="approval-inbox-move" title="Drag to move approval inbox" {...moveGrip} />
       <div className="approval-inbox-controls">
-        <IconButton label="Refresh approval requests" variant="ghost" disabled={queue.isFetching} onClick={refetch}><Icon name="refresh" /></IconButton>
+        <IconButton label="Refresh approval requests" variant="ghost" disabled={isFetching} onClick={refetch}><RefreshCw aria-hidden="true" size={14} /></IconButton>
         <IconButton label="Close approval inbox" variant="ghost" onClick={closeInbox}><Icon name="close" /></IconButton>
       </div>
       <IconButton className={`approval-sidebar-toggle${sidebarOpen ? ' approval-sidebar-toggle-open' : ''}`}
@@ -127,12 +141,14 @@ function ApprovalInboxPanel({ open, exiting, resize }: {
           </button>)}
         </aside> : null}
         <main>
-          {queue.isError ? <ErrorState title="Requests unavailable" description={queue.error.message} onRetry={refetch} retrying={queue.isFetching} /> : null}
-          {queue.isPending ? <LoadingState label="Loading human approvals…" rows={4} /> : null}
-          {!queue.isPending && !queue.isError && interactions.length === 0 ? <p className="approval-empty">No requests yet.</p> : null}
+          {isError ? <ErrorState title="Requests unavailable" description={queues.find((queue) => queue.error)?.error?.message ?? 'The request could not be loaded.'} onRetry={refetch} retrying={isFetching} /> : null}
+          {isPending ? <LoadingState label="Loading human approvals…" rows={4} /> : null}
+          {!isPending && !isError && interactions.length === 0 ? <p className="approval-empty">No requests yet.</p> : null}
           {selectedRequests.length ? <ol className="approval-request-list">{selectedRequests.map((interaction) => <RequestRow key={interaction.id} interaction={interaction} onChanged={refetch} onOpen={() => selectInteraction(interaction.id)} />)}</ol> : null}
-          {queue.hasNextPage ? <Button size="sm" disabled={queue.isFetchingNextPage} loading={queue.isFetchingNextPage} onClick={() => void queue.fetchNextPage()}>Load more</Button> : null}
-          {queue.isFetchNextPageError ? <Alert live tone="danger" title="More requests could not be loaded">Try Load more again.</Alert> : null}
+          {queues.some((queue) => queue.hasNextPage) ? <Button size="sm" disabled={queues.some((queue) => queue.isFetchingNextPage)} loading={queues.some((queue) => queue.isFetchingNextPage)} onClick={() => {
+            for (const queue of queues) if (queue.hasNextPage && !queue.isFetchingNextPage) void queue.fetchNextPage()
+          }}>Load more</Button> : null}
+          {queues.some((queue) => queue.isFetchNextPageError) ? <Alert live tone="danger" title="More requests could not be loaded">Try Load more again.</Alert> : null}
         </main>
       </div>
     </section>
