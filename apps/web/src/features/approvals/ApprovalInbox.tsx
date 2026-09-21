@@ -1,175 +1,147 @@
-import { useEffect, useRef } from 'react'
-import type { ApprovalInboxView, DurableInteraction } from '@graphql/contracts'
-import { Link } from '@tanstack/react-router'
-
-import { useInteractionQuery, useInfiniteInteractionsQuery, useWorkspaceDetailsQuery } from '../../shared/api/query'
+import { useEffect, useMemo, useState } from 'react'
+import type { DurableInteraction } from '@graphql/contracts'
+import { useInfiniteInteractionsQuery, useInteractionQuery, useWorkspaceDetailsQuery } from '../../shared/api/query'
+import { sessionSignal } from '../../shared/api/sessionBoundary'
+import { useUserInteractionResponse, type UserApprovalCredential } from '../../shared/api/userApprovals'
 import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
-import { Alert, Badge, Button, EmptyState, ErrorState, Icon, LoadingState, PageHeader } from '../../shared/ui/nocturne'
+import { Alert, Badge, Button, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState } from '../../shared/ui/nocturne'
+import { usePresence } from '../../shared/ui/usePresence'
 import { interactionMatchesScope } from './approvalState'
 import { UserApprovalResponse } from './UserApprovalResponse'
-import { approvalReadOnlyReason, approvalStatuses, summarizeApprovalRequest } from './approvalPresentation'
+import { summarizeApprovalRequest } from './approvalPresentation'
 import { ApprovalRequestSummary } from './ApprovalRequestSummary'
-import { ReviewStatusNotice } from './ReviewStatusNotice'
+import { approvalResizeEdges, useApprovalInboxResize } from './useApprovalInboxResize'
+import { useApprovalInboxStore } from './approvalInboxStore'
 import './approvals.css'
 
-export interface ApprovalInboxProps {
-  workspaceId?: string
-  workflowId?: string
-  selectedInteractionId?: string
-  onSelectInteraction?(interactionId?: string): void
-  view?: ApprovalInboxView
-  onChangeView?(view: ApprovalInboxView): void
-  embedded?: boolean
-}
-const stateLabels = {
-  pending: 'Waiting for decision', decided: 'Decision accepted', delivery_pending: 'Delivering',
-  delivered: 'Delivered', delivery_failed: 'Delivery failed', canceled: 'Canceled',
-} as const
-function StateBadge({ state }: { state: keyof typeof stateLabels }) {
-  const tone = state === 'delivered' ? 'success' : state === 'delivery_failed' || state === 'canceled' ? 'danger' : 'warning'
-  return <Badge className={`approval-state approval-state-${state}`} tone={tone} dot>{stateLabels[state]}</Badge>
-}
+const credential = (): UserApprovalCredential => ({ id: 'browser-user', signal: sessionSignal() })
 
-function useApprovalNames(interaction: DurableInteraction) {
+function ApprovalContext({ interaction }: { interaction: DurableInteraction }) {
   const query = useWorkspaceDetailsQuery(interaction.workspaceId, { retry: false })
   const context = !query.isError && query.data?.workspace.id === interaction.workspaceId ? query.data : undefined
-  return {
-    workspace: context?.workspace.name ?? 'Workspace name unavailable',
-    workflow: context?.workflows.find((workflow) => workflow.id === interaction.workflowId)?.name ?? 'Workflow name unavailable',
-    agent: context?.agents.find((agent) => agent.id === interaction.requestingAgentId)?.name ?? 'Agent name unavailable',
-  }
+  const agent = context?.agents.find((item) => item.id === interaction.requestingAgentId)?.name ?? 'Unknown agent'
+  const workflow = context?.workflows.find((item) => item.id === interaction.workflowId)?.name
+  return <p className="approval-detail-context">Requested by <strong>{agent}</strong>{workflow ? ` in ${workflow}` : ''} · {interaction.harness === 'codex' ? 'Codex' : 'OpenCode'}</p>
 }
 
-function ApprovalNames({ interaction }: { interaction: DurableInteraction }) {
-  const names = useApprovalNames(interaction)
-  return <dl className="approval-context">
-    <div><dt>Requesting agent</dt><dd>{names.agent}</dd></div>
-    <div><dt>Workflow</dt><dd><Link to="/workspaces/$workspaceId" params={{ workspaceId: interaction.workspaceId }} search={{ workflowId: interaction.workflowId }}>{names.workflow} · Open workflow</Link></dd></div>
-    <div><dt>Workspace</dt><dd>{names.workspace}</dd></div>
-    <div><dt>Assigned reviewer</dt><dd>{interaction.approval.handler === 'user' ? 'User' : interaction.approval.handler === 'operator' ? 'Operator agent' : 'Orchestrator agent'}</dd></div>
-  </dl>
-}
-
-function ApprovalDetail({ interactionId, workspaceId, workflowId, onClear }: {
-  interactionId: string; workspaceId?: string; workflowId?: string; onClear(): void
+function ApprovalDetail({ interactionId, workspaceId, workflowId, onChanged }: {
+  interactionId: string; workspaceId: string; workflowId?: string; onChanged(): void
 }) {
   const detail = useInteractionQuery(interactionId)
-  // Never authorize a response from stale detail after an access/error response.
-  if (detail.isError) return <article className="approval-detail"><ErrorState title="Request unavailable" description={detail.error.message} onRetry={() => void detail.refetch()} retrying={detail.isFetching} /></article>
-  if (detail.isPending || !detail.data) return <article className="approval-detail"><LoadingState label="Loading request…" rows={4} /></article>
+  if (detail.isError) return <ErrorState title="Request unavailable" description={detail.error.message} onRetry={() => void detail.refetch()} retrying={detail.isFetching} />
+  if (detail.isPending || !detail.data) return <LoadingState label="Loading request…" rows={4} />
   const selected = detail.data.interaction
-  const review = detail.data.review
-  if (selected.id !== interactionId || !interactionMatchesScope(selected, { workspaceId, workflowId })) {
-    return <article className="approval-detail"><ErrorState title="Request outside this Inbox" description="This request is outside the selected Inbox scope." /><Button onClick={onClear}>Clear selection</Button></article>
+  if (selected.id !== interactionId || selected.approval.handler !== 'user' || !interactionMatchesScope(selected, { workspaceId, workflowId })) {
+    return <ErrorState title="Request unavailable here" description="This is not a human approval request in the current board scope." />
   }
   const selectedOption = selected.responseOptions.find((option) => option.optionId === selected.selectedOptionId)
-  const selectedLabel = selectedOption?.label
-  // User authority is resolved by the browser-session User endpoint below;
-  // the Operator detail route is intentionally read-only for this handler.
-  const readOnlyReason = selected.approval.handler === 'user' ? undefined : approvalReadOnlyReason(selected, false)
   return <article className="approval-detail">
-    <header><div><p className="panel-kicker">{selected.harness === 'codex' ? 'Codex' : 'OpenCode'} permission request</p><h2>{summarizeApprovalRequest(selected.request, selected.nativeRequestType).operation}</h2></div><StateBadge state={selected.status} /></header>
-    <ApprovalNames interaction={selected} />
-    {review ? <ReviewStatusNotice review={review} interaction={selected} /> : null}
+    <ApprovalContext interaction={selected} />
     <ApprovalRequestSummary request={selected.request} nativeRequestType={selected.nativeRequestType} reviewContext={selected.reviewContext} />
-    <details className="approval-request"><summary>Technical details</summary>
-      <dl className="approval-context">
-        <div><dt>Workspace ID</dt><dd>{selected.workspaceId}</dd></div><div><dt>Workflow ID</dt><dd>{selected.workflowId}</dd></div>
-        <div><dt>Requesting agent ID</dt><dd>{selected.requestingAgentId}</dd></div><div><dt>Run / execution IDs</dt><dd>{selected.runId} / {selected.executionId}</dd></div>
-        <div><dt>Native request type</dt><dd>{selected.nativeRequestType}</dd></div><div><dt>Provider version</dt><dd>{selected.providerVersion}</dd></div>
-        <div><dt>Accepted handler</dt><dd>{selected.approval.handler}{selected.approval.designatedOrchestratorAgentId ? ` · ${selected.approval.designatedOrchestratorAgentId}` : ''}</dd></div>
-        <div><dt>Native delivery</dt><dd>{selected.deliveryState.replaceAll('_', ' ')}</dd></div>
-      </dl>
-      <h3>Request details</h3><pre>{JSON.stringify(selected.request, null, 2)}</pre>
-    </details>
-    {readOnlyReason ? <p className="approval-reviewer-note">{readOnlyReason}</p> : null}
-    {selected.approval.handler === 'user' ? <UserApprovalResponse key={selected.id} interaction={selected}
-      onChanged={() => { void detail.refetch() }} /> : null}
-    {selected.selectedOptionId ? <div className="approval-history"><h3>Decision history</h3><p><strong>{selectedLabel ?? selected.selectedOptionId}</strong> accepted at {selected.decidedAt ?? 'unknown time'}.</p>{selectedOption ? <p>{approvalOptionScope(selectedOption)}</p> : null}<p>Delivery: {selected.deliveryState.replaceAll('_', ' ')}{selected.deliveredAt ? ` at ${selected.deliveredAt}` : ''}.</p></div> : null}
-    <Button variant="ghost" leading={<Icon name="refresh" size={15} />} onClick={() => void detail.refetch()}>Refresh request</Button>
+    <UserApprovalResponse key={selected.id} interaction={selected} onChanged={() => { void detail.refetch(); onChanged() }} />
+    {selected.selectedOptionId ? <div className="approval-history"><h3>Recorded choice</h3><p><strong>{selectedOption?.label ?? selected.selectedOptionId}</strong>{selected.decidedAt ? ` · ${new Date(selected.decidedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}` : ''}</p>{selectedOption ? <p>{approvalOptionScope(selectedOption)}</p> : null}</div> : null}
   </article>
 }
 
-function ApprovalListItem({ item, selected, onSelect }: { item: DurableInteraction; selected: boolean; onSelect(button: HTMLButtonElement): void }) {
-  const names = useApprovalNames(item)
-  return <li><button type="button" className={selected ? 'selected' : ''} aria-current={selected ? 'true' : undefined} onClick={(event) => onSelect(event.currentTarget)}>
-    <StateBadge state={item.status} />
-    <strong>{names.agent} · {summarizeApprovalRequest(item.request, item.nativeRequestType).operation}</strong>
-    <small>{names.workflow}</small><span className="approval-handler">Handled by {item.approval.handler}</span>
-  </button></li>
+function QuickApprovalActions({ interaction, onChanged }: { interaction: DurableInteraction; onChanged(): void }) {
+  const [userCredential] = useState(credential)
+  const response = useUserInteractionResponse(userCredential)
+  const approve = interaction.responseOptions.find((option) => option.semantic === 'approve_once')
+    ?? interaction.responseOptions.find((option) => option.semantic === 'allow_turn')
+  const reject = interaction.responseOptions.find((option) => option.semantic === 'reject')
+    ?? interaction.responseOptions.find((option) => option.semantic === 'cancel')
+  const send = (optionId: string) => response.mutate({ interactionId: interaction.id, optionId, expectedRevision: interaction.revision }, { onSuccess: onChanged })
+  return <div className="approval-row-actions" aria-label={`Respond to ${summarizeApprovalRequest(interaction.request, interaction.nativeRequestType).operation}`}>
+    {approve ? <Button size="sm" disabled={response.isPending} loading={response.isPending && response.variables?.optionId === approve.optionId}
+      title={approvalOptionScope(approve)} onClick={() => send(approve.optionId)}>Approve</Button> : null}
+    {reject ? <Button size="sm" variant="ghost" disabled={response.isPending} loading={response.isPending && response.variables?.optionId === reject.optionId}
+      title={`${reject.scopeSummary ? `${reject.scopeSummary}. ` : ''}${approvalOptionScope(reject)}`} onClick={() => send(reject.optionId)}>Reject</Button> : null}
+    {response.isError ? <span role="alert" className="approval-row-error">{response.error.message}</span> : null}
+  </div>
 }
 
-export function ApprovalInbox({ workspaceId, workflowId, selectedInteractionId, onSelectInteraction, view = 'pending', onChangeView, embedded = false }: ApprovalInboxProps) {
-  // Each status has its own server cursor. Never filter only the first 100 historical records.
-  const scope = { workspaceId, workflowId, limit: 100 }
-  const queues = {
-    pending: useInfiniteInteractionsQuery({ ...scope, status: 'pending' }, view === 'pending'),
-    decided: useInfiniteInteractionsQuery({ ...scope, status: 'decided' }, view === 'delivery'),
-    delivery_pending: useInfiniteInteractionsQuery({ ...scope, status: 'delivery_pending' }, view === 'delivery'),
-    delivery_failed: useInfiniteInteractionsQuery({ ...scope, status: 'delivery_failed' }, view === 'delivery'),
-    delivered: useInfiniteInteractionsQuery({ ...scope, status: 'delivered' }, view === 'history'),
-    canceled: useInfiniteInteractionsQuery({ ...scope, status: 'canceled' }, view === 'history'),
-  }
-  const statuses = approvalStatuses(view)
-  const activeQueues = statuses.map((status) => queues[status])
-  const pages = activeQueues.flatMap((queue) => queue.data?.pages ?? [])
-  const isError = activeQueues.some((queue) => queue.isError)
-  const isPending = activeQueues.some((queue) => queue.isPending)
-  const byId = new Map<string, DurableInteraction>()
-  for (const page of pages) for (const item of page.items) {
-    if (!interactionMatchesScope(item, { workspaceId, workflowId })) continue
-    const current = byId.get(item.id)
-    if (!current || item.revision >= current.revision) byId.set(item.id, item)
-  }
-  const interactions = [...byId.values()].filter((item) => statuses.includes(item.status))
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id))
-  const pendingCount = pages.find((page) => page.pendingCount !== undefined)?.pendingCount
-  const detailPanel = useRef<HTMLDivElement>(null)
-  const listPanel = useRef<HTMLDivElement>(null)
-  const selectionTrigger = useRef<HTMLButtonElement | null>(null)
-  const previousId = useRef<string | undefined>(undefined)
-  useEffect(() => {
-    if (selectedInteractionId) {
-      if (detailPanel.current) detailPanel.current.scrollTop = 0
-      detailPanel.current?.focus({ preventScroll: true })
-      detailPanel.current?.scrollIntoView?.({ block: 'nearest' })
-    } else if (previousId.current) {
-      const target = selectionTrigger.current?.isConnected ? selectionTrigger.current : listPanel.current
-      target?.focus()
+function RequestRow({ interaction, onOpen, onChanged }: { interaction: DurableInteraction; onOpen(): void; onChanged(): void }) {
+  const summary = summarizeApprovalRequest(interaction.request, interaction.nativeRequestType)
+  return <li className="approval-request-row">
+    <QuickApprovalActions interaction={interaction} onChanged={onChanged} />
+    <button type="button" className="approval-request-open" onClick={onOpen} aria-haspopup="dialog">
+      <strong>{summary.operation}</strong>
+      <span>{summary.command ?? summary.target ?? summary.explanation ?? 'Open request details'}</span>
+      <small>{interaction.harness === 'codex' ? 'Codex' : 'OpenCode'} · {new Date(interaction.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>
+    </button>
+  </li>
+}
+
+function ApprovalInboxPanel({ open, exiting }: { open: boolean; exiting: boolean }) {
+  const sidebarOpen = useApprovalInboxStore((state) => state.sidebarOpen)
+  const workspaceId = useApprovalInboxStore((state) => state.workspaceId)
+  const workflowId = useApprovalInboxStore((state) => state.workflowId)
+  const interactionId = useApprovalInboxStore((state) => state.interactionId)
+  const closeInbox = useApprovalInboxStore((state) => state.closeInbox)
+  const setSidebarOpen = useApprovalInboxStore((state) => state.setSidebarOpen)
+  const selectInteraction = useApprovalInboxStore((state) => state.selectInteraction)
+  const { panelRef, style, moveGrip, grip } = useApprovalInboxResize()
+  const queue = useInfiniteInteractionsQuery({ workspaceId: workspaceId || undefined, workflowId, status: 'pending', limit: 100 }, open && Boolean(workspaceId))
+  const workspace = useWorkspaceDetailsQuery(workspaceId, { enabled: open && Boolean(workspaceId), retry: false })
+  const [selectedAgentId, setSelectedAgentId] = useState<string>()
+  const pages = queue.data?.pages ?? []
+  const interactions = useMemo(() => {
+    const byId = new Map<string, DurableInteraction>()
+    for (const page of pages) for (const item of page.items) {
+      if (item.status !== 'pending' || item.approval.handler !== 'user' || !interactionMatchesScope(item, { workspaceId, workflowId })) continue
+      const current = byId.get(item.id)
+      if (!current || item.revision >= current.revision) byId.set(item.id, item)
     }
-    previousId.current = selectedInteractionId
-  }, [selectedInteractionId, workspaceId, workflowId])
+    return [...byId.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id))
+  }, [pages, workspaceId, workflowId])
+  const agentIds = useMemo(() => [...new Set(interactions.map((item) => item.requestingAgentId))], [interactions])
   useEffect(() => {
-    if (!selectedInteractionId || !window.matchMedia) return
-    const media = window.matchMedia('(max-width: 760px)')
-    const reveal = () => { if (media.matches) detailPanel.current?.focus() }
-    media.addEventListener('change', reveal)
-    return () => media.removeEventListener('change', reveal)
-  }, [selectedInteractionId])
-  const changeView = (next: ApprovalInboxView) => onChangeView?.(next)
-  return <section className={`approval-inbox${embedded ? ' approval-inbox--embedded' : ''}`} aria-label="Approval Inbox">
-    {!embedded ? <PageHeader eyebrow="Review queue" title="Approval Inbox" description={workflowId ? 'Requests for this workflow.' : workspaceId ? 'Requests across this workspace.' : 'Requests across every authorized workspace.'} actions={
-      <Button variant="secondary" className="approval-count" leading={<Icon name="shield" size={17} />} onClick={() => changeView('pending')}>{pendingCount === undefined || isError ? 'Pending count unavailable' : `${pendingCount} pending`}</Button>
-    } /> : <div className="approval-inbox-toolbar">
-      <Button variant="secondary" className="approval-count" leading={<Icon name="shield" size={17} />} onClick={() => changeView('pending')}>{pendingCount === undefined || isError ? 'Pending count unavailable' : `${pendingCount} pending`}</Button>
-    </div>}
-    <nav className="approval-filters" aria-label="Approval views">
-      {(['pending', 'delivery', 'history'] as const).map((item) => <Button variant={view === item ? 'primary' : 'secondary'} size="sm" key={item} aria-pressed={view === item} onClick={() => changeView(item)}>{item === 'pending' ? 'Pending' : item === 'delivery' ? 'Delivery problems' : 'History'}</Button>)}
-    </nav>
-    <div className="approval-layout" data-has-selection={Boolean(selectedInteractionId)}>
-      <div ref={listPanel} tabIndex={-1} className="approval-list-pane" aria-label="Request list">
-        {view === 'delivery' ? <p>Recorded decisions awaiting delivery, reconciliation, or retry.</p> : null}
-        {isError ? <ErrorState title="Inbox refresh failed" description={`Available requests are preserved. ${activeQueues.find((queue) => queue.error)?.error?.message ?? ''}`} onRetry={() => { for (const queue of activeQueues) void queue.refetch() }} retrying={activeQueues.some((queue) => queue.isFetching)} /> : null}
-        {isPending ? <LoadingState label="Loading approvals…" rows={4} /> : null}
-        {!isPending && !isError && interactions.length === 0 ? <EmptyState icon="shield" title={view === 'pending' ? 'No pending requests' : view === 'delivery' ? 'No delivery problems' : 'No approval history'} description="No matching requests were found in this authorized scope." /> : null}
-        <ol className="approval-list" aria-label="Approval requests">{interactions.map((item) => <ApprovalListItem key={item.id} item={item} selected={selectedInteractionId === item.id} onSelect={(button) => { selectionTrigger.current = button; onSelectInteraction?.(item.id) }} />)}</ol>
-        {activeQueues.some((queue) => queue.hasNextPage) ? <Button disabled={activeQueues.some((queue) => queue.isFetchingNextPage)} loading={activeQueues.some((queue) => queue.isFetchingNextPage)} loadingLabel="Loading more…" onClick={() => { for (const queue of activeQueues) if (queue.hasNextPage && !queue.isFetchingNextPage) void queue.fetchNextPage() }}>Load more requests</Button> : null}
-        {activeQueues.some((queue) => queue.isFetchNextPageError) ? <Alert live tone="danger" title="The next page could not be loaded">Retry Load more requests.</Alert> : null}
+    if (!open) return
+    if (!selectedAgentId || !agentIds.includes(selectedAgentId)) setSelectedAgentId(agentIds[0])
+  }, [agentIds, open, selectedAgentId])
+  const refetch = () => void queue.refetch()
+  const selectedRequests = interactions.filter((item) => item.requestingAgentId === selectedAgentId)
+  const selectedInteraction = interactions.find((item) => item.id === interactionId)
+  const agentName = (agentId: string) => workspace.data?.agents.find((agent) => agent.id === agentId)?.name ?? 'Unknown agent'
+  return <div className="approval-inbox-root">
+    <section ref={panelRef} style={style} className="approval-inbox-panel" data-state={exiting ? 'closing' : 'open'} role="dialog" aria-modal="false" aria-label="Human approval inbox"
+      aria-hidden={exiting} inert={exiting}
+      onKeyDown={(event) => { if (event.key === 'Escape' && !interactionId) closeInbox() }}>
+      {approvalResizeEdges.map((edge) => <button key={edge} type="button" className={`approval-inbox-resize approval-inbox-resize-${edge}`} {...grip(edge)} />)}
+      <div className="approval-inbox-navigation">
+        <IconButton label={sidebarOpen ? 'Close agent sidebar' : 'Open agent sidebar'} variant="ghost" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(!sidebarOpen)}><Icon name="menu" /></IconButton>
+        <button type="button" className="approval-inbox-move" title="Drag to move approval inbox" {...moveGrip}><span aria-hidden="true" /></button>
+        <IconButton label="Close approval inbox" variant="ghost" onClick={closeInbox}><Icon name="close" /></IconButton>
       </div>
-      <div ref={detailPanel} tabIndex={-1} className="approval-detail-pane" aria-label="Selected request details">
-        {selectedInteractionId ? <><Button variant="ghost" className="approval-back" onClick={() => onSelectInteraction?.(undefined)}>Back to requests</Button><ApprovalDetail key={`${workspaceId ?? 'all'}:${workflowId ?? 'all'}:${selectedInteractionId}`} interactionId={selectedInteractionId} workspaceId={workspaceId} workflowId={workflowId} onClear={() => onSelectInteraction?.(undefined)} /></>
-          : <article className="approval-detail"><EmptyState icon="shield" title="Select a request" description="Inspect its scope, native choices and delivery history." /></article>}
+      <div className={`approval-inbox-body${sidebarOpen ? ' approval-inbox-sidebar-open' : ''}`}>
+        <aside aria-label="Agents with human approval requests" aria-hidden={!sidebarOpen} inert={!sidebarOpen}>
+          <p>Agents</p>
+          {agentIds.map((agentId) => <button key={agentId} type="button" aria-current={selectedAgentId === agentId ? 'true' : undefined} onClick={() => setSelectedAgentId(agentId)}>
+            <span>{agentName(agentId)}</span><Badge tone="accent">{interactions.filter((item) => item.requestingAgentId === agentId).length}</Badge>
+          </button>)}
+        </aside>
+        <main>
+          <header><div><p className="panel-kicker">Human review</p><h2>{selectedAgentId ? agentName(selectedAgentId) : 'Approval requests'}</h2></div>
+            <IconButton label="Refresh approval requests" variant="ghost" disabled={queue.isFetching} onClick={refetch}><Icon name="refresh" /></IconButton></header>
+          {queue.isError ? <ErrorState title="Requests unavailable" description={queue.error.message} onRetry={refetch} retrying={queue.isFetching} /> : null}
+          {queue.isPending ? <LoadingState label="Loading human approvals…" rows={4} /> : null}
+          {!queue.isPending && !queue.isError && interactions.length === 0 ? <EmptyState icon="shield" title="No human approvals waiting" description="Requests assigned to agents or the Operator are not shown here." /> : null}
+          {selectedRequests.length ? <ol className="approval-request-list">{selectedRequests.map((interaction) => <RequestRow key={interaction.id} interaction={interaction} onChanged={refetch} onOpen={() => selectInteraction(interaction.id)} />)}</ol> : null}
+          {queue.hasNextPage ? <Button size="sm" disabled={queue.isFetchingNextPage} loading={queue.isFetchingNextPage} onClick={() => void queue.fetchNextPage()}>Load more</Button> : null}
+          {queue.isFetchNextPageError ? <Alert live tone="danger" title="More requests could not be loaded">Try Load more again.</Alert> : null}
+        </main>
       </div>
-    </div>
-  </section>
+    </section>
+    <Dialog open={Boolean(interactionId)} onOpenChange={(next) => { if (!next) selectInteraction(undefined) }}
+      title={selectedInteraction ? summarizeApprovalRequest(selectedInteraction.request, selectedInteraction.nativeRequestType).operation : 'Approval request'}
+      size="md" closeOnOutsideClick className="approval-detail-dialog">
+      {interactionId ? <ApprovalDetail interactionId={interactionId} workspaceId={workspaceId} workflowId={workflowId} onChanged={refetch} /> : null}
+    </Dialog>
+  </div>
+}
+
+export function ApprovalInbox() {
+  const open = useApprovalInboxStore((state) => state.open)
+  const presence = usePresence(open)
+  return presence.mounted ? <ApprovalInboxPanel open={open} exiting={presence.exiting} /> : null
 }

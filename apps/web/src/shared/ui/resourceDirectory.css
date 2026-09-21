@@ -92,7 +92,7 @@
 .resource-card :is(.workflow-card-actions, .workspace-card-actions) .n-input { min-height: 44px; font-size: 1rem; }
 .workspace-overview { display: grid; align-content: start; gap: 1.5rem; }
 .workspace-overview .settings-card-list { grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: .75rem; }
-.workspace-overview .settings-card-open { min-height: 5rem; gap: .75rem; padding: 1rem; }
+.workspace-overview .settings-card-open { width: 100%; min-height: 5rem; gap: .75rem; padding: 1rem; border: 0; background: transparent; font: inherit; text-align: left; cursor: pointer; }
 .workspace-overview .settings-card-icon { width: 1rem; height: 1rem; min-width: 1rem; padding: 0; border: 0; background: none; color: var(--n-muted); }
 .workspace-overview .settings-card-copy strong { font-size: .875rem; font-weight: 550; }
 .workspace-overview .settings-card-copy small { font-size: .8125rem; line-height: 1.5; }

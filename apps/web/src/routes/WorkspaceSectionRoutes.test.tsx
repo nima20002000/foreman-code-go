@@ -162,35 +162,22 @@ describe('workspace section routes', () => {
     expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
   })
 
-  it('opens approvals from the selected workspace and returns to that workspace', async () => {
+  it('opens human approvals over the selected workspace without leaving settings', async () => {
     const user = userEvent.setup()
     const { router } = renderRoute('/workspaces/workspace-1/settings')
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
     expect(screen.queryByTestId('workflow-card-workflow-content-pipeline')).not.toBeInTheDocument()
-    const approvals = screen.getByRole('link', { name: /Approvals Review requests in this workspace/ })
-    expect(approvals).toHaveAttribute('href', '/workspaces/workspace-1/approvals')
+    const approvals = screen.getByRole('button', { name: /Approvals Review requests in this workspace/ })
     await user.click(approvals)
-    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/approvals'))
-    expect(await screen.findByRole('heading', { name: 'Approval Inbox', level: 1 })).toBeVisible()
-    expect(screen.getAllByRole('heading', { name: 'Approval Inbox' })).toHaveLength(1)
-    expect(screen.getByRole('region', { name: 'Approval Inbox' })).toHaveClass('approval-inbox--embedded')
-    expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
-    const back = screen.getByRole('link', { name: 'Back to workspace settings' })
-    expect(back).toHaveAttribute('href', '/workspaces/workspace-1/settings')
-    await user.click(back)
-    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings'))
+    expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings')
+    expect(await screen.findByRole('dialog', { name: 'Human approval inbox' })).toBeVisible()
   })
 
-  it('preserves workflow and view filters on a workspace approval deep link', async () => {
-    const user = userEvent.setup()
+  it('redirects an old approval deep link back to its workflow board and opens the panel', async () => {
     const { router } = renderRoute('/workspaces/workspace-1/approvals?workflowId=workflow-content-pipeline&approvalView=history')
-    expect(await screen.findByRole('heading', { name: 'Approval Inbox', level: 1 })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'History' })).toHaveAttribute('aria-pressed', 'true')
-    await user.click(screen.getByRole('button', { name: 'Delivery problems' }))
-    await waitFor(() => expect(router.state.location.search).toMatchObject({
-      workflowId: 'workflow-content-pipeline', approvalView: 'delivery',
-    }))
-    expect(router.state.location.pathname).toBe('/workspaces/workspace-1/approvals')
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1'))
+    expect(router.state.location.search).toMatchObject({ workflowId: 'workflow-content-pipeline' })
+    expect(await screen.findByRole('dialog', { name: 'Human approval inbox' })).toBeVisible()
   })
 
   it('places Browsers under Settings and preserves its deep link', async () => {

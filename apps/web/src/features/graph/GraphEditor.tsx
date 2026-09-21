@@ -71,6 +71,7 @@ import {
   queryKeys,
 } from '../../shared/api/query'
 import { useCancelRunMutation } from '../../shared/api/runActions'
+import { useApprovalInboxStore } from '../approvals'
 import { ApiError, applyManagedGraphDraft, saveManagedGraphDraft } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { managedSaveQueue } from './managedSave'
@@ -1456,8 +1457,7 @@ export function GraphEditor({
       {stopCause ? <Alert tone="danger" title="Orchestrator review failed">
         <p>{stopCause.error.message}</p>
         <p>Finish any pending cleanup, then correct the reviewer settings before starting a new Run.</p>
-        <Link to="/workspaces/$workspaceId/approvals" params={{ workspaceId }}
-          search={{ workflowId: workflow.id, interactionId: stopCause.interactionId, approvalView: 'history' }}>Open failed review</Link>
+        <span>Review ID: {stopCause.interactionId}</span>
       </Alert> : null}
       <div className="workflow-graph-canvas" data-testid="workflow-graph-canvas" ref={canvasRef}>
         <NodeMenuContext.Provider value={nodeMenuValue}>
@@ -1514,7 +1514,8 @@ export function GraphEditor({
             <Button ref={workflowSettingsButtonRef} variant="secondary" className="n-icon-button workflow-graph-add-agent" aria-label="Workflow settings" title="Workflow settings"
               aria-haspopup="dialog" aria-expanded={workflowSettingsOpen} aria-controls={workflowSettingsOpen ? 'workflow-settings-popover' : undefined}
               onClick={() => void leaveSurface(() => { setAgentPickerOpen(false); setOpenMenuNodeId(undefined); setWorkflowSettingsOpen((open) => !open) })}><Icon name="settings" size={16} /></Button>
-            <Link to="/workspaces/$workspaceId/approvals" params={{ workspaceId }} search={{ workflowId: displayedWorkflow.id }} className="workflow-graph-add-agent" aria-label="Workflow Approval Inbox" title="Workflow Approval Inbox"><Inbox aria-hidden="true" size={16} /></Link>
+            <Button variant="secondary" className="n-icon-button workflow-graph-add-agent" aria-label="Open human approval inbox" title="Human approval inbox"
+              onClick={() => useApprovalInboxStore.getState().openInbox({ workspaceId, workflowId: displayedWorkflow.id })}><Inbox aria-hidden="true" size={16} /></Button>
             <Button
               variant="secondary"
               className="n-icon-button workflow-graph-run"

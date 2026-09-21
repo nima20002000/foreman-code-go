@@ -1,4 +1,4 @@
-import { useCallback, type ReactNode } from 'react'
+import { useCallback, useEffect, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
 
@@ -7,7 +7,7 @@ import '../shared/ui/resourceDirectory.css'
 
 import { AgentsDirectory } from '../features/agents'
 import { McpDetectionSettings, WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
-import { ApprovalInbox } from '../features/approvals'
+import { useApprovalInboxStore } from '../features/approvals'
 import { WorkflowDirectory } from '../features/workflows'
 import { Badge, Card, EmptyState, Icon, PageHeader, SettingsSection, type IconName } from '../shared/ui/nocturne'
 import { WorkspaceShell, type WorkspaceSection } from '../shared/ui/WorkspaceShell'
@@ -149,9 +149,9 @@ export function SettingsRouteEntry() {
               </li> : null}
               <li>
                 <Card className="settings-card">
-                  <Link to="/workspaces/$workspaceId/approvals" params={{ workspaceId }} search={{}} className="settings-card-open">
+                  <button type="button" className="settings-card-open" onClick={() => useApprovalInboxStore.getState().openInbox({ workspaceId })}>
                     <SettingsCardBody icon="shield" title="Approvals" description="Review requests in this workspace" />
-                  </Link>
+                  </button>
                 </Card>
               </li>
               <li>
@@ -291,18 +291,13 @@ export function GlobalApprovalsRouteEntry() {
 
 export function WorkspaceApprovalsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/approvals' })
-  const { workflowId, interactionId, approvalView } = useSearch({ from: '/workspaces/$workspaceId/approvals' })
+  const { workflowId, interactionId } = useSearch({ from: '/workspaces/$workspaceId/approvals' })
   const navigate = useNavigate({ from: '/workspaces/$workspaceId/approvals' })
-  return <WorkspaceShell workspaceId={workspaceId} activeSection="settings" slots={{ main:
-    <SettingsDetailPage eyebrow="Workspace" title="Approval Inbox"
-      description={workflowId ? 'Requests for this workflow.' : 'Requests for this workspace.'}
-      backLink={<Link to="/workspaces/$workspaceId/settings" params={{ workspaceId }} className="settings-back-link" aria-label="Back to workspace settings">
-        <ArrowLeft aria-hidden="true" size={16} />Workspace
-      </Link>}>
-      <ApprovalInbox key={workspaceId} embedded workspaceId={workspaceId} workflowId={workflowId} selectedInteractionId={interactionId} view={approvalView}
-        onChangeView={(next) => void navigate({ search: (previous) => ({ ...previous, approvalView: next, interactionId: undefined }) })}
-        onSelectInteraction={(next) => void navigate({ search: (previous) => ({ ...previous, interactionId: next }) })} />
-    </SettingsDetailPage> }} />
+  useEffect(() => {
+    useApprovalInboxStore.getState().openInbox({ workspaceId, workflowId, interactionId })
+    void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, search: workflowId ? { workflowId } : {}, replace: true })
+  }, [interactionId, navigate, workflowId, workspaceId])
+  return null
 }
 
 export function BrowsersSettingsRouteEntry() {

@@ -40,18 +40,19 @@ function AuthenticatedResponse({ expected, credential, onChanged }: {
   const recoverable = interaction.status !== 'canceled' && interaction.status !== 'delivered'
     && (canRecoverInteraction(interaction) || Boolean(retryInput))
   return <div className="approval-actions">
-    <h3>Respond as User</h3>
+    <h3>Decision</h3>
     {interaction.status === 'pending' && !retryInput ? <div>{interaction.responseOptions.map((option) =>
       <button key={option.optionId} type="button" disabled={response.isPending} onClick={() => send(option.optionId)}
         className={option.semantic === 'reject' || option.semantic === 'cancel' ? 'danger' : ''}>
-        <strong>{option.label}</strong><small>{approvalOptionScope(option)}</small>
-        {option.scopeSummary ? <small>{option.scopeSummary}</small> : null}
+        <strong>{option.label}</strong>
+        {option.persistence !== 'request' || option.affectsOtherPendingRequests || option.interruptsCurrentTurn || option.mutatesPersistentPolicy
+          ? <small>{option.scopeSummary ?? approvalOptionScope(option)}</small> : null}
       </button>)}
-      {interaction.responseOptions.some((option) => option.affectsOtherPendingRequests) ? <p className="approval-warning">Some choices affect other pending requests. Review each choice’s scope.</p> : null}
+      {interaction.responseOptions.some((option) => option.affectsOtherPendingRequests) ? <p className="approval-warning">Some choices also affect other pending requests.</p> : null}
     </div> : null}
-    {recoverable && recoveryOption ? <><p>The original choice is preserved. Reconciliation never resends an uncertain response.</p>
+    {recoverable && recoveryOption ? <><p>Your choice was saved, but the agent has not confirmed it yet.</p>
       <button type="button" disabled={response.isPending} onClick={() => send(recoveryOption)}>
-        {response.isPending ? 'Checking delivery…' : ['uncertain', 'submitted'].includes(interaction.deliveryState) ? 'Reconcile delivery' : 'Retry original choice'}
+        {response.isPending ? 'Checking…' : ['uncertain', 'submitted'].includes(interaction.deliveryState) ? 'Check delivery' : 'Try delivery again'}
       </button></> : null}
     {interaction.status === 'delivered' || interaction.status === 'canceled' ? <p>This request is {interaction.status}.</p> : null}
     {response.isError ? <p role="alert">{response.error.message}{retryInput ? ' Check the original choice before trying anything else.' : ''}</p> : null}
