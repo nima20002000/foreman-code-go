@@ -56,7 +56,7 @@ export function nativeLanes(): PostgresInteractionCoordinationRepository {
       const lane = owned(id, token)
       Object.assign(lane, observed, { revision: lane.revision + 1 })
       delete lane.leaseToken; delete lane.leaseExpiresAt; delete lane.leaseOwner
-      if (observed.observedStatus === 'idle') delete lane.correlationId
+      if (observed.observedStatus === 'idle' && !observed.currentTurnOrMessageId) delete lane.correlationId
       return structuredClone(lane)
     },
   } as unknown as PostgresInteractionCoordinationRepository

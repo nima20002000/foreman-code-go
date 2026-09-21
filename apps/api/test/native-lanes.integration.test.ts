@@ -24,7 +24,12 @@ it('round-trips claimed and renewed lane leases through PostgreSQL and the share
     await repository.renewLane(lane.id, 'token', 60_000)
     const renewed = NativeSessionLaneSchema.parse((await pool.query('select record from native_session_lanes where id=$1', [lane.id])).rows[0].record)
     expect(Date.parse(renewed.leaseExpiresAt!)).toBeGreaterThan(Date.now())
-    await repository.releaseLane(lane.id, 'token', { observedStatus: 'idle' })
+    await repository.bindLaneTurn({ id: lane.id, token: 'token' }, 'workflow-turn')
+    const released = await repository.releaseLane(lane.id, 'token', {
+      observedStatus: 'idle', currentTurnOrMessageId: 'native-turn',
+    })
+    expect(released.correlationId).toBe('workflow-turn')
+    expect(released.currentTurnOrMessageId).toBe('native-turn')
     await expect(repository.assertLaneLease(lane.id, 'token')).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
   } finally {
     await pool.end()

@@ -443,7 +443,11 @@ export class PostgresInteractionCoordinationRepository {
         observedAt: new Date().toISOString(), connectionGeneration: observed.connectionGeneration ?? current.connectionGeneration,
         ...(observed.currentTurnOrMessageId ? { currentTurnOrMessageId: observed.currentTurnOrMessageId } : { currentTurnOrMessageId: undefined }),
         leaseOwner: undefined, leaseToken: undefined, leaseExpiresAt: undefined,
-        correlationId: observed.observedStatus === 'idle' ? undefined : current.correlationId,
+        // A retained provider turn ID is useful only with the correlation that
+        // owns it. Keep the completed pair for the next idle preflight; a lane
+        // with no provider identity may become fully unbound.
+        correlationId: observed.observedStatus === 'idle' && !observed.currentTurnOrMessageId
+          ? undefined : current.correlationId,
       })
       const updated = await client.query(
         `update native_session_lanes set revision=$2,record=$3::jsonb,updated_at=now()

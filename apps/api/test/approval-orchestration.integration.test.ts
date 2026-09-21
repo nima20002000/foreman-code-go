@@ -13,6 +13,7 @@ import {
   DurableInteractionSchema,
   NATIVE_INTERACTION_FIXTURES,
   NativeHarnessEventSchema,
+  ReviewJobSchema,
   type HarnessExecutionRequest,
   type NativeHarnessEvent,
   type NativeSessionReference,
@@ -449,6 +450,8 @@ it('delivers an Orchestrator App MCP response to native execution, resumes the r
   await engine.start(run.id)
   const pending = (await interactions.list({ runId: run.id, limit: 10 }))[0]!
   const reviewerExecution = (await runs.listExecutions(run.id)).find((item) => item.agentId === 'agent-reviewer')!
+  const review = await interactions.coordination.findReviewJob(pending.id, 'agent-reviewer')
+  if (!review) throw new Error('Expected the engine to enqueue the Orchestrator review.')
   const issued = await new WorkerCredentialService(pool, access).issueForReviewer(reviewerExecution.id)
   const client = new Client({ name: 'orchestrator-app-proof', version: '1.0.0' })
   await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/tools', address), {
@@ -463,7 +466,14 @@ it('delivers an Orchestrator App MCP response to native execution, resumes the r
       expectedRevision: pending.revision,
     } })
     expect(response.isError).not.toBe(true)
-    expect((response.structuredContent as { interaction: { deliveryState: string } }).interaction.deliveryState).toBe('delivered')
+    expect((response.structuredContent as { interaction: { deliveryState: string } }).interaction.deliveryState).toBe('pending')
+    const completedAt = new Date().toISOString()
+    const completedReview = ReviewJobSchema.parse({ ...review, state: 'completed', updatedAt: completedAt, completedAt,
+      leaseOwner: undefined, leaseToken: undefined, leaseExpiresAt: undefined })
+    await pool.query(`update review_jobs set state='completed',lease_owner=null,lease_token=null,lease_expires_at=null,
+      revision=revision+1,record=$2::jsonb,updated_at=now() where id=$1`, [review.id, JSON.stringify(completedReview)])
+    await service.recover({ limit: 10 })
+    expect((await interactions.get(pending.id))?.deliveryState).toBe('delivered')
     expect(await runs.get(run.id)).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
     expect([...managers.values()].reduce((count, manager) => count + manager.counters.deliveries, 0)).toBe(1)
     expect(revoked).toHaveLength(revocationsBeforeResponse + 1)
@@ -488,8 +498,10 @@ it.each(['direct', 'transitive', 'unconnected', 'same_agent_other_node'] as cons
       attachOwnedSession: async () => { nativeReviewAttaches += 1; throw new Error('No model review may start in this test') },
     })
     const reviewContext = { executionId: reviewer.id, workingDirectory: projectRoot }
+    let directJobId: string | undefined
     if (topology === 'direct') {
       const job = await dispatcher.enqueue(fixture.interaction, reviewerId, reviewerSession, reviewContext)
+      directJobId = job.id
       await interactions.coordination.claimReviewJob(job.id, 'test-owner', 'test-fence', new Date(Date.now() + 60_000).toISOString())
     } else {
       await expect(dispatcher.enqueue(fixture.interaction, reviewerId, reviewerSession, reviewContext))
@@ -564,6 +576,9 @@ it.each(['direct', 'transitive', 'unconnected', 'same_agent_other_node'] as cons
       const response = await reviewerClient.callTool({ name: 'interaction_respond', arguments: request })
       if (topology === 'direct') {
         expect(response.isError).not.toBe(true)
+        expect((response.structuredContent as { interaction: { deliveryState: string } }).interaction.deliveryState).toBe('pending')
+        await interactions.coordination.transitionReviewJob(directJobId!, 'test-fence', 'completed')
+        await service.recover({ limit: 10 })
         expect(manager.counters.deliveries).toBe(1)
         const persisted = await readClient.callTool({ name: 'interaction_get', arguments: { interactionId: request.interactionId } })
         expect(persisted.isError).not.toBe(true)

@@ -48,7 +48,7 @@ const idle = (): View => ({ state: 'idle', action: null, cause: 'idle' })
 const newLane = (): Lane => ({ state: 'idle', ended: false, operations: new Map(), finished: new Set(), pending: new Map(), sequence: 0n })
 const integer = (value: string): bigint => /^(0|[1-9][0-9]*)$/.test(value) ? BigInt(value) : -1n
 const key = (left: string, right: string) => JSON.stringify([left, right])
-const activeReview = (state: string) => ['leased', 'submitted', 'acknowledged'].includes(state)
+const activeReview = (state: string) => ['pending', 'leased', 'submitted', 'acknowledged'].includes(state)
 
 function lastOperation(lane: Lane): Operation | undefined {
   let last: Operation | undefined
@@ -196,12 +196,14 @@ export function projectRunLiveActivity(input: {
         if (owner.lane.ended) continue
         if (payload.status === 'delivered' || payload.deliveryState === 'delivered' || payload.status === 'canceled') {
           owner.lane.pending.delete(payload.interactionId)
-          // A confirmed native delivery is continuation evidence, not just a selected decision.
-          if (payload.deliveryState === 'delivered' && !owner.lane.pending.size) owner.lane.state = 'running'
+          // Native delivery answers the tool request but does not prove the
+          // graph resumed this execution. Only its next execution-state event
+          // may make the Worker live again.
         } else {
           owner.lane.pending.set(payload.interactionId, { handler: String(payload.handler),
             ...(typeof payload.reviewerAgentId === 'string' ? { reviewer: payload.reviewerAgentId } : {}),
             decided: payload.status !== 'pending' })
+          owner.lane.state = 'waiting'
         }
         owner.lane.sequence = sequence
       } else if (payload.topic === 'review' && typeof payload.reviewJobId === 'string') {

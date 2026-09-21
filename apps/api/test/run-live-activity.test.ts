@@ -136,6 +136,11 @@ describe('one event-backed per-node live projection', () => {
     events.push(review(8, 'completed'))
     assert.equal(node(events, 'review').state, 'idle')
   })
+  it('treats an assigned pending review as active Orchestrator ownership', () => {
+    const reviewNode = node([...handoff(), review(5, 'pending')], 'review')
+    assert.equal(reviewNode.state, 'working')
+    assert.equal(reviewNode.action?.kind, 'reviewing_request')
+  })
   it('shows uncertain review and incomplete cleanup as waiting, never idle success', () => {
     assert.equal(node([...handoff(), review(5, 'uncertain')], 'review').state, 'waiting')
     const events = [...handoff(), review(5, 'failed', 'job', { cleanupPending: true })]
@@ -147,6 +152,9 @@ describe('one event-backed per-node live projection', () => {
     assert.equal(node(events).state, 'waiting')
     assert.equal(node(events).action?.kind, 'waiting_delivery')
     events.push(interaction(6, 'delivered', 'delivered'))
+    assert.equal(node(events).state, 'waiting')
+    assert.equal(node(events).action, null)
+    events.push(state(7, 'worker', 'running'))
     assert.equal(node(events).state, 'working')
     assert.equal(node(events).action, null)
   })

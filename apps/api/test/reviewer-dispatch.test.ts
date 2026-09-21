@@ -147,7 +147,7 @@ class CoordinationFake {
     await this.assertLaneLease(id, token)
     this.lane = { ...this.lane, ...observed, revision: this.lane.revision + 1 }
     delete this.lane.leaseOwner; delete this.lane.leaseToken; delete this.lane.leaseExpiresAt
-    if (observed.observedStatus === 'idle') delete this.lane.correlationId
+    if (observed.observedStatus === 'idle' && !observed.currentTurnOrMessageId) delete this.lane.correlationId
     return clone(this.lane)
   }
 }

@@ -68,8 +68,16 @@ export class InteractionService {
     private readonly responseJournal?: NativeResponseJournal,
   ) {}
 
+  private async reviewCompleted(interaction: DurableInteraction): Promise<boolean> {
+    if (interaction.approval.handler !== 'orchestrator') return true
+    const reviewerId = interaction.approval.designatedOrchestratorAgentId
+    if (!reviewerId) return false
+    return (await this.interactions.coordination.findReviewJob(interaction.id, reviewerId))?.state === 'completed'
+  }
+
   private async resumeDelivered(interaction: DurableInteraction): Promise<void> {
     if (interaction.deliveryState !== 'delivered') return
+    if (!await this.reviewCompleted(interaction)) return
     const claim = await this.interactions.delivery.claimGraphResume(interaction.id, randomUUID())
     if (!claim) return
     let resumeError: string | undefined
@@ -97,6 +105,11 @@ export class InteractionService {
   }
 
   private async deliver(id: string, reconcileOnly = false): Promise<DurableInteraction> {
+    const current = await this.get(id)
+    // The native response itself releases the Worker. A routed Orchestrator
+    // records its choice during the review turn, then lifecycle recovery sends
+    // that response only after the review is terminal.
+    if (!await this.reviewCompleted(current)) return current
     const claim = await this.interactions.delivery.claim(id, randomUUID(), reconcileOnly)
     if (!claim) return this.get(id)
     const signal = AbortSignal.timeout(INTERACTION_DELIVERY_LEASE_MS)

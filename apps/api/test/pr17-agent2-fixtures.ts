@@ -58,7 +58,7 @@ export function reviewCoordination(initial = reviewJob()) {
     async releaseLane(_id: string, token: string, fields: { observedStatus: NativeSessionLane['observedStatus']; currentTurnOrMessageId?: string }) {
       assert.equal(token, lane.leaseToken)
       lane = { ...lane, ...fields }
-      if (fields.observedStatus === 'idle') delete lane.correlationId
+      if (fields.observedStatus === 'idle' && !fields.currentTurnOrMessageId) delete lane.correlationId
       delete lane.leaseToken; delete lane.leaseOwner; delete lane.leaseExpiresAt
       return structuredClone(lane)
     },
