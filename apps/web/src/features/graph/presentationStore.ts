@@ -1,5 +1,8 @@
 import { createStore } from 'zustand/vanilla'
 
+/** Disposable decoration only. These IDs/captions never authorize or advance a Run. */
+export type GraphExchangeCue = Readonly<{ key: string; relationshipId: string; token: string; caption: string }>
+
 type IdsUpdate = Set<string> | ((previous: Set<string>) => Set<string>)
 
 export type GraphPresentationState = {
@@ -10,6 +13,10 @@ export type GraphPresentationState = {
   enteringNodeIds: Set<string>
   departingNodeIds: Set<string>
   enteringEdgeId?: string
+  focusedExchangeKey?: string
+  exchangeCues: readonly GraphExchangeCue[]
+  setFocusedExchangeKey: (key?: string) => void
+  setExchangeCues: (cues: readonly GraphExchangeCue[]) => void
   epoch: number
   resetPresentation: () => void
   setSelectedNodeIds: (update: IdsUpdate) => void
@@ -28,10 +35,17 @@ function sameIds(left: Set<string>, right: Set<string>) {
 /** No workflow definitions, Run records, transport cursors, or gesture geometry live here. */
 export function createGraphPresentationStore() {
   return createStore<GraphPresentationState>((set) => ({
-    selectedNodeIds: new Set(), enteringNodeIds: new Set(), departingNodeIds: new Set(), epoch: 0,
+    selectedNodeIds: new Set(), enteringNodeIds: new Set(), departingNodeIds: new Set(), epoch: 0, exchangeCues: [],
     resetPresentation: () => set((state) => ({ selectedNodeIds: new Set(), enteringNodeIds: new Set(),
       departingNodeIds: new Set(), openMenuNodeId: undefined, focusedNodeId: undefined,
-      focusedEdgeId: undefined, enteringEdgeId: undefined, epoch: state.epoch + 1 })),
+      focusedEdgeId: undefined, enteringEdgeId: undefined, focusedExchangeKey: undefined, exchangeCues: [], epoch: state.epoch + 1 })),
+    setFocusedExchangeKey: (focusedExchangeKey) => set((state) => state.focusedExchangeKey === focusedExchangeKey
+      ? state : { focusedExchangeKey }),
+    setExchangeCues: (cues) => set((state) => {
+      const exchangeCues = cues.filter((cue, index) => cues.findIndex((item) => item.key === cue.key) === index).slice(0, 4)
+      return state.exchangeCues.length === exchangeCues.length && state.exchangeCues.every((cue, index) => cue === exchangeCues[index])
+        ? state : { exchangeCues }
+    }),
     setSelectedNodeIds: (update) => set((state) => {
       const selectedNodeIds = typeof update === 'function' ? update(state.selectedNodeIds) : update
       return sameIds(state.selectedNodeIds, selectedNodeIds) ? state : { selectedNodeIds }

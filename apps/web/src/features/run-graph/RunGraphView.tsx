@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from 'react'
+import { memo, useCallback, useMemo, useRef, useState } from 'react'
 import {
   Background, BaseEdge, Controls, Handle, Position, ReactFlow, getSmoothStepPath,
   type NodeProps, type EdgeProps,
@@ -12,16 +12,22 @@ import { RunGraphProvider } from './RunGraphProvider'
 import { useRunGraphContext } from './context'
 import { useRunGraphNode, useRunGraphSelection } from './hooks'
 import {
-  selectGraphTopology, selectGraphRun, selectGraphReader, selectGraphTransport, selectGraphExchanges,
+  selectGraphTopology, selectGraphRun, selectGraphReader, selectGraphTransport,
   selectLegacyRun,
 } from './cache'
 import { presentRunGraphNode } from './presentation'
 import { createRunViewTopologyProjector, type RunViewNode, type RunViewEdge } from './topology'
+import { RunAttentionAnnouncement, RunAttentionTools, RunExchangeInspector } from './RunAttention'
+import { RunVisualEffects } from './RunVisualEffects'
+import { selectRelationshipSummary, selectVisualStale, selectVisualStopped } from './exchangePresentation'
+import type { RunGraphRecord } from './types'
 import './runGraph.css'
 
 const RunFactNode = memo(function RunFactNode({ data }: NodeProps<RunViewNode>) {
   const fact = useRunGraphNode(data.workflowNodeId)
-  const view = presentRunGraphNode(fact)
+  const stale = useRunGraphSelection(selectVisualStale)
+  const stopped = useRunGraphSelection(selectVisualStopped)
+  const view = presentRunGraphNode(fact, { stale, stopped })
   const presentation = useGraphPresentationStore()
   const selected = useGraphPresentation((state) => state.selectedNodeIds.has(data.workflowNodeId))
   const role = data.productRole === 'unknown' ? 'Role unavailable' : data.productRole === 'orchestrator' ? 'Orchestrator' : 'Worker'
@@ -30,37 +36,51 @@ const RunFactNode = memo(function RunFactNode({ data }: NodeProps<RunViewNode>) 
     <WorkflowNodeCard className="run-graph-node-select" title={data.workflowNodeId}
       subtitle={`${data.isEntry ? 'Entry · ' : ''}${role}`} statusLabel={view.lifecycle} tone={view.tone}
       icon={data.productRole === 'orchestrator' ? 'workflow' : 'bot'} meta={view.activity}
-      selected={selected} working={false} ariaLabel={`Inspect node ${data.workflowNodeId}`}
-      onSelect={() => { presentation.getState().setSelectedNodeIds(new Set([data.workflowNodeId])); presentation.getState().setFocusedEdgeId(undefined) }} />
+      selected={selected} working={false} ariaLabel={`Inspect node ${data.workflowNodeId}: ${view.lifecycle}; ${view.activity}`}
+      onSelect={() => { presentation.getState().setSelectedNodeIds(new Set([data.workflowNodeId])); presentation.getState().setFocusedEdgeId(undefined); presentation.getState().setFocusedExchangeKey(undefined) }} />
     {fact && (fact.attention.pendingInteractionCount > 0 || fact.attention.unsettledReviewCount > 0 || fact.attention.cleanupPending)
       ? <small className="run-graph-attention">{fact.attention.pendingInteractionCount} pending · {fact.attention.unsettledReviewCount} unsettled reviews{fact.attention.cleanupPending ? ' · Cleanup pending' : ''}</small> : null}
     <Handle id="out" type="source" position={Position.Right} isConnectable={false} />
   </article>
 })
 const RunRelationship = memo(function RunRelationship(props: EdgeProps<RunViewEdge>) {
+  const summary = useRunGraphSelection(useCallback((record: RunGraphRecord) => selectRelationshipSummary(record, props.id), [props.id]))
+  const cue = useGraphPresentation((state) => state.exchangeCues.find((item) => item.relationshipId === props.id))
+  const kind = props.data?.kind === 'approval' ? 'Approval' : 'Execution'
   const [path, labelX, labelY] = getSmoothStepPath({ sourceX: props.sourceX, sourceY: props.sourceY,
     targetX: props.targetX, targetY: props.targetY, sourcePosition: props.sourcePosition,
     targetPosition: props.targetPosition, offset: props.data?.kind === 'approval' ? 45 : 20 })
-  return <BaseEdge id={props.id} path={path} markerEnd={props.markerEnd} labelX={labelX} labelY={labelY}
-    label={props.data?.kind === 'approval' ? 'Approval' : 'Execution'}
+  return <g data-run-relationship={props.id}><title>{kind}: {props.source} → {props.target}{summary ? `. ${summary}` : ''}</title>
+    <BaseEdge id={props.id} path={path} markerEnd={props.markerEnd} labelX={labelX} labelY={labelY}
+    label={summary ? `${kind} · ${summary}` : kind}
     style={{ strokeDasharray: props.data?.kind === 'approval' ? '5 4' : undefined }} />
+    {cue ? <g key={cue.token} className="run-graph-cue" aria-hidden="true" pointerEvents="none">
+      <path d={path} className="run-graph-cue-line" />
+      <text x={labelX} y={labelY - 18} textAnchor="middle" className="run-graph-cue-caption">{cue.caption}</text>
+    </g> : null}
+  </g>
 })
 const nodeTypes = { 'run-fact': RunFactNode }
 const edgeTypes = { 'run-relationship': RunRelationship }
 const fitViewOptions = { padding: 0.2 }
 
 const ImmutableCanvas = memo(function ImmutableCanvas() {
+  const canvas = useRef<HTMLDivElement>(null)
+  const updateDetail = useCallback((_event: unknown, viewport: { zoom: number }) => {
+    const level = viewport.zoom < 0.6 ? 'coarse' : 'normal'
+    if (canvas.current && canvas.current.dataset.detail !== level) canvas.current.dataset.detail = level
+  }, [])
   const topology = useRunGraphSelection(selectGraphTopology)
   const [project] = useState(createRunViewTopologyProjector)
   const graph = useMemo(() => topology ? project(topology) : undefined, [topology, project])
   const presentation = useGraphPresentationStore()
   if (!graph) return null
-  return <div className="run-graph-canvas" data-testid="immutable-run-canvas">
+  return <div ref={canvas} className="run-graph-canvas" data-testid="immutable-run-canvas">
     <ReactFlow<RunViewNode, RunViewEdge> nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
       nodesDraggable={false} nodesConnectable={false} edgesReconnectable={false} deleteKeyCode={null}
-      fitView fitViewOptions={fitViewOptions} aria-label="Immutable Run graph"
-      onPaneClick={() => { presentation.getState().setSelectedNodeIds(new Set()); presentation.getState().setFocusedEdgeId(undefined) }}
-      onEdgeClick={(_event, edge) => { presentation.getState().setFocusedEdgeId(edge.id); presentation.getState().setSelectedNodeIds(new Set()) }}>
+      onMove={updateDetail} onMoveEnd={updateDetail} fitView fitViewOptions={fitViewOptions} aria-label="Immutable Run graph"
+      onPaneClick={() => { presentation.getState().setSelectedNodeIds(new Set()); presentation.getState().setFocusedEdgeId(undefined); presentation.getState().setFocusedExchangeKey(undefined) }}
+      onEdgeClick={(_event, edge) => { presentation.getState().setFocusedEdgeId(edge.id); presentation.getState().setSelectedNodeIds(new Set()); presentation.getState().setFocusedExchangeKey(undefined) }}>
       <Background />
       <Controls showInteractive={false} />
     </ReactFlow>
@@ -74,7 +94,7 @@ function GraphStatus() {
   const phase = transport?.phase ?? 'loading'
   return <header className="run-graph-header">
     <div><h2>Run graph</h2><p>Immutable version <code>{scope.workflowVersionId}</code></p></div>
-    <div role="status" aria-live="polite">
+    <div>
       {run ? <p>{run.executionState} · {run.outcome}{run.stopRequested ? ' · Stop requested' : ''}
         {run.cleanupPending ? ' · Cleanup pending' : ''}</p> : null}
       <p>{phase === 'live' ? 'Synchronized' : phase === 'loading' ? 'Loading confirmed facts…'
@@ -92,10 +112,11 @@ function RunInspector() {
   const edgeId = useGraphPresentation((state) => state.focusedEdgeId)
   const node = useRunGraphNode(id ?? '')
   const topology = useRunGraphSelection(selectGraphTopology)
-  const exchanges = useRunGraphSelection(selectGraphExchanges)
   const metadata = topology?.nodes.find((item) => item.workflowNodeId === id)
   const edge = topology?.relationships.find((item) => item.relationshipId === edgeId)
-  const view = presentRunGraphNode(node)
+  const stale = useRunGraphSelection(selectVisualStale)
+  const stopped = useRunGraphSelection(selectVisualStopped)
+  const view = presentRunGraphNode(node, { stale, stopped })
   return <aside className="run-graph-inspector" aria-label="Run fact inspector">
     <h3>{id ? 'Node facts' : edge ? 'Relationship' : 'Run facts'}</h3>
     {metadata ? <><dl>
@@ -110,19 +131,7 @@ function RunInspector() {
     </dl></> : edge ? <dl><dt>ID</dt><dd>{edge.relationshipId}</dd><dt>Kind</dt><dd>{edge.kind}</dd>
       <dt>From</dt><dd>{edge.source}</dd><dt>To</dt><dd>{edge.target}</dd></dl>
       : <p>Select a node or relationship to inspect its confirmed facts.</p>}
-    <h3>Exchanges</h3>
-    {exchanges?.interactions.filter((item) => !id || item.requester.workflowNodeId === id || item.reviewer?.workflowNodeId === id)
-      .map((item) => <details key={item.interactionId}><summary>{item.interactionId} · {item.status}</summary>
-        <dl><dt>Decision</dt><dd>{item.decision ?? 'Not decided'}</dd><dt>Native delivery</dt><dd>{item.deliveryState}</dd>
-          <dt>Worker resumption</dt><dd>{item.resumeState}</dd></dl></details>)}
-    {exchanges?.reviews.filter((item) => !id || item.requester.workflowNodeId === id || item.reviewer.workflowNodeId === id)
-      .map((item) => <details key={item.reviewJobId}><summary>{item.reviewJobId} · {item.state}</summary>
-        <dl><dt>Native cleanup</dt><dd>{item.nativeCleanup}</dd><dt>Credential cleanup</dt><dd>{item.credentialCleanup}</dd></dl></details>)}
-    <h3>Accepted input receipts</h3>
-    {exchanges?.inputBindings.filter((item) => !id || item.recipient.workflowNodeId === id || item.sender.workflowNodeId === id)
-      .map((item) => <details key={item.bindingId}><summary>{item.relationshipId} · Input {item.inputOrdinal + 1}</summary>
-        <dl><dt>Sender</dt><dd>{item.sender.executionId}</dd><dt>Recipient</dt><dd>{item.recipient.executionId}</dd>
-          <dt>Accepted result digest</dt><dd>{item.acceptedResultDigest}</dd><dt>Input digest</dt><dd>{item.recipientInputDigest}</dd></dl></details>)}
+    <RunExchangeInspector nodeId={id} relationshipId={edgeId} />
   </aside>
 }
 
@@ -137,10 +146,15 @@ function LegacyFacts() {
     </tbody></table>
   </section>
 }
-function RunGraphContent() {
+export function RunGraphContent() {
+  const root = useRef<HTMLElement>(null)
+  const stale = useRunGraphSelection(selectVisualStale)
   const reader = useRunGraphSelection(selectGraphReader)
-  return <section className="n-theme run-graph-view" aria-label="Read-only Run view">
+  return <section ref={root} data-stale={stale || undefined} className="n-theme run-graph-view" aria-label="Read-only Run view">
+    <RunVisualEffects root={root} />
+    <RunAttentionAnnouncement />
     <GraphStatus />
+    {reader === 'graph' ? <RunAttentionTools /> : null}
     {reader === 'graph' ? <div className="run-graph-body"><ImmutableCanvas /><RunInspector /></div>
       : reader === 'legacy' ? <LegacyFacts /> : null}
   </section>
