@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { createNextDraftSlice, type NextDraftSlice } from './nextDraft/state'
 import type { Agent, WorkflowDefinition } from '@graphql/contracts'
 import { sameWorkflow } from './mapper'
 import { sameEditableGraph, sameManagedValue, type ManagedEditBase, type CloneSources } from './managedGraphState'
@@ -11,7 +12,7 @@ export type GraphSaveSnapshot = {
 }
 export type GraphDraft = GraphSaveSnapshot & { dirty: true }
 
-type GraphDraftStore = {
+type GraphDraftStore = NextDraftSlice & {
   drafts: Record<string, GraphDraft>
   managedSaving: Record<string, boolean>
   acknowledgedBases: Record<string, ManagedEditBase>
@@ -58,6 +59,7 @@ function rebaseEntities<T extends { id: string }>(current: T[], sent: T[], saved
 }
 
 export const useGraphDraftStore = create<GraphDraftStore>((set) => ({
+  ...createNextDraftSlice(set),
   drafts: {},
   managedSaving: {},
   acknowledgedBases: {},
@@ -154,7 +156,7 @@ export const useGraphDraftStore = create<GraphDraftStore>((set) => ({
     const drafts = { ...state.drafts }; delete drafts[workflowKey]
     return { drafts }
   }),
-  clearAllDrafts: () => set({ drafts: {}, managedSaving: {}, acknowledgedBases: {} }),
+  clearAllDrafts: () => set({ drafts: {}, managedSaving: {}, acknowledgedBases: {}, nextDrafts: {}, nextDraftPromotions: {} }),
 }))
 
 export function workflowDraftKey(workspaceId: string, workflowId: string): string { return `${workspaceId}::${workflowId}` }

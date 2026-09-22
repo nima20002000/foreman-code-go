@@ -64,6 +64,9 @@ import { AgentManagementService } from './modules/workspaces/agents.js'
 import { WorkspaceLocationService } from './modules/workspaces/location.js'
 import { WorkspaceManagementService } from './modules/workspaces/management.js'
 import { PostgresWorkspaceRepository } from './modules/workspaces/postgres.js'
+import { RunGraphReadService } from './modules/run-graph/readService.js'
+import { createCompactSnapshotAssembler } from './modules/run-graph/compactSnapshot.js'
+import { readCurrentGraphExchanges } from './modules/interactions/wave25/currentExchanges.js'
 
 function inspectorFor(manager: NativeHarnessSessionManager) {
   if (manager instanceof CodexAppServerSessionManager) return codexMcpInspectorAdapter(manager)
@@ -241,6 +244,7 @@ export function buildProductionApp(
     runs: new RunManagementService(database.pool, commands, runs, engine, locations),
     commands,
     interactions: new OperatorInteractionService(interactions),
+    runGraph: new RunGraphReadService(database.pool, createCompactSnapshotAssembler(readCurrentGraphExchanges), { qualifiedReads: true }),
   }
   const detection = new McpDetectionService({
     async inspect(input) {
