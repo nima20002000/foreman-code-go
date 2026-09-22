@@ -1,0 +1,215 @@
+import { HarnessNativeEventSchema, type HarnessNativeEvent } from '@graphql/contracts'
+import {
+  canonicalGraphJson, graphJsonBytes, parseNativeGraphObservation, sameGraphScope,
+  assertNativeGraphProjectionAuthority, type GraphFact, type NativeGraphObservation, type NativeGraphCorrelationRecord, type RunGraphScope,
+} from '@graphql/contracts/wave25'
+import { readCurrentNodeAttention } from './currentAttention.js'
+import { poisonGraphTransaction } from './connection.js'
+import { readCurrentNativeActivities, readCurrentActivityContext, selectCurrentNodeActivity, type CurrentNativeActivity } from './currentActivity.js'
+import { assertRunGraphPublication, graphSourceDigest, type RunGraphPublication } from './publication.js'
+import { readNativeGraphActivity, readNativeGraphCorrelation, type NativeGraphProjectionGuard } from './records.js'
+import { RunGraphError } from './errors.js'
+import { PostgresNativeGraphProjectionWriter } from './nativeWriter.js'
+import { nativeProjectionId, projectNativeEvidence, reconcileNativeEvidence, type ProjectionBinding, type ProjectionEvent, type NativeProjectionState } from './nativeProjection.js'
+import { parseNativeCheckpoint } from './nativeCheckpoint.js'
+import { selectNativeGraphEvidence } from './nativeEvidence.js'
+
+export interface NativeGraphWork {
+  guard: NativeGraphProjectionGuard
+  correlationKey: string
+  /** Optional normalized reliability evidence produced by the qualified adapter, not a raw frame. */
+  observation?: NativeGraphObservation
+  /** Adapter-qualified COMPLETE view of the exact current work, never a partial history page.
+   * Every listed item is grounded in the input's captured provider response. No native call occurs here. */
+  currentView?: { complete: true; events: readonly Pick<ProjectionEvent, 'type' | 'payload'>[] }
+}
+export interface NativeGraphIngestionResult { rawInserted: boolean; projected: number; rejected: number; ignored: number }
+export function nativeGraphSource(event: HarnessNativeEvent) {
+  return { sourceKind: 'native_event' as const,
+    sourceId: nativeProjectionId('native', event.executionId, event.connectionId ?? null, event.sequence), sourceRevision: '0' }
+}
+
+/**
+ * SQL-only producer. Caller has opened G1 publication FIRST on the exclusively owned connection.
+ * The existing native append, bounded projection and semantic batch commit or roll back together.
+ * No native/network call, private cursor, advisory owner acquisition, or lifetime replay here.
+ */
+export async function appendNativeGraphEvent(publication: RunGraphPublication, input: HarnessNativeEvent,
+  work: readonly NativeGraphWork[], writer = new PostgresNativeGraphProjectionWriter()): Promise<NativeGraphIngestionResult> {
+  try { return await ingest(publication, input, work, writer) }
+  catch (error) { poisonGraphTransaction(publication.sql); throw error }
+}
+
+async function ingest(publication: RunGraphPublication, input: HarnessNativeEvent, work: readonly NativeGraphWork[],
+  writer: PostgresNativeGraphProjectionWriter): Promise<NativeGraphIngestionResult> {
+  const { sql, scope } = publication
+  assertRunGraphPublication(sql, scope)
+  if (scope.executionSemanticsVersion !== 2 || !work.length || work.length > 16) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
+  const event = HarnessNativeEventSchema.parse(input)
+  if (!Number.isSafeInteger(event.sequence) || event.sequence > 2147483647) throw new RunGraphError('GRAPH_EVIDENCE_INVALID')
+  const evidence = nativeGraphSource(event)
+  const ordered = [...work].sort((a, b) => canonicalGraphJson(a.guard.expected.key).localeCompare(canonicalGraphJson(b.guard.expected.key)))
+  if (new Set(ordered.map((item) => canonicalGraphJson(item.guard.expected.key))).size !== ordered.length) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+  for (const item of ordered) {
+    if (!sameGraphScope(item.guard.expected.scope, scope) || item.guard.expected.key.execution.executionId !== event.executionId) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
+    assertNativeGraphProjectionAuthority(item.guard.expected, await item.guard.readCurrentLocked(sql, scope, item.guard.expected.key))
+  }
+  // Same S1 function, identity and integer numbering; it locks the execution AFTER Run/head.
+  const appended = await sql.query<{ inserted: boolean }>('select append_harness_native_event($1::jsonb) as inserted', [JSON.stringify(event)])
+  const result: NativeGraphIngestionResult = { rawInserted: appended.rows[0]!.inserted, projected: 0, rejected: 0, ignored: 0 }
+  const published = await sql.query('select 1 from run_graph_sources where run_id=$1 and source_kind=$2 and source_id=$3 and source_revision=0',
+    [scope.runId, evidence.sourceKind, evidence.sourceId])
+  if (published.rowCount) { result.ignored = work.length; return result }
+  const native = await sql.query<{ sequence: string }>(
+    event.connectionId
+      ? 'select sequence::text from harness_native_events where execution_id=$1 and connection_id=$2 and source_sequence=$3'
+      : 'select sequence::text from harness_native_events where execution_id=$1 and connection_id is null and sequence=$3',
+    [event.executionId, event.connectionId ?? null, event.sequence])
+  if (native.rows.length !== 1) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+  const nativeSequence = native.rows[0]!.sequence
+  const selected = selectNativeGraphEvidence(event.type, event.payload)
+  // Irrelevant token/prose/keepalive events perform no checkpoint/correlation reads at all.
+  if (selected.kind !== 'evidence' && ordered.every((item) => !item.observation && !item.currentView)) {
+    if (selected.kind === 'invalid') result.rejected = ordered.length
+    else result.ignored = ordered.length
+    return result
+  }
+  const writes: (() => Promise<void>)[] = []
+  const facts: GraphFact[] = []
+  const nodeIds = [...new Set(ordered.map((item) => item.guard.expected.key.execution.workflowNodeId))]
+  const beforeCandidates = await readCurrentNativeActivities(sql, scope, nodeIds)
+  const afterCandidates: CurrentNativeActivity[] = [...beforeCandidates]
+  // Oversized original evidence fails projection explicitly; raw source numbering is preserved.
+  let sourceDigest: string
+  try { sourceDigest = graphSourceDigest(event) } catch { result.rejected = ordered.length; return result }
+  for (const item of ordered) {
+    const key = item.guard.expected.key
+    const correlation = await readNativeGraphCorrelation(sql, scope, key, item.correlationKey)
+    // The exact submission/session correlation is a prerequisite; never infer a workflow lane by exclusion.
+    if (!correlation) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
+    if (correlation.connectionId !== (event.connectionId ?? null)
+      || String(correlation.connectionGeneration) !== item.guard.expected.connectionGeneration) throw new RunGraphError('GRAPH_STALE_GENERATION')
+    const closed = await sql.query<{ closed: boolean }>(
+      `select (r.stop_requested_at is not null or r.execution_state in ('completed','interrupted') or
+         case when $3='workflow' then e.record->>'state'='completed' else
+           exists(select 1 from review_jobs j where j.id=$4 and j.execution_id=e.id
+             and (j.record->>'state'='completed' or j.record->'cleanup'->>'completedAt' is not null)) end) as closed
+       from runs r join harness_executions e on e.run_id=r.id where r.id=$1 and e.id=$2`,
+      [scope.runId, key.execution.executionId, key.workKind, key.workId])
+    if (!closed.rows[0]) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
+    const binding: ProjectionBinding = { key, provider: correlation.provider, nativeSessionId: correlation.nativeSessionId,
+      nativeTurnId: correlation.nativeTurnId, connectionGeneration: item.guard.expected.connectionGeneration,
+      interactionId: correlation.interactionId, closed: closed.rows[0].closed || correlation.terminalNativeSequence !== null }
+    const checkpoint = (await sql.query<{ revision: string; checkpoint: unknown }>(
+      `select revision::text,checkpoint from run_native_projection_checkpoints
+       where run_id=$1 and execution_id=$2 and work_kind=$3 and work_id=$4`,
+      [scope.runId, key.execution.executionId, key.workKind, key.workId])).rows[0]
+    const previous = checkpoint ? parseNativeCheckpoint(checkpoint.checkpoint) : undefined
+    let normalized: Pick<ProjectionEvent, 'type' | 'payload'> | undefined
+    try { normalized = normalizedEvidence(scope, item.observation, event, binding, selected) }
+    catch { result.rejected++; continue }
+    if (!normalized && !item.currentView) { result.ignored++; continue }
+    const cut = { nativeSequence, sourcePosition: String(event.sequence),
+      sourceStreamId: nativeProjectionId('stream', event.executionId, event.connectionId ?? null),
+      connectionGeneration: binding.connectionGeneration, sourceId: evidence.sourceId }
+    let projected
+    if (item.currentView) {
+      if (item.currentView.complete !== true || item.currentView.events.length > 256) { result.rejected++; continue }
+      const currentEvents: ProjectionEvent[] = []
+      let invalid = false
+      for (const current of item.currentView.events) {
+        if (!['item.snapshot', 'message.updated', 'message.part.updated'].includes(current.type)) { invalid = true; break }
+        const safe = selectNativeGraphEvidence(current.type, current.payload)
+        const selectedCurrent = normalizedEvidence(scope, undefined, event, binding, safe)
+        if (!selectedCurrent) { invalid = true; break }
+        currentEvents.push({ ...cut, ...selectedCurrent })
+      }
+      if (invalid) { result.rejected++; continue }
+      projected = reconcileNativeEvidence(previous, binding, cut, currentEvents)
+    } else projected = projectNativeEvidence(previous, binding, { ...cut, ...normalized! })
+    if (projected.disposition === 'rejected') result.rejected++
+    else if (projected.disposition === 'ignored') result.ignored++
+    else result.projected++
+    // Invalid input does not destroy a good checkpoint; bounded-capacity uncertainty is explicit.
+    if (projected.disposition === 'rejected' && projected.reason !== 'capacity') continue
+    let nextState = projected.state
+    if (graphJsonBytes(nextState) > 120000) {
+      nextState = { ...(previous ?? nextState), operations: previous?.operations ?? [], messages: previous?.messages ?? [], overflow: true }
+      projected.activity = { workflowNodeId: key.execution.workflowNodeId, execution: key.execution, status: 'unknown' }
+      result.rejected++
+    }
+    const current = await readNativeGraphActivity(sql, scope, key)
+    const changed = !current || canonicalGraphJson(current.activity) !== canonicalGraphJson(projected.activity)
+      || current.lastNativeSequence !== (nextState.lastNativeSequence ?? current.lastNativeSequence)
+      || current.terminalNativeSequence !== (nextState.terminalNativeSequence ?? current.terminalNativeSequence)
+    const candidate: CurrentNativeActivity = { key, activity: projected.activity,
+      lastNativeSequence: nextState.lastNativeSequence ?? current?.lastNativeSequence ?? null }
+    const candidateIndex = afterCandidates.findIndex((row) => canonicalGraphJson(row.key) === canonicalGraphJson(key))
+    if (candidateIndex < 0) afterCandidates.push(candidate)
+    else afterCandidates[candidateIndex] = candidate
+    const nextRevision = current ? String(BigInt(current.projectionRevision) + 1n) : '0'
+    const nextCorrelation: NativeGraphCorrelationRecord = { ...correlation,
+      metadataRevision: String(BigInt(correlation.metadataRevision) + 1n),
+      firstNativeSequence: BigInt(nativeSequence) < BigInt(correlation.firstNativeSequence) ? nativeSequence : correlation.firstNativeSequence,
+      lastNativeSequence: BigInt(nativeSequence) > BigInt(correlation.lastNativeSequence) ? nativeSequence : correlation.lastNativeSequence,
+      terminalNativeSequence: projected.state.terminalNativeSequence ?? correlation.terminalNativeSequence }
+    if (checkpoint && canonicalGraphJson(previous) === canonicalGraphJson(nextState) && !changed) continue
+    const capturedState: NativeProjectionState = nextState
+    writes.push(async () => {
+      await writer.persistCorrelation(sql, scope, correlation.metadataRevision, nextCorrelation, item.guard)
+      if (changed) await writer.persistActivity(sql, scope, current?.projectionRevision ?? null, {
+        key, projectionRevision: nextRevision, lastNativeSequence: capturedState.lastNativeSequence ?? current?.lastNativeSequence ?? null,
+        terminalNativeSequence: capturedState.terminalNativeSequence ?? current?.terminalNativeSequence ?? null, activity: projected.activity,
+      }, item.guard)
+      const values = [scope.runId, key.execution.executionId, key.execution.workflowNodeId, key.execution.attempt,
+        key.workKind, key.workId, checkpoint ? String(BigInt(checkpoint.revision) + 1n) : '0', canonicalGraphJson(parseNativeCheckpoint(capturedState))]
+      const saved = await sql.query(
+        `insert into run_native_projection_checkpoints(run_id,execution_id,workflow_node_id,attempt,work_kind,work_id,revision,checkpoint)
+         values($1,$2,$3,$4,$5,$6,$7::bigint,$8::jsonb)
+         on conflict(run_id,execution_id,work_kind,work_id) do update set revision=excluded.revision,checkpoint=excluded.checkpoint
+         where run_native_projection_checkpoints.revision=$9::bigint returning execution_id`, [...values, checkpoint?.revision ?? null])
+      if (saved.rowCount !== 1) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
+    })
+  }
+  for (const nodeId of nodeIds) {
+    const context = await readCurrentActivityContext(sql, scope, nodeId)
+    const before = selectCurrentNodeActivity(nodeId, beforeCandidates, context)
+    const after = selectCurrentNodeActivity(nodeId, afterCandidates, context)
+    if (canonicalGraphJson(before) !== canonicalGraphJson(after)) {
+      facts.push({ type: 'node.activity', activity: after })
+      const attention = await readCurrentNodeAttention(sql, scope, new Map([[nodeId, after]]))
+      facts.push({ type: 'node.attention', attention: attention.get(nodeId)! })
+    }
+  }
+  const mutate = async () => { for (const write of writes) await write() }
+  if (facts.length) {
+    // Includes private fields in the source digest, never in the public graph facts.
+    await publication.source({ evidence, sourceDigest, facts }, mutate)
+  } else await mutate() // Identity bookkeeping is atomic but is NOT a semantic graph event.
+  return result
+}
+
+function normalizedEvidence(scope: RunGraphScope, observation: NativeGraphObservation | undefined, event: HarnessNativeEvent, binding: ProjectionBinding,
+  selected: ReturnType<typeof selectNativeGraphEvidence>): Pick<ProjectionEvent, 'type' | 'payload'> | undefined {
+  if (!observation) {
+    if (selected.kind !== 'evidence') return undefined
+    // Exact current connection/session binding is already locked above. Fill only
+    // missing session metadata; contradictory provider metadata is never overwritten.
+    const payload = { ...selected.payload }
+    if (payload.sessionID === undefined && payload.threadId === undefined
+      && !('sessionID' in (payload.info as Record<string, unknown> ?? {}))
+      && !('sessionID' in (payload.part as Record<string, unknown> ?? {}))) payload.sessionID = binding.nativeSessionId
+    return { type: selected.type, payload }
+  }
+  const value = parseNativeGraphObservation(observation)
+  const source = nativeGraphSource(event)
+  if (!sameGraphScope(value.scope, scope)
+    || value.sourceStreamId !== nativeProjectionId('stream', event.executionId, event.connectionId ?? null)
+    || value.observedAt !== event.occurredAt || canonicalGraphJson(value.work) !== canonicalGraphJson(binding.key) || value.source.sourceId !== source.sourceId
+    || value.source.sourceRevision !== source.sourceRevision || value.sourcePosition !== String(event.sequence)
+    || value.connectionGeneration !== binding.connectionGeneration) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
+  const payload = { sessionID: binding.nativeSessionId, turnId: binding.nativeTurnId }
+  if (value.kind === 'transport') return value.transport === 'closed' ? { type: 'graph.native.disconnected', payload } : undefined
+  if (value.kind === 'submission') return { type: value.state === 'acknowledged' ? 'graph.native.acknowledged' : 'graph.native.uncertain', payload }
+  return { type: 'graph.native.terminal', payload: { ...payload, terminal: value.terminal } }
+}

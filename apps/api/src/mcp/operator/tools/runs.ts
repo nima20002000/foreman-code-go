@@ -4,6 +4,7 @@ import {
   RunEventsListInputSchema, RunGetInputSchema, RunListInputSchema, RunStartInputSchema, RunStopInputSchema,
   RunDetailsSchema, RunEventsPageSchema, RunPageSchema, RunStartResultSchema, RunStopResultSchema,
 } from '@graphql/contracts/management'
+import { RunStartV2InputSchema, CompatibleWorkflowRunSchema } from '@graphql/contracts/wave25'
 import { invokeOperatorTool } from '../invoke.js'
 import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'
@@ -11,7 +12,7 @@ import type { OperatorRequestContext } from '../types.js'
 export function registerRunTools(server: McpServer, context: OperatorRequestContext): void {
   if (operatorToolAvailable(context, 'run_list')) server.registerTool('run_list', {
     description: 'List authorized durable runs with pagination.', inputSchema: RunListInputSchema,
-    outputSchema: RunPageSchema,
+    outputSchema: RunPageSchema.extend({ items: CompatibleWorkflowRunSchema.array() }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_list', () => context.services.runs.list(context.principal, input)))
   if (operatorToolAvailable(context, 'run_get')) server.registerTool('run_get', {
@@ -25,8 +26,8 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_events_list', () => context.services.runs.events(context.principal, input)))
   if (operatorToolAvailable(context, 'run_start')) server.registerTool('run_start', {
-    description: 'Durably accept one run of an explicit current saved workflow version. Nodes using routed Orchestrator approval require direct edges. Interrupted Runs and pending native cleanup must be stopped/resolved first.', inputSchema: RunStartInputSchema,
-    outputSchema: RunStartResultSchema,
+    description: 'Durably accept one run of an explicit current saved workflow version. Nodes using routed Orchestrator approval require direct edges. Interrupted Runs and pending native cleanup must be stopped/resolved first.', inputSchema: RunStartInputSchema.or(RunStartV2InputSchema),
+    outputSchema: RunStartResultSchema.extend({ run: CompatibleWorkflowRunSchema }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_start', () => context.services.runs.start(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'run_stop')) server.registerTool('run_stop', {

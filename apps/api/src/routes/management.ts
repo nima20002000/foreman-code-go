@@ -35,6 +35,7 @@ import {
   WorkspaceLocationValidateInputSchema,
   WorkflowDefaultsUpdateInputSchema,
 } from '@graphql/contracts/management'
+import { GraphDraftApplyV2InputSchema, GraphSaveV2InputSchema, RunStartV2InputSchema } from '@graphql/contracts/wave25'
 import { requireBrowserSession, requirePrincipal } from '../modules/access/http.js'
 import type { OperatorServices } from '../mcp/operator/types.js'
 import { DomainError } from '../modules/errors.js'
@@ -120,13 +121,13 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
     return services.drafts.get(requirePrincipal(request), input.workspaceId, input.workflowId, input.draftId)
   })
   app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/drafts/:draftId/operations', async (request) =>
-    services.drafts.apply(requirePrincipal(request), 'http', GraphDraftApplyInputSchema.parse(routeInput(request.params, request.body))))
+    services.drafts.apply(requirePrincipal(request), 'http', GraphDraftApplyInputSchema.or(GraphDraftApplyV2InputSchema).parse(routeInput(request.params, request.body))))
   app.post<{ Params: Params }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/drafts/:draftId/validate', async (request) => {
     const input = GraphValidateInputSchema.parse(request.params)
     return services.drafts.validate(requirePrincipal(request), input.workspaceId, input.workflowId, input.draftId)
   })
   app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/drafts/:draftId/save', async (request) =>
-    services.drafts.save(requirePrincipal(request), 'http', GraphSaveInputSchema.parse(routeInput(request.params, request.body))))
+    services.drafts.save(requirePrincipal(request), 'http', GraphSaveInputSchema.or(GraphSaveV2InputSchema).parse(routeInput(request.params, request.body))))
   app.delete<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/drafts/:draftId', async (request) =>
     services.drafts.discard(requirePrincipal(request), 'http', GraphDraftDiscardInputSchema.parse(routeInput(request.params, request.body))))
 
@@ -167,7 +168,7 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
       ...(request.query.limit ? { limit: Number(request.query.limit) } : {}),
     })))
   app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/runs', async (request, reply) => {
-    const result = await services.runs.start(requirePrincipal(request), 'http', RunStartInputSchema.parse(routeInput(request.params, request.body)))
+    const result = await services.runs.start(requirePrincipal(request), 'http', RunStartInputSchema.or(RunStartV2InputSchema).parse(routeInput(request.params, request.body)))
     reply.code(202)
     return result
   })

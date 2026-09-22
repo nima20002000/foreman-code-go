@@ -887,7 +887,7 @@ export class ApprovalExecutionCoordinator {
       }
 
       if (!execution.nativeSessionId) {
-        if (!ensured.created) {
+        if (!ensured.created && !this.runs.consumeOneShotLaunch?.(execution.id, input.owner)) {
           throw new DomainError('NATIVE_SESSION_START_UNCERTAIN', 'The existing execution has no recorded native session. Native side effects will not be replayed.', 409)
         }
         const environment = await this.prepareEnvironment(context, resolved, signal)
@@ -895,6 +895,7 @@ export class ApprovalExecutionCoordinator {
         await this.validateContinuation?.(execution.id, signal)
         signal.throwIfAborted()
         input.owner.assertOwned()
+        await this.runs.assertOneShotNativeBoundary?.(execution.id, input.owner)
         session = await this.openingSession(ownedSession, manager.createSession({ request, ...(environment ? { environment } : {}) }, signal))
         if (session.harness !== context.harness) throw new Error('The created native session has the wrong harness.')
         resolved.markResident?.()
@@ -906,6 +907,7 @@ export class ApprovalExecutionCoordinator {
         await this.validateContinuation?.(execution.id, signal)
         signal.throwIfAborted()
         input.owner.assertOwned()
+        await this.runs.assertOneShotNativeBoundary?.(execution.id, input.owner)
         for await (const event of manager.startTurn(session, {
           prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
         }, signal)) {
@@ -916,7 +918,7 @@ export class ApprovalExecutionCoordinator {
           if (waiting) return waiting
         }
       } else {
-        session = {
+        session = await this.runs.exactOneShotSession?.(execution.id, input.owner) ?? {
           harness: context.harness,
           providerVersion: existing?.providerVersion ?? (await manager.capabilities(signal)).providerVersion,
           nativeSessionId: execution.nativeSessionId,
@@ -928,6 +930,7 @@ export class ApprovalExecutionCoordinator {
         await this.validateContinuation?.(execution.id, signal)
         signal.throwIfAborted()
         input.owner.assertOwned()
+        await this.runs.assertOneShotNativeBoundary?.(execution.id, input.owner)
         if (resolved.processState === 'needs_start') {
           const attached = await this.openingSession(ownedSession, manager.attachSession(session, {
             kind: 'workflow', correlationId: `execution:${execution.id}`, request,

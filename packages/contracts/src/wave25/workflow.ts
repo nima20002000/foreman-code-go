@@ -165,7 +165,12 @@ export const ExecutableWorkflowV2Schema = z.object({
     if (edge.source !== version.entryNodeId || edge.target === version.entryNodeId) fail('independent or recursive reviewer startup is unsupported')
   }
   for (const node of nodes) {
-    if (node.id !== version.entryNodeId && !approvals.some((edge) => edge.target === node.id)) fail('App-routed requester requires an explicit reviewer relationship')
+    const configuration = configs.get(version.agentConfigurationVersionIds[node.agentId]!)
+    const nativeSelfReview = configuration?.harness.harness === 'codex'
+      && configuration.harness.advanced?.approvalPolicy === 'on-request'
+      && configuration.harness.advanced.approvalsReviewer === 'auto_review'
+    if (node.id !== version.entryNodeId && !nativeSelfReview
+      && !approvals.some((edge) => edge.target === node.id)) fail('App-routed requester requires an explicit reviewer relationship')
   }
 })
 

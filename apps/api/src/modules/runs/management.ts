@@ -3,12 +3,14 @@ import { randomUUID } from 'node:crypto'
 import {
   AgentConfigurationVersionSchema,
   RunActivitySchema,
-  WorkflowRunSchema,
   WorkflowVersionSchema,
   type RunInput,
 } from '@graphql/contracts'
 import { GraphDraftSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
+import { CompatibleWorkflowRunSchema as WorkflowRunSchema, RunStartV2InputSchema, assertWave25Admission } from '@graphql/contracts/wave25'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
+import { admitOneShotRun } from './oneShotAdmission.js'
 
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { authorizedPage } from '../access/authorizedPage.js'
@@ -97,11 +99,19 @@ export class RunManagementService {
 
   async start(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
     workspaceId: string; workflowId: string; workflowVersionId: string; expectedLocationRevision: number;
-    commandId: string; input: RunInput;
+    commandId: string; input: RunInput; executionSemanticsVersion?: 2;
     draftId?: string | undefined; expectedDraftRevision?: number | undefined; triggerJobId?: string | undefined
   }) {
     requireAuthorization(principal, 'runs:start', { workspaceId: input.workspaceId, workflowId: input.workflowId })
     requireAuthorization(principal, 'workspace_locations:read', { workspaceId: input.workspaceId })
+    if (input.executionSemanticsVersion === 2) {
+      assertWave25Admission() // remains OFF until the assembled writer/reader lanes qualify
+      const { triggerJobId, ...command } = input
+      const execution = await admitOneShotRun(this.pool, this.locations, principal, source,
+        RunStartV2InputSchema.parse(command), triggerJobId === undefined ? {} : { triggerJobId: triggerJobId as string })
+      if (!execution.replayed) setImmediate(() => { void this.engine.start(execution.value.id).catch(() => undefined) })
+      return { run: this.visibleRun(principal, execution.value), accepted: true as const, replayed: execution.replayed }
+    }
     const execution = await this.commands.execute({
       principal, source, operation: 'run.start', commandId: input.commandId,
       targetKey: `workflow:${input.workflowId}:version:${input.workflowVersionId}`, payload: input,
@@ -141,6 +151,9 @@ export class RunManagementService {
           [input.workflowVersionId, input.workspaceId, input.workflowId],
         )
         if (!versionRow.rows[0]) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', `Workflow version '${input.workflowVersionId}' was not found.`, 404)
+        const semantics = (versionRow.rows[0].record as { executionSemanticsVersion?: unknown }).executionSemanticsVersion
+        if (semantics === 2) assertWave25Admission()
+        if (semantics !== undefined && semantics !== 1) throw new DomainError('EXECUTION_SEMANTICS_UNSUPPORTED', 'Unknown semantics cannot use the legacy admission path.', 409)
         const version = WorkflowVersionSchema.parse(versionRow.rows[0].record)
         validateExecutableTopology(version)
         const approval = acceptedRunApproval(version)
@@ -201,6 +214,12 @@ export class RunManagementService {
         if (latest.executionState === 'completed' && !await this.runs.hasPendingCleanup(input.runId, client)) {
           return { runId: input.runId, status: 'already_terminal' as const, processStopped: false }
         }
+        // Revalidate live command authority while the same parent Run lock that
+        // fences native launch/completion is held. Cleanup is not Stop intent.
+        if ('executionSemanticsVersion' in latest && latest.executionSemanticsVersion === 2) await this.runs.requestStop(input.runId, async (sql) => {
+          const live = await readLiveManagementPrincipal(sql as unknown as Pick<pg.ClientBase, 'query'>, principal.id)
+          requireAuthorization(live, 'runs:stop', { workspaceId: input.workspaceId, workflowId: latest.workflowId, runId: input.runId })
+        })
         const accepted = await this.engine.cancel(input.runId, client)
         return accepted
           ? { runId: input.runId, status: 'accepted' as const, processStopped: false }

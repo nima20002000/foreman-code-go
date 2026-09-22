@@ -1,3 +1,5 @@
+import { Wave25InteractionRepository } from './wave25/repository.js'
+import { deliverApproval, respondToApproval, resumeApproval, type ApprovalRuntimeDependencies, type AtomicApprovalResumeConsumer } from './wave25/service.js'
 import { randomUUID } from 'node:crypto'
 import type { NativeResponseJournal } from '../harnesses/recovery/responseJournal.js'
 
@@ -49,6 +51,18 @@ function message(error: unknown): string {
 
 /** One authoritative decide -> native delivery -> reconciliation boundary for all handlers. */
 export class InteractionService {
+  private atomicApprovalResume: AtomicApprovalResumeConsumer | undefined
+  useAtomicApprovalResume(consumer: AtomicApprovalResumeConsumer): void { this.atomicApprovalResume = consumer }
+  async usesAtomicApproval(runId: string): Promise<boolean> {
+    return this.interactions instanceof Wave25InteractionRepository && this.interactions.usesAtomicApproval(runId)
+  }
+  private approvalDependencies(): ApprovalRuntimeDependencies {
+    if (!(this.interactions instanceof Wave25InteractionRepository)) throw new DomainError('APPROVAL_REPOSITORY_REQUIRED', 'The v2 approval repository is not attached.', 503)
+    return { repository: this.interactions, nativeRuntime: this.nativeRuntime,
+      ...(this.responseJournal ? { journal: this.responseJournal } : {}),
+      ...(this.atomicApprovalResume ? { atomicResume: this.atomicApprovalResume } : {}) }
+  }
+
   constructor(
     private readonly interactions: PostgresInteractionRepository,
     private readonly budgets: PostgresApprovalBudgetRepository,
@@ -65,6 +79,7 @@ export class InteractionService {
   }
 
   private async resumeDelivered(interaction: DurableInteraction): Promise<void> {
+    if (await this.usesAtomicApproval(interaction.runId)) return resumeApproval(this.approvalDependencies(), interaction)
     if (interaction.deliveryState !== 'delivered') return
     if (!await this.reviewCompleted(interaction)) return
     const claim = await this.interactions.delivery.claimGraphResume(interaction.id, randomUUID())
@@ -95,6 +110,7 @@ export class InteractionService {
 
   private async deliver(id: string, reconcileOnly = false): Promise<DurableInteraction> {
     const current = await this.get(id)
+    if (await this.usesAtomicApproval(current.runId)) return deliverApproval(this.approvalDependencies(), id, reconcileOnly)
     // The native response itself releases the Worker. A routed Orchestrator
     // records its choice during the review turn, then lifecycle recovery sends
     // that response only after the review is terminal.
@@ -228,6 +244,12 @@ export class InteractionService {
 
   async respond(responder: InteractionResponder, input: { interactionId: string; optionId: string; expectedRevision: number; commandId?: string }) {
     const current = await this.get(input.interactionId)
+    if (await this.usesAtomicApproval(current.runId)) {
+      const atomicResponder = responder.kind === 'orchestrator'
+        ? { kind: responder.kind, authority: responder.authority, ...(responder.principal ? { principal: responder.principal } : {}) } as InteractionResponder
+        : responder
+      return respondToApproval(this.approvalDependencies(), atomicResponder, input)
+    }
     assertResponder(current, responder)
     await this.interactions.assertOrchestratorConnection(current,
       responder.kind === 'orchestrator' && responder.principal ? { principalId: responder.principal.id } : {})

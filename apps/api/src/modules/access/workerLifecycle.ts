@@ -1,3 +1,4 @@
+import { assertWave25WorkerBinding } from '../interactions/wave25/credentialAuthority.js'
 import { HarnessExecutionSchema, WorkflowRunSchema } from '@graphql/contracts'
 import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
@@ -80,6 +81,7 @@ export async function requireActiveWorkerBinding(client: pg.ClientBase | pg.Pool
        and ${WORKER_BINDING_ELIGIBLE}`, [principalId],
   )
   if (active.rowCount !== 1) throw new DomainError('AUTH_REVOKED', 'The credential is no longer active.', 401)
+  await assertWave25WorkerBinding(client, principalId)
 }
 
 /** Hold the same parent locks as Stop until the decision and its audit commit. */

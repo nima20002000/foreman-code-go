@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/server'
 import { requireAuthorization } from '../../../modules/access/policy.js'
 import * as contracts from '@graphql/contracts/management'
+import { CompatibleWorkflowVersionSchema } from '@graphql/contracts/wave25'
 import { operatorToolAvailable } from '../availability.js'
 import { invokeOperatorTool } from '../invoke.js'
 import type { OperatorRequestContext } from '../types.js'
@@ -36,11 +37,11 @@ export function registerExtendedOperatorTools(server: McpServer, context: Operat
     annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'agent_clone', () => extension.agents.clone(context.principal,input)))
   if (operatorToolAvailable(context, 'workflow_versions_list')) server.registerTool('workflow_versions_list', {
-    description: "List immutable workflow versions in increasing numeric version order.", inputSchema: contracts.WorkflowVersionListInputSchema, outputSchema: contracts.WorkflowVersionPageSchema,
+    description: "List immutable workflow versions in increasing numeric version order.", inputSchema: contracts.WorkflowVersionListInputSchema, outputSchema: contracts.WorkflowVersionPageSchema.extend({ items: CompatibleWorkflowVersionSchema.array() }),
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'workflow_versions_list', () => extension.history.workflows(context.principal,input)))
   if (operatorToolAvailable(context, 'workflow_version_get')) server.registerTool('workflow_version_get', {
-    description: "Inspect one immutable workflow version. Restore it through graph_draft_apply workflow.restore_version, then validate and publish a new current version.", inputSchema: contracts.WorkflowVersionGetInputSchema, outputSchema: contracts.WorkflowVersionResultSchema,
+    description: "Inspect one immutable workflow version. Restore it through graph_draft_apply workflow.restore_version, then validate and publish a new current version.", inputSchema: contracts.WorkflowVersionGetInputSchema, outputSchema: contracts.WorkflowVersionResultSchema.extend({ version: CompatibleWorkflowVersionSchema }),
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'workflow_version_get', () => extension.history.workflow(context.principal,input)))
   if (operatorToolAvailable(context, 'agent_configuration_versions_list')) server.registerTool('agent_configuration_versions_list', {

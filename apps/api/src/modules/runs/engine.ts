@@ -13,6 +13,12 @@ import {
   type DurableInteraction,
 } from '@graphql/contracts'
 
+import { WorkflowVersionV2Schema } from '@graphql/contracts/wave25'
+import { executeOneShotRuntime } from './oneShotRuntime.js'
+import { compileOneShotGraph } from './oneShotGraph.js'
+import { compileOneShotTopology } from './topology.js'
+import { RunnerAdmission } from './runnerAdmission.js'
+
 import { DomainError } from '../errors.js'
 import { validateWorkflowApproval } from '../workflows/approval.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
@@ -102,7 +108,14 @@ async function withExecutionSignal<T>(operation: Promise<T>, signal: AbortSignal
   }
 }
 
+function isOneShotRun(run: WorkflowRun): boolean {
+  return 'executionSemanticsVersion' in run && run.executionSemanticsVersion === 2
+}
+
 export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
+  private readonly workerAdmission: RunnerAdmission
+  private readonly configuredParallelism: number
+  private readonly maximumActiveRuns: number
   private readonly activeRuns = new Map<string, AbortController>()
   private readonly activeTasks = new Map<string, Promise<void>>()
   private readonly resumeTasks = new Map<string, Promise<void>>()
@@ -120,8 +133,12 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     private readonly workerCredentials?: ExecutionCredentialProvider,
     private readonly interactions?: PostgresInteractionRepository,
     private readonly onRunTerminal?: (runId: string, reason: string) => Promise<void>,
+    limits: { workerParallelism?: number; maximumWaiting?: number; maximumActiveRuns?: number } = {},
   ) {
     this.workspaceRoot = resolve(workspaceRoot)
+    this.configuredParallelism = limits.workerParallelism ?? 4
+    this.maximumActiveRuns = limits.maximumActiveRuns ?? 32
+    this.workerAdmission = new RunnerAdmission(this.configuredParallelism, limits.maximumWaiting ?? 1000, this.maximumActiveRuns)
   }
 
   start(runId: string): Promise<void> {
@@ -132,6 +149,8 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
   private trackRun(runId: string, work: (controller: AbortController) => Promise<void>): Promise<void> {
     if (this.closing) return Promise.reject(new DomainError('ENGINE_CLOSING', 'The workflow engine is shutting down.', 503))
+    if (this.activeTasks.size >= this.maximumActiveRuns) return Promise.reject(new DomainError(
+      'RUNNER_ADMISSION_FULL', 'The runner is at its active Run limit. Durable queued work was not launched.', 503))
     // Register cancellation before the first database await, including queued work.
     const controller = new AbortController()
     this.activeRuns.set(runId, controller)
@@ -181,7 +200,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         if (this.closing) break
         if (this.activeTasks.has(candidate.id) || this.resumeTasks.has(candidate.id)) continue
         if (await this.runs.hasPendingCleanup?.(candidate.id)) {
-          await this.cancel(candidate.id).catch(onError)
+          await this.cancel(candidate.id, undefined, false).catch(onError)
           if ((await this.runs.get(candidate.id))?.executionState === 'completed') {
             await this.finishRunLifecycle(candidate.id).catch(onError)
           }
@@ -226,6 +245,12 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
           await this.completeRun(run, version, snapshot.values as EngineStateValue, controller.signal, owner)
           return
         }
+      }
+      if (isOneShotRun(run)) {
+        // Re-enter the same thread using durable admitted/result records. The v2
+        // driver reconciles a claimed submission; it never blindly relaunches it.
+        await this.executeRun(run, controller.signal, owner)
+        return
       }
       // No healthy interrupt or terminal checkpoint: never replay orphaned work.
       await this.nativeExecutions.cancelRun(runId)
@@ -352,6 +377,12 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   }
 
   private buildGraph(version: WorkflowVersion, action: (nodeId: string, state: EngineStateValue) => Promise<Partial<EngineStateValue>>): DynamicCompiledGraph {
+    if ('executionSemanticsVersion' in version && version.executionSemanticsVersion === 2) {
+      const pinned = WorkflowVersionV2Schema.parse(version)
+      const compiled = compileOneShotGraph(pinned, this.checkpointer, action)
+      return { getState: (config) => compiled.getState(config),
+        invoke: (value, config) => compiled.invoke(value, { ...config, recursionLimit: compileOneShotTopology(pinned).recursionLimit }) }
+    }
     const topology = validateExecutableTopology(version)
     const builder = new StateGraph(EngineState) as unknown as DynamicGraphBuilder
     for (const node of version.definition.nodes) builder.addNode(node.id, (state) => action(node.id, state))
@@ -366,7 +397,8 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   }
 
   private async readCheckpoint(run: WorkflowRun): Promise<{ version: WorkflowVersion; snapshot: GraphSnapshot }> {
-    const version = await this.workflows.getVersion(run.workflowVersionId)
+    const version = isOneShotRun(run) ? await this.runs.getOneShotVersion(run.workflowVersionId)
+      : await this.workflows.getVersion(run.workflowVersionId)
     if (!version) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', `Workflow version '${run.workflowVersionId}' was not found.`, 409)
     // getState reads the existing thread without invoking any node, including
     // predecessors. Keep a read-only graph incapable of launching native work.
@@ -437,6 +469,13 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   }
 
   private async settleCanceled(runId: string, owner: RunOwnership, cleanupFailure?: { error: unknown }): Promise<boolean> {
+    if (await this.runs.isOneShot?.(runId, owner)) {
+      const stopped = await this.runs.hasRequestedStop(runId)
+      const current = await this.runs.get(runId, owner)
+      if (current?.executionState !== 'completed') await this.runs.oneShot(owner).settleRun(stopped, !stopped)
+      await this.runs.finishCleanup(runId, Boolean(cleanupFailure))
+      return true
+    }
     // Terminalize only after native cleanup. A failed closure is not a successful Stop.
     const settled = await this.runs.settleOrphan(runId, owner, !cleanupFailure)
     if (settled && cleanupFailure) {
@@ -450,11 +489,15 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     return settled || (!cleanupFailure && (await this.runs.get(runId, owner))?.executionState === 'completed')
   }
 
-  async cancel(runId: string, transactionClient?: import('pg').PoolClient): Promise<boolean> {
+  async cancel(runId: string, transactionClient?: import('pg').PoolClient, stopIntent = true): Promise<boolean> {
+    // Commit Stop before aborting the local task or waiting on cleanup. Internal
+    // cleanup/restart callers explicitly do not manufacture a user Stop intent.
+    const oneShot = await this.runs.isOneShot?.(runId) === true
+    if (stopIntent && oneShot) await this.runs.requestStop(runId)
     const controller = this.activeRuns.get(runId)
     const activeTask = this.activeTasks.get(runId)
     controller?.abort()
-    await this.runs.requestCleanup?.(runId, transactionClient)
+    await this.runs.requestCleanup?.(runId, oneShot ? undefined : transactionClient)
     await this.workerCredentials?.revokeForRun?.(runId, transactionClient)
     // Local native ownership outlives graph tasks and database execution state.
     // Begin its cancellation even if acquiring database ownership later fails.
@@ -504,7 +547,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     // Waiting sessions are deliberately included; all cancellations start before
     // any task drain, and a failed sibling must not short-circuit shutdown.
     const reviewerCleanup = this.nativeExecutions.reviewers.shutdown()
-    const outcomes = await Promise.allSettled([...runIds].map((runId) => this.cancel(runId)))
+    const outcomes = await Promise.allSettled([...runIds].map((runId) => this.cancel(runId, undefined, false)))
     const drains = await Promise.allSettled([
       withCleanupDeadline(() => this.reconciliation ?? Promise.resolve()),
       withCleanupDeadline(async () => { await Promise.allSettled([...this.activeTasks.values(), ...this.resumeTasks.values()]) }),
@@ -515,6 +558,15 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   }
 
   private async executeRun(run: WorkflowRun, signal: AbortSignal, owner: RunOwnership, resumeCommand?: Command): Promise<void> {
+    if (isOneShotRun(run)) {
+      return executeOneShotRuntime({ run, version: await this.runs.getOneShotVersion(run.workflowVersionId),
+        runs: this.runs, workflows: this.workflows, native: this.nativeExecutions, locations: this.locations,
+        owner, signal, checkpointer: this.checkpointer, admission: this.workerAdmission,
+        configuredParallelism: this.configuredParallelism,
+        directory: (nodeId) => this.executionDirectory(run.workspaceId, run.id, nodeId, 1),
+        persistWait: (snapshot) => this.persistApprovalWait(run, snapshot, signal, owner),
+        ...(resumeCommand ? { resumeCommand } : {}) })
+    }
     const startedAt = run.startedAt ?? new Date().toISOString()
     const failedNodes = new AbortController()
     const nodeSignal = AbortSignal.any([signal, failedNodes.signal])
@@ -621,6 +673,13 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
   private async completeRun(run: WorkflowRun, version: WorkflowVersion, state: EngineStateValue, signal: AbortSignal, owner: RunOwnership): Promise<void> {
     signal.throwIfAborted()
+    if (isOneShotRun(run)) {
+      await this.runs.oneShot(owner).completeRun()
+      await this.runs.requestCleanup(run.id)
+      await this.nativeExecutions.finishRun(run.id)
+      await this.runs.finishCleanup(run.id, false)
+      return
+    }
     const topology = validateExecutableTopology(version)
     const finalOutputs = await Promise.all(topology.sinks.map(async (nodeId) => {
       const executionId = state.executionIds[nodeId]

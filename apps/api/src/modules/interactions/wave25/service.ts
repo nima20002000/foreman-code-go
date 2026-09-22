@@ -1,0 +1,105 @@
+import { randomUUID } from 'node:crypto'
+import type { DurableInteraction } from '@graphql/contracts'
+import type { NativeResponseJournal } from '../../harnesses/recovery/responseJournal.js'
+import type { InteractionNativeRuntime } from '../runtimePorts.js'
+import type { InteractionResponder } from '../service.js'
+import type { GraphResumeClaim } from '../deliveryPostgres.js'
+import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence, type NativeDeliveryOutcome } from '../delivery.js'
+import type { Wave25InteractionRepository } from './repository.js'
+import { fail } from './context.js'
+
+/** Consumer must call consumeApprovalGraphResume in the existing Run/checkpoint
+ * transaction. A callback that starts native work or returns void without that
+ * receipt is not a qualified implementation. */
+export type AtomicApprovalResumeConsumer = (claim: GraphResumeClaim) => Promise<void>
+export interface ApprovalRuntimeDependencies {
+  repository: Wave25InteractionRepository
+  nativeRuntime: InteractionNativeRuntime
+  journal?: NativeResponseJournal
+  atomicResume?: AtomicApprovalResumeConsumer
+}
+
+async function read(deps: ApprovalRuntimeDependencies, id: string): Promise<DurableInteraction> {
+  const current = await deps.repository.get(id)
+  return current ?? fail('INTERACTION_NOT_FOUND')
+}
+export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: string, reconcileOnly = false): Promise<DurableInteraction> {
+  const current = await read(deps, id)
+  if (current.status === 'canceled' || current.deliveryState === 'delivered') return current
+  const claim = await deps.repository.delivery.claim(id, randomUUID(), reconcileOnly)
+  if (!claim) return read(deps, id)
+  const signal = AbortSignal.timeout(INTERACTION_DELIVERY_LEASE_MS)
+  const option = current.responseOptions.find((item) => item.optionId === current.selectedOptionId)
+  if (!option) return fail('INTERACTION_OPTION_INVALID')
+  const expectedSession = { harness: current.harness, providerVersion: current.providerVersion, nativeSessionId: current.nativeSessionId }
+  if (claim.mode === 'reconcile') {
+    let result: NativeDeliveryOutcome = { state: 'uncertain' }
+    try {
+      const cached = deps.journal?.read(expectedSession, { nativeRequestId: current.nativeRequestId, nativeRequestType: current.nativeRequestType, option })
+      if (cached) result = { state: 'delivered', evidence: cached }
+      else {
+        const attached = await deps.nativeRuntime.attachInteraction(current, signal)
+        if (attached.manager.harness !== current.harness || attached.session.harness !== current.harness
+          || attached.session.nativeSessionId !== current.nativeSessionId || attached.session.providerVersion !== current.providerVersion) return fail('APPROVAL_SESSION_MISMATCH')
+        const history = attached.manager.reconcileResponse
+          ? await attached.manager.reconcileResponse(attached.session, { nativeRequestId: current.nativeRequestId, nativeRequestType: current.nativeRequestType, option }, signal)
+          : await attached.manager.history(attached.session, signal)
+        const proof = matchingDeliveryEvidence(current, attached.session, history)
+        if (proof) result = { state: 'delivered', evidence: proof }
+      }
+    } catch { result = { state: 'uncertain', error: 'APPROVAL_RECONCILIATION_UNCERTAIN' } }
+    return deps.repository.delivery.finish(claim, result)
+  }
+  if (!deps.nativeRuntime.validateInteraction) return fail('APPROVAL_NATIVE_QUALIFICATION_REQUIRED')
+  let attached: Awaited<ReturnType<InteractionNativeRuntime['attachInteraction']>>
+  try {
+    await deps.nativeRuntime.validateInteraction(current, signal)
+    attached = await deps.nativeRuntime.attachInteraction(current, signal)
+    if (attached.manager.harness !== current.harness || attached.session.harness !== current.harness
+      || attached.session.nativeSessionId !== current.nativeSessionId || attached.session.providerVersion !== current.providerVersion) return fail('APPROVAL_SESSION_MISMATCH')
+  } catch {
+    return deps.repository.delivery.finish(claim, { state: 'failed', error: 'APPROVAL_NATIVE_QUALIFICATION_FAILED' })
+  }
+  return deps.repository.delivery.finish(claim, async (interaction, writeSignal) => {
+    try {
+      await deps.nativeRuntime.validateInteraction!(interaction, writeSignal)
+      writeSignal.throwIfAborted()
+      await attached.manager.respond(attached.session, interaction.nativeRequestId, option, writeSignal)
+      const cached = deps.journal?.read(expectedSession, { nativeRequestId: interaction.nativeRequestId, nativeRequestType: interaction.nativeRequestType, option })
+      if (cached) return { state: 'delivered', evidence: cached }
+      const history = attached.manager.reconcileResponse
+        ? await attached.manager.reconcileResponse(attached.session, { nativeRequestId: interaction.nativeRequestId, nativeRequestType: interaction.nativeRequestType, option }, writeSignal)
+        : await attached.manager.history(attached.session, writeSignal)
+      const proof = matchingDeliveryEvidence(interaction, attached.session, history)
+      return proof ? { state: 'delivered', evidence: proof } : { state: 'uncertain', error: 'APPROVAL_DELIVERY_RECEIPT_MISSING' }
+    } catch { return { state: 'uncertain', error: 'APPROVAL_NATIVE_DELIVERY_UNCERTAIN' } }
+  }, signal)
+}
+
+export async function resumeApproval(deps: ApprovalRuntimeDependencies, interaction: DurableInteraction): Promise<void> {
+  if (interaction.deliveryState !== 'delivered' || interaction.status === 'canceled') return
+  if (!deps.atomicResume) return fail('GRAPH_RESUME_ATOMIC_CONSUMER_REQUIRED',
+    'The v2 checkpoint consumer is not attached. Delivery is persisted; no native response or graph callback was replayed.')
+  const claim = await deps.repository.delivery.claimAtomicGraphResume(interaction.id, randomUUID())
+  if (!claim) return
+  let error: string | undefined
+  try { await deps.atomicResume(claim) } catch { error = 'GRAPH_RESUME_CHECKPOINT_UNCERTAIN' }
+  await deps.repository.delivery.finishGraphResume(claim, error)
+}
+export async function respondToApproval(deps: ApprovalRuntimeDependencies, responder: InteractionResponder,
+  input: { interactionId: string; optionId: string; expectedRevision: number }) {
+  const current = await read(deps, input.interactionId)
+  if (!responder.principal || (current.approval.handler === 'user') !== (responder.kind === 'user')) return fail('INTERACTION_ACCESS_DENIED')
+  if (responder.kind === 'orchestrator') {
+    if (responder.beforeCommit) return fail('APPROVAL_RAW_AUDIT_CALLBACK_REJECTED')
+    if (responder.authority.agentId !== responder.principal.agentId || responder.authority.workspaceId !== current.workspaceId
+      || responder.authority.workflowId !== current.workflowId) return fail('INTERACTION_ACCESS_DENIED')
+  }
+  const option = current.responseOptions.find((item) => item.optionId === input.optionId)
+  if (!option) return fail('INTERACTION_OPTION_INVALID')
+  const decided = await deps.repository.decide({ id: current.id, optionId: input.optionId, expectedRevision: input.expectedRevision,
+    principal: responder.principal, nativeResponse: { optionId: option.optionId, semantic: option.semantic } })
+  const delivered = await deliverApproval(deps, current.id)
+  await resumeApproval(deps, delivered)
+  return { interaction: await read(deps, current.id), replayed: decided.replayed }
+}

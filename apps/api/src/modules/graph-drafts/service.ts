@@ -3,14 +3,15 @@ import { randomUUID } from 'node:crypto'
 import {
   AgentSchema,
   AgentConfigurationVersionSchema,
-  WorkflowDefinitionSchema,
   projectHarnessEffort,
   type Agent,
   type WorkflowDefinition,
   type WorkflowVersion,
 } from '@graphql/contracts'
 import {
-  GraphDraftSchema,
+  GraphDraftOperationSchema,
+  GraphDraftApplyInputSchema,
+  GraphSaveInputSchema,
   ManagementHarnessConfigurationSchema,
   GraphValidationResultSchema,
   type GraphDraft,
@@ -23,13 +24,17 @@ import type pg from 'pg'
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
-import { buildExecutableWorkflowVersion } from '../workflows/executableVersion.js'
+import { GraphDraftApplyV2InputSchema, GraphDraftV2Schema, GraphSaveV2InputSchema, WorkflowVersionV2Schema, type GraphDraftOperationV2 } from '@graphql/contracts/wave25'
+import { GraphDraftRecordSchema as GraphDraftSchema, WorkflowDefinitionRecordSchema as WorkflowDefinitionSchema,
+  buildDraftVersion as buildExecutableWorkflowVersion, applyExecutionOperation, draftSemantics, draftEntry, promoteExecutionDefinition } from './executionOperations.js'
 import { configurationInput, lockAgentConfigurations, saveAgentConfiguration } from '../workspaces/agentConfiguration.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { normalizeHarnessDefaults } from '../settings/postgres.js'
 import { readAgentForReuse } from '../workspaces/operatorAgents.js'
 import { assertSourceAgentPins, restoreWorkflowDraft } from './operatorOperations.js'
+import { applyApprovalOperation } from '../workflows/approvalOperations.js'
+import { validateExecutableApprovalRoutes } from '../workflows/approval.js'
 
 interface DraftRow { id: string; record: unknown; discarded_at: Date | null }
 interface AgentRow { record: unknown; metadata_revision: string; current_configuration_version_id: string | null }
@@ -192,7 +197,17 @@ export class GraphDraftService {
     return { agent: existing.agent, baseRevision: existing.revision }
   }
 
-  private async applyOperation(client: pg.PoolClient, draft: GraphDraft, operation: GraphDraftOperation, principal: ManagementPrincipal): Promise<GraphDraft> {
+  private async applyOperation(client: pg.PoolClient, draft: GraphDraft, operation: GraphDraftOperationV2, principal: ManagementPrincipal): Promise<GraphDraft> {
+    const handled = await applyExecutionOperation(client, principal, draft, operation)
+    if (handled) return this.referencedDraft(handled)
+    if (draftSemantics(draft) === 2) {
+      const approval = applyApprovalOperation(GraphDraftV2Schema.parse(draft), operation, principal)
+      if (approval) return this.referencedDraft(approval)
+    }
+    return this.applyLegacyOperation(client, draft, GraphDraftOperationSchema.parse(operation), principal)
+  }
+
+  private async applyLegacyOperation(client: pg.PoolClient, draft: GraphDraft, operation: GraphDraftOperation, principal: ManagementPrincipal): Promise<GraphDraft> {
     const graph = structuredClone(draft.graph)
     switch (operation.type) {
       case 'workflow.set_execution_condition':
@@ -395,8 +410,9 @@ export class GraphDraftService {
 
   async apply(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
     workspaceId: string; workflowId: string; draftId: string; commandId: string;
-    expectedRevision: number; operations: GraphDraftOperation[]
+    expectedRevision: number; operations: GraphDraftOperationV2[]; executionSemanticsVersion?: 2
   }) {
+    input = input.executionSemanticsVersion === 2 ? GraphDraftApplyV2InputSchema.parse(input) : GraphDraftApplyInputSchema.parse(input)
     requireAuthorization(principal, 'graph:edit', { workspaceId: input.workspaceId, workflowId: input.workflowId })
     return this.commands.execute({
       principal, source, operation: 'graph.apply', commandId: input.commandId,
@@ -413,6 +429,13 @@ export class GraphDraftService {
         if (draft.revision !== input.expectedRevision) {
           throw new DomainError('REVISION_CONFLICT', 'The graph draft changed since it was read.', 409, { currentRevision: draft.revision })
         }
+        if (draftSemantics(draft) === 2 && input.executionSemanticsVersion !== 2) {
+          throw new DomainError('EXECUTION_SEMANTICS_MISMATCH', 'Use the explicit v2 mutation boundary for this draft.', 409)
+        }
+        if (input.executionSemanticsVersion === 2 && draftSemantics(draft) === 1) {
+          draft = GraphDraftSchema.parse({ ...draft,
+            graph: await promoteExecutionDefinition(client, principal, draft.graph, draft.baseWorkflowVersionId) })
+        }
         const effects: GraphDraftEffect[] = []
         for (const operation of input.operations) {
           requireAuthorization(principal, 'graph:edit', { workspaceId: input.workspaceId, workflowId: input.workflowId })
@@ -427,17 +450,17 @@ export class GraphDraftService {
               code: 'SHARED_AGENT_CHANGED', agentId: operation.agentId, workflowIds,
             })
           }
-          const previousEntry = draft.graph.nodes[0]?.id
+          const previousEntry = draftEntry(draft)
           draft = await this.applyOperation(client, draft, operation, principal)
-          if (operation.type === 'workflow.restore_version') {
+          if (operation.type === 'workflow.restore_version' || operation.type === 'workflow.restore_version_v2') {
             for (const staged of draft.stagedAgents) {
               const workflowIds = await this.authorizeAgentWrite(client, principal, draft, staged.agent.id)
               if (workflowIds.length > 1) effects.push({code: 'SHARED_AGENT_CHANGED', agentId: staged.agent.id, workflowIds})
               this.requireConfigurationAuthorization(principal, draft, staged.agent)
             }
           }
-          const nextEntry = draft.graph.nodes[0]?.id
-          if (previousEntry && previousEntry !== nextEntry && (operation.type === 'node.remove' || operation.type === 'nodes.reorder' || operation.type === 'workflow.restore_version')) {
+          const nextEntry = draftEntry(draft)
+          if (previousEntry && previousEntry !== nextEntry && (operation.type === 'node.remove' || operation.type === 'nodes.reorder' || operation.type === 'workflow.restore_version' || operation.type === 'workflow.restore_version_v2' || operation.type === 'workflow.set_entry')) {
             effects.push({ code: 'ENTRY_NODE_CHANGED', previousEntryNodeId: previousEntry, nextEntryNodeId: nextEntry ?? null })
           }
         }
@@ -445,6 +468,9 @@ export class GraphDraftService {
           ...draft, revision: draft.revision + 1,
           updatedByPrincipalId: principal.id, updatedAt: new Date().toISOString(),
         })
+        if (draftSemantics(draft) === 2) {
+          await client.query("select set_config('graphql.approval_writer','v2',true)")
+        }
         await client.query(
           'update graph_drafts set revision = $2, record = $3::jsonb, updated_at = now() where id = $1',
           [draft.id, draft.revision, JSON.stringify(draft)],
@@ -504,8 +530,9 @@ export class GraphDraftService {
   }
 
   async save(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
-    workspaceId: string; workflowId: string; draftId: string; commandId: string; expectedRevision: number
+    workspaceId: string; workflowId: string; draftId: string; commandId: string; expectedRevision: number; executionSemanticsVersion?: 2
   }) {
+    input = input.executionSemanticsVersion === 2 ? GraphSaveV2InputSchema.parse(input) : GraphSaveInputSchema.parse(input)
     requireAuthorization(principal, 'graph:save', { workspaceId: input.workspaceId, workflowId: input.workflowId })
     return this.commands.execute({
       principal, source, operation: 'graph.save', commandId: input.commandId,
@@ -520,6 +547,7 @@ export class GraphDraftService {
         if (!current.rows[0] || current.rows[0].discarded_at) throw new DomainError('GRAPH_DRAFT_NOT_FOUND', `Draft '${input.draftId}' is unavailable.`, 404)
         let draft = this.referencedDraft(GraphDraftSchema.parse(current.rows[0].record))
         if (draft.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'The graph draft changed since it was read.', 409, { currentRevision: draft.revision })
+        if (draftSemantics(draft) !== (input.executionSemanticsVersion ?? 1)) throw new DomainError('EXECUTION_SEMANTICS_MISMATCH', 'Save using the exact draft execution semantics.', 409)
         if (workflowRow.current_version_id !== draft.baseWorkflowVersionId) throw new DomainError('WORKFLOW_BASE_CONFLICT', 'The saved workflow changed since this draft was opened.', 409)
         const agentIdsToLock = [...new Set(draft.graph.nodes.map((node) => node.agentId))].sort()
         await lockAgentConfigurations(client, agentIdsToLock)
@@ -565,11 +593,15 @@ export class GraphDraftService {
           definition: { ...draft.graph, name: metadata.name, description: metadata.description },
           previousDefinition: metadata, version: versionNumber, configurations, createdAt: now,
         })
+        if (draftSemantics(draft) === 2) {
+          validateExecutableApprovalRoutes(WorkflowVersionV2Schema.parse(version), configurations)
+          await client.query("select set_config('graphql.approval_writer','v2',true)")
+        }
         const definition = version.definition
         await client.query(
-          `insert into workflow_versions (id, workspace_id, workflow_id, version, entry_node_id, record)
-           values ($1, $2, $3, $4, $5, $6::jsonb)`,
-          [version.id, version.workspaceId, version.workflowId, version.version, version.entryNodeId, JSON.stringify(version)],
+          `insert into workflow_versions (id, workspace_id, workflow_id, version, entry_node_id, record, execution_semantics_version)
+           values ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+          [version.id, version.workspaceId, version.workflowId, version.version, version.entryNodeId, JSON.stringify(version), draftSemantics(draft)],
         )
         await client.query(
           `update workflows set current_version_id = $3, record = $4::jsonb, revision = revision + 1

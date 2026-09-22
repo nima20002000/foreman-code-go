@@ -100,6 +100,7 @@ export const GraphAttentionSchema = z.object({
   unsettledReviewCount: z.number().int().min(0).max(100000), cleanupPending: z.boolean(),
   telemetry: z.enum(['current', 'unknown', 'stale']),
 }).strict()
+export type GraphAttention = z.infer<typeof GraphAttentionSchema>
 export const GraphRunStateSchema = z.object({
   executionState: RunExecutionStateSchema, outcome: RunOutcomeSchema,
   /** Durable Stop intent; null means unavailable legacy evidence, never inferred from cleanup. */

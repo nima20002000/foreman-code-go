@@ -20,7 +20,7 @@ import { OperatorRuntimeOwner } from './infrastructure/operatorRuntimeOwner.js'
 import { RuntimeShutdown } from './infrastructure/runtimeShutdown.js'
 import { PostgresAccessService } from './modules/access/postgres.js'
 import { BrowserAuthentication } from './modules/browser-auth/service.js'
-import { WorkerCredentialService } from './modules/access/workerCredentials.js'
+import { Wave25WorkerCredentialService as WorkerCredentialService } from './modules/interactions/wave25/credentials.js'
 import {
   ensureOperatorRuntimeDirectory,
   OperatorChatService,
@@ -31,6 +31,7 @@ import { OPERATOR_MCP_ENVIRONMENT_VARIABLE, PostgresOperatorChatAuthority } from
 import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
 import { DomainError } from './modules/errors.js'
 import { GraphDraftService } from './modules/graph-drafts/service.js'
+import { Wave25ApprovalDraftService } from './modules/workflows/approvalDraftService.js'
 import { HarnessCatalogService } from './modules/harnesses/catalog.js'
 import { createHarnessCompatibility } from './modules/harnesses/compatibility/service.js'
 import { CodexAppServerSessionManager } from './modules/harnesses/codexAppServer.js'
@@ -45,7 +46,7 @@ import { PostgresAppInteractionService } from './modules/interactions/app.js'
 import { PostgresApprovalBudgetRepository } from './modules/interactions/budget.js'
 import { ApprovalExecutionCoordinator } from './modules/interactions/execution.js'
 import { OperatorInteractionService } from './modules/interactions/operator.js'
-import { PostgresInteractionRepository } from './modules/interactions/postgres.js'
+import { Wave25InteractionRepository as PostgresInteractionRepository } from './modules/interactions/wave25/repository.js'
 import { ExecutionScopedNativeSessionManagerResolver } from './modules/interactions/runtimePorts.js'
 import { InteractionService } from './modules/interactions/service.js'
 import { AutomaticReviewService } from './modules/interactions/automaticReview.js'
@@ -234,6 +235,7 @@ export function buildProductionApp(
     workflows: new WorkflowManagementService(database.pool, commands),
     agents: new AgentManagementService(database.pool),
     drafts: new GraphDraftService(database.pool, commands),
+    approvalDrafts: new Wave25ApprovalDraftService(database.pool, commands),
     harnesses: harnessCatalog,
     settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators),
     runs: new RunManagementService(database.pool, commands, runs, engine, locations),
