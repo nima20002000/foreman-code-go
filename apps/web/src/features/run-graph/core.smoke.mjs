@@ -1,4 +1,5 @@
-// Dependency-free checks of the actual production modules. Run separately from Vitest:
+// Dependency-free checks of the actual production modules; also run by the web test script.
+// Standalone (Node 22.6+ with type stripping): corepack pnpm test:run-graph-smoke
 // node --experimental-strip-types --test src/features/run-graph/core.smoke.mjs
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
@@ -59,37 +60,69 @@ test('unexpected task failures surface once without an infinite retry loop', asy
   loop.dispose()
 })
 const identity = { workflowNodeId: 'n', executionId: 'e', agentId: 'a', agentConfigurationVersionId: 'cfg', attempt: 1 }
-function node(lifecycle, activity) {
+function node(lifecycle, activity, telemetry) {
   return { state: { workflowNodeId: 'n', lifecycle, execution: identity }, activity: { workflowNodeId: 'n', ...activity },
-    attention: { workflowNodeId: 'n', cleanupPending: false, unsettledReviewCount: 0, pendingInteractionCount: 0, telemetry: 'unknown' } }
+    attention: { workflowNodeId: 'n', cleanupPending: false, unsettledReviewCount: 0, pendingInteractionCount: 0, telemetry } }
 }
 for (const state of ['unknown', 'uncertain', 'interrupted']) test(`${state} is explicit, never Idle/Working/success/failure`, () => {
-  const result = presentRunGraphNode(node(state, { status: 'unknown' }))
+  const result = presentRunGraphNode(node(state, { status: 'unknown' }, 'unknown'))
   assert.equal(result.activity, 'Activity unavailable')
+  assert.equal(result.tone, 'neutral')
   assert.doesNotMatch(result.lifecycle, /Idle|Working|Succeeded|Failed/)
 })
-test('unknown activity and stale activity remain unavailable/stale even with a running lifecycle', () => {
-  assert.equal(presentRunGraphNode(node('running', { status: 'unknown' })).activity, 'Activity unavailable')
-  assert.equal(presentRunGraphNode(node('running', { status: 'stale' })).activity, 'Activity stale')
+for (const status of ['unknown', 'stale']) test(`${status} activity without evidence stays unavailable even with current telemetry`, () => {
+  assert.deepEqual(presentRunGraphNode(node('running', { status }, 'current')),
+    { lifecycle: 'Running', activity: 'Activity unavailable', tone: 'neutral' })
 })
 test('native work requires both acknowledgement and correlation', () => {
   const activity = { status: 'active', action: 'working', execution: identity }
-  assert.equal(presentRunGraphNode(node('running', activity)).activity, 'Activity unavailable')
-  assert.equal(presentRunGraphNode(node('running', { ...activity, acknowledgementId: 'ack' })).activity, 'Activity unavailable')
-  assert.equal(presentRunGraphNode(node('running', { ...activity, acknowledgementId: 'ack', correlationId: 'corr' })).activity, 'Working')
+  const unavailable = { lifecycle: 'Running', activity: 'Activity unavailable', tone: 'neutral' }
+  assert.deepEqual(presentRunGraphNode(node('running', activity, 'current')), unavailable)
+  assert.deepEqual(presentRunGraphNode(node('running', { ...activity, acknowledgementId: 'ack' }, 'current')), unavailable)
+  assert.deepEqual(presentRunGraphNode(node('running', { ...activity, correlationId: 'corr' }, 'current')), unavailable)
 })
-test('reviewing requires its exact review and interaction, not a lease or liveness flag', () => {
+test('reviewing requires both its review and interaction, not just acknowledgement', () => {
   const activity = { status: 'active', action: 'reviewing', execution: identity, acknowledgementId: 'ack', correlationId: 'corr' }
-  assert.equal(presentRunGraphNode(node('running', activity)).activity, 'Activity unavailable')
-  assert.equal(presentRunGraphNode(node('running', { ...activity, reviewJobId: 'r', interactionId: 'i' })).activity, 'Reviewing')
+  const unavailable = { lifecycle: 'Running', activity: 'Activity unavailable', tone: 'neutral' }
+  assert.deepEqual(presentRunGraphNode(node('running', activity, 'current')), unavailable)
+  assert.deepEqual(presentRunGraphNode(node('running', { ...activity, reviewJobId: 'r' }, 'current')), unavailable)
+  assert.deepEqual(presentRunGraphNode(node('running', { ...activity, interactionId: 'i' }, 'current')), unavailable)
+})
+for (const [action, label, review] of [['working', 'Working', {}], ['reviewing', 'Reviewing', { reviewJobId: 'r', interactionId: 'i' }]]) {
+  const activity = { status: 'active', action, execution: identity, acknowledgementId: 'ack', correlationId: 'corr', ...review }
+  for (const telemetry of ['current', 'unknown', 'stale']) test(`${action} with ${telemetry} telemetry preserves its evidence confidence`, () => {
+    assert.deepEqual(presentRunGraphNode(node('running', activity, telemetry)), {
+      lifecycle: 'Running',
+      activity: telemetry === 'current' ? label : `Last known: ${label} · updates unconfirmed`,
+      tone: telemetry === 'current' ? 'accent' : 'neutral',
+    })
+  })
+  test(`acknowledged stale ${action} stays last-known despite current telemetry`, () => {
+    assert.deepEqual(presentRunGraphNode(node('running', { ...activity, status: 'stale' }, 'current')),
+      { lifecycle: 'Running', activity: `Last known: ${label} · updates unconfirmed`, tone: 'neutral' })
+  })
+  test(`stale ${action} without acknowledgement or correlation stays unavailable`, () => {
+    for (const missing of ['acknowledgementId', 'correlationId']) {
+      const incomplete = { ...activity, status: 'stale' }
+      delete incomplete[missing]
+      assert.deepEqual(presentRunGraphNode(node('running', incomplete, 'current')),
+        { lifecycle: 'Running', activity: 'Activity unavailable', tone: 'neutral' }, missing)
+    }
+  })
+}
+test('stale unsupported or mismatched execution evidence cannot become last-known work', () => {
+  const activity = { status: 'stale', action: 'working', execution: identity, acknowledgementId: 'ack', correlationId: 'corr' }
+  for (const invalid of [{ action: 'unsupported' }, { execution: undefined }, { execution: { ...identity, executionId: 'other' } }]) {
+    assert.deepEqual(presentRunGraphNode(node('running', { ...activity, ...invalid }, 'current')),
+      { lifecycle: 'Running', activity: 'Activity unavailable', tone: 'neutral' })
+  }
 })
 test('extra polling/connection fields cannot produce semantic activity', () => {
-  const fact = { ...node('queued', { status: 'unknown' }), connected: true, reconnecting: false, ping: true, polling: true }
-  assert.equal(presentRunGraphNode(fact).activity, 'Activity unavailable')
-  assert.equal(presentRunGraphNode(fact).lifecycle, 'Queued')
+  const fact = { ...node('queued', { status: 'unknown' }, 'current'), connected: true, reconnecting: false, ping: true, polling: true }
+  assert.deepEqual(presentRunGraphNode(fact), { lifecycle: 'Queued', activity: 'Activity unavailable', tone: 'neutral' })
 })
 test('transport/current activity cannot substitute for terminal lifecycle', () => {
-  const result = presentRunGraphNode(node('canceled', { status: 'unknown' }))
-  assert.equal(result.lifecycle, 'Canceled')
-  assert.equal(result.activity, 'Activity unavailable')
+  const activity = { status: 'active', action: 'working', execution: identity, acknowledgementId: 'ack', correlationId: 'corr' }
+  assert.deepEqual(presentRunGraphNode(node('canceled', activity, 'current')),
+    { lifecycle: 'Canceled', activity: 'Activity unavailable', tone: 'neutral' })
 })

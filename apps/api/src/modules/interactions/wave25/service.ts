@@ -7,6 +7,7 @@ import type { GraphResumeClaim } from '../deliveryPostgres.js'
 import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence, type NativeDeliveryOutcome } from '../delivery.js'
 import type { Wave25InteractionRepository } from './repository.js'
 import { fail } from './context.js'
+import { SingleWriterSessionManager } from '../sessionWriter.js'
 
 /** Consumer must call consumeApprovalGraphResume in the existing Run/checkpoint
  * transaction. A callback that starts native work or returns void without that
@@ -60,11 +61,21 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
   } catch {
     return deps.repository.delivery.finish(claim, { state: 'failed', error: 'APPROVAL_NATIVE_QUALIFICATION_FAILED' })
   }
+  if (!(attached.manager instanceof SingleWriterSessionManager)) {
+    return deps.repository.delivery.finish(claim, { state: 'failed', error: 'APPROVAL_NATIVE_QUALIFICATION_REQUIRED' })
+  }
+  const writer = attached.manager
+  const dispatchSignal = attached.signal ? AbortSignal.any([signal, attached.signal]) : signal
   return deps.repository.delivery.finish(claim, async (interaction, writeSignal) => {
     try {
-      await deps.nativeRuntime.validateInteraction!(interaction, writeSignal)
+      // Revalidate permission/location AFTER the writer's control queue, using
+      // its owned cancellation signal. The final SQL fence check commits before
+      // provider dispatch; no Run/head lock covers filesystem or native I/O.
       writeSignal.throwIfAborted()
-      await attached.manager.respond(attached.session, interaction.nativeRequestId, option, writeSignal)
+      await writer.respondQualified(attached.session, interaction.nativeRequestId, option, async (ownedSignal) => {
+        await deps.nativeRuntime.validateInteraction!(interaction, ownedSignal)
+        await deps.repository.delivery.assertNativeDispatch(claim)
+      }, writeSignal)
       const cached = deps.journal?.read(expectedSession, { nativeRequestId: interaction.nativeRequestId, nativeRequestType: interaction.nativeRequestType, option })
       if (cached) return { state: 'delivered', evidence: cached }
       const history = attached.manager.reconcileResponse
@@ -73,7 +84,7 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
       const proof = matchingDeliveryEvidence(interaction, attached.session, history)
       return proof ? { state: 'delivered', evidence: proof } : { state: 'uncertain', error: 'APPROVAL_DELIVERY_RECEIPT_MISSING' }
     } catch { return { state: 'uncertain', error: 'APPROVAL_NATIVE_DELIVERY_UNCERTAIN' } }
-  }, signal)
+  }, dispatchSignal)
 }
 
 export async function resumeApproval(deps: ApprovalRuntimeDependencies, interaction: DurableInteraction): Promise<void> {

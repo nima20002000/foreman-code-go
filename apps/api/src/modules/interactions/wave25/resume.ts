@@ -9,6 +9,7 @@ import type { GraphTransactionSql } from '../../run-graph/connection.js'
 import type { NativeGraphProjectionGuard } from '../../run-graph/records.js'
 import { fail, identity, lockInteraction, readContext, transact, requireLeaseAtCommit } from './context.js'
 import { decisionDigest, interactionFact, nextInteraction, writeInteraction } from './publication.js'
+import { approvalAttentionFacts } from './attention.js'
 
 interface ResumeRow { lease_expires_at: Date | null; last_error: string | null; state: string; lease_token: string | null; lease_fence: string; revision: string; live: boolean;
   approval_dispatch_started_at: Date | null; approval_native_ack_id: string | null }
@@ -122,7 +123,9 @@ export async function recordWorkerResumption(publication: RunGraphPublication,
   const fact = GraphFactSchema.parse(supplied)
   if (fact.type !== 'worker.resumed' || source.sourceKind !== 'native_event') return fail('GRAPH_EVIDENCE_INVALID')
   const sql = publication.sql, i = await lockInteraction(sql, fact.interactionId), context = await readContext(sql, i)
-  if (i.deliveryState !== 'delivered' || graphSourceDigest(identity(context.requester)) !== graphSourceDigest(fact.requester)
+  if (context.stopped) return fail('GRAPH_STOP_CONFLICT')
+  if (i.status !== 'delivered' || i.deliveryState !== 'delivered'
+    || graphSourceDigest(identity(context.requester)) !== graphSourceDigest(fact.requester)
     || guard.expected.key.workKind !== 'workflow' || guard.expected.key.workId !== i.executionId) return fail('GRAPH_SCOPE_MISMATCH')
   assertNativeGraphProjectionAuthority(guard.expected,
     await guard.readCurrentLocked(sql, publication.scope, guard.expected.key))
@@ -140,10 +143,13 @@ export async function recordWorkerResumption(publication: RunGraphPublication,
   const next = nextInteraction(i, {})
   const base = interactionFact(context, next, 'pending')
   if (base.type !== 'interaction.state') return fail('GRAPH_INVALID_FACT')
+  const attention = await approvalAttentionFacts(sql, context, { interaction: next, nativeAcknowledged: true })
   await publication.source({ evidence: { sourceKind: 'native_event', sourceId: i.id, sourceRevision: String(next.revision) },
     sourceDigest: graphSourceDigest({ next, source, fact }), facts: [fact, { type: 'interaction.state',
       interaction: GraphInteractionSchema.parse({ ...base.interaction, resumeState: 'acknowledged',
-        resumeAcknowledgementId: fact.acknowledgementId }) }] }, async (transaction) => {
+        resumeAcknowledgementId: fact.acknowledgementId }) },
+    { type: 'exchange.retired', exchangeKind: 'interaction', exchangeId: i.id, finalRevision: String(next.revision) },
+    ...attention] }, async (transaction) => {
     await writeInteraction(transaction, i, next)
     await transaction.query(`update interaction_graph_resumes set approval_native_ack_id=$2,approval_native_ack_source=$3::jsonb,
       revision=revision+1,updated_at=clock_timestamp() where interaction_id=$1`, [i.id, fact.acknowledgementId, JSON.stringify(source)])

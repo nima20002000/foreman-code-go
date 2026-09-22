@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 
 import { Annotation, Command, END, START, StateGraph, interrupt, isGraphInterrupt } from '@langchain/langgraph'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
+import type pg from 'pg'
 import {
   HarnessExecutionRequestSchema,
   HarnessExecutionSchema,
@@ -15,6 +16,8 @@ import {
 
 import { WorkflowVersionV2Schema } from '@graphql/contracts/wave25'
 import { executeOneShotRuntime } from './oneShotRuntime.js'
+import { consumeDeliveredApprovals } from './approvalCheckpointResume.js'
+import type { GraphResumeClaim } from '../interactions/deliveryPostgres.js'
 import { compileOneShotGraph } from './oneShotGraph.js'
 import { compileOneShotTopology } from './topology.js'
 import { RunnerAdmission } from './runnerAdmission.js'
@@ -280,24 +283,24 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     }
   }
 
-  async resumeInteraction(interaction: DurableInteraction): Promise<void> {
-    await this.resumeInteractions([interaction])
+  async resumeInteraction(interaction: DurableInteraction, claim?: GraphResumeClaim): Promise<void> {
+    await this.resumeInteractions([interaction], claim)
   }
 
-  private async resumeInteractions(interactions: DurableInteraction[]): Promise<void> {
+  private async resumeInteractions(interactions: DurableInteraction[], claim?: GraphResumeClaim): Promise<void> {
     const runId = interactions[0]?.runId
     if (!runId || interactions.some((item) => item.runId !== runId)) throw new DomainError('INTERACTION_RUN_MISMATCH', 'Resume interactions must belong to one Run.', 409)
-    await this.queueResume(runId, interactions.map((item) => item.id))
+    await this.queueResume(runId, interactions.map((item) => item.id), claim)
   }
 
-  private queueResume(runId: string, requestedIds?: string[]): Promise<void> {
+  private queueResume(runId: string, requestedIds?: string[], claim?: GraphResumeClaim): Promise<void> {
     if (!this.interactions) return Promise.reject(new DomainError('RUN_RESUME_NOT_IMPLEMENTED', `Run '${runId}' has no durable approval runtime.`, 501))
     if (this.closing) return Promise.reject(new DomainError('ENGINE_CLOSING', 'The workflow engine is shutting down.', 503))
     // Publish the queue tail synchronously. Waiting callers must not all replace
     // the same active task/controller after a shared predecessor settles.
     const previous = this.resumeTasks.get(runId) ?? this.activeTasks.get(runId) ?? Promise.resolve()
     const task = previous.catch(() => undefined).then(() =>
-      this.trackRun(runId, (controller) => this.resumeRun(runId, controller, requestedIds)),
+      this.trackRun(runId, (controller) => this.resumeRun(runId, controller, requestedIds, claim)),
     ).finally(() => {
       if (this.resumeTasks.get(runId) === task) this.resumeTasks.delete(runId)
     })
@@ -305,7 +308,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     return task
   }
 
-  private async resumeRun(runId: string, controller: AbortController, requestedIds?: string[]): Promise<void> {
+  private async resumeRun(runId: string, controller: AbortController, requestedIds?: string[], claim?: GraphResumeClaim): Promise<void> {
     let owner: RunOwnership | undefined
     try {
       owner = await this.runs.acquireOwnership(runId, () => controller.abort(
@@ -334,7 +337,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         if (await this.resumeTerminalRecoveries(run, current, controller, owner)) return
         throw new DomainError('RUN_NOT_RESUMABLE', `Run '${runId}' has no confirmed delivery or exact terminal execution.`, 409)
       }
-      await this.resumeCheckpoint(run, delivered, controller, owner)
+      await this.resumeCheckpoint(run, delivered, controller, owner, claim)
     } finally {
       try {
         if (owner && controller.signal.aborted) await this.settleCanceledRun(runId, owner)
@@ -365,11 +368,29 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     // ensureObserve() returns the durable terminal execution before any interrupt
     // response is consumed. This marker is NOT accepted by assertResume() and
     // cannot serve as an approval for a later/different native request.
-    await this.executeRun(run, controller.signal, owner, new Command({ resume: resumes }))
+    // V2 terminal recovery skips the interrupt only because the exact durable
+    // execution is already terminal. It must not inject an unreceipted approval.
+    await this.executeRun(run, controller.signal, owner, isOneShotRun(run) ? undefined : new Command({ resume: resumes }))
     return true
   }
 
-  private async resumeCheckpoint(run: WorkflowRun, interactions: DurableInteraction[], controller: AbortController, owner: RunOwnership): Promise<void> {
+  private async resumeCheckpoint(run: WorkflowRun, interactions: DurableInteraction[], controller: AbortController,
+    owner: RunOwnership, claim?: GraphResumeClaim): Promise<void> {
+    if (isOneShotRun(run)) {
+      controller.signal.throwIfAborted()
+      if (!await consumeDeliveredApprovals(owner, this.checkpointer, this.interactions, interactions, claim, async (sql, current) => {
+        if (current.authorizationPrincipalId) await this.locations.revalidateRunAuthorization(
+          current.authorizationPrincipalId, current.workspaceId, current.workflowId,
+          sql as unknown as Pick<pg.PoolClient, 'query'>)
+      })) return
+      // No provider, filesystem operation or graph invocation is inside SQL.
+      // A crash here leaves durable task-local resume writes plus the receipt;
+      // the same recovery path re-enters without adding another resume value.
+      controller.signal.throwIfAborted()
+      owner.assertOwned()
+      await this.executeRun(run, controller.signal, owner)
+      return
+    }
     const resumeMap = Object.fromEntries(interactions.map((item) => [item.graphInterruptId!, { interactionId: item.id }]))
     // Approval time is persisted per execution. Each ensure/observe lifetime
     // owns its deadline; completed branches cannot constrain later graph work.

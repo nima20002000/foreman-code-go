@@ -3,9 +3,9 @@ import {
   canonicalGraphJson, graphJsonBytes, parseNativeGraphObservation, sameGraphScope,
   assertNativeGraphProjectionAuthority, type GraphFact, type NativeGraphObservation, type NativeGraphCorrelationRecord, type RunGraphScope,
 } from '@graphql/contracts/wave25'
-import { readCurrentNodeAttention } from './currentAttention.js'
 import { poisonGraphTransaction } from './connection.js'
-import { readCurrentNativeActivities, readCurrentActivityContext, selectCurrentNodeActivity, type CurrentNativeActivity } from './currentActivity.js'
+import { readCurrentNativeActivities, type CurrentNativeActivity } from './currentActivity.js'
+import { publicNodeProjectionDelta, readPublicNodeProjection } from './publicProjection.js'
 import { assertRunGraphPublication, graphSourceDigest, type RunGraphPublication } from './publication.js'
 import { readNativeGraphActivity, readNativeGraphCorrelation, type NativeGraphProjectionGuard } from './records.js'
 import { RunGraphError } from './errors.js'
@@ -13,6 +13,8 @@ import { PostgresNativeGraphProjectionWriter } from './nativeWriter.js'
 import { nativeProjectionId, projectNativeEvidence, reconcileNativeEvidence, type ProjectionBinding, type ProjectionEvent, type NativeProjectionState } from './nativeProjection.js'
 import { parseNativeCheckpoint } from './nativeCheckpoint.js'
 import { selectNativeGraphEvidence } from './nativeEvidence.js'
+import { normalizeNativeProducerEvent } from './nativeProducerNormalization.js'
+import { appendNormalizedNativeEvent } from '../runs/nativeEvents.js'
 
 export interface NativeGraphWork {
   guard: NativeGraphProjectionGuard
@@ -45,7 +47,8 @@ async function ingest(publication: RunGraphPublication, input: HarnessNativeEven
   const { sql, scope } = publication
   assertRunGraphPublication(sql, scope)
   if (scope.executionSemanticsVersion !== 2 || !work.length || work.length > 16) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
-  const event = HarnessNativeEventSchema.parse(input)
+  const prepared = normalizeNativeProducerEvent(input)
+  const event = HarnessNativeEventSchema.parse(prepared.event)
   if (!Number.isSafeInteger(event.sequence) || event.sequence > 2147483647) throw new RunGraphError('GRAPH_EVIDENCE_INVALID')
   const evidence = nativeGraphSource(event)
   const ordered = [...work].sort((a, b) => canonicalGraphJson(a.guard.expected.key).localeCompare(canonicalGraphJson(b.guard.expected.key)))
@@ -55,16 +58,22 @@ async function ingest(publication: RunGraphPublication, input: HarnessNativeEven
     assertNativeGraphProjectionAuthority(item.guard.expected, await item.guard.readCurrentLocked(sql, scope, item.guard.expected.key))
   }
   // Same S1 function, identity and integer numbering; it locks the execution AFTER Run/head.
-  const appended = await sql.query<{ inserted: boolean }>('select append_harness_native_event($1::jsonb) as inserted', [JSON.stringify(event)])
-  const result: NativeGraphIngestionResult = { rawInserted: appended.rows[0]!.inserted, projected: 0, rejected: 0, ignored: 0 }
+  const appended = await appendNormalizedNativeEvent(sql, { ...prepared, event })
+  const result: NativeGraphIngestionResult = { rawInserted: appended.inserted, projected: 0, rejected: 0, ignored: 0 }
+  // Retained oversized/malformed input always stays a rejection, including when
+  // a caller supplies an observation/current view. It cannot seed a checkpoint,
+  // publish an activity, or promote that source into acknowledgement/terminal proof.
+  if (appended.rejected) { result.rejected = ordered.length; return result }
   const published = await sql.query('select 1 from run_graph_sources where run_id=$1 and source_kind=$2 and source_id=$3 and source_revision=0',
     [scope.runId, evidence.sourceKind, evidence.sourceId])
   if (published.rowCount) { result.ignored = work.length; return result }
-  const native = await sql.query<{ sequence: string }>(
-    event.connectionId
-      ? 'select sequence::text from harness_native_events where execution_id=$1 and connection_id=$2 and source_sequence=$3'
-      : 'select sequence::text from harness_native_events where execution_id=$1 and connection_id is null and sequence=$3',
-    [event.executionId, event.connectionId ?? null, event.sequence])
+  const native = event.connectionId
+    ? await sql.query<{ sequence: string }>(
+      'select sequence::text from harness_native_events where execution_id=$1 and connection_id=$2 and source_sequence=$3',
+      [event.executionId, event.connectionId, event.sequence])
+    : await sql.query<{ sequence: string }>(
+      'select sequence::text from harness_native_events where execution_id=$1 and connection_id is null and sequence=$2',
+      [event.executionId, event.sequence])
   if (native.rows.length !== 1) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
   const nativeSequence = native.rows[0]!.sequence
   const selected = selectNativeGraphEvidence(event.type, event.payload)
@@ -171,16 +180,9 @@ async function ingest(publication: RunGraphPublication, input: HarnessNativeEven
       if (saved.rowCount !== 1) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
     })
   }
-  for (const nodeId of nodeIds) {
-    const context = await readCurrentActivityContext(sql, scope, nodeId)
-    const before = selectCurrentNodeActivity(nodeId, beforeCandidates, context)
-    const after = selectCurrentNodeActivity(nodeId, afterCandidates, context)
-    if (canonicalGraphJson(before) !== canonicalGraphJson(after)) {
-      facts.push({ type: 'node.activity', activity: after })
-      const attention = await readCurrentNodeAttention(sql, scope, new Map([[nodeId, after]]))
-      facts.push({ type: 'node.attention', attention: attention.get(nodeId)! })
-    }
-  }
+  const beforeNodes = await readPublicNodeProjection(sql, scope, nodeIds, { native: beforeCandidates })
+  const afterNodes = await readPublicNodeProjection(sql, scope, nodeIds, { native: afterCandidates })
+  facts.push(...publicNodeProjectionDelta(beforeNodes, afterNodes))
   const mutate = async () => { for (const write of writes) await write() }
   if (facts.length) {
     // Includes private fields in the source digest, never in the public graph facts.

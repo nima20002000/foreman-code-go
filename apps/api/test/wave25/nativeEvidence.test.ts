@@ -25,6 +25,16 @@ describe('bounded structured native evidence', () => {
       expect(selectNativeGraphEvidence(type, hostile)).toEqual({ kind: 'ignored' })
     }
   })
+  it('keeps the actual Codex top-level turn identity and terminal status without importing output', () => {
+    expect(selectNativeGraphEvidence('turn.started', { threadId: 'session', turnId: 'turn',
+      clientCorrelationId: 'execution:exec', privateOutput: 'SECRET-PROBE' })).toEqual({
+      kind: 'evidence', type: 'turn.started', payload: { threadId: 'session', turnId: 'turn',
+        turn: { id: 'turn', status: 'inProgress' } },
+    })
+    expect(selectNativeGraphEvidence('turn.completed', { threadId: 'session', turnId: 'turn', status: 'failed',
+      privateOutput: 'SECRET-PROBE' })).toEqual({ kind: 'evidence', type: 'turn.completed',
+      payload: { threadId: 'session', turnId: 'turn', turn: { id: 'turn', status: 'failed' } } })
+  })
   it('rejects oversize complete evidence and an over-capacity actions array, then accepts the next valid event', () => {
     expect(selectNativeGraphEvidence('item.started', { item: { id: 'tool', server: 'x'.repeat(40000) } })).toMatchObject({ kind: 'invalid', code: 'GRAPH_EVIDENCE_TOO_LARGE' })
     expect(selectNativeGraphEvidence('item.started', { item: { commandActions: Array.from({ length: 129 }, () => ({ type: 'read' })) } })).toMatchObject({ kind: 'invalid' })

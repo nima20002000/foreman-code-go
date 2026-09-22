@@ -22,7 +22,13 @@ export function selectNativeGraphEvidence(type: string, input: Record<string, un
       item.commandActions = original.commandActions.map((action) => pick(action, ['type']))
     }
     payload.item = item
-  } else if (type.startsWith('turn.')) payload.turn = pick(input.turn, ['id', 'status'])
+  } else if (type.startsWith('turn.')) {
+    const turn = pick(input.turn, ['id', 'status'])
+    if (turn.id === undefined && typeof input.turnId === 'string') turn.id = input.turnId
+    if (type === 'turn.started') turn.status = 'inProgress'
+    else if (turn.status === undefined && typeof input.status === 'string') turn.status = input.status
+    payload.turn = turn
+  }
   else if (type === 'message.updated') payload.info = pick(input.info, ['id', 'parentID', 'sessionID', 'role', 'summary'])
   else {
     payload.part = { ...pick(input.part, ['id', 'messageID', 'sessionID', 'type', 'tool']), state: pick(nativeObject(input.part).state, ['status']) }

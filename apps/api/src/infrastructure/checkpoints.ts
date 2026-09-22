@@ -1,5 +1,5 @@
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
-import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres'
+import { ApprovalPostgresSaver } from './approvalCheckpointSaver.js'
 
 import { createPool, queryForReadiness, type DatabaseOptions } from './pool.js'
 
@@ -22,7 +22,7 @@ export function createCheckpointStore(
     throw new Error('Checkpoint schema must be a lowercase PostgreSQL identifier')
   }
   const pool = createPool({ ...options, connectionString }, 'graphql-checkpoints')
-  const saver = new PostgresSaver(pool, undefined, { schema })
+  const saver = new ApprovalPostgresSaver(pool, undefined, { schema })
 
   return {
     saver,

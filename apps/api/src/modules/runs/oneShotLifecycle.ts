@@ -4,6 +4,8 @@ import { DomainError } from '../errors.js'
 import { withExclusiveGraphConnection, type GraphTransactionSql } from '../run-graph/connection.js'
 import { graphSourceDigest, openRunGraphPublication, type RunGraphPublication } from '../run-graph/publication.js'
 import { readOneShotRunState } from './oneShotPostgres.js'
+import { publicRunClosedFacts } from '../run-graph/publicProjection.js'
+import { publicAttentionTotals, readPublicAttentionCounts } from '../run-graph/currentAttention.js'
 
 /** SQL-only command authorization; management callers pass the same live policy
  * they use for commands, not a caller-provided boolean or native write lease. */
@@ -47,7 +49,7 @@ export async function changeOneShotLifecycle(pool: pg.Pool, runId: string,
       state.cleanupPending = true
       await publication.effect({ effect, sourceDigest: effect.digest,
         evidence: { sourceKind: 'run', sourceId: `stop-${effect.digest.slice(7)}`, sourceRevision: '0' },
-        facts: [{ type: 'run.state', state }] }, { expected, readCurrentLocked: readAuthority }, async () => {
+        facts: [{ type: 'run.state', state }, ...await publicRunClosedFacts(sql, scope)] }, { expected, readCurrentLocked: readAuthority }, async () => {
         await sql.query(`insert into run_cleanup_intents(run_id) values($1)
           on conflict(run_id) do update set pending=true,updated_at=now()`, [runId])
       })
@@ -86,7 +88,7 @@ export async function publishOneShotCleanup(publication: RunGraphPublication, pe
     'select pending,attempts from run_cleanup_intents where run_id=$1 for update', [runId])
   if (previous.rows[0]?.pending === pending) return
   const state = await readOneShotRunState(sql, runId, run, stopped)
-  state.cleanupPending = pending
+  state.cleanupPending = pending || publicAttentionTotals(await readPublicAttentionCounts(sql, runId)).cleanupPending
   const head = await sql.query<{ revision: string }>(
     'select (head_sequence+1)::text as revision from run_graph_heads where run_id=$1', [runId])
   const facts: GraphFact[] = [{ type: 'run.state', state }]

@@ -7,6 +7,9 @@ import {
 } from '@graphql/contracts/wave25'
 
 import type { RunStateUpdate } from './port.js'
+import { publicNodeLifecycle } from '../run-graph/publicLifecycle.js'
+import { readPublicNodeProjection, publicNodeProjectionDelta, publicRunClosedFacts } from '../run-graph/publicProjection.js'
+import { publicAttentionTotals, readPublicAttentionCounts } from '../run-graph/currentAttention.js'
 import { DomainError } from '../errors.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
@@ -182,7 +185,7 @@ export class OneShotRunRepository {
     if (existing) return existing
     const resolution = inactiveOneShotResolution(context.version, nodeId, kind, new Date().toISOString())
     const facts: GraphFact[] = [{ type: 'node.resolved', resolution }]
-    if (kind === 'skipped') facts.push({ type: 'node.state', state: { workflowNodeId: nodeId, lifecycle: 'skipped' } })
+    if (kind === 'skipped') facts.push({ type: 'node.state', state: { workflowNodeId: nodeId, lifecycle: publicNodeLifecycle(undefined, undefined, resolution.resolution) } })
     await this.effect(context, 'route.resolve', nodeId, resolution, facts,
       async (sql) => { await putNodeResolution(sql, context.scope, resolution) })
     return resolution
@@ -213,7 +216,7 @@ export class OneShotRunRepository {
         resolutions: context.resolutions, predecessors: context.executions, boundAt: new Date().toISOString(),
       })
       const facts: GraphFact[] = [{ type: 'node.state', state: {
-        workflowNodeId: nodeId, execution: oneShotIdentity(execution), lifecycle: 'queued',
+        workflowNodeId: nodeId, execution: oneShotIdentity(execution), lifecycle: publicNodeLifecycle(execution.state, execution.result?.outcome),
       } }, ...bindings.map((binding): GraphFact => ({ type: 'input.bound', binding }))]
       await this.effect(context, 'input.bind', execution.id, { execution, bindings }, facts, async (sql) => {
         await sql.query(
@@ -258,7 +261,7 @@ export class OneShotRunRepository {
       const resolution = oneShotResolution(context.version, execution)
       const facts: GraphFact[] = [{ type: 'node.resolved', resolution }, { type: 'node.state', state: {
         workflowNodeId: execution.workflowNodeId, execution: oneShotIdentity(execution),
-        lifecycle: resolution.resolution === 'succeeded' ? 'succeeded' : resolution.resolution === 'canceled' ? 'canceled' : 'failed',
+        lifecycle: publicNodeLifecycle(execution.state, execution.result?.outcome, resolution.resolution),
       } }]
       if (resolution.resolution === 'succeeded') facts.unshift({
         type: 'result.accepted', execution: oneShotIdentity(execution), resultDigest: resolution.acceptedResultDigest!,
@@ -360,7 +363,7 @@ export class OneShotRunRepository {
       }
       const next = HarnessExecutionSchema.parse({ ...row.execution, ...paths, state: 'starting', startedAt: new Date().toISOString() })
       await this.effect(context, 'execution.launch', executionId, next,
-        [{ type: 'node.state', state: { workflowNodeId: next.workflowNodeId, execution: oneShotIdentity(next), lifecycle: 'starting' } }],
+        [{ type: 'node.state', state: { workflowNodeId: next.workflowNodeId, execution: oneShotIdentity(next), lifecycle: publicNodeLifecycle(next.state, next.result?.outcome) } }],
         async (sql) => { await sql.query('update harness_executions set record=$2::jsonb where id=$1', [executionId, JSON.stringify(next)]) })
       return next
     })
@@ -385,9 +388,9 @@ export class OneShotRunRepository {
       }
       if (!reference || row.execution.nativeSessionId) return row.execution
       const next = HarnessExecutionSchema.parse({ ...row.execution, nativeSessionId: reference.nativeSessionId })
-      await this.source(context, 'execution', executionId, { before: row.execution, next },
-        [{ type: 'node.state', state: { workflowNodeId: next.workflowNodeId, execution: oneShotIdentity(next), lifecycle: 'uncertain' } }],
-        async () => { await context.sql.query('update harness_executions set record=$2::jsonb where id=$1', [executionId, JSON.stringify(next)]) })
+      // Repairing a session binding is not native progress and does not change
+      // the public lifecycle. Keep the same graph-visible state at the same head.
+      await context.sql.query('update harness_executions set record=$2::jsonb where id=$1', [executionId, JSON.stringify(next)])
       return next
     })
   }
@@ -461,11 +464,12 @@ export class OneShotRunRepository {
       if (next.result?.outcome === 'succeeded' && !next.nativeSessionId) conflict('NATIVE_TERMINAL_EVIDENCE_MISSING', 'Success requires the exact native session.')
       next = normalizeOneShotTerminal(context.version, next)
       if (canonicalGraphJson(previous) === canonicalGraphJson(next)) return
-      // 'running' from coordinator setup is not acknowledgement. Agent 5 owns
-      // running/activity projection from native evidence, and is never overwritten here.
-      const lifecycle = next.state === 'completed' ? next.result!.outcome : next.state === 'running' ? undefined : next.state
-      const facts: GraphFact[] = lifecycle ? [{ type: 'node.state', state: {
-        workflowNodeId: next.workflowNodeId, execution: oneShotIdentity(next), lifecycle } }] : []
+      // Lifecycle, activity and telemetry change atomically with the execution.
+      // The same current-record projection serves a fresh snapshot at this head.
+      const ids = [next.workflowNodeId]
+      const before = await readPublicNodeProjection(context.sql, context.scope, ids)
+      const after = await readPublicNodeProjection(context.sql, context.scope, ids, { executions: [next] })
+      const facts = publicNodeProjectionDelta(before, after)
       if (!facts.length) {
         // Exact native binding is internal domain bookkeeping; no fake work event.
         await context.sql.query('update harness_executions set record=$2::jsonb where id=$1', [next.id, JSON.stringify(next)])
@@ -503,8 +507,10 @@ export class OneShotRunRepository {
       const resolution = oneShotResolution(context.version, execution)
       const state = await readOneShotRunState(context.sql, context.run.id, context.run, context.stopped)
       state.cleanupPending = true
-      const facts: GraphFact[] = [
-        { type: 'node.state', state: { workflowNodeId: execution.workflowNodeId, execution: oneShotIdentity(execution), lifecycle: execution.result!.outcome } },
+      const ids = [execution.workflowNodeId]
+      const before = await readPublicNodeProjection(context.sql, context.scope, ids)
+      const after = await readPublicNodeProjection(context.sql, context.scope, ids, { executions: [execution] })
+      const facts: GraphFact[] = [...publicNodeProjectionDelta(before, after),
         { type: 'node.resolved', resolution }, { type: 'run.state', state },
       ]
       const mutate = async () => {
@@ -537,7 +543,9 @@ export class OneShotRunRepository {
       if (canonicalGraphJson(next) === canonicalGraphJson(context.run)) return
       if (update.outcome === 'succeeded') this.terminalResults(context)
       const state = await readOneShotRunState(context.sql, context.run.id, next, context.stopped)
-      await this.source(context, 'run', context.run.id, next, [{ type: 'run.state', state }], async () => {
+      const closedFacts = ['completed', 'interrupted'].includes(next.executionState)
+        ? await publicRunClosedFacts(context.sql, context.scope) : []
+      await this.source(context, 'run', context.run.id, next, [{ type: 'run.state', state }, ...closedFacts], async () => {
         await context.sql.query('update runs set execution_state=$2,record=$3::jsonb where id=$1', [next.id, next.executionState, JSON.stringify(next)])
       })
     })
@@ -578,7 +586,8 @@ export class OneShotRunRepository {
       }
       const state = await readOneShotRunState(context.sql, next.id, next, false)
       state.cleanupPending = true
-      await this.source(context, 'run', next.id, next, [{ type: 'run.state', state }], async () => {
+      const closedFacts = await publicRunClosedFacts(context.sql, context.scope)
+      await this.source(context, 'run', next.id, next, [{ type: 'run.state', state }, ...closedFacts], async () => {
         await context.sql.query(`insert into run_cleanup_intents(run_id) values($1)
           on conflict(run_id) do update set pending=true,updated_at=now()`, [next.id])
         await context.sql.query('update runs set execution_state=$2,record=$3::jsonb where id=$1', [next.id, next.executionState, JSON.stringify(next)])
@@ -607,12 +616,9 @@ export class OneShotRunRepository {
 /** Bounded current domain aggregates; no Activity/native-history reconstruction. */
 export async function readOneShotRunState(sql: GraphTransactionSql, runId: string,
   run: OneShotRun, stopped: boolean): Promise<Extract<GraphFact, { type: 'run.state' }>['state']> {
-  const counts = await sql.query<{ cleanup: boolean; interactions: string; reviews: string }>(`
-    select exists(select 1 from run_cleanup_intents where run_id=$1 and pending) as cleanup,
-      (select count(*)::text from durable_interactions where run_id=$1 and status in ('pending','decided','delivery_pending')) as interactions,
-      (select count(*)::text from review_jobs j join harness_executions e on e.id=j.execution_id
-        where e.run_id=$1 and j.state<>'completed' and (j.state<>'failed' or j.record->'cleanup'->>'completedAt' is null)) as reviews`, [runId])
-  const row = counts.rows[0]!
+  const counts = publicAttentionTotals(await readPublicAttentionCounts(sql, runId))
+  const row = (await sql.query<{ cleanup: boolean }>(
+    'select exists(select 1 from run_cleanup_intents where run_id=$1 and pending) as cleanup', [runId])).rows[0]!
   return { executionState: run.executionState, outcome: run.outcome, stopRequested: stopped,
-    cleanupPending: row.cleanup, pendingInteractionCount: Number(row.interactions), unsettledReviewCount: Number(row.reviews) }
+    ...counts, cleanupPending: row.cleanup || counts.cleanupPending }
 }

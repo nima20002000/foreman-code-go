@@ -13,7 +13,7 @@ import { approvalFixture, deliveryFixture } from './wave25ApprovalFixture.js'
 
 /** Real isolated PostgreSQL. No provider starts, process credentials or bypasses.
  * Deliberately fails without TEST_DATABASE_URL: these are not mock DB tests. */
-export async function approvalDatabase() {
+export async function approvalDatabase(options: { runThread?: boolean } = {}) {
   const connectionString = process.env.TEST_DATABASE_URL
   if (!connectionString) throw new Error('Set TEST_DATABASE_URL for the Wave 2.5 approval integration suite.')
   const schema = `a4_${randomUUID().replaceAll('-', '')}`
@@ -38,7 +38,7 @@ export async function approvalDatabase() {
       finishedAt: f.createdAt, workingDirectory: '/synthetic/approval-test' })
     const requester = HarnessExecutionSchema.parse({ ...worker, workingDirectory: '/synthetic/approval-test' })
     const raw = deliveryFixture().interaction
-    const interaction = DurableInteractionSchema.parse({ ...raw, revision: 0, status: 'pending', deliveryState: 'not_started',
+    const interaction = DurableInteractionSchema.parse({ ...raw, ...(options.runThread ? { graphThreadId: run.id } : {}), revision: 0, status: 'pending', deliveryState: 'not_started',
       selectedOptionId: undefined, selectedSemantic: undefined, nativeResponse: undefined, decidedAt: undefined })
     await pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [run.workspaceId, JSON.stringify({ id: run.workspaceId, name: 'Approval tests' })])
     for (const c of f.configurations) {

@@ -7,6 +7,7 @@ import { Wave25InteractionDeliveryRepository } from './delivery.js'
 import { createRequest, decide } from './decisions.js'
 import { fail, isV2, lockInteraction, readContext, runFor, transact } from './context.js'
 import { nextInteraction, publishInteraction } from './publication.js'
+import { runCleanupAllowed } from './cleanupAuthority.js'
 
 /** Production replaces only this constructor and the matching service constructor.
  * Legacy reads/writes retain the S1 implementation; v2 never falls back to a raw
@@ -69,8 +70,7 @@ export class Wave25InteractionRepository extends PostgresInteractionRepository {
     if (!await this.usesAtomicApproval(runId)) return super.cancelPendingForRun(runId)
     return transact(this.approvalPool, runId, async (publication) => {
       const sql = publication.sql
-      if (!(await sql.query(`select 1 from runs where id=$1 and (stop_requested_at is not null
-        or execution_state in ('completed','interrupted'))`, [runId])).rowCount) return fail('EXECUTION_NOT_STOPPED')
+      if (!await runCleanupAllowed(sql, runId)) return fail('EXECUTION_NOT_STOPPED')
       const rows = (await sql.query<{ id: string }>(`select i.id from durable_interactions i
         left join interaction_graph_resumes g on g.interaction_id=i.id where i.run_id=$1 and i.status<>'canceled'
         and not (i.status='delivered' and (coalesce(g.state,'pending')='resumed' or g.approval_native_ack_id is not null)) order by i.id`, [runId])).rows

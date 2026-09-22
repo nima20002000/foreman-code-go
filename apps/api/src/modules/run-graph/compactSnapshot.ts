@@ -1,46 +1,30 @@
 import {
-  GraphExecutionIdentitySchema, GraphNodeStateSchema, RunGraphTopologySchema, RunGraphCurrentStateSchema,
+  GraphNodeStateSchema, RunGraphTopologySchema, RunGraphCurrentStateSchema,
   RUN_GRAPH_LIMITS, type RunGraphScope, type RunGraphCurrentState, type RunGraphTopology,
-  type GraphExecutionIdentity,
 } from '@graphql/contracts/wave25'
 import type { GraphTransactionSql } from './connection.js'
 import { assertGraphTransaction } from './connection.js'
 import { RunGraphError } from './errors.js'
-import { readInputBindings, readNodeResolutions } from './records.js'
-import { readCurrentNativeActivities, selectCurrentNodeActivity } from './currentActivity.js'
-import { readCurrentNodeAttention } from './currentAttention.js'
+import { readInputBindings } from './records.js'
 import type { ReadCurrentRunGraph } from './reader.js'
 import { z } from 'zod'
+import { publicNodeState, type PublicExecution } from './publicLifecycle.js'
+import { readPublicNodeProjection } from './publicProjection.js'
+import type { CurrentNativeActivity } from './nativeActivitySelection.js'
 
 export type CurrentExchanges = Pick<RunGraphCurrentState, 'interactions' | 'reviews'>
-/** Agent 4 supplies current domain records through the SAME SQL transaction.
- * No permissive empty default: absent producer coverage is not an empty inbox.
- * Completed history belongs on detail paths. Retirements must be published by its producer.
- */
+/** Current exchanges must be read on the SAME coherent SQL cut as lifecycle. */
 export type ReadCurrentGraphExchanges = (sql: GraphTransactionSql, scope: RunGraphScope) => Promise<CurrentExchanges>
 const ExchangesSchema = z.object({
   interactions: RunGraphCurrentStateSchema.shape.interactions,
   reviews: RunGraphCurrentStateSchema.shape.reviews,
 }).strict()
-export interface CompactExecution {
-  execution: GraphExecutionIdentity
-  state: string
-}
+export type CompactExecution = PublicExecution
 
-/** Shared current-state mapping for the execution producer's fixture/qualification pass. */
+/** Retained public helper; publishers use the identical authoritative mapper. */
 export function compactNodeState(workflowNodeId: string, current: CompactExecution | undefined,
-  resolution: RunGraphCurrentState['nodes'][number]['resolution']) {
-  if (resolution) {
-    const lifecycle = resolution.resolution === 'excluded' ? 'not_activated' : resolution.resolution
-    return GraphNodeStateSchema.parse({ workflowNodeId, lifecycle,
-      ...(resolution.execution ? { execution: resolution.execution } : {}) })
-  }
-  if (!current) return GraphNodeStateSchema.parse({ workflowNodeId, lifecycle: 'not_activated' })
-  // Persisted execution lifecycle remains independent from current activity.
-  // Agent 3 must qualify every v2 writer: a running row requires native evidence.
-  // Missing accepted-result resolution never becomes success from an empty stream.
-  const lifecycle = ['queued', 'starting', 'running', 'waiting'].includes(current.state) ? current.state : 'unknown'
-  return GraphNodeStateSchema.parse({ workflowNodeId, execution: current.execution, lifecycle })
+  resolution: RunGraphCurrentState['nodes'][number]['resolution'], native: readonly CurrentNativeActivity[] = [], closed = false) {
+  return GraphNodeStateSchema.parse(publicNodeState(workflowNodeId, current, resolution, native, closed))
 }
 
 export function createCompactSnapshotAssembler(readExchanges: ReadCurrentGraphExchanges): ReadCurrentRunGraph {
@@ -61,74 +45,29 @@ export function createCompactSnapshotAssembler(readExchanges: ReadCurrentGraphEx
       [scope.runId, scope.workspaceId, scope.workflowId, scope.workflowVersionId, scope.executionSemanticsVersion])).rows[0]
     if (!head) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
     const topology = await readPinnedTopology(sql, scope, head.entry_node_id)
-    const executionRows = await sql.query<{
-      id: string; workflow_node_id: string; agent_id: string; configuration_id: string; attempt: number; state: string
-    }>(
-      `select e.id,e.workflow_node_id,e.record->>'agentId' as agent_id,
-        e.record->>'agentConfigurationVersionId' as configuration_id,e.attempt,e.record->>'state' as state
-       from harness_executions e where e.run_id=$1 order by e.workflow_node_id,e.id limit $2`,
-      [scope.runId, RUN_GRAPH_LIMITS.nodes + 1])
-    if (executionRows.rows.length > RUN_GRAPH_LIMITS.nodes) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
-    const executions = new Map<string, CompactExecution>()
-    for (const row of executionRows.rows) {
-      if (executions.has(row.workflow_node_id) || row.attempt !== 1) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
-      executions.set(row.workflow_node_id, { state: row.state, execution: GraphExecutionIdentitySchema.parse({
-        workflowNodeId: row.workflow_node_id, executionId: row.id, agentId: row.agent_id,
-        agentConfigurationVersionId: row.configuration_id, attempt: row.attempt,
-      }) })
-    }
-    // Sequential queries deliberately retain the G1 exclusive transaction object.
-    const resolutions = await readNodeResolutions(sql, scope)
+    const ids = topology.nodes.map((node) => node.workflowNodeId)
+    // A targeted projection must not silently hide an out-of-pin stored node.
+    const invalid = await sql.query(`select 1 from harness_executions where run_id=$1
+      and (not (workflow_node_id=any($2::text[])) or attempt<>1)
+      union all select 1 from run_node_resolutions where run_id=$1
+        and not (workflow_node_id=any($2::text[])) limit 1`, [scope.runId, ids])
+    if (invalid.rowCount) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+    const nodes = await readPublicNodeProjection(sql, scope, ids)
     const inputBindings = await readInputBindings(sql, scope)
-    const native = head.stopped || ['completed', 'interrupted'].includes(head.execution_state)
-      ? [] : await readCurrentNativeActivities(sql, scope)
-    const nativeByNode = new Map<string, typeof native>()
-    for (const candidate of native) {
-      const id = candidate.key.execution.workflowNodeId, values = nativeByNode.get(id) ?? []
-      values.push(candidate); nativeByNode.set(id, values)
-    }
     const exchanges = ExchangesSchema.parse(await readExchanges(sql, scope))
-    const resolutionByNode = new Map(resolutions.map((resolution) => [resolution.workflowNodeId, resolution]))
-    const pendingByNode = new Map<string, CurrentExchanges['interactions']>()
-    const reviewsByNode = new Map<string, CurrentExchanges['reviews']>()
-    for (const interaction of exchanges.interactions) {
-      if (['delivered', 'canceled'].includes(interaction.status) && interaction.resumeState !== 'pending') continue
-      const key = interaction.requester.workflowNodeId
-      const values = pendingByNode.get(key) ?? []; values.push(interaction); pendingByNode.set(key, values)
+    const pinned = new Set(ids)
+    if (exchanges.interactions.some((item) => !pinned.has(item.requester.workflowNodeId)
+      || item.reviewer && !pinned.has(item.reviewer.workflowNodeId))
+      || exchanges.reviews.some((item) => !pinned.has(item.reviewer.workflowNodeId) || !pinned.has(item.requester.workflowNodeId))) {
+      throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
     }
-    for (const review of exchanges.reviews) {
-      if (review.state === 'completed' || (review.state === 'failed' && review.nativeCleanup !== 'pending' && review.credentialCleanup !== 'pending')) continue
-      const key = review.reviewer.workflowNodeId
-      const values = reviewsByNode.get(key) ?? []; values.push(review); reviewsByNode.set(key, values)
-    }
-    const closed = head.stopped || ['completed', 'interrupted'].includes(head.execution_state)
     const state: RunGraphCurrentState = {
       run: { executionState: head.execution_state, outcome: head.outcome, stopRequested: head.stopped,
-        cleanupPending: head.cleanup_pending,
-        pendingInteractionCount: [...pendingByNode.values()].reduce((count, items) => count + items.length, 0),
-        unsettledReviewCount: [...reviewsByNode.values()].reduce((count, items) => count + items.length, 0) },
-      nodes: topology.nodes.map((node) => {
-        const id = node.workflowNodeId, current = executions.get(id), resolution = resolutionByNode.get(id)
-        const pending = pendingByNode.get(id) ?? [], reviews = reviewsByNode.get(id) ?? []
-        const pendingId = pending.filter((item) => item.status === 'pending').map((item) => item.interactionId).sort()[0]
-        const activity = selectCurrentNodeActivity(id, nativeByNode.get(id) ?? [], { closed, workflowClosed: current?.state === 'completed',
-          ...(pendingId ? { pendingInteractionId: pendingId } : {}),
-          deliveryBlocked: pending.some((item) => ['decided', 'delivery_pending', 'delivery_failed'].includes(item.status)) })
-        if (resolution?.execution && current?.execution.executionId !== resolution.execution.executionId) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
-        return { state: compactNodeState(id, current, resolution), activity,
-          attention: { workflowNodeId: id, pendingInteractionCount: pending.length, unsettledReviewCount: reviews.length,
-            cleanupPending: reviews.some((review) => review.nativeCleanup === 'pending' || review.credentialCleanup === 'pending'),
-            telemetry: activity.status === 'stale' ? 'stale' as const : activity.status === 'unknown' ? 'unknown' as const : 'current' as const },
-          ...(resolution ? { resolution } : {}),
-          ...(resolution?.acceptedResultDigest ? { acceptedResultDigest: resolution.acceptedResultDigest } : {}) }
-      }), inputBindings, ...exchanges,
+        cleanupPending: head.cleanup_pending || nodes.some((node) => node.attention.cleanupPending),
+        pendingInteractionCount: nodes.reduce((sum, node) => sum + node.attention.pendingInteractionCount, 0),
+        unsettledReviewCount: nodes.reduce((sum, node) => sum + node.attention.unsettledReviewCount, 0) },
+      nodes, inputBindings, ...exchanges,
     }
-    const attention = await readCurrentNodeAttention(sql, scope, new Map(state.nodes.map((node) => [node.state.workflowNodeId, node.activity])))
-    for (const node of state.nodes) node.attention = attention.get(node.state.workflowNodeId)!
-    state.run.pendingInteractionCount = [...attention.values()].reduce((count, item) => count + item.pendingInteractionCount, 0)
-    state.run.unsettledReviewCount = [...attention.values()].reduce((count, item) => count + item.unsettledReviewCount, 0)
-    const pinnedIds = new Set(topology.nodes.map((node) => node.workflowNodeId))
-    if ([...executions.keys(), ...resolutionByNode.keys(), ...pendingByNode.keys(), ...reviewsByNode.keys()].some((id) => !pinnedIds.has(id))) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
     return { topology, state: RunGraphCurrentStateSchema.parse(state) }
   }
 }

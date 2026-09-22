@@ -12,6 +12,7 @@ import { settleReviewCleanup } from './reviewerCleanup.js'
 import { definitelyRejected, ReviewEvidenceTracker } from './reviewerEvidence.js'
 import type { NativeManagerResolutionContext } from './runtimePorts.js'
 import { coordinateSessionManager, isLeaseLost, LeaseGuard, ownedEvents } from './sessionWriter.js'
+import { normalizeNativeProducerEvent } from '../run-graph/nativeProducerNormalization.js'
 
 export class ReviewerDispatcher {
   private readonly workerId = `review-worker-${randomUUID()}`
@@ -266,8 +267,8 @@ export class ReviewerDispatcher {
               onSubmitted: acknowledge,
             }, workSignal), lane.guard, workSignal)) {
               await check()
-              tracker.observeEvent(event)
-              await this.coordination.appendReviewNativeEvent(job, safe.value(event))
+              const normalized = normalizeNativeProducerEvent({ ...safe.value(event), executionId: executionId! }).event
+              tracker.observeEvent(normalized)
               const evidence = tracker.snapshot()
               if (evidence.identityConflict) return await failReview({ code: 'REVIEW_JOB_IDENTITY_CONFLICT',
                 message: 'The review has conflicting native identities. No further native response will be sent.' })
@@ -276,6 +277,9 @@ export class ReviewerDispatcher {
               // Inspect while consuming the stream: an approval can block its next event forever.
               const pending = await lane.guard.wait(manager.pending(session, workSignal), workSignal)
               await check()
+              await this.coordination.appendReviewNativeEvent(job, normalized, {
+                writer: lane.fence, live: true, terminalReady: evidence.terminal && !pending,
+              })
               if (pending) return await approvalFailure(pending)
             }
           }
@@ -286,11 +290,16 @@ export class ReviewerDispatcher {
           const history = await lane.guard.wait(manager.reconcile(session, job.correlationId, workSignal), workSignal)
           await check()
           workSignal.throwIfAborted()
-          tracker.observeHistory(history)
-          for (const event of history.events) {
+          const normalizedEvents = history.events.map((event) => normalizeNativeProducerEvent(
+            { ...safe.value(event), executionId: executionId! }).event)
+          tracker.observeHistory({ ...history, events: normalizedEvents })
+          for (const event of normalizedEvents) {
             await check()
             workSignal.throwIfAborted()
-            await this.coordination.appendReviewNativeEvent(job, safe.value(event))
+            await this.coordination.appendReviewNativeEvent(job, event, {
+              writer: lane.fence, live: false,
+              terminalReady: tracker.snapshot().terminal && !history.pendingInteraction && history.pendingInteractions.length === 0,
+            })
           }
           const evidence = tracker.snapshot()
           if (evidence.providerId) lane.providerId = evidence.providerId

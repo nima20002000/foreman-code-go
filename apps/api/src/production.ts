@@ -1,3 +1,4 @@
+import { registerApprovalCheckpointResume } from './modules/runs/approvalCheckpointRegistration.js'
 import { isDeepStrictEqual } from 'node:util'
 import { NativeResponseJournal } from './modules/harnesses/recovery/responseJournal.js'
 import { NativeProcessRegistry } from './modules/harnesses/recovery/processRegistry.js'
@@ -187,6 +188,9 @@ export function buildProductionApp(
   const interactions = new InteractionService(
     repository, budgets, approvals, (interaction) => engine.resumeInteraction(interaction), responseJournal,
   )
+  // V2 responses and engine recovery consume the actual checkpoint and receipt
+  // on the same Run-owner transaction before any native continuation.
+  registerApprovalCheckpointResume(interactions, engine)
   const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
   const resolveOperatorManager: NativeManagerResolver = (configuration, conversationId) => {

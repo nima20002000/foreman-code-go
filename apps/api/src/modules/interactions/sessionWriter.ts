@@ -146,6 +146,15 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     return this.active.has(session.nativeSessionId)
   }
 
+  /** A current callback may present this exact native-writer lease to its
+   * persisted graph producer. History outside the lease cannot mint authority. */
+  currentProjectionLease(session: NativeSessionReference) {
+    const lease = this.active.get(session.nativeSessionId)
+    return lease && !lease.guard.signal.aborted
+      ? { id: lease.fence.id, token: lease.fence.token, ...(lease.providerId ? { providerId: lease.providerId } : {}), live: true as const }
+      : undefined
+  }
+
   private ensure(session: NativeSessionReference, status: NativeSessionLane['observedStatus']) {
     return this.coordination.ensureLane({
       id: `lane-${randomUUID()}`, harness: session.harness, nativeSessionId: session.nativeSessionId,
@@ -339,6 +348,19 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     })
     this.controlTail = work
     return work
+  }
+
+  /** Recheck a committed approval claim AFTER the control queue and native lane
+   * are acquired, immediately before dispatch. The check is SQL-only and must
+   * release its transaction before it returns; the native wait owns no Run lock. */
+  respondQualified(session: NativeSessionReference, requestId: string,
+    option: Parameters<NativeHarnessSessionManager['respond']>[2],
+    beforeDispatch: (signal: AbortSignal) => Promise<void>, signal?: AbortSignal) {
+    return this.control(session, signal, async (ownedSignal) => {
+      await beforeDispatch(ownedSignal)
+      ownedSignal.throwIfAborted()
+      return this.manager.respond(session, requestId, option, ownedSignal)
+    })
   }
 
   respond: NativeHarnessSessionManager['respond'] = (session, requestId, option, signal) =>

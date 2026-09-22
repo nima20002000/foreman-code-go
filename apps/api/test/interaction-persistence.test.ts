@@ -107,16 +107,17 @@ it('stores native event envelopes and their activity references atomically, with
   const events = new Map<string, unknown>()
   let activityCount = 0
   const db = { query: async (sql: string, values: unknown[]) => {
-    assert.equal(sql, 'select append_harness_native_event($1::jsonb)')
+    assert.match(sql, /append_harness_native_event\(\$1::jsonb\)/)
+    assert.match(sql, /rejected_source/)
     const record = JSON.parse(String(values[0])) as HarnessNativeEvent
     const identity = `${record.executionId}:${record.connectionId ?? 'legacy'}:${record.sequence}`
     const existing = events.get(identity)
     if (existing) {
       if (JSON.stringify(existing) !== JSON.stringify(record)) throw Object.assign(new Error('identity conflict'), { code: 'PNE01' })
-      return { rows: [{ append_harness_native_event: false }], rowCount: 1 }
+      return { rows: [{ inserted: false, previously_rejected: false }], rowCount: 1 }
     }
     events.set(identity, record); activityCount += 1
-    return { rows: [{ append_harness_native_event: true }], rowCount: 1 }
+    return { rows: [{ inserted: true, previously_rejected: false }], rowCount: 1 }
   } } as unknown as pg.ClientBase
   const event: HarnessNativeEvent = { executionId: 'execution-1', sequence: 7, type: 'native.approval', occurredAt: '2026-09-16T00:00:00.000Z', payload: { requestId: 'exact-native-request', nested: { value: true } } }
   await appendNativeEvent(db, event)

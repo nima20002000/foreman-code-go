@@ -17,6 +17,7 @@ import type { RunOwnership } from './ownership.js'
 import { buildOneShotGraph, type OneShotCheckpoint } from './oneShotGraph.js'
 import type { OneShotExecutionDriver, OneShotGraphState } from './oneShotNode.js'
 import type { RunnerAdmission } from './runnerAdmission.js'
+import { oneShotInitialPrompt } from './oneShotPrompt.js'
 
 export interface OneShotRuntimeContext {
   run: WorkflowRun
@@ -84,9 +85,10 @@ export function oneShotExecutionDriver(context: OneShotRuntimeContext): OneShotE
         await store.assertNativeBoundary(execution.id)
         // The only directory allocation is in the newly claimed branch.
         if (claimed) await withFilesystemDeadline((check) => check(() => mkdir(paths.runtimeDirectory, { recursive: true })), signal)
+        const initialPrompt = oneShotInitialPrompt(node)
         const request = HarnessExecutionRequestSchema.parse({
           executionId: execution.id, runId: run.id, workspaceId: run.workspaceId,
-          workflowNodeId: node.id, ...paths, ...(node.initialPrompt ? { initialPrompt: node.initialPrompt } : {}),
+          workflowNodeId: node.id, ...paths, ...(initialPrompt ? { initialPrompt } : {}),
           configuration, input: execution.input,
         })
         for (;;) {

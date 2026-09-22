@@ -10,7 +10,6 @@ import { interactionFact, reviewFact } from './publication.js'
 
 interface InteractionRow {
   record: unknown
-  resume_state: string | null
 }
 
 /** Current bounded approval exchanges for the compact graph snapshot.
@@ -21,12 +20,12 @@ export async function readCurrentGraphExchanges(
   scope: RunGraphScope,
 ): Promise<CurrentExchanges> {
   const interactionRows = await sql.query<InteractionRow>(
-    `select i.record,g.state as resume_state
+    `select i.record
      from durable_interactions i
      left join interaction_graph_resumes g on g.interaction_id=i.id
      where i.run_id=$1 and (
        i.status not in ('delivered','canceled')
-       or (i.status='delivered' and coalesce(g.state,'blocked')<>'resumed')
+       or (i.status='delivered' and g.approval_native_ack_id is null)
      ) order by i.id limit $2`,
     [scope.runId, RUN_GRAPH_LIMITS.exchanges + 1],
   )
@@ -47,9 +46,9 @@ export async function readCurrentGraphExchanges(
   const interactions: CurrentExchanges['interactions'] = []
   for (const row of interactionRows.rows) {
     const interaction = DurableInteractionSchema.parse(row.record)
-    const resumeState = row.resume_state === 'pending' || row.resume_state === 'resuming'
-      ? 'pending' as const
-      : interaction.deliveryState === 'delivered' ? 'unknown' as const : 'not_started' as const
+    // Delivery establishes a pending continuation obligation, not evidence of
+    // checkpoint consumption or native work. Lease/blocked states stay private.
+    const resumeState = interaction.deliveryState === 'delivered' ? 'pending' as const : 'not_started' as const
     const fact = interactionFact(await contextFor(interaction), interaction, resumeState)
     if (fact.type !== 'interaction.state') throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
     interactions.push(fact.interaction)

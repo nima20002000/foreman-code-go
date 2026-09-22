@@ -153,7 +153,9 @@ export class PostgresInteractionCoordinationRepository {
     return { executionId: row.execution_id, workingDirectory: row.working_directory, providerVersion: row.provider_version }
   }
 
-  async appendReviewNativeEvent(job: ReviewJob, event: NativeHarnessEvent): Promise<void> {
+  async appendReviewNativeEvent(job: ReviewJob, event: NativeHarnessEvent,
+    _projection?: { writer: WriterFence; live: boolean; terminalReady: boolean }): Promise<void> {
+    void _projection
     const result = await this.queryConnection.query<{ record: unknown; execution_id: string | null }>(
       'select record,execution_id from review_jobs where id=$1', [job.id],
     )

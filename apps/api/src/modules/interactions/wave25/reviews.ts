@@ -1,14 +1,18 @@
 import { approvalAttentionFacts } from './attention.js'
-import { DurableInteractionSchema, ReviewJobSchema, type ReviewJob, type DurableInteraction } from '@graphql/contracts'
+import { DurableInteractionSchema, ReviewJobSchema, type ReviewJob, type DurableInteraction, type NativeHarnessEvent } from '@graphql/contracts'
 import type pg from 'pg'
 import { type GraphEffect } from '@graphql/contracts/wave25'
-import { PostgresInteractionCoordinationRepository } from '../coordination.js'
+import { PostgresInteractionCoordinationRepository, type WriterFence } from '../coordination.js'
 import { graphSourceDigest, type RunGraphPublication } from '../../run-graph/publication.js'
 import { fail, isV2, readContext, runFor, transact, requireLeaseAtCommit, type ApprovalContext } from './context.js'
 import { acknowledgementId, reviewEvidence } from './nativeEvidence.js'
 import { reviewFact, sourceForReview } from './publication.js'
 import { assertWave25WorkerBinding } from './credentialAuthority.js'
 import { stopForReviewFailure } from './stop.js'
+import { runCleanupAllowed } from './cleanupAuthority.js'
+import { renewReviewLease } from './reviewLease.js'
+import { publicReviewRetirementFacts } from '../../run-graph/publicLifecycle.js'
+import { appendReviewNativeGraphEvent } from './reviewNativeGraph.js'
 
 function parseReviewJob(input: unknown): ReviewJob {
   return ReviewJobSchema.parse(JSON.parse(JSON.stringify(input)))
@@ -38,6 +42,14 @@ function settlementDigest(job: ReviewJob): string {
 /** Same queue/session lanes and ReviewJob authority; only v2 mutations use G1. */
 export class Wave25InteractionCoordinationRepository extends PostgresInteractionCoordinationRepository {
   constructor(private readonly approvalPool: pg.Pool) { super(approvalPool) }
+  override async appendReviewNativeEvent(job: ReviewJob, event: NativeHarnessEvent,
+    projection?: { writer: WriterFence; live: boolean; terminalReady: boolean }): Promise<void> {
+    const mode = await this.v2('review', job.id)
+    if (!mode.enabled) return super.appendReviewNativeEvent(job, event)
+    if (!projection) return fail('SESSION_LANE_LEASE_LOST')
+    await appendReviewNativeGraphEvent(this.approvalPool, job, event,
+      projection.writer, projection.live, projection.terminalReady)
+  }
   private async v2(kind: 'interaction' | 'review' | 'execution', id: string) {
     const runId = await runFor(this.approvalPool, kind, id)
     return { runId, enabled: await isV2(this.approvalPool, runId) }
@@ -137,6 +149,11 @@ export class Wave25InteractionCoordinationRepository extends PostgresInteraction
       return next
     })
   }
+  override async renewReviewJob(id: string, token: string, leaseMs: number): Promise<string> {
+    const mode = await this.v2('review', id)
+    if (!mode.enabled) return super.renewReviewJob(id, token, leaseMs)
+    return renewReviewLease(this.approvalPool, id, token, leaseMs)
+  }
   override async transitionReviewJob(id: string, token: string, requested: ReviewJob['state'],
     fields: Parameters<PostgresInteractionCoordinationRepository['transitionReviewJob']>[3] = {},
     expected?: { revision: number; fence: number }): Promise<ReviewJob> {
@@ -228,7 +245,8 @@ export class Wave25InteractionCoordinationRepository extends PostgresInteraction
       }
       const revision = String(BigInt(row.revision) + 1n)
       const source = { evidence: sourceForReview(next, revision, ack ? observation?.source : undefined),
-        sourceDigest: graphSourceDigest({ next, nativeEvidence: observation ?? null }), facts: [reviewFact(context, next, revision, ack), ...await approvalAttentionFacts(publication.sql, context, { review: next })] }
+        sourceDigest: graphSourceDigest({ next, nativeEvidence: observation ?? null }), facts: [reviewFact(context, next, revision, ack), ...await approvalAttentionFacts(publication.sql, context, { review: next }),
+          ...publicReviewRetirementFacts(next, revision)] }
       const mutate = async () => {
         const result = await publication.sql.query(`update review_jobs set state=$2,record=$3::jsonb,revision=revision+1,
           approval_connection_generation=$7::bigint,updated_at=clock_timestamp()
@@ -305,9 +323,7 @@ export class Wave25InteractionCoordinationRepository extends PostgresInteraction
   override async reviewRunStopped(id: string): Promise<boolean> {
     const mode = await this.v2('review', id)
     if (!mode.enabled) return super.reviewRunStopped(id)
-    const result = await this.approvalPool.query(`select 1 from runs where id=$1
-      and (stop_requested_at is not null or execution_state in ('completed','interrupted'))`, [mode.runId])
-    return result.rowCount === 1
+    return runCleanupAllowed(this.approvalPool, mode.runId)
   }
 
   override async finishStoppedReviews(runId: string, credentialsRequired: boolean, client?: pg.ClientBase): Promise<void> {
@@ -325,7 +341,7 @@ export class Wave25InteractionCoordinationRepository extends PostgresInteraction
    * is treated as proof that a provider process closed. */
   async finishStoppedReviewsInPublication(publication: RunGraphPublication, credentialsRequired: boolean): Promise<void> {
     const runId = publication.scope.runId, sql = publication.sql
-    if (!(await sql.query('select 1 from runs where id=$1 and stop_requested_at is not null', [runId])).rowCount) return fail('EXECUTION_NOT_STOPPED')
+    if (!await runCleanupAllowed(sql, runId)) return fail('EXECUTION_NOT_STOPPED')
     if (credentialsRequired && (await sql.query(`select 1 from worker_credential_bindings b
       join management_principals p on p.id=b.principal_id where b.run_id=$1
       and (b.revoked_at is null or p.revoked_at is null) limit 1`, [runId])).rowCount) return fail('REVIEW_CREDENTIAL_CLEANUP_PENDING')
@@ -336,13 +352,15 @@ export class Wave25InteractionCoordinationRepository extends PostgresInteraction
       const now = new Date().toISOString()
       const next = parseReviewJob({ ...current, state: 'failed', leaseOwner: undefined, leaseToken: undefined,
         leaseExpiresAt: undefined, retryAfter: undefined, updatedAt: now,
-        error: current.error ?? { code: 'REVIEW_RUN_STOPPED', message: 'The Run stopped before review settlement.' },
+        error: current.error ?? { code: 'REVIEW_RUN_CLEANUP', message: 'Run cleanup ended the unsettled review.' },
         cleanup: { ...current.cleanup,
           nativeState: current.cleanup?.nativeState && current.cleanup.nativeState !== 'pending' ? current.cleanup.nativeState : 'closed',
           credentialState: credentialsRequired ? 'revoked' : 'not_required',
           interruptState: current.cleanup?.interruptState ?? 'not_sent', completedAt: current.cleanup?.completedAt ?? now } })
       const revision = String(BigInt(row.revision) + 1n)
-      const input = { evidence: sourceForReview(next, revision), sourceDigest: graphSourceDigest(next), facts: [reviewFact(context, next, revision), ...await approvalAttentionFacts(publication.sql, context, { review: next })] }
+      const input = { evidence: sourceForReview(next, revision), sourceDigest: graphSourceDigest(next),
+        facts: [reviewFact(context, next, revision), ...await approvalAttentionFacts(publication.sql, context, { review: next }),
+          ...publicReviewRetirementFacts(next, revision)] }
       const mutate = async () => {
         const result = await sql.query(`update review_jobs set state='failed',record=$2::jsonb,revision=revision+1,updated_at=clock_timestamp()
           where id=$1 and revision=$3::bigint`, [id, JSON.stringify(next), row.revision])
@@ -354,10 +372,10 @@ export class Wave25InteractionCoordinationRepository extends PostgresInteraction
         await publication.effect({ ...input, effect }, { expected: { scope: context.scope, effect: effect.identity, effectDigest: effect.digest,
           ownerId: runId, fence: row.revision, connectionGeneration: null }, readCurrentLocked: async () => {
           const actual = await rowFor(publication, id), subject = parseReviewJob(actual.record)
-          const stopped = (await sql.query('select id from runs where id=$1 and stop_requested_at is not null', [runId])).rowCount === 1
+          const cleanupAllowed = await runCleanupAllowed(sql, runId)
           return { scope: context.scope, effect: { kind: 'review.settle', entityId: subject.id },
             effectDigest: settlementDigest({ ...subject, state: 'failed' }), ownerId: runId, fence: actual.revision,
-            connectionGeneration: null, ownership: stopped ? 'held' : 'lost', access: 'effect', security: 'valid',
+            connectionGeneration: null, ownership: cleanupAllowed ? 'held' : 'lost', access: 'effect', security: 'valid',
             effectClosed: subject.state === 'completed', submission: 'settled' }
         } }, mutate)
       }

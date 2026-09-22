@@ -1,8 +1,8 @@
-import { DurableInteractionSchema, type DurableInteraction } from '@graphql/contracts'
+import type { DurableInteraction } from '@graphql/contracts'
 import type pg from 'pg'
 import type { GraphEffect } from '@graphql/contracts/wave25'
 import { PostgresInteractionDeliveryRepository, type GraphResumeClaim } from '../deliveryPostgres.js'
-import { interactionConnection } from '../connection.js'
+import { observeNativeDispatch } from './dispatchWait.js'
 import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence,
   type InteractionDeliveryClaim, type NativeDeliveryOutcome } from '../delivery.js'
 import { assertBudget, fail, isV2, lockInteraction, readContext, runFor, transact, requireLeaseAtCommit } from './context.js'
@@ -117,48 +117,33 @@ export class Wave25InteractionDeliveryRepository extends PostgresInteractionDeli
     })
   }
 
-  /** This is the existing native-write/Stop gate, NOT a graph publication. The
-   * committed intent precedes it; the outcome is published in a separate G1 tx.
-   * A database loss aborts the writer and leaves the durable attempt uncertain. */
+  /** SQL-only dispatch check. The publication connection is released before
+   * filesystem/provider work. Recheck after asynchronous preflight as well as
+   * before entering the callback; a claimed attempt is never a replay permit. */
+  async assertNativeDispatch(claim: InteractionDeliveryClaim): Promise<{ interaction: DurableInteraction; expiresAt: Date }> {
+    return transact(this.approvalPool, claim.interaction.runId, async (publication) => {
+      const { current, attempt, expiresAt } = await ownAttempt(publication.sql, claim)
+      requireLeaseAtCommit(publication.sql, expiresAt, 'DELIVERY_OWNER_LOST')
+      await readContext(publication.sql, current, true)
+      await assertBudget(publication.sql, current)
+      if (claim.mode !== 'submit' || !attempt.approval_write_started_at
+        || current.status !== 'delivery_pending' || current.deliveryState !== 'submitted'
+        || !await settled(publication.sql, current)) return fail('GRAPH_SUBMISSION_NOT_REPLAYABLE')
+      return { interaction: current, expiresAt }
+    })
+  }
+
+  /** Intent was committed by prepare(). Native session ownership and cancellation
+   * remain with the existing SingleWriterSessionManager, not a held Run row lock.
+   * Stop may now commit while I/O is in flight. The finish transaction rechecks
+   * the delivery owner/generation; a lost or timed-out attempt is reconciliation-only. */
   private async nativeWrite(claim: InteractionDeliveryClaim,
     action: (interaction: DurableInteraction, signal: AbortSignal) => Promise<NativeDeliveryOutcome>,
     signal?: AbortSignal): Promise<NativeDeliveryOutcome> {
-    const client = await this.approvalPool.connect(), lost = new AbortController()
-    const onLost = () => lost.abort(new Error('APPROVAL_NATIVE_DATABASE_OWNER_LOST'))
-    let committing = false
-    client.on('error', onLost); client.on('end', onLost)
-    try {
-      await client.query('begin')
-      const run = (await client.query<{ stopped: boolean }>(`select stop_requested_at is not null
-        or execution_state in ('completed','interrupted') or worker_credentials_closed_at is not null as stopped
-        from runs where id=$1 for no key update`, [claim.interaction.runId])).rows[0]
-      if (!run || run.stopped) return fail('EXECUTION_STOPPED')
-      const row = (await client.query<{ record: unknown; expires: Date; generation: string; actual_generation: string }>(
-        `select i.record,i.delivery_lease_expires_at as expires,a.approval_connection_generation::text as generation,
-          l.record->>'connectionGeneration' as actual_generation
-         from durable_interactions i join interaction_delivery_attempts a on a.interaction_id=i.id
-         join native_session_lanes l on l.harness=i.harness and l.native_session_id=i.native_session_id
-         where i.id=$1 and i.run_id=$2 and i.delivery_token=$3 and a.lease_owner=$3 and a.attempt=$4
-           and a.delivery_fence=i.delivery_fence and a.approval_write_started_at is not null
-           and i.delivery_lease_expires_at>clock_timestamp() and a.lease_expires_at>clock_timestamp()
-           and i.status='delivery_pending' and i.record->>'deliveryState'='submitted' for update of i,a`,
-      [claim.interaction.id, claim.interaction.runId, claim.ownerToken, claim.attempt])).rows[0]
-      if (!row || row.generation !== row.actual_generation) return fail('DELIVERY_OWNER_LOST')
-      const budget = (await client.query<{ active: boolean }>(`select stopped_at is null and active_elapsed_ms+
-        coalesce(extract(epoch from(clock_timestamp()-active_started_at))*1000,0)<active_timeout_ms as active
-        from approval_execution_state where execution_id=$1 for update`, [claim.interaction.executionId])).rows[0]
-      if (!budget?.active) return fail('EXECUTION_STOPPED')
-      const timeout = AbortSignal.timeout(Math.max(1, Math.min(INTERACTION_DELIVERY_LEASE_MS, row.expires.getTime() - Date.now())))
-      const combined = AbortSignal.any([lost.signal, timeout, ...(signal ? [signal] : [])])
-      combined.throwIfAborted()
-      const outcome = await interactionConnection.run(client, () => action(DurableInteractionSchema.parse(row.record), combined))
-      combined.throwIfAborted()
-      committing = true
-      await client.query('commit')
-      committing = false
-      return outcome
-    } catch (error) { await client.query('rollback').catch(onLost); throw error }
-    finally { client.removeListener('error', onLost); client.removeListener('end', onLost); client.release(lost.signal.aborted || committing) }
+    const { interaction, expiresAt } = await this.assertNativeDispatch(claim)
+    const timeout = AbortSignal.timeout(Math.max(1, Math.min(INTERACTION_DELIVERY_LEASE_MS, expiresAt.getTime() - Date.now())))
+    const combined = signal ? AbortSignal.any([signal, timeout]) : timeout
+    return observeNativeDispatch(() => action(interaction, combined), combined)
   }
 
   override async finish(claim: InteractionDeliveryClaim,

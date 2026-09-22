@@ -3,6 +3,8 @@ import { WorkflowRunV2Schema, type GraphEffect } from '@graphql/contracts/wave25
 import { graphSourceDigest, type RunGraphPublication } from '../../run-graph/publication.js'
 import { publicReviewStopError } from '../reviewPolicy.js'
 import { fail, type ApprovalContext } from './context.js'
+import { publicAttentionTotals, readPublicAttentionCounts } from '../../run-graph/currentAttention.js'
+import { publicRunClosedFacts } from '../../run-graph/publicProjection.js'
 
 /** Persist a real review failure and Stop intent; the existing Run owner performs
  * native cancellation/credential cleanup. This never schedules or completes work. */
@@ -21,17 +23,12 @@ export async function stopForReviewFailure(publication: RunGraphPublication, job
   const cause = row?.stop_cause ?? RunStopCauseSchema.parse({ kind: 'review_failure', interactionId: job.interactionId,
     reviewJobId: job.id, error: publicReviewStopError(job.error?.code), recordedAt: new Date().toISOString() })
   const effect: GraphEffect = { identity: { kind: 'run.stop', entityId: run.id }, digest: graphSourceDigest({ runId: run.id, cause }) }
-  const counts = (await sql.query<{ interactions: string; reviews: string }>(`select
-    (select count(*)::text from durable_interactions where run_id=$1 and status='pending') as interactions,
-    (select count(*)::text from review_jobs j join durable_interactions i on i.id=j.interaction_id
-      where i.run_id=$1 and j.state<>'completed' and (j.state<>'failed' or j.record->'cleanup'->>'completedAt' is null)) as reviews`,
-  [run.id])).rows[0]!
+  const counts = publicAttentionTotals(await readPublicAttentionCounts(sql, run.id))
   await publication.effect({ effect,
     evidence: { sourceKind: 'cleanup', sourceId: `stop:${graphSourceDigest({ job: job.id }).slice(7)}`, sourceRevision: '0' },
     sourceDigest: graphSourceDigest({ failed, cause }), facts: [{ type: 'run.state', state: {
-      executionState: run.executionState, outcome: run.outcome, stopRequested: true, cleanupPending: true,
-      pendingInteractionCount: Number(counts.interactions), unsettledReviewCount: Number(counts.reviews),
-    } }] }, { expected: { scope: context.scope, effect: effect.identity, effectDigest: effect.digest,
+      executionState: run.executionState, outcome: run.outcome, stopRequested: true, ...counts, cleanupPending: true,
+    } }, ...await publicRunClosedFacts(sql, context.scope)] }, { expected: { scope: context.scope, effect: effect.identity, effectDigest: effect.digest,
       ownerId: job.id, fence: saved.revision, connectionGeneration: null },
     readCurrentLocked: async (transaction) => {
       const current = (await transaction.query<{ id: string; revision: string; state: string }>(

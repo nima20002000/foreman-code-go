@@ -30,6 +30,8 @@ import { OneShotRunRepository } from './oneShotPostgres.js'
 import { assertWave25Admission, CompatibleWorkflowRunSchema, WorkflowVersionV2Schema } from '@graphql/contracts/wave25'
 import { changeOneShotLifecycle, type AuthorizeOneShotStop } from './oneShotLifecycle.js'
 import { appendNativeEvent } from './nativeEvents.js'
+import { appendWorkflowNativeGraphEvent, type WorkflowApprovalCorrelation, type WorkflowContinuationProof,
+  type WorkflowNativeLease } from './workflowNativeGraph.js'
 import { validateExecutableTopology } from './topology.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
 
@@ -403,8 +405,13 @@ export class PostgresRunRepository implements RunRepository {
     return execution?.result
   }
 
-  async appendNativeEvent(event: HarnessNativeEvent, owner?: RunOwnership): Promise<void> {
+  async appendNativeEvent(event: HarnessNativeEvent, owner?: RunOwnership, lease?: WorkflowNativeLease,
+    approval?: WorkflowApprovalCorrelation, continuation?: WorkflowContinuationProof): Promise<void> {
     owner?.assertOwned()
+    if (owner && lease && await this.isOneShot(owner.runId, owner)) {
+      await appendWorkflowNativeGraphEvent(owner, event, lease, approval, continuation)
+      return
+    }
     await appendNativeEvent(owner?.client ?? this.pool, event)
   }
 

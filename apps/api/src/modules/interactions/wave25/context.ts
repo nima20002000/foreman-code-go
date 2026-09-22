@@ -13,6 +13,7 @@ import { resolveImmutableApprovalRoute, usesNativeSelfReview } from '../../workf
 import { validateReviewerBootstrap } from '../../workflows/reviewerBootstrap.js'
 import { withExclusiveGraphConnection, beforeGraphCommit, type GraphSqlClient, type GraphTransactionSql } from '../../run-graph/connection.js'
 import { openRunGraphPublication, type RunGraphPublication } from '../../run-graph/publication.js'
+import { RUN_CLEANUP_BOUNDARY_SQL } from './cleanupAuthority.js'
 
 export function fail(code: string, message = 'The approval identity, authority or owner changed.'): never {
   throw new DomainError(code, message, code === 'AUTH_REVOKED' ? 401 : code.endsWith('ACCESS_DENIED') ? 403 : 409)
@@ -66,7 +67,7 @@ export interface ApprovalContext {
 export async function readContext(sql: GraphSqlClient, interaction: DurableInteraction, requireOpen = false, completedReplay = false): Promise<ApprovalContext> {
   const row = (await sql.query<{ run: unknown; version: unknown; stopped: boolean }>(
     `select r.record as run,v.record as version,
-       r.stop_requested_at is not null or r.worker_credentials_closed_at is not null as stopped
+       ${RUN_CLEANUP_BOUNDARY_SQL} or r.worker_credentials_closed_at is not null as stopped
      from runs r join workflow_versions v on v.id=r.workflow_version_id
      where r.id=$1 and v.execution_semantics_version=2`, [interaction.runId])).rows[0]
   if (!row) return fail('APPROVAL_RUN_NOT_FOUND')
