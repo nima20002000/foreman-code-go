@@ -1,15 +1,17 @@
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
-import { MemorySaver } from '@langchain/langgraph'
-import { HarnessExecutionSchema } from '@graphql/contracts'
+import { DurableInteractionSchema, HarnessExecutionSchema } from '@graphql/contracts'
 import { ExecutableWorkflowV2Schema, makeWave25Fixture } from '@graphql/contracts/wave25'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { createAppMcpRuntime } from '../src/modules/app-runtime/composition.js'
 import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
-import type { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
+import { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
+import type { ApprovalExecutionCoordinator, ApprovalExecutionObservation } from '../src/modules/interactions/execution.js'
 import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
+import { Wave25InteractionRepository } from '../src/modules/interactions/wave25/repository.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import { resolveExecutionDirectory } from '../src/modules/runs/executionDirectory.js'
@@ -17,11 +19,23 @@ import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { agent3Database, candidateFor, deferred, ownedAgent3, postgresEnabled, seedAgent3, terminalAgent3 } from './helpers/wave25Agent3.js'
+import { deliveryFixture } from './helpers/wave25ApprovalFixture.js'
 
 describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parallel branches', () => {
   let db: Awaited<ReturnType<typeof agent3Database>>
-  beforeAll(async () => { db = await agent3Database() }, 60_000)
-  afterAll(async () => { await db?.close() })
+  let checkpoints: ReturnType<typeof createCheckpointStore>
+  beforeAll(async () => {
+    db = await agent3Database()
+    checkpoints = createCheckpointStore(process.env.WAVE25_TEST_DATABASE_URL!, `${db.schema}_c_checkpoints`)
+    await checkpoints.setup()
+  }, 60_000)
+  afterAll(async () => {
+    await checkpoints?.close()
+    if (db) {
+      await db.pool.query(`drop schema if exists ${db.schema}_c_checkpoints cascade`)
+      await db.close()
+    }
+  })
 
   async function fixture(extraQueued = false) {
     const f = makeWave25Fixture(randomUUID())
@@ -58,14 +72,15 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     return { f, entry: entry.id, first: first.id, sibling: sibling.id, queued: queued?.id }
   }
 
-  function runtime(onNode: (nodeId: string, signal: AbortSignal) => Promise<'succeeded' | 'failed'>) {
+  function runtime(onNode: (nodeId: string, signal: AbortSignal) => Promise<'succeeded' | 'failed'>,
+    interactions?: PostgresInteractionRepository) {
     const locations = new WorkspaceLocationService(db.pool, new PostgresCommandCoordinator(db.pool), db.directory)
     vi.spyOn(locations, 'revalidateSnapshot').mockResolvedValue(undefined)
     const workflows = new PostgresWorkflowRepository(db.pool)
     const runs = new PostgresRunRepository(db.pool, workflows, locations)
     const starts: string[] = [], observations: string[] = []
     const native = {
-      async ensureObserve(input: Parameters<ApprovalExecutionCoordinator['ensureObserve']>[0]) {
+      async ensureObserve(input: Parameters<ApprovalExecutionCoordinator['ensureObserve']>[0]): Promise<ApprovalExecutionObservation> {
         const execution = input.candidate
         observations.push(execution.workflowNodeId)
         const fresh = runs.consumeOneShotLaunch(execution.id, input.owner)
@@ -86,11 +101,12 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
         return { state: 'completed' as const, execution: completed, result: completed.result! }
       },
       cancelRun: vi.fn(async () => undefined), finishRun: vi.fn(async () => undefined),
+      assertResume: vi.fn(async () => undefined),
       residentRunIds: () => [], reconcileReviews: async () => undefined,
       reviewers: { shutdown: async () => undefined },
     }
     const engine = new LangGraphWorkflowEngine(runs, workflows, native as unknown as ApprovalExecutionCoordinator,
-      new MemorySaver(), db.directory, locations, undefined, undefined, undefined, { workerParallelism: 2 })
+      checkpoints.saver, db.directory, locations, undefined, interactions, undefined, { workerParallelism: 2 })
     return { engine, runs, starts, observations, native }
   }
 
@@ -176,7 +192,7 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
   it('reconciles an unfinished exact session after one sibling was accepted without another native start', async () => {
     const { f, entry, first, sibling } = await fixture()
     const held = await ownedAgent3(db.pool, f)
-    let unfinishedId = ''
+    let unfinishedId: string
     try {
       await held.store.updateRun({ executionState: 'running', outcome: 'pending', startedAt: new Date().toISOString() })
       const admittedEntry = await held.store.admit(entry, () => candidateFor(f, entry))
@@ -208,7 +224,7 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
   it('issues an authenticated v2 App credential through the composed runtime and revokes it at Stop', async () => {
     const { f, entry } = await fixture()
     const held = await ownedAgent3(db.pool, f)
-    let executionId = ''
+    let executionId: string
     try {
       await held.store.updateRun({ executionState: 'running', outcome: 'pending', startedAt: new Date().toISOString() })
       const admitted = await held.store.admit(entry, () => candidateFor(f, entry))
@@ -229,5 +245,120 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     expect(await access.authenticate(token, 'worker')).toMatchObject({ agentId: f.configurations[0]!.agentId })
     await credentials.revokeForRun(f.run.id)
     await expect(access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+  }, 30_000)
+
+  it('keeps an approval wait isolated while its sibling finishes, then consumes the exact delivered response once', async () => {
+    const { f, first, sibling } = await fixture()
+    const interactions = new Wave25InteractionRepository(db.pool)
+    const budget = new PostgresApprovalBudgetRepository(db.pool)
+    const waiting = deferred(), releasedSibling = deferred()
+    const r = runtime(async (node) => {
+      if (node === sibling) { await waiting.promise; releasedSibling.resolve() }
+      return 'succeeded'
+    }, interactions)
+    const original = r.native.ensureObserve.bind(r.native)
+    let waitingInteractionId = ''
+    vi.spyOn(r.native, 'ensureObserve').mockImplementation(async (input) => {
+      if (input.candidate.workflowNodeId !== first) return original(input)
+      const execution = input.candidate
+      if (waitingInteractionId) throw new Error('The waiting native request was reissued')
+      if (!r.runs.consumeOneShotLaunch(execution.id, input.owner)) throw new Error('Expected first native launch')
+      r.starts.push(first)
+      const session = { harness: 'codex' as const, providerVersion: 'synthetic-c', nativeSessionId: `native-${execution.id}` }
+      await interactions.coordination.ensureLane({ id: `lane-${execution.id}`, harness: session.harness,
+        nativeSessionId: session.nativeSessionId, ownerAgentId: execution.agentId,
+        revision: 0, observedStatus: 'busy', connectionGeneration: 0, observedAt: new Date().toISOString() })
+      await interactions.coordination.bindWorkflowSession(execution.id, session)
+      const running = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: session.nativeSessionId, state: 'running' })
+      await r.runs.updateExecution(running, input.owner)
+      await budget.ensure(execution.id, f.run.id, 600_000)
+      const request = deliveryFixture().interaction
+      const pending = DurableInteractionSchema.parse({ ...request, id: `interaction-${randomUUID()}`,
+        workspaceId: f.run.workspaceId, workflowId: f.run.workflowId, runId: f.run.id,
+        executionId: execution.id, requestingAgentId: execution.agentId, providerVersion: session.providerVersion,
+        nativeSessionId: session.nativeSessionId,
+        nativeRequestId: `request-${execution.id}`, graphThreadId: f.run.id, approval: { handler: 'user' },
+        revision: 0, status: 'pending', deliveryState: 'not_started', selectedOptionId: undefined,
+        selectedSemantic: undefined, nativeResponse: undefined, decidedAt: undefined,
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
+      const created = await interactions.create(pending)
+      waitingInteractionId = created.interaction.id
+      const waitingExecution = HarnessExecutionSchema.parse({ ...running, state: 'waiting' })
+      await r.runs.updateExecution(waitingExecution, input.owner)
+      await budget.beginWait(execution.id)
+      waiting.resolve()
+      return { state: 'waiting', execution: waitingExecution,
+        interaction: created.interaction, interactions: [created.interaction] }
+    })
+    const start = r.engine.start(f.run.id)
+    void start.catch((error: unknown) => waiting.reject(error))
+    await waiting.promise
+    await releasedSibling.promise
+    await start
+    expect((await r.runs.get(f.run.id))?.executionState).toBe('waiting')
+    expect((await r.runs.listExecutions(f.run.id)).find((item) => item.workflowNodeId === sibling)?.result?.outcome).toBe('succeeded')
+    const pending = (await interactions.get(waitingInteractionId))!
+    expect(pending.graphInterruptId).toBeTruthy()
+    const paused = (await db.pool.query<{ active_started_at: Date | null; approval_wait_started_at: Date | null }>(
+      'select active_started_at,approval_wait_started_at from approval_execution_state where execution_id=$1', [pending.executionId],
+    )).rows[0]!
+    expect(paused.active_started_at).toBeNull()
+    expect(paused.approval_wait_started_at).not.toBeNull()
+    await r.engine.shutdown()
+    expect((await r.runs.get(f.run.id))?.executionState).toBe('waiting')
+    const restarted = runtime(async () => 'succeeded', interactions)
+    vi.spyOn(restarted.native, 'ensureObserve').mockImplementation(async (input) => {
+      expect(input.candidate.workflowNodeId).toBe(first)
+      expect(input.candidate.nativeSessionId).toBe(pending.nativeSessionId)
+      expect(r.runs.consumeOneShotLaunch(input.candidate.id, input.owner)).toBe(false)
+      const current = await interactions.get(pending.id)
+      expect(current?.deliveryState).toBe('delivered')
+      await budget.resume(input.candidate.id)
+      const completed = HarnessExecutionSchema.parse({ ...input.candidate, state: 'completed',
+        result: { outcome: 'succeeded', output: { approved: true } }, finishedAt: new Date().toISOString() })
+      await restarted.runs.updateExecution(completed, input.owner)
+      await budget.finish(completed.id, completed.finishedAt)
+      return { state: 'completed', execution: completed, result: completed.result! }
+    })
+    await restarted.engine.reconcile()
+    expect((await restarted.runs.get(f.run.id))?.executionState).toBe('waiting')
+    const access = new PostgresAccessService(db.pool)
+    const user = await access.issue({ name: 'C exact responder', audience: 'user',
+      expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['interactions:read', 'interactions:respond'],
+        scope: { workspaceIds: [f.run.workspaceId], workflowIds: [f.run.workflowId], runIds: [f.run.id] } }] })
+    const denied = await access.issue({ name: 'Wrong handler', audience: 'operator',
+      expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['interactions:respond'], scope: { runIds: [f.run.id] } }] })
+    await expect(interactions.decide({ id: pending.id, optionId: 'approve-once', expectedRevision: pending.revision,
+      principal: denied.principal, nativeResponse: { optionId: 'approve-once', semantic: 'approve_once' } }))
+      .rejects.toMatchObject({ code: 'INTERACTION_ACCESS_DENIED' })
+    const wrongRun = await access.issue({ name: 'Wrong Run', audience: 'user',
+      expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['interactions:respond'],
+        scope: { runIds: [`other-${f.run.id}`] } }] })
+    await expect(interactions.decide({ id: pending.id, optionId: 'approve-once', expectedRevision: pending.revision,
+      principal: wrongRun.principal, nativeResponse: { optionId: 'approve-once', semantic: 'approve_once' } }))
+      .rejects.toMatchObject({ code: 'INTERACTION_ACCESS_DENIED' })
+    await expect(interactions.create(DurableInteractionSchema.parse({ ...pending,
+      id: `interaction-${randomUUID()}`, revision: 0, graphInterruptId: undefined,
+      nativeSessionId: `other-${pending.nativeSessionId}` })))
+      .rejects.toMatchObject({ code: 'APPROVAL_REQUESTER_MISMATCH' })
+    const respond = () => interactions.decide({ id: pending.id, optionId: 'approve-once', expectedRevision: pending.revision,
+      principal: user.principal, nativeResponse: { optionId: 'approve-once', semantic: 'approve_once' } })
+    const [decision, replay] = await Promise.all([respond(), respond()])
+    expect([decision.replayed, replay.replayed].sort()).toEqual([false, true])
+    const claim = await interactions.delivery.claim(pending.id, 'c-delivery')
+    expect(claim?.mode).toBe('submit')
+    const delivered = await interactions.delivery.finish(claim!, async () => ({ state: 'delivered', evidence: {
+      source: 'provider_acknowledgement', harness: pending.harness, providerVersion: pending.providerVersion,
+      nativeSessionId: pending.nativeSessionId, nativeRequestId: pending.nativeRequestId,
+      nativeRequestType: pending.nativeRequestType, optionId: 'approve-once', semantic: 'approve_once',
+    } }))
+    expect(delivered.deliveryState).toBe('delivered')
+    expect(await interactions.delivery.claim(pending.id, 'c-duplicate')).toBeUndefined()
+    await restarted.engine.resumeInteraction(delivered)
+    expect((await restarted.runs.get(f.run.id))?.outcome).toBe('succeeded')
+    expect(r.starts.filter((node) => node === first)).toHaveLength(1)
+    expect(restarted.starts).toEqual([])
+    expect((await db.pool.query("select count(*)::int as count from run_graph_effects where run_id=$1 and effect_kind='approval.decide'", [f.run.id])).rows[0]?.count).toBe(1)
+    await restarted.engine.shutdown()
   }, 30_000)
 })
