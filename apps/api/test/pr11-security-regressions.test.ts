@@ -242,9 +242,11 @@ process.stdout.write(${JSON.stringify(stdout)}); process.exit(${exitCode});
 `, { mode: 0o755 })
         await chmod(binary, 0o755)
         const manager = new CodexAppServerSessionManager(binary)
-        // Qualification itself is covered separately; exercise the actual get/list subprocess path.
-        manager.capabilities = async () => ({ providerVersion: '0.154.0' } as never)
-        await assert.rejects(manager.inspectMcpConfiguration(directory), (error: unknown) => {
+        // Qualification itself is covered separately; exercise only the get/list subprocess path.
+        const inspection = manager as unknown as { mcpConfiguration(
+          binary: string, cwd: string, environment: NodeJS.ProcessEnv, providerVersion: string,
+        ): Promise<unknown> }
+        await assert.rejects(inspection.mcpConfiguration(binary, directory, { ...process.env }, 'codex-cli 0.154.0'), (error: unknown) => {
           const failure = error as { result?: { error?: { code?: string } } }
           assert.equal(failure.result?.error?.code, expected)
           return true

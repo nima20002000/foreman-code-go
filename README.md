@@ -80,6 +80,14 @@ For a separate local test installation, set `GRAPHQL_API_ENV_FILE` to an absolut
 path before `corepack pnpm dev`; the API and credential CLI use that file instead
 of `apps/api/.env`.
 
+Model selectors read the API host's qualified Codex or connected OpenCode native
+catalog, including model-specific efforts and variants. The bundled Codex CLI is
+0.154.0; an existing authenticated Codex 0.156.1 installation can be selected
+with an absolute `CODEX_BINARY` path in the private API env file to expose its
+newly advertised models. Both releases have separate protocol qualifications;
+other CLI versions remain unavailable until qualified. OpenCode's explicit
+models.dev update and the ordinary local catalog reread are separate actions.
+
 The repository pins pnpm 11.27.0 and rejects plain `npm install`. pnpm enforces
 a strict 2,880-minute (48-hour) minimum release age for direct and transitive
 registry packages, with no exclusions and no missing-publish-time fallback.

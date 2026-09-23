@@ -15,6 +15,18 @@ export const QUALIFIED_CODEX_VERSION = 'codex-cli 0.154.0'
 export const QUALIFIED_CODEX_SCHEMA_SHA256 = 'b785f87f96c4747e9db6c0492cea2de68e99b48f3462908174a1e8122a620054'
 /** Exact upstream rust-v0.154.0 stable bundle, not a locally invented schema. */
 export const QUALIFIED_STABLE_SCHEMA_GIT_BLOB = '7de4646ea2657038e164609d9473c76c1be7c843'
+/** Each admitted release has an independently measured upstream stable schema. */
+const qualifiedSchemas: Record<string, { stableGitBlob: string; referenceManifestSha256: string }> = {
+  [QUALIFIED_CODEX_VERSION]: {
+    stableGitBlob: QUALIFIED_STABLE_SCHEMA_GIT_BLOB,
+    referenceManifestSha256: QUALIFIED_CODEX_SCHEMA_SHA256,
+  },
+  'codex-cli 0.156.1': {
+    stableGitBlob: '772a8a0a9633722c7dee40388e3d5d4e81b97078',
+    referenceManifestSha256: 'ba31111b6547fcb05e28987ed7310991e017321eda0f7604333b2f9784130ae0',
+  },
+}
+export function isQualifiedCodexVersion(value: string): boolean { return Object.hasOwn(qualifiedSchemas, value) }
 const BUNDLE = 'codex_app_server_protocol.schemas.json'
 
 export function canonical(value: unknown): string {
@@ -203,10 +215,10 @@ function gitBlob(bytes: Buffer): string {
 
 /** No lifetime auth/version cache: each newly launched process is requalified. */
 export async function qualifyCodex(
-  binary: string, expectedVersion: string, cwd: string, environment: NodeJS.ProcessEnv,
+  binary: string, expectedVersion: string | undefined, cwd: string, environment: NodeJS.ProcessEnv,
   requireAuthentication: boolean, signal?: AbortSignal,
 ): Promise<QualifiedCodex> {
-  if (expectedVersion !== QUALIFIED_CODEX_VERSION) {
+  if (expectedVersion !== undefined && !qualifiedSchemas[expectedVersion]) {
     throw new HarnessExecutionError('CODEX_APP_SERVER_VERSION_UNQUALIFIED', 'A different provider version needs a new protocol qualification.')
   }
   const resolved = await executable(binary, cwd, environment)
@@ -214,8 +226,9 @@ export async function qualifyCodex(
   const command = (args: string[]) => runCommand(resolved, args, cwd, signal, environment)
   const version = await command(['--version'])
   const actual = (version.stdout || version.stderr).trim()
-  if (version.exitCode !== 0 || actual !== expectedVersion) {
-    throw new HarnessExecutionError('CODEX_APP_SERVER_VERSION_UNQUALIFIED', `Codex requires exact version '${expectedVersion}'.`)
+  const schema = qualifiedSchemas[actual]
+  if (version.exitCode !== 0 || !schema || (expectedVersion !== undefined && actual !== expectedVersion)) {
+    throw new HarnessExecutionError('CODEX_APP_SERVER_VERSION_UNQUALIFIED', 'The installed Codex version has no qualified protocol profile.')
   }
   if (requireAuthentication) {
     const auth = await command(['login', 'status'])
@@ -234,8 +247,8 @@ export async function qualifyCodex(
     const sorted = JSON.parse(canonical(JSON.parse(stableBytes.toString('utf8')))) as unknown
     const formatted = JSON.stringify(sorted, null, 2)
     const candidates = [stableBytes, Buffer.from(formatted), Buffer.from(formatted + '\n')]
-    if (!candidates.some((bytes) => gitBlob(bytes) === QUALIFIED_STABLE_SCHEMA_GIT_BLOB)) {
-      throw new HarnessExecutionError('CODEX_SCHEMA_UNQUALIFIED', 'The installed stable protocol does not match upstream Codex 0.154.0.')
+    if (!candidates.some((bytes) => gitBlob(bytes) === schema.stableGitBlob)) {
+      throw new HarnessExecutionError('CODEX_SCHEMA_UNQUALIFIED', `The installed stable protocol does not match upstream ${actual}.`)
     }
     const generated = await command(['app-server', 'generate-json-schema', '--experimental', '--out', experimental])
     if (generated.exitCode !== 0) throw new Error('Codex experimental schema generation failed.')
@@ -245,8 +258,8 @@ export async function qualifyCodex(
     const result: QualifiedCodex = {
       binary: resolved, identity: fingerprint, protocol, providerVersion: actual,
       schemaManifestSha256: measuredManifest,
-      stableSchemaGitBlob: QUALIFIED_STABLE_SCHEMA_GIT_BLOB,
-      referenceSchemaManifestSha256: QUALIFIED_CODEX_SCHEMA_SHA256,
+      stableSchemaGitBlob: schema.stableGitBlob,
+      referenceSchemaManifestSha256: schema.referenceManifestSha256,
     }
     await assertCodexUnchanged(result)
     return result

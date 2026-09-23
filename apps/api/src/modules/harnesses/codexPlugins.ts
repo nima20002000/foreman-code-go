@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path'
 import { z } from 'zod'
 import type { CodexPluginDetailResult, CodexPluginSummary } from '@graphql/contracts/management'
 import { DomainError } from '../errors.js'
-import { assertCodexUnchanged, qualifyCodex, QUALIFIED_CODEX_VERSION } from './codexProtocol.js'
+import { assertCodexUnchanged, qualifyCodex } from './codexProtocol.js'
 import { runCommand } from './process.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { inspectCodexPluginCatalog, pluginCommandEnvironment } from './codexPluginConfiguration.js'
@@ -39,7 +39,7 @@ export class NativeCodexPlugins implements CodexPluginAdapter {
   private async command(args: string[], signal: AbortSignal, mutation = false) {
     const environment = pluginCommandEnvironment()
     if (mutation && (!this.processRecovery || process.platform !== 'linux')) throw new DomainError('CODEX_PLUGIN_RECOVERY_UNAVAILABLE', 'Persistent process recovery is required before changing plugins.', 503)
-    const qualified = await qualifyCodex(this.binary, QUALIFIED_CODEX_VERSION, this.directory, environment, true, signal)
+    const qualified = await qualifyCodex(this.binary, undefined, this.directory, environment, true, signal)
     await assertCodexUnchanged(qualified)
     return runCommand(qualified.binary, args, this.directory, signal, environment,
       { maxOutputBytes: 8_000_000, ...(mutation && this.processRecovery ? { recovery: this.processRecovery } : {}) })

@@ -15,7 +15,7 @@ function nativeCode(code: string) {
 
 type Runtime = ReturnType<CodexAppServerSessionManager['requireRuntime']>
 type Waiting = Runtime['interactions'] extends Map<string, infer T> ? T : never
-const codexSession: NativeSessionReference = { harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'thread-test' }
+const codexSession: NativeSessionReference = { harness: 'codex', providerVersion: 'codex-cli 0.154.0', nativeSessionId: 'thread-test' }
 const option: ApprovalResponseOption = {
   optionId: 'accept', semantic: 'approve_once', label: 'Approve', persistence: 'request',
   affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false,

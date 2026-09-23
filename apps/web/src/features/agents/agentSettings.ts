@@ -7,26 +7,13 @@ import {
   type AgentProductRole,
 } from '@graphql/contracts'
 
-export const CODEX_MODELS: readonly string[] = [
-  'gpt-5.6-luna',
-  'gpt-5.6-terra',
-  'gpt-5.6-sol',
-  'gpt-6-astra',
-]
-
-export const OPENCODE_MODELS: readonly string[] = ['opencode-go/deepseek-v4.1-flash']
-
 export const STANDARD_EFFORTS: readonly NonNullable<Agent['effort']>[] = [
   'low', 'medium', 'high', 'xhigh', 'max',
 ]
 
-export function modelOptions(harness: NonNullable<Agent['harness']>): readonly string[] {
-  return harness === 'codex' ? CODEX_MODELS : OPENCODE_MODELS
-}
-
 export function initialModel(agent: Agent, harness: NonNullable<Agent['harness']>): string {
-  const options = modelOptions(harness)
-  return (agent.harnessConfiguration?.harness === harness ? agent.harnessConfiguration.model : agent.model) ?? options[0]!
+  return (agent.harnessConfiguration?.harness === harness ? agent.harnessConfiguration.model
+    : agent.harness === harness ? agent.model : undefined) ?? DEFAULT_HARNESS_DEFAULTS[harness].model
 }
 
 export function effortOptions(

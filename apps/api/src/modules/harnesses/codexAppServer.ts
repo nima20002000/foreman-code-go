@@ -18,7 +18,7 @@ import { codexModelOptions } from './operatorOptions.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from './port.js'
 import { runCommand } from './process.js'
 import {
-  assertCodexUnchanged, canonical, qualifyCodex, QUALIFIED_CODEX_VERSION,
+  assertCodexUnchanged, canonical, isQualifiedCodexVersion, qualifyCodex, QUALIFIED_CODEX_VERSION,
   QUALIFIED_CODEX_SCHEMA_SHA256, type QualifiedCodex,
 } from './codexProtocol.js'
 import { CodexRpcError, CodexStdioTransport, isObject, object, text, type JsonObject, type RequestId, type RpcRequest } from './codexStdioTransport.js'
@@ -273,7 +273,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   constructor(
     private readonly binary: string,
-    private readonly expectedVersion = QUALIFIED_CODEX_VERSION,
+    private readonly expectedVersion?: string,
     private readonly appMcpServerName = 'graphql-app',
     private readonly processRecovery?: NativeProcessRecovery,
   ) {}
@@ -368,7 +368,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         this.shutdownController.signal.throwIfAborted()
         const response = object(value, 'CODEX_THREAD_START_INVALID')
         const thread = this.validateThreadResponse(prepared, response)
-        const session = NativeSessionReferenceSchema.parse({ harness: 'codex', providerVersion: this.expectedVersion, nativeSessionId: thread.id })
+        const session = NativeSessionReferenceSchema.parse({ harness: 'codex', providerVersion: prepared.qualified.providerVersion, nativeSessionId: thread.id })
         if (this.runtimes.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_COLLISION', 'Codex returned an already-owned native session identity.')
         const runtime = this.runtime(prepared, session, candidate!.transport)
         this.runtimes.set(session.nativeSessionId, runtime)
@@ -420,6 +420,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const loaded = this.runtimes.get(session.nativeSessionId)
       if (loaded) {
         if (loaded.disposed) throw new HarnessExecutionError('CODEX_SESSION_UNAVAILABLE', 'Session closure is still unconfirmed; retry cleanup before attaching.')
+        if (loaded.session.providerVersion !== session.providerVersion) throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The loaded session belongs to another Codex release.')
         this.assertBinding(loaded, input)
         if (credentialIdentity(loaded.input) !== credentialIdentity(input)) {
           throw new HarnessExecutionError('CODEX_SESSION_ENVIRONMENT_REFRESH_REQUIRED', 'Use explicit idle-boundary credential refresh instead of attaching with a different environment.')
@@ -430,6 +431,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         return structuredClone(loaded.session)
       }
       const prepared = await this.prepareInput(input, signal)
+      if (prepared.qualified.providerVersion !== session.providerVersion) {
+        throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The saved session belongs to another Codex release.')
+      }
       if (advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral') {
         throw new HarnessExecutionError('CODEX_SETTING_UNSUPPORTED', 'Ephemeral sessions cannot be resumed after their process exits.')
       }
@@ -647,6 +651,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     await this.exclusive(session.nativeSessionId, async () => {
       const runtime = this.runtimes.get(session.nativeSessionId)
       if (!runtime) return
+      if (runtime.session.providerVersion !== session.providerVersion) throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The loaded session belongs to another Codex release.')
       runtime.closed = true
       runtime.disposed = true
       runtime.starting?.resolveIdentity(undefined)
@@ -683,8 +688,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   async inspectMcpConfiguration(cwd: string, signal?: AbortSignal): Promise<CodexMcpConfigurationInspection> {
     const environment = safeEnvironment()
-    await this.capabilities(signal)
-    return this.mcpConfiguration(this.binary, cwd, environment, signal)
+    const qualified = await qualifyCodex(this.binary, this.expectedVersion, cwd, environment, true, signal)
+    return this.mcpConfiguration(qualified.binary, cwd, environment, qualified.providerVersion, signal)
   }
 
   async inspectConfiguration(session: NativeSessionReference, includeLayers = true, signal?: AbortSignal): Promise<JsonObject> {
@@ -818,7 +823,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   private assertSessionVersion(session: NativeSessionReference): void {
-    if (session.harness !== 'codex' || session.providerVersion !== this.expectedVersion) {
+    if (session.harness !== 'codex' || !isQualifiedCodexVersion(session.providerVersion)
+      || (this.expectedVersion !== undefined && session.providerVersion !== this.expectedVersion)) {
       throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The session does not match this qualified Codex provider.')
     }
   }
@@ -826,6 +832,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     this.assertSessionVersion(session)
     const runtime = this.runtimes.get(session.nativeSessionId)
     if (!runtime || runtime.disposed) throw new HarnessExecutionError('CODEX_SESSION_UNAVAILABLE', 'The Codex native session is not loaded.')
+    if (runtime.session.providerVersion !== session.providerVersion) throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The loaded session belongs to another Codex release.')
     return runtime
   }
   private assertBinding(runtime: Runtime, input: NativeSessionStart): void {
@@ -860,7 +867,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     await this.validateMcpPolicies(harnessConfiguration, qualified.binary, workingDirectory, environment, signal)
     let scopedCredentialVariable: string | undefined
     try {
-      const mcp = await this.mcpConfiguration(qualified.binary, workingDirectory, environment, signal)
+      const mcp = await this.mcpConfiguration(qualified.binary, workingDirectory, environment, qualified.providerVersion, signal)
       if (mcp.configured.enabled) scopedCredentialVariable = mcp.configured.bearerTokenEnvironmentVariable ?? undefined
     } catch (error) {
       if (!(error instanceof HarnessExecutionError) || error.result.error?.code !== 'CODEX_MCP_NOT_CONFIGURED') throw error
@@ -871,7 +878,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, environment: scopedEnvironment, qualified }
   }
 
-  private async mcpConfiguration(binary: string, cwd: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<CodexMcpConfigurationInspection> {
+  private async mcpConfiguration(binary: string, cwd: string, environment: NodeJS.ProcessEnv,
+    providerVersion: string, signal?: AbortSignal): Promise<CodexMcpConfigurationInspection> {
     const result = await runCommand(binary, ['mcp', 'get', this.appMcpServerName, '--json'], cwd, signal, environment)
     if (result.exitCode !== 0) {
       const listed = await runCommand(binary, ['mcp', 'list', '--json'], cwd, signal, environment)
@@ -889,7 +897,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const transport = isObject(parsed.transport) ? parsed.transport : {}
       const url = text(transport.url) ?? null
       return {
-        providerVersion: this.expectedVersion, binary, cwd, serverName: this.appMcpServerName, inspectionScope: 'effective_config',
+        providerVersion, binary, cwd, serverName: this.appMcpServerName, inspectionScope: 'effective_config',
         configured: {
           enabled: parsed.enabled !== false, required: parsed.required === true,
           transport: transport.type === 'streamable_http' || transport.type === 'stdio'
@@ -1041,6 +1049,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     const prepared = supplied ?? await this.prepareInput(runtime.input, signal)
     this.assertBinding(runtime, prepared.input)
+    if (prepared.qualified.providerVersion !== runtime.session.providerVersion) {
+      throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The saved session belongs to another Codex release.')
+    }
     const generation = runtime.generation + 1
     // The old transport remains owned until its entire process tree is stopped.
     await runtime.transport.close()

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 
 import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, type NativeHarnessEvent } from '@graphql/contracts'
 import type { WorkflowNativeSessionStart } from '../../src/modules/harnesses/port.js'
-import type { QualifiedCodex } from '../../src/modules/harnesses/codexProtocol.js'
+import { isQualifiedCodexVersion, type QualifiedCodex } from '../../src/modules/harnesses/codexProtocol.js'
 import type { CodexProtocol, JsonObject } from '../../src/modules/harnesses/codexStdioTransport.js'
 import { HarnessExecutionError } from '../../src/modules/harnesses/errors.js'
 import { runCommand } from '../../src/modules/harnesses/process.js'
@@ -96,11 +96,12 @@ export const fixtureProtocol: CodexProtocol = {
   },
 }
 export async function fixtureQualification(
-  binary: string, expectedVersion: string, cwd: string, environment: NodeJS.ProcessEnv,
+  binary: string, expectedVersion: string | undefined, cwd: string, environment: NodeJS.ProcessEnv,
   requireAuthentication: boolean, signal?: AbortSignal,
 ): Promise<QualifiedCodex> {
   const version = await runCommand(binary, ['--version'], cwd, signal, environment)
-  if (version.exitCode !== 0 || version.stdout.trim() !== expectedVersion) {
+  const installed = version.stdout.trim()
+  if (version.exitCode !== 0 || (expectedVersion === undefined ? !isQualifiedCodexVersion(installed) : installed !== expectedVersion)) {
     throw new HarnessExecutionError('CODEX_APP_SERVER_VERSION_UNQUALIFIED', 'Fixture version rejected.')
   }
   if (requireAuthentication) {
@@ -108,7 +109,7 @@ export async function fixtureQualification(
     if (auth.exitCode !== 0) throw new HarnessExecutionError('CODEX_APP_SERVER_AUTH_UNQUALIFIED', 'Fixture authentication rejected.')
   }
   return {
-    binary, identity: 'test-double', providerVersion: expectedVersion, protocol: fixtureProtocol,
+    binary, identity: 'test-double', providerVersion: installed, protocol: fixtureProtocol,
     schemaManifestSha256: 'test-double-not-installed-evidence', stableSchemaGitBlob: 'test-double', referenceSchemaManifestSha256: 'test-double',
   }
 }

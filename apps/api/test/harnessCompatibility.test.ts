@@ -37,7 +37,7 @@ function create(options: ConstructorParameters<typeof HarnessCompatibilityServic
 afterEach(async () => { await Promise.allSettled(services.splice(0).map((service) => service.close())) })
 
 describe('harness compatibility diagnostics (not execution qualification)', () => {
-  it('records official provenance for exactly the existing native qualification versions', async () => {
+  it('records official provenance for the bundled native qualification versions', async () => {
     expect(`codex-cli ${QUALIFIED_RELEASES.codex.version}`).toBe(QUALIFIED_CODEX_VERSION)
     expect(QUALIFIED_RELEASES.opencode.version).toBe(QUALIFIED_OPENCODE_VERSION)
     const options = fixture(QUALIFIED_RELEASES.codex.version)
@@ -46,6 +46,13 @@ describe('harness compatibility diagnostics (not execution qualification)', () =
     expect(result[0]?.knownRelease?.releaseUrl).toBe('https://github.com/openai/codex/releases/tag/rust-v0.154.0')
     expect(options.probe.probe).not.toHaveBeenCalled()
     expect(options.probe.inspect).toHaveBeenCalledTimes(2)
+  })
+  it('recognizes the separately qualified Codex 0.156.1 release', async () => {
+    const options = fixture('0.156.1')
+    const result = await create(options).checkAll()
+    expect(result[0]).toMatchObject({ status: 'known-compatible', matchesQualifiedVersion: true,
+      qualifiedRelease: { version: '0.156.1' }, knownRelease: { tag: 'rust-v0.156.1' } })
+    expect(options.probe.probe).not.toHaveBeenCalled()
   })
   it('caches an unknown version without qualifying it or changing the release manifest', async () => {
     const options = fixture()

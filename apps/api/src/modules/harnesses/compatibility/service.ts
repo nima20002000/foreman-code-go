@@ -110,7 +110,8 @@ export class HarnessCompatibilityService {
       const release = knownRelease(harness, installation.version)
       const base: HarnessCompatibility = {
         ...this.initial(harness), checkId, installedVersion: installation.version,
-        knownRelease: release, matchesQualifiedVersion: installation.version === QUALIFIED_RELEASES[harness].version,
+        qualifiedRelease: release ?? QUALIFIED_RELEASES[harness],
+        knownRelease: release, matchesQualifiedVersion: release !== null,
       }
       this.reports[harness] = { ...base, status: 'checking' }
       if (release) {

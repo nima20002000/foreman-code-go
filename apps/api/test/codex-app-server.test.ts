@@ -85,6 +85,15 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await wire('thread/resume')).length, 0)
   })
 
+  it('rejects a foreign qualified release identity for an already loaded session', async () => {
+    const session = await manager.createSession(source)
+    const foreign = { ...session, providerVersion: 'codex-cli 0.156.1' }
+    await assertCode(manager.attachSession(foreign, source), 'CODEX_SESSION_VERSION_MISMATCH')
+    await assertCode(collect(manager.startTurn(foreign, { prompt: 'no turn', clientCorrelationId: 'foreign' })), 'CODEX_SESSION_VERSION_MISMATCH')
+    await assertCode(manager.close(foreign), 'CODEX_SESSION_VERSION_MISMATCH')
+    assert.equal((await manager.history(session)).terminalResult, undefined)
+  })
+
   it('F02: refuses every accepted configuration change, not just model/effort/cwd', async () => {
     codex().sandbox = 'danger-full-access'
     const session = await manager.createSession(source)
@@ -483,6 +492,16 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await assertCode(manager.reconcile(session, 'recover'), 'CODEX_APP_SERVER_AUTH_UNQUALIFIED')
     await unflag('logged-out')
     await manager.reconcile(session, 'recover')
+  })
+
+  it('does not resume a saved thread across two separately qualified Codex releases', async () => {
+    const session = await manager.createSession(source)
+    await collect(manager.startTurn(session, { prompt: 'crash-completed', clientCorrelationId: 'recover' }))
+    await json('version.json', 'codex-cli 0.156.1')
+    await assertCode(manager.reconcile(session, 'recover'), 'CODEX_SESSION_VERSION_MISMATCH')
+    assert.equal((await wire('thread/resume')).length, 0)
+    await unflag('version.json')
+    assert.equal((await manager.reconcile(session, 'recover')).terminalResult?.outcome, 'succeeded')
   })
 
   it('F29: the manager accepts contract-valid Windows writable paths rather than checking only slash prefixes', async () => {

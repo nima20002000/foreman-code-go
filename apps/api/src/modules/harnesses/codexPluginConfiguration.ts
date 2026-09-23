@@ -1,5 +1,5 @@
 import { DomainError } from '../errors.js'
-import { assertCodexUnchanged, qualifyCodex, QUALIFIED_CODEX_VERSION } from './codexProtocol.js'
+import { assertCodexUnchanged, qualifyCodex } from './codexProtocol.js'
 import { CodexStdioTransport } from './codexStdioTransport.js'
 import { runCommand } from './process.js'
 import { pluginHash } from './codexPluginIdentity.js'
@@ -14,7 +14,7 @@ export function pluginCommandEnvironment(): NodeJS.ProcessEnv {
 /** Only config/read and plugin list: do not couple discovery to unrelated MCP connection health. */
 export async function inspectCodexPluginCatalog(binary: string, directory: string, signal: AbortSignal) {
   const environment = pluginCommandEnvironment()
-  const qualified = await qualifyCodex(binary, QUALIFIED_CODEX_VERSION, directory, environment, true, signal)
+  const qualified = await qualifyCodex(binary, undefined, directory, environment, true, signal)
   await assertCodexUnchanged(qualified)
   const transport = new CodexStdioTransport(qualified.binary, directory, environment, qualified.protocol,
     async () => { throw new DomainError('CODEX_PLUGIN_UNEXPECTED_INTERACTION', 'Plugin inspection requested an unexpected interaction.', 409) },

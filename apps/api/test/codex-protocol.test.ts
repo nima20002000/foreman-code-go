@@ -25,6 +25,18 @@ describe.skipIf(process.platform === 'win32')('Codex installation qualification 
     assert.equal((await calls(f.directory)).length, 0)
   })
 
+  it('selects a registered installed release but still requires its measured schema', async () => {
+    await writeFile(join(f.directory, 'version.json'), JSON.stringify('codex-cli 0.156.1'))
+    await assert.rejects(qualifyCodex(f.binary, undefined, f.directory, { ...process.env }, false),
+      (error: unknown) => errorCode(error) === 'CODEX_SCHEMA_UNQUALIFIED')
+    assert((await calls(f.directory)).some((entry) => Array.isArray(entry.cli) && entry.cli.includes('generate-json-schema')))
+    await writeFile(join(f.directory, 'version.json'), JSON.stringify('codex-cli 99.0.0'))
+    const priorCalls = (await calls(f.directory)).length
+    await assert.rejects(qualifyCodex(f.binary, undefined, f.directory, { ...process.env }, false),
+      (error: unknown) => errorCode(error) === 'CODEX_APP_SERVER_VERSION_UNQUALIFIED')
+    assert.equal((await calls(f.directory)).length, priorCalls + 1)
+  })
+
   it('F24/F28: logged-out control initialization reaches schema qualification, not execution authentication', async () => {
     await writeFile(join(f.directory, 'logged-out'), '')
     await assert.rejects(qualifyCodex(f.binary, QUALIFIED_CODEX_VERSION, f.directory, { ...process.env }, true),

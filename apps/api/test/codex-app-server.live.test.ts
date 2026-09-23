@@ -30,7 +30,7 @@ function request(directory: string): HarnessExecutionRequest {
 }
 
 // The approval scenario uses POSIX shell syntax. It is not Windows acceptance.
-describe.skipIf(!enabled || process.platform === 'win32')('authenticated Codex app-server 0.154.0 acceptance', () => {
+describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualified Codex app-server acceptance', () => {
   it('measures installed schemas, approves, continues, cancels and reattaches the same native session', async () => {
     const directory = process.cwd()
     const scratch = await mkdtemp(join(tmpdir(), 'graphql-hap02-live-'))
