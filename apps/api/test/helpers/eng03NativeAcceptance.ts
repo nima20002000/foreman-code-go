@@ -221,6 +221,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     engine = new LangGraphWorkflowEngine(runs, workflows, approvals, checkpoints.saver, runtimeDirectory, locations,
       credentials, interactions, undefined, { workerParallelism: 2 })
     const startTask = engine.start(run.id)
+    if (options.control) void startTask.catch(() => undefined)
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       const work = options.control
