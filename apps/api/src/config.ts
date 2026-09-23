@@ -27,6 +27,7 @@ export interface ApiConfig {
   /** Trusted composition override for an isolated storage root; never a request field. */
   workspaceStorageRoot?: string
   browserAuth?: BrowserAuthConfig
+  localDevBrowserAccess?: { principalId?: string | undefined }
   host: string
   port: number
   readinessTimeoutMs: number
@@ -50,8 +51,25 @@ export interface ApiConfig {
 export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
   const parsed = EnvironmentSchema.parse(environment)
   const browserAuth = readBrowserAuthConfig(environment)
+  const localDevBrowserAccess = environment.GRAPHQL_DEV_BROWSER_ACCESS === '1'
+  if (environment.GRAPHQL_DEV_BROWSER_ACCESS !== undefined && !['0', '1'].includes(environment.GRAPHQL_DEV_BROWSER_ACCESS)) {
+    throw new Error('GRAPHQL_DEV_BROWSER_ACCESS must be 0 or 1.')
+  }
+  if (localDevBrowserAccess && (environment.NODE_ENV === 'production' || parsed.HOST !== '127.0.0.1'
+    || !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(parsed.DATABASE_URL).hostname)
+    || (browserAuth && browserAuth.origin !== 'http://127.0.0.1:5173'))) {
+    throw new Error('Local development browser access requires a loopback API, database and browser origin outside production.')
+  }
+  const localDevBrowserPrincipalId = environment.GRAPHQL_DEV_OPERATOR_PRINCIPAL_ID?.trim()
+  if (localDevBrowserPrincipalId && localDevBrowserPrincipalId.length > 200) {
+    throw new Error('GRAPHQL_DEV_OPERATOR_PRINCIPAL_ID must be a valid principal ID.')
+  }
   return {
     ...(browserAuth ? { browserAuth } : {}),
+    ...(localDevBrowserAccess ? { localDevBrowserAccess: {
+      ...(localDevBrowserPrincipalId || browserAuth?.ownerPrincipalId
+        ? { principalId: localDevBrowserPrincipalId || browserAuth?.ownerPrincipalId } : {}),
+    } } : {}),
     host: parsed.HOST,
     port: parsed.PORT,
     readinessTimeoutMs: parsed.READINESS_TIMEOUT_MS,

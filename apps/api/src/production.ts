@@ -19,6 +19,7 @@ import type { createDatabase } from './infrastructure/database.js'
 import { OperatorRuntimeOwner } from './infrastructure/operatorRuntimeOwner.js'
 import { RuntimeShutdown } from './infrastructure/runtimeShutdown.js'
 import { PostgresAccessService } from './modules/access/postgres.js'
+import { LocalDevBrowserAccess } from './modules/access/localDevBrowser.js'
 import { BrowserAuthentication } from './modules/browser-auth/service.js'
 import { WorkerCredentialService } from './modules/access/workerCredentials.js'
 import {
@@ -271,6 +272,9 @@ export function buildProductionApp(
   })
   const app = buildApp({
     ...(config.browserAuth ? { browserAuth: new BrowserAuthentication(database.pool, access, config.browserAuth) } : {}),
+    ...(config.localDevBrowserAccess ? { localDevBrowserAccess: new LocalDevBrowserAccess(
+      database.pool, access, config.localDevBrowserAccess.principalId,
+    ) } : {}),
     readiness: { database, checkpoints },
     readinessTimeoutMs: config.readinessTimeoutMs,
     harnessCompatibility,

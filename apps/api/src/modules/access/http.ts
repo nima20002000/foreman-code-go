@@ -7,6 +7,7 @@ import { bearerToken, type PostgresAccessService } from './postgres.js'
 import { DomainError } from '../errors.js'
 import { isPublicBrowserAuthRequest } from '../browser-auth/routes.js'
 import { appendAuthCookies, type BrowserAuthentication } from '../browser-auth/service.js'
+import type { LocalDevBrowserAccess } from './localDevBrowser.js'
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -14,6 +15,7 @@ declare module 'fastify' {
     operatorAuthentication?: 'browser' | 'bearer'
     reauthorizeOperator?: () => Promise<ManagementPrincipal>
     browserAccount?: { name: string; email: string }
+    operatorLocalDev?: boolean
   }
 }
 
@@ -70,10 +72,11 @@ export function requireBrowserSession(request: FastifyRequest): void {
   }
 }
 
-export function registerOperatorHttpSecurity(app: FastifyInstance, access: PostgresAccessService, browserAuth?: BrowserAuthentication): void {
+export function registerOperatorHttpSecurity(app: FastifyInstance, access: PostgresAccessService,
+  browserAuth?: BrowserAuthentication, localDevBrowserAccess?: LocalDevBrowserAccess): void {
   app.post<{ Body: unknown }>('/api/auth/enroll', async (request, reply) => {
     requireLocalRequest(request)
-    if (browserAuth) throw new DomainError('BROWSER_TOKEN_ENROLLMENT_DISABLED', 'Sign in with the owner account. CLI and MCP bearer credentials remain supported.', 403)
+    if (browserAuth || localDevBrowserAccess) throw new DomainError('BROWSER_TOKEN_ENROLLMENT_DISABLED', 'Browser token enrollment is disabled. CLI and MCP bearer credentials remain supported.', 403)
     const input = z.object({ token: z.string().trim().min(1) }).strict().parse(request.body)
     const principal = await access.authenticate(input.token, 'operator')
     reply.header('set-cookie', `${COOKIE_NAME}=${encodeURIComponent(input.token)}; HttpOnly; SameSite=Strict; Path=/`)
@@ -93,7 +96,15 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
       // Explicit User bearer credentials remain isolated and are authenticated
       // by the route. With no header, a verified owner browser session supplies
       // the first-party human identity without minting another secret.
-      if (headerToken || !browserAuth) return
+      if (headerToken) return
+      if (localDevBrowserAccess) {
+        localDevBrowserAccess.requireLocalBrowser(request, !['GET', 'HEAD', 'OPTIONS'].includes(request.method))
+        request.operatorPrincipal = await localDevBrowserAccess.authenticate()
+        request.operatorAuthentication = 'browser'
+        request.operatorLocalDev = true
+        return
+      }
+      if (!browserAuth) return
       if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) browserAuth.requireMutationOrigin(request)
       request.operatorPrincipal = await browserAuth.authenticate(request, reply)
       request.operatorAuthentication = 'browser'
@@ -101,6 +112,7 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
     }
     // Clearing a stale session must not depend on authenticating that session.
     if (path === '/api/auth/logout' && request.method === 'POST') {
+      if (localDevBrowserAccess) throw new DomainError('DEV_BROWSER_ALWAYS_ACTIVE', 'Local development browser access remains active while the dev server runs.', 409)
       browserAuth?.requireMutationOrigin(request)
       if (!request.headers.origin) {
         throw new DomainError('CSRF_ORIGIN_REQUIRED', 'Logout requires a trusted Origin header.', 403)
@@ -111,20 +123,24 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
     if (request.headers.authorization !== undefined && !headerToken) {
       throw new DomainError('AUTH_INVALID', 'The Authorization header is invalid.', 401)
     }
-    const browserToken = headerToken || browserAuth ? undefined : cookieToken(request.headers.cookie)
+    const browserToken = headerToken || browserAuth || localDevBrowserAccess ? undefined : cookieToken(request.headers.cookie)
     if (!headerToken && !['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
-      if (browserAuth) browserAuth.requireMutationOrigin(request)
+      if (localDevBrowserAccess) localDevBrowserAccess.requireLocalBrowser(request, true)
+      else if (browserAuth) browserAuth.requireMutationOrigin(request)
       else if (browserToken && !request.headers.origin) {
         throw new DomainError('CSRF_ORIGIN_REQUIRED', 'Browser mutations require a trusted Origin header.', 403)
       }
     }
     // Explicit bearer credentials always win; invalid credentials never fall back to a cookie.
-    const authenticate = () => headerToken || !browserAuth
-      ? access.authenticate(headerToken ?? browserToken, 'operator')
-      : browserAuth.authenticate(request, reply)
+    const authenticate = () => headerToken ? access.authenticate(headerToken, 'operator')
+      : localDevBrowserAccess ? localDevBrowserAccess.authenticate()
+      : browserAuth ? browserAuth.authenticate(request, reply)
+      : access.authenticate(browserToken, 'operator')
+    if (!headerToken && localDevBrowserAccess) localDevBrowserAccess.requireLocalBrowser(request, false)
     const principal = await authenticate()
     request.operatorPrincipal = principal
     request.operatorAuthentication = headerToken ? 'bearer' : 'browser'
+    if (!headerToken && localDevBrowserAccess) request.operatorLocalDev = true
     request.reauthorizeOperator = async () => {
       const current = await authenticate()
       requireAuthorization(current, actionFor(request))
@@ -153,7 +169,8 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
     const principal = requirePrincipal(request)
     reply.header('cache-control', 'no-store')
     reply.header('vary', 'Cookie, Authorization')
-    return BrowserAccessSessionSchema.parse({ ...(request.browserAccount ? { account: request.browserAccount } : {}), principal: {
+    return BrowserAccessSessionSchema.parse({ ...(request.browserAccount ? { account: request.browserAccount } : {}),
+      ...(request.operatorLocalDev ? { localDev: true } : {}), principal: {
       id: principal.id, name: principal.name, expiresAt: principal.expiresAt, grants: principal.grants,
     } })
   })

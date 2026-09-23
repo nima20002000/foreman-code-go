@@ -125,6 +125,7 @@ export type ManagementPrincipal = z.infer<typeof ManagementPrincipalSchema>;
 
 /** Browser identity readback. No bearer token, cookie, or token hash is returned. */
 export const BrowserAccessSessionSchema = z.object({
+  localDev: z.literal(true).optional(),
   principal: z.object({
     id: IdSchema, name: z.string().min(1), expiresAt: TimestampSchema,
     grants: z.array(ManagementGrantSchema),

@@ -1,10 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import { readBrowserAuthConfig } from '../src/modules/browser-auth/config.js'
+import { loadConfig } from '../src/config.js'
 import { isPublicBrowserAuthRequest } from '../src/modules/browser-auth/routes.js'
 import type { FastifyRequest } from 'fastify'
 
 const secret = 'a'.repeat(48)
 describe('browser authentication configuration', () => {
+  it('allows local development access only with an explicit flag and loopback services', () => {
+    const base = { DATABASE_URL: 'postgresql://graphql:graphql@127.0.0.1:5432/graphql' }
+    expect(loadConfig(base).localDevBrowserAccess).toBeUndefined()
+    expect(loadConfig({ ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1' }).localDevBrowserAccess).toEqual({})
+    for (const environment of [
+      { ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1', HOST: '0.0.0.0' },
+      { ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1', NODE_ENV: 'production' },
+      { ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1', DATABASE_URL: 'postgresql://graphql:graphql@example.com/graphql' },
+      { ...base, GRAPHQL_DEV_BROWSER_ACCESS: 'yes' },
+    ]) expect(() => loadConfig(environment)).toThrow()
+  })
   it('does not fabricate a development secret', () => {
     expect(readBrowserAuthConfig({})).toBeUndefined()
     expect(() => readBrowserAuthConfig({ BETTER_AUTH_URL: 'http://localhost:5173' })).toThrow()

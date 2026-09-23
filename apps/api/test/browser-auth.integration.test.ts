@@ -7,6 +7,7 @@ import { NATIVE_INTERACTION_FIXTURES } from '@graphql/contracts'
 import { ManagementActionSchema, ManagedWorkspaceDefaultsSchema } from '@graphql/contracts/management'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { LocalDevBrowserAccess } from '../src/modules/access/localDevBrowser.js'
 import { registerOperatorHttpSecurity } from '../src/modules/access/http.js'
 import { BrowserAuthentication } from '../src/modules/browser-auth/service.js'
 import { registerBrowserAuthRoutes } from '../src/modules/browser-auth/routes.js'
@@ -31,7 +32,8 @@ function cookies(value: string | string[] | undefined): string {
 }
 
 type Fixture = { pool: pg.Pool; access: PostgresAccessService; coldAuth: BrowserAuthentication;
-  app: (overrides?: Partial<BrowserAuthConfig>, existingAuth?: BrowserAuthentication) => FastifyInstance }
+  app: (overrides?: Partial<BrowserAuthConfig>, existingAuth?: BrowserAuthentication,
+    localDev?: LocalDevBrowserAccess) => FastifyInstance }
 async function withDatabase(work: (fixture: Fixture) => Promise<void>): Promise<void> {
   const schema = `browser_auth_${randomUUID().replaceAll('-', '')}`
   const admin = new pg.Pool({ connectionString })
@@ -46,11 +48,12 @@ async function withDatabase(work: (fixture: Fixture) => Promise<void>): Promise<
     await applyApplicationMigrations(pool)
     await applyApplicationMigrations(pool)
     const settings = new FoundationSettingsManagementService(new PostgresFoundationSettingsRepository(database), new PostgresCommandCoordinator(database))
-    const app = (overrides: Partial<BrowserAuthConfig> = {}, existingAuth?: BrowserAuthentication) => {
+    const app = (overrides: Partial<BrowserAuthConfig> = {}, existingAuth?: BrowserAuthentication,
+      localDev?: LocalDevBrowserAccess) => {
       const server = Fastify()
       const auth = existingAuth ?? new BrowserAuthentication(database, access, { ...config, ...overrides })
       registerBrowserAuthRoutes(server, auth)
-      registerOperatorHttpSecurity(server, access, auth)
+      registerOperatorHttpSecurity(server, access, auth, localDev)
       // Real production route and settings/command repositories; unrelated harnesses are not started.
       registerWorkspaceDefaultsRoutes(server, { settings } as OperatorServices)
       server.setErrorHandler((error, _request, reply) => {
@@ -81,6 +84,58 @@ async function signIn(app: FastifyInstance) {
 }
 
 describe('Better Auth owner browser lifecycle (PostgreSQL)', () => {
+  it('serves the real API in local dev without browser credentials while enforcing grants and origin', async () => withDatabase(async ({ app, access, pool }) => {
+    const dev = new LocalDevBrowserAccess(pool, access)
+    const server = app({}, undefined, dev)
+    const localHeaders = { host: '127.0.0.1:3000', origin: 'http://127.0.0.1:5173' }
+    const session = await server.inject({ method: 'GET', url: '/api/auth/session', headers: localHeaders })
+    expect(session.statusCode).toBe(200)
+    expect(session.json().localDev).toBe(true)
+    expect(session.json().principal.id).toBe('principal-local-development-browser')
+    expect((await pool.query('select * from management_principals')).rowCount).toBe(1)
+    const read = await server.inject({ method: 'GET', url: '/api/management/settings/workspaces', headers: localHeaders })
+    expect(read.statusCode).toBe(200)
+    const defaults = ManagedWorkspaceDefaultsSchema.parse(read.json())
+    const saved = await server.inject({ method: 'PUT', url: '/api/management/settings/workspaces', headers: localHeaders,
+      payload: { commandId: 'local-dev-save', expectedRevision: defaults.revision,
+        value: { ...defaults.value, suggestedName: 'Local dev workspace' } } })
+    expect(saved.statusCode).toBe(200)
+    expect(saved.json().value.value.suggestedName).toBe('Local dev workspace')
+    expect((await server.inject({ method: 'GET', url: '/api/auth/session', headers: { ...localHeaders, authorization: 'Bearer invalid' } })).statusCode).toBe(401)
+    expect((await server.inject({ method: 'PUT', url: '/api/management/settings/workspaces',
+      headers: { host: localHeaders.host }, payload: {} })).statusCode).toBe(403)
+    expect((await server.inject({ method: 'GET', url: '/api/auth/session', headers: {
+      ...localHeaders, origin: 'http://localhost:5173',
+    } })).statusCode).toBe(403)
+    expect((await server.inject({ method: 'GET', url: '/api/auth/session', headers: localHeaders,
+      remoteAddress: '192.0.2.10' })).statusCode).toBe(403)
+    expect((await server.inject({ method: 'POST', url: '/api/auth/logout', headers: localHeaders })).statusCode).toBe(409)
+  }), 30_000)
+
+  it('uses a selected existing Operator without expanding its grants', async () => withDatabase(async ({ app, access, pool }) => {
+    const issued = await access.issue({ name: 'Limited dev owner', audience: 'operator',
+      grants: [{ actions: ['settings:read'], scope: {} }], expiresAt: new Date(Date.now() + 3_600_000) })
+    const before = (await pool.query('select grants from management_principals where id=$1', [issued.principal.id])).rows[0]
+    const localHeaders = { host: '127.0.0.1:3000', origin: 'http://127.0.0.1:5173' }
+    const singleOwner = app({}, undefined, new LocalDevBrowserAccess(pool, access))
+    expect((await singleOwner.inject({ method: 'GET', url: '/api/auth/session', headers: localHeaders })).json().principal.id)
+      .toBe(issued.principal.id)
+    await access.issue({ name: 'Other root Operator', audience: 'operator', grants: [],
+      expiresAt: new Date(Date.now() + 3_600_000) })
+    const ambiguous = app({}, undefined, new LocalDevBrowserAccess(pool, access))
+    expect((await ambiguous.inject({ method: 'GET', url: '/api/auth/session', headers: localHeaders })).statusCode).toBe(503)
+    const server = app({}, undefined, new LocalDevBrowserAccess(pool, access, issued.principal.id))
+    expect((await server.inject({ method: 'GET', url: '/api/auth/session', headers: localHeaders })).json().principal.grants)
+      .toEqual(issued.principal.grants)
+    expect((await server.inject({ method: 'GET', url: '/api/management/settings/workspaces', headers: localHeaders })).statusCode).toBe(200)
+    expect((await server.inject({ method: 'PUT', url: '/api/management/settings/workspaces', headers: localHeaders,
+      payload: { commandId: 'denied-dev-save', expectedRevision: 0, value: { suggestedName: 'Denied', description: '' } } })).statusCode).toBe(403)
+    expect((await pool.query('select grants from management_principals where id=$1', [issued.principal.id])).rows[0]).toEqual(before)
+    expect((await access.authenticate(issued.token)).id).toBe(issued.principal.id)
+    await access.revoke(issued.principal.id)
+    expect((await server.inject({ method: 'GET', url: '/api/auth/session', headers: localHeaders })).statusCode).toBe(403)
+  }), 30_000)
+
   it('initializes the auth engine after cold-start migrations', async () => withDatabase(async ({ app, coldAuth }) => {
     const server = app({}, coldAuth)
     expect((await server.inject({ method: 'GET', url: '/api/auth/session', headers })).statusCode).toBe(401)

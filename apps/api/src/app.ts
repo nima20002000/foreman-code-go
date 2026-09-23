@@ -18,6 +18,7 @@ import { registerOperatorHttpSecurity } from './modules/access/http.js'
 import { registerBrowserAuthRoutes } from './modules/browser-auth/routes.js'
 import type { BrowserAuthentication } from './modules/browser-auth/service.js'
 import type { PostgresAccessService } from './modules/access/postgres.js'
+import type { LocalDevBrowserAccess } from './modules/access/localDevBrowser.js'
 import { DomainError } from './modules/errors.js'
 import type { McpDetectionService } from './modules/harnesses/mcpDetection.js'
 import { registerUserInteractions } from './routes/userInteractions.js'
@@ -34,6 +35,7 @@ export interface ReadinessDependencies {
 
 export interface BuildAppOptions {
   browserAuth?: BrowserAuthentication
+  localDevBrowserAccess?: LocalDevBrowserAccess
   harnessCompatibility?: HarnessCompatibilityService
   readiness: ReadinessDependencies
   readinessTimeoutMs?: number
@@ -114,7 +116,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   })
 
   if (options.operator) registerBrowserAuthRoutes(app, options.browserAuth)
-  if (options.operator) registerOperatorHttpSecurity(app, options.operator.access, options.browserAuth)
+  if (options.operator) registerOperatorHttpSecurity(app, options.operator.access, options.browserAuth, options.localDevBrowserAccess)
   if (options.operator) registerManagementRoutes(app, options.operator.services)
   if (options.operator && options.harnessCompatibility) registerHarnessCompatibilityRoutes(app, options.harnessCompatibility)
   if (options.operator && options.mcpDetection) registerMcpDetectionRoute(app, options.mcpDetection.pool, options.mcpDetection.service)

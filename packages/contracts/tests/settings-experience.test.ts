@@ -27,6 +27,8 @@ describe('Settings experience contracts', () => {
   it('session readback excludes credentials', () => {
     const value = { principal: { id: 'principal-x', name: 'Browser', expiresAt: '2099-01-01T00:00:00Z', grants: [] } }
     expect(BrowserAccessSessionSchema.safeParse(value).success).toBe(true)
+    expect(BrowserAccessSessionSchema.safeParse({ ...value, localDev: true }).success).toBe(true)
+    expect(BrowserAccessSessionSchema.safeParse({ ...value, localDev: false }).success).toBe(false)
     expect(BrowserAccessSessionSchema.safeParse({ ...value, token: 'secret' }).success).toBe(false)
     expect(BrowserAccessSessionSchema.safeParse({ principal: { ...value.principal, tokenHash: 'secret' } }).success).toBe(false)
   })

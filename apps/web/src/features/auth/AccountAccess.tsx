@@ -28,7 +28,7 @@ export function AccountAccess() {
       <section aria-labelledby="account-session-heading">
         <h2 id="account-session-heading">Session</h2>
         <dl className="account-facts">
-          <div><dt>Browser access</dt><dd>Signed in</dd></div>
+          <div><dt>Browser access</dt><dd>{session.data.localDev ? 'Local development access' : 'Signed in'}</dd></div>
           <div><dt>Expires</dt><dd><time dateTime={principal.expiresAt}>{new Date(principal.expiresAt).toLocaleString()}</time></dd></div>
         </dl>
       </section>
@@ -44,6 +44,8 @@ export function AccountAccess() {
         </details>
       </section>
     </div>
-    <footer className="account-actions"><p>Signing out ends this browser session. CLI and MCP credentials stay active.</p><SignOutButton /></footer>
+    <footer className="account-actions">{session.data.localDev
+      ? <p>Local development access stays active while the dev server runs.</p>
+      : <><p>Signing out ends this browser session. CLI and MCP credentials stay active.</p><SignOutButton /></>}</footer>
   </section>
 }

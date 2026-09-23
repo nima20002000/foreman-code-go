@@ -1,5 +1,11 @@
 # Browser owner authentication
 
+`corepack pnpm dev` also offers automatic local development browser access. It
+uses a persisted Operator principal and the normal authorization checks, scoped
+to loopback API, database and browser traffic. See the README's local development
+section. The setup and sign-in steps below apply to direct API starts and other
+environments where that local mode is disabled.
+
 ## What changes
 
 The browser uses Better Auth 1.7.5 with PostgreSQL-backed sessions. The browser does
@@ -72,10 +78,9 @@ when browser auth is entirely unconfigured, for existing non-browser callers.
    and resolve that through the existing local credential administration flow;
    do not delete records just to make setup appear fresh.
 
-5. Restart the local API with the new code and environment, then run the normal
-   `corepack pnpm dev` flow. The dev launcher may reuse an already-running API,
-   so simply starting a second launcher will not reload that process's code or
-   environment. No SSH, router or VPS changes are required or included.
+5. Restart the API with the new code and environment. Use the separately started
+   API and web processes for this normal sign-in flow; `corepack pnpm dev` enables
+   automatic local development access. No SSH, router or VPS changes are required.
 6. Open `http://127.0.0.1:5173/setup` and enter your email and a password of at
    least 12 characters. After creation, sign in with the same credentials. No
    application bearer token is shown or stored in browser JavaScript. Setup

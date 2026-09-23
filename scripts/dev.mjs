@@ -109,9 +109,14 @@ async function main() {
     if (!await responds(`${apiUrl}/health/live`, apiLive)) {
       throw new Error(`Port ${port} is in use by a different or unhealthy service.`)
     }
+    if (!await responds(`${apiUrl}/api/auth/session`, (response, body) => response.ok && body.includes('"localDev":true'))) {
+      throw new Error(`The API at ${apiUrl} is not running with local development browser access. Stop it and restart corepack pnpm dev.`)
+    }
     console.log(`Using the GraphQL API already running at ${apiUrl}.`)
   } else {
-    api = start('API', ['--filter', '@graphql/api', 'dev'])
+    api = start('API', ['--filter', '@graphql/api', 'dev'], {
+      env: { ...process.env, GRAPHQL_DEV_BROWSER_ACCESS: '1' },
+    })
   }
   await waitFor('API', `${apiUrl}/health/ready`, apiReady, api)
 
@@ -135,7 +140,7 @@ async function main() {
   // dev:api and dev:web already own a contracts watcher when one is reused.
   if (api && web) start('Contracts watcher', ['--filter', '@graphql/contracts', 'dev'])
   console.log(`GraphQL ready: ${webUrl} (API ${apiUrl}).`)
-  console.log(`Sign in at ${webUrl}/sign-in. First-owner setup: ${webUrl}/setup.`)
+  console.log('Local development browser access is active; open the app without signing in.')
   const ended = await Promise.race(children.map(({ exited }) => exited))
   if (!stopping) {
     console.error(`${ended.name} stopped (exit ${ended.code ?? ended.signal}).`)
