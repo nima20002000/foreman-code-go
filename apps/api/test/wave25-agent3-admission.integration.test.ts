@@ -167,6 +167,7 @@ describe.skipIf(!postgresEnabled)('Agent 3 atomic Run admission and live authori
     await expect(management.start(issued.principal, 'mcp', { ...input, input: { changed: true } }))
       .rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
     const { executionSemanticsVersion: _semantics, ...legacyStart } = input
+    expect(_semantics).toBe(2)
     await expect(management.start(issued.principal, 'mcp', { ...legacyStart, commandId: randomUUID() }))
       .rejects.toMatchObject({ code: 'V2_ADMISSION_REQUIRED' })
     const denied = await access.issue({ name: 'Read only', audience: 'operator',

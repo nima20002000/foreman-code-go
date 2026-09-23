@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
+import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import {
   AgentConfigurationVersionSchema, HarnessConfigurationSchema, HarnessExecutionSchema,
   type AgentConfigurationVersion, type HarnessConfiguration, type HarnessExecution, type HarnessNativeEvent,
@@ -30,6 +31,7 @@ import { ExecutionScopedNativeSessionManagerResolver } from '../../src/modules/i
 import { graphSourceDigest } from '../../src/modules/run-graph/publication.js'
 import { LangGraphWorkflowEngine } from '../../src/modules/runs/engine.js'
 import { insertOneShotRun } from '../../src/modules/runs/oneShotAdmission.js'
+import { continuationValidator } from '../../src/modules/runs/continuation.js'
 import { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import { withExclusiveGraphConnection } from '../../src/modules/run-graph/connection.js'
 import { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres.js'
@@ -42,25 +44,34 @@ type Scenario = 'E03-P01' | 'E03-P02' | 'E03-P03' | 'E03-L01' | 'E03-L02' | 'E03
 const codexBinary = process.env.ENG03_A_CODEX_BINARY ?? '/home/nima/.local/bin/codex'
 const openCodeBinary = process.env.ENG03_A_OPENCODE_BINARY ?? '/home/nima/.local/bin/opencode'
 
-export interface Eng03NativeControl {
-  pool: pg.Pool
-  runId: string
-  nodeIds: readonly string[]
-  projectDirectory: string
-  runtimeDirectory: string
+export interface Eng03NativeRuntime {
   engine: LangGraphWorkflowEngine
   runs: PostgresRunRepository
   approvals: ApprovalExecutionCoordinator
   interactions: Wave25InteractionRepository
   budgets: PostgresApprovalBudgetRepository
   registry: NativeProcessRegistry
+}
+
+export interface Eng03NativeControl extends Eng03NativeRuntime {
+  pool: pg.Pool
+  runId: string
+  nodeIds: readonly string[]
+  projectDirectory: string
+  runtimeDirectory: string
   startTask: Promise<void>
+  restartWaitingRuntime(): Promise<Eng03NativeRuntime>
 }
 
 export interface Eng03NativeOptions {
   prompts?: Partial<Record<'Entry' | 'A' | 'B' | 'Reviewer', string>>
   harnessOverrides?: Partial<Record<'A' | 'B', HarnessConfiguration>>
+  queryTimeoutMs?: number
   control?: (context: Eng03NativeControl) => Promise<void>
+}
+
+interface RuntimeInstance extends Eng03NativeRuntime {
+  managers: ExecutionScopedNativeSessionManagerResolver
 }
 
 interface NativeInterval {
@@ -103,6 +114,10 @@ async function version(binary: string): Promise<string> {
 /** Internal-service qualification while normal v2 admission remains closed. */
 export async function runEng03NativeScenario(scenario: Scenario, first: Harness, second: Harness,
   options: Eng03NativeOptions = {}) {
+  if (options.queryTimeoutMs !== undefined
+    && (!Number.isSafeInteger(options.queryTimeoutMs) || options.queryTimeoutMs < 1 || options.queryTimeoutMs > 60_000)) {
+    throw new Error('queryTimeoutMs must be a positive integer at most 60000.')
+  }
   const baseUrl = process.env.ENG03_A_TEST_DATABASE_URL
   if (!baseUrl) throw new Error('ENG03_A_TEST_DATABASE_URL must name a task-owned loopback test database.')
   const parsed = new URL(baseUrl)
@@ -120,6 +135,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   let pool: pg.Pool | undefined
   let checkpoints: ReturnType<typeof createCheckpointStore> | undefined
   let engine: LangGraphWorkflowEngine | undefined
+  let activeRuntime: RuntimeInstance | undefined
   let runId: string | undefined
   const evidence: Record<string, unknown> = { scenario, mode: 'native internal preliminary', artifactPath,
     sourceSha: (await runCommand('git', ['rev-parse', 'HEAD'])).stdout.trim(),
@@ -132,8 +148,11 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     await admin.query(`create schema ${schema}`)
     const url = new URL(baseUrl)
     url.searchParams.set('options', `-c search_path=${schema},public`)
-    pool = new pg.Pool({ connectionString: url.toString(), max: 12, connectionTimeoutMillis: 5000 })
-    await applyApplicationMigrations(pool)
+    const migrationPool = new pg.Pool({ connectionString: url.toString(), max: 12, connectionTimeoutMillis: 5000 })
+    try { await applyApplicationMigrations(migrationPool) } finally { await migrationPool.end() }
+    pool = new pg.Pool({ connectionString: url.toString(), max: 12, connectionTimeoutMillis: 5000,
+      ...(options.queryTimeoutMs ? { query_timeout: options.queryTimeoutMs,
+        statement_timeout: options.queryTimeoutMs } : {}) })
     checkpoints = createCheckpointStore(url.toString(), schema)
     await checkpoints.setup()
     const fixture = makeWave25Fixture(suffix)
@@ -195,59 +214,113 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     fixture.run = run
     runId = run.id
     await withExclusiveGraphConnection(pool, (connection) => connection.transaction((sql) => insertOneShotRun(sql, run)))
-    const commands = new PostgresCommandCoordinator(pool)
-    const locations = new WorkspaceLocationService(pool, commands, runtimeDirectory)
-    const workflows = new PostgresWorkflowRepository(pool)
-    const runs = new PostgresRunRepository(pool, workflows, locations)
-    const interactions = new Wave25InteractionRepository(pool)
-    const registry = new NativeProcessRegistry(join(runtimeDirectory, 'native-process-registry'))
+    const livePool = pool
     const endpoint = process.env.APP_MCP_ENDPOINT ?? 'http://127.0.0.1:3000/mcp/tools'
-    const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
-      const config = context.configuration.harness
-      if (config.harness !== context.harness) throw new Error('Pinned harness mismatch')
-      return config.harness === 'codex'
-        ? new CodexAppServerSessionManager(codexBinary, undefined, undefined, registry.scope(`execution:${context.executionId}`))
-        : new OpenCodeNativeSessionManager({ server: new ManagedOpenCodeServer({ binary: openCodeBinary,
-          processRecovery: registry.scope(`execution:${context.executionId}`), workingDirectory: context.workingDirectory,
-          ownerAgentId: context.agentId, ...(config.advanced ? { advancedConfiguration: config.advanced } : {}) }),
-          ownerAgentId: context.agentId, expectedAppMcpEndpoint: endpoint })
-    })
-    const workerCredentials = new WorkerCredentialService(pool, new PostgresAccessService(pool))
-    const credentials: ExecutionCredentialProvider = {
-      async prepare(input) {
-        const execution = await runs.getExecution(input.executionId)
-        const configuration = execution && await runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
-        if (!execution || !configuration) throw new Error('Native execution identity is missing')
-        const { manager } = managers.resolve({ executionId: execution.id, agentId: execution.agentId,
-          harness: input.harness, workingDirectory: input.workingDirectory, configuration })
-        const inspector = manager instanceof CodexAppServerSessionManager ? codexMcpInspectorAdapter(manager)
-          : openCodeMcpInspectorAdapter(manager as OpenCodeNativeSessionManager)
-        return new WorkerLaunchCredentialService(new McpDetectionService(inspector, endpoint), workerCredentials, 'runner-local').prepare(input)
-      },
-      revoke: (credential) => workerCredentials.revoke(credential),
-      revokeForExecution: (id) => workerCredentials.revokeForExecution(id),
-      revokeForRun: (id, client) => workerCredentials.revokeForRun(id, client),
-      renew: (id, credential) => workerCredentials.renewForExecution(id, credential),
+    const makeRuntime = (saver: BaseCheckpointSaver): RuntimeInstance => {
+      const commands = new PostgresCommandCoordinator(livePool)
+      const locations = new WorkspaceLocationService(livePool, commands, runtimeDirectory)
+      const workflows = new PostgresWorkflowRepository(livePool)
+      const runs = new PostgresRunRepository(livePool, workflows, locations)
+      const interactions = new Wave25InteractionRepository(livePool)
+      const registry = new NativeProcessRegistry(join(runtimeDirectory, 'native-process-registry'))
+      const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
+        const config = context.configuration.harness
+        if (config.harness !== context.harness) throw new Error('Pinned harness mismatch')
+        return config.harness === 'codex'
+          ? new CodexAppServerSessionManager(codexBinary, undefined, undefined, registry.scope(`execution:${context.executionId}`))
+          : new OpenCodeNativeSessionManager({ server: new ManagedOpenCodeServer({ binary: openCodeBinary,
+            processRecovery: registry.scope(`execution:${context.executionId}`), workingDirectory: context.workingDirectory,
+            ownerAgentId: context.agentId, ...(config.advanced ? { advancedConfiguration: config.advanced } : {}) }),
+            ownerAgentId: context.agentId, expectedAppMcpEndpoint: endpoint })
+      })
+      const validateContinuation = continuationValidator(livePool, locations)
+      const workerCredentials = new WorkerCredentialService(livePool, new PostgresAccessService(livePool))
+      const credentials: ExecutionCredentialProvider = {
+        async prepare(input) {
+          await validateContinuation(input.executionId, input.signal)
+          const execution = await runs.getExecution(input.executionId)
+          const configuration = execution && await runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+          if (!execution || !configuration || execution.workingDirectory !== input.workingDirectory
+            || configuration.harness.harness !== input.harness) throw new Error('Native execution identity is missing')
+          const { manager } = managers.resolve({ executionId: execution.id, agentId: execution.agentId,
+            harness: input.harness, workingDirectory: input.workingDirectory, configuration })
+          const inspector = manager instanceof CodexAppServerSessionManager ? codexMcpInspectorAdapter(manager)
+            : openCodeMcpInspectorAdapter(manager as OpenCodeNativeSessionManager)
+          return new WorkerLaunchCredentialService(new McpDetectionService(inspector, endpoint), workerCredentials, 'runner-local').prepare(input)
+        },
+        revoke: (credential) => workerCredentials.revoke(credential),
+        revokeForExecution: (id) => workerCredentials.revokeForExecution(id),
+        revokeForRun: (id, client) => workerCredentials.revokeForRun(id, client),
+        reconcileTerminalCredentials: () => workerCredentials.reconcileTerminalCredentials(),
+        renew: (id, credential) => workerCredentials.renewForExecution(id, credential),
+      }
+      const budgets = new PostgresApprovalBudgetRepository(livePool)
+      const approvals = new ApprovalExecutionCoordinator(runs, interactions, budgets,
+        managers, 180_000, credentials, validateContinuation, (id, signal) => registry.closeOwner(`execution:${id}`, signal))
+      const engine = new LangGraphWorkflowEngine(runs, workflows, approvals, saver, runtimeDirectory, locations,
+        credentials, interactions, undefined, { workerParallelism: 2 })
+      return { engine, runs, approvals, interactions, budgets, registry, managers }
     }
-    const budgets = new PostgresApprovalBudgetRepository(pool)
-    const approvals = new ApprovalExecutionCoordinator(runs, interactions, budgets,
-      managers, 180_000, credentials, undefined, (id, signal) => registry.closeOwner(`execution:${id}`, signal))
-    engine = new LangGraphWorkflowEngine(runs, workflows, approvals, checkpoints.saver, runtimeDirectory, locations,
-      credentials, interactions, undefined, { workerParallelism: 2 })
+    activeRuntime = makeRuntime(checkpoints.saver)
+    engine = activeRuntime.engine
     const startTask = engine.start(run.id)
     if (options.control) void startTask.catch(() => undefined)
+    const restartWaitingRuntime = async (): Promise<Eng03NativeRuntime> => {
+      await startTask
+      if (!activeRuntime || !checkpoints) throw new Error('Native runtime is unavailable for restart.')
+      const current = await activeRuntime.runs.get(run.id)
+      const pending = await livePool.query(`select 1 from durable_interactions where run_id=$1 and status='pending'
+        and native_session_id is not null limit 1`, [run.id])
+      if (current?.executionState !== 'waiting' || !pending.rowCount) {
+        throw new Error('Restart requires a durable waiting Run with an exact pending native interaction.')
+      }
+      const before = await livePool.query<{ accepted: boolean; result: unknown; native_session_id: string | null }>(
+        `select e.id,e.accepted,e.record->>'nativeSessionId' as native_session_id,e.record->'result' as result,
+          s.reference,s.workflow_finalized_at
+         from harness_executions e left join execution_native_sessions s on s.execution_id=e.id
+         where e.run_id=$1 order by e.id`, [run.id])
+      if (!before.rows.some((row) => row.accepted && row.result)
+        || !before.rows.some((row) => row.native_session_id && !row.result)) {
+        throw new Error('Restart requires one accepted sibling and one unfinished exact native session.')
+      }
+      const stopBefore = await livePool.query<{ stop_requested_at: Date | null }>(
+        'select stop_requested_at from runs where id=$1', [run.id])
+      if (stopBefore.rows[0]?.stop_requested_at) throw new Error('A stopped Run cannot exercise waiting restart.')
+      await activeRuntime.engine.shutdown()
+      await activeRuntime.managers.dispose()
+      await checkpoints.close()
+      checkpoints = createCheckpointStore(url.toString(), schema)
+      await checkpoints.setup()
+      activeRuntime = makeRuntime(checkpoints.saver)
+      engine = activeRuntime.engine
+      const after = await livePool.query(
+        `select e.id,e.accepted,e.record->>'nativeSessionId' as native_session_id,e.record->'result' as result,
+          s.reference,s.workflow_finalized_at
+         from harness_executions e left join execution_native_sessions s on s.execution_id=e.id
+         where e.run_id=$1 order by e.id`, [run.id])
+      const stopAfter = await livePool.query<{ stop_requested_at: Date | null }>(
+        'select stop_requested_at from runs where id=$1', [run.id])
+      if (JSON.stringify(before.rows) !== JSON.stringify(after.rows)
+        || (await activeRuntime.runs.get(run.id))?.executionState !== 'waiting'
+        || stopAfter.rows[0]?.stop_requested_at) {
+        throw new Error('Runtime restart changed a durable execution or waiting Run identity.')
+      }
+      evidence.runtimeRestart = { at: new Date().toISOString(), preservedExecutionCount: before.rowCount,
+        preservedNativeSessionIds: before.rows.map((row) => row.native_session_id).filter(Boolean) }
+      return activeRuntime
+    }
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       const work = options.control
         ? options.control({ pool, runId: run.id, nodeIds: nodes.map((node) => node.id), projectDirectory,
-          runtimeDirectory, engine, runs, approvals, interactions, budgets, registry, startTask })
+          runtimeDirectory, ...activeRuntime, startTask, restartWaitingRuntime })
           .then(() => startTask.catch(() => undefined))
         : startTask
       await Promise.race([work, new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => reject(new Error('ENG03_NATIVE_TIMEOUT')), 180_000)
       })])
     } finally { clearTimeout(timer) }
-    const final = await runs.get(run.id)
+    const final = await activeRuntime.runs.get(run.id)
     const executionRows = await pool.query<{ record: unknown }>('select record from harness_executions where run_id=$1', [run.id])
     const executions = executionRows.rows.map((row) => HarnessExecutionSchema.parse(row.record))
     const byNode = (index: number) => executions.find((execution) => execution.workflowNodeId === nodes[index]!.id)
@@ -296,6 +369,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       && new Set([1, 2].map((index) => byNode(index)?.runtimeDirectory)).size === 2
     const activeCredentials = await pool.query<{ count: string }>(`select count(*) from worker_credential_bindings b
       join management_principals p on p.id=b.principal_id where b.run_id=$1 and p.revoked_at is null`, [run.id])
+    const registry = activeRuntime.registry
     const cleanup = Number(activeCredentials.rows[0]?.count) === 0
       && (await Promise.all(executions.map((execution) => registry.closeOwner(`execution:${execution.id}`)))).every(Boolean)
     Object.assign(evidence, { runId: run.id, workflowVersionId: workflowVersion.id, sourceGraph: { nodes, edges },
@@ -328,6 +402,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     throw error
   } finally {
     await engine?.shutdown().catch(() => undefined)
+    await activeRuntime?.managers.dispose().catch(() => undefined)
     if (runId) await checkpoints?.saver.deleteThread(runId).catch(() => undefined)
     await checkpoints?.close().catch(() => undefined)
     await pool?.end().catch(() => undefined)

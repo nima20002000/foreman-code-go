@@ -147,6 +147,14 @@ export class RunManagementService {
         if (parent.current_version_id !== input.workflowVersionId) {
           throw new DomainError('WORKFLOW_VERSION_UNSUPPORTED', 'Only the current explicitly saved workflow version can be started.', 409, { currentVersionId: parent.current_version_id })
         }
+        const versionRow = await client.query<{ record: unknown }>(
+          `select record from workflow_versions where id = $1 and workspace_id = $2 and workflow_id = $3`,
+          [input.workflowVersionId, input.workspaceId, input.workflowId],
+        )
+        if (!versionRow.rows[0]) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', `Workflow version '${input.workflowVersionId}' was not found.`, 404)
+        const semantics = (versionRow.rows[0].record as { executionSemanticsVersion?: unknown }).executionSemanticsVersion
+        if (semantics === 2) throw new DomainError('V2_ADMISSION_REQUIRED', 'Use the explicit v2 admission contract.', 409)
+        if (semantics !== undefined && semantics !== 1) throw new DomainError('EXECUTION_SEMANTICS_UNSUPPORTED', 'Unknown semantics cannot use the legacy admission path.', 409)
         if ((input.draftId === undefined) !== (input.expectedDraftRevision === undefined)) {
           throw new DomainError('DRAFT_IDENTITY_REQUIRED', 'Supply both draft identity and revision.', 400)
         }
@@ -161,14 +169,6 @@ export class RunManagementService {
             throw new DomainError('DISPLAYED_GRAPH_NOT_PUBLISHED', 'The displayed graph changed or is unpublished. Reload and save it before starting.', 409)
           }
         }
-        const versionRow = await client.query<{ record: unknown }>(
-          `select record from workflow_versions where id = $1 and workspace_id = $2 and workflow_id = $3`,
-          [input.workflowVersionId, input.workspaceId, input.workflowId],
-        )
-        if (!versionRow.rows[0]) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', `Workflow version '${input.workflowVersionId}' was not found.`, 404)
-        const semantics = (versionRow.rows[0].record as { executionSemanticsVersion?: unknown }).executionSemanticsVersion
-        if (semantics === 2) throw new DomainError('V2_ADMISSION_REQUIRED', 'Use the explicit v2 admission contract.', 409)
-        if (semantics !== undefined && semantics !== 1) throw new DomainError('EXECUTION_SEMANTICS_UNSUPPORTED', 'Unknown semantics cannot use the legacy admission path.', 409)
         const version = WorkflowVersionSchema.parse(versionRow.rows[0].record)
         validateExecutableTopology(version)
         const approval = acceptedRunApproval(version)

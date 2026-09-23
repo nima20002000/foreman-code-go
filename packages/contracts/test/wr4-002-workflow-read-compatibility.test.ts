@@ -29,11 +29,11 @@ const typed = WorkflowDefinitionV2Schema.parse({
 const managed = (workflow: unknown) => ({ workflow, revision: 2, currentVersionId: null, archivedAt: null })
 
 describe('WR4-002 strict versioned persisted read contracts', () => {
-  it('shares the same root/wave25 schemas without a new import cycle or admission change', () => {
+  it('shares the same root/wave25 schemas without a new import cycle under the activation candidate', () => {
     expect(Wave25ReadSchema).toBe(CompatibleWorkflowDefinitionSchema)
     expect(Wave25V2Schema).toBe(WorkflowDefinitionV2Schema)
-    expect(WAVE25_ADMISSION_ENABLED).toBe(false)
-    expect(() => assertWave25Admission()).toThrow('EXECUTION_SEMANTICS_ROLLOUT_DISABLED')
+    expect(WAVE25_ADMISSION_ENABLED).toBe(true)
+    expect(() => assertWave25Admission()).not.toThrow()
   })
   it('roundtrips legacy and exact tagged, typed records without mutating either input', () => {
     for (const definition of [legacy, typed]) {
