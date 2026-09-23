@@ -183,7 +183,7 @@ describe.skipIf(!postgresEnabled)('WR4-003 durable draft instance replacement', 
     }
     expect(start).not.toHaveBeenCalled()
     expect(qualify).not.toHaveBeenCalled()
-    expect(WAVE25_ADMISSION_ENABLED).toBe(false)
+    expect(WAVE25_ADMISSION_ENABLED).toBe(true)
   }
   async function rejectsSql(code: string, work: (client: pg.PoolClient) => Promise<unknown>, writer = '') {
     const client = await db.pool.connect()

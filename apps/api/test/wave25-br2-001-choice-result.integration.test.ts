@@ -156,7 +156,7 @@ describe.skipIf(!postgresEnabled)('BR2-001: driver and durable choice acceptance
       expect(acceptance.rows[0]!.accepted).toBe(outcome !== 'invalid')
       expect((await readExecution(stored.id))!.result).toEqual(stored.result)
       expect(native.ensureObserve).toHaveBeenCalledTimes(1)
-      expect(WAVE25_ADMISSION_ENABLED).toBe(false)
+      expect(WAVE25_ADMISSION_ENABLED).toBe(true)
     }, 60000)
   }
 })

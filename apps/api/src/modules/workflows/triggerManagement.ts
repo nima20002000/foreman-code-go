@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
-import { WorkflowRunSchema, WorkflowVersionSchema } from '@graphql/contracts'
+import { CompatibleWorkflowRunSchema, CompatibleWorkflowVersionSchema } from '@graphql/contracts/wave25'
 import {
   WorkflowTriggerRecordSchema, WorkflowTriggerUpdateInputSchema,
   type ManagementPrincipal, type WorkflowTriggerUpdateInput,
@@ -19,6 +19,12 @@ function projection(row:TriggerRow) {
   const record=WorkflowTriggerRecordSchema.parse(row.record)
   return WorkflowTriggerRecordSchema.parse({...record,revision:Number(row.revision),enabled:row.enabled,
     nextFireAt:row.next_fire_at?.toISOString() ?? null,lastError:row.last_error})
+}
+async function versionSemantics(sql:Pick<pg.ClientBase,'query'>,workspaceId:string,workflowId:string,versionId:string):Promise<2|undefined> {
+  const rows=await sql.query<{record:unknown}>('select record from workflow_versions where workspace_id=$1 and workflow_id=$2 and id=$3',
+    [workspaceId,workflowId,versionId])
+  const version=CompatibleWorkflowVersionSchema.parse(rows.rows[0]?.record)
+  return 'executionSemanticsVersion' in version ? version.executionSemanticsVersion : undefined
 }
 function jobId(parts:unknown[]):string{return `trigger-${createHash('sha256').update(JSON.stringify(parts)).digest('hex')}`}
 
@@ -49,7 +55,7 @@ export class WorkflowTriggerService {
         if (!workflow.rows[0]) throw new DomainError('WORKFLOW_NOT_FOUND','The active workflow was not found.',404)
         if (workflow.rows[0].current_version_id!==input.workflowVersionId) throw new DomainError('WORKFLOW_VERSION_UNSUPPORTED','Configure triggers only for the current saved version.',409)
         const versions=await client.query<{record:unknown}>('select record from workflow_versions where workspace_id=$1 and workflow_id=$2 and id=$3',[input.workspaceId,input.workflowId,input.workflowVersionId])
-        const version=WorkflowVersionSchema.parse(versions.rows[0]?.record)
+        const version=CompatibleWorkflowVersionSchema.parse(versions.rows[0]?.record)
         if (version.definition.executionCondition.kind!==input.trigger.kind) throw new DomainError('TRIGGER_CONDITION_MISMATCH','Save the matching workflow execution condition before configuring its trigger.',409)
         const location=await client.query<{location_revision:string;execution_location:unknown}>('select location_revision,execution_location from workspaces where id=$1',[input.workspaceId])
         if (input.enabled && (!location.rows[0]?.execution_location || Number(location.rows[0].location_revision)!==input.expectedLocationRevision)) {
@@ -111,7 +117,10 @@ export class WorkflowTriggerService {
           throw new DomainError('TRIGGER_EVENT_MISMATCH','Supply the accepted event type or a nonempty message for an on_message trigger.',400)
         }
         const id=jobId([principal.id,input.workflowId,input.commandId])
-        const payload=TriggerJobPayloadSchema.parse({mode:'event',workflowVersionId:record.workflowVersionId,expectedLocationRevision:record.locationRevision,input:input.input})
+        const executionSemanticsVersion=await versionSemantics(client,input.workspaceId,input.workflowId,record.workflowVersionId)
+        const payload=TriggerJobPayloadSchema.parse({mode:'event',workflowVersionId:record.workflowVersionId,
+          ...(executionSemanticsVersion===2?{executionSemanticsVersion}:{}),
+          expectedLocationRevision:record.locationRevision,input:input.input})
         await client.query('insert into workflow_trigger_jobs(id,workspace_id,workflow_id,principal_id,trigger_revision,payload) values($1,$2,$3,$4,$5,$6::jsonb)',
           [id,input.workspaceId,input.workflowId,principal.id,record.revision,JSON.stringify(payload)])
         return {jobId:id,status:'queued' as const}
@@ -165,7 +174,9 @@ export class WorkflowTriggerService {
         const timing=dueSchedule(record.trigger,row.next_fire_at.getTime(),now)
         if (timing.fireAt!==null) {
           const id=jobId([row.workflow_id,row.revision,new Date(timing.fireAt).toISOString()])
+          const executionSemanticsVersion=await versionSemantics(client,row.workspace_id,row.workflow_id,record.workflowVersionId)
           const payload=TriggerJobPayloadSchema.parse({mode:'schedule',workflowVersionId:record.workflowVersionId,
+            ...(executionSemanticsVersion===2?{executionSemanticsVersion}:{}),
             expectedLocationRevision:record.locationRevision,input:record.trigger.input})
           await client.query(`insert into workflow_trigger_jobs(id,workspace_id,workflow_id,principal_id,trigger_revision,payload)
             values($1,$2,$3,$4,$5,$6::jsonb) on conflict(id) do nothing`,
@@ -185,6 +196,7 @@ export class WorkflowTriggerService {
       // requiring a now-expired credential or launching another Run.
       const payload=TriggerJobPayloadSchema.parse(job.payload)
       const acceptedInput={workspaceId:job.workspace_id,workflowId:job.workflow_id,workflowVersionId:payload.workflowVersionId,
+        ...(payload.executionSemanticsVersion===2?{executionSemanticsVersion:2 as const}:{}),
         expectedLocationRevision:payload.expectedLocationRevision,input:payload.input,commandId,triggerJobId:job.id}
       const receipts=await this.pool.query<{result:unknown;input_hash:string;target_key:string}>(
         "select result,input_hash,target_key from management_command_receipts where principal_id=$1 and operation='run.start' and command_id=$2",[job.principal_id,commandId])
@@ -194,8 +206,11 @@ export class WorkflowTriggerService {
           || receipts.rows[0].target_key!==`workflow:${job.workflow_id}:version:${payload.workflowVersionId}`) {
           throw new DomainError('TRIGGER_RECEIPT_MISMATCH','A different command already occupies this trigger job identity.',409)
         }
-        const run=WorkflowRunSchema.parse(receipts.rows[0].result)
-        if (run.workspaceId!==job.workspace_id || run.workflowId!==job.workflow_id) throw new DomainError('TRIGGER_RECEIPT_MISMATCH','The launch receipt has a different scope.',409)
+        const run=CompatibleWorkflowRunSchema.parse(receipts.rows[0].result)
+        if (run.workspaceId!==job.workspace_id || run.workflowId!==job.workflow_id
+          || run.workflowVersionId!==payload.workflowVersionId
+          || ('executionSemanticsVersion' in run ? run.executionSemanticsVersion : undefined)!==payload.executionSemanticsVersion)
+          throw new DomainError('TRIGGER_RECEIPT_MISMATCH','The launch receipt has a different scope or semantics.',409)
         runId=run.id
       } else {
         const principal=await readTriggerAuthority(this.pool,job.principal_id,{workspaceId:job.workspace_id,workflowId:job.workflow_id},payload.mode)

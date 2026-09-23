@@ -96,6 +96,6 @@ describe('A5 Operator extension callbacks', () => {
       expect(() => service.capabilities(denied)).toThrow('GRAPH_READ_ACCESS_DENIED')
     }
     const qualified = new RunGraphReadService(pool, async () => { throw new Error('Unused assembler') }, { qualifiedReads: true })
-    expect(qualified.capabilities(principal)).toMatchObject({ admissionEnabled: false, authoringSemanticsVersions: [], protocolVersions: [1] })
+    expect(qualified.capabilities(principal)).toMatchObject({ admissionEnabled: true, authoringSemanticsVersions: [2], protocolVersions: [1] })
   })
 })

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ApiClient } from '../../../shared/api/client'
 import { createNextDraftApi } from './transport'
 import { fixture } from './core.cases'
+import { makeWave25Fixture } from '@graphql/contracts/wave25'
 import type { DraftRequest } from './state'
 const request: DraftRequest = { kind: 'apply', executionSemanticsVersion: 2, workspaceId: 'workspace', workflowId: 'workflow', draftId: 'draft',
   commandId: 'authoring-test-command', expectedRevision: 7, operations: [{ type: 'workflow.set_entry', entryNodeId: 'node-0' }] }
@@ -44,5 +45,23 @@ describe('Agent 6 existing authenticated HTTP boundary (mock responses, not back
     const result = await createNextDraftApi(new ApiClient({ fetch })).context('workspace', 'workflow')
     expect(result.agents[0]!.agent.configurationVersionId).toBe('configuration-0')
     expect(fetch).toHaveBeenCalledTimes(3)
+  })
+  it('starts the exact saved v2 version through authenticated HTTP and rejects mismatched admission', async () => {
+    const saved = makeWave25Fixture('web-start')
+    const input = { workspaceId: saved.scope.workspaceId, workflowId: saved.scope.workflowId,
+      workflowVersionId: saved.scope.workflowVersionId, executionSemanticsVersion: 2 as const,
+      draftId: 'draft-web-start', expectedDraftRevision: 3, expectedLocationRevision: 1,
+      commandId: 'start-web-start', input: {} }
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ run: saved.run, accepted: true, replayed: false }))
+    const api = createNextDraftApi(new ApiClient({ fetch }))
+    expect((await api.start(input)).run.id).toBe(saved.scope.runId)
+    const [url, init] = fetch.mock.calls[0]!
+    expect(String(url)).toContain(`/workspaces/${saved.scope.workspaceId}/workflows/${saved.scope.workflowId}/runs`)
+    expect(init!.credentials).toBe('same-origin')
+    expect(JSON.parse(String(init!.body))).toMatchObject({ executionSemanticsVersion: 2,
+      workflowVersionId: saved.scope.workflowVersionId, draftId: input.draftId,
+      expectedDraftRevision: 3, commandId: input.commandId })
+    fetch.mockResolvedValue(response({ run: { ...saved.run, workflowId: 'other-workflow' }, accepted: true, replayed: false }))
+    await expect(api.start(input)).rejects.toMatchObject({ code: 'INVALID_RESPONSE' })
   })
 })

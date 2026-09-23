@@ -25,7 +25,7 @@ describe('Wave 2.5 production compact graph composition', () => {
     const reader = await fixture.access.issue({ name: 'graph-reader', audience: 'operator', expiresAt: new Date(Date.now() + 60_000),
       grants: [{ actions: ['runs:read'], scope: { workspaceIds: [fixture.run.workspaceId], workflowIds: [fixture.run.workflowId], runIds: [fixture.run.id] } }] })
     const service = new RunGraphReadService(fixture.pool, createCompactSnapshotAssembler(readCurrentGraphExchanges), { qualifiedReads: true })
-    expect(service.capabilities(reader.principal)).toMatchObject({ protocolVersions: [1], executionSemanticsVersions: [2], admissionEnabled: false })
+    expect(service.capabilities(reader.principal)).toMatchObject({ protocolVersions: [1], executionSemanticsVersions: [2], admissionEnabled: true })
     const snapshot = await service.snapshot(reader.principal, { protocolVersion: 1, scope: fixture.scope })
     expect(snapshot.state.interactions[0]?.interactionId).toBe(fixture.interaction.id)
     expect(snapshot.state.reviews[0]?.reviewJobId).toBe(fixture.job.id)
