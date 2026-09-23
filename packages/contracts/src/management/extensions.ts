@@ -52,6 +52,7 @@ export const HarnessOptionsInputSchema = z.object({ harness: z.enum(["codex", "o
 export const HarnessOptionsRefreshInputSchema = z.object({
   harness: z.enum(["codex", "opencode"]), refresh: z.enum(["catalog", "upstream"]).default("catalog"),
 }).strict();
+export const OpenCodeModelsRefreshInputSchema = z.object({ harness: z.literal("opencode") }).strict();
 export const HarnessModelOptionSchema = z.object({
   id: IdSchema, providerId: IdSchema.optional(), name: z.string().optional(),
   reasoningEfforts: z.array(z.string()), variants: z.array(z.string()), serviceTiers: z.array(z.string()),

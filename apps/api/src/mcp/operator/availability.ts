@@ -18,6 +18,10 @@ const extensions: Partial<Record<OperatorToolName,{scope:ScopeKind;extension:key
     "scope": "global",
     "extension": "native"
   },
+  "opencode_models_cache_update": {
+    "scope": "global",
+    "extension": "native"
+  },
   "harness_mcp_detection_get": {
     "scope": "workspace",
     "extension": "workspace"
@@ -138,6 +142,7 @@ export function operatorToolRequirements(name: OperatorToolName): Requirement[] 
   if (name === 'workspace_folders_list') result.push({action:'harnesses:read',scope:'global'})
   if (['workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) result.push({action:'workspace_locations:read',scope:'global'})
   if (['harness_mcp_change_request', 'harness_mcp_managed_request'].includes(name)) result.push({action:'harnesses:read',scope:'global'})
+  if (name === 'opencode_models_cache_update') result.push({action:'harnesses:read',scope:'global'})
   if (['run_start','harness_mcp_detection_get','workspace_location_provision','run_resume','run_retry'].includes(name)) result.push({action:'workspace_locations:read',scope:'workspace'})
   if (name === 'workspace_location_provision') result.push({action:'workspace_locations:update',scope:'workspace'})
   if (['agent_create','agent_update','agent_clone','agent_configuration_restore'].includes(name)) result.push({action:'agents:read',scope:name==='agent_clone'?'resource':'workspace'})

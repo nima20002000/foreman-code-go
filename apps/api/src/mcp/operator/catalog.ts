@@ -22,6 +22,7 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'harness_configuration_check', action: 'harnesses:read' },
   { name: 'harness_options_get', action: 'harnesses:read' },
   { name: 'harness_options_refresh', action: 'harnesses:read' },
+  { name: 'opencode_models_cache_update', action: 'harnesses:update' },
   { name: 'harness_mcp_detection_get', action: 'harnesses:read' },
   { name: 'agent_create', action: 'agents:create' },
   { name: 'agent_update', action: 'agents:update' },

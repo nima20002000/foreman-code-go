@@ -555,6 +555,7 @@ export const OperatorToolNameSchema = z.enum([
   "harness_configuration_check",
   "harness_options_get",
   "harness_options_refresh",
+  "opencode_models_cache_update",
   "harness_mcp_detection_get",
   "agent_create",
   "agent_update",

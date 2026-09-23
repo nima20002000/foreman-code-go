@@ -24,9 +24,11 @@ export function registerHarnessSettingsRoutes(app: FastifyInstance, services: Op
     return HarnessOptionsResultSchema.parse(await services.extensions.native.options(harness))
   })
   app.post('/api/management/harnesses/:harness/refresh', async (request) => {
-    requireAuthorization(requirePrincipal(request), 'harnesses:read')
+    const principal = requirePrincipal(request)
+    requireAuthorization(principal, 'harnesses:read')
     const { harness } = HarnessOptionsInputSchema.parse(request.params)
     const { refresh } = HarnessOptionsRefreshInputSchema.parse({ harness, ...(request.body as object ?? {}) })
+    if (refresh === 'upstream') requireAuthorization(principal, 'harnesses:update')
     services.harnesses.invalidateChecks()
     if (!services.extensions?.native) throw new DomainError('NATIVE_OPTIONS_UNAVAILABLE', 'Native discovery is unavailable.', 503)
     return HarnessOptionsResultSchema.parse(await services.extensions.native.refreshOptions(harness, refresh))

@@ -20,12 +20,21 @@ export function registerExtendedOperatorTools(server: McpServer, context: Operat
     return extension.native.options(input.harness)
   }))
   if (operatorToolAvailable(context, 'harness_options_refresh')) server.registerTool('harness_options_refresh', {
-    description: "Reread the qualified native model catalog. Use refresh=upstream only for OpenCode to first update its models.dev cache; refresh=catalog only rereads the local provider data. Requires harnesses:read.", inputSchema: contracts.HarnessOptionsRefreshInputSchema, outputSchema: contracts.HarnessOptionsResultSchema,
-    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true},
+    description: "Reread the configured qualified CLI's model catalog without requesting a models.dev cache update. Requires harnesses:read.", inputSchema: contracts.HarnessOptionsInputSchema, outputSchema: contracts.HarnessOptionsResultSchema,
+    annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'harness_options_refresh', async () => {
     requireAuthorization(context.principal, 'harnesses:read')
     context.services.harnesses.invalidateChecks()
-    return extension.native.refreshOptions(input.harness, input.refresh)
+    return extension.native.refreshOptions(input.harness, 'catalog')
+  }))
+  if (operatorToolAvailable(context, 'opencode_models_cache_update')) server.registerTool('opencode_models_cache_update', {
+    description: "Update the API host's shared OpenCode models.dev cache through the qualified native CLI, then reread connected provider models. Requires harnesses:read and harnesses:update.", inputSchema: contracts.OpenCodeModelsRefreshInputSchema, outputSchema: contracts.HarnessOptionsResultSchema,
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true},
+  }, async () => invokeOperatorTool(context, 'opencode_models_cache_update', async () => {
+    requireAuthorization(context.principal, 'harnesses:read')
+    requireAuthorization(context.principal, 'harnesses:update')
+    context.services.harnesses.invalidateChecks()
+    return extension.native.refreshOptions('opencode', 'upstream')
   }))
   if (operatorToolAvailable(context, 'harness_mcp_detection_get')) server.registerTool('harness_mcp_detection_get', {
     description: "Inspect MCP configuration in the validated saved workspace directory; requires location-read permission.", inputSchema: contracts.HarnessMcpDetectionInputSchema, outputSchema: contracts.HarnessMcpDetectionResultSchema,
