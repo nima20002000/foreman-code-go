@@ -290,6 +290,8 @@
   color:var(--graph-ink); background:var(--graph-panel); box-shadow:0 1rem 3rem rgb(0 0 0 / 32%);
 }
 .workflow-settings-popover header { display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; }
+.workflow-graph-next-draft-link { color: var(--n-text); font-size: .8rem; font-weight: 600; padding: .45rem .6rem; border: 1px solid var(--n-border); border-radius: .5rem; white-space: nowrap; }
+.workflow-graph-next-draft-link:hover { background: var(--n-surface-hover); }
 .workflow-settings-popover h2 { margin:.2rem 0 0; font-size:1rem; }.workflow-settings-popover header button { border:0; color:inherit; background:transparent; cursor:pointer; }
 .workflow-settings-popover label { display:grid; gap:.35rem; color:var(--graph-muted); font-size:.75rem; font-weight:700; }
 .workflow-settings-popover select { width:100%; padding:.55rem; border:1px solid var(--graph-line-strong); border-radius:2px; color:var(--graph-ink); background:var(--graph-panel); }
