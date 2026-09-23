@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
 import {
-  AgentConfigurationVersionSchema, HarnessExecutionSchema, type AgentConfigurationVersion,
-  type HarnessExecution, type HarnessNativeEvent,
+  AgentConfigurationVersionSchema, HarnessConfigurationSchema, HarnessExecutionSchema,
+  type AgentConfigurationVersion, type HarnessConfiguration, type HarnessExecution, type HarnessNativeEvent,
 } from '@graphql/contracts'
 import {
   ExecutableWorkflowV2Schema, RunNodeInputV2Schema, WorkflowRunV2Schema, makeWave25Fixture,
@@ -25,7 +25,7 @@ import { codexMcpInspectorAdapter } from '../../src/modules/harnesses/codexMcpIn
 import { openCodeMcpInspectorAdapter } from '../../src/modules/harnesses/opencodeMcpInspectorAdapter.js'
 import { PostgresApprovalBudgetRepository } from '../../src/modules/interactions/budget.js'
 import { ApprovalExecutionCoordinator } from '../../src/modules/interactions/execution.js'
-import { PostgresInteractionRepository } from '../../src/modules/interactions/postgres.js'
+import { Wave25InteractionRepository } from '../../src/modules/interactions/wave25/repository.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../../src/modules/interactions/runtimePorts.js'
 import { graphSourceDigest } from '../../src/modules/run-graph/publication.js'
 import { LangGraphWorkflowEngine } from '../../src/modules/runs/engine.js'
@@ -50,12 +50,16 @@ export interface Eng03NativeControl {
   runtimeDirectory: string
   engine: LangGraphWorkflowEngine
   runs: PostgresRunRepository
+  approvals: ApprovalExecutionCoordinator
+  interactions: Wave25InteractionRepository
+  budgets: PostgresApprovalBudgetRepository
   registry: NativeProcessRegistry
   startTask: Promise<void>
 }
 
 export interface Eng03NativeOptions {
   prompts?: Partial<Record<'Entry' | 'A' | 'B' | 'Reviewer', string>>
+  harnessOverrides?: Partial<Record<'A' | 'B', HarnessConfiguration>>
   control?: (context: Eng03NativeControl) => Promise<void>
 }
 
@@ -143,16 +147,25 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       'Read only the two accepted predecessor results. Find each final A-/B- marker and return exactly A:<A marker>|B:<B marker>. Do not read or write files.',
     ]
     const configuredPrompts = prompts.map((prompt, index) => options.prompts?.[nodeNames[index]!] ?? prompt)
-    const configurations: AgentConfigurationVersion[] = nodeNames.map((name, index) => AgentConfigurationVersionSchema.parse({
-      id: `cfg-${suffix}-${index}`, workspaceId: fixture.scope.workspaceId, agentId: `agent-${suffix}-${index}`,
-      productRole: 'coder', version: 1, prompt: { system: configuredPrompts[index] }, assignedSkills: [],
-      harness: harnesses[index] === 'codex'
+    const configurations: AgentConfigurationVersion[] = nodeNames.map((name, index) => {
+      const fallback = harnesses[index] === 'codex'
         ? { harness: 'codex', model: evidence.models && (evidence.models as { codex: string }).codex,
           reasoningEffort: 'high', sandbox: 'read-only', serviceTier: 'standard' }
         : { harness: 'opencode', model: (evidence.models as { opencode: string }).opencode,
-          variant: 'high', nativeAgent: 'build', thinking: false, autoApprove: false },
-      contentHash: `sha256:${'0'.repeat(64)}`, createdAt: new Date().toISOString(),
-    }))
+          variant: 'high', nativeAgent: 'build', thinking: false, autoApprove: false }
+      const override = name === 'A' || name === 'B' ? options.harnessOverrides?.[name] : undefined
+      if (override && override.harness !== harnesses[index]) throw new Error(`Harness override for ${name} changes its provider.`)
+      return AgentConfigurationVersionSchema.parse({
+        id: `cfg-${suffix}-${index}`, workspaceId: fixture.scope.workspaceId, agentId: `agent-${suffix}-${index}`,
+        productRole: 'coder', version: 1, prompt: { system: configuredPrompts[index] }, assignedSkills: [],
+        harness: HarnessConfigurationSchema.parse(override ?? fallback),
+        contentHash: `sha256:${'0'.repeat(64)}`, createdAt: new Date().toISOString(),
+      })
+    })
+    evidence.effectiveHarnesses = configurations.map((item) => ({ agentId: item.agentId, harness: item.harness.harness,
+      model: item.harness.model, ...(item.harness.harness === 'codex' ? { sandbox: item.harness.sandbox,
+        approvalPolicy: item.harness.advanced?.approvalPolicy,
+        approvalsReviewer: item.harness.advanced?.approvalsReviewer } : { autoApprove: item.harness.autoApprove }) }))
     const nodes = nodeNames.map((name, index) => ({ id: `node-${suffix}-${index}`, name,
       agentId: configurations[index]!.agentId, ...(index === 0 ? {} : { join: { mode: 'all' as const } }) }))
     const edges = ([[0, 1], [0, 2], [1, 3], [2, 3]] as const).map(([source, target], index) => ({
@@ -186,7 +199,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     const locations = new WorkspaceLocationService(pool, commands, runtimeDirectory)
     const workflows = new PostgresWorkflowRepository(pool)
     const runs = new PostgresRunRepository(pool, workflows, locations)
-    const interactions = new PostgresInteractionRepository(pool)
+    const interactions = new Wave25InteractionRepository(pool)
     const registry = new NativeProcessRegistry(join(runtimeDirectory, 'native-process-registry'))
     const endpoint = process.env.APP_MCP_ENDPOINT ?? 'http://127.0.0.1:3000/mcp/tools'
     const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
@@ -216,7 +229,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       revokeForRun: (id, client) => workerCredentials.revokeForRun(id, client),
       renew: (id, credential) => workerCredentials.renewForExecution(id, credential),
     }
-    const approvals = new ApprovalExecutionCoordinator(runs, interactions, new PostgresApprovalBudgetRepository(pool),
+    const budgets = new PostgresApprovalBudgetRepository(pool)
+    const approvals = new ApprovalExecutionCoordinator(runs, interactions, budgets,
       managers, 180_000, credentials, undefined, (id, signal) => registry.closeOwner(`execution:${id}`, signal))
     engine = new LangGraphWorkflowEngine(runs, workflows, approvals, checkpoints.saver, runtimeDirectory, locations,
       credentials, interactions, undefined, { workerParallelism: 2 })
@@ -226,7 +240,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     try {
       const work = options.control
         ? options.control({ pool, runId: run.id, nodeIds: nodes.map((node) => node.id), projectDirectory,
-          runtimeDirectory, engine, runs, registry, startTask }).then(() => startTask.catch(() => undefined))
+          runtimeDirectory, engine, runs, approvals, interactions, budgets, registry, startTask })
+          .then(() => startTask.catch(() => undefined))
         : startTask
       await Promise.race([work, new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => reject(new Error('ENG03_NATIVE_TIMEOUT')), 180_000)
