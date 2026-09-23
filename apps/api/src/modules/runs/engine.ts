@@ -525,13 +525,17 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     const localCleanup = controller || this.nativeExecutions.residentRunIds().includes(runId)
       ? this.cleanupApprovals(runId, false) : undefined
     let drainFailure: { error: unknown } | undefined
+    let stoppedTask: unknown
     if (controller) {
       await localCleanup
       if (activeTask) {
         try { await withCleanupDeadline(() => activeTask) } catch (error) {
           // The task may observe this Stop between checkpoint reads. Its own
           // cancellation reason is successful draining, not a cleanup failure.
-          if (error !== controller.signal.reason) drainFailure = { error }
+          if (error !== controller.signal.reason) {
+            if (stopIntent && oneShot && error instanceof DomainError && error.code === 'GRAPH_STOP_CONFLICT') stoppedTask = error
+            else drainFailure = { error }
+          }
         }
       }
       // Stop can race the transition to waiting after graph invocation returns.
@@ -547,12 +551,18 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     if (!owner) {
       const cleanupFailure = (await localCleanup) ?? drainFailure
       if (cleanupFailure) throw cleanupFailure.error
+      if (stoppedTask) throw stoppedTask
       return false
     }
     try {
       const cleanupFailure = (await (localCleanup ?? this.cleanupApprovals(runId, false))) ?? drainFailure
       const settled = await this.settleCanceled(runId, owner, cleanupFailure)
       if (cleanupFailure) throw cleanupFailure.error
+      if (stoppedTask) {
+        const current = await this.runs.get(runId, owner)
+        if (!await this.runs.hasRequestedStop(runId) || current?.executionState !== 'completed'
+          || current.outcome !== 'canceled' || await this.runs.hasPendingCleanup(runId)) throw stoppedTask
+      }
       return settled || Boolean(controller)
     } finally {
       await owner.release()

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { DurableInteractionSchema, HarnessExecutionSchema } from '@graphql/contracts'
+import { ManagementActionSchema } from '@graphql/contracts/management'
 import { ExecutableWorkflowV2Schema, makeWave25Fixture } from '@graphql/contracts/wave25'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
@@ -18,6 +19,7 @@ import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave2
 import { Wave25InteractionRepository } from '../src/modules/interactions/wave25/repository.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
+import { RunManagementService } from '../src/modules/runs/management.js'
 import { resolveExecutionDirectory } from '../src/modules/runs/executionDirectory.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
@@ -131,8 +133,47 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     }
     const engine = new LangGraphWorkflowEngine(runs, workflows, native as unknown as ApprovalExecutionCoordinator,
       checkpoints.saver, db.directory, locations, undefined, interactions, undefined, { workerParallelism: 2 })
-    return { engine, runs, starts, observations, native }
+    return { engine, runs, locations, starts, observations, native }
   }
+
+  it('acknowledges immediate Stop after a queued v2 launch loses the durable Stop race', async () => {
+    const { f } = await fixture()
+    const entered = deferred(), release = deferred()
+    const r = runtime(async () => 'succeeded')
+    const originalOneShot = r.runs.oneShot.bind(r.runs)
+    let patched = false
+    vi.spyOn(r.runs, 'oneShot').mockImplementation((owner) => {
+      const store = originalOneShot(owner)
+      if (!patched) {
+        patched = true
+        const originalUpdate = store.updateRun.bind(store)
+        vi.spyOn(store, 'updateRun').mockImplementationOnce(async (update) => {
+          entered.resolve()
+          await release.promise
+          return originalUpdate(update)
+        })
+      }
+      return store
+    })
+    const started = r.engine.start(f.run.id).then(() => undefined, (error: unknown) => error)
+    await entered.promise
+    const access = new PostgresAccessService(db.pool)
+    const issued = await access.issue({ name: 'ENG-03 Stop race Operator', audience: 'operator',
+      grants: [{ actions: ManagementActionSchema.options, scope: { workspaceIds: [f.scope.workspaceId] } }],
+      expiresAt: new Date(Date.now() + 300_000) })
+    const commands = new PostgresCommandCoordinator(db.pool)
+    const managed = new RunManagementService(db.pool, commands, r.runs, r.engine, r.locations)
+    const stopping = managed.stop(issued.principal, 'http', { workspaceId: f.scope.workspaceId, runId: f.run.id, commandId: randomUUID() })
+    await expect.poll(() => r.runs.hasRequestedStop(f.run.id)).toBe(true)
+    release.resolve()
+    expect(await started).toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
+    await expect(stopping).resolves.toMatchObject({ status: 'accepted', replayed: false, processStopped: false })
+    expect((await r.runs.get(f.run.id))?.outcome).toBe('canceled')
+    expect(await r.runs.hasPendingCleanup(f.run.id)).toBe(false)
+    expect(await r.runs.listExecutions(f.run.id)).toHaveLength(0)
+    expect(r.starts).toHaveLength(0)
+    await r.engine.shutdown()
+  }, 30_000)
 
   it('stops both active branches before any later native dispatch and leaves another Run intact', async () => {
     const one = await fixture(true), other = await fixture()
