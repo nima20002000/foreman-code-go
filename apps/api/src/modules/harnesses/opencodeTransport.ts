@@ -127,7 +127,11 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   }
 
   redact<T>(value: T): T {
-    const secrets = Object.values(this.desiredEnvironment?.variables ?? {})
+    return this.redactWithAdditionalSecrets(value, [])
+  }
+
+  redactWithAdditionalSecrets<T>(value: T, additionalSecrets: readonly string[]): T {
+    const secrets = [...additionalSecrets, ...Object.values(this.desiredEnvironment?.variables ?? {})]
     if (this.password) secrets.push(this.password, Buffer.from(`opencode:${this.password}`).toString('base64'))
     return redactKnownSecrets(value, secrets)
   }

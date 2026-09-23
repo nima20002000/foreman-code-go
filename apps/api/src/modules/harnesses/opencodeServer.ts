@@ -1043,7 +1043,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private sanitize<T>(value: T): T {
-    const safe = redactKnownSecrets(value, [...this.knownSecrets])
+    const secrets = [...this.knownSecrets]
+    if (this.options.server instanceof ManagedOpenCodeServer) {
+      return this.options.server.redactWithAdditionalSecrets(value, secrets)
+    }
+    const safe = redactKnownSecrets(value, secrets)
     return this.options.server.redact ? this.options.server.redact(safe) : safe
   }
 
