@@ -4,7 +4,7 @@ import {
 import {
   GraphDraftV2Schema, GraphDraftApplyV2InputSchema, GraphDraftCommandV2ResultSchema,
   GraphSaveV2InputSchema, GraphSaveCommandV2ResultSchema, WorkflowDefinitionV2Schema,
-  GraphDraftOperationV2Schema,
+  GraphDraftOperationV2Schema, RunStartV2InputSchema, RunStartV2ResultSchema, CompatibleRunPageSchema,
 } from '@graphql/contracts/wave25'
 import { apiClient, ApiError, type ApiClient, type RequestOptions } from '../../../shared/api/client'
 import type { z } from 'zod'
@@ -65,6 +65,26 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
     },
     validate: async (workspaceId: string, workflowId: string, draftId: string) =>
       client.request(`${path(workspaceId, workflowId, draftId)}/validate`, GraphValidationResultSchema, { method: 'POST' }),
+    start: async (input: z.input<typeof RunStartV2InputSchema>) => {
+      const request = RunStartV2InputSchema.parse(input)
+      const result = await client.request(
+        `/api/management/workspaces/${encodeURIComponent(request.workspaceId)}/workflows/${encodeURIComponent(request.workflowId)}/runs`,
+        RunStartV2ResultSchema, { method: 'POST', body: request })
+      if (result.run.workspaceId !== request.workspaceId || result.run.workflowId !== request.workflowId
+        || result.run.workflowVersionId !== request.workflowVersionId) {
+        throw new ApiError({ code: 'INVALID_RESPONSE', message: 'The admitted Run did not match the saved version pin.' })
+      }
+      return result
+    },
+    runs: async (workspaceId: string, workflowId: string, options?: RequestOptions) => {
+      const result = await client.request(
+        `/api/management/workspaces/${encodeURIComponent(workspaceId)}/runs?workflowId=${encodeURIComponent(workflowId)}&limit=20`,
+        CompatibleRunPageSchema, options)
+      if (result.items.some((run) => run.workspaceId !== workspaceId || run.workflowId !== workflowId)) {
+        throw new ApiError({ code: 'INVALID_RESPONSE', message: 'The Run list contains a different workflow scope.' })
+      }
+      return result
+    },
   }
 }
 export const nextDraftApi = createNextDraftApi()

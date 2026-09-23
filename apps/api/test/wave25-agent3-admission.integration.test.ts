@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { ManagementActionSchema } from '@graphql/contracts/management'
-import { WAVE25_ADMISSION_ENABLED, RunGraphBatchSchema } from '@graphql/contracts/wave25'
+import { WAVE25_ADMISSION_ENABLED, RunGraphBatchSchema, CompatibleWorkflowRunSchema, makeWave25Fixture } from '@graphql/contracts/wave25'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
@@ -12,10 +12,11 @@ import type { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import { admitOneShotRun } from '../src/modules/runs/oneShotAdmission.js'
 import { OneShotRunRepository } from '../src/modules/runs/oneShotPostgres.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
+import { WorkflowTriggerService } from '../src/modules/workflows/triggerManagement.js'
+import { TriggerJobPayloadSchema } from '../src/modules/workflows/triggerAuthority.js'
 import { agent3Database, seedAgent3, candidateFor, graphHead, deferred, postgresEnabled } from './helpers/wave25Agent3.js'
 
-/** Tests the actual SQL admission implementation directly in isolated fixtures.
- * Public admissions remain unconditionally OFF; no env-based bypass is added. */
+/** Tests transactional admission and the public application service in isolated fixtures. */
 describe.skipIf(!postgresEnabled)('Agent 3 atomic Run admission and live authorization', () => {
   let db: Awaited<ReturnType<typeof agent3Database>>
   beforeAll(async () => { db = await agent3Database() }, 60000)
@@ -24,8 +25,10 @@ describe.skipIf(!postgresEnabled)('Agent 3 atomic Run admission and live authori
     vi.restoreAllMocks()
     for (const table of ['runs', 'run_graph_batches', 'management_command_receipts']) await db.pool.query(`drop trigger if exists a3_admission_fault on ${table}`)
   })
-  async function fixture() {
-    const f = await seedAgent3(db.pool, db.directory, undefined, { run: false })
+  async function fixture(condition: 'manual' | 'schedule' = 'manual') {
+    const candidate = makeWave25Fixture(randomUUID())
+    if (condition === 'schedule') candidate.version.definition.executionCondition = { kind: 'schedule' }
+    const f = await seedAgent3(db.pool, db.directory, candidate, { run: false })
     const access = new PostgresAccessService(db.pool)
     const issued = await access.issue({ name: 'Synthetic Run authority', audience: 'operator',
       grants: [{ actions: ManagementActionSchema.options, scope: { workspaceIds: [f.scope.workspaceId] } }], expiresAt: new Date(Date.now() + 300_000) })
@@ -145,14 +148,59 @@ describe.skipIf(!postgresEnabled)('Agent 3 atomic Run admission and live authori
       expect((await repository.get(first.value.id))!.executionState).toBe('queued')
     } finally { await owner.release() }
   })
-  it('retains the frozen public rollout gate without any synthetic-mode environment bypass', async () => {
-    const { f, issued, commands, locations, input, snapshot } = await fixture()
+  it('admits v2 through the public service, replays the exact command and denies legacy or ungranted entry', async () => {
+    const { f, issued, access, commands, locations, input, snapshot } = await fixture()
     const runs = new PostgresRunRepository(db.pool, new PostgresWorkflowRepository(db.pool), locations)
     const start = vi.fn(async () => undefined)
     const management = new RunManagementService(db.pool, commands, runs, { start } as unknown as LangGraphWorkflowEngine, locations)
-    expect(WAVE25_ADMISSION_ENABLED).toBe(false)
-    await expect(management.start(issued.principal, 'mcp', input)).rejects.toThrow('EXECUTION_SEMANTICS_ROLLOUT_DISABLED')
-    expect(start).not.toHaveBeenCalled(); expect(snapshot).not.toHaveBeenCalled()
-    expect((await db.pool.query('select 1 from runs where workflow_id=$1', [f.scope.workflowId])).rowCount).toBe(0)
+    expect(WAVE25_ADMISSION_ENABLED).toBe(true)
+    const accepted = await management.start(issued.principal, 'mcp', input)
+    expect(accepted).toMatchObject({ accepted: true, replayed: false, run: {
+      workflowVersionId: input.workflowVersionId, executionSemanticsVersion: 2,
+    } })
+    expect((await runs.getForWorkspace(input.workspaceId, accepted.run.id))?.executionState).toBe('queued')
+    const replay = await management.start(issued.principal, 'http', input)
+    expect(replay).toMatchObject({ accepted: true, replayed: true, run: { id: accepted.run.id } })
+    expect(snapshot).toHaveBeenCalledTimes(1)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(start).toHaveBeenCalledTimes(1)
+    await expect(management.start(issued.principal, 'mcp', { ...input, input: { changed: true } }))
+      .rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
+    const { executionSemanticsVersion: _semantics, ...legacyStart } = input
+    await expect(management.start(issued.principal, 'mcp', { ...legacyStart, commandId: randomUUID() }))
+      .rejects.toMatchObject({ code: 'V2_ADMISSION_REQUIRED' })
+    const denied = await access.issue({ name: 'Read only', audience: 'operator',
+      grants: [{ actions: ['runs:read'], scope: { workspaceIds: [f.scope.workspaceId] } }],
+      expiresAt: new Date(Date.now() + 300_000) })
+    await expect(management.start(denied.principal, 'mcp', { ...input, commandId: randomUUID() })).rejects.toThrow()
+    expect((await db.pool.query('select 1 from runs where workflow_id=$1', [f.scope.workflowId])).rowCount).toBe(1)
+  })
+  it('pins v2 semantics through a saved schedule and dispatches by the same management admission', async () => {
+    const { f, issued, commands, locations } = await fixture('schedule')
+    const runs = new PostgresRunRepository(db.pool, new PostgresWorkflowRepository(db.pool), locations)
+    const start = vi.fn(async () => undefined)
+    const management = new RunManagementService(db.pool, commands, runs, { start } as unknown as LangGraphWorkflowEngine, locations)
+    const triggers = new WorkflowTriggerService(db.pool, commands, management)
+    const configured = await triggers.update(issued.principal, {
+      workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId, commandId: randomUUID(),
+      expectedRevision: 0, workflowVersionId: f.version.id, expectedLocationRevision: 1, enabled: true,
+      trigger: { kind: 'schedule', startsAt: new Date().toISOString(), intervalSeconds: 60,
+        missed: 'latest', input: { message: 'scheduled v2' } },
+    })
+    await db.pool.query("update workflow_triggers set next_fire_at=now()-interval '1 second' where workflow_id=$1", [f.scope.workflowId])
+    const errors: unknown[] = []
+    await triggers.tick((error) => errors.push(error))
+    expect(errors).toEqual([])
+    const job = (await triggers.jobs(issued.principal, { workspaceId: f.scope.workspaceId,
+      workflowId: f.scope.workflowId, limit: 10 })).items[0]!
+    expect(job.status).toBe('started')
+    const payload = (await db.pool.query<{ payload: unknown }>('select payload from workflow_trigger_jobs where id=$1', [job.jobId])).rows[0]!.payload
+    expect(TriggerJobPayloadSchema.parse(payload).executionSemanticsVersion).toBe(2)
+    expect(CompatibleWorkflowRunSchema.parse(await runs.getForWorkspace(f.scope.workspaceId, job.runId!))).toMatchObject({ executionSemanticsVersion: 2 })
+    expect((await db.pool.query('select 1 from runs where workflow_id=$1', [f.scope.workflowId])).rowCount).toBe(1)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(start).toHaveBeenCalledTimes(1)
+    await triggers.shutdown()
+    expect(configured.value.enabled).toBe(true)
   })
 })

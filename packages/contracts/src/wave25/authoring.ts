@@ -2,9 +2,9 @@ import { z } from 'zod'
 import { IdSchema } from '../index.js'
 import {
   GraphDraftSchema, GraphDraftOperationSchema, GraphDraftApplyInputSchema,
-  GraphDraftApplyResultSchema, GraphSaveInputSchema, GraphSaveResultSchema, RunStartInputSchema,
+  GraphDraftApplyResultSchema, GraphSaveInputSchema, GraphSaveResultSchema, RunStartInputSchema, RunStartResultSchema, RunPageSchema,
 } from '../management/index.js'
-import { WorkflowDefinitionV2Schema, WorkflowVersionV2Schema, WorkflowNodeV2Schema, WorkflowRelationshipSchema, WorkflowChoiceSchema } from './workflow.js'
+import { WorkflowDefinitionV2Schema, WorkflowVersionV2Schema, WorkflowNodeV2Schema, WorkflowRelationshipSchema, WorkflowChoiceSchema, WorkflowRunV2Schema, CompatibleWorkflowRunSchema } from './workflow.js'
 
 /** Separate v2 boundary. Do not broaden legacy strict draft/command responses. */
 export const GraphDraftV2Schema = GraphDraftSchema.extend({ graph: WorkflowDefinitionV2Schema }).strict()
@@ -34,3 +34,5 @@ export const GraphSaveV2InputSchema = GraphSaveInputSchema.extend({ executionSem
 export const GraphSaveV2ResultSchema = GraphSaveResultSchema.extend({ draft: GraphDraftV2Schema, version: WorkflowVersionV2Schema }).strict()
 export const GraphSaveCommandV2ResultSchema = z.object({ value: GraphSaveV2ResultSchema, replayed: z.boolean() }).strict()
 export const RunStartV2InputSchema = RunStartInputSchema.safeExtend({ executionSemanticsVersion: z.literal(2) })
+export const RunStartV2ResultSchema = RunStartResultSchema.extend({ run: WorkflowRunV2Schema }).strict()
+export const CompatibleRunPageSchema = RunPageSchema.extend({ items: CompatibleWorkflowRunSchema.array() }).strict()

@@ -120,7 +120,7 @@ export class RunManagementService {
     requireAuthorization(principal, 'runs:start', { workspaceId: input.workspaceId, workflowId: input.workflowId })
     requireAuthorization(principal, 'workspace_locations:read', { workspaceId: input.workspaceId })
     if (input.executionSemanticsVersion === 2) {
-      assertWave25Admission() // remains OFF until the assembled writer/reader lanes qualify
+      assertWave25Admission()
       const { triggerJobId, ...command } = input
       const execution = await admitOneShotRun(this.pool, this.locations, principal, source,
         RunStartV2InputSchema.parse(command), triggerJobId === undefined ? {} : { triggerJobId: triggerJobId as string })
@@ -167,7 +167,7 @@ export class RunManagementService {
         )
         if (!versionRow.rows[0]) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', `Workflow version '${input.workflowVersionId}' was not found.`, 404)
         const semantics = (versionRow.rows[0].record as { executionSemanticsVersion?: unknown }).executionSemanticsVersion
-        if (semantics === 2) assertWave25Admission()
+        if (semantics === 2) throw new DomainError('V2_ADMISSION_REQUIRED', 'Use the explicit v2 admission contract.', 409)
         if (semantics !== undefined && semantics !== 1) throw new DomainError('EXECUTION_SEMANTICS_UNSUPPORTED', 'Unknown semantics cannot use the legacy admission path.', 409)
         const version = WorkflowVersionSchema.parse(versionRow.rows[0].record)
         validateExecutableTopology(version)

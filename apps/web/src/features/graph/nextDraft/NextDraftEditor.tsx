@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { GraphDraftV2Schema, type WorkflowDefinitionV2, type WorkflowRelationship } from '@graphql/contracts/wave25'
 import { GraphPresentationProvider } from '../GraphPresentation'
 import { useGraphPresentation, useGraphPresentationStore } from '../useGraphPresentation'
@@ -10,6 +11,8 @@ import { nextDraftDirty, nextDraftKey, type NextDraftEdit } from './state'
 import { nextDraftApi, type AuthoringContext } from './transport'
 import { nextDraftWriter, promoteNextDraft } from './managed'
 import { draftFailure } from './writer'
+import { useManagedWorkspaceQuery } from '../../../shared/api/query'
+import { runGraphHref } from '../../run-graph/navigation'
 import { ApprovalFields, AttachAgentField, ConnectionFields, EntryFields, Field, NodeFields, RelationshipFields } from './AuthoringFields'
 import { DraftCanvas, type DraftCanvasHandle } from './DraftCanvas'
 import './nextDraft.css'
@@ -51,8 +54,8 @@ function DraftLoader({ draftKey, workspaceId, workflowId }: { draftKey: string; 
     {promotion?.error ? <p role="alert">{promotion.error.code}: {promotion.error.message}</p> : null}
     {source ? <>
       <p>{promotion ? 'A draft conversion is awaiting confirmation. Reconcile the same command before making other edits.' : 'This workflow uses legacy execution semantics. Convert only its editable draft to explicit entry and typed relationships. Saved versions and Runs remain unchanged.'}</p>
-      <p>After conversion, use this v2 editor. The legacy draft editor cannot read typed v2 records; terminal integration must qualify the remaining workflow readers before exposing this route.</p>
-      <p>S2 preserves the saved entry identity and rejects unsupported legacy conditional or repeating routes. New Run admission remains disabled.</p>
+      <p>After conversion, use this v2 editor. Saved versions and existing Runs keep their original execution semantics.</p>
+      <p>Conversion preserves the saved entry identity and rejects unsupported legacy conditional or repeating routes.</p>
       <button type="button" disabled={promotion?.busy} onClick={() => {
         void promoteNextDraft(draftKey, source).catch((reason: unknown) => setError(draftFailure(reason, true).message))
       }}>{promotion?.busy ? 'Converting draft…' : promotion ? 'Reconcile conversion' : 'Convert editable draft'}</button>
@@ -72,6 +75,13 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const [localError, setLocalError] = useState<string>()
   const [geometryPending, setGeometryPending] = useState(false)
   const [reloading, setReloading] = useState(false)
+  const [starting, setStarting] = useState(false)
+  const pendingStart = useRef<Parameters<typeof nextDraftApi.start>[0] | undefined>(undefined)
+  const workspace = useManagedWorkspaceQuery(graph.workspaceId)
+  const queryClient = useQueryClient()
+  const runKey = ['managed-v2-runs', graph.workspaceId, graph.id] as const
+  const runs = useQuery({ queryKey: runKey,
+    queryFn: ({ signal }) => nextDraftApi.runs(graph.workspaceId, graph.id, { signal }), refetchInterval: 3_000 })
   const canvas = useRef<DraftCanvasHandle>(null)
   const presentation = useGraphPresentationStore()
   const nodeId = useGraphPresentation((state) => state.focusedNodeId)
@@ -120,8 +130,29 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
       if (!current || current.instanceId !== before.instanceId) return
       if (current.graph !== before.graph || current.busy || current.pending) throw new Error('The form changed during reload. Your edits are retained; reload again when ready.')
       useGraphDraftStore.getState().installNextDraft(draftKey, { draft: GraphDraftV2Schema.parse(fresh.draft), agents: fresh.agents }, true)
+      pendingStart.current = undefined
       setLocalError(undefined); setMessage('Loaded the current shared draft.')
     } catch (error) { report(error) } finally { setReloading(false) }
+  }
+  const start = async () => {
+    const current = useGraphDraftStore.getState().nextDrafts[draftKey]
+    if (!current || current.busy || current.pending || nextDraftDirty(current) || geometryPending
+      || !current.context.draft.baseWorkflowVersionId || workspace.data?.locationValidation.status !== 'ready') return
+    const request = pendingStart.current ?? {
+      executionSemanticsVersion: 2 as const,
+      workspaceId: graph.workspaceId, workflowId: graph.id,
+      workflowVersionId: current.context.draft.baseWorkflowVersionId,
+      draftId: current.context.draft.id, expectedDraftRevision: current.context.draft.revision,
+      expectedLocationRevision: workspace.data.locationRevision, commandId: crypto.randomUUID(), input: {},
+    }
+    pendingStart.current = request
+    setStarting(true); setLocalError(undefined)
+    try {
+      const result = await nextDraftApi.start(request)
+      pendingStart.current = undefined
+      await queryClient.invalidateQueries({ queryKey: runKey })
+      setMessage(result.replayed ? 'The accepted Run was recovered from the same Start command.' : 'Run accepted from this immutable version.')
+    } catch (error) { report(error) } finally { setStarting(false) }
   }
   return <section className="next-draft n-theme" aria-label="Next-draft authoring">
     <header className="next-draft-header"><div><h1>{graph.name} <span>Next draft</span></h1>
@@ -134,9 +165,19 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         <button type="button" disabled={edit.busy || !!edit.pending} onClick={() => void save(false).catch(report)}>Persist draft &amp; validate</button>
         <button type="button" className="next-draft-primary" disabled={edit.busy} onClick={() => void save(true).catch(report)}>
           {edit.busy ? 'Saving…' : edit.pending ? 'Reconcile pending command' : 'Save immutable version'}</button>
+        <button type="button" disabled={starting || edit.busy || !!edit.pending || nextDraftDirty(edit) || geometryPending
+          || !context.draft.baseWorkflowVersionId || workspace.data?.locationValidation.status !== 'ready'}
+          onClick={() => void start()}>{starting ? 'Starting…' : pendingStart.current ? 'Reconcile Start' : 'Start saved version'}</button>
       </div>
     </header>
-    <p className="next-draft-notice">This editor changes only the next draft. Run facts and saved versions are separate. New v2 Run admission remains rollout-disabled.</p>
+    <p className="next-draft-notice">This editor changes the next draft. A Run pins the current saved version and cannot be retargeted by later edits.</p>
+    {workspace.data?.locationValidation.status !== 'ready' ? <p role="status">Set and validate the workspace execution location before starting.</p> : null}
+    {runs.data ? <section className="next-draft-section" aria-label="Saved Runs"><h2>Saved Runs</h2>
+      {runs.data.items.filter((run) => 'executionSemanticsVersion' in run && run.executionSemanticsVersion === 2)
+        .map((run) => <p key={run.id}><a href={runGraphHref({ workspaceId: run.workspaceId,
+          workflowId: run.workflowId, runId: run.id, workflowVersionId: run.workflowVersionId,
+          executionSemanticsVersion: 2 })}>Open Run {run.id}</a> · {run.executionState} · {run.outcome}</p>)}
+    </section> : null}
     {message ? <p role="status">{message}</p> : null}
     {localError ? <p role="alert">{localError}</p> : null}
     {edit.error ? <div role="alert"><strong>{edit.error.code}</strong>: {edit.error.message}

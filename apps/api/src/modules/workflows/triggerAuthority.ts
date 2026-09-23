@@ -9,6 +9,7 @@ import { DomainError } from '../errors.js'
 
 export const TriggerJobPayloadSchema=z.object({
   mode:z.enum(['schedule','event']),workflowVersionId:z.string().min(1),
+  executionSemanticsVersion:z.literal(2).optional(),
   expectedLocationRevision:z.number().int().nonnegative(),input:RunInputSchema,
 }).strict()
 
@@ -23,7 +24,8 @@ export async function readTriggerAuthority(client:Pick<pg.ClientBase,'query'>,pr
 
 /** Called under Run admission's workspace lock, before a Run or receipt is created. */
 export async function assertTriggerDispatch(client:pg.PoolClient,principal:ManagementPrincipal,input:{
-  workspaceId:string;workflowId:string;workflowVersionId:string;expectedLocationRevision:number;input:RunInput;triggerJobId:string;
+  workspaceId:string;workflowId:string;workflowVersionId:string;executionSemanticsVersion?:2;
+  expectedLocationRevision:number;input:RunInput;triggerJobId:string;
 }):Promise<void> {
   const rows=await client.query<{workspace_id:string;workflow_id:string;principal_id:string;payload:unknown;trigger_revision:string;revision:string;enabled:boolean;status:string;lease_valid:boolean}>(
     `select j.workspace_id,j.workflow_id,j.principal_id,j.payload,j.trigger_revision,t.revision,t.enabled,j.status,
@@ -36,7 +38,9 @@ export async function assertTriggerDispatch(client:pg.PoolClient,principal:Manag
     throw new DomainError('TRIGGER_CHANGED','The trigger was disabled, changed, or lost its dispatch lease.',409)
   }
   const payload=TriggerJobPayloadSchema.parse(row.payload)
-  if (payload.workflowVersionId!==input.workflowVersionId || payload.expectedLocationRevision!==input.expectedLocationRevision
+  if (payload.workflowVersionId!==input.workflowVersionId
+    || payload.executionSemanticsVersion!==input.executionSemanticsVersion
+    || payload.expectedLocationRevision!==input.expectedLocationRevision
     || commandInputHash(payload.input)!==commandInputHash(input.input)) throw new DomainError('TRIGGER_JOB_MISMATCH','The dispatch differs from its accepted job.',409)
   await readTriggerAuthority(client,principal.id,{workspaceId:input.workspaceId,workflowId:input.workflowId},payload.mode)
 }

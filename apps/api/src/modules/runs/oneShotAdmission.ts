@@ -42,7 +42,7 @@ export async function insertOneShotRun(sql: GraphTransactionSql, input: unknown)
   return run
 }
 
-/** Execution-side application service behind assertWave25Admission in the public
+/** Execution-side application service behind source-controlled admission in the public
  * RunManagementService. It reuses existing command locks/receipts/audit and Run
  * authority records. No new queue, token, owner, retry or occurrence subsystem.
  * Filesystem location validation happens BEFORE the publication transaction;

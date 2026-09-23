@@ -2,7 +2,7 @@ import { z } from 'zod'
 import {
   AgentConfigurationVersionSchema, AcceptedWorkflowApprovalConfigurationSchema,
   ExecutionResultSchema, HarnessWorkflowCompatibilitySchema, RunInputSchema, IdSchema, TimestampSchema,
-  WorkflowVersionSchema, WorkflowRunSchema,
+  WorkflowVersionSchema, WorkflowRunSchema, GetRunResponseSchema,
   ChoiceOutcomeSchema, WorkflowChoiceSchema, WorkflowDefinitionV2Schema, type WorkflowChoice,
 } from '../index.js'
 import { canonicalGraphJson } from './json.js'
@@ -18,8 +18,8 @@ export type {
 } from '../index.js'
 
 export const EXECUTION_SEMANTICS_VERSION = 2 as const
-/** This is deliberately not an environment toggle. Qualification changes the admission boundary later. */
-export const WAVE25_ADMISSION_ENABLED = false as const
+/** Source-controlled admission candidate. Release requires the ENG-03 qualification register. */
+export const WAVE25_ADMISSION_ENABLED = true as const
 export const ExecutionSemanticsVersionSchema = z.union([z.literal(1), z.literal(2)])
 export const WorkflowVersionV2Schema = z.object({
   ...WorkflowVersionSchema.shape,
@@ -147,6 +147,8 @@ export const CompatibleWorkflowVersionSchema = z.union([WorkflowVersionSchema, W
 // safeExtend preserves the legacy Run lifecycle refinements while adding only the new-mode pin.
 export const WorkflowRunV2Schema = WorkflowRunSchema.safeExtend({ executionSemanticsVersion: z.literal(2) })
 export const CompatibleWorkflowRunSchema = z.union([WorkflowRunSchema, WorkflowRunV2Schema])
+export const RunDetailsV2Schema = GetRunResponseSchema.extend({ run: WorkflowRunV2Schema }).strict()
+export const CompatibleRunDetailsSchema = z.union([GetRunResponseSchema, RunDetailsV2Schema])
 
 export const ChoiceResultEnvelopeSchema = z.object({
   routing: z.object({ outcome: ChoiceOutcomeSchema }).strict(),
@@ -172,8 +174,8 @@ export function parseChoiceResultEnvelope(result: unknown, choice: WorkflowChoic
   return envelope
 }
 
-export function assertWave25Admission(): never {
-  throw new Error('EXECUTION_SEMANTICS_ROLLOUT_DISABLED')
+export function assertWave25Admission(): void {
+  if (!WAVE25_ADMISSION_ENABLED) throw new Error('EXECUTION_SEMANTICS_ROLLOUT_DISABLED')
 }
 // Keep these pins distinct from the graph wire schema version.
 export const WorkflowSemanticsPinSchema = z.object({
