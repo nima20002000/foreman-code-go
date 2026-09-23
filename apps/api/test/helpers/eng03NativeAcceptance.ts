@@ -38,9 +38,26 @@ import { seedAgent3 } from './wave25Agent3.js'
 
 const runCommand = promisify(execFile)
 type Harness = 'codex' | 'opencode'
-type Scenario = 'E03-P01' | 'E03-P02' | 'E03-P03'
+type Scenario = 'E03-P01' | 'E03-P02' | 'E03-P03' | 'E03-L01' | 'E03-L02' | 'E03-L03' | 'E03-L04' | 'E03-A01'
 const codexBinary = process.env.ENG03_A_CODEX_BINARY ?? '/home/nima/.local/bin/codex'
 const openCodeBinary = process.env.ENG03_A_OPENCODE_BINARY ?? '/home/nima/.local/bin/opencode'
+
+export interface Eng03NativeControl {
+  pool: pg.Pool
+  runId: string
+  nodeIds: readonly string[]
+  projectDirectory: string
+  runtimeDirectory: string
+  engine: LangGraphWorkflowEngine
+  runs: PostgresRunRepository
+  registry: NativeProcessRegistry
+  startTask: Promise<void>
+}
+
+export interface Eng03NativeOptions {
+  prompts?: Partial<Record<'Entry' | 'A' | 'B' | 'Reviewer', string>>
+  control?: (context: Eng03NativeControl) => Promise<void>
+}
 
 interface NativeInterval {
   executionId: string
@@ -80,7 +97,8 @@ async function version(binary: string): Promise<string> {
 }
 
 /** Internal-service qualification while normal v2 admission remains closed. */
-export async function runEng03NativeScenario(scenario: Scenario, first: Harness, second: Harness) {
+export async function runEng03NativeScenario(scenario: Scenario, first: Harness, second: Harness,
+  options: Eng03NativeOptions = {}) {
   const baseUrl = process.env.ENG03_A_TEST_DATABASE_URL
   if (!baseUrl) throw new Error('ENG03_A_TEST_DATABASE_URL must name a task-owned loopback test database.')
   const parsed = new URL(baseUrl)
@@ -124,9 +142,10 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       `Read the accepted Entry result. Without tools or files, list n and n cubed modulo 101 for n=1 through 120, one row per n. Finish with exactly ${tokens[2]}. Keep the response under 3000 characters.`,
       'Read only the two accepted predecessor results. Find each final A-/B- marker and return exactly A:<A marker>|B:<B marker>. Do not read or write files.',
     ]
+    const configuredPrompts = prompts.map((prompt, index) => options.prompts?.[nodeNames[index]!] ?? prompt)
     const configurations: AgentConfigurationVersion[] = nodeNames.map((name, index) => AgentConfigurationVersionSchema.parse({
       id: `cfg-${suffix}-${index}`, workspaceId: fixture.scope.workspaceId, agentId: `agent-${suffix}-${index}`,
-      productRole: 'coder', version: 1, prompt: { system: prompts[index] }, assignedSkills: [],
+      productRole: 'coder', version: 1, prompt: { system: configuredPrompts[index] }, assignedSkills: [],
       harness: harnesses[index] === 'codex'
         ? { harness: 'codex', model: evidence.models && (evidence.models as { codex: string }).codex,
           reasoningEffort: 'high', sandbox: 'read-only', serviceTier: 'standard' }
@@ -201,9 +220,14 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       managers, 180_000, credentials, undefined, (id, signal) => registry.closeOwner(`execution:${id}`, signal))
     engine = new LangGraphWorkflowEngine(runs, workflows, approvals, checkpoints.saver, runtimeDirectory, locations,
       credentials, interactions, undefined, { workerParallelism: 2 })
+    const startTask = engine.start(run.id)
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
-      await Promise.race([engine.start(run.id), new Promise<never>((_resolve, reject) => {
+      const work = options.control
+        ? options.control({ pool, runId: run.id, nodeIds: nodes.map((node) => node.id), projectDirectory,
+          runtimeDirectory, engine, runs, registry, startTask }).then(() => startTask.catch(() => undefined))
+        : startTask
+      await Promise.race([work, new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => reject(new Error('ENG03_NATIVE_TIMEOUT')), 180_000)
       })])
     } finally { clearTimeout(timer) }
