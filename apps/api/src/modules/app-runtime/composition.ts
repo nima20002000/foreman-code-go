@@ -2,7 +2,7 @@ import type pg from 'pg'
 
 import type { ApiConfig } from '../../config.js'
 import type { PostgresAccessService } from '../access/postgres.js'
-import { WorkerCredentialService } from '../access/workerCredentials.js'
+import { Wave25WorkerCredentialService } from '../interactions/wave25/credentials.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { CodexAppServerSessionManager } from '../harnesses/codexAppServer.js'
 import { codexMcpInspectorAdapter } from '../harnesses/codexMcpInspectorAdapter.js'
@@ -33,7 +33,7 @@ export function createAppMcpRuntime(input: {
   const detection = new McpDetectionService({
     inspect: (request) => (request.harness === 'codex' ? codex : opencode).inspect(request),
   }, localAppMcpEndpoint(input.config.host, input.config.port))
-  const credentials = new WorkerCredentialService(input.pool, input.access)
+  const credentials = new Wave25WorkerCredentialService(input.pool, input.access)
   return {
     appMcp: {
       access: input.access,
