@@ -25,7 +25,7 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_list', () => context.services.runs.list(context.principal, input)))
   if (operatorToolAvailable(context, 'run_get')) server.registerTool('run_get', {
-    description: 'Read an authorized Run, result, execution attempts and liveActivity from one backend snapshot. Each exact workflow node has a coherent Working, Waiting or Idle state and a safe event-backed action. liveActivity uses the Run’s saved workflow version, decimal event identities and an event count; terminal Runs have no live actions. Includes persisted automatic Stop causes and cleanup status; a canceled outcome does not hide reviewer failure.', inputSchema: RunGetInputSchema,
+    description: 'Read an authorized Run, result, execution attempts and activity from one backend snapshot. Semantics-1 includes the legacy liveActivity projection; semantics-2 current node state is available from run_graph_snapshot_v1. Includes persisted Stop causes and cleanup status.', inputSchema: RunGetInputSchema,
     outputSchema: CompatibleRunDetailsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_get', () => context.services.runs.get(context.principal, input.workspaceId, input.runId)))

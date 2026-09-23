@@ -32,6 +32,8 @@ describe('Wave 2.5 compatibility and executable contracts', () => {
     expect(CompatibleWorkflowRunSchema.parse(legacyRun)).not.toHaveProperty('executionSemanticsVersion')
     expect(WorkflowVersionSchema.safeParse(fixture.version).success).toBe(false)
     expect(CompatibleWorkflowVersionSchema.parse(fixture.version)).toMatchObject({ executionSemanticsVersion: 2 })
+    expect(CompatibleWorkflowVersionSchema.safeParse({ ...fixture.version, executionSemanticsVersion: 3 }).success).toBe(false)
+    expect(CompatibleWorkflowRunSchema.safeParse({ ...fixture.run, executionSemanticsVersion: 3 }).success).toBe(false)
     expect(WAVE25_ADMISSION_ENABLED).toBe(true)
     expect(DISABLED_RUN_GRAPH_CAPABILITIES.protocolVersions).toEqual([])
     expect(() => assertWave25Admission()).not.toThrow()
