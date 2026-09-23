@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { createNextDraftSlice, type NextDraftSlice } from './nextDraft/state'
+import { clearNextDraftStartStorage, createNextDraftSlice, type NextDraftSlice } from './nextDraft/state'
 import type { Agent, WorkflowDefinition } from '@graphql/contracts'
 import { sameWorkflow } from './mapper'
 import { sameEditableGraph, sameManagedValue, type ManagedEditBase, type CloneSources } from './managedGraphState'
@@ -156,7 +156,7 @@ export const useGraphDraftStore = create<GraphDraftStore>((set) => ({
     const drafts = { ...state.drafts }; delete drafts[workflowKey]
     return { drafts }
   }),
-  clearAllDrafts: () => set({ drafts: {}, managedSaving: {}, acknowledgedBases: {}, nextDrafts: {}, nextDraftPromotions: {} }),
+  clearAllDrafts: () => { clearNextDraftStartStorage(); set({ drafts: {}, managedSaving: {}, acknowledgedBases: {}, nextDrafts: {}, nextDraftPromotions: {}, pendingRunStarts: {} }) },
 }))
 
 export function workflowDraftKey(workspaceId: string, workflowId: string): string { return `${workspaceId}::${workflowId}` }

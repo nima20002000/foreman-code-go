@@ -76,9 +76,11 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
       }
       return result
     },
-    runs: async (workspaceId: string, workflowId: string, options?: RequestOptions) => {
+    runs: async (workspaceId: string, workflowId: string, cursor: string | null = null, options?: RequestOptions) => {
+      const query = new URLSearchParams({ workflowId, limit: '20' })
+      if (cursor) query.set('cursor', cursor)
       const result = await client.request(
-        `/api/management/workspaces/${encodeURIComponent(workspaceId)}/runs?workflowId=${encodeURIComponent(workflowId)}&limit=20`,
+        `/api/management/workspaces/${encodeURIComponent(workspaceId)}/runs?${query}`,
         CompatibleRunPageSchema, options)
       if (result.items.some((run) => run.workspaceId !== workspaceId || run.workflowId !== workflowId)) {
         throw new ApiError({ code: 'INVALID_RESPONSE', message: 'The Run list contains a different workflow scope.' })

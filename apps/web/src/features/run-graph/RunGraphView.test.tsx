@@ -11,6 +11,9 @@ import type { RunViewNode } from './topology'
 import { batch, fixture, page } from './testFixtures'
 
 const flow = vi.hoisted(() => ({ renders: [] as Array<{ nodes: RunViewNode[]; nodesDraggable: boolean; nodesConnectable: boolean; deleteKeyCode: unknown }> }))
+const stop = vi.hoisted(() => ({ state: { isPending: false, isSuccess: false, isError: false,
+  data: { status: 'accepted' }, error: { message: '' }, mutate: vi.fn() } }))
+vi.mock('../../shared/api/query', () => ({ useStopManagedRunMutation: () => stop.state }))
 vi.mock('./sync', () => ({ retainRunGraphSync: () => ({ epoch: 1, retry: vi.fn(), release: vi.fn(), subscribe: () => () => undefined }) }))
 vi.mock('@xyflow/react', () => ({
   MarkerType: { ArrowClosed: 'arrowclosed' }, Position: { Left: 'left', Right: 'right' },
@@ -32,7 +35,7 @@ vi.mock('../../shared/ui/nocturne', () => ({
   Button: ({ children, onClick }: { children: ReactNode; onClick: () => void }) => <button onClick={onClick}>{children}</button>,
 }))
 const clients: QueryClient[] = []
-afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); flow.renders.length = 0 })
+afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); flow.renders.length = 0; stop.state.isSuccess = false })
 function setup() {
   const f = fixture('view')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
@@ -68,6 +71,23 @@ describe('immutable Run view (component checks, not a real React Flow profile)',
       facts: { reader: 'graph', snapshot: { ...terminal, state: { ...terminal.state,
         run: { ...terminal.state.run, cleanupPending: true } } } } }); await new Promise((resolve) => setTimeout(resolve, 0)) })
     expect(screen.getByRole('button', { name: 'Stop Run' })).toBeDefined()
+  })
+  it('replaces provisional Stop text only after the graph confirms terminal cleanup settlement', async () => {
+    const f = setup()
+    stop.state.isSuccess = true
+    render(<QueryClientProvider client={f.client}><RunGraphView scope={f.scope} /></QueryClientProvider>)
+    expect(screen.getByText('Stop accepted. Native process exit is not yet verified.')).toBeDefined()
+    const terminal = { ...f.snapshot, state: { ...f.snapshot.state,
+      run: { ...f.snapshot.state.run, executionState: 'completed' as const, outcome: 'canceled' as const,
+        cleanupPending: true } } }
+    await act(async () => { f.client.setQueryData<RunGraphRecord>(f.key, { ...f.record,
+      facts: { reader: 'graph', snapshot: terminal } }); await new Promise((resolve) => setTimeout(resolve, 0)) })
+    expect(screen.getByText('Stop accepted. Native process exit is not yet verified.')).toBeDefined()
+    await act(async () => { f.client.setQueryData<RunGraphRecord>(f.key, { ...f.record,
+      facts: { reader: 'graph', snapshot: { ...terminal, state: { ...terminal.state,
+        run: { ...terminal.state.run, cleanupPending: false } } } } }); await new Promise((resolve) => setTimeout(resolve, 0)) })
+    expect(screen.queryByText('Stop accepted. Native process exit is not yet verified.')).toBeNull()
+    expect(screen.getByText('Run completed; cleanup settled.')).toBeDefined()
   })
   it('does not rebuild the canvas topology for an activity-only update or a transport change', async () => {
     const f = setup()

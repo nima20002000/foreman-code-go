@@ -109,7 +109,8 @@ function GraphStatus() {
         ? <Button variant="secondary" disabled={stop.isPending} onClick={() => stop.mutate({
           workspaceId: scope.workspaceId, runId: scope.runId, commandId: crypto.randomUUID(),
         })}>{stop.isPending ? 'Requesting Stop…' : 'Stop Run'}</Button> : null}
-      {stop.isSuccess ? <small>Stop {stop.data.status}. Native process exit is not yet verified.</small> : null}
+      {stop.isSuccess ? <small>{run?.executionState === 'completed' && !run.cleanupPending
+        ? 'Run completed; cleanup settled.' : `Stop ${stop.data.status}. Native process exit is not yet verified.`}</small> : null}
       {stop.isError ? <small role="alert">Stop failed: {stop.error.message}</small> : null}
     </div>
   </header>
