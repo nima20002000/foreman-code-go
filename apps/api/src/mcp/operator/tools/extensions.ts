@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/server'
 import { requireAuthorization } from '../../../modules/access/policy.js'
 import * as contracts from '@graphql/contracts/management'
-import { CompatibleWorkflowVersionSchema } from '@graphql/contracts/wave25'
+import { CompatibleWorkflowVersionSchema, RunStartV2ResultSchema } from '@graphql/contracts/wave25'
 import { operatorToolAvailable } from '../availability.js'
 import { invokeOperatorTool } from '../invoke.js'
 import type { OperatorRequestContext } from '../types.js'
@@ -138,7 +138,7 @@ export function registerExtendedOperatorTools(server: McpServer, context: Operat
     annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'run_resume', () => extension.runs.resume(context.principal,input)))
   if (operatorToolAvailable(context, 'run_retry')) server.registerTool('run_retry', {
-    description: "Explicitly start a new full Run from the input of a failed/canceled terminal Run, using a caller-selected current workflow version. Not a selected-node retry.", inputSchema: contracts.RunRetryInputSchema, outputSchema: contracts.RunStartResultSchema,
+    description: "Explicitly start a new full Run from the input of a failed/canceled terminal Run. The caller selects the current saved workflow version; its persisted execution semantics determine legacy or v2 admission. Not a selected-node retry.", inputSchema: contracts.RunRetryInputSchema, outputSchema: contracts.RunStartResultSchema.or(RunStartV2ResultSchema),
     annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'run_retry', () => extension.runs.retry(context.principal,input)))
 }
