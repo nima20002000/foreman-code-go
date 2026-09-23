@@ -14,18 +14,19 @@ function preparedSecrets(secrets: readonly string[]): string[] {
 
 function redactPreparedText(value: string, values: readonly string[]): string {
   if (!values.length) return value
-  const replace = (text: string) => values.reduce((current, secret) => current.split(secret).join('[REDACTED]'), text)
+  const replace = (text: string) => values.reduce((current, secret) =>
+    current.includes(secret) ? current.split(secret).join('[REDACTED]') : current, text)
   // Providers sometimes embed JSON in raw stdout/stderr, including arrays and
   // Unicode-escaped string literals. Decode individual JSON strings before
   // matching known values; do not rely on the surrounding field name.
-  let result = value.replace(/"(?:\\.|[^"\\])*"/g, (quoted) => {
+  let result = value.includes('\\') && value.includes('"') ? value.replace(/"(?:\\.|[^"\\])*"/g, (quoted) => {
     try {
       const decoded: unknown = JSON.parse(quoted)
       if (typeof decoded !== 'string') return quoted
       const safe = replace(decoded)
       return safe === decoded ? quoted : JSON.stringify(safe)
     } catch { return quoted }
-  })
+  }) : value
   result = replace(result)
   return result
 }
