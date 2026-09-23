@@ -1,4 +1,8 @@
 import { randomUUID } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { DurableInteractionSchema, HarnessExecutionSchema } from '@graphql/contracts'
 import { ExecutableWorkflowV2Schema, makeWave25Fixture } from '@graphql/contracts/wave25'
@@ -36,6 +40,26 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
       await db.close()
     }
   })
+
+  async function evidence(scenario: string, runId: string, runs: PostgresRunRepository,
+    expected: unknown, actual: unknown): Promise<void> {
+    const directory = process.env.ENG03_C_EVIDENCE_DIR ?? join(tmpdir(), 'eng03-c-evidence')
+    await mkdir(directory, { recursive: true })
+    const artifactPath = join(directory, `${scenario}-${randomUUID().replaceAll('-', '')}.json`)
+    const executions = await runs.listExecutions(runId)
+    const cleanup = (await db.pool.query<{ pending: boolean }>(
+      'select pending from run_cleanup_intents where run_id=$1', [runId],
+    )).rows[0]?.pending ?? false
+    await writeFile(artifactPath, JSON.stringify({ scenario, mode: 'native internal synthetic with PostgreSQL saver',
+      sourceSha: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), artifactPath,
+      runId, expected, actual, cleanupPending: cleanup,
+      executions: executions.map((item) => ({ id: item.id, nodeId: item.workflowNodeId,
+        agentId: item.agentId, nativeSessionId: item.nativeSessionId, state: item.state,
+        result: item.result, input: item.input })),
+      commands: ["RUN_WAVE25_POSTGRES_TESTS=1 WAVE25_TEST_DATABASE_URL=<task-owned loopback test DB> corepack pnpm --filter @graphql/api exec vitest run test/eng03-c-lifecycle.integration.test.ts --no-file-parallelism"],
+    }, null, 2))
+    process.stdout.write(`ENG03-C evidence ${artifactPath}\n`)
+  }
 
   async function fixture(extraQueued = false) {
     const f = makeWave25Fixture(randomUUID())
@@ -139,6 +163,10 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     expect(r.starts).not.toContain(queued)
     expect((await r.runs.get(other.f.run.id))?.executionState).toBe('queued')
     expect(r.native.cancelRun).toHaveBeenCalledWith(one.f.run.id)
+    await evidence('E03-L01', one.f.run.id, r.runs,
+      { stoppedBranches: 2, queuedNativeStarts: 0, unrelatedRun: 'queued' },
+      { outcome: (await r.runs.get(one.f.run.id))?.outcome, queuedNativeStarts: r.starts.filter((id) => id === queued).length,
+        unrelatedRun: (await r.runs.get(other.f.run.id))?.executionState })
     await r.engine.cancel(other.f.run.id)
     release.resolve()
     await r.engine.shutdown()
@@ -162,6 +190,8 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     expect((await r.runs.get(f.run.id))?.outcome).toBe('failed')
     expect(r.starts.filter((id) => id === sibling)).toHaveLength(1)
     expect(r.native.cancelRun).toHaveBeenCalledWith(f.run.id)
+    await evidence('E03-L02', f.run.id, r.runs, { outcome: 'failed', siblingCanceled: true },
+      { outcome: (await r.runs.get(f.run.id))?.outcome, siblingNativeStarts: r.starts.filter((id) => id === sibling).length })
     await r.engine.shutdown()
   }, 30_000)
 
@@ -185,6 +215,8 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     expect(r.starts).toHaveLength(3)
     expect(new Set(r.starts).size).toBe(3)
     expect((await r.runs.get(f.run.id))?.outcome).toBe('succeeded')
+    await evidence('E03-L03', f.run.id, r.runs, { nativeStarts: 3, uniqueStarts: 3 },
+      { nativeStarts: r.starts.length, uniqueStarts: new Set(r.starts).size })
     await delay(1)
     await r.engine.shutdown()
   }, 30_000)
@@ -218,6 +250,10 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     expect((await r.runs.getExecution(unfinishedId))?.nativeSessionId).toBe(`native-${unfinishedId}`)
     expect((await r.runs.get(f.run.id))?.outcome).toBe('succeeded')
     expect((await db.pool.query('select count(*)::int as count from harness_executions where run_id=$1', [f.run.id])).rows[0]?.count).toBe(3)
+    await evidence('E03-L04', f.run.id, r.runs,
+      { acceptedSiblingPreserved: true, replacementNativeStarts: 0, exactSessionId: `native-${unfinishedId}` },
+      { outcome: (await r.runs.get(f.run.id))?.outcome, replacementNativeStarts: r.starts.length,
+        nativeSessionId: (await r.runs.getExecution(unfinishedId))?.nativeSessionId })
     await r.engine.shutdown()
   }, 30_000)
 
@@ -359,6 +395,10 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     expect(r.starts.filter((node) => node === first)).toHaveLength(1)
     expect(restarted.starts).toEqual([])
     expect((await db.pool.query("select count(*)::int as count from run_graph_effects where run_id=$1 and effect_kind='approval.decide'", [f.run.id])).rows[0]?.count).toBe(1)
+    await evidence('E03-A01', f.run.id, restarted.runs,
+      { siblingAcceptedBeforeDecision: true, decisionEffects: 1, waitingSessionReused: pending.nativeSessionId },
+      { outcome: (await restarted.runs.get(f.run.id))?.outcome, resumedNativeStarts: restarted.starts.length,
+        waitingSessionId: (await restarted.runs.getExecution(pending.executionId))?.nativeSessionId })
     await restarted.engine.shutdown()
   }, 30_000)
 })
