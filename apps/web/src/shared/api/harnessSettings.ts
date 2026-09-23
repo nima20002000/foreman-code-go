@@ -157,7 +157,7 @@ export function useChangeCodexPlugin() {
 export function useNativeHarnessOptions(harness: Harness) {
   useHarnessSessionEpoch()
   return useQuery({ queryKey: harnessSettingsKeys.options(harness), enabled: !sessionIsSwitching(), staleTime: 300_000, retry: false,
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: true, refetchInterval: 330_000,
     queryFn: ({ signal }) => apiClient.request(`/api/management/harnesses/${harness}/options`, HarnessOptionsResultSchema, { signal }),
   })
 }
