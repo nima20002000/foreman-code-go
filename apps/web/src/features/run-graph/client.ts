@@ -1,4 +1,5 @@
-import type { GetRunResponse } from '@graphql/contracts'
+import { RUN_CURRENT_ROUTE, RunCurrentRequestSchema, RunCurrentResponseSchema, type RunCurrentResponse } from '@graphql/contracts/run-current'
+import { RunEventsListInputSchema, RunEventsPageSchema } from '@graphql/contracts/management'
 import {
   RUN_GRAPH_ROUTES, RunGraphCapabilitiesSchema, RunGraphEventsRequestSchema,
   RunGraphEventsResponseSchema, RunGraphReadRequestSchema, RunGraphSnapshotSchema,
@@ -12,7 +13,7 @@ export interface RunGraphClient {
   capabilities(signal: AbortSignal): Promise<GraphCapabilities>
   snapshot(scope: RunGraphScope, signal: AbortSignal): Promise<RunGraphSnapshot>
   events(scope: RunGraphScope, afterSequence: string, signal: AbortSignal): Promise<RunGraphPage | RunGraphReset>
-  legacy(scope: RunGraphScope, signal: AbortSignal): Promise<GetRunResponse>
+  legacy(scope: RunGraphScope, signal: AbortSignal): Promise<RunCurrentResponse>
 }
 
 export function graphReadPath(scope: RunGraphScope, afterSequence?: string): string {
@@ -46,7 +47,42 @@ export function createRunGraphClient(client: ApiClient = apiClient): RunGraphCli
     capabilities: (signal) => client.request(RUN_GRAPH_ROUTES.capabilities, RunGraphCapabilitiesSchema, { signal }),
     snapshot: (scope, signal) => client.request(graphReadPath(scope), RunGraphSnapshotSchema, { signal }),
     events: (scope, after, signal) => client.request(graphReadPath(scope, after), RunGraphEventsResponseSchema, { signal }),
-    legacy: (scope, signal) => client.getRun({ workspaceId: scope.workspaceId, runId: scope.runId }, { signal }),
+    legacy: (scope, signal) => client.request(legacyCurrentReadPath(scope), RunCurrentResponseSchema, { signal }),
   }
 }
 export const runGraphClient = createRunGraphClient()
+
+export function legacyCurrentReadPath(scope: RunGraphScope): string {
+  const request = RunCurrentRequestSchema.parse(scope)
+  const path = RUN_CURRENT_ROUTE.replace(':workspaceId', encodeURIComponent(request.workspaceId))
+    .replace(':runId', encodeURIComponent(request.runId))
+  return `${path}?${new URLSearchParams({ workflowId: request.workflowId,
+    workflowVersionId: request.workflowVersionId, executionSemanticsVersion: '1' })}`
+}
+
+/** Explicit detail access only. One page per call; never used by synchronization. */
+export async function readLegacyRunActivityPage(scope: RunGraphScope, afterSequence: number | undefined,
+  signal: AbortSignal, client: ApiClient = apiClient) {
+  const pin = RunCurrentRequestSchema.parse(scope)
+  if (afterSequence !== undefined && !Number.isSafeInteger(afterSequence)) {
+    throw new GraphProtocolError('GRAPH_INVALID_LEGACY_HISTORY')
+  }
+  const input = RunEventsListInputSchema.parse({ workspaceId: pin.workspaceId, runId: pin.runId,
+    ...(afterSequence === undefined ? {} : { afterSequence }), limit: 50 })
+  const query = new URLSearchParams({ limit: String(input.limit) })
+  if (input.afterSequence !== undefined) query.set('cursor', String(input.afterSequence))
+  const response = await client.request(`/api/management/workspaces/${encodeURIComponent(input.workspaceId)}/runs/${encodeURIComponent(input.runId)}/events?${query}`,
+    RunEventsPageSchema, { signal })
+  let previous = input.afterSequence ?? -1
+  for (const item of response.items) {
+    if (item.runId !== input.runId || !Number.isSafeInteger(item.sequence) || item.sequence <= previous) {
+      throw new GraphProtocolError('GRAPH_INVALID_LEGACY_HISTORY')
+    }
+    previous = item.sequence
+  }
+  if (response.items.length > input.limit || response.pageInfo.nextCursor !== null
+    && (response.items.length === 0 || response.pageInfo.nextCursor !== String(previous))) {
+    throw new GraphProtocolError('GRAPH_INVALID_LEGACY_HISTORY')
+  }
+  return response
+}

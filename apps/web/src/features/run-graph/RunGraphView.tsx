@@ -137,11 +137,13 @@ function RunInspector() {
 
 function LegacyFacts() {
   const response = useRunGraphSelection(selectLegacyRun)
-  if (!response) return null
+  if (!response || response.kind !== 'legacy-run-current') return null
   return <section className="run-graph-legacy" aria-label="Legacy Run facts">
     <p>Legacy reader · {response.run.executionState} · {response.run.outcome}</p>
     <p>The legacy read contract does not expose pinned topology. The current draft is not substituted.</p>
-    <table><thead><tr><th>Node</th><th>Execution</th><th>State</th></tr></thead><tbody>
+    <p>{response.cleanupPending ? 'Cleanup pending.' : 'No pending Run cleanup intent.'} Approval and native settlement remain unconfirmed; current-state checks continue while this view is open.</p>
+    <p>Historical activity is not loaded by this view.</p>
+    <table><caption>Latest execution attempt per saved node</caption><thead><tr><th>Node</th><th>Execution</th><th>State</th></tr></thead><tbody>
       {response.executions.map((execution) => <tr key={execution.id}><td>{execution.workflowNodeId}</td><td>{execution.id}</td><td>{execution.state}</td></tr>)}
     </tbody></table>
   </section>

@@ -6,7 +6,8 @@ import { Wave25InteractionCoordinationRepository } from './reviews.js'
 import { Wave25InteractionDeliveryRepository } from './delivery.js'
 import { createRequest, decide } from './decisions.js'
 import { fail, isV2, lockInteraction, readContext, runFor, transact } from './context.js'
-import { nextInteraction, publishInteraction } from './publication.js'
+import { CANCELED_INTERACTION_RETIRED_SQL, nextInteraction, publishInteraction, retireCanceledInteraction, retireCanceledInteractionsAfterCleanup } from './publication.js'
+import type { RunGraphPublication } from '../../run-graph/publication.js'
 import { runCleanupAllowed } from './cleanupAuthority.js'
 
 /** Production replaces only this constructor and the matching service constructor.
@@ -18,7 +19,7 @@ export class Wave25InteractionRepository extends PostgresInteractionRepository {
   constructor(private readonly approvalPool: pg.Pool) {
     super(approvalPool)
     this.delivery = new Wave25InteractionDeliveryRepository(approvalPool)
-    this.coordination = new Wave25InteractionCoordinationRepository(approvalPool)
+    this.coordination = new RetiringInteractionCoordinationRepository(approvalPool)
   }
   usesAtomicApproval(runId: string): Promise<boolean> { return isV2(this.approvalPool, runId) }
   private async mode(id: string) { const runId = await runFor(this.approvalPool, 'interaction', id)
@@ -58,11 +59,13 @@ export class Wave25InteractionRepository extends PostgresInteractionRepository {
     await transact(this.approvalPool, runId, async (publication) => {
       if (!nativeRequestIds && !(await publication.sql.query(
         "select 1 from harness_executions where id=$1 and record->>'state'='completed'", [executionId])).rowCount) return fail('APPROVAL_TERMINAL_EVIDENCE_REQUIRED')
-      const ids = (await publication.sql.query<{ id: string }>(`select id from durable_interactions where execution_id=$1 and status='pending'
-        and ($2::text[] is null or native_request_id=any($2)) order by id`, [executionId, nativeRequestIds ?? null])).rows
+      const ids = (await publication.sql.query<{ id: string }>(`select i.id from durable_interactions i where i.execution_id=$1
+        and (i.status='pending' or i.status='canceled' and not (${CANCELED_INTERACTION_RETIRED_SQL}))
+        and ($2::text[] is null or i.native_request_id=any($2)) order by i.id`, [executionId, nativeRequestIds ?? null])).rows
       for (const { id } of ids) {
         const current = await lockInteraction(publication.sql, id), context = await readContext(publication.sql, current)
-        await publishInteraction(publication, context, current, nextInteraction(current, { status: 'canceled' }))
+        if (current.status === 'canceled') await retireCanceledInteraction(publication, context, current)
+        else await publishInteraction(publication, context, current, nextInteraction(current, { status: 'canceled' }))
       }
     })
   }
@@ -72,10 +75,17 @@ export class Wave25InteractionRepository extends PostgresInteractionRepository {
       const sql = publication.sql
       if (!await runCleanupAllowed(sql, runId)) return fail('EXECUTION_NOT_STOPPED')
       const rows = (await sql.query<{ id: string }>(`select i.id from durable_interactions i
-        left join interaction_graph_resumes g on g.interaction_id=i.id where i.run_id=$1 and i.status<>'canceled'
+        left join interaction_graph_resumes g on g.interaction_id=i.id where i.run_id=$1
+        and (i.status<>'canceled' or not (${CANCELED_INTERACTION_RETIRED_SQL}))
         and not (i.status='delivered' and (coalesce(g.state,'pending')='resumed' or g.approval_native_ack_id is not null)) order by i.id`, [runId])).rows
+      let canceled = 0
       for (const { id } of rows) {
         const current = await lockInteraction(sql, id), context = await readContext(sql, current)
+        if (current.status === 'canceled') {
+          await retireCanceledInteraction(publication, context, current)
+          continue
+        }
+        canceled += 1
         const next = nextInteraction(current, { status: 'canceled', deliveryState: current.deliveryState === 'not_started' ? 'not_started'
           : current.deliveryState === 'delivered' ? 'delivered' : 'failed' })
         await publishInteraction(publication, context, current, next, { resumeState: 'unknown', mutate: async (transaction) => {
@@ -89,7 +99,7 @@ export class Wave25InteractionRepository extends PostgresInteractionRepository {
             delivery_token=null,delivery_lease_expires_at=null where id=$1`, [id])
         } })
       }
-      return rows.length
+      return canceled
     })
   }
   override async recordReconciliation(...args: Parameters<PostgresInteractionRepository['recordReconciliation']>) {
@@ -138,5 +148,18 @@ export class Wave25InteractionRepository extends PostgresInteractionRepository {
   override async settleDeliveryAttempt(...args: Parameters<PostgresInteractionRepository['settleDeliveryAttempt']>) {
     if ((await this.mode(args[0].interactionId)).enabled) return fail('APPROVAL_QUALIFIED_DELIVERY_REQUIRED')
     return super.settleDeliveryAttempt(...args)
+  }
+}
+
+/** Keep the existing coordinator's native-closure/credential checks and virtual
+ * dispatch. Both its own transaction and caller-owned publications reach this
+ * hook; interaction retirement joins the SAME final review-cleanup batch. */
+class RetiringInteractionCoordinationRepository extends Wave25InteractionCoordinationRepository {
+  override async finishStoppedReviewsInPublication(publication: RunGraphPublication, credentialsRequired: boolean): Promise<void> {
+    // Preserve the interaction-before-review child lock order in this shared
+    // publication; the later retirement helper only re-reads these same locks.
+    await publication.sql.query("select id from durable_interactions where run_id=$1 and status='canceled' order by id for update", [publication.scope.runId])
+    await super.finishStoppedReviewsInPublication(publication, credentialsRequired)
+    await retireCanceledInteractionsAfterCleanup(publication)
   }
 }

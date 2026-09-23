@@ -38,12 +38,14 @@ async function nativeEvidence(f: Fixture, terminal = false) {
     } }
   // Test producer stands in only for the provider/A5 observation. It uses the
   // real frozen G1 publisher and a real locked database owner; no native work.
-  await transact(f.pool, f.run.id, async (publication) => publication.source({ evidence: source,
-    sourceDigest: graphSourceDigest(observation), facts: [{ type: 'node.activity', activity: terminal
-      ? { workflowNodeId: f.reviewer.workflowNodeId, status: 'none' }
-      : { workflowNodeId: f.reviewer.workflowNodeId, status: 'active', action: 'reviewing', execution: work.execution,
-        correlationId: f.job.correlationId, acknowledgementId: acknowledgementId(observation), interactionId: f.interaction.id, reviewJobId: f.job.id } }] },
-    () => recordReviewObservation(publication, observation, guard)))
+  await transact(f.pool, f.run.id, async (publication) => {
+    await publication.source({ evidence: source,
+      sourceDigest: graphSourceDigest(observation), facts: [{ type: 'node.activity', activity: terminal
+        ? { workflowNodeId: f.reviewer.workflowNodeId, status: 'none' }
+        : { workflowNodeId: f.reviewer.workflowNodeId, status: 'active', action: 'reviewing', execution: work.execution,
+          correlationId: f.job.correlationId, acknowledgementId: acknowledgementId(observation), interactionId: f.interaction.id, reviewJobId: f.job.id } }] }, async () => undefined)
+    await recordReviewObservation(publication, observation, guard)
+  })
   return observation
 }
 async function settle(f: Fixture) {

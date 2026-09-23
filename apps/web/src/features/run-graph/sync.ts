@@ -1,12 +1,12 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { GetRunResponseSchema } from '@graphql/contracts'
+import { RunCurrentResponseSchema } from '@graphql/contracts/run-current'
 import {
   RUN_GRAPH_LIMITS, RunGraphScopeSchema, RunGraphSnapshotSchema, RunGraphErrorResponseSchema, sameGraphScope,
   type RunGraphScope,
 } from '@graphql/contracts/wave25'
 import { ApiError } from '../../shared/api/client'
 import { sessionGeneration, sessionSignal, sessionIsSwitching, assertSession } from '../../shared/api/sessionBoundary'
-import { keepLatestRunResponse } from './legacy'
+import { keepLatestRunCurrent } from './legacyCurrent'
 import { graphCachePrefix, graphCapabilityKey, graphRecordKey, shareGraphRecordOrSelection } from './cache'
 import { negotiateGraphReader, runGraphClient, type RunGraphClient } from './client'
 import { GraphProtocolError } from './errors'
@@ -152,7 +152,8 @@ function createOwner(client: QueryClient, session: SessionOwners, scope: RunGrap
       if (!initialized) {
         const cached = current()
         // A restored cursor alone, malformed record or old session is not a recoverable fact base.
-        if (cached?.facts?.reader === 'graph' && !RunGraphSnapshotSchema.safeParse(cached.facts.snapshot).success) {
+        if (cached?.facts?.reader === 'graph' && !RunGraphSnapshotSchema.safeParse(cached.facts.snapshot).success
+          || cached?.facts?.reader === 'legacy' && !RunCurrentResponseSchema.safeParse(cached.facts.response).success) {
           client.setQueryData<RunGraphRecord>(key, { kind: 'run-graph-cache', scope, epoch, transport: { phase: 'loading' } })
         }
         setPhase(current()?.facts ? 'catching-up' : 'loading')
@@ -172,16 +173,16 @@ function createOwner(client: QueryClient, session: SessionOwners, scope: RunGrap
           const requestSignal = AbortSignal.any([signal, querySignal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
           const old = current()
           if (reader === 'legacy') {
-            const parsed = GetRunResponseSchema.safeParse(await api.legacy(scope, requestSignal))
+            const parsed = RunCurrentResponseSchema.safeParse(await api.legacy(scope, requestSignal))
             if (!parsed.success) throw new GraphProtocolError('GRAPH_INVALID_LEGACY_RESPONSE')
             const response = parsed.data
             valid(requestSignal)
             const run = response.run
             if (run.workspaceId !== scope.workspaceId || run.workflowId !== scope.workflowId || run.id !== scope.runId
-              || run.workflowVersionId !== scope.workflowVersionId) throw new GraphProtocolError('GRAPH_SCOPE_MISMATCH')
+              || run.workflowVersionId !== scope.workflowVersionId || scope.executionSemanticsVersion !== 1) throw new GraphProtocolError('GRAPH_SCOPE_MISMATCH')
             const latest = current()
             const previous = latest?.facts?.reader === 'legacy' ? latest.facts.response : undefined
-            return { kind: 'run-graph-cache', scope, epoch, facts: { reader: 'legacy', response: keepLatestRunResponse(previous, response) },
+            return { kind: 'run-graph-cache', scope, epoch, facts: { reader: 'legacy', response: keepLatestRunCurrent(previous, response) },
               transport: { phase: 'live', confirmedAt: Date.now() } }
           }
           const previous = old?.facts?.reader === 'graph' ? old.facts.snapshot : undefined
@@ -222,8 +223,9 @@ function createOwner(client: QueryClient, session: SessionOwners, scope: RunGrap
       }
       if (tookSnapshot) { needSnapshot = false; catchingUp = true; return 0 }
       if (result.facts?.reader === 'legacy') {
-        // The compatibility endpoint cannot certify complete review/delivery settlement.
-        // Keep its bounded compatibility poll while viewed; never guess settlement from outcome.
+        // Explicit compatibility policy: poll current facts only while viewed,
+        // including clean terminal Runs. Settlement is unconfirmed; outcome or
+        // cleanupPending=false cannot certify all native/review obligations.
         return ACTIVE_POLL_MS
       }
       // Only after fetchQuery has atomically published the complete record and cursor.

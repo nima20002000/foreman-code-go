@@ -1,4 +1,4 @@
-import { ReviewJobSchema } from '@graphql/contracts'
+import { DurableInteractionSchema, ReviewJobSchema } from '@graphql/contracts'
 import {
   parseNativeGraphObservation, assertNativeGraphProjectionAuthority, sameGraphScope,
   canonicalGraphJson, type NativeGraphObservation,
@@ -7,7 +7,8 @@ import type { NativeGraphProjectionGuard } from '../../run-graph/records.js'
 import type { RunGraphPublication } from '../../run-graph/publication.js'
 import { graphSourceDigest } from '../../run-graph/publication.js'
 import type { GraphTransactionSql } from '../../run-graph/connection.js'
-import { fail } from './context.js'
+import { fail, readContext } from './context.js'
+import { reviewFact, sourceForReview } from './publication.js'
 
 /** A5 supplies a complete normalized observation and its EXISTING locked owner.
  * This consumer does not parse native frames, infer completion or acquire a runtime.
@@ -20,8 +21,8 @@ export async function recordReviewObservation(publication: RunGraphPublication,
     || guard.expected.connectionGeneration !== observation.connectionGeneration) return fail('GRAPH_SCOPE_MISMATCH')
   const currentAuthority = await guard.readCurrentLocked(publication.sql, publication.scope, observation.work)
   assertNativeGraphProjectionAuthority(guard.expected, currentAuthority)
-  const row = (await publication.sql.query<{ record: unknown; execution_id: string; approval_native_evidence: unknown }>(
-    'select record,execution_id,approval_native_evidence from review_jobs where id=$1 for update',
+  const row = (await publication.sql.query<{ record: unknown; revision: string; execution_id: string; approval_native_evidence: unknown }>(
+    'select record,revision::text,execution_id,approval_native_evidence from review_jobs where id=$1 for update',
     [observation.work.workId])).rows[0]
   const job = ReviewJobSchema.parse(row?.record)
   if (row?.execution_id !== observation.work.execution.executionId || job.id !== observation.work.workId) return fail('REVIEW_JOB_IDENTITY_CONFLICT')
@@ -47,10 +48,21 @@ export async function recordReviewObservation(publication: RunGraphPublication,
         && BigInt(observation.sourcePosition) <= BigInt(previous.sourcePosition)) return
     }
   }
-  // This bounded internal receipt is evidence, not a second ReviewJob or activity
-  // projection. The coordinator publishes a separate durable business transition.
-  await publication.sql.query(`update review_jobs set approval_native_evidence=$2::jsonb
-    where id=$1`, [job.id, JSON.stringify(observation)])
+  const interaction = (await publication.sql.query<{ record: unknown }>(
+    'select record from durable_interactions where id=$1', [job.interactionId])).rows[0]
+  const context = await readContext(publication.sql, DurableInteractionSchema.parse(interaction?.record))
+  if (!sameGraphScope(context.scope, publication.scope) || context.reviewer?.id !== row.execution_id) return fail('REVIEW_JOB_IDENTITY_CONFLICT')
+  // The snapshot derives acknowledgementId from this receipt. Publish that same
+  // review projection in the receipt's transaction, before the later coordinator
+  // business transition. A changed acknowledgement must never reuse a revision.
+  const revision = String(BigInt(row.revision) + 1n)
+  await publication.source({ evidence: sourceForReview(job, revision, observation.source),
+    sourceDigest: graphSourceDigest({ job, nativeEvidence: observation }),
+    facts: [reviewFact(context, job, revision, acknowledgementId(observation))] }, async (sql) => {
+    const result = await sql.query(`update review_jobs set approval_native_evidence=$2::jsonb,revision=revision+1
+      where id=$1 and revision=$3::bigint`, [job.id, JSON.stringify(observation), row.revision])
+    if (result.rowCount !== 1) return fail('REVISION_CONFLICT')
+  })
 }
 
 export async function reviewEvidence(sql: GraphTransactionSql, jobId: string): Promise<NativeGraphObservation | undefined> {

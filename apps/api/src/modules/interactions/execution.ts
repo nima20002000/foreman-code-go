@@ -853,11 +853,12 @@ export class ApprovalExecutionCoordinator {
             'NATIVE_APPROVAL_HANDLER_MISSING',
             'The native execution asked for a decision but this workflow has no routed approval handler. Reopen and save the workflow or Agent configuration. The request was not automatically approved.', 409,
           )
+          this.assertSessionIdentity(session!, pending.session)
           await this.interactions.assertOrchestratorConnection({
             workspaceId: request.workspaceId, workflowId: input.workflowId, runId: execution.runId,
             executionId: execution.id, requestingAgentId: execution.agentId, approval: input.approval,
+            harness: session!.harness, nativeSessionId: session!.nativeSessionId,
           })
-          this.assertSessionIdentity(session!, pending.session)
           if (!pending.turn.nativeRequestId) throw new Error('Native approval request is missing its stable request identity.')
           const now = new Date().toISOString()
           // create() deduplicates by (harness, native session, native request),

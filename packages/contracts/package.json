@@ -8,6 +8,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./run-current": {
+      "types": "./dist/runCurrent.d.ts",
+      "import": "./dist/runCurrent.js"
+    },
     "./operator-chat": {
       "types": "./dist/operatorChat.d.ts",
       "import": "./dist/operatorChat.js"

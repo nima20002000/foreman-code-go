@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
-import { HarnessExecutionSchema, type HarnessExecution, type RunInput } from '@graphql/contracts'
+import { HarnessExecutionSchema, type ExecutionResult, type HarnessExecution, type RunInput } from '@graphql/contracts'
 import {
   AcceptedNodeResultV2Schema, GraphExecutionIdentitySchema, InputBindingSchema,
   NodeResolutionSchema, RunNodeInputV2Schema, parseChoiceResultEnvelope,
-  type GraphExecutionIdentity, type InputBinding, type NodeResolution, type WorkflowVersionV2,
+  type ChoiceResultEnvelope, type GraphExecutionIdentity, type InputBinding, type NodeResolution, type WorkflowChoice, type WorkflowVersionV2,
 } from '@graphql/contracts/wave25'
 
 import { DomainError } from '../errors.js'
@@ -28,6 +28,20 @@ export function assertOneShotExecutionPin(version: WorkflowVersionV2, execution:
   }
 }
 
+/** Parsing-only view of the exact Codex/OpenCode final-text carrier. Bound the
+ * original result here so durable record rechecks can use the same policy without
+ * rewriting stored evidence, accepted digests or inputs. Mixed carriers stay invalid.
+ */
+export function parseOneShotChoiceResult(result: ExecutionResult, choice: WorkflowChoice): ChoiceResultEnvelope {
+  AcceptedNodeResultV2Schema.parse(result)
+  const output = result.outcome === 'succeeded' ? result.output : undefined
+  if (output !== null && typeof output === 'object' && !Array.isArray(output)
+    && Object.keys(output).length === 1 && 'text' in output && typeof output.text === 'string') {
+    return parseChoiceResultEnvelope({ ...result, output: output.text }, choice)
+  }
+  return parseChoiceResultEnvelope(result, choice)
+}
+
 /** Validate complete evidence BEFORE the first terminal record is written; never salvage a JSON prefix. */
 export function normalizeOneShotTerminal(version: WorkflowVersionV2, input: HarnessExecution): HarnessExecution {
   const execution = HarnessExecutionSchema.parse(input)
@@ -37,8 +51,8 @@ export function normalizeOneShotTerminal(version: WorkflowVersionV2, input: Harn
   if (execution.result.outcome !== 'succeeded') return execution
   const node = version.definition.nodes.find((item) => item.id === execution.workflowNodeId)!
   try {
-    AcceptedNodeResultV2Schema.parse(execution.result)
-    if (node.choice) parseChoiceResultEnvelope(execution.result, node.choice)
+    if (node.choice) parseOneShotChoiceResult(execution.result, node.choice)
+    else AcceptedNodeResultV2Schema.parse(execution.result)
     return execution
   } catch {
     // No model output, paths, parser fragments or secrets are copied into the public error.
@@ -60,13 +74,15 @@ export function oneShotResolution(version: WorkflowVersionV2, execution: Harness
   const outgoing = version.definition.edges.filter((edge) => edge.kind === 'execution' && edge.source === node.id)
   let selected: string[] = [], outcome: string | undefined, branchEnded = false
   if (execution.result.outcome === 'succeeded') {
-    AcceptedNodeResultV2Schema.parse(execution.result)
     if (node.choice) {
-      outcome = parseChoiceResultEnvelope(execution.result, node.choice).routing.outcome
+      outcome = parseOneShotChoiceResult(execution.result, node.choice).routing.outcome
       const target = node.choice.outcomes.find((item) => item.outcome === outcome)!.target
       branchEnded = target.kind === 'branch_end'
       if (target.kind === 'edge') selected = [target.relationshipId]
-    } else selected = outgoing.map((edge) => edge.id)
+    } else {
+      AcceptedNodeResultV2Schema.parse(execution.result)
+      selected = outgoing.map((edge) => edge.id)
+    }
   }
   return NodeResolutionSchema.parse({
     workflowNodeId: node.id, execution: oneShotIdentity(execution), resolution: execution.result.outcome,

@@ -14,6 +14,8 @@ import { matchingDeliveryEvidence, type NativeResponseDeliveryEvidence } from '.
 import { recordWorkerResumption } from '../interactions/wave25/resume.js'
 import type { NativeHistory } from '../harnesses/port.js'
 import { nativeProjectionId } from '../run-graph/nativeProjection.js'
+import { OPENCODE_RECONCILIATION_EVENT, readOpenCodeReconciliation } from '../harnesses/opencodeReconciliation.js'
+import { openCodeGraphReconciliation } from '../harnesses/opencodeGraphReconciliation.js'
 
 export interface WorkflowNativeLease {
   id: string
@@ -50,8 +52,15 @@ export async function appendWorkflowNativeGraphEvent(owner: RunOwnership, input:
       executionId: execution.id, agentId: execution.agentId,
       agentConfigurationVersionId: execution.agentConfigurationVersionId!, attempt: execution.attempt },
     workKind: 'workflow', workId: execution.id }
-    const terminal = continuation && ['turn.completed', 'turn/completed'].includes(normalized.event.type)
+    const reconciliationIdentity = { ownerAgentId: execution.agentId,
+      nativeSessionId: execution.nativeSessionId ?? '', correlationId: `execution:${execution.id}`,
+      nativeTurnId: lease?.providerId ?? '' }
+    const reconciled = readOpenCodeReconciliation(normalized.event, reconciliationIdentity)
+    const terminal = continuation && (['turn.completed', 'turn/completed'].includes(normalized.event.type)
       && normalized.event.payload.turnId === continuation.providerId
+      || reconciled && continuation.session.harness === 'opencode'
+        && reconciled.providerVersion === continuation.session.providerVersion
+        && reconciled.nativeTurnId === continuation.providerId)
       && continuation.correlationId === `execution:${execution.id}`
       && continuation.session.nativeSessionId === execution.nativeSessionId
     const delivered = terminal ? (await sql.query<{ record: unknown }>(`select record from durable_interactions
@@ -105,6 +114,12 @@ export async function appendWorkflowNativeGraphEvent(owner: RunOwnership, input:
     })
     const correlationKey = `execution:${execution.id}`
     const prior = await readNativeGraphCorrelation(sql, scope, key, correlationKey)
+    // A reconciliation observation is not a new live attachment. It can only
+    // complete the original same-generation writer correlation.
+    if (normalized.event.type === OPENCODE_RECONCILIATION_EVENT && (!prior || !reconciled
+      || lane.harness !== 'opencode' || prior.provider !== 'opencode'
+      || prior.nativeSessionId !== execution.nativeSessionId
+      || prior.nativeTurnId !== reconciled.nativeTurnId)) return
     if (!prior && !lease.live) return
     if (prior && (prior.connectionId !== (normalized.event.connectionId ?? null)
       || String(prior.connectionGeneration) !== generation)) return
@@ -151,10 +166,14 @@ export async function appendWorkflowNativeGraphEvent(owner: RunOwnership, input:
         throw new DomainError('GRAPH_SOURCE_CONFLICT', 'The approval native correlation changed.', 409)
       }
     }
-    const observation = nativeDisconnectObservation(scope, key, normalized.event, generation)
+    const reconciliation = reconciled ? await openCodeGraphReconciliation(sql, normalized.event,
+      reconciliationIdentity, scope, key, generation) : undefined
+    if (normalized.event.type === OPENCODE_RECONCILIATION_EVENT && !reconciliation) return
+    const observation = reconciliation ?? nativeDisconnectObservation(scope, key, normalized.event, generation)
     await appendNativeGraphEvent(publication, normalized.event, [{ guard, correlationKey,
       ...(observation ? { observation } : {}) }])
-    if (terminal) {
+    // OpenCode cannot acquire a Worker ack through a Codex-named wire event.
+    if (terminal && (lane.harness === 'codex' || reconciliation)) {
       const currentRun = (await sql.query<{ open: boolean }>(`select stop_requested_at is null
         and execution_state in ('running','waiting','queued') as open from runs where id=$1`, [scope.runId])).rows[0]
       if (!currentRun?.open) return
@@ -165,6 +184,16 @@ export async function appendWorkflowNativeGraphEvent(owner: RunOwnership, input:
         const receipt = await sql.query(`select 1 from run_graph_effects where run_id=$1
           and effect_kind='graph.resume' and entity_id=$2`, [scope.runId, interaction.id])
         if (!receipt.rowCount) continue
+        if (reconciliation) {
+          const approvalCorrelation = await readNativeGraphCorrelation(sql, scope, key, `approval:${interaction.id}`)
+          if (!approvalCorrelation || approvalCorrelation.provider !== 'opencode'
+            || approvalCorrelation.nativeTurnId !== continuation.providerId
+            || approvalCorrelation.nativeSessionId !== continuation.session.nativeSessionId
+            || approvalCorrelation.nativeRequestId !== interaction.nativeRequestId
+            || approvalCorrelation.interactionId !== interaction.id
+            || approvalCorrelation.connectionId !== normalized.event.connectionId
+            || String(approvalCorrelation.connectionGeneration) !== generation) continue
+        }
         await recordWorkerResumption(publication, { type: 'worker.resumed', interactionId: interaction.id,
           requester: key.execution, acknowledgementId: nativeProjectionId('continuation-ack',
             interaction.id, normalized.event.executionId, normalized.event.connectionId ?? null,

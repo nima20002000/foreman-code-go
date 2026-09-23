@@ -1,4 +1,4 @@
-import type { GetRunResponse } from '@graphql/contracts'
+import type { RunCurrentResponse } from '@graphql/contracts/run-current'
 import type { RunGraphScope, RunGraphSnapshot } from '@graphql/contracts/wave25'
 
 export type GraphTransportPhase = 'loading' | 'catching-up' | 'live' | 'stale' | 'resetting' | 'error' | 'denied'
@@ -14,7 +14,7 @@ export type RunGraphRecord = {
   scope: RunGraphScope
   epoch: number
   transport: GraphTransport
-  facts?: { reader: 'graph'; snapshot: RunGraphSnapshot } | { reader: 'legacy'; response: GetRunResponse }
+  facts?: { reader: 'graph'; snapshot: RunGraphSnapshot } | { reader: 'legacy'; response: RunCurrentResponse }
 }
 
 /** Deliberately contains no writable cache, event payloads, or business-state references. */

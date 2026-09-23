@@ -1,11 +1,12 @@
 import { HarnessExecutionSchema } from '@graphql/contracts'
 import {
-  InputBindingSchema, NodeResolutionSchema, WorkflowVersionV2Schema, parseChoiceResultEnvelope, RunNodeInputV2Schema, NativeGraphProjectionKeySchema,
+  InputBindingSchema, NodeResolutionSchema, WorkflowVersionV2Schema, RunNodeInputV2Schema, NativeGraphProjectionKeySchema,
   NativeGraphActivityRecordSchema, NativeGraphCorrelationRecordSchema, canonicalGraphJson,
   type InputBinding, type NodeResolution, type NativeGraphProjectionKey,
   type NativeGraphActivityRecord, type NativeGraphCorrelationRecord, type RunGraphScope,
   type NativeGraphProjectionFence, type NativeGraphProjectionAuthority,
 } from '@graphql/contracts/wave25'
+import { parseOneShotChoiceResult } from '../runs/oneShotResolution.js'
 import type { GraphTransactionSql } from './connection.js'
 import { assertGraphTransaction, poisonGraphTransaction } from './connection.js'
 import { assertRunGraphPublication, graphSourceDigest } from './publication.js'
@@ -48,7 +49,7 @@ export async function putNodeResolution(sql: GraphTransactionSql, scope: RunGrap
       if (resolution.resolution === 'succeeded') {
         if (!row.accepted || graphSourceDigest(execution.result) !== resolution.acceptedResultDigest) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
         if (node.choice) {
-          const envelope = parseChoiceResultEnvelope(execution.result, node.choice)
+          const envelope = parseOneShotChoiceResult(execution.result, node.choice)
           const target = node.choice.outcomes.find((choice) => choice.outcome === envelope.routing.outcome)!.target
           const selected = target.kind === 'edge' ? [target.relationshipId] : []
           if (resolution.outcome !== envelope.routing.outcome || resolution.branchEnded !== (target.kind === 'branch_end')

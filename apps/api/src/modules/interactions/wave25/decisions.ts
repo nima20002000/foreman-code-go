@@ -6,7 +6,7 @@ import type { GraphSqlClient } from '../../run-graph/connection.js'
 import { beforeGraphCommit } from '../../run-graph/connection.js'
 import { graphSourceDigest } from '../../run-graph/publication.js'
 import type pg from 'pg'
-import { assertBudget, fail, identity, lockInteraction, readContext, transact } from './context.js'
+import { assertBudget, fail, lockInteraction, readContext, transact } from './context.js'
 import { lockPrincipal } from './principal.js'
 import { decisionDigest, interactionFact, nextInteraction, publishInteraction } from './publication.js'
 
@@ -37,10 +37,11 @@ export async function createRequest(pool: pg.Pool, input: DurableInteraction) {
     const context = await readContext(sql, accepted, true)
     await assertBudget(sql, accepted)
     await publication.source({ evidence: { sourceKind: 'interaction', sourceId: accepted.id, sourceRevision: '0' },
-      sourceDigest: graphSourceDigest(accepted), facts: [interactionFact(context, accepted), {
-        type: 'node.activity', activity: { workflowNodeId: context.requester.workflowNodeId, status: 'active',
-          action: 'waiting_approval', execution: identity(context.requester), interactionId: accepted.id },
-      }, ...await approvalAttentionFacts(sql, context, { interaction: accepted })] }, async (transaction) => {
+      // The shared overlay owns activity as well as attention. An unconditional
+      // wait can disagree with the snapshot (no native candidate, or an already
+      // selected sibling request) without producing a correcting projection delta.
+      sourceDigest: graphSourceDigest(accepted), facts: [interactionFact(context, accepted),
+        ...await approvalAttentionFacts(sql, context, { interaction: accepted })] }, async (transaction) => {
       await transaction.query(`insert into durable_interactions
         (id,workspace_id,workflow_id,run_id,execution_id,requesting_agent_id,harness,native_session_id,native_request_id,status,revision,record,
          approval_relationship_id,approval_reviewer_execution_id)

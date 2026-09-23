@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import { RUN_CURRENT_ROUTE, RunCurrentRequestSchema } from '@graphql/contracts/run-current'
 import { registerWorkspaceDefaultsRoutes } from './workspaceDefaults.js'
 import { registerHarnessSettingsRoutes } from './harnessSettings.js'
 
@@ -157,6 +158,11 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
 
   app.get<{ Params: Params; Querystring: Query }>('/api/management/workspaces/:workspaceId/runs', async (request) =>
     services.runs.list(requirePrincipal(request), RunListInputSchema.parse({ ...page(request.query), ...(request.query.workflowId !== undefined ? { workflowId: request.query.workflowId } : {}), ...request.params })))
+  app.get<{ Params: Params; Querystring: Query }>(RUN_CURRENT_ROUTE, async (request) =>
+    services.runs.current(requirePrincipal(request), RunCurrentRequestSchema.parse({
+      ...request.query, ...request.params,
+      executionSemanticsVersion: request.query.executionSemanticsVersion === '1' ? 1 : undefined,
+    })))
   app.get<{ Params: Params }>('/api/management/workspaces/:workspaceId/runs/:runId', async (request) => {
     const input = RunGetInputSchema.parse(request.params)
     return services.runs.get(requirePrincipal(request), input.workspaceId, input.runId)

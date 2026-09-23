@@ -1,4 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/server'
+import { RUN_CURRENT_MCP_TOOL, RunCurrentRequestSchema, RunCurrentResponseSchema } from '@graphql/contracts/run-current'
 
 import {
   RunEventsListInputSchema, RunGetInputSchema, RunListInputSchema, RunStartInputSchema, RunStopInputSchema,
@@ -10,6 +11,14 @@ import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'
 
 export function registerRunTools(server: McpServer, context: OperatorRequestContext): void {
+  // This bounded read uses the same runs:read grant as run_get and is included
+  // in both tools/list and operator_get_capabilities discovery.
+  if (operatorToolAvailable(context, RUN_CURRENT_MCP_TOOL)) server.registerTool(RUN_CURRENT_MCP_TOOL, {
+    description: 'Read bounded semantics-1 current Run lifecycle, latest attempt per pinned node and cleanup status. No history or native bodies. Settlement remains unconfirmed even for terminal outcomes; use run_events_list explicitly for paginated history.',
+    inputSchema: RunCurrentRequestSchema, outputSchema: RunCurrentResponseSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input) => invokeOperatorTool(context, RUN_CURRENT_MCP_TOOL,
+    () => context.services.runs.current(context.principal, input)))
   if (operatorToolAvailable(context, 'run_list')) server.registerTool('run_list', {
     description: 'List authorized durable runs with pagination.', inputSchema: RunListInputSchema,
     outputSchema: RunPageSchema.extend({ items: CompatibleWorkflowRunSchema.array() }),

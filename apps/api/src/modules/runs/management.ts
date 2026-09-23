@@ -8,6 +8,8 @@ import {
 } from '@graphql/contracts'
 import { GraphDraftSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
+import { RunCurrentRequestSchema, type RunCurrentRequest } from '@graphql/contracts/run-current'
+import { readRunCurrent } from './liveSnapshot.js'
 import { CompatibleWorkflowRunSchema as WorkflowRunSchema, RunStartV2InputSchema, assertWave25Admission } from '@graphql/contracts/wave25'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { admitOneShotRun } from './oneShotAdmission.js'
@@ -58,6 +60,19 @@ export class RunManagementService {
     return { ...page, items: page.items.map((item) => this.visibleRun(principal, item)) }
   }
 
+  async current(principal: ManagementPrincipal, input: RunCurrentRequest) {
+    const scope = RunCurrentRequestSchema.parse(input)
+    // URL/tool pins are requests, not authority. The read matches every saved
+    // identity in the same statement; a forged workflow pin cannot widen access.
+    requireAuthorization(principal, 'runs:read', {
+      workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId,
+    })
+    const current = await readRunCurrent(this.pool, scope)
+    if (!current) throw new DomainError('RUN_NOT_FOUND', `Run '${scope.runId}' was not found at the requested scope.`, 404)
+    // Compact fields contain no filesystem paths or authorization principal IDs.
+    return current
+  }
+
   async get(principal: ManagementPrincipal, workspaceId: string, runId: string) {
     const run = await this.runs.getForWorkspace(workspaceId, runId)
     if (!run) throw new DomainError('RUN_NOT_FOUND', `Run '${runId}' was not found.`, 404)
@@ -85,7 +100,7 @@ export class RunManagementService {
       occurred_at: Date; payload: Record<string, unknown>
     }>(
       `select sequence::text, source, kind, harness_execution_id, occurred_at, payload
-       from run_activity where run_id = $1 and sequence > $2 order by sequence limit $3`,
+       from run_activity where run_id = $1 and sequence > $2 order by run_activity.sequence limit $3`,
       [input.runId, input.afterSequence ?? -1, input.limit + 1],
     )
     const items = rows.rows.slice(0, input.limit).map((row) => RunActivitySchema.parse({

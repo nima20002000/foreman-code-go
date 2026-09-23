@@ -6,7 +6,7 @@ import type { CurrentExchanges } from '../../run-graph/compactSnapshot.js'
 import { RunGraphError } from '../../run-graph/errors.js'
 import { readContext, type ApprovalContext } from './context.js'
 import { acknowledgementId, reviewEvidence } from './nativeEvidence.js'
-import { interactionFact, reviewFact } from './publication.js'
+import { CANCELED_INTERACTION_RETIRED_SQL, interactionFact, reviewFact } from './publication.js'
 
 interface InteractionRow {
   record: unknown
@@ -26,6 +26,7 @@ export async function readCurrentGraphExchanges(
      where i.run_id=$1 and (
        i.status not in ('delivered','canceled')
        or (i.status='delivered' and g.approval_native_ack_id is null)
+       or (i.status='canceled' and not (${CANCELED_INTERACTION_RETIRED_SQL}))
      ) order by i.id limit $2`,
     [scope.runId, RUN_GRAPH_LIMITS.exchanges + 1],
   )
@@ -48,8 +49,9 @@ export async function readCurrentGraphExchanges(
     const interaction = DurableInteractionSchema.parse(row.record)
     // Delivery establishes a pending continuation obligation, not evidence of
     // checkpoint consumption or native work. Lease/blocked states stay private.
-    const resumeState = interaction.deliveryState === 'delivered' ? 'pending' as const : 'not_started' as const
-    const fact = interactionFact(await contextFor(interaction), interaction, resumeState)
+    // Canceled uncertainty uses the same mapper as its delta producer. Only a
+    // committed retirement receipt removes it, never a later cleanup flag alone.
+    const fact = interactionFact(await contextFor(interaction), interaction)
     if (fact.type !== 'interaction.state') throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
     interactions.push(fact.interaction)
   }

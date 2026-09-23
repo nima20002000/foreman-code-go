@@ -55,9 +55,11 @@ async function settleReview(f: Fixture) {
       observedAt: new Date().toISOString(), ...(terminal ? { kind: 'terminal' as const, submissionId: 'provider-review-turn',
         terminal: { outcome: 'succeeded' as const, evidenceKind: 'provider_terminal' as const, evidenceId: 'r1-fixture-terminal', nativeSettled: true } }
         : { kind: 'submission' as const, submissionId: 'provider-review-turn', state: 'acknowledged' as const }) }
-    await transact(f.pool, f.run.id, async (publication) => publication.source({ evidence: source,
-      sourceDigest: graphSourceDigest(observation), facts: [{ type: 'node.activity', activity: { workflowNodeId: f.reviewer.workflowNodeId, status: 'none' } }] },
-    () => recordReviewObservation(publication, observation, guard)))
+    await transact(f.pool, f.run.id, async (publication) => {
+      await publication.source({ evidence: source,
+        sourceDigest: graphSourceDigest(observation), facts: [{ type: 'node.activity', activity: { workflowNodeId: f.reviewer.workflowNodeId, status: 'none' } }] }, async () => undefined)
+      await recordReviewObservation(publication, observation, guard)
+    })
     await f.repository.coordination.transitionReviewJob(f.job.id, 'review-owner-token', terminal ? 'completed' : 'acknowledged', {
       writerFence: { id: `lane-${f.reviewer.id}`, token: 'native-writer-token' },
       providerTurnOrMessageId: 'provider-review-turn', releaseLease: terminal,
