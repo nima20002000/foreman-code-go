@@ -159,6 +159,6 @@ describe.each(br2001Providers)('BR2-001: %s final-text choice carrier', (provide
       expect(() => normalizeOneShotTerminal(f.version, input)).toThrow()
       expect(() => oneShotResolution(f.version, input)).toThrow()
     }
-    expect(WAVE25_ADMISSION_ENABLED).toBe(false)
+    expect(WAVE25_ADMISSION_ENABLED).toBe(true)
   })
 })
