@@ -300,6 +300,7 @@ describe.skipIf(!postgresEnabled)('WR4-002 committed mixed-v1/v2 workflow read p
     expect((await app.inject({ method: 'POST', url: path, headers: { host: 'localhost', origin: 'http://localhost', cookie: wrongCookie },
       payload: { ...input, commandId: randomUUID() } })).statusCode).toBe(403)
     const { executionSemanticsVersion: _semantics, ...legacyInput } = input
+    expect(_semantics).toBe(2)
     const legacy = await app.inject({ method: 'POST', url: path, headers: { host: 'localhost', origin: 'http://localhost', cookie },
       payload: { ...legacyInput, commandId: randomUUID() } })
     expect(legacy.statusCode).toBe(409)
