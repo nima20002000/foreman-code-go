@@ -23,7 +23,7 @@ export function registerRunGraphTools(server: McpServer, context: OperatorReques
     }
   }
   server.registerTool(RUN_GRAPH_MCP_TOOLS.capabilities, {
-    description: 'Read graph v1 capabilities. Graph reads do not enable new-Run admission.',
+    description: 'Read graph v1 capabilities, including the source-controlled v2 authoring and new-Run admission state.',
     inputSchema: z.object({}).strict(), outputSchema: RunGraphCapabilitiesSchema, annotations,
   }, async () => invoke(RUN_GRAPH_MCP_TOOLS.capabilities, () => reads.capabilities(context.principal)))
   server.registerTool(RUN_GRAPH_MCP_TOOLS.snapshot, {

@@ -1,7 +1,7 @@
 import type pg from 'pg'
 import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import {
-  DISABLED_RUN_GRAPH_CAPABILITIES, RunGraphCapabilitiesSchema, graphJsonBytes,
+  DISABLED_RUN_GRAPH_CAPABILITIES, RunGraphCapabilitiesSchema, WAVE25_ADMISSION_ENABLED, graphJsonBytes,
   type RunGraphSnapshot, type RunGraphPage, type RunGraphReset,
 } from '@graphql/contracts/wave25'
 import { hasAction, requireAuthorization } from '../access/policy.js'
@@ -24,8 +24,8 @@ export class RunGraphReadService implements RunGraphReadApi {
     this.principal(principal)
     if (!this.options.qualifiedReads) return DISABLED_RUN_GRAPH_CAPABILITIES
     return RunGraphCapabilitiesSchema.parse({ ...DISABLED_RUN_GRAPH_CAPABILITIES,
-      protocolVersions: [1], executionSemanticsVersions: [2] })
-    // Reader qualification NEVER enables authoring/admission. That remains the coordinator's gate.
+      protocolVersions: [1], executionSemanticsVersions: [2], authoringSemanticsVersions: [2],
+      admissionEnabled: WAVE25_ADMISSION_ENABLED })
   }
   private principal(input: ManagementPrincipal): ManagementPrincipal {
     try {

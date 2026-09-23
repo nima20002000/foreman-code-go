@@ -7,7 +7,6 @@ import {
   type ActivityKind,
   type ActivitySource,
   type ExecutionResult,
-  type GetRunResponse,
   type HarnessExecution,
   type HarnessNativeEvent,
   type RunActivity,
@@ -487,7 +486,7 @@ export class PostgresRunRepository implements RunRepository {
     }))
   }
 
-  async getDetails(workspaceId: string, runId: string): Promise<GetRunResponse | undefined> {
+  async getDetails(workspaceId: string, runId: string): ReturnType<typeof readRunDetails> {
     return readRunDetails(this.pool, workspaceId, runId)
   }
 

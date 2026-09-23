@@ -28,7 +28,7 @@ export function PersistedWorkflowBoundary({ workspaceId, workflowId, workflow, c
     <h2>{definition.name}</h2>
     <p>Execution semantics 2 · Saved workflow version {definition.version ?? 'not published'}</p>
     <p>Entry node: <code>{definition.entryNodeId ?? 'not selected'}</code></p>
-    <p>This typed workflow uses the v2 draft editor, not the legacy graph editor. New-Run admission remains disabled.</p>
+    <p>Open the typed draft editor to change this workflow or start its current saved version.</p>
     <Link to="/workspaces/$workspaceId/workflows/$workflowId/draft" params={{ workspaceId, workflowId }}>
       Open typed draft editor
     </Link>

@@ -67,7 +67,9 @@ function harness(context = fixture()) {
     return result
   }
   const api: NextDraftApi = { write, open: async () => server, get: async () => server,
-    context: async () => ({ draft: server, agents: context.agents }), validate: async () => ({ valid: true, issues: [] }) }
+    context: async () => ({ draft: server, agents: context.agents }), validate: async () => ({ valid: true, issues: [] }),
+    start: async () => { throw new Error('Authoring fixture does not start Runs') },
+    runs: async () => ({ items: [], pageInfo: { nextCursor: null } }) }
   const access = { get: () => edit, update: (_: string, update: (edit: NextDraftEdit) => NextDraftEdit) => { if (edit) edit = update(edit) } }
   let sequence = 0
   return { api, calls, committed, access, edit: () => edit!, server: () => server,

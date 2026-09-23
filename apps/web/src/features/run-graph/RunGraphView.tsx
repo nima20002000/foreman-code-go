@@ -20,6 +20,7 @@ import { createRunViewTopologyProjector, type RunViewNode, type RunViewEdge } fr
 import { RunAttentionAnnouncement, RunAttentionTools, RunExchangeInspector } from './RunAttention'
 import { RunVisualEffects } from './RunVisualEffects'
 import { selectRelationshipSummary, selectVisualStale, selectVisualStopped } from './exchangePresentation'
+import { useStopManagedRunMutation } from '../../shared/api/query'
 import type { RunGraphRecord } from './types'
 import './runGraph.css'
 
@@ -89,6 +90,7 @@ const ImmutableCanvas = memo(function ImmutableCanvas() {
 
 function GraphStatus() {
   const { scope, retry } = useRunGraphContext()
+  const stop = useStopManagedRunMutation()
   const transport = useRunGraphSelection(selectGraphTransport)
   const run = useRunGraphSelection(selectGraphRun)
   const phase = transport?.phase ?? 'loading'
@@ -103,6 +105,12 @@ function GraphStatus() {
             : phase === 'denied' ? 'Run access unavailable' : 'Updates unavailable; showing last confirmed facts'}</p>
       {transport?.reason ? <small>{transport.reason}</small> : null}
       {phase === 'error' || phase === 'stale' ? <Button variant="secondary" onClick={retry}>Retry synchronization</Button> : null}
+      {scope.executionSemanticsVersion === 2 && run && (run.executionState !== 'completed' || run.cleanupPending)
+        ? <Button variant="secondary" disabled={stop.isPending} onClick={() => stop.mutate({
+          workspaceId: scope.workspaceId, runId: scope.runId, commandId: crypto.randomUUID(),
+        })}>{stop.isPending ? 'Requesting Stop…' : 'Stop Run'}</Button> : null}
+      {stop.isSuccess ? <small>Stop {stop.data.status}. Native process exit is not yet verified.</small> : null}
+      {stop.isError ? <small role="alert">Stop failed: {stop.error.message}</small> : null}
     </div>
   </header>
 }

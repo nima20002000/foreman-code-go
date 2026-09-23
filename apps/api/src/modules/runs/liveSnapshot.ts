@@ -1,14 +1,15 @@
+import { HarnessExecutionSchema, ReviewJobSchema, WorkflowRunSchema } from '@graphql/contracts'
 import {
-  GetRunResponseSchema, HarnessExecutionSchema, ReviewJobSchema, WorkflowRunSchema, WorkflowVersionSchema,
-  type GetRunResponse,
-} from '@graphql/contracts'
+  CompatibleRunDetailsSchema, CompatibleWorkflowRunSchema, CompatibleWorkflowVersionSchema,
+} from '@graphql/contracts/wave25'
+import type { z } from 'zod'
 import type pg from 'pg'
 import { RunCurrentRequestSchema, RunCurrentResponseSchema, type RunCurrentRequest, type RunCurrentResponse } from '@graphql/contracts/run-current'
 import { DomainError } from '../errors.js'
 import { projectRunLiveActivity, type LiveActivityEvent } from './liveActivity.js'
 
 /** A single MVCC snapshot: status, native evidence and review ownership cannot come from different polls. */
-export async function readRunDetails(pool: pg.Pool, workspaceId: string, runId: string): Promise<GetRunResponse | undefined> {
+export async function readRunDetails(pool: pg.Pool, workspaceId: string, runId: string): Promise<z.infer<typeof CompatibleRunDetailsSchema> | undefined> {
   const result = await pool.query<{
     run: unknown; version: unknown; executions: unknown[]; events: LiveActivityEvent[]; cleanup_pending: boolean
     reviews: Array<{ executionId: string; record: unknown }>
@@ -60,11 +61,12 @@ export async function readRunDetails(pool: pg.Pool, workspaceId: string, runId: 
   )
   const row = result.rows[0]
   if (!row) return undefined
-  const run = WorkflowRunSchema.parse(row.run)
-  const version = WorkflowVersionSchema.parse(row.version)
+  const run = CompatibleWorkflowRunSchema.parse(row.run)
+  const version = CompatibleWorkflowVersionSchema.parse(row.version)
   if (run.id !== runId || run.workspaceId !== workspaceId || version.id !== run.workflowVersionId
     || version.workspaceId !== workspaceId || version.workflowId !== run.workflowId
-    || version.definition.id !== run.workflowId || version.definition.workspaceId !== workspaceId) {
+    || version.definition.id !== run.workflowId || version.definition.workspaceId !== workspaceId
+    || ('executionSemanticsVersion' in run) !== ('executionSemanticsVersion' in version)) {
     throw new DomainError('RUN_IDENTITY_INVALID', 'The saved Run and workflow version do not match.', 409)
   }
   const executions = row.executions.map((value) => HarnessExecutionSchema.parse(value))
@@ -72,7 +74,7 @@ export async function readRunDetails(pool: pg.Pool, workspaceId: string, runId: 
     const parsed = ReviewJobSchema.safeParse(value.record)
     return parsed.success ? [{ executionId: value.executionId, job: parsed.data }] : []
   })
-  return GetRunResponseSchema.parse({
+  const details = {
     run, executions, cleanupPending: row.cleanup_pending,
     activity: row.events.map((event) => ({
       id: `activity-${run.id}-${event.sequence}`, runId: run.id, sequence: Number(event.sequence),
@@ -80,7 +82,11 @@ export async function readRunDetails(pool: pg.Pool, workspaceId: string, runId: 
       ...(event.harnessExecutionId ? { harnessExecutionId: event.harnessExecutionId } : {}),
       occurredAt: new Date(event.occurredAt).toISOString(), payload: event.payload,
     })),
-    liveActivity: projectRunLiveActivity({ run, definition: version.definition, executions, events: row.events, reviews }),
+  }
+  if ('executionSemanticsVersion' in version) return CompatibleRunDetailsSchema.parse(details)
+  return CompatibleRunDetailsSchema.parse({ ...details,
+    liveActivity: projectRunLiveActivity({ run: WorkflowRunSchema.parse(run), definition: version.definition,
+      executions, events: row.events, reviews }),
   })
 }
 
