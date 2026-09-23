@@ -132,7 +132,10 @@ export async function readNodeResolutions(sql: GraphTransactionSql, scope: RunGr
 export async function readInputBindings(sql: GraphTransactionSql, scope: RunGraphScope): Promise<InputBinding[]> {
   assertGraphTransaction(sql)
   const result = await sql.query<{ record: unknown }>(
-    'select record from run_input_bindings where run_id=$1 order by recipient_execution_id,input_ordinal limit 8001', [scope.runId],
+    `select b.record from run_input_bindings b
+     left join run_graph_effects e on e.run_id=b.run_id and e.effect_kind='input.bind'
+       and e.entity_id=b.recipient_execution_id
+     where b.run_id=$1 order by e.first_sequence nulls first,b.recipient_execution_id,b.input_ordinal limit 8001`, [scope.runId],
   )
   if (result.rows.length > 8000) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
   return result.rows.map((row) => InputBindingSchema.parse(row.record))

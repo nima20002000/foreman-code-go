@@ -70,6 +70,10 @@ describe.skipIf(!postgresEnabled)('ENG-03 B PostgreSQL duplicate and checkpoint 
   it('persists unequal-depth selected inputs in relationship order and keeps the Run open for a slow sibling', async () => {
     const fixture = await seedAgent3(db.pool, db.directory, fanInFixture())
     const { owner, store } = await ownedAgent3(db.pool, fixture); owners.push(owner)
+    const authorize = async () => undefined
+    const assemble = createCompactSnapshotAssembler(async () => ({ interactions: [], reviews: [] }))
+    const snapshot = () => readRunGraphSnapshot(db.pool, { scope: fixture.scope, protocolVersion: 1 }, authorize, assemble)
+    const baseline = await snapshot()
     async function admit(nodeId: string) {
       return store.admit(nodeId, () => candidateFor(fixture, nodeId))
     }
@@ -121,6 +125,18 @@ describe.skipIf(!postgresEnabled)('ENG-03 B PostgreSQL duplicate and checkpoint 
     await store.completeRun()
     expect((await db.pool.query<{ record: { outcome: string } }>('select record from runs where id=$1', [fixture.run.id])).rows[0]!.record.outcome).toBe('succeeded')
     expect((await db.pool.query('select 1 from harness_executions where run_id=$1 and workflow_node_id=$2', [fixture.run.id, 'join'])).rowCount).toBe(1)
+    const current = await snapshot()
+    let replay = baseline
+    for (;;) {
+      const page = await readRunGraphPage(db.pool, { scope: fixture.scope, protocolVersion: 1,
+        afterSequence: replay.asOfSequence }, authorize)
+      const applied = applyRunGraphPageFixture(replay, page, 1, 1)
+      expect(applied.kind).toBe('applied')
+      replay = applied.snapshot
+      if (page.kind === 'page' && !page.hasMore) break
+    }
+    expect(replay.asOfSequence).toBe(current.asOfSequence)
+    expect(replay).toEqual(current)
   })
 
   it('commits one launch, accepted result, route and exact input under concurrent duplicate calls', async () => {
