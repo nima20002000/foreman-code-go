@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { pluginHttpRead } from './pluginReadCancellation.js'
 import {
-  HarnessOptionsInputSchema, HarnessOptionsResultSchema, HarnessMcpListInputSchema, HarnessMcpListResultSchema,
+  HarnessOptionsInputSchema, HarnessOptionsRefreshInputSchema, HarnessOptionsResultSchema, HarnessMcpListInputSchema, HarnessMcpListResultSchema,
   HarnessMcpManagedInputSchema, HarnessMcpPlanInputSchema, HarnessMcpPlanResultSchema, HarnessMcpPlansResultSchema, HarnessMcpPlanSchema,
   HarnessMcpPlanGetInputSchema, HarnessMcpDecisionInputSchema, HarnessMcpReconcileInputSchema,
   HarnessDirectoryBrowseInputSchema, HarnessDirectoryBrowseResultSchema,
@@ -26,10 +26,10 @@ export function registerHarnessSettingsRoutes(app: FastifyInstance, services: Op
   app.post('/api/management/harnesses/:harness/refresh', async (request) => {
     requireAuthorization(requirePrincipal(request), 'harnesses:read')
     const { harness } = HarnessOptionsInputSchema.parse(request.params)
+    const { refresh } = HarnessOptionsRefreshInputSchema.parse({ harness, ...(request.body as object ?? {}) })
     services.harnesses.invalidateChecks()
-    services.extensions?.native.invalidateOptions()
     if (!services.extensions?.native) throw new DomainError('NATIVE_OPTIONS_UNAVAILABLE', 'Native discovery is unavailable.', 503)
-    return HarnessOptionsResultSchema.parse(await services.extensions.native.options(harness))
+    return HarnessOptionsResultSchema.parse(await services.extensions.native.refreshOptions(harness, refresh))
   })
   const settings = () => {
     if (!services.harnessSettings) throw new DomainError('HARNESS_SETTINGS_UNAVAILABLE', 'Native connection management is unavailable.', 503)

@@ -14,6 +14,10 @@ const extensions: Partial<Record<OperatorToolName,{scope:ScopeKind;extension:key
     "scope": "global",
     "extension": "native"
   },
+  "harness_options_refresh": {
+    "scope": "global",
+    "extension": "native"
+  },
   "harness_mcp_detection_get": {
     "scope": "workspace",
     "extension": "workspace"

@@ -157,7 +157,7 @@ export function useChangeCodexPlugin() {
 export function useNativeHarnessOptions(harness: Harness) {
   useHarnessSessionEpoch()
   return useQuery({ queryKey: harnessSettingsKeys.options(harness), enabled: !sessionIsSwitching(), staleTime: 300_000, retry: false,
-    refetchOnWindowFocus: true, refetchInterval: 330_000,
+    refetchOnWindowFocus: true,
     queryFn: ({ signal }) => apiClient.request(`/api/management/harnesses/${harness}/options`, HarnessOptionsResultSchema, { signal }),
   })
 }
@@ -180,14 +180,22 @@ export function useAutomaticHarnessCheck(configuration: HarnessConfiguration | u
   return { result, current: Boolean(snapshot) && snapshot === settled }
 }
 
-export function useRefreshNativeHarness(harness: Harness) {
+export function useRefreshNativeHarness(harness: Harness, refresh: 'catalog' | 'upstream' = 'catalog') {
   const client = useQueryClient()
+  const epoch = useHarnessSessionEpoch()
   return useMutation({ retry: false,
-    mutationFn: () => apiClient.request(`/api/management/harnesses/${harness}/refresh`, HarnessOptionsResultSchema, { method: 'POST', body: {} }),
-    onSuccess: async (data) => {
-      client.setQueryData(harnessSettingsKeys.options(harness), data)
+    mutationFn: () => {
+      if (epoch !== sessionGeneration() || sessionIsSwitching()) throw new SessionChangedError()
+      return apiClient.request(`/api/management/harnesses/${harness}/refresh`, HarnessOptionsResultSchema, { method: 'POST', body: { refresh } })
+    },
+    onSuccess: (data) => {
+      if (epoch !== sessionGeneration() || sessionIsSwitching()) return
+      client.setQueryData(harnessSettingsKeys.options(data.harness), data)
+    },
+    onSettled: async () => {
+      if (epoch !== sessionGeneration() || sessionIsSwitching()) return
       await Promise.all([
-        client.invalidateQueries({ queryKey: [...harnessSettingsKeys.root, 'check'] }),
+        client.invalidateQueries({ queryKey: [...harnessSettingsKeys.root, 'check', epoch] }),
         client.invalidateQueries({ queryKey: ['workbench', 'management', 'harnesses'] }),
       ])
     },

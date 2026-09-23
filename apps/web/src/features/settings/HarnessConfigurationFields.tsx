@@ -30,6 +30,7 @@ export function HarnessConfigurationFields({ editor, onChange, routedApproval = 
   const presetsQuery = useHarnessDefaultsQuery({ enabled: allowHarnessChange && !harnessDefaults })
   const presets = harnessDefaults ?? presetsQuery.data?.defaults
   const refresh = useRefreshNativeHarness(value.harness)
+  const upstreamRefresh = useRefreshNativeHarness(value.harness, 'upstream')
   let candidate: HarnessConfiguration | undefined
   try { candidate = prepareHarnessEditor(editor) } catch { /* Incomplete drafts are validated on Save, never sent as valid configurations. */ }
   const configurationSection = section !== 'connections' && section !== 'workspace' && section !== 'plugins'
@@ -64,9 +65,12 @@ export function HarnessConfigurationFields({ editor, onChange, routedApproval = 
       routedApproval={routedApproval} allowAutoReview={allowAutoReview} requiresResume={requiresResume} workspaceId={workspaceId} />
     {check.current && check.result.isError ? <Alert live tone="danger" title={check.result.error.message} /> : null}
     {refresh.isError ? <Alert live tone="danger" title={refresh.error.message} /> : null}
+    {upstreamRefresh.isError ? <Alert live tone="danger" title={upstreamRefresh.error.message} /> : null}
     {issues.length ? <p className="n-field-error" role="alert">{[...new Set(issues.map((issue) => issue.message))].join(' ')}</p> : null}
     {configurationSection ? <div className="settings-check-row"><span role="status" className={status === 'Ready' ? 'harness-success' : 'harness-muted'}>{status}</span>
-      <Button size="sm" variant="ghost" disabled={refresh.isPending} onClick={() => refresh.mutate()}>{refresh.isPending ? 'Checking…' : 'Refresh checks'}</Button>
+      <Button size="sm" variant="ghost" disabled={refresh.isPending || upstreamRefresh.isPending} onClick={() => refresh.mutate()}>{refresh.isPending ? 'Checking…' : 'Refresh checks'}</Button>
+      {value.harness === 'opencode' && section === 'model' ? <Button size="sm" variant="ghost" disabled={refresh.isPending || upstreamRefresh.isPending}
+        onClick={() => upstreamRefresh.mutate()}>{upstreamRefresh.isPending ? 'Updating…' : 'Update models.dev catalog'}</Button> : null}
       {allowHarnessChange && section === 'model' && presets?.[value.harness] ? <Button size="sm" variant="ghost" onClick={() => setResetChoice('saved')}>Use provider preset</Button> : null}
       {allowHarnessChange && section === 'model' ? <Button size="sm" variant="ghost" onClick={() => setResetChoice('builtin')}>Use built-in defaults</Button> : null}
     </div> : null}

@@ -6,7 +6,10 @@ import { QualificationCache } from './qualificationCache.js'
 import { qualificationError } from './qualificationErrors.js'
 import { CodexAppServerSessionManager } from './codexAppServer.js'
 import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from './opencodeServer.js'
+import { QUALIFIED_OPENCODE_VERSION } from './opencodeTransport.js'
 import { harnessSettingSupport } from './operatorOptions.js'
+import { runCommand } from './process.js'
+import { HarnessExecutionError } from './errors.js'
 
 export class NativeConfigurationService {
   private readonly catalogCache = new QualificationCache<ReturnType<typeof HarnessOptionsResultSchema.parse>>()
@@ -40,6 +43,25 @@ export class NativeConfigurationService {
   async options(harness: 'codex' | 'opencode') {
     try { return await this.catalogCache.get(harness, () => this.discoverOptions(harness)) }
     catch (error) { throw qualificationError(error) }
+  }
+
+  async refreshOptions(harness: 'codex' | 'opencode', refresh: 'catalog' | 'upstream' = 'catalog') {
+    try {
+      try {
+        if (refresh === 'upstream') {
+          if (harness !== 'opencode') throw new HarnessExecutionError('CODEX_MODEL_REFRESH_UNSUPPORTED', 'Codex has no upstream catalog refresh command.')
+          const signal = AbortSignal.timeout(60_000)
+          const version = await runCommand(this.openCodeBinary, ['--version'], this.directory, signal)
+          if (version.exitCode !== 0 || (version.stdout || version.stderr).trim() !== QUALIFIED_OPENCODE_VERSION) {
+            throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'The configured OpenCode CLI is not the qualified release.')
+          }
+          // Update the shared registry without loading plugins; the fresh /provider read still filters connected providers.
+          const result = await runCommand(this.openCodeBinary, ['models', '--refresh', '--pure'], this.directory, signal)
+          if (result.exitCode !== 0) throw new HarnessExecutionError('OPENCODE_MODEL_REFRESH_UNAVAILABLE', 'OpenCode could not refresh its models.dev cache.')
+        }
+      } finally { this.invalidateOptions() }
+      return await this.options(harness)
+    } catch (error) { throw qualificationError(error) }
   }
 
   private async discoverOptions(harness: 'codex' | 'opencode') {
