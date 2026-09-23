@@ -6,6 +6,7 @@ import {
   type Agent,
   type AgentConfigurationVersion,
   type WorkflowDefinition,
+  type CompatibleWorkflowDefinition,
   type WorkflowVersion,
 } from '@graphql/contracts'
 import type pg from 'pg'
@@ -20,7 +21,7 @@ import { buildExecutableWorkflowVersion, buildExecutableWorkflowVersionV2 } from
 export class PostgresWorkflowRepository implements WorkflowRepository {
   constructor(private readonly pool: pg.Pool) {}
 
-  async list(workspaceId: string): Promise<WorkflowDefinition[]> {
+  async list(workspaceId: string): Promise<CompatibleWorkflowDefinition[]> {
     const result = await this.pool.query<{ record: unknown }>(
       'select record from workflows where workspace_id = $1 order by created_at, id',
       [workspaceId],
@@ -28,7 +29,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     return result.rows.map((row) => WorkflowDefinitionSchema.parse(row.record))
   }
 
-  async get(workspaceId: string, workflowId: string): Promise<WorkflowDefinition | undefined> {
+  async get(workspaceId: string, workflowId: string): Promise<CompatibleWorkflowDefinition | undefined> {
     const result = await this.pool.query<{ record: unknown }>(
       'select record from workflows where workspace_id = $1 and id = $2',
       [workspaceId, workflowId],

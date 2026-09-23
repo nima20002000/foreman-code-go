@@ -1,57 +1,26 @@
 import { z } from 'zod'
 import {
   AgentConfigurationVersionSchema, AcceptedWorkflowApprovalConfigurationSchema,
-  ExecutionResultSchema, HarnessWorkflowCompatibilitySchema, RunInputSchema, IdSchema, TimestampSchema, WorkflowDefinitionSchema,
-  WorkflowEdgeSchema, WorkflowNodeSchema, WorkflowVersionSchema, WorkflowRunSchema,
+  ExecutionResultSchema, HarnessWorkflowCompatibilitySchema, RunInputSchema, IdSchema, TimestampSchema,
+  WorkflowVersionSchema, WorkflowRunSchema,
+  ChoiceOutcomeSchema, WorkflowChoiceSchema, WorkflowDefinitionV2Schema, type WorkflowChoice,
 } from '../index.js'
 import { canonicalGraphJson } from './json.js'
+
+// Preserve the wave25 import surface while root/management share the same strict read schemas.
+export {
+  ChoiceOutcomeSchema, ChoiceTargetSchema, WorkflowChoiceSchema, WorkflowNodeV2Schema,
+  WorkflowExecutionRelationshipSchema, WorkflowApprovalRelationshipSchema, WorkflowRelationshipSchema,
+  WorkflowDefinitionV2Schema, CompatibleWorkflowDefinitionSchema,
+} from '../index.js'
+export type {
+  WorkflowChoice, WorkflowRelationship, WorkflowDefinitionV2, CompatibleWorkflowDefinition,
+} from '../index.js'
 
 export const EXECUTION_SEMANTICS_VERSION = 2 as const
 /** This is deliberately not an environment toggle. Qualification changes the admission boundary later. */
 export const WAVE25_ADMISSION_ENABLED = false as const
 export const ExecutionSemanticsVersionSchema = z.union([z.literal(1), z.literal(2)])
-export const ChoiceOutcomeSchema = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/)
-export const ChoiceTargetSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('edge'), relationshipId: IdSchema }).strict(),
-  z.object({ kind: z.literal('branch_end') }).strict(),
-])
-export const WorkflowChoiceSchema = z.object({
-  outcomes: z.array(z.object({ outcome: ChoiceOutcomeSchema, target: ChoiceTargetSchema }).strict()).min(1).max(16),
-}).strict().superRefine((value, context) => {
-  const outcomes = new Set<string>()
-  for (const [index, declaration] of value.outcomes.entries()) {
-    if (outcomes.has(declaration.outcome)) context.addIssue({ code: 'custom', path: ['outcomes', index], message: 'outcomes must be unique' })
-    outcomes.add(declaration.outcome)
-  }
-})
-export type WorkflowChoice = z.infer<typeof WorkflowChoiceSchema>
-
-export const WorkflowNodeV2Schema = z.object({
-  ...WorkflowNodeSchema.shape,
-  join: z.object({ mode: z.literal('all') }).strict().optional(),
-  choice: WorkflowChoiceSchema.optional(),
-}).strict().superRefine((node, context) => {
-  if (!node.name && !node.label) context.addIssue({ code: 'custom', path: ['name'], message: 'a workflow node requires name or label' })
-})
-const relationshipShape = WorkflowEdgeSchema.omit({ route: true }).shape
-export const WorkflowExecutionRelationshipSchema = z.object({
-  ...relationshipShape, kind: z.literal('execution'),
-}).strict()
-export const WorkflowApprovalRelationshipSchema = z.object({
-  ...relationshipShape, kind: z.literal('approval'),
-}).strict()
-export const WorkflowRelationshipSchema = z.discriminatedUnion('kind', [
-  WorkflowExecutionRelationshipSchema, WorkflowApprovalRelationshipSchema,
-])
-export type WorkflowRelationship = z.infer<typeof WorkflowRelationshipSchema>
-
-/** Editable v2 records can be incomplete; executable acceptance below is separate. */
-export const WorkflowDefinitionV2Schema = WorkflowDefinitionSchema.extend({
-  executionSemanticsVersion: z.literal(2), entryNodeId: IdSchema.nullable(),
-  nodes: z.array(WorkflowNodeV2Schema).max(1000),
-  edges: z.array(WorkflowRelationshipSchema).max(8000),
-}).strict()
-export type WorkflowDefinitionV2 = z.infer<typeof WorkflowDefinitionV2Schema>
 export const WorkflowVersionV2Schema = z.object({
   ...WorkflowVersionSchema.shape,
   executionSemanticsVersion: z.literal(2),
@@ -174,7 +143,6 @@ export const ExecutableWorkflowV2Schema = z.object({
   }
 })
 
-export const CompatibleWorkflowDefinitionSchema = z.union([WorkflowDefinitionSchema, WorkflowDefinitionV2Schema])
 export const CompatibleWorkflowVersionSchema = z.union([WorkflowVersionSchema, WorkflowVersionV2Schema])
 // safeExtend preserves the legacy Run lifecycle refinements while adding only the new-mode pin.
 export const WorkflowRunV2Schema = WorkflowRunSchema.safeExtend({ executionSemanticsVersion: z.literal(2) })

@@ -21,6 +21,7 @@ import {
   RunInputSchema,
   TimestampSchema,
   WorkflowDefinitionSchema,
+  CompatibleWorkflowDefinitionSchema,
   WorkflowApprovalConfigurationSchema,
   WorkflowNodeSchema,
   WorkflowEdgeSchema,
@@ -189,7 +190,7 @@ export const ManagedWorkspaceCommandResultSchema = z.object({ value: ManagedWork
 
 export const ManagedWorkflowSchema = z
   .object({
-    workflow: WorkflowDefinitionSchema,
+    workflow: CompatibleWorkflowDefinitionSchema,
     revision: ExpectedRevisionSchema,
     currentVersionId: IdSchema.nullable(),
     archivedAt: TimestampSchema.nullable(),

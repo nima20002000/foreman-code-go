@@ -9,6 +9,7 @@ import type { WorkspaceDetailsResponse } from '@graphql/contracts'
 
 import { Button } from '../shared/ui/nocturne'
 import { WorkflowGraph } from '../features/graph'
+import { PersistedWorkflowBoundary } from '../features/graph/PersistedWorkflowBoundary'
 import { ApiError } from '../shared/api/client'
 import {
   queryKeys,
@@ -49,7 +50,7 @@ export function WorkspaceRouteEntry() {
   const { agentId, workflowId } = useSearch({ from: '/workspaces/$workspaceId' })
   const navigate = useNavigate({ from: '/workspaces/$workspaceId' })
   const queryClient = useQueryClient()
-  const workspaceQuery = useWorkspaceDetailsQuery(workspaceId)
+  const workspaceQuery = useWorkspaceDetailsQuery(workspaceId, { refetchInterval: 1_000 })
   const managedWorkflowsQuery = useManagedWorkflowsQuery(workspaceId)
 
   const selectAgent = useCallback(
@@ -154,14 +155,16 @@ export function WorkspaceRouteEntry() {
       slots={{
         workspace: <WorkspaceHeader details={details} />,
         graph: workflow ? (
-          <WorkflowGraph
-            key={`${workspaceId}:${workflow.id}`}
-            workspaceId={workspaceId}
-            workflowId={workflow.id}
-            selectedAgentId={agentId}
-            onSelectAgent={selectAgent}
-            onClearAgent={clearAgent}
-          />
+          <PersistedWorkflowBoundary workspaceId={workspaceId} workflowId={workflow.id} workflow={workflow}>
+            <WorkflowGraph
+              key={`${workspaceId}:${workflow.id}`}
+              workspaceId={workspaceId}
+              workflowId={workflow.id}
+              selectedAgentId={agentId}
+              onSelectAgent={selectAgent}
+              onClearAgent={clearAgent}
+            />
+          </PersistedWorkflowBoundary>
         ) : undefined,
       }}
     />

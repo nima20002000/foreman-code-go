@@ -507,9 +507,11 @@ export class OneShotRunRepository {
       const resolution = oneShotResolution(context.version, execution)
       const state = await readOneShotRunState(context.sql, context.run.id, context.run, context.stopped)
       state.cleanupPending = true
-      const ids = [execution.workflowNodeId]
+      // Cleanup changes every pinned node's projection at this COMMIT. Compute
+      // one coherent after-state, including this execution's negative terminal.
+      const ids = context.version.definition.nodes.map((node) => node.id)
       const before = await readPublicNodeProjection(context.sql, context.scope, ids)
-      const after = await readPublicNodeProjection(context.sql, context.scope, ids, { executions: [execution] })
+      const after = await readPublicNodeProjection(context.sql, context.scope, ids, { executions: [execution], cleanupPending: true })
       const facts: GraphFact[] = [...publicNodeProjectionDelta(before, after),
         { type: 'node.resolved', resolution }, { type: 'run.state', state },
       ]

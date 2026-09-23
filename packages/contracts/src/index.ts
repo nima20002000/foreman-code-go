@@ -827,6 +827,54 @@ export const WorkflowDefinitionSchema = z
   .strict();
 export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;
 
+export const ChoiceOutcomeSchema = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/)
+export const ChoiceTargetSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('edge'), relationshipId: IdSchema }).strict(),
+  z.object({ kind: z.literal('branch_end') }).strict(),
+])
+export const WorkflowChoiceSchema = z.object({
+  outcomes: z.array(z.object({ outcome: ChoiceOutcomeSchema, target: ChoiceTargetSchema }).strict()).min(1).max(16),
+}).strict().superRefine((value, context) => {
+  const outcomes = new Set<string>()
+  for (const [index, declaration] of value.outcomes.entries()) {
+    if (outcomes.has(declaration.outcome)) context.addIssue({ code: 'custom', path: ['outcomes', index], message: 'outcomes must be unique' })
+    outcomes.add(declaration.outcome)
+  }
+})
+export type WorkflowChoice = z.infer<typeof WorkflowChoiceSchema>
+
+export const WorkflowNodeV2Schema = z.object({
+  ...WorkflowNodeSchema.shape,
+  join: z.object({ mode: z.literal('all') }).strict().optional(),
+  choice: WorkflowChoiceSchema.optional(),
+}).strict().superRefine((node, context) => {
+  if (!node.name && !node.label) context.addIssue({ code: 'custom', path: ['name'], message: 'a workflow node requires name or label' })
+})
+const relationshipShape = WorkflowEdgeSchema.omit({ route: true }).shape
+export const WorkflowExecutionRelationshipSchema = z.object({
+  ...relationshipShape, kind: z.literal('execution'),
+}).strict()
+export const WorkflowApprovalRelationshipSchema = z.object({
+  ...relationshipShape, kind: z.literal('approval'),
+}).strict()
+export const WorkflowRelationshipSchema = z.discriminatedUnion('kind', [
+  WorkflowExecutionRelationshipSchema, WorkflowApprovalRelationshipSchema,
+])
+export type WorkflowRelationship = z.infer<typeof WorkflowRelationshipSchema>
+
+/** Editable v2 records can be incomplete; executable acceptance in wave25 is separate. */
+export const WorkflowDefinitionV2Schema = WorkflowDefinitionSchema.extend({
+  executionSemanticsVersion: z.literal(2), entryNodeId: IdSchema.nullable(),
+  nodes: z.array(WorkflowNodeV2Schema).max(1000),
+  edges: z.array(WorkflowRelationshipSchema).max(8000),
+}).strict()
+export type WorkflowDefinitionV2 = z.infer<typeof WorkflowDefinitionV2Schema>
+/** Persisted reads accept strict legacy definitions or explicitly tagged typed definitions.
+ * This is not an execution-admission boundary and never strips v2 metadata. */
+export const CompatibleWorkflowDefinitionSchema = z.union([WorkflowDefinitionSchema, WorkflowDefinitionV2Schema])
+export type CompatibleWorkflowDefinition = z.infer<typeof CompatibleWorkflowDefinitionSchema>
+
+
 /** Immutable workflow snapshot pinned by every run. */
 export const WorkflowVersionSchema = z
   .object({
@@ -1449,7 +1497,7 @@ export const WorkspaceDetailsSchema = z
   .object({
     workspace: WorkspaceSchema,
     agents: z.array(AgentSchema),
-    workflows: z.array(WorkflowDefinitionSchema),
+    workflows: z.array(CompatibleWorkflowDefinitionSchema),
     runs: z.array(WorkflowRunSummarySchema),
     resources: z.array(ResourceSummarySchema),
     browserProfiles: z.array(BrowserProfileSummarySchema).optional(),
@@ -1490,7 +1538,7 @@ export const GetWorkflowRequestSchema = z
   .strict();
 export type GetWorkflowRequest = z.infer<typeof GetWorkflowRequestSchema>;
 export const GetWorkflowResponseSchema = z
-  .object({ workflow: WorkflowDefinitionSchema })
+  .object({ workflow: CompatibleWorkflowDefinitionSchema })
   .strict();
 export type GetWorkflowResponse = z.infer<typeof GetWorkflowResponseSchema>;
 export const ReadWorkflowRequestSchema = GetWorkflowRequestSchema;
