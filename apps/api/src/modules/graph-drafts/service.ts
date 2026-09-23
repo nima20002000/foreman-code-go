@@ -131,18 +131,25 @@ export class GraphDraftService {
         updatedByPrincipalId: principal.id, updatedAt: new Date().toISOString(),
       })
       if (existing.rows[0]) {
+        // A discarded draft is a finished instance, not an in-place graph edit.
+        // Receipts/audit retain its ID as historical data, not as a draft FK.
+        // Keep the workspace/workflow, advisory and row locks across replacement;
+        // failure to insert rolls back the deletion as well. Same-instance writer
+        // guards remain unchanged, including the prohibition on v2 downgrades.
         await client.query(
-          `update graph_drafts set id = $1, revision = 0, base_workflow_version_id = $2,
-             record = $3::jsonb, discarded_at = null, updated_at = now() where workflow_id = $4 and workspace_id = $5`,
-          [draft.id, draft.baseWorkflowVersionId, JSON.stringify(draft), workflowId, workspaceId],
-        )
-      } else {
-        await client.query(
-          `insert into graph_drafts (id, workspace_id, workflow_id, revision, base_workflow_version_id, record)
-           values ($1, $2, $3, 0, $4, $5::jsonb)`,
-          [draft.id, workspaceId, workflowId, draft.baseWorkflowVersionId, JSON.stringify(draft)],
+          `delete from graph_drafts where id = $1 and workspace_id = $2 and workflow_id = $3
+             and discarded_at is not null`,
+          [existing.rows[0].id, workspaceId, workflowId],
         )
       }
+      if (draftSemantics(draft) === 2) {
+        await client.query("select set_config('graphql.approval_writer','v2',true)")
+      }
+      await client.query(
+        `insert into graph_drafts (id, workspace_id, workflow_id, revision, base_workflow_version_id, record)
+         values ($1, $2, $3, 0, $4, $5::jsonb)`,
+        [draft.id, workspaceId, workflowId, draft.baseWorkflowVersionId, JSON.stringify(draft)],
+      )
       await client.query('commit')
       return draft
     } catch (error) {
