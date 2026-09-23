@@ -13,6 +13,10 @@ describe('ENG-03 concurrent native event redaction', () => {
     expect(redacted).toEqual({ '[REDACTED]': [{ text: '[REDACTED]', nested: { encoded: '["[REDACTED]"]' } }], safe: null })
     expect(source).toEqual(before)
     expect(redactSecretText(JSON.stringify({ value: secret }), [secret])).toBe('{"value":"[REDACTED]"}')
+    expect(redactSecretText(String.raw`{"token":"\u0073ecret"}`, ['secret']))
+      .toBe('{"token":"[REDACTED]"}')
+    expect(redactSecretText(String.raw`{"\u0073ecret":"safe"}`, ['secret']))
+      .toBe('{"[REDACTED]":"safe"}')
   })
 
   it('keeps a large nested native payload below the event-loop blocking budget', async () => {
