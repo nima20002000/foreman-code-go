@@ -74,10 +74,14 @@ export class Wave25InteractionRepository extends PostgresInteractionRepository {
     return transact(this.approvalPool, runId, async (publication) => {
       const sql = publication.sql
       if (!await runCleanupAllowed(sql, runId)) return fail('EXECUTION_NOT_STOPPED')
+      // A committed graph.resume consumes the checkpoint; it is not Worker
+      // acknowledgement. Stop must still cancel that exposed obligation. The
+      // existing mutation below preserves resumed outboxes and delivery evidence,
+      // and retirement remains gated by confirmed native/resource cleanup.
       const rows = (await sql.query<{ id: string }>(`select i.id from durable_interactions i
         left join interaction_graph_resumes g on g.interaction_id=i.id where i.run_id=$1
         and (i.status<>'canceled' or not (${CANCELED_INTERACTION_RETIRED_SQL}))
-        and not (i.status='delivered' and (coalesce(g.state,'pending')='resumed' or g.approval_native_ack_id is not null)) order by i.id`, [runId])).rows
+        and not (i.status='delivered' and g.approval_native_ack_id is not null) order by i.id`, [runId])).rows
       let canceled = 0
       for (const { id } of rows) {
         const current = await lockInteraction(sql, id), context = await readContext(sql, current)

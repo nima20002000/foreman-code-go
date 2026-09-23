@@ -1,6 +1,7 @@
 import type { HarnessNativeEvent } from '@graphql/contracts'
 import type { NativeGraphObservation, NativeGraphProjectionKey } from '@graphql/contracts/wave25'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
+import { openCodeReviewTerminalOutcome } from './opencodeReviewTerminal.js'
 import { nativeGraphSource } from '../run-graph/nativeIngestion.js'
 import { nativeProjectionId } from '../run-graph/nativeProjection.js'
 import { normalizeNativeProducerEvent } from '../run-graph/nativeProducerNormalization.js'
@@ -23,9 +24,15 @@ export async function openCodeGraphReconciliation(sql: GraphTransactionSql, even
   if (!row || row.record.executionId !== event.executionId) return undefined
   const raw = normalizeNativeProducerEvent({ ...row.record, sequence: Number(row.source_sequence) })
   if (raw.rejected || !matchesOpenCodeHistorySource(proof, raw.event)) return undefined
+  // The marker attests the ordinary workflow result and raw-source identity.
+  // Reviews apply their stricter finish policy to that SAME validated assistant,
+  // before either graph projection or durable review evidence is published.
+  // Do not rewrite the raw event, marker, or ordinary workflow result.
+  const outcome = work.workKind === 'review' ? openCodeReviewTerminalOutcome(raw.event.payload.info) : proof.outcome
+  if (!outcome) return undefined
   const source = nativeGraphSource(event)
   return { scope, work, source, sourceStreamId: nativeProjectionId('stream', event.executionId, event.connectionId ?? null),
     sourcePosition: String(event.sequence), connectionGeneration: generation, observedAt: event.occurredAt,
-    submissionId: proof.nativeTurnId, kind: 'terminal', terminal: { outcome: proof.outcome,
+    submissionId: proof.nativeTurnId, kind: 'terminal', terminal: { outcome,
       evidenceKind: 'provider_terminal', evidenceId: source.sourceId, nativeSettled: true } }
 }

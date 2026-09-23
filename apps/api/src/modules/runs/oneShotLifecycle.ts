@@ -4,7 +4,7 @@ import { DomainError } from '../errors.js'
 import { withExclusiveGraphConnection, type GraphTransactionSql } from '../run-graph/connection.js'
 import { graphSourceDigest, openRunGraphPublication, type RunGraphPublication } from '../run-graph/publication.js'
 import { readOneShotRunState } from './oneShotPostgres.js'
-import { publicRunClosedFacts } from '../run-graph/publicProjection.js'
+import { publicRunBoundaryFacts, publicRunClosedFacts } from '../run-graph/publicProjection.js'
 import { publicAttentionTotals, readPublicAttentionCounts } from '../run-graph/currentAttention.js'
 
 /** SQL-only command authorization; management callers pass the same live policy
@@ -91,7 +91,10 @@ export async function publishOneShotCleanup(publication: RunGraphPublication, pe
   state.cleanupPending = pending || publicAttentionTotals(await readPublicAttentionCounts(sql, runId)).cleanupPending
   const head = await sql.query<{ revision: string }>(
     'select (head_sequence+1)::text as revision from run_graph_heads where run_id=$1', [runId])
-  const facts: GraphFact[] = [{ type: 'run.state', state }]
+  // The flag changes current native projection too. Commit those node facts at
+  // this same head, before cancellation removes its interaction overlay.
+  const facts: GraphFact[] = [{ type: 'run.state', state },
+    ...await publicRunBoundaryFacts(sql, scope, { cleanupPending: pending })]
   await publication.source({ evidence: { sourceKind: 'cleanup', sourceId: runId, sourceRevision: head.rows[0]!.revision },
     sourceDigest: graphSourceDigest({ before: previous.rows[0]?.pending ?? null, pending: pending }), facts }, async () => {
     await sql.query(`insert into run_cleanup_intents(run_id,pending) values($1,$2)

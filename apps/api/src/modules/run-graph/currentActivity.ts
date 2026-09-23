@@ -57,7 +57,8 @@ export async function readCurrentNativeActivities(sql: GraphTransactionSql, scop
 export async function readCurrentActivityContext(sql: GraphTransactionSql, scope: RunGraphScope,
   workflowNodeId: string): Promise<CurrentActivityContext> {
   const result = await sql.query<{ closed: boolean; workflow_closed: boolean; pending_id: string | null; delivery_blocked: boolean }>(
-    `select r.stop_requested_at is not null or r.execution_state in ('completed','interrupted') as closed,
+    `select r.stop_requested_at is not null or r.execution_state in ('completed','interrupted')
+       or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as closed,
        exists(select 1 from harness_executions e where e.run_id=r.id and e.workflow_node_id=$2
          and e.record->>'state'='completed') as workflow_closed,
        (select i.id from durable_interactions i join harness_executions e on e.id=i.execution_id and e.run_id=i.run_id

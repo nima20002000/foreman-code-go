@@ -18,6 +18,8 @@ const deliveryLabels: Record<Interaction['deliveryState'], string> = {
   not_started: 'Not started', pending: 'Pending delivery', submitted: 'Submitted; receipt not confirmed',
   uncertain: 'Delivery uncertain; checking evidence', delivered: 'Native delivery confirmed', failed: 'Delivery failed',
 }
+const canceledDeliveryUnconfirmed = (item: Interaction) => item.status === 'canceled'
+  && item.deliveryState === 'failed' && item.resumeState === 'unknown'
 const resumeLabels: Record<Interaction['resumeState'], string> = {
   not_started: 'Not started', pending: 'Pending; not acknowledged', unknown: 'Resumption unavailable', acknowledged: 'Resumption acknowledged',
 }
@@ -37,7 +39,8 @@ const field = (label: string, value: string) => ({ label, value })
 
 export function presentInteraction(item: Interaction): ExchangeView {
   const handler = item.reviewer?.workflowNodeId ?? (item.handler === 'user' ? 'Human' : item.handler === 'operator' ? 'Operator' : 'Reviewer unavailable')
-  const delivery = label(deliveryLabels, item.deliveryState, 'Delivery unavailable')
+  const delivery = canceledDeliveryUnconfirmed(item) ? 'Delivery outcome unconfirmed after cancellation'
+    : label(deliveryLabels, item.deliveryState, 'Delivery unavailable')
   const resume = item.resumeState === 'acknowledged' && (!item.resumeAcknowledgementId || item.deliveryState !== 'delivered')
     ? 'Resumption unavailable' : label(resumeLabels, item.resumeState, 'Resumption unavailable')
   return { key: `interaction:${item.interactionId}`, title: `Approval ${item.interactionId}`,
@@ -122,7 +125,10 @@ export function selectRelationshipSummary(record: RunGraphRecord, relationshipId
       const count = row(item.approvalRelationshipId)
       if (item.status === 'pending') ++count.pending
       if (item.deliveryState === 'pending' || item.deliveryState === 'submitted') ++count.delivery
-      if (item.deliveryState === 'failed') ++count.failed
+      if (item.deliveryState === 'failed') {
+        if (canceledDeliveryUnconfirmed(item)) ++count.uncertain
+        else ++count.failed
+      }
       if (item.deliveryState === 'uncertain') ++count.uncertain
     }
     for (const item of state.reviews) {

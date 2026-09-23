@@ -39,13 +39,14 @@ function observationFor(job: ReviewJob, event: HarnessNativeEvent, scope: Native
     && (payload.clientCorrelationId === undefined || payload.clientCorrelationId === job.correlationId)
   const openCodeStart = job.provider === 'opencode' && event.type === 'message.updated' && info.role === 'user' && info.id === providerId
     && info.sessionID === job.nativeSessionId
-  const openCodeEnd = job.provider === 'opencode' && event.type === 'message.updated' && info.role === 'assistant' && info.parentID === providerId
-    && info.sessionID === job.nativeSessionId && typeof object(info.time).completed === 'number'
-  if (terminalReady && (codexEnd || openCodeEnd)) {
+  // A live OpenCode assistant frame does not prove rooted selection, idle
+  // status or absence of pending tools. Keep it as raw/activity evidence only.
+  // Both live+history and lost-live reviews settle through the adapter's exact
+  // reconciliation marker below, with the same review-only terminal policy.
+  if (terminalReady && codexEnd) {
     const status = typeof payload.status === 'string' ? payload.status : turn.status
-    if (codexEnd && !['completed', 'failed', 'interrupted'].includes(String(status))) return undefined
-    const failed = codexEnd ? status !== 'completed' || !!turn.error
-      : info.finish !== 'stop' || !!info.error
+    if (!['completed', 'failed', 'interrupted'].includes(String(status))) return undefined
+    const failed = status !== 'completed' || !!turn.error
     return { ...base, kind: 'terminal', terminal: { outcome: failed ? 'failed' : 'succeeded',
       evidenceKind: 'provider_terminal', evidenceId: source.sourceId, nativeSettled: true } }
   }
@@ -141,7 +142,7 @@ export async function appendReviewNativeGraphEvent(pool: pg.Pool, supplied: Revi
     let observation = reconciled ?? observationFor(job, event, publication.scope, key, row.generation!, terminalReady)
     if (reconciled?.kind === 'terminal') {
       const previous = await reviewEvidence(sql, job.id)
-      // A live terminal may already have settled this exact turn. Retain that
+      // A pre-fix live terminal or a prior marker may have settled this turn. Retain that
       // original receipt, rather than relabeling it with a reconciliation source.
       // The shared consumer still validates scope, work, authority and identity.
       if (previous?.kind === 'terminal' && previous.submissionId === reconciled.submissionId

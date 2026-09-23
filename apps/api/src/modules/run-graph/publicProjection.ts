@@ -15,6 +15,8 @@ export interface PublicProjectionOverlay extends PublicAttentionOverlay {
   /** Guard-qualified proposed candidates from BR1-002, not transport observations. */
   native?: readonly CurrentNativeActivity[]
   closed?: boolean
+  /** Proposed Run cleanup intent, not native/resource closure evidence. */
+  cleanupPending?: boolean
 }
 
 /** One authoritative bounded node projection for both compact snapshots and
@@ -25,10 +27,14 @@ export async function readPublicNodeProjection(sql: GraphTransactionSql, scope: 
   nodeIds: readonly string[], overlay: PublicProjectionOverlay = {}): Promise<PublicNode[]> {
   assertGraphTransaction(sql)
   if (nodeIds.length > 1000 || new Set(nodeIds).size !== nodeIds.length) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
-  const row = (await sql.query<{ closed: boolean }>(`select stop_requested_at is not null
-    or execution_state in ('completed','interrupted') as closed from runs where id=$1`, [scope.runId])).rows[0]
+  const row = (await sql.query<{ closed: boolean; cleanup_pending: boolean }>(`select r.stop_requested_at is not null
+    or r.execution_state in ('completed','interrupted') as closed,
+    exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as cleanup_pending
+    from runs r where r.id=$1`, [scope.runId])).rows[0]
   if (!row) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
-  const closed = overlay.closed ?? row.closed
+  // Cleanup closes positive work authority even before business settlement. A
+  // canceled approval must not uncover an earlier native start as continuation.
+  const closed = (overlay.closed ?? row.closed) || (overlay.cleanupPending ?? row.cleanup_pending)
   // Select bounded scalar facts, never result/output/input payloads or native history.
   const stored = await sql.query<{ id: string; workflow_node_id: string; agent_id: string;
     configuration_id: string; attempt: number; state: string; outcome: string | null }>(
@@ -111,11 +117,20 @@ function factKey(fact: GraphFact): string {
 
 /** Run-domain Stop/completion/interruption projection. Native row clear/closure
  * remains BR1-002's fenced boundary; this never claims native cleanup succeeded. */
-export async function publicRunClosedFacts(sql: GraphTransactionSql, scope: RunGraphScope): Promise<GraphFact[]> {
+export function publicRunClosedFacts(sql: GraphTransactionSql, scope: RunGraphScope): Promise<GraphFact[]> {
+  return publicRunBoundaryFacts(sql, scope, { closed: true })
+}
+
+/** Publish the entire node delta with the proposed Run boundary, before its SQL
+ * mutation. Clearing cleanup is not a native acknowledgement: the unchanged
+ * publication schema still rejects any attempt to restore active native work
+ * from a cleanup source. Stop/terminal closure survives a cleared cleanup flag. */
+export async function publicRunBoundaryFacts(sql: GraphTransactionSql, scope: RunGraphScope,
+  overlay: Pick<PublicProjectionOverlay, 'closed' | 'cleanupPending'>): Promise<GraphFact[]> {
   const ids = (await sql.query<{ id: string }>(`select n.node->>'id' as id from workflow_versions v
     cross join lateral jsonb_array_elements(v.record->'definition'->'nodes') n(node)
     where v.id=$1 order by n.node->>'id' limit 1001`, [scope.workflowVersionId])).rows.map((row) => row.id)
   const before = await readPublicNodeProjection(sql, scope, ids)
-  const after = await readPublicNodeProjection(sql, scope, ids, { closed: true })
+  const after = await readPublicNodeProjection(sql, scope, ids, overlay)
   return publicNodeProjectionDelta(before, after)
 }

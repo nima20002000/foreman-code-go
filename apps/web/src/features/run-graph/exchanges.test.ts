@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { RunGraphSnapshotSchema, applyRunGraphPageFixture, type GraphFact } from '@graphql/contracts/wave25'
+import { GraphInteractionSchema, RunGraphSnapshotSchema, applyRunGraphPageFixture, type GraphFact } from '@graphql/contracts/wave25'
 import { reduceGraphPage } from './reducer'
 import { presentRunGraphNode } from './presentation'
+import { presentInteraction, selectFocusedExchange, selectRelationshipSummary } from './exchangePresentation'
 import { batch, fixture, page, queued } from './testFixtures'
+import type { RunGraphRecord } from './types'
 
 const digest = 'sha256:' + 'a'.repeat(64)
 describe('independent resolution, receipts, review, decision, delivery and resumption facts', () => {
@@ -78,5 +80,34 @@ describe('independent resolution, receipts, review, decision, delivery and resum
       { type: 'exchange.retired', exchangeKind: 'interaction', exchangeId: 'interaction', finalRevision: '4' }])
     expect(snapshot.state.reviews).toEqual([])
     expect(snapshot.state.interactions).toEqual([])
+  })
+
+  it('keeps canceled attempted delivery unconfirmed in the inspector and relationship', () => {
+    const f = fixture('canceled-delivery')
+    const relationshipId = 'approval-canceled-delivery'
+    const initial = RunGraphSnapshotSchema.parse({ ...f.snapshot, topology: { ...f.snapshot.topology,
+      relationships: [...f.snapshot.topology.relationships, { relationshipId, kind: 'approval',
+        source: f.identities[0]!.workflowNodeId, target: f.identities[1]!.workflowNodeId }],
+    } })
+    const interaction = GraphInteractionSchema.parse({ interactionId: 'interaction-canceled-delivery', revision: '1',
+      requester: f.identities[1], reviewer: f.identities[0], approvalRelationshipId: relationshipId,
+      handler: 'orchestrator', status: 'canceled', deliveryState: 'failed', resumeState: 'unknown' })
+    const response = page(f.scope, [batch(f.scope, '1', [{ type: 'interaction.state', interaction }])])
+    const snapshot = reduceGraphPage(initial, response).snapshot
+    expect(snapshot).toEqual(applyRunGraphPageFixture(initial, response, 1, 1).snapshot)
+    const record: RunGraphRecord = { kind: 'run-graph-cache', scope: f.scope, epoch: 0,
+      transport: { phase: 'live' }, facts: { reader: 'graph', snapshot } }
+    const selected = selectFocusedExchange(record, `interaction:${interaction.interactionId}`)
+    expect(selected?.fields.find((item) => item.label === 'Native delivery')?.value).toBe('Delivery outcome unconfirmed after cancellation')
+    expect(selectRelationshipSummary(record, relationshipId)).toContain('1 delivery uncertain')
+    expect(selectRelationshipSummary(record, relationshipId)).not.toContain('delivery failed')
+
+    const failed = GraphInteractionSchema.parse({ ...interaction, status: 'delivery_failed', revision: '2',
+      decision: 'approve_once', selectedOptionId: 'approve' })
+    expect(presentInteraction(failed).fields.find((item) => item.label === 'Native delivery')?.value).toBe('Delivery failed')
+    const delivered = GraphInteractionSchema.parse({ ...failed, status: 'delivered', deliveryState: 'delivered', revision: '3', resumeState: 'pending' })
+    expect(presentInteraction(delivered).fields.find((item) => item.label === 'Native delivery')?.value).toBe('Native delivery confirmed')
+    const notStarted = GraphInteractionSchema.parse({ ...interaction, deliveryState: 'not_started', revision: '4' })
+    expect(presentInteraction(notStarted).fields.find((item) => item.label === 'Native delivery')?.value).toBe('Not started')
   })
 })
