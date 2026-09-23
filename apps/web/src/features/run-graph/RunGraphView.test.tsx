@@ -52,8 +52,22 @@ describe('immutable Run view (component checks, not a real React Flow profile)',
     expect(screen.queryByText('FUTURE DRAFT LABEL')).toBeNull()
     expect(screen.getByText(f.scope.workflowVersionId)).toBeDefined()
     expect(flow.renders.at(-1)).toMatchObject({ nodesDraggable: false, nodesConnectable: false, deleteKeyCode: null })
-    expect(screen.queryByRole('button', { name: /save|start|stop|delete|edit/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /save|start|delete|edit/i })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Stop Run' })).toBeDefined()
     expect(screen.getAllByText('Activity unavailable')).toHaveLength(2)
+  })
+  it('offers Stop only while work or cleanup is pending', async () => {
+    const f = setup()
+    render(<QueryClientProvider client={f.client}><RunGraphView scope={f.scope} /></QueryClientProvider>)
+    const terminal = { ...f.snapshot, state: { ...f.snapshot.state,
+      run: { ...f.snapshot.state.run, executionState: 'completed' as const, outcome: 'succeeded' as const } } }
+    await act(async () => { f.client.setQueryData<RunGraphRecord>(f.key, { ...f.record,
+      facts: { reader: 'graph', snapshot: terminal } }); await new Promise((resolve) => setTimeout(resolve, 0)) })
+    expect(screen.queryByRole('button', { name: 'Stop Run' })).toBeNull()
+    await act(async () => { f.client.setQueryData<RunGraphRecord>(f.key, { ...f.record,
+      facts: { reader: 'graph', snapshot: { ...terminal, state: { ...terminal.state,
+        run: { ...terminal.state.run, cleanupPending: true } } } } }); await new Promise((resolve) => setTimeout(resolve, 0)) })
+    expect(screen.getByRole('button', { name: 'Stop Run' })).toBeDefined()
   })
   it('does not rebuild the canvas topology for an activity-only update or a transport change', async () => {
     const f = setup()

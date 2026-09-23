@@ -1,6 +1,7 @@
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, expect, it, vi } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { UnsavedChangesContext, type EditorRegistration } from '../../../shared/ui/unsavedChanges'
 import { useGraphDraftStore } from '../store'
 import { nextDraftKey } from './state'
@@ -18,7 +19,10 @@ it('registers local form dirtiness and discard with the existing navigation guar
   const guard = { changed: vi.fn(), surfaces: async () => true, request: async () => true,
     register: (id: string, editor: EditorRegistration) => { registrations.set(id, editor); return () => { registrations.delete(id) } } }
   const user = userEvent.setup()
-  render(<UnsavedChangesContext.Provider value={guard}><NextDraftEditor workspaceId="workspace" workflowId="workflow" /></UnsavedChangesContext.Provider>)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<QueryClientProvider client={client}><UnsavedChangesContext.Provider value={guard}>
+    <NextDraftEditor workspaceId="workspace" workflowId="workflow" />
+  </UnsavedChangesContext.Provider></QueryClientProvider>)
   await user.click(screen.getByRole('button', { name: /Entry · Node 0/ }))
   await user.type(screen.getByLabelText('Node instruction'), 'Unsaved instruction')
   const registered = [...registrations.values()].find((item) => item.current.label.endsWith('next draft'))!
