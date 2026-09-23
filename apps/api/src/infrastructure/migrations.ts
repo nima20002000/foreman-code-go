@@ -12,6 +12,10 @@ import { nativeEventSequenceMigration } from './nativeEventSequenceMigration.js'
 import { interactionDeliveryMigration } from './interactionDeliveryMigration.js'
 import { operatorMcpMigration } from './operatorMcpMigration.js'
 import { operatorApprovalRemovalMigration } from './operatorApprovalRemovalMigration.js'
+import { wave25RunGraphMigration } from './wave25RunGraphMigration.js'
+import { wave25ReliabilityMigration } from './wave25ReliabilityMigration.js'
+import { wave25ApprovalMigrationSql } from '../modules/interactions/wave25/migration.js'
+import { nativeProjectionMigration } from '../modules/run-graph/nativeProjectionMigration.js'
 
 // Reserved migration blocks: HAP-01 100-109, HAP-02 200-209, HAP-03 300-309,
 // HAP-04 400-409, HAP-05 500-509, HAP-06 600-609, HAP-07 700-709.
@@ -666,6 +670,10 @@ export const migrations = [
   runLiveActivityMigration,
   reviewFailureLifecycleMigration,
   operatorApprovalRemovalMigration,
+  wave25RunGraphMigration,
+  wave25ReliabilityMigration,
+  { version: 250003, sql: wave25ApprovalMigrationSql },
+  nativeProjectionMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

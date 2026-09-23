@@ -22,6 +22,7 @@ import type { LocalDevBrowserAccess } from './modules/access/localDevBrowser.js'
 import { DomainError } from './modules/errors.js'
 import type { McpDetectionService } from './modules/harnesses/mcpDetection.js'
 import { registerUserInteractions } from './routes/userInteractions.js'
+import { registerRunGraphRoutes } from './routes/runGraph.js'
 import { registerManagementRoutes } from './routes/management.js'
 import { registerMcpDetectionRoute } from './routes/mcpDetection.js'
 import { registerProductRoutes, type ProductServices } from './routes/product.js'
@@ -118,6 +119,8 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   if (options.operator) registerBrowserAuthRoutes(app, options.browserAuth)
   if (options.operator) registerOperatorHttpSecurity(app, options.operator.access, options.browserAuth, options.localDevBrowserAccess)
   if (options.operator) registerManagementRoutes(app, options.operator.services)
+  if (options.operator?.services.runGraph) registerRunGraphRoutes(app, options.operator.services.runGraph,
+    (principalId, code, route) => options.operator!.services.commands.recordDenied(principalId, 'http', code, route))
   if (options.operator && options.harnessCompatibility) registerHarnessCompatibilityRoutes(app, options.harnessCompatibility)
   if (options.operator && options.mcpDetection) registerMcpDetectionRoute(app, options.mcpDetection.pool, options.mcpDetection.service)
   if (options.operator && options.product?.interactions) registerUserInteractions(app, options.operator.access, options.product.interactions)

@@ -80,6 +80,7 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'graph_draft_discard', action: 'graph:edit' },
   { name: 'run_list', action: 'runs:read' },
   { name: 'run_get', action: 'runs:read' },
+  { name: 'run_current_get_v1', action: 'runs:read' },
   { name: 'run_events_list', action: 'runs:read' },
   { name: 'run_start', action: 'runs:start' },
   { name: 'run_stop', action: 'runs:stop' },

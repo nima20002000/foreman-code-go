@@ -54,7 +54,7 @@ import {
   type RequestOptions,
 } from './client'
 import { keepLatestWorkspaceLocation, locationMutationKey, shareManagedWorkspace } from './workspaceLocationCache'
-import { keepLatestRunResponse } from './runLiveCache'
+import { shareRunResponseOrSelection } from './runLiveCache'
 
 /**
  * Query keys deliberately carry every scope identity used by the endpoint.
@@ -449,9 +449,7 @@ export function useRunQuery(
       }
       return result
     },
-    structuralSharing: (current, incoming) => keepLatestRunResponse(
-      current as GetRunResponse | undefined, incoming as GetRunResponse,
-    ),
+    structuralSharing: shareRunResponseOrSelection,
   })
 }
 

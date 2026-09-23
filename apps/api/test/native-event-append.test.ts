@@ -10,10 +10,11 @@ const event: HarnessNativeEvent = {
 }
 
 it('uses one atomic database statement for an append or exact replay without managing the caller transaction', async () => {
-  const query = vi.fn().mockResolvedValue({ rows: [{ append_harness_native_event: false }] })
+  const query = vi.fn().mockResolvedValue({ rows: [{ inserted: false, previously_rejected: false }] })
   await appendNativeEvent({ query } as unknown as pg.ClientBase, event)
   expect(query).toHaveBeenCalledOnce()
-  expect(query.mock.calls[0]?.[0]).toBe('select append_harness_native_event($1::jsonb)')
+  expect(String(query.mock.calls[0]?.[0])).toContain('append_harness_native_event($1::jsonb)')
+  expect(String(query.mock.calls[0]?.[0])).toContain('rejected_source')
   expect(JSON.parse(String(query.mock.calls[0]?.[1]?.[0]))).toEqual(event)
 })
 

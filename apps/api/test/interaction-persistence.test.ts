@@ -107,16 +107,17 @@ it('stores native event envelopes and their activity references atomically, with
   const events = new Map<string, unknown>()
   let activityCount = 0
   const db = { query: async (sql: string, values: unknown[]) => {
-    assert.equal(sql, 'select append_harness_native_event($1::jsonb)')
+    assert.match(sql, /append_harness_native_event\(\$1::jsonb\)/)
+    assert.match(sql, /rejected_source/)
     const record = JSON.parse(String(values[0])) as HarnessNativeEvent
     const identity = `${record.executionId}:${record.connectionId ?? 'legacy'}:${record.sequence}`
     const existing = events.get(identity)
     if (existing) {
       if (JSON.stringify(existing) !== JSON.stringify(record)) throw Object.assign(new Error('identity conflict'), { code: 'PNE01' })
-      return { rows: [{ append_harness_native_event: false }], rowCount: 1 }
+      return { rows: [{ inserted: false, previously_rejected: false }], rowCount: 1 }
     }
     events.set(identity, record); activityCount += 1
-    return { rows: [{ append_harness_native_event: true }], rowCount: 1 }
+    return { rows: [{ inserted: true, previously_rejected: false }], rowCount: 1 }
   } } as unknown as pg.ClientBase
   const event: HarnessNativeEvent = { executionId: 'execution-1', sequence: 7, type: 'native.approval', occurredAt: '2026-09-16T00:00:00.000Z', payload: { requestId: 'exact-native-request', nested: { value: true } } }
   await appendNativeEvent(db, event)
@@ -198,7 +199,7 @@ it('keeps every applied migration byte-for-byte and composes HAP-04 and HAP-05 m
     return { rows: [], rowCount: 0 }
   } }) } as unknown as pg.Pool
   await applyApplicationMigrations(pool)
-  assert.deepEqual([...observed.keys()], [...Object.keys(expected).map(Number), 503, 507, 508, 509, 700, 701, 800, 1701, 1702, 170017, 170018, 170019, 170020, 170021, 170022, 170023, 170024, 170025, 170026])
+  assert.deepEqual([...observed.keys()], [...Object.keys(expected).map(Number), 503, 507, 508, 509, 700, 701, 800, 1701, 1702, 170017, 170018, 170019, 170020, 170021, 170022, 170023, 170024, 170025, 170026, 250001, 250002, 250003, 250005])
   for (const [version, hash] of Object.entries(expected)) assert.equal(observed.get(Number(version)), hash, `migration ${version}`)
   assert.equal(observed.get(170021), '5d91e223036ef21375b5d67916956121b4ed4ca5de702a545650a1ef054b2e6a')
   assert.equal(observed.get(170022), '8cc94ebe79fb52b2bce61655d2d2a57a7c2bb766752594f21b4b08d0d71bfa20')

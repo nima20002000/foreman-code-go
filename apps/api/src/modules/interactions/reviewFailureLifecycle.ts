@@ -1,5 +1,7 @@
 import { DurableInteractionSchema, ReviewJobSchema, RunStopCauseSchema, WorkflowRunSchema } from '@graphql/contracts'
 import type pg from 'pg'
+import { transact } from './wave25/context.js'
+import { recoverApprovalFailure } from './wave25/failureRecovery.js'
 import { DomainError } from '../errors.js'
 import { publicReviewStopError, reviewNeedsStop } from './reviewPolicy.js'
 
@@ -11,6 +13,17 @@ type FailureReference = { reviewJobId: string } | { interactionId: string; error
  * Never accept the scheduler's unrelated Run/execution as the failure's owner.
  */
 export async function requestReviewFailureStop(pool: pg.Pool, reference: FailureReference): Promise<string | undefined> {
+  const target = (await pool.query<{ run_id: string; execution_semantics_version: number }>('reviewJobId' in reference
+    ? `select i.run_id,v.execution_semantics_version from review_jobs j join durable_interactions i on i.id=j.interaction_id
+       join runs r on r.id=i.run_id join workflow_versions v on v.id=r.workflow_version_id where j.id=$1`
+    : `select i.run_id,v.execution_semantics_version from durable_interactions i join runs r on r.id=i.run_id
+       join workflow_versions v on v.id=r.workflow_version_id where i.id=$1`,
+  ['reviewJobId' in reference ? reference.reviewJobId : reference.interactionId])).rows[0]
+  if (target?.execution_semantics_version === 2) return transact(pool, target.run_id, (publication) => recoverApprovalFailure(publication, reference))
+  return requestLegacyReviewFailureStop(pool, reference)
+}
+
+async function requestLegacyReviewFailureStop(pool: pg.Pool, reference: FailureReference): Promise<string | undefined> {
   const client = await pool.connect()
   try {
     await client.query('begin')

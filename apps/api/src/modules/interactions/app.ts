@@ -5,8 +5,11 @@ import {
   DurableInteractionSchema,
   RespondToInteractionRequestSchema,
   RespondToInteractionResponseSchema,
-  WorkflowVersionSchema, WorkflowRunSchema, HarnessExecutionSchema, directApprovalConnection,
+  HarnessExecutionSchema,
 } from '@graphql/contracts'
+import { CompatibleWorkflowRunSchema, CompatibleWorkflowVersionSchema } from '@graphql/contracts/wave25'
+import { resolveImmutableApprovalRoute } from '../workflows/approvalRoutes.js'
+import { assertWave25WorkerBinding } from './wave25/credentialAuthority.js'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
 
@@ -83,7 +86,9 @@ export class PostgresAppInteractionService implements AppInteractionService {
 
   async canRespond(principal: ManagementPrincipal): Promise<boolean> {
     if (!this.orchestration) return false
-    if (!hasWorkerAction(principal, 'interactions:respond')) return false
+    if (!hasWorkerAction(principal, 'interactions:respond') || !hasWorkerAction(principal, 'interactions:read')) return false
+    try { await assertWave25WorkerBinding(this.pool, principal.id) }
+    catch (error) { if (error instanceof DomainError) return false; throw error }
     workerScope(principal)
     const scopes = workerScopesForAction(principal, 'interactions:respond')
     // Discovery uses the same exact reviewer occurrence as its bound credential.
@@ -106,20 +111,21 @@ export class PostgresAppInteractionService implements AppInteractionService {
       [principal.id, principal.agentId, JSON.stringify(scopes)],
     )
     return result.rows.some((row) => {
-      const run = WorkflowRunSchema.safeParse(row.run)
-      const version = WorkflowVersionSchema.safeParse(row.version)
+      const run = CompatibleWorkflowRunSchema.safeParse(row.run)
+      const version = CompatibleWorkflowVersionSchema.safeParse(row.version)
       const execution = HarnessExecutionSchema.safeParse(row.execution)
       if (!run.success || !version.success || !execution.success) return false
       const r = run.data, v = version.data, e = execution.data
-      if (r.workflowVersionId !== v.id || r.workspaceId !== v.workspaceId || r.workflowId !== v.workflowId
+      if (('executionSemanticsVersion' in r) !== ('executionSemanticsVersion' in v)
+        || r.workflowVersionId !== v.id || r.workspaceId !== v.workspaceId || r.workflowId !== v.workflowId
         || v.definition.id !== r.workflowId || v.definition.workspaceId !== r.workspaceId
         || e.runId !== r.id || e.agentId !== principal.agentId || e.workflowNodeId !== row.node_id
         || e.agentConfigurationVersionId !== r.agentConfigurationVersionIds[e.agentId]
         || e.agentConfigurationVersionId !== v.agentConfigurationVersionIds[e.agentId]
         || [r.approval, v.approval, v.definition.approval].some((approval) =>
           approval?.handler !== 'orchestrator' || approval.designatedOrchestratorAgentId !== e.agentId)) return false
-      return v.definition.nodes.some((requester) => directApprovalConnection(
-        v.definition, requester.id, requester.agentId, e.agentId,
+      return v.definition.nodes.some((requester) => resolveImmutableApprovalRoute(
+        v, requester.id, requester.agentId,
       )?.orchestratorNodeId === e.workflowNodeId)
     })
   }

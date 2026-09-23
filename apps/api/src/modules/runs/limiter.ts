@@ -3,13 +3,15 @@ export class ExecutionLimiter {
   private active = 0
   private readonly waiting: Array<() => void> = []
 
-  constructor(private readonly maximum: number) {
-    if (!Number.isInteger(maximum) || maximum < 1) throw new Error('maxParallelism must be a positive integer.')
+  constructor(private readonly maximum: number, private readonly maximumWaiting = Number.MAX_SAFE_INTEGER) {
+    if (!Number.isSafeInteger(maximum) || maximum < 1) throw new Error('maxParallelism must be a positive integer.')
+    if (!Number.isSafeInteger(maximumWaiting) || maximumWaiting < 0) throw new Error('The waiting capacity must be a nonnegative integer.')
   }
 
   async run<T>(signal: AbortSignal, work: () => Promise<T>): Promise<T> {
     signal.throwIfAborted()
     if (this.active >= this.maximum) {
+      if (this.waiting.length >= this.maximumWaiting) throw new Error('RUNNER_ADMISSION_FULL')
       await new Promise<void>((resolve, reject) => {
         const enter = () => {
           signal.removeEventListener('abort', abort)
@@ -22,6 +24,7 @@ export class ExecutionLimiter {
         }
         this.waiting.push(enter)
         signal.addEventListener('abort', abort, { once: true })
+        if (signal.aborted) abort()
       })
       // The releasing worker transfers its existing slot to this waiter.
     } else {

@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Position, type EdgeProps } from '@xyflow/react'
 import type { WorkflowDefinition } from '@graphql/contracts'
 import { HandoffEdge } from './GraphEditor'
+import { GraphPresentationProvider } from './GraphPresentation'
 import { graphToWorkflow, makeSequentialHandoffEdge, workflowToGraph } from './mapper'
 import type { GraphEdge } from './types'
 
@@ -23,9 +24,10 @@ describe('PR19 custom handoff labels', () => {
     const edge = graph.edges[0]!
     const props = { ...edge, sourceX: 0, sourceY: 0, targetX: 200, targetY: 0,
       sourcePosition: Position.Right, targetPosition: Position.Left } as EdgeProps<GraphEdge>
-    render(<svg><HandoffEdge {...props} /></svg>)
+    render(<GraphPresentationProvider><svg><HandoffEdge {...props} /></svg></GraphPresentationProvider>)
     expect(screen.getByText('Only after review approval')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Only after review approval/ })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('group', { name: /Only after review approval/ }))
+    expect(screen.getByRole('button', { name: /only after review approval/i })).toBeInTheDocument()
     const moved = graph.nodes.map((node) => ({ ...node, position: { x: node.position.x + 50, y: node.position.y + 10 } }))
     expect(graphToWorkflow(workflow, moved, graph.edges).edges[0]?.label).toBe('Only after review approval')
     expect(makeSequentialHandoffEdge('a', 'b').label).toBeUndefined()

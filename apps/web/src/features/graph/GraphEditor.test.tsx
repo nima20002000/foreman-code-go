@@ -10,6 +10,8 @@ import { getMockFixture, setMockScenario } from '../../shared/mocks/scenarios'
 import { queryKeys } from '../../shared/api/query'
 import { AgentMinimapDot, GraphEditor, HandoffEdge } from './GraphEditor'
 import { getGraphDraft, useGraphDraftStore, workflowDraftKey } from './store'
+import { GraphPresentationProvider } from './GraphPresentation'
+import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
 import { deleteAgentForSession, readDeletedAgentIds, readLocalAgents, writeLocalAgents } from '../agents/localAgents'
 import { Position } from '@xyflow/react'
 
@@ -93,6 +95,7 @@ beforeAll(() => {
 afterEach(() => {
   setMockScenario('normal')
   useGraphDraftStore.getState().clearAllDrafts()
+  useAgentDirectoryStore.getState().reset()
   sessionStorage.clear()
   vi.useRealTimers()
 })
@@ -537,7 +540,7 @@ describe('GraphEditor persistence boundary', () => {
     const key = workflowDraftKey(workflow.workspaceId, workflow.id)
     const user = userEvent.setup()
     const first = renderEditor({ selectedAgentId: 'agent-one' })
-    const resize = screen.getByRole('button', { name: 'Resize selected node' })
+    const resize = await screen.findByRole('button', { name: 'Resize selected node' })
     expect(resize).toHaveAttribute('data-min-width', '208')
     expect(resize).toHaveAttribute('data-max-width', '520')
     expect(resize).toHaveAttribute('data-min-height', '112')
@@ -552,7 +555,7 @@ describe('GraphEditor persistence boundary', () => {
     first.unmount()
 
     const second = renderEditor({ selectedAgentId: 'agent-one' })
-    await user.click(screen.getByRole('button', { name: 'Resize selected node' }))
+    await user.click(await screen.findByRole('button', { name: 'Resize selected node' }))
     await user.click(screen.getByRole('button', { name: 'Save graph' }))
     await waitFor(() => expect(second.queryClient.getQueryData(queryKeys.workflow(workflow.workspaceId, workflow.id))).toEqual({
       workflow: expect.objectContaining({
@@ -653,7 +656,7 @@ describe('Graph edge and minimap controls', () => {
   it('renders an accessible remove control on the handoff edge and reports its edge id', () => {
     const onRemove = vi.fn()
     render(
-      <svg>
+      <GraphPresentationProvider><svg>
         <HandoffEdge
           id="edge-one"
           source="step-one"
@@ -666,9 +669,11 @@ describe('Graph edge and minimap controls', () => {
           targetPosition={Position.Left}
           data={{ explanation: 'test edge', onRemove }}
         />
-      </svg>,
+      </svg></GraphPresentationProvider>,
     )
 
+    expect(screen.queryByRole('button', { name: 'Remove connection from step-one to step-two' })).not.toBeInTheDocument()
+    fireEvent.focus(screen.getByRole('group', { name: 'Connection from step-one to step-two' }))
     const remove = screen.getByRole('button', { name: 'Remove connection from step-one to step-two' })
     expect(remove).toHaveAttribute('title', 'Remove connection')
     fireEvent.click(remove)

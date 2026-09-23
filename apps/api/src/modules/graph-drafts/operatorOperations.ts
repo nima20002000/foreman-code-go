@@ -1,6 +1,9 @@
 import type pg from 'pg'
-import { AgentConfigurationVersionSchema, AgentSchema, WorkflowVersionSchema } from '@graphql/contracts'
-import { GraphDraftSchema, type GraphDraft, type ManagementPrincipal } from '@graphql/contracts/management'
+import { AgentConfigurationVersionSchema, AgentSchema } from '@graphql/contracts'
+import { type GraphDraft, type ManagementPrincipal } from '@graphql/contracts/management'
+import { CompatibleWorkflowVersionSchema as WorkflowVersionSchema, WorkflowVersionV2Schema } from '@graphql/contracts/wave25'
+import { GraphDraftRecordSchema as GraphDraftSchema, draftSemantics } from './executionOperations.js'
+import { migrateSavedWorkflowDefinition } from '../workflows/executableVersion.js'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { agentWithConfiguration, readAgentForReuse } from '../workspaces/operatorAgents.js'
@@ -26,6 +29,11 @@ export async function restoreWorkflowDraft(client: pg.ClientBase, principal: Man
   if (!rows.rows[0]) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND','The saved workflow version was not found.',404)
   const version = WorkflowVersionSchema.parse(rows.rows[0].record)
   if (version.workflowId !== draft.workflowId || version.workspaceId !== draft.workspaceId || version.id !== versionId) throw new DomainError('WORKFLOW_VERSION_INVALID','The historical workflow identity does not match.',409)
+  const versionIsV2 = 'executionSemanticsVersion' in version && version.executionSemanticsVersion === 2
+  if (versionIsV2 && draftSemantics(draft) !== 2) throw new DomainError('EXECUTION_SEMANTICS_MISMATCH', 'Restore this version using the explicit v2 draft operation.', 409)
+  const definition = draftSemantics(draft) === 2
+    ? versionIsV2 ? WorkflowVersionV2Schema.parse(version).definition : migrateSavedWorkflowDefinition(version)
+    : version.definition
   const stagedAgents: GraphDraft['stagedAgents'] = []
   const sourceAgentPins: NonNullable<GraphDraft['sourceAgentPins']> = []
   for (const agentId of [...new Set(version.definition.nodes.map((node) => node.agentId))].sort()) {
@@ -41,7 +49,7 @@ export async function restoreWorkflowDraft(client: pg.ClientBase, principal: Man
     stagedAgents.push({agent,baseRevision:source.baseRevision})
     sourceAgentPins.push({agentId,metadataRevision:source.baseRevision,configurationVersionId:source.agent.configurationVersionId!})
   }
-  return GraphDraftSchema.parse({...draft, graph:{...version.definition,
+  return GraphDraftSchema.parse({...draft, graph:{...definition,
     name:draft.graph.name,description:draft.graph.description,createdAt:draft.graph.createdAt,updatedAt:draft.graph.updatedAt},
     stagedAgents,sourceAgentPins})
 }

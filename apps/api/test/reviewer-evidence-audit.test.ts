@@ -167,7 +167,9 @@ it('F11: actual reviewer streaming reads each payload only for evidence and reda
   const result = await fixture.dispatcher.dispatchNext(fixture.job.reviewerAgentId, 'worker')
   assert.equal(result?.state, 'completed')
   assert.equal(fixture.hooks.eventCount, count)
-  assert.equal(reads, count * 2)
+  // Redaction reads the provider getter once; evidence consumes the bounded
+  // normalized copy, so no second provider-body walk or history rescan occurs.
+  assert.equal(reads, count)
   assert.equal(fixture.saved.events.length, 0)
   assert.ok(fixture.saved.jobs.length <= 4)
 }, 15_000)

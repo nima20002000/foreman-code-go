@@ -3,12 +3,16 @@ import { randomUUID } from 'node:crypto'
 import {
   AgentConfigurationVersionSchema,
   RunActivitySchema,
-  WorkflowRunSchema,
   WorkflowVersionSchema,
   type RunInput,
 } from '@graphql/contracts'
 import { GraphDraftSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
+import { RunCurrentRequestSchema, type RunCurrentRequest } from '@graphql/contracts/run-current'
+import { readRunCurrent } from './liveSnapshot.js'
+import { CompatibleWorkflowRunSchema as WorkflowRunSchema, RunStartV2InputSchema, assertWave25Admission } from '@graphql/contracts/wave25'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
+import { admitOneShotRun } from './oneShotAdmission.js'
 
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { authorizedPage } from '../access/authorizedPage.js'
@@ -56,6 +60,19 @@ export class RunManagementService {
     return { ...page, items: page.items.map((item) => this.visibleRun(principal, item)) }
   }
 
+  async current(principal: ManagementPrincipal, input: RunCurrentRequest) {
+    const scope = RunCurrentRequestSchema.parse(input)
+    // URL/tool pins are requests, not authority. The read matches every saved
+    // identity in the same statement; a forged workflow pin cannot widen access.
+    requireAuthorization(principal, 'runs:read', {
+      workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId,
+    })
+    const current = await readRunCurrent(this.pool, scope)
+    if (!current) throw new DomainError('RUN_NOT_FOUND', `Run '${scope.runId}' was not found at the requested scope.`, 404)
+    // Compact fields contain no filesystem paths or authorization principal IDs.
+    return current
+  }
+
   async get(principal: ManagementPrincipal, workspaceId: string, runId: string) {
     const run = await this.runs.getForWorkspace(workspaceId, runId)
     if (!run) throw new DomainError('RUN_NOT_FOUND', `Run '${runId}' was not found.`, 404)
@@ -83,7 +100,7 @@ export class RunManagementService {
       occurred_at: Date; payload: Record<string, unknown>
     }>(
       `select sequence::text, source, kind, harness_execution_id, occurred_at, payload
-       from run_activity where run_id = $1 and sequence > $2 order by sequence limit $3`,
+       from run_activity where run_id = $1 and sequence > $2 order by run_activity.sequence limit $3`,
       [input.runId, input.afterSequence ?? -1, input.limit + 1],
     )
     const items = rows.rows.slice(0, input.limit).map((row) => RunActivitySchema.parse({
@@ -97,11 +114,19 @@ export class RunManagementService {
 
   async start(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
     workspaceId: string; workflowId: string; workflowVersionId: string; expectedLocationRevision: number;
-    commandId: string; input: RunInput;
+    commandId: string; input: RunInput; executionSemanticsVersion?: 2;
     draftId?: string | undefined; expectedDraftRevision?: number | undefined; triggerJobId?: string | undefined
   }) {
     requireAuthorization(principal, 'runs:start', { workspaceId: input.workspaceId, workflowId: input.workflowId })
     requireAuthorization(principal, 'workspace_locations:read', { workspaceId: input.workspaceId })
+    if (input.executionSemanticsVersion === 2) {
+      assertWave25Admission() // remains OFF until the assembled writer/reader lanes qualify
+      const { triggerJobId, ...command } = input
+      const execution = await admitOneShotRun(this.pool, this.locations, principal, source,
+        RunStartV2InputSchema.parse(command), triggerJobId === undefined ? {} : { triggerJobId: triggerJobId as string })
+      if (!execution.replayed) setImmediate(() => { void this.engine.start(execution.value.id).catch(() => undefined) })
+      return { run: this.visibleRun(principal, execution.value), accepted: true as const, replayed: execution.replayed }
+    }
     const execution = await this.commands.execute({
       principal, source, operation: 'run.start', commandId: input.commandId,
       targetKey: `workflow:${input.workflowId}:version:${input.workflowVersionId}`, payload: input,
@@ -141,6 +166,9 @@ export class RunManagementService {
           [input.workflowVersionId, input.workspaceId, input.workflowId],
         )
         if (!versionRow.rows[0]) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', `Workflow version '${input.workflowVersionId}' was not found.`, 404)
+        const semantics = (versionRow.rows[0].record as { executionSemanticsVersion?: unknown }).executionSemanticsVersion
+        if (semantics === 2) assertWave25Admission()
+        if (semantics !== undefined && semantics !== 1) throw new DomainError('EXECUTION_SEMANTICS_UNSUPPORTED', 'Unknown semantics cannot use the legacy admission path.', 409)
         const version = WorkflowVersionSchema.parse(versionRow.rows[0].record)
         validateExecutableTopology(version)
         const approval = acceptedRunApproval(version)
@@ -201,6 +229,12 @@ export class RunManagementService {
         if (latest.executionState === 'completed' && !await this.runs.hasPendingCleanup(input.runId, client)) {
           return { runId: input.runId, status: 'already_terminal' as const, processStopped: false }
         }
+        // Revalidate live command authority while the same parent Run lock that
+        // fences native launch/completion is held. Cleanup is not Stop intent.
+        if ('executionSemanticsVersion' in latest && latest.executionSemanticsVersion === 2) await this.runs.requestStop(input.runId, async (sql) => {
+          const live = await readLiveManagementPrincipal(sql as unknown as Pick<pg.ClientBase, 'query'>, principal.id)
+          requireAuthorization(live, 'runs:stop', { workspaceId: input.workspaceId, workflowId: latest.workflowId, runId: input.runId })
+        })
         const accepted = await this.engine.cancel(input.runId, client)
         return accepted
           ? { runId: input.runId, status: 'accepted' as const, processStopped: false }

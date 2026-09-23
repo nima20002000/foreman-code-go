@@ -1,4 +1,5 @@
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema, WorkflowRunSchema } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@graphql/contracts'
+import { CompatibleWorkflowRunSchema } from '@graphql/contracts/wave25'
 import type pg from 'pg'
 import { DomainError } from '../errors.js'
 import { interactionConnection } from '../interactions/connection.js'
@@ -18,11 +19,14 @@ export function continuationValidator(pool: pg.Pool, locations: WorkspaceLocatio
     const row = result.rows[0]
     if (!row) throw new DomainError('WORKER_EXECUTION_NOT_FOUND', 'The accepted execution is unavailable.', 409)
     const execution = HarnessExecutionSchema.parse(row.execution)
-    const run = WorkflowRunSchema.parse(row.run)
+    const run = CompatibleWorkflowRunSchema.parse(row.run)
     const configuration = AgentConfigurationVersionSchema.parse(row.configuration)
-    if (run.executionState === 'completed' || !run.executionLocation
+    if (run.executionState === 'completed' || run.executionState === 'interrupted' || !run.executionLocation
+      || execution.id !== executionId || execution.runId !== run.id
       || execution.workingDirectory !== run.executionLocation.rootPath
-      || configuration.agentId !== execution.agentId) {
+      || configuration.agentId !== execution.agentId || configuration.workspaceId !== run.workspaceId
+      || configuration.id !== execution.agentConfigurationVersionId
+      || run.agentConfigurationVersionIds[execution.agentId] !== configuration.id) {
       throw new DomainError('WORKER_EXECUTION_IDENTITY_INVALID', 'Native continuation requires the accepted active Run identity.', 409)
     }
     if (run.authorizationPrincipalId) await locations.revalidateRunAuthorization(

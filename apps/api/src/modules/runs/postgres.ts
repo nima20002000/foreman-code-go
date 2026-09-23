@@ -26,11 +26,17 @@ import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowCo
 import { validateWorkflowApproval } from '../workflows/approval.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { RunOwnership } from './ownership.js'
+import { OneShotRunRepository } from './oneShotPostgres.js'
+import { assertWave25Admission, CompatibleWorkflowRunSchema, WorkflowVersionV2Schema } from '@graphql/contracts/wave25'
+import { changeOneShotLifecycle, type AuthorizeOneShotStop } from './oneShotLifecycle.js'
 import { appendNativeEvent } from './nativeEvents.js'
+import { appendWorkflowNativeGraphEvent, type WorkflowApprovalCorrelation, type WorkflowContinuationProof,
+  type WorkflowNativeLease } from './workflowNativeGraph.js'
 import { validateExecutableTopology } from './topology.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
 
 export class PostgresRunRepository implements RunRepository {
+  private readonly oneShotStores = new WeakMap<RunOwnership, OneShotRunRepository>()
   constructor(
     private readonly pool: pg.Pool,
     private readonly workflows: PostgresWorkflowRepository,
@@ -41,7 +47,67 @@ export class PostgresRunRepository implements RunRepository {
     return RunOwnership.acquire(this.pool, runId, onLost)
   }
 
+  /** One repository and ephemeral first-launch permit set per existing Run owner. */
+  oneShot(owner: RunOwnership): OneShotRunRepository {
+    owner.assertOwned()
+    let store = this.oneShotStores.get(owner)
+    if (!store) {
+      store = new OneShotRunRepository(owner, async (sql, run) => {
+        if (run.authorizationPrincipalId) await this.locations.revalidateRunAuthorization(
+          run.authorizationPrincipalId, run.workspaceId, run.workflowId,
+          // This existing helper is SQL-only; the facade retains exclusive G1
+          // transaction ownership and exposes no raw native/connection methods.
+          sql as unknown as Pick<pg.PoolClient, 'query'>)
+      })
+      this.oneShotStores.set(owner, store)
+    }
+    return store
+  }
+
+  async isOneShot(runId: string, owner?: RunOwnership): Promise<boolean> {
+    owner?.assertOwned()
+    if (owner?.runId !== undefined && owner.runId !== runId) throw new DomainError('GRAPH_SCOPE_MISMATCH', 'Run ownership cannot cross Run identities.', 409)
+    const result = await (owner?.client ?? this.pool).query<{ semantics: string | null }>(
+      "select record->>'executionSemanticsVersion' as semantics from runs where id=$1", [runId])
+    const semantics = result.rows[0]?.semantics
+    if (semantics !== undefined && semantics !== null && semantics !== '1' && semantics !== '2') {
+      throw new DomainError('EXECUTION_SEMANTICS_UNSUPPORTED', 'Unknown execution semantics cannot use the legacy engine.', 409)
+    }
+    return semantics === '2'
+  }
+
+  async getOneShotVersion(workflowVersionId: string) {
+    const row = await this.pool.query<{ record: unknown }>('select record from workflow_versions where id=$1', [workflowVersionId])
+    return WorkflowVersionV2Schema.parse(row.rows[0]?.record)
+  }
+
+  consumeOneShotLaunch(executionId: string, owner: RunOwnership): boolean {
+    return this.oneShotStores.get(owner)?.consumeLaunchPermit(executionId) === true
+  }
+
+  async exactOneShotSession(executionId: string, owner: RunOwnership) {
+    if (!await this.isOneShot(owner.runId, owner)) return undefined
+    return this.oneShot(owner).exactSession(executionId)
+  }
+
+  async assertOneShotNativeBoundary(executionId: string, owner: RunOwnership): Promise<void> {
+    if (await this.isOneShot(owner.runId, owner)) await this.oneShot(owner).assertNativeBoundary(executionId)
+  }
+
+  async requestStop(runId: string, authorize?: AuthorizeOneShotStop): Promise<void> {
+    if (await this.isOneShot(runId)) await changeOneShotLifecycle(this.pool, runId, { kind: 'stop', ...(authorize ? { authorize } : {}) })
+  }
+
+  async hasRequestedStop(runId: string): Promise<boolean> {
+    const row = await this.pool.query<{ stopped: boolean }>('select stop_requested_at is not null as stopped from runs where id=$1', [runId])
+    return row.rows[0]?.stopped === true
+  }
+
   async requestCleanup(runId: string, client?: pg.ClientBase): Promise<void> {
+    if (await this.isOneShot(runId)) {
+      if (client) throw new DomainError('GRAPH_TRANSACTION_CONTEXT_REQUIRED', 'Compose publishOneShotCleanup with the current G1 publication; raw-client nesting is forbidden.', 409)
+      return changeOneShotLifecycle(this.pool, runId, { kind: 'cleanup', pending: true })
+    }
     await (client ?? this.pool).query(`insert into run_cleanup_intents(run_id) values($1)
       on conflict(run_id) do update set pending=true,updated_at=now()`, [runId])
   }
@@ -53,6 +119,10 @@ export class PostgresRunRepository implements RunRepository {
   }
 
   async finishCleanup(runId: string, failed: boolean, client?: pg.ClientBase): Promise<void> {
+    if (await this.isOneShot(runId)) {
+      if (client) throw new DomainError('GRAPH_TRANSACTION_CONTEXT_REQUIRED', 'Compose publishOneShotCleanup with the current G1 publication; raw-client nesting is forbidden.', 409)
+      return changeOneShotLifecycle(this.pool, runId, { kind: 'cleanup', pending: failed })
+    }
     await (client ?? this.pool).query(`update run_cleanup_intents set pending=$2,attempts=attempts+1,
       last_error=$3,updated_at=now() where run_id=$1`,
     [runId, failed, failed ? 'Native closure or task draining remains unconfirmed; retry cleanup.' : null])
@@ -64,7 +134,7 @@ export class PostgresRunRepository implements RunRepository {
         or exists(select 1 from run_cleanup_intents c where c.run_id=runs.id and c.pending)
         order by created_at,id`,
     )
-    return result.rows.map((row) => WorkflowRunSchema.parse(row.record))
+    return result.rows.map((row) => CompatibleWorkflowRunSchema.parse(row.record))
   }
 
   /** Read persisted active time on the ownership connection, excluding approval waits. */
@@ -89,11 +159,17 @@ export class PostgresRunRepository implements RunRepository {
   /** Called only while holding database ownership; never modifies another live owner. */
   async settleOrphan(runId: string, owner: RunOwnership, canceled: boolean): Promise<boolean> {
     owner.assertOwned()
+    if (await this.isOneShot(runId, owner)) {
+      const run = await this.get(runId, owner)
+      if (!run || run.executionState === 'completed') return false
+      await this.oneShot(owner).settleRun(canceled, !canceled)
+      return true
+    }
     const client = owner.client
     try {
       await client.query('begin')
       const found = await client.query<{ record: unknown }>('select record from runs where id = $1 for update', [runId])
-      const current = found.rows[0] ? WorkflowRunSchema.parse(found.rows[0].record) : undefined
+      const current = found.rows[0] ? CompatibleWorkflowRunSchema.parse(found.rows[0].record) : undefined
       if (!current || current.executionState === 'completed') {
         await client.query('commit')
         return false
@@ -130,6 +206,10 @@ export class PostgresRunRepository implements RunRepository {
     const version = await this.workflows.getCurrentVersion(workspaceId, workflowId)
     if (!version) {
       throw new DomainError('WORKFLOW_NOT_FOUND', `Workflow '${workflowId}' was not found.`, 404)
+    }
+    if ('executionSemanticsVersion' in version && version.executionSemanticsVersion === 2) {
+      assertWave25Admission()
+      throw new DomainError('V2_ADMISSION_REQUIRED', 'Use the explicit authenticated v2 admission service.', 409)
     }
     validateExecutableTopology(version)
     const approval = acceptedRunApproval(version)
@@ -177,8 +257,9 @@ export class PostgresRunRepository implements RunRepository {
 
   async get(runId: string, owner?: RunOwnership): Promise<WorkflowRun | undefined> {
     owner?.assertOwned()
+    if (owner?.runId !== undefined && owner.runId !== runId) throw new DomainError('GRAPH_SCOPE_MISMATCH', 'Run ownership cannot cross Run identities.', 409)
     const result = await (owner?.client ?? this.pool).query<{ record: unknown }>('select record from runs where id = $1', [runId])
-    return result.rows[0] ? WorkflowRunSchema.parse(result.rows[0].record) : undefined
+    return result.rows[0] ? CompatibleWorkflowRunSchema.parse(result.rows[0].record) : undefined
   }
 
   async getForWorkspace(workspaceId: string, runId: string): Promise<WorkflowRun | undefined> {
@@ -186,10 +267,14 @@ export class PostgresRunRepository implements RunRepository {
       'select record from runs where workspace_id = $1 and id = $2',
       [workspaceId, runId],
     )
-    return result.rows[0] ? WorkflowRunSchema.parse(result.rows[0].record) : undefined
+    return result.rows[0] ? CompatibleWorkflowRunSchema.parse(result.rows[0].record) : undefined
   }
 
   async create(run: WorkflowRun, client?: pg.ClientBase): Promise<void> {
+    if ('executionSemanticsVersion' in run && run.executionSemanticsVersion === 2) {
+      assertWave25Admission()
+      throw new DomainError('V2_ADMISSION_REQUIRED', 'Use insertOneShotRun inside the v2 admission transaction.', 409)
+    }
     const parsed = WorkflowRunSchema.parse(run)
     await (client ?? this.pool).query(
       `insert into runs (id, workspace_id, workflow_id, workflow_version_id, execution_state, record,
@@ -204,6 +289,10 @@ export class PostgresRunRepository implements RunRepository {
   async updateState(runId: string, update: RunStateUpdate, owner?: RunOwnership): Promise<void> {
     const current = await this.get(runId, owner)
     if (!current) throw new DomainError('RUN_NOT_FOUND', `Run '${runId}' was not found.`, 404)
+    if ('executionSemanticsVersion' in current && current.executionSemanticsVersion === 2) {
+      if (!owner) throw new DomainError('RUN_OWNERSHIP_REQUIRED', 'One-shot execution mutations require the current Run owner.', 409)
+      return this.oneShot(owner).updateRun(update)
+    }
     const next = WorkflowRunSchema.parse({ ...current, ...update })
     owner?.assertOwned()
     await (owner?.client ?? this.pool).query(
@@ -217,6 +306,7 @@ export class PostgresRunRepository implements RunRepository {
   }
 
   async createExecution(execution: HarnessExecution, owner?: RunOwnership): Promise<void> {
+    if (await this.isOneShot(execution.runId, owner)) throw new DomainError('EXECUTION_ADMISSION_REQUIRED', 'Use transactional one-shot queue admission.', 409)
     owner?.assertOwned()
     const parsed = HarnessExecutionSchema.parse(execution)
     await (owner?.client ?? this.pool).query(
@@ -232,6 +322,16 @@ export class PostgresRunRepository implements RunRepository {
   }
 
   async ensureExecution(execution: HarnessExecution, owner?: RunOwnership): Promise<{ execution: HarnessExecution; created: boolean }> {
+    if (await this.isOneShot(execution.runId, owner)) {
+      if (!owner) throw new DomainError('RUN_OWNERSHIP_REQUIRED', 'One-shot observation requires the Run owner.', 409)
+      const current = await this.getExecution(execution.id, owner)
+      if (!current || current.runId !== owner.runId || current.runId !== execution.runId
+        || current.workflowNodeId !== execution.workflowNodeId || current.agentId !== execution.agentId
+        || current.agentConfigurationVersionId !== execution.agentConfigurationVersionId || current.attempt !== 1) {
+        throw new DomainError('EXECUTION_OCCURRENCE_CONFLICT', 'Observe only the exact already admitted one-shot execution.', 409)
+      }
+      return { execution: current, created: false }
+    }
     owner?.assertOwned()
     const parsed = HarnessExecutionSchema.parse(execution)
     // One SQL statement is atomic on a pool lease AND on an owner's client.
@@ -262,6 +362,10 @@ export class PostgresRunRepository implements RunRepository {
   }
 
   async updateExecution(execution: HarnessExecution, owner?: RunOwnership): Promise<void> {
+    if (await this.isOneShot(execution.runId, owner)) {
+      if (!owner) throw new DomainError('RUN_OWNERSHIP_REQUIRED', 'Native domain writes require the current Run owner.', 409)
+      return this.oneShot(owner).updateExecution(execution)
+    }
     owner?.assertOwned()
     const parsed = HarnessExecutionSchema.parse(execution)
     await (owner?.client ?? this.pool).query(
@@ -271,6 +375,11 @@ export class PostgresRunRepository implements RunRepository {
   }
 
   async acceptExecutionResult(execution: HarnessExecution, owner?: RunOwnership): Promise<void> {
+    if (await this.isOneShot(execution.runId, owner)) {
+      if (!owner) throw new DomainError('RUN_OWNERSHIP_REQUIRED', 'Result acceptance requires the current Run owner.', 409)
+      await this.oneShot(owner).acceptTerminal(execution.id)
+      return
+    }
     owner?.assertOwned()
     const parsed = HarnessExecutionSchema.parse(execution)
     if (parsed.state !== 'completed' || parsed.result?.outcome !== 'succeeded') {
@@ -296,8 +405,13 @@ export class PostgresRunRepository implements RunRepository {
     return execution?.result
   }
 
-  async appendNativeEvent(event: HarnessNativeEvent, owner?: RunOwnership): Promise<void> {
+  async appendNativeEvent(event: HarnessNativeEvent, owner?: RunOwnership, lease?: WorkflowNativeLease,
+    approval?: WorkflowApprovalCorrelation, continuation?: WorkflowContinuationProof): Promise<void> {
     owner?.assertOwned()
+    if (owner && lease && await this.isOneShot(owner.runId, owner)) {
+      await appendWorkflowNativeGraphEvent(owner, event, lease, approval, continuation)
+      return
+    }
     await appendNativeEvent(owner?.client ?? this.pool, event)
   }
 
@@ -386,7 +500,7 @@ export class PostgresRunRepository implements RunRepository {
        order by r.created_at desc,r.id desc`, [workspaceId],
     )
     return result.rows.map((row) => {
-      const run = WorkflowRunSchema.parse(row.record)
+      const run = CompatibleWorkflowRunSchema.parse(row.record)
       return {
         id: run.id,
         workspaceId: run.workspaceId,

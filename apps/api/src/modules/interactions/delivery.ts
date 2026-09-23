@@ -46,7 +46,16 @@ export function matchingDeliveryEvidence(
   if (pending.some((item) => item.session.harness === interaction.harness
     && item.session.nativeSessionId === interaction.nativeSessionId
     && item.turn.nativeRequestId === interaction.nativeRequestId)) return undefined
-  return history.responseDeliveries?.find((proof) =>
+  if (!interaction.selectedOptionId || !interaction.selectedSemantic || interaction.status === 'pending') return undefined
+  const deliveries = history.responseDeliveries ?? []
+  // Reordered or duplicated positive receipts are harmless. A contradictory
+  // decision for the same native request is not resolved by picking the first hit.
+  const sameRequest = deliveries.filter((proof) => proof.harness === interaction.harness
+    && proof.providerVersion === interaction.providerVersion
+    && proof.nativeSessionId === interaction.nativeSessionId && proof.nativeRequestId === interaction.nativeRequestId)
+  if (sameRequest.some((proof) => proof.nativeRequestType !== interaction.nativeRequestType
+    || proof.optionId !== interaction.selectedOptionId || proof.semantic !== interaction.selectedSemantic)) return undefined
+  return sameRequest.find((proof) =>
     (proof.source === 'provider_acknowledgement' || proof.source === 'provider_history')
     && proof.harness === interaction.harness && proof.providerVersion === interaction.providerVersion
     && proof.nativeSessionId === interaction.nativeSessionId && proof.nativeRequestId === interaction.nativeRequestId

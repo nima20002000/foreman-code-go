@@ -1,3 +1,4 @@
+import { registerApprovalCheckpointResume } from './modules/runs/approvalCheckpointRegistration.js'
 import { isDeepStrictEqual } from 'node:util'
 import { NativeResponseJournal } from './modules/harnesses/recovery/responseJournal.js'
 import { NativeProcessRegistry } from './modules/harnesses/recovery/processRegistry.js'
@@ -21,7 +22,7 @@ import { RuntimeShutdown } from './infrastructure/runtimeShutdown.js'
 import { PostgresAccessService } from './modules/access/postgres.js'
 import { LocalDevBrowserAccess } from './modules/access/localDevBrowser.js'
 import { BrowserAuthentication } from './modules/browser-auth/service.js'
-import { WorkerCredentialService } from './modules/access/workerCredentials.js'
+import { Wave25WorkerCredentialService as WorkerCredentialService } from './modules/interactions/wave25/credentials.js'
 import {
   ensureOperatorRuntimeDirectory,
   OperatorChatService,
@@ -32,6 +33,7 @@ import { OPERATOR_MCP_ENVIRONMENT_VARIABLE, PostgresOperatorChatAuthority } from
 import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
 import { DomainError } from './modules/errors.js'
 import { GraphDraftService } from './modules/graph-drafts/service.js'
+import { Wave25ApprovalDraftService } from './modules/workflows/approvalDraftService.js'
 import { HarnessCatalogService } from './modules/harnesses/catalog.js'
 import { createHarnessCompatibility } from './modules/harnesses/compatibility/service.js'
 import { CodexAppServerSessionManager } from './modules/harnesses/codexAppServer.js'
@@ -46,7 +48,7 @@ import { PostgresAppInteractionService } from './modules/interactions/app.js'
 import { PostgresApprovalBudgetRepository } from './modules/interactions/budget.js'
 import { ApprovalExecutionCoordinator } from './modules/interactions/execution.js'
 import { OperatorInteractionService } from './modules/interactions/operator.js'
-import { PostgresInteractionRepository } from './modules/interactions/postgres.js'
+import { Wave25InteractionRepository as PostgresInteractionRepository } from './modules/interactions/wave25/repository.js'
 import { ExecutionScopedNativeSessionManagerResolver } from './modules/interactions/runtimePorts.js'
 import { InteractionService } from './modules/interactions/service.js'
 import { AutomaticReviewService } from './modules/interactions/automaticReview.js'
@@ -64,6 +66,9 @@ import { AgentManagementService } from './modules/workspaces/agents.js'
 import { WorkspaceLocationService } from './modules/workspaces/location.js'
 import { WorkspaceManagementService } from './modules/workspaces/management.js'
 import { PostgresWorkspaceRepository } from './modules/workspaces/postgres.js'
+import { RunGraphReadService } from './modules/run-graph/readService.js'
+import { createCompactSnapshotAssembler } from './modules/run-graph/compactSnapshot.js'
+import { readCurrentGraphExchanges } from './modules/interactions/wave25/currentExchanges.js'
 
 function inspectorFor(manager: NativeHarnessSessionManager) {
   if (manager instanceof CodexAppServerSessionManager) return codexMcpInspectorAdapter(manager)
@@ -184,6 +189,9 @@ export function buildProductionApp(
   const interactions = new InteractionService(
     repository, budgets, approvals, (interaction) => engine.resumeInteraction(interaction), responseJournal,
   )
+  // V2 responses and engine recovery consume the actual checkpoint and receipt
+  // on the same Run-owner transaction before any native continuation.
+  registerApprovalCheckpointResume(interactions, engine)
   const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
   const resolveOperatorManager: NativeManagerResolver = (configuration, conversationId) => {
@@ -235,11 +243,13 @@ export function buildProductionApp(
     workflows: new WorkflowManagementService(database.pool, commands),
     agents: new AgentManagementService(database.pool),
     drafts: new GraphDraftService(database.pool, commands),
+    approvalDrafts: new Wave25ApprovalDraftService(database.pool, commands),
     harnesses: harnessCatalog,
     settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators),
     runs: new RunManagementService(database.pool, commands, runs, engine, locations),
     commands,
     interactions: new OperatorInteractionService(interactions),
+    runGraph: new RunGraphReadService(database.pool, createCompactSnapshotAssembler(readCurrentGraphExchanges), { qualifiedReads: true }),
   }
   const detection = new McpDetectionService({
     async inspect(input) {

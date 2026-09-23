@@ -11,6 +11,7 @@ import {
   type WorkflowApprovalConfiguration,
   type AgentConfigurationVersion,
   type NativeSessionReference,
+  type NativeHarnessEvent,
   type PendingNativeInteraction,
   type ReviewJob,
   HarnessExecutionRequestSchema,
@@ -32,6 +33,8 @@ import { buildHarnessPrompt } from '../harnesses/prompt.js'
 import { maintainCredential } from '../harnesses/credentialHeartbeat.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { RunOwnership } from '../runs/ownership.js'
+import type { WorkflowNativeLease } from '../runs/workflowNativeGraph.js'
+import { normalizeNativeProducerEvent } from '../run-graph/nativeProducerNormalization.js'
 import type { PostgresApprovalBudgetRepository } from './budget.js'
 import type { PostgresInteractionRepository } from './postgres.js'
 import type {
@@ -832,7 +835,10 @@ export class ApprovalExecutionCoordinator {
       ownedSession = this.ownSession(execution, context, manager)
       signal = AbortSignal.any([signal, ownedSession.controller.signal])
 
-      const observePending = async (history: NativeHistory): Promise<ApprovalExecutionObservation | undefined> => {
+      const observePending = async (history: NativeHistory, sourceEvent?: NativeHarnessEvent,
+        sourceLease?: WorkflowNativeLease): Promise<ApprovalExecutionObservation | undefined> => {
+        history = { ...history, events: history.events.map((event) => normalizeNativeProducerEvent(
+          redactKnownSecrets({ ...event, executionId: execution.id }, knownSecrets)).event) }
         signal.throwIfAborted()
         input.owner.assertOwned()
         if (history.canceledRequestIds?.length) await this.interactions.cancelPendingForExecution(execution.id, history.canceledRequestIds)
@@ -847,11 +853,12 @@ export class ApprovalExecutionCoordinator {
             'NATIVE_APPROVAL_HANDLER_MISSING',
             'The native execution asked for a decision but this workflow has no routed approval handler. Reopen and save the workflow or Agent configuration. The request was not automatically approved.', 409,
           )
+          this.assertSessionIdentity(session!, pending.session)
           await this.interactions.assertOrchestratorConnection({
             workspaceId: request.workspaceId, workflowId: input.workflowId, runId: execution.runId,
             executionId: execution.id, requestingAgentId: execution.agentId, approval: input.approval,
+            harness: session!.harness, nativeSessionId: session!.nativeSessionId,
           })
-          this.assertSessionIdentity(session!, pending.session)
           if (!pending.turn.nativeRequestId) throw new Error('Native approval request is missing its stable request identity.')
           const now = new Date().toISOString()
           // create() deduplicates by (harness, native session, native request),
@@ -867,6 +874,9 @@ export class ApprovalExecutionCoordinator {
             reviewContext: redactKnownSecrets(nativeApprovalContext(pending, history.events), knownSecrets),
             status: 'pending', deliveryState: 'not_started', createdAt: now, updatedAt: now,
           }))
+          if (sourceEvent && sourceLease) await this.runs.appendNativeEvent(
+            redactKnownSecrets({ ...sourceEvent, executionId: execution.id }, knownSecrets), input.owner,
+            sourceLease, { interaction: created.interaction, nativeTurnId: pending.turn.nativeTurnId })
           // A provider may briefly report an already-delivered request. Observe
           // its continuation; never offer that delivered interaction as a new ask.
           if (created.interaction.deliveryState !== 'delivered') waiting.push(created.interaction)
@@ -887,7 +897,7 @@ export class ApprovalExecutionCoordinator {
       }
 
       if (!execution.nativeSessionId) {
-        if (!ensured.created) {
+        if (!ensured.created && !this.runs.consumeOneShotLaunch?.(execution.id, input.owner)) {
           throw new DomainError('NATIVE_SESSION_START_UNCERTAIN', 'The existing execution has no recorded native session. Native side effects will not be replayed.', 409)
         }
         const environment = await this.prepareEnvironment(context, resolved, signal)
@@ -895,6 +905,7 @@ export class ApprovalExecutionCoordinator {
         await this.validateContinuation?.(execution.id, signal)
         signal.throwIfAborted()
         input.owner.assertOwned()
+        await this.runs.assertOneShotNativeBoundary?.(execution.id, input.owner)
         session = await this.openingSession(ownedSession, manager.createSession({ request, ...(environment ? { environment } : {}) }, signal))
         if (session.harness !== context.harness) throw new Error('The created native session has the wrong harness.')
         resolved.markResident?.()
@@ -906,17 +917,20 @@ export class ApprovalExecutionCoordinator {
         await this.validateContinuation?.(execution.id, signal)
         signal.throwIfAborted()
         input.owner.assertOwned()
+        await this.runs.assertOneShotNativeBoundary?.(execution.id, input.owner)
         for await (const event of manager.startTurn(session, {
           prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
         }, signal)) {
           signal.throwIfAborted()
           await this.budgets.assertActive(execution.id)
-          await this.runs.appendNativeEvent(redactKnownSecrets({ ...event, executionId: execution.id }, knownSecrets), input.owner)
-          const waiting = await observePending(await manager.history(session, signal))
+          const lease = manager.currentProjectionLease(session)
+          await this.runs.appendNativeEvent(redactKnownSecrets({ ...event, executionId: execution.id }, knownSecrets),
+            input.owner, lease)
+          const waiting = await observePending(await manager.history(session, signal), event, lease)
           if (waiting) return waiting
         }
       } else {
-        session = {
+        session = await this.runs.exactOneShotSession?.(execution.id, input.owner) ?? {
           harness: context.harness,
           providerVersion: existing?.providerVersion ?? (await manager.capabilities(signal)).providerVersion,
           nativeSessionId: execution.nativeSessionId,
@@ -928,6 +942,7 @@ export class ApprovalExecutionCoordinator {
         await this.validateContinuation?.(execution.id, signal)
         signal.throwIfAborted()
         input.owner.assertOwned()
+        await this.runs.assertOneShotNativeBoundary?.(execution.id, input.owner)
         if (resolved.processState === 'needs_start') {
           const attached = await this.openingSession(ownedSession, manager.attachSession(session, {
             kind: 'workflow', correlationId: `execution:${execution.id}`, request,
@@ -945,9 +960,27 @@ export class ApprovalExecutionCoordinator {
         signal.throwIfAborted()
         input.owner.assertOwned()
         await this.budgets.assertActive(execution.id)
-        const history = await manager.reconcile(session, `execution:${execution.id}`, signal)
-        for (const event of history.events) await this.runs.appendNativeEvent(redactKnownSecrets({ ...event, executionId: execution.id }, knownSecrets), input.owner)
-        const waiting = await observePending(history)
+        const observed = await manager.withLane(session, `execution:${execution.id}`, signal, async (nativeManager, lane) => {
+          const observed = await nativeManager.reconcile(session!, `execution:${execution.id}`, lane.guard.signal)
+          const exactTerminal = observed.terminalTurn?.correlationId === `execution:${execution.id}`
+            && (!observed.nativeTurnId || observed.terminalTurn.providerId === observed.nativeTurnId)
+            && !observed.pendingInteraction && observed.pendingInteractions.length === 0
+          if (exactTerminal) {
+            lane.providerId = observed.terminalTurn!.providerId
+          } else if (observed.correlationId === `execution:${execution.id}` && observed.nativeTurnId) {
+            lane.providerId = observed.nativeTurnId
+          }
+          const lease = { ...lane.fence, ...(lane.providerId ? { providerId: lane.providerId } : {}), live: false as const }
+          const continuation = exactTerminal ? { session: session!, providerId: observed.terminalTurn!.providerId,
+            correlationId: `execution:${execution.id}`, responseDeliveries: observed.responseDeliveries ?? [] } : undefined
+          for (const event of observed.events) {
+            await lane.guard.check()
+            await this.runs.appendNativeEvent(redactKnownSecrets({ ...event, executionId: execution.id }, knownSecrets),
+              input.owner, lease, undefined, continuation)
+          }
+          return { history: observed, waiting: await observePending(observed, observed.events.at(-1), lease) }
+        })
+        const { history, waiting } = observed
         if (waiting) return waiting
         if (history.terminalTurn?.correlationId === `execution:${execution.id}`) {
           const result = redactKnownSecrets(history.terminalTurn.result, knownSecrets)

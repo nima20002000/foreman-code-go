@@ -38,6 +38,7 @@ import { OpenCodeNativeAutoReplies, usesOpenCodeNativeAuto } from './opencodeNat
 import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
 import { isOpenCodeReplyAcknowledgement } from './openCodeResponseAcknowledgement.js'
 import type { NativeResponseJournal } from './recovery/responseJournal.js'
+import { OPENCODE_RECONCILIATION_EVENT, openCodeReconciliationPayload } from './opencodeReconciliation.js'
 
 export {
   ManagedOpenCodeServer, OpenCodeNativeDeliveryError, buildOpenCodeConfigContent,
@@ -65,6 +66,7 @@ interface OwnedTurn {
   scopedError: JsonObject | undefined
   terminalResult: NativeHistory['terminalResult']
   nativeMessageId?: string
+  reconciliationEvents?: readonly NativeHarnessEvent[]
 }
 interface SessionState {
   readonly connectionId: string
@@ -433,11 +435,24 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       await this.autoReplyPending(session, signal)
       return []
     }
-    return (await this.ownedPermissions(session, signal)).map((request) => PendingNativeInteractionSchema.parse({
-      session, turn: { nativeTurnId: request.tool?.messageID ?? request.id, nativeRequestId: request.id },
-      nativeRequestType: 'permission.asked', request,
-      responseOptions: optionsForRequest(request.id),
-    }))
+    const pending: PendingNativeInteraction[] = []
+    for (const request of await this.ownedPermissions(session, signal)) {
+      let nativeTurnId = request.tool?.messageID ?? request.id
+      const rootId = state.turn?.messageID ?? (state.recoveryCorrelationId ? nativeMessageId(state.recoveryCorrelationId) : undefined)
+      if (request.tool && rootId && request.sessionID === session.nativeSessionId) {
+        const message = await this.message(session.nativeSessionId, request.tool.messageID, state.directory, signal)
+        // OpenCode permissions refer to the tool's assistant message, not the
+        // submitted user turn. Normalize only a proven direct parent. Unknown
+        // ancestry keeps the raw identity and the graph bridge remains closed.
+        if (message?.info.id === request.tool.messageID && message.info.role === 'assistant'
+          && message.info.sessionID === session.nativeSessionId && message.info.parentID === rootId) nativeTurnId = rootId
+      }
+      pending.push(PendingNativeInteractionSchema.parse({ session,
+        turn: { nativeTurnId, nativeRequestId: request.id }, nativeRequestType: 'permission.asked',
+        request, responseOptions: optionsForRequest(request.id),
+      }))
+    }
+    return pending
   }
 
   async respond(session: NativeSessionReference, nativeRequestId: string, option: ApprovalResponseOption, signal?: AbortSignal): Promise<void> {
@@ -672,18 +687,14 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       ...(pendingInteractions[0] ? { pendingInteraction: pendingInteractions[0] } : {}),
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     }
-    if (turn?.terminalResult) return {
-      ...result,
-      terminalResult: turn.terminalResult,
-      ...(turn.nativeMessageId ? { nativeMessageId: turn.nativeMessageId } : {}),
-      terminalTurn: { correlationId, providerId: messageID, result: turn.terminalResult },
-    }
+    if (turn?.terminalResult) return historyWithOwnedTerminal(result, turn, this.generation)
     if (!root) {
       if (!turn?.submitted) throw new HarnessExecutionError('OPENCODE_TURN_IDENTITY_MISSING', 'The requested turn could not be identified in native history; older answers are not substitutes.')
     } else if (root.info.role !== 'user') {
       throw new HarnessExecutionError('OPENCODE_TURN_IDENTITY_INVALID', 'The correlated native message is not a user prompt.')
     }
     let terminalResult: NativeHistory['terminalResult']
+    let terminalMessage: OpenCodeMessage | undefined
     if (root) {
       const history = new OpenCodeTurnHistory(root)
       let current = page
@@ -698,14 +709,17 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       }
       if (!history.rooted) throw new HarnessExecutionError('OPENCODE_TURN_HISTORY_INCOMPLETE', 'Native history did not include the correlated prompt; no older result was selected.')
       terminalResult = history.result
+      terminalMessage = history.resultMessage
       if (history.resultMessageId) {
         result.nativeMessageId = history.resultMessageId
-        if (turn) turn.nativeMessageId = history.resultMessageId
       }
     }
     const statusAfter = await this.sessionStatus(session.nativeSessionId, state.directory, signal)
     if (statusBefore !== 'idle' || statusAfter !== 'idle' || pendingInteractions.length
       || (usesOpenCodeNativeAuto(state.configuration) && !state.autoReplies.stopped && state.autoReplies.hasPending)) return result
+    // Another observation may have finished while this scan awaited provider I/O.
+    // Reuse its complete result/source pair; do not mint a competing receipt.
+    if (turn?.terminalResult) return historyWithOwnedTerminal(result, turn, this.generation)
     if (!terminalResult && turn?.scopedError && (root || turn.idleObserved)) {
       const error = turn.scopedError
       terminalResult = failure(typeof error.name === 'string' ? error.name : 'OPENCODE_TURN_FAILED',
@@ -718,7 +732,29 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       terminalResult = failure('OPENCODE_TURN_DELIVERY_UNRESOLVED', 'OpenCode restarted without a persisted identity for the submitted turn. The prompt was not replayed.')
     }
     if (terminalResult) {
-      if (turn) turn.terminalResult = terminalResult
+      if (turn) {
+        turn.terminalResult = terminalResult
+        if (result.nativeMessageId !== undefined) turn.nativeMessageId = result.nativeMessageId
+        else delete turn.nativeMessageId
+      }
+      // Only the actual rooted scan above, after both idle checks and the pending
+      // checks, may produce this observation. Generic interrupted/error fallbacks
+      // have no selected assistant and must NOT acknowledge Worker continuation.
+      if (terminalMessage && turn?.generation === this.generation
+        && ['succeeded', 'failed'].includes(terminalResult.outcome)) {
+        const source = normalizedHistory([terminalMessage], state.configuration.thinking)[0]!
+        const payload = openCodeReconciliationPayload(session, this.options.ownerAgentId,
+          correlationId, messageID, source, terminalResult.outcome as 'succeeded' | 'failed')
+        if (payload) {
+          const marker = this.recordSynthetic(state, OPENCODE_RECONCILIATION_EVENT, payload)
+          // The selected answer may be on an older page (e.g. native compaction).
+          // Preserve its original source ID, then append the distinct observation.
+          const events = [source, marker]
+          if (turn) turn.reconciliationEvents = events
+          result.events = [...result.events, ...events.filter((event) => !result.events.some(
+            (raw) => raw.connectionId === event.connectionId && raw.sequence === event.sequence))]
+        }
+      }
       result.terminalResult = terminalResult
       result.terminalTurn = { correlationId, providerId: messageID, result: terminalResult }
     }
@@ -984,6 +1020,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private record(state: SessionState, native: OpenCodeEvent): NativeHarnessEvent | undefined {
+    // Provider-controlled SSE cannot impersonate our history-scan observation.
+    if (native.type === OPENCODE_RECONCILIATION_EVENT) return undefined
     const key = native.id ?? native.sseId
     if (key && state.eventIds.has(key)) return undefined
     if (key) boundedSetAdd(state.eventIds, key)
@@ -1104,6 +1142,20 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     } catch {
       return { ...baseline, state: 'check_failed', detail: 'OpenCode MCP inspection failed; resolved credential values are not included in diagnostics.' }
     }
+  }
+}
+
+/** Repeated/concurrent observation retains the first qualified source identity.
+ * A replacement native producer generation must not reuse its positive receipt. */
+function historyWithOwnedTerminal(history: NativeHistory, turn: OwnedTurn, generation: number): NativeHistory {
+  if (!turn.terminalResult) return history
+  const events = turn.generation === generation ? turn.reconciliationEvents ?? [] : []
+  return { ...history,
+    events: [...history.events, ...events.filter((event) => !history.events.some(
+      (raw) => raw.connectionId === event.connectionId && raw.sequence === event.sequence))],
+    terminalResult: turn.terminalResult,
+    ...(turn.nativeMessageId ? { nativeMessageId: turn.nativeMessageId } : {}),
+    terminalTurn: { correlationId: turn.correlationId, providerId: turn.messageID, result: turn.terminalResult },
   }
 }
 

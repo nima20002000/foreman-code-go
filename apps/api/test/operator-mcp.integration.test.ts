@@ -161,7 +161,9 @@ describe('Operator MCP with PostgreSQL', () => {
     const tools = await client.listTools()
     const implementedOperatorTools = OperatorToolNameSchema.options.filter((name) => operatorToolAvailable({ principal: issued.principal, services }, name))
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual(implementedOperatorTools.sort())
-    expect(tools.tools.every((tool) => tool.inputSchema.additionalProperties === false && tool.outputSchema?.additionalProperties === false)).toBe(true)
+    const strict = (schema: Record<string, unknown> | undefined): boolean => schema?.additionalProperties === false
+      || Array.isArray(schema?.anyOf) && schema.anyOf.every((branch) => strict(branch as Record<string, unknown>))
+    expect(tools.tools.every((tool) => strict(tool.inputSchema) && strict(tool.outputSchema))).toBe(true)
 
     const harnesses = structured(await client.callTool({ name: 'harness_list', arguments: {} })) as unknown as {
       items: Array<{ harness: 'codex' | 'opencode'; defaults: Record<string, unknown>; defaultsRevision: number; capability: unknown }>

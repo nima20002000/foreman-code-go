@@ -3,24 +3,25 @@ import { randomUUID } from 'node:crypto'
 import {
   AgentConfigurationVersionSchema,
   AgentSchema,
-  WorkflowDefinitionSchema,
-  WorkflowVersionSchema,
   type Agent,
   type AgentConfigurationVersion,
   type WorkflowDefinition,
+  type CompatibleWorkflowDefinition,
   type WorkflowVersion,
 } from '@graphql/contracts'
 import type pg from 'pg'
+import { CompatibleWorkflowDefinitionSchema as WorkflowDefinitionSchema, CompatibleWorkflowVersionSchema as WorkflowVersionSchema,
+  WorkflowDefinitionV2Schema } from '@graphql/contracts/wave25'
 
 import { DomainError } from '../errors.js'
 import { lockAgentConfigurations, saveAgentConfiguration } from '../workspaces/agentConfiguration.js'
 import type { WorkflowRepository } from './port.js'
-import { buildExecutableWorkflowVersion } from './executableVersion.js'
+import { buildExecutableWorkflowVersion, buildExecutableWorkflowVersionV2 } from './executableVersion.js'
 
 export class PostgresWorkflowRepository implements WorkflowRepository {
   constructor(private readonly pool: pg.Pool) {}
 
-  async list(workspaceId: string): Promise<WorkflowDefinition[]> {
+  async list(workspaceId: string): Promise<CompatibleWorkflowDefinition[]> {
     const result = await this.pool.query<{ record: unknown }>(
       'select record from workflows where workspace_id = $1 order by created_at, id',
       [workspaceId],
@@ -28,7 +29,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     return result.rows.map((row) => WorkflowDefinitionSchema.parse(row.record))
   }
 
-  async get(workspaceId: string, workflowId: string): Promise<WorkflowDefinition | undefined> {
+  async get(workspaceId: string, workflowId: string): Promise<CompatibleWorkflowDefinition | undefined> {
     const result = await this.pool.query<{ record: unknown }>(
       'select record from workflows where workspace_id = $1 and id = $2',
       [workspaceId, workflowId],
@@ -77,9 +78,9 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
   async insertVersion(workflowVersion: WorkflowVersion): Promise<void> {
     const parsed = WorkflowVersionSchema.parse(workflowVersion)
     await this.pool.query(
-      `insert into workflow_versions (id, workspace_id, workflow_id, version, entry_node_id, record)
-       values ($1, $2, $3, $4, $5, $6::jsonb)`,
-      [parsed.id, parsed.workspaceId, parsed.workflowId, parsed.version, parsed.entryNodeId, JSON.stringify(parsed)],
+      `insert into workflow_versions (id, workspace_id, workflow_id, version, entry_node_id, record, execution_semantics_version)
+       values ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+      [parsed.id, parsed.workspaceId, parsed.workflowId, parsed.version, parsed.entryNodeId, JSON.stringify(parsed), 'executionSemanticsVersion' in parsed ? 2 : 1],
     )
   }
 
@@ -160,13 +161,16 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       )
       const version = Number(versionResult.rows[0]?.next_version ?? 1)
       const now = new Date().toISOString()
-      const workflowVersion = buildExecutableWorkflowVersion({
+      const buildInput = {
         id: `${input.id}-v${version}-${randomUUID()}`,
         definition: input, version, configurations: acceptedConfigurations, createdAt: now,
         previousDefinition: existing.rows[0] ? WorkflowDefinitionSchema.parse(existing.rows[0].record) : undefined,
         initialApproval: !existing.rows[0] && selectedOrchestrator
-          ? { handler: 'orchestrator', designatedOrchestratorAgentId: selectedOrchestrator.agentId } : undefined,
-      })
+          ? { handler: 'orchestrator' as const, designatedOrchestratorAgentId: selectedOrchestrator.agentId } : undefined,
+      }
+      const workflowVersion = 'executionSemanticsVersion' in input && input.executionSemanticsVersion === 2
+        ? buildExecutableWorkflowVersionV2({ ...buildInput, definition: WorkflowDefinitionV2Schema.parse(input) })
+        : buildExecutableWorkflowVersion(buildInput)
       const definition = workflowVersion.definition
 
       const saved = await client.query(
@@ -183,9 +187,9 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         throw new DomainError('WORKFLOW_WORKSPACE_MISMATCH', 'The scoped workflow could not be updated.', 409)
       }
       await client.query(
-        `insert into workflow_versions (id, workspace_id, workflow_id, version, entry_node_id, record)
-         values ($1, $2, $3, $4, $5, $6::jsonb)`,
-        [workflowVersion.id, workspaceId, input.id, version, entryNode.id, JSON.stringify(workflowVersion)],
+        `insert into workflow_versions (id, workspace_id, workflow_id, version, entry_node_id, record, execution_semantics_version)
+         values ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+        [workflowVersion.id, workspaceId, input.id, version, workflowVersion.entryNodeId, JSON.stringify(workflowVersion), 'executionSemanticsVersion' in workflowVersion ? 2 : 1],
       )
       await client.query('commit')
       return definition

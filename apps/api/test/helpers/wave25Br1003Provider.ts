@@ -1,0 +1,130 @@
+import {
+  CODEX_APPROVAL_OPTIONS_FIXTURE, NativeHarnessEventSchema,
+  type HarnessExecutionRequest, type NativeHarnessCapabilities, type NativeHarnessEvent, type NativeSessionReference,
+  type PendingNativeInteraction,
+} from '@graphql/contracts'
+import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart } from '../../src/modules/harnesses/port.js'
+import type { NativeResponseDeliveryEvidence } from '../../src/modules/interactions/delivery.js'
+
+/** A deterministic external-provider port, NOT a replacement coordinator. State
+ * survives construction of another API engine in this fixture. No native binary,
+ * filesystem tool, model or BR1-002 normalized-evidence producer is simulated. */
+export class CheckpointTestProvider implements NativeHarnessSessionManager {
+  readonly harness = 'codex' as const
+  readonly counts = { sessions: 0, starts: 0, responses: 0, attaches: 0 }
+  readonly startedNodes: string[] = []
+  private readonly requests = new Map<string, HarnessExecutionRequest>()
+  private readonly waits = new Map<string, PendingNativeInteraction[]>()
+  private readonly terminals = new Map<string, NonNullable<NativeHistory['terminalResult']>>()
+  private readonly continuationEvents = new Map<string, NativeHarnessEvent>()
+  private readonly receipts = new Map<string, NativeResponseDeliveryEvidence[]>()
+  /** Fault/timing observation only; receives no SQL or authority capability. */
+  beforeRespond?: () => Promise<void>
+
+  constructor(private readonly approvalNodes: ReadonlySet<string>, private readonly pendingPerExecution: 1 | 2 = 1,
+    private readonly acknowledgeStarts = false, private readonly disconnectAfterStart = false) {}
+
+  connection(): NativeHarnessSessionManager {
+    // Separate transport facades per execution; only external history is shared.
+    return { harness: this.harness, capabilities: this.capabilities.bind(this), inspectMcp: this.inspectMcp.bind(this),
+      createSession: this.createSession.bind(this), attachSession: this.attachSession.bind(this),
+      startTurn: this.startTurn.bind(this), pending: this.pending.bind(this), respond: this.respond.bind(this),
+      history: this.history.bind(this), reconcile: this.reconcile.bind(this),
+      cancel: this.cancel.bind(this), close: this.close.bind(this) }
+  }
+  async capabilities(): Promise<NativeHarnessCapabilities> {
+    return { provider: this.harness, providerVersion: '0.154.0', persistentSessions: true,
+      reconnect: true, sameRequestResponses: true, cancellation: true, history: true,
+      configurationInspection: true, mcpDetection: true, supportedInteractionKinds: ['approval'] }
+  }
+  async inspectMcp() {
+    return { harness: this.harness, serverName: 'graphql', state: 'connected' as const,
+      endpointMatches: true, credentialEnvironmentVariable: null, checkedAt: new Date().toISOString() }
+  }
+  async createSession(input: NativeSessionStart): Promise<NativeSessionReference> {
+    if (input.kind === 'operator') throw new Error('The checkpoint fixture accepts only workflow requests')
+    const session = { harness: this.harness, providerVersion: '0.154.0', nativeSessionId: `native-${input.request.executionId}` }
+    if (this.requests.has(session.nativeSessionId)) throw new Error('Duplicate native session creation')
+    this.counts.sessions++
+    this.requests.set(session.nativeSessionId, input.request)
+    return session
+  }
+  async attachSession(session: NativeSessionReference, input: NativeSessionStart): Promise<NativeSessionReference> {
+    if (input.kind === 'operator' || !this.requests.has(session.nativeSessionId)) throw new Error('Unknown persisted provider session')
+    const original = this.requests.get(session.nativeSessionId)!
+    if (original.executionId !== input.request.executionId) throw new Error('Attachment changed the execution identity')
+    this.counts.attaches++
+    return session
+  }
+  async *startTurn(session: NativeSessionReference, input: Parameters<NativeHarnessSessionManager['startTurn']>[1]): AsyncIterable<NativeHarnessEvent> {
+    const request = this.requests.get(session.nativeSessionId)
+    if (!request) throw new Error('Missing accepted provider request')
+    if (this.startedNodes.includes(request.workflowNodeId)) throw new Error('A predecessor/native turn was replayed')
+    this.startedNodes.push(request.workflowNodeId)
+    this.counts.starts++
+    const turnId = `turn-${request.executionId}`
+    if (this.acknowledgeStarts) await input.onSubmitted?.(turnId)
+    yield NativeHarnessEventSchema.parse({ sequence: 0, type: 'turn.started', occurredAt: new Date().toISOString(),
+      payload: { turnId, ...(this.acknowledgeStarts ? { threadId: session.nativeSessionId,
+        clientCorrelationId: input.clientCorrelationId, turn: { id: turnId, status: 'inProgress' } } : {}) } })
+    if (this.approvalNodes.has(request.workflowNodeId)) {
+      this.waits.set(session.nativeSessionId, Array.from({ length: this.pendingPerExecution }, (_, index) => ({
+        session, turn: { nativeTurnId: turnId, nativeRequestId: `request-${request.executionId}-${index}` },
+        nativeRequestType: 'item/commandExecution/requestApproval', request: { command: ['checkpoint-test-no-tool'] },
+        responseOptions: CODEX_APPROVAL_OPTIONS_FIXTURE,
+      })))
+      if (this.disconnectAfterStart) yield NativeHarnessEventSchema.parse({ sequence: 1,
+        type: 'transport.disconnected', occurredAt: new Date().toISOString(),
+        payload: { threadId: session.nativeSessionId } })
+      yield NativeHarnessEventSchema.parse({ sequence: this.disconnectAfterStart ? 2 : 1,
+        type: 'interaction.pending', occurredAt: new Date().toISOString(), payload: {} })
+      return
+    }
+    this.terminals.set(session.nativeSessionId, { outcome: 'succeeded', output: { node: request.workflowNodeId } })
+    yield NativeHarnessEventSchema.parse({ sequence: 1, type: 'turn.completed', occurredAt: new Date().toISOString(), payload: { turnId } })
+  }
+  async pending(session: NativeSessionReference) { return this.waits.get(session.nativeSessionId)?.[0] }
+  async respond(session: NativeSessionReference, requestId: string,
+    option: Parameters<NativeHarnessSessionManager['respond']>[2]): Promise<void> {
+    const pendingSet = this.waits.get(session.nativeSessionId) ?? []
+    const pending = pendingSet.find((item) => item.turn.nativeRequestId === requestId)
+    if (!pending) throw new Error('Repeated or mismatched native response')
+    await this.beforeRespond?.()
+    this.counts.responses++
+    const remaining = pendingSet.filter((item) => item !== pending)
+    this.waits.set(session.nativeSessionId, remaining)
+    const receipts = this.receipts.get(session.nativeSessionId) ?? []
+    receipts.push({ source: 'provider_acknowledgement', ...session,
+      nativeRequestId: requestId, nativeRequestType: pending.nativeRequestType,
+      optionId: option.optionId, semantic: option.semantic })
+    this.receipts.set(session.nativeSessionId, receipts)
+    if (!remaining.length) {
+      this.terminals.set(session.nativeSessionId, { outcome: 'succeeded', output: { approved: true } })
+      const request = this.requests.get(session.nativeSessionId)!
+      this.continuationEvents.set(session.nativeSessionId, NativeHarnessEventSchema.parse({ sequence: this.disconnectAfterStart ? 3 : 2,
+        type: 'turn.completed', occurredAt: new Date().toISOString(), payload: {
+          threadId: session.nativeSessionId, turnId: `turn-${request.executionId}`,
+          clientCorrelationId: `execution:${request.executionId}`,
+          turn: { id: `turn-${request.executionId}`, status: 'completed' },
+        } }))
+    }
+  }
+  async history(session: NativeSessionReference): Promise<NativeHistory> {
+    const pendingInteractions = this.waits.get(session.nativeSessionId) ?? []
+    const pendingInteraction = pendingInteractions[0]
+    const terminalResult = this.terminals.get(session.nativeSessionId)
+    const receipt = this.receipts.get(session.nativeSessionId)
+    return { events: this.continuationEvents.has(session.nativeSessionId)
+      ? [this.continuationEvents.get(session.nativeSessionId)!] : [], pendingInteractions,
+      responseDeliveries: receipt ?? [], ...(pendingInteraction ? { pendingInteraction } : {}),
+      ...(terminalResult ? { terminalResult } : {}) }
+  }
+  async reconcile(session: NativeSessionReference, correlationId: string): Promise<NativeHistory> {
+    const history = await this.history(session), request = this.requests.get(session.nativeSessionId)
+    return { ...history, ...(request && correlationId === `execution:${request.executionId}` && history.terminalResult ? {
+      terminalTurn: { correlationId, providerId: `turn-${request.executionId}`, result: history.terminalResult },
+    } : {}) }
+  }
+  async cancel() { return true }
+  async close() { /* The deterministic external history survives API restart. */ }
+}

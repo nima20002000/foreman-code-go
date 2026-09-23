@@ -12,6 +12,8 @@ import { AgentSettingsSearchSchema, HarnessSettingsSearchSchema } from '@graphql
 import { AccountRouteEntry, WorkspaceDefaultsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
 
 import { WorkspaceRouteEntry } from '../routes/WorkspaceRouteEntry'
+import { RunGraphRoute } from '../features/run-graph/RunGraphRoute'
+import { NextDraftRoute } from '../routes/NextDraftRoute'
 import {
   AgentsRouteEntry,
   BrowsersSettingsRouteEntry,
@@ -51,6 +53,18 @@ const workspaceRoute = createRoute({
   path: '/workspaces/$workspaceId',
   validateSearch: UrlSearchSelectionSchema,
   component: WorkspaceRouteEntry,
+})
+
+const nextDraftRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/workspaces/$workspaceId/workflows/$workflowId/draft',
+  component: NextDraftRoute,
+})
+
+const runGraphRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/workspaces/$workspaceId/workflows/$workflowId/runs/$runId/graph/$workflowVersionId/$executionSemanticsVersion',
+  component: RunGraphRoute,
 })
 
 const workflowsRoute = createRoute({
@@ -175,6 +189,8 @@ export const routeTree = rootRoute.addChildren([
   indexRoute,
   workspacesRoute,
   workspaceRoute,
+  nextDraftRoute,
+  runGraphRoute,
   workflowsRoute,
   agentsRoute,
   browsersRoute,

@@ -228,6 +228,7 @@ export class OpenCodeTurnHistory {
   rooted = false
   result: ExecutionResult | undefined
   resultMessageId: string | undefined
+  resultMessage: OpenCodeMessage | undefined
   constructor(private readonly root: OpenCodeMessage) {}
 
   push(message: OpenCodeMessage): boolean {
@@ -246,6 +247,7 @@ export class OpenCodeTurnHistory {
         const answer = this.haveContinuation ? this.continuation : this.latest
         this.result = assistantResult(answer)
         this.resultMessageId = this.result && typeof answer?.info.id === 'string' ? answer.info.id : undefined
+        this.resultMessage = this.result ? answer : undefined
       }
       return true
     }

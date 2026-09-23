@@ -1,5 +1,6 @@
 import type pg from 'pg'
-import { AgentConfigurationVersionSchema, WorkflowVersionSchema } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema } from '@graphql/contracts'
+import { CompatibleWorkflowVersionSchema as WorkflowVersionSchema } from '@graphql/contracts/wave25'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { hasAction, isAuthorized, requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'

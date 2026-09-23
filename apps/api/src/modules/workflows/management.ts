@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import { WorkflowDefinitionSchema } from '@graphql/contracts'
+import { CompatibleWorkflowDefinitionSchema, WorkflowDefinitionSchema } from '@graphql/contracts'
 import {
   ManagedWorkflowSchema,
   type ManagedWorkflow,
@@ -19,7 +19,7 @@ interface WorkflowRow { record: unknown; revision: string; current_version_id: s
 
 function managed(row: WorkflowRow): ManagedWorkflow {
   return ManagedWorkflowSchema.parse({
-    workflow: WorkflowDefinitionSchema.parse(row.record),
+    workflow: CompatibleWorkflowDefinitionSchema.parse(row.record),
     revision: Number(row.revision), currentVersionId: row.current_version_id,
     archivedAt: row.archived_at?.toISOString() ?? null,
   })
@@ -100,8 +100,8 @@ export class WorkflowManagementService {
         if (Number(row.revision) !== input.expectedRevision) {
           throw new DomainError('REVISION_CONFLICT', 'The workflow changed since it was read.', 409, { currentRevision: Number(row.revision) })
         }
-        const previous = WorkflowDefinitionSchema.parse(row.record)
-        const workflow = WorkflowDefinitionSchema.parse({
+        const previous = CompatibleWorkflowDefinitionSchema.parse(row.record)
+        const workflow = CompatibleWorkflowDefinitionSchema.parse({
           ...previous,
           ...(input.name !== undefined ? { name: input.name } : {}),
           ...(input.description === null ? { description: undefined }

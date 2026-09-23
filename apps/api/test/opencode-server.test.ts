@@ -3,8 +3,10 @@ import assert from 'node:assert/strict'
 import { it } from 'vitest'
 
 import { OpenCodeNativeDeliveryError } from '../src/modules/harnesses/opencodeServer.js'
-import { nativeMessageId, nativePolicy, object, OPENCODE_EVENT_LIMIT, OPENCODE_ID_LIMIT } from '../src/modules/harnesses/opencodeProtocol.js'
+import { nativeMessageId, nativePolicy, normalizedHistory, object, OPENCODE_EVENT_LIMIT, OPENCODE_ID_LIMIT } from '../src/modules/harnesses/opencodeProtocol.js'
 import type { NativeHarnessEvent } from '@graphql/contracts'
+import { OPENCODE_RECONCILIATION_EVENT, readOpenCodeReconciliation,
+  matchesOpenCodeHistorySource } from '../src/modules/harnesses/opencodeReconciliation.js'
 
 import { advanced, brokenBody, configuration, environment, errorCode, FixtureServer, json, manager, permission, request, sessionFor } from './opencode-fixtures.js'
 
@@ -27,8 +29,24 @@ it('qualifies the pinned live API and submits one prompt after opening its event
     correlationId: 'turn-1', providerId: nativeMessageId('turn-1'),
     result: { outcome: 'succeeded', output: { text: 'done' } },
   })
-  assert(reconciled.events.every((event) => event.sequence === 0 && event.connectionId?.startsWith('history-')))
-  assert.equal(new Set(reconciled.events.map((event) => event.connectionId)).size, reconciled.events.length)
+  // Raw provider history is unchanged; the completed scan has a separate,
+  // adapter-owned observation, never a relabeled history/Codex event.
+  const raw = reconciled.events.filter((event) => event.type !== OPENCODE_RECONCILIATION_EVENT)
+  assert.deepEqual(raw, normalizedHistory(server.messages.get(session.nativeSessionId)!, false))
+  assert(raw.length > 0)
+  assert(raw.every((event) => event.sequence === 0 && event.connectionId?.startsWith('history-')))
+  assert.equal(new Set(raw.map((event) => event.connectionId)).size, raw.length)
+  const observations = reconciled.events.filter((event) => event.type === OPENCODE_RECONCILIATION_EVENT)
+  assert.equal(observations.length, 1)
+  const observation = observations[0]!
+  assert.equal(observation.connectionId, events[0]!.connectionId)
+  const proof = readOpenCodeReconciliation(observation, { ownerAgentId: 'agent-1',
+    nativeSessionId: session.nativeSessionId, providerVersion: session.providerVersion,
+    correlationId: 'turn-1', nativeTurnId: nativeMessageId('turn-1') })
+  assert(proof)
+  assert(raw.some((event) => matchesOpenCodeHistorySource(proof, event)))
+  assert.equal(new Set(reconciled.events.map((event) => JSON.stringify([event.connectionId, event.sequence]))).size,
+    reconciled.events.length)
   const prompt = server.calls.find((call) => call.path.includes('/prompt_async'))!
   assert.deepEqual(prompt.body?.parts, [{ type: 'text', text: 'hello' }])
   assert.equal(prompt.body?.messageID, nativeMessageId('turn-1'))

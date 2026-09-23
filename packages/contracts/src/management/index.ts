@@ -21,6 +21,7 @@ import {
   RunInputSchema,
   TimestampSchema,
   WorkflowDefinitionSchema,
+  CompatibleWorkflowDefinitionSchema,
   WorkflowApprovalConfigurationSchema,
   WorkflowNodeSchema,
   WorkflowEdgeSchema,
@@ -190,7 +191,7 @@ export const ManagedWorkspaceCommandResultSchema = z.object({ value: ManagedWork
 
 export const ManagedWorkflowSchema = z
   .object({
-    workflow: WorkflowDefinitionSchema,
+    workflow: CompatibleWorkflowDefinitionSchema,
     revision: ExpectedRevisionSchema,
     currentVersionId: IdSchema.nullable(),
     archivedAt: TimestampSchema.nullable(),
@@ -590,7 +591,7 @@ export const OperatorToolNameSchema = z.enum([
   "workspace_location_validate", "workspace_location_set",
   "workflow_list", "workflow_get", "workflow_create", "workflow_update", "workflow_archive",
   "agent_list", "agent_get", "graph_draft_open", "graph_draft_get", "graph_draft_apply",
-  "graph_validate", "graph_save", "graph_draft_discard", "run_list", "run_get",
+  "graph_validate", "graph_save", "graph_draft_discard", "run_list", "run_get", "run_current_get_v1",
   "run_events_list", "run_start", "run_stop",
   "interaction_list", "interaction_get",
 ]);

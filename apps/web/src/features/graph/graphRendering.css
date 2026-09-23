@@ -1,0 +1,15 @@
+.graph-edge-active-controls { overflow: visible; pointer-events: none; }
+.graph-edge-controls { display: flex; justify-content: center; gap: 4px; }
+.graph-edge-controls > button { min-width: 32px; min-height: 32px; padding: 4px; pointer-events: auto; }
+.graph-edge-inspection {
+  margin-top: 4px;
+  padding: 8px;
+  border: 1px solid var(--graph-line-strong);
+  border-radius: 6px;
+  background: var(--graph-panel, Canvas);
+  color: var(--graph-ink, CanvasText);
+  font-size: 12px;
+  pointer-events: auto;
+}
+
+.graph-edge-controls > .workflow-graph-edge-remove { position: static; opacity: 1; transform: none; }
