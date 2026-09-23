@@ -3,12 +3,14 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, DurableInteractionSchema, HarnessExecutionSchema } from '@graphql/contracts'
+import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, DurableInteractionSchema, HarnessExecutionSchema,
+  type NativeSessionReference } from '@graphql/contracts'
 import { describe, expect, it, vi } from 'vitest'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { cgroupBoundary, killCgroup } from '../src/modules/harnesses/recovery/cgroupBoundary.js'
 import { bootIdentity, identityAlive } from '../src/modules/harnesses/recovery/linuxIdentity.js'
 import { InteractionService } from '../src/modules/interactions/service.js'
+import type { SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
 import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
 import { registerApprovalCheckpointResume } from '../src/modules/runs/approvalCheckpointRegistration.js'
 import { OneShotRunRepository } from '../src/modules/runs/oneShotPostgres.js'
@@ -165,6 +167,52 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
     expect(submissionCounts).toEqual([1, 1])
     expect(artifact.executions).toHaveLength(4)
     expect(new Set(artifact.executions.map((item) => item.nativeSessionId)).size).toBe(4)
+  }, 180_000)
+
+  it('E03-L04 reobserves one active native turn on its exact session without another submission', async () => {
+    let observed: { executionId: string; nativeSessionId: string; nativeTurnId: string } | undefined
+    const result = await runEng03NativeScenario('E03-L04', 'codex', 'codex', {
+      prompts: {
+        A: 'Read the accepted Entry result. Without tools or files, list n and n squared modulo 97 for n=1 through 60. End with A-OBSERVED.',
+        B: 'Read the accepted Entry result. Without tools or files, list n and n cubed modulo 101 for n=1 through 60. End with B-OBSERVED.',
+        Reviewer: 'Read both accepted predecessor results and return exactly OBSERVATION-COMPLETE. Do not use tools or files.',
+      },
+      control: async (context) => {
+        const { pool, runId, nodeIds, runs, approvals, startTask } = context
+        const started = await startedBranches(context)
+        const execution = (await runs.listExecutions(runId)).find((item) => item.id === started[0]!.execution_id)!
+        const sessions = Reflect.get(approvals, 'ownedSessions') as Map<string, {
+          session?: NativeSessionReference; manager: SingleWriterSessionManager
+        }>
+        const owned = sessions.get(execution.id)
+        expect(owned?.session?.nativeSessionId).toBe(execution.nativeSessionId)
+        expect(owned!.manager.isActive(owned!.session!)).toBe(true)
+        const correlationId = `execution:${execution.id}`
+        const history = await owned!.manager.reconcile(owned!.session!, correlationId, AbortSignal.timeout(20_000))
+        expect(history.correlationId).toBe(correlationId)
+        expect(history.nativeTurnId).toBeTruthy()
+        observed = { executionId: execution.id, nativeSessionId: owned!.session!.nativeSessionId,
+          nativeTurnId: history.nativeTurnId! }
+        await startTask
+        const turns = await pool.query<{ count: number }>(
+          `select count(distinct record->'payload'->>'turnId')::int as count from harness_native_events
+           where execution_id=$1 and record->>'type'='turn.started'`, [execution.id],
+        )
+        expect(turns.rows[0]?.count).toBe(1)
+        expect((await runs.getExecution(execution.id))?.nativeSessionId).toBe(observed.nativeSessionId)
+        expect((await pool.query('select 1 from harness_executions where run_id=$1 and workflow_node_id=$2',
+          [runId, nodeIds[3]])).rowCount).toBe(1)
+      },
+    })
+    const artifact = JSON.parse(await readFile(result.artifactPath, 'utf8')) as { runOutcome: string; cleanup: boolean }
+    expect(artifact.runOutcome).toBe('succeeded')
+    expect(artifact.cleanup).toBe(true)
+    expect(observed).toBeDefined()
+    await writeFile(result.artifactPath.replace('.json', '-observation.json'), JSON.stringify({
+      scenario: 'E03-L04', mode: 'native internal active same-session reobservation',
+      providerEvidence: result.artifactPath, observed, distinctNativeTurns: 1,
+      runOutcome: artifact.runOutcome, cleanup: artifact.cleanup,
+    }, null, 2))
   }, 180_000)
 
   it('E03-A01 isolates a native approval wait from its progressing sibling', async () => {
