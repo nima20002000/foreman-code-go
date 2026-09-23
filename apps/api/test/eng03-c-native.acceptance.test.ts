@@ -3,14 +3,15 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, DurableInteractionSchema } from '@graphql/contracts'
-import { describe, expect, it } from 'vitest'
+import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, DurableInteractionSchema, HarnessExecutionSchema } from '@graphql/contracts'
+import { describe, expect, it, vi } from 'vitest'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { cgroupBoundary, killCgroup } from '../src/modules/harnesses/recovery/cgroupBoundary.js'
 import { bootIdentity, identityAlive } from '../src/modules/harnesses/recovery/linuxIdentity.js'
 import { InteractionService } from '../src/modules/interactions/service.js'
 import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
 import { registerApprovalCheckpointResume } from '../src/modules/runs/approvalCheckpointRegistration.js'
+import { OneShotRunRepository } from '../src/modules/runs/oneShotPostgres.js'
 import { runEng03NativeScenario, type Eng03NativeControl } from './helpers/eng03NativeAcceptance.js'
 
 async function startedBranches({ pool, runId, nodeIds, runs }: Eng03NativeControl) {
@@ -166,7 +167,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
     expect(new Set(artifact.executions.map((item) => item.nativeSessionId)).size).toBe(4)
   }, 180_000)
 
-  it('E03-A01 lets one native approval wait while its sibling progresses and delivers one User response', async () => {
+  it('E03-A01 isolates a native approval wait from its progressing sibling', async () => {
     const outside = await mkdtemp(join(tmpdir(), 'eng03-c-approval-'))
     const target = join(outside, 'approved.txt')
     let interactionId = '', sessionId = '', siblingActiveAtWait = false
@@ -303,5 +304,120 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
             senderExecutionId: item.senderExecutionId, acceptedResultDigest: graphSourceDigest(item.acceptedResult) })) },
       }, null, 2))
     } finally { await rm(outside, { recursive: true, force: true }) }
+  }, 180_000)
+
+  it('E03-L04 restarts after one native terminal result but before its graph acceptance', async () => {
+    let cutExecutionId = '', cutNativeSessionId = ''
+    let cutResult: unknown
+    let acceptedSiblingId = '', beforeNativeEventCount = -1, afterNativeEventCount = -1
+    const result = await runEng03NativeScenario('E03-L04', 'codex', 'codex', {
+      prompts: {
+        A: 'Read the accepted Entry result. Without tools or files, list n and n squared for n=1 through 25. End with A-RECOVERY.',
+        B: 'Read the accepted Entry result. Without tools or files, list n and n cubed for n=1 through 30. End with B-RECOVERY.',
+        Reviewer: 'Read the two accepted predecessor results and return exactly RECOVERED. Do not use tools or files.',
+      },
+      control: async ({ pool, runId, nodeIds, runs, startTask, restartRecoverableRuntime }) => {
+        const original = OneShotRunRepository.prototype.acceptTerminal
+        let injected = false
+        const spy = vi.spyOn(OneShotRunRepository.prototype, 'acceptTerminal').mockImplementation(
+          async function (this: OneShotRunRepository, executionId: string) {
+            const row = (await pool.query<{ workflow_node_id: string; accepted: boolean; record: unknown }>(
+              'select workflow_node_id,accepted,record from harness_executions where id=$1 and run_id=$2',
+              [executionId, runId],
+            )).rows[0]
+            if (row && !injected && [nodeIds[1], nodeIds[2]].includes(row.workflow_node_id)) {
+              const sibling = await pool.query(
+                `select 1 from harness_executions where run_id=$1 and id<>$2
+                 and workflow_node_id=any($3::text[]) and accepted=true limit 1`,
+                [runId, executionId, [nodeIds[1], nodeIds[2]]],
+              )
+              const execution = HarnessExecutionSchema.parse(row.record)
+              if (sibling.rowCount && !row.accepted && execution.state === 'completed'
+                && execution.result?.outcome === 'succeeded' && execution.nativeSessionId) {
+                injected = true
+                cutExecutionId = executionId
+                cutNativeSessionId = execution.nativeSessionId
+                cutResult = execution.result
+                throw new Error('ENG03_C_ACCEPTANCE_CUT')
+              }
+            }
+            return original.call(this, executionId)
+          },
+        )
+        try {
+          await startTask.catch(() => undefined)
+          expect(injected).toBe(true)
+          expect((await runs.get(runId))?.executionState).toBe('running')
+          const before = (await runs.getExecution(cutExecutionId))!
+          expect(before).toMatchObject({ state: 'completed', nativeSessionId: cutNativeSessionId, result: cutResult })
+          const accepted = await pool.query<{ id: string }>(
+            `select id from harness_executions where run_id=$1 and accepted=true
+             and workflow_node_id=any($2::text[])`, [runId, [nodeIds[1], nodeIds[2]]],
+          )
+          expect(accepted.rowCount).toBe(1)
+          acceptedSiblingId = accepted.rows[0]!.id
+          const beforeEvents = (await pool.query<{ count: number }>(
+            'select count(*)::int as count from harness_native_events where execution_id=$1', [cutExecutionId],
+          )).rows[0]!.count
+          beforeNativeEventCount = beforeEvents
+          spy.mockRestore()
+          const next = await restartRecoverableRuntime()
+          expect((await next.runs.getExecution(cutExecutionId))?.nativeSessionId).toBe(cutNativeSessionId)
+          await next.engine.reconcile()
+          expect((await next.runs.get(runId))?.outcome).toBe('succeeded')
+          expect((await next.runs.getExecution(cutExecutionId))?.result).toEqual(cutResult)
+          const after = await pool.query<{ accepted: boolean }>('select accepted from harness_executions where id=$1', [cutExecutionId])
+          expect(after.rows[0]?.accepted).toBe(true)
+          const afterEvents = (await pool.query<{ count: number }>(
+            'select count(*)::int as count from harness_native_events where execution_id=$1', [cutExecutionId],
+          )).rows[0]!.count
+          afterNativeEventCount = afterEvents
+          expect(afterEvents).toBe(beforeEvents)
+          expect((await pool.query('select 1 from harness_executions where run_id=$1 and workflow_node_id=$2',
+            [runId, nodeIds[3]])).rowCount).toBe(1)
+        } finally { spy.mockRestore() }
+      },
+    })
+    const artifact = JSON.parse(await readFile(result.artifactPath, 'utf8')) as {
+      runOutcome: string; cleanup: boolean; runtimeRestart?: { kind: string; preservedNativeSessionIds: string[] }
+      finalText: string; joinExact: boolean; sourceGraph: { nodes: Array<{ id: string }> }
+      executions: Array<{ id: string; nodeId: string; nativeSessionId?: string; result?: unknown; input: unknown }>
+      bindings: Array<{ relationshipId: string; inputOrdinal: number; acceptedResultDigest: string;
+        recipientInputDigest: string; sender: { executionId: string }; recipient: { executionId: string } }>
+    }
+    expect(artifact.runOutcome).toBe('succeeded')
+    expect(artifact.cleanup).toBe(true)
+    expect(artifact.runtimeRestart?.kind).toBe('terminal_unaccepted')
+    expect(artifact.runtimeRestart?.preservedNativeSessionIds).toContain(cutNativeSessionId)
+    expect(artifact.executions.find((item) => item.id === cutExecutionId)?.result).toEqual(cutResult)
+    expect(artifact.finalText).toBe('RECOVERED')
+    expect(artifact.joinExact).toBe(true)
+    const reviewer = artifact.executions.find((item) => item.nodeId === artifact.sourceGraph.nodes[3]?.id)!
+    const input = reviewer.input as { predecessors: Array<{ relationshipId: string; senderExecutionId: string;
+      acceptedResult: unknown }> }
+    expect(input.predecessors).toHaveLength(2)
+    expect(artifact.bindings).toHaveLength(2)
+    const recipientInputDigest = graphSourceDigest(reviewer.input)
+    for (const [ordinal, predecessor] of input.predecessors.entries()) {
+      const sender = artifact.executions.find((item) => item.id === predecessor.senderExecutionId)!
+      const binding = artifact.bindings.find((item) => item.relationshipId === predecessor.relationshipId)!
+      expect(predecessor.acceptedResult).toEqual(sender.result)
+      expect(binding).toMatchObject({ inputOrdinal: ordinal, sender: { executionId: sender.id },
+        recipient: { executionId: reviewer.id }, acceptedResultDigest: graphSourceDigest(sender.result),
+        recipientInputDigest })
+    }
+    expect(beforeNativeEventCount).toBeGreaterThan(0)
+    expect(afterNativeEventCount).toBe(beforeNativeEventCount)
+    await writeFile(result.artifactPath.replace('.json', '-recovery.json'), JSON.stringify({
+      scenario: 'E03-L04', mode: 'native internal post-terminal recovery', providerEvidence: result.artifactPath,
+      recovered: true, runOutcome: artifact.runOutcome, cleanup: artifact.cleanup,
+      acceptedSiblingId, cutExecutionId, cutNativeSessionId, cutResultDigest: graphSourceDigest(cutResult),
+      nativeEventCountBeforeRestart: beforeNativeEventCount, nativeEventCountAfterRestart: afterNativeEventCount,
+      reviewerExecutionId: reviewer.id, reviewerInputDigest: recipientInputDigest,
+      bindings: artifact.bindings.map((item) => ({ relationshipId: item.relationshipId, inputOrdinal: item.inputOrdinal,
+        senderExecutionId: item.sender.executionId, recipientExecutionId: item.recipient.executionId,
+        acceptedResultDigest: item.acceptedResultDigest, recipientInputDigest: item.recipientInputDigest })),
+      finalText: artifact.finalText,
+    }, null, 2))
   }, 180_000)
 })
