@@ -191,7 +191,8 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     expect(r.starts.filter((id) => id === sibling)).toHaveLength(1)
     expect(r.native.cancelRun).toHaveBeenCalledWith(f.run.id)
     await evidence('E03-L02', f.run.id, r.runs, { outcome: 'failed', siblingCanceled: true },
-      { outcome: (await r.runs.get(f.run.id))?.outcome, siblingNativeStarts: r.starts.filter((id) => id === sibling).length })
+      { outcome: (await r.runs.get(f.run.id))?.outcome, siblingNativeStarts: r.starts.filter((id) => id === sibling).length,
+        siblingOutcome: (await r.runs.listExecutions(f.run.id)).find((item) => item.workflowNodeId === sibling)?.result?.outcome })
     await r.engine.shutdown()
   }, 30_000)
 
@@ -253,6 +254,7 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     await evidence('E03-L04', f.run.id, r.runs,
       { acceptedSiblingPreserved: true, replacementNativeStarts: 0, exactSessionId: `native-${unfinishedId}` },
       { outcome: (await r.runs.get(f.run.id))?.outcome, replacementNativeStarts: r.starts.length,
+        acceptedSiblingOutcome: (await r.runs.listExecutions(f.run.id)).find((item) => item.workflowNodeId === first)?.result?.outcome,
         nativeSessionId: (await r.runs.getExecution(unfinishedId))?.nativeSessionId })
     await r.engine.shutdown()
   }, 30_000)
@@ -398,6 +400,9 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     await evidence('E03-A01', f.run.id, restarted.runs,
       { siblingAcceptedBeforeDecision: true, decisionEffects: 1, waitingSessionReused: pending.nativeSessionId },
       { outcome: (await restarted.runs.get(f.run.id))?.outcome, resumedNativeStarts: restarted.starts.length,
+        decisionEffects: (await db.pool.query<{ count: number }>(
+          "select count(*)::int as count from run_graph_effects where run_id=$1 and effect_kind='approval.decide'", [f.run.id],
+        )).rows[0]?.count,
         waitingSessionId: (await restarted.runs.getExecution(pending.executionId))?.nativeSessionId })
     await restarted.engine.shutdown()
   }, 30_000)
