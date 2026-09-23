@@ -272,7 +272,9 @@ describe.skipIf(!postgresEnabled)('WR4-002 committed mixed-v1/v2 workflow read p
     const client = await connect(owner.token)
     const configured = await locations.set(owner.principal, 'mcp', { workspaceId: scope.workspaceId,
       commandId: randomUUID(), expectedLocationRevision: 1, runnerId: 'runner-local', rootPath: process.cwd() })
+    const draft = await new GraphDraftService(db.pool, commands).open(owner.principal, scope.workspaceId, scope.workflowId)
     const input = { ...scope, workflowVersionId: f.version.id, executionSemanticsVersion: 2 as const,
+      draftId: draft.id, expectedDraftRevision: draft.revision,
       commandId: randomUUID(), expectedLocationRevision: configured.value.locationRevision, input: {} }
     const path = `/api/management/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/runs`
     const response = await app.inject({ method: 'POST', url: path, headers: { host: 'localhost', origin: 'http://localhost', cookie }, payload: input })
@@ -305,6 +307,10 @@ describe.skipIf(!postgresEnabled)('WR4-002 committed mixed-v1/v2 workflow read p
       payload: { ...legacyInput, commandId: randomUUID() } })
     expect(legacy.statusCode).toBe(409)
     expect(legacy.json().error.code).toBe('V2_ADMISSION_REQUIRED')
+    const legacyMcp = await client.callTool({ name: 'run_start', arguments: { ...legacyInput, commandId: randomUUID() } })
+    expect(legacyMcp.isError).toBe(true)
+    expect(legacyMcp.structuredContent).toMatchObject({ error: { code: 'V2_ADMISSION_REQUIRED' } })
+    expect((await db.pool.query('select 1 from runs where workflow_id=$1', [scope.workflowId])).rowCount).toBe(1)
     const stopInput = { workspaceId: scope.workspaceId, runId: accepted.run.id, commandId: randomUUID() }
     const stopped = await call(client, 'run_stop', RunStopResultSchema, stopInput)
     expect(stopped).toMatchObject({ status: 'accepted', replayed: false, processStopped: false })
