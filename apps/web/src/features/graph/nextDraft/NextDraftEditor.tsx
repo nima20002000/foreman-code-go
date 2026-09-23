@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { GraphDraftV2Schema, type WorkflowDefinitionV2, type WorkflowRelationship } from '@graphql/contracts/wave25'
 import { GraphPresentationProvider } from '../GraphPresentation'
 import { useGraphPresentation, useGraphPresentationStore } from '../useGraphPresentation'
@@ -13,6 +13,7 @@ import { nextDraftWriter, promoteNextDraft } from './managed'
 import { draftFailure } from './writer'
 import { useManagedWorkspaceQuery } from '../../../shared/api/query'
 import { runGraphHref } from '../../run-graph/navigation'
+import { assertSession, sessionGeneration } from '../../../shared/api/sessionBoundary'
 import { ApprovalFields, AttachAgentField, ConnectionFields, EntryFields, Field, NodeFields, RelationshipFields } from './AuthoringFields'
 import { DraftCanvas, type DraftCanvasHandle } from './DraftCanvas'
 import './nextDraft.css'
@@ -76,12 +77,17 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const [geometryPending, setGeometryPending] = useState(false)
   const [reloading, setReloading] = useState(false)
   const [starting, setStarting] = useState(false)
-  const pendingStart = useRef<Parameters<typeof nextDraftApi.start>[0] | undefined>(undefined)
+  const pendingStart = useGraphDraftStore((state) => state.pendingRunStarts[draftKey])
   const workspace = useManagedWorkspaceQuery(graph.workspaceId)
   const queryClient = useQueryClient()
   const runKey = ['managed-v2-runs', graph.workspaceId, graph.id] as const
-  const runs = useQuery({ queryKey: runKey,
-    queryFn: ({ signal }) => nextDraftApi.runs(graph.workspaceId, graph.id, { signal }), refetchInterval: 3_000 })
+  const runs = useInfiniteQuery({ queryKey: runKey, initialPageParam: null as string | null,
+    queryFn: ({ pageParam, signal }) => nextDraftApi.runs(graph.workspaceId, graph.id, pageParam, { signal }),
+    getNextPageParam: (page) => page.pageInfo.nextCursor })
+  useEffect(() => {
+    try { useGraphDraftStore.getState().loadPendingRunStart(draftKey) }
+    catch (error) { setLocalError(error instanceof Error ? error.message : 'The pending Start could not be loaded.') }
+  }, [draftKey])
   const canvas = useRef<DraftCanvasHandle>(null)
   const presentation = useGraphPresentationStore()
   const nodeId = useGraphPresentation((state) => state.focusedNodeId)
@@ -115,8 +121,8 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state, graph: state.context.draft.graph, history: [], error: undefined, validation: undefined }))
     setLocalError(undefined); setMessage('Local edits discarded. The shared server draft is unchanged.')
   }
-  useUnsavedChanges({ label: `${graph.name} next draft`, dirty: hasLocalChanges(context, graph) || geometryPending || !!edit.pending || edit.busy,
-    busy: edit.busy || reloading, uncertain: edit.error?.uncertain, error: edit.error?.message ?? localError,
+  useUnsavedChanges({ label: `${graph.name} next draft`, dirty: hasLocalChanges(context, graph) || geometryPending || !!edit.pending || edit.busy || !!pendingStart,
+    busy: edit.busy || reloading, uncertain: edit.error?.uncertain || !!pendingStart, error: edit.error?.message ?? localError,
     save: () => save(true), discard: discardLocal })
   const reload = async () => {
     canvas.current?.flush()
@@ -130,28 +136,35 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
       if (!current || current.instanceId !== before.instanceId) return
       if (current.graph !== before.graph || current.busy || current.pending) throw new Error('The form changed during reload. Your edits are retained; reload again when ready.')
       useGraphDraftStore.getState().installNextDraft(draftKey, { draft: GraphDraftV2Schema.parse(fresh.draft), agents: fresh.agents }, true)
-      pendingStart.current = undefined
-      setLocalError(undefined); setMessage('Loaded the current shared draft.')
+      setLocalError(undefined); setMessage(pendingStart ? 'Loaded the shared draft. Reconcile the earlier Start before starting again.' : 'Loaded the current shared draft.')
     } catch (error) { report(error) } finally { setReloading(false) }
   }
   const start = async () => {
     const current = useGraphDraftStore.getState().nextDrafts[draftKey]
-    if (!current || current.busy || current.pending || nextDraftDirty(current) || geometryPending
-      || !current.context.draft.baseWorkflowVersionId || workspace.data?.locationValidation.status !== 'ready') return
-    const request = pendingStart.current ?? {
-      executionSemanticsVersion: 2 as const,
-      workspaceId: graph.workspaceId, workflowId: graph.id,
-      workflowVersionId: current.context.draft.baseWorkflowVersionId,
-      draftId: current.context.draft.id, expectedDraftRevision: current.context.draft.revision,
-      expectedLocationRevision: workspace.data.locationRevision, commandId: crypto.randomUUID(), input: {},
-    }
-    pendingStart.current = request
+    if (!current || current.busy || current.pending) return
+    const existing = useGraphDraftStore.getState().pendingRunStarts[draftKey]
+    if (!existing && (nextDraftDirty(current) || geometryPending || !current.context.draft.baseWorkflowVersionId
+      || workspace.data?.locationValidation.status !== 'ready')) return
     setStarting(true); setLocalError(undefined)
     try {
+      const candidate = existing ?? {
+        executionSemanticsVersion: 2 as const,
+        workspaceId: graph.workspaceId, workflowId: graph.id,
+        workflowVersionId: current.context.draft.baseWorkflowVersionId!,
+        draftId: current.context.draft.id, expectedDraftRevision: current.context.draft.revision,
+        expectedLocationRevision: workspace.data!.locationRevision, commandId: crypto.randomUUID(), input: {},
+      }
+      const request = useGraphDraftStore.getState().reserveRunStart(draftKey, candidate)
+      const generation = sessionGeneration()
       const result = await nextDraftApi.start(request)
-      pendingStart.current = undefined
-      await queryClient.invalidateQueries({ queryKey: runKey })
-      setMessage(result.replayed ? 'The accepted Run was recovered from the same Start command.' : 'Run accepted from this immutable version.')
+      assertSession(generation)
+      useGraphDraftStore.getState().acknowledgeRunStart(draftKey, request.commandId)
+      void queryClient.invalidateQueries({ queryKey: runKey })
+      // Let the unsaved-changes registration observe the cleared journal before navigation.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      assertSession(generation)
+      window.location.assign(runGraphHref({ workspaceId: result.run.workspaceId, workflowId: result.run.workflowId,
+        runId: result.run.id, workflowVersionId: result.run.workflowVersionId, executionSemanticsVersion: 2 }))
     } catch (error) { report(error) } finally { setStarting(false) }
   }
   return <section className="next-draft n-theme" aria-label="Next-draft authoring">
@@ -165,18 +178,22 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         <button type="button" disabled={edit.busy || !!edit.pending} onClick={() => void save(false).catch(report)}>Persist draft &amp; validate</button>
         <button type="button" className="next-draft-primary" disabled={edit.busy} onClick={() => void save(true).catch(report)}>
           {edit.busy ? 'Saving…' : edit.pending ? 'Reconcile pending command' : 'Save immutable version'}</button>
-        <button type="button" disabled={starting || edit.busy || !!edit.pending || nextDraftDirty(edit) || geometryPending
-          || !context.draft.baseWorkflowVersionId || workspace.data?.locationValidation.status !== 'ready'}
-          onClick={() => void start()}>{starting ? 'Starting…' : pendingStart.current ? 'Reconcile Start' : 'Start saved version'}</button>
+        <button type="button" disabled={starting || edit.busy || !!edit.pending || (!pendingStart && (nextDraftDirty(edit) || geometryPending
+          || !context.draft.baseWorkflowVersionId || workspace.data?.locationValidation.status !== 'ready'))}
+          onClick={() => void start()}>{starting ? 'Starting…' : pendingStart ? 'Reconcile Start' : 'Start saved version'}</button>
       </div>
     </header>
     <p className="next-draft-notice">This editor changes the next draft. A Run pins the current saved version and cannot be retargeted by later edits.</p>
-    {workspace.data?.locationValidation.status !== 'ready' ? <p role="status">Set and validate the workspace execution location before starting.</p> : null}
+    {pendingStart ? <p role="status">An earlier Start may have been accepted for version <code>{pendingStart.workflowVersionId}</code>. Reconcile its exact command before starting another Run.</p> : null}
+    {!pendingStart && workspace.data?.locationValidation.status !== 'ready' ? <p role="status">Set and validate the workspace execution location before starting.</p> : null}
     {runs.data ? <section className="next-draft-section" aria-label="Saved Runs"><h2>Saved Runs</h2>
-      {runs.data.items.filter((run) => 'executionSemanticsVersion' in run && run.executionSemanticsVersion === 2)
+      <button type="button" disabled={runs.isFetching} onClick={() => void runs.refetch()}>{runs.isFetching ? 'Refreshing Runs…' : 'Refresh Runs'}</button>
+      {runs.data.pages.flatMap((page) => page.items).filter((run) => 'executionSemanticsVersion' in run && run.executionSemanticsVersion === 2)
         .map((run) => <p key={run.id}><a href={runGraphHref({ workspaceId: run.workspaceId,
           workflowId: run.workflowId, runId: run.id, workflowVersionId: run.workflowVersionId,
           executionSemanticsVersion: 2 })}>Open Run {run.id}</a> · {run.executionState} · {run.outcome}</p>)}
+      {runs.hasNextPage ? <button type="button" disabled={runs.isFetchingNextPage}
+        onClick={() => void runs.fetchNextPage()}>{runs.isFetchingNextPage ? 'Loading Runs…' : 'Load more Runs'}</button> : null}
     </section> : null}
     {message ? <p role="status">{message}</p> : null}
     {localError ? <p role="alert">{localError}</p> : null}

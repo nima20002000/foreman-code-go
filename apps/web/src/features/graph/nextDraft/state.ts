@@ -1,9 +1,40 @@
-import type { GraphDraftOperationV2, WorkflowDefinitionV2 } from '@graphql/contracts/wave25'
+import { RunStartV2InputSchema, type GraphDraftOperationV2, type WorkflowDefinitionV2 } from '@graphql/contracts/wave25'
+import { protectedKey } from '../../../shared/api/protectedChatStorage'
+import { sessionIsSwitching, SessionChangedError } from '../../../shared/api/sessionBoundary'
 import { hasLocalChanges, sameValue, type AuthoringIssue, type NextDraftContext } from './model'
 
 /** Opaque workspace/workflow IDs may contain separators; never concatenate them ambiguously. */
 export function nextDraftKey(workspaceId: string, workflowId: string): string {
   return `next-draft:${JSON.stringify([workspaceId, workflowId])}`
+}
+
+export type PendingRunStart = ReturnType<typeof RunStartV2InputSchema.parse>
+const startJournalId = (key: string) => `next-draft-start:${key}`
+const startJournalKey = (key: string) => protectedKey('outbox', startJournalId(key))
+const storageError = 'Pending Start storage is unavailable. Start is disabled to avoid duplicating a Run after a lost response.'
+
+function readStoredStart(key: string): PendingRunStart | undefined {
+  if (sessionIsSwitching()) throw new SessionChangedError()
+  if (typeof window === 'undefined') return undefined
+  let raw: string | null
+  try { raw = window.localStorage.getItem(startJournalKey(key)) } catch { throw new Error(storageError) }
+  if (raw === null) return undefined
+  try {
+    const request = RunStartV2InputSchema.parse(JSON.parse(raw))
+    if (nextDraftKey(request.workspaceId, request.workflowId) !== key) throw new Error('Start scope mismatch')
+    return request
+  } catch { throw new Error('The pending Start record is invalid. Recover its receipt before starting another Run.') }
+}
+
+export function clearNextDraftStartStorage(): void {
+  if (typeof window === 'undefined') return
+  try {
+    const prefix = startJournalKey('')
+    for (let i = window.localStorage.length - 1; i >= 0; i--) {
+      const key = window.localStorage.key(i)
+      if (key?.startsWith(prefix)) window.localStorage.removeItem(key)
+    }
+  } catch { /* Identity cleanup also clears protected outbox records. */ }
 }
 
 export type DraftFailure = { code: string; message: string; uncertain: boolean; issues?: AuthoringIssue[] }
@@ -63,6 +94,10 @@ export type NextDraftSlice = {
   nextDraftPromotions: Record<string, DraftPromotion>
   setNextDraftPromotion: (key: string, promotion: DraftPromotion | undefined) => void
   nextDrafts: Record<string, NextDraftEdit>
+  pendingRunStarts: Record<string, PendingRunStart>
+  loadPendingRunStart: (key: string) => void
+  reserveRunStart: (key: string, candidate: PendingRunStart) => PendingRunStart
+  acknowledgeRunStart: (key: string, commandId: string) => void
   installNextDraft: (key: string, context: NextDraftContext, replace?: boolean) => void
   changeNextDraft: (key: string, update: (graph: WorkflowDefinitionV2) => WorkflowDefinitionV2) => void
   undoNextDraft: (key: string) => void
@@ -81,7 +116,45 @@ export function createNextDraftSlice(set: SetSlice): NextDraftSlice {
     return next === current ? state : { nextDrafts: { ...state.nextDrafts, [key]: next } }
   })
   return {
-    nextDrafts: {}, nextDraftPromotions: {},
+    nextDrafts: {}, nextDraftPromotions: {}, pendingRunStarts: {},
+    loadPendingRunStart: (key) => {
+      const request = readStoredStart(key)
+      set((state) => {
+        const pendingRunStarts = { ...state.pendingRunStarts }
+        if (request) pendingRunStarts[key] = request
+        else delete pendingRunStarts[key]
+        return { pendingRunStarts }
+      })
+    },
+    reserveRunStart: (key, candidate) => {
+      const existing = readStoredStart(key)
+      if (existing) {
+        set((state) => ({ pendingRunStarts: { ...state.pendingRunStarts, [key]: existing } }))
+        return existing
+      }
+      if (typeof window === 'undefined') throw new Error(storageError)
+      const request = RunStartV2InputSchema.parse(candidate)
+      if (nextDraftKey(request.workspaceId, request.workflowId) !== key) throw new Error('Start scope mismatch')
+      const saved = JSON.stringify(request)
+      try {
+        window.localStorage.setItem(startJournalKey(key), saved)
+        if (window.localStorage.getItem(startJournalKey(key)) !== saved) throw new Error(storageError)
+      } catch { throw new Error(storageError) }
+      set((state) => ({ pendingRunStarts: { ...state.pendingRunStarts, [key]: request } }))
+      return request
+    },
+    acknowledgeRunStart: (key, commandId) => {
+      const existing = readStoredStart(key)
+      if (!existing || existing.commandId !== commandId) throw new Error('The pending Start changed. Reconcile it before starting another Run.')
+      try {
+        window.localStorage.removeItem(startJournalKey(key))
+        if (window.localStorage.getItem(startJournalKey(key)) !== null) throw new Error(storageError)
+      } catch { throw new Error(storageError) }
+      set((state) => {
+        const pendingRunStarts = { ...state.pendingRunStarts }; delete pendingRunStarts[key]
+        return { pendingRunStarts }
+      })
+    },
     setNextDraftPromotion: (key, promotion) => set((state) => {
       const nextDraftPromotions = { ...state.nextDraftPromotions }
       if (promotion) nextDraftPromotions[key] = promotion
