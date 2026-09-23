@@ -61,6 +61,7 @@ export interface Eng03NativeControl extends Eng03NativeRuntime {
   runtimeDirectory: string
   startTask: Promise<void>
   restartWaitingRuntime(): Promise<Eng03NativeRuntime>
+  restartRecoverableRuntime(): Promise<Eng03NativeRuntime>
 }
 
 export interface Eng03NativeOptions {
@@ -265,23 +266,33 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     engine = activeRuntime.engine
     const startTask = engine.start(run.id)
     if (options.control) void startTask.catch(() => undefined)
-    const restartWaitingRuntime = async (): Promise<Eng03NativeRuntime> => {
-      await startTask
+    const restartRuntime = async (kind: 'waiting' | 'terminal_unaccepted'): Promise<Eng03NativeRuntime> => {
+      if (kind === 'waiting') await startTask
+      else await startTask.catch(() => undefined)
       if (!activeRuntime || !checkpoints) throw new Error('Native runtime is unavailable for restart.')
       const current = await activeRuntime.runs.get(run.id)
-      const pending = await livePool.query(`select 1 from durable_interactions where run_id=$1 and status='pending'
-        and native_session_id is not null limit 1`, [run.id])
-      if (current?.executionState !== 'waiting' || !pending.rowCount) {
-        throw new Error('Restart requires a durable waiting Run with an exact pending native interaction.')
+      if (kind === 'waiting') {
+        const pending = await livePool.query(`select 1 from durable_interactions where run_id=$1 and status='pending'
+          and native_session_id is not null limit 1`, [run.id])
+        if (current?.executionState !== 'waiting' || !pending.rowCount) {
+          throw new Error('Restart requires a durable waiting Run with an exact pending native interaction.')
+        }
+      } else if (current?.executionState !== 'running') {
+        throw new Error('Terminal recovery restart requires an unfinished running Run.')
       }
-      const before = await livePool.query<{ accepted: boolean; result: unknown; native_session_id: string | null }>(
-        `select e.id,e.accepted,e.record->>'nativeSessionId' as native_session_id,e.record->'result' as result,
+      const before = await livePool.query<{ id: string; accepted: boolean; state: string; result: unknown; native_session_id: string | null }>(
+        `select e.id,e.accepted,e.record->>'state' as state,e.record->>'nativeSessionId' as native_session_id,e.record->'result' as result,
           s.reference,s.workflow_finalized_at
          from harness_executions e left join execution_native_sessions s on s.execution_id=e.id
          where e.run_id=$1 order by e.id`, [run.id])
-      if (!before.rows.some((row) => row.accepted && row.result)
-        || !before.rows.some((row) => row.native_session_id && !row.result)) {
-        throw new Error('Restart requires one accepted sibling and one unfinished exact native session.')
+      const acceptedSibling = before.rows.some((row) => row.accepted && row.result)
+      const recoverable = kind === 'waiting'
+        ? before.rows.some((row) => row.native_session_id && !row.result)
+        : before.rows.some((row) => !row.accepted && row.state === 'completed' && row.native_session_id
+          && row.result && typeof row.result === 'object' && 'outcome' in row.result
+          && row.result.outcome === 'succeeded')
+      if (!acceptedSibling || !recoverable) {
+        throw new Error('Restart requires an accepted sibling and the exact recoverable native session/result.')
       }
       const stopBefore = await livePool.query<{ stop_requested_at: Date | null }>(
         'select stop_requested_at from runs where id=$1', [run.id])
@@ -294,26 +305,28 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       activeRuntime = makeRuntime(checkpoints.saver)
       engine = activeRuntime.engine
       const after = await livePool.query(
-        `select e.id,e.accepted,e.record->>'nativeSessionId' as native_session_id,e.record->'result' as result,
+        `select e.id,e.accepted,e.record->>'state' as state,e.record->>'nativeSessionId' as native_session_id,e.record->'result' as result,
           s.reference,s.workflow_finalized_at
          from harness_executions e left join execution_native_sessions s on s.execution_id=e.id
          where e.run_id=$1 order by e.id`, [run.id])
       const stopAfter = await livePool.query<{ stop_requested_at: Date | null }>(
         'select stop_requested_at from runs where id=$1', [run.id])
       if (JSON.stringify(before.rows) !== JSON.stringify(after.rows)
-        || (await activeRuntime.runs.get(run.id))?.executionState !== 'waiting'
+        || (await activeRuntime.runs.get(run.id))?.executionState !== current.executionState
         || stopAfter.rows[0]?.stop_requested_at) {
         throw new Error('Runtime restart changed a durable execution or waiting Run identity.')
       }
-      evidence.runtimeRestart = { at: new Date().toISOString(), preservedExecutionCount: before.rowCount,
+      evidence.runtimeRestart = { kind, at: new Date().toISOString(), preservedExecutionCount: before.rowCount,
         preservedNativeSessionIds: before.rows.map((row) => row.native_session_id).filter(Boolean) }
       return activeRuntime
     }
+    const restartWaitingRuntime = () => restartRuntime('waiting')
+    const restartRecoverableRuntime = () => restartRuntime('terminal_unaccepted')
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       const work = options.control
         ? options.control({ pool, runId: run.id, nodeIds: nodes.map((node) => node.id), projectDirectory,
-          runtimeDirectory, ...activeRuntime, startTask, restartWaitingRuntime })
+          runtimeDirectory, ...activeRuntime, startTask, restartWaitingRuntime, restartRecoverableRuntime })
           .then(() => startTask.catch(() => undefined))
         : startTask
       await Promise.race([work, new Promise<never>((_resolve, reject) => {
