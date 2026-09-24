@@ -302,6 +302,10 @@ button.n-node:disabled { opacity: .5; cursor: not-allowed; }
 .n-node-bottom > .n-mono { color: var(--n-faint); font-size: 11px; }
 .n-node > .n-progress { margin-top: 12px; }
 .n-node > .n-progress > .n-between { display: none; }
+.n-node[data-harness] { --n-harness: var(--harness-neutral); }
+.n-node[data-harness='codex'] { --n-harness: var(--harness-codex); }
+.n-node[data-harness='opencode'] { --n-harness: var(--harness-opencode); }
+.n-node[data-harness]::before { content: ''; position: absolute; inset: -1px auto -1px -1px; width: 3px; border-radius: var(--radius-md) 0 0 var(--radius-md); background: var(--n-harness); pointer-events: none; }
 .n-approval { padding: 19px; border: 1px solid var(--warning); border-radius: var(--radius-md); background: var(--n-surface); }
 .n-approval > header { display: flex; gap: 11px; align-items: center; }
 .n-approval > header > div { flex: 1; min-width: 0; }

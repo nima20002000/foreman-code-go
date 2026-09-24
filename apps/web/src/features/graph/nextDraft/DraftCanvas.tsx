@@ -26,7 +26,7 @@ const DraftCard = memo(function DraftCard({ id, data, selected }: NodeProps<Grap
     <NodeResizer isVisible={selected} minWidth={GRAPH_NODE_MIN_WIDTH} maxWidth={GRAPH_NODE_MAX_WIDTH} minHeight={GRAPH_NODE_MIN_HEIGHT} maxHeight={GRAPH_NODE_MAX_HEIGHT} handleClassName="workflow-agent-node-resize-handle nodrag" lineClassName="workflow-agent-node-resize-line" />
     {Object.entries(handlePositions).map(([name, position]) => <Handle key={name} id={name} type="source" position={position} />)}
     <WorkflowNodeCard className="workflow-agent-node-button" title={data.label} subtitle={`${entry ? 'Entry · ' : ''}${data.agent.productRole === 'orchestrator' ? 'Orchestrator' : data.agent.productRole === 'coder' ? 'Worker' : 'Role unavailable'}`}
-      statusLabel="Draft" icon={data.agent.productRole === 'orchestrator' ? 'workflow' : 'bot'} selected={selected} working={false}
+      statusLabel="Draft" icon={data.agent.productRole === 'orchestrator' ? 'workflow' : 'bot'} harness={data.agent.harness ?? data.agent.harnessConfiguration?.harness} selected={selected} working={false}
       meta="Next draft · edits do not change existing Runs" ariaLabel={`Edit node ${data.label}${entry ? ', entry' : ''}`}
       onSelect={() => inspect(() => { presentation.getState().setFocusedNodeId(id); presentation.getState().setFocusedEdgeId(undefined) })} />
     <DraftRunBadge nodeId={id} agentId={data.agent.id} />

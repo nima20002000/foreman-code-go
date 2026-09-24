@@ -124,6 +124,12 @@ describe('Controlled navigation and safe states', () => {
     render(<WorkflowNodeCard title="Builder" subtitle="Codex" statusLabel="Working" selected onSelect={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Builder: Working' })).toHaveAttribute('aria-pressed', 'true')
   })
+  it('marks harness identity on graph nodes only when it is known', () => {
+    render(<><WorkflowNodeCard title="Builder" subtitle="Codex" statusLabel="Idle" harness="codex" onSelect={vi.fn()} />
+      <WorkflowNodeCard title="Planner" subtitle="Agent" statusLabel="Idle" onSelect={vi.fn()} /></>)
+    expect(screen.getByRole('button', { name: 'Builder: Idle' })).toHaveAttribute('data-harness', 'codex')
+    expect(screen.getByRole('button', { name: 'Planner: Idle' })).not.toHaveAttribute('data-harness')
+  })
   it('defaults approval decisions to read-only', async () => {
     const choose = vi.fn()
     render(<ApprovalCard title="Approve command" description="Run a test" scope="This run only" choices={[{ id: 'allow', label: 'Allow once' }]} onChoose={choose} />)

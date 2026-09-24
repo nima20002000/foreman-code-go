@@ -9,15 +9,17 @@ export interface WorkflowNodeCardProps {
   title: string; subtitle: string; statusLabel: string; tone?: Tone; icon?: IconName; selected?: boolean
   working?: boolean; disabled?: boolean; progress?: number; detail?: string; meta?: string
   ariaLabel?: string; onSelect?: (event: MouseEvent<HTMLButtonElement>) => void; className?: string
+  /** Harness identity (codex, opencode, other); drawn as the node's rim color, never as state. */
+  harness?: string
 }
-export function WorkflowNodeCard({ title, subtitle, statusLabel, tone = 'neutral', icon = 'bot', selected, working, disabled, progress, detail, meta, ariaLabel, onSelect, className }: WorkflowNodeCardProps) {
+export function WorkflowNodeCard({ title, subtitle, statusLabel, tone = 'neutral', icon = 'bot', selected, working, disabled, progress, detail, meta, ariaLabel, onSelect, className, harness }: WorkflowNodeCardProps) {
   const content = <><div className="n-node-top"><span className="n-node-icon"><Icon name={icon} size={20} /></span><div><strong>{title}</strong><small>{subtitle}</small></div><span className="n-node-marker" aria-hidden="true"><Icon name={working ? 'spark' : tone === 'success' ? 'check' : tone === 'warning' ? 'clock' : 'more'} size={16} /></span></div>
     {detail && <p className="n-node-detail">{detail}</p>}<div className="n-node-bottom"><StatusBadge label={statusLabel} tone={tone} busy={working} />{meta && <span className="n-mono">{meta}</span>}</div>
     {progress !== undefined && <Progress label={`${title} progress`} value={progress} tone={tone} showValue={false} />}
   </>
-  return onSelect ? <button type="button" className={cx('n-node', selected && 'n-node--selected', className)} data-tone={tone} data-working={working || undefined}
+  return onSelect ? <button type="button" className={cx('n-node', selected && 'n-node--selected', className)} data-tone={tone} data-working={working || undefined} data-harness={harness}
     aria-pressed={selected} aria-label={ariaLabel ?? `${title}: ${statusLabel}`} disabled={disabled} onClick={onSelect}>{content}</button>
-    : <div className={cx('n-node', selected && 'n-node--selected', className)} data-tone={tone} data-working={working || undefined}>{content}</div>
+    : <div className={cx('n-node', selected && 'n-node--selected', className)} data-tone={tone} data-working={working || undefined} data-harness={harness}>{content}</div>
 }
 
 export interface ApprovalChoice { id: string; label: string; description?: string; destructive?: boolean; disabled?: boolean }

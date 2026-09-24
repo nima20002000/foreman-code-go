@@ -111,6 +111,7 @@ export const AgentNode = memo(function AgentNode({ data: staticData, isConnectab
           statusLabel={status}
           tone={nodeView.tone}
           icon={agentNodeIcon(data)}
+        harness={data.agent.harness ?? data.agent.harnessConfiguration?.harness}
           meta={nodeView.actionLabel}
         />
       </div>
@@ -163,6 +164,7 @@ export const AgentNode = memo(function AgentNode({ data: staticData, isConnectab
         statusLabel={status}
         tone={nodeView.tone}
         icon={agentNodeIcon(data)}
+        harness={data.agent.harness ?? data.agent.harnessConfiguration?.harness}
         selected={selected}
         working={nodeView.working}
         meta={nodeView.actionLabel}
