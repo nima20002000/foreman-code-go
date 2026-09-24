@@ -28,7 +28,9 @@ export type GraphDraftOperationV2 = z.infer<typeof GraphDraftOperationV2Schema>
 export const GraphDraftApplyV2InputSchema = GraphDraftApplyInputSchema.extend({
   executionSemanticsVersion: z.literal(2), operations: z.array(GraphDraftOperationV2Schema).min(1).max(100),
 }).strict()
-export const GraphDraftApplyV2ResultSchema = GraphDraftApplyResultSchema.extend({ draft: GraphDraftV2Schema }).strict()
+export const GraphDraftApplyV2ResultSchema = GraphDraftApplyResultSchema.extend({
+  draft: GraphDraftV2Schema, previousDraft: GraphDraftSchema.or(GraphDraftV2Schema).optional(),
+}).strict()
 export const GraphDraftCommandV2ResultSchema = z.object({ value: GraphDraftApplyV2ResultSchema, replayed: z.boolean() }).strict()
 export const GraphSaveV2InputSchema = GraphSaveInputSchema.extend({ executionSemanticsVersion: z.literal(2) }).strict()
 export const GraphSaveV2ResultSchema = GraphSaveResultSchema.extend({ draft: GraphDraftV2Schema, version: WorkflowVersionV2Schema }).strict()

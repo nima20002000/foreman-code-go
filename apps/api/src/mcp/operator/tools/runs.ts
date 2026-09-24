@@ -1,5 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server'
 import { RUN_CURRENT_MCP_TOOL, RunCurrentRequestSchema, RunCurrentResponseSchema } from '@graphql/contracts/run-current'
+import { RUN_HISTORY_MCP_TOOL, RunHistoryRequestSchema, RunHistoryResponseSchema } from '@graphql/contracts/run-history'
 
 import {
   RunEventsListInputSchema, RunGetInputSchema, RunListInputSchema, RunStartInputSchema, RunStopInputSchema,
@@ -19,6 +20,12 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, RUN_CURRENT_MCP_TOOL,
     () => context.services.runs.current(context.principal, input)))
+  if (operatorToolAvailable(context, RUN_HISTORY_MCP_TOOL)) server.registerTool(RUN_HISTORY_MCP_TOOL, {
+    description: 'Read the exact pinned topology and latest result for one semantics-1 Run. Agent model, effort and harness settings require an additional scoped agents:read grant. No prompts, skills, advanced settings or activity bodies; use run_events_list for paginated activity.',
+    inputSchema: RunHistoryRequestSchema, outputSchema: RunHistoryResponseSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input) => invokeOperatorTool(context, RUN_HISTORY_MCP_TOOL,
+    () => context.services.runs.history(context.principal, input)))
   if (operatorToolAvailable(context, 'run_list')) server.registerTool('run_list', {
     description: 'List authorized durable runs with pagination.', inputSchema: RunListInputSchema,
     outputSchema: RunPageSchema.extend({ items: CompatibleWorkflowRunSchema.array() }),

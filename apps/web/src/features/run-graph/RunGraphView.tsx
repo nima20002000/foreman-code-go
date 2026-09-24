@@ -1,4 +1,5 @@
 import { memo, useCallback, useMemo, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import {
   Background, BaseEdge, Controls, Handle, Position, ReactFlow, getSmoothStepPath,
   type NodeProps, type EdgeProps,
@@ -25,6 +26,9 @@ import { useStopManagedRunMutation } from '../../shared/api/query'
 import type { RunGraphRecord } from './types'
 import { RunHistory } from '../workflow-board/RunHistory'
 import { RunBoardSelection } from '../workflow-board/RunBoardSelection'
+import { useProtectedAccessError } from '../auth/useProtectedAccessError'
+import { sessionGeneration } from '../../shared/api/sessionBoundary'
+import { readLegacyRunHistory } from './client'
 import './runGraph.css'
 
 const RunFactNode = memo(function RunFactNode({ data }: NodeProps<RunViewNode>) {
@@ -169,13 +173,47 @@ function RunInspector() {
 }
 
 function LegacyFacts() {
+  const { scope } = useRunGraphContext()
   const response = useRunGraphSelection(selectLegacyRun)
+  const detail = useQuery({ queryKey: ['workbench', 'run-history', sessionGeneration(), scope,
+    response?.run.executionState === 'completed' ? 'completed' : 'active'],
+    queryFn: ({ signal }) => readLegacyRunHistory(scope, signal), staleTime: Infinity,
+    refetchOnWindowFocus: false, refetchOnReconnect: false, retry: false, gcTime: 0 })
+  const denied = useProtectedAccessError(detail)
   if (!response || response.kind !== 'legacy-run-current') return null
   return <section className="run-graph-legacy" aria-label="Legacy Run facts">
     <p>Legacy reader · {response.run.executionState} · {response.run.outcome}</p>
-    <p>The legacy read contract does not expose pinned topology. The current draft is not substituted.</p>
     <p>{response.cleanupPending ? 'Cleanup pending.' : 'No pending Run cleanup intent.'} Approval and native settlement remain unconfirmed; current-state checks continue while this view is open.</p>
-    <p>Historical activity is not loaded by this view.</p>
+    {denied ? <p role="alert">Historical Run detail access is unavailable.</p>
+      : detail.isPending ? <p role="status">Loading pinned historical detail…</p>
+        : detail.isError ? <p role="alert">Historical Run detail could not be loaded. <Button variant="secondary" onClick={() => void detail.refetch()}>Retry detail</Button></p>
+          : <div aria-label="Pinned historical detail">
+            <h3>Saved v{detail.data.version} topology</h3>
+            <p>Entry node: {detail.data.entryNodeId}</p>
+            {detail.data.runResult ? <p>Final Run result: {detail.data.runResult.outcome}
+              {detail.data.runResult.outputPreview !== undefined ? <><br /><span>{detail.data.runResult.outputPreview}{detail.data.runResult.outputTruncated ? '…' : ''}</span></> : null}</p> : null}
+            <ul>{detail.data.nodes.map((node) => {
+              const config = detail.data.agentConfigurations.find((item) => item.id === node.agentConfigurationVersionId)
+              const result = detail.data.latestResults.find((item) => item.workflowNodeId === node.id)
+              return <li key={node.id}><h4>{node.name}</h4><dl>
+                <dt>Node</dt><dd>{node.id}</dd><dt>Agent</dt><dd>{node.agentId}</dd>
+                <dt>Pinned configuration</dt><dd>{node.agentConfigurationVersionId}</dd>
+                {config ? <><dt>Harness</dt><dd>{config.harness}</dd><dt>Model</dt><dd>{config.model}</dd>
+                  {config.reasoningEffort ? <><dt>Effort</dt><dd>{config.reasoningEffort}</dd></> : null}
+                  {config.sandbox ? <><dt>Sandbox</dt><dd>{config.sandbox}</dd></> : null}
+                  {config.serviceTier ? <><dt>Service tier</dt><dd>{config.serviceTier}</dd></> : null}
+                  {config.variant ? <><dt>Variant</dt><dd>{config.variant}</dd></> : null}
+                  {config.nativeAgent ? <><dt>Native Agent</dt><dd>{config.nativeAgent}</dd></> : null}
+                  {config.thinking !== undefined ? <><dt>Thinking</dt><dd>{config.thinking ? 'On' : 'Off'}</dd></> : null}</>
+                  : <><dt>Agent settings</dt><dd>Requires Agent read access</dd></>}
+                {result ? <><dt>Latest attempt</dt><dd>{result.id} · {result.state} · {result.outcome ?? 'pending'}</dd>
+                  {result.outputPreview !== undefined ? <><dt>Result</dt><dd><pre>{result.outputPreview}{result.outputTruncated ? '…' : ''}</pre></dd></> : null}</> : null}
+              </dl></li>
+            })}</ul>
+            <h4>Pinned relationships</h4>
+            {detail.data.edges.length ? <ul>{detail.data.edges.map((edge) => <li key={edge.id}>{edge.source} → {edge.target}</li>)}</ul>
+              : <p>No relationships in this version.</p>}
+          </div>}
     <table><caption>Latest execution attempt per saved node</caption><thead><tr><th>Node</th><th>Execution</th><th>State</th></tr></thead><tbody>
       {response.executions.map((execution) => <tr key={execution.id}><td>{execution.workflowNodeId}</td><td>{execution.id}</td><td>{execution.state}</td></tr>)}
     </tbody></table>

@@ -84,7 +84,10 @@ export async function applyExecutionOperation(client: pg.PoolClient, principal: 
     case 'node.replace_v2': {
       const previous = node(operation.node.id)
       if (previous.agentId !== operation.node.agentId) throw new DomainError('AGENT_REFERENCE_CHANGE_UNSUPPORTED', 'Replacing metadata cannot change the Agent identity.', 409)
-      graph.nodes[graph.nodes.findIndex((item) => item.id === previous.id)] = operation.node
+      // Preserve the independently revisioned layout when meaning is replaced.
+      graph.nodes[graph.nodes.findIndex((item) => item.id === previous.id)] = {
+        ...operation.node, position: previous.position ?? operation.node.position,
+      }
       break
     }
     case 'relationship.put': {

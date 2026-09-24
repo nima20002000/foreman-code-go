@@ -10,13 +10,13 @@ const base: WorkflowDefinition = {
 const agent = { id: 'agent-1', name: 'Agent', harnessConfiguration: DEFAULT_HARNESS_DEFAULTS.codex }
 
 describe('management graph diff', () => {
-  it('emits a complete node replacement without reordering from node movement', () => {
+  it('keeps independent node movement out of executable graph operations', () => {
     const movedNode = { ...base.nodes[0]!, position: { x: 10, y: 20 } }
     const operations = managementGraphOperations({
       base, next: { ...base, nodes: [movedNode] },
       baseAgents: [agent], nextAgents: [agent], metadataRevisions: { 'agent-1': 2 },
     })
-    expect(operations).toEqual([{ type: 'node.replace', node: movedNode }])
+    expect(operations).toEqual([])
   })
 
   it('adds a logical agent before configuring its new node', () => {

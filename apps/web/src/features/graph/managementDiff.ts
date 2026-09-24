@@ -15,6 +15,9 @@ function settings(agent: Agent) {
   return { harnessConfiguration: agent.harnessConfiguration, harness: agent.harness, model: agent.model,
     effort: agent.effort, fastMode: agent.fastMode, ...content(agent) }
 }
+function sameNodeMeaning(before: WorkflowNode, after: WorkflowNode): boolean {
+  return same({ ...before, position: undefined }, { ...after, position: undefined })
+}
 function unique(ids: readonly string[], kind: string): void {
   if (new Set(ids).size !== ids.length) throw new Error(`The graph contains duplicate ${kind} IDs.`)
 }
@@ -104,7 +107,7 @@ export function managementGraphOperations(input: {
     const before = baseNodes.get(node.id)
     if (!before) continue
     if (before.agentId !== node.agentId) throw new Error('Changing a node agent requires an explicit clone.')
-    if (!same(before, node)) operations.push({ type: 'node.replace', node })
+    if (!sameNodeMeaning(before, node)) operations.push({ type: 'node.replace', node })
   }
   for (const edge of input.next.edges) {
     if (!nextNodes.has(edge.source) || !nextNodes.has(edge.target)) throw new Error('An edge references a node that is not in the graph.')

@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { AgentSchema } from '@graphql/contracts'
 import { ManagedAgentSchema } from '@graphql/contracts/management'
-import { GraphDraftV2Schema, GraphEditStageInputSchema, WorkflowDefinitionV2Schema, sameWorkflowValue,
+import { GraphDraftV2Schema, GraphEditStageInputSchema, WorkflowDefinitionV2Schema, sameExecutableWorkflow, sameWorkflowValue,
   type GraphEditIntent, type GraphEditStageInput } from '@graphql/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
@@ -12,7 +12,7 @@ const prefix = 'graph-edit-intent:'
 const SnapshotSchema = z.object({
   context: z.object({ draft: GraphDraftV2Schema, agents: z.array(ManagedAgentSchema) }).strict(),
   graph: WorkflowDefinitionV2Schema, agentEdits: z.record(z.string(), AgentSchema).optional(),
-  acknowledgedStageCommands: z.array(z.string()).optional(),
+  acknowledgedStageCommands: z.array(z.string()).optional(), submittedStageCommands: z.array(z.string()).optional(),
 }).strict()
 const OutboxSchema = z.object({ request: GraphEditStageInputSchema, target: WorkflowDefinitionV2Schema,
   agentTarget: z.record(z.string(), AgentSchema).optional() }).strict()
@@ -73,11 +73,21 @@ function sameDraftBase(left: NextDraftEdit['context']['draft'], right: NextDraft
   return left.workspaceId === right.workspaceId && left.workflowId === right.workflowId && left.id === right.id
     && left.revision === right.revision && left.baseWorkflowVersionId === right.baseWorkflowVersionId
 }
+function sameSnapshotForm(left: z.infer<typeof SnapshotSchema>, right: z.infer<typeof SnapshotSchema>) {
+  return sameDraftBase(left.context.draft, right.context.draft) && sameWorkflowValue(left.context, right.context)
+    && sameWorkflowValue(left.graph, right.graph) && sameWorkflowValue(left.agentEdits ?? {}, right.agentEdits ?? {})
+}
 /** Local consumption only, not server state. Scoped to this tab and form base. */
 export function editSnapshotAcknowledged(scope: string, edit: NextDraftEdit, stageCommandId: string): boolean {
   const snapshot = read(key('draft', `${scope}:${tab()}`), SnapshotSchema)
   return !!snapshot && sameDraftBase(snapshot.context.draft, edit.context.draft)
     && !!snapshot.acknowledgedStageCommands?.includes(stageCommandId)
+}
+/** Local lineage only. It never authorizes a server command or proves publication. */
+export function editSnapshotSubmitted(scope: string, edit: NextDraftEdit, stageCommandId: string): boolean {
+  const snapshot = read(key('draft', `${scope}:${tab()}`), SnapshotSchema)
+  return !!snapshot && sameDraftBase(snapshot.context.draft, edit.context.draft)
+    && !!snapshot.submittedStageCommands?.includes(stageCommandId)
 }
 export function storeEditSnapshot(scope: string, edit: Pick<NextDraftEdit, 'context' | 'graph' | 'agentEdits'>, acknowledgedStageCommandId?: string) {
   const value = SnapshotSchema.parse({ context: edit.context, graph: edit.graph,
@@ -85,13 +95,22 @@ export function storeEditSnapshot(scope: string, edit: Pick<NextDraftEdit, 'cont
   assertScope(scope, value.graph.workspaceId, value.graph.id)
   assertScope(scope, value.context.draft.workspaceId, value.context.draft.workflowId)
   const id = tab(), name = key('draft', `${scope}:${id}`), previous = read(name, SnapshotSchema)
-  const acknowledgedStageCommands = new Set(previous && sameDraftBase(previous.context.draft, value.context.draft)
-    ? previous.acknowledgedStageCommands : [])
+  const latestId = !previous ? read(key('ui', `${scope}:latest`), z.string()) : undefined
+  const latest = latestId && latestId !== id ? read(key('draft', `${scope}:${latestId}`), SnapshotSchema) : undefined
+  // A genuinely new recovery tab may continue the exact last form lineage. An
+  // already-independent tab always keeps its own metadata and cannot inherit it.
+  const lineage = previous ?? (latest && sameSnapshotForm(latest, value) ? latest : undefined)
+  const acknowledgedStageCommands = new Set(lineage && sameDraftBase(lineage.context.draft, value.context.draft)
+    ? lineage.acknowledgedStageCommands : [])
+  const submittedStageCommands = new Set(lineage && sameDraftBase(lineage.context.draft, value.context.draft)
+    ? lineage.submittedStageCommands : [])
   if (acknowledgedStageCommandId) acknowledgedStageCommands.add(acknowledgedStageCommandId)
-  // Form plus local consumption marker share one atomic storage write. The
-  // caller persists this before exposing the merged form for further typing.
+  // Form plus local command-lineage/consumption markers share one storage write.
+  // These markers are local safety evidence only, never publication authority.
   write(key('ui', `${scope}:latest`), id)
-  write(name, { ...value, ...(acknowledgedStageCommands.size ? { acknowledgedStageCommands: [...acknowledgedStageCommands] } : {}) })
+  write(name, { ...value,
+    ...(acknowledgedStageCommands.size ? { acknowledgedStageCommands: [...acknowledgedStageCommands] } : {}),
+    ...(submittedStageCommands.size ? { submittedStageCommands: [...submittedStageCommands] } : {}) })
 }
 export function readEditOutbox(scope: string): EditIntentOutbox | undefined {
   const value = read(key('outbox', scope), OutboxSchema)
@@ -113,6 +132,35 @@ function retainEditSubmission(scope: string, candidate: EditIntentOutbox): EditI
   if (previous && !sameWorkflowValue(previous, value)) throw new Error('The retained submission conflicts with this exact command. No evidence was replaced.')
   if (!previous) write(name, value)
   return previous ?? value
+}
+function snapshotMatchesSubmission(snapshot: z.infer<typeof SnapshotSchema>, value: EditIntentOutbox): boolean {
+  const request = value.request, draft = snapshot.context.draft
+  return draft.workspaceId === request.workspaceId && draft.workflowId === request.workflowId && draft.id === request.draftId
+    && draft.revision === request.expectedRevision && draft.baseWorkflowVersionId === request.expectedWorkflowVersionId
+    && sameExecutableWorkflow(snapshot.graph, value.target)
+    && sameWorkflowValue(snapshot.agentEdits ?? {}, value.agentTarget ?? {})
+}
+/** Capture only tabs whose local form still matches this Stage at reservation time.
+ * Later typing keeps that lineage; already-divergent tabs remain pinned to their
+ * own revision and must hit the server conflict/reload path explicitly. */
+function markSubmittedSnapshots(scope: string, value: EditIntentOutbox): void {
+  const local = storage(), ownName = key('draft', `${scope}:${tab()}`)
+  const mark = (name: string, snapshot: z.infer<typeof SnapshotSchema>) => {
+    if (!snapshotMatchesSubmission(snapshot, value)) return
+    const submittedStageCommands = new Set(snapshot.submittedStageCommands)
+    submittedStageCommands.add(value.request.commandId)
+    write(name, { ...snapshot, submittedStageCommands: [...submittedStageCommands] })
+  }
+  const own = read(ownName, SnapshotSchema)
+  if (own) mark(ownName, own)
+  const start = key('draft', `${scope}:`)
+  for (let i = 0; i < local.length; i++) {
+    const name = local.key(i)
+    if (!name?.startsWith(start) || name === ownName) continue
+    // A corrupt sibling snapshot is never trusted or repaired here. It simply
+    // receives no lineage marker and therefore cannot advance another form.
+    try { const snapshot = read(name, SnapshotSchema); if (snapshot) mark(name, snapshot) } catch { /* fail closed for that sibling */ }
+  }
 }
 export function matchesEditIntent(value: EditIntentOutbox, intent: GraphEditIntent): boolean {
   const request = value.request
@@ -139,6 +187,7 @@ export function reserveEditOutbox(scope: string, candidate: EditIntentOutbox): E
   const existing = readEditOutbox(scope)
   if (existing) return retainEditSubmission(scope, existing) // Never replace an uncertain command with newer typing.
   const value = retainEditSubmission(scope, candidate)
+  markSubmittedSnapshots(scope, value)
   write(key('outbox', scope), value)
   return value
 }

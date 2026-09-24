@@ -88,6 +88,10 @@ import {
   GraphDraftCommandResultSchema,
   GraphSaveCommandResultSchema,
   GraphDraftApplyInputSchema,
+  GraphDraftLayoutInputSchema,
+  GraphDraftLayoutResultSchema,
+  GraphDraftRevertAppliedInputSchema,
+  GraphDraftRevertAppliedResultSchema,
   GraphSaveInputSchema,
   GraphDraftDiscardInputSchema,
   RunStartInputSchema,
@@ -419,6 +423,24 @@ export class ApiClient {
     )
   }
 
+  putManagedGraphLayout(input: z.input<typeof GraphDraftLayoutInputSchema>, options?: RequestOptions) {
+    const request = parseRequest(GraphDraftLayoutInputSchema, input)
+    return this.request(
+      `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/drafts/${toPath(request.draftId)}/layout`,
+      GraphDraftLayoutResultSchema,
+      { ...options, method: 'PUT', body: request },
+    )
+  }
+
+  revertManagedGraphApply(input: z.input<typeof GraphDraftRevertAppliedInputSchema>, options?: RequestOptions) {
+    const request = parseRequest(GraphDraftRevertAppliedInputSchema, input)
+    return this.request(
+      `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/drafts/${toPath(request.draftId)}/revert-applied`,
+      GraphDraftRevertAppliedResultSchema,
+      { ...options, method: 'POST', body: request },
+    )
+  }
+
   saveManagedGraphDraft(input: { workspaceId: string; workflowId: string; draftId: string; commandId: string; expectedRevision: number }, options?: RequestOptions) {
     const request = parseRequest(GraphSaveInputSchema, input)
     return this.request(
@@ -737,6 +759,8 @@ export const listManagedAgents = apiClient.listManagedAgents.bind(apiClient)
 export const getManagedGraphContext = apiClient.getManagedGraphContext.bind(apiClient)
 export const openManagedGraphDraft = apiClient.openManagedGraphDraft.bind(apiClient)
 export const applyManagedGraphDraft = apiClient.applyManagedGraphDraft.bind(apiClient)
+export const putManagedGraphLayout = apiClient.putManagedGraphLayout.bind(apiClient)
+export const revertManagedGraphApply = apiClient.revertManagedGraphApply.bind(apiClient)
 export const saveManagedGraphDraft = apiClient.saveManagedGraphDraft.bind(apiClient)
 export const discardManagedGraphDraft = apiClient.discardManagedGraphDraft.bind(apiClient)
 export const startManagedRun = apiClient.startManagedRun.bind(apiClient)

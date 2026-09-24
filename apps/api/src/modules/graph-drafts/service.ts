@@ -11,6 +11,8 @@ import {
 import {
   GraphDraftOperationSchema,
   GraphDraftApplyInputSchema,
+  GraphDraftLayoutInputSchema,
+  GraphDraftRevertAppliedInputSchema,
   GraphSaveInputSchema,
   ManagementHarnessConfigurationSchema,
   GraphValidationResultSchema,
@@ -28,7 +30,7 @@ import { GraphEditIntentService } from './editIntent.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { CompatibleWorkflowVersionSchema, GraphDraftApplyV2InputSchema, GraphDraftV2Schema, GraphSaveV2InputSchema, GraphSaveV2ResultSchema, WorkflowVersionV2Schema, type GraphEditStageInput, type GraphEditIntent,
-  preserveWorkflowGeometry, sameExecutableWorkflow, sameWorkflowValue, type GraphDraftOperationV2 } from '@graphql/contracts/wave25'
+  preserveWorkflowGeometry, sameExecutableWorkflow, sameWorkflowExceptGeometry, sameWorkflowValue, type GraphDraftOperationV2 } from '@graphql/contracts/wave25'
 import { GraphDraftRecordSchema as GraphDraftSchema, WorkflowDefinitionRecordSchema as WorkflowDefinitionSchema,
   buildDraftVersion as buildExecutableWorkflowVersion, applyExecutionOperation, draftSemantics, draftEntry, promoteExecutionDefinition } from './executionOperations.js'
 import { configurationInput, lockAgentConfigurations, saveAgentConfiguration } from '../workspaces/agentConfiguration.js'
@@ -359,7 +361,9 @@ export class GraphDraftService {
         if (graph.nodes[index]!.agentId !== operation.node.agentId) {
           throw new DomainError('AGENT_REFERENCE_CHANGE_UNSUPPORTED', 'Replacing node metadata cannot change its agent. Add an authorized clone instead.', 409)
         }
-        graph.nodes[index] = operation.node
+        // Semantic replacement must not replay a stale position over an
+        // independently persisted layout command.
+        graph.nodes[index] = { ...operation.node, position: graph.nodes[index]!.position ?? operation.node.position }
         return GraphDraftSchema.parse({ ...draft, graph })
       }
       case 'nodes.reorder': {
@@ -510,8 +514,17 @@ export class GraphDraftService {
         const presentationOnly = sameExecutableWorkflow(beforeMutation.graph, draft.graph)
           && sameWorkflowValue(beforeMutation.stagedAgents, draft.stagedAgents)
           && sameWorkflowValue(beforeMutation.sourceAgentPins, draft.sourceAgentPins)
+        const priorNodes = new Map(beforeMutation.graph.nodes.map((node) => [node.id, node]))
+        const layoutChanged = beforeMutation.graph.nodes.length !== draft.graph.nodes.length
+          || draft.graph.nodes.some((node) => {
+            const prior = priorNodes.get(node.id)
+            return !prior || !sameWorkflowValue(prior.position, node.position)
+          })
         draft = GraphDraftSchema.parse({
           ...draft, revision: draft.revision + 1,
+          // Legacy graph.apply still advances its existing semantic revision.
+          // Every changed position also fences independently revisioned layout.
+          layoutRevision: layoutChanged ? (beforeMutation.layoutRevision ?? 0) + 1 : draft.layoutRevision,
           // A revision still fences a shared layout write. It is not executable
           // dirtiness and never makes a previously dirty draft look published.
           publishedRevision: presentationOnly && beforeMutation.publishedRevision === beforeMutation.revision
@@ -525,7 +538,130 @@ export class GraphDraftService {
           'update graph_drafts set revision = $2, record = $3::jsonb, updated_at = now() where id = $1',
           [draft.id, draft.revision, JSON.stringify(draft)],
         )
-        return { draft: this.readableDraft(principal, draft), effects }
+        return { draft: this.readableDraft(principal, draft), effects,
+          previousDraft: this.readableDraft(principal, beforeMutation) }
+      },
+    })
+  }
+
+  async setLayout(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown) {
+    const input = GraphDraftLayoutInputSchema.parse(raw)
+    requireAuthorization(principal, 'graph:edit', { workspaceId: input.workspaceId, workflowId: input.workflowId })
+    return this.commands.execute({
+      principal, source, operation: 'graph.layout', commandId: input.commandId,
+      targetKey: `draft:${input.draftId}`, payload: input,
+      authorize: async (client) => {
+        principal = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(principal, 'graph:edit', { workspaceId: input.workspaceId, workflowId: input.workflowId })
+      },
+      perform: async (client) => {
+        await this.lockActiveWorkflow(client, input.workspaceId, input.workflowId)
+        const current = await client.query<DraftRow>(
+          `select id, record, discarded_at from graph_drafts
+           where id = $1 and workspace_id = $2 and workflow_id = $3 for update`,
+          [input.draftId, input.workspaceId, input.workflowId],
+        )
+        if (!current.rows[0] || current.rows[0].discarded_at) throw new DomainError('GRAPH_DRAFT_NOT_FOUND', 'The exact draft instance is unavailable.', 404)
+        const draft = GraphDraftSchema.parse(current.rows[0].record)
+        const layoutRevision = draft.layoutRevision ?? 0
+        if (layoutRevision !== input.expectedLayoutRevision) {
+          throw new DomainError('LAYOUT_REVISION_CONFLICT', 'The node layout changed since it was read.', 409, { currentLayoutRevision: layoutRevision })
+        }
+        const index = nodeIndex(draft.graph, input.nodeId)
+        const graph = structuredClone(draft.graph)
+        graph.nodes[index] = { ...graph.nodes[index]!, position: input.position }
+        const nextRevision = layoutRevision + 1
+        const next = GraphDraftSchema.parse({ ...draft, layoutRevision: nextRevision, graph })
+        if (draftSemantics(next) === 2) await client.query("select set_config('graphql.approval_writer','v2',true)")
+        await client.query('update graph_drafts set record = $2::jsonb, updated_at = now() where id = $1',
+          [draft.id, JSON.stringify(next)])
+        return { draftId: draft.id, layoutRevision: nextRevision, nodeId: input.nodeId, position: input.position }
+      },
+    })
+  }
+
+  async revertApplied(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown) {
+    const input = GraphDraftRevertAppliedInputSchema.parse(raw)
+    requireAuthorization(principal, 'graph:edit', { workspaceId: input.workspaceId, workflowId: input.workflowId })
+    return this.commands.execute({
+      principal, source, operation: 'graph.revert_applied', commandId: input.commandId,
+      targetKey: `draft:${input.draftId}`, payload: input,
+      authorize: async (client) => {
+        principal = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(principal, 'graph:edit', { workspaceId: input.workspaceId, workflowId: input.workflowId })
+        const applied = await client.query<{ result: unknown }>(
+          `select result from management_command_receipts
+           where principal_id = $1 and operation = 'graph.apply' and command_id = $2 and target_key = $3`,
+          [principal.id, input.applyCommandId, `draft:${input.draftId}`],
+        )
+        const value = applied.rows[0]?.result as { draft?: unknown; previousDraft?: unknown } | undefined
+        if (value?.draft && value.previousDraft && (GraphDraftSchema.parse(value.draft).stagedAgents.length > 0
+          || GraphDraftSchema.parse(value.previousDraft).stagedAgents.length > 0)) {
+          requireAuthorization(principal, 'agents:read', { workspaceId: input.workspaceId, workflowId: input.workflowId })
+        }
+      },
+      perform: async (client) => {
+        await this.lockActiveWorkflow(client, input.workspaceId, input.workflowId)
+        const current = await client.query<DraftRow>(
+          `select id, record, discarded_at from graph_drafts
+           where id = $1 and workspace_id = $2 and workflow_id = $3 for update`,
+          [input.draftId, input.workspaceId, input.workflowId],
+        )
+        if (!current.rows[0] || current.rows[0].discarded_at) throw new DomainError('GRAPH_DRAFT_NOT_FOUND', 'The exact draft instance is unavailable.', 404)
+        const draft = GraphDraftSchema.parse(current.rows[0].record)
+        if (draft.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'The graph draft changed since it was read.', 409, { currentRevision: draft.revision })
+        const receipt = await client.query<{ result: unknown }>(
+          `select result from management_command_receipts
+           where principal_id = $1 and operation = 'graph.apply' and command_id = $2 and target_key = $3`,
+          [principal.id, input.applyCommandId, `draft:${input.draftId}`],
+        )
+        const value = (receipt.rows[0]?.result as { draft?: unknown; previousDraft?: unknown } | undefined)
+        if (!value?.draft || !value.previousDraft) throw new DomainError('APPLIED_EDIT_NOT_FOUND', 'The exact applied edit cannot be reverted.', 404)
+        const applied = GraphDraftSchema.parse(value.draft)
+        const previous = GraphDraftSchema.parse(value.previousDraft)
+        if (draft.stagedAgents.length > 0 || previous.stagedAgents.length > 0) {
+          requireAuthorization(principal, 'agents:read', { workspaceId: input.workspaceId, workflowId: input.workflowId })
+        }
+        if (applied.revision !== draft.revision) {
+          const predecessor = await client.query<{ result: unknown }>(
+            `select result from management_command_receipts
+             where principal_id = $1 and operation = 'graph.revert_applied' and target_key = $2
+               and (result->'draft'->>'revision')::integer = $3
+               and (result->>'priorRevision')::integer = $4`,
+            [principal.id, `draft:${input.draftId}`, draft.revision, applied.revision],
+          )
+          if (!predecessor.rows[0]) throw new DomainError('APPLIED_EDIT_CONFLICT', 'A newer semantic edit prevents this revert.', 409)
+        }
+        if (applied.workspaceId !== input.workspaceId || applied.workflowId !== input.workflowId
+          || applied.id !== input.draftId || previous.id !== input.draftId
+          || previous.revision + 1 !== applied.revision
+          || applied.baseWorkflowVersionId !== draft.baseWorkflowVersionId
+          || applied.publishedRevision !== draft.publishedRevision
+          || !sameWorkflowExceptGeometry(draft.graph, applied.graph)
+          || !sameWorkflowValue(draft.stagedAgents, applied.stagedAgents)
+          || !sameWorkflowValue(draft.sourceAgentPins, applied.sourceAgentPins)) {
+          throw new DomainError('APPLIED_EDIT_CONFLICT', 'The applied edit is no longer the current semantic draft.', 409)
+        }
+        if (draftSemantics(previous) !== draftSemantics(draft)) {
+          throw new DomainError('EXECUTION_SEMANTICS_MISMATCH', 'A schema conversion cannot be reverted through this command.', 409)
+        }
+        const nextRevision = draft.revision + 1
+        const next = GraphDraftSchema.parse({ ...previous,
+          revision: nextRevision, layoutRevision: draft.layoutRevision,
+          publishedRevision: previous.publishedRevision === previous.revision ? nextRevision : previous.publishedRevision,
+          graph: preserveWorkflowGeometry(previous.graph, draft.graph),
+          updatedByPrincipalId: principal.id, updatedAt: new Date().toISOString(),
+        })
+        for (const staged of next.stagedAgents) {
+          requireAuthorization(principal, 'agents:read', next)
+          await this.authorizeAgentWrite(client, principal, next, staged.agent.id)
+          this.requireConfigurationAuthorization(principal, next, staged.agent)
+        }
+        if (draftSemantics(next) === 2) await client.query("select set_config('graphql.approval_writer','v2',true)")
+        await client.query('update graph_drafts set revision = $2, record = $3::jsonb, updated_at = now() where id = $1',
+          [next.id, next.revision, JSON.stringify(next)])
+        return { draft: this.readableDraft(principal, next),
+          revertedApplyCommandId: input.applyCommandId, priorRevision: previous.revision }
       },
     })
   }

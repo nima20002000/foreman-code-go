@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { GraphEditStageInputSchema, preserveWorkflowGeometry, sameExecutableWorkflow,
+import { GraphEditStageInputSchema, preserveWorkflowGeometry, sameExecutableWorkflow, sameWorkflowValue,
   type GraphEditIntent, type GraphEditReadResult } from '@graphql/contracts/wave25'
 import { assertSession, sessionGeneration } from '../../../shared/api/sessionBoundary'
 import { useGraphDraftStore } from '../store'
@@ -9,7 +9,7 @@ import { acknowledgeAgentEdits, hasAgentEdits } from './agentEdits'
 import { draftOperations, hasLocalChanges, mergeAcknowledgement } from './model'
 import { nextDraftDirty, type NextDraftEdit } from './state'
 import { nextDraftApi } from './transport'
-import { acknowledgeEditOutbox, editSnapshotAcknowledged, matchesEditIntent, readEditOutbox, readEditSubmission,
+import { acknowledgeEditOutbox, editSnapshotAcknowledged, editSnapshotSubmitted, matchesEditIntent, readEditOutbox, readEditSubmission,
   rejectEditOutbox, reserveEditOutbox, storeEditSnapshot, withEditIntentLock, type EditIntentOutbox } from './editIntentStorage'
 
 export const activeEditIntent = (intent: GraphEditIntent | null | undefined) => !!intent && !['saved', 'discarded'].includes(intent.state)
@@ -32,6 +32,14 @@ export function acknowledgeEditIntentSnapshot(draftKey: string, current: NextDra
   const submission = readEditSubmission(draftKey, intent)
   // Without exact local evidence, a remote Discard says nothing about this form.
   if (intent.state === 'discarded' && !submission) return current
+  const submittedHere = editSnapshotSubmitted(draftKey, current, intent.stageCommandId)
+  const exactLegacyForm = !!submission && sameExecutableWorkflow(current.graph, submission.target)
+    && sameWorkflowValue(current.agentEdits ?? {}, submission.agentTarget ?? {})
+  const cleanRemoteForm = !hasLocalChanges(current.context, current.graph) && !hasAgentEdits(current)
+  // A terminal command may be shared across tabs, but its saved revision is not.
+  // Keep an independently-diverged unsent form pinned to its original base so
+  // its next Stage receives the authoritative stale-revision conflict.
+  if (!submittedHere && !exactLegacyForm && !cleanRemoteForm) return current
   let context = current.context
   if (intent.state === 'saved') {
     if (!intent.result) return current
@@ -39,7 +47,9 @@ export function acknowledgeEditIntentSnapshot(draftKey: string, current: NextDra
     for (const item of intent.result.agents) catalog.set(item.agent.id, item)
     context = { draft: intent.result.draft, agents: [...catalog.values()] }
   }
-  const graph = mergeAcknowledgement(current.graph, submission?.target ?? intent.stagedDraft.graph, context.draft.graph)
+  const graph = intent.state === 'saved' && cleanRemoteForm && !submittedHere && !exactLegacyForm
+    ? preserveWorkflowGeometry(context.draft.graph, current.graph)
+    : mergeAcknowledgement(current.graph, submission?.target ?? intent.stagedDraft.graph, context.draft.graph)
   const next = { ...current, context, graph,
     // Never substitute normalized server Agents for a lost local submission.
     agentEdits: acknowledgeAgentEdits(current.agentEdits, submission?.agentTarget, context,

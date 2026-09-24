@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { ManagementActionSchema, GraphDraftSchema } from '@graphql/contracts/management'
+import { ManagementActionSchema, GraphDraftSchema, GraphDraftLayoutResultSchema } from '@graphql/contracts/management'
 import { GraphDraftV2Schema, GraphDraftCommandV2ResultSchema, GraphSaveCommandV2ResultSchema, WorkflowRunV2Schema, WorkflowVersionV2Schema, GraphEditReadResultSchema, type GraphEditIntent } from '@graphql/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -65,7 +65,13 @@ describe.skipIf(!postgresEnabled)('Agent 3 authenticated entry/route editing par
     clients.push(client); return client
   }
   async function fixture(legacy = false, withRun = false) {
-    const f = await seedAgent3(db.pool, db.directory, undefined, { run: withRun, legacy })
+    const f = await seedAgent3(db.pool, db.directory, undefined, { run: withRun && !legacy, legacy })
+    if (legacy && withRun) {
+      const record = { ...f.run, executionSemanticsVersion: undefined, executionState: 'running' }
+      await db.pool.query(`insert into runs(id,workspace_id,workflow_id,workflow_version_id,execution_state,record)
+        values($1,$2,$3,$4,'running',$5::jsonb)`,
+      [f.run.id, f.scope.workspaceId, f.scope.workflowId, f.version.id, JSON.stringify(record)])
+    }
     const issued = await access.issue({ name: 'Synthetic editing owner', audience: 'operator',
       grants: [{ actions: ManagementActionSchema.options, scope: { workspaceIds: [f.scope.workspaceId] } }], expiresAt: new Date(Date.now() + 300_000) })
     const client = await connect(issued.token)
@@ -536,5 +542,151 @@ describe.skipIf(!postgresEnabled)('Agent 3 authenticated entry/route editing par
     expect(GraphDraftV2Schema.parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: draft.id }))).toEqual(draft)
     await tool(client, 'graph_draft_discard', intentCommand(intent, true))
     expect((await db.pool.query<{ stopped: boolean }>('select stop_requested_at is not null as stopped from runs where id=$1', [run.id])).rows[0]!.stopped).toBe(false)
+  })
+
+  it.each([false, true])('persists independent layout during a Run for legacy=%s, with MCP parity and denied scope', async (legacy) => {
+    const { f, issued, client } = await fixture(legacy, true)
+    const opened = GraphDraftSchema.or(GraphDraftV2Schema).parse(await tool(client, 'graph_draft_open', scoped(f)))
+    const nodeId = opened.graph.nodes[0]!.id
+    const legacyMove = await tool(client, 'graph_draft_apply', {
+      ...scoped(f), draftId: opened.id, commandId: randomUUID(), expectedRevision: opened.revision,
+      ...(legacy ? {} : { executionSemanticsVersion: 2 }),
+      operations: [{ type: 'node.move', nodeId, position: { x: 700, y: 80 } }],
+    }) as { value: { draft: typeof opened } }
+    expect(legacyMove.value.draft.revision).toBe(opened.revision + 1)
+    expect(legacyMove.value.draft.layoutRevision).toBe(1)
+    const input = { ...scoped(f), draftId: opened.id, commandId: randomUUID(),
+      expectedLayoutRevision: opened.layoutRevision ?? 0, nodeId, position: { x: 811, y: -94 } }
+    const headers = await browserHeaders(issued.token)
+    const staleHttp = await app.inject({ method: 'PUT', url: `${draftPath(f, opened.id)}/layout`, headers, payload: input })
+    expect(staleHttp.statusCode).toBe(409)
+    expect(JSON.stringify(staleHttp.json())).toContain('LAYOUT_REVISION_CONFLICT')
+    await denied(client, 'graph_draft_layout', { ...input, commandId: randomUUID() })
+    const current = GraphDraftSchema.or(GraphDraftV2Schema).parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: opened.id }))
+    expect(current.graph.nodes.find((node) => node.id === nodeId)?.position).toEqual({ x: 700, y: 80 })
+    const accepted = { ...input, commandId: randomUUID(), expectedLayoutRevision: current.layoutRevision! }
+    const moved = GraphDraftLayoutResultSchema.parse(await tool(client, 'graph_draft_layout', accepted))
+    expect(moved.value.layoutRevision).toBe(2)
+    expect(GraphDraftLayoutResultSchema.parse(await tool(client, 'graph_draft_layout', accepted))).toMatchObject({ replayed: true, value: moved.value })
+    const read = GraphDraftSchema.or(GraphDraftV2Schema).parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: opened.id }))
+    expect(read.revision).toBe(legacyMove.value.draft.revision)
+    expect(read.layoutRevision).toBe(2)
+    expect(read.graph.nodes.find((node) => node.id === nodeId)?.position).toEqual(input.position)
+    expect(read.baseWorkflowVersionId).toBe(opened.baseWorkflowVersionId)
+    expect((await db.pool.query<{ count: string }>('select count(*)::text as count from workflow_versions where workflow_id=$1', [f.scope.workflowId])).rows[0]?.count).toBe('1')
+    const readOnly = await access.issue({ name: 'Layout reader', audience: 'operator',
+      grants: [{ actions: ['graph:read', 'agents:read'], scope: { workspaceIds: [f.scope.workspaceId] } }],
+      expiresAt: new Date(Date.now() + 300_000) })
+    await denied(await connect(readOnly.token), 'graph_draft_layout', { ...input, commandId: randomUUID(), expectedLayoutRevision: 2 })
+    const http = await app.inject({ method: 'GET', url: draftPath(f, opened.id), headers })
+    expect(http.statusCode).toBe(200)
+    expect(GraphDraftSchema.or(GraphDraftV2Schema).parse(http.json()).layoutRevision).toBe(2)
+  })
+
+  it.each([false, true])('reverts an exact applied semantic edit after active-Run save rejection for legacy=%s, preserving layout', async (legacy) => {
+    const { f, issued, client } = await fixture(legacy, true)
+    const opened = GraphDraftSchema.or(GraphDraftV2Schema).parse(await tool(client, 'graph_draft_open', scoped(f)))
+    const node = opened.graph.nodes[0]!
+    const applyInput = { ...scoped(f), draftId: opened.id, commandId: randomUUID(), expectedRevision: opened.revision,
+      ...(legacy ? {} : { executionSemanticsVersion: 2 as const }),
+      operations: [{ type: 'node.rename' as const, nodeId: node.id, name: 'Discard this staged name' }] }
+    const applied = await tool(client, 'graph_draft_apply', applyInput) as { value: { draft: typeof opened } }
+    const secondInput = { ...applyInput, commandId: randomUUID(), expectedRevision: applied.value.draft.revision,
+      operations: [{ type: 'node.set_initial_prompt' as const, nodeId: node.id, initialPrompt: 'Discard this staged prompt' }] }
+    const second = await tool(client, 'graph_draft_apply', secondInput) as { value: { draft: typeof opened } }
+    const layout = GraphDraftLayoutResultSchema.parse(await tool(client, 'graph_draft_layout', {
+      ...scoped(f), draftId: opened.id, commandId: randomUUID(), expectedLayoutRevision: 0,
+      nodeId: node.id, position: { x: 987, y: 123 },
+    }))
+    expect(layout.value.layoutRevision).toBe(1)
+    const blockedSave = await client.callTool({ name: 'graph_save', arguments: {
+      ...scoped(f), draftId: opened.id, commandId: randomUUID(),
+      expectedRevision: second.value.draft.revision, ...(legacy ? {} : { executionSemanticsVersion: 2 }),
+    } })
+    expect(blockedSave.isError).toBe(true)
+    expect(JSON.stringify(blockedSave)).toContain('WORKFLOW_RUNS_UNSETTLED')
+    const stale = { ...scoped(f), draftId: opened.id, commandId: randomUUID(),
+      expectedRevision: second.value.draft.revision, applyCommandId: applyInput.commandId }
+    const readOnly = await access.issue({ name: 'Revert reader', audience: 'operator',
+      grants: [{ actions: ['graph:read', 'agents:read'], scope: { workspaceIds: [f.scope.workspaceId] } }],
+      expiresAt: new Date(Date.now() + 300_000) })
+    await denied(await connect(readOnly.token), 'graph_draft_revert_applied', stale)
+    await denied(client, 'graph_draft_revert_applied', stale)
+    const firstRevert = await tool(client, 'graph_draft_revert_applied', { ...stale,
+      commandId: randomUUID(), applyCommandId: secondInput.commandId }) as { value: { draft: typeof opened } }
+    const revert = { ...stale, commandId: randomUUID(), expectedRevision: firstRevert.value.draft.revision }
+    const result = GraphDraftSchema.or(GraphDraftV2Schema).parse(
+      (await tool(client, 'graph_draft_revert_applied', revert) as { value: { draft: unknown } }).value.draft)
+    expect(result.graph.nodes.find((item) => item.id === node.id)).toMatchObject({ name: node.name, position: { x: 987, y: 123 } })
+    expect(result.layoutRevision).toBe(1)
+    expect(result.revision).toBe(firstRevert.value.draft.revision + 1)
+    expect(result.publishedRevision).toBe(result.revision)
+    const replay = await tool(client, 'graph_draft_revert_applied', revert) as { replayed: boolean }
+    expect(replay.replayed).toBe(true)
+    const persisted = GraphDraftSchema.or(GraphDraftV2Schema).parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: opened.id }))
+    expect(persisted).toEqual(result)
+    expect((await db.pool.query('select 1 from management_command_receipts where principal_id=$1 and operation=$2',
+      [issued.principal.id, 'run.stop'])).rowCount).toBe(0)
+  })
+
+  it('allows graph-only Apply/revert with graph grants and denies Agent-sensitive revert after Agent read revocation', async () => {
+    const { f, issued, client } = await fixture(true)
+    const opened = GraphDraftSchema.parse(await tool(client, 'graph_draft_open', scoped(f)))
+    const limited = await access.issue({ name: 'Graph-only editor', audience: 'operator',
+      grants: [{ actions: ['graph:read', 'graph:edit'], scope: { workspaceIds: [f.scope.workspaceId] } }],
+      expiresAt: new Date(Date.now() + 300_000) })
+    const editor = await connect(limited.token)
+    const applyInput = { ...scoped(f), draftId: opened.id, commandId: randomUUID(), expectedRevision: opened.revision,
+      operations: [{ type: 'node.rename', nodeId: opened.graph.nodes[0]!.id, name: 'Graph-only change' }] }
+    const applied = await tool(editor, 'graph_draft_apply', applyInput) as { value: { draft: typeof opened } }
+    const revertInput = { ...scoped(f), draftId: opened.id, commandId: randomUUID(),
+      expectedRevision: applied.value.draft.revision, applyCommandId: applyInput.commandId }
+    const response = await app.inject({ method: 'POST', url: `${draftPath(f, opened.id)}/revert-applied`,
+      headers: await browserHeaders(limited.token), payload: revertInput })
+    expect(response.statusCode).toBe(200)
+    expect(GraphDraftSchema.parse(response.json().value.draft).graph.nodes[0]!.name).toBe(opened.graph.nodes[0]!.name)
+    expect((await tool(editor, 'graph_draft_revert_applied', revertInput) as { replayed: boolean }).replayed).toBe(true)
+    const current = GraphDraftSchema.parse(await tool(editor, 'graph_draft_get', { ...scoped(f), draftId: opened.id }))
+    expect(current.revision).toBe(applied.value.draft.revision + 1)
+
+    const agentInput = { ...scoped(f), draftId: opened.id, commandId: randomUUID(), expectedRevision: current.revision,
+      operations: [{ type: 'agent.rename', agentId: f.configurations[0]!.agentId,
+        expectedAgentRevision: 1, name: 'Staged Agent name' }] }
+    const staged = await tool(client, 'graph_draft_apply', agentInput) as { value: { draft: typeof opened } }
+    await db.pool.query('update management_principals set grants=$2::jsonb where id=$1', [issued.principal.id,
+      JSON.stringify([{ actions: ['graph:read', 'graph:edit'], scope: { workspaceIds: [f.scope.workspaceId] } }])])
+    await denied(client, 'graph_draft_revert_applied', { ...scoped(f), draftId: opened.id, commandId: randomUUID(),
+      expectedRevision: staged.value.draft.revision, applyCommandId: agentInput.commandId })
+    const stored = (await db.pool.query<{ record: unknown }>('select record from graph_drafts where id=$1', [opened.id])).rows[0]!.record
+    expect(GraphDraftSchema.parse(stored).stagedAgents).toHaveLength(1)
+  })
+
+  it('retains a newly copied legacy node position when the same Apply replaces its metadata and Save reloads', async () => {
+    const { f, client } = await fixture(true)
+    const opened = GraphDraftSchema.parse(await tool(client, 'graph_draft_open', scoped(f)))
+    const agentId = `agent-clone-${randomUUID()}`, nodeId = `node-clone-${randomUUID()}`
+    const position = { x: 641, y: -73 }
+    const appliedResponse = await client.callTool({ name: 'graph_draft_apply', arguments: {
+      ...scoped(f), draftId: opened.id, commandId: randomUUID(), expectedRevision: opened.revision,
+      operations: [
+        { type: 'agent.clone', sourceAgentId: f.configurations[0]!.agentId, agentId, nodeId, name: 'Copied Coder' },
+        { type: 'node.replace', node: { id: nodeId, agentId, name: 'Copied Coder', position } },
+        { type: 'edge.connect', edgeId: `edge-clone-${randomUUID()}`,
+          sourceNodeId: opened.graph.nodes.at(-1)!.id, targetNodeId: nodeId },
+        { type: 'workflow.set_execution_limits', maxParallelism: opened.graph.executionPolicy?.maxParallelism ?? 1,
+          maxNodeExecutions: opened.graph.nodes.length + 1 },
+      ],
+    } })
+    expect(appliedResponse.isError, JSON.stringify(appliedResponse.content)).not.toBe(true)
+    const applied = appliedResponse.structuredContent as { value: { draft: typeof opened } }
+    expect(applied.value.draft.graph.nodes.find((node) => node.id === nodeId)?.position).toEqual(position)
+    expect(applied.value.draft.layoutRevision).toBe(1)
+    const saveResponse = await client.callTool({ name: 'graph_save', arguments: { ...scoped(f), draftId: opened.id,
+      commandId: randomUUID(), expectedRevision: applied.value.draft.revision } })
+    expect(saveResponse.isError, JSON.stringify(saveResponse.content)).not.toBe(true)
+    const saved = saveResponse.structuredContent as { value: { draft: typeof opened } }
+    expect(saved.value.draft.graph.nodes.find((node) => node.id === nodeId)?.position).toEqual(position)
+    const reopened = GraphDraftSchema.parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: opened.id }))
+    expect(reopened.graph.nodes.find((node) => node.id === nodeId)?.position).toEqual(position)
   })
 })

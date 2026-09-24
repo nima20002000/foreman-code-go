@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ComponentType, ReactNode } from 'react'
@@ -9,6 +9,8 @@ import { reduceGraphPage } from './reducer'
 import type { RunGraphRecord } from './types'
 import type { RunViewNode } from './topology'
 import { batch, fixture, page } from './testFixtures'
+import { legacyCurrent, legacyScope } from './fe-r2-001.fixtures'
+import * as clientApi from './client'
 
 const flow = vi.hoisted(() => ({ renders: [] as Array<{ nodes: RunViewNode[]; nodesDraggable: boolean; nodesConnectable: boolean; deleteKeyCode: unknown }> }))
 const stop = vi.hoisted(() => ({ state: { isPending: false, isSuccess: false, isError: false,
@@ -36,7 +38,7 @@ vi.mock('../../shared/ui/nocturne', async (importOriginal) => ({
   Button: ({ children, onClick }: { children: ReactNode; onClick: () => void }) => <button onClick={onClick}>{children}</button>,
 }))
 const clients: QueryClient[] = []
-afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); flow.renders.length = 0; stop.state.isSuccess = false })
+afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); flow.renders.length = 0; stop.state.isSuccess = false; vi.restoreAllMocks() })
 function setup() {
   const f = fixture('view')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
@@ -49,6 +51,27 @@ function setup() {
 }
 
 describe('immutable Run view (component checks, not a real React Flow profile)', () => {
+  it('shows pinned semantics-1 topology, Agent settings and result on the selected board', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    clients.push(client)
+    client.setQueryData(graphRecordKey(legacyScope, sessionGeneration()), { kind: 'run-graph-cache', scope: legacyScope,
+      epoch: 1, transport: { phase: 'live', confirmedAt: 1 }, facts: { reader: 'legacy', response: legacyCurrent() } })
+    const read = vi.spyOn(clientApi, 'readLegacyRunHistory').mockResolvedValue({
+      kind: 'legacy-run-history', ...legacyScope, executionSemanticsVersion: 1, version: 1, entryNodeId: 'node-old',
+      nodes: [{ id: 'node-old', agentId: 'agent-old', name: 'coder-001', agentConfigurationVersionId: 'config-v1' }],
+      edges: [], agentConfigurations: [{ id: 'config-v1', agentId: 'agent-old', harness: 'codex',
+        model: 'gpt-5.6-luna', reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard' }],
+      latestResults: [{ id: 'execution-old', workflowNodeId: 'node-old', attempt: 1,
+        state: 'completed', outcome: 'succeeded', outputPreview: 'T9-HISTORY-RUN-ONE', outputTruncated: false }],
+    })
+    render(<QueryClientProvider client={client}><RunGraphView scope={legacyScope} embedded /></QueryClientProvider>)
+    await waitFor(() => expect(screen.getByText('coder-001')).toBeDefined())
+    expect(screen.getByText('gpt-5.6-luna')).toBeDefined()
+    expect(screen.getByText('medium')).toBeDefined()
+    expect(screen.getByText('T9-HISTORY-RUN-ONE')).toBeDefined()
+    expect(screen.queryByText('coder-002-current')).toBeNull()
+    expect(read).toHaveBeenCalledTimes(1)
+  })
   it('uses pinned topology and rejects a draft overlay even when node IDs match', () => {
     const f = setup()
     const props = { scope: f.scope, draft: { nodes: [{ id: f.identities[0]!.workflowNodeId, name: 'FUTURE DRAFT LABEL' }] } }

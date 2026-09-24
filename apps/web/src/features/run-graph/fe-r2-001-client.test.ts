@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ApiClient } from '../../shared/api/client'
-import { createRunGraphClient, legacyCurrentReadPath, readLegacyRunActivityPage } from './client'
+import { createRunGraphClient, legacyCurrentReadPath, legacyHistoryReadPath, readLegacyRunActivityPage, readLegacyRunHistory } from './client'
 import { legacyCurrent, legacyScope } from './fe-r2-001.fixtures'
 
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), {
@@ -50,5 +50,22 @@ describe('FE-R2-001 actual shared HTTP client boundary', () => {
     fetch.mockResolvedValueOnce(json({ error: { code: 'ACCESS_DENIED', message: 'Denied' } }, 403))
     await expect(api.legacy(legacyScope, new AbortController().signal)).rejects.toMatchObject({ status: 403 })
     expect(fetch).toHaveBeenCalledTimes(2)
+  })
+  it('reads historical pins through a separate exact-scope request', async () => {
+    const detail = { kind: 'legacy-run-history', runId: legacyScope.runId, workspaceId: legacyScope.workspaceId,
+      workflowId: legacyScope.workflowId, workflowVersionId: legacyScope.workflowVersionId,
+      executionSemanticsVersion: 1, version: 1, entryNodeId: 'node-fe-r2',
+      nodes: [{ id: 'node-fe-r2', agentId: 'agent-fe-r2', name: 'old-node', agentConfigurationVersionId: 'config-fe-r2' }],
+      edges: [], agentConfigurations: [], latestResults: [] }
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => json(detail))
+    const signal = new AbortController().signal
+    expect((await readLegacyRunHistory(legacyScope, signal, new ApiClient({ fetch }))).nodes[0]?.name).toBe('old-node')
+    expect(new URL(String(fetch.mock.calls[0]?.[0])).pathname + new URL(String(fetch.mock.calls[0]?.[0])).search)
+      .toBe(legacyHistoryReadPath(legacyScope))
+    expect(fetch.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal)
+    expect(() => legacyHistoryReadPath({ ...legacyScope, executionSemanticsVersion: 2 })).toThrow()
+    fetch.mockResolvedValueOnce(json({ ...detail, runId: 'other-run' }))
+    await expect(readLegacyRunHistory(legacyScope, signal, new ApiClient({ fetch })))
+      .rejects.toThrow('GRAPH_INVALID_LEGACY_HISTORY')
   })
 })

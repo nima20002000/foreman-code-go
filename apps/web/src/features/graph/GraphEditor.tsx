@@ -48,9 +48,9 @@ import {
 } from '../../shared/api/query'
 import { useCancelRunMutation } from '../../shared/api/runActions'
 import { useApprovalInboxStore } from '../approvals'
-import { ApiError, applyManagedGraphDraft, saveManagedGraphDraft } from '../../shared/api/client'
+import { ApiError, applyManagedGraphDraft, getManagedGraphContext, putManagedGraphLayout, revertManagedGraphApply, saveManagedGraphDraft } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
-import { managedSaveQueue } from './managedSave'
+import { managedLayoutQueueKey, managedSaveQueue, readManagedLayoutQueue, writeManagedLayoutQueue } from './managedSave'
 import {
   assertManagedBase, captureManagedBase, managedDraftIsPublished,
   type AgentRevisions, type CloneSources, type ManagedEditBase,
@@ -141,14 +141,34 @@ function graphErrorMessage(error: unknown, fallback: string): string {
   return issues.length > 0 ? `${message} ${issues.join(' ')}` : message
 }
 
-function cacheManagedBase(queryClient: ReturnType<typeof useQueryClient>, base: ManagedEditBase) {
-  const items = base.agents.flatMap((agent) => {
+function cacheManagedBase(queryClient: ReturnType<typeof useQueryClient>, base: ManagedEditBase,
+  persistedItems?: Array<{ agent: Agent; metadataRevision: number | null }>) {
+  const stagedIds = new Set(base.draft.stagedAgents.map((entry) => entry.agent.id))
+  const fallbackItems = base.agents.filter((agent) => !stagedIds.has(agent.id)).flatMap((agent) => {
     const metadataRevision = base.metadataRevisions[agent.id]
     return typeof metadataRevision === 'number' ? [{ agent, metadataRevision }] : []
   })
-  const next = { draft: base.draft, agents: { items, pageInfo: { nextCursor: null as string | null } } }
-  queryClient.setQueryData<typeof next>(queryKeys.managedGraphContext(base.draft.workspaceId, base.draft.workflowId),
-    (current) => current?.draft.id === next.draft.id && current.draft.revision > next.draft.revision ? current : next)
+  const key = queryKeys.managedGraphContext(base.draft.workspaceId, base.draft.workflowId)
+  queryClient.setQueryData<{ draft: ManagedGraphDraft; agents: { items: Array<{ agent: Agent; metadataRevision: number | null }>; pageInfo: { nextCursor: string | null } } }>(key,
+    (current) => current?.draft.id === base.draft.id && current.draft.revision > base.draft.revision ? current : {
+      draft: base.draft,
+      agents: persistedItems ? { items: persistedItems, pageInfo: { nextCursor: null } }
+        : current?.draft.id === base.draft.id ? current.agents
+        : { items: fallbackItems, pageInfo: { nextCursor: null } },
+    })
+}
+
+function cacheManagedLayout(queryClient: ReturnType<typeof useQueryClient>,
+  workspaceId: string, workflowId: string, draftId: string, layoutRevision: number,
+  nodeId: string, position: { x: number; y: number }) {
+  const update = (current: ManagedGraphDraft | undefined) => current?.id === draftId
+    && (current.layoutRevision ?? 0) <= layoutRevision
+    ? { ...current, layoutRevision, graph: applyGraphGeometry(current.graph, [{ id: nodeId, position }]) }
+    : current
+  queryClient.setQueryData<ManagedGraphDraft>(queryKeys.managedDraft(workspaceId, workflowId), update)
+  queryClient.setQueryData<{ draft: ManagedGraphDraft; agents: { items: Array<{ agent: Agent; metadataRevision: number | null }>; pageInfo: { nextCursor: string | null } } }>(
+    queryKeys.managedGraphContext(workspaceId, workflowId),
+    (current) => current ? { ...current, draft: update(current.draft)! } : current)
 }
 
 function updateWorkspaceDetailsCache(
@@ -233,6 +253,7 @@ function GraphEditorBody({
   const discardDraft = useGraphDraftStore((state) => state.discardDraft)
   const completeSave = useGraphDraftStore((state) => state.completeSave)
   const restoreDraft = useGraphDraftStore((state) => state.restoreDraft)
+  const applyManagedLayout = useGraphDraftStore((state) => state.applyManagedLayout)
   const managedSaving = useGraphDraftStore((state) => Boolean(state.managedSaving[workflowKey]))
   const saveLock = useRef(false)
   const geometryRef = useRef<GraphCanvasHandle>(null)
@@ -240,6 +261,24 @@ function GraphEditorBody({
   const geometryStartRef = useRef<{ snapshot: GraphSaveSnapshot; generation: ReturnType<typeof sessionGeneration> } | undefined>(undefined)
   const [geometryBase, setGeometryBase] = useState<GraphSaveSnapshot>()
   const [geometryDirty, setGeometryDirty] = useState(false)
+  const [discarding, setDiscarding] = useState(false)
+  const [layoutOverrides, setLayoutOverrides] = useState<Record<string, { x: number; y: number }>>({})
+  const layoutRevisionRef = useRef(managedDraft?.layoutRevision ?? 0)
+  const layoutQueueKey = managedDraft ? managedLayoutQueueKey(workflowKey, managedDraft.id) : undefined
+  const layoutPendingRef = useRef(layoutQueueKey ? readManagedLayoutQueue(layoutQueueKey) : [])
+  const layoutFlightRef = useRef(false)
+  const layoutConflictRef = useRef(false)
+  layoutRevisionRef.current = Math.max(layoutRevisionRef.current, managedDraft?.layoutRevision ?? 0)
+  useEffect(() => {
+    if (!managedDraft?.layoutRevision) return
+    setLayoutOverrides((current) => {
+      const entries = Object.entries(current).filter(([id, position]) => {
+        const persisted = managedDraft.graph.nodes.find((node) => node.id === id)?.position
+        return !persisted || persisted.x !== position.x || persisted.y !== position.y
+      })
+      return entries.length === Object.keys(current).length ? current : Object.fromEntries(entries)
+    })
+  }, [managedDraft])
   const agentOverrides = draft?.agentOverrides ?? EMPTY_AGENT_OVERRIDES
   const [notice, setNotice] = useState<{ kind: 'success' | 'error' | 'info'; text: string }>()
   useEffect(() => { if (notice?.kind === 'success') toasts?.notify({ tone: 'success', title: notice.text }) }, [notice, toasts])
@@ -303,7 +342,7 @@ function GraphEditorBody({
     [openNodeMenuAction, workspaceId, workflowApprovalHandler, designatedOrchestratorAgentId],
   )
   const saveMutation = useSaveGraphMutation()
-  const isSaving = managedSaving || saveMutation.isPending
+  const isSaving = managedSaving || saveMutation.isPending || discarding
   const managedBase = useMemo(() => managedDraft
     ? draft?.managedBase ?? geometryBase?.managedBase ?? captureManagedBase(managedDraft, agents, managedAgentRevisions)
     : undefined, [agents, draft?.managedBase, geometryBase?.managedBase, managedAgentRevisions, managedDraft])
@@ -382,11 +421,12 @@ function GraphEditorBody({
     () => withoutAgentReferences(workflow, deletedAgentIdSet),
     [deletedAgentIdSet, workflow],
   )
-  const displayedWorkflow = useMemo(
-    () => withoutAgentReferences(currentWorkflow, deletedAgentIdSet),
-    [currentWorkflow, deletedAgentIdSet],
-  )
-  const hasSessionCleanup = displayedWorkflow !== currentWorkflow
+  const cleanedCurrentWorkflow = useMemo(
+    () => withoutAgentReferences(currentWorkflow, deletedAgentIdSet), [currentWorkflow, deletedAgentIdSet])
+  const displayedWorkflow = useMemo(() => managedDraft ? applyGraphGeometry(cleanedCurrentWorkflow,
+    Object.entries(layoutOverrides).map(([id, position]) => ({ id, position }))) : cleanedCurrentWorkflow,
+  [cleanedCurrentWorkflow, layoutOverrides, managedDraft])
+  const hasSessionCleanup = cleanedCurrentWorkflow !== currentWorkflow
   const catalogAgents = useMemo(() => {
     const catalogById = new Map((draft?.managedBase?.agents ?? agents)
       .filter((agent) => !deletedAgentIdSet.has(agent.id))
@@ -424,7 +464,7 @@ function GraphEditorBody({
     return local && (!persisted || (['harness', 'model', 'effort', 'fastMode', 'configurationVersionId'] as const)
       .some((key) => local[key] !== persisted[key]))
   })
-  const hasLocalChanges = draft?.dirty === true || geometryDirty || hasSessionCleanup
+  const hasLocalChanges = draft?.dirty === true || (!managedDraft && geometryDirty) || hasSessionCleanup
     || Object.keys(agentOverrides).length > 0 || hasUnsavedAgentSettings
   const hasUnpublishedChanges = Boolean(managedDraft && !managedDraftIsPublished(managedDraft))
   const hasPendingSave = managedSaveQueue.hasPending(workflowKey)
@@ -441,7 +481,7 @@ function GraphEditorBody({
     if (undoStackRef.current.length > 100) undoStackRef.current.shift()
   }, [captureEditorSnapshot])
   const beginGeometry = useGraphEvent((dirty: boolean) => {
-    if (dirty) setGeometryDirty(true)
+    if (dirty && !managedDraft) setGeometryDirty(true)
     if (geometryStartRef.current) return
     const snapshot = captureEditorSnapshot()
     geometryStartRef.current = { snapshot, generation: sessionGeneration() }
@@ -452,6 +492,57 @@ function GraphEditorBody({
     setGeometryBase(undefined)
     setGeometryDirty(false)
   })
+  const flushLayoutQueue = useGraphEvent(async () => {
+    if (!managedDraft || layoutFlightRef.current || layoutPendingRef.current.length === 0) return
+    layoutFlightRef.current = true
+    const generation = sessionGeneration()
+    let failed = false
+    try {
+      if (layoutConflictRef.current) {
+        const latest = await getManagedGraphContext(workspaceId, workflow.id)
+        assertSession(generation)
+        if (latest.draft.id !== managedDraft.id) throw new Error('The shared graph draft changed. Reload before moving nodes.')
+        layoutRevisionRef.current = latest.draft.layoutRevision ?? 0
+        queryClient.setQueryData(queryKeys.managedDraft(workspaceId, workflow.id), latest.draft)
+        queryClient.setQueryData(queryKeys.managedGraphContext(workspaceId, workflow.id), latest)
+        layoutConflictRef.current = false
+      }
+      while (layoutPendingRef.current.length) {
+        const item = layoutPendingRef.current[0]!
+        item.expectedLayoutRevision ??= layoutRevisionRef.current
+        if (layoutQueueKey) writeManagedLayoutQueue(layoutQueueKey, layoutPendingRef.current)
+        const result = await putManagedGraphLayout({
+          workspaceId, workflowId: workflow.id, draftId: managedDraft.id,
+          commandId: item.commandId, expectedLayoutRevision: item.expectedLayoutRevision,
+          nodeId: item.nodeId, position: item.position,
+        })
+        assertSession(generation)
+        layoutRevisionRef.current = result.value.layoutRevision
+        cacheManagedLayout(queryClient, workspaceId, workflow.id, managedDraft.id,
+          result.value.layoutRevision, item.nodeId, item.position)
+        applyManagedLayout(workflowKey, item.nodeId, item.position, result.value.layoutRevision)
+        layoutPendingRef.current.shift()
+        if (layoutQueueKey) writeManagedLayoutQueue(layoutQueueKey, layoutPendingRef.current)
+      }
+    } catch (error) {
+      failed = true
+      if (ApiError.is(error) && error.code === 'LAYOUT_REVISION_CONFLICT') {
+        // The write definitely did not apply. Later queued positions require
+        // a fresh, explicit gesture after reading the concurrent layout.
+        layoutPendingRef.current = []
+        if (layoutQueueKey) writeManagedLayoutQueue(layoutQueueKey, [])
+        layoutConflictRef.current = true
+      }
+      if (generation === sessionGeneration()) setNotice({ kind: 'error',
+        text: ApiError.is(error) && error.code === 'LAYOUT_REVISION_CONFLICT'
+          ? 'Node layout changed elsewhere. Your moved node remains visible; move it again to save against the latest layout.'
+          : `Node layout could not be saved: ${graphErrorMessage(error, 'Retry the movement to save its position.')}` })
+    } finally {
+      layoutFlightRef.current = false
+      if (!failed && layoutPendingRef.current.length) void flushLayoutQueue()
+    }
+  })
+  useEffect(() => { void flushLayoutQueue() }, [flushLayoutQueue])
   const commitGeometry = useGraphEvent((changes: readonly GraphGeometryChange[]) => {
     const started = geometryStartRef.current
     geometryStartRef.current = undefined
@@ -459,6 +550,23 @@ function GraphEditorBody({
     setGeometryDirty(false)
     // A teardown after session loss must not recreate a cleared draft.
     if (!started || started.generation !== sessionGeneration()) return
+    if (managedDraft) {
+      const geometryChanges = changes.filter((change) => change.width !== undefined || change.height !== undefined)
+      if (geometryChanges.length) {
+        const before = getGraphDraft(workflowKey) ?? started.snapshot
+        undoStackRef.current.push(before)
+        updateDraft(workflowKey, started.snapshot.workflow,
+          (saved) => applyGraphGeometry(saved, geometryChanges.map(({ id, width, height }) => ({ id, width, height }))),
+          [], before.managedBase)
+      }
+      for (const change of changes) if (change.position) {
+        setLayoutOverrides((current) => ({ ...current, [change.id]: change.position! }))
+        layoutPendingRef.current.push({ nodeId: change.id, position: change.position, commandId: crypto.randomUUID() })
+      }
+      if (layoutQueueKey) writeManagedLayoutQueue(layoutQueueKey, layoutPendingRef.current)
+      void flushLayoutQueue()
+      return
+    }
     const before = getGraphDraft(workflowKey) ?? started.snapshot
     const next = applyGraphGeometry(before.workflow, changes)
     if (sameWorkflow(before.workflow, next)) return
@@ -688,21 +796,38 @@ function GraphEditorBody({
     [graph.edges, graph.nodes],
   )
 
-  const handleDiscard = useCallback(() => {
+  const handleDiscard = useCallback(async () => {
     if (saveLock.current || managedSaveQueue.isRunning(workflowKey)) return
+    if (navigationGuard && !await navigationGuard.surfaces()) return
     try { managedSaveQueue.discard(workflowKey) } catch (error) {
       setNotice({ kind: 'error', text: graphErrorMessage(error, 'Resolve the pending save before discarding.') })
       return
     }
-    geometryRef.current?.cancel()
-    connectionSourceNodeRef.current = undefined
-    discardDraft(workflowKey)
-    undoStackRef.current = []
-
-    setSelectedNodeIds(new Set())
-    onClearAgent?.()
-    setNotice(undefined)
-  }, [discardDraft, onClearAgent, workflowKey, setSelectedNodeIds])
+    setDiscarding(true)
+    const generation = sessionGeneration()
+    const discarded = getGraphDraft(workflowKey)
+    try {
+      if (managedDraft && managedSaveQueue.hasAppliedEdits(workflowKey)) {
+        await managedSaveQueue.revertApplied(workflowKey, revertManagedGraphApply, (reverted) => {
+          queryClient.setQueryData(queryKeys.managedDraft(workspaceId, workflow.id), reverted)
+          queryClient.setQueryData<{ draft: ManagedGraphDraft; agents: { items: Array<{ agent: Agent; metadataRevision: number | null }>; pageInfo: { nextCursor: string | null } } }>(
+            queryKeys.managedGraphContext(workspaceId, workflow.id),
+            (current) => current ? { ...current, draft: reverted } : current)
+        }, () => assertSession(generation))
+      }
+      assertSession(generation)
+      geometryRef.current?.cancel()
+      connectionSourceNodeRef.current = undefined
+      if (getGraphDraft(workflowKey) === discarded) discardDraft(workflowKey)
+      undoStackRef.current = []
+      setSelectedNodeIds(new Set())
+      onClearAgent?.()
+      setNotice(undefined)
+    } catch (error) {
+      if (generation === sessionGeneration()) setNotice({ kind: 'error', text:
+        `Local edits were retained: ${graphErrorMessage(error, 'The shared draft could not be reverted.')}` })
+    } finally { setDiscarding(false) }
+  }, [discardDraft, managedDraft, navigationGuard, onClearAgent, queryClient, workflow.id, workspaceId, workflowKey, setSelectedNodeIds])
 
   const handleSave = useCallback(async () => {
     if (saveLock.current || managedSaveQueue.isRunning(workflowKey)) return
@@ -786,7 +911,7 @@ function GraphEditorBody({
             completeSave(workflowKey, plan.submitted, savedWorkflow, savedAgents, base)
             queryClient.setQueryData(queryKeys.managedDraft(workspaceId, savedWorkflow.id), saved.value.draft)
             queryClient.setQueryData(queryKeys.workflow(workspaceId, savedWorkflow.id), { workflow: savedWorkflow })
-            cacheManagedBase(queryClient, base)
+            cacheManagedBase(queryClient, base, saved.value.agents)
             updateWorkspaceDetailsCache(queryClient, workspaceId, savedWorkflow, base.agents)
             // Keep post-submission gestures undoable. Retry keeps the same prepared snapshot.
             // restoreDraft already protects the acknowledged concurrency token.

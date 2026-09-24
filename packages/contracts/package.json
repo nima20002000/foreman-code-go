@@ -12,6 +12,10 @@
       "types": "./dist/runCurrent.d.ts",
       "import": "./dist/runCurrent.js"
     },
+    "./run-history": {
+      "types": "./dist/runHistory.d.ts",
+      "import": "./dist/runHistory.js"
+    },
     "./operator-chat": {
       "types": "./dist/operatorChat.d.ts",
       "import": "./dist/operatorChat.js"

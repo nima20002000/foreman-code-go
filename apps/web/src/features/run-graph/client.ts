@@ -1,4 +1,5 @@
 import { RUN_CURRENT_ROUTE, RunCurrentRequestSchema, RunCurrentResponseSchema, type RunCurrentResponse } from '@graphql/contracts/run-current'
+import { RUN_HISTORY_ROUTE, RunHistoryRequestSchema, RunHistoryResponseSchema } from '@graphql/contracts/run-history'
 import { RunEventsListInputSchema, RunEventsPageSchema } from '@graphql/contracts/management'
 import {
   RUN_GRAPH_ROUTES, RunGraphCapabilitiesSchema, RunGraphEventsRequestSchema,
@@ -51,6 +52,24 @@ export function createRunGraphClient(client: ApiClient = apiClient): RunGraphCli
   }
 }
 export const runGraphClient = createRunGraphClient()
+
+export function legacyHistoryReadPath(scope: RunGraphScope): string {
+  const request = RunHistoryRequestSchema.parse(scope)
+  const path = RUN_HISTORY_ROUTE.replace(':workspaceId', encodeURIComponent(request.workspaceId))
+    .replace(':runId', encodeURIComponent(request.runId))
+  return `${path}?${new URLSearchParams({ workflowId: request.workflowId,
+    workflowVersionId: request.workflowVersionId, executionSemanticsVersion: '1' })}`
+}
+
+/** Explicit selected-Run detail. It is never called by the /current synchronization loop. */
+export async function readLegacyRunHistory(scope: RunGraphScope, signal: AbortSignal, client: ApiClient = apiClient) {
+  const response = await client.request(legacyHistoryReadPath(scope), RunHistoryResponseSchema, { signal })
+  if (response.workspaceId !== scope.workspaceId || response.workflowId !== scope.workflowId
+    || response.runId !== scope.runId || response.workflowVersionId !== scope.workflowVersionId) {
+    throw new GraphProtocolError('GRAPH_INVALID_LEGACY_HISTORY')
+  }
+  return response
+}
 
 export function legacyCurrentReadPath(scope: RunGraphScope): string {
   const request = RunCurrentRequestSchema.parse(scope)

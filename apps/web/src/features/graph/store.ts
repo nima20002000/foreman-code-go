@@ -4,6 +4,8 @@ import { clearNextDraftStartStorage, createNextDraftSlice, type NextDraftSlice }
 import type { Agent, WorkflowDefinition } from '@graphql/contracts'
 import { sameWorkflow } from './mapper'
 import { sameEditableGraph, sameManagedValue, type ManagedEditBase, type CloneSources } from './managedGraphState'
+import { applyGraphGeometry } from './geometry'
+import { clearManagedLayoutQueues } from './managedSave'
 
 export type GraphSaveSnapshot = {
   workflow: WorkflowDefinition
@@ -27,6 +29,7 @@ type GraphDraftStore = NextDraftSlice & {
     savedAgents: readonly Agent[], managedBase?: ManagedEditBase,
   ) => void
   acknowledgeManagedBase: (workflowKey: string, base: ManagedEditBase) => void
+  applyManagedLayout: (workflowKey: string, nodeId: string, position: { x: number; y: number }, layoutRevision: number) => void
   restoreDraft: (workflowKey: string, saved: WorkflowDefinition, snapshot: GraphSaveSnapshot) => void
   setManagedSaving: (workflowKey: string, saving: boolean) => void
   discardDraft: (workflowKey: string) => void
@@ -84,6 +87,20 @@ export const useGraphDraftStore = create<GraphDraftStore>((set) => ({
     const acknowledgedBases = { ...state.acknowledgedBases, [workflowKey]: managedBase }
     if (!current) return { acknowledgedBases }
     return { drafts: { ...state.drafts, [workflowKey]: { ...current, managedBase } }, acknowledgedBases }
+  }),
+  applyManagedLayout: (workflowKey, nodeId, position, layoutRevision) => set((state) => {
+    const change = [{ id: nodeId, position }]
+    const updateBase = (base: ManagedEditBase): ManagedEditBase => ({ ...base, draft: { ...base.draft,
+      layoutRevision, graph: applyGraphGeometry(base.draft.graph, change) } })
+    const current = state.drafts[workflowKey]
+    const acknowledged = state.acknowledgedBases[workflowKey]
+    return {
+      ...(current ? { drafts: { ...state.drafts, [workflowKey]: {
+        ...current, workflow: applyGraphGeometry(current.workflow, change),
+        ...(current.managedBase ? { managedBase: updateBase(current.managedBase) } : {}),
+      } } } : {}),
+      ...(acknowledged ? { acknowledgedBases: { ...state.acknowledgedBases, [workflowKey]: updateBase(acknowledged) } } : {}),
+    }
   }),
   completeSave: (workflowKey, submitted, savedWorkflow, savedAgents, managedBase) => set((state) => {
     const draft = state.drafts[workflowKey]
@@ -157,7 +174,7 @@ export const useGraphDraftStore = create<GraphDraftStore>((set) => ({
     const drafts = { ...state.drafts }; delete drafts[workflowKey]
     return { drafts }
   }),
-  clearAllDrafts: () => { clearNextDraftStartStorage(); clearEditIntentStorage(); set({ drafts: {}, managedSaving: {}, acknowledgedBases: {}, nextDrafts: {}, nextDraftPromotions: {}, pendingRunStarts: {} }) },
+  clearAllDrafts: () => { clearNextDraftStartStorage(); clearEditIntentStorage(); clearManagedLayoutQueues(); set({ drafts: {}, managedSaving: {}, acknowledgedBases: {}, nextDrafts: {}, nextDraftPromotions: {}, pendingRunStarts: {} }) },
 }))
 
 export function workflowDraftKey(workspaceId: string, workflowId: string): string { return `${workspaceId}::${workflowId}` }

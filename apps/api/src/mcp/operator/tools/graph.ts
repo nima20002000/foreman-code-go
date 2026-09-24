@@ -2,6 +2,8 @@ import type { McpServer } from '@modelcontextprotocol/server'
 
 import {
   GraphDraftApplyInputSchema, GraphDraftDiscardInputSchema, GraphDraftGetInputSchema,
+  GraphDraftLayoutInputSchema, GraphDraftLayoutResultSchema,
+  GraphDraftRevertAppliedInputSchema, GraphDraftRevertAppliedResultSchema,
   GraphDraftOpenInputSchema, GraphSaveInputSchema, GraphValidateInputSchema,
   GraphDraftCommandResultSchema, GraphDraftDiscardResultSchema, GraphDraftSchema,
   GraphSaveCommandResultSchema, GraphValidationResultSchema,
@@ -30,10 +32,21 @@ export function registerGraphTools(server: McpServer, context: OperatorRequestCo
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'graph_validate', () => context.services.drafts.validate(context.principal, input.workspaceId, input.workflowId, input.draftId)))
   if (operatorToolAvailable(context, 'graph_draft_apply')) server.registerTool('graph_draft_apply', {
-    description: `Atomically apply typed graph and workflow-setting operations to the expected draft revision. Supports approval routing, execution condition, execution limits, required agent count, agent configuration, prompts, nodes and edges. Use executionSemanticsVersion: 2 for explicit workflow.set_entry, node.set_choice, and typed relationship.put. Meaningful changes are drafts until graph_save succeeds. A layout-only node.move preserves a clean draft publication watermark and does not create an executable version. ${approvalDraftToolDescription}`, inputSchema: GraphDraftApplyInputSchema.or(GraphDraftApplyV2InputSchema),
+    description: `Atomically apply typed graph and workflow-setting operations to the expected draft revision. Supports approval routing, execution condition, execution limits, required agent count, agent configuration, prompts, nodes and edges. Use executionSemanticsVersion: 2 for explicit workflow.set_entry, node.set_choice, and typed relationship.put. Meaningful changes are drafts until graph_save succeeds. Use graph_draft_layout for independent node movement; legacy node.move still advances the draft revision. ${approvalDraftToolDescription}`, inputSchema: GraphDraftApplyInputSchema.or(GraphDraftApplyV2InputSchema),
     outputSchema: GraphDraftCommandResultSchema.or(GraphDraftCommandV2ResultSchema),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'graph_draft_apply', () => context.services.drafts.apply(context.principal, 'mcp', input)))
+  if (operatorToolAvailable(context, 'graph_draft_layout')) server.registerTool('graph_draft_layout', {
+    description: 'Persist one existing node position using its independent layout revision. Read layoutRevision and positions through graph_draft_get. This leaves the semantic draft revision and executable version unchanged, including during an active Run.',
+    inputSchema: GraphDraftLayoutInputSchema, outputSchema: GraphDraftLayoutResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input) => invokeOperatorTool(context, 'graph_draft_layout', () => context.services.drafts.setLayout(context.principal, 'mcp', input)))
+  if (operatorToolAvailable(context, 'graph_draft_revert_applied')) server.registerTool('graph_draft_revert_applied', {
+    description: 'Revert this principal’s exact latest acknowledged graph_draft_apply command, fenced by current semantic draft revision and content. Preserves independently persisted node positions, rejects later semantic edits, and does not Stop or Start a Run. Repeat the same command ID after an uncertain reply.',
+    inputSchema: GraphDraftRevertAppliedInputSchema,
+    outputSchema: GraphDraftRevertAppliedResultSchema.extend({ value: GraphDraftRevertAppliedResultSchema.shape.value.extend({ draft: GraphDraftSchema.or(GraphDraftV2Schema) }) }),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input) => invokeOperatorTool(context, 'graph_draft_revert_applied', () => context.services.drafts.revertApplied(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'graph_draft_discard')) server.registerTool('graph_draft_discard', {
     description: 'With action: discard_edits, discard only your exact private intent using its persisted discardCommandId. Never issues Stop, mutates the shared draft, or erases layout. An uncertain save must first be reconciled; submitted Stop effects cannot be undone. Without action, retain the original expected-revision shared-draft discard contract.', inputSchema: GraphEditDiscardInputSchema.or(GraphDraftDiscardInputSchema),
     outputSchema: GraphEditReadResultSchema.or(GraphDraftDiscardResultSchema),

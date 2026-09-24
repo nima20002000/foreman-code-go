@@ -421,6 +421,7 @@ export const GraphDraftSchema = z.object({
   workspaceId: IdSchema,
   workflowId: IdSchema,
   revision: ExpectedRevisionSchema,
+  layoutRevision: ExpectedRevisionSchema.optional(),
   baseWorkflowVersionId: IdSchema.nullable(),
   // Missing markers on older records are conservatively treated as unpublished.
   publishedRevision: ExpectedRevisionSchema.nullable().optional(),
@@ -447,6 +448,7 @@ export type GraphDraftEffect = z.infer<typeof GraphDraftEffectSchema>;
 export const GraphDraftApplyResultSchema = z.object({
   draft: GraphDraftSchema,
   effects: z.array(GraphDraftEffectSchema),
+  previousDraft: GraphDraftSchema.optional(),
 }).strict();
 export const GraphDraftCommandResultSchema = z.object({ value: GraphDraftApplyResultSchema, replayed: z.boolean() }).strict();
 
@@ -460,6 +462,24 @@ export const GraphDraftApplyInputSchema = z.object({
 export const GraphValidateInputSchema = DraftScopeSchema;
 export const GraphSaveInputSchema = z.object({ ...DraftScopeSchema.shape, ...RevisionMutationFields }).strict();
 export const GraphDraftDiscardInputSchema = z.object({ ...DraftScopeSchema.shape, ...RevisionMutationFields }).strict();
+export const GraphDraftLayoutInputSchema = z.object({
+  ...DraftScopeSchema.shape, ...MutationFields,
+  expectedLayoutRevision: ExpectedRevisionSchema,
+  nodeId: IdSchema,
+  position: NodeMoveOperationSchema.shape.position,
+}).strict();
+export const GraphDraftLayoutResultSchema = z.object({
+  value: z.object({ draftId: IdSchema, layoutRevision: ExpectedRevisionSchema,
+    nodeId: IdSchema, position: NodeMoveOperationSchema.shape.position }).strict(),
+  replayed: z.boolean(),
+}).strict();
+export const GraphDraftRevertAppliedInputSchema = z.object({
+  ...DraftScopeSchema.shape, ...RevisionMutationFields, applyCommandId: IdSchema,
+}).strict();
+export const GraphDraftRevertAppliedResultSchema = z.object({
+  value: z.object({ draft: GraphDraftSchema, revertedApplyCommandId: IdSchema,
+    priorRevision: ExpectedRevisionSchema }).strict(), replayed: z.boolean(),
+}).strict();
 
 export const HarnessDefaultsUpdateInputSchema = z.object({
   ...RevisionMutationFields,
@@ -591,7 +611,7 @@ export const OperatorToolNameSchema = z.enum([
   "workspace_location_validate", "workspace_location_set",
   "workflow_list", "workflow_get", "workflow_create", "workflow_update", "workflow_archive",
   "agent_list", "agent_get", "graph_draft_open", "graph_draft_get", "graph_draft_apply",
-  "graph_validate", "graph_save", "graph_draft_discard", "run_list", "run_get", "run_current_get_v1",
+  "graph_draft_layout", "graph_draft_revert_applied", "graph_validate", "graph_save", "graph_draft_discard", "run_list", "run_get", "run_current_get_v1", "run_history_get_v1",
   "run_events_list", "run_start", "run_stop",
   "interaction_list", "interaction_get",
 ]);

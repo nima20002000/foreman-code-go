@@ -9,7 +9,9 @@ import {
 import { GraphDraftSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
 import { RunCurrentRequestSchema, type RunCurrentRequest } from '@graphql/contracts/run-current'
+import { RunHistoryRequestSchema, type RunHistoryRequest } from '@graphql/contracts/run-history'
 import { readRunCurrent } from './liveSnapshot.js'
+import { readRunHistory } from './runHistory.js'
 import { CompatibleWorkflowRunSchema as WorkflowRunSchema, RunStartV2InputSchema, assertWave25Admission } from '@graphql/contracts/wave25'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { admitOneShotRun } from './oneShotAdmission.js'
@@ -71,6 +73,17 @@ export class RunManagementService {
     if (!current) throw new DomainError('RUN_NOT_FOUND', `Run '${scope.runId}' was not found at the requested scope.`, 404)
     // Compact fields contain no filesystem paths or authorization principal IDs.
     return current
+  }
+
+  async history(principal: ManagementPrincipal, input: RunHistoryRequest) {
+    const scope = RunHistoryRequestSchema.parse(input)
+    requireAuthorization(principal, 'runs:read', {
+      workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId,
+    })
+    const history = await readRunHistory(this.pool, scope,
+      isAuthorized(principal, 'agents:read', { workspaceId: scope.workspaceId }))
+    if (!history) throw new DomainError('RUN_NOT_FOUND', `Run '${scope.runId}' was not found at the requested scope.`, 404)
+    return history
   }
 
   async get(principal: ManagementPrincipal, workspaceId: string, runId: string) {
