@@ -5,6 +5,7 @@ import { safeAuthReturnTo, type BrowserSignInRequest, type OwnerSetupRequest } f
 import { ApiError } from '../../shared/api/client'
 import { browserAuthClient, useOwnerSetupStatus } from '../../shared/api/browserAuth'
 import { finishSessionChange } from '../../shared/api/sessionBoundary'
+import { Alert, Button, TextField } from '../../shared/ui/nocturne'
 import { ToastContext } from '../../shared/ui/nocturne/toastContext'
 import { clearBrowserIdentity, prepareBrowserIdentityChange } from './sessionTransition'
 import { SignOutButton } from './SignOutButton'
@@ -15,7 +16,7 @@ function ErrorMessage({ error }: { error: unknown }) {
   const message = ApiError.is(error) && (error.status >= 500 || error.status === 0)
     ? 'The server could not complete this request. Check the API connection and try again.'
     : error instanceof Error ? error.message : 'The request could not be completed.'
-  return <p role="alert" className="auth-error">{message}</p>
+  return <Alert live tone="danger" title={message} />
 }
 
 export function SignInRoute() {
@@ -57,27 +58,25 @@ export function SignInRoute() {
     if (!mutation.isPending) mutation.mutate({ email, password })
   }
   return <main className="auth-screen"><section className="auth-card" aria-labelledby="sign-in-title">
-    <div className="auth-brand">GraphQL · Owner access</div>
+    <p className="auth-brand">graphql · Owner access</p>
     <h1 id="sign-in-title">Welcome back</h1><p>Sign in to manage your workspaces and agents.</p>
     {search.notice === 'owner-created' ? <p role="status">Your owner account is ready. Sign in below.</p> : null}
     {search.notice === 'signed-out' ? <p role="status">You are signed out.</p> : null}
-    {search.notice === 'sign-out-unconfirmed' ? <div role="alert" className="auth-error">
-      <p>Sign-out was not confirmed. The server session may still be active. Retry before leaving a shared browser.</p><SignOutButton />
-    </div> : null}
+    {search.notice === 'sign-out-unconfirmed' ? <Alert live tone="danger" title="Sign-out was not confirmed" action={<SignOutButton />}>
+      The server session may still be active. Retry before leaving a shared browser.
+    </Alert> : null}
     <form onSubmit={submit} aria-label="Owner sign in">
-      <label htmlFor="sign-in-email">Email</label>
-      <input id="sign-in-email" name="email" type="email" autoComplete="username" required maxLength={254}
+      <TextField id="sign-in-email" label="Email" name="email" type="email" autoComplete="username" required maxLength={254}
         value={email} onChange={(event) => setEmail(event.target.value)} disabled={mutation.isPending} />
-      <label htmlFor="sign-in-password">Password</label>
-      <input id="sign-in-password" name="password" type="password" autoComplete="current-password" required maxLength={128}
+      <TextField id="sign-in-password" label="Password" name="password" type="password" autoComplete="current-password" required maxLength={128}
         value={password} onChange={(event) => setPassword(event.target.value)} disabled={mutation.isPending} />
       <ErrorMessage error={mutation.error} />
-      <button type="submit" disabled={mutation.isPending}>{mutation.isPending ? 'Signing in…' : 'Sign in'}</button>
+      <Button type="submit" variant="primary" size="lg" loading={mutation.isPending} loadingLabel="Signing in…">Sign in</Button>
     </form>
     {status.data?.state === 'ready' ? <Link to="/setup" search={{ returnTo: search.returnTo }}>Set up the owner account</Link> : null}
     {status.data?.state === 'locked' ? <p className="auth-note">Owner setup is locked. Existing installations must select the owner Operator principal on the server.</p> : null}
-    {status.isError ? <div role="alert"><p>Browser authentication could not be checked. Verify the server configuration.</p>
-      <button type="button" onClick={() => void status.refetch()}>Check again</button></div> : null}
+    {status.isError ? <Alert live tone="danger" title="Browser authentication could not be checked"
+      action={<Button size="sm" onClick={() => void status.refetch()}>Check again</Button>}>Verify the server configuration.</Alert> : null}
     <p className="auth-note">CLI and MCP bearer credentials still work. Browser sign-in does not change your Codex or OpenCode account.</p>
   </section></main>
 }
@@ -106,19 +105,19 @@ export function OwnerSetupRoute() {
   }
   if (status.data?.state === 'complete') return <Navigate to="/sign-in" search={{ returnTo: search.returnTo }} replace />
   return <main className="auth-screen"><section className="auth-card" aria-labelledby="owner-setup-title">
-    <div className="auth-brand">GraphQL · First-time setup</div><h1 id="owner-setup-title">Create the owner account</h1>
+    <p className="auth-brand">graphql · First-time setup</p><h1 id="owner-setup-title">Create the owner account</h1>
     <p>Use your email and a password to create the local owner account.</p>
     {status.isPending ? <p role="status">Checking owner setup…</p> : null}
-    {status.isError ? <div><ErrorMessage error={status.error} /><button type="button" onClick={() => void status.refetch()}>Try again</button></div> : null}
-    {status.data?.state === 'locked' ? <p role="alert">Setup is locked. Existing installations require an explicitly selected OWNER_OPERATOR_PRINCIPAL_ID on the server. Do not delete existing accounts or credentials to reopen setup.</p> : null}
+    {status.isError ? <div className="auth-retry"><ErrorMessage error={status.error} /><Button onClick={() => void status.refetch()}>Try again</Button></div> : null}
+    {status.data?.state === 'locked' ? <Alert live tone="danger" title="Setup is locked">Existing installations require an explicitly selected OWNER_OPERATOR_PRINCIPAL_ID on the server. Do not delete existing accounts or credentials to reopen setup.</Alert> : null}
     {status.data?.state === 'ready' ? <form onSubmit={submit} aria-label="Set up owner">
-      <label htmlFor="owner-email">Email</label><input id="owner-email" type="email" autoComplete="username" required maxLength={254}
+      <TextField id="owner-email" label="Email" type="email" autoComplete="username" required maxLength={254}
         value={email} onChange={(event) => setEmail(event.target.value)} disabled={mutation.isPending} />
-      <label htmlFor="owner-password">Password</label><input id="owner-password" type="password" autoComplete="new-password" required minLength={12} maxLength={128}
-        aria-describedby="password-help" value={password} onChange={(event) => setPassword(event.target.value)} disabled={mutation.isPending} />
-      <p id="password-help" className="auth-note">Use at least 12 characters. Keep it in your password manager.</p>
+      <TextField id="owner-password" label="Password" type="password" autoComplete="new-password" required minLength={12} maxLength={128}
+        hint="Use at least 12 characters. Keep it in your password manager."
+        value={password} onChange={(event) => setPassword(event.target.value)} disabled={mutation.isPending} />
       <ErrorMessage error={mutation.error} />
-      <button type="submit" disabled={mutation.isPending}>{mutation.isPending ? 'Creating owner…' : 'Create owner account'}</button>
+      <Button type="submit" variant="primary" size="lg" loading={mutation.isPending} loadingLabel="Creating owner…">Create owner account</Button>
     </form> : null}
     <Link to="/sign-in" search={{ returnTo: search.returnTo }}>Back to sign in</Link>
   </section></main>

@@ -27,9 +27,7 @@
 .run-graph-canvas[data-detail="coarse"] .react-flow__edge:not(.selected):not(:focus-within) .react-flow__edge-textwrapper { visibility: hidden; }
 .run-graph-attention-tools { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem 1rem; padding: .75rem 1rem; border-bottom: 1px solid var(--n-border); }
 .run-graph-attention-tools p { margin: .3rem 0 0; font-size: .8rem; }
-.run-graph-field { display: grid; gap: .35rem; min-width: 0; font-size: .8rem; flex: 1 1 14rem; }
-.run-graph-field select { width: 100%; min-width: 0; min-height: 44px; padding: .5rem; border: 1px solid var(--n-border); border-radius: .5rem; background: var(--n-surface, #171923); color: inherit; font: inherit; }
-.run-graph-field select:focus-visible { outline: 2px solid var(--n-accent); outline-offset: 2px; }
+.run-graph-field { flex: 1 1 14rem; }
 .run-graph-exchange h4 { overflow-wrap: anywhere; }
 .run-graph-exchange dl { margin: .5rem 0; }
 .run-graph-hint { font-size: .8rem; line-height: 1.5; opacity: .8; }
@@ -44,6 +42,6 @@
   .run-graph-cue { display: none; animation: none; }
 }
 @media (forced-colors: active) {
-  .run-graph-node-selected, .run-graph-field select:focus-visible { outline-color: Highlight; }
+  .run-graph-node-selected { outline-color: Highlight; }
 }
 .run-graph-node-select .n-node-bottom > .n-mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

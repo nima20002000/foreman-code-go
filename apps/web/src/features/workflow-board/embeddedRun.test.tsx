@@ -18,7 +18,8 @@ vi.mock('@xyflow/react', () => ({
   Handle: () => null, Background: () => null, Controls: () => null, BaseEdge: () => null,
   getSmoothStepPath: () => ['', 0, 0], ReactFlow: () => { flow.render(); return <div data-testid="second-canvas" /> },
 }))
-vi.mock('../../shared/ui/nocturne', () => ({
+vi.mock('../../shared/ui/nocturne', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../shared/ui/nocturne')>(),
   WorkflowNodeCard: () => null,
   Button: ({ children, onClick }: { children: ReactNode; onClick?: () => void }) => <button onClick={onClick}>{children}</button>,
 }))

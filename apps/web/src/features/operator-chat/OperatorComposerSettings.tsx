@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { operatorChatSettings, type OperatorChatSettings } from '@graphql/contracts'
 import { useNativeHarnessOptions } from '../../shared/api/harnessSettings'
 import { useHarnessDefaultsQuery } from '../../shared/api/query'
-import { Button, Icon, Switch } from '../../shared/ui/nocturne'
+import { Button, Icon, SearchField, SegmentedControl, Slider, Switch } from '../../shared/ui/nocturne'
 import { supportedEfforts } from '../settings/harnessModelSelection'
 
 export function OperatorComposerSettings({ value, onChange, disabled }: {
@@ -63,7 +63,7 @@ export function OperatorComposerSettings({ value, onChange, disabled }: {
       <small>Saved to Operator defaults for your next message and future chats.</small>
       {choosingModel ? <>
         <Button size="sm" variant="ghost" leading={<Icon name="chevron" className="operator-chat-previous" size={14} />} onClick={() => setChoosingModel(false)}>Agent settings</Button>
-        <input autoFocus aria-label="Search models" placeholder="Search models…" value={search} onChange={(event) => setSearch(event.target.value)} />
+        <SearchField autoFocus label="Search models" placeholder="Model name or ID" value={search} onChange={(event) => setSearch(event.target.value)} />
         <div className="operator-model-list" aria-label="Models">
           {models.filter((item) => `${item.id} ${item.name}`.toLowerCase().includes(search.toLowerCase())).map((item) =>
             <button type="button" key={item.id} disabled={disabled} aria-pressed={item.id === value.model} onClick={() => chooseModel(item.id)}>
@@ -72,23 +72,22 @@ export function OperatorComposerSettings({ value, onChange, disabled }: {
           {!models.some((item) => `${item.id} ${item.name}`.toLowerCase().includes(search.toLowerCase())) ? <p>No models match.</p> : null}
         </div>
       </> : <>
-        <div className="operator-harness-choice" role="group" aria-label="Harness">
-          {(['codex', 'opencode'] as const).map((harness) => <button key={harness} type="button" aria-pressed={value.harness === harness}
-            disabled={disabled || !defaults.data} onClick={() => {
-              const preset = defaults.data?.defaults[harness]
-              if (preset) update(operatorChatSettings(preset, value.showThinking))
-            }}>{harness === 'codex' ? 'Codex' : 'OpenCode'}</button>)}
-        </div>
+        <SegmentedControl label="Harness" value={value.harness}
+          options={(['codex', 'opencode'] as const).map((harness) => ({ value: harness, label: harness === 'codex' ? 'Codex' : 'OpenCode', disabled: disabled || !defaults.data }))}
+          onValueChange={(harness) => {
+            const preset = defaults.data?.defaults[harness as 'codex' | 'opencode']
+            if (preset) update(operatorChatSettings(preset, value.showThinking))
+          }} />
         <button className="operator-model-choice" type="button" disabled={disabled || !catalog.isSuccess} onClick={() => { setChoosingModel(true); setSearch('') }}>
           <span>{modelName}<small>Choose model</small></span><Icon name="chevron" size={14} />
         </button>
-        <label className="operator-effort"><span>Effort<strong>{effort || 'Default'}</strong></span>
-          <input type="range" aria-label="Effort" aria-valuetext={effort || 'Default'} min={0} max={Math.max(0, efforts.length - 1)} step={1}
-            value={Math.max(0, efforts.indexOf(effort))} disabled={disabled || efforts.length < 2} onChange={(event) => {
-              const next = efforts[Number(event.target.value)]
-              if (next) update(value.harness === 'codex' ? { ...value, reasoningEffort: next as typeof value.reasoningEffort } : { ...value, variant: next })
-            }} />
-        </label>
+        <Slider label="Effort" min={0} max={Math.max(0, efforts.length - 1)} step={1}
+          value={Math.max(0, efforts.indexOf(effort))} disabled={disabled || efforts.length < 2}
+          format={(index) => efforts.includes(effort) ? efforts[index] ?? 'Default' : effort || 'Default'}
+          onValueChange={(index) => {
+            const next = efforts[index]
+            if (next) update(value.harness === 'codex' ? { ...value, reasoningEffort: next as typeof value.reasoningEffort } : { ...value, variant: next })
+          }} />
         <Switch label="Fast mode" checked={value.harness === 'codex' && value.serviceTier === 'priority'}
           disabled={disabled || value.harness !== 'codex' || (!fastSupported && value.serviceTier !== 'priority')}
           onChange={(event) => { if (value.harness === 'codex') update({ ...value, serviceTier: event.target.checked ? 'priority' : 'standard' }) }} />

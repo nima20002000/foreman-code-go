@@ -5,7 +5,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type { RunGraphScope } from '@graphql/contracts/wave25'
-import { Button, WorkflowNodeCard } from '../../shared/ui/nocturne'
+import { Button, Select, WorkflowNodeCard } from '../../shared/ui/nocturne'
 import { GraphPresentationProvider } from '../graph/GraphPresentation'
 import { useGraphPresentation, useGraphPresentationStore } from '../graph/useGraphPresentation'
 import { RunGraphProvider } from './RunGraphProvider'
@@ -124,15 +124,14 @@ function RunNodeSelector() {
   const topology = useRunGraphSelection(selectGraphTopology)
   const selected = useGraphPresentation((state) => state.selectedNodeIds.values().next().value as string | undefined)
   const presentation = useGraphPresentationStore()
-  return <label className="run-graph-field">Inspect any pinned node
-    <select value={selected ?? ''} onChange={(event) => {
-      presentation.getState().setSelectedNodeIds(new Set(event.target.value ? [event.target.value] : []))
-      presentation.getState().setFocusedEdgeId(undefined); presentation.getState().setFocusedExchangeKey(undefined)
-    }}><option value="">Select a node</option>
-      {selected && !topology?.nodes.some((node) => node.workflowNodeId === selected) ? <option value={selected}>Selected node unavailable: {selected}</option> : null}
-      {topology?.nodes.map((node) => <option key={node.workflowNodeId} value={node.workflowNodeId}>{node.workflowNodeId}{node.workflowNodeId === topology.entryNodeId ? ' · Entry' : ''}</option>)}
-    </select>
-  </label>
+  return <Select className="run-graph-field" label="Inspect any pinned node" value={selected ?? ''} options={[
+    { value: '', label: 'Select a node' },
+    ...(selected && !topology?.nodes.some((node) => node.workflowNodeId === selected) ? [{ value: selected, label: `Selected node unavailable: ${selected}` }] : []),
+    ...(topology?.nodes.map((node) => ({ value: node.workflowNodeId, label: `${node.workflowNodeId}${node.workflowNodeId === topology.entryNodeId ? ' · Entry' : ''}` })) ?? []),
+  ]} onChange={(event) => {
+    presentation.getState().setSelectedNodeIds(new Set(event.target.value ? [event.target.value] : []))
+    presentation.getState().setFocusedEdgeId(undefined); presentation.getState().setFocusedExchangeKey(undefined)
+  }} />
 }
 
 function RunInspector() {

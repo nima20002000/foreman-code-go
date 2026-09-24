@@ -7,6 +7,7 @@ import {
   type ExchangeView,
 } from './exchangePresentation'
 import type { RunGraphRecord } from './types'
+import { Select } from '../../shared/ui/nocturne'
 
 export function RunAttentionTools() {
   const run = useRunGraphSelection(selectGraphRun)
@@ -17,30 +18,24 @@ export function RunAttentionTools() {
   const presentation = useGraphPresentationStore()
   return <section className="run-graph-attention-tools" aria-label="Run attention and navigation">
     <div><strong>Attention</strong><p>{run ? `${run.pendingInteractionCount} pending requests · ${run.unsettledReviewCount} unsettled reviews${run.cleanupPending ? ' · Cleanup pending' : ''}` : 'Attention unavailable'}</p></div>
-    <label className="run-graph-field">Inspect a node needing attention
-      <select value={selected ?? ''} onChange={(event) => {
-        const id = event.target.value
-        presentation.getState().setSelectedNodeIds(new Set(id ? [id] : []))
-        presentation.getState().setFocusedEdgeId(undefined)
-        presentation.getState().setFocusedExchangeKey(undefined)
-      }}>
-        <option value="">{blockers.length ? `${blockers.length} nodes to inspect` : 'No nodes listed in current attention facts'}</option>
-        {selected && !blockers.some((node) => node.id === selected) ? <option value={selected}>Selected node: {selected}</option> : null}
-        {blockers.map((node) => <option key={node.id} value={node.id}>{node.label}</option>)}
-      </select>
-    </label>
-    <label className="run-graph-field">Inspect a relationship
-      <select value={edgeId ?? ''} onChange={(event) => {
-        presentation.getState().setFocusedEdgeId(event.target.value || undefined)
-        presentation.getState().setSelectedNodeIds(new Set())
-        presentation.getState().setFocusedExchangeKey(undefined)
-      }}>
-        <option value="">All immutable relationships</option>
-        {topology?.relationships.map((edge) => <option key={edge.relationshipId} value={edge.relationshipId}>
-          {edge.kind} · {edge.source} → {edge.target} · {edge.relationshipId}
-        </option>)}
-      </select>
-    </label>
+    <Select className="run-graph-field" label="Inspect a node needing attention" value={selected ?? ''} options={[
+      { value: '', label: blockers.length ? `${blockers.length} nodes to inspect` : 'No nodes listed in current attention facts' },
+      ...(selected && !blockers.some((node) => node.id === selected) ? [{ value: selected, label: `Selected node: ${selected}` }] : []),
+      ...blockers.map((node) => ({ value: node.id, label: node.label })),
+    ]} onChange={(event) => {
+      const id = event.target.value
+      presentation.getState().setSelectedNodeIds(new Set(id ? [id] : []))
+      presentation.getState().setFocusedEdgeId(undefined)
+      presentation.getState().setFocusedExchangeKey(undefined)
+    }} />
+    <Select className="run-graph-field" label="Inspect a relationship" value={edgeId ?? ''} options={[
+      { value: '', label: 'All immutable relationships' },
+      ...(topology?.relationships.map((edge) => ({ value: edge.relationshipId, label: `${edge.kind} · ${edge.source} → ${edge.target} · ${edge.relationshipId}` })) ?? []),
+    ]} onChange={(event) => {
+      presentation.getState().setFocusedEdgeId(event.target.value || undefined)
+      presentation.getState().setSelectedNodeIds(new Set())
+      presentation.getState().setFocusedExchangeKey(undefined)
+    }} />
   </section>
 }
 
@@ -60,13 +55,11 @@ export function RunExchangeInspector({ nodeId, relationshipId }: { nodeId?: stri
   const focused = useRunGraphSelection(useCallback((record: RunGraphRecord) => selectFocusedExchange(record, selected, nodeId, relationshipId), [selected, nodeId, relationshipId]))
   return <section aria-label="Exchange inspection">
     <h3>Exchanges</h3>
-    <label className="run-graph-field">Inspect an exchange
-      <select value={selected ?? ''} onChange={(event) => presentation.getState().setFocusedExchangeKey(event.target.value || undefined)}>
-        <option value="">{views.length ? `${views.length} current exchange records` : 'No exchanges in this current selection'}</option>
-        {selected && !focused ? <option value={selected}>Selected exchange unavailable: {selected}</option> : null}
-        {views.map((item) => <option key={item.key} value={item.key}>{item.title} · {item.from} → {item.to}</option>)}
-      </select>
-    </label>
+    <Select className="run-graph-field" label="Inspect an exchange" value={selected ?? ''} options={[
+      { value: '', label: views.length ? `${views.length} current exchange records` : 'No exchanges in this current selection' },
+      ...(selected && !focused ? [{ value: selected, label: `Selected exchange unavailable: ${selected}` }] : []),
+      ...views.map((item) => ({ value: item.key, label: `${item.title} · ${item.from} → ${item.to}` })),
+    ]} onChange={(event) => presentation.getState().setFocusedExchangeKey(event.target.value || undefined)} />
     {focused ? <ExchangeFacts view={focused} /> : selected
       ? <p>The selected exchange is unavailable in this current window. Other requests and cleanup remain independent.</p>
       : <p className="run-graph-hint">Choose an exact request, review, or accepted input receipt. Relationship arrows show authority/dependency; request and response directions are listed separately.</p>}

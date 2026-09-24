@@ -17,7 +17,7 @@
 .board-run-facts .run-graph-header h2 { font-size: .85rem; }
 .board-run-facts .run-graph-body { display: block; min-height: 0; }
 .board-run-facts .run-graph-inspector, .board-run-facts .run-graph-attention-tools { display: block; width: auto; max-height: none; min-width: 0; overflow: visible; padding: .5rem 0; border: 0; }
-.board-run-facts .run-graph-field, .board-run-facts select { display: block; max-width: 100%; width: 100%; margin-bottom: .5rem; }
+.board-run-facts .run-graph-field { max-width: 100%; width: 100%; margin-bottom: var(--space-2); }
 .board-run-facts dl { margin: .5rem 0; }
 .board-run-facts dd { margin-left: 0; overflow-wrap: anywhere; }
 .board-history ol { padding-left: 1rem; }

@@ -39,7 +39,7 @@
 .n-rich-menu[aria-label^='Chat options:'] button[data-danger] { min-height: 30px; padding: .35rem .5rem; font-size: .75rem; color: var(--n-danger); }
 .n-rich-menu[aria-label^='Chat options:'] button[data-danger]:is(:hover, :focus-visible) { color: oklch(72% .19 15); background: var(--n-danger-subtle); }
 .operator-chat .operator-chat-new { color: var(--color-accent); flex: 0 0 auto; justify-content: flex-start; gap: .5rem; width: 100%; font-size: .75rem; margin-bottom: .5rem; }
-.operator-chat-load-more { flex: 0 0 auto; border: 0; background: transparent; color: var(--color-text-muted); font-size: .7rem; padding: .6rem; cursor: pointer; }
+.operator-chat-load-more { flex: 0 0 auto; }
 .operator-chat-main { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; padding: 3rem .75rem .75rem; gap: .5rem; }
 .operator-chat-transcript { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; min-width: 0; }
 .operator-chat-transcript-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; padding: .25rem; }
@@ -80,7 +80,7 @@
 @media (max-width: 600px) { .operator-approval-card { margin-left: 0; } .operator-approval-actions button { flex: 1 1 auto; } }
 .operator-chat-controls { display: flex; flex-direction: column; flex: 0 0 auto; min-width: 0; gap: .35rem; }
 .operator-chat-handoff { margin: 0; color: var(--color-text-muted); font-size: .72rem; line-height: 1.4; }
-.operator-chat-handoff button { padding: 0; border: 0; background: transparent; color: var(--color-accent); font: inherit; cursor: pointer; text-decoration: underline; }
+.operator-chat-handoff .n-button { min-height: 0; padding: 0 var(--space-1); color: var(--text); text-decoration: underline; }
 .operator-chat-turn-actions { height: 1.25rem; min-height: 1.25rem; }
 .operator-chat-turn-actions p { font-size: .7rem; color: var(--color-text-muted); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .operator-chat-feedback { min-width: 0; font-size: .75rem; overflow-wrap: anywhere; }
@@ -107,8 +107,6 @@
 .operator-access-panel p { margin: 0; }
 .operator-access-rules { display: grid; gap: .5rem; }
 .operator-access-rule { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 5rem; gap: .35rem; padding: .5rem; border: 1px solid var(--color-border); border-radius: .5rem; }
-.operator-access-rule label { display: grid; gap: .2rem; min-width: 0; color: var(--color-text-muted); font-size: .68rem; }
-.operator-access-rule input, .operator-access-rule select { width: 100%; min-width: 0; padding: .4rem; border: 1px solid var(--color-border-strong); border-radius: .35rem; background: var(--color-surface); color: var(--color-text); font: inherit; font-size: .75rem; }
 .operator-access-rule-actions { grid-column: 1 / -1; display: flex; gap: .2rem; }
 .operator-access-rule-actions button { min-height: 1.8rem; padding: .25rem .45rem; }
 .operator-access-footer { display: flex; justify-content: flex-end; gap: .4rem; }
@@ -120,18 +118,12 @@
 .operator-agent-trigger:hover, .operator-agent-trigger[aria-expanded='true'] { background: var(--color-surface-subtle); color: var(--color-text); }
 .operator-agent-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 13rem; }
 .operator-agent-trigger small { text-transform: capitalize; color: var(--color-accent); }
+.operator-agent-panel .n-segmented { display: flex; }
+.operator-agent-panel .n-segmented > label { flex: 1; justify-content: center; }
 .operator-agent-panel { position: absolute; right: 0; bottom: calc(100% + .65rem); z-index: 8; width: min(18rem, calc(100vw - 3rem)); max-height: min(30rem, calc(100dvh - 10rem)); overflow: auto; display: grid; gap: .85rem; border: 1px solid var(--color-border-strong); border-radius: 1.1rem; padding: .85rem; background: var(--color-surface-raised); box-shadow: 0 12px 36px #0004; }
-.operator-harness-choice { display: flex; gap: .2rem; background: var(--color-surface); padding: .2rem; border-radius: .65rem; }
-.operator-harness-choice button { flex: 1; padding: .4rem; border: 0; border-radius: .5rem; background: transparent; color: var(--color-text-muted); font-size: .75rem; cursor: pointer; }
-.operator-harness-choice button[aria-pressed='true'] { background: var(--color-surface-subtle); color: var(--color-text); }
 .operator-model-choice { display: flex; justify-content: space-between; align-items: center; gap: .5rem; padding: .4rem 0; border: 0; background: transparent; text-align: left; color: var(--color-text); cursor: pointer; }
 .operator-model-choice small, .operator-model-list small { display: block; color: var(--color-text-muted); font-size: .65rem; padding-top: .15rem; }
 .operator-model-choice span { min-width: 0; overflow-wrap: anywhere; }
-.operator-effort { display: grid; gap: .5rem; font-size: .75rem; }
-.operator-effort > span { display: flex; justify-content: space-between; }
-.operator-effort strong { text-transform: capitalize; font-weight: 500; color: var(--color-accent); }
-.operator-effort input { width: 100%; accent-color: var(--color-accent); cursor: pointer; }
-.operator-agent-panel > input { width: 100%; min-width: 0; padding: .55rem; border: 1px solid var(--color-border-strong); border-radius: .6rem; background: var(--color-surface); color: var(--color-text); }
 .operator-model-list { overflow: auto; max-height: 18rem; }
 .operator-model-list button { display: flex; width: 100%; align-items: center; justify-content: space-between; text-align: left; gap: .5rem; border: 0; border-radius: .5rem; padding: .55rem; background: transparent; color: var(--color-text); cursor: pointer; }
 .operator-model-list button:hover, .operator-model-list button[aria-pressed='true'] { background: var(--color-surface-subtle); }
@@ -167,7 +159,7 @@
   .operator-access-trigger { max-width: 8rem; }
   .operator-access-submenu { left: 0; bottom: calc(100% - 1px); }
   .operator-access-rule { grid-template-columns: minmax(0, 1fr) 5rem; }
-  .operator-access-rule label:first-child { grid-column: 1 / -1; }
+  .operator-access-rule > .n-field:first-child { grid-column: 1 / -1; }
 }
 @media (prefers-reduced-motion: reduce) {
   .operator-chat-row:is(:hover, :focus-within) .operator-chat-title-clip > span, .operator-chat-typing > span { animation: none; }

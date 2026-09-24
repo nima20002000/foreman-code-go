@@ -1,11 +1,17 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { changeCodexSandbox, OpenCodeHarnessConfigurationSchema, withAdvancedDefaults, type HarnessConfiguration, type OpenCodeAdvancedConfiguration } from '@graphql/contracts'
-import { Button, ConfirmDialog, Icon } from '../../shared/ui/nocturne'
+import { Button, ConfirmDialog, Icon, Select, TextField } from '../../shared/ui/nocturne'
 
 const sandboxChoices = [
   { value: 'read-only', label: 'Read only' },
   { value: 'workspace-write', label: 'Workspace write' },
   { value: 'danger-full-access', label: 'Full access' },
+] as const
+
+const ruleEffects = [
+  { value: 'ask', label: 'Ask' },
+  { value: 'allow', label: 'Allow' },
+  { value: 'deny', label: 'Deny' },
 ] as const
 
 export function OperatorAccessPicker({ value, disabled, saving = false, saveError, onChange }: {
@@ -95,14 +101,12 @@ export function OperatorAccessPicker({ value, disabled, saving = false, saveErro
         <p>OpenCode permissions control whether tools ask, run, or are denied. They are not a filesystem sandbox. Last matching rule wins.</p>
         <div className="operator-access-rules">
           {rules.map((rule, index) => <div className="operator-access-rule" key={index}>
-            <label>Permission<input aria-label={`Permission ${index + 1}`} value={rule.permission} disabled={disabled}
-              onChange={(event) => setRules(rules.map((item, at) => at === index ? { ...item, permission: event.target.value } : item))} /></label>
-            <label>Pattern<input aria-label={`Pattern ${index + 1}`} value={rule.pattern} disabled={disabled}
-              onChange={(event) => setRules(rules.map((item, at) => at === index ? { ...item, pattern: event.target.value } : item))} /></label>
-            <label>Action<select aria-label={`Action ${index + 1}`} value={rule.effect} disabled={disabled}
-              onChange={(event) => setRules(rules.map((item, at) => at === index ? { ...item, effect: event.target.value as OpenCodeAdvancedConfiguration['permissionRules'][number]['effect'] } : item))}>
-              <option value="ask">Ask</option><option value="allow">Allow</option><option value="deny">Deny</option>
-            </select></label>
+            <TextField label="Permission" aria-label={`Permission ${index + 1}`} value={rule.permission} disabled={disabled}
+              onChange={(event) => setRules(rules.map((item, at) => at === index ? { ...item, permission: event.target.value } : item))} />
+            <TextField label="Pattern" aria-label={`Pattern ${index + 1}`} value={rule.pattern} disabled={disabled}
+              onChange={(event) => setRules(rules.map((item, at) => at === index ? { ...item, pattern: event.target.value } : item))} />
+            <Select label="Action" aria-label={`Action ${index + 1}`} value={rule.effect} disabled={disabled} options={ruleEffects}
+              onChange={(event) => setRules(rules.map((item, at) => at === index ? { ...item, effect: event.target.value as OpenCodeAdvancedConfiguration['permissionRules'][number]['effect'] } : item))} />
             <div className="operator-access-rule-actions">
               <Button size="sm" variant="ghost" aria-label={`Move rule ${index + 1} up`} disabled={disabled || index === 0}
                 onClick={() => setRules((current) => { const next = [...current]; [next[index - 1], next[index]] = [next[index]!, next[index - 1]!]; return next })}>↑</Button>

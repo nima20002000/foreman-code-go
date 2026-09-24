@@ -28,7 +28,8 @@ vi.mock('@xyflow/react', () => ({
     })}{props.children}</div>
   },
 }))
-vi.mock('../../shared/ui/nocturne', () => ({
+vi.mock('../../shared/ui/nocturne', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../shared/ui/nocturne')>(),
   WorkflowNodeCard: ({ title, subtitle, statusLabel, meta, ariaLabel, onSelect }: {
     title: string; subtitle: string; statusLabel: string; meta: string; ariaLabel: string; onSelect: () => void;
   }) => <button aria-label={ariaLabel} onClick={onSelect}><span>{title}</span><span>{subtitle}</span><span>{statusLabel}</span><span>{meta}</span></button>,
