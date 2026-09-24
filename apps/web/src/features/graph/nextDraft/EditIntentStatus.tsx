@@ -1,36 +1,32 @@
 import type { GraphEditReadResult } from '@graphql/contracts/wave25'
+import { Alert } from '../../../shared/ui/nocturne'
 
-/** Required recovery controls stay on the V1 board, never in a second Run page. */
+/** Progress of a save that waits for affected Runs to stop. Recovery stays on the board, never in a second Run page. */
 export function EditIntentStatus({ data }: { data: GraphEditReadResult }) {
   const intent = data.intent
   if (!intent) return null
-  return <section className="next-draft-section board-edit-intent" aria-label="Retained edits and affected Runs">
-    <h2>Retained edits · {intent.state}</h2>
-    <p>Intent <code>{intent.id}</code> · draft revision {intent.expectedRevision} · saved version <code>{intent.expectedWorkflowVersionId ?? 'none'}</code></p>
-    {intent.state === 'saved' ? <p role="status">Saved as <code>{intent.result?.version.id}</code>. No Run was restarted. Historical Run pins are unchanged.</p>
-      : intent.state === 'discarded' ? <p role="status">The private edit intent was discarded. Discard did not issue Stop or change independent layout.</p>
-      : <p role="status">Stop acceptance is not settlement. Publication waits for terminal outcome and all native, interaction, review and cleanup obligations.</p>}
-    {intent.error ? <p role="alert">{intent.error.code}: {intent.error.message}</p> : null}
-    {data.affectedSetChanged ? <p role="alert">The exact affected Run set changed. This intent cannot Stop newly discovered Runs or publish over them.</p> : null}
-    {!data.canStop && data.current.some((item) => !item.settled) ? <p role="alert">Stop permission is required for every unsettled affected Run.</p> : null}
-    <details><summary>Affected workflow and shared-Agent Runs ({data.current.length})</summary>
-      <p>The board-selected Run is navigation only. The authenticated server plan determines this full set.</p>
-      {data.current.map((item) => {
-        const stop = intent.stops.find((entry) => entry.input.runId === item.pin.runId)
-        return <p key={item.pin.runId}><code>{item.pin.workflowId}</code> / <code>{item.pin.runId}</code> / version <code>{item.pin.workflowVersionId}</code>
-          {' · '}{item.settled ? 'settled' : item.terminal ? 'terminal, settlement pending' : 'not terminal'} · {item.outcome}
-          {item.nativePending ? ' · native pending' : ''}{item.interactionPending ? ' · interaction pending' : ''}
-          {item.reviewPending ? ' · review pending' : ''}{item.cleanupPending ? ' · cleanup pending' : ''}
-          {stop ? <> · Stop command <code>{stop.input.commandId}</code>: {stop.receipt?.status ?? 'no acknowledged receipt'}</> : ' · no Stop command planned'}
-        </p>
-      })}
-    </details>
-    <details><summary>Exact staged payload and command journal</summary>
-      <pre>{JSON.stringify({ stagedDraft: intent.stagedDraft, agentPins: intent.agentPins, affected: intent.affected,
-        stageCommandId: intent.stageCommandId, stageInputHash: intent.stageInputHash,
-        advanceCommandId: intent.advanceCommandId, advanceInputHash: intent.advanceInputHash,
-        discardCommandId: intent.discardCommandId, discardInputHash: intent.discardInputHash,
-        stops: intent.stops, saveInput: intent.saveInput, saveInputHash: intent.saveInputHash }, null, 2)}</pre>
-    </details>
-  </section>
+  const waiting = data.current.filter((item) => !item.settled).length
+  const tone = intent.state === 'saved' ? 'success' : intent.error || data.affectedSetChanged ? 'danger' : intent.state === 'discarded' ? 'neutral' : 'warning'
+  const title = intent.state === 'saved' ? 'Changes saved.' : intent.state === 'discarded' ? 'The pending save was discarded.'
+    : waiting ? `Saving once ${waiting} ${waiting === 1 ? 'run stops' : 'runs stop'}.` : 'Finishing the save…'
+  return <Alert tone={tone} title={title}>
+    <div className="board-edit-intent" aria-label="Retained edits and affected Runs">
+      {intent.state === 'saved' ? <p>Stopped runs were not restarted.</p>
+        : intent.state === 'discarded' ? <p>Nothing was stopped by discarding.</p>
+          : <p>Your changes are kept until every affected run has fully stopped and cleaned up.</p>}
+      {intent.error ? <p role="alert">{intent.error.message}</p> : null}
+      {data.affectedSetChanged ? <p role="alert">New runs started with these agents. Discard this save and try again.</p> : null}
+      {!data.canStop && data.current.some((item) => !item.settled) ? <p role="alert">You don’t have permission to stop every affected run.</p> : null}
+      {data.current.length ? <details><summary>Affected runs ({data.current.length})</summary>
+        <ul>{data.current.map((item) => <li key={item.pin.runId}><code>{item.pin.runId.slice(-8)}</code>{' · '}
+          {item.settled ? 'Stopped' : item.terminal ? 'Cleaning up' : 'Still running'}
+          {item.pin.workflowId !== intent.workflowId ? ' · another workflow' : ''}</li>)}</ul>
+      </details> : null}
+      <details><summary>Technical details</summary>
+        <pre>{JSON.stringify({ intent: intent.id, state: intent.state, revision: intent.expectedRevision, version: intent.expectedWorkflowVersionId,
+          stageCommandId: intent.stageCommandId, advanceCommandId: intent.advanceCommandId, discardCommandId: intent.discardCommandId,
+          stops: intent.stops, affected: data.current.map((item) => item.pin) }, null, 2)}</pre>
+      </details>
+    </div>
+  </Alert>
 }

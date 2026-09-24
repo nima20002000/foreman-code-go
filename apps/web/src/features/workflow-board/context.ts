@@ -12,5 +12,8 @@ export const WorkflowBoardContext = createContext<{
   selectRun(scope?: RunGraphScope): void
   requestConversion(): void
   openLocation(): void
+  openRuns(): void
+  /** Active or recovering Runs in the workspace; saving meaningful edits may stop them. */
+  activeRuns: number
 } | null>(null)
 export const useWorkflowBoard = () => useContext(WorkflowBoardContext)

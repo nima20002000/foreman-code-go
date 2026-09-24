@@ -12,7 +12,7 @@ import { useApprovalInboxStore } from '../approvals'
 vi.mock('@xyflow/react', async () => ({
   ...await vi.importActual<typeof import('@xyflow/react')>('@xyflow/react'),
   ReactFlow: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  Background: () => null, MiniMap: () => null,
+  Background: () => null, Controls: () => null,
 }))
 afterEach(() => { cleanup(); useGraphDraftStore.getState().clearAllDrafts(); useApprovalInboxStore.getState().closeInbox(); sessionStorage.clear() })
 

@@ -37,3 +37,5 @@ export type { ExecutionNode, ExecutionConnection, ExecutionEvent, ExecutionMapPr
 export { useReplay, useReducedMotion } from './useReplay'
 export { FilterChips, MultiSelect, FileDropzone, NotificationCenter, PermissionMatrix, KeyboardShortcuts, DetailSection } from './WorkspacePatterns'
 export type { NotificationItem } from './WorkspacePatterns'
+export { AgentNodeView, AgentPopover, AgentFacts } from './Canvas'
+export type { AgentNodeState, AgentPanel, AgentNodeViewProps, AgentPopoverProps } from './Canvas'

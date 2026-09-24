@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { Position, type EdgeProps } from '@xyflow/react'
+import { Position, ReactFlowProvider, type EdgeProps } from '@xyflow/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { WorkflowDefinition } from '@graphql/contracts'
 import { HandoffEdge } from './GraphEditor'
 import { GraphPresentationProvider } from './GraphPresentation'
@@ -24,7 +25,7 @@ describe('PR19 custom handoff labels', () => {
     const edge = graph.edges[0]!
     const props = { ...edge, sourceX: 0, sourceY: 0, targetX: 200, targetY: 0,
       sourcePosition: Position.Right, targetPosition: Position.Left } as EdgeProps<GraphEdge>
-    render(<GraphPresentationProvider><svg><HandoffEdge {...props} /></svg></GraphPresentationProvider>)
+    render(<QueryClientProvider client={new QueryClient()}><ReactFlowProvider><GraphPresentationProvider><svg><HandoffEdge {...props} /></svg></GraphPresentationProvider></ReactFlowProvider></QueryClientProvider>)
     expect(screen.getByText('Only after review approval')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('group', { name: /Only after review approval/ }))
     expect(screen.getByRole('button', { name: /only after review approval/i })).toBeInTheDocument()

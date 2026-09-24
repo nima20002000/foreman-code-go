@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import type { WorkflowRunSummary } from '@graphql/contracts'
 import { sameGraphScope } from '@graphql/contracts/wave25'
-import { Button } from '../../shared/ui/nocturne'
+import { Alert, Button, EmptyState, Icon, LoadingState, StatusBadge } from '../../shared/ui/nocturne'
+import { isActiveRun, runLabel, runTone, when } from './runFacts'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { useProtectedAccessError } from '../auth/useProtectedAccessError'
 import { nextDraftApi } from '../graph/nextDraft/transport'
@@ -30,8 +31,7 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
   })
   const denied = useProtectedAccessError(runs)
   const listed = denied ? [] : runs.data?.pages.flatMap((page) => page.items) ?? []
-  const active = summaries.filter((run) => run.workspaceId === workspaceId && run.workflowId === workflowId
-    && (['queued', 'running', 'waiting', 'interrupted'].includes(run.executionState) || run.cleanupPending))
+  const active = summaries.filter((run) => run.workspaceId === workspaceId && run.workflowId === workflowId && isActiveRun(run))
   const inspect = async (runId: string) => {
     const ticket = ++request.current, generation = sessionGeneration()
     setReading(runId); setError(undefined)
@@ -45,33 +45,42 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
       if (ticket === request.current && generation === sessionGeneration()) setError(reason instanceof Error ? reason.message : 'The Run could not be opened.')
     } finally { if (ticket === request.current) setReading(undefined) }
   }
-  return <aside className="workflow-board-run-panel" aria-label="Run activity" data-testid="board-run-activity">
-    <header><h2>Run activity</h2><p>{active.length} active or recovering Run{active.length === 1 ? '' : 's'} in this workflow</p></header>
-    <details className="board-run-picker"><summary>Current and past Runs</summary>
-      {active.length ? <section aria-label="Active and recovering Runs">{active.map((run) => <div key={run.id}>
-        <Button variant="secondary" disabled={reading === run.id} onClick={() => void inspect(run.id)}>Inspect {run.id}</Button>
-        <span>{run.executionState}{run.cleanupPending ? ' · Cleanup pending' : ''}</span>
-      </div>)}</section> : null}
-      {denied ? <p role="alert">Run list access is unavailable.</p> : runs.isError ? <p role="alert">The Run list could not be loaded.</p> : null}
-      <Button variant="secondary" disabled={runs.isFetching} onClick={() => void runs.refetch()}>Refresh Runs</Button>
-      <div className="board-run-options">{listed.map((run) => {
+  const listedIds = new Set(listed.map((item) => item.id))
+  return <div className="workflow-board-run-panel" aria-label="Run activity" data-testid="board-run-activity">
+    {error ? <Alert tone="danger" live title="That run couldn’t be opened.">{error}</Alert> : null}
+    {denied ? <Alert tone="warning" title="You don’t have access to this workflow’s runs." /> : runs.isError ? <Alert tone="danger" title="Runs couldn’t be loaded."
+      action={<Button size="sm" onClick={() => void runs.refetch()}>Try again</Button>} /> : null}
+    {runs.isPending && !denied ? <LoadingState label="Loading runs…" rows={3} /> : null}
+    {!runs.isPending && !listed.length && !active.length && !denied && !runs.isError ? <EmptyState icon="history" title="No runs yet" description="Start a run from the board. It shows up here." /> : null}
+    <ul className="board-run-list">
+      {active.filter((run) => !listedIds.has(run.id)).map((run) => <li key={run.id}>
+        <button type="button" className="board-run-row" disabled={reading === run.id} onClick={() => void inspect(run.id)} aria-label={`Inspect ${run.id}`}>
+          <StatusBadge label={runLabel(run.executionState, run.outcome)} tone={runTone(run.executionState, run.outcome)} busy={run.executionState === 'running'} />
+          <code>{run.id.slice(-8)}</code><span>{run.cleanupPending ? 'Cleaning up' : when(run.startedAt)}</span>
+        </button></li>)}
+      {listed.map((run) => {
         let scope: ReturnType<typeof scopeForBoardRun>
         try { scope = scopeForBoardRun(run) } catch {
-          return <p key={run.id}>Run {run.id} has no supported immutable version pin. Its identity was not replaced with the current version.</p>
+          return <li key={run.id}><p className="next-draft-hint">Run {run.id.slice(-8)} can’t be shown on this board.</p></li>
         }
-        return <Button size="sm" variant="ghost" key={run.id} aria-pressed={!!selected && sameGraphScope(scope, selected)}
-          onClick={() => { ++request.current; setReading(undefined); selectRun(scope) }}>
-          Open Run {run.id} · {run.executionState} · {run.outcome}
-        </Button>
-      })}</div>
-      {runs.hasNextPage && !denied ? <Button variant="secondary" disabled={runs.isFetchingNextPage} onClick={() => void runs.fetchNextPage()}>Load more Runs</Button> : null}
-    </details>
-    {error ? <p role="alert">{error}</p> : null}
-    {selected ? <>
-      <p className="board-run-pin">Run <code>{selected.runId}</code> · version <code>{selected.workflowVersionId}</code></p>
-      <p className="board-run-pin">Execution semantics {selected.executionSemanticsVersion}. Editing this board never changes this Run.</p>
+        const current = !!selected && sameGraphScope(scope, selected)
+        return <li key={run.id}><button type="button" className="board-run-row" aria-pressed={current}
+          aria-label={`Open Run ${run.id} · ${run.executionState} · ${run.outcome}`}
+          onClick={() => { ++request.current; setReading(undefined); selectRun(current ? undefined : scope) }}>
+          <StatusBadge label={runLabel(run.executionState, run.outcome)} tone={runTone(run.executionState, run.outcome)} busy={run.executionState === 'running'} />
+          <code>{run.id.slice(-8)}</code><span>{when(run.startedAt)}</span>
+        </button></li>
+      })}
+    </ul>
+    <div className="n-actions">
+      {runs.hasNextPage && !denied ? <Button size="sm" disabled={runs.isFetchingNextPage} onClick={() => void runs.fetchNextPage()}>Load more Runs</Button> : null}
+      <Button size="sm" variant="ghost" leading={<Icon name="refresh" size={14} />} disabled={runs.isFetching} onClick={() => void runs.refetch()}>Refresh Runs</Button>
+    </div>
+    {selected ? <section className="board-run-detail" aria-label="Selected run">
+      <header><h3>Run {selected.runId.slice(-8)}</h3>
+        <Button size="sm" variant="ghost" onClick={() => { ++request.current; setReading(undefined); selectRun() }}>Clear Run selection</Button></header>
       <RunGraphView scope={selected} embedded />
-      <Button variant="secondary" onClick={() => { ++request.current; setReading(undefined); selectRun() }}>Clear Run selection</Button>
-    </> : <p>Select a current or past Run here. Authoring stays on this board.</p>}
-  </aside>
+    </section> : null}
+  </div>
 }
+

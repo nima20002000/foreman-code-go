@@ -27,7 +27,9 @@ const DEFAULT_NODE_WIDTH = GRAPH_NODE_MIN_WIDTH
 const DEFAULT_NODE_HEIGHT = GRAPH_NODE_MIN_HEIGHT
 const DEFAULT_NODE_GAP = 92
 const DEFAULT_NODE_Y = 120
-const PLACEMENT_GAP = 24
+// Agents render as fixed circles; placement reserves the circle plus room for rim actions and connections.
+const PLACEMENT_SIZE = 212
+const PLACEMENT_GAP = 88
 
 const executionStateLabels: Record<AgentExecutionState, string> = {
   available: 'Available',
@@ -71,12 +73,11 @@ function rectanglesOverlap(
 export function findOpenNodePosition(
   nodes: readonly WorkflowNode[],
   anchor: XYPosition,
-  width = DEFAULT_NODE_WIDTH,
-  height = DEFAULT_NODE_HEIGHT,
+  width = PLACEMENT_SIZE,
+  height = PLACEMENT_SIZE,
 ): XYPosition {
   const occupied = nodes.map((node, index) => ({
-    position: workflowNodePosition(node, index),
-    ...clampNodeSize(node.width ?? DEFAULT_NODE_WIDTH, node.height ?? DEFAULT_NODE_HEIGHT),
+    position: workflowNodePosition(node, index), width: PLACEMENT_SIZE, height: PLACEMENT_SIZE,
   }))
   const stepX = width + PLACEMENT_GAP
   const stepY = height + PLACEMENT_GAP

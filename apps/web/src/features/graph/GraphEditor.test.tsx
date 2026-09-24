@@ -8,12 +8,12 @@ import type { Agent, WorkflowDefinition } from '@graphql/contracts'
 
 import { getMockFixture, setMockScenario } from '../../shared/mocks/scenarios'
 import { queryKeys } from '../../shared/api/query'
-import { AgentMinimapDot, GraphEditor, HandoffEdge } from './GraphEditor'
+import { GraphEditor, HandoffEdge } from './GraphEditor'
 import { getGraphDraft, useGraphDraftStore, workflowDraftKey } from './store'
 import { GraphPresentationProvider } from './GraphPresentation'
 import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
 import { deleteAgentForSession, readDeletedAgentIds, readLocalAgents, writeLocalAgents } from '../agents/localAgents'
-import { Position } from '@xyflow/react'
+import { Position, ReactFlowProvider } from '@xyflow/react'
 
 // These existing tests isolate editor behavior; pr12-navigation.test.tsx covers the real router Link.
 vi.mock('@tanstack/react-router', async () => {
@@ -225,7 +225,7 @@ describe('GraphEditor persistence boundary', () => {
     const key = workflowDraftKey(workflow.workspaceId, workflow.id)
     renderEditor()
 
-    const trigger = screen.getByRole('button', { name: 'Open actions for Researcher' })
+    const trigger = screen.getByRole('button', { name: 'Open Researcher settings' })
     await user.click(trigger)
     const settings = screen.getByRole('dialog', { name: 'Researcher settings' })
     expect(settings).toBeVisible()
@@ -317,7 +317,7 @@ describe('GraphEditor persistence boundary', () => {
     renderEditor()
     const researcher = screen.getByRole('button', { name: 'Researcher agent, Step 1, Idle' })
     fireEvent.click(researcher)
-    fireEvent.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open Researcher settings' }))
     const name = screen.getByRole('textbox', { name: 'Name' })
 
     fireEvent.keyDown(name, { key: 'Delete' })
@@ -327,7 +327,7 @@ describe('GraphEditor persistence boundary', () => {
   it('persists the explicit Codex sandbox selected for one board agent', async () => {
     const user = userEvent.setup()
     renderEditor()
-    await user.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
+    await user.click(screen.getByRole('button', { name: 'Open Researcher settings' }))
     await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'danger-full-access')
     fireEvent.change(screen.getByLabelText('Type “full access” to confirm'), { target: { value: 'full access' } })
     await user.click(screen.getByRole('button', { name: 'Use full access' }))
@@ -356,12 +356,12 @@ describe('GraphEditor persistence boundary', () => {
 
     for (const agentId of ['agent-one', 'agent-two']) {
       const node = screen.getByTestId(`agent-node-${agentId}`)
-      expect(node.querySelector('.n-node')).toBeInTheDocument()
-      expect(node.querySelector('.n-badge')).toBeInTheDocument()
-      expect(node.querySelector('.n-node-detail')).not.toBeInTheDocument()
-      const handles = node.querySelectorAll('.workflow-agent-node-handle')
-      expect(handles).toHaveLength(4)
-      expect([...handles].map((handle) => handle.getAttribute('data-handleid'))).toEqual(['top', 'right', 'bottom', 'left'])
+      expect(node.querySelector('.n-agent')).toBeInTheDocument()
+      expect(node.querySelector('.n-agent-status')).toBeInTheDocument()
+      // One visible rim port starts connections; the whole circle accepts them. Saved side ids still resolve.
+      expect(node.querySelector('.n-agent-port')).toHaveAttribute('data-handleid', 'right')
+      expect(node.querySelector('.n-agent-target')).toHaveAttribute('data-handleid', 'left')
+      expect([...node.querySelectorAll('.n-agent-side')].map((handle) => handle.getAttribute('data-handleid'))).toEqual(['top', 'bottom', 'left'])
     }
   })
 
@@ -389,7 +389,7 @@ describe('GraphEditor persistence boundary', () => {
   it('dismisses the anchored node menu from Escape or an outside click and restores trigger focus', async () => {
     const user = userEvent.setup()
     renderEditor()
-    const trigger = screen.getByRole('button', { name: 'Open actions for Researcher' })
+    const trigger = screen.getByRole('button', { name: 'Open Researcher settings' })
 
     await user.click(trigger)
     expect(screen.getByRole('dialog', { name: 'Researcher settings' })).toBeVisible()
@@ -410,8 +410,8 @@ describe('GraphEditor persistence boundary', () => {
   it('keeps a single node menu open and moves focus into the menu opened last', async () => {
     const user = userEvent.setup()
     renderEditor()
-    const researcherTrigger = screen.getByRole('button', { name: 'Open actions for Researcher' })
-    const developerTrigger = screen.getByRole('button', { name: 'Open actions for Developer' })
+    const researcherTrigger = screen.getByRole('button', { name: 'Open Researcher settings' })
+    const developerTrigger = screen.getByRole('button', { name: 'Open Developer settings' })
 
     await user.click(researcherTrigger)
     expect(screen.getByRole('dialog', { name: 'Researcher settings' })).toBeVisible()
@@ -432,7 +432,7 @@ describe('GraphEditor persistence boundary', () => {
   it('closes an open node menu when the agent picker opens from the keyboard', async () => {
     const user = userEvent.setup()
     renderEditor()
-    const trigger = screen.getByRole('button', { name: 'Open actions for Researcher' })
+    const trigger = screen.getByRole('button', { name: 'Open Researcher settings' })
     trigger.focus()
 
     await user.keyboard('{Enter}')
@@ -509,7 +509,7 @@ describe('GraphEditor persistence boundary', () => {
     const user = userEvent.setup()
     renderEditor({ workflow: repeatedWorkflow })
 
-    await user.click(screen.getAllByRole('button', { name: 'Open actions for Researcher' })[0] as HTMLElement)
+    await user.click(screen.getAllByRole('button', { name: 'Open Researcher settings' })[0] as HTMLElement)
     await user.click(screen.getByRole('button', { name: 'Remove Researcher from workflow' }))
 
     expect(getGraphDraft(key)?.workflow.nodes.map((node) => node.id)).toEqual(['step-two', 'step-three'])
@@ -534,34 +534,6 @@ describe('GraphEditor persistence boundary', () => {
     expect(screen.queryByRole('button', { name: /Researcher agent/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Developer agent, Step 1, Idle' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Save graph' })).toBeEnabled()
-  })
-
-  it('resizes a selected node within bounds and supports discard and save', async () => {
-    const key = workflowDraftKey(workflow.workspaceId, workflow.id)
-    const user = userEvent.setup()
-    const first = renderEditor({ selectedAgentId: 'agent-one' })
-    const resize = await screen.findByRole('button', { name: 'Resize selected node' })
-    expect(resize).toHaveAttribute('data-min-width', '208')
-    expect(resize).toHaveAttribute('data-max-width', '520')
-    expect(resize).toHaveAttribute('data-min-height', '112')
-    expect(resize).toHaveAttribute('data-max-height', '320')
-
-    await user.click(resize)
-    expect(getGraphDraft(key)?.workflow.nodes[0]).toMatchObject({ width: 520, height: 112 })
-    expect(screen.getByRole('button', { name: 'Discard' })).toBeEnabled()
-
-    await user.click(screen.getByRole('button', { name: 'Discard' }))
-    expect(getGraphDraft(key)).toBeUndefined()
-    first.unmount()
-
-    const second = renderEditor({ selectedAgentId: 'agent-one' })
-    await user.click(await screen.findByRole('button', { name: 'Resize selected node' }))
-    await user.click(screen.getByRole('button', { name: 'Save graph' }))
-    await waitFor(() => expect(second.queryClient.getQueryData(queryKeys.workflow(workflow.workspaceId, workflow.id))).toEqual({
-      workflow: expect.objectContaining({
-        nodes: expect.arrayContaining([expect.objectContaining({ id: 'step-one', width: 520, height: 112 })]),
-      }),
-    }))
   })
 
   it('keeps actions over the canvas without routine discard feedback', () => {
@@ -641,7 +613,7 @@ describe('GraphEditor motion', () => {
     enableMotion()
     renderEditor()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open Researcher settings' }))
     fireEvent.click(screen.getByRole('button', { name: 'Remove Researcher from workflow' }))
 
     expect(screen.queryByRole('button', { name: /Researcher agent/ })).not.toBeInTheDocument()
@@ -652,11 +624,11 @@ describe('GraphEditor motion', () => {
   })
 })
 
-describe('Graph edge and minimap controls', () => {
+describe('Graph edge controls', () => {
   it('renders an accessible remove control on the handoff edge and reports its edge id', () => {
     const onRemove = vi.fn()
     render(
-      <GraphPresentationProvider><svg>
+      <QueryClientProvider client={new QueryClient()}><ReactFlowProvider><GraphPresentationProvider><svg>
         <HandoffEdge
           id="edge-one"
           source="step-one"
@@ -669,7 +641,7 @@ describe('Graph edge and minimap controls', () => {
           targetPosition={Position.Left}
           data={{ explanation: 'test edge', onRemove }}
         />
-      </svg></GraphPresentationProvider>,
+      </svg></GraphPresentationProvider></ReactFlowProvider></QueryClientProvider>,
     )
 
     expect(screen.queryByRole('button', { name: 'Remove connection from step-one to step-two' })).not.toBeInTheDocument()
@@ -680,34 +652,6 @@ describe('Graph edge and minimap controls', () => {
     expect(onRemove).toHaveBeenCalledWith('edge-one')
   })
 
-  it('renders minimap agents as blue circles while keeping the minimap node classes', () => {
-    const { container } = render(
-      <svg>
-        <AgentMinimapDot
-          id="step-one"
-          x={0}
-          y={0}
-          width={238}
-          height={92}
-          className="workflow-graph-minimap-node-selected"
-          selected
-          color="#1d4ed8"
-          strokeColor="#f2f2ef"
-          strokeWidth={2}
-          shapeRendering="geometricPrecision"
-          borderRadius={5}
-        />
-      </svg>,
-    )
-
-    const dot = container.querySelector('circle.react-flow__minimap-node')
-    expect(dot).toBeInTheDocument()
-    expect(dot).toHaveClass('selected')
-    expect(dot).toHaveClass('workflow-graph-minimap-node-selected')
-    expect(dot).toHaveAttribute('fill', '#1d4ed8')
-    expect(dot).toHaveStyle({ fill: '#1d4ed8' })
-    expect(dot).toHaveAttribute('r', '31')
-  })
 })
 
 describe('GraphEditor dirty-state gating', () => {
@@ -724,7 +668,7 @@ describe('GraphEditor dirty-state gating', () => {
     fireEvent.click(document.querySelector('.react-flow__pane') as HTMLElement)
     expect(screen.queryByRole('button', { name: 'Save graph' })).not.toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Open actions for Researcher' }))
+    await user.click(screen.getByRole('button', { name: 'Open Researcher settings' }))
     expect(screen.getByRole('dialog', { name: 'Researcher settings' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Save graph' })).not.toBeInTheDocument()
     fireEvent.mouseDown(document.body)
@@ -742,21 +686,6 @@ describe('GraphEditor dirty-state gating', () => {
     expect(screen.queryByRole('button', { name: 'Save graph' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument()
     expect(getGraphDraft(key)).toBeUndefined()
-  })
-
-  it('drops a resize that returns the node to the saved size', async () => {
-    const sizedWorkflow: WorkflowDefinition = {
-      ...workflow,
-      nodes: workflow.nodes.map((node) => (node.id === 'step-one' ? { ...node, width: 520, height: 112 } : node)),
-    }
-    const key = workflowDraftKey(workflow.workspaceId, workflow.id)
-    renderEditor({ workflow: sizedWorkflow, selectedAgentId: 'agent-one' })
-
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Resize selected node' }))
-
-    expect(getGraphDraft(key)).toBeUndefined()
-    expect(screen.queryByRole('button', { name: 'Save graph' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument()
   })
 
   it('returns to clean when every draft edit is reverted to the saved definition', () => {

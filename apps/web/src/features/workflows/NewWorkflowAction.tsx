@@ -32,11 +32,8 @@ export function NewWorkflowAction({ workspaceId, navigation = false, variant = '
         void navigate({
           to: '/workspaces/$workspaceId',
           params: { workspaceId },
-          search: (previous) => {
-            const next = { ...previous, workflowId }
-            delete next.agentId
-            return next
-          },
+          // A new workflow starts clean: no agent or Run selection from the previous board.
+          search: { workflowId },
         })
       }}
     /> : null}

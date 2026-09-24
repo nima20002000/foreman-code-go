@@ -46,7 +46,7 @@ vi.mock('@xyflow/react', async () => {
       return <div>{children}</div>
     },
     Background: () => null,
-    MiniMap: () => null,
+    Controls: () => null,
   }
 })
 

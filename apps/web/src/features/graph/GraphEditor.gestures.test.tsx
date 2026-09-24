@@ -20,7 +20,7 @@ vi.mock('@tanstack/react-router', async () => ({
 vi.mock('@xyflow/react', async () => ({
   ...await vi.importActual<typeof import('@xyflow/react')>('@xyflow/react'),
   ReactFlow: (props: ReactFlowProps<GraphNode, GraphEdge>) => { flow.props = props; return <div /> },
-  Background: () => null, MiniMap: () => null,
+  Background: () => null, Controls: () => null,
 }))
 vi.mock('./GraphElements', () => ({ AgentNode: () => null, AgentMinimapDot: () => null, HandoffEdge: () => null }))
 

@@ -64,48 +64,48 @@ export function nodeTitle(graph: WorkflowDefinitionV2, id: string): string {
 export function authoringHints(graph: WorkflowDefinitionV2, context: NextDraftContext, agentEdits: DraftAgentEdits = {}): AuthoringIssue[] {
   const issues: AuthoringIssue[] = []
   const entry = entryChoices(graph, context, agentEdits)
-  if (!graph.nodes.length) issues.push({ code: 'ENTRY_REQUIRED', message: 'Add a board Agent before selecting an entry.' })
-  else if (entry.unresolved.length) issues.push({ code: 'ROLE_PIN_UNAVAILABLE', message: 'A product-role pin is unavailable or changed. Reload the Agent context; labels cannot determine entry.' })
+  if (!graph.nodes.length) issues.push({ code: 'ENTRY_REQUIRED', message: 'Add an agent to start building this workflow.' })
+  else if (entry.unresolved.length) issues.push({ code: 'ROLE_PIN_UNAVAILABLE', message: 'An agent’s role changed or can’t be confirmed. Reload the saved draft.' })
   else if (!entry.valid) issues.push({ code: 'ENTRY_REQUIRED', message: entry.mode === 'sole'
-    ? 'The sole node must be the explicit entry.'
-    : entry.mode === 'orchestrator' ? 'Select an Orchestrator as entry. Reordering does not change entry.'
-      : 'Select a Worker as entry. Reordering does not change entry.' })
+    ? 'Mark the only agent as the one that starts the workflow.'
+    : entry.mode === 'orchestrator' ? 'Choose the orchestrator that starts the workflow.'
+      : 'Choose the worker that starts the workflow.' })
   for (const edge of graph.edges) {
     if (edge.kind === 'execution' && edge.target === graph.entryNodeId) issues.push({
-      code: 'ENTRY_HAS_DEPENDENCY', relationshipId: edge.id, message: 'Entry cannot have an incoming execution dependency. Remove or redirect this execution record.',
+      code: 'ENTRY_HAS_DEPENDENCY', relationshipId: edge.id, message: 'The starting agent can’t receive a handoff. Remove or redirect that connection.',
     })
   }
   for (const node of graph.nodes) {
     if (!node.choice) continue
-    if (!node.choice.outcomes.length) issues.push({ code: 'CHOICE_INCOMPLETE', nodeId: node.id, message: 'Declare at least one outcome and choose an execution edge or an explicit branch end.' })
+    if (!node.choice.outcomes.length) issues.push({ code: 'CHOICE_INCOMPLETE', nodeId: node.id, message: 'Add at least one outcome and send it to a handoff or end the branch.' })
     const declared = new Set<string>()
     const targets = new Set<string>()
     for (const item of node.choice.outcomes) {
-      if (!/^[a-z][a-z0-9_]{0,47}$/.test(item.outcome) || declared.has(item.outcome)) issues.push({ code: 'OUTCOME_INVALID', nodeId: node.id, message: 'Outcome names must be unique: a lowercase letter, then lowercase letters, digits or underscores (48 characters maximum).' })
+      if (!/^[a-z][a-z0-9_]{0,47}$/.test(item.outcome) || declared.has(item.outcome)) issues.push({ code: 'OUTCOME_INVALID', nodeId: node.id, message: 'Outcome names must be unique, start with a lowercase letter and use only lowercase letters, digits or underscores (up to 48).' })
       declared.add(item.outcome)
       if (item.target.kind === 'edge') {
         targets.add(item.target.relationshipId)
         if (!graph.edges.some((edge) => item.target.kind === 'edge' && edge.id === item.target.relationshipId && edge.kind === 'execution' && edge.source === node.id)) issues.push({
           code: 'CHOICE_TARGET_REQUIRED', nodeId: node.id, relationshipId: item.target.relationshipId,
-          message: 'Choose an existing outgoing execution record or explicitly end this branch. A missing edge is not a branch end.',
+          message: 'Send each outcome to one of this agent’s handoffs, or end the branch.',
         })
       }
     }
-    if (node.choice.outcomes.length > 16) issues.push({ code: 'CHOICE_TOO_LARGE', nodeId: node.id, message: 'A choice supports at most 16 declared outcomes.' })
+    if (node.choice.outcomes.length > 16) issues.push({ code: 'CHOICE_TOO_LARGE', nodeId: node.id, message: 'An agent can have at most 16 outcomes.' })
     for (const edge of graph.edges) if (edge.kind === 'execution' && edge.source === node.id && !targets.has(edge.id)) issues.push({
-      code: 'UNDECLARED_CHOICE_EDGE', nodeId: node.id, relationshipId: edge.id, message: 'Each outgoing choice edge needs a declared outcome. Ordinary fan-out is a separate mode.',
+      code: 'UNDECLARED_CHOICE_EDGE', nodeId: node.id, relationshipId: edge.id, message: 'Every handoff from an agent that chooses by outcome needs an outcome.',
     })
   }
   const approvals = graph.edges.filter((edge) => edge.kind === 'approval')
-  if (!graph.approval) issues.push({ code: 'APPROVAL_MODE_REQUIRED', message: 'Select an explicit approval handler before saving an executable version.' })
-  if (graph.approval?.handler !== 'orchestrator' && approvals.length) issues.push({ code: 'APPROVAL_MODE_CONFLICT', message: 'Human/Operator handling cannot include App reviewer assignments. Remove those records explicitly before switching authority.' })
+  if (!graph.approval) issues.push({ code: 'APPROVAL_MODE_REQUIRED', message: 'Choose who handles approvals in workflow settings.' })
+  if (graph.approval?.handler !== 'orchestrator' && approvals.length) issues.push({ code: 'APPROVAL_MODE_CONFLICT', message: 'Approval connections only work when an agent reviews approvals. Remove them or change who handles approvals.' })
   if (graph.approval?.handler === 'orchestrator') {
     const reviewer = graph.nodes.find((node) => node.agentId === graph.approval?.designatedOrchestratorAgentId)
     if (!reviewer || reviewer.id !== graph.entryNodeId || entry.roles.get(reviewer.id)?.role !== 'orchestrator') issues.push({
-      code: 'REVIEWER_BOOTSTRAP_UNSUPPORTED', message: 'Executable save supports one initialized reviewer: the explicitly designated entry Orchestrator.',
+      code: 'REVIEWER_BOOTSTRAP_UNSUPPORTED', message: 'The reviewer must be the orchestrator that starts the workflow.',
     })
     if (approvals.some((edge) => edge.source !== graph.entryNodeId || edge.target === graph.entryNodeId)) issues.push({
-      code: 'REVIEWER_BOOTSTRAP_UNSUPPORTED', message: 'These assignments require independent or nested reviewer startup. They may be draftable, but executable save does not support them.',
+      code: 'REVIEWER_BOOTSTRAP_UNSUPPORTED', message: 'Approval connections must go from the starting orchestrator to another agent.',
     })
   }
   return issues

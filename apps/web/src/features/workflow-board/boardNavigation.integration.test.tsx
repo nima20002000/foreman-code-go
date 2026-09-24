@@ -36,7 +36,7 @@ function Harness() {
   const workflowId = selected.workflowId!
   return <WorkflowBoardContext.Provider value={{ workspaceId: 'workspace', workflowId, run: selected.run,
     inspection: {}, selectInspection: () => undefined, conversionRequested: false, requestConversion: () => undefined,
-    closeConversion: () => undefined, openLocation: () => undefined,
+    closeConversion: () => undefined, openLocation: () => undefined, openRuns: () => undefined, activeRuns: 0,
     selectRun: (run) => { void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId: 'workspace' }, search: boardSearchForRun(selected.search, workflowId, run) }) },
   }}>
     <p data-testid="selected-run">{selected.run ? `${selected.run.runId}:${selected.run.workflowVersionId}` : 'No Run selected'}</p>

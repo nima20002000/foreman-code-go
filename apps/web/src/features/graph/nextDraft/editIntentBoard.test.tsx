@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -11,9 +11,15 @@ import { nextDraftKey } from './state'
 import { nextDraftApi } from './transport'
 import { readEditOutbox } from './editIntentStorage'
 
+async function confirmDiscard(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: /^Discard changes$/ }))
+  await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Discard changes' }))
+}
+
 // Mounted React state/form tests with a mocked transport and canvas. These do
 // not claim an authenticated browser, React Flow geometry or native Stop test.
-vi.mock('./DraftCanvas', () => ({ DraftCanvas: () => <div>Canvas test placeholder</div> }))
+vi.mock('./DraftCanvas', () => ({ DraftCanvas: ({ open, panels }: { open?: { nodeId: string; panel: 'chat' | 'settings' | 'info' }; panels?: (nodeId: string) => Record<string, unknown> }) => <div>Canvas fixture{open && panels
+  ? <section role="dialog" aria-label={`${open.nodeId} ${open.panel}`}>{panels(open.nodeId)[open.panel] as never}</section> : null}</div> }))
 vi.mock('../../../shared/api/query', async (original) => ({
   ...await original<typeof import('../../../shared/api/query')>(),
   useInteractionsQuery: () => ({ data: { items: [] } }),
@@ -65,8 +71,8 @@ afterEach(() => {
 it('shows both exact board actions; Discard does not Stop, publish, or erase independent layout', async () => {
   const stage = vi.spyOn(nextDraftApi, 'editStage'), advance = vi.spyOn(nextDraftApi, 'editAdvance'), start = vi.spyOn(nextDraftApi, 'start')
   const user = userEvent.setup(); mount(); changeMeaning()
-  expect(screen.getByRole('button', { name: /^Stop current Run and save edits$/ })).toBeInTheDocument()
-  await user.click(screen.getByRole('button', { name: /^Discard changes$/ }))
+  expect(screen.getByRole('button', { name: /^Save changes$/ })).toBeInTheDocument()
+  await confirmDiscard(user)
   const edit = useGraphDraftStore.getState().nextDrafts[key]!
   expect(edit.graph.nodes[0]?.initialPrompt).toBeUndefined()
   expect(edit.graph.nodes[0]?.position).toEqual({ x: 802, y: -71 }); expect(edit.context.draft.revision).toBe(7)
@@ -84,21 +90,21 @@ it('recovers a dropped Stage reply after full form-memory loss and retries the s
   })
   const start = vi.spyOn(nextDraftApi, 'start'), user = userEvent.setup(), first = mount()
   changeMeaning()
-  await user.click(screen.getByRole('button', { name: /^Stop current Run and save edits$/ }))
+  await user.click(screen.getByRole('button', { name: /^Save changes$/ }))
   await waitFor(() => expect(stage).toHaveBeenCalledOnce())
-  await waitFor(() => expect(screen.getByRole('button', { name: /^Stop current Run and save edits$/ })).toBeEnabled())
+  await waitFor(() => expect(screen.getByRole('button', { name: /^Save changes$/ })).toBeEnabled())
   const request = stage.mock.calls[0]![0]
   expect(readEditOutbox(key)?.request).toEqual(request)
   first.unmount()
   // Deliberate memory loss only; logout/clearAllDrafts would correctly purge the session.
   act(() => useGraphDraftStore.setState({ nextDrafts: {} }))
   mount()
-  await user.click(await screen.findByRole('button', { name: /^Stop current Run and save edits$/ }))
+  await user.click(await screen.findByRole('button', { name: /^Save changes$/ }))
   await waitFor(() => expect(advance).toHaveBeenCalledOnce())
   expect(stage.mock.calls[1]![0]).toEqual(request)
   expect(advance.mock.calls[0]![0]).toMatchObject({ intentId: 'private-intent', commandId: 'exact-advance', action: 'stop_and_save' })
   expect(useGraphDraftStore.getState().nextDrafts[key]?.graph.nodes[0]?.initialPrompt).toBe('Retained exact instruction')
-  expect(screen.getByText('shared-workflow', { selector: 'code' })).toBeInTheDocument()
+  expect(screen.getByText(/another workflow/)).toBeInTheDocument()
   expect(start).not.toHaveBeenCalled()
 })
 it('duplicate clicks share one stage/advance; private Discard reconciles without another Stop', async () => {
@@ -109,11 +115,11 @@ it('duplicate clicks share one stage/advance; private Discard reconciles without
   const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => new Promise((resolve) => { release = resolve }))
   const discard = vi.spyOn(nextDraftApi, 'editDiscard').mockImplementation(async () => (persisted = { ...persisted, intent: { ...persisted.intent!, state: 'discarded' } }))
   const user = userEvent.setup(); mount(); changeMeaning()
-  await user.dblClick(screen.getByRole('button', { name: /^Stop current Run and save edits$/ }))
+  await user.dblClick(screen.getByRole('button', { name: /^Save changes$/ }))
   await waitFor(() => expect(advance).toHaveBeenCalledOnce())
   expect(stage).toHaveBeenCalledOnce()
   await act(async () => { persisted = { ...persisted, intent: { ...persisted.intent!, state: 'waiting' } }; release(persisted) })
-  await user.click(screen.getByRole('button', { name: /^Discard changes$/ }))
+  await confirmDiscard(user)
   await waitFor(() => expect(discard).toHaveBeenCalledOnce())
   expect(discard.mock.calls[0]![0]).toMatchObject({ intentId: 'private-intent', commandId: 'exact-discard', action: 'discard_edits' })
   expect(advance).toHaveBeenCalledOnce()

@@ -16,8 +16,10 @@ import { FieldValidationError, fieldMessage, focusFirstInvalid, issuesAt, valida
 import './agentSettingsPanel.css'
 
 export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onClose, onRemove, onSave,
-  executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 }, workspaceId, workflowApprovalHandler, designatedOrchestrator = false,
+  executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 }, workspaceId, workflowApprovalHandler, designatedOrchestrator = false, embedded = false,
 }: {
+  /** Inside an agent popover: the popover owns the title and close button. */
+  embedded?: boolean
   agent: Agent
   initialPrompt?: string
   creationDefaults?: HarnessDefaults
@@ -87,8 +89,13 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
   const leave = useUnsavedChanges({ scope: 'surface', label: 'agent settings', get dirty() { return currentSnapshot !== initialSnapshot.current },
     error, save, discard: () => { initialSnapshot.current = currentSnapshot; onClose() },
   })
-  return <div ref={root} className="agent-settings-panel">
-    <header className="agent-settings-heading">
+  return <div ref={root} className={`agent-settings-panel${embedded ? ' agent-settings-panel-embedded' : ''}`}>
+    {embedded ? view === 'advanced' ? <header className="agent-settings-heading">
+      <div className="agent-settings-title">
+        <IconButton size="sm" variant="ghost" className="agent-settings-back" label="Back to general settings" onClick={() => setView('general')}><Icon name="chevron" size={15} /></IconButton>
+        <strong>Advanced settings</strong>
+      </div>
+    </header> : null : <header className="agent-settings-heading">
       <div className="agent-settings-title">
         {view === 'advanced' ? <IconButton size="sm" variant="ghost" className="agent-settings-back" label="Back to general settings" onClick={() => setView('general')}><Icon name="chevron" size={15} /></IconButton> : null}
         <strong>{view === 'advanced' ? 'Advanced settings' : 'Agent settings'}</strong>
@@ -97,7 +104,7 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
       <Button size="sm" variant="primary" className="agent-settings-save" aria-label="Save agent settings" disabled={!isDirty} onClick={save} leading={<Icon name="check" size={13} />}>Save</Button>
       <IconButton size="sm" variant="ghost" label="Close agent settings" onClick={() => void leave(onClose)}><Icon name="close" size={15} /></IconButton>
       </div>
-    </header>
+    </header>}
     {view === 'general' ? <div className="agent-settings-general">
       <div className="agent-settings-row agent-settings-row-primary">
         <TextField label="Name" aria-label="Name" value={name} error={nameError} onChange={(event) => { setName(event.target.value); clearErrors() }} />
@@ -114,12 +121,14 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
     </div> : <div className="agent-settings-advanced-view">
       <Textarea label="Initial prompt" aria-label="Initial prompt" className="agent-settings-prompt" rows={3} value={prompt} onChange={(event) => { setPrompt(event.target.value); clearErrors() }} />
       <HarnessConfigurationFields editor={editor} issues={issuesAt(issues, ['harness'])} onChange={(next) => { setEditor(next); clearErrors() }} allowHarnessChange={false} harnessDefaults={providerDefaults} workspaceId={workspaceId} routedApproval={Boolean(workflowApprovalHandler)} allowAutoReview={workflowApprovalHandler === 'orchestrator'} compact advancedOnly />
-      <p className="settings-help">Save updates this graph draft. Use Save graph to persist it.</p>
+      {embedded ? null : <p className="settings-help">Save updates this graph draft. Use Save graph to persist it.</p>}
     </div>}
     {error ? <Alert tone="danger" live title={error} /> : null}
     <footer className="agent-settings-footer">
       {view === 'general' ? <Button size="sm" variant="ghost" className="agent-settings-advanced-link" onClick={() => setView('advanced')} trailing={<Icon name="chevron" size={13} />}>Advanced settings</Button> : null}
-      {onRemove ? <IconButton size="sm" variant="ghost" className="agent-settings-trash" label={`Remove ${agent.name} from workflow`} onClick={onRemove}><Icon name="minus" size={15} /></IconButton> : null}
+      {onRemove ? embedded ? <Button size="sm" variant="ghost" className="agent-settings-trash" aria-label={`Remove ${agent.name} from workflow`} onClick={onRemove}>Remove from workflow</Button>
+        : <IconButton size="sm" variant="ghost" className="agent-settings-trash" label={`Remove ${agent.name} from workflow`} onClick={onRemove}><Icon name="minus" size={15} /></IconButton> : null}
+      {embedded ? <Button size="sm" variant="primary" className="agent-settings-save" aria-label="Save agent settings" disabled={!isDirty} onClick={save}>Apply</Button> : null}
     </footer>
   </div>
 }

@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -18,9 +18,20 @@ import { acknowledgeEditIntentSnapshot } from './useGraphEditIntent'
 import { inFollowupTab } from './nim2644Followup.cases'
 import { repairFixture } from './nim2644State.cases'
 
+async function confirmDiscard(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: /^Discard changes$/ }))
+  await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Discard changes' }))
+}
+async function reloadSavedDraft(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: 'Reload saved draft' }))
+  const dialog = screen.queryByRole('alertdialog')
+  if (dialog) await user.click(within(dialog).getByRole('button', { name: 'Reload saved draft' }))
+}
+
 // Mounted Query/Zustand/form regressions with the existing transport boundary
 // mocked. Not authenticated HTTP/MCP, a real browser/canvas, or native Stop evidence.
-vi.mock('./DraftCanvas', () => ({ DraftCanvas: () => <div>Canvas fixture</div> }))
+vi.mock('./DraftCanvas', () => ({ DraftCanvas: ({ open, panels }: { open?: { nodeId: string; panel: 'chat' | 'settings' | 'info' }; panels?: (nodeId: string) => Record<string, unknown> }) => <div>Canvas fixture{open && panels
+  ? <section role="dialog" aria-label={`${open.nodeId} ${open.panel}`}>{panels(open.nodeId)[open.panel] as never}</section> : null}</div> }))
 vi.mock('../../../shared/api/query', async (original) => {
   const { DEFAULT_HARNESS_DEFAULTS } = await import('@graphql/contracts')
   return { ...await original<typeof import('../../../shared/api/query')>(),
@@ -34,7 +45,7 @@ const key = nextDraftKey('workspace', 'workflow'), clients: QueryClient[] = []
 const empty: GraphEditReadResult = { intent: null, current: [], canStop: false, affectedSetChanged: false }
 const hash = 'sha256:' + '1'.repeat(64), now = '2026-09-24T00:00:00Z'
 const edit = () => useGraphDraftStore.getState().nextDrafts[key]!
-const saveButton = () => screen.getByRole('button', { name: /^Stop current Run and save edits$/ })
+const saveButton = () => screen.getByRole('button', { name: /^Save changes$/ })
 const startButton = () => screen.getByRole('button', { name: 'Start saved version' })
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
@@ -134,11 +145,11 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     const advance = vi.spyOn(nextDraftApi, 'editAdvance'), user = userEvent.setup()
     mount(); typeMeaning(); await user.click(saveButton())
     await waitFor(() => expect(stage).toHaveBeenCalledOnce())
-    await waitFor(() => expect(screen.getByText(/The local form is retained. Correct it/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/Your edits are still here/)).toBeInTheDocument())
     expect(readEditOutbox(key)).toBeUndefined(); expect(edit().graph.nodes[0]?.initialPrompt).toBe('submitted instruction')
     expect(readEditSnapshot(key)?.graph.nodes[0]?.initialPrompt).toBe('submitted instruction')
     expect(startButton()).toBeDisabled()
-    await user.click(screen.getByRole('button', { name: /^Discard changes$/ }))
+    await confirmDiscard(user)
     expect(edit().graph.nodes[0]?.initialPrompt).toBeUndefined()
     expect(stage).toHaveBeenCalledOnce(); expect(advance).not.toHaveBeenCalled(); expect(nextDraftApi.start).not.toHaveBeenCalled()
     await waitFor(() => expect(startButton()).toBeEnabled())
@@ -156,7 +167,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     const fresh = repairFixture(1); fresh.draft.revision = 8; fresh.draft.publishedRevision = 8
     vi.mocked(nextDraftApi.context).mockResolvedValue(fresh); vi.spyOn(window, 'confirm').mockReturnValue(true)
     await user.click(screen.getByRole('button', { name: 'Workflow settings' }))
-    await user.click(screen.getByRole('button', { name: 'Reload shared draft' }))
+    await reloadSavedDraft(user)
     await waitFor(() => expect(edit().context.draft.revision).toBe(8))
     typeMeaning('corrected'); await user.click(saveButton())
     await waitFor(() => expect(advance).toHaveBeenCalledOnce())
@@ -202,15 +213,13 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     const stage = vi.spyOn(nextDraftApi, 'editStage').mockImplementation(async (input) => (persisted = stageValue(input)))
     const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => (persisted = published(persisted)))
     const user = userEvent.setup(), first = mount(), node = await createWorker(user)
-    await user.click(screen.getByText('Select a board node or connection'))
-    await user.click(screen.getByRole('button', { name: 'Entry · Node 0' }))
-    await user.click(screen.getByRole('button', { name: 'Remove node' }))
+        await user.click(screen.getByRole('button', { name: 'Entry · Node 0' }))
+    await user.click(screen.getByRole('button', { name: /from workflow$/ }))
     expect(edit().graph.entryNodeId).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Workflow settings' }))
-    const option = screen.getByRole('option', { name: 'Worker 2 · Worker' })
+    const option = screen.getByRole('option', { name: /^Worker \d$/ })
     expect(option).toBeEnabled()
-    expect(screen.getByText(/Local Agent roles are pending server validation/)).toBeInTheDocument()
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Entry node' }), node.id)
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Starts the workflow' }), node.id)
     expect(edit().graph.entryNodeId).toBe(node.id); expect(startButton()).toBeDisabled()
     await user.click(saveButton()); await waitFor(() => expect(advance).toHaveBeenCalledOnce())
     await waitFor(() => expect(startButton()).toBeEnabled())
@@ -287,9 +296,10 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
       typeMeaning('independently newer')
       act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => removeNode(graph, 'node-2')))
     }
-    await user.click(screen.getByRole('button', { name: /^Discard changes$/ }))
+    await confirmDiscard(user)
     await waitFor(() => expect(discard).toHaveBeenCalledOnce())
-    await waitFor(() => expect(saveButton()).toBeEnabled())
+    // With nothing left to save the save bar closes; otherwise Save is available again.
+    await waitFor(() => { const button = screen.queryByRole('button', { name: /^Save changes$/ }); if (button) expect(button).toBeEnabled() })
     if (dropped) {
       expect(readEditOutbox(key)).toBeDefined(); expect(edit().graph.nodes.some((node) => node.id === 'node-1')).toBe(false)
     } else await waitFor(() => expect(readEditOutbox(key)).toBeUndefined())
@@ -330,7 +340,7 @@ describe('NIM-2644 follow-up stale existing-Agent attach', () => {
     expect(screen.getByRole('button', { name: /^Discard changes$/ })).toBeEnabled()
     expect(advance).not.toHaveBeenCalled()
     if (action === 'discard') {
-      await user.click(screen.getByRole('button', { name: /^Discard changes$/ }))
+      await confirmDiscard(user)
       expect(edit().graph.nodes.some((node) => node.id === 'attached-worker')).toBe(false)
       expect(stage).toHaveBeenCalledOnce()
       await waitFor(() => expect(startButton()).toBeEnabled())
@@ -343,7 +353,7 @@ describe('NIM-2644 follow-up stale existing-Agent attach', () => {
       vi.mocked(nextDraftApi.context).mockResolvedValue(fresh)
       vi.spyOn(window, 'confirm').mockReturnValue(true)
       await user.click(screen.getByRole('button', { name: 'Workflow settings' }))
-      await user.click(screen.getByRole('button', { name: 'Reload shared draft' }))
+      await reloadSavedDraft(user)
       await waitFor(() => expect(edit().context.agents[1]?.metadataRevision).toBe(source.metadataRevision + 1))
       act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => attachAgent(graph, fresh.agents[1]!, 'attached-worker')))
       await user.click(saveButton()); await waitFor(() => expect(advance).toHaveBeenCalledOnce())
@@ -410,9 +420,10 @@ describe('NIM-2644 follow-up mounted stale-tab readback', () => {
     act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => removeNode(graph, 'node-2')))
     await user.click(saveButton()); await waitFor(() => expect(advance).toHaveBeenCalledOnce())
     moveSurvivor()
-    await user.click(screen.getByRole('button', { name: /^Discard changes$/ }))
+    await confirmDiscard(user)
     await waitFor(() => expect(discard).toHaveBeenCalledOnce())
-    await waitFor(() => expect(saveButton()).toBeEnabled())
+    // With nothing left to save the save bar closes; otherwise Save is available again.
+    await waitFor(() => { const button = screen.queryByRole('button', { name: /^Save changes$/ }); if (button) expect(button).toBeEnabled() })
     if (newer) typeMeaning('independent newer instruction')
     const raw = structuredClone(edit()), sibling = siblingConsumes(persisted)
     expect(sibling.getState().edit.graph.nodes.map((node) => node.id)).toEqual(['node-0', 'node-1', 'node-2'])

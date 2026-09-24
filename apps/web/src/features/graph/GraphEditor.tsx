@@ -4,6 +4,7 @@ import { useCallback, useContext, useEffect, useMemo, useRef, useState, type Key
 import { Inbox } from 'lucide-react'
 import { WorkflowExecutionLimits } from './WorkflowExecutionLimits'
 import { EnableTypedDraftButton } from '../workflow-board/EnableTypedDraftButton'
+import { useWorkflowBoard } from '../workflow-board/context'
 import {
   Alert,
   Button,
@@ -57,7 +58,6 @@ import {
 import type { GraphSaveSnapshot } from './store'
 import { motionEnabled, usePresence } from '../../shared/ui/usePresence'
 import { useDismissableSurface, type SurfaceDismissReason } from '../../shared/ui/useDismissableSurface'
-import { useTheme } from '../theme'
 import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
 import {
   defaultAgentForHarness,
@@ -221,7 +221,6 @@ function GraphEditorBody({
   managedDraft,
   managedAgentRevisions = {},
 }: GraphEditorProps) {
-  const theme = useTheme()
   const toasts = useContext(ToastContext)
   const navigationGuard = useContext(UnsavedChangesContext)
   const leaveSurface = useCallback(async (action: () => void) => {
@@ -237,6 +236,7 @@ function GraphEditorBody({
   const managedSaving = useGraphDraftStore((state) => Boolean(state.managedSaving[workflowKey]))
   const saveLock = useRef(false)
   const geometryRef = useRef<GraphCanvasHandle>(null)
+  const board = useWorkflowBoard()
   const geometryStartRef = useRef<{ snapshot: GraphSaveSnapshot; generation: ReturnType<typeof sessionGeneration> } | undefined>(undefined)
   const [geometryBase, setGeometryBase] = useState<GraphSaveSnapshot>()
   const [geometryDirty, setGeometryDirty] = useState(false)
@@ -1142,7 +1142,7 @@ function GraphEditorBody({
       <div className="workflow-graph-canvas" data-testid="workflow-graph-canvas" ref={canvasRef}>
         <GraphNodeMenuContext.Provider value={nodeMenuValue}>
           <GraphRuntimeProvider scope={runtimeScope}>
-            <GraphCanvas topology={graph} departing={departing} theme={theme} geometryRef={geometryRef}
+            <GraphCanvas topology={graph} departing={departing} geometryRef={geometryRef}
               onGeometryStart={beginGeometry} onGeometryCommit={commitGeometry} onGeometryCancel={cancelGeometry}
               onConnect={connectAction} isValidConnection={validConnection} onPaneClick={paneClickAction} onInit={initializeCanvas} />
           </GraphRuntimeProvider>
@@ -1150,11 +1150,11 @@ function GraphEditorBody({
 
         <div className="workflow-graph-primary-actions">
           <Toolbar label="Workflow controls">
-            {managedDraft ? <EnableTypedDraftButton /> : null}
             <Button ref={workflowSettingsButtonRef} variant="secondary" className="n-icon-button workflow-graph-add-agent" aria-label="Workflow settings" title="Workflow settings"
               aria-haspopup="dialog" aria-expanded={workflowSettingsOpen} aria-controls={workflowSettingsOpen ? 'workflow-settings-popover' : undefined}
               onClick={() => void leaveSurface(() => { setAgentPickerOpen(false); setOpenMenuNodeId(undefined); setWorkflowSettingsOpen((open) => !open) })}><Icon name="settings" size={16} /></Button>
             <HumanApprovalInboxButton workspaceId={workspaceId} workflowId={displayedWorkflow.id} />
+            {board ? <IconButton label="Runs" onClick={board.openRuns}><Icon name="history" size={16} /></IconButton> : null}
             <Button
               variant="secondary"
               className="n-icon-button workflow-graph-run"
@@ -1200,7 +1200,7 @@ function GraphEditorBody({
         </div>
 
         {workflowSettingsOpen ? <div ref={workflowSettingsRef} id="workflow-settings-popover" className="workflow-settings-popover" role="dialog" aria-modal={false} aria-labelledby="workflow-settings-title">
-          <header><div><p className="n-eyebrow">Local override</p><h2 id="workflow-settings-title">Workflow settings</h2></div><IconButton label="Close workflow settings" variant="ghost" onClick={() => closeWorkflowSettings()}><Icon name="close" size={16} /></IconButton></header>
+          <header><div><h2 id="workflow-settings-title">Workflow settings</h2></div><IconButton label="Close workflow settings" variant="ghost" onClick={() => closeWorkflowSettings()}><Icon name="close" size={16} /></IconButton></header>
           <Select
             label="Approval handler"
             value={displayedWorkflow.approval?.handler ?? ''}
@@ -1238,7 +1238,9 @@ function GraphEditorBody({
             value={executionPolicy} nodeCount={displayedWorkflow.nodes.length}
             onApply={(next) => applyBoardChange((saved) => ({ ...saved, executionPolicy: next }))}
           />
-          <p>Normal graph edges do not grant approval authority. These workflow settings are pinned when you Save graph.</p>
+          <p>These settings are saved with the workflow when you save the graph.</p>
+          {managedDraft ? <section className="workflow-settings-upgrade"><h3>Parallel runs</h3>
+            <p>Let agents hand work to several others at once and choose which one starts.</p><EnableTypedDraftButton /></section> : null}
         </div> : null}
 
         {showGraphActions ? (
@@ -1363,5 +1365,5 @@ export function WorkflowGraph({ workspaceId, workflowId, selectedAgentId, onSele
     managedDraft={managedContextQuery.data.draft} managedAgentRevisions={revisions} />
 }
 
-export { AgentMinimapDot, AgentNode, HandoffEdge } from './GraphElements'
+export { AgentNode, HandoffEdge } from './GraphElements'
 export { AgentSettingsForm } from './AgentSettingsForm'

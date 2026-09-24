@@ -1,0 +1,302 @@
+/* The agent canvas (design-system AgentNode, SignalEdge, AgentPopover), on xyflow.
+   Harness color is identity; state keeps its word and the four state hues.
+   Motion lives only here, is decorative, and stops under reduced motion. */
+
+.n-agent {
+  --agent-size: 212px;
+  --agent-hue: var(--harness-neutral);
+  position: relative;
+  width: var(--agent-size);
+  height: var(--agent-size);
+  color: var(--text);
+  font-family: var(--font-sans);
+  isolation: isolate;
+}
+.n-agent[data-harness='codex'] { --agent-hue: var(--harness-codex); }
+.n-agent[data-harness='opencode'] { --agent-hue: var(--harness-opencode); }
+
+.n-agent-core {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 30px 0 0;
+  border: 1px solid color-mix(in srgb, var(--agent-hue) 35%, var(--border));
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--agent-hue) 4%, var(--surface-raised));
+  color: inherit;
+  font: inherit;
+  cursor: inherit;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+.n-agent-core:hover,
+.n-agent[data-selected] .n-agent-core,
+.n-agent[data-open] .n-agent-core {
+  border-color: var(--agent-hue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--agent-hue) 16%, transparent);
+}
+.n-agent-core:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
+
+.n-agent-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 172px;
+  color: var(--text-muted);
+  font: var(--type-eyebrow);
+  letter-spacing: var(--type-eyebrow-tracking);
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.n-agent-status i { flex: none; width: 6px; height: 6px; border-radius: var(--radius-full); background: currentColor; }
+.n-agent-glyph { display: grid; place-items: center; height: 20px; margin: 6px 0 2px; color: var(--agent-hue); }
+.n-agent-name {
+  max-width: 156px;
+  overflow: hidden;
+  color: var(--text-strong);
+  font: var(--type-heading);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.n-agent-harness {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--agent-hue);
+  font: var(--type-caption);
+}
+.n-agent-harness::before { content: ''; width: 4px; height: 4px; border-radius: var(--radius-full); background: currentColor; }
+.n-agent-model {
+  max-width: 140px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font: var(--type-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.n-agent-meta {
+  display: flex;
+  gap: var(--space-4);
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid color-mix(in srgb, var(--agent-hue) 14%, var(--border));
+}
+.n-agent-meta > span { display: grid; min-width: 44px; justify-items: center; }
+.n-agent-meta > span + span { padding-left: var(--space-4); border-left: 1px solid var(--border); }
+.n-agent-meta small { color: var(--text-faint); font: var(--type-eyebrow); letter-spacing: var(--type-eyebrow-tracking); text-transform: uppercase; }
+.n-agent-meta b { max-width: 84px; overflow: hidden; color: var(--text); font: var(--type-control); text-overflow: ellipsis; white-space: nowrap; }
+
+/* State: always a word; hue only reinforces it. */
+.n-agent[data-state='running'] .n-agent-status,
+.n-agent[data-state='queued'] .n-agent-status { color: var(--agent-hue); }
+.n-agent[data-state='waiting'] .n-agent-status { color: var(--warning); }
+.n-agent[data-state='completed'] .n-agent-status { color: var(--success); }
+.n-agent[data-state='failed'] .n-agent-status,
+.n-agent[data-state='failed'] .n-agent-glyph { color: var(--danger); }
+.n-agent[data-state='failed'] .n-agent-core { border-color: var(--danger-border); }
+.n-agent[data-state='unavailable'] .n-agent-core { opacity: .7; }
+.n-agent[data-state='running'] .n-agent-core {
+  border-color: color-mix(in srgb, var(--agent-hue) 70%, var(--border));
+  background: color-mix(in srgb, var(--agent-hue) 7%, var(--surface-raised));
+}
+
+/* Energy field: a harness-colored light circling a running agent. Decoration only. */
+.n-agent-energy {
+  position: absolute;
+  inset: -10px;
+  z-index: 0;
+  border-radius: var(--radius-full);
+  opacity: 0;
+  pointer-events: none;
+  background: radial-gradient(closest-side, transparent 88%, color-mix(in srgb, var(--agent-hue) 22%, transparent) 94%, transparent 100%);
+  transition: opacity 400ms ease;
+}
+.n-agent-energy::after {
+  content: '';
+  position: absolute;
+  inset: 6px;
+  border-radius: inherit;
+  background: conic-gradient(from 0deg, transparent 0 62%, color-mix(in srgb, var(--agent-hue) 70%, transparent) 88%, transparent 100%);
+  -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  mask: radial-gradient(closest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+}
+.n-agent[data-state='running'] .n-agent-energy { opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .n-agent[data-state='running'] .n-agent-energy::after { animation: n-agent-orbit 3.2s linear infinite; }
+}
+@keyframes n-agent-orbit { to { transform: rotate(1turn); } }
+
+.n-agent-done {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 2;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--success) 40%, var(--border));
+  border-radius: var(--radius-full);
+  background: var(--surface-raised);
+  color: var(--success);
+}
+.n-agent-entry {
+  position: absolute;
+  left: 50%;
+  bottom: -30px;
+  transform: translateX(-50%);
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font: var(--type-caption);
+  white-space: nowrap;
+}
+
+/* Rim actions: Chat, Settings, Info on the upper-right rim, revealed on hover, focus or selection. */
+.n-agent-actions { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+.n-agent-actions::before { content: ''; position: absolute; left: 132px; top: -34px; width: 130px; height: 150px; border-radius: 40% 60% 60% 30%; }
+.n-agent-action {
+  position: absolute;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--agent-hue) 30%, var(--border-strong));
+  border-radius: var(--radius-full);
+  background: var(--surface-raised);
+  color: var(--agent-hue);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(6px) scale(.9);
+  transition: opacity 140ms ease, transform 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+.n-agent-action--chat { left: 146px; top: -29px; }
+.n-agent-action--settings { left: 194px; top: 10px; transition-delay: 30ms; }
+.n-agent-action--info { left: 218px; top: 66px; transition-delay: 60ms; }
+.n-agent-action:hover { border-color: var(--agent-hue); background: color-mix(in srgb, var(--agent-hue) 10%, var(--surface-raised)); }
+.n-agent-action:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.n-agent-action[aria-expanded='true'] { border-color: var(--agent-hue); background: var(--agent-hue); color: var(--on-harness); }
+.n-agent:hover .n-agent-actions::before,
+.n-agent[data-selected] .n-agent-actions::before,
+.n-agent[data-open] .n-agent-actions::before,
+.n-agent:hover .n-agent-action,
+.n-agent:focus-within .n-agent-action,
+.n-agent[data-selected] .n-agent-action,
+.n-agent[data-open] .n-agent-action { pointer-events: auto; }
+.n-agent-action { pointer-events: none; }
+.is-connecting .n-agent-actions { display: none; }
+.n-agent:hover .n-agent-action,
+.n-agent:focus-within .n-agent-action,
+.n-agent[data-selected] .n-agent-action,
+.n-agent[data-open] .n-agent-action { opacity: 1; transform: none; }
+.n-agent[data-pending] .n-agent-action--settings::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--surface-raised);
+  border-radius: var(--radius-full);
+  background: var(--warning);
+}
+
+/* Popover beside the node. */
+.n-agent-popover {
+  --agent-hue: var(--harness-neutral);
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  width: min(392px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-popover);
+  color: var(--text);
+  font: var(--type-body);
+}
+.n-agent-popover[data-harness='codex'] { --agent-hue: var(--harness-codex); }
+.n-agent-popover[data-harness='opencode'] { --agent-hue: var(--harness-opencode); }
+.n-agent-popover-header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); padding: var(--space-4) var(--space-4) 0; }
+.n-agent-popover-header h2 { margin: 0; overflow: hidden; color: var(--text-strong); font: var(--type-heading); text-overflow: ellipsis; white-space: nowrap; }
+.n-agent-popover-header p { margin: 0; color: var(--text-muted); font: var(--type-caption); }
+.n-agent-popover-glyph { display: grid; width: 36px; height: 36px; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-hover); color: var(--agent-hue); }
+.n-agent-popover > .n-tabs { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+.n-agent-popover .n-tab-list { padding: 0 var(--space-4); }
+.n-agent-popover .n-tab-panel { min-height: 0; flex: 1; overflow: auto; padding: 0; overscroll-behavior: contain; }
+.n-agent-popover-body { display: grid; gap: var(--space-4); padding: var(--space-4); }
+.n-agent-popover-body > * { min-width: 0; }
+@media (max-width: 720px) {
+  .n-agent-popover { inset: auto 0 0; width: 100%; max-height: 75vh; border-radius: var(--radius-lg) var(--radius-lg) 0 0; box-shadow: var(--shadow-dialog); }
+}
+
+.n-agent-facts { display: grid; gap: var(--space-2); margin: 0; }
+.n-agent-facts > div { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: var(--space-3); }
+.n-agent-facts dt { color: var(--text-muted); }
+.n-agent-facts dd { margin: 0; overflow-wrap: anywhere; color: var(--text); }
+.n-agent-facts dd.n-mono { font: var(--type-mono); }
+
+@media (prefers-reduced-motion: reduce) {
+  .n-agent-core, .n-agent-action, .n-agent-energy { transition: none; }
+}
+
+/* SignalEdge: direction is a mid chevron; light marks a handoff (task), a result coming home (return) or a failure. */
+.n-signal-edge { --edge-signal: var(--signal-task); }
+.n-signal-edge[data-signal='return'] { --edge-signal: var(--signal-return); }
+.n-signal-edge[data-signal='error'] { --edge-signal: var(--danger); }
+.react-flow__edge .n-signal-edge .n-signal-edge-base, .n-signal-edge .n-signal-edge-base { fill: none; stroke: var(--border-strong); stroke-width: 1.4; stroke-linecap: round; transition: stroke 140ms ease; }
+.n-signal-edge[data-kind='approval'] .n-signal-edge-base { stroke-dasharray: 5 4; }
+.react-flow__edge:hover .n-signal-edge .n-signal-edge-base,
+.react-flow__edge.selected .n-signal-edge .n-signal-edge-base,
+.react-flow__edge:focus-visible .n-signal-edge .n-signal-edge-base,
+.n-signal-edge[data-focused] .n-signal-edge-base { stroke: var(--text-muted); stroke-width: 2; }
+.n-signal-edge-trace { fill: none; stroke: var(--edge-signal); stroke-width: 2.4; stroke-linecap: round; opacity: .45; pointer-events: none; }
+.n-signal-edge-chevron { fill: none; stroke: var(--text-faint); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+.n-signal-edge[data-signal] .n-signal-edge-chevron { stroke: var(--edge-signal); }
+.n-signal-edge-pulse { display: none; fill: var(--surface-raised); stroke: var(--edge-signal); stroke-width: 2; pointer-events: none; offset-rotate: 0deg; }
+@media (prefers-reduced-motion: no-preference) {
+  .n-signal-edge-pulse { display: block; animation: n-signal-travel 1.6s cubic-bezier(.45, 0, .25, 1) 1 both; }
+  .n-signal-edge-pulse[data-reversed] { animation-direction: reverse; }
+}
+@keyframes n-signal-travel {
+  0% { offset-distance: 0%; opacity: 0; }
+  12% { opacity: 1; }
+  88% { opacity: 1; }
+  100% { offset-distance: 100%; opacity: 0; }
+}
+.n-signal-edge-badge rect { fill: var(--surface-raised); stroke: var(--border); }
+.n-signal-edge-badge text { fill: var(--text-muted); font: var(--type-eyebrow); letter-spacing: var(--type-eyebrow-tracking); text-transform: uppercase; }
+.n-signal-edge[data-signal] .n-signal-edge-badge text { fill: var(--edge-signal); }
+
+/* xyflow adapter: fixed-size circles, connection port on the rim, a whole-circle drop target. */
+.react-flow__node.react-flow__node-agent { width: var(--agent-size, 212px) !important; height: var(--agent-size, 212px) !important; padding: 0; border: 0; background: transparent; box-shadow: none; }
+.react-flow__node.react-flow__node-agent.selected, .react-flow__node.react-flow__node-agent:focus-visible { outline: none; box-shadow: none; }
+.react-flow__node-agent:focus-visible .n-agent-core { outline: 2px solid var(--focus); outline-offset: 4px; }
+.is-connecting .n-agent .n-agent-target.react-flow__handle { z-index: 6; pointer-events: auto; }
+.n-agent .n-agent-port.react-flow__handle {
+  top: 50%; right: -7px; left: auto; z-index: 4;
+  width: 14px; height: 14px; min-width: 0; min-height: 0;
+  border: 3px solid var(--surface-raised); border-radius: var(--radius-full);
+  background: var(--agent-hue); box-shadow: 0 0 0 1px var(--agent-hue);
+  opacity: 0; transform: translate(0, -50%) scale(.8); transition: opacity 140ms ease, transform 140ms ease; cursor: crosshair;
+}
+.n-agent:hover .n-agent-port.react-flow__handle, .n-agent[data-selected] .n-agent-port.react-flow__handle,
+.react-flow__handle.n-agent-port.connectingfrom { opacity: 1; transform: translate(0, -50%) scale(1); }
+.n-agent .n-agent-target.react-flow__handle {
+  inset: 0; width: 100%; height: 100%; min-width: 0; min-height: 0; transform: none;
+  border: 0; border-radius: var(--radius-full); background: transparent; opacity: 0; pointer-events: none;
+}
+.react-flow__handle.n-agent-target.connectingto, .react-flow__handle.n-agent-target.valid { opacity: 1; box-shadow: inset 0 0 0 2px var(--signal-task); }
+.react-flow__connection-path { stroke: var(--signal-task); stroke-width: 2; stroke-dasharray: 4 6; }
+.react-flow__attribution { display: none; }
+.n-agent .n-agent-side.react-flow__handle { top: 50%; left: 50%; right: auto; bottom: auto; width: 1px; height: 1px; min-width: 0; min-height: 0; border: 0; opacity: 0; pointer-events: none; transform: none; }

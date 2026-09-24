@@ -5,7 +5,8 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type { RunGraphScope } from '@graphql/contracts/wave25'
-import { Button, Select, WorkflowNodeCard } from '../../shared/ui/nocturne'
+import { AgentNodeView, Button, Select } from '../../shared/ui/nocturne'
+import { lifecycleView } from '../workflow-board/runFacts'
 import { GraphPresentationProvider } from '../graph/GraphPresentation'
 import { useGraphPresentation, useGraphPresentationStore } from '../graph/useGraphPresentation'
 import { RunGraphProvider } from './RunGraphProvider'
@@ -34,12 +35,13 @@ const RunFactNode = memo(function RunFactNode({ data }: NodeProps<RunViewNode>) 
   const presentation = useGraphPresentationStore()
   const selected = useGraphPresentation((state) => state.selectedNodeIds.has(data.workflowNodeId))
   const role = data.productRole === 'unknown' ? 'Role unavailable' : data.productRole === 'orchestrator' ? 'Orchestrator' : 'Worker'
+  const [state] = lifecycleView(fact?.state.lifecycle)
   return <article className={`run-graph-node${selected ? ' run-graph-node-selected' : ''}`}>
     <Handle id="in" type="target" position={Position.Left} isConnectable={false} />
-    <WorkflowNodeCard className="run-graph-node-select" title={data.workflowNodeId}
-      subtitle={`${data.isEntry ? 'Entry · ' : ''}${role}`} statusLabel={view.lifecycle} tone={view.tone}
-      icon={data.productRole === 'orchestrator' ? 'workflow' : 'bot'} meta={view.activity}
-      selected={selected} working={false} ariaLabel={`Inspect node ${data.workflowNodeId}: ${view.lifecycle}; ${view.activity}`}
+    <AgentNodeView className="run-graph-node-select" name={data.workflowNodeId} harnessLabel={`${data.isEntry ? 'Starts here · ' : ''}${role}`}
+      icon={data.productRole === 'orchestrator' ? 'workflow' : 'code'} statusLabel={view.lifecycle} state={state}
+      model={view.activity} selected={selected}
+      ariaLabel={`Inspect node ${data.workflowNodeId}: ${view.lifecycle}; ${view.activity}`}
       onSelect={() => { presentation.getState().setSelectedNodeIds(new Set([data.workflowNodeId])); presentation.getState().setFocusedEdgeId(undefined); presentation.getState().setFocusedExchangeKey(undefined) }} />
     {fact && (fact.attention.pendingInteractionCount > 0 || fact.attention.unsettledReviewCount > 0 || fact.attention.cleanupPending)
       ? <small className="run-graph-attention">{fact.attention.pendingInteractionCount} pending · {fact.attention.unsettledReviewCount} unsettled reviews{fact.attention.cleanupPending ? ' · Cleanup pending' : ''}</small> : null}

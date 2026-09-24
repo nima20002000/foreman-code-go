@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -14,8 +14,19 @@ import { makeWave25Fixture } from '@graphql/contracts/wave25'
 import { WorkflowBoardContext } from '../../workflow-board/context'
 import { RunActivityPanel } from '../../workflow-board/RunActivityPanel'
 
+async function confirmDiscard(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: /^Discard changes$/ }))
+  await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Discard changes' }))
+}
+async function reloadSavedDraft(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: 'Reload saved draft' }))
+  const dialog = screen.queryByRole('alertdialog')
+  if (dialog) await user.click(within(dialog).getByRole('button', { name: 'Reload saved draft' }))
+}
+
 // Form/registration tests. This is not React Flow or authenticated browser evidence.
-vi.mock('./DraftCanvas', () => ({ DraftCanvas: () => <div>Canvas test placeholder</div> }))
+vi.mock('./DraftCanvas', () => ({ DraftCanvas: ({ open, panels }: { open?: { nodeId: string; panel: 'chat' | 'settings' | 'info' }; panels?: (nodeId: string) => Record<string, unknown> }) => <div>Canvas fixture{open && panels
+  ? <section role="dialog" aria-label={`${open.nodeId} ${open.panel}`}>{panels(open.nodeId)[open.panel] as never}</section> : null}</div> }))
 vi.mock('../../../shared/api/query', async (original) => ({
   ...await original<typeof import('../../../shared/api/query')>(),
   useInteractionsQuery: () => ({ data: { items: [] } }),
@@ -32,7 +43,7 @@ function readyClient() {
 }
 function boardContext() {
   return { workspaceId: 'workspace', workflowId: 'workflow', inspection: {}, selectInspection: vi.fn(),
-    selectRun: vi.fn(), conversionRequested: false, requestConversion: vi.fn(), closeConversion: vi.fn(), openLocation: vi.fn() }
+    selectRun: vi.fn(), conversionRequested: false, requestConversion: vi.fn(), closeConversion: vi.fn(), openLocation: vi.fn(), openRuns: vi.fn(), activeRuns: 0 }
 }
 it('registers local form dirtiness and discard with the existing navigation guard', async () => {
   useGraphDraftStore.getState().installNextDraft(key, fixture())
@@ -43,13 +54,15 @@ it('registers local form dirtiness and discard with the existing navigation guar
   render(<QueryClientProvider client={client}><UnsavedChangesContext.Provider value={guard}>
     <NextDraftEditor workspaceId="workspace" workflowId="workflow" />
   </UnsavedChangesContext.Provider></QueryClientProvider>)
-  await user.click(screen.getByText('Select a board node or connection'))
-  await user.click(screen.getByRole('button', { name: /Entry · Node 0/ }))
-  await user.type(screen.getByLabelText('Node instruction'), 'Unsaved instruction')
+    await user.click(screen.getByRole('button', { name: /Entry · Node 0/ }))
+  const panel = await screen.findByRole('dialog', { name: /settings$/ })
+  const name = within(panel).getByRole('textbox', { name: 'Name' }), original = (name as HTMLInputElement).value
+  await user.clear(name); await user.type(name, 'Unsaved name')
+  await user.click(within(panel).getByRole('button', { name: 'Save agent settings' }))
   const registered = [...registrations.values()].find((item) => item.current.label.endsWith('next draft'))!
   expect(registered.current.dirty).toBe(true)
   await act(async () => { await registered.current.discard() })
-  expect(screen.getByLabelText('Node instruction')).toHaveValue('')
+  expect(within(screen.getByRole('dialog', { name: /settings$/ })).getByRole('textbox', { name: 'Name' })).toHaveValue(original)
   expect(registered.current.dirty).toBe(false)
 })
 it('discarding a semantic edit preserves independent node layout', async () => {
@@ -60,9 +73,7 @@ it('discarding a semantic edit preserves independent node layout', async () => {
   act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph,
     nodes: graph.nodes.map((node, index) => index === 0 ? { ...node, position, initialPrompt: 'Unpublished instruction' } : node),
   })))
-  await user.click(screen.getByRole('button', { name: 'Workflow settings' }))
-  vi.spyOn(window, 'confirm').mockReturnValue(true)
-  await user.click(screen.getByRole('button', { name: 'Discard local edits' }))
+  await confirmDiscard(user)
   const draft = useGraphDraftStore.getState().nextDrafts[key]!
   expect(draft.graph.nodes[0]?.initialPrompt).toBeUndefined()
   expect(draft.graph.nodes[0]?.position).toEqual(position)
@@ -125,7 +136,7 @@ it('reconciles the same uncertain Start after draft reload and editor remount', 
   const request = start.mock.calls[0]![0]
   expect(useGraphDraftStore.getState().pendingRunStarts[key]).toEqual(request)
   await user.click(screen.getByRole('button', { name: 'Workflow settings' }))
-  await user.click(screen.getByRole('button', { name: 'Reload shared draft' }))
+  await reloadSavedDraft(user)
   await waitFor(() => expect(screen.getByRole('button', { name: 'Reconcile Start' })).toBeEnabled())
   expect(useGraphDraftStore.getState().pendingRunStarts[key]).toEqual(request)
   first.unmount()
@@ -163,7 +174,6 @@ it('pages through persisted Runs on the board and retains the older Run pin', as
   render(<QueryClientProvider client={client}><WorkflowBoardContext.Provider value={board}>
     <RunActivityPanel summaries={[]} />
   </WorkflowBoardContext.Provider></QueryClientProvider>)
-  await user.click(screen.getByText('Current and past Runs'))
   expect(await screen.findByRole('button', { name: /Open Run run-first/ })).toBeInTheDocument()
   await user.click(screen.getByRole('button', { name: 'Load more Runs' }))
   await user.click(await screen.findByRole('button', { name: /Open Run run-older/ }))

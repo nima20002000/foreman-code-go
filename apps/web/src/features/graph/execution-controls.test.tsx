@@ -191,12 +191,12 @@ it('keeps a canceled historical execution out of live node state after remount',
   </QueryClientProvider>)
 
   const first = renderCanceled()
-  expect(screen.getAllByText('Idle').every((badge) => badge.closest('[data-tone]')?.getAttribute('data-tone') === 'neutral')).toBe(true)
+  expect(screen.getAllByText('Idle').every((badge) => badge.closest('.n-agent')?.getAttribute('data-state') === 'idle')).toBe(true)
   expect(screen.queryByText('Canceled')).not.toBeInTheDocument()
   first.unmount()
   renderCanceled()
 
-  expect(screen.getAllByText('Idle').every((badge) => badge.closest('[data-tone]')?.getAttribute('data-tone') === 'neutral')).toBe(true)
+  expect(screen.getAllByText('Idle').every((badge) => badge.closest('.n-agent')?.getAttribute('data-state') === 'idle')).toBe(true)
   expect(screen.getByRole('button', { name: 'Start workflow' })).toBeEnabled()
 })
 

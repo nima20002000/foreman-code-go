@@ -10,8 +10,7 @@
 .run-graph-inspector dd { margin: .2rem 0; }
 .run-graph-inspector details { margin-bottom: .6rem; }
 .run-graph-node { position: relative; }
-.run-graph-node-select { width: 100%; text-align: left; }
-.run-graph-node-select:focus-visible, .run-graph-node-selected { outline: 2px solid var(--n-accent); outline-offset: 3px; border-radius: var(--radius-lg); }
+.react-flow__node-run-fact { width: 212px !important; height: 212px !important; padding: 0; border: 0; background: transparent; }
 .run-graph-attention { display: block; padding: .4rem .6rem; }
 .run-graph-legacy { padding: 1rem; overflow: auto; }
 .run-graph-legacy th, .run-graph-legacy td { text-align: left; padding: .5rem 1rem .5rem 0; }
@@ -22,8 +21,8 @@
 }
 
 /* Presentation detail never changes measured node/handle geometry. */
-.run-graph-canvas[data-detail="coarse"] .run-graph-node:not(:focus-within):not(.run-graph-node-selected) .n-node-bottom > .n-mono,
-.run-graph-canvas[data-detail="coarse"] .run-graph-node:not(:focus-within):not(.run-graph-node-selected) .n-node-top small,
+.run-graph-canvas[data-detail="coarse"] .run-graph-node:not(:focus-within):not(.run-graph-node-selected) .n-agent-model,
+.run-graph-canvas[data-detail="coarse"] .run-graph-node:not(:focus-within):not(.run-graph-node-selected) .n-agent-harness,
 .run-graph-canvas[data-detail="coarse"] .react-flow__edge:not(.selected):not(:focus-within) .react-flow__edge-textwrapper { visibility: hidden; }
 .run-graph-attention-tools { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-3) var(--space-4); padding: .75rem 1rem; border-bottom: 1px solid var(--n-border); }
 .run-graph-attention-tools p { margin: .3rem 0 0; font-size: 13px; }
@@ -44,4 +43,3 @@
 @media (forced-colors: active) {
   .run-graph-node-selected { outline-color: Highlight; }
 }
-.run-graph-node-select .n-node-bottom > .n-mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

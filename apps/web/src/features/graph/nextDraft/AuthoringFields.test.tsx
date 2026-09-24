@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { WorkflowDefinitionV2 } from '@graphql/contracts/wave25'
-import { ApprovalFields, ChoiceFields, EntryFields, NodeFields, RelationshipFields } from './AuthoringFields'
+import { ApprovalFields, ChoiceFields, EntryFields, NodeConnections, NodeWorkflowFields, RelationshipFields } from './AuthoringFields'
 import { fixture } from './core.cases'
 import { putRelationship } from './model'
 
@@ -12,30 +12,19 @@ function Form({ revision = 7 }: { revision?: number }) {
   context.draft.revision = revision
   const [graph, setGraph] = useState(context.draft.graph)
   return <><EntryFields graph={graph} context={context} change={setGraph} />
-    <NodeFields graph={graph} node={graph.nodes.find((node) => node.id === 'node-0')!} context={context} change={setGraph} />
-    <output data-testid="entry">{graph.entryNodeId}</output><output data-testid="order">{graph.nodes.map((node) => node.id).join(',')}</output></>
+    <NodeWorkflowFields graph={graph} node={graph.nodes.find((node) => node.id === 'node-0')!} context={context} change={setGraph} />
+    <output data-testid="entry">{graph.entryNodeId}</output></>
 }
 
 describe('Agent 6 accessible authoring forms (not browser performance evidence)', () => {
-  it('entry control is keyboard focusable and reorder never changes entry', async () => {
+  it('entry control is keyboard focusable and the node switch mirrors it', async () => {
     const user = userEvent.setup()
     render(<Form />)
     await user.tab()
-    expect(screen.getByLabelText('Entry node')).toHaveFocus()
-    screen.getByRole('button', { name: 'Move later' }).focus()
-    await user.keyboard('{Enter}')
-    expect(screen.getByTestId('order')).toHaveTextContent('node-1,node-0')
-    expect(screen.getByTestId('entry')).toHaveTextContent('node-0')
-  })
-  it('name and instruction forms retain typing across revision-only rerenders', async () => {
-    const user = userEvent.setup(), view = render(<Form />)
-    await user.clear(screen.getByLabelText('Node name'))
-    await user.type(screen.getByLabelText('Node name'), 'Unsaved name')
-    await user.type(screen.getByLabelText('Node instruction'), 'Keep this form')
-    view.rerender(<Form revision={8} />)
-    expect(screen.getByLabelText('Node name')).toHaveValue('Unsaved name')
-    expect(screen.getByLabelText('Node instruction')).toHaveValue('Keep this form')
-    expect(screen.getByLabelText('Node instruction')).toHaveFocus()
+    expect(screen.getByLabelText('Starts the workflow', { selector: 'select' })).toHaveFocus()
+    expect(screen.getByRole('switch', { name: /Starts the workflow/ })).toBeChecked()
+    await user.click(screen.getByRole('switch', { name: /Starts the workflow/ }))
+    expect(screen.getByTestId('entry')).toBeEmptyDOMElement()
   })
   it('choice creation leaves an unresolved target until explicit branch-end selection', async () => {
     const user = userEvent.setup()
@@ -50,7 +39,7 @@ describe('Agent 6 accessible authoring forms (not browser performance evidence)'
     await user.type(screen.getByLabelText('Outcome 1'), 'finished')
     await user.selectOptions(screen.getByLabelText('Target for outcome 1'), 'end')
     expect(screen.getByTestId('choice')).toHaveTextContent('branch_end')
-    expect(screen.getByText(/No prose, Markdown/)).toBeInTheDocument()
+    expect(screen.getByText(/Return exactly this JSON/)).toBeInTheDocument()
   })
   it('form action deletes only the chosen semantic record', async () => {
     const user = userEvent.setup(), report = vi.fn()
@@ -62,9 +51,25 @@ describe('Agent 6 accessible authoring forms (not browser performance evidence)'
         <output data-testid="relationships">{graph.edges.map((edge) => edge.id).join(',')}</output></>
     }
     render(<Relationships />)
-    await user.click(screen.getByRole('button', { name: 'Remove this approval record' }))
+    await user.click(screen.getByRole('button', { name: 'Remove connection' }))
     expect(screen.getByTestId('relationships')).toHaveTextContent('execution-1')
     expect(screen.getByTestId('relationships')).not.toHaveTextContent('approval')
+    expect(report).not.toHaveBeenCalled()
+  })
+  it('lists and removes one agent’s connections and adds one by keyboard', async () => {
+    const user = userEvent.setup(), report = vi.fn()
+    function Connections() {
+      const [graph, setGraph] = useState<WorkflowDefinitionV2>(() => fixture(['orchestrator', 'coder']).draft.graph)
+      return <><NodeConnections graph={graph} nodeId="node-0" change={setGraph} report={report} />
+        <output data-testid="relationships">{graph.edges.map((edge) => `${edge.kind}:${edge.source}>${edge.target}`).join(',')}</output></>
+    }
+    render(<Connections />)
+    await user.click(screen.getByRole('radio', { name: 'Approval' }))
+    await user.selectOptions(screen.getByLabelText('Reviews'), 'node-1')
+    await user.click(screen.getByRole('button', { name: 'Connect' }))
+    expect(screen.getByTestId('relationships')).toHaveTextContent('approval:node-0>node-1')
+    await user.click(screen.getByRole('button', { name: /Remove connection: Hands off/ }))
+    expect(screen.getByTestId('relationships')).not.toHaveTextContent('execution')
     expect(report).not.toHaveBeenCalled()
   })
   it('switching to Human cannot silently prune existing App assignments', async () => {
