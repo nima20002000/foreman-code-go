@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { ManagementActionSchema, GraphDraftSchema, GraphDraftLayoutResultSchema } from '@graphql/contracts/management'
-import { GraphDraftV2Schema, GraphDraftCommandV2ResultSchema, GraphSaveCommandV2ResultSchema, WorkflowRunV2Schema, WorkflowVersionV2Schema, GraphEditReadResultSchema, type GraphEditIntent } from '@graphql/contracts/wave25'
+import { GraphDraftV2Schema, GraphDraftCommandV2ResultSchema, GraphSaveCommandV2ResultSchema, RunStartV2ResultSchema, WorkflowRunV2Schema, WorkflowVersionV2Schema, GraphEditReadResultSchema, type GraphEditIntent } from '@graphql/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator, commandInputHash } from '../src/modules/commands/postgres.js'
@@ -22,7 +22,7 @@ import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { insertOneShotRun } from '../src/modules/runs/oneShotAdmission.js'
 import { changeOneShotLifecycle } from '../src/modules/runs/oneShotLifecycle.js'
-import { agent3Database, seedAgent3, postgresEnabled, ownedAgent3 } from './helpers/wave25Agent3.js'
+import { agent3Database, seedAgent3, postgresEnabled, ownedAgent3, deferred } from './helpers/wave25Agent3.js'
 
 /** Actual loopback Streamable HTTP MCP endpoint, real persisted principals,
  * scopes, commands and PostgreSQL drafts/versions. No mocked authentication. */
@@ -452,6 +452,73 @@ describe.skipIf(!postgresEnabled)('Agent 3 authenticated entry/route editing par
       for (const run of accepted.rows) { expect(run.workflow_version_id).toBe(f.version.id); expect(run.pins).toEqual(f.run.agentConfigurationVersionIds) }
       expect((await history.workflow(issued.principal, { ...scoped(f), versionId: f.version.id })).version).toEqual(f.version)
     } finally { lostReply.mockRestore(); await first.owner.release(); await other.owner.release() }
+  })
+
+  it('NIM-2644 blocks publication when a new authenticated Start wins the gap after Stop cleanup', async () => {
+    const { f, issued, client } = await fixture(false, true)
+    const locationReply = await client.callTool({ name: 'workspace_location_set', arguments: {
+      workspaceId: f.scope.workspaceId, commandId: randomUUID(), expectedLocationRevision: 1,
+      runnerId: 'runner-local', rootPath: process.cwd(),
+    } })
+    expect(locationReply.isError, JSON.stringify(locationReply.structuredContent ?? locationReply.content)).not.toBe(true)
+    const location = locationReply.structuredContent as { value: { locationRevision: number } }
+    const { request } = await privateRequest(f, client)
+    const intent = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', request)).intent!
+    const command = intentCommand(intent)
+    const waiting = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', command))
+    expect(waiting.intent?.state).toBe('waiting')
+    expect(waiting.intent?.stops[0]?.receipt).toMatchObject({ runId: f.run.id, status: 'not_owner' })
+    const owned = await ownedAgent3(db.pool, f)
+    try {
+      await owned.store.settleRun(true)
+      await changeOneShotLifecycle(db.pool, f.run.id, { kind: 'cleanup', pending: false })
+    } finally { await owned.owner.release() }
+
+    const entered = deferred(), release = deferred()
+    const originalSave = drafts.save.bind(drafts)
+    const pausedSave = vi.spyOn(drafts, 'save').mockImplementation(async (...args) => {
+      entered.resolve()
+      await release.promise
+      return originalSave(...args)
+    })
+    let advancing: Promise<ReturnType<typeof GraphEditReadResultSchema.parse>> | undefined
+    try {
+      advancing = (async () => GraphEditReadResultSchema.parse(await tool(client, 'graph_save', command)))()
+      await Promise.race([entered.promise, advancing.then(() => { throw new Error('Advance completed before publication pause') })])
+      const startReply = await client.callTool({ name: 'run_start', arguments: {
+        ...scoped(f), workflowVersionId: f.version.id, executionSemanticsVersion: 2,
+        expectedLocationRevision: location.value.locationRevision, commandId: randomUUID(), input: {},
+      } })
+      expect(startReply.isError, JSON.stringify(startReply.structuredContent ?? startReply.content)).not.toBe(true)
+      const started = RunStartV2ResultSchema.parse(startReply.structuredContent)
+      expect(started).toMatchObject({ accepted: true, replayed: false, run: {
+        workflowVersionId: f.version.id, executionSemanticsVersion: 2,
+      } })
+      expect(started.run.id).not.toBe(f.run.id)
+      expect(await counts(f)).toEqual({ versions: '1', runs: '2' })
+      expect((await db.pool.query('select 1 from management_command_receipts where principal_id=$1 and operation=$2 and target_key=$3',
+        [issued.principal.id, 'run.start', `workflow:${f.scope.workflowId}:version:${f.version.id}`])).rowCount).toBe(1)
+      release.resolve()
+      const blocked = await advancing
+      expect(blocked.intent?.state).toBe('blocked')
+      expect(blocked.intent?.error?.code).toBe('AFFECTED_RUN_SET_CHANGED')
+      expect(blocked.intent?.stagedDraft).toEqual(intent.stagedDraft)
+      expect(blocked.intent?.stops).toEqual(waiting.intent?.stops)
+      expect(blocked.intent?.advanceCommandId).toBe(intent.advanceCommandId)
+      expect(blocked.intent?.saveInput).toEqual(intent.saveInput)
+      expect((await readPrivate(client, intent)).intent).toEqual(blocked.intent)
+      expect(await counts(f)).toEqual({ versions: '1', runs: '2' })
+      expect((await db.pool.query('select 1 from management_command_receipts where principal_id=$1 and operation=$2 and command_id=$3',
+        [issued.principal.id, 'graph.save', intent.saveInput.commandId])).rowCount).toBe(0)
+      expect((await db.pool.query('select 1 from management_command_receipts where principal_id=$1 and operation=$2 and target_key=$3',
+        [issued.principal.id, 'run.stop', `run:${started.run.id}`])).rowCount).toBe(0)
+      expect((await db.pool.query<{ stopped: boolean }>('select stop_requested_at is not null as stopped from runs where id=$1',
+        [started.run.id])).rows[0]?.stopped).toBe(false)
+    } finally {
+      release.resolve()
+      await advancing?.catch(() => undefined)
+      pausedSave.mockRestore()
+    }
   })
 
   it('NIM-2642 records natural completion without a fabricated Stop and retains stale revision/Start conflicts without expanding the plan', async () => {
