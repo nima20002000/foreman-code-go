@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
 import { HarnessConfigurationCheckResultSchema } from '@graphql/contracts/management'
+import { GraphDraftV2Schema, makeWave25Fixture } from '@graphql/contracts/wave25'
 
 import { ApiError, ApiClient, apiClient } from './client'
 import { resetMockFixtures, setMockScenario } from '../mocks/scenarios'
@@ -97,5 +98,30 @@ describe('Phase 1 API boundary', () => {
     controller.abort('caller cancelled')
     expect(receivedSignal?.aborted).toBe(true)
     expect(receivedSignal?.reason).toBe('caller cancelled')
+  })
+
+  it('accepts an exact v2 Apply revert and its idempotent HTTP replay', async () => {
+    const fixture = makeWave25Fixture('web-revert')
+    const draft = GraphDraftV2Schema.parse({
+      id: 'draft-web-revert', workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId,
+      revision: 9, publishedRevision: 9, baseWorkflowVersionId: fixture.version.id,
+      graph: fixture.version.definition, stagedAgents: [], updatedByPrincipalId: 'principal-web-revert',
+      updatedAt: fixture.createdAt,
+    })
+    const response = (replayed: boolean) => new Response(JSON.stringify({
+      value: { draft, revertedApplyCommandId: 'apply-web-revert', priorRevision: 7 }, replayed,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(response(false))
+      .mockResolvedValueOnce(response(true))
+    const client = new ApiClient({ fetch })
+    const input = { workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId,
+      draftId: draft.id, commandId: 'revert-web-revert', expectedRevision: 8,
+      applyCommandId: 'apply-web-revert' }
+
+    expect((await client.revertManagedGraphApply(input)).value.draft).toEqual(draft)
+    expect(await client.revertManagedGraphApply(input)).toMatchObject({ replayed: true, value: { draft } })
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([input, input])
   })
 })

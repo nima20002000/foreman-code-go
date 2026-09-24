@@ -91,7 +91,6 @@ import {
   GraphDraftLayoutInputSchema,
   GraphDraftLayoutResultSchema,
   GraphDraftRevertAppliedInputSchema,
-  GraphDraftRevertAppliedResultSchema,
   GraphSaveInputSchema,
   GraphDraftDiscardInputSchema,
   RunStartInputSchema,
@@ -130,6 +129,7 @@ import {
   type WorkflowUpdateInput,
   type GraphDraftOperation,
 } from '@graphql/contracts/management'
+import { CompatibleGraphDraftRevertAppliedResultSchema } from '@graphql/contracts/wave25'
 
 export type RequestOptions = Omit<RequestInit, 'body' | 'method'> & {
   /** The client uses this signal for query cancellation and component unmounts. */
@@ -436,7 +436,7 @@ export class ApiClient {
     const request = parseRequest(GraphDraftRevertAppliedInputSchema, input)
     return this.request(
       `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/drafts/${toPath(request.draftId)}/revert-applied`,
-      GraphDraftRevertAppliedResultSchema,
+      CompatibleGraphDraftRevertAppliedResultSchema,
       { ...options, method: 'POST', body: request },
     )
   }

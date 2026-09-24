@@ -615,13 +615,33 @@ describe.skipIf(!postgresEnabled)('Agent 3 authenticated entry/route editing par
     const firstRevert = await tool(client, 'graph_draft_revert_applied', { ...stale,
       commandId: randomUUID(), applyCommandId: secondInput.commandId }) as { value: { draft: typeof opened } }
     const revert = { ...stale, commandId: randomUUID(), expectedRevision: firstRevert.value.draft.revision }
-    const result = GraphDraftSchema.or(GraphDraftV2Schema).parse(
-      (await tool(client, 'graph_draft_revert_applied', revert) as { value: { draft: unknown } }).value.draft)
+    let reverted: { value: { draft: unknown }; replayed: boolean }
+    let httpHeaders: Awaited<ReturnType<typeof browserHeaders>> | undefined
+    if (legacy) {
+      reverted = await tool(client, 'graph_draft_revert_applied', revert) as typeof reverted
+    } else {
+      httpHeaders = await browserHeaders(issued.token)
+      const response = await app.inject({ method: 'POST', url: `${draftPath(f, opened.id)}/revert-applied`,
+        headers: httpHeaders, payload: revert })
+      expect(response.statusCode).toBe(200)
+      reverted = response.json() as typeof reverted
+      GraphDraftV2Schema.parse(reverted.value.draft)
+    }
+    const result = GraphDraftSchema.or(GraphDraftV2Schema).parse(reverted.value.draft)
     expect(result.graph.nodes.find((item) => item.id === node.id)).toMatchObject({ name: node.name, position: { x: 987, y: 123 } })
     expect(result.layoutRevision).toBe(1)
     expect(result.revision).toBe(firstRevert.value.draft.revision + 1)
     expect(result.publishedRevision).toBe(result.revision)
-    const replay = await tool(client, 'graph_draft_revert_applied', revert) as { replayed: boolean }
+    let replay: { value: { draft: unknown }; replayed: boolean }
+    if (legacy) {
+      replay = await tool(client, 'graph_draft_revert_applied', revert) as typeof replay
+    } else {
+      const response = await app.inject({ method: 'POST', url: `${draftPath(f, opened.id)}/revert-applied`,
+        headers: httpHeaders!, payload: revert })
+      expect(response.statusCode).toBe(200)
+      replay = response.json() as typeof replay
+      expect(GraphDraftV2Schema.parse(replay.value.draft)).toEqual(result)
+    }
     expect(replay.replayed).toBe(true)
     const persisted = GraphDraftSchema.or(GraphDraftV2Schema).parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: opened.id }))
     expect(persisted).toEqual(result)

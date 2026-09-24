@@ -2,13 +2,19 @@ import { z } from 'zod'
 import { IdSchema } from '../index.js'
 import {
   GraphDraftSchema, GraphDraftOperationSchema, GraphDraftApplyInputSchema,
-  GraphDraftApplyResultSchema, GraphSaveInputSchema, GraphSaveResultSchema, RunStartInputSchema, RunStartResultSchema, RunPageSchema,
+  GraphDraftApplyResultSchema, GraphDraftRevertAppliedResultSchema, GraphSaveInputSchema, GraphSaveResultSchema,
+  RunStartInputSchema, RunStartResultSchema, RunPageSchema,
 } from '../management/index.js'
 import { WorkflowDefinitionV2Schema, WorkflowVersionV2Schema, WorkflowNodeV2Schema, WorkflowRelationshipSchema, WorkflowChoiceSchema, WorkflowRunV2Schema, CompatibleWorkflowRunSchema } from './workflow.js'
 
 /** Separate v2 boundary. Do not broaden legacy strict draft/command responses. */
 export const GraphDraftV2Schema = GraphDraftSchema.extend({ graph: WorkflowDefinitionV2Schema }).strict()
 export type GraphDraftV2 = z.infer<typeof GraphDraftV2Schema>
+export const CompatibleGraphDraftRevertAppliedResultSchema = GraphDraftRevertAppliedResultSchema.extend({
+  value: GraphDraftRevertAppliedResultSchema.shape.value.extend({
+    draft: GraphDraftSchema.or(GraphDraftV2Schema),
+  }),
+})
 // Old geometry/Agent/settings operations retain their exact validation. Operations
 // which construct structural records must use the explicit typed v2 alternatives.
 const LegacySafeDraftOperationSchema = GraphDraftOperationSchema.superRefine((operation, context) => {
