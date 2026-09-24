@@ -494,6 +494,11 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       const stopped = await this.runs.hasRequestedStop(runId)
       const current = await this.runs.get(runId, owner)
       if (current?.executionState !== 'completed') await this.runs.oneShot(owner).settleRun(stopped, !stopped)
+      // The early native pass had no Run owner. Reuse its exact closure evidence
+      // only after terminal settlement, before clearing the retryable intent.
+      if (!cleanupFailure && (await this.runs.get(runId, owner))?.executionState === 'completed') {
+        await this.nativeExecutions.cancelRun(runId, owner)
+      }
       await this.runs.finishCleanup(runId, Boolean(cleanupFailure))
       return true
     }
@@ -505,6 +510,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         executionState: 'completed', outcome: result.outcome, result, finishedAt: new Date().toISOString(),
       }, owner)
     }
+    if (!cleanupFailure) await this.nativeExecutions.cancelRun(runId, owner)
     await this.runs.finishCleanup?.(runId, Boolean(cleanupFailure), owner.client)
     // A terminal business record does not prevent completing its independent cleanup.
     return settled || (!cleanupFailure && (await this.runs.get(runId, owner))?.executionState === 'completed')
@@ -684,6 +690,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         startedAt,
         finishedAt: new Date().toISOString(),
       }, owner)
+      if (!cleanupFailure && !drainFailed) await this.nativeExecutions.cancelRun(run.id, owner)
       await this.runs.finishCleanup?.(run.id, Boolean(cleanupFailure) || drainFailed, owner.client)
     } finally {
       nodeSignal.removeEventListener('abort', cancelNative)

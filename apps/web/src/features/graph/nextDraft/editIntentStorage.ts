@@ -3,6 +3,7 @@ import { AgentSchema } from '@graphql/contracts'
 import { ManagedAgentSchema } from '@graphql/contracts/management'
 import { GraphDraftV2Schema, GraphEditStageInputSchema, WorkflowDefinitionV2Schema, sameWorkflowValue,
   type GraphEditStageInput } from '@graphql/contracts/wave25'
+import { ApiError } from '../../../shared/api/client'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
 import { assertSession, sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../../shared/api/sessionBoundary'
 import { nextDraftKey, type NextDraftEdit } from './state'
@@ -89,13 +90,35 @@ export function reserveEditOutbox(scope: string, candidate: EditIntentOutbox): E
   write(key('outbox', scope), value)
   return value
 }
-/** Acknowledgement must be from authenticated, scope-checked persisted readback. */
-export function acknowledgeEditOutbox(scope: string, stageCommandId: string): void {
+function removeEditOutbox(scope: string, stageCommandId: string): void {
   const existing = readEditOutbox(scope)
   if (!existing) return
   if (existing.request.commandId !== stageCommandId) throw new Error('Another edit command is retained. Its outbox was not cleared.')
   const local = storage(); local.removeItem(key('outbox', scope))
   if (local.getItem(key('outbox', scope)) !== null) throw new Error(storageFailure)
+}
+/** Acknowledgement must be from authenticated, scope-checked persisted readback. */
+export function acknowledgeEditOutbox(scope: string, stageCommandId: string): void {
+  removeEditOutbox(scope, stageCommandId)
+}
+/** These Stage errors originate only before intent insertion (prepare/perform),
+ * not in the post-commit readback. Do NOT generalize to all 4xx: authorization,
+ * receipt conflicts and unavailable readback can follow a committed Stage. */
+export function isDefinitiveStageRejection(error: unknown): boolean {
+  if (!ApiError.is(error)) return false
+  if (error.status === 404) return error.code === 'GRAPH_DRAFT_NOT_FOUND'
+  return error.status === 409 && ['REVISION_CONFLICT', 'WORKFLOW_BASE_CONFLICT', 'GRAPH_INVALID',
+    'AGENT_ID_CONFLICT', 'AGENT_REVISION_CONFLICT', 'GRAPH_EDIT_INTENT_EXISTS'].includes(error.code)
+}
+/** Call only for the exact editStage failure, under the same session/scope lock.
+ * Releasing a rejected reservation never discards or rewrites the local form. */
+export function rejectEditOutbox(scope: string, request: GraphEditStageInput, error: unknown): boolean {
+  if (!isDefinitiveStageRejection(error)) return false
+  const existing = readEditOutbox(scope)
+  if (!existing) return false
+  if (!sameWorkflowValue(existing.request, request)) throw new Error('Another edit command is retained. Its outbox was not cleared.')
+  removeEditOutbox(scope, request.commandId)
+  return true
 }
 export function sameStageRequest(left: GraphEditStageInput, right: GraphEditStageInput) {
   return sameWorkflowValue({ ...left, commandId: null }, { ...right, commandId: null })

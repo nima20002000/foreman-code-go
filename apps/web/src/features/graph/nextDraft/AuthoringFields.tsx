@@ -1,5 +1,6 @@
 import { useId, useState, type ReactNode } from 'react'
 import type { WorkflowDefinitionV2, WorkflowRelationship } from '@graphql/contracts/wave25'
+import type { DraftAgentEdits } from './agentEdits'
 import { attachAgent, changeApprovalHandler, entryChoices, nodeTitle, putRelationship,
   removeNode, removeRelationship, roleEvidence, type DraftNode, type NextDraftContext } from './model'
 
@@ -11,8 +12,8 @@ export function NodeOptions({ graph }: { graph: WorkflowDefinitionV2 }) {
   return <>{graph.nodes.map((node) => <option key={node.id} value={node.id}>{nodeTitle(graph, node.id)} · {node.id}</option>)}</>
 }
 
-export function EntryFields({ graph, context, change }: { graph: WorkflowDefinitionV2; context: NextDraftContext; change: EditGraph }) {
-  const choices = entryChoices(graph, context), id = useId()
+export function EntryFields({ graph, context, change, agentEdits }: { graph: WorkflowDefinitionV2; context: NextDraftContext; change: EditGraph; agentEdits?: DraftAgentEdits }) {
+  const choices = entryChoices(graph, context, agentEdits), id = useId()
   return <section aria-labelledby={id} className="next-draft-section">
     <h2 id={id}>Start here</h2>
     <Field label="Entry node"><select value={graph.entryNodeId ?? ''} aria-invalid={!choices.valid}
@@ -24,11 +25,12 @@ export function EntryFields({ graph, context, change }: { graph: WorkflowDefinit
     </select></Field>
     <p>{choices.mode === 'sole' ? 'This node starts itself. Select it explicitly.' : choices.mode === 'orchestrator'
       ? 'Choose an Orchestrator. Its workflow node identity is pinned when saved.' : 'Choose a Worker. Moving or reordering nodes never changes entry.'}</p>
+    {[...choices.roles.values()].some((role) => role.source === 'local') ? <p>Local Agent roles are pending server validation; no saved configuration pin exists yet.</p> : null}
     {graph.entryNodeId && !graph.nodes.some((node) => node.id === graph.entryNodeId) ? <p role="alert">The selected entry no longer exists. Choose a replacement.</p> : null}
   </section>
 }
 
-export function ApprovalFields({ graph, context, change, report }: { graph: WorkflowDefinitionV2; context: NextDraftContext; change: EditGraph; report: (error: unknown) => void }) {
+export function ApprovalFields({ graph, context, change, report, agentEdits }: { graph: WorkflowDefinitionV2; context: NextDraftContext; change: EditGraph; report: (error: unknown) => void; agentEdits?: DraftAgentEdits }) {
   return <section className="next-draft-section" aria-label="Approval handling">
     <h2>Approvals</h2>
     <Field label="Approval handler"><select value={graph.approval?.handler ?? ''} onChange={(event) => {
@@ -39,7 +41,7 @@ export function ApprovalFields({ graph, context, change, report }: { graph: Work
     {graph.approval?.handler === 'orchestrator' ? <Field label="Designated reviewer"><select value={graph.approval.designatedOrchestratorAgentId ?? ''}
       onChange={(event) => change((value) => ({ ...value, approval: { handler: 'orchestrator', ...(event.target.value ? { designatedOrchestratorAgentId: event.target.value } : {}) } }))}>
       <option value="">Choose the entry Orchestrator</option>
-      {graph.nodes.filter((node) => roleEvidence(context, node.agentId).role === 'orchestrator').map((node) => <option key={node.id} value={node.agentId}>{nodeTitle(graph, node.id)} · {node.id}</option>)}
+      {graph.nodes.filter((node) => roleEvidence(context, node.agentId, agentEdits).role === 'orchestrator').map((node) => <option key={node.id} value={node.agentId}>{nodeTitle(graph, node.id)} · {node.id}</option>)}
     </select></Field> : null}
     <p>Approval records point from reviewer to requester; they never schedule work.</p>
     <p>Executable save supports one initialized reviewer at the entry Orchestrator. Independent reviewers, nested review and dynamic delegation are not supported.</p>
@@ -68,8 +70,8 @@ export function AttachAgentField({ graph, context, change, report }: { graph: Wo
 function changeNode(change: EditGraph, nodeId: string, update: (node: DraftNode) => DraftNode) {
   change((graph) => ({ ...graph, nodes: graph.nodes.map((node) => node.id === nodeId ? update(node) : node) }))
 }
-export function NodeFields({ graph, node, context, change }: { graph: WorkflowDefinitionV2; node: DraftNode; context: NextDraftContext; change: EditGraph }) {
-  const role = roleEvidence(context, node.agentId)
+export function NodeFields({ graph, node, context, change, agentEdits }: { graph: WorkflowDefinitionV2; node: DraftNode; context: NextDraftContext; change: EditGraph; agentEdits?: DraftAgentEdits }) {
+  const role = roleEvidence(context, node.agentId, agentEdits)
   const position = graph.nodes.findIndex((item) => item.id === node.id)
   const reorder = (offset: number) => change((value) => {
     const index = value.nodes.findIndex((item) => item.id === node.id), nodes = [...value.nodes]
@@ -80,7 +82,7 @@ export function NodeFields({ graph, node, context, change }: { graph: WorkflowDe
   return <section className="next-draft-section" aria-label="Node settings">
     <h2>{graph.entryNodeId === node.id ? 'Entry · ' : ''}{nodeTitle(graph, node.id)}</h2>
     <code>{node.id}</code>
-    <p>{role.role === 'orchestrator' ? 'Orchestrator' : role.role === 'coder' ? 'Worker' : 'Role unavailable'} · {role.source === 'staged' ? 'server-staged role; pinned on save' : role.configurationVersionId ?? 'configuration unavailable'}</p>
+    <p>{role.role === 'orchestrator' ? 'Orchestrator' : role.role === 'coder' ? 'Worker' : 'Role unavailable'} · {role.source === 'local' ? 'local role; pending server validation, not pinned' : role.source === 'staged' ? 'server-staged role; pinned on save' : role.configurationVersionId ?? 'configuration unavailable'}</p>
     <Field label="Node name"><input value={node.name ?? node.label ?? ''} onChange={(event) => changeNode(change, node.id, (item) => ({ ...item, name: event.target.value }))} /></Field>
     <Field label="Node instruction"><textarea rows={4} value={node.initialPrompt ?? ''} onChange={(event) => changeNode(change, node.id, (item) => {
       const next = { ...item }; if (event.target.value) next.initialPrompt = event.target.value; else delete next.initialPrompt; return next

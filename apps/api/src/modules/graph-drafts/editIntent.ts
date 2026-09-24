@@ -20,8 +20,10 @@ import { readAffectedGraphRuns } from './saveAdmission.js'
 type Source = 'http' | 'mcp'
 type Prepared = { draft: GraphDraftV2; savedWorkflowRevision: number; agentPins: GraphEditIntent['agentPins'] }
 type SaveValue = ReturnType<typeof GraphSaveV2ResultSchema.parse>
+type StopEntry = GraphEditIntent['stops'][number]
 interface DraftBoundary {
   prepare(client: pg.PoolClient, principal: ManagementPrincipal, input: GraphEditStageInput): Promise<Prepared>
+  authorizePublication(client: pg.PoolClient, principal: ManagementPrincipal, draft: GraphDraftV2): Promise<void>
   publish(principal: ManagementPrincipal, source: Source, input: GraphEditIntent['saveInput'], intentId: string): Promise<unknown>
 }
 const isFinished = (intent: GraphEditIntent) => intent.state === 'saved' || intent.state === 'discarded'
@@ -172,6 +174,8 @@ export class GraphEditIntentService {
         await client.query(`insert into graph_edit_intents(id,principal_id,workspace_id,workflow_id,draft_id,state,record)
           values($1,$2,$3,$4,$5,$6,$7::jsonb)`,
         [id, principal.id, input.workspaceId, input.workflowId, input.draftId, intent.state, JSON.stringify(intent)])
+        await this.commands.recordAudit(principal.id, source, 'graph.edit_stop_tracking', `edit-intent:${id}`,
+          'succeeded', { stageCommandId: input.commandId }, client)
         return { intentId: id }
       } })
     // Do not return the stage receipt's old state after a replay.
@@ -216,11 +220,60 @@ export class GraphEditIntentService {
         throw new DomainError('AGENT_REVISION_CONFLICT', 'An exact Agent configuration or metadata pin changed. The private staged payload is retained.', 409)
       }
     }
+    await this.drafts.authorizePublication(client, live, intent.stagedDraft)
     const current = await readAffectedGraphRuns(client, scope(intent))
     this.authorizeCurrent(live, current)
     if (!sameAffectedSet(intent, current)) throw new DomainError('AFFECTED_RUN_SET_CHANGED',
       'The affected Run/version set changed after planning. No newly discovered Run will be stopped by this intent.', 409)
     return current
+  }
+
+  private async stopTrackingEnabled(client: Pick<pg.PoolClient, 'query'>, intent: GraphEditIntent) {
+    const rows = await client.query(`select 1 from management_audit
+      where principal_id=$1 and action='graph.edit_stop_tracking' and target_key=$2
+        and details->>'stageCommandId'=$3 limit 1`,
+    [intent.ownerPrincipalId, `edit-intent:${intent.id}`, intent.stageCommandId])
+    return rows.rows.length > 0
+  }
+
+  private async stopWasAttempted(client: Pick<pg.PoolClient, 'query'>, intent: GraphEditIntent, entry: StopEntry) {
+    const rows = await client.query<{ details: { inputHash?: unknown; targetKey?: unknown } }>(`select details from management_audit
+      where principal_id=$1 and action='graph.edit_stop_attempt' and target_key=$2 and details->>'commandId'=$3`,
+    [intent.ownerPrincipalId, `edit-intent:${intent.id}`, entry.input.commandId])
+    if (rows.rows.some((row) => row.details.inputHash !== entry.inputHash || row.details.targetKey !== `run:${entry.input.runId}`)) {
+      throw new DomainError('COMMAND_ID_CONFLICT', 'The Stop submission evidence contradicts the exact planned command.', 409)
+    }
+    return rows.rows.length > 0
+  }
+
+  private async stopReceipt(client: Pick<pg.PoolClient, 'query'>, intent: GraphEditIntent, entry: StopEntry) {
+    if (commandInputHash(entry.input) !== entry.inputHash) throw new DomainError('COMMAND_ID_CONFLICT', 'The Stop input hash is inconsistent.', 409)
+    const receipt = await client.query<{ input_hash: string; target_key: string; result: unknown }>(`select input_hash,target_key,result
+      from management_command_receipts where principal_id=$1 and operation='run.stop' and command_id=$2`,
+    [intent.ownerPrincipalId, entry.input.commandId])
+    const row = receipt.rows[0]
+    if (!row) {
+      if (entry.receipt) throw new Error('The previously observed exact Stop receipt is unavailable; retain uncertainty.')
+      return undefined
+    }
+    if (row.input_hash !== entry.inputHash || row.target_key !== `run:${entry.input.runId}`) {
+      throw new DomainError('COMMAND_ID_CONFLICT', 'The Stop receipt contradicts the exact planned command.', 409)
+    }
+    const parsed = GraphEditStopSchema.shape.receipt.unwrap().parse(row.result)
+    if (parsed.runId !== entry.input.runId || (entry.receipt && !sameWorkflowValue(entry.receipt, parsed))) {
+      throw new DomainError('COMMAND_ID_CONFLICT', 'Contradictory Stop receipt evidence is retained, never overwritten.', 409)
+    }
+    return parsed
+  }
+
+  private async assertStopsReconciled(client: pg.PoolClient, intent: GraphEditIntent) {
+    for (const entry of intent.stops) {
+      const receipt = await this.stopReceipt(client, intent, entry)
+      if (!entry.receipt && (receipt || await this.stopWasAttempted(client, intent, entry)
+        || !await this.stopTrackingEnabled(client, intent))) {
+        throw new Error('Reconcile the exact Stop receipt before publication; settlement does not resolve a submitted or untracked Stop.')
+      }
+    }
   }
 
   async advance(principal: ManagementPrincipal, source: Source, raw: GraphEditAdvanceInput,
@@ -241,38 +294,52 @@ export class GraphEditIntentService {
           await this.transaction(principal, async (client, live) => {
             const current = await this.fresh(client, live, intent)
             for (const item of current.filter((item) => !item.settled)) requireAuthorization(live, 'runs:stop', item.pin)
+            // A pre-upgrade untouched Stage cannot have submitted Stop. An
+            // already-advanced untracked intent has no such proof.
+            if (intent.state === 'staged' && !await this.stopTrackingEnabled(client, intent)) {
+              await this.commands.recordAudit(live.id, source, 'graph.edit_stop_tracking', `edit-intent:${intent.id}`,
+                'succeeded', { stageCommandId: intent.stageCommandId }, client)
+            }
             intent = await this.write(client, { ...intent, state: 'stopping', error: undefined })
             return current
           })
           for (let index = 0; index < intent.stops.length; index++) {
             const entry = intent.stops[index]!
-            const live = await this.transaction(principal, async (client, live) => {
+            const decision = await this.transaction(principal, async (client, live) => {
               const current = await this.fresh(client, live, intent)
               for (const item of current.filter((item) => !item.settled)) requireAuthorization(live, 'runs:stop', item.pin)
-              return { principal: live, settled: current.find((item) => item.pin.runId === entry.input.runId)?.settled === true }
+              const run = current.find((item) => item.pin.runId === entry.input.runId)
+              if (!run) throw new DomainError('GRAPH_EDIT_INTENT_INVALID', 'The planned Stop is outside the exact affected Run set.', 409)
+              const receipt = await this.stopReceipt(client, intent, entry)
+              if (receipt) return { principal: live, submit: false, receipt }
+              const attempted = await this.stopWasAttempted(client, intent, entry)
+              if (run.settled && !attempted) {
+                if (!await this.stopTrackingEnabled(client, intent)) {
+                  throw new Error('An untracked Stop may have been submitted before upgrade; its missing receipt remains uncertain.')
+                }
+                return { principal: live, submit: false, receipt: undefined }
+              }
+              // A settled Run with a possible prior submission still needs the
+              // SAME Stop command. Recheck its Stop grant even after settlement.
+              requireAuthorization(live, 'runs:stop', run.pin)
+              if (!attempted) {
+                // COMMIT this write-ahead submission fact BEFORE calling Stop.
+                // It proves possible submission, not acceptance or native exit.
+                // Audit storage avoids changing the public intent/Stop schemas.
+                await this.commands.recordAudit(live.id, source, 'graph.edit_stop_attempt', `edit-intent:${intent.id}`,
+                  'uncertain', { commandId: entry.input.commandId, inputHash: entry.inputHash, targetKey: `run:${entry.input.runId}` }, client)
+              }
+              return { principal: live, submit: true, receipt: undefined }
             })
-            if (commandInputHash(entry.input) !== entry.inputHash) throw new DomainError('COMMAND_ID_CONFLICT', 'The Stop input hash is inconsistent.', 409)
-            // This is the existing Stop service, with its exact coordinator,
-            // native/owner gates and receipt. No direct lifecycle SQL exists here.
+            if (!decision.submit && !decision.receipt) continue // proven natural completion before any submission
+            // Existing Stop service only: no replacement identity, direct
+            // lifecycle SQL or inferred cancellation acknowledgement.
             let stopError: unknown
-            // Natural completion needs no new Stop, but a reply lost before
-            // settlement may already have a durable receipt. Read it either way.
-            if (!live.settled) {
-              try { await stop(live.principal, source, entry.input) } catch (error) { stopError = error }
+            if (decision.submit) {
+              try { await stop(decision.principal, source, entry.input) } catch (error) { stopError = error }
             }
-            const receipt = await this.pool.query<{ input_hash: string; target_key: string; result: unknown }>(`select input_hash,target_key,result
-              from management_command_receipts where principal_id=$1 and operation='run.stop' and command_id=$2`,
-            [principal.id, entry.input.commandId])
-            const row = receipt.rows[0]
-            if (!row && live.settled) continue
-            if (!row) throw stopError ?? new Error('Stop acknowledgement is uncertain; its exact command is retained.')
-            if (row.input_hash !== entry.inputHash || row.target_key !== `run:${entry.input.runId}`) {
-              throw new DomainError('COMMAND_ID_CONFLICT', 'The Stop receipt contradicts the exact planned command.', 409)
-            }
-            const parsed = GraphEditStopSchema.shape.receipt.unwrap().parse(row.result)
-            if (parsed.runId !== entry.input.runId || (entry.receipt && !sameWorkflowValue(entry.receipt, parsed))) {
-              throw new DomainError('COMMAND_ID_CONFLICT', 'Contradictory Stop receipt evidence is retained, never overwritten.', 409)
-            }
+            const parsed = decision.receipt ?? await this.stopReceipt(this.pool, intent, entry)
+            if (!parsed) throw stopError ?? new Error('Stop acknowledgement is uncertain; its exact command is retained.')
             intent = await this.transaction(principal, async (client, live) => {
               this.authorizeContent(live, intent, true)
               return this.write(client, { ...intent, stops: intent.stops.map((item, i) => i === index ? { ...item, receipt: parsed } : item) })
@@ -282,6 +349,7 @@ export class GraphEditIntentService {
         const ready = await this.transaction(principal, async (client, live) => {
           const current = await this.fresh(client, live, intent)
           const settled = current.every((item) => item.settled)
+          await this.assertStopsReconciled(client, intent)
           intent = await this.write(client, { ...intent, state: settled ? 'saving' : 'waiting',
             saveAttempted: intent.saveAttempted || settled, error: undefined })
           return settled
@@ -351,6 +419,7 @@ export class GraphEditIntentService {
     const current = await this.fresh(client, live, intent)
     if (current.some((item) => !item.settled)) throw new DomainError('WORKFLOW_RUNS_UNSETTLED',
       'Affected work is not fully settled. The exact payload and command identities remain staged.', 409)
+    await this.assertStopsReconciled(client, intent)
     return intent.stagedDraft
   }
   async saved(client: pg.PoolClient, live: ManagementPrincipal, intentId: string, value: SaveValue) {

@@ -118,7 +118,7 @@ function fixture(harness: AgentHarness = 'codex') {
   let budgetFailure: Error | undefined
   let stopFailure: Error | undefined
   let cancelPendingCalls = 0
-  const owner = { assertOwned() {}, client: {} } as unknown as RunOwnership
+  const owner = { runId: candidate.runId, assertOwned() {}, client: {} } as unknown as RunOwnership
   const runs = {
     async ensureExecution(input: HarnessExecution) {
       const existing = [...executions.values()].find((item) => item.runId === input.runId

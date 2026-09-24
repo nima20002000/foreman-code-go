@@ -61,13 +61,15 @@ export function changeDraftAgent(edit: NextDraftEdit, agent: Agent, graph: Workf
 }
 
 /** Clear only the submitted Agent edits. Later edits survive normalization and publication. */
-export function acknowledgeAgentEdits(current: DraftAgentEdits | undefined, sent: DraftAgentEdits | undefined, context: NextDraftContext): DraftAgentEdits | undefined {
+export function acknowledgeAgentEdits(current: DraftAgentEdits | undefined, sent: DraftAgentEdits | undefined, context: NextDraftContext, retainedGraph?: WorkflowDefinitionV2): DraftAgentEdits | undefined {
   if (!current) return undefined
   const saved = new Map(draftAgents(context).map((agent) => [agent.id, agent]))
   return Object.fromEntries(Object.entries(current).flatMap(([id, agent]) => {
     const submitted = sent?.[id]
     if (!submitted) return [[id, agent]]
-    if (sameValue(agent, submitted)) return []
+    // Discard may retain a newly created node because its meaning was edited
+    // again. Keep its local Agent until that dependent newer work is resolved.
+    if (sameValue(agent, submitted) && (saved.has(id) || !retainedGraph?.nodes.some((node) => node.agentId === id))) return []
     const acknowledged = saved.get(id)
     return [[id, acknowledged ? { ...agent, configurationVersionId: acknowledged.configurationVersionId,
       createdAt: acknowledged.createdAt, updatedAt: acknowledged.updatedAt } : agent]]

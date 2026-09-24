@@ -13,7 +13,7 @@ import { editorAgents, hasAgentEdits } from './agentEdits'
 import { nextDraftDirty, nextDraftKey, type NextDraftEdit } from './state'
 import { nextDraftApi, type AuthoringContext } from './transport'
 import { nextDraftWriter, promoteNextDraft } from './managed'
-import { readEditSnapshot } from './editIntentStorage'
+import { readEditOutbox, readEditSnapshot } from './editIntentStorage'
 import { useGraphEditIntent } from './useGraphEditIntent'
 import { EditIntentStatus } from './EditIntentStatus'
 import { draftFailure } from './writer'
@@ -135,7 +135,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     // URL changes project selection only; neither polling nor Run selection replaces the draft.
   }, [linkedAgent, draftKey, presentation, linkedSelection])
   const agents = useMemo(() => editorAgents(edit), [edit])
-  const hints = useMemo(() => authoringHints(graph, context), [graph, context])
+  const hints = useMemo(() => authoringHints(graph, context, edit.agentEdits), [graph, context, edit.agentEdits])
   const selectedNode = graph.nodes.find((node) => node.id === nodeId)
   const selectedEdge = graph.edges.find((edge) => edge.id === edgeId)
   const change = useCallback((update: (graph: WorkflowDefinitionV2) => WorkflowDefinitionV2) => {
@@ -192,8 +192,19 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const discardChanges = async () => {
     canvas.current?.flush()
     if (editIntent.locked) {
+      const retained = readEditOutbox(draftKey)
+      const instanceId = useGraphDraftStore.getState().nextDrafts[draftKey]?.instanceId
       const result = await editIntent.discard()
       if (result.intent && result.intent.state !== 'discarded') throw new Error('This intent was not discarded. Read its persisted result before changing the form.')
+      if (useGraphDraftStore.getState().nextDrafts[draftKey]?.instanceId !== instanceId) throw new Error('The draft instance changed while Discard was acknowledged. The new form is retained.')
+      if (retained && result.intent?.stageCommandId === retained.request.commandId
+        && result.intent.draftId === retained.request.draftId && result.intent.expectedRevision === retained.request.expectedRevision
+        && result.intent.expectedWorkflowVersionId === retained.request.expectedWorkflowVersionId) {
+        // The hook already three-way-acknowledged this exact submission. A
+        // blanket local discard here would erase independently newer edits.
+        setLocalError(undefined); setMessage('The recorded edits were discarded. Independent layout and newer local edits are retained.')
+        return
+      }
     }
     discardLocal()
   }
@@ -266,7 +277,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         {message ? <p role="status">{message}</p> : null}
         {editIntent.storageError ? <p role="alert">{editIntent.storageError}</p> : null}
         {editIntent.query.error ? <p role="alert">Retained-intent readback is unavailable: {editIntent.query.error.message}. No read error proves that a Stop or save failed.</p> : null}
-        {editIntent.mutation.error ? <p role="alert">{editIntent.mutation.error.message} The retained payload and exact command identities have not been replaced.</p> : null}
+        {editIntent.mutation.error ? <p role="alert">{editIntent.mutation.error.message} {editIntent.locked ? 'The retained payload and exact command identities have not been replaced.' : 'The local form is retained. Correct it, explicitly discard it, or reload the shared draft.'}</p> : null}
         {editIntent.outboxPending ? <p role="status">An exact Stage command is retained for reply reconciliation. Retrying does not allocate a new command.</p> : null}
         {editIntent.locked && !editIntent.sameDisplayedPayload ? <p role="alert">This tab has independent local edits. The action reconciles only the recorded payload below; newer local edits will not be overwritten.</p> : null}
         {editIntent.query.data?.intent ? <EditIntentStatus data={editIntent.query.data} /> : null}
@@ -305,7 +316,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         <Button variant="secondary" onClick={() => openPanel(null)}>Close controls</Button>
         <fieldset disabled={edit.busy || reloading || editIntent.locked}>
           {selectedNode ? <>
-            <NodeFields graph={graph} node={selectedNode} context={context} change={change} />
+            <NodeFields graph={graph} node={selectedNode} context={context} agentEdits={edit.agentEdits} change={change} />
             <Button variant="secondary" onClick={() => setAgentSettings(true)}>Agent configuration</Button>
             {agentSettings ? <BoardAgentSettings draftKey={draftKey} edit={edit} nodeId={selectedNode.id} close={() => setAgentSettings(false)} /> : null}
           </> : null}
@@ -313,8 +324,8 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
           {panel === 'agents' ? <><NewBoardAgent draftKey={draftKey} edit={edit} report={report} /><AttachAgentField graph={graph} context={context} change={change} report={report} /></> : null}
           {panel === 'connection' ? <ConnectionFields graph={graph} kind={kind} setKind={setKind} change={change} report={report} /> : null}
           {panel === 'workflow' ? <>
-            <EntryFields graph={graph} context={context} change={change} />
-            <ApprovalFields graph={graph} context={context} change={change} report={report} />
+            <EntryFields graph={graph} context={context} agentEdits={edit.agentEdits} change={change} />
+            <ApprovalFields graph={graph} context={context} agentEdits={edit.agentEdits} change={change} report={report} />
             <section className="next-draft-section" aria-label="Execution bounds"><h2>Execution bounds</h2>
               {graph.executionPolicy ? <>
                 <Field label="Maximum parallelism"><input type="number" min={1} max={100} value={Number.isFinite(graph.executionPolicy.maxParallelism) ? graph.executionPolicy.maxParallelism : ''} onChange={(event) => { const value = event.target.valueAsNumber; change((item) => ({ ...item, executionPolicy: { ...item.executionPolicy!, maxParallelism: value } })) }} /></Field>

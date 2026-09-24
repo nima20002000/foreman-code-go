@@ -12,7 +12,7 @@ export type AuthoringIssue = { code: string; message: string; nodeId?: string; r
 export type RoleEvidence = {
   role?: 'orchestrator' | 'coder'
   configurationVersionId?: string
-  source: 'configuration' | 'staged' | 'unavailable'
+  source: 'configuration' | 'staged' | 'local' | 'unavailable'
 }
 
 /** Kept as an authoring compatibility export; classification is shared. */
@@ -24,11 +24,18 @@ export function draftAgents(context: NextDraftContext): Agent[] {
   return [...agents.values()]
 }
 
-/** Only server-returned productRole/configuration pins, never Agent.role or node labels. */
-export function roleEvidence(context: NextDraftContext, agentId: string): RoleEvidence {
+/** Existing Agents require server evidence. Explicit new-Agent roles are only
+ * local authoring evidence, never a saved configuration pin or execution grant. */
+export function roleEvidence(context: NextDraftContext, agentId: string, agentEdits: DraftAgentEdits = {}): RoleEvidence {
   const staged = context.draft.stagedAgents.find((item) => item.agent.id === agentId)
   const agent = staged?.agent ?? context.agents.find((item) => item.agent.id === agentId)?.agent
   const expected = context.draft.sourceAgentPins?.find((pin) => pin.agentId === agentId)
+  const local = agentEdits[agentId]
+  if (!agent && !expected && !context.draft.graph.nodes.some((node) => node.agentId === agentId)
+    && local?.id === agentId && !local.configurationVersionId
+    && (local.productRole === 'coder' || local.productRole === 'orchestrator')) {
+    return { role: local.productRole, source: 'local' }
+  }
   if (!agent || (!staged && (!agent.configurationVersionId
     || (expected && expected.configurationVersionId !== agent.configurationVersionId)))) return { source: 'unavailable' }
   const role = agent.productRole
@@ -36,8 +43,8 @@ export function roleEvidence(context: NextDraftContext, agentId: string): RoleEv
   return { role, source: staged ? 'staged' : 'configuration', configurationVersionId: agent.configurationVersionId }
 }
 
-export function entryChoices(graph: WorkflowDefinitionV2, context: NextDraftContext) {
-  const roles = new Map(graph.nodes.map((node) => [node.id, roleEvidence(context, node.agentId)]))
+export function entryChoices(graph: WorkflowDefinitionV2, context: NextDraftContext, agentEdits: DraftAgentEdits = {}) {
+  const roles = new Map(graph.nodes.map((node) => [node.id, roleEvidence(context, node.agentId, agentEdits)]))
   const unresolved = graph.nodes.filter((node) => !roles.get(node.id)?.role)
   const orchestrators = graph.nodes.filter((node) => roles.get(node.id)?.role === 'orchestrator')
   // An unresolved node might be an Orchestrator. Do not enable a permissive Worker fallback.
@@ -54,9 +61,9 @@ export function nodeTitle(graph: WorkflowDefinitionV2, id: string): string {
 }
 
 /** Hints explain frozen acceptance rules. Only the shared service can accept a version. */
-export function authoringHints(graph: WorkflowDefinitionV2, context: NextDraftContext): AuthoringIssue[] {
+export function authoringHints(graph: WorkflowDefinitionV2, context: NextDraftContext, agentEdits: DraftAgentEdits = {}): AuthoringIssue[] {
   const issues: AuthoringIssue[] = []
-  const entry = entryChoices(graph, context)
+  const entry = entryChoices(graph, context, agentEdits)
   if (!graph.nodes.length) issues.push({ code: 'ENTRY_REQUIRED', message: 'Add a board Agent before selecting an entry.' })
   else if (entry.unresolved.length) issues.push({ code: 'ROLE_PIN_UNAVAILABLE', message: 'A product-role pin is unavailable or changed. Reload the Agent context; labels cannot determine entry.' })
   else if (!entry.valid) issues.push({ code: 'ENTRY_REQUIRED', message: entry.mode === 'sole'
@@ -224,13 +231,47 @@ export function mergeAcknowledgement(current: WorkflowDefinitionV2, sent: Workfl
     const accepted = preserveWorkflowGeometry(saved, current)
     return sameValue(current, accepted) ? current : accepted
   }
-  const mergeEntities = <T extends { id: string }>(items: T[], before: T[], after: T[]): T[] => {
+  const mergeEntities = <T extends { id: string }>(items: T[], before: T[], after: T[], meaning: (item: T) => unknown): T[] => {
     const b = new Map(before.map((item) => [item.id, item])), a = new Map(after.map((item) => [item.id, item]))
-    const merged = items.map((item) => b.has(item.id) && a.has(item.id) ? mergeFields(item, b.get(item.id)!, a.get(item.id)!) : item)
-    return merged.every((item, index) => item === items[index]) ? items : merged
+    const now = new Map(items.map((item) => [item.id, item])), merged = new Map<string, T>()
+    for (const item of items) {
+      const previous = b.get(item.id), accepted = a.get(item.id)
+      // A discarded addition disappears only if its meaning was not edited
+      // again. Geometry alone must not keep an otherwise discarded node alive.
+      if (previous && !accepted && sameValue(meaning(item), meaning(previous))) continue
+      merged.set(item.id, previous && accepted ? mergeFields(item, previous, accepted) : item)
+    }
+    for (const item of after) {
+      // Restore staged removals, but never resurrect a deletion made AFTER
+      // the submitted snapshot (present in before, absent in current).
+      if (!now.has(item.id) && !b.has(item.id)) merged.set(item.id, item)
+    }
+    const ids = (values: T[]) => values.map((item) => item.id)
+    const order = ids(sameValue(ids(items), ids(before)) ? after : items).filter((id) => merged.has(id))
+    // Install restored entities in saved order without reordering newer work.
+    const savedOrder = ids(after)
+    for (const [index, id] of savedOrder.entries()) {
+      if (!merged.has(id) || order.includes(id)) continue
+      const next = savedOrder.slice(index + 1).find((candidate) => order.includes(candidate))
+      order.splice(next === undefined ? order.length : order.indexOf(next), 0, id)
+    }
+    for (const id of merged.keys()) if (!order.includes(id)) order.push(id)
+    const result = order.map((id) => merged.get(id)!)
+    return result.length === items.length && result.every((item, index) => item === items[index]) ? items : result
   }
-  return preserveWorkflowGeometry({ ...mergeFields(current, sent, saved),
-    nodes: mergeEntities(current.nodes, sent.nodes, saved.nodes), edges: mergeEntities(current.edges, sent.edges, saved.edges) }, current)
+  const nodes = mergeEntities(current.nodes, sent.nodes, saved.nodes, executableNodeContent)
+  const nodeIds = new Set(nodes.map((node) => node.id))
+  const currentEdges = new Set(current.edges.map((edge) => edge.id))
+  const edges = mergeEntities(current.edges, sent.edges, saved.edges, (edge) => edge).filter((edge) =>
+    // A restored edge cannot undo a newer endpoint deletion. Already local
+    // records remain visible for explicit correction, rather than being hidden.
+    currentEdges.has(edge.id) || (nodeIds.has(edge.source) && nodeIds.has(edge.target)))
+  const fields = mergeFields(current, sent, saved)
+  // Restoring an old entry must not point at a node deleted only after Stage.
+  // Keep an already-local unresolved selection visible for explicit correction.
+  const entryNodeId = fields.entryNodeId && !nodeIds.has(fields.entryNodeId) && fields.entryNodeId !== current.entryNodeId
+    ? current.entryNodeId : fields.entryNodeId
+  return preserveWorkflowGeometry({ ...fields, entryNodeId, nodes, edges }, current)
 }
 
 export function hasLocalChanges(context: NextDraftContext, graph: WorkflowDefinitionV2): boolean {

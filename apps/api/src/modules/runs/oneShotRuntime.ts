@@ -232,6 +232,11 @@ export async function executeOneShotRuntime(input: OneShotRuntimeContext & {
     const clean = await closing
     owner.assertOwned()
     await store.settleRun(stop, signal.aborted && !stop)
+    // A waiting/aborted node may never re-enter ensureObserve's finalizer.
+    // Failure here deliberately leaves the durable cleanup intent pending.
+    if (clean && drained && (await runs.get(run.id, owner))?.executionState === 'completed') {
+      await native.cancelRun(run.id, owner)
+    }
     await runs.finishCleanup(run.id, !clean || !drained)
     throw error
   }

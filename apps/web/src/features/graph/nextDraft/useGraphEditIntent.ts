@@ -9,7 +9,7 @@ import { acknowledgeAgentEdits, hasAgentEdits } from './agentEdits'
 import { draftOperations, hasLocalChanges, mergeAcknowledgement } from './model'
 import { nextDraftDirty, type NextDraftEdit } from './state'
 import { nextDraftApi } from './transport'
-import { acknowledgeEditOutbox, readEditOutbox, reserveEditOutbox, storeEditSnapshot, withEditIntentLock } from './editIntentStorage'
+import { acknowledgeEditOutbox, readEditOutbox, rejectEditOutbox, reserveEditOutbox, storeEditSnapshot, withEditIntentLock, type EditIntentOutbox } from './editIntentStorage'
 
 export const activeEditIntent = (intent: GraphEditIntent | null | undefined) => !!intent && !['saved', 'discarded'].includes(intent.state)
 export const graphEditIntentKey = (workspaceId: string, workflowId: string, draftId: string, generation = sessionGeneration()) =>
@@ -67,6 +67,13 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
     if (!current || current.busy || current.pending) return
     const retained = readEditOutbox(draftKey)
     const ownOutbox = retained?.request.commandId === intent.stageCommandId
+      && retained.request.draftId === intent.draftId && retained.request.expectedRevision === intent.expectedRevision
+      && retained.request.expectedWorkflowVersionId === intent.expectedWorkflowVersionId
+    // Server staging normalizes optional Agent fields. Only our reserved local
+    // snapshot can tell unchanged submission apart from independently newer typing.
+    const submittedGraph = ownOutbox ? retained.target : intent.stagedDraft.graph
+    const submittedAgents = ownOutbox ? retained.agentTarget
+      : Object.fromEntries(intent.stagedDraft.stagedAgents.map((item) => [item.agent.id, item.agent]))
     if (intent.state === 'saved' && intent.result) {
       const result = intent.result
       if (current.context.draft.id === intent.draftId && current.context.draft.revision === intent.expectedRevision) {
@@ -74,9 +81,8 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
           const catalog = new Map(state.context.agents.map((item) => [item.agent.id, item]))
           for (const item of result.agents) catalog.set(item.agent.id, item)
           const context = { draft: result.draft, agents: [...catalog.values()] }
-          return { ...state, context, graph: mergeAcknowledgement(state.graph, intent.stagedDraft.graph, result.draft.graph),
-            agentEdits: acknowledgeAgentEdits(state.agentEdits,
-              Object.fromEntries(intent.stagedDraft.stagedAgents.map((item) => [item.agent.id, item.agent])), context),
+          return { ...state, context, graph: mergeAcknowledgement(state.graph, submittedGraph, result.draft.graph),
+            agentEdits: acknowledgeAgentEdits(state.agentEdits, submittedAgents, context),
             error: undefined, validation: undefined }
         })
       }
@@ -89,11 +95,13 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
       void queryClient.invalidateQueries({ queryKey: boardDraftContextKey(workspaceId, workflowId) })
     } else if (intent.state === 'discarded' && ownOutbox) {
       // Recover a lost Discard reply without discarding independently newer edits.
-      useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state,
-        graph: mergeAcknowledgement(state.graph, intent.stagedDraft.graph, state.context.draft.graph),
-        agentEdits: acknowledgeAgentEdits(state.agentEdits,
-          Object.fromEntries(intent.stagedDraft.stagedAgents.map((item) => [item.agent.id, item.agent])), state.context),
-      }))
+      useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => {
+        if (state.context.draft.id !== intent.draftId || state.context.draft.revision !== intent.expectedRevision
+          || state.context.draft.baseWorkflowVersionId !== intent.expectedWorkflowVersionId) return state
+        const graph = mergeAcknowledgement(state.graph, submittedGraph, state.context.draft.graph)
+        return { ...state, graph,
+          agentEdits: acknowledgeAgentEdits(state.agentEdits, submittedAgents, state.context, graph) }
+      })
       storeEditSnapshot(draftKey, useGraphDraftStore.getState().nextDrafts[draftKey]!)
       acknowledgeEditOutbox(draftKey, intent.stageCommandId); setOutboxPending(false)
     } else if (activeEditIntent(intent) && hydrated.current !== intent.id) {
@@ -103,8 +111,8 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
       if (!hasLocalChanges(current.context, current.graph) && !hasAgentEdits(current)
         && current.context.draft.id === intent.draftId && current.context.draft.revision === intent.expectedRevision) {
         useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state,
-          graph: preserveWorkflowGeometry(intent.stagedDraft.graph, state.graph),
-          agentEdits: Object.fromEntries(intent.stagedDraft.stagedAgents.map((item) => [item.agent.id, item.agent])),
+          graph: preserveWorkflowGeometry(submittedGraph, state.graph),
+          agentEdits: submittedAgents,
         }))
       }
     }
@@ -126,9 +134,21 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
     }
     storeEditSnapshot(draftKey, current)
     const retained = readEditOutbox(draftKey)
+    const stage = async (outbox: EditIntentOutbox) => {
+      try { return await nextDraftApi.editStage(outbox.request) }
+      catch (error) {
+        assertSession(generation)
+        if (rejectEditOutbox(draftKey, outbox.request, error)) {
+          setOutboxPending(!!readEditOutbox(draftKey))
+          void queryClient.invalidateQueries({ queryKey })
+        }
+        // No replacement command, automatic retry, or form discard on failure.
+        throw error
+      }
+    }
     // Stage replay is read/receipt reconciliation, not Stop. Even Discard must
     // first settle an uncertain Stage reply; it never calls editAdvance.
-    let data = retained ? await nextDraftApi.editStage(retained.request)
+    let data = retained ? await stage(retained)
       : await nextDraftApi.editRead(readInput(current))
     assertSession(generation)
     if (action === 'advance' && !activeEditIntent(data.intent) && !retained) {
@@ -140,7 +160,7 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
       const reserved = reserveEditOutbox(draftKey, { request, target: current.graph,
         ...(current.agentEdits ? { agentTarget: current.agentEdits } : {}) })
       setOutboxPending(true)
-      data = await nextDraftApi.editStage(reserved.request)
+      data = await stage(reserved)
       assertSession(generation)
     }
     accept(data)

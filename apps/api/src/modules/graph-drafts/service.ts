@@ -60,6 +60,7 @@ export class GraphDraftService {
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator) {
     this.editIntents = new GraphEditIntentService(pool, commands, {
       prepare: (client, principal, input) => this.prepareEditIntent(client, principal, input),
+      authorizePublication: (client, principal, draft) => this.authorizeEditPublication(client, principal, draft),
       publish: (principal, source, input, intentId) => this.save(principal, source, input, intentId),
     })
   }
@@ -115,6 +116,30 @@ export class GraphDraftService {
       requireAuthorization(principal, 'graph:edit', { workspaceId: draft.workspaceId, workflowId: row.id })
     }
     return references.rows.map((row) => row.id)
+  }
+
+  /** Permission-only preview of the exact staged writes. Called with fresh
+   * authority and locked Agent pins before Stop; save keeps its final checks. */
+  private async authorizeEditPublication(client: pg.PoolClient, principal: ManagementPrincipal, draft: GraphDraft) {
+    await assertSourceAgentPins(client, draft, principal)
+    for (const staged of draft.stagedAgents) {
+      requireAuthorization(principal, 'agents:read', draft)
+      await this.authorizeAgentWrite(client, principal, draft, staged.agent.id)
+      this.requireConfigurationAuthorization(principal, draft, staged.agent)
+      const saved = staged.agent.configurationVersionId ? await client.query<{ record: unknown }>(
+        'select record from agent_configuration_versions where id=$1 and workspace_id=$2 and agent_id=$3',
+        [staged.agent.configurationVersionId, draft.workspaceId, staged.agent.id],
+      ) : undefined
+      const current = saved?.rows[0] ? AgentConfigurationVersionSchema.parse(saved.rows[0].record) : undefined
+      if (staged.baseRevision !== null && !current) {
+        throw new DomainError('AGENT_CONFIGURATION_UNAVAILABLE', 'The staged Agent configuration is unavailable.', 409)
+      }
+      // Match saveAgentConfiguration's inheritance without writing a version.
+      const next = configurationInput(draft.workspaceId, staged.agent, current)
+      this.requireConfigurationAuthorization(principal, draft, {
+        ...staged.agent, harnessConfiguration: next.harness, assignedSkills: next.assignedSkills,
+      })
+    }
   }
 
   async open(principal: ManagementPrincipal, workspaceId: string, workflowId: string): Promise<GraphDraft> {

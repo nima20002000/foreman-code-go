@@ -29,6 +29,7 @@ import { HarnessExecutionError } from '../harnesses/errors.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import { redactKnownSecrets, redactSecretText } from '../harnesses/secrets.js'
 import { attemptCleanup } from './cleanup.js'
+import { finalizeStoppedWorkflowSessions, type ClosedWorkflowSession } from './stoppedWorkflowFinalization.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
 import { maintainCredential } from '../harnesses/credentialHeartbeat.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
@@ -73,6 +74,8 @@ export class ApprovalExecutionCoordinator {
   // A waiting graph has no active task, but still owns its native process.
   private readonly ownedSessions = new Map<string, OwnedNativeSession>()
   private readonly closedExecutions = new Set<string>()
+  // Closure survives the early ownerless Stop pass, but never a new connection.
+  private readonly closedWorkflowSessions = new Map<string, ClosedWorkflowSession>()
   private readonly stoppingRuns = new Set<string>()
   private readonly pendingCleanupRuns = new Set<string>()
   private readonly cancellations = new Map<string, Promise<void>>()
@@ -86,6 +89,7 @@ export class ApprovalExecutionCoordinator {
     let owned = this.ownedSessions.get(execution.id)
     if (!owned) {
       this.closedExecutions.delete(execution.id)
+      this.closedWorkflowSessions.delete(execution.id)
       owned = { execution, context, manager, controller: new AbortController(), generation: 0 }
       this.ownedSessions.set(execution.id, owned)
     }
@@ -99,6 +103,7 @@ export class ApprovalExecutionCoordinator {
         owned.generation += 1
         // A late create/attach completion invalidates earlier closure evidence.
         this.closedExecutions.delete(owned.execution.id)
+        this.closedWorkflowSessions.delete(owned.execution.id)
         delete owned.openingFailed
         return session
       },
@@ -106,6 +111,17 @@ export class ApprovalExecutionCoordinator {
     ).finally(() => { if (owned.opening === opening) delete owned.opening })
     owned.opening = opening
     return opening
+  }
+
+  private rememberClosedWorkflowSession(execution: HarnessExecution, session: NativeSessionReference): void {
+    this.closedWorkflowSessions.set(execution.id, {
+      execution: { id: execution.id, runId: execution.runId, workflowNodeId: execution.workflowNodeId,
+        agentId: execution.agentId, agentConfigurationVersionId: execution.agentConfigurationVersionId,
+        attempt: execution.attempt, nativeSessionId: session.nativeSessionId,
+        ...(execution.workingDirectory ? { workingDirectory: execution.workingDirectory } : {}),
+        ...(execution.runtimeDirectory ? { runtimeDirectory: execution.runtimeDirectory } : {}) },
+      session: { ...session },
+    })
   }
 
   private cleanupSession(owned: OwnedNativeSession, cancel = true): Promise<Error[]> {
@@ -140,12 +156,16 @@ export class ApprovalExecutionCoordinator {
           if (owned.generation !== generation) return false
           // Remember a late successful close even when the cleanup deadline won.
           this.closedExecutions.add(owned.execution.id)
+          this.rememberClosedWorkflowSession(owned.execution, session)
           return true
         }) === true
       }
       if (!closed && this.recoverNativeProcesses) {
+        const generation = owned.generation
         closed = await attempt('recover registered native process groups',
           (signal) => this.recoverNativeProcesses!(owned.execution.id, signal)) === true
+          && owned.generation === generation && !owned.opening
+        if (closed && owned.session) this.rememberClosedWorkflowSession(owned.execution, owned.session)
       }
       if (closed) this.closedExecutions.add(owned.execution.id)
       const revoked = await attempt('revoke execution credential', async () => {
@@ -643,12 +663,30 @@ export class ApprovalExecutionCoordinator {
   }
 
   cancelRun(runId: string, owner?: RunOwnership): Promise<void> {
+    if (owner) {
+      owner.assertOwned()
+      if (owner.runId !== runId) throw new DomainError('GRAPH_SCOPE_MISMATCH', 'Run ownership cannot cross Run identities.', 409)
+    }
+    // Physical cleanup can start before the engine obtains database ownership.
+    // An owner joining that pass must still perform its own fenced finalization.
+    const finish = (cleanup: Promise<void>) => owner ? cleanup.then(async () => {
+      try {
+        await finalizeStoppedWorkflowSessions(runId, owner, (executionId) => {
+          const proof = this.closedWorkflowSessions.get(executionId)
+          if (!proof || this.ownedSessions.has(executionId)) return undefined
+          return proof
+        })
+      } catch (error) {
+        this.pendingCleanupRuns.add(runId)
+        throw error
+      }
+    }) : cleanup
     this.stoppingRuns.add(runId)
     this.pendingCleanupRuns.add(runId)
     const local = [...this.ownedSessions.values()].filter((owned) => owned.execution.runId === runId)
     for (const owned of local) owned.controller.abort()
     const existing = this.cancellations.get(runId)
-    if (existing) return existing
+    if (existing) return finish(existing)
     const task = (async () => {
       const failures: Error[] = []
       // Start local native cleanup before any database wait. Process every sibling,
@@ -662,9 +700,18 @@ export class ApprovalExecutionCoordinator {
       for (const execution of executions ?? []) {
         cleanups.push((async () => {
           if (known.has(execution.id)) return
+          // Capture the durable identity BEFORE recovery, never retarget closure
+          // evidence to whatever session happens to be bound after an await.
+          const native = this.recoverNativeProcesses && !this.closedExecutions.has(execution.id)
+            ? await attemptCleanup(failures, `${execution.id}: read native recovery identity`,
+              () => this.interactions.coordination.workflowSession(execution.id)) : undefined
           const recovered = await attemptCleanup(failures, `${execution.id}: recover registered process groups`,
-            async (signal) => this.recoverNativeProcesses ? this.recoverNativeProcesses(execution.id, signal) : false)
-          if (recovered) this.closedExecutions.add(execution.id)
+            async (signal) => this.recoverNativeProcesses && !this.closedExecutions.has(execution.id)
+              ? this.recoverNativeProcesses(execution.id, signal) : false)
+          if (recovered) {
+            this.closedExecutions.add(execution.id)
+            if (native) this.rememberClosedWorkflowSession(execution, native.session)
+          }
           const owned = await attemptCleanup(failures, `${execution.id}: resolve native session`, async (signal) => {
             if (!execution.nativeSessionId || this.closedExecutions.has(execution.id)) return undefined
             if (execution.state === 'completed') {
@@ -710,11 +757,14 @@ export class ApprovalExecutionCoordinator {
       if (failures.length) throw new AggregateError(failures, 'Run cleanup was incomplete; native closure must not be assumed.')
       // Publish cleanup evidence only after every sibling's native closure and
       // revocation succeeded. A failed Stop keeps the durable intent retryable.
-      await this.interactions.coordination.finishStoppedReviews(runId, Boolean(this.credentials), owner?.client)
+      owner?.assertOwned()
+      // This call owns its review/retirement publication; no owner transaction
+      // is open here. Native finalization follows that committed cleanup.
+      await this.interactions.coordination.finishStoppedReviews(runId, Boolean(this.credentials))
       this.pendingCleanupRuns.delete(runId)
     })().finally(() => { this.cancellations.delete(runId) })
     this.cancellations.set(runId, task)
-    return task
+    return finish(task)
   }
 
   async ensureObserve(input: {

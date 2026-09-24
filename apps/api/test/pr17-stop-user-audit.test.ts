@@ -39,7 +39,7 @@ it('F11: failed cleanup remains retryable after terminal settlement and a fresh 
   const outcome = record.outcome
   fail = false
   assert.equal(await freshEngine().cancel('run'), true)
-  assert.equal(attempts, 2)
+  assert.equal(attempts, 3, 'the terminal owner makes a final fenced cleanup pass')
   assert.equal(pending, false)
   assert.equal(record.outcome, outcome, 'cleanup success must not rewrite the business outcome')
 })
