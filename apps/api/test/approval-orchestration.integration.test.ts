@@ -448,6 +448,8 @@ it('delivers an Orchestrator App MCP response to native execution, resumes the r
   try {
     const revocationsBeforeResponse = revoked.length
     expect(revocationsBeforeResponse).toBeGreaterThan(0)
+    const requesterRevocationsBeforeResponse = revoked.filter((executionId) => executionId === pending.executionId).length
+    expect(requesterRevocationsBeforeResponse).toBe(0)
     const response = await client.callTool({ name: 'interaction_respond', arguments: {
       interactionId: pending.id,
       optionId: pending.responseOptions.find((option) => option.semantic === 'approve_once')!.optionId,
@@ -464,7 +466,8 @@ it('delivers an Orchestrator App MCP response to native execution, resumes the r
     expect((await interactions.get(pending.id))?.deliveryState).toBe('delivered')
     expect(await runs.get(run.id)).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
     expect([...managers.values()].reduce((count, manager) => count + manager.counters.deliveries, 0)).toBe(1)
-    expect(revoked).toHaveLength(revocationsBeforeResponse + 1)
+    expect(revoked.filter((executionId) => executionId === pending.executionId))
+      .toHaveLength(requesterRevocationsBeforeResponse + 1)
   } finally { await client.close() }
 })
 
