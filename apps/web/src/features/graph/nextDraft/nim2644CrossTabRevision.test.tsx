@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -37,7 +37,7 @@ const now = '2026-09-24T00:00:00Z'
 const hash = 'sha256:' + '7'.repeat(64)
 const clients: QueryClient[] = []
 const edit = () => useGraphDraftStore.getState().nextDrafts[key]!
-const saveButton = () => screen.getByRole('button', { name: /^Stop current Run and save edits$/ })
+const saveButton = () => screen.getByRole('button', { name: /^Save changes$/ })
 
 function inTab<T>(id: string, work: () => T): T {
   const previous = sessionStorage.getItem(tabKey)
@@ -177,9 +177,9 @@ describe('NIM-2644 typed-board cross-tab stale revision fence', () => {
     expect(savedA.intent?.result?.version.id).toBe('version-6')
     expect(nextDraftApi.start).not.toHaveBeenCalled()
 
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     await user.click(screen.getByRole('button', { name: 'Workflow settings' }))
-    await user.click(screen.getByRole('button', { name: 'Reload shared draft' }))
+    await user.click(screen.getByRole('button', { name: 'Reload saved draft' }))
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Reload saved draft' }))
     await waitFor(() => expect(edit().context.draft.revision).toBe(11))
     expect(edit().context.draft.baseWorkflowVersionId).toBe('version-6')
     expect(edit().graph.nodes[0]?.initialPrompt).toBe('marker A')
