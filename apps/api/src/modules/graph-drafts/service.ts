@@ -22,9 +22,13 @@ import {
 import type pg from 'pg'
 
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
+import { assertMeaningfulSaveAdmitted } from './saveAdmission.js'
+import { GraphEditIntentService } from './editIntent.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
-import { GraphDraftApplyV2InputSchema, GraphDraftV2Schema, GraphSaveV2InputSchema, WorkflowVersionV2Schema, type GraphDraftOperationV2 } from '@graphql/contracts/wave25'
+import { CompatibleWorkflowVersionSchema, GraphDraftApplyV2InputSchema, GraphDraftV2Schema, GraphSaveV2InputSchema, GraphSaveV2ResultSchema, WorkflowVersionV2Schema, type GraphEditStageInput, type GraphEditIntent,
+  preserveWorkflowGeometry, sameExecutableWorkflow, sameWorkflowValue, type GraphDraftOperationV2 } from '@graphql/contracts/wave25'
 import { GraphDraftRecordSchema as GraphDraftSchema, WorkflowDefinitionRecordSchema as WorkflowDefinitionSchema,
   buildDraftVersion as buildExecutableWorkflowVersion, applyExecutionOperation, draftSemantics, draftEntry, promoteExecutionDefinition } from './executionOperations.js'
 import { configurationInput, lockAgentConfigurations, saveAgentConfiguration } from '../workspaces/agentConfiguration.js'
@@ -52,12 +56,18 @@ function nodeIndex(graph: WorkflowDefinition, nodeId: string): number {
 }
 
 export class GraphDraftService {
-  constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator) {}
+  readonly editIntents: GraphEditIntentService
+  constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator) {
+    this.editIntents = new GraphEditIntentService(pool, commands, {
+      prepare: (client, principal, input) => this.prepareEditIntent(client, principal, input),
+      publish: (principal, source, input, intentId) => this.save(principal, source, input, intentId),
+    })
+  }
 
   private async lockActiveWorkflow(client: pg.PoolClient, workspaceId: string, workflowId: string) {
     await lockActiveWorkspace(client, workspaceId)
-    const workflow = await client.query<{ record: unknown; current_version_id: string | null; archived_at: Date | null }>(
-      'select record, current_version_id, archived_at from workflows where workspace_id = $1 and id = $2 for update',
+    const workflow = await client.query<{ record: unknown; current_version_id: string | null; archived_at: Date | null; revision: string }>(
+      'select record, current_version_id, archived_at, revision::text from workflows where workspace_id = $1 and id = $2 for update',
       [workspaceId, workflowId],
     )
     const row = workflow.rows[0]
@@ -436,6 +446,7 @@ export class GraphDraftService {
         if (draft.revision !== input.expectedRevision) {
           throw new DomainError('REVISION_CONFLICT', 'The graph draft changed since it was read.', 409, { currentRevision: draft.revision })
         }
+        const beforeMutation = draft
         if (draftSemantics(draft) === 2 && input.executionSemanticsVersion !== 2) {
           throw new DomainError('EXECUTION_SEMANTICS_MISMATCH', 'Use the explicit v2 mutation boundary for this draft.', 409)
         }
@@ -471,8 +482,15 @@ export class GraphDraftService {
             effects.push({ code: 'ENTRY_NODE_CHANGED', previousEntryNodeId: previousEntry, nextEntryNodeId: nextEntry ?? null })
           }
         }
+        const presentationOnly = sameExecutableWorkflow(beforeMutation.graph, draft.graph)
+          && sameWorkflowValue(beforeMutation.stagedAgents, draft.stagedAgents)
+          && sameWorkflowValue(beforeMutation.sourceAgentPins, draft.sourceAgentPins)
         draft = GraphDraftSchema.parse({
           ...draft, revision: draft.revision + 1,
+          // A revision still fences a shared layout write. It is not executable
+          // dirtiness and never makes a previously dirty draft look published.
+          publishedRevision: presentationOnly && beforeMutation.publishedRevision === beforeMutation.revision
+            ? draft.revision + 1 : draft.publishedRevision,
           updatedByPrincipalId: principal.id, updatedAt: new Date().toISOString(),
         })
         if (draftSemantics(draft) === 2) {
@@ -536,14 +554,80 @@ export class GraphDraftService {
     try { return (await this.validateWithClient(client, draft)).result } finally { client.release() }
   }
 
+  private async publishedAgents(client: pg.PoolClient, principal: ManagementPrincipal,
+    workspaceId: string, workflowId: string, agentIds: readonly string[]) {
+    const agents: Array<{ agent: Agent; metadataRevision: number }> = []
+    if (isAuthorized(principal, 'agents:read', { workspaceId, workflowId })) {
+      for (const agentId of [...agentIds].sort()) {
+        const persisted = await this.loadAgent(client, workspaceId, agentId)
+        agents.push({ agent: persisted.agent, metadataRevision: persisted.revision })
+      }
+    }
+    return agents
+  }
+
+  /** Stage privately without mutating the shared draft, Agent rows or any Run.
+   * Existing typed-operation and configuration authorization remain the owner. */
+  private async prepareEditIntent(client: pg.PoolClient, principal: ManagementPrincipal, input: GraphEditStageInput) {
+    const parent = await this.lockActiveWorkflow(client, input.workspaceId, input.workflowId)
+    const row = (await client.query<DraftRow>(`select id,record,discarded_at from graph_drafts
+      where id=$1 and workspace_id=$2 and workflow_id=$3 for update`,
+    [input.draftId, input.workspaceId, input.workflowId])).rows[0]
+    if (!row || row.discarded_at) throw new DomainError('GRAPH_DRAFT_NOT_FOUND', 'The exact draft instance is unavailable.', 404)
+    let draft = this.referencedDraft(GraphDraftV2Schema.parse(row.record))
+    if (draft.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'The shared draft changed before staging.', 409)
+    if (parent.current_version_id !== input.expectedWorkflowVersionId || draft.baseWorkflowVersionId !== input.expectedWorkflowVersionId) {
+      throw new DomainError('WORKFLOW_BASE_CONFLICT', 'Stage against the exact currently saved version.', 409)
+    }
+    for (const operation of input.operations) {
+      requireAuthorization(principal, 'graph:edit', input)
+      draft = await this.applyOperation(client, draft, operation, principal)
+    }
+    draft = this.referencedDraft(draft)
+    const ids = [...new Set(draft.graph.nodes.map((node) => node.agentId))].sort()
+    await lockAgentConfigurations(client, ids)
+    await assertSourceAgentPins(client, draft, principal)
+    const agentPins: GraphEditIntent['agentPins'] = []
+    for (const id of ids) {
+      const staged = draft.stagedAgents.find((item) => item.agent.id === id)
+      const current = (await client.query<AgentRow & { workspace_id: string; archived_at: Date | null }>(
+        'select workspace_id,record,metadata_revision::text,current_configuration_version_id,archived_at from agents where id=$1 for share',
+        [id])).rows[0]
+      if (staged?.baseRevision === null) {
+        if (current) throw new DomainError('AGENT_ID_CONFLICT', 'A staged new Agent already exists.', 409)
+        agentPins.push({ agentId: id, metadataRevision: null, configurationVersionId: null })
+      } else {
+        if (!current || current.workspace_id !== input.workspaceId || current.archived_at || !current.current_configuration_version_id) throw new DomainError('AGENT_NOT_FOUND', 'A referenced Agent is unavailable.', 409)
+        if (staged && (staged.baseRevision !== Number(current.metadata_revision)
+          || staged.agent.configurationVersionId !== current.current_configuration_version_id)) {
+          throw new DomainError('AGENT_REVISION_CONFLICT', 'The staged Agent metadata or configuration changed.', 409)
+        }
+        agentPins.push({ agentId: id, metadataRevision: Number(current.metadata_revision), configurationVersionId: current.current_configuration_version_id })
+      }
+      if (staged) {
+        requireAuthorization(principal, 'agents:read', input)
+        await this.authorizeAgentWrite(client, principal, draft, id)
+        this.requireConfigurationAuthorization(principal, draft, staged.agent)
+      }
+    }
+    const validation = await this.validateWithClient(client, draft, WorkflowDefinitionSchema.parse(parent.record))
+    if (!validation.result.valid) throw new DomainError('GRAPH_INVALID', 'Fix graph validation before stopping any Run.', 409, { issues: validation.result.issues })
+    return { draft: GraphDraftV2Schema.parse(draft), savedWorkflowRevision: Number(parent.revision), agentPins }
+  }
+
   async save(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
     workspaceId: string; workflowId: string; draftId: string; commandId: string; expectedRevision: number; executionSemanticsVersion?: 2
-  }) {
+  }, editIntentId?: string) {
     input = input.executionSemanticsVersion === 2 ? GraphSaveV2InputSchema.parse(input) : GraphSaveInputSchema.parse(input)
     requireAuthorization(principal, 'graph:save', { workspaceId: input.workspaceId, workflowId: input.workflowId })
     return this.commands.execute({
       principal, source, operation: 'graph.save', commandId: input.commandId,
-      targetKey: `draft:${input.draftId}`, payload: input,
+      targetKey: `draft:${input.draftId}`, payload: editIntentId ? { ...input, editIntentId } : input,
+      authorize: async (client) => {
+        principal = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(principal, 'graph:save', { workspaceId: input.workspaceId, workflowId: input.workflowId })
+        if (editIntentId) await this.editIntents.authorizeSave(client, principal, editIntentId, input)
+      },
       perform: async (client) => {
         const workflowRow = await this.lockActiveWorkflow(client, input.workspaceId, input.workflowId)
         const current = await client.query<DraftRow>(
@@ -556,11 +640,50 @@ export class GraphDraftService {
         if (draft.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'The graph draft changed since it was read.', 409, { currentRevision: draft.revision })
         if (draftSemantics(draft) !== (input.executionSemanticsVersion ?? 1)) throw new DomainError('EXECUTION_SEMANTICS_MISMATCH', 'Save using the exact draft execution semantics.', 409)
         if (workflowRow.current_version_id !== draft.baseWorkflowVersionId) throw new DomainError('WORKFLOW_BASE_CONFLICT', 'The saved workflow changed since this draft was opened.', 409)
+        if (editIntentId) {
+          // The server-owned staged payload is immutable. Independent current
+          // draft geometry survives; all executable fields come from the intent.
+          const staged = await this.editIntents.publication(client, principal, editIntentId, GraphSaveV2InputSchema.parse(input))
+          draft = GraphDraftSchema.parse({ ...staged, graph: preserveWorkflowGeometry(staged.graph, GraphDraftV2Schema.parse(draft).graph) })
+        }
         const agentIdsToLock = [...new Set(draft.graph.nodes.map((node) => node.agentId))].sort()
         await lockAgentConfigurations(client, agentIdsToLock)
         await assertSourceAgentPins(client, draft, principal)
         const validation = await this.validateWithClient(client, draft, WorkflowDefinitionSchema.parse(workflowRow.record))
         if (!validation.result.valid) throw new DomainError('GRAPH_INVALID', 'The graph is not executable.', 409, { issues: validation.result.issues })
+
+        const savedRows = draft.baseWorkflowVersionId ? await client.query<{ record: unknown }>(
+          'select record from workflow_versions where id=$1 and workspace_id=$2 and workflow_id=$3',
+          [draft.baseWorkflowVersionId, input.workspaceId, input.workflowId],
+        ) : undefined
+        const saved = savedRows?.rows[0] ? CompatibleWorkflowVersionSchema.parse(savedRows.rows[0].record) : undefined
+        if (draft.baseWorkflowVersionId && (!saved || saved.id !== draft.baseWorkflowVersionId
+          || saved.workspaceId !== input.workspaceId || saved.workflowId !== input.workflowId)) {
+          throw new DomainError('WORKFLOW_BASE_CONFLICT', 'The saved workflow version is unavailable or has a different identity.', 409)
+        }
+        // Reusing an immutable version is allowed during execution ONLY when
+        // both executable meaning and current configuration pins are unchanged.
+        // New/shared Agent configuration writes always take the admission path.
+        if (saved && validation.version && draft.stagedAgents.length === 0
+          && sameExecutableWorkflow(saved.definition, draft.graph)
+          && sameWorkflowValue(saved.agentConfigurationVersionIds, validation.version.agentConfigurationVersionIds)) {
+          draft = GraphDraftSchema.parse({ ...draft, revision: draft.revision + 1,
+            publishedRevision: draft.revision + 1,
+            graph: preserveWorkflowGeometry(saved.definition, draft.graph), sourceAgentPins: [],
+            updatedByPrincipalId: principal.id, updatedAt: new Date().toISOString() })
+          if (draftSemantics(draft) === 2) await client.query("select set_config('graphql.approval_writer','v2',true)")
+          await client.query('update graph_drafts set revision=$2,record=$3::jsonb,updated_at=now() where id=$1',
+            [draft.id, draft.revision, JSON.stringify(draft)])
+          const value = { draft, version: saved,
+            agents: await this.publishedAgents(client, principal, input.workspaceId, input.workflowId, agentIdsToLock) }
+          if (editIntentId) await this.editIntents.saved(client, principal, editIntentId, GraphSaveV2ResultSchema.parse(value))
+          return value
+        }
+
+        // lockActiveWorkflow already holds admission:workspace, also used by
+        // every Start. Check ALL affected Runs before any Agent/version write.
+        await assertMeaningfulSaveAdmitted(client, { workspaceId: input.workspaceId, workflowId: input.workflowId,
+          stagedAgentIds: draft.stagedAgents.filter((item) => item.baseRevision !== null).map((item) => item.agent.id) })
 
         for (const staged of [...draft.stagedAgents].sort((left, right) => left.agent.id < right.agent.id ? -1 : left.agent.id > right.agent.id ? 1 : 0)) {
           await this.authorizeAgentWrite(client, principal, draft, staged.agent.id)
@@ -623,14 +746,10 @@ export class GraphDraftService {
           `update graph_drafts set revision = $2, base_workflow_version_id = $3, record = $4::jsonb, updated_at = now()
            where id = $1`, [draft.id, draft.revision, version.id, JSON.stringify(draft)],
         )
-        const publishedAgents: Array<{ agent: Agent; metadataRevision: number }> = []
-        if (isAuthorized(principal, 'agents:read', { workspaceId: input.workspaceId, workflowId: input.workflowId })) {
-          for (const agentId of [...agentIds].sort()) {
-            const persisted = await this.loadAgent(client, input.workspaceId, agentId)
-            publishedAgents.push({ agent: persisted.agent, metadataRevision: persisted.revision })
-          }
-        }
-        return { draft, version, agents: publishedAgents }
+        const value = { draft, version,
+          agents: await this.publishedAgents(client, principal, input.workspaceId, input.workflowId, agentIds) }
+        if (editIntentId) await this.editIntents.saved(client, principal, editIntentId, GraphSaveV2ResultSchema.parse(value))
+        return value
       },
     })
   }

@@ -1,18 +1,21 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Inbox } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
-import { GraphDraftV2Schema, staysOnWorkflowBoard, type WorkflowDefinitionV2, type WorkflowRelationship } from '@graphql/contracts/wave25'
+import { GraphDraftV2Schema, staysOnWorkflowBoard, sameExecutableWorkflow, type WorkflowDefinitionV2, type WorkflowRelationship } from '@graphql/contracts/wave25'
 import { Button, Icon, Toolbar } from '../../../shared/ui/nocturne'
 import { GraphPresentationProvider } from '../GraphPresentation'
 import { useGraphPresentation, useGraphPresentationStore } from '../useGraphPresentation'
 import { applyGraphGeometry, type GraphGeometryChange } from '../geometry'
 import { useGraphDraftStore } from '../store'
 import { UnsavedChangesContext, useUnsavedChanges } from '../../../shared/ui/unsavedChanges'
-import { authoringHints, hasLocalChanges, nodeTitle } from './model'
+import { authoringHints, discardMeaningfulChanges, hasLocalChanges, nodeTitle } from './model'
 import { editorAgents, hasAgentEdits } from './agentEdits'
 import { nextDraftDirty, nextDraftKey, type NextDraftEdit } from './state'
 import { nextDraftApi, type AuthoringContext } from './transport'
 import { nextDraftWriter, promoteNextDraft } from './managed'
+import { readEditSnapshot } from './editIntentStorage'
+import { useGraphEditIntent } from './useGraphEditIntent'
+import { EditIntentStatus } from './EditIntentStatus'
 import { draftFailure } from './writer'
 import { useInteractionsQuery, useManagedWorkspaceQuery } from '../../../shared/api/query'
 import { assertSession, sessionGeneration } from '../../../shared/api/sessionBoundary'
@@ -46,6 +49,19 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext }: {
     const controller = new AbortController()
     let active = true
     if (!useGraphDraftStore.getState().nextDrafts[draftKey]) {
+      try {
+        const retained = readEditSnapshot(draftKey)
+        if (retained && !useGraphDraftStore.getState().nextDraftPromotions[draftKey]) {
+          useGraphDraftStore.getState().installNextDraft(draftKey, retained.context)
+          useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state,
+            graph: retained.graph, agentEdits: retained.agentEdits }))
+          return () => { active = false; controller.abort() }
+        }
+      } catch (reason) {
+        // Invalid/out-of-scope storage is not deleted or silently overwritten.
+        setError(reason instanceof Error ? reason.message : 'The retained edit cannot be recovered.')
+        return () => { active = false; controller.abort() }
+      }
       void (initialContext ? Promise.resolve(initialContext) : nextDraftApi.context(workspaceId, workflowId, { signal: controller.signal })).then((context) => {
         if (!active) return
         setError(undefined)
@@ -79,6 +95,7 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext }: {
 type Panel = 'workflow' | 'agents' | 'connection' | 'readiness' | null
 function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit }) {
   const graph = edit.graph, context = edit.context, board = useWorkflowBoard()
+  const editIntent = useGraphEditIntent(draftKey, edit)
   const guard = useContext(UnsavedChangesContext)
   const [panel, setPanel] = useState<Panel>(null)
   const [agentSettings, setAgentSettings] = useState(false)
@@ -122,8 +139,15 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const selectedNode = graph.nodes.find((node) => node.id === nodeId)
   const selectedEdge = graph.edges.find((edge) => edge.id === edgeId)
   const change = useCallback((update: (graph: WorkflowDefinitionV2) => WorkflowDefinitionV2) => {
-    useGraphDraftStore.getState().changeNextDraft(draftKey, update); setMessage(undefined)
-  }, [draftKey])
+    useGraphDraftStore.getState().changeNextDraft(draftKey, (value) => {
+      const next = update(value)
+      if (editIntent.locked && !sameExecutableWorkflow(value, next)) {
+        setLocalError('The exact staged payload is retained. Reconcile or discard it before changing meaning; layout remains editable.')
+        return value
+      }
+      return next
+    }); setMessage(undefined)
+  }, [draftKey, editIntent.locked])
   const geometry = useCallback((changes: GraphGeometryChange[]) => change((value) => applyGraphGeometry(value, changes) as WorkflowDefinitionV2), [change])
   const report = useCallback((error: unknown) => setLocalError(draftFailure(error, false).message), [])
   const inspect = useCallback((action: () => void) => {
@@ -140,6 +164,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     presentation.getState().setFocusedNodeId(undefined); presentation.getState().setFocusedEdgeId(undefined); setPanel(next)
   })
   const save = async (publish: boolean) => {
+    if (editIntent.locked) throw new Error('Reconcile the retained Stop-and-save intent first.')
     canvas.current?.flush(); setLocalError(undefined); setMessage(undefined)
     const result = await nextDraftWriter.write(draftKey, publish)
     void queryClient.invalidateQueries({ queryKey: boardDraftContextKey(graph.workspaceId, graph.id) })
@@ -150,12 +175,31 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const discardLocal = () => {
     const current = useGraphDraftStore.getState().nextDrafts[draftKey]
     if (!current || current.busy || current.pending || useGraphDraftStore.getState().pendingRunStarts[draftKey]) throw new Error('Reconcile the in-flight or uncertain command first.')
-    canvas.current?.cancel()
-    useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state, graph: state.context.draft.graph,
+    // Flush any buffered drag before restoring meaning, so independent layout survives.
+    canvas.current?.flush()
+    useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state, graph: discardMeaningfulChanges(state.context, state.graph),
       history: [], agentEdits: undefined, agentHistory: undefined, error: undefined, validation: undefined }))
     setLocalError(undefined); setMessage('Local edits discarded. The shared server draft is unchanged.')
   }
+  const stopAndSave = async () => {
+    canvas.current?.flush(); setLocalError(undefined); setMessage(undefined)
+    const result = await editIntent.advance()
+    if (result.intent?.state === 'saved') setMessage('The exact edits were saved once. No Run was restarted.')
+    else if (result.intent?.state === 'blocked' || result.intent?.state === 'uncertain') {
+      setLocalError(result.intent.error?.message ?? 'The intent is retained; publication is not confirmed.')
+    } else setMessage('The exact edit intent is retained. Publication waits for authoritative settlement of all affected Runs.')
+  }
+  const discardChanges = async () => {
+    canvas.current?.flush()
+    if (editIntent.locked) {
+      const result = await editIntent.discard()
+      if (result.intent && result.intent.state !== 'discarded') throw new Error('This intent was not discarded. Read its persisted result before changing the form.')
+    }
+    discardLocal()
+  }
   const reload = async () => {
+    if (editIntent.locked) { report(new Error('The private staged payload is retained. Reconcile or discard it before reloading the shared draft.')); return }
+
     canvas.current?.flush()
     const before = useGraphDraftStore.getState().nextDrafts[draftKey]
     if (!before || before.busy || before.pending) return
@@ -172,7 +216,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   }
   const start = async () => {
     const current = useGraphDraftStore.getState().nextDrafts[draftKey]
-    if (!current || current.busy || current.pending || startLock.current) return
+    if (!current || current.busy || current.pending || startLock.current || editIntent.locked) return
     const existing = useGraphDraftStore.getState().pendingRunStarts[draftKey]
     if (!existing && (nextDraftDirty(current) || geometryPending || !current.context.draft.baseWorkflowVersionId || workspace.data?.locationValidation.status !== 'ready')) return
     startLock.current = true; setStarting(true); setLocalError(undefined)
@@ -196,10 +240,15 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     } catch (error) { report(error) } finally { startLock.current = false; setStarting(false) }
   }
   useUnsavedChanges({ label: `${graph.name} next draft`,
-    dirty: hasLocalChanges(context, graph) || hasAgentEdits(edit) || geometryPending || !!edit.pending || edit.busy || !!pendingStart,
-    busy: edit.busy || reloading || starting, uncertain: edit.error?.uncertain || !!pendingStart,
+    dirty: hasLocalChanges(context, graph) || hasAgentEdits(edit) || !!edit.pending || edit.busy || !!pendingStart || editIntent.locked,
+    busy: edit.busy || reloading || starting || editIntent.mutation.isPending, uncertain: edit.error?.uncertain || !!pendingStart || editIntent.intent?.state === 'uncertain',
     error: edit.error?.message ?? localError,
-    save: () => pendingStart ? start() : save(true), discard: discardLocal }, (current, next) =>
+    // A generic navigation Save must not implicitly issue Stop. The board
+    // exposes the explicit destructive action and the separate safe Discard.
+    saveDisabled: !pendingStart && !edit.pending,
+    save: () => pendingStart ? start() : edit.pending ? save(true)
+      : Promise.reject(new Error('Use “Stop current Run and save edits” on the board, or Discard changes.')),
+    discard: discardChanges }, (current, next) =>
     // The draft document stays mounted when authoring selection changes; dirty contextual forms
     // keep their separate surface registrations and still require a decision before unmounting.
     !staysOnWorkflowBoard({ ...current, search: { ...current.search, agentId: undefined } },
@@ -207,14 +256,20 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const prepare = async (action: () => void | Promise<unknown>) => {
     if (!guard || await guard.surfaces()) await action()
   }
-  const dirty = nextDraftDirty(edit) || geometryPending
-  const startDisabled = storageFailed || starting || edit.busy || !!edit.pending || (!pendingStart
+  const dirty = nextDraftDirty(edit)
+  const startDisabled = storageFailed || starting || editIntent.locked || edit.busy || !!edit.pending || (!pendingStart
     && (dirty || !context.draft.baseWorkflowVersionId || workspace.data?.locationValidation.status !== 'ready'))
   return <section className="workflow-graph board-typed-editor n-theme" aria-label="Workflow authoring">
       <div className="board-draft-notices">
         {pendingStart ? <p role="status">An earlier Start may have been accepted for version <code>{pendingStart.workflowVersionId}</code>. Reconcile Start before a new admission.</p> : null}
         {!pendingStart && workspace.data?.locationValidation.status !== 'ready' ? <p role="status">A valid workspace execution folder is required to Start. <button type="button" onClick={board?.openLocation}>Set execution folder</button></p> : null}
         {message ? <p role="status">{message}</p> : null}
+        {editIntent.storageError ? <p role="alert">{editIntent.storageError}</p> : null}
+        {editIntent.query.error ? <p role="alert">Retained-intent readback is unavailable: {editIntent.query.error.message}. No read error proves that a Stop or save failed.</p> : null}
+        {editIntent.mutation.error ? <p role="alert">{editIntent.mutation.error.message} The retained payload and exact command identities have not been replaced.</p> : null}
+        {editIntent.outboxPending ? <p role="status">An exact Stage command is retained for reply reconciliation. Retrying does not allocate a new command.</p> : null}
+        {editIntent.locked && !editIntent.sameDisplayedPayload ? <p role="alert">This tab has independent local edits. The action reconciles only the recorded payload below; newer local edits will not be overwritten.</p> : null}
+        {editIntent.query.data?.intent ? <EditIntentStatus data={editIntent.query.data} /> : null}
         {localError ? <p role="alert">{localError}</p> : null}
         {edit.error ? <div role="alert"><strong>{edit.error.code}</strong>: {edit.error.message}
           {edit.error.uncertain ? <p>Reconcile the exact command before discarding or replacing it.</p> : <p>The local form is retained.</p>}
@@ -238,14 +293,17 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         <span>Editing next draft · revision {context.draft.revision} · {dirty ? 'Unpublished edits' : 'Published version'}</span>
         <button type="button" onClick={() => openPanel('readiness')}>Readiness{hints.length ? ` · ${hints.length} checks` : ''}</button>
       </header>
-      <div className="workflow-graph-actions"><Toolbar label="Graph actions">
-        <Button variant="secondary" disabled={edit.busy || !edit.history.length} onClick={() => void prepare(() => { canvas.current?.flush(); useGraphDraftStore.getState().undoNextDraft(draftKey) })}>Undo</Button>
-        <Button variant="primary" disabled={edit.busy || reloading} onClick={() => void prepare(() => save(true)).catch(report)}>
-          {edit.busy ? 'Saving…' : edit.pending ? 'Reconcile pending command' : 'Save version'}</Button>
+      <div className="workflow-graph-actions"><p>Saving meaningful edits stops every affected unsettled workflow or shared-Agent Run, not only the Run selected on this board. It never restarts a Run.</p><Toolbar label="Graph actions">
+        <Button variant="secondary" disabled={edit.busy || editIntent.locked || !edit.history.length} onClick={() => void prepare(() => { canvas.current?.flush(); useGraphDraftStore.getState().undoNextDraft(draftKey) })}>Undo</Button>
+        <Button variant="primary" disabled={edit.busy || reloading || !!edit.pending || !!pendingStart || editIntent.mutation.isPending || !!editIntent.storageError}
+          onClick={() => void prepare(stopAndSave).catch(report)}>Stop current Run and save edits</Button>
+        <Button variant="secondary" disabled={edit.busy || reloading || !!edit.pending || !!pendingStart || editIntent.mutation.isPending}
+          onClick={() => void prepare(discardChanges).catch(report)}>Discard changes</Button>
+        {edit.pending ? <Button variant="secondary" disabled={edit.busy || editIntent.locked} onClick={() => void prepare(() => save(true)).catch(report)}>Reconcile pending command</Button> : null}
       </Toolbar></div>
       {panel || selectedNode || selectedEdge ? <aside className="board-authoring-inspector" aria-label="Board controls">
         <Button variant="secondary" onClick={() => openPanel(null)}>Close controls</Button>
-        <fieldset disabled={edit.busy || reloading}>
+        <fieldset disabled={edit.busy || reloading || editIntent.locked}>
           {selectedNode ? <>
             <NodeFields graph={graph} node={selectedNode} context={context} change={change} />
             <Button variant="secondary" onClick={() => setAgentSettings(true)}>Agent configuration</Button>
@@ -268,11 +326,10 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
               </> : <p>No fixed Agent count is authored.</p>}
             </section>
             <section className="next-draft-section"><h2>Draft actions</h2>
-              <Button variant="secondary" disabled={!!edit.pending} onClick={() => void save(false).catch(report)}>Persist draft &amp; validate</Button>
               <Button variant="secondary" disabled={!!edit.pending} onClick={() => void reload()}>Reload shared draft</Button>
               <Button variant="secondary" disabled={!!edit.pending || !!pendingStart} onClick={() => {
-                if (window.confirm('Discard only this tab’s local edits? The shared draft and Runs will not change.')) {
-                  try { discardLocal() } catch (error) { report(error) }
+                if (window.confirm('Discard changes without issuing Stop? Independent layout is retained.')) {
+                  void discardChanges().catch(report)
                 }
               }}>Discard local edits</Button>
               <p>Base version: <code>{context.draft.baseWorkflowVersionId ?? 'Not published'}</code>. Save version does not retarget existing Runs.</p>
@@ -282,7 +339,6 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
             {hints.length ? hints.map((issue, i) => <p key={i}>{issue.code}: {issue.message}</p>) : <p>No local hints. Executability still requires server acceptance.</p>}
             {edit.validation ? <div role="status"><strong>Server validation at draft revision {edit.validation.revision}: {edit.validation.valid ? 'valid' : 'needs correction'}</strong>
               {edit.validation.issues.map((issue, i) => <p key={i}>{issue.code}: {issue.message}</p>)}</div> : null}
-            <Button variant="secondary" disabled={!!edit.pending} onClick={() => void save(false).catch(report)}>Persist draft &amp; validate</Button>
             <p>Save validates exact roles, configuration pins, routing, approval authority and native compatibility.</p>
           </section> : null}
         </fieldset>

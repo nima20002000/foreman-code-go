@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import { registerGraphEditIntentRoutes } from './graphEditIntent.js'
 import { RUN_CURRENT_ROUTE, RunCurrentRequestSchema } from '@graphql/contracts/run-current'
 import { registerWorkspaceDefaultsRoutes } from './workspaceDefaults.js'
 import { registerHarnessSettingsRoutes } from './harnessSettings.js'
@@ -66,6 +67,7 @@ function page(query: Query) {
 }
 
 export function registerManagementRoutes(app: FastifyInstance, services: OperatorServices): void {
+  registerGraphEditIntentRoutes(app, services)
   registerWorkspaceDefaultsRoutes(app, services)
   registerHarnessSettingsRoutes(app, services)
   app.get<{ Querystring: Query }>('/api/management/workspaces', async (request) =>

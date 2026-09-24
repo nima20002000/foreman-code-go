@@ -1,3 +1,4 @@
+import { executableNodeContent, preserveNodeGeometry, preserveWorkflowGeometry, sameExecutableWorkflow, sameWorkflowValue } from '@graphql/contracts/wave25'
 import type { z } from 'zod'
 import { addAgentOperations, configureAgentOperations, type DraftAgentEdits } from './agentEdits'
 import type { Agent, WorkflowApprovalConfiguration } from '@graphql/contracts'
@@ -14,17 +15,8 @@ export type RoleEvidence = {
   source: 'configuration' | 'staged' | 'unavailable'
 }
 
-/** JSON content comparison, not a new workflow validation or runtime authority. */
-export function sameValue(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) return true
-  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false
-  if (Array.isArray(left) || Array.isArray(right)) return Array.isArray(left) && Array.isArray(right)
-    && left.length === right.length && left.every((item, index) => sameValue(item, right[index]))
-  const a = left as Record<string, unknown>, b = right as Record<string, unknown>
-  const keys = Object.keys(a).filter((key) => a[key] !== undefined)
-  return keys.length === Object.keys(b).filter((key) => b[key] !== undefined).length
-    && keys.every((key) => sameValue(a[key], b[key]))
-}
+/** Kept as an authoring compatibility export; classification is shared. */
+export const sameValue = sameWorkflowValue
 
 export function draftAgents(context: NextDraftContext): Agent[] {
   const agents = new Map(context.agents.map(({ agent }) => [agent.id, agent]))
@@ -182,11 +174,11 @@ export function draftOperations(context: NextDraftContext, graph: WorkflowDefini
           name: node.name ?? node.label, ...(node.position ? { position: node.position } : {}) })
       }
       operations.push({ type: 'node.replace_v2', node })
-    } else if (!sameValue(old, node)) {
-      const { choice: oldChoice, ...oldMetadata } = old
-      const { choice, ...metadata } = node
+    } else if (!sameValue(executableNodeContent(old), executableNodeContent(node))) {
+      const { choice: oldChoice, ...oldMetadata } = executableNodeContent(old)
+      const { choice, ...metadata } = executableNodeContent(node)
       if (sameValue(oldMetadata, metadata)) operations.push({ type: 'node.set_choice', nodeId: node.id, choice: choice ?? null })
-      else operations.push({ type: 'node.replace_v2', node })
+      else operations.push({ type: 'node.replace_v2', node: preserveNodeGeometry(node, old) })
       // Keep the destructured prior choice explicit: it is not copied into a new result.
       void oldChoice
     }
@@ -228,20 +220,24 @@ function mergeFields<T extends object>(current: T, sent: T, saved: T): T {
 
 /** An acknowledged own command can normalize its submission, never erase newer typing. */
 export function mergeAcknowledgement(current: WorkflowDefinitionV2, sent: WorkflowDefinitionV2, saved: WorkflowDefinitionV2): WorkflowDefinitionV2 {
-  if (sameValue(current, sent)) return sameValue(current, saved) ? current : saved
+  if (sameValue(current, sent)) {
+    const accepted = preserveWorkflowGeometry(saved, current)
+    return sameValue(current, accepted) ? current : accepted
+  }
   const mergeEntities = <T extends { id: string }>(items: T[], before: T[], after: T[]): T[] => {
     const b = new Map(before.map((item) => [item.id, item])), a = new Map(after.map((item) => [item.id, item]))
     const merged = items.map((item) => b.has(item.id) && a.has(item.id) ? mergeFields(item, b.get(item.id)!, a.get(item.id)!) : item)
     return merged.every((item, index) => item === items[index]) ? items : merged
   }
-  return { ...mergeFields(current, sent, saved), nodes: mergeEntities(current.nodes, sent.nodes, saved.nodes), edges: mergeEntities(current.edges, sent.edges, saved.edges) }
+  return preserveWorkflowGeometry({ ...mergeFields(current, sent, saved),
+    nodes: mergeEntities(current.nodes, sent.nodes, saved.nodes), edges: mergeEntities(current.edges, sent.edges, saved.edges) }, current)
 }
 
 export function hasLocalChanges(context: NextDraftContext, graph: WorkflowDefinitionV2): boolean {
-  const content = (value: WorkflowDefinitionV2) => {
-    const { version, createdAt, updatedAt, ...editable } = value
-    void version; void createdAt; void updatedAt
-    return editable
-  }
-  return !sameValue(content(context.draft.graph), content(graph))
+  return !sameExecutableWorkflow(context.draft.graph, graph)
+}
+
+/** Discard affects staged meaning only. It never dispatches a Run command. */
+export function discardMeaningfulChanges(context: NextDraftContext, graph: WorkflowDefinitionV2): WorkflowDefinitionV2 {
+  return preserveWorkflowGeometry(context.draft.graph, graph)
 }

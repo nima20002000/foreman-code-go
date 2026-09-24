@@ -392,6 +392,12 @@ describe.each(['http', 'mcp'] as const)('PR8 managed %s acceptance', (source) =>
         { type:'agent.configure',agentId:coder,expectedAgentRevision:1,configuration:userCoder },
         { type:'workflow.set_approval',approval:{ handler:'user' } },
       ])
+      await expect(save(changed)).rejects.toThrow('WORKFLOW_RUNS_UNSETTLED')
+      // The synthetic engine does not advance its queued Run. Settle that exact
+      // fixture before publishing the next version; the old Run keeps its pin.
+      await runs.updateState(started.run.id, {
+        executionState:'completed',outcome:'canceled',result:{ outcome:'canceled' },finishedAt:new Date().toISOString(),
+      })
       await save(changed)
       await templates.updateWorkflowDefaults({ approvalHandler:'user' },firstDefaults.revision)
       expect((await runs.getForWorkspace(workspaceId,started.run.id))!.approval).toEqual(expectedApproval)

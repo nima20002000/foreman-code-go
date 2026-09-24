@@ -2,6 +2,7 @@ import type { DurableInteraction, ReviewJob } from '@graphql/contracts'
 import { GraphAttentionSchema, type GraphActivity, type GraphAttention, type RunGraphScope } from '@graphql/contracts/wave25'
 import type { GraphTransactionSql } from './connection.js'
 import { RunGraphError } from './errors.js'
+import { PUBLIC_PENDING_INTERACTION_SQL, PUBLIC_UNSETTLED_REVIEW_SQL } from './publicObligations.js'
 import { publicInteractionPending, publicReviewCleanupPending, publicReviewUnsettled } from './publicLifecycle.js'
 
 export interface PublicAttentionOverlay {
@@ -32,8 +33,7 @@ export async function readPublicAttentionCounts(sql: GraphTransactionSql, runId:
        bool_or(i.status in ('decided','delivery_pending','delivery_failed','delivered')) as blocked
      from durable_interactions i join harness_executions e on e.id=i.execution_id and e.run_id=i.run_id
      left join interaction_graph_resumes g on g.interaction_id=i.id
-     where i.run_id=$1 and i.status<>'canceled'
-       and (i.status<>'delivered' or g.approval_native_ack_id is null)
+     where i.run_id=$1 and ${PUBLIC_PENDING_INTERACTION_SQL}
        and ($2::text[] is null or e.workflow_node_id=any($2)) and ($3::text is null or i.id<>$3)
      group by e.workflow_node_id limit 1001`, [runId, ids, overlay.interaction?.record.id ?? null])
   const reviews = await sql.query<{ node_id: string; count: string; cleanup: boolean }>(
@@ -42,8 +42,7 @@ export async function readPublicAttentionCounts(sql: GraphTransactionSql, runId:
          (j.record->'cleanup'->>'nativeState'='pending' or j.record->'cleanup'->>'credentialState'='pending')) as cleanup
      from harness_executions e join review_jobs j on j.execution_id=e.id
      where e.run_id=$1 and ($2::text[] is null or e.workflow_node_id=any($2))
-       and ($3::text is null or j.id<>$3) and j.state<>'completed'
-       and (j.state<>'failed' or j.record->'cleanup'->>'completedAt' is null)
+       and ($3::text is null or j.id<>$3) and ${PUBLIC_UNSETTLED_REVIEW_SQL}
      group by e.workflow_node_id limit 1001`, [runId, ids, overlay.review?.record.id ?? null])
   if (interactions.rows.length > 1000 || reviews.rows.length > 1000) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
   const result = new Map<string, PublicAttentionCount>((nodeIds ?? []).map((id) => [id, empty()]))
