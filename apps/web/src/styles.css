@@ -1,116 +1,43 @@
 @import 'tailwindcss';
 
+/* Legacy aliases onto the design-system tokens (shared/ui/nocturne/tokens.css).
+   The tokens switch with the theme, so these aliases are defined once. */
 :root {
-  color-scheme: dark;
-  --color-canvas: #111416;
-  --color-sidebar: #171a1c;
-  --color-header: #181b1d;
-  --color-surface: #1d2022;
-  --color-surface-raised: #24282b;
-  --color-surface-subtle: #202426;
-  --color-border: #363c40;
-  --color-border-strong: #5b6368;
-  --color-text: #e8ecee;
-  --color-text-strong: #f4f6f7;
-  --color-text-muted: #b0b8bc;
-  --color-text-faint: #879196;
-  --color-accent: #d9dfe2;
-  --color-accent-strong: #f1f3f4;
-  --color-accent-contrast: #131618;
-  --color-focus: #f2f4f5;
-  --color-status-bg: #242a2d;
-  --color-status-dot: #c1c9cc;
-  --color-success-text: #72dbaa;
-  --color-warning-text: #ffd180;
-  --color-error-text: #ff9c9c;
-  --color-dashed: #515a5f;
-  --color-minimap-mask: rgba(17, 20, 22, 0.78);
+  --color-canvas: var(--canvas);
+  --color-sidebar: var(--sidebar);
+  --color-header: var(--surface);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-subtle: var(--surface-hover);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-text-strong: var(--text-strong);
+  --color-text-muted: var(--text-muted);
+  --color-text-faint: var(--text-faint);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-hover);
+  --color-accent-contrast: var(--on-accent);
+  --color-focus: var(--focus);
+  --color-status-bg: var(--surface-raised);
+  --color-status-dot: var(--text-muted);
+  --color-success-text: var(--success);
+  --color-warning-text: var(--warning);
+  --color-error-text: var(--danger);
+  --color-danger: var(--danger);
+  --color-error-border: var(--danger-border);
+  --color-dashed: var(--border-strong);
+  --color-minimap-mask: color-mix(in srgb, var(--canvas) 78%, transparent);
   --motion-duration-fast: 140ms;
   --motion-duration: 200ms;
   --motion-duration-enter: 420ms;
   --motion-ease: cubic-bezier(0.22, 0, 0, 1);
   --motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  color: var(--color-text);
-  background: var(--color-canvas);
-  font-family: 'Inter Variable', Inter, ui-sans-serif, system-ui, sans-serif;
+  color: var(--text);
+  background: var(--canvas);
+  font-family: var(--font-sans);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-}
-
-:root[data-theme='light'] {
-  color-scheme: light;
-  --color-canvas: #f4f4f4;
-  --color-sidebar: #ededed;
-  --color-header: #fafafa;
-  --color-surface: #fafafa;
-  --color-surface-raised: #fdfdfd;
-  --color-surface-subtle: #f2f2f2;
-  --color-border: #cfcfcf;
-  --color-border-strong: #a8a8a8;
-  --color-text: #373737;
-  --color-text-strong: #171717;
-  --color-text-muted: #686868;
-  --color-text-faint: #555555;
-  --color-accent: #292929;
-  --color-accent-strong: #111111;
-  --color-accent-contrast: #fdfdfd;
-  --color-focus: #171717;
-  --color-status-bg: #f2f2f2;
-  --color-status-dot: #555555;
-  --color-success-text: #14613b;
-  --color-warning-text: #765000;
-  --color-error-text: #a21d28;
-  --color-dashed: #bdbdbd;
-  --color-minimap-mask: rgba(255, 255, 255, 0.72);
-  --n-canvas: #f4f4f4;
-  --n-sidebar: #ededed;
-  --n-surface: #fafafa;
-  --n-raised: #fdfdfd;
-  --n-hover: #f2f2f2;
-  --n-border: #cfcfcf;
-  --n-border-strong: #a8a8a8;
-  --n-control-border: #a8a8a8;
-  --n-text: #171717;
-  --n-muted: #555555;
-  --n-faint: #686868;
-  --n-accent: #292929;
-  --n-accent-hover: #111111;
-  --n-accent-ink: #fdfdfd;
-  --n-accent-subtle: #f2f2f2;
-  --n-success: #14613b;
-  --n-success-subtle: #e6f2ec;
-  --n-warning: #765000;
-  --n-warning-subtle: #f7efdd;
-  --n-danger: #a21d28;
-  --n-danger-subtle: #f9e9ea;
-  --n-info: #1f4f8f;
-  --n-info-subtle: #e9f0f9;
-  --n-focus: #171717;
-  --n-shadow: 0 18px 60px rgba(0, 0, 0, 0.12), 0 4px 16px rgba(0, 0, 0, 0.08);
-}
-
-:root[data-theme='light'] .n-theme {
-  color-scheme: light;
-}
-
-:root[data-theme='light'] .n-dialog::backdrop {
-  background: rgba(23, 23, 23, 0.35);
-}
-
-:root[data-theme='light'] .n-button--danger {
-  border-color: color-mix(in srgb, var(--n-danger) 40%, transparent);
-}
-
-:root[data-theme='light'] .n-button--danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--n-danger) 12%, transparent);
-}
-
-:root[data-theme='light'] .n-nav-item[aria-current='page'] {
-  border-color: color-mix(in srgb, var(--n-accent) 35%, transparent);
-}
-
-:root[data-theme='light'] .n-approval {
-  border-color: color-mix(in srgb, var(--n-warning) 45%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
