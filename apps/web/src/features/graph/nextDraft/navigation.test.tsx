@@ -13,6 +13,7 @@ import { protectedKey } from '../../../shared/api/protectedChatStorage'
 import { makeWave25Fixture } from '@graphql/contracts/wave25'
 import { WorkflowBoardContext } from '../../workflow-board/context'
 import { RunActivityPanel } from '../../workflow-board/RunActivityPanel'
+import { ApiError } from '../../../shared/api/client'
 
 async function confirmDiscard(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: /^Discard changes$/ }))
@@ -32,7 +33,15 @@ vi.mock('../../../shared/api/query', async (original) => ({
   useInteractionsQuery: () => ({ data: { items: [] } }),
 }))
 const key = nextDraftKey('workspace', 'workflow')
-beforeEach(() => { useGraphDraftStore.getState().clearAllDrafts() })
+beforeEach(() => {
+  useGraphDraftStore.getState().clearAllDrafts()
+  const queues = new Map<string, Promise<unknown>>()
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (name: string, work: () => unknown) => {
+    const result = (queues.get(name) ?? Promise.resolve()).then(work)
+    queues.set(name, result.catch(() => undefined))
+    return result
+  } } })
+})
 afterEach(() => { cleanup(); useGraphDraftStore.getState().clearAllDrafts(); vi.restoreAllMocks() })
 
 function readyClient() {
@@ -95,34 +104,64 @@ it('a remount cannot hide an ambiguous promotion just because the server already
   expect(await screen.findByRole('button', { name: 'Reconcile conversion' })).toBeInTheDocument()
   expect(useGraphDraftStore.getState().nextDrafts[key]).toBeUndefined()
 })
-it('journals one exact Start before HTTP and recovers it after in-memory remount', () => {
+it('journals one exact Start before HTTP and recovers it after in-memory remount', async () => {
   const store = useGraphDraftStore.getState()
   const input = { workspaceId: 'workspace', workflowId: 'workflow', workflowVersionId: 'workflow-version-1',
     executionSemanticsVersion: 2 as const, draftId: 'draft', expectedDraftRevision: 7,
     expectedLocationRevision: 1, commandId: 'first-start', input: {} }
-  expect(store.reserveRunStart(key, input)).toEqual(input)
+  expect(await store.reserveRunStart(key, input)).toEqual(input)
   const storageKey = protectedKey('outbox', `next-draft-start:${key}`)
   expect(localStorage.getItem(storageKey)).toContain('first-start')
   useGraphDraftStore.setState({ pendingRunStarts: {} })
   useGraphDraftStore.getState().loadPendingRunStart(key)
   expect(useGraphDraftStore.getState().pendingRunStarts[key]).toEqual(input)
-  expect(store.reserveRunStart(key, { ...input, commandId: 'replacement' })).toEqual(input)
-  expect(() => store.acknowledgeRunStart(key, 'replacement')).toThrow()
-  store.acknowledgeRunStart(key, input.commandId)
+  expect(await store.reserveRunStart(key, { ...input, commandId: 'replacement' })).toEqual(input)
+  await expect(store.acknowledgeRunStart(key, 'replacement')).rejects.toThrow()
+  await store.acknowledgeRunStart(key, input.commandId)
   expect(useGraphDraftStore.getState().pendingRunStarts[key]).toBeUndefined()
   expect(localStorage.getItem(storageKey)).toBeNull()
-  store.reserveRunStart(key, { ...input, commandId: 'later-start' })
+  await store.reserveRunStart(key, { ...input, commandId: 'later-start' })
   store.clearAllDrafts()
   expect(localStorage.getItem(storageKey)).toBeNull()
 })
-it('fails closed when the durable pending Start record is unreadable', () => {
+it('fails closed when the durable pending Start record is unreadable', async () => {
   const storageKey = protectedKey('outbox', `next-draft-start:${key}`)
   localStorage.setItem(storageKey, '{invalid')
   const input = { workspaceId: 'workspace', workflowId: 'workflow', workflowVersionId: 'workflow-version-1',
     executionSemanticsVersion: 2 as const, draftId: 'draft', expectedDraftRevision: 7,
     expectedLocationRevision: 1, commandId: 'replacement', input: {} }
-  expect(() => useGraphDraftStore.getState().reserveRunStart(key, input)).toThrow('pending Start record is invalid')
+  await expect(useGraphDraftStore.getState().reserveRunStart(key, input)).rejects.toThrow('pending Start record is invalid')
   expect(localStorage.getItem(storageKey)).toBe('{invalid')
+})
+it('keeps an uncertain Start and refuses to clear a different exact command', async () => {
+  const store = useGraphDraftStore.getState()
+  const request = { workspaceId: 'workspace', workflowId: 'workflow', workflowVersionId: 'workflow-version-1',
+    executionSemanticsVersion: 2 as const, draftId: 'draft', expectedDraftRevision: 7,
+    expectedLocationRevision: 1, commandId: 'retained-start', input: {} }
+  await store.reserveRunStart(key, request)
+  expect(await store.rejectRunStart(key, request, new Error('Connection lost'))).toBe(false)
+  expect(await store.rejectRunStart(key, request, new ApiError({ code: 'WORKFLOW_VERSION_UNSUPPORTED', message: 'Server failure' }, 500))).toBe(false)
+  expect(await store.rejectRunStart(key, request, new ApiError({ code: 'INVALID_RESPONSE', message: 'Invalid result' }))).toBe(false)
+  await expect(store.rejectRunStart(key, { ...request, commandId: 'different' }, new ApiError({
+    code: 'WORKFLOW_VERSION_UNSUPPORTED', message: 'Rejected' }, 409))).rejects.toThrow('not cleared')
+  expect(useGraphDraftStore.getState().pendingRunStarts[key]).toEqual(request)
+  expect(localStorage.getItem(protectedKey('outbox', `next-draft-start:${key}`))).toContain(request.commandId)
+})
+it('serializes a late rejection after another tab has reserved a newer command', async () => {
+  const store = useGraphDraftStore.getState()
+  const first = { workspaceId: 'workspace', workflowId: 'workflow', workflowVersionId: 'workflow-version-1',
+    executionSemanticsVersion: 2 as const, draftId: 'draft', expectedDraftRevision: 7,
+    expectedLocationRevision: 1, commandId: 'first-start', input: {} }
+  const later = { ...first, commandId: 'later-start', workflowVersionId: 'workflow-version-2' }
+  await store.reserveRunStart(key, first)
+  const acknowledge = store.acknowledgeRunStart(key, first.commandId)
+  const reserve = store.reserveRunStart(key, later)
+  const reject = store.rejectRunStart(key, first, new ApiError({ code: 'WORKFLOW_VERSION_UNSUPPORTED', message: 'Rejected' }, 409))
+  await acknowledge
+  expect(await reserve).toEqual(later)
+  await expect(reject).rejects.toThrow('not cleared')
+  expect(useGraphDraftStore.getState().pendingRunStarts[key]).toEqual(later)
+  expect(localStorage.getItem(protectedKey('outbox', `next-draft-start:${key}`))).toContain(later.commandId)
 })
 it('reconciles the same uncertain Start after draft reload and editor remount', async () => {
   const context = fixture()
@@ -135,6 +174,7 @@ it('reconciles the same uncertain Start after draft reload and editor remount', 
   await waitFor(() => expect(start).toHaveBeenCalledTimes(1))
   const request = start.mock.calls[0]![0]
   expect(useGraphDraftStore.getState().pendingRunStarts[key]).toEqual(request)
+  expect(useGraphDraftStore.getState().nextDrafts[key]?.startRejectedVersionId).toBeUndefined()
   await user.click(screen.getByRole('button', { name: 'Workflow settings' }))
   await reloadSavedDraft(user)
   await waitFor(() => expect(screen.getByRole('button', { name: 'Reconcile Start' })).toBeEnabled())
@@ -145,6 +185,64 @@ it('reconciles the same uncertain Start after draft reload and editor remount', 
   await user.click(await screen.findByRole('button', { name: 'Reconcile Start' }))
   await waitFor(() => expect(start).toHaveBeenCalledTimes(2))
   expect(start.mock.calls[1]![0]).toEqual(request)
+})
+it('releases only a rejected Start and requires confirmed reload before a fresh version command', async () => {
+  useGraphDraftStore.getState().installNextDraft(key, fixture())
+  const fresh = fixture()
+  fresh.draft.revision = 8
+  fresh.draft.publishedRevision = 8
+  fresh.draft.baseWorkflowVersionId = 'workflow-version-2'
+  vi.spyOn(nextDraftApi, 'context').mockResolvedValueOnce(fixture()).mockResolvedValue(fresh)
+  const start = vi.spyOn(nextDraftApi, 'start').mockRejectedValueOnce(new ApiError({
+    code: 'WORKFLOW_VERSION_UNSUPPORTED', message: 'Saved version is stale.' }, 409))
+    .mockImplementation(async (request) => ({ accepted: true, replayed: false, run: {
+      ...makeWave25Fixture('fresh-start').run, workspaceId: 'workspace', workflowId: 'workflow',
+      workflowVersionId: request.workflowVersionId } }))
+  const client = readyClient(), user = userEvent.setup()
+  render(<QueryClientProvider client={client}><NextDraftEditor workspaceId="workspace" workflowId="workflow" /></QueryClientProvider>)
+  await user.click(screen.getByRole('button', { name: 'Start saved version' }))
+  await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[key]?.startRejectedVersionId).toBe('workflow-version-1'))
+  const rejected = start.mock.calls[0]![0]
+  expect(useGraphDraftStore.getState().pendingRunStarts[key]).toBeUndefined()
+  expect(localStorage.getItem(protectedKey('outbox', `next-draft-start:${key}`))).toBeNull()
+  expect(screen.getByRole('button', { name: 'Start saved version' })).toBeDisabled()
+  act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph, name: 'Unsaved local name' })))
+  await user.click(screen.getByRole('button', { name: 'Reload saved draft' }))
+  expect(start).toHaveBeenCalledTimes(1)
+  expect(useGraphDraftStore.getState().nextDrafts[key]?.graph.name).toBe('Unsaved local name')
+  await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Reload saved draft' }))
+  await waitFor(() => expect(screen.getByText(/still points to the rejected version/)).toBeInTheDocument())
+  expect(useGraphDraftStore.getState().nextDrafts[key]?.startRejectedVersionId).toBe('workflow-version-1')
+  expect(useGraphDraftStore.getState().nextDrafts[key]?.graph.name).toBe('Unsaved local name')
+  await user.click(screen.getByRole('button', { name: 'Reload saved draft' }))
+  await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Reload saved draft' }))
+  await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[key]?.context.draft.baseWorkflowVersionId).toBe('workflow-version-2'))
+  expect(useGraphDraftStore.getState().nextDrafts[key]?.startRejectedVersionId).toBeUndefined()
+  await user.click(screen.getByRole('button', { name: 'Start saved version' }))
+  await waitFor(() => expect(start).toHaveBeenCalledTimes(2))
+  expect(start.mock.calls[1]![0]).toMatchObject({ workflowVersionId: 'workflow-version-2', expectedDraftRevision: 8 })
+  expect(start.mock.calls[1]![0].commandId).not.toBe(rejected.commandId)
+})
+it('allows a new Start after a local save advances beyond the rejected version', async () => {
+  useGraphDraftStore.getState().installNextDraft(key, fixture())
+  const start = vi.spyOn(nextDraftApi, 'start').mockRejectedValueOnce(new ApiError({
+    code: 'WORKFLOW_VERSION_UNSUPPORTED', message: 'Saved version is stale.' }, 409))
+    .mockImplementation(async (request) => ({ accepted: true, replayed: false, run: {
+      ...makeWave25Fixture('saved-again').run, workspaceId: 'workspace', workflowId: 'workflow',
+      workflowVersionId: request.workflowVersionId } }))
+  const client = readyClient(), user = userEvent.setup()
+  render(<QueryClientProvider client={client}><NextDraftEditor workspaceId="workspace" workflowId="workflow" /></QueryClientProvider>)
+  await user.click(screen.getByRole('button', { name: 'Start saved version' }))
+  await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[key]?.startRejectedVersionId).toBe('workflow-version-1'))
+  const saved = fixture()
+  saved.draft.revision = 8
+  saved.draft.publishedRevision = 8
+  saved.draft.baseWorkflowVersionId = 'workflow-version-3'
+  act(() => useGraphDraftStore.getState().updateNextDraft(key, (edit) => ({ ...edit, context: saved, graph: saved.draft.graph })))
+  expect(screen.queryByText(/previous Start was rejected/)).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Start saved version' }))
+  await waitFor(() => expect(start).toHaveBeenCalledTimes(2))
+  expect(start.mock.calls[1]![0]).toMatchObject({ workflowVersionId: 'workflow-version-3', expectedDraftRevision: 8 })
 })
 it('duplicate Start clicks share one pending command and one accepted Run', async () => {
   useGraphDraftStore.getState().installNextDraft(key, fixture())

@@ -1,8 +1,9 @@
 import { RunStartV2InputSchema, type GraphDraftOperationV2, type WorkflowDefinitionV2 } from '@graphql/contracts/wave25'
 import { hasAgentEdits, referencedAgentEdits, type DraftAgentEdits } from './agentEdits'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
-import { sessionIsSwitching, SessionChangedError } from '../../../shared/api/sessionBoundary'
+import { assertSession, sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../../shared/api/sessionBoundary'
 import { hasLocalChanges, sameValue, type AuthoringIssue, type NextDraftContext } from './model'
+import { ApiError } from '../../../shared/api/client'
 
 /** Opaque workspace/workflow IDs may contain separators; never concatenate them ambiguously. */
 export function nextDraftKey(workspaceId: string, workflowId: string): string {
@@ -13,6 +14,13 @@ export type PendingRunStart = ReturnType<typeof RunStartV2InputSchema.parse>
 const startJournalId = (key: string) => `next-draft-start:${key}`
 const startJournalKey = (key: string) => protectedKey('outbox', startJournalId(key))
 const storageError = 'Pending Start storage is unavailable. Start is disabled to avoid duplicating a Run after a lost response.'
+async function withStartLock<T>(key: string, work: () => T): Promise<T> {
+  const generation = sessionGeneration()
+  if (sessionIsSwitching()) throw new SessionChangedError()
+  if (typeof window === 'undefined') throw new Error(storageError)
+  if (!navigator.locks) throw new Error('This browser cannot safely reserve a cross-tab Start command. No Run was sent.')
+  return navigator.locks.request(startJournalKey(key), () => { assertSession(generation); return work() })
+}
 
 function readStoredStart(key: string): PendingRunStart | undefined {
   if (sessionIsSwitching()) throw new SessionChangedError()
@@ -63,6 +71,7 @@ export type NextDraftEdit = {
   pending?: DraftRequest
   error?: DraftFailure
   validation?: { revision: number; valid: boolean; issues: AuthoringIssue[] }
+  startRejectedVersionId?: string
 }
 
 export function newNextDraft(context: NextDraftContext, instanceId: string): NextDraftEdit {
@@ -102,8 +111,9 @@ export type NextDraftSlice = {
   nextDrafts: Record<string, NextDraftEdit>
   pendingRunStarts: Record<string, PendingRunStart>
   loadPendingRunStart: (key: string) => void
-  reserveRunStart: (key: string, candidate: PendingRunStart) => PendingRunStart
-  acknowledgeRunStart: (key: string, commandId: string) => void
+  reserveRunStart: (key: string, candidate: PendingRunStart) => Promise<PendingRunStart>
+  acknowledgeRunStart: (key: string, commandId: string) => Promise<void>
+  rejectRunStart: (key: string, request: PendingRunStart, error: unknown) => Promise<boolean>
   installNextDraft: (key: string, context: NextDraftContext, replace?: boolean) => void
   changeNextDraft: (key: string, update: (graph: WorkflowDefinitionV2) => WorkflowDefinitionV2) => void
   undoNextDraft: (key: string) => void
@@ -132,7 +142,7 @@ export function createNextDraftSlice(set: SetSlice): NextDraftSlice {
         return { pendingRunStarts }
       })
     },
-    reserveRunStart: (key, candidate) => {
+    reserveRunStart: (key, candidate) => withStartLock(key, () => {
       const existing = readStoredStart(key)
       if (existing) {
         set((state) => ({ pendingRunStarts: { ...state.pendingRunStarts, [key]: existing } }))
@@ -148,8 +158,8 @@ export function createNextDraftSlice(set: SetSlice): NextDraftSlice {
       } catch { throw new Error(storageError) }
       set((state) => ({ pendingRunStarts: { ...state.pendingRunStarts, [key]: request } }))
       return request
-    },
-    acknowledgeRunStart: (key, commandId) => {
+    }),
+    acknowledgeRunStart: (key, commandId) => withStartLock(key, () => {
       const existing = readStoredStart(key)
       if (!existing || existing.commandId !== commandId) throw new Error('The pending Start changed. Reconcile it before starting another Run.')
       try {
@@ -160,7 +170,23 @@ export function createNextDraftSlice(set: SetSlice): NextDraftSlice {
         const pendingRunStarts = { ...state.pendingRunStarts }; delete pendingRunStarts[key]
         return { pendingRunStarts }
       })
-    },
+    }),
+    rejectRunStart: (key, request, error) => withStartLock(key, () => {
+      if (!ApiError.is(error) || error.status !== 409 || error.code !== 'WORKFLOW_VERSION_UNSUPPORTED') return false
+      const existing = readStoredStart(key)
+      if (!existing || !sameValue(existing, request)) throw new Error('The pending Start changed. Its outbox was not cleared.')
+      try {
+        window.localStorage.removeItem(startJournalKey(key))
+        if (window.localStorage.getItem(startJournalKey(key)) !== null) throw new Error(storageError)
+      } catch { throw new Error(storageError) }
+      set((state) => {
+        const pendingRunStarts = { ...state.pendingRunStarts }; delete pendingRunStarts[key]
+        const nextDrafts = { ...state.nextDrafts }
+        if (nextDrafts[key]) nextDrafts[key] = { ...nextDrafts[key], startRejectedVersionId: request.workflowVersionId }
+        return { pendingRunStarts, nextDrafts }
+      })
+      return true
+    }),
     setNextDraftPromotion: (key, promotion) => set((state) => {
       const nextDraftPromotions = { ...state.nextDraftPromotions }
       if (promotion) nextDraftPromotions[key] = promotion
