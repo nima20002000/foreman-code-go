@@ -237,7 +237,7 @@
 .n-card-body { padding: 20px; }
 .n-card-footer { padding: 14px 20px; border-top: 1px solid var(--n-border); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .n-page-header { display: flex; justify-content: space-between; align-items: center; gap: 24px; padding-block: 26px; }
-.n-page-header h1 { font-size: clamp(22px, 2.8vw, 28px); font-weight: 600; letter-spacing: -.045em; line-height: 1.25; }
+.n-page-header h1 { font: var(--type-title); }
 .n-page-header p:not(.n-eyebrow) { color: var(--n-faint); font-size: 12px; margin-top: 8px; }
 .n-page-header .n-eyebrow { margin-bottom: 8px; }
 .n-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }

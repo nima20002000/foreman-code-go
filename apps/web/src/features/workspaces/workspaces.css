@@ -88,7 +88,7 @@
 .workspace-directory header h1 {
   margin: 0.25rem 0 0;
   color: var(--color-text-strong);
-  font-size: 24px;
+  font: var(--type-title);
 }
 
 .workspace-directory header > p:last-child {

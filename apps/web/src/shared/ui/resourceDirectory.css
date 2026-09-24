@@ -14,7 +14,7 @@
 .workflow-directory.resource-directory { display: grid; align-content: start; gap: var(--space-4); }
 .resource-directory h1,
 .workspace-overview h1,
-.workspace-detail h1 { font-size: 24px; font-weight: 600; line-height: 1.3; letter-spacing: -.025em; }
+.workspace-detail h1 { font: var(--type-title); }
 .workspace-overview .n-page-header,
 .workspace-detail .n-page-header { margin: 0; }
 .resource-card-list.workspace-card-list,
