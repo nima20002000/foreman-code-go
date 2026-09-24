@@ -437,6 +437,25 @@ export const handlers: RequestHandler[] = [
       updatedAt: new Date().toISOString(),
     })
   }),
+  http.get('/api/management/workspaces/:workspaceId/workflows/:workflowId/drafts/:draftId', ({ params }) => {
+    const workspaceId = String(params.workspaceId)
+    const workflow = getMockFixture(workspaceId)?.workflows.find((item) => item.id === String(params.workflowId))
+    if (!workflow || String(params.draftId) !== `draft-${workflow.id}`) return fixtureNotFound('draft', String(params.draftId))
+    return HttpResponse.json({
+      id: `draft-${workflow.id}`,
+      workspaceId,
+      workflowId: workflow.id,
+      revision: 0,
+      baseWorkflowVersionId: `${workflow.id}-v1`,
+      publishedRevision: 1,
+      graph: workflow,
+      stagedAgents: [],
+      updatedByPrincipalId: 'principal-test',
+      updatedAt: new Date().toISOString(),
+    })
+  }),
+  http.get('/api/management/workspaces/:workspaceId/runs', () =>
+    HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
   http.get('/api/management/workspaces/:workspaceId', ({ params }) => {
     const failure = readFailure()
     if (failure) return failure

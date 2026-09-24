@@ -14,6 +14,8 @@ import {
 export type WorkspaceRouteState = 'ready' | 'loading' | 'error' | 'not-found' | 'empty' | 'stale'
 
 export interface WorkspaceRouteViewProps {
+  /** Run reads and authoring do not require a future-Run execution folder. Start still does. */
+  allowBoardWithoutLocation?: boolean
   workspaceId: string
   selectedAgentId?: string
   activeWorkflowId?: string
@@ -114,6 +116,7 @@ export function WorkspaceRouteView({
   state = 'ready',
   stateMessage,
   slots,
+  allowBoardWithoutLocation = false,
 }: WorkspaceRouteViewProps) {
   const resolvedSlots: WorkspaceShellSlots = {
     workspace: slots?.workspace ?? <DefaultWorkspaceSlot workspaceId={workspaceId} />,
@@ -129,7 +132,7 @@ export function WorkspaceRouteView({
   }
 
   resolvedSlots.graph = (
-    <WorkspaceExecutionLocationSetup workspaceId={workspaceId} enabled={state !== 'loading' && state !== 'error' && state !== 'not-found'}>
+    <WorkspaceExecutionLocationSetup workspaceId={workspaceId} enabled={!allowBoardWithoutLocation && state !== 'loading' && state !== 'error' && state !== 'not-found'}>
       {state === 'ready' ? <div className="workspace-board">
         <div className="workspace-board-actions" data-testid="workspace-board-actions">
           {lastRunId ? <WorkflowRunLocation workspaceId={workspaceId} runId={lastRunId} /> : null}
@@ -150,6 +153,7 @@ export function WorkspaceRouteView({
 }
 
 export interface WorkspaceSelectionProps {
+  allowBoardWithoutLocation?: boolean
   workspaceId: string
   selectedAgentId?: string
   activeWorkflowId?: string

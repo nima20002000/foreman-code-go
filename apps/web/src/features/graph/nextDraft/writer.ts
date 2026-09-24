@@ -1,3 +1,4 @@
+import { acknowledgeAgentEdits, hasAgentEdits } from './agentEdits'
 import type { WorkflowDefinitionV2 } from '@graphql/contracts/wave25'
 import { draftOperations, hasLocalChanges, mergeAcknowledgement, type AuthoringIssue } from './model'
 import type { DraftFailure, DraftRequest, NextDraftEdit } from './state'
@@ -57,10 +58,10 @@ export function createNextDraftWriter(
       }
       try {
         if (!initial.pending) {
-          const operations = draftOperations(initial.context, initial.graph)
+          const operations = draftOperations(initial.context, initial.graph, initial.agentEdits)
           validateSubmission(initial.graph, operations)
           update((edit) => ({ ...edit, busy: true, error: undefined, validation: undefined,
-            plan: { target: initial.graph, operations, publish } }))
+            plan: { target: initial.graph, operations, publish, agentTarget: initial.agentEdits } }))
         } else {
           // Retry means reconcile the old intent, not submit newer edits under its command ID.
           if (!initial.plan) throw new Error('The unresolved command has no retained submission. Do not start a replacement write.')
@@ -105,6 +106,9 @@ export function createNextDraftWriter(
               return { ...state, context: { draft: result.draft, agents: result.agents ? [...catalog.values()] : state.context.agents },
                 // Intermediate batches are not the whole submitted document. Never replace unapplied edits with them.
                 graph: complete ? mergeAcknowledgement(state.graph, state.plan.target, result.draft.graph) : state.graph,
+                agentEdits: complete ? acknowledgeAgentEdits(state.agentEdits, state.plan.agentTarget, {
+                  draft: result.draft, agents: [...catalog.values()],
+                }) : state.agentEdits,
                 pending: undefined, error: undefined,
                 plan: sent.kind === 'save' ? undefined : { ...state.plan, operations: remaining } }
             })
@@ -118,13 +122,13 @@ export function createNextDraftWriter(
             if (readback.revision !== before.revision) {
               update((edit) => ({ ...edit, error: { code: 'REVISION_CONFLICT', uncertain: false,
                 message: 'The shared draft changed during validation. Your local edits are retained; reload explicitly before continuing.' } }))
-            } else update((edit) => edit.context.draft.revision !== before.revision || hasLocalChanges(edit.context, edit.graph) ? edit : {
+            } else update((edit) => edit.context.draft.revision !== before.revision || hasLocalChanges(edit.context, edit.graph) || hasAgentEdits(edit) ? edit : {
               ...edit, validation: { revision: before.revision, valid: validation.valid, issues: validation.issues },
             })
           }
           const done = current()
           update((edit) => ({ ...edit, busy: false }))
-          return { published, newerLocalEdits: hasLocalChanges(done.context, done.graph) }
+          return { published, newerLocalEdits: hasLocalChanges(done.context, done.graph) || hasAgentEdits(done) }
         } catch (error) {
           const edit = access.get(key)
           if (edit?.instanceId === instanceId) {

@@ -22,6 +22,8 @@ import { RunVisualEffects } from './RunVisualEffects'
 import { selectRelationshipSummary, selectVisualStale, selectVisualStopped } from './exchangePresentation'
 import { useStopManagedRunMutation } from '../../shared/api/query'
 import type { RunGraphRecord } from './types'
+import { RunHistory } from '../workflow-board/RunHistory'
+import { RunBoardSelection } from '../workflow-board/RunBoardSelection'
 import './runGraph.css'
 
 const RunFactNode = memo(function RunFactNode({ data }: NodeProps<RunViewNode>) {
@@ -92,10 +94,12 @@ function GraphStatus() {
   const { scope, retry } = useRunGraphContext()
   const stop = useStopManagedRunMutation()
   const transport = useRunGraphSelection(selectGraphTransport)
-  const run = useRunGraphSelection(selectGraphRun)
+  const graphRun = useRunGraphSelection(selectGraphRun)
+  const legacy = useRunGraphSelection(selectLegacyRun)
+  const run = graphRun ?? (legacy?.kind === 'legacy-run-current' ? { ...legacy.run, cleanupPending: legacy.cleanupPending, stopRequested: null } : undefined)
   const phase = transport?.phase ?? 'loading'
   return <header className="run-graph-header">
-    <div><h2>Run graph</h2><p>Immutable version <code>{scope.workflowVersionId}</code></p></div>
+    <div><h2>Run status</h2><p>Immutable version <code>{scope.workflowVersionId}</code></p></div>
     <div>
       {run ? <p>{run.executionState} · {run.outcome}{run.stopRequested ? ' · Stop requested' : ''}
         {run.cleanupPending ? ' · Cleanup pending' : ''}</p> : null}
@@ -105,7 +109,7 @@ function GraphStatus() {
             : phase === 'denied' ? 'Run access unavailable' : 'Updates unavailable; showing last confirmed facts'}</p>
       {transport?.reason ? <small>{transport.reason}</small> : null}
       {phase === 'error' || phase === 'stale' ? <Button variant="secondary" onClick={retry}>Retry synchronization</Button> : null}
-      {scope.executionSemanticsVersion === 2 && run && (run.executionState !== 'completed' || run.cleanupPending)
+      {run && (run.executionState !== 'completed' || run.cleanupPending)
         ? <Button variant="secondary" disabled={stop.isPending} onClick={() => stop.mutate({
           workspaceId: scope.workspaceId, runId: scope.runId, commandId: crypto.randomUUID(),
         })}>{stop.isPending ? 'Requesting Stop…' : 'Stop Run'}</Button> : null}
@@ -114,6 +118,21 @@ function GraphStatus() {
       {stop.isError ? <small role="alert">Stop failed: {stop.error.message}</small> : null}
     </div>
   </header>
+}
+
+function RunNodeSelector() {
+  const topology = useRunGraphSelection(selectGraphTopology)
+  const selected = useGraphPresentation((state) => state.selectedNodeIds.values().next().value as string | undefined)
+  const presentation = useGraphPresentationStore()
+  return <label className="run-graph-field">Inspect any pinned node
+    <select value={selected ?? ''} onChange={(event) => {
+      presentation.getState().setSelectedNodeIds(new Set(event.target.value ? [event.target.value] : []))
+      presentation.getState().setFocusedEdgeId(undefined); presentation.getState().setFocusedExchangeKey(undefined)
+    }}><option value="">Select a node</option>
+      {selected && !topology?.nodes.some((node) => node.workflowNodeId === selected) ? <option value={selected}>Selected node unavailable: {selected}</option> : null}
+      {topology?.nodes.map((node) => <option key={node.workflowNodeId} value={node.workflowNodeId}>{node.workflowNodeId}{node.workflowNodeId === topology.entryNodeId ? ' · Entry' : ''}</option>)}
+    </select>
+  </label>
 }
 
 function RunInspector() {
@@ -136,7 +155,11 @@ function RunInspector() {
       <dt>Attention telemetry</dt><dd>{node?.attention.telemetry ?? 'unknown'}</dd>
       <dt>Cleanup</dt><dd>{node ? node.attention.cleanupPending ? 'Pending' : 'No pending cleanup' : 'Unavailable'}</dd>
       {node?.state.execution ? <><dt>Execution</dt><dd>{node.state.execution.executionId}</dd></> : null}
-      {node?.resolution ? <><dt>Resolution</dt><dd>{node.resolution.resolution}</dd></> : null}
+      {node?.resolution ? <><dt>Resolution</dt><dd>{node.resolution.resolution}</dd>
+        <dt>Declared outcome</dt><dd>{node.resolution.outcome ?? 'No outcome recorded'}</dd>
+        <dt>Branch ended</dt><dd>{node.resolution.branchEnded ? 'Yes' : 'No'}</dd>
+        <dt>Selected execution records</dt><dd>{node.resolution.selectedRelationshipIds.join(', ') || 'None'}</dd>
+        <dt>Unselected execution records</dt><dd>{node.resolution.unselectedRelationshipIds.join(', ') || 'None'}</dd></> : null}
     </dl></> : edge ? <dl><dt>ID</dt><dd>{edge.relationshipId}</dd><dt>Kind</dt><dd>{edge.kind}</dd>
       <dt>From</dt><dd>{edge.source}</dd><dt>To</dt><dd>{edge.target}</dd></dl>
       : <p>Select a node or relationship to inspect its confirmed facts.</p>}
@@ -157,22 +180,25 @@ function LegacyFacts() {
     </tbody></table>
   </section>
 }
-export function RunGraphContent() {
+export function RunGraphContent({ embedded = false }: { embedded?: boolean } = {}) {
+  const { scope } = useRunGraphContext()
   const root = useRef<HTMLElement>(null)
   const stale = useRunGraphSelection(selectVisualStale)
   const reader = useRunGraphSelection(selectGraphReader)
-  return <section ref={root} data-stale={stale || undefined} className="n-theme run-graph-view" aria-label="Read-only Run view">
+  return <section ref={root} data-stale={stale || undefined} className={`n-theme run-graph-view${embedded ? ' board-run-facts' : ''}`} aria-label={embedded ? 'Selected Run facts' : 'Read-only Run view'}>
+    {embedded ? <RunBoardSelection /> : null}
     <RunVisualEffects root={root} />
     <RunAttentionAnnouncement />
     <GraphStatus />
     {reader === 'graph' ? <RunAttentionTools /> : null}
-    {reader === 'graph' ? <div className="run-graph-body"><ImmutableCanvas /><RunInspector /></div>
+    {reader === 'graph' ? <div className="run-graph-body">{embedded ? <RunNodeSelector /> : <ImmutableCanvas />}<RunInspector /></div>
       : reader === 'legacy' ? <LegacyFacts /> : null}
+    {embedded && reader ? <RunHistory scope={scope} /> : null}
   </section>
 }
 
 /** No draft, Agent settings, commands or edit callbacks are accepted at this boundary. */
-export function RunGraphView({ scope }: { scope: RunGraphScope }) {
+export function RunGraphView({ scope, embedded = false }: { scope: RunGraphScope; embedded?: boolean }) {
   const key = JSON.stringify([scope.workspaceId, scope.workflowId, scope.runId, scope.workflowVersionId, scope.executionSemanticsVersion])
-  return <RunGraphProvider key={key} scope={scope}><GraphPresentationProvider><RunGraphContent /></GraphPresentationProvider></RunGraphProvider>
+  return <RunGraphProvider key={key} scope={scope}><GraphPresentationProvider><RunGraphContent embedded={embedded} /></GraphPresentationProvider></RunGraphProvider>
 }

@@ -1,4 +1,5 @@
 import { RunStartV2InputSchema, type GraphDraftOperationV2, type WorkflowDefinitionV2 } from '@graphql/contracts/wave25'
+import { hasAgentEdits, referencedAgentEdits, type DraftAgentEdits } from './agentEdits'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
 import { sessionIsSwitching, SessionChangedError } from '../../../shared/api/sessionBoundary'
 import { hasLocalChanges, sameValue, type AuthoringIssue, type NextDraftContext } from './model'
@@ -38,7 +39,7 @@ export function clearNextDraftStartStorage(): void {
 }
 
 export type DraftFailure = { code: string; message: string; uncertain: boolean; issues?: AuthoringIssue[] }
-export type WritePlan = { target: WorkflowDefinitionV2; operations: GraphDraftOperationV2[]; publish: boolean }
+export type WritePlan = { target: WorkflowDefinitionV2; operations: GraphDraftOperationV2[]; publish: boolean; agentTarget?: DraftAgentEdits }
 export type DraftRequest = {
   kind: 'apply' | 'save'
   commandId: string
@@ -54,6 +55,8 @@ export type NextDraftEdit = {
   context: NextDraftContext
   graph: WorkflowDefinitionV2
   history: WorkflowDefinitionV2[]
+  agentEdits?: DraftAgentEdits
+  agentHistory?: DraftAgentEdits[]
   busy: boolean
   plan?: WritePlan
   /** Retained verbatim after an ambiguous response. A retry uses this exact command. */
@@ -70,6 +73,8 @@ export function editNextDraft(current: NextDraftEdit, update: (graph: WorkflowDe
   const graph = update(current.graph)
   if (sameValue(graph, current.graph)) return current
   return { ...current, graph, history: [...current.history.slice(-49), current.graph], validation: undefined,
+    ...(current.agentHistory ? { agentEdits: referencedAgentEdits(graph, current.agentEdits),
+      agentHistory: [...current.agentHistory.slice(-49), current.agentEdits ?? {}] } : {}),
     // Typing cannot clear an unresolved command or an authorization/conflict error.
     error: current.error }
 }
@@ -80,11 +85,12 @@ export function undoNextDraft(current: NextDraftEdit): NextDraftEdit {
   // Content only: base revision and acknowledged configuration pins never rewind.
   const base = current.context.draft.graph
   return { ...current, graph: { ...previous, version: base.version, createdAt: base.createdAt, updatedAt: base.updatedAt },
-    history: current.history.slice(0, -1), validation: undefined }
+    history: current.history.slice(0, -1), validation: undefined,
+    ...(current.agentHistory ? { agentEdits: current.agentHistory.at(-1) ?? {}, agentHistory: current.agentHistory.slice(0, -1) } : {}) }
 }
 
 export function nextDraftDirty(edit: NextDraftEdit): boolean {
-  return hasLocalChanges(edit.context, edit.graph) || !!edit.pending
+  return hasLocalChanges(edit.context, edit.graph) || hasAgentEdits(edit) || !!edit.pending
     || edit.context.draft.publishedRevision !== edit.context.draft.revision
 }
 

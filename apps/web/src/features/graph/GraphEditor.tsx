@@ -3,6 +3,7 @@ import { UnsavedChangesContext, useUnsavedChanges } from '../../shared/ui/unsave
 import { useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Inbox } from 'lucide-react'
 import { WorkflowExecutionLimits } from './WorkflowExecutionLimits'
+import { EnableTypedDraftButton } from '../workflow-board/EnableTypedDraftButton'
 import {
   Alert,
   Button,
@@ -16,7 +17,6 @@ import {
 
 import type { Connection, IsValidConnection, ReactFlowInstance } from '@xyflow/react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
 
 import {
   DEFAULT_AGENT_DEFAULTS, isLiveRunState, requiresRunRecovery, runRefetchInterval, type AgentDefaults,
@@ -1150,9 +1150,7 @@ function GraphEditorBody({
 
         <div className="workflow-graph-primary-actions">
           <Toolbar label="Workflow controls">
-            {managedDraft ? <Link className="workflow-graph-next-draft-link"
-              to="/workspaces/$workspaceId/workflows/$workflowId/draft"
-              params={{ workspaceId, workflowId: displayedWorkflow.id }}>Parallel workflow draft</Link> : null}
+            {managedDraft ? <EnableTypedDraftButton /> : null}
             <Button ref={workflowSettingsButtonRef} variant="secondary" className="n-icon-button workflow-graph-add-agent" aria-label="Workflow settings" title="Workflow settings"
               aria-haspopup="dialog" aria-expanded={workflowSettingsOpen} aria-controls={workflowSettingsOpen ? 'workflow-settings-popover' : undefined}
               onClick={() => void leaveSurface(() => { setAgentPickerOpen(false); setOpenMenuNodeId(undefined); setWorkflowSettingsOpen((open) => !open) })}><Icon name="settings" size={16} /></Button>

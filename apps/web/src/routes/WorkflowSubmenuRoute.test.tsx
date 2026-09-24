@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { routeTree } from '../app/router'
@@ -49,7 +49,7 @@ describe('workflow submenu route integration', () => {
     renderRoute('/workspaces/workspace-1')
 
     expect(await screen.findByTestId('workflow-navigation-empty')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'New workflow' })).toBeVisible()
+    expect(within(screen.getByRole('region', { name: 'Workspace workflows' })).getByRole('button', { name: 'New workflow' })).toBeVisible()
   })
 
   it('marks the URL-selected workflow active on the graph route', async () => {

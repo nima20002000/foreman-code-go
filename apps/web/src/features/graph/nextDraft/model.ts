@@ -1,4 +1,5 @@
 import type { z } from 'zod'
+import { addAgentOperations, configureAgentOperations, type DraftAgentEdits } from './agentEdits'
 import type { Agent, WorkflowApprovalConfiguration } from '@graphql/contracts'
 import type { ManagedAgentSchema } from '@graphql/contracts/management'
 import type { GraphDraftOperationV2, GraphDraftV2, WorkflowDefinitionV2, WorkflowRelationship } from '@graphql/contracts/wave25'
@@ -158,7 +159,7 @@ export function relationshipPairs(graph: WorkflowDefinitionV2): WorkflowRelation
 }
 
 /** Generate only the frozen v2 and legacy-safe operations, retaining exact revision/source pins. */
-export function draftOperations(context: NextDraftContext, graph: WorkflowDefinitionV2): GraphDraftOperationV2[] {
+export function draftOperations(context: NextDraftContext, graph: WorkflowDefinitionV2, agentEdits: DraftAgentEdits = {}): GraphDraftOperationV2[] {
   const base = context.draft.graph
   if (base.id !== graph.id || base.workspaceId !== graph.workspaceId) throw new Error('Draft scope changed; reload this workspace.')
   const operations: GraphDraftOperationV2[] = []
@@ -172,10 +173,14 @@ export function draftOperations(context: NextDraftContext, graph: WorkflowDefini
     if (old && old.agentId !== node.agentId) throw new Error('Node identity cannot be rebound to another Agent.')
     if (!old) {
       const source = context.agents.find((item) => item.agent.id === node.agentId)
-      if (!source?.agent.configurationVersionId || source.archivedAt) throw new Error('The selected Agent source pin is unavailable. Reload before attaching it.')
-      operations.push({ type: 'agent.attach', agentId: node.agentId, nodeId: node.id,
-        expectedAgentRevision: source.metadataRevision, expectedConfigurationVersionId: source.agent.configurationVersionId,
-        name: node.name ?? node.label, ...(node.position ? { position: node.position } : {}) })
+      const local = agentEdits[node.agentId]
+      if (!source && local) operations.push(...addAgentOperations(local, node))
+      else {
+        if (!source?.agent.configurationVersionId || source.archivedAt) throw new Error('The selected Agent source pin is unavailable. Reload before attaching it.')
+        operations.push({ type: 'agent.attach', agentId: node.agentId, nodeId: node.id,
+          expectedAgentRevision: source.metadataRevision, expectedConfigurationVersionId: source.agent.configurationVersionId,
+          name: node.name ?? node.label, ...(node.position ? { position: node.position } : {}) })
+      }
       operations.push({ type: 'node.replace_v2', node })
     } else if (!sameValue(old, node)) {
       const { choice: oldChoice, ...oldMetadata } = old
@@ -186,6 +191,7 @@ export function draftOperations(context: NextDraftContext, graph: WorkflowDefini
       void oldChoice
     }
   }
+  operations.push(...configureAgentOperations(context, graph, agentEdits))
   if (!sameValue(base.nodes.map((node) => node.id), graph.nodes.map((node) => node.id))) operations.push({ type: 'nodes.reorder', nodeIds: graph.nodes.map((node) => node.id) })
   if (!sameValue(base.approval, graph.approval)) {
     if (!graph.approval) throw new Error('Choose an explicit approval handler; clearing authority is unsupported.')
