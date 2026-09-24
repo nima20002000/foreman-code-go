@@ -4,7 +4,7 @@ import { access, copyFile, chmod } from 'node:fs/promises'
 import { createConnection } from 'node:net'
 import { loadEnvFile } from 'node:process'
 import { fileURLToPath } from 'node:url'
-import { dirname, isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const customApiEnv = process.env.GRAPHQL_API_ENV_FILE
@@ -19,9 +19,6 @@ function stop() {
     try { process.kill(-child.pid, 'SIGTERM') } catch { /* Already stopped. */ }
   }
 }
-
-process.on('SIGINT', stop)
-process.on('SIGTERM', stop)
 
 function start(name, args, options = {}) {
   const child = spawn('corepack', ['pnpm', ...args], {
@@ -57,6 +54,15 @@ async function responds(url, accepts) {
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(2000) })
     return accepts(response, await response.text())
+  } catch { return false }
+}
+
+export async function runningApiAcceptsBrowserOrigin(apiUrl, browserOrigin, request = fetch) {
+  try {
+    const response = await request(`${apiUrl}/api/auth/session`, {
+      headers: { origin: browserOrigin }, signal: AbortSignal.timeout(2000),
+    })
+    return response.ok && (await response.text()).includes('"localDev":true')
   } catch { return false }
 }
 
@@ -109,13 +115,13 @@ async function main() {
     if (!await responds(`${apiUrl}/health/live`, apiLive)) {
       throw new Error(`Port ${port} is in use by a different or unhealthy service.`)
     }
-    if (!await responds(`${apiUrl}/api/auth/session`, (response, body) => response.ok && body.includes('"localDev":true'))) {
-      throw new Error(`The API at ${apiUrl} is not running with local development browser access. Stop it and restart corepack pnpm dev.`)
+    if (!await runningApiAcceptsBrowserOrigin(apiUrl, webUrl)) {
+      throw new Error(`The API at ${apiUrl} does not allow local development browser access from ${webUrl}. Stop it and restart corepack pnpm dev.`)
     }
     console.log(`Using the GraphQL API already running at ${apiUrl}.`)
   } else {
     api = start('API', ['--filter', '@graphql/api', 'dev'], {
-      env: { ...process.env, GRAPHQL_DEV_BROWSER_ACCESS: '1' },
+      env: { ...process.env, GRAPHQL_DEV_BROWSER_ACCESS: '1', GRAPHQL_DEV_BROWSER_ORIGIN: webUrl },
     })
   }
   await waitFor('API', `${apiUrl}/health/ready`, apiReady, api)
@@ -149,8 +155,12 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  stop()
-  console.error(`GraphQL dev startup failed: ${error.message}`)
-  process.exitCode = 1
-})
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  process.on('SIGINT', stop)
+  process.on('SIGTERM', stop)
+  main().catch((error) => {
+    stop()
+    console.error(`GraphQL dev startup failed: ${error.message}`)
+    process.exitCode = 1
+  })
+}

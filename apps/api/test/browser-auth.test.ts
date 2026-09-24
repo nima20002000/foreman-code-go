@@ -9,13 +9,26 @@ describe('browser authentication configuration', () => {
   it('allows local development access only with an explicit flag and loopback services', () => {
     const base = { DATABASE_URL: 'postgresql://graphql:graphql@127.0.0.1:5432/graphql' }
     expect(loadConfig(base).localDevBrowserAccess).toBeUndefined()
-    expect(loadConfig({ ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1' }).localDevBrowserAccess).toEqual({})
+    expect(loadConfig({ ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1' }).localDevBrowserAccess)
+      .toEqual({ origin: 'http://127.0.0.1:5173' })
+    expect(loadConfig({ ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1',
+      GRAPHQL_DEV_BROWSER_ORIGIN: 'http://localhost:5175' }).localDevBrowserAccess)
+      .toEqual({ origin: 'http://localhost:5175' })
     for (const environment of [
       { ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1', HOST: '0.0.0.0' },
       { ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1', NODE_ENV: 'production' },
       { ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1', DATABASE_URL: 'postgresql://graphql:graphql@example.com/graphql' },
       { ...base, GRAPHQL_DEV_BROWSER_ACCESS: 'yes' },
+      { ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1', GRAPHQL_DEV_BROWSER_ORIGIN: 'http://0.0.0.0:5175' },
+      { ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1', GRAPHQL_DEV_BROWSER_ORIGIN: 'http://localhost:5175, http://127.0.0.1:5175' },
+      { ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1', GRAPHQL_DEV_BROWSER_ORIGIN: 'http://localhost' },
+      { ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1', GRAPHQL_DEV_BROWSER_ORIGIN: 'https://localhost:5175' },
+      { ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1', GRAPHQL_DEV_BROWSER_ORIGIN: 'http://localhost:5175/path' },
+      { ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1', GRAPHQL_DEV_BROWSER_ORIGIN: 'http://user@localhost:5175' },
     ]) expect(() => loadConfig(environment)).toThrow()
+    expect(() => loadConfig({ ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1',
+      GRAPHQL_DEV_BROWSER_ORIGIN: 'http://localhost:5175', BETTER_AUTH_SECRET: secret,
+      BETTER_AUTH_URL: 'http://127.0.0.1:5173' })).toThrow()
   })
   it('does not fabricate a development secret', () => {
     expect(readBrowserAuthConfig({})).toBeUndefined()

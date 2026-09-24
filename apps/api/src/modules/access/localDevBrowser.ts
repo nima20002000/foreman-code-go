@@ -8,7 +8,6 @@ import { DomainError } from '../errors.js'
 import type { PostgresAccessService } from './postgres.js'
 
 const DEV_PRINCIPAL_ID = 'principal-local-development-browser'
-const DEV_ORIGIN = 'http://127.0.0.1:5173'
 const LOOPBACK_IPS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 
 /** Local dev uses a persisted Operator, so every ordinary grant and scope check still applies. */
@@ -16,14 +15,14 @@ export class LocalDevBrowserAccess {
   private resolvedPrincipalId?: string
 
   constructor(private readonly pool: pg.Pool, private readonly access: PostgresAccessService,
-    private readonly selectedPrincipalId?: string) {}
+    private readonly origin: string, private readonly selectedPrincipalId?: string) {}
 
   requireLocalBrowser(request: FastifyRequest, mutation: boolean): void {
     if (!LOOPBACK_IPS.has(request.ip)) throw new DomainError('DEV_BROWSER_LOCAL_REQUIRED', 'Local development browser access requires a loopback client.', 403)
-    if (request.headers.origin && request.headers.origin !== DEV_ORIGIN) {
+    if (request.headers.origin && request.headers.origin !== this.origin) {
       throw new DomainError('CSRF_ORIGIN_NOT_ALLOWED', 'This action requires the local development browser Origin.', 403)
     }
-    if (mutation && request.headers.origin !== DEV_ORIGIN) {
+    if (mutation && request.headers.origin !== this.origin) {
       throw new DomainError('CSRF_ORIGIN_REQUIRED', 'Browser mutations require the local development browser Origin.', 403)
     }
     if (request.headers['sec-fetch-site'] === 'cross-site') {
