@@ -47,6 +47,7 @@ import { NativeHarnessConfigurationQualifier } from './modules/harnesses/nativeC
 import { PostgresAppInteractionService } from './modules/interactions/app.js'
 import { PostgresApprovalBudgetRepository } from './modules/interactions/budget.js'
 import { ApprovalExecutionCoordinator } from './modules/interactions/execution.js'
+import { PostgresWorkflowClosureStore } from './modules/interactions/workflowClosure.js'
 import { OperatorInteractionService } from './modules/interactions/operator.js'
 import { Wave25InteractionRepository as PostgresInteractionRepository } from './modules/interactions/wave25/repository.js'
 import { ExecutionScopedNativeSessionManagerResolver } from './modules/interactions/runtimePorts.js'
@@ -181,6 +182,7 @@ export function buildProductionApp(
   const approvals = new ApprovalExecutionCoordinator(
     runs, repository, budgets, managers, config.harnesses.timeoutMs, launchCredentials, validateContinuation,
     (executionId, signal) => processRegistry.closeOwner(`execution:${executionId}`, signal),
+    new PostgresWorkflowClosureStore(database.pool),
   )
   const engine = new LangGraphWorkflowEngine(
     runs, workflows, approvals, checkpoints.saver, config.harnesses.workspaceRoot,
@@ -327,7 +329,16 @@ export function buildProductionApp(
       { name: 'reconciliation', run: () => reconciliation },
     ],
     dispose: [
-      { name: 'execution native managers', run: () => managers.dispose() },
+      { name: 'execution native managers', run: async () => {
+        // Ordinary restart must persist the exact retained Worker/reviewer
+        // closes before raw disposal loses their manager lifetime identities.
+        // Still dispose all allocations after a receipt failure, but propagate
+        // that failure so shutdown cannot release runtime ownership.
+        const errors: unknown[] = []
+        try { await approvals.closeForRestart() } catch (error) { errors.push(error) }
+        try { await managers.dispose() } catch (error) { errors.push(error) }
+        if (errors.length) throw new AggregateError(errors, 'Execution native manager disposal was incomplete.')
+      } },
       { name: 'remaining Operator native managers', run: async () => {
         // Snapshot only after all producers have drained. Keep failed disposals
         // visible instead of clearing their ownership records unconditionally.

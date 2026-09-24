@@ -46,6 +46,7 @@ import type {
   ResolvedNativeSessionManager,
 } from './runtimePorts.js'
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
+import type { WorkflowClosureStore } from './workflowClosure.js'
 
 export type ApprovalExecutionObservation =
   | { state: 'waiting'; execution: HarnessExecution; interaction: DurableInteraction; interactions: DurableInteraction[] }
@@ -57,6 +58,8 @@ interface OwnedNativeSession {
   manager: SingleWriterSessionManager
   controller: AbortController
   generation: number
+  closureGeneration?: string
+  closureRegistration?: Promise<string>
   failed?: boolean
   session?: NativeSessionReference
   opening?: Promise<NativeSessionReference>
@@ -79,12 +82,15 @@ export class ApprovalExecutionCoordinator {
   private readonly stoppingRuns = new Set<string>()
   private readonly pendingCleanupRuns = new Set<string>()
   private readonly cancellations = new Map<string, Promise<void>>()
+  private closing = false
+  private restartClosure: Promise<void> | undefined
 
   residentRunIds(): string[] {
     return [...new Set([...this.pendingCleanupRuns, ...[...this.ownedSessions.values()].map((owned) => owned.execution.runId)])]
   }
 
   private ownSession(execution: HarnessExecution, context: NativeManagerResolutionContext, manager: SingleWriterSessionManager): OwnedNativeSession {
+    if (this.closing) throw new Error('Native sessions are shutting down.')
     if (this.stoppingRuns.has(execution.runId)) throw new Error('The Run is stopping; native work cannot be restarted.')
     let owned = this.ownedSessions.get(execution.id)
     if (!owned) {
@@ -124,6 +130,38 @@ export class ApprovalExecutionCoordinator {
     })
   }
 
+  /** Persist only the exact manager's confirmed close, for Stop AND ordinary
+   * runtime disposal. This does not cancel the Run, stop its budget, retire its
+   * approval, revoke execution authority or finalize its workflow lifetime. */
+  private async closeWorkflowSession(owned: OwnedNativeSession): Promise<void> {
+    const session = owned.session
+    if (!session) throw new DomainError('NATIVE_WORKFLOW_CLOSURE_CONFLICT',
+      'The native connection is not ready for an exact close receipt.', 409)
+    const generation = owned.generation
+    await owned.manager.close(session)
+    // Persist the same positive close that formerly survived only in RAM.
+    // Registration precedes native preflight/spawn; no cold resolver or
+    // terminal business state can create this receipt.
+    const assertCurrent = () => {
+      if (this.ownedSessions.get(owned.execution.id) !== owned
+        || owned.generation !== generation || owned.opening) {
+        throw new DomainError('NATIVE_WORKFLOW_CLOSURE_CONFLICT', 'The native manager lifetime changed during close.', 409)
+      }
+    }
+    assertCurrent()
+    if (this.workflowClosures && owned.closureRegistration
+      && (!owned.closureGeneration || owned.generation === 0 || owned.openingFailed)) {
+      throw new DomainError('NATIVE_WORKFLOW_CLOSURE_CONFLICT', 'No confirmed native connection owns this close receipt.', 409)
+    }
+    const durable = this.workflowClosures && owned.closureGeneration
+      ? await this.workflowClosures.record(owned.execution, session, owned.closureGeneration, assertCurrent) : undefined
+    assertCurrent()
+    // Remember a late successful close even when the cleanup deadline won.
+    this.closedExecutions.add(owned.execution.id)
+    if (durable) this.closedWorkflowSessions.set(owned.execution.id, durable)
+    else this.rememberClosedWorkflowSession(owned.execution, session)
+  }
+
   private cleanupSession(owned: OwnedNativeSession, cancel = true): Promise<Error[]> {
     if (cancel) owned.controller.abort()
     if (owned.cleanup) return owned.cleanup
@@ -149,14 +187,8 @@ export class ApprovalExecutionCoordinator {
       if (owned.session && !closed) {
         const session = owned.session
         if (cancel) await attempt('cancel native session', (signal) => owned.manager.cancel(session, signal))
-        const generation = owned.generation
         closed = await attempt('close native session', async () => {
-          await owned.manager.close(session)
-          // A close of an older connection cannot confirm a late attach is closed.
-          if (owned.generation !== generation) return false
-          // Remember a late successful close even when the cleanup deadline won.
-          this.closedExecutions.add(owned.execution.id)
-          this.rememberClosedWorkflowSession(owned.execution, session)
+          await this.closeWorkflowSession(owned)
           return true
         }) === true
       }
@@ -191,6 +223,7 @@ export class ApprovalExecutionCoordinator {
     private readonly credentials?: ExecutionCredentialProvider,
     private readonly validateContinuation?: (executionId: string, signal?: AbortSignal) => Promise<void>,
     private readonly recoverNativeProcesses?: (executionId: string, signal: AbortSignal) => Promise<boolean>,
+    private readonly workflowClosures?: WorkflowClosureStore,
   ) {
     this.reviewers = new ReviewerDispatcher(interactions.coordination, this)
   }
@@ -266,6 +299,23 @@ export class ApprovalExecutionCoordinator {
     signal?: AbortSignal,
     purpose?: 'reviewer',
   ) {
+    if (this.workflowClosures) {
+      const owned = this.ownedSessions.get(context.executionId)
+      if (!owned || owned.manager !== resolved.manager) throw new Error('Native preflight has no exact manager owner.')
+      // OpenCode credential inspection can spawn its server. Invalidate older
+      // closure evidence BEFORE that inspection, not only before attachSession.
+      owned.closureRegistration ??= this.workflowClosures.begin(owned.execution)
+      const generation = await owned.closureRegistration
+      if (owned.closureGeneration !== generation) {
+        this.closedExecutions.delete(context.executionId)
+        this.closedWorkflowSessions.delete(context.executionId)
+        owned.closureGeneration = generation
+      }
+      signal?.throwIfAborted()
+      if (this.ownedSessions.get(context.executionId) !== owned || owned.controller.signal.aborted) {
+        throw new Error('Native preflight lost its manager owner.')
+      }
+    }
     if (!this.credentials) return undefined
     if (resolved.processState === 'resident') {
       const credential = this.managerCredentials.get(resolved.manager)
@@ -485,6 +535,40 @@ export class ApprovalExecutionCoordinator {
     }), executionId)
   }
 
+  /** Production calls this AFTER stopping/draining producers and BEFORE raw
+   * manager disposal. Waiting Workers and retained reviewers are not Stop: their
+   * checkpoints, budgets, credentials and business records must survive restart.
+   * Every sibling is attempted; failed/uncertain closure keeps shutdown failed. */
+  closeForRestart(): Promise<void> {
+    this.closing = true
+    if (this.restartClosure) return this.restartClosure
+    const sessions = [...this.ownedSessions.values()]
+    for (const owned of sessions) owned.controller.abort()
+    const task = (async () => {
+      const results = await Promise.all(sessions.map(async (owned) => {
+        const safe = nativePersistenceRedactor(Object.values(this.managerCredentials.get(owned.manager)?.environment.variables ?? {}))
+        const failures: Error[] = []
+        await attemptCleanup(failures, `${owned.execution.id}: close for restart`, async () => {
+          // A failed drain can leave cleanup or create/attach in flight. Observe
+          // its actual completion; an abort/timeout is never a closure receipt.
+          await owned.cleanup
+          await owned.opening
+          if (this.ownedSessions.get(owned.execution.id) !== owned) return
+          if (this.closedExecutions.has(owned.execution.id)) return
+          await this.closeWorkflowSession(owned)
+        })
+        return failures.map((error) => safe.error(error) as Error)
+      }))
+      const failures = results.flat()
+      if (failures.length) throw new AggregateError(failures, 'Native restart closure was incomplete.')
+    })()
+    this.restartClosure = task
+    // A failed receipt/close is not cached success. The same captured manager
+    // may retry; no new generation or substitute session is admitted here.
+    void task.catch(() => { if (this.restartClosure === task) this.restartClosure = undefined })
+    return task
+  }
+
   async finishRun(runId: string): Promise<void> {
     const failures: Error[] = []
     for (const owned of this.ownedSessions.values()) {
@@ -700,6 +784,21 @@ export class ApprovalExecutionCoordinator {
       for (const execution of executions ?? []) {
         cleanups.push((async () => {
           if (known.has(execution.id)) return
+          const cached = this.closedWorkflowSessions.get(execution.id)
+          if (this.workflowClosures && (!this.closedExecutions.has(execution.id) || cached?.durableGeneration)) {
+            const proof = await attemptCleanup(failures, `${execution.id}: read durable native closure`,
+              () => this.workflowClosures!.read(execution))
+            if (cached?.durableGeneration && cached.durableGeneration !== proof?.durableGeneration) {
+              // Revalidate before publishing reviewer cleanup too, not just at
+              // workflow finalization. A newer preflight makes a cached close stale.
+              this.closedExecutions.delete(execution.id)
+              this.closedWorkflowSessions.delete(execution.id)
+            }
+            if (proof) {
+              this.closedExecutions.add(execution.id)
+              this.closedWorkflowSessions.set(execution.id, proof)
+            }
+          }
           // Capture the durable identity BEFORE recovery, never retarget closure
           // evidence to whatever session happens to be bound after an await.
           const native = this.recoverNativeProcesses && !this.closedExecutions.has(execution.id)

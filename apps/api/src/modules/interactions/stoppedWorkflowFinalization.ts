@@ -1,6 +1,7 @@
 import { HarnessExecutionSchema, NativeSessionReferenceSchema, RunOutcomeSchema,
   type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
 import { DomainError } from '../errors.js'
+import { readWorkflowClosure } from './workflowClosure.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import { PUBLIC_PENDING_INTERACTION_SQL, PUBLIC_UNSETTLED_REVIEW_SQL } from '../run-graph/publicObligations.js'
 import { CANCELED_INTERACTION_RETIRED_SQL } from './wave25/publication.js'
@@ -11,6 +12,7 @@ export interface ClosedWorkflowSession {
   execution: Pick<HarnessExecution, 'id' | 'runId' | 'workflowNodeId' | 'agentId' | 'agentConfigurationVersionId'
     | 'attempt' | 'workingDirectory' | 'runtimeDirectory' | 'nativeSessionId'>
   session: NativeSessionReference
+  durableGeneration?: string
 }
 
 function unsettled(): never {
@@ -64,6 +66,12 @@ export async function finalizeStoppedWorkflowSessions(runId: string, owner: RunO
       if (!proof || identityKeys.some((key) => proof.execution[key] !== execution[key])
         || proof.session.harness !== session.harness || proof.session.providerVersion !== session.providerVersion
         || proof.session.nativeSessionId !== session.nativeSessionId) return unsettled()
+      if (proof.durableGeneration) {
+        // Re-read on the same owner transaction while the execution is locked.
+        // A fresh preflight invalidates an older proof before any native spawn.
+        const durable = await readWorkflowClosure(sql, execution)
+        if (durable?.durableGeneration !== proof.durableGeneration) return unsettled()
+      }
       pending.push({ execution, session, proof })
     }
     // Use the same durable obligations as save admission, without weakening it

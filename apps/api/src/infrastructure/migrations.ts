@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { workflowClosureMigration } from './workflowClosureMigration.js'
 import { graphEditIntentMigration } from './graphEditIntentMigration.js'
 import { harnessSettingsMigration } from './harnessSettingsMigration.js'
 import { pr18RecoveryMigration } from './pr18RecoveryMigration.js'
@@ -676,6 +677,7 @@ export const migrations = [
   { version: 250003, sql: wave25ApprovalMigrationSql },
   nativeProjectionMigration,
   graphEditIntentMigration,
+  workflowClosureMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
