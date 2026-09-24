@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { AgentSchema } from '@graphql/contracts'
 import { ManagedAgentSchema } from '@graphql/contracts/management'
 import { GraphDraftV2Schema, GraphEditStageInputSchema, WorkflowDefinitionV2Schema, sameWorkflowValue,
-  type GraphEditStageInput } from '@graphql/contracts/wave25'
+  type GraphEditIntent, type GraphEditStageInput } from '@graphql/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
 import { assertSession, sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../../shared/api/sessionBoundary'
@@ -12,6 +12,7 @@ const prefix = 'graph-edit-intent:'
 const SnapshotSchema = z.object({
   context: z.object({ draft: GraphDraftV2Schema, agents: z.array(ManagedAgentSchema) }).strict(),
   graph: WorkflowDefinitionV2Schema, agentEdits: z.record(z.string(), AgentSchema).optional(),
+  acknowledgedStageCommands: z.array(z.string()).optional(),
 }).strict()
 const OutboxSchema = z.object({ request: GraphEditStageInputSchema, target: WorkflowDefinitionV2Schema,
   agentTarget: z.record(z.string(), AgentSchema).optional() }).strict()
@@ -56,21 +57,41 @@ export function readEditSnapshot(scope: string) {
   const latest = read(key('ui', `${scope}:latest`), z.string())
   // Reopening in a new tab copies the last form, then owns an independent
   // snapshot. No tab can overwrite another tab's retained unsent payload.
-  const value = read(own, SnapshotSchema) ?? (latest ? read(key('draft', `${scope}:${latest}`), SnapshotSchema) : undefined)
+  const existing = read(own, SnapshotSchema)
+  const value = existing ?? (latest ? read(key('draft', `${scope}:${latest}`), SnapshotSchema) : undefined)
   if (value) {
     assertScope(scope, value.context.draft.workspaceId, value.context.draft.workflowId)
     assertScope(scope, value.graph.workspaceId, value.graph.id)
+    // Copy the acknowledgement metadata with the form. A new tab must not
+    // replay an old Discard against edits made after this snapshot settled.
+    if (!existing) write(own, value)
+    return { context: value.context, graph: value.graph, agentEdits: value.agentEdits }
   }
-  return value
+  return undefined
 }
-export function storeEditSnapshot(scope: string, edit: Pick<NextDraftEdit, 'context' | 'graph' | 'agentEdits'>) {
+function sameDraftBase(left: NextDraftEdit['context']['draft'], right: NextDraftEdit['context']['draft']) {
+  return left.workspaceId === right.workspaceId && left.workflowId === right.workflowId && left.id === right.id
+    && left.revision === right.revision && left.baseWorkflowVersionId === right.baseWorkflowVersionId
+}
+/** Local consumption only, not server state. Scoped to this tab and form base. */
+export function editSnapshotAcknowledged(scope: string, edit: NextDraftEdit, stageCommandId: string): boolean {
+  const snapshot = read(key('draft', `${scope}:${tab()}`), SnapshotSchema)
+  return !!snapshot && sameDraftBase(snapshot.context.draft, edit.context.draft)
+    && !!snapshot.acknowledgedStageCommands?.includes(stageCommandId)
+}
+export function storeEditSnapshot(scope: string, edit: Pick<NextDraftEdit, 'context' | 'graph' | 'agentEdits'>, acknowledgedStageCommandId?: string) {
   const value = SnapshotSchema.parse({ context: edit.context, graph: edit.graph,
     ...(edit.agentEdits ? { agentEdits: edit.agentEdits } : {}) })
   assertScope(scope, value.graph.workspaceId, value.graph.id)
   assertScope(scope, value.context.draft.workspaceId, value.context.draft.workflowId)
-  const id = tab()
-  write(key('draft', `${scope}:${id}`), value)
+  const id = tab(), name = key('draft', `${scope}:${id}`), previous = read(name, SnapshotSchema)
+  const acknowledgedStageCommands = new Set(previous && sameDraftBase(previous.context.draft, value.context.draft)
+    ? previous.acknowledgedStageCommands : [])
+  if (acknowledgedStageCommandId) acknowledgedStageCommands.add(acknowledgedStageCommandId)
+  // Form plus local consumption marker share one atomic storage write. The
+  // caller persists this before exposing the merged form for further typing.
   write(key('ui', `${scope}:latest`), id)
+  write(name, { ...value, ...(acknowledgedStageCommands.size ? { acknowledgedStageCommands: [...acknowledgedStageCommands] } : {}) })
 }
 export function readEditOutbox(scope: string): EditIntentOutbox | undefined {
   const value = read(key('outbox', scope), OutboxSchema)
@@ -80,13 +101,44 @@ export function readEditOutbox(scope: string): EditIntentOutbox | undefined {
   }
   return value
 }
-/** Call only while withEditIntentLock holds the same principal-epoch/scope lock. */
-export function reserveEditOutbox(scope: string, candidate: EditIntentOutbox): EditIntentOutbox {
-  const existing = readEditOutbox(scope)
-  if (existing) return existing // Never replace an uncertain command with newer typing.
+/** Submission evidence is immutable and command-keyed, unlike the shared active
+ * outbox. Keep it until session cleanup so a suspended tab can still reconcile
+ * after another tab consumes the outbox. It never authorizes or sends a command. */
+function submissionKey(scope: string, commandId: string) { return key('ui', `submission:${JSON.stringify([scope, commandId])}`) }
+function retainEditSubmission(scope: string, candidate: EditIntentOutbox): EditIntentOutbox {
   const value = OutboxSchema.parse(candidate)
   assertScope(scope, value.request.workspaceId, value.request.workflowId)
   assertScope(scope, value.target.workspaceId, value.target.id)
+  const name = submissionKey(scope, value.request.commandId), previous = read(name, OutboxSchema)
+  if (previous && !sameWorkflowValue(previous, value)) throw new Error('The retained submission conflicts with this exact command. No evidence was replaced.')
+  if (!previous) write(name, value)
+  return previous ?? value
+}
+export function matchesEditIntent(value: EditIntentOutbox, intent: GraphEditIntent): boolean {
+  const request = value.request
+  return request.workspaceId === intent.workspaceId && request.workflowId === intent.workflowId
+    && value.target.workspaceId === intent.workspaceId && value.target.id === intent.workflowId
+    && request.commandId === intent.stageCommandId && request.draftId === intent.draftId
+    && request.expectedRevision === intent.expectedRevision && request.expectedWorkflowVersionId === intent.expectedWorkflowVersionId
+}
+/** Call only with authenticated, scope-checked readback. Local evidence supplies
+ * the submitted form, never the terminal state, result, or authority. */
+export function readEditSubmission(scope: string, intent: GraphEditIntent): EditIntentOutbox | undefined {
+  assertScope(scope, intent.workspaceId, intent.workflowId)
+  const value = read(submissionKey(scope, intent.stageCommandId), OutboxSchema)
+  if (value) {
+    if (!matchesEditIntent(value, intent)) throw new Error('The retained submission does not match the acknowledged command and draft base.')
+    return value
+  }
+  const outbox = readEditOutbox(scope)
+  // Upgrade older reservations before ANY tab can consume the sole copy.
+  return outbox && matchesEditIntent(outbox, intent) ? retainEditSubmission(scope, outbox) : undefined
+}
+/** Call only while withEditIntentLock holds the same principal-epoch/scope lock. */
+export function reserveEditOutbox(scope: string, candidate: EditIntentOutbox): EditIntentOutbox {
+  const existing = readEditOutbox(scope)
+  if (existing) return retainEditSubmission(scope, existing) // Never replace an uncertain command with newer typing.
+  const value = retainEditSubmission(scope, candidate)
   write(key('outbox', scope), value)
   return value
 }
@@ -99,6 +151,8 @@ function removeEditOutbox(scope: string, stageCommandId: string): void {
 }
 /** Acknowledgement must be from authenticated, scope-checked persisted readback. */
 export function acknowledgeEditOutbox(scope: string, stageCommandId: string): void {
+  const existing = readEditOutbox(scope)
+  if (existing?.request.commandId === stageCommandId) retainEditSubmission(scope, existing)
   removeEditOutbox(scope, stageCommandId)
 }
 /** These Stage errors originate only before intent insertion (prepare/perform),
@@ -108,7 +162,7 @@ export function isDefinitiveStageRejection(error: unknown): boolean {
   if (!ApiError.is(error)) return false
   if (error.status === 404) return error.code === 'GRAPH_DRAFT_NOT_FOUND'
   return error.status === 409 && ['REVISION_CONFLICT', 'WORKFLOW_BASE_CONFLICT', 'GRAPH_INVALID',
-    'AGENT_ID_CONFLICT', 'AGENT_REVISION_CONFLICT', 'GRAPH_EDIT_INTENT_EXISTS'].includes(error.code)
+    'AGENT_ID_CONFLICT', 'AGENT_REVISION_CONFLICT', 'AGENT_SOURCE_CONFLICT', 'GRAPH_EDIT_INTENT_EXISTS'].includes(error.code)
 }
 /** Call only for the exact editStage failure, under the same session/scope lock.
  * Releasing a rejected reservation never discards or rewrites the local form. */

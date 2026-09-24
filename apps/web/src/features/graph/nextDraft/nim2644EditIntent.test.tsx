@@ -2,6 +2,7 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { createStore } from 'zustand/vanilla'
 import { GraphEditIntentSchema, GraphEditReadResultSchema, sameExecutableWorkflow,
   type GraphEditReadResult, type GraphEditStageInput } from '@graphql/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
@@ -11,8 +12,10 @@ import { NextDraftEditor } from './NextDraftEditor'
 import { nextDraftApi } from './transport'
 import { nextDraftDirty, nextDraftKey } from './state'
 import { changeDraftAgent, editorAgents } from './agentEdits'
-import { removeNode } from './model'
-import { readEditOutbox, readEditSnapshot } from './editIntentStorage'
+import { attachAgent, removeNode } from './model'
+import { acknowledgeEditOutbox, readEditOutbox, readEditSnapshot, storeEditSnapshot } from './editIntentStorage'
+import { acknowledgeEditIntentSnapshot } from './useGraphEditIntent'
+import { inFollowupTab } from './nim2644Followup.cases'
 import { repairFixture } from './nim2644State.cases'
 
 // Mounted Query/Zustand/form regressions with the existing transport boundary
@@ -300,5 +303,128 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     expect(readEditSnapshot(key)?.graph).toEqual(edit().graph)
     expect(stage).toHaveBeenCalledTimes(2); expect(stage.mock.calls[1]![0]).toEqual(stage.mock.calls[0]![0])
     expect(advance).toHaveBeenCalledOnce(); expect(discard).toHaveBeenCalledOnce(); expect(nextDraftApi.start).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('NIM-2644 follow-up stale existing-Agent attach', () => {
+  it.each(['discard', 'reload-and-retry'] as const)('FE-001 releases AGENT_SOURCE_CONFLICT for explicit %s', async (action) => {
+    const context = repairFixture(1), source = repairFixture(2).agents[1]!
+    context.agents.push(source)
+    useGraphDraftStore.getState().installNextDraft(key, context, true)
+    const stage = vi.spyOn(nextDraftApi, 'editStage').mockRejectedValueOnce(
+      new ApiError({ code: 'AGENT_SOURCE_CONFLICT', message: 'The source Agent changed since it was selected.' }, 409))
+      .mockImplementation(async (input) => stageValue(input))
+    const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => waiting(stageValue(stage.mock.calls.at(-1)![0])))
+    const user = userEvent.setup(), first = mount()
+    act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => attachAgent(graph, source, 'attached-worker')))
+    await user.click(saveButton())
+    await waitFor(() => expect(stage).toHaveBeenCalledOnce())
+    await waitFor(() => expect(readEditOutbox(key)).toBeUndefined())
+    expect(stage.mock.calls[0]![0].operations).toContainEqual(expect.objectContaining({ type: 'agent.attach',
+      expectedAgentRevision: source.metadataRevision, expectedConfigurationVersionId: source.agent.configurationVersionId }))
+    expect(edit().context.draft.revision).toBe(7)
+    expect(edit().graph.nodes.some((node) => node.id === 'attached-worker')).toBe(true)
+    expect(readEditSnapshot(key)?.graph).toEqual(edit().graph)
+    expect(saveButton()).toBeEnabled()
+    expect(screen.getByRole('button', { name: /^Discard changes$/ })).toBeEnabled()
+    expect(advance).not.toHaveBeenCalled()
+    if (action === 'discard') {
+      await user.click(screen.getByRole('button', { name: /^Discard changes$/ }))
+      expect(edit().graph.nodes.some((node) => node.id === 'attached-worker')).toBe(false)
+      expect(stage).toHaveBeenCalledOnce()
+      await waitFor(() => expect(startButton()).toBeEnabled())
+    } else {
+      reopen(first); await screen.findByRole('region', { name: 'Workflow authoring' })
+      const fresh = structuredClone(context)
+      fresh.agents[1] = { metadataRevision: source.metadataRevision + 1,
+        agent: { ...source.agent, configurationVersionId: 'configuration-updated-in-other-session' } }
+      // Only Agent metadata/configuration changes. The draft revision stays 7.
+      vi.mocked(nextDraftApi.context).mockResolvedValue(fresh)
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      await user.click(screen.getByRole('button', { name: 'Workflow settings' }))
+      await user.click(screen.getByRole('button', { name: 'Reload shared draft' }))
+      await waitFor(() => expect(edit().context.agents[1]?.metadataRevision).toBe(source.metadataRevision + 1))
+      act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => attachAgent(graph, fresh.agents[1]!, 'attached-worker')))
+      await user.click(saveButton()); await waitFor(() => expect(advance).toHaveBeenCalledOnce())
+      expect(stage.mock.calls[1]![0].commandId).not.toBe(stage.mock.calls[0]![0].commandId)
+      expect(stage.mock.calls[1]![0].expectedRevision).toBe(7)
+      expect(stage.mock.calls[1]![0].operations).toContainEqual(expect.objectContaining({ type: 'agent.attach',
+        expectedAgentRevision: source.metadataRevision + 1, expectedConfigurationVersionId: 'configuration-updated-in-other-session' }))
+    }
+    expect(nextDraftApi.start).not.toHaveBeenCalled()
+  })
+})
+
+
+// The mounted board retains the real module store; the sibling has a separate
+// Zustand store and protected snapshot ID but shares the same localStorage.
+function siblingConsumes(value: GraphEditReadResult) {
+  const sibling = createStore<{ edit: ReturnType<typeof edit> }>(() => ({ edit: structuredClone(edit()) }))
+  inFollowupTab('independent-sibling', () => {
+    storeEditSnapshot(key, sibling.getState().edit)
+    sibling.setState(({ edit: current }) => ({ edit: acknowledgeEditIntentSnapshot(key, current, value.intent!) }))
+    acknowledgeEditOutbox(key, value.intent!.stageCommandId)
+  })
+  return sibling
+}
+describe('NIM-2644 follow-up mounted stale-tab readback', () => {
+  it.each(['refresh', 'explicit-retry'] as const)('FE-002 sibling-consumed saved readback reconciles the mounted raw Worker through %s', async (recovery) => {
+    let persisted = empty, visible = empty
+    vi.mocked(nextDraftApi.editRead).mockImplementation(async () => visible)
+    vi.spyOn(nextDraftApi, 'editStage').mockImplementation(async (input) => (persisted = stageValue(input)))
+    vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => {
+      persisted = published(persisted); throw new Error('Publication reply lost in the stale tab')
+    })
+    const user = userEvent.setup(), first = mount(), node = await createWorker(user)
+    await user.click(saveButton())
+    await waitFor(() => expect(persisted.intent?.state).toBe('saved'))
+    await waitFor(() => expect(saveButton()).toBeEnabled())
+    const raw = structuredClone(edit())
+    expect(raw.agentEdits?.[node.agentId]?.prompt).toBeUndefined()
+    const sibling = siblingConsumes(persisted)
+    expect(nextDraftDirty(sibling.getState().edit)).toBe(false)
+    expect(readEditOutbox(key)).toBeUndefined()
+    expect(edit()).toEqual(raw) // Consuming the sibling's store did not alter this one.
+    visible = persisted
+    if (recovery === 'refresh') reopen(first)
+    else await user.click(saveButton())
+    await waitFor(() => expect(startButton()).toBeEnabled())
+    expect(nextDraftApi.editStage).toHaveBeenCalledOnce(); expect(nextDraftApi.editAdvance).toHaveBeenCalledOnce()
+    expect(nextDraftDirty(edit())).toBe(false); expect(edit().agentEdits).toEqual({})
+    expect(editorAgents(edit()).find((agent) => agent.id === node.agentId)?.configurationVersionId).toBe(`configuration-${node.agentId}-saved`)
+    expect(nextDraftApi.start).not.toHaveBeenCalled()
+  })
+  it.each([false, true])('FE-003 another store consumes lost Discard first; refresh restores topology with newer typing=%s', async (newer) => {
+    const context = repairFixture(3)
+    useGraphDraftStore.getState().installNextDraft(key, context, true)
+    let persisted = empty, visible = empty
+    vi.mocked(nextDraftApi.editRead).mockImplementation(async () => visible)
+    const stage = vi.spyOn(nextDraftApi, 'editStage').mockImplementation(async (input) => persisted.intent ? persisted : (persisted = stageValue(input)))
+    const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => (persisted = waiting(persisted)))
+    const discard = vi.spyOn(nextDraftApi, 'editDiscard').mockImplementation(async () => {
+      persisted = { ...persisted, intent: { ...persisted.intent!, state: 'discarded' } }
+      throw new Error('Discard reply lost in original tab A')
+    })
+    const user = userEvent.setup(), first = mount()
+    act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => removeNode(graph, 'node-2')))
+    await user.click(saveButton()); await waitFor(() => expect(advance).toHaveBeenCalledOnce())
+    moveSurvivor()
+    await user.click(screen.getByRole('button', { name: /^Discard changes$/ }))
+    await waitFor(() => expect(discard).toHaveBeenCalledOnce())
+    await waitFor(() => expect(saveButton()).toBeEnabled())
+    if (newer) typeMeaning('independent newer instruction')
+    const raw = structuredClone(edit()), sibling = siblingConsumes(persisted)
+    expect(sibling.getState().edit.graph.nodes.map((node) => node.id)).toEqual(['node-0', 'node-1', 'node-2'])
+    expect(readEditOutbox(key)).toBeUndefined(); expect(edit()).toEqual(raw)
+    visible = persisted; reopen(first)
+    await waitFor(() => expect(edit().graph.nodes.map((node) => node.id)).toEqual(['node-0', 'node-1', 'node-2']))
+    expect(edit().graph.edges).toEqual(context.draft.graph.edges)
+    expect(edit().graph.nodes[0]?.position).toEqual({ x: 934, y: -28 })
+    expect(edit().graph.nodes[0]?.initialPrompt).toBe(newer ? 'independent newer instruction' : undefined)
+    expect(nextDraftDirty(edit())).toBe(newer)
+    expect(advance).toHaveBeenCalledOnce(); expect(discard).toHaveBeenCalledOnce()
+    expect(stage.mock.calls[1]![0]).toEqual(stage.mock.calls[0]![0])
+    expect(nextDraftApi.start).not.toHaveBeenCalled()
   })
 })

@@ -9,7 +9,8 @@ import { acknowledgeAgentEdits, hasAgentEdits } from './agentEdits'
 import { draftOperations, hasLocalChanges, mergeAcknowledgement } from './model'
 import { nextDraftDirty, type NextDraftEdit } from './state'
 import { nextDraftApi } from './transport'
-import { acknowledgeEditOutbox, readEditOutbox, rejectEditOutbox, reserveEditOutbox, storeEditSnapshot, withEditIntentLock, type EditIntentOutbox } from './editIntentStorage'
+import { acknowledgeEditOutbox, editSnapshotAcknowledged, matchesEditIntent, readEditOutbox, readEditSubmission,
+  rejectEditOutbox, reserveEditOutbox, storeEditSnapshot, withEditIntentLock, type EditIntentOutbox } from './editIntentStorage'
 
 export const activeEditIntent = (intent: GraphEditIntent | null | undefined) => !!intent && !['saved', 'discarded'].includes(intent.state)
 export const graphEditIntentKey = (workspaceId: string, workflowId: string, draftId: string, generation = sessionGeneration()) =>
@@ -18,6 +19,35 @@ const readInput = (edit: NextDraftEdit) => ({ action: 'read_edits' as const, wor
   workflowId: edit.context.draft.workflowId, draftId: edit.context.draft.id })
 const commandInput = (intent: GraphEditIntent) => ({ workspaceId: intent.workspaceId, workflowId: intent.workflowId,
   draftId: intent.draftId, intentId: intent.id })
+
+/** Reconcile only authenticated terminal readback for this exact form base.
+ * Persist consumption with the resulting form before exposing it to new typing;
+ * the shared outbox is not a per-tab acknowledgement marker. */
+export function acknowledgeEditIntentSnapshot(draftKey: string, current: NextDraftEdit, intent: GraphEditIntent): NextDraftEdit {
+  const draft = current.context.draft
+  if (current.busy || current.pending || !['saved', 'discarded'].includes(intent.state)
+    || draft.workspaceId !== intent.workspaceId || draft.workflowId !== intent.workflowId || draft.id !== intent.draftId
+    || draft.revision !== intent.expectedRevision || draft.baseWorkflowVersionId !== intent.expectedWorkflowVersionId
+    || editSnapshotAcknowledged(draftKey, current, intent.stageCommandId)) return current
+  const submission = readEditSubmission(draftKey, intent)
+  // Without exact local evidence, a remote Discard says nothing about this form.
+  if (intent.state === 'discarded' && !submission) return current
+  let context = current.context
+  if (intent.state === 'saved') {
+    if (!intent.result) return current
+    const catalog = new Map(context.agents.map((item) => [item.agent.id, item]))
+    for (const item of intent.result.agents) catalog.set(item.agent.id, item)
+    context = { draft: intent.result.draft, agents: [...catalog.values()] }
+  }
+  const graph = mergeAcknowledgement(current.graph, submission?.target ?? intent.stagedDraft.graph, context.draft.graph)
+  const next = { ...current, context, graph,
+    // Never substitute normalized server Agents for a lost local submission.
+    agentEdits: acknowledgeAgentEdits(current.agentEdits, submission?.agentTarget, context,
+      intent.state === 'discarded' ? graph : undefined),
+    error: undefined, validation: undefined }
+  storeEditSnapshot(draftKey, next, intent.stageCommandId)
+  return next
+}
 
 /** Server plans/facts and request lifecycle are Query-owned. Only the local
  * form and its pinned authoring base live in Zustand; storage is an outbox,
@@ -66,45 +96,21 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
     const current = useGraphDraftStore.getState().nextDrafts[draftKey]
     if (!current || current.busy || current.pending) return
     const retained = readEditOutbox(draftKey)
-    const ownOutbox = retained?.request.commandId === intent.stageCommandId
-      && retained.request.draftId === intent.draftId && retained.request.expectedRevision === intent.expectedRevision
-      && retained.request.expectedWorkflowVersionId === intent.expectedWorkflowVersionId
-    // Server staging normalizes optional Agent fields. Only our reserved local
-    // snapshot can tell unchanged submission apart from independently newer typing.
-    const submittedGraph = ownOutbox ? retained.target : intent.stagedDraft.graph
-    const submittedAgents = ownOutbox ? retained.agentTarget
-      : Object.fromEntries(intent.stagedDraft.stagedAgents.map((item) => [item.agent.id, item.agent]))
-    if (intent.state === 'saved' && intent.result) {
-      const result = intent.result
-      if (current.context.draft.id === intent.draftId && current.context.draft.revision === intent.expectedRevision) {
-        useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => {
-          const catalog = new Map(state.context.agents.map((item) => [item.agent.id, item]))
-          for (const item of result.agents) catalog.set(item.agent.id, item)
-          const context = { draft: result.draft, agents: [...catalog.values()] }
-          return { ...state, context, graph: mergeAcknowledgement(state.graph, submittedGraph, result.draft.graph),
-            agentEdits: acknowledgeAgentEdits(state.agentEdits, submittedAgents, context),
-            error: undefined, validation: undefined }
-        })
-      }
-      // Persist the acknowledged form before clearing the sole uncertain Stage
-      // identity. An interrupted local acknowledgement simply replays readback.
+    const ownOutbox = !!retained && matchesEditIntent(retained, intent)
+    if (intent.state === 'saved' || intent.state === 'discarded') {
+      useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => acknowledgeEditIntentSnapshot(draftKey, state, intent))
+      // Removing a shared reservation must not remove the submission evidence
+      // needed by another tab that has not consumed this terminal readback yet.
       const acknowledged = useGraphDraftStore.getState().nextDrafts[draftKey]
       if (acknowledged) storeEditSnapshot(draftKey, acknowledged)
       if (ownOutbox) acknowledgeEditOutbox(draftKey, intent.stageCommandId)
       setOutboxPending(!!readEditOutbox(draftKey))
-      void queryClient.invalidateQueries({ queryKey: boardDraftContextKey(workspaceId, workflowId) })
-    } else if (intent.state === 'discarded' && ownOutbox) {
-      // Recover a lost Discard reply without discarding independently newer edits.
-      useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => {
-        if (state.context.draft.id !== intent.draftId || state.context.draft.revision !== intent.expectedRevision
-          || state.context.draft.baseWorkflowVersionId !== intent.expectedWorkflowVersionId) return state
-        const graph = mergeAcknowledgement(state.graph, submittedGraph, state.context.draft.graph)
-        return { ...state, graph,
-          agentEdits: acknowledgeAgentEdits(state.agentEdits, submittedAgents, state.context, graph) }
-      })
-      storeEditSnapshot(draftKey, useGraphDraftStore.getState().nextDrafts[draftKey]!)
-      acknowledgeEditOutbox(draftKey, intent.stageCommandId); setOutboxPending(false)
+      if (intent.state === 'saved') void queryClient.invalidateQueries({ queryKey: boardDraftContextKey(workspaceId, workflowId) })
     } else if (activeEditIntent(intent) && hydrated.current !== intent.id) {
+      const submission = readEditSubmission(draftKey, intent)
+      const submittedGraph = submission?.target ?? intent.stagedDraft.graph
+      const submittedAgents = submission ? submission.agentTarget
+        : Object.fromEntries(intent.stagedDraft.stagedAgents.map((item) => [item.agent.id, item.agent]))
       hydrated.current = intent.id
       // Fresh/reopened clean boards show the exact private payload. Never
       // overwrite another tab's/newer unsent form or replace its revision base.
@@ -151,6 +157,12 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
     let data = retained ? await stage(retained)
       : await nextDraftApi.editRead(readInput(current))
     assertSession(generation)
+    const beforeAcknowledgement = useGraphDraftStore.getState().nextDrafts[draftKey]
+    accept(data)
+    // A sibling tab may have finished this form while consuming the shared
+    // outbox. Acknowledge that result, not a new Stage from the captured old base.
+    if (data.intent && !activeEditIntent(data.intent)
+      && useGraphDraftStore.getState().nextDrafts[draftKey] !== beforeAcknowledgement) return data
     if (action === 'advance' && !activeEditIntent(data.intent) && !retained) {
       if (!nextDraftDirty(current)) { accept(data); return data }
       const request = GraphEditStageInputSchema.parse({ ...readInput(current), action: 'stage_edits',
