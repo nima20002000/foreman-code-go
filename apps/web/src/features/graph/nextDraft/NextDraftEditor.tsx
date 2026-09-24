@@ -2,7 +2,7 @@ import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, u
 import { Inbox } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { GraphDraftV2Schema, staysOnWorkflowBoard, sameExecutableWorkflow, type WorkflowDefinitionV2, type WorkflowRelationship } from '@graphql/contracts/wave25'
-import { Button, Icon, Toolbar } from '../../../shared/ui/nocturne'
+import { Button, Icon, IconButton, TextField, Toolbar } from '../../../shared/ui/nocturne'
 import { GraphPresentationProvider } from '../GraphPresentation'
 import { useGraphPresentation, useGraphPresentationStore } from '../useGraphPresentation'
 import { applyGraphGeometry, type GraphGeometryChange } from '../geometry'
@@ -19,7 +19,7 @@ import { EditIntentStatus } from './EditIntentStatus'
 import { draftFailure } from './writer'
 import { useInteractionsQuery, useManagedWorkspaceQuery } from '../../../shared/api/query'
 import { assertSession, sessionGeneration } from '../../../shared/api/sessionBoundary'
-import { ApprovalFields, AttachAgentField, ConnectionFields, EntryFields, Field, NodeFields, RelationshipFields } from './AuthoringFields'
+import { ApprovalFields, AttachAgentField, ConnectionFields, EntryFields, NodeFields, RelationshipFields } from './AuthoringFields'
 import { DraftCanvas, type DraftCanvasHandle } from './DraftCanvas'
 import { useWorkflowBoard } from '../../workflow-board/context'
 import { BoardAgentSettings, NewBoardAgent } from '../../workflow-board/AgentControls'
@@ -273,7 +273,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   return <section className="workflow-graph board-typed-editor" aria-label="Workflow authoring">
       <div className="board-draft-notices">
         {pendingStart ? <p role="status">An earlier Start may have been accepted for version <code>{pendingStart.workflowVersionId}</code>. Reconcile Start before a new admission.</p> : null}
-        {!pendingStart && workspace.data?.locationValidation.status !== 'ready' ? <p role="status">A valid workspace execution folder is required to Start. <button type="button" onClick={board?.openLocation}>Set execution folder</button></p> : null}
+        {!pendingStart && workspace.data?.locationValidation.status !== 'ready' ? <p role="status">A valid workspace execution folder is required to Start. <Button size="sm" variant="ghost" onClick={board?.openLocation}>Set execution folder</Button></p> : null}
         {message ? <p role="status">{message}</p> : null}
         {editIntent.storageError ? <p role="alert">{editIntent.storageError}</p> : null}
         {editIntent.query.error ? <p role="alert">Retained-intent readback is unavailable: {editIntent.query.error.message}. No read error proves that a Stop or save failed.</p> : null}
@@ -297,12 +297,12 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
           {pendingApprovals ? <span className="workflow-approval-inbox-badge" aria-hidden="true">{pendingApprovals}</span> : null}</Button>
         <Button variant="secondary" className="n-icon-button workflow-graph-run" aria-label={pendingStart ? 'Reconcile Start' : 'Start saved version'}
           title={pendingStart ? 'Reconcile the exact earlier Start' : 'Start saved version'} disabled={startDisabled} onClick={() => void prepare(start).catch(report)}><Icon name="play" size={16} /></Button>
-        <Button variant="secondary" className="n-icon-button workflow-graph-add-agent" aria-label="Add agent to graph" title="Add agent to graph" onClick={() => openPanel('agents')}><Icon name="plus" size={17} /></Button>
+        <IconButton className="workflow-graph-add-agent" label="Add agent to graph" onClick={() => openPanel('agents')}><Icon name="plus" size={16} /></IconButton>
         <Button variant="secondary" onClick={() => openPanel('connection')}>Connections</Button>
       </Toolbar></div>
       <header className="board-draft-caption"><strong>{graph.name}</strong>
         <span>Editing next draft · revision {context.draft.revision} · {dirty ? 'Unpublished edits' : 'Published version'}</span>
-        <button type="button" onClick={() => openPanel('readiness')}>Readiness{hints.length ? ` · ${hints.length} checks` : ''}</button>
+        <Button size="sm" variant="ghost" onClick={() => openPanel('readiness')}>Readiness{hints.length ? ` · ${hints.length} checks` : ''}</Button>
       </header>
       <div className="workflow-graph-actions"><p>Saving meaningful edits stops every affected unsettled workflow or shared-Agent Run, not only the Run selected on this board. It never restarts a Run.</p><Toolbar label="Graph actions">
         <Button variant="secondary" disabled={edit.busy || editIntent.locked || !edit.history.length} onClick={() => void prepare(() => { canvas.current?.flush(); useGraphDraftStore.getState().undoNextDraft(draftKey) })}>Undo</Button>
@@ -328,11 +328,11 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
             <ApprovalFields graph={graph} context={context} agentEdits={edit.agentEdits} change={change} report={report} />
             <section className="next-draft-section" aria-label="Execution bounds"><h2>Execution bounds</h2>
               {graph.executionPolicy ? <>
-                <Field label="Maximum parallelism"><input type="number" min={1} max={100} value={Number.isFinite(graph.executionPolicy.maxParallelism) ? graph.executionPolicy.maxParallelism : ''} onChange={(event) => { const value = event.target.valueAsNumber; change((item) => ({ ...item, executionPolicy: { ...item.executionPolicy!, maxParallelism: value } })) }} /></Field>
-                <Field label="Maximum node executions"><input type="number" min={1} max={10000} value={Number.isFinite(graph.executionPolicy.maxNodeExecutions) ? graph.executionPolicy.maxNodeExecutions : ''} onChange={(event) => { const value = event.target.valueAsNumber; change((item) => ({ ...item, executionPolicy: { ...item.executionPolicy!, maxNodeExecutions: value } })) }} /></Field>
+                <TextField label="Maximum parallelism" type="number" min={1} max={100} value={Number.isFinite(graph.executionPolicy.maxParallelism) ? graph.executionPolicy.maxParallelism : ''} onChange={(event) => { const value = event.target.valueAsNumber; change((item) => ({ ...item, executionPolicy: { ...item.executionPolicy!, maxParallelism: value } })) }} />
+                <TextField label="Maximum node executions" type="number" min={1} max={10000} value={Number.isFinite(graph.executionPolicy.maxNodeExecutions) ? graph.executionPolicy.maxNodeExecutions : ''} onChange={(event) => { const value = event.target.valueAsNumber; change((item) => ({ ...item, executionPolicy: { ...item.executionPolicy!, maxNodeExecutions: value } })) }} />
               </> : <Button onClick={() => change((item) => ({ ...item, executionPolicy: { maxParallelism: Number.NaN, maxNodeExecutions: Number.NaN } }))}>Set execution bounds</Button>}
               {graph.requiredAgentCount !== undefined ? <>
-                <Field label="Required Agent count"><input type="number" min={1} max={10000} value={Number.isFinite(graph.requiredAgentCount) ? graph.requiredAgentCount : ''} onChange={(event) => { const requiredAgentCount = event.target.valueAsNumber; change((item) => ({ ...item, requiredAgentCount })) }} /></Field>
+                <TextField label="Required Agent count" type="number" min={1} max={10000} value={Number.isFinite(graph.requiredAgentCount) ? graph.requiredAgentCount : ''} onChange={(event) => { const requiredAgentCount = event.target.valueAsNumber; change((item) => ({ ...item, requiredAgentCount })) }} />
                 <Button variant="secondary" onClick={() => change((item) => { const next = { ...item }; delete next.requiredAgentCount; return next })}>Remove fixed Agent count</Button>
               </> : <p>No fixed Agent count is authored.</p>}
             </section>
@@ -355,12 +355,12 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         </fieldset>
       </aside> : null}
       <div className="board-accessible-selection"><details><summary>Select a board node or connection</summary>
-        {graph.nodes.map((node) => <button type="button" key={node.id} onClick={() => inspect(() => {
+        {graph.nodes.map((node) => <Button size="sm" variant="ghost" key={node.id} onClick={() => inspect(() => {
           presentation.getState().setFocusedNodeId(node.id); presentation.getState().setFocusedEdgeId(undefined)
-        })}>{graph.entryNodeId === node.id ? 'Entry · ' : ''}{nodeTitle(graph, node.id)}</button>)}
-        {graph.edges.map((edge) => <button type="button" key={edge.id} onClick={() => inspect(() => {
+        })}>{graph.entryNodeId === node.id ? 'Entry · ' : ''}{nodeTitle(graph, node.id)}</Button>)}
+        {graph.edges.map((edge) => <Button size="sm" variant="ghost" key={edge.id} onClick={() => inspect(() => {
           presentation.getState().setFocusedEdgeId(edge.id); presentation.getState().setFocusedNodeId(undefined)
-        })}>{edge.kind} · {nodeTitle(graph, edge.source)} → {nodeTitle(graph, edge.target)} · {edge.id}</button>)}
+        })}>{edge.kind} · {nodeTitle(graph, edge.source)} → {nodeTitle(graph, edge.target)} · {edge.id}</Button>)}
       </details></div>
     </div>
   </section>

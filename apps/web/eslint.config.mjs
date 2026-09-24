@@ -37,4 +37,15 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // Feature code renders form fields through the design-system kit (shared/ui/nocturne).
+    files: ['src/features/**/*.tsx', 'src/routes/**/*.tsx', 'src/app/**/*.tsx'],
+    ignores: ['**/*.test.tsx', '**/fixtures/**'],
+    rules: {
+      'no-restricted-syntax': ['error', {
+        selector: "JSXOpeningElement[name.name=/^(input|select|textarea)$/]",
+        message: 'Use TextField, SearchField, Textarea, Select, Checkbox, Switch or Slider from shared/ui/nocturne.',
+      }],
+    },
+  },
 )

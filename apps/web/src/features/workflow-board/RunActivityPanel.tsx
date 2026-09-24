@@ -59,10 +59,10 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
         try { scope = scopeForBoardRun(run) } catch {
           return <p key={run.id}>Run {run.id} has no supported immutable version pin. Its identity was not replaced with the current version.</p>
         }
-        return <button type="button" key={run.id} aria-pressed={!!selected && sameGraphScope(scope, selected)}
+        return <Button size="sm" variant="ghost" key={run.id} aria-pressed={!!selected && sameGraphScope(scope, selected)}
           onClick={() => { ++request.current; setReading(undefined); selectRun(scope) }}>
           Open Run {run.id} · {run.executionState} · {run.outcome}
-        </button>
+        </Button>
       })}</div>
       {runs.hasNextPage && !denied ? <Button variant="secondary" disabled={runs.isFetchingNextPage} onClick={() => void runs.fetchNextPage()}>Load more Runs</Button> : null}
     </details>

@@ -28,7 +28,7 @@ function installAgent(draftKey: string, instanceId: string, agent: Agent, nodeId
 export function NewBoardAgent({ draftKey, edit, report }: { draftKey: string; edit: NextDraftEdit; report(error: unknown): void }) {
   const defaults = useAgentDefaultsQuery()
   return <section aria-label="Create board Agent"><h3>Create Agent</h3>
-    {defaults.isError ? <p role="alert">Agent defaults are unavailable. <button type="button" onClick={() => void defaults.refetch()}>Retry defaults</button></p> : null}
+    {defaults.isError ? <p role="alert">Agent defaults are unavailable. <Button size="sm" variant="ghost" onClick={() => void defaults.refetch()}>Retry defaults</Button></p> : null}
     {(['orchestrator', 'coder'] as const).map((role) => <Button key={role} variant="secondary"
       disabled={!defaults.data || defaults.isError || edit.busy || !!edit.pending}
       onClick={() => {

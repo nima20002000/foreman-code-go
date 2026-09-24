@@ -31,6 +31,7 @@ export function OperatorComposer({ conversationId, context, access, sendDisabled
         onClick={onNewChat}><code>/new</code><span>Start a new chat</span><kbd>↵</kbd></button>
     </div> : null}
     <label htmlFor={id} className="n-sr-only">Message</label>
+    {/* eslint-disable-next-line no-restricted-syntax -- combobox textarea with slash-command autocomplete; MessageComposer has no listbox support. */}
     <textarea ref={input} id={id} rows={1} value={value} maxLength={16000} placeholder="Message the operator…"
       aria-controls={commandsOpen ? `${id}-commands` : undefined} aria-expanded={commandsOpen}
       aria-autocomplete="list" aria-activedescendant={commandsOpen ? `${id}-new` : undefined}
