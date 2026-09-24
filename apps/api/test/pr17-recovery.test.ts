@@ -111,8 +111,8 @@ it('PR17 terminal execution recovery does not change the unconfirmed approval de
     respond, startTurn } as unknown as NativeHarnessSessionManager
   vi.spyOn(coordinator, 'attachInteraction').mockResolvedValue({ manager, session, signal: new AbortController().signal })
   const owner = { assertOwned() {}, client: {} } as unknown as RunOwnership
-  expect(await coordinator.recoverTerminalInteraction(interaction, owner, new AbortController().signal)).toBe(true)
-  expect(updateExecution).toHaveBeenCalledWith(expect.objectContaining({ state: 'completed', result: { outcome: 'succeeded', output: { text: 'verified' } } }), owner)
+  expect(await coordinator.recoverTerminalInteraction(interaction, owner, new AbortController().signal)).toBe(false)
+  expect(updateExecution).not.toHaveBeenCalled()
   expect(interaction.deliveryState).toBe('uncertain')
   expect(respond).not.toHaveBeenCalled()
   expect(startTurn).not.toHaveBeenCalled()

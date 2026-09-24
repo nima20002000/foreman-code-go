@@ -244,6 +244,8 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
     attach(signal?: AbortSignal) { return runtime.attachOwnedSession({ harness: session.harness, agentId: execution.agentId,
       executionId: execution.id, workingDirectory: execution.workingDirectory!, purpose: 'reviewer', correlationId }, session, signal) },
     interaction: { id: 'waiting-interaction', executionId: execution.id, runId: run.id, requestingAgentId: execution.agentId,
-      ...session, selectedOptionId: 'approve', deliveryState: 'uncertain' } as DurableInteraction,
+      ...session, selectedOptionId: 'approve', selectedSemantic: 'approve_once',
+      ...(options.workflow ? { status: 'delivered', deliveryState: 'delivered', deliveredAt: now }
+        : { status: 'delivery_pending', deliveryState: 'uncertain' }) } as DurableInteraction,
   }
 }

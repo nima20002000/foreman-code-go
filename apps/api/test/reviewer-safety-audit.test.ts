@@ -102,7 +102,7 @@ it('F6: reviewer live events and recovered native history are redacted before th
   assert.ok(JSON.stringify(recovered.saved.events).includes(providerId), 'provider identity is retained')
 })
 
-it('F6: terminal recovery redacts both events and result/output without claiming ambiguous approval delivery', async () => {
+it('F6: terminal recovery redacts both events and result/output after confirmed approval delivery', async () => {
   const fixture = await reviewerFixture({ workflow: true })
   const expectedCorrelation = `execution:${fixture.execution.id}`
   const history = terminal(expectedCorrelation)
@@ -116,10 +116,10 @@ it('F6: terminal recovery redacts both events and result/output without claiming
   assert.equal(fixture.execution.state, 'completed')
   assert.deepEqual(fixture.execution.result?.output, { nested: ['[REDACTED]', '[REDACTED]'] })
   assert.deepEqual(fixture.interaction, original)
-  assert.equal(fixture.interaction.deliveryState, 'uncertain')
+  assert.equal(fixture.interaction.deliveryState, 'delivered')
   assert.equal(fixture.responses, 0)
   assert.equal(fixture.starts.length, 0)
-  assert.match(JSON.stringify(fixture.saved.activity), /approvalDeliveryUnconfirmed/)
+  assert.match(JSON.stringify(fixture.saved.activity), /"approvalDeliveryUnconfirmed":false/)
 })
 
 it('F6: replay redaction is identical across different process credential contexts', () => {
