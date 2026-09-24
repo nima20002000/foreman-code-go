@@ -1124,7 +1124,8 @@ export class ApprovalExecutionCoordinator {
           }
           const lease = { ...lane.fence, ...(lane.providerId ? { providerId: lane.providerId } : {}), live: false as const }
           const continuation = exactTerminal ? { session: session!, providerId: observed.terminalTurn!.providerId,
-            correlationId: `execution:${execution.id}`, responseDeliveries: observed.responseDeliveries ?? [] } : undefined
+            correlationId: `execution:${execution.id}`, responseDeliveries: observed.responseDeliveries ?? [],
+            historyEvents: observed.events } : undefined
           for (const event of observed.events) {
             await lane.guard.check()
             await this.runs.appendNativeEvent(redactKnownSecrets({ ...event, executionId: execution.id }, knownSecrets),

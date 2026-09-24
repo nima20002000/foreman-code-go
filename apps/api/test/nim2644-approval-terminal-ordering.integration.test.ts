@@ -80,7 +80,7 @@ describe.skipIf(!postgresEnabled)('NIM-2644 requester terminal / delayed approva
       id: `interaction-${randomUUID()}`, workspaceId: f.run.workspaceId, workflowId: f.run.workflowId,
       runId: f.run.id, executionId: running.id, requestingAgentId: running.agentId, ...session,
       graphThreadId: f.run.id, approval: { handler: 'user' }, nativeRequestId: `request-${randomUUID()}`,
-      request: { threadId: session.nativeSessionId, turnId, itemId: 'item-pwd', command: 'pwd' },
+      request: { threadId: session.nativeSessionId, turnId, itemId: 'item-pwd', command: 'pwd', cwd: db.directory },
       revision: 0, status: 'pending', deliveryState: 'not_started', selectedOptionId: undefined,
       selectedSemantic: undefined, nativeResponse: undefined, decidedAt: undefined, createdAt: at, updatedAt: at })
     await repository.create(pending)
@@ -133,10 +133,21 @@ describe.skipIf(!postgresEnabled)('NIM-2644 requester terminal / delayed approva
       ? { outcome: 'failed', error: { code: 'NATIVE_APPROVAL_DENIED', message: 'Provider-shaped denied turn.', retryable: false } }
       : { outcome: 'succeeded', output: { command: 'pwd', exitCode: 0 } }
     const completed = HarnessExecutionSchema.parse({ ...waiting, state: 'completed', result, finishedAt: new Date().toISOString() })
-    const terminal: HarnessNativeEvent = { ...start, sequence: 2, type: 'turn.completed', payload: {
+    const codexHistory: HarnessNativeEvent[] = optionId === 'approve-once' ? [
+      { ...start, sequence: 2, type: 'interaction.submitted', payload: {
+        nativeRequestId: pending.nativeRequestId, optionId, semantic } },
+      { ...start, sequence: 3, type: 'interaction.resolved', payload: {
+        nativeRequestId: pending.nativeRequestId, submittedOptionId: optionId, evidence: 'serverRequest/resolved' } },
+      { ...start, sequence: 4, type: 'item.completed', payload: { threadId: session.nativeSessionId, turnId,
+        item: { id: 'item-pwd', type: 'commandExecution', status: 'completed', command: 'pwd', cwd: db.directory, exitCode: 0 } } },
+    ] : []
+    for (const event of codexHistory) await appendWorkflowNativeGraphEvent(owner, event, lease)
+    const terminal: HarnessNativeEvent = { ...start, sequence: 2 + codexHistory.length, type: 'turn.completed', payload: {
       threadId: session.nativeSessionId, turnId, turn: { id: turnId, status: optionId === 'reject' ? 'failed' : 'completed' },
     } }
-    const continuation = { session, providerId: turnId, correlationId: `execution:${running.id}`, responseDeliveries: [proof] }
+    const continuation = { session, providerId: turnId, correlationId: `execution:${running.id}`,
+      responseDeliveries: optionId === 'approve-once' ? [] : [proof],
+      historyEvents: optionId === 'approve-once' ? [start, approvalEvent, ...codexHistory, terminal] : [] }
     const observeTerminal = () => appendWorkflowNativeGraphEvent(owner, terminal, { ...lease, live: false }, undefined, continuation)
     const storedExecution = async () => HarnessExecutionSchema.parse((await db.pool.query<{ record: unknown }>(
       'select record from harness_executions where id=$1', [running.id])).rows[0]!.record)
@@ -193,7 +204,7 @@ describe.skipIf(!postgresEnabled)('NIM-2644 requester terminal / delayed approva
     expect(await repository.delivery.claim(bound.id, `no-resend-${randomUUID()}`)).toBeUndefined()
     // Missing or foreign proof must not acquire an acknowledgement.
     await appendWorkflowNativeGraphEvent(owner, terminal, { ...lease, live: false }, undefined,
-      { ...continuation, responseDeliveries: [{ ...proof, nativeRequestId: 'foreign-request' }] })
+      { ...continuation, responseDeliveries: [{ ...proof, nativeRequestId: 'foreign-request' }], historyEvents: [] })
     expect((await outbox())?.approval_native_ack_id).toBeNull()
     await observeTerminal()
     const acknowledged = await outbox()

@@ -29,6 +29,7 @@ export interface WorkflowContinuationProof {
   providerId: string
   correlationId: string
   responseDeliveries: readonly NativeResponseDeliveryEvidence[]
+  historyEvents?: NativeHistory['events']
 }
 
 /** The existing Run owner and native writer supply separate live fences. A
@@ -177,7 +178,11 @@ export async function appendWorkflowNativeGraphEvent(owner: RunOwnership, input:
       const currentRun = (await sql.query<{ open: boolean }>(`select stop_requested_at is null
         and execution_state in ('running','waiting','queued') as open from runs where id=$1`, [scope.runId])).rows[0]
       if (!currentRun?.open) return
-      const history: NativeHistory = { events: [], pendingInteractions: [],
+      // Codex has no direct response receipt. Only ordered command evidence from
+      // this terminal event's exact connection can qualify its native ack.
+      const history: NativeHistory = { events: continuation.historyEvents?.filter((event) =>
+        !!normalized.event.connectionId && event.connectionId === normalized.event.connectionId
+        && event.sequence <= normalized.event.sequence) ?? [], pendingInteractions: [],
         responseDeliveries: continuation.responseDeliveries }
       for (const interaction of delivered) {
         if (!matchingDeliveryEvidence(interaction, continuation.session, history)) continue
