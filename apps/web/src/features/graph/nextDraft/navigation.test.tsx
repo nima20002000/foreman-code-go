@@ -52,6 +52,22 @@ it('registers local form dirtiness and discard with the existing navigation guar
   expect(screen.getByLabelText('Node instruction')).toHaveValue('')
   expect(registered.current.dirty).toBe(false)
 })
+it('discarding a semantic edit preserves independent node layout', async () => {
+  useGraphDraftStore.getState().installNextDraft(key, fixture())
+  const client = readyClient(), user = userEvent.setup()
+  render(<QueryClientProvider client={client}><NextDraftEditor workspaceId="workspace" workflowId="workflow" /></QueryClientProvider>)
+  const position = { x: 615, y: -90 }
+  act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph,
+    nodes: graph.nodes.map((node, index) => index === 0 ? { ...node, position, initialPrompt: 'Unpublished instruction' } : node),
+  })))
+  await user.click(screen.getByRole('button', { name: 'Workflow settings' }))
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  await user.click(screen.getByRole('button', { name: 'Discard local edits' }))
+  const draft = useGraphDraftStore.getState().nextDrafts[key]!
+  expect(draft.graph.nodes[0]?.initialPrompt).toBeUndefined()
+  expect(draft.graph.nodes[0]?.position).toEqual(position)
+  expect(draft.context.draft.revision).toBe(7)
+})
 it('clearing the application session also purges next drafts and pending conversions', () => {
   useGraphDraftStore.getState().installNextDraft(key, fixture())
   useGraphDraftStore.getState().setNextDraftPromotion(key, { busy: false, request: { kind: 'apply', executionSemanticsVersion: 2,
@@ -118,6 +134,23 @@ it('reconciles the same uncertain Start after draft reload and editor remount', 
   await user.click(await screen.findByRole('button', { name: 'Reconcile Start' }))
   await waitFor(() => expect(start).toHaveBeenCalledTimes(2))
   expect(start.mock.calls[1]![0]).toEqual(request)
+})
+it('duplicate Start clicks share one pending command and one accepted Run', async () => {
+  useGraphDraftStore.getState().installNextDraft(key, fixture())
+  let resolve!: (value: Awaited<ReturnType<typeof nextDraftApi.start>>) => void
+  const start = vi.spyOn(nextDraftApi, 'start').mockReturnValue(new Promise((done) => { resolve = done }))
+  const client = readyClient(), user = userEvent.setup()
+  render(<QueryClientProvider client={client}><NextDraftEditor workspaceId="workspace" workflowId="workflow" /></QueryClientProvider>)
+  const button = screen.getByRole('button', { name: 'Start saved version' })
+  await user.dblClick(button)
+  await waitFor(() => expect(start).toHaveBeenCalledOnce())
+  const request = start.mock.calls[0]![0]
+  expect(useGraphDraftStore.getState().pendingRunStarts[key]).toEqual(request)
+  expect(localStorage.getItem(protectedKey('outbox', `next-draft-start:${key}`))).toContain(request.commandId)
+  await act(async () => resolve({ accepted: true, replayed: false, run: { ...makeWave25Fixture('duplicate-start').run,
+    workspaceId: 'workspace', workflowId: 'workflow', workflowVersionId: request.workflowVersionId } }))
+  expect(start).toHaveBeenCalledOnce()
+  expect(useGraphDraftStore.getState().pendingRunStarts[key]).toBeUndefined()
 })
 it('pages through persisted Runs on the board and retains the older Run pin', async () => {
   const sample = makeWave25Fixture('pages').run

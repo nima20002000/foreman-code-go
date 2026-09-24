@@ -63,6 +63,19 @@ function setup() {
 describe('one mounted board across compatibility URLs', () => {
   beforeEach(() => { mounts.canvas = 0; mounts.disposed = 0; useGraphDraftStore.getState().clearAllDrafts(); useGraphDraftStore.getState().installNextDraft(key, fixture()) })
   afterEach(() => { cleanup(); useGraphDraftStore.getState().clearAllDrafts(); vi.restoreAllMocks() })
+  it('opens an old draft deep link in the same workspace and keeps the editor mounted', async () => {
+    const { router, history, client } = setup()
+    await screen.findByTestId('retained-canvas')
+    const instance = useGraphDraftStore.getState().nextDrafts[key]!.instanceId
+    await act(async () => { await router.navigate({ to: '/workspaces/$workspaceId/workflows/$workflowId/draft',
+      params: { workspaceId: 'workspace', workflowId: 'workflow' }, search: {} }) })
+    expect(history.location.pathname).toBe('/workspaces/workspace/workflows/workflow/draft')
+    expect(screen.getByTestId('selected-run')).toHaveTextContent('No Run selected')
+    expect(screen.getByTestId('retained-canvas')).toBeInTheDocument()
+    expect(useGraphDraftStore.getState().nextDrafts[key]?.instanceId).toBe(instance)
+    expect(mounts.canvas).toBe(1)
+    client.clear()
+  })
   it('retains the editor, unsent content and geometry across canonical and old Run URLs and back', async () => {
     const { router, history, client } = setup(), user = userEvent.setup()
     await screen.findByTestId('retained-canvas')
