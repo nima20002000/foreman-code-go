@@ -175,7 +175,7 @@ beforeEach(async () => {
       endpoint: 'http://127.0.0.1:4100/mcp/tools', credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN',
       endpointMatches: true, baseConfigurationFilters: [], policyScope: 'base_configuration_only' }
   })
-  for (const method of ['createSession', 'attachSession', 'startTurn', 'history', 'reconcile', 'pending', 'respond', 'cancel', 'close'] as const) {
+  for (const method of ['createSession', 'attachSession', 'startTurn', 'history', 'reconcile', 'pending', 'respond', 'cancel', 'close', 'closeForRestart'] as const) {
     vi.spyOn(OpenCodeNativeSessionManager.prototype, method).mockImplementation(CodexAppServerSessionManager.prototype[method] as never)
   }
   vi.spyOn(OpenCodeNativeSessionManager.prototype, 'dispose').mockResolvedValue()
