@@ -390,12 +390,14 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     })
   }
 
-  async close(session: NativeSessionReference): Promise<void> {
+  private async closeOwned(session: NativeSessionReference, restart: boolean): Promise<void> {
+    const close = (manager: NativeHarnessSessionManager) => restart && manager.closeForRestart
+      ? manager.closeForRestart(session) : manager.close(session)
     let active = this.active.get(session.nativeSessionId)
     if (active?.operation === 'attach' && active.guard.signal.aborted && !isLeaseLost(active.guard.signal.reason)) {
       await this.coordination.assertLaneLease(active.fence.id, active.fence.token)
       active.observedStatus = 'disconnected'
-      return this.manager.close(session)
+      return close(this.manager)
     }
     if (active?.guard.signal.aborted && !isLeaseLost(active.guard.signal.reason)) {
       await active.finished
@@ -404,13 +406,16 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     if (active) {
       await active.guard.check()
       active.observedStatus = 'disconnected'
-      return this.manager.close(session)
+      return close(this.manager)
     }
     return this.withLane(session, `close-${randomUUID()}`, undefined, async (manager, lease) => {
       lease.observedStatus = lease.previous.observedStatus === 'idle' ? 'idle' : 'disconnected'
-      await manager.close(session)
+      await close(manager)
     })
   }
+
+  close(session: NativeSessionReference): Promise<void> { return this.closeOwned(session, false) }
+  closeForRestart(session: NativeSessionReference): Promise<void> { return this.closeOwned(session, true) }
 }
 
 async function waitForSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {

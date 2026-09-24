@@ -35,7 +35,7 @@ function fixture(reviewer = false) {
   const state = { terminal: false, stopped: false, finalized: reviewer, outstanding: false, owned: true,
     failBegin: false, failCloseWrite: false, loseCommitReply: false, failNativeClose: false, loseAtFinalFence: false,
     finalizationWrites: 0, revocations: 0, retirementCalls: 0, closeWrites: 0, beginCalls: 0,
-    preflightCalls: 0, closes: 0, attaches: 0, cancels: 0, creates: 0, turns: 0, reads: 0,
+    preflightCalls: 0, closes: 0, restartCloses: 0, attaches: 0, cancels: 0, creates: 0, turns: 0, reads: 0,
     recoveryCalls: 0, resolutions: 0, budgetStops: 0, interactionCancels: 0 }
   let rows: Row[] = []
   let before: Row[] | undefined
@@ -111,12 +111,20 @@ function fixture(reviewer = false) {
   }, revokeForExecution: async () => { state.revocations++ } } as unknown as ExecutionCredentialProvider
   const cold = () => {
     let resident = false
-    const manager = { harness: 'codex', attachSession: async (reference: NativeSessionReference) => {
-      assert.deepEqual(reference, session); state.attaches++; return reference
-    }, close: async (reference: NativeSessionReference) => {
+    let restartClosed = false
+    const close = async (reference: NativeSessionReference) => {
       assert.deepEqual(reference, session); state.closes++; await beforeClose()
       if (state.failNativeClose) throw new Error('Synthetic uncertain native close')
-    }, cancel: async () => { state.cancels++; return true },
+    }
+    const manager = { harness: 'codex', attachSession: async (reference: NativeSessionReference) => {
+      assert.deepEqual(reference, session); state.attaches++; return reference
+    }, close, closeForRestart: async (reference: NativeSessionReference) => {
+      state.restartCloses++
+      if (restartClosed) return
+      await close(reference)
+      restartClosed = true
+    },
+    cancel: async () => { state.cancels++; return true },
     createSession: async () => { state.creates++; throw new Error('Replacement creation forbidden') },
     startTurn: () => { state.turns++; throw new Error('Turn replay forbidden') },
     history: async () => ({ events: [], pendingInteractions: [] }), reconcile: async () => ({ events: [], pendingInteractions: [] }),
@@ -292,6 +300,7 @@ for (const reviewer of [false, true]) it(`BE-001 graceful restart: ${reviewer ? 
   assert.equal(f.state.retirementCalls, 0)
   assert.equal(f.state.finalizationWrites, 0)
   assert.equal(f.state.cancels, 0)
+  assert.equal(f.state.restartCloses, 1)
   assert.equal(f.state.creates, 0); assert.equal(f.state.turns, 0)
   // The retired coordinator must not admit another lifetime.
   await assert.rejects(first.coordinator.attachOwnedSession(f.context(), f.session), /shutting down/)
@@ -305,6 +314,7 @@ for (const reviewer of [false, true]) it(`BE-001 graceful restart: ${reviewer ? 
   assert.ok(f.rows().every((row) => row.closed))
   assert.equal((await fresh.store.read(f.execution()))?.durableGeneration, '2')
   assert.equal(f.state.closes, 2); assert.equal(f.state.attaches, 2)
+  assert.equal(f.state.restartCloses, 2)
   assert.equal(f.state.revocations, 0); assert.equal(f.state.cancels, 0)
 })
 
@@ -350,7 +360,18 @@ it('BE-001 graceful restart: receipt write failure cannot become shutdown succes
   f.state.failCloseWrite = false
   await first.coordinator.closeForRestart()
   assert.equal(f.rows()[0]!.closed, true)
-  assert.equal(f.state.closes, 2); assert.equal(f.state.beginCalls, 1)
+  assert.equal(f.state.closes, 1); assert.equal(f.state.restartCloses, 2); assert.equal(f.state.beginCalls, 1)
+})
+
+it('BE-001 graceful restart: lost receipt COMMIT reply retries persistence without another native close', async () => {
+  const f = fixture(), first = f.cold()
+  await first.coordinator.attachOwnedSession(f.context(), f.session)
+  f.state.loseCommitReply = true
+  await assert.rejects(first.coordinator.closeForRestart(), AggregateError)
+  assert.equal(f.rows()[0]!.closed, true)
+  await first.coordinator.closeForRestart()
+  assert.equal((await first.store.read(f.execution()))?.durableGeneration, '1')
+  assert.equal(f.state.closes, 1); assert.equal(f.state.restartCloses, 2); assert.equal(f.state.closeWrites, 1)
 })
 
 it('BE-001 graceful restart: a genuinely unclosed predecessor is not closed by a later matching-session attachment', async () => {

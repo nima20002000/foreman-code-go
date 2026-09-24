@@ -133,12 +133,13 @@ export class ApprovalExecutionCoordinator {
   /** Persist only the exact manager's confirmed close, for Stop AND ordinary
    * runtime disposal. This does not cancel the Run, stop its budget, retire its
    * approval, revoke execution authority or finalize its workflow lifetime. */
-  private async closeWorkflowSession(owned: OwnedNativeSession): Promise<void> {
+  private async closeWorkflowSession(owned: OwnedNativeSession, restart = false): Promise<void> {
     const session = owned.session
     if (!session) throw new DomainError('NATIVE_WORKFLOW_CLOSURE_CONFLICT',
       'The native connection is not ready for an exact close receipt.', 409)
     const generation = owned.generation
-    await owned.manager.close(session)
+    if (restart) await owned.manager.closeForRestart(session)
+    else await owned.manager.close(session)
     // Persist the same positive close that formerly survived only in RAM.
     // Registration precedes native preflight/spawn; no cold resolver or
     // terminal business state can create this receipt.
@@ -555,7 +556,7 @@ export class ApprovalExecutionCoordinator {
           await owned.opening
           if (this.ownedSessions.get(owned.execution.id) !== owned) return
           if (this.closedExecutions.has(owned.execution.id)) return
-          await this.closeWorkflowSession(owned)
+          await this.closeWorkflowSession(owned, true)
         })
         return failures.map((error) => safe.error(error) as Error)
       }))

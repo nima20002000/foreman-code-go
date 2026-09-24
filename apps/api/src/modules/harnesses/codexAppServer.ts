@@ -664,6 +664,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     })
   }
 
+  closeForRestart(session: NativeSessionReference): Promise<void> { return this.close(session) }
+
   async inspectMcp(signal?: AbortSignal): Promise<McpDetection> {
     const checkedAt = new Date().toISOString()
     try {

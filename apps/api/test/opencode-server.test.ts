@@ -216,6 +216,21 @@ it('[F09] observer abort keeps native ownership and conflicting same-correlation
   await native.cancel(session)
 })
 
+it('[F09] restart detaches an unresolved turn without canceling or approving it', async () => {
+  const server = new FixtureServer()
+  const native = manager(server)
+  const session = await sessionFor(native)
+  const iterator = native.startTurn(session, { prompt: 'hello', clientCorrelationId: 'restart-wait' })[Symbol.asyncIterator]()
+  assert.equal((await iterator.next()).done, false)
+  await iterator.return?.()
+  await assert.rejects(native.close(session), errorCode('OPENCODE_SESSION_BUSY'))
+  await native.closeForRestart(session)
+  await native.closeForRestart(session)
+  assert.equal(server.calls.filter((call) => call.path.includes('/abort')).length, 0)
+  assert.equal(server.calls.filter((call) => call.path.includes('/permission/') && call.path.endsWith('/reply')).length, 0)
+  assert.equal(server.disposals, 1)
+})
+
 it('[F09] explicit re-observation of a completed persisted turn never submits another prompt', async () => {
   const server = new FixtureServer()
   const native = manager(server)
