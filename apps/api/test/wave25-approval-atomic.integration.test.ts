@@ -56,6 +56,12 @@ async function settle(f: Fixture) {
   await f.repository.coordination.transitionReviewJob(f.job.id, 'review-owner-token', 'completed', {
     writerFence: { id: `lane-${f.reviewer.id}`, token: 'native-writer-token' } })
 }
+async function completeRun(f: Fixture) {
+  const terminal = { ...f.run, executionState: 'completed' as const, outcome: 'succeeded' as const,
+    result: { outcome: 'succeeded' as const, output: {} }, finishedAt: new Date().toISOString() }
+  await f.pool.query('update runs set execution_state=$2,record=$3::jsonb where id=$1',
+    [f.run.id, terminal.executionState, JSON.stringify(terminal)])
+}
 
 describe('A4 actual G1/PostgreSQL approval transactions', () => {
   it('concurrent exact decisions produce one effect, one mutation and one replay', async () => {
@@ -135,6 +141,74 @@ describe('A4 actual G1/PostgreSQL approval transactions', () => {
     expect(again.mode).toBe('reconcile'); expect(again.attempt).toBe(first.attempt)
     await expect(f.repository.delivery.finish(again, async () => ({ state: 'delivered', evidence: deliveryFixture().proof }))).rejects.toBeDefined()
     expect((await f.pool.query("select * from run_graph_effects where run_id=$1 and effect_kind='approval.deliver'", [f.run.id])).rowCount).toBe(1)
+  })
+  it('reconciles a terminal Run from the exact retained Codex command execution without another write', async () => {
+    const f = await setup(); await decision(f); await settle(f)
+    const decided = (await f.repository.get(f.interaction.id))!
+    const interaction = { ...decided, request: { kind: 'command', itemId: 'command-item', turnId: 'turn-worker',
+      threadId: decided.nativeSessionId, command: '/bin/bash -lc pwd', cwd: '/workspace' } }
+    const connectionId = 'codex-approval-connection'
+    await f.pool.query(`insert into run_native_correlations(run_id,execution_id,workflow_node_id,attempt,work_kind,work_id,
+      correlation_key,provider,native_session_id,connection_id,connection_generation,native_turn_id,native_request_id,
+      interaction_id,first_native_sequence,last_native_sequence,metadata_revision)
+      values($1,$2,$3,1,'workflow',$2,$4,'codex',$5,$6,0,$7,$8,$9,1,4,0)`,
+    [f.run.id, f.requester.id, f.requester.workflowNodeId, `approval:${interaction.id}`,
+      interaction.nativeSessionId, connectionId, 'turn-worker', interaction.nativeRequestId, interaction.id])
+    const events = [
+      ['interaction.pending', { nativeRequestId: interaction.nativeRequestId,
+        nativeRequestType: interaction.nativeRequestType, turnId: 'turn-worker' }],
+      ['interaction.submitted', { nativeRequestId: interaction.nativeRequestId,
+        optionId: interaction.selectedOptionId, semantic: interaction.selectedSemantic }],
+      ['interaction.resolved', { nativeRequestId: interaction.nativeRequestId,
+        submittedOptionId: interaction.selectedOptionId, evidence: 'serverRequest/resolved' }],
+      ['item.completed', { threadId: interaction.nativeSessionId, turnId: 'turn-worker', item: {
+        id: 'command-item', type: 'commandExecution', status: 'completed', command: '/bin/bash -lc pwd',
+        cwd: '/workspace', exitCode: 0, aggregatedOutput: '/workspace\n' } }],
+    ] as const
+    for (const [index, [type, payload]] of events.entries()) {
+      const sequence = index + 1
+      await f.pool.query(`insert into harness_native_events(execution_id,sequence,record,connection_id,source_sequence)
+        values($1,$2,$3::jsonb,$4,$2)`, [f.requester.id, sequence, JSON.stringify({
+        executionId: f.requester.id, sequence, connectionId, type, payload, occurredAt: f.run.createdAt,
+      }), connectionId])
+    }
+    const first = (await f.repository.delivery.claim(interaction.id, 'delivery-owner'))!
+    expect((await f.repository.delivery.finish(first, async () => ({ state: 'delivered' }))).deliveryState).toBe('uncertain')
+    await f.pool.query("update native_session_lanes set record=jsonb_set(record,'{connectionGeneration}','1'::jsonb) where owner_agent_id=$1",
+      [f.requester.agentId])
+    await completeRun(f)
+    const reconcile = (await f.repository.delivery.claim(interaction.id, 'reconcile-owner'))!
+    expect(reconcile.mode).toBe('reconcile')
+    const proof = await f.repository.delivery.persistedResponseEvidence(interaction)
+    expect(proof).toMatchObject({ source: 'provider_history', nativeRequestId: interaction.nativeRequestId,
+      optionId: interaction.selectedOptionId, semantic: interaction.selectedSemantic })
+    const delivered = await f.repository.delivery.finish(reconcile, { state: 'delivered', evidence: proof! })
+    expect(delivered.deliveryState).toBe('delivered')
+  })
+  it('does not reconcile a terminal Run after a definite pre-write failure', async () => {
+    const f = await setup(); await decision(f); await settle(f)
+    const claim = (await f.repository.delivery.claim(f.interaction.id, 'preflight-owner'))!
+    const failed = await f.repository.delivery.finish(claim, { state: 'failed', error: 'APPROVAL_NATIVE_QUALIFICATION_FAILED' })
+    expect(failed.deliveryState).toBe('failed')
+    const attempt = (await f.pool.query('select approval_write_started_at from interaction_delivery_attempts where interaction_id=$1',
+      [f.interaction.id])).rows[0]
+    expect(attempt.approval_write_started_at).toBeNull()
+    await completeRun(f)
+    expect(await f.repository.delivery.claim(f.interaction.id, 'terminal-owner')).toBeUndefined()
+  })
+  it('does not manufacture a terminal reconciliation attempt when the attempt record is missing', async () => {
+    const f = await setup(); await decision(f); await settle(f)
+    const current = (await f.repository.get(f.interaction.id))!
+    await transact(f.pool, f.run.id, async (publication) => {
+      const context = await readContext(publication.sql, current)
+      const next = nextInteraction(current, { status: 'delivery_pending', deliveryState: 'uncertain' })
+      await publication.source({ evidence: { sourceKind: 'interaction', sourceId: next.id, sourceRevision: String(next.revision) },
+        sourceDigest: graphSourceDigest(next), facts: [interactionFact(context, next)] },
+      (sql) => writeInteraction(sql, current, next))
+    })
+    expect((await f.pool.query('select * from interaction_delivery_attempts where interaction_id=$1', [f.interaction.id])).rowCount).toBe(0)
+    await completeRun(f)
+    expect(await f.repository.delivery.claim(f.interaction.id, 'terminal-owner')).toBeUndefined()
   })
   it('a changed generation fences old decisions and native delivery owners', async () => {
     const f = await setup()

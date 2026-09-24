@@ -34,6 +34,64 @@ export interface NativeResponseDeliveryEvidence {
   semantic: NonNullable<DurableInteraction['selectedSemantic']>
 }
 
+function object(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : undefined
+}
+
+/** Codex 0.154 has no response ACK, but its retained history can prove that the
+ * exact locally submitted permission response was consumed: the provider resolves
+ * that request and then executes the same gated command item on the same turn and
+ * connection. Resolution or command completion alone is deliberately insufficient. */
+function matchingCodexCommandExecution(
+  interaction: DurableInteraction,
+  session: NativeSessionReference,
+  history: NativeHistory,
+): NativeResponseDeliveryEvidence | undefined {
+  if (interaction.harness !== 'codex' || interaction.nativeRequestType !== 'item/commandExecution/requestApproval'
+    || !interaction.selectedOptionId || !interaction.selectedSemantic) return undefined
+  if (!['approve_once', 'allow_turn', 'allow_session', 'provider_scoped_allow', 'persistent_policy_change']
+    .includes(interaction.selectedSemantic)) return undefined
+  const request = object(interaction.request)
+  const itemId = request?.itemId, turnId = request?.turnId, threadId = request?.threadId
+  const command = request?.command, cwd = request?.cwd
+  if (typeof itemId !== 'string' || typeof turnId !== 'string' || threadId !== interaction.nativeSessionId
+    || typeof command !== 'string' || typeof cwd !== 'string') return undefined
+  const relevant = history.events.filter((event) => event.connectionId && [
+    'interaction.pending', 'interaction.submitted', 'interaction.resolved', 'item.completed',
+  ].includes(event.type))
+  const submissions = relevant.filter((event) => event.type === 'interaction.submitted'
+    && event.payload.nativeRequestId === interaction.nativeRequestId)
+  if (!submissions.length || submissions.some((event) => event.payload.optionId !== interaction.selectedOptionId
+    || event.payload.semantic !== interaction.selectedSemantic)) return undefined
+  for (const submitted of submissions) {
+    const pending = relevant.find((event) => event.connectionId === submitted.connectionId
+      && event.sequence < submitted.sequence && event.type === 'interaction.pending'
+      && event.payload.nativeRequestId === interaction.nativeRequestId
+      && event.payload.nativeRequestType === interaction.nativeRequestType && event.payload.turnId === turnId)
+    const resolved = relevant.find((event) => event.connectionId === submitted.connectionId
+      && event.sequence > submitted.sequence && event.type === 'interaction.resolved'
+      && event.payload.nativeRequestId === interaction.nativeRequestId
+      && event.payload.submittedOptionId === interaction.selectedOptionId
+      && event.payload.evidence === 'serverRequest/resolved')
+    if (!pending || !resolved) continue
+    const completed = relevant.find((event) => {
+      const payload = event.payload, item = object(payload.item)
+      return event.connectionId === submitted.connectionId && event.sequence > resolved.sequence
+        && event.type === 'item.completed' && payload.threadId === threadId && payload.turnId === turnId
+        && item?.id === itemId && item.type === 'commandExecution' && item.status === 'completed'
+        && item.command === command && item.cwd === cwd && typeof item.exitCode === 'number'
+    })
+    if (completed) return {
+      source: 'provider_history', harness: interaction.harness, providerVersion: interaction.providerVersion,
+      nativeSessionId: session.nativeSessionId, nativeRequestId: interaction.nativeRequestId,
+      nativeRequestType: interaction.nativeRequestType, optionId: interaction.selectedOptionId,
+      semantic: interaction.selectedSemantic,
+    }
+  }
+  return undefined
+}
+
 export function matchingDeliveryEvidence(
   interaction: DurableInteraction,
   session: NativeSessionReference,
@@ -55,10 +113,11 @@ export function matchingDeliveryEvidence(
     && proof.nativeSessionId === interaction.nativeSessionId && proof.nativeRequestId === interaction.nativeRequestId)
   if (sameRequest.some((proof) => proof.nativeRequestType !== interaction.nativeRequestType
     || proof.optionId !== interaction.selectedOptionId || proof.semantic !== interaction.selectedSemantic)) return undefined
-  return sameRequest.find((proof) =>
+  const explicit = sameRequest.find((proof) =>
     (proof.source === 'provider_acknowledgement' || proof.source === 'provider_history')
     && proof.harness === interaction.harness && proof.providerVersion === interaction.providerVersion
     && proof.nativeSessionId === interaction.nativeSessionId && proof.nativeRequestId === interaction.nativeRequestId
     && proof.nativeRequestType === interaction.nativeRequestType
     && proof.optionId === interaction.selectedOptionId && proof.semantic === interaction.selectedSemantic)
+  return explicit ?? matchingCodexCommandExecution(interaction, session, history)
 }

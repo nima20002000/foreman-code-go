@@ -36,7 +36,10 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
   if (claim.mode === 'reconcile') {
     let result: NativeDeliveryOutcome = { state: 'uncertain' }
     try {
-      const cached = deps.journal?.read(expectedSession, { nativeRequestId: current.nativeRequestId, nativeRequestType: current.nativeRequestType, option })
+      const persisted = await deps.repository.delivery.persistedResponseEvidence(current)
+      const cached = persisted ?? deps.journal?.read(expectedSession, {
+        nativeRequestId: current.nativeRequestId, nativeRequestType: current.nativeRequestType, option,
+      })
       if (cached) result = { state: 'delivered', evidence: cached }
       else {
         const attached = await deps.nativeRuntime.attachInteraction(current, signal)
