@@ -5,10 +5,11 @@ import { AgentSchema, DEFAULT_HARNESS_DEFAULTS, type WorkflowDefinition, type Wo
 import type { GraphDraft } from '@graphql/contracts/management'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { ApiError } from '../../shared/api/client'
+import { identityEpochKey } from '../../shared/api/protectedChatStorage'
 import { queryKeys } from '../../shared/api/query'
 import { GraphEditor } from './GraphEditor'
 import { captureManagedBase } from './managedGraphState'
-import { managedSaveQueue } from './managedSave'
+import { managedLayoutQueueKey, managedSaveQueue } from './managedSave'
 import { getGraphDraft, useGraphDraftStore, workflowDraftKey } from './store'
 import type { GraphEdge, GraphNode } from './types'
 
@@ -87,7 +88,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup(); client.clear(); managedSaveQueue.reset(); useGraphDraftStore.getState().clearAllDrafts()
-  vi.unstubAllGlobals(); sessionStorage.clear()
+  vi.unstubAllGlobals(); localStorage.clear(); sessionStorage.clear()
 })
 
 it('T2 persists movement during a Run without executable controls or draft revision changes', async () => {
@@ -120,6 +121,25 @@ it('T2 replays an uncertain layout command with the same ID after remount', asyn
   await waitFor(() => expect(mocks.layout).toHaveBeenCalledTimes(2))
   expect(mocks.layout.mock.calls[1]![0]).toEqual(first)
   await waitFor(() => expect(contextDraft().graph.nodes[0]?.position).toEqual({ x: 260, y: 280 }))
+})
+
+it('T2 refuses an uncertain layout command after a cross-tab identity rotation and reload', async () => {
+  localStorage.setItem(identityEpochKey, 'identity-a')
+  mocks.layout.mockRejectedValueOnce(new Error('Connection lost'))
+  const view = mount()
+  move(260, 280)
+  await waitFor(() => expect(screen.getByText(/Node layout could not be saved/)).toBeVisible())
+  const oldQueueKey = managedLayoutQueueKey(key, draft.id)
+  expect(sessionStorage.getItem(oldQueueKey)).not.toBeNull()
+
+  view.unmount()
+  localStorage.setItem(identityEpochKey, 'identity-b')
+  mount()
+  await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+  expect(mocks.layout).toHaveBeenCalledOnce()
+  expect(sessionStorage.getItem(oldQueueKey)).not.toBeNull()
+  expect(sessionStorage.getItem(managedLayoutQueueKey(key, draft.id))).toBeNull()
 })
 
 it('T2 keeps a conflicted move visible and uses a fresh command after a later explicit move', async () => {

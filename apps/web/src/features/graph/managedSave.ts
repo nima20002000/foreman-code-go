@@ -1,5 +1,6 @@
 import type { GraphDraft, GraphDraftOperation } from '@graphql/contracts/management'
 import type { applyManagedGraphDraft, revertManagedGraphApply, saveManagedGraphDraft } from '../../shared/api/client'
+import { identityEpoch } from '../../shared/api/protectedChatStorage'
 import type { GraphSaveSnapshot } from './store'
 import { captureManagedBase, type ManagedEditBase } from './managedGraphState'
 
@@ -12,7 +13,7 @@ export interface PendingManagedLayout {
 }
 const LAYOUT_QUEUE_PREFIX = 'graphql:managed-layout:'
 export function managedLayoutQueueKey(workflowKey: string, draftId: string): string {
-  return `${LAYOUT_QUEUE_PREFIX}${workflowKey}:${draftId}`
+  return `${LAYOUT_QUEUE_PREFIX}${identityEpoch()}:${workflowKey}:${draftId}`
 }
 export function readManagedLayoutQueue(key: string): PendingManagedLayout[] {
   try {
