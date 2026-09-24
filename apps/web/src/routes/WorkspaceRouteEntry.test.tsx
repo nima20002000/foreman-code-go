@@ -153,4 +153,28 @@ describe('WorkspaceRouteEntry integration', () => {
     missing.unmount()
   })
 
+  it.each([403, 404])('stops automatic polling after a terminal %s while keeping manual retry', async (status) => {
+    let requests = 0
+    server.use(http.get('/api/workspaces/stale-workspace', () => {
+      requests += 1
+      return HttpResponse.json({
+        error: {
+          code: status === 404 ? 'WORKSPACE_NOT_FOUND' : 'ACCESS_DENIED',
+          message: status === 404 ? 'Workspace not found.' : 'Access denied.',
+        },
+      }, { status })
+    }))
+
+    const stale = renderWorkspace('/workspaces/stale-workspace')
+    const retry = await screen.findByRole('button', { name: 'Retry workspace request' })
+    expect(requests).toBe(1)
+
+    await new Promise((resolve) => setTimeout(resolve, 1_200))
+    expect(requests).toBe(1)
+
+    fireEvent.click(retry)
+    await waitFor(() => expect(requests).toBe(2))
+    stale.unmount()
+  })
+
 })
