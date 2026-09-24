@@ -1,12 +1,12 @@
 /* One canvas, with compact contextual controls. Uses the existing workspace theme. */
 .unified-workflow-board { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; height: 100%; overflow: hidden; }
 .workflow-board-authoring { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
-.workflow-board-context { position: absolute; z-index: 5; left: 1.25rem; bottom: 4rem; width: min(20rem, calc(100% - 2.5rem)); max-height: calc(100% - 10rem); overflow: auto; border: 1px solid var(--color-border-strong); border-radius: 3px; background: var(--color-surface-raised); box-shadow: 0 .375rem 1.25rem rgb(0 0 0 / 18%); color: var(--color-text); }
+.workflow-board-context { position: absolute; z-index: 5; left: 1.25rem; bottom: 4rem; width: min(20rem, calc(100% - 2.5rem)); max-height: calc(100% - 10rem); overflow: auto; border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm); background: var(--color-surface-raised); box-shadow: var(--shadow-popover); color: var(--color-text); }
 .workflow-board-run-panel { padding: .9rem; min-height: 12rem; overflow-wrap: anywhere; }
-.workflow-board-run-panel h2 { margin: 0 0 .5rem; font-size: .95rem; }
-.workflow-board-run-panel p, .workflow-board-location p { font-size: .78rem; line-height: 1.5; }
-.board-run-picker summary, .workflow-board-location summary, .board-history summary { cursor: pointer; padding: .5rem 0; font-size: .8rem; }
-.board-run-options { display: grid; gap: .4rem; margin-top: .5rem; }
+.workflow-board-run-panel h2 { margin: 0 0 .5rem; font-size: 15px; }
+.workflow-board-run-panel p, .workflow-board-location p { font-size: 12px; line-height: 1.5; }
+.board-run-picker summary, .workflow-board-location summary, .board-history summary { cursor: pointer; padding: .5rem 0; font-size: 13px; }
+.board-run-options { display: grid; gap: var(--space-2); margin-top: .5rem; }
 .board-run-options button { text-align: left; overflow-wrap: anywhere; }
 .board-run-options button[aria-pressed=true] { outline: 2px solid var(--color-focus); }
 .board-run-pin { color: var(--color-text-muted); }
@@ -14,7 +14,7 @@
 .workflow-board-location .workspace-location-form { max-width: 100%; }
 .workflow-board-run-panel .board-run-facts { display: block; min-height: 0; padding: 0; overflow: visible; background: transparent; }
 .board-run-facts .run-graph-header { display: block; padding: .5rem 0; }
-.board-run-facts .run-graph-header h2 { font-size: .85rem; }
+.board-run-facts .run-graph-header h2 { font-size: 13px; }
 .board-run-facts .run-graph-body { display: block; min-height: 0; }
 .board-run-facts .run-graph-inspector, .board-run-facts .run-graph-attention-tools { display: block; width: auto; max-height: none; min-width: 0; overflow: visible; padding: .5rem 0; border: 0; }
 .board-run-facts .run-graph-field { max-width: 100%; width: 100%; margin-bottom: var(--space-2); }
@@ -25,19 +25,19 @@
 .board-typed-editor { height: 100%; min-height: 20rem; }
 .board-typed-editor .workflow-graph-canvas { position: relative; flex: 1; min-height: 0; height: 100%; }
 .board-typed-editor .board-draft-canvas { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; border: 0; }
-.board-draft-caption { position: absolute; z-index: 3; top: 4.5rem; left: 2rem; display: grid; max-width: min(28rem, calc(100% - 4rem)); gap: .25rem; pointer-events: none; }
-.board-draft-caption span { color: var(--color-text-muted); font-size: .76rem; }
+.board-draft-caption { position: absolute; z-index: 3; top: 4.5rem; left: 2rem; display: grid; max-width: min(28rem, calc(100% - 4rem)); gap: var(--space-1); pointer-events: none; }
+.board-draft-caption span { color: var(--color-text-muted); font-size: 12px; }
 .board-draft-caption button { pointer-events: auto; justify-self: start; }
-.board-draft-node { height: 100%; min-width: 200px; background: var(--color-surface-raised); border-radius: 3px; }
-.board-run-badge { display: block; font-size: .68rem; padding: .35rem .6rem; color: var(--color-text-muted); border-top: 1px solid var(--color-border); }
-.board-authoring-inspector { position: absolute; z-index: 7; right: 1.25rem; top: 5rem; bottom: 3.25rem; width: min(25rem, calc(100% - 2.5rem)); overflow: auto; padding: .75rem; background: var(--color-surface-raised); border: 1px solid var(--color-border-strong); border-radius: 3px; box-shadow: 0 .375rem 1.25rem rgb(0 0 0 / 18%); }
+.board-draft-node { height: 100%; min-width: 200px; background: var(--color-surface-raised); border-radius: var(--radius-sm); }
+.board-run-badge { display: block; font-size: 11px; padding: .35rem .6rem; color: var(--color-text-muted); border-top: 1px solid var(--color-border); }
+.board-authoring-inspector { position: absolute; z-index: 7; right: 1.25rem; top: 5rem; bottom: 3.25rem; width: min(25rem, calc(100% - 2.5rem)); overflow: auto; padding: .75rem; background: var(--color-surface-raised); border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm); box-shadow: var(--shadow-popover); }
 .board-authoring-inspector > fieldset { padding: 0; border: 0; min-width: 0; }
 .board-authoring-inspector .agent-settings-panel { position: static; width: 100%; max-height: none; min-width: 0; }
 .board-authoring-inspector .next-draft-section { margin-top: .75rem; }
-.board-draft-notices { flex: 0 0 auto; max-height: 10rem; overflow: auto; font-size: .8rem; }
+.board-draft-notices { flex: 0 0 auto; max-height: 10rem; overflow: auto; font-size: 13px; }
 .board-draft-notices > p, .board-draft-notices > div { padding: .5rem .75rem; background: var(--color-surface-raised); border: 1px solid var(--color-border); pointer-events: auto; }
 .board-draft-notices:empty { display: none; }
-.board-accessible-selection { position: absolute; z-index: 4; bottom: .6rem; left: 4rem; max-width: calc(100% - 16rem); font-size: .75rem; background: var(--color-surface-raised); }
+.board-accessible-selection { position: absolute; z-index: 4; bottom: .6rem; left: 4rem; max-width: calc(100% - 16rem); font-size: 12px; background: var(--color-surface-raised); }
 .board-accessible-selection details[open] { padding: .5rem; max-height: 15rem; overflow: auto; border: 1px solid var(--color-border-strong); }
 .board-accessible-selection button { display: block; margin: .3rem 0; text-align: left; }
 @media (max-width: 900px) {

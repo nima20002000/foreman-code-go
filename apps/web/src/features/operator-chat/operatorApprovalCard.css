@@ -1,14 +1,14 @@
 .operator-approval-choice {
   display: grid;
   align-content: start;
-  gap: .375rem;
+  gap: var(--space-1);
   flex: 1 1 13rem;
   min-width: 0;
 }
 
 .operator-approval-scope {
   margin: 0;
-  font-size: .8rem;
+  font-size: 13px;
   line-height: 1.45;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -20,6 +20,6 @@
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: .8rem;
+  font-size: 13px;
   line-height: 1.45;
 }
