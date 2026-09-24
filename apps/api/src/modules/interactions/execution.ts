@@ -686,8 +686,9 @@ export class ApprovalExecutionCoordinator {
   }
 
   /**
-   * A terminal execution can be recovered without claiming that an ambiguous
-   * approval was delivered. Only the exact durable execution correlation counts.
+   * Terminal history must not bypass a selected approval's delivery checkpoint.
+   * Unconfirmed delivery stays on that checkpoint; the delivery reconciler owns
+   * its exact receipt, then the normal resume path qualifies native continuation.
    * No prompt/response is sent and the interaction's delivery ledger is untouched.
    */
   async recoverTerminalInteraction(interaction: DurableInteraction, owner: RunOwnership, signal: AbortSignal): Promise<boolean> {
@@ -695,7 +696,8 @@ export class ApprovalExecutionCoordinator {
     let safe = nativePersistenceRedactor(Object.values(resident
       ? this.managerCredentials.get(resident.manager)?.environment.variables ?? {} : {}))
     try {
-      if (!interaction.selectedOptionId || !['submitted', 'uncertain'].includes(interaction.deliveryState)) return false
+      if (!interaction.selectedOptionId || interaction.status !== 'delivered'
+        || interaction.deliveryState !== 'delivered') return false
       signal.throwIfAborted()
       owner.assertOwned()
       const execution = await this.runs.getExecution(interaction.executionId, owner)
@@ -727,7 +729,7 @@ export class ApprovalExecutionCoordinator {
       owner.assertOwned()
       await this.runs.recordActivity(execution.runId, 'backend', 'harness_output', {
         executionTerminalRecovered: true, nativeTurnId: terminal.providerId,
-        interactionId: interaction.id, approvalDeliveryUnconfirmed: true,
+        interactionId: interaction.id, approvalDeliveryUnconfirmed: false,
       }, execution.id, owner.client)
       return true
     } catch (error) { throw safe.error(error) }
@@ -1134,10 +1136,12 @@ export class ApprovalExecutionCoordinator {
         if (waiting) return waiting
         if (history.terminalTurn?.correlationId === `execution:${execution.id}`) {
           const result = redactKnownSecrets(history.terminalTurn.result, knownSecrets)
-          execution = HarnessExecutionSchema.parse({
+          const completed = HarnessExecutionSchema.parse({
             ...execution, state: 'completed', result, finishedAt: new Date().toISOString(),
           })
-          await this.runs.updateExecution(execution, input.owner)
+          await this.runs.updateExecution(completed, input.owner)
+          // A rejected settlement gate has not made this execution terminal.
+          execution = completed
           const failures: unknown[] = []
           try { await this.budgets.finish(execution.id, execution.finishedAt) }
           catch (error) { failures.push(error) }
@@ -1162,6 +1166,19 @@ export class ApprovalExecutionCoordinator {
       if (credential) knownSecrets.push(...Object.values(credential.environment.variables))
       const error = safeError(signal.aborted && signal.reason instanceof DomainError
         && signal.reason.code === 'WORKER_CREDENTIAL_EXPIRING' ? signal.reason : rawError)
+      if (error instanceof DomainError && error.code === 'APPROVAL_SETTLEMENT_PENDING' && !signal.aborted) {
+        input.owner.assertOwned()
+        // Waiting for durable proof is not active model time or a reason to
+        // close the requester/credential needed by the exact delivery retry.
+        try { await this.budgets.beginWait(execution.id) }
+        catch {
+          input.owner.assertOwned()
+          throw new DomainError('APPROVAL_SETTLEMENT_PENDING',
+            'Exact approval settlement is pending and its budget pause could not be confirmed. Reconcile the same execution; no native work was replayed.', 409)
+        }
+        input.owner.assertOwned()
+        throw error
+      }
       if ((resolved && !manager) || isLeaseLost(rawError)
         || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw error
       if (execution.state === 'completed' && (!ownedSession || this.closedExecutions.has(execution.id))) throw error

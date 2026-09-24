@@ -11,6 +11,7 @@ import { publicNodeLifecycle } from '../run-graph/publicLifecycle.js'
 import { readPublicNodeProjection, publicNodeProjectionDelta, publicRunClosedFacts } from '../run-graph/publicProjection.js'
 import { publicAttentionTotals, readPublicAttentionCounts } from '../run-graph/currentAttention.js'
 import { DomainError } from '../errors.js'
+import { assertApprovalTerminalSettlement } from '../interactions/wave25/resume.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import {
@@ -254,6 +255,7 @@ export class OneShotRunRepository {
         return prior
       }
       if (context.stopped || context.run.executionState === 'interrupted') return conflict('GRAPH_STOP_CONFLICT', 'Stopped or interrupted work cannot accept a new result.')
+      await assertApprovalTerminalSettlement(context.sql, context.run.id, executionId)
       const execution = normalizeOneShotTerminal(context.version, row.execution)
       if (row.accepted && graphSourceDigest(execution) !== graphSourceDigest(row.execution)) {
         return conflict('EXECUTION_ACCEPTED_RESULT_CONFLICT', 'An already accepted result cannot be rewritten to repair history.')
@@ -462,6 +464,9 @@ export class OneShotRunRepository {
         }
       }
       if (next.result?.outcome === 'succeeded' && !next.nativeSessionId) conflict('NATIVE_TERMINAL_EVIDENCE_MISSING', 'Success requires the exact native session.')
+      // Keep the requester open for delayed delivery/checkpoint/ack recovery.
+      // A terminal provider result is not proof of any of those obligations.
+      if (next.state === 'completed') await assertApprovalTerminalSettlement(context.sql, context.run.id, next.id)
       next = normalizeOneShotTerminal(context.version, next)
       if (canonicalGraphJson(previous) === canonicalGraphJson(next)) return
       // Lifecycle, activity and telemetry change atomically with the execution.
@@ -543,7 +548,10 @@ export class OneShotRunRepository {
       const next = WorkflowRunV2Schema.parse({ ...context.run, ...update,
         ...(context.run.startedAt ? { startedAt: context.run.startedAt } : {}) })
       if (canonicalGraphJson(next) === canonicalGraphJson(context.run)) return
-      if (update.outcome === 'succeeded') this.terminalResults(context)
+      if (update.outcome === 'succeeded') {
+        this.terminalResults(context)
+        await assertApprovalTerminalSettlement(context.sql, context.run.id)
+      }
       const state = await readOneShotRunState(context.sql, context.run.id, next, context.stopped)
       const closedFacts = ['completed', 'interrupted'].includes(next.executionState)
         ? await publicRunClosedFacts(context.sql, context.scope) : []
@@ -581,6 +589,7 @@ export class OneShotRunRepository {
       }
       this.assertActive(context)
       const outputs = this.terminalResults(context)
+      await assertApprovalTerminalSettlement(context.sql, context.run.id)
       const result: ExecutionResult = { outcome: 'succeeded', output: outputs.length === 1 ? outputs[0]!.result as ExecutionResult['output'] : { outputs } as ExecutionResult['output'] }
       const next = WorkflowRunV2Schema.parse({ ...context.run, executionState: 'completed', outcome: 'succeeded', result, finishedAt: new Date().toISOString() })
       try { canonicalGraphJson(next, RUN_GRAPH_LIMITS.transactionBytes) } catch {

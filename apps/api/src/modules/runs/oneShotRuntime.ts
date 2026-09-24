@@ -106,6 +106,9 @@ export function oneShotExecutionDriver(context: OneShotRuntimeContext): OneShotE
       })
     } catch (error) {
       if (isGraphInterrupt(error) || (error instanceof DomainError && ['RUNNER_ADMISSION_FULL', 'SESSION_LANE_BUSY'].includes(error.code))) throw error
+      // This is a recoverable receipt gap, not a failed Worker. In particular
+      // do not create a cleanup intent that cancels its delivered obligation.
+      if (error instanceof DomainError && error.code === 'APPROVAL_SETTLEMENT_PENDING' && !signal.aborted) throw error
       owner.assertOwned() // a lost owner cannot settle a replacement owner's work
       const terminal = await runs.getExecution(execution.id, owner)
       // Native cleanup can throw AFTER a positively evidenced terminal result

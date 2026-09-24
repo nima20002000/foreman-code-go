@@ -1,4 +1,4 @@
-import type { DurableInteraction } from '@graphql/contracts'
+import { DurableInteractionSchema, type DurableInteraction } from '@graphql/contracts'
 import { GraphFactSchema, GraphInteractionSchema, assertNativeGraphProjectionAuthority,
   type GraphEffect, type GraphEvidence, type GraphFact } from '@graphql/contracts/wave25'
 import type pg from 'pg'
@@ -27,6 +27,34 @@ async function consumed(sql: GraphTransactionSql, i: DurableInteraction): Promis
     "select effect_digest from run_graph_effects where run_id=$1 and effect_kind='graph.resume' and entity_id=$2", [i.runId, i.id])).rows[0]
   if (receipt && receipt.effect_digest !== resumeDigest(i)) return fail('GRAPH_EFFECT_CONFLICT')
   return !!receipt
+}
+
+/** Normal terminal publication is downstream of the exact selected approval,
+ * not an alternative way to consume it. Call on the Run owner's transaction
+ * AFTER the parent/head and execution locks. No native I/O or invented ack is
+ * allowed here; the existing native projection writer alone qualifies the ack.
+ * Stop/abnormal negative settlement deliberately does not use this gate.
+ */
+export async function assertApprovalTerminalSettlement(sql: GraphTransactionSql, runId: string,
+  executionId?: string): Promise<void> {
+  const rows = (await sql.query<{ id: string; execution_id: string; record: unknown }>(`select id,execution_id,record
+    from durable_interactions where run_id=$1 and ($2::text is null or execution_id=$2)
+      and record->>'selectedOptionId' is not null order by id limit 1001 for update`, [runId, executionId ?? null])).rows
+  if (rows.length > 1000) return fail('GRAPH_RESUME_LIMIT')
+  for (const stored of rows) {
+    const i = DurableInteractionSchema.parse(stored.record)
+    if (i.id !== stored.id || i.executionId !== stored.execution_id || i.runId !== runId
+      || i.graphThreadId !== runId) return fail('APPROVAL_IDENTITY_MISMATCH')
+    // Acceptance may follow legitimate exact-session cleanup. These durable
+    // receipts are settlement evidence, NOT a fresh native/credential authority.
+    // The caller separately arbitrates Stop under its Run-owner lock.
+    const row = await resumeRow(sql, i.id)
+    if (i.status !== 'delivered' || i.deliveryState !== 'delivered' || !i.graphInterruptId
+      || row?.state !== 'resumed' || !row.approval_native_ack_id || !await consumed(sql, i)) {
+      return fail('APPROVAL_SETTLEMENT_PENDING',
+        'The selected approval still needs exact delivery, checkpoint consumption and native acknowledgement. Native work was not replayed.')
+    }
+  }
 }
 
 /** Lease the existing outbox. Unknown old callbacks are NOT replayed automatically.

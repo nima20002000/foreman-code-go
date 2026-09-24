@@ -19,6 +19,7 @@ import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave2
 import { Wave25InteractionRepository } from '../src/modules/interactions/wave25/repository.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
+import { appendWorkflowNativeGraphEvent } from '../src/modules/runs/workflowNativeGraph.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
 import { resolveExecutionDirectory } from '../src/modules/runs/executionDirectory.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
@@ -337,6 +338,8 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     }, interactions)
     const original = r.native.ensureObserve.bind(r.native)
     let waitingInteractionId = ''
+    const provider = { connectionId: `c-connection-${randomUUID()}`, turnId: `c-turn-${randomUUID()}`,
+      token: `c-writer-${randomUUID()}`, laneId: '' }
     vi.spyOn(r.native, 'ensureObserve').mockImplementation(async (input) => {
       if (input.candidate.workflowNodeId !== first) return original(input)
       const execution = input.candidate
@@ -344,9 +347,12 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
       if (!r.runs.consumeOneShotLaunch(execution.id, input.owner)) throw new Error('Expected first native launch')
       r.starts.push(first)
       const session = { harness: 'codex' as const, providerVersion: 'synthetic-c', nativeSessionId: `native-${execution.id}` }
-      await interactions.coordination.ensureLane({ id: `lane-${execution.id}`, harness: session.harness,
+      const lane = await interactions.coordination.ensureLane({ id: `lane-${execution.id}`, harness: session.harness,
         nativeSessionId: session.nativeSessionId, ownerAgentId: execution.agentId,
         revision: 0, observedStatus: 'busy', connectionGeneration: 0, observedAt: new Date().toISOString() })
+      provider.laneId = lane.id
+      await interactions.coordination.claimLane(lane.id, lane.revision, 'c-fixture-writer', provider.token,
+        new Date(Date.now() + 120_000).toISOString(), `execution:${execution.id}`)
       await interactions.coordination.bindWorkflowSession(execution.id, session)
       const running = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: session.nativeSessionId, state: 'running' })
       await r.runs.updateExecution(running, input.owner)
@@ -357,11 +363,19 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
         executionId: execution.id, requestingAgentId: execution.agentId, providerVersion: session.providerVersion,
         nativeSessionId: session.nativeSessionId,
         nativeRequestId: `request-${execution.id}`, graphThreadId: f.run.id, approval: { handler: 'user' },
+        request: { threadId: session.nativeSessionId, turnId: provider.turnId, itemId: 'c-approval-item' },
         revision: 0, status: 'pending', deliveryState: 'not_started', selectedOptionId: undefined,
         selectedSemantic: undefined, nativeResponse: undefined, decidedAt: undefined,
         createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
       const created = await interactions.create(pending)
       waitingInteractionId = created.interaction.id
+      // Seed actual provider-shaped correlation through the production writer.
+      // Terminal results below must not stand in for a missing native ack.
+      await appendWorkflowNativeGraphEvent(input.owner, { executionId: execution.id,
+        connectionId: provider.connectionId, sequence: 0, type: 'turn.started', occurredAt: new Date().toISOString(),
+        payload: { threadId: session.nativeSessionId, turnId: provider.turnId, turn: { id: provider.turnId, status: 'inProgress' } },
+      }, { id: provider.laneId, token: provider.token, providerId: provider.turnId, live: true },
+      { interaction: created.interaction, nativeTurnId: provider.turnId })
       const waitingExecution = HarnessExecutionSchema.parse({ ...running, state: 'waiting' })
       await r.runs.updateExecution(waitingExecution, input.owner)
       await budget.beginWait(execution.id)
@@ -393,6 +407,17 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
       const current = await interactions.get(pending.id)
       expect(current?.deliveryState).toBe('delivered')
       await budget.resume(input.candidate.id)
+      // The engine already committed graph.resume with the real saver. Only
+      // matching terminal history + delivery evidence can settle the Worker ack.
+      const session = { harness: pending.harness, providerVersion: pending.providerVersion, nativeSessionId: pending.nativeSessionId }
+      await appendWorkflowNativeGraphEvent(input.owner, { executionId: input.candidate.id,
+        connectionId: provider.connectionId, sequence: 1, type: 'turn.completed', occurredAt: new Date().toISOString(),
+        payload: { threadId: pending.nativeSessionId, turnId: provider.turnId, turn: { id: provider.turnId, status: 'completed' } },
+      }, { id: provider.laneId, token: provider.token, providerId: provider.turnId, live: false }, undefined,
+      { session, providerId: provider.turnId, correlationId: `execution:${input.candidate.id}`, responseDeliveries: [{
+        ...session, source: 'provider_acknowledgement', nativeRequestId: current!.nativeRequestId,
+        nativeRequestType: current!.nativeRequestType, optionId: 'approve-once', semantic: 'approve_once',
+      }] })
       const completed = HarnessExecutionSchema.parse({ ...input.candidate, state: 'completed',
         result: { outcome: 'succeeded', output: { approved: true } }, finishedAt: new Date().toISOString() })
       await restarted.runs.updateExecution(completed, input.owner)
