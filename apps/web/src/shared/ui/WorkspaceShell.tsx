@@ -184,10 +184,9 @@ export function WorkspaceShell({
         <nav className="shell-navigation" id="workspace-primary-navigation">
           <p className="sidebar-brand" data-testid="sidebar-brand">
             <span aria-hidden="true" className="sidebar-brand-mark">
-              G
+              g
             </span>
-            <span className="sidebar-brand-name">GraphQL</span>
-            <span className="visually-hidden">graphql</span>
+            <span className="sidebar-brand-name">graphql</span>
           </p>
 
           <WorkspaceNavigation

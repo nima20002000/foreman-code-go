@@ -24,7 +24,7 @@ export function WorkflowBoard({ workspaceId, workflowId, run, selectRun, inspect
       <div className="workflow-board-authoring">{children}</div>
       <div className="workflow-board-context">
         <RunActivityPanel summaries={summaries} />
-        <details className="workflow-board-location n-theme" open={locationOpen} onToggle={(event) => setLocationOpen(event.currentTarget.open)}>
+        <details className="workflow-board-location" open={locationOpen} onToggle={(event) => setLocationOpen(event.currentTarget.open)}>
           <summary>Workspace execution folder</summary>
           <p>For future Runs only. Existing Runs keep their accepted location.</p>
           <WorkspaceExecutionLocationSettings workspaceId={workspaceId} presentation="field" />

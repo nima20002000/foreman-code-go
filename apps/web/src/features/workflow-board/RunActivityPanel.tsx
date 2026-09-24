@@ -45,7 +45,7 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
       if (ticket === request.current && generation === sessionGeneration()) setError(reason instanceof Error ? reason.message : 'The Run could not be opened.')
     } finally { if (ticket === request.current) setReading(undefined) }
   }
-  return <aside className="workflow-board-run-panel n-theme" aria-label="Run activity" data-testid="board-run-activity">
+  return <aside className="workflow-board-run-panel" aria-label="Run activity" data-testid="board-run-activity">
     <header><h2>Run activity</h2><p>{active.length} active or recovering Run{active.length === 1 ? '' : 's'} in this workflow</p></header>
     <details className="board-run-picker"><summary>Current and past Runs</summary>
       {active.length ? <section aria-label="Active and recovering Runs">{active.map((run) => <div key={run.id}>

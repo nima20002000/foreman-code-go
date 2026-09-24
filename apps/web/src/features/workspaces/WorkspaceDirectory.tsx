@@ -117,7 +117,7 @@ export function WorkspaceDirectory() {
   const loading = managedQuery.isPending
   const needsAccess = failed && ApiError.is(managedQuery.error) && managedQuery.error.status === 401
   return (
-    <section className="workspace-directory resource-directory n-theme" aria-label="Workspaces">
+    <section className="workspace-directory resource-directory" aria-label="Workspaces">
       <PageHeader
         title="Workspaces"
       />

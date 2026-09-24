@@ -78,7 +78,7 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext }: {
     save: async () => { if (source) await promoteNextDraft(draftKey, source) },
     discard: () => { if (promotion) throw new Error('Reconcile the conversion before leaving.') } })
   if (edit && !promotion) return <EditorForm draftKey={draftKey} edit={edit} />
-  return <section className="workflow-graph-state n-theme" aria-label="Enable parallel execution">
+  return <section className="workflow-graph-state" aria-label="Enable parallel execution">
     <h2>Enable parallel execution</h2>
     {error ? <p role="alert">{error}</p> : null}
     {promotion?.error ? <p role="alert">{promotion.error.code}: {promotion.error.message}</p> : null}
@@ -270,7 +270,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const dirty = nextDraftDirty(edit)
   const startDisabled = storageFailed || starting || editIntent.locked || edit.busy || !!edit.pending || (!pendingStart
     && (dirty || !context.draft.baseWorkflowVersionId || workspace.data?.locationValidation.status !== 'ready'))
-  return <section className="workflow-graph board-typed-editor n-theme" aria-label="Workflow authoring">
+  return <section className="workflow-graph board-typed-editor" aria-label="Workflow authoring">
       <div className="board-draft-notices">
         {pendingStart ? <p role="status">An earlier Start may have been accepted for version <code>{pendingStart.workflowVersionId}</code>. Reconcile Start before a new admission.</p> : null}
         {!pendingStart && workspace.data?.locationValidation.status !== 'ready' ? <p role="status">A valid workspace execution folder is required to Start. <button type="button" onClick={board?.openLocation}>Set execution folder</button></p> : null}

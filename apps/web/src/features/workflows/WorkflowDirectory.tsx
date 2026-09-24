@@ -83,7 +83,7 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
   const workflows = managed.map((item) => item.workflow)
 
   return (
-    <section className="workflow-directory resource-directory n-theme" aria-label="Workflows">
+    <section className="workflow-directory resource-directory" aria-label="Workflows">
       <PageHeader
         title="Workflows"
         actions={workflows.length > 0 ? <NewWorkflowAction workspaceId={workspaceId} /> : undefined}

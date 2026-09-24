@@ -185,7 +185,7 @@ export function RunGraphContent({ embedded = false }: { embedded?: boolean } = {
   const root = useRef<HTMLElement>(null)
   const stale = useRunGraphSelection(selectVisualStale)
   const reader = useRunGraphSelection(selectGraphReader)
-  return <section ref={root} data-stale={stale || undefined} className={`n-theme run-graph-view${embedded ? ' board-run-facts' : ''}`} aria-label={embedded ? 'Selected Run facts' : 'Read-only Run view'}>
+  return <section ref={root} data-stale={stale || undefined} className={`run-graph-view${embedded ? ' board-run-facts' : ''}`} aria-label={embedded ? 'Selected Run facts' : 'Read-only Run view'}>
     {embedded ? <RunBoardSelection /> : null}
     <RunVisualEffects root={root} />
     <RunAttentionAnnouncement />

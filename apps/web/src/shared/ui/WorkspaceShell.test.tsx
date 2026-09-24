@@ -122,15 +122,15 @@ describe('WorkspaceShell', () => {
 
     const brand = await screen.findByTestId('sidebar-brand')
     const mark = brand.querySelector('.sidebar-brand-mark')
-    expect(brand).toHaveTextContent('GraphQL')
-    expect(mark).toHaveTextContent('G')
+    expect(brand).toHaveTextContent('graphql')
+    expect(mark).toHaveTextContent('g')
     expect(mark).toHaveAttribute('aria-hidden', 'true')
-    expect(brand.querySelector('.sidebar-brand-name')).toHaveTextContent('GraphQL')
+    expect(brand.querySelector('.sidebar-brand-name')).toHaveTextContent('graphql')
 
     await user.click(screen.getByRole('button', { name: 'Collapse navigation' }))
 
-    expect(screen.getByTestId('sidebar-brand')).toHaveTextContent('GraphQL')
-    expect(screen.getByTestId('sidebar-brand').querySelector('.sidebar-brand-name')).toHaveTextContent('GraphQL')
+    expect(screen.getByTestId('sidebar-brand')).toHaveTextContent('graphql')
+    expect(screen.getByTestId('sidebar-brand').querySelector('.sidebar-brand-name')).toHaveTextContent('graphql')
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveAttribute('title', 'Workspaces')
   })
 
@@ -283,7 +283,7 @@ describe('WorkspaceShell', () => {
     expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
     expect(screen.queryByRole('separator', { name: 'Resize workspace context panel' })).not.toBeInTheDocument()
     expect(screen.getByTestId('workspace-shell')).not.toHaveTextContent('Shared workspace')
-    expect(screen.getByTestId('sidebar-brand')).toHaveTextContent('GraphQL')
+    expect(screen.getByTestId('sidebar-brand')).toHaveTextContent('graphql')
     expect(screen.getByTestId('workspace-shell')).not.toHaveTextContent('Runner one')
     expect(screen.getByTestId('workspace-shell')).toHaveTextContent('Graph slot')
     expect(screen.getByTestId('workspace-shell')).not.toHaveTextContent('Terminal slot')

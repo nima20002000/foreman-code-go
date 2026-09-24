@@ -85,7 +85,7 @@ export function ComingSoonRouteEntry({ section, label }: { section: WorkspaceSec
       activeGlobalSection={section === 'terminal' || section === 'settings' ? section : undefined}
       slots={{
         main: (
-          <div className="coming-soon-page n-theme" data-testid="coming-soon">
+          <div className="coming-soon-page" data-testid="coming-soon">
             <p className="n-eyebrow">GraphQL</p>
             <EmptyState
               icon="clock"
@@ -113,7 +113,7 @@ export function GlobalComingSoonRouteEntry({
       activeGlobalSection={section}
       slots={{
         main: (
-          <div className="coming-soon-page n-theme" data-testid="coming-soon">
+          <div className="coming-soon-page" data-testid="coming-soon">
             <p className="n-eyebrow">GraphQL</p>
             <EmptyState
               icon="clock"
@@ -138,7 +138,7 @@ export function SettingsRouteEntry() {
       activeSection="settings"
       slots={{
         main: (
-          <div className="settings-page workspace-overview n-theme">
+          <div className="settings-page workspace-overview">
             <PageHeader
               eyebrow={name ?? 'Workspace'}
               title="Settings"
@@ -203,7 +203,7 @@ function SettingsDetailPage({ eyebrow = 'GraphQL', title, description, backLink,
   children: ReactNode
 }) {
   return (
-    <div className="settings-page workspace-detail n-theme">
+    <div className="settings-page workspace-detail">
       {backLink}
       <PageHeader eyebrow={eyebrow} title={title} description={description} />
       {children}
@@ -317,7 +317,7 @@ export function BrowsersSettingsRouteEntry() {
 export function WorkspaceLocationSettingsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/settings/location' })
   return <WorkspaceShell workspaceId={workspaceId} activeSection="settings" slots={{ main:
-    <div className="settings-page workspace-detail n-theme">
+    <div className="settings-page workspace-detail">
       <Link to="/workspaces/$workspaceId/settings" params={{ workspaceId }} className="settings-back-link" aria-label="Back to settings">
         <ArrowLeft aria-hidden="true" size={14} />Settings
       </Link>
