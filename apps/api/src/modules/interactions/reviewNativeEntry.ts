@@ -16,8 +16,9 @@ export async function reserveReviewNativeEntryLocked(publication: RunGraphPublic
   const stored = await readRepeatExecutionLocked(publication.sql, snapshot, executionId)
   const record = { scope: publication.scope, job: reviewJobIdentity(job), ref: stored.ref,
     execution: repeatExecutionIdentity(stored.execution), inputDigest: stored.inputDigest }
+  const recordJson = canonicalGraphJson(record)
   if ((await publication.sql.query(`insert into review_native_entries(job_id,run_id,execution_id,phase,record,record_json)
-    values($1,$2,$3,'reserved',$4::jsonb,$4::text)`, [job.id, publication.scope.runId, executionId, canonicalGraphJson(record)])).rowCount !== 1) return conflict()
+    values($1,$2,$3,'reserved',$4::jsonb,$5::text)`, [job.id, publication.scope.runId, executionId, recordJson, recordJson])).rowCount !== 1) return conflict()
 }
 export async function reviewEntryPhaseLocked(sql: GraphTransactionSql, job: ReviewJob, executionId: string): Promise<string> {
   const row = (await sql.query<{ phase: string; record: { job: ReturnType<typeof reviewJobIdentity> } }>(

@@ -3,7 +3,7 @@ import { HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecu
 import {
   RepeatWorkflowVersionV1Schema,
   canonicalGraphJson,
-  makeWave25Fixture,
+  makeCurrentWorkflowFixture,
   parseRepeatExitResultV1,
   type RepeatDecisionV1,
   type RepeatOccurrenceV1,
@@ -37,7 +37,7 @@ export interface RepeatFixture {
   version: RepeatWorkflowVersionV1
   scope: RepeatScope
   run: RepeatRuntimeRun
-  block: RepeatWorkflowVersionV1['definition']['repeat']['blocks'][number]
+  block: NonNullable<RepeatWorkflowVersionV1['definition']['repeat']>['blocks'][number]
 }
 
 function configuredFixture(input: {
@@ -52,7 +52,7 @@ function configuredFixture(input: {
   blockExit: string
   runId?: string
 }): RepeatFixture {
-  const base = makeWave25Fixture(input.suffix)
+  const base = makeCurrentWorkflowFixture(input.suffix)
   const pins = Object.fromEntries(input.names.map((id) => [`agent-${id}`, `config-${id}`]))
   const version = RepeatWorkflowVersionV1Schema.parse({
     ...base.version,
@@ -104,7 +104,7 @@ function configuredFixture(input: {
     agentConfigurationVersionIds: version.agentConfigurationVersionIds,
     approval: version.approval,
   }
-  return { version, scope, run, block: version.definition.repeat.blocks[0]! }
+  return { version, scope, run, block: version.definition.repeat!.blocks[0]! }
 }
 
 export function makeSimpleRepeatFixture(cap = 3, options: { suffix?: string; runId?: string; sibling?: boolean } = {}): RepeatFixture {

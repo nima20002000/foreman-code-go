@@ -202,9 +202,12 @@ export class WorkflowNativeProofServices {
       if (existing && (existing.identity_digest !== identityDigest || repeatDigest(existing.record, 4 * 1024 * 1024) !== existing.source_digest
         || !sameRepeatValue(sourceIdentity(existing.record), sourceIdentity(proposed)))) return fail('NATIVE_SOURCE_CONFLICT')
       const record = existing?.record ?? proposed
-      if (!existing) await sql.query(`insert into workflow_native_proofs(proof_id,run_id,execution_id,identity_digest,source_digest,record,record_json)
-        values($1,$2,$3,$4,$5,$6::jsonb,$6::text)`,
-      [proofId, run.id, stored.execution.id, identityDigest, repeatDigest(record, 4 * 1024 * 1024), canonicalGraphJson(record, 4 * 1024 * 1024)])
+      if (!existing) {
+        const recordJson = canonicalGraphJson(record, 4 * 1024 * 1024)
+        await sql.query(`insert into workflow_native_proofs(proof_id,run_id,execution_id,identity_digest,source_digest,record,record_json)
+          values($1,$2,$3,$4,$5,$6::jsonb,$7::text)`,
+        [proofId, run.id, stored.execution.id, identityDigest, repeatDigest(record, 4 * 1024 * 1024), recordJson, recordJson])
+      }
       const publication = currentRunGraphPublication(sql, scope)
       const receipt = await publication.retainNativeSource(owner, proofId)
       requireRepeatCanonicalReceiptBeforeCommit(sql, { scope, ...receipt, effect: null })

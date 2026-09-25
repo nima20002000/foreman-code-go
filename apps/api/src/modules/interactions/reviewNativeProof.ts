@@ -120,9 +120,12 @@ export class ReviewNativeProofServices {
     if (previous) {
       if (graphSourceDigest(previous.record) !== previous.source_digest || !sameRepeatValue(sourceIdentity(previous.record), sourceIdentity(record))) return fail()
       record = previous.record // retain first original generation/time/lease, never relabel it
-    } else if ((await sql.query(`insert into review_native_proofs(proof_id,run_id,execution_id,job_id,record,source_digest,record_json)
-      values($1,$2,$3,$4,$5::jsonb,$6,$5::text)`, [proofId, publication.scope.runId, stored.execution.id, job.id,
-      canonicalGraphJson(record, 4 * 1024 * 1024), graphSourceDigest(record)])).rowCount !== 1) return fail()
+    } else {
+      const recordJson = canonicalGraphJson(record, 4 * 1024 * 1024)
+      if ((await sql.query(`insert into review_native_proofs(proof_id,run_id,execution_id,job_id,record,source_digest,record_json)
+        values($1,$2,$3,$4,$5::jsonb,$6,$7::text)`, [proofId, publication.scope.runId, stored.execution.id, job.id,
+        recordJson, graphSourceDigest(record), recordJson])).rowCount !== 1) return fail()
+    }
     const receipt = await publication.retainReviewSource(job.id, job.leaseToken!, proofId)
     requireRepeatCanonicalReceiptBeforeCommit(sql, { scope: record.scope, ...receipt, effect: null })
     beforeGraphCommit(sql, async () => { await this.verifyLocked(publication, job, capture) })

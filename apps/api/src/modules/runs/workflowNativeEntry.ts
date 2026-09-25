@@ -46,9 +46,10 @@ export function workflowNativeReservation(scope: RepeatScope, ref: RepeatNodeRef
 }
 export async function reserveWorkflowNativeEntryLocked(sql: GraphTransactionSql, reservation: WorkflowNativeReservation): Promise<void> {
   assertGraphTransaction(sql)
+  const reservationJson = canonicalGraphJson(reservation)
   const result = await sql.query(`insert into workflow_native_entries
-    (execution_id,run_id,reservation,reservation_json,reservation_digest,phase) values($1,$2,$3::jsonb,$3::text,$4,'reserved')`,
-  [reservation.execution.executionId, reservation.scope.runId, canonicalGraphJson(reservation), repeatDigest(reservation)])
+    (execution_id,run_id,reservation,reservation_json,reservation_digest,phase) values($1,$2,$3::jsonb,$4::text,$5,'reserved')`,
+  [reservation.execution.executionId, reservation.scope.runId, reservationJson, reservationJson, repeatDigest(reservation)])
   if (result.rowCount !== 1) return conflict()
 }
 export async function readWorkflowNativeEntryLocked(sql: GraphTransactionSql, reservation: WorkflowNativeReservation) {

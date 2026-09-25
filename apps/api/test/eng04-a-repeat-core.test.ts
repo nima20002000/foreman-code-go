@@ -3,7 +3,7 @@ import type pg from 'pg'
 import { MemorySaver } from '@langchain/langgraph'
 import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
 import {
-  RepeatWorkflowVersionV1Schema, makeWave25Fixture, parseRepeatExitResultV1,
+  RepeatWorkflowVersionV1Schema, makeCurrentWorkflowFixture, parseRepeatExitResultV1,
   validateRepeatDecisionV1, validateRepeatSuccessorV1, canonicalGraphJson,
   type RepeatOccurrenceV1,
 } from '@graphql/contracts/wave25'
@@ -18,13 +18,13 @@ import {
   type RepeatResolution, type RepeatScope, type RepeatSource,
 } from '../src/modules/runs/repeatResolution.js'
 import { executeRepeatRuntime, repeatExecutionDirectoryKey } from '../src/modules/runs/repeatRuntime.js'
-import { compileOneShotTopology } from '../src/modules/runs/topology.js'
+import { compileExecutionTopology } from '../src/modules/runs/topology.js'
 import { repeatOccurrenceMigrationSql } from '../src/infrastructure/repeatOccurrenceMigration.js'
 
 const at = '2026-09-25T00:00:00.000Z'
 const edge = (source: string, target: string) => ({ id: `${source}-${target}`, kind: 'execution' as const, source, target })
 function fixture(cap = 3) {
-  const base = makeWave25Fixture('eng04-core')
+  const base = makeCurrentWorkflowFixture('eng04-core')
   const names = ['work', 'review', 'done', 'limit']
   const version = RepeatWorkflowVersionV1Schema.parse({ ...base.version, executionSemanticsVersion: 3, entryNodeId: 'work',
     agentConfigurationVersionIds: Object.fromEntries(names.map((id) => [`agent-${id}`, `config-${id}`])),
@@ -41,7 +41,7 @@ function fixture(cap = 3) {
   const scope: RepeatScope = { ...base.scope, executionSemanticsVersion: 3 }
   const run: RepeatRuntimeRun = { ...base.run, executionState: 'running', executionSemanticsVersion: 3,
     agentConfigurationVersionIds: version.agentConfigurationVersionIds }
-  return { version, scope, run, block: version.definition.repeat.blocks[0]! }
+  return { version, scope, run, block: version.definition.repeat!.blocks[0]! }
 }
 function execution(f: ReturnType<typeof fixture>, nodeId: string, id: string, attempt = 1): HarnessExecution {
   return HarnessExecutionSchema.parse({ id, runId: f.scope.runId, workflowNodeId: nodeId, agentId: `agent-${nodeId}`,
@@ -143,11 +143,11 @@ describe('ENG04-A deterministic occurrence core', () => {
     expect(a.boundaries).toHaveLength(1)
     expect(b.recursionLimit).toBeGreaterThan(a.recursionLimit)
   })
-  it('retains both the frozen v2 cycle guard and the semantics-3 structural guard', () => {
-    const v2 = makeWave25Fixture('guard').version
-    const broken = structuredClone(v2)
+  it('rejects cycles in both the common current graph and configured repeat blocks', () => {
+    const current = makeCurrentWorkflowFixture('guard').version
+    const broken = structuredClone(current)
     broken.definition.edges.push(edge(broken.definition.nodes[1]!.id, broken.entryNodeId))
-    expect(() => compileOneShotTopology(broken)).toThrow()
+    expect(() => compileExecutionTopology(broken)).toThrow()
     const f = fixture(); f.version.definition.edges.push(edge('limit', 'work'))
     expect(RepeatWorkflowVersionV1Schema.safeParse(f.version).success).toBe(false)
   })
