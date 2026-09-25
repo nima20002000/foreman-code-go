@@ -104,6 +104,15 @@ export interface OneShotTopology {
 }
 
 export function compileOneShotTopology(version: import('@graphql/contracts/wave25').WorkflowVersionV2): OneShotTopology {
+  return compileExecutionTopology(version)
+}
+
+/** Shared static-DAG compiler. This does not parse, retag or admit a saved version.
+ * v2 keeps its validator and exact acyclic behavior; v3 calls this only after A0 validation. */
+export function compileExecutionTopology(version: {
+  entryNodeId: string
+  definition: { entryNodeId?: string | null; nodes: readonly { id: string }[]; edges: readonly import('@graphql/contracts/wave25').WorkflowRelationship[] }
+}): OneShotTopology {
   const nodes = new Set(version.definition.nodes.map((node) => node.id))
   if (!nodes.size || nodes.size !== version.definition.nodes.length || !nodes.has(version.entryNodeId)
     || version.definition.entryNodeId !== version.entryNodeId) {

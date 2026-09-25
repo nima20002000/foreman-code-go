@@ -1,0 +1,6 @@
+export { RepeatEditor } from './RepeatEditor'
+export { RepeatStatus } from './RepeatStatus'
+export { createRepeatClient, repeatClient, RepeatClientError } from './client'
+export type { RepeatClient, RepeatAuthoringSnapshot, RepeatRunReadback, RepeatRunScope } from './client'
+export { repeatPlanFromLocalDraft, validateRepeatDraft } from './repeatModel'
+export type { RepeatLocalDraft, RepeatLocalBlockDraft, RepeatValidationIssue } from './repeatModel'
