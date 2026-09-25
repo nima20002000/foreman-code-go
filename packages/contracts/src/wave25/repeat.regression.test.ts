@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 
-import { makeWave25Fixture } from './fixtures.js'
+import { makeCurrentWorkflowFixture } from './currentFixture.js'
 import { canonicalGraphJson } from './json.js'
 import {
   REPEAT_CONTRACT_VERSION,
@@ -23,7 +23,7 @@ const digest = (value: unknown) => `sha256:${createHash('sha256').update(canonic
 const edge = (source: string, target: string) => ({ id: `${source}-${target}`, kind: 'execution' as const, source, target })
 
 function version(cap = 3): RepeatWorkflowVersionV1 {
-  const base = makeWave25Fixture('eng04-d-contract')
+  const base = makeCurrentWorkflowFixture('eng04-d-contract')
   const names = ['work', 'review', 'done', 'limit']
   return RepeatWorkflowVersionV1Schema.parse({
     ...base.version,

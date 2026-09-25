@@ -1,5 +1,5 @@
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema } from '@graphql/contracts'
-import { WorkflowRunV2Schema, WorkflowVersionV2Schema, canonicalGraphJson } from '@graphql/contracts/wave25'
+import { WorkflowRunV3Schema, WorkflowVersionV3Schema, canonicalGraphJson } from '@graphql/contracts/wave25'
 import type { GraphSqlClient } from '../../run-graph/connection.js'
 import { resolveImmutableApprovalRoute, usesNativeSelfReview } from '../../workflows/approvalRoutes.js'
 import { validateReviewerBootstrap } from '../../workflows/reviewerBootstrap.js'
@@ -23,7 +23,7 @@ export async function credentialAuthority(sql: GraphSqlClient, executionId: stri
      left join approval_execution_state b on b.execution_id=e.id
      where e.id=$1 and v.execution_semantics_version=2`, [executionId])).rows[0]
   if (!row) return fail('AUTH_REVOKED')
-  const r = WorkflowRunV2Schema.parse(row.run), v = WorkflowVersionV2Schema.parse(row.version)
+  const r = WorkflowRunV3Schema.parse(row.run), v = WorkflowVersionV3Schema.parse(row.version)
   const e = HarnessExecutionSchema.parse(row.execution), c = AgentConfigurationVersionSchema.parse(row.configuration)
   if (row.stopped || !['running','waiting','queued'].includes(r.executionState) || r.outcome !== 'pending'
     || e.id !== executionId || e.runId !== r.id || e.attempt !== 1 || r.workflowVersionId !== v.id

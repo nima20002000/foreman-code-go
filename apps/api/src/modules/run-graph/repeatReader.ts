@@ -1,3 +1,5 @@
+import { readPublicProjectionLocked } from './compactSnapshot.js'
+import { assertPublicProjectionCommittedLocked } from './publicProjectionReceipt.js'
 import type pg from 'pg'
 import {
   GraphSequenceSchema, RUN_GRAPH_LIMITS, RepeatGraphReadRequestV3Schema, RepeatGraphEventsRequestV3Schema,
@@ -69,7 +71,9 @@ async function verifiedRepeatCut(sql: GraphTransactionSql, scope: RepeatGraphSco
     const resolutions = await readRepeatGraphResolutionsLocked(sql, scope)
     const results = await readRepeatGraphResultsLocked(sql, scope, executions)
     const decisions = await readRepeatGraphDecisionsLocked(sql, scope)
-    const data = { run, occurrences, executions, bindings, resolutions, results, decisions }
+    const publicView = await readPublicProjectionLocked(sql, scope)
+    await assertPublicProjectionCommittedLocked(sql, scope, head.head_sequence, publicView)
+    const data = { ...publicView, run, occurrences, executions, bindings, resolutions, results, decisions }
     if (graphJsonBytes(data) > RUN_GRAPH_LIMITS.snapshotBytes) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
     const state = sortRepeatGraphState(RepeatGraphStateV3Schema.parse(data))
     const candidate = { kind: 'snapshot' as const, protocolVersion: 1 as const, scope,

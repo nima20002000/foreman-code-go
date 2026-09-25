@@ -1,8 +1,9 @@
+import { readPublicRunStateLocked } from './publicRunState.js'
 import {
   GraphExecutionIdentitySchema, RepeatOccurrenceV1Schema, RepeatDecisionMetadataV1Schema,
   RepeatGraphExecutionV3Schema, RepeatGraphBindingV3Schema, RepeatGraphResolutionV3Schema,
-  RepeatGraphRunStateV3Schema, RepeatGraphScopeV3Schema, RepeatWorkflowVersionV1Schema,
-  SavedRunVersionSnapshotSchema, AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema, REPEAT_GRAPH_LIMITS,
+  RepeatGraphRunStateV3Schema, RepeatGraphScopeV3Schema, WorkflowVersionV3Schema,
+  CurrentRunVersionSnapshotSchema, AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema, REPEAT_GRAPH_LIMITS,
   sameCanonicalGraphScope, canonicalGraphJson, qualifyRepeatGraphExecution,
   type RepeatGraphScopeV3, type RepeatGraphExecutionV3, type RepeatGraphBindingV3,
   type RepeatGraphResolutionV3, type RepeatGraphFactV3,
@@ -37,12 +38,12 @@ export async function readRepeatGraphPinsLocked(sql: GraphTransactionSql, input:
     || row.workflow_version_id !== scope.workflowVersionId || row.execution_semantics_version !== 3
     || row.version_workspace_id !== scope.workspaceId || row.version_workflow_id !== scope.workflowId) return conflict()
   const run = AcceptedWorkflowRunV3Schema.parse(row.run_record)
-  const version = RepeatWorkflowVersionV1Schema.parse(readImmutableWorkflowVersion({
+  const version = WorkflowVersionV3Schema.parse(readImmutableWorkflowVersion({
     id: row.version_id, workspace_id: row.version_workspace_id, workflow_id: row.version_workflow_id,
     version: row.version_number, entry_node_id: row.entry_node_id, execution_semantics_version: row.execution_semantics_version,
     record: row.version_record,
   }, { id: scope.workflowVersionId, workspaceId: scope.workspaceId, workflowId: scope.workflowId }))
-  SavedRunVersionSnapshotSchema.parse({ run, version })
+  CurrentRunVersionSnapshotSchema.parse({ run, version })
   if (run.id !== scope.runId || run.workspaceId !== scope.workspaceId || run.workflowId !== scope.workflowId
     || run.workflowVersionId !== scope.workflowVersionId || run.executionState !== row.execution_state) return conflict()
   const configs = await sql.query<ImmutableAgentConfigurationRow>(
@@ -56,12 +57,7 @@ export async function readRepeatGraphPinsLocked(sql: GraphTransactionSql, input:
   ExecutableWorkflowV3Schema.parse({ version, configurations })
   return { scope, run, version, configurations }
 }
-export async function readRepeatRunStateLocked(sql: GraphTransactionSql, scope: RepeatGraphScopeV3) {
-  const row = (await sql.query<{ execution_state: string; outcome: string; stopped: boolean }>(
-    "select execution_state,record->>'outcome' as outcome,stop_requested_at is not null as stopped from runs where id=$1", [scope.runId])).rows[0]
-  if (!row) return conflict()
-  return RepeatGraphRunStateV3Schema.parse({ executionState: row.execution_state, outcome: row.outcome, stopRequested: row.stopped })
-}
+export const readRepeatRunStateLocked = readPublicRunStateLocked
 
 interface ExecutionRow {
   execution_id: string; run_id: string; slot_id: string; occurrence_id: string | null;

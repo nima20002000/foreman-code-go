@@ -3,7 +3,7 @@ import { AgentConfigurationVersionSchema, TimestampSchema } from '../index.js'
 import { canonicalGraphJson } from './json.js'
 import {
   GraphDigestSchema, GraphExecutionIdentitySchema, GraphIdSchema,
-} from './protocol.js'
+} from './graphPrimitives.js'
 import {
   ChoiceOutcomeSchema, ChoiceTargetSchema,
   parseChoiceResultEnvelope, type WorkflowChoice,

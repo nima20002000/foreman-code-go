@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import type { HarnessExecution, NativeSessionReference, ReviewJob } from '@graphql/contracts'
+import type { WorkflowNativeEntryPermit } from '../runs/workflowNativeEntry.js'
 import type { RepeatRunRepository } from '../runs/repeatPostgres.js'
 import { DomainError } from '../errors.js'
 
@@ -9,15 +10,18 @@ import { DomainError } from '../errors.js'
  * evidence; it must not reconstruct a reference from capabilities or a latest row. */
 export interface RepeatNativeObservationStore extends Pick<RepeatRunRepository,
   'readExecution' | 'settleNativeExecution'> {
+  assertExecutionAdmission(executionId: string): Promise<void>
   assertNativeBoundary(executionId: string): Promise<void>
   exactSession(executionId: string): Promise<NativeSessionReference>
   /** Synchronous, one-use permission from a positively acknowledged launch COMMIT.
    * A returned candidate, an admission receipt or possible submission is not one. */
+  authorizeNativeSubmission(executionId: string): Promise<void>
   consumeLaunch(executionId: string): boolean
 }
 
 /** The launch implementation belongs to the existing owner repository, not here. */
 export interface RepeatNativeLaunchStore extends RepeatNativeObservationStore {
+  beginNativeEntry(executionId: string): Promise<WorkflowNativeEntryPermit>
   claimLaunch(executionId: string, paths: { workingDirectory: string; runtimeDirectory: string }): Promise<HarnessExecution | undefined>
   recoverSession(executionId: string): Promise<HarnessExecution>
 }

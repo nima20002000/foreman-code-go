@@ -5,7 +5,7 @@ import { PostgresInteractionDeliveryRepository, type GraphResumeClaim } from '..
 import { observeNativeDispatch } from './dispatchWait.js'
 import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence,
   type InteractionDeliveryClaim, type NativeDeliveryOutcome } from '../delivery.js'
-import { assertBudget, fail, isV2, lockInteraction, readContext, runFor, transact, requireLeaseAtCommit } from './context.js'
+import { assertBudget, fail, isCurrentApprovalRun, lockInteraction, readContext, runFor, transact, requireLeaseAtCommit } from './context.js'
 import { decisionDigest, nextInteraction, publishInteraction } from './publication.js'
 import type { GraphTransactionSql } from '../../run-graph/connection.js'
 import { claimResume, finishResume, renewResume } from './resume.js'
@@ -48,11 +48,11 @@ async function ownAttempt(sql: GraphTransactionSql, claim: InteractionDeliveryCl
 export class Wave25InteractionDeliveryRepository extends PostgresInteractionDeliveryRepository {
   constructor(private readonly approvalPool: pg.Pool) { super(approvalPool) }
   private async mode(id: string) { const runId = await runFor(this.approvalPool, 'interaction', id)
-    return { runId, enabled: await isV2(this.approvalPool, runId) } }
+    return { runId, enabled: await isCurrentApprovalRun(this.approvalPool, runId) } }
 
   override async claim(id: string, ownerToken: string, reconcileOnly = false): Promise<InteractionDeliveryClaim | undefined> {
     const mode = await this.mode(id)
-    if (!mode.enabled) return super.claim(id, ownerToken, reconcileOnly)
+
     return transact(this.approvalPool, mode.runId, async (publication) => {
       const sql = publication.sql, current = await lockInteraction(sql, id)
       if (!current.selectedOptionId || !['decided','delivery_pending','delivery_failed'].includes(current.status)) return undefined
@@ -186,7 +186,7 @@ export class Wave25InteractionDeliveryRepository extends PostgresInteractionDeli
   override async finish(claim: InteractionDeliveryClaim,
     outcome: NativeDeliveryOutcome | ((interaction: DurableInteraction, signal: AbortSignal) => Promise<NativeDeliveryOutcome>),
     signal?: AbortSignal): Promise<DurableInteraction> {
-    if (!await isV2(this.approvalPool, claim.interaction.runId)) return super.finish(claim, outcome, signal)
+
     let result: NativeDeliveryOutcome
     if (typeof outcome === 'function') { await this.prepare(claim); result = await this.nativeWrite(claim, outcome, signal) }
     else result = outcome
@@ -220,7 +220,7 @@ export class Wave25InteractionDeliveryRepository extends PostgresInteractionDeli
 
   async claimAtomicGraphResume(id: string, ownerToken: string): Promise<GraphResumeClaim | undefined> {
     const mode = await this.mode(id)
-    if (!mode.enabled) return super.claimGraphResume(id, ownerToken)
+
     return claimResume(this.approvalPool, mode.runId, id, ownerToken, true)
   }
   override async claimGraphResume(id: string, ownerToken: string): Promise<GraphResumeClaim | undefined> {
@@ -228,11 +228,11 @@ export class Wave25InteractionDeliveryRepository extends PostgresInteractionDeli
     return mode.enabled ? claimResume(this.approvalPool, mode.runId, id, ownerToken) : super.claimGraphResume(id, ownerToken)
   }
   override async renewGraphResume(claim: GraphResumeClaim): Promise<void> {
-    if (!await isV2(this.approvalPool, claim.interaction.runId)) return super.renewGraphResume(claim)
+
     return renewResume(this.approvalPool, claim)
   }
   override async finishGraphResume(claim: GraphResumeClaim, error?: string): Promise<void> {
-    if (!await isV2(this.approvalPool, claim.interaction.runId)) return super.finishGraphResume(claim, error)
+
     return finishResume(this.approvalPool, claim, error)
   }
 }

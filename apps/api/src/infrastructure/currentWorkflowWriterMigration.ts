@@ -181,7 +181,7 @@ begin
     and NEW.input->>'workspaceId'=NEW.workspace_id and NEW.input->>'workflowId'=NEW.workflow_id
     and (NEW.input - array['workspaceId','workflowId','executionSemanticsVersion','expectedRevision','expectedWorkflowVersionId',
       'expectedAgentConfigurationVersionIds','expectedLocationRevision','graph','commandId'])='{}'::jsonb
-    and NEW.input #> '{graph,version}'=workflow.record->'version'
+    and NEW.input #> '{graph,version}' is not distinct from workflow.record->'version'
     and (eng04_preserve_current_geometry(NEW.input->'graph',workflow.record) - array['version','updatedAt'])=(graph - array['version','updatedAt'])
     and NEW.input->'expectedAgentConfigurationVersionIds'=candidate.record->'agentConfigurationVersionIds'
     and NEW.content_json::jsonb=jsonb_build_object('definition',graph,'configurations',candidate.record->'agentConfigurationVersionIds','entryNodeId',candidate.entry_node_id)

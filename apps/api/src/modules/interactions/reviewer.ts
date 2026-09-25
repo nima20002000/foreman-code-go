@@ -120,6 +120,15 @@ export class ReviewerDispatcher {
         const writer = coordinateSessionManager(recovery.manager, this.coordination, job.reviewerAgentId, this.leaseMs)
         return await writer.withLane(session, job.correlationId, guard.signal, async (manager, lane) => {
           const check = async () => { await guard.check(); await lane.guard.check() }
+          const observe = async (read: () => Promise<import('../harnesses/port.js').NativeHistory>) => {
+            const original = safe.value(await read())
+            await check()
+            const capture = this.nativeRuntime.captureReviewNative(executionId!, session, job, lane, { type: 'history', history: original })
+            for (const event of original.events) await this.coordination.appendReviewNativeEvent(job,
+              normalizeNativeProducerEvent({ ...event, executionId: executionId! }).event,
+              { writer: lane.fence, live: false, terminalReady: false, nativeCapture: capture })
+            return original
+          }
           const ownsTurn = job.error?.code !== 'REVIEW_JOB_IDENTITY_CONFLICT'
             && lane.previous.correlationId === job.correlationId
             && (!lane.previous.currentTurnOrMessageId || !job.providerTurnOrMessageId
@@ -128,8 +137,8 @@ export class ReviewerDispatcher {
           const signal = AbortSignal.any([lane.guard.signal, AbortSignal.timeout(Math.min(this.leaseMs, 5_000))])
           job = await settleReviewCleanup({ job, session, ownsTurn, closed: recovery.closed, check,
             ...(recovery.resident ? {
-              observe: () => lane.guard.wait((session.harness === 'opencode' ? manager.history(session, signal)
-                : manager.reconcile(session, job.correlationId, signal)), signal),
+              observe: () => observe(() => lane.guard.wait((session.harness === 'opencode' ? manager.history(session, signal)
+                : manager.reconcile(session, job.correlationId, signal)), signal)),
               cancel: (id: string) => lane.guard.wait(manager.cancel(session, signal, id), signal),
             } : {}),
             ...(recovery.confirmClosed ? { confirmClosed: () => lane.guard.wait(recovery.confirmClosed!(signal), signal) } : {}),
@@ -188,6 +197,7 @@ export class ReviewerDispatcher {
           await check()
           job = await this.coordination.transitionReviewJob(job.id, jobToken, state, {
             ...safe.value(fields), writerFence: lane.fence,
+            ...(state === 'submitted' ? { nativeCapture: this.nativeRuntime.captureReviewNative(executionId!, session, job, lane, { type: 'entry' }) } : {}),
           })
           return job
         }
@@ -230,8 +240,16 @@ export class ReviewerDispatcher {
           const cleanupSignal = AbortSignal.any([lane.guard.signal, AbortSignal.timeout(Math.min(this.leaseMs, 5_000))])
           job = await settleReviewCleanup({ job, session, ownsTurn,
             pending: pendingRequests, check,
-            observe: () => lane.guard.wait((session.harness === 'opencode' ? manager.history(session, cleanupSignal)
-              : manager.reconcile(session, job.correlationId, cleanupSignal)), cleanupSignal),
+            observe: async () => {
+              const original = safe.value(await lane.guard.wait((session.harness === 'opencode' ? manager.history(session, cleanupSignal)
+                : manager.reconcile(session, job.correlationId, cleanupSignal)), cleanupSignal))
+              await check()
+              const capture = this.nativeRuntime.captureReviewNative(executionId!, session, job, lane, { type: 'history', history: original })
+              for (const event of original.events) await this.coordination.appendReviewNativeEvent(job,
+                normalizeNativeProducerEvent({ ...event, executionId: executionId! }).event,
+                { writer: lane.fence, live: false, terminalReady: false, nativeCapture: capture })
+              return original
+            },
             cancel: (providerId) => lane.guard.wait(manager.cancel(session, cleanupSignal, providerId), cleanupSignal),
             ...(maintenance ? { invalidate: () => lane.guard.wait(maintenance!.invalidate(), cleanupSignal) }
               : this.nativeRuntime.revokeReviewCredential ? {
@@ -277,19 +295,23 @@ export class ReviewerDispatcher {
               onSubmitted: acknowledge,
             }, workSignal), lane.guard, workSignal)) {
               await check()
-              const normalized = normalizeNativeProducerEvent({ ...safe.value(event), executionId: executionId! }).event
+              const original = safe.value(event)
+              const normalized = normalizeNativeProducerEvent({ ...original, executionId: executionId! }).event
               tracker.observeEvent(normalized)
               const evidence = tracker.snapshot()
               if (evidence.identityConflict) return await failReview({ code: 'REVIEW_JOB_IDENTITY_CONFLICT',
                 message: 'The review has conflicting native identities. No further native response will be sent.' })
-              if (evidence.providerId && evidence.acknowledged) await acknowledge(evidence.providerId)
+              if (evidence.providerId) lane.providerId = evidence.providerId
               // pending() is the provider's current request, not a transcript scan.
               // Inspect while consuming the stream: an approval can block its next event forever.
               const pending = await lane.guard.wait(manager.pending(session, workSignal), workSignal)
               await check()
               await this.coordination.appendReviewNativeEvent(job, normalized, {
-                writer: lane.fence, live: true, terminalReady: evidence.terminal && !pending,
+                writer: lane.fence, live: true, terminalReady: false,
+                nativeCapture: this.nativeRuntime.captureReviewNative(executionId!, session, job, lane,
+                  { type: 'event', event: original, pending: pending ? safe.value(pending) : null }),
               })
+              if (evidence.providerId && evidence.acknowledged) await acknowledge(evidence.providerId)
               if (pending) return await approvalFailure(pending)
             }
           }
@@ -300,15 +322,23 @@ export class ReviewerDispatcher {
           const history = await lane.guard.wait(manager.reconcile(session, job.correlationId, workSignal), workSignal)
           await check()
           workSignal.throwIfAborted()
-          const normalizedEvents = history.events.map((event) => normalizeNativeProducerEvent(
+          const originalHistory = safe.value(history)
+          const normalizedEvents = originalHistory.events.map((event) => normalizeNativeProducerEvent(
             { ...safe.value(event), executionId: executionId! }).event)
-          tracker.observeHistory({ ...history, events: normalizedEvents })
+          // OpenCode cancellation ACK metadata is not terminal evidence.
+          const trackedHistory = { ...originalHistory, events: normalizedEvents }
+          delete trackedHistory.terminalTurn; delete trackedHistory.terminalResult
+          tracker.observeHistory(trackedHistory)
+          const observedProviderId = tracker.snapshot().providerId
+          if (observedProviderId) lane.providerId = observedProviderId
+          const nativeCapture = this.nativeRuntime.captureReviewNative(executionId!, session, job, lane,
+            { type: 'history', history: originalHistory })
           for (const event of normalizedEvents) {
             await check()
             workSignal.throwIfAborted()
             await this.coordination.appendReviewNativeEvent(job, event, {
               writer: lane.fence, live: false,
-              terminalReady: tracker.snapshot().terminal && !history.pendingInteraction && history.pendingInteractions.length === 0,
+              terminalReady: false, nativeCapture,
             })
           }
           const evidence = tracker.snapshot()

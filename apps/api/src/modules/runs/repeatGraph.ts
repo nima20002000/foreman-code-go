@@ -1,6 +1,6 @@
 import { Annotation, END, START, StateGraph, type Command } from '@langchain/langgraph'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
-import { RepeatWorkflowVersionV1Schema, type RepeatOccurrenceV1, type RepeatWorkflowVersionV1 } from '@graphql/contracts/wave25'
+import { WorkflowVersionV3Schema, type RepeatOccurrenceV1, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
 
 import { ExecutionLimiter } from './limiter.js'
 import { repeatNodeAction, type RepeatExecutionDriver, type RepeatGraphState, type RepeatNodeStore } from './repeatNode.js'
@@ -35,16 +35,15 @@ export type RepeatGraphStore = RepeatNodeStore & Pick<RepeatRunRepository, 'ente
  * an external barrier; intermediate exits cannot select OR deselect external edges.
  */
 export function buildRepeatGraph(input: {
-  runId: string; version: RepeatWorkflowVersionV1; store: RepeatGraphStore; driver: RepeatExecutionDriver
+  runId: string; version: WorkflowVersionV3; store: RepeatGraphStore; driver: RepeatExecutionDriver
   checkpointer: BaseCheckpointSaver; signal: AbortSignal; configuredParallelism?: number; maximumWaiting?: number
   track?: (task: Promise<Partial<RepeatGraphState>>) => void
 }) {
-  const version = RepeatWorkflowVersionV1Schema.parse(input.version), layout = compileRepeatLayout(version)
+  const version = WorkflowVersionV3Schema.parse(input.version), layout = compileRepeatLayout(version)
   const configured = input.configuredParallelism ?? 4
   if (!Number.isSafeInteger(configured) || configured < 1) return repeatConflict('INVALID_RUNNER_PARALLELISM')
   const action = repeatNodeAction({ ...input, limiter: new ExecutionLimiter(
     Math.min(configured, version.definition.executionPolicy!.maxParallelism), input.maximumWaiting ?? 1000) })
-  const graph = new StateGraph(RepeatState) as unknown as GraphBuilder
   const current = async (blockId: string, state: RepeatGraphState): Promise<RepeatOccurrenceV1> => {
     const id = state.occurrences[blockId]
     if (!id) return repeatConflict('REPEAT_CHECKPOINT_OCCURRENCE_MISSING')
@@ -54,7 +53,7 @@ export function buildRepeatGraph(input: {
       || value.identity.blockId !== blockId) return repeatConflict('REPEAT_CHECKPOINT_OCCURRENCE_CONFLICT')
     return value
   }
-  for (const node of layout.nodes) graph.addNode(node.name, (state) => {
+  const graph = compileWorkflowGraph(version, input.checkpointer, (node, state) => {
     const task = (async (): Promise<Partial<RepeatGraphState>> => {
       if (state.runId !== input.runId) return repeatConflict('RUN_PIN_CONFLICT')
       input.signal.throwIfAborted()
@@ -78,6 +77,18 @@ export function buildRepeatGraph(input: {
     input.track?.(task)
     return task
   })
+  return { graph,
+    config: { configurable: { thread_id: input.runId }, signal: input.signal, recursionLimit: layout.recursionLimit } }
+}
+
+/** The one current graph compiler is shared by execution and read-only recovery
+ * inspection. Getting a checkpoint does not invoke wrappers, allocate an attempt
+ * or reconstruct a native launch permit. Graph names stay stable across restarts. */
+export function compileWorkflowGraph(version: WorkflowVersionV3, checkpointer: BaseCheckpointSaver,
+  action: (node: ReturnType<typeof compileRepeatLayout>['nodes'][number], state: RepeatGraphState) => Promise<Partial<RepeatGraphState>>) {
+  const layout = compileRepeatLayout(WorkflowVersionV3Schema.parse(version))
+  const graph = new StateGraph(RepeatState) as unknown as GraphBuilder
+  for (const node of layout.nodes) graph.addNode(node.name, (state) => action(node, state))
   graph.addEdge(START, layout.start)
   for (const edge of layout.edges) graph.addEdge(edge.sources.length === 1 ? edge.sources[0]! : edge.sources, edge.target)
   for (const boundary of layout.boundaries) {
@@ -87,6 +98,13 @@ export function buildRepeatGraph(input: {
     graph.addConditionalEdges(boundary.advance, route, mapping)
   }
   for (const sink of layout.sinks) graph.addEdge(sink, END)
-  return { graph: graph.compile({ checkpointer: input.checkpointer }),
-    config: { configurable: { thread_id: input.runId }, signal: input.signal, recursionLimit: layout.recursionLimit } }
+  return graph.compile({ checkpointer })
+}
+
+export async function readWorkflowCheckpoint(runId: string, version: WorkflowVersionV3,
+  saver: BaseCheckpointSaver): Promise<RepeatCheckpoint> {
+  const graph = compileWorkflowGraph(version, saver, async () => { throw new Error('Checkpoint inspection cannot execute workflow nodes.') })
+  const checkpoint = await graph.getState({ configurable: { thread_id: runId } })
+  if (checkpoint.values.runId !== undefined && checkpoint.values.runId !== runId) return repeatConflict('RUN_PIN_CONFLICT')
+  return checkpoint
 }

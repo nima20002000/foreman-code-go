@@ -4,7 +4,7 @@ import { canonicalGraphJson } from '@graphql/contracts/wave25'
 import type {
   GraphExecutionIdentity, NodeResolution, RepeatBlockV1, RepeatDecisionV1,
   RepeatExecutionIdentityV1, RepeatExitDataV1, RepeatOccurrenceIdentityV1,
-  RepeatOccurrenceV1, RepeatWorkflowVersionV1, WorkflowRelationship,
+  RepeatOccurrenceV1, WorkflowVersionV3, WorkflowRelationship,
 } from '@graphql/contracts/wave25'
 
 import { DomainError } from '../errors.js'
@@ -74,21 +74,21 @@ export function repeatExecutionIdentity(execution: HarnessExecution): GraphExecu
 export function repeatSlotId(runId: string, ref: RepeatNodeRef): string {
   return repeatId('repeat-slot', runId, ref.occurrence?.occurrenceId ?? 'outside', ref.nodeId)
 }
-export function repeatBlock(version: RepeatWorkflowVersionV1, blockId: string): RepeatBlockV1 {
+export function repeatBlock(version: WorkflowVersionV3, blockId: string): RepeatBlockV1 {
   const block = version.definition.repeat?.blocks.find((item) => item.id === blockId)
   if (!block) return repeatConflict('REPEAT_BLOCK_NOT_FOUND')
   return block
 }
-export function blockForNode(version: RepeatWorkflowVersionV1, nodeId: string): RepeatBlockV1 | undefined {
+export function blockForNode(version: WorkflowVersionV3, nodeId: string): RepeatBlockV1 | undefined {
   return version.definition.repeat?.blocks.find((block) => block.nodeIds.includes(nodeId))
 }
-export function assertRepeatScope(version: RepeatWorkflowVersionV1, scope: RepeatScope): void {
+export function assertRepeatScope(version: WorkflowVersionV3, scope: RepeatScope): void {
   if (scope.executionSemanticsVersion !== 3 || version.executionSemanticsVersion !== 3
     || version.definition.executionSemanticsVersion !== 3 || !scope.runId
     || scope.workspaceId !== version.workspaceId || scope.workflowId !== version.workflowId
     || scope.workflowVersionId !== version.id) repeatConflict('REPEAT_SCOPE_CONFLICT')
 }
-export function assertRepeatRef(version: RepeatWorkflowVersionV1, scope: RepeatScope, ref: RepeatNodeRef): void {
+export function assertRepeatRef(version: WorkflowVersionV3, scope: RepeatScope, ref: RepeatNodeRef): void {
   assertRepeatScope(version, scope)
   if (!version.definition.nodes.some((node) => node.id === ref.nodeId)) repeatConflict('WORKFLOW_NODE_NOT_FOUND')
   const block = blockForNode(version, ref.nodeId)
@@ -101,7 +101,7 @@ export function assertRepeatRef(version: RepeatWorkflowVersionV1, scope: RepeatS
     || !Number.isInteger(occurrence.occurrenceIndex) || occurrence.occurrenceIndex < 1
     || occurrence.occurrenceIndex > block.maxOccurrences) repeatConflict('REPEAT_OCCURRENCE_CONFLICT')
 }
-export function assertRepeatExecution(version: RepeatWorkflowVersionV1, scope: RepeatScope,
+export function assertRepeatExecution(version: WorkflowVersionV3, scope: RepeatScope,
   ref: RepeatNodeRef, execution: HarnessExecution): void {
   assertRepeatRef(version, scope, ref)
   const node = version.definition.nodes.find((item) => item.id === ref.nodeId)!
@@ -113,7 +113,7 @@ export function assertRepeatExecution(version: RepeatWorkflowVersionV1, scope: R
 }
 
 /** Current DAG/barrier algorithm on the validated block-induced subgraph. No saved-version retagging. */
-export function occurrenceTopology(version: RepeatWorkflowVersionV1, occurrence: RepeatOccurrenceIdentityV1): ExecutionTopology {
+export function occurrenceTopology(version: WorkflowVersionV3, occurrence: RepeatOccurrenceIdentityV1): ExecutionTopology {
   assertRepeatScope(version, occurrence.scope)
   const block = repeatBlock(version, occurrence.blockId)
   const members = new Set(block.nodeIds)
@@ -122,7 +122,7 @@ export function occurrenceTopology(version: RepeatWorkflowVersionV1, occurrence:
     edges: version.definition.edges.filter((edge) => edge.kind === 'execution' && members.has(edge.source) && members.has(edge.target)),
   } })
 }
-export function decideRepeatAdmission(version: RepeatWorkflowVersionV1, ref: RepeatNodeRef,
+export function decideRepeatAdmission(version: WorkflowVersionV3, ref: RepeatNodeRef,
   resolutions: ReadonlyMap<string, RepeatResolution>) {
   if (!version.definition.nodes.some((node) => node.id === ref.nodeId)) repeatConflict('WORKFLOW_NODE_NOT_FOUND')
   if (ref.occurrence) assertRepeatRef(version, ref.occurrence.scope, ref)
@@ -141,7 +141,7 @@ export function decideRepeatAdmission(version: RepeatWorkflowVersionV1, ref: Rep
   return decideExecutionAdmission(ref.occurrence ? occurrenceTopology(version, ref.occurrence)
     : compileExecutionTopology(version), ref.nodeId, values)
 }
-export function assertRepeatBodyComplete(version: RepeatWorkflowVersionV1, occurrence: RepeatOccurrenceIdentityV1,
+export function assertRepeatBodyComplete(version: WorkflowVersionV3, occurrence: RepeatOccurrenceIdentityV1,
   resolutions: ReadonlyMap<string, RepeatResolution>): void {
   const block = repeatBlock(version, occurrence.blockId)
   for (const id of block.nodeIds) {
@@ -153,7 +153,7 @@ export function assertRepeatBodyComplete(version: RepeatWorkflowVersionV1, occur
 }
 
 /** Caller loads the exact accepted row and validates its complete schema first. */
-export function assertRepeatSource(version: RepeatWorkflowVersionV1, scope: RepeatScope,
+export function assertRepeatSource(version: WorkflowVersionV3, scope: RepeatScope,
   source: RepeatSource, execution: HarnessExecution, accepted: boolean): void {
   const ref = { nodeId: source.execution.workflowNodeId, occurrence: source.occurrence }
   assertRepeatExecution(version, scope, ref, execution)
@@ -205,7 +205,7 @@ export function repeatSuccessorInput(initial: RepeatEntryInput, previous: Repeat
 }
 
 /** Deterministic business rule over a fully parsed accepted envelope; not launch authority. */
-export function decideRepeatExit(version: RepeatWorkflowVersionV1, occurrence: RepeatOccurrenceV1,
+export function decideRepeatExit(version: WorkflowVersionV3, occurrence: RepeatOccurrenceV1,
   execution: HarnessExecution, envelope: { routing: { outcome: string }; data: RepeatExitDataV1 }, decidedAt: string): RepeatDecisionV1 {
   const identity = occurrence.identity, block = repeatBlock(version, identity.blockId)
   assertRepeatExecution(version, identity.scope, { nodeId: block.exitNodeId, occurrence: identity }, execution)
@@ -225,7 +225,7 @@ export function decideRepeatExit(version: RepeatWorkflowVersionV1, occurrence: R
 }
 
 /** Only a FINAL decision can publish external relationship state. */
-export function finalRepeatExport(version: RepeatWorkflowVersionV1, local: RepeatResolution,
+export function finalRepeatExport(version: WorkflowVersionV3, local: RepeatResolution,
   decision: RepeatDecisionV1): RepeatResolution {
   if (decision.reason === 'repeat' || decision.target.kind === 'next_occurrence') repeatConflict('REPEAT_EGRESS_UNRESOLVED')
   if (local.value.resolution !== 'succeeded' || local.ref.nodeId !== decision.exitExecution.workflowNodeId
@@ -243,7 +243,7 @@ export function finalRepeatExport(version: RepeatWorkflowVersionV1, local: Repea
 }
 
 export function bindRepeatNodeInput(input: {
-  version: RepeatWorkflowVersionV1; runInput: RunInput; recipient: HarnessExecution; ref: RepeatNodeRef;
+  version: WorkflowVersionV3; runInput: RunInput; recipient: HarnessExecution; ref: RepeatNodeRef;
   occurrence: RepeatOccurrenceV1 | null; entry: RepeatEntryInput | null; predecessors: RepeatSource[];
 }): { input: RepeatNodeInput; digest: string; bindings: RepeatInputBinding[] } {
   const { ref, recipient, occurrence, entry } = input
@@ -277,7 +277,7 @@ export function bindRepeatNodeInput(input: {
   })) }
 }
 
-export function repeatInternalEdges(version: RepeatWorkflowVersionV1, block: RepeatBlockV1): WorkflowRelationship[] {
+export function repeatInternalEdges(version: WorkflowVersionV3, block: RepeatBlockV1): WorkflowRelationship[] {
   const members = new Set(block.nodeIds)
   return version.definition.edges.filter((edge) => edge.kind === 'execution' && members.has(edge.source) && members.has(edge.target))
 }
@@ -292,7 +292,7 @@ export interface RepeatGraphLayout {
 }
 /** O(static graph size), not O(cap). Only the two guarded block boundaries can
  * feed a body entry again; authored edges remain an acyclic, immutable graph. */
-export function compileRepeatLayout(version: RepeatWorkflowVersionV1): RepeatGraphLayout {
+export function compileRepeatLayout(version: WorkflowVersionV3): RepeatGraphLayout {
   const topology = compileExecutionTopology(version)
   const name = (kind: string, id: string) => repeatId(`repeat-${kind}`, id)
   const result: RepeatGraphLayout = { nodes: [], edges: [], boundaries: [], start: '', sinks: [], recursionLimit: 2 }

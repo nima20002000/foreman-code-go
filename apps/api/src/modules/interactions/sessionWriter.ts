@@ -126,6 +126,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   readonly harness: NativeHarnessSessionManager['harness']
   private readonly active = new Map<string, SessionWriteLease>()
   private controlTail: Promise<unknown> = Promise.resolve()
+  private disposal: Promise<void> | undefined
 
   constructor(
     private readonly manager: NativeHarnessSessionManager,
@@ -155,6 +156,22 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       : undefined
   }
 
+  /** Synchronous counterpart of lease.check for use while G1 holds the lane.
+   * The SQL verifier additionally checks the actual token, generation and DB
+   * clock through that SAME transaction, never a detached heartbeat query. */
+  assertCapturedLease(session: NativeSessionReference, lease: SessionWriteLease): void {
+    if (this.active.get(session.nativeSessionId) !== lease || lease.guard.signal.aborted
+      || session.harness !== this.harness || lease.previous.nativeSessionId !== session.nativeSessionId) {
+      throw new DomainError('SESSION_LANE_LEASE_LOST', 'The original native source no longer owns its writer lane.', 409)
+    }
+  }
+
+  capturedLease(session: NativeSessionReference): SessionWriteLease | undefined {
+    const lease = this.active.get(session.nativeSessionId)
+    if (lease) this.assertCapturedLease(session, lease)
+    return lease
+  }
+
   private ensure(session: NativeSessionReference, status: NativeSessionLane['observedStatus']) {
     return this.coordination.ensureLane({
       id: `lane-${randomUUID()}`, harness: session.harness, nativeSessionId: session.nativeSessionId,
@@ -163,7 +180,23 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     })
   }
 
+  /** Positively close every transport owned by this exact manager, including
+   * creates that failed before a native ID was returned. Never infer disposal
+   * from an empty local session map. New writes stay fenced after any attempt. */
+  dispose(): Promise<void> {
+    if (this.disposal) return this.disposal
+    if (!this.manager.dispose) return Promise.reject(new DomainError('NATIVE_DISPOSAL_UNSUPPORTED',
+      'The native manager cannot prove closure of an unbound transport.', 409))
+    const active = [...this.active.values()]
+    const operation = Promise.resolve().then(() => this.manager.dispose!()).then(async () => {
+      await Promise.all(active.map((lease) => lease.finished))
+    })
+    this.disposal = operation
+    return operation
+  }
+
   async createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
+    if (this.disposal) throw new DomainError('NATIVE_MANAGER_DISPOSED', 'The captured native manager is disposed.', 409)
     const session = await this.manager.createSession(input, signal)
     await this.ensure(session, 'idle')
     return session
@@ -171,6 +204,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
 
   async acquire(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<SessionWriteLease> {
     signal?.throwIfAborted()
+    if (this.disposal) throw new DomainError('NATIVE_MANAGER_DISPOSED', 'The captured native manager is disposed.', 409)
     const previous = await this.ensure(session, 'uncertain')
     const token = `writer-${randomUUID()}`
     // Preserve the unresolved turn correlation through attach/control operations and failed preflight.

@@ -5,8 +5,13 @@ import {
 } from '@graphql/contracts'
 import { assertGraphTransaction, beforeGraphCommit, poisonGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import { graphSourceDigest } from '../run-graph/publication.js'
-import { readWorkflowClosure } from './workflowClosure.js'
+import { readWorkflowClosure, readUnboundWorkflowClosure, type UnboundWorkflowClosure } from './workflowClosure.js'
+import { assertReviewJobTerminalProofLocked } from './reviewNativeProof.js'
 import { CANCELED_INTERACTION_RETIRED_SQL, decisionDigest } from './wave25/publication.js'
+import { assertWorkflowApprovalAckLocked } from './nativeApprovalProof.js'
+import { readAcceptedRepeatRunLocked } from '../runs/repeatStartRead.js'
+import { readRepeatExecutionLocked } from '../runs/repeatPostgres.js'
+import { assertWorkflowNativeNotSubmittedLocked, readWorkflowNativeEntryLocked, workflowNativeReservation, type WorkflowNativeEntryRecord } from '../runs/workflowNativeEntry.js'
 import { assertRepeatNativeClosure, repeatNativePending } from './repeatNativeEvidence.js'
 
 interface SessionRow { reference: unknown; finalized: boolean }
@@ -15,8 +20,10 @@ interface ClosedExecution { execution: HarnessExecution; session: NativeSessionR
  * no-submission or graph-publication capability. No caller-supplied proof is read. */
 export interface RepeatNativeSettlementCheckpoint {
   execution: HarnessExecution
-  session: NativeSessionReference
-  generation: string
+  session: NativeSessionReference | null
+  generation: string | null
+  noSubmission?: WorkflowNativeEntryRecord
+  unbound?: UnboundWorkflowClosure
 }
 
 /** SQL-only boundary, on the SAME Run/head/owner transaction as repeat routing.
@@ -87,6 +94,7 @@ async function settleExact(sql: GraphTransactionSql, runId: string,
   for (const execution of reviewers) executions.set(execution.id, execution)
   const ordered = [...executions.values()].sort((left, right) => left.id.localeCompare(right.id))
   const closed: ClosedExecution[] = []
+  const unbound: RepeatNativeSettlementCheckpoint[] = []
   for (const execution of ordered) {
     await assertExecutionResourcesSettled(sql, runId, execution.id)
     const native = (await sql.query<SessionRow>(
@@ -95,10 +103,23 @@ async function settleExact(sql: GraphTransactionSql, runId: string,
     const session = native ? NativeSessionReferenceSchema.parse(native.reference) : null
     await assertInteractionsSettled(sql, runId, execution, session, parent.rows[0], parent.rows[0].negative_cleanup === true)
     if (!native || !session) {
-      // Neither an empty SQL ledger nor a failed/canceled business result is an
-      // original no-submission receipt. Until the coordinator has an explicit,
-      // durable pre-dispatch proof port, this negative cleanup stays pending.
-      return repeatNativePending('REPEAT_BOUNDARY_PENDING')
+      if (execution.nativeSessionId || execution.result?.outcome === 'succeeded') return repeatNativePending('REPEAT_NATIVE_IDENTITY_CONFLICT')
+      const snapshot = await readAcceptedRepeatRunLocked(sql, runId)
+      const stored = await readRepeatExecutionLocked(sql, snapshot, execution.id)
+      const scope = { workspaceId: snapshot.run.workspaceId, workflowId: snapshot.run.workflowId,
+        workflowVersionId: snapshot.run.workflowVersionId, runId, executionSemanticsVersion: 3 as const }
+      const reservation = workflowNativeReservation(scope, stored.ref, execution, stored.inputDigest)
+      const entry = await readWorkflowNativeEntryLocked(sql, reservation)
+      if (entry.phase === 'not_submitted') {
+        const proof = await assertWorkflowNativeNotSubmittedLocked(sql, reservation)
+        unbound.push({ execution, session: null, generation: null, noSubmission: proof })
+      } else {
+        if (entry.phase !== 'entered') return repeatNativePending('REPEAT_BOUNDARY_PENDING')
+        const proof = await readUnboundWorkflowClosure(sql, execution)
+        if (!proof) return repeatNativePending('REPEAT_CLEANUP_PENDING')
+        unbound.push({ execution, session: null, generation: proof.durableGeneration, unbound: proof })
+      }
+      continue
     }
     const configuration = (await sql.query<{ harness: string; agent_id: string; workspace_id: string; pinned: boolean }>(
       `select c.record#>>'{harness,harness}' as harness,c.agent_id,c.workspace_id,
@@ -129,7 +150,7 @@ async function settleExact(sql: GraphTransactionSql, runId: string,
     [item.execution.id, JSON.stringify(item.session)])
     if (updated.rowCount !== 1) return repeatNativePending('REPEAT_NATIVE_IDENTITY_CONFLICT')
   }
-  return closed.map(({ execution, session, generation }) => structuredClone({ execution, session, generation }))
+  return [...closed.map(({ execution, session, generation }) => structuredClone({ execution, session, generation })), ...unbound]
 }
 
 async function readExecution(sql: GraphTransactionSql, runId: string, id: string): Promise<HarnessExecution> {
@@ -178,6 +199,7 @@ async function readSettledReviewers(sql: GraphTransactionSql, runId: string,
         // preflight or credential boundary was never crossed.
         return repeatNativePending('REPEAT_BOUNDARY_PENDING')
       }
+      await assertReviewJobTerminalProofLocked(sql, job, row.execution_id)
       const execution = result.get(row.execution_id) ?? await readExecution(sql, runId, row.execution_id)
       const native = NativeSessionReferenceSchema.parse(row.native_reference)
       if (execution.agentId !== job.reviewerAgentId || execution.nativeSessionId !== job.nativeSessionId
@@ -229,10 +251,8 @@ async function assertInteractionsSettled(sql: GraphTransactionSql, runId: string
         decision: decisionDigest(interaction) })
       if (receipt && receipt.effect_digest !== expected) return repeatNativePending('REPEAT_APPROVAL_RECEIPT_CONFLICT')
       if (resume?.state !== 'resumed' || !resume.approval_native_ack_id || !receipt) return repeatNativePending('APPROVAL_SETTLEMENT_PENDING')
-      // The legacy ack ID plus graph.resume is not an occurrence-qualified v3
-      // original-source proof. Until that producer/readback is composed, do not
-      // let even a delivered, resumed enum retire this approval or route work.
-      return repeatNativePending('REPEAT_APPROVAL_SOURCE_PROOF_REQUIRED')
+      await assertWorkflowApprovalAckLocked(sql, interaction)
+
     }
     if (rows.length < 100) return
     after = rows[rows.length - 1]!.id

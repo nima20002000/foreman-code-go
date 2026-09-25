@@ -93,7 +93,7 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
 export async function resumeApproval(deps: ApprovalRuntimeDependencies, interaction: DurableInteraction): Promise<void> {
   if (interaction.deliveryState !== 'delivered' || interaction.status === 'canceled') return
   if (!deps.atomicResume) return fail('GRAPH_RESUME_ATOMIC_CONSUMER_REQUIRED',
-    'The v2 checkpoint consumer is not attached. Delivery is persisted; no native response or graph callback was replayed.')
+    'The current checkpoint consumer is not attached. Delivery is persisted; no native response or graph callback was replayed.')
   const claim = await deps.repository.delivery.claimAtomicGraphResume(interaction.id, randomUUID())
   if (!claim) return
   let error: string | undefined

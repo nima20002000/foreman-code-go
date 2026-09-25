@@ -29,7 +29,12 @@ function fixture() {
     executionId: 'exit-execution-1', attempt: 1, occurrence: occurrence.identity }
   const snapshot = RepeatGraphSnapshotV3Schema.parse({ kind: 'snapshot', protocolVersion: 1, scope, asOfSequence: '1', retentionFloor: '0',
     historyCoverage: 'from_admission', topology: repeatGraphTopologyV3(version), state: {
-      run: { executionState: 'running', outcome: 'pending', stopRequested: false }, occurrences: [occurrence],
+      run: { executionState: 'running', outcome: 'pending', stopRequested: false,
+        cleanupPending: false, unsettledReviewCount: 0, pendingInteractionCount: 0 },
+      nodes: version.definition.nodes.map((node) => ({ state: { workflowNodeId: node.id, lifecycle: 'not_activated' },
+        activity: { workflowNodeId: node.id, status: 'none' }, attention: { workflowNodeId: node.id,
+          pendingInteractionCount: 0, unsettledReviewCount: 0, cleanupPending: false, telemetry: 'current' } })),
+      inputBindings: [], interactions: [], reviews: [], occurrences: [occurrence],
       executions: [{ identity, inputDigest: digest, previousExecutionId: null, state: 'completed', resultOutcome: 'succeeded' }],
       resolutions: [], results: [], bindings: [], decisions: [],
     } })
@@ -102,9 +107,9 @@ describe('ENG04 explicit v3 graph metadata contracts', () => {
     assert.equal(RepeatGraphFactV3Schema.safeParse({ ...f.facts[2], decision: { ...(f.facts[2] as Extract<RepeatGraphFactV3,{type:'repeat.decision'}>).decision,
       resultData: { latestDeliverable: 'private', remainingFindings: [] } } }).success, false)
   })
-  it('does not widen legacy or unknown-version acceptance', () => {
+  it('shares the current graph scope and rejects retired or unknown semantics', () => {
     const f = fixture()
-    assert.equal(RunGraphScopeSchema.safeParse(f.scope).success, false)
+    assert.equal(RunGraphScopeSchema.safeParse(f.scope).success, true)
     assert.equal(CanonicalRunGraphScopeSchema.safeParse({ ...f.scope, executionSemanticsVersion: 4 }).success, false)
     for (const executionSemanticsVersion of [1,2]) assert.equal(CanonicalRunGraphScopeSchema.safeParse({ ...f.scope, executionSemanticsVersion }).success, false)
   })

@@ -1,18 +1,21 @@
 import { z } from 'zod'
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecution, type WorkflowRun } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecution } from '@graphql/contracts'
 import {
   AcceptedCurrentNodeResultSchema, GraphDigestSchema, GraphExecutionIdentitySchema, GraphIdSchema, NodeResolutionSchema,
   RepeatDecisionMetadataV1Schema, RepeatDecisionV1Schema, RepeatExecutionIdentityV1Schema,
-  RepeatOccurrenceIdentityV1Schema, RepeatOccurrenceV1Schema, RepeatWorkflowVersionV1Schema,
+  RepeatOccurrenceIdentityV1Schema, RepeatOccurrenceV1Schema, WorkflowVersionV3Schema,
   canonicalGraphJson, parseRepeatExitResultV1, validateRepeatDecisionV1, validateRepeatSuccessorV1,
-  type RepeatDecisionMetadataV1, type RepeatDecisionV1, type RepeatOccurrenceV1, type RepeatWorkflowVersionV1,
+  type WorkflowRunV3, type RepeatDecisionMetadataV1, type RepeatDecisionV1, type RepeatOccurrenceV1, type WorkflowVersionV3,
 } from '@graphql/contracts/wave25'
 
+import { enterWorkflowNativeLocked, releaseWorkflowNativeEntryPermit, reserveWorkflowNativeEntryLocked, readWorkflowNativeEntryLocked,
+  sealWorkflowNativeEntryLocked, workflowNativeReservation, type WorkflowNativeEntryPermit, type WorkflowNativeEntryRecord } from './workflowNativeEntry.js'
 import { assertGraphTransaction, beforeGraphCommit, type GraphSqlClient, type GraphTransactionSql } from '../run-graph/connection.js'
 import type { RunOwnership } from './ownership.js'
 import type { AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
 import { canonicalRepeatEffectReceipt } from '../run-graph/repeatPublication.js'
 import { assertRepeatCanonicalReceiptLocked, requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
+import { readWorkflowClosure, readUnboundWorkflowClosure } from '../interactions/workflowClosure.js'
 import { assertApprovalTerminalSettlement } from '../interactions/wave25/resume.js'
 import { settleRepeatNativeExecutionLocked } from '../interactions/repeatNativeSettlement.js'
 import { visitRepeatNativeAttemptsLocked, type RepeatNativeAttemptSelection } from './repeatNativeAttempts.js'
@@ -31,7 +34,7 @@ import {
 } from './repeatResolution.js'
 
 /** This is an internal projection of the SHELL-validated v3 Run, not a new wire schema. */
-export type RepeatRuntimeRun = Pick<WorkflowRun, 'id' | 'workspaceId' | 'workflowId' | 'workflowVersionId'
+export type RepeatRuntimeRun = Pick<WorkflowRunV3, 'id' | 'workspaceId' | 'workflowId' | 'workflowVersionId'
   | 'agentConfigurationVersionIds' | 'approval' | 'input' | 'executionState'> & { executionSemanticsVersion: 3 }
 export type RepeatFact =
   | { type: 'repeat.occurrence'; occurrence: RepeatOccurrenceV1 }
@@ -72,11 +75,11 @@ export interface RepeatRepositoryHost {
   /** Lock order: Run (already held), graph head, exact execution children, receipts.
    * Parse the actual v3 Run union, retain all admission/approval/configuration pins,
    * and open the existing publication. Never initialize a missing history head. */
-  openLocked(sql: GraphTransactionSql, scope: RepeatScope, runRecord: unknown, version: RepeatWorkflowVersionV1): Promise<RepeatLockedHooks>
+  openLocked(sql: GraphTransactionSql, scope: RepeatScope, runRecord: unknown, version: WorkflowVersionV3): Promise<RepeatLockedHooks>
 }
 interface Context {
-  sql: GraphTransactionSql; scope: RepeatScope; version: RepeatWorkflowVersionV1; hooks: RepeatLockedHooks
-  stopped: boolean; now: string; fence: { ownerId: string; fence: string }
+  sql: GraphTransactionSql; scope: RepeatScope; version: WorkflowVersionV3; hooks: RepeatLockedHooks
+  stopped: boolean; cleanup: boolean; now: string; fence: { ownerId: string; fence: string }
 }
 interface StoredOccurrence { occurrence: RepeatOccurrenceV1; input: RepeatEntryInput }
 export interface StoredRepeatExecution {
@@ -130,11 +133,11 @@ export async function readRepeatDecision(sql: GraphSqlClient, scope: RepeatScope
  * native launch, approval delivery, terminal rewrite, new owner, or detached pool. */
 export class RepeatRunRepository {
   constructor(private readonly owner: Pick<RunOwnership, 'runId' | 'assertOwned' | 'oneShotConnection' | 'readOneShotFence'>,
-    private readonly host: RepeatRepositoryHost, expectedVersion: RepeatWorkflowVersionV1) {
-    this.expectedVersion = RepeatWorkflowVersionV1Schema.parse(expectedVersion)
+    private readonly host: RepeatRepositoryHost, expectedVersion: WorkflowVersionV3) {
+    this.expectedVersion = WorkflowVersionV3Schema.parse(expectedVersion)
     if (!host || typeof host.openLocked !== 'function') repeatConflict('REPEAT_SHELL_WIRING_REQUIRED')
   }
-  private readonly expectedVersion: RepeatWorkflowVersionV1
+  private readonly expectedVersion: WorkflowVersionV3
   private readonly launchPermits = new Set<string>()
 
   /** A durable claim read after recovery cannot reconstruct this one-use permit. */
@@ -146,13 +149,13 @@ export class RepeatRunRepository {
   private async transaction<T>(work: (context: Context) => Promise<T>): Promise<T> {
     return this.owner.oneShotConnection().transaction(async (sql) => {
       this.owner.assertOwned()
-      const found = await sql.query<{ run: unknown; version: unknown; stopped: boolean; state: string; now: string }>(
+      const found = await sql.query<{ run: unknown; version: unknown; stopped: boolean; cleanup: boolean; state: string; now: string }>(
         `select r.record as run,v.record as version,r.stop_requested_at is not null as stopped,
-          r.execution_state as state,transaction_timestamp()::text as now
+          r.execution_state as state,exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as cleanup,transaction_timestamp()::text as now
          from runs r join workflow_versions v on v.id=r.workflow_version_id where r.id=$1 for update of r`, [this.owner.runId])
       const row = found.rows[0]
       if (!row) return repeatConflict('RUN_NOT_FOUND')
-      const version = RepeatWorkflowVersionV1Schema.parse(row.version)
+      const version = WorkflowVersionV3Schema.parse(row.version)
       if (!sameRepeatValue(version, this.expectedVersion)) return repeatConflict('RUN_PIN_CONFLICT')
       const scope: RepeatScope = { workspaceId: version.workspaceId, workflowId: version.workflowId,
         workflowVersionId: version.id, runId: this.owner.runId, executionSemanticsVersion: 3 }
@@ -164,7 +167,7 @@ export class RepeatRunRepository {
         || !sameRepeatValue(run.approval, version.approval)) return repeatConflict('RUN_PIN_CONFLICT')
       const fence = await this.owner.readOneShotFence(sql)
       // Recheck after publication/receipt finalizers, not merely before staging.
-      const result = await work({ sql, scope, version, hooks, stopped: row.stopped, now: new Date(row.now).toISOString(), fence })
+      const result = await work({ sql, scope, version, hooks, stopped: row.stopped, cleanup: row.cleanup, now: new Date(row.now).toISOString(), fence })
       if (!sameRepeatValue(fence, await this.owner.readOneShotFence(sql))) return repeatConflict('RUN_OWNERSHIP_LOST')
       beforeGraphCommit(sql, async () => {
         if (!sameRepeatValue(fence, await this.owner.readOneShotFence(sql))) return repeatConflict('RUN_OWNERSHIP_LOST')
@@ -173,7 +176,7 @@ export class RepeatRunRepository {
     })
   }
   private active(context: Context): void {
-    if (context.stopped) repeatConflict('GRAPH_STOP_CONFLICT')
+    if (context.stopped || context.cleanup) repeatConflict('GRAPH_STOP_CONFLICT')
     if (['completed', 'interrupted'].includes(context.hooks.run.executionState)) repeatConflict('GRAPH_TERMINAL_CONFLICT')
   }
   private async effect(context: Context, kind: RepeatEffect['kind'], entityId: string, value: unknown,
@@ -292,7 +295,10 @@ export class RepeatRunRepository {
         await native.assertLaunchReceiptLocked(context.sql, claim, digest)
         return undefined // a receipt, even from our owner, NEVER recreates a permit
       }
-      if (await repeatPossibleSubmissionLocked(context.sql, stored.execution)) return repeatConflict('NATIVE_SESSION_START_UNCERTAIN')
+      const reservation = await readWorkflowNativeEntryLocked(context.sql,
+        workflowNativeReservation(context.scope, stored.ref, stored.execution, stored.inputDigest))
+      if (reservation.phase !== 'reserved' || reservation.transition !== null
+        || await repeatPossibleSubmissionLocked(context.sql, stored.execution)) return repeatConflict('NATIVE_SESSION_START_UNCERTAIN')
       await context.hooks.assertAuthorityLocked(context.sql)
       await native.assertLaunchLocked(context.sql, stored.execution, stored.ref, paths)
       const next = HarnessExecutionSchema.parse({ ...stored.execution, ...paths, state: 'starting', startedAt: context.now })
@@ -311,6 +317,55 @@ export class RepeatRunRepository {
     return execution
   }
 
+  /** This is the final known-COMMIT gate BEFORE mkdir, manager allocation,
+   * credential preflight, create or attach. SQL readback cannot recreate it. */
+  async beginNativeEntry(executionId: string): Promise<WorkflowNativeEntryPermit> {
+    this.owner.assertOwned()
+    if (!this.launchPermits.delete(executionId)) return repeatConflict('NATIVE_SESSION_START_UNCERTAIN')
+    return this.nativeEntry(executionId)
+  }
+
+  async authorizeNativeSubmission(executionId: string, prepared: WorkflowNativeEntryPermit): Promise<WorkflowNativeEntryPermit> {
+    return this.nativeEntry(executionId, prepared)
+  }
+
+  private async nativeEntry(executionId: string, prepared?: WorkflowNativeEntryPermit): Promise<WorkflowNativeEntryPermit> {
+    let committedSql: GraphTransactionSql | undefined
+    await this.transaction(async (context) => {
+      this.active(context)
+      const stored = await this.execution(context, executionId)
+      await this.recordedEffect(context, 'input.bind', executionId)
+      await this.launchReceipt(context, stored)
+      await context.hooks.assertAdmissionLocked(context.sql, stored.execution, stored.ref)
+      if (stored.execution.nativeSessionId || stored.execution.state !== 'starting') return repeatConflict('NATIVE_ENTRY_CONFLICT')
+      const claim = repeatLaunchClaim(context.scope, stored.ref, stored.execution, stored.inputDigest)
+      const entry: WorkflowNativeEntryRecord = {
+        reservation: workflowNativeReservation(context.scope, stored.ref, stored.execution, stored.inputDigest),
+        phase: prepared ? 'entered' : 'prepared', ownerId: context.fence.ownerId, ownerFence: context.fence.fence,
+        launchDigest: repeatDigest(claim),
+      }
+      const change = this.nativeChange(context, stored, stored.execution, 'native_entry', entry)
+      await this.publishNative(context, change, () => enterWorkflowNativeLocked(context.sql, this.owner, entry, {
+        scope: context.scope, evidence: { sourceKind: 'execution', sourceId: change.sourceId, sourceRevision: change.sourceRevision },
+        sourceDigest: change.sourceDigest, effect: null,
+      }, prepared))
+      committedSql = context.sql
+    })
+    if (!committedSql) return repeatConflict('NATIVE_ENTRY_CONFLICT')
+    return releaseWorkflowNativeEntryPermit(committedSql, this.owner, executionId)
+  }
+
+  /** SQL admission checks are intentionally distinct from a captured native
+   * source/lease. They cannot acknowledge submission, terminal state or closure. */
+  async assertExecutionAdmission(executionId: string): Promise<void> {
+    await this.transaction(async (context) => {
+      this.active(context)
+      const stored = await this.execution(context, executionId)
+      await this.recordedEffect(context, 'input.bind', executionId)
+      await context.hooks.assertAdmissionLocked(context.sql, stored.execution, stored.ref)
+    })
+  }
+
   private nativeChange(context: Context, stored: StoredRepeatExecution, next: HarnessExecution,
     kind: RepeatNativeChange['kind'], source: unknown, effect: RepeatNativeChange['effect'] = null): RepeatNativeChange {
     const sourceDigest = repeatDigest(source, 8 * 1024 * 1024)
@@ -318,11 +373,12 @@ export class RepeatRunRepository {
       source, sourceDigest, sourceId: repeatId('repeat-native', context.scope.runId,
         stored.ref.occurrence?.occurrenceId ?? 'outside', next.id, kind, sourceDigest), sourceRevision: '1', effect }
   }
-  private async publishNative(context: Context, change: RepeatNativeChange): Promise<void> {
+  private async publishNative(context: Context, change: RepeatNativeChange, additionalMutation?: () => Promise<void>): Promise<void> {
     const native = requireRepeatNativeHooks(context.hooks.native)
     let mutations = 0
     await native.publishLocked(context.sql, change, async () => {
       if (++mutations !== 1) return repeatConflict('REPEAT_PUBLICATION_CONFLICT')
+      await additionalMutation?.()
       const updated = await context.sql.query(`update harness_executions set record=$3::jsonb
         where id=$1 and run_id=$2 and record=$4::jsonb and accepted=false returning id`,
       [change.next.id, context.scope.runId, JSON.stringify(change.next), JSON.stringify(change.previous)])
@@ -343,8 +399,26 @@ export class RepeatRunRepository {
     await native.assertLaunchReceiptLocked(context.sql, claim, digest)
   }
 
-  /** SQL-only repair of bindWorkflowSession -> execution.nativeSessionId. It
-   * never creates, attaches, chooses a replacement, or starts a native session. */
+  private async assertSession(context: Context, execution: HarnessExecution,
+    session: ReturnType<typeof NativeSessionReferenceSchema.parse>): Promise<void> {
+    if (!execution.nativeSessionId || session.nativeSessionId !== execution.nativeSessionId
+      || execution.runId !== context.scope.runId
+      || context.version.agentConfigurationVersionIds[execution.agentId] !== execution.agentConfigurationVersionId) {
+      return repeatConflict('NATIVE_SESSION_IDENTITY_MISMATCH')
+    }
+    const row = (await context.sql.query<{ record: unknown; reference: unknown }>(
+      `select c.record,s.reference from agent_configuration_versions c
+       join execution_native_sessions s on s.execution_id=$1
+       where c.id=$2 and c.agent_id=$3 and c.workspace_id=$4 for share of c,s`,
+      [execution.id, execution.agentConfigurationVersionId, execution.agentId, context.scope.workspaceId])).rows[0]
+    if (!row || !sameRepeatValue(NativeSessionReferenceSchema.parse(row.reference), session)
+      || AgentConfigurationVersionSchema.parse(row.record).harness.harness !== session.harness) {
+      return repeatConflict('NATIVE_SESSION_IDENTITY_MISMATCH')
+    }
+  }
+
+  /** Recovery reads the original atomic session binding. A partial row can
+   * never repair an execution or reconstruct a dispatch permit. */
   async recoverSession(executionId: string): Promise<HarnessExecution> {
     return this.transaction(async (context) => {
       this.active(context)
@@ -353,34 +427,17 @@ export class RepeatRunRepository {
       if (stored.execution.state === 'completed') return stored.execution
       await context.hooks.assertAuthorityLocked(context.sql)
       await this.launchReceipt(context, stored)
-      const rows = await context.sql.query<{ reference: unknown }>(
-        'select reference from execution_native_sessions where execution_id=$1 for share', [executionId])
-      if (!rows.rows[0]) {
-        if (stored.execution.nativeSessionId) return repeatConflict('NATIVE_SESSION_IDENTITY_MISMATCH')
-        return stored.execution // absence is uncertainty, never permission to create
+      if (stored.execution.nativeSessionId) {
+        const native = (await context.sql.query<{ reference: unknown }>(
+          'select reference from execution_native_sessions where execution_id=$1 for share', [executionId])).rows[0]
+        if (!native) return repeatConflict('NATIVE_SESSION_IDENTITY_MISMATCH')
+        await this.assertSession(context, stored.execution, NativeSessionReferenceSchema.parse(native.reference))
       }
-      const session = NativeSessionReferenceSchema.parse(rows.rows[0].reference)
-      await this.assertSession(context, stored.execution, session)
-      if (stored.execution.nativeSessionId) return stored.execution
-      const next = HarnessExecutionSchema.parse({ ...stored.execution, nativeSessionId: session.nativeSessionId })
-      await this.publishNative(context, this.nativeChange(context, stored, next, 'session_recovery', {
-        scope: context.scope, ref: stored.ref, previous: stored.execution, next, session,
-      }))
-      return next
+      // No session means possibly dispatched; the runtime never submits again.
+      return stored.execution
     })
   }
-  private async assertSession(context: Context, execution: HarnessExecution,
-    session: ReturnType<typeof NativeSessionReferenceSchema.parse>): Promise<void> {
-    const configs = await context.sql.query<{ id: string; agent_id: string; workspace_id: string; record: unknown }>(
-      'select id,agent_id,workspace_id,record from agent_configuration_versions where id=$1 and workspace_id=$2 and agent_id=$3 for share',
-      [execution.agentConfigurationVersionId, context.scope.workspaceId, execution.agentId])
-    const row = configs.rows[0], configuration = AgentConfigurationVersionSchema.parse(row?.record)
-    if (!row || row.id !== configuration.id || row.agent_id !== configuration.agentId
-      || row.workspace_id !== configuration.workspaceId || configuration.id !== execution.agentConfigurationVersionId
-      || context.version.agentConfigurationVersionIds[execution.agentId] !== configuration.id
-      || session.harness !== configuration.harness.harness
-      || execution.nativeSessionId && execution.nativeSessionId !== session.nativeSessionId) return repeatConflict('NATIVE_SESSION_IDENTITY_MISMATCH')
-  }
+
   async exactSession(executionId: string): Promise<ReturnType<typeof NativeSessionReferenceSchema.parse>> {
     return this.transaction(async (context) => {
       this.active(context)
@@ -444,22 +501,67 @@ export class RepeatRunRepository {
       const next = prepareRepeatNativeUpdate(context.version, context.scope, stored.ref, stored.execution, incoming)
       await this.launchReceipt(context, stored)
       await context.hooks.assertAuthorityLocked(context.sql)
+      const original = await native.assertUpdateLocked(context.sql, structuredClone(stored.execution), structuredClone(incoming),
+        structuredClone(stored.ref), evidence)
       const rows = await context.sql.query<{ reference: unknown }>(
         'select reference from execution_native_sessions where execution_id=$1 for share', [incoming.id])
       const session = NativeSessionReferenceSchema.parse(rows.rows[0]?.reference)
       if (!incoming.nativeSessionId || incoming.nativeSessionId !== session.nativeSessionId
         || !sameRepeatValue(session, evidence.session)) return repeatConflict('NATIVE_SESSION_IDENTITY_MISMATCH')
       await this.assertSession(context, incoming, session)
-      await native.assertUpdateLocked(context.sql, structuredClone(stored.execution), structuredClone(incoming),
-        structuredClone(stored.ref), structuredClone(evidence))
       if (incoming.state === 'completed') await assertApprovalTerminalSettlement(context.sql, context.scope.runId, incoming.id)
       if (sameRepeatValue(stored.execution, next)) return
       await this.publishNative(context, this.nativeChange(context, stored, next, 'observation', {
         scope: context.scope, ref: stored.ref, previous: stored.execution, incoming, next,
         // Only a digest enters source receipts; the canonical adapter MUST retain
         // the actual raw provider source via existing native-event storage.
-        native: evidence,
+        native: original,
       }))
+    })
+  }
+
+  /** The existing owner may close a nonterminal attempt only from a committed
+   * pre-submission seal or the captured manager's exact durable close. This does
+   * not reinterpret a missing session as no submission or alter an accepted
+   * result. Pending closure remains pending across Stop and restart. */
+  async settleNegativeExecution(executionId: string, canceled: boolean): Promise<void> {
+    await this.transaction(async (context) => {
+      const stored = await this.execution(context, executionId)
+      await this.recordedEffect(context, 'input.bind', executionId)
+      if (stored.execution.state === 'completed') return
+      const closing = await context.sql.query(`select 1 from runs r where r.id=$1 and (
+        r.stop_requested_at is not null or r.execution_state in ('completed','interrupted')
+        or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending))`, [context.scope.runId])
+      if (closing.rowCount !== 1 || canceled !== context.stopped) return repeatConflict('GRAPH_STOP_CONFLICT')
+      const reservation = workflowNativeReservation(context.scope, stored.ref, stored.execution, stored.inputDigest)
+      const entry = await readWorkflowNativeEntryLocked(context.sql, reservation)
+      let seal: WorkflowNativeEntryRecord | undefined
+      let closure: Awaited<ReturnType<typeof readWorkflowClosure>> | Awaited<ReturnType<typeof readUnboundWorkflowClosure>>
+      if (entry.phase === 'reserved' || entry.phase === 'prepared') {
+        if (stored.execution.nativeSessionId) return repeatConflict('NATIVE_ENTRY_CONFLICT')
+        seal = { reservation, phase: 'not_submitted', ownerId: context.fence.ownerId,
+          ownerFence: context.fence.fence, launchDigest: entry.transition?.launchDigest ?? null }
+      } else if (entry.phase === 'entered') {
+        closure = await (stored.execution.nativeSessionId ? readWorkflowClosure : readUnboundWorkflowClosure)(context.sql, stored.execution)
+        if (!closure?.durableGeneration) return repeatConflict('REPEAT_CLEANUP_PENDING')
+        const generation = closure.durableGeneration
+        beforeGraphCommit(context.sql, async () => {
+          const current = await (stored.execution.nativeSessionId ? readWorkflowClosure : readUnboundWorkflowClosure)(context.sql, stored.execution)
+          if (!current || current.durableGeneration !== generation || !sameRepeatValue(current, closure)) {
+            return repeatConflict('REPEAT_NATIVE_IDENTITY_CONFLICT')
+          }
+        })
+      } else return repeatConflict('NATIVE_ENTRY_CONFLICT')
+      const result = canceled ? { outcome: 'canceled' as const } : { outcome: 'failed' as const,
+        error: { code: 'EXECUTION_INTERRUPTED', message: 'The native attempt was closed without an accepted result. It was not resubmitted.', retryable: false } }
+      const next = HarnessExecutionSchema.parse({ ...stored.execution, state: 'completed', result, finishedAt: context.now })
+      const source = { scope: context.scope, ref: stored.ref, previous: stored.execution, next,
+        ...(seal ? { noSubmission: seal } : { closure }) }
+      const change = this.nativeChange(context, stored, next, 'negative_settlement', source)
+      await this.publishNative(context, change, seal ? () => sealWorkflowNativeEntryLocked(context.sql, this.owner, seal!, {
+        scope: context.scope, evidence: { sourceKind: 'execution', sourceId: change.sourceId, sourceRevision: '1' },
+        sourceDigest: change.sourceDigest, effect: null,
+      }) : undefined)
     })
   }
 
@@ -592,6 +694,7 @@ export class RepeatRunRepository {
       values($1,$2,$3,$4,$5,$6,$7::jsonb)`, [execution.id, context.scope.runId, ref.nodeId, execution.agentId, execution.attempt, occurrenceId, JSON.stringify(execution)])
     await context.sql.query(`insert into run_repeat_executions(execution_id,run_id,slot_id,occurrence_id,technical_attempt,previous_execution_id,identity)
       values($1,$2,$3,$4,$5,$6,$7::jsonb)`, [execution.id, context.scope.runId, slotId, occurrenceId, execution.attempt, previousExecutionId, JSON.stringify(identity)])
+    await reserveWorkflowNativeEntryLocked(context.sql, workflowNativeReservation(context.scope, ref, execution, inputDigest))
     for (const binding of bindings) await context.sql.query(`insert into run_repeat_bindings
       (binding_id,run_id,recipient_execution_id,source_execution_id,source_result_digest,input_digest,slot_id,ordinal,record)
       values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`, [binding.bindingId, context.scope.runId, execution.id,
@@ -780,7 +883,7 @@ async function readStoredRepeatOccurrence(sql: GraphTransactionSql, scope: Repea
 }
 
 async function readStoredRepeatExecution(sql: GraphTransactionSql, scope: RepeatScope,
-  version: RepeatWorkflowVersionV1, executionId: string, lock: 'share' | 'update'): Promise<StoredRepeatExecution> {
+  version: WorkflowVersionV3, executionId: string, lock: 'share' | 'update'): Promise<StoredRepeatExecution> {
   const rows = await sql.query<{ record: unknown; accepted: boolean; identity: unknown; slot_id: string;
     occurrence_id: string | null; execution_run_id: string; execution_node_id: string; execution_agent_id: string; execution_attempt: number; execution_occurrence_id: string | null; identity_occurrence_id: string | null; technical_attempt: number; workflow_node_id: string; input_json: string; input_digest: string }>(
     `select e.record,e.accepted,x.identity,s.slot_id,s.occurrence_id,s.workflow_node_id,s.input_json,s.input_digest,

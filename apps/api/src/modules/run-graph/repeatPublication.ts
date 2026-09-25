@@ -198,7 +198,6 @@ export async function openRepeatCanonicalPublicationLocked(sql: GraphTransaction
             if (effect.kind === 'run.complete') {
               const state = await readRepeatRunStateLocked(sql, scope)
               if (state.executionState !== 'completed' || state.outcome !== 'succeeded' || state.stopRequested) return fail()
-              metadata.push({ type: 'repeat.run.state', state })
             }
             validateRepeatGraphFactsV3(version, scope, metadata)
             for (const fact of metadata) await assertPersistedFact(sql, scope, fact)

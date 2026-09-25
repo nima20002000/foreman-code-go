@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
 import { HarnessExecutionSchema, type DurableInteraction, type HarnessExecution } from '@graphql/contracts'
 import { AcceptedCurrentNodeResultSchema, NodeResolutionSchema, RepeatOccurrenceV1Schema,
-  SavedRunVersionSnapshotSchema, type RepeatWorkflowVersionV1 } from '@graphql/contracts/wave25'
+  CurrentRunVersionSnapshotSchema, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { assertRepeatExecution, repeatDigest, repeatExecutionIdentity, repeatSlotId,
   type RepeatNodeRef, type RepeatScope } from '../runs/repeatResolution.js'
@@ -29,11 +29,11 @@ function conflict(): never {
 /** Approval is authority, not a scheduling edge. Do not select a latest attempt
  * or a reviewer from another live block. Cross-block reviewer scopes need an
  * explicit immutable export binding; they are deliberately not guessed here. */
-export function repeatReviewerOccurrence(version: RepeatWorkflowVersionV1, requester: RepeatNodeRef,
+export function repeatReviewerOccurrence(version: WorkflowVersionV3, requester: RepeatNodeRef,
   reviewerNodeId: string): string | null {
-  const reviewerBlock = version.definition.repeat.blocks.find((block) => block.nodeIds.includes(reviewerNodeId))
+  const reviewerBlock = version.definition.repeat?.blocks.find((block) => block.nodeIds.includes(reviewerNodeId))
   if (!reviewerBlock) return null
-  const requesterBlock = version.definition.repeat.blocks.find((block) => block.nodeIds.includes(requester.nodeId))
+  const requesterBlock = version.definition.repeat?.blocks.find((block) => block.nodeIds.includes(requester.nodeId))
   if (requesterBlock?.id !== reviewerBlock.id || requester.occurrence?.blockId !== reviewerBlock.id) {
     throw new DomainError('REPEAT_REVIEW_SCOPE_UNSUPPORTED',
       'An in-block reviewer cannot be selected for another scope without an exact exported assignment.', 409)
@@ -50,7 +50,7 @@ interface ExecutionRow {
 
 /** Read only. The decision caller supplies its existing credential/Stop-locked
  * transaction; enqueue supplies its normal pool. This is not a launch grant. */
-async function loadExecution(sql: GraphSqlClient, scope: RepeatScope, version: RepeatWorkflowVersionV1,
+async function loadExecution(sql: GraphSqlClient, scope: RepeatScope, version: WorkflowVersionV3,
   executionId: string): Promise<{ execution: HarnessExecution; ref: RepeatNodeRef; accepted: boolean }> {
   const rows = await sql.query<ExecutionRow>(`select e.record,x.identity,e.accepted,e.id as execution_id,
     e.run_id,e.workflow_node_id,e.agent_id,e.attempt,s.slot_id,s.occurrence_id,
@@ -89,7 +89,7 @@ export class PostgresRepeatReviewerBindings implements RepeatReviewerBindings {
         and v.workflow_id=r.workflow_id and v.workspace_id=r.workspace_id where r.id=$1`, [interaction.runId])
     const row = snapshot.rows[0]
     if (snapshot.rows.length !== 1 || !row) return conflict()
-    const { run, version } = SavedRunVersionSnapshotSchema.parse({ run: row.run_record, version: row.version_record })
+    const { run, version } = CurrentRunVersionSnapshotSchema.parse({ run: row.run_record, version: row.version_record })
     if (!('executionSemanticsVersion' in version) || version.executionSemanticsVersion !== 3
       || !('executionSemanticsVersion' in run) || run.executionSemanticsVersion !== 3
       || row.run_id !== interaction.runId || run.id !== row.run_id || row.workspace_id !== interaction.workspaceId
@@ -142,7 +142,6 @@ export async function assertRepeatReviewerBinding(sql: GraphSqlClient, interacti
   const row = (await sql.query<{ semantics: string | null }>(
     "select record->>'executionSemanticsVersion' as semantics from runs where id=$1", [interaction.runId])).rows[0]
   if (!row) return conflict()
-  if (row.semantics === null || row.semantics === '1' || row.semantics === '2') return
   if (row.semantics !== '3') return conflict()
   const selected = await new PostgresRepeatReviewerBindings(sql).select(interaction, reviewerNodeId)
   if (selected.execution.id !== executionId) return conflict()

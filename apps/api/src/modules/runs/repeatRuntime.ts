@@ -2,8 +2,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { interrupt, isGraphInterrupt } from '@langchain/langgraph'
 import { HarnessExecutionSchema, HarnessExecutionRequestSchema, type HarnessExecution } from '@graphql/contracts'
-import { AcceptedWorkflowRunV3Schema, SavedRunVersionSnapshotSchema,
-  type AcceptedWorkflowRunV3, type RepeatWorkflowVersionV1 } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, CurrentRunVersionSnapshotSchema,
+  type AcceptedWorkflowRunV3, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { ApprovalExecutionCoordinator } from '../interactions/execution.js'
@@ -27,7 +27,7 @@ import type { RepeatRunRepository } from './repeatPostgres.js'
  * Neither a saved occurrence nor a returned candidate is a dispatch permission.
  */
 export function repeatExecutionDriver(input: {
-  scope: RepeatScope; version: RepeatWorkflowVersionV1
+  scope: RepeatScope; version: WorkflowVersionV3
   owner: Pick<RunOwnership, 'assertOwned'>
   store: Pick<RepeatRunRepository, 'readExecution' | 'settleNativeExecution'>
   /** Required existing native boundary; never supply native.ensureObserve directly.
@@ -105,7 +105,7 @@ export function repeatExecutionDriver(input: {
 
 export interface RepeatNativeObserverContext {
   run: AcceptedWorkflowRunV3
-  version: RepeatWorkflowVersionV1
+  version: WorkflowVersionV3
   owner: RunOwnership
   store: RepeatNativeLaunchStore
   native: Pick<ApprovalExecutionCoordinator, 'observeExact' | 'assertResume'>
@@ -123,7 +123,7 @@ export interface RepeatNativeObserverContext {
 export function repeatNativeObserver(context: RepeatNativeObserverContext):
   (admitted: HarnessExecution, signal: AbortSignal) => Promise<void> {
   const run = AcceptedWorkflowRunV3Schema.parse(context.run)
-  SavedRunVersionSnapshotSchema.parse({ run, version: context.version })
+  CurrentRunVersionSnapshotSchema.parse({ run, version: context.version })
   const { owner, store, native, locations } = context
   const common = { workflowId: run.workflowId, graphThreadId: run.id, approval: run.approval, owner }
   return async (admitted, signal) => {
@@ -187,15 +187,14 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       if (!claimed && !execution.nativeSessionId) throw new DomainError('NATIVE_SESSION_START_UNCERTAIN',
         'Dispatch may have occurred. No second native session or turn was started.', 409)
       await validate()
-      await store.assertNativeBoundary(execution.id)
+      await store.assertExecutionAdmission(execution.id)
       check()
-      let launchAvailable = false
       if (claimed) {
-        // Consume the repository's known-COMMIT permit BEFORE filesystem or
-        // credential preflight. A reply gap never reaches this branch again.
-        if (execution.nativeSessionId || !store.consumeLaunch(execution.id)) throw new DomainError(
-          'NATIVE_SESSION_START_UNCERTAIN', 'The exact first-launch permit was not available.', 409)
-        launchAvailable = true
+        // Preparation permits only directory setup. A second acknowledged
+        // transition is required before manager or credential preflight.
+        if (execution.nativeSessionId) throw new DomainError('NATIVE_ENTRY_CONFLICT', 'A first entry already owns a native session.', 409)
+        await store.beginNativeEntry(execution.id)
+        check()
         await withFilesystemDeadline((checkFilesystem) => checkFilesystem(() => mkdir(paths.runtimeDirectory, { recursive: true })), signal)
         check()
       }
@@ -203,15 +202,18 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
         readExecution: (id) => store.readExecution(id),
         settleNativeExecution: (id) => store.settleNativeExecution(id),
         exactSession: (id) => store.exactSession(id),
+        assertExecutionAdmission: async (id) => { await validate(); await store.assertExecutionAdmission(id); check() },
         assertNativeBoundary: async (id) => { await validate(); await store.assertNativeBoundary(id); check() },
-        consumeLaunch: (id) => {
+        authorizeNativeSubmission: async (id) => {
           check()
-          if (id !== execution.id || !launchAvailable) return false
-          launchAvailable = false
-          return true
+          if (id !== execution.id || !claimed) throw new DomainError('NATIVE_ENTRY_CONFLICT', 'Recovery cannot authorize another submission.', 409)
+          await validate()
+          await store.authorizeNativeSubmission(id)
+          check()
         },
+        consumeLaunch: (id) => { check(); return id === execution.id && store.consumeLaunch(id) },
       }
-      const initialPrompt = currentInitialPrompt(node, version.definition.repeat?.blocks.some((block) => block.exitNodeId === node.id) ?? false)
+      const initialPrompt = currentInitialPrompt(node, context.version.definition.repeat?.blocks.some((block) => block.exitNodeId === node.id) ?? false)
       const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: run.id,
         workspaceId: run.workspaceId, workflowNodeId: node.id, ...paths,
         ...(initialPrompt ? { initialPrompt } : {}), configuration, input: execution.input })
@@ -238,7 +240,7 @@ export function repeatExecutionDirectoryKey(executionId: string): string {
 
 /** Call from the existing coordinator BEFORE either durable terminal observation.
  * Never invoke this to replace an already-written terminal with a different one. */
-export function repeatTerminalNormalizer(version: RepeatWorkflowVersionV1, scope: RepeatScope, ref: RepeatNodeRef) {
+export function repeatTerminalNormalizer(version: WorkflowVersionV3, scope: RepeatScope, ref: RepeatNodeRef) {
   return (execution: HarnessExecution): HarnessExecution => normalizeRepeatTerminal(version, scope, ref, execution)
 }
 
@@ -271,7 +273,7 @@ export interface RepeatRuntimeLifecycle {
  * The shared engine remains responsible for Run ownership, admission of the Run,
  * authenticated graph-resume claims and choosing this semantics-3 entry point. */
 export async function executeRepeatRuntime(input: {
-  runId: string; version: RepeatWorkflowVersionV1
+  runId: string; version: WorkflowVersionV3
   owner: Pick<RunOwnership, 'assertOwned'>; signal: AbortSignal
   store: Pick<RepeatRunRepository, 'admit' | 'acceptTerminal' | 'enterBlock' | 'readOccurrence' | 'transition' | 'resolveExcluded' | 'completeRun'>
   driver: RepeatExecutionDriver; lifecycle: RepeatRuntimeLifecycle
@@ -291,7 +293,7 @@ export async function executeRepeatRuntime(input: {
     if (typeof error !== 'object' || !error || !('code' in error)) return false
     const code = String(error.code)
     return code.startsWith('REPEAT_') || code.startsWith('AUTH_') || [
-      'WORKFLOW_SELECTED_EXECUTION_FAILED', 'WORKFLOW_UNRESOLVED', 'EXECUTION_OCCURRENCE_CONFLICT',
+      'WORKFLOW_SELECTED_EXECUTION_FAILED', 'WORKFLOW_UNRESOLVED', 'WORKFLOW_RESULT_TOO_LARGE', 'EXECUTION_OCCURRENCE_CONFLICT',
       'RUN_PIN_CONFLICT', 'ACCESS_DENIED', 'GRAPH_SECURITY_UNQUALIFIED', 'GRAPH_STOP_CONFLICT', 'GRAPH_TERMINAL_CONFLICT',
     ].includes(code)
   }
@@ -302,7 +304,7 @@ export async function executeRepeatRuntime(input: {
       tasks.add(task)
       void task.then(() => { tasks.delete(task) }, (error: unknown) => {
         tasks.delete(task)
-        if (definitive(error)) {
+        if (!(input.signal.reason instanceof DomainError && input.signal.reason.code === 'ENGINE_RESTART') && definitive(error)) {
           firstFailure ??= error
           failed.abort(error)
           void cancel().catch(() => undefined)

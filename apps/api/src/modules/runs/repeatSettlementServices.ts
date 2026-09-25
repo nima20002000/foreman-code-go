@@ -8,16 +8,10 @@ import type { RepeatRepositoryServices } from './repeatRepositoryHost.js'
 import { readRepeatExecutionLocked, type StoredRepeatExecution } from './repeatPostgres.js'
 import { readAcceptedRepeatRunLocked } from './repeatStartRead.js'
 
-/** Only the positive-close settlement slice is implemented here. This is deliberately NOT a
- * RepeatRepositoryServices object: production must still supply the four real
- * native/lifecycle ports. Spreading this object cannot activate a factory alone.
- *
- * Selected positive approvals still fail closed pending original v3 source
- * qualification; missing-session cleanup needs a positive no-dispatch port.
- * Owner is supplied by RepeatRepositoryFactory, not reconstructed from SQL or an
- * ID. Positive close generations originate in ApprovalExecutionCoordinator's
- * WorkflowClosureStore; this function only consumes their locked readback.
- */
+/** Shared current settlement proof. Every ordinary attempt and actual repeat
+ * occurrence is validated against exact input/terminal/closure/approval receipts.
+ * Negative unbound work requires an explicit sealed entry or manager-dispose
+ * receipt; no missing row or terminal enum authorizes cleanup. */
 export const repeatSettlementServices = { assertSettlementLocked } satisfies Pick<RepeatRepositoryServices, 'assertSettlementLocked'>
 
 function immutableRun(run: AcceptedWorkflowRunV3): unknown {
@@ -58,9 +52,8 @@ export async function assertSettlementLocked(sql: GraphTransactionSql, suppliedR
         return repeatNativePending('REPEAT_NATIVE_IDENTITY_CONFLICT')
       }
       captured.push(structuredClone(executionPins(stored)))
-      // Includes exact requesters/reviewers, native generation, revoked resource
-      // bindings. Selected approvals remain blocked until their original v3
-      // source/continuation receipts can be qualified. Missing rows cannot pass.
+      // Includes exact requester/reviewer generations, original native approval
+      // proof, revoked resource bindings and canonical receipt finalizers.
       // The helper enlists its own exact-generation recheck before COMMIT.
       await settleRepeatNativeExecutionWithProofLocked(sql, run.id, stored.execution)
     }

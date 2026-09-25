@@ -5,7 +5,7 @@ import {
 } from '../index.js'
 import { ExpectedRevisionSchema, ManagementPageInfoSchema } from '../management/index.js'
 import { RepeatWorkflowVersionV1Schema, RepeatWorkflowRunV1Schema } from './repeat.js'
-import { GraphIdSchema } from './protocol.js'
+import { GraphIdSchema } from './graphPrimitives.js'
 import { sameWorkflowValue } from './meaningfulEdit.js'
 
 /** Current persisted V3 records only. Unsupported/missing execution tags fail;

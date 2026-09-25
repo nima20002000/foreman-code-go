@@ -1,12 +1,11 @@
 import type { HarnessExecution } from '@graphql/contracts'
-import { GraphExecutionIdentitySchema, RUN_GRAPH_LIMITS, canonicalGraphJson, type GraphFact, type RunGraphCurrentState, type RunGraphScope } from '@graphql/contracts/wave25'
+import { GraphExecutionIdentitySchema, NodeResolutionSchema, RUN_GRAPH_LIMITS, canonicalGraphJson, type GraphFact, type RunGraphCurrentState, type RunGraphScope } from '@graphql/contracts/wave25'
 import type { GraphTransactionSql } from './connection.js'
 import { assertGraphTransaction } from './connection.js'
 import { readCurrentNativeActivities, selectCurrentNodeActivity } from './currentActivity.js'
 import type { CurrentNativeActivity } from './nativeActivitySelection.js'
 import { publicNodeAttention, readPublicAttentionCounts, type PublicAttentionOverlay } from './currentAttention.js'
 import { publicNodeState, publicReviewUnsettled, type PublicExecution } from './publicLifecycle.js'
-import { readNodeResolutions } from './records.js'
 import { RunGraphError } from './errors.js'
 
 type PublicNode = RunGraphCurrentState['nodes'][number]
@@ -38,16 +37,18 @@ export async function readPublicNodeProjection(sql: GraphTransactionSql, scope: 
   // Select bounded scalar facts, never result/output/input payloads or native history.
   const stored = await sql.query<{ id: string; workflow_node_id: string; agent_id: string;
     configuration_id: string; attempt: number; state: string; outcome: string | null }>(
-    `select e.id,e.workflow_node_id,e.record->>'agentId' as agent_id,
+    `select distinct on (e.workflow_node_id) e.id,e.workflow_node_id,e.record->>'agentId' as agent_id,
        e.record->>'agentConfigurationVersionId' as configuration_id,e.attempt,
        e.record->>'state' as state,e.record->'result'->>'outcome' as outcome
-     from harness_executions e where e.run_id=$1 and e.workflow_node_id=any($2::text[])
-     order by e.workflow_node_id,e.id limit 1001`, [scope.runId, [...nodeIds]])
+     from harness_executions e join run_repeat_executions x on x.execution_id=e.id and x.run_id=e.run_id
+     left join run_repeat_occurrences o on o.occurrence_id=x.occurrence_id and o.run_id=e.run_id
+     where e.run_id=$1 and e.workflow_node_id=any($2::text[])
+     order by e.workflow_node_id,coalesce(o.occurrence_index,0) desc,x.technical_attempt desc limit 1001`, [scope.runId, [...nodeIds]])
   if (stored.rows.length > 1000) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
   const executions = new Map<string, PublicExecution>()
   const put = (current: PublicExecution, replace = false) => {
     const identity = GraphExecutionIdentitySchema.parse(current.execution), id = identity.workflowNodeId
-    if (identity.attempt !== 1 || !nodeIds.includes(id) || (!replace && executions.has(id))) {
+    if (!nodeIds.includes(id) || (!replace && executions.has(id))) {
       throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
     }
     if (replace && executions.has(id) && canonicalGraphJson(executions.get(id)!.execution) !== canonicalGraphJson(identity)) {
@@ -64,7 +65,17 @@ export async function readPublicNodeProjection(sql: GraphTransactionSql, scope: 
       workflowNodeId: execution.workflowNodeId, executionId: execution.id, agentId: execution.agentId,
       agentConfigurationVersionId: execution.agentConfigurationVersionId!, attempt: execution.attempt } }, true)
   }
-  const resolutions = new Map((await readNodeResolutions(sql, scope)).map((resolution) => [resolution.workflowNodeId, resolution]))
+  const resolutionRows = await sql.query<{ record: { value: NonNullable<PublicNode['resolution']> } }>(
+    `select d.record from run_repeat_resolutions d where d.run_id=$1 and d.workflow_node_id=any($2::text[])
+      and (d.execution_id=any($3::text[]) or d.execution_id is null and d.occurrence_key='')
+      order by d.workflow_node_id,(d.occurrence_key='') desc limit 2001`,
+    [scope.runId, [...nodeIds], [...executions.values()].map((item) => item.execution.executionId)])
+  if (resolutionRows.rows.length > 2000) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
+  const resolutions = new Map<string, NonNullable<PublicNode['resolution']>>()
+  for (const row of resolutionRows.rows) {
+    const value = NodeResolutionSchema.parse(row.record.value)
+    if (!resolutions.has(value.workflowNodeId)) resolutions.set(value.workflowNodeId, value)
+  }
   // Domain closure suppresses stale retained native rows without treating a
   // projection clear as proof that the native process or credentials are closed.
   let native: readonly CurrentNativeActivity[] = closed ? [] : overlay.native
@@ -82,6 +93,8 @@ export async function readPublicNodeProjection(sql: GraphTransactionSql, scope: 
     }
     native = native.filter((item) => item.key.workKind === 'workflow' || active.has(item.key.workId))
   }
+  native = native.filter((item) => item.key.workKind === 'review'
+    || executions.get(item.key.execution.workflowNodeId)?.execution.executionId === item.key.execution.executionId)
   const counts = await readPublicAttentionCounts(sql, scope.runId, nodeIds, overlay)
   return nodeIds.map((id) => {
     const execution = executions.get(id), resolution = resolutions.get(id), count = counts.get(id)!

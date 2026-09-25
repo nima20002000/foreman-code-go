@@ -1,7 +1,9 @@
+import { readPublicRunStateLocked } from './publicRunState.js'
+import { capturePublicProjectionLocked, assertPublicProjectionUnchangedLocked, assertPublicProjectionCommittedLocked } from './publicProjectionReceipt.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
-  canonicalGraphJson, graphJsonBytes, sameGraphScope, isOneShotGraphFact, GraphDigestSchema, GraphEvidenceSchema, GraphFactSchema,
-  RUN_GRAPH_LIMITS, RunGraphEventContentSchema, RunGraphBatchSchema, RunGraphScopeSchema,
+  canonicalGraphJson, graphJsonBytes, sameGraphScope, GraphDigestSchema, GraphEvidenceSchema, GraphFactSchema,
+  RUN_GRAPH_LIMITS, RunGraphScopeSchema,
   GraphEffectSchema, GraphEffectFenceSchema, assertGraphEffectAuthority, RunGraphErrorCodeSchema,
   type GraphEffect, type GraphEffectFence, type GraphEffectAuthority, type GraphEffectIdentity,
   type GraphEvidence, type GraphFact, type RunGraphEvent, type RunGraphScope,
@@ -54,10 +56,10 @@ export async function readRepeatRunSourceLocked(sql: GraphTransactionSql, input:
     || run.workflowVersionId !== scope.workflowVersionId || run.executionState !== row.execution_state) {
     throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
   }
-  const state = RepeatGraphRunStateV3Schema.parse({ executionState: run.executionState, outcome: run.outcome, stopRequested: row.stopped })
+  const state = await readPublicRunStateLocked(sql, scope)
   const fact = RepeatGraphFactV3Schema.parse({ type: 'repeat.run.state', state })
   const semanticDigest = graphSourceDigest([fact])
-  const sourceDigest = graphSourceDigest({ scope, record: run, stopRequested: row.stopped })
+  const sourceDigest = graphSourceDigest({ scope, record: run, state })
   const head = (await sql.query<{ head_sequence: string }>('select head_sequence::text from run_graph_heads where run_id=$1', [scope.runId])).rows[0]
   if (!head) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
   GraphSequenceSchema.parse(head.head_sequence)
@@ -154,9 +156,9 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
       if (this.#busy) throw new RunGraphError('GRAPH_TRANSACTION_CONCURRENT')
       this.#busy = true
       entered = true
-      const legacyScope = RunGraphScopeSchema.parse(this.scope)
+      const currentScope = RunGraphScopeSchema.parse(this.scope)
       if (!guarded && Object.prototype.hasOwnProperty.call(input, 'effect')) throw new RunGraphError('GRAPH_INVALID_FACT')
-      if (guarded && this.scope.executionSemanticsVersion !== 2) throw new RunGraphError('GRAPH_EFFECT_ACCESS_DENIED')
+      if (guarded && this.scope.executionSemanticsVersion !== 3) throw new RunGraphError('GRAPH_EFFECT_ACCESS_DENIED')
       const evidence = GraphEvidenceSchema.parse(input.evidence)
       const sourceDigest = GraphDigestSchema.parse(input.sourceDigest)
       // Bound before parsing/retaining large arrays. Facts may exceed a wire event,
@@ -164,10 +166,10 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
       canonicalGraphJson(input.facts, RUN_GRAPH_LIMITS.transactionBytes)
       if (!input.facts.length) throw new RunGraphError('GRAPH_INVALID_FACT')
       const facts = input.facts.map((fact) => GraphFactSchema.parse(fact))
-      if (this.scope.executionSemanticsVersion === 2 && facts.some((fact) => !isOneShotGraphFact(fact))) throw new RunGraphError('GRAPH_INVALID_FACT')
-      const events = facts.map((fact) => RunGraphEventContentSchema.parse({ eventId: randomUUID(), evidence, fact }))
       const effect = guarded ? GraphEffectSchema.parse(guarded.effect) : undefined
       const semanticDigest = graphSourceDigest(effect ? { effect, facts } : facts)
+      const events = facts.map((fact) => RepeatGraphEventContentV3Schema.parse({ eventId: randomUUID(), evidence,
+        sourceDigest, semanticDigest, effect: effect ?? null, fact }))
       const key = canonicalGraphJson(evidence)
       const staged = this.#sources.get(key)
       if (staged) {
@@ -205,7 +207,7 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
         }
         if (!guarded?.guard || typeof guarded.guard.readCurrentLocked !== 'function') throw new RunGraphError('GRAPH_AUTHORITY_INVALID')
         const expected = GraphEffectFenceSchema.parse(guarded.guard.expected)
-        if (!sameGraphScope(expected.scope, legacyScope) || canonicalGraphJson(expected.effect) !== effectKey || expected.effectDigest !== effect.digest) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
+        if (!sameGraphScope(expected.scope, currentScope) || canonicalGraphJson(expected.effect) !== effectKey || expected.effectDigest !== effect.digest) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
         // Parent Run already locked by openRunGraphPublication. Never use cleanup
         // as Stop or trust a caller-supplied terminal flag for this parent fence.
         const run = (await this.sql.query<{ execution_state: string; stopped: boolean }>(
@@ -215,7 +217,7 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
           if (run.stopped) throw new RunGraphError('GRAPH_STOP_CONFLICT')
           if (['completed', 'interrupted'].includes(run.execution_state)) throw new RunGraphError('GRAPH_TERMINAL_CONFLICT')
         }
-        assertGraphEffectAuthority(expected, await guarded.guard.readCurrentLocked(this.sql, legacyScope, effect.identity))
+        assertGraphEffectAuthority(expected, await guarded.guard.readCurrentLocked(this.sql, currentScope, effect.identity))
         if (effect.identity.kind === 'run.stop') {
           if (effect.identity.entityId !== this.scope.runId) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
           if (!facts.some((fact) => fact.type === 'run.state' && fact.state.stopRequested === true)) throw new RunGraphError('GRAPH_INVALID_FACT')
@@ -249,6 +251,139 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
       throw new RunGraphError('GRAPH_INVALID_FACT')
     } finally { if (entered) this.#busy = false }
   }
+  /** Verify a source already staged by this branded G1 or durably committed.
+   * This grants no mutation permission; it allows atomic downstream consumers
+   * to verify a producer before G1's single finalizer writes journal receipts. */
+  async assertSourceEnlisted(evidenceInput: GraphEvidence, sourceDigest: string, semanticDigest: string): Promise<void> {
+    assertGraphTransaction(this.sql)
+    const evidence = GraphEvidenceSchema.parse(evidenceInput)
+    GraphDigestSchema.parse(sourceDigest); GraphDigestSchema.parse(semanticDigest)
+    const staged = this.#sources.get(canonicalGraphJson(evidence))
+    if (staged) { this.assertSame(staged, sourceDigest, semanticDigest); return }
+    const row = (await this.sql.query<{ source_digest: string; semantic_digest: string; first_sequence: string; head: string }>(
+      `select s.source_digest,s.semantic_digest,s.first_sequence::text,h.head_sequence::text as head
+       from run_graph_sources s join run_graph_heads h on h.run_id=s.run_id where s.run_id=$1
+        and s.source_kind=$2 and s.source_id=$3 and s.source_revision=$4::bigint`,
+      [this.scope.runId, evidence.sourceKind, evidence.sourceId, evidence.sourceRevision])).rows[0]
+    if (!row || BigInt(GraphSequenceSchema.parse(row.first_sequence)) < 1n
+      || BigInt(row.first_sequence) > BigInt(GraphSequenceSchema.parse(row.head))) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
+    this.assertSame({ sourceDigest: row.source_digest, semanticDigest: row.semantic_digest }, sourceDigest, semanticDigest)
+  }
+
+  /** Retain a coordinator-authenticated ORIGINAL native source even when the
+   * provider event has no public activity change. Read the actual immutable row
+   * in this G1 transaction; there is no caller facts/authority/mutation callback.
+   * A source-only receipt anchors to the existing committed cut and does not
+   * fabricate a cursor advance, a result, native activity or acknowledgement. */
+  async retainNativeSource(owner: RunOwnership, proofId: string): Promise<{
+    evidence: GraphEvidence; sourceDigest: string; semanticDigest: string
+  }> {
+    let entered = false
+    try {
+      assertGraphTransaction(this.sql)
+      if (this.#finalized || this.#admissionOnly) throw new RunGraphError('GRAPH_TRANSACTION_CLOSED')
+      if (this.#busy) throw new RunGraphError('GRAPH_TRANSACTION_CONCURRENT')
+      this.#busy = true; entered = true
+      owner.assertOwned()
+      if (owner.runId !== this.scope.runId) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
+      const fence = await owner.readOneShotFence(this.sql)
+      const row = (await this.sql.query<{ record: unknown; source_digest: string }>(
+        'select record,source_digest from workflow_native_proofs where proof_id=$1 and run_id=$2 for share',
+        [proofId, owner.runId])).rows[0]
+      if (!row || graphSourceDigest(row.record) !== row.source_digest) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
+      const evidence = GraphEvidenceSchema.parse({ sourceKind: 'native_event', sourceId: proofId, sourceRevision: '1' })
+      const sourceDigest = GraphDigestSchema.parse(row.source_digest)
+      const semanticDigest = graphSourceDigest({ evidence, facts: [], effect: null })
+      const key = canonicalGraphJson(evidence), staged = this.#sources.get(key)
+      const saved = staged ? undefined : (await this.sql.query<{ source_digest: string; semantic_digest: string }>(
+        `select source_digest,semantic_digest from run_graph_sources where run_id=$1
+         and source_kind='native_event' and source_id=$2 and source_revision=1`, [owner.runId, proofId])).rows[0]
+      if (staged || saved) this.assertSame(staged ?? { sourceDigest: saved!.source_digest,
+        semanticDigest: saved!.semantic_digest }, sourceDigest, semanticDigest)
+      else {
+        const head = (await this.sql.query<{ sequence: string }>(
+          'select head_sequence::text as sequence from run_graph_heads where run_id=$1', [owner.runId])).rows[0]
+        if (!head || BigInt(GraphSequenceSchema.parse(head.sequence)) < 1n) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
+        const bytes = graphJsonBytes({ evidence, sourceDigest, semanticDigest })
+        if (this.#sources.size >= RUN_GRAPH_LIMITS.transactionSources || this.#bytes + bytes > RUN_GRAPH_LIMITS.transactionBytes) {
+          throw new RunGraphError('GRAPH_TRANSACTION_LIMIT')
+        }
+        this.#sources.set(key, { evidence, sourceDigest, semanticDigest, events: [], firstSequence: head.sequence })
+        this.#bytes += bytes
+      }
+      beforeGraphCommit(this.sql, async () => {
+        owner.assertOwned()
+        const current = await owner.readOneShotFence(this.sql)
+        const latest = (await this.sql.query<{ record: unknown; source_digest: string }>(
+          'select record,source_digest from workflow_native_proofs where proof_id=$1 and run_id=$2', [proofId, owner.runId])).rows[0]
+        if (current.ownerId !== fence.ownerId || current.fence !== fence.fence || !latest
+          || latest.source_digest !== sourceDigest || graphSourceDigest(latest.record) !== sourceDigest) {
+          throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
+        }
+      })
+      return { evidence, sourceDigest, semanticDigest }
+    } catch (error) { poisonGraphTransaction(this.sql); throw error }
+    finally { if (entered) this.#busy = false }
+  }
+
+  /** Same journal, exact reviewer lease instead of the workflow drive owner.
+   * This retains only a verifier-produced immutable reviewer source row. */
+  async retainReviewSource(jobId: string, token: string, proofId: string): Promise<{
+    evidence: GraphEvidence; sourceDigest: string; semanticDigest: string
+  }> {
+    let entered = false
+    try {
+      assertGraphTransaction(this.sql)
+      if (this.#finalized || this.#admissionOnly) throw new RunGraphError('GRAPH_TRANSACTION_CLOSED')
+      if (this.#busy) throw new RunGraphError('GRAPH_TRANSACTION_CONCURRENT')
+      this.#busy = true; entered = true
+      const lease = async () => {
+        const row = (await this.sql.query<{ fence: string; live: boolean }>(`select j.lease_fence::text as fence,
+          coalesce(j.lease_expires_at>clock_timestamp(),false) as live from review_jobs j
+          join harness_executions e on e.id=j.execution_id
+          where j.id=$1 and j.lease_token=$2 and e.run_id=$3 for update of j`, [jobId, token, this.scope.runId])).rows[0]
+        if (!row?.live) throw new RunGraphError('GRAPH_OWNER_LOST')
+        return row.fence
+      }
+      const fence = await lease()
+      const row = (await this.sql.query<{ record: unknown; source_digest: string }>(
+        'select record,source_digest from review_native_proofs where proof_id=$1 and run_id=$2 and job_id=$3 for share',
+        [proofId, this.scope.runId, jobId])).rows[0]
+      if (!row || graphSourceDigest(row.record) !== row.source_digest) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
+      const evidence = GraphEvidenceSchema.parse({ sourceKind: 'native_event', sourceId: proofId, sourceRevision: '1' })
+      const sourceDigest = GraphDigestSchema.parse(row.source_digest)
+      const semanticDigest = graphSourceDigest({ evidence, facts: [], effect: null })
+      const key = canonicalGraphJson(evidence), staged = this.#sources.get(key)
+      const saved = staged ? undefined : (await this.sql.query<{ source_digest: string; semantic_digest: string }>(
+        `select source_digest,semantic_digest from run_graph_sources where run_id=$1
+         and source_kind='native_event' and source_id=$2 and source_revision=1`, [this.scope.runId, proofId])).rows[0]
+      if (staged || saved) this.assertSame(staged ?? { sourceDigest: saved!.source_digest,
+        semanticDigest: saved!.semantic_digest }, sourceDigest, semanticDigest)
+      else {
+        const head = (await this.sql.query<{ sequence: string }>(
+          'select head_sequence::text as sequence from run_graph_heads where run_id=$1', [this.scope.runId])).rows[0]
+        if (!head || BigInt(GraphSequenceSchema.parse(head.sequence)) < 1n) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
+        const bytes = graphJsonBytes({ evidence, sourceDigest, semanticDigest })
+        if (this.#sources.size >= RUN_GRAPH_LIMITS.transactionSources || this.#bytes + bytes > RUN_GRAPH_LIMITS.transactionBytes) {
+          throw new RunGraphError('GRAPH_TRANSACTION_LIMIT')
+        }
+        this.#sources.set(key, { evidence, sourceDigest, semanticDigest, events: [], firstSequence: head.sequence })
+        this.#bytes += bytes
+      }
+      beforeGraphCommit(this.sql, async () => {
+        const current = await lease()
+        const latest = (await this.sql.query<{ record: unknown; source_digest: string }>(
+          'select record,source_digest from review_native_proofs where proof_id=$1 and run_id=$2 and job_id=$3', [proofId, this.scope.runId, jobId])).rows[0]
+        if (current !== fence || !latest
+          || latest.source_digest !== sourceDigest || graphSourceDigest(latest.record) !== sourceDigest) {
+          throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
+        }
+      })
+      return { evidence, sourceDigest, semanticDigest }
+    } catch (error) { poisonGraphTransaction(this.sql); throw error }
+    finally { if (entered) this.#busy = false }
+  }
+
   /** V3 owner mutation and post-mutation metadata projection in the SAME journal.
    * Private rows (notably input bindings) do not exist before mutate. No native
    * I/O belongs here. Exact duplicates project immutable metadata but never call
@@ -435,7 +570,7 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
       }
       const projected = await projectLocked(this.sql)
       canonicalGraphJson(projected, RUN_GRAPH_LIMITS.transactionBytes)
-      if (!projected.length) throw new RunGraphError('GRAPH_INVALID_FACT')
+      if (!projected.length && effect?.operation !== 'run.complete') throw new RunGraphError('GRAPH_INVALID_FACT')
       const facts = projected.map((fact) => RepeatGraphFactV3Schema.parse(fact))
       for (const fact of facts) assertRepeatGraphFactScope(scope, fact)
       if (mode === 'native_evidence' && (facts.length !== 1 || facts[0]!.type !== 'repeat.execution'
@@ -491,6 +626,32 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
     assertGraphTransaction(this.sql)
     if (this.#busy) throw new RunGraphError('GRAPH_TRANSACTION_CONCURRENT')
     if (this.#finalized) return
+    if (!this.#admissionOnly) {
+      const current = await readRepeatRunSourceLocked(this.sql, this.scope)
+      const key = canonicalGraphJson(current.evidence), staged = this.#sources.get(key)
+      if (staged) this.assertSame(staged, current.sourceDigest, current.semanticDigest)
+      else if (!current.replayed) this.#sources.set(key, { evidence: current.evidence,
+        sourceDigest: current.sourceDigest, semanticDigest: current.semanticDigest,
+        events: [RepeatGraphEventContentV3Schema.parse({ eventId: randomUUID(), evidence: current.evidence,
+          sourceDigest: current.sourceDigest, semanticDigest: current.semanticDigest, effect: null, fact: current.fact })] })
+      beforeGraphCommit(this.sql, async () => {
+        const final = await readRepeatRunSourceLocked(this.sql, this.scope)
+        if (!final.replayed || canonicalGraphJson(final.run) !== canonicalGraphJson(current.run)
+          || canonicalGraphJson(final.fact) !== canonicalGraphJson(current.fact)) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
+      })
+    }
+    const projection = await capturePublicProjectionLocked(this.sql, this.scope)
+    if (projection) {
+      const key = canonicalGraphJson(projection.evidence)
+      if (this.#sources.has(key)) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
+      this.#sources.set(key, { evidence: projection.evidence, sourceDigest: projection.sourceDigest,
+        semanticDigest: projection.semanticDigest, events: [RepeatGraphEventContentV3Schema.parse({ eventId: randomUUID(),
+          evidence: projection.evidence, sourceDigest: projection.sourceDigest, semanticDigest: projection.semanticDigest,
+          effect: null, fact: projection.fact })] })
+      beforeGraphCommit(this.sql, () => assertPublicProjectionUnchangedLocked(this.sql, this.scope, projection))
+    }
+    if (this.#sources.size > RUN_GRAPH_LIMITS.transactionSources
+      || graphJsonBytes([...this.#sources.values()]) > RUN_GRAPH_LIMITS.transactionBytes) throw new RunGraphError('GRAPH_TRANSACTION_LIMIT')
     this.#finalized = true
     if (!this.#sources.size) return
     const events = [...this.#sources.values()].flatMap((source) => source.events)
@@ -513,11 +674,10 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
         || events.some((event) => graphJsonBytes(event) > RUN_GRAPH_LIMITS.eventBytes)
         || graphJsonBytes(candidate) > RUN_GRAPH_LIMITS.batchBytes
       kind = oversized ? 'reset' : 'events'
-      if (!oversized && this.scope.executionSemanticsVersion === 3) batchProof = repeatGraphBatchReceipt({
+      if (!oversized) batchProof = repeatGraphBatchReceipt({
         ...candidate, scope: RepeatGraphScopeV3Schema.parse(this.scope), events: events as RepeatGraphEventV3[],
       })
-      const parsed = oversized ? undefined : (this.scope.executionSemanticsVersion === 3
-        ? RepeatGraphBatchV3Schema.safeParse(candidate) : RunGraphBatchSchema.safeParse(candidate))
+      const parsed = oversized ? undefined : RepeatGraphBatchV3Schema.safeParse(candidate)
       if (parsed && !parsed.success) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
       // A size barrier preserves domain state and ALL source receipts. Invalid
       // semantic content is instead a rollback, never disguised as an oversized batch.
@@ -583,9 +743,18 @@ export async function openRunGraphPublication<S extends CanonicalRunGraphScope>(
       `insert into run_graph_heads(run_id,protocol_version,history_coverage) values($1,1,$2) on conflict(run_id) do nothing`,
       [scope.runId, initialize.historyCoverage],
     )
-    const head = await sql.query<{ protocol_version: number }>('select protocol_version from run_graph_heads where run_id=$1 for update', [scope.runId])
+    const head = await sql.query<{ protocol_version: number; sequence: string }>('select protocol_version,head_sequence::text as sequence from run_graph_heads where run_id=$1 for update', [scope.runId])
     if (!head.rows[0]) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
     if (head.rows[0].protocol_version !== 1) throw new RunGraphError('GRAPH_UNSUPPORTED_PROTOCOL')
+    if (head.rows[0].sequence !== '0') {
+      const priorRun = await readRepeatRunSourceLocked(sql, scope)
+      if (!priorRun.replayed) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+      await assertPublicProjectionCommittedLocked(sql, scope, head.rows[0].sequence)
+    } else {
+      const inserted = (await sql.query<{ fresh: boolean }>(
+        'select xmin=pg_current_xact_id_if_assigned()::xid and created_at=transaction_timestamp() as fresh from runs where id=$1', [scope.runId])).rows[0]
+      if (!initialize || initialize.historyCoverage !== 'from_admission' || inserted?.fresh !== true) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
+    }
     const publication = new RunGraphPublication(constructionKey, sql, scope)
     publications.set(sql, publication)
     return publication
@@ -609,4 +778,9 @@ export async function withRunGraphPublication<T>(
     return work(publication)
   })
   return { value, publication: publication!.receipt }
+}
+
+export function currentRunGraphPublication<S extends CanonicalRunGraphScope>(sql: GraphTransactionSql, scope: S): RunGraphPublication<S> {
+  assertRunGraphPublication(sql, scope)
+  return publications.get(sql)! as RunGraphPublication<S>
 }

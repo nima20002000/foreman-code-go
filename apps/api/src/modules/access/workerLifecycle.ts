@@ -1,6 +1,6 @@
 import { assertWave25WorkerBinding } from '../interactions/wave25/credentialAuthority.js'
 import { HarnessExecutionSchema } from '@graphql/contracts'
-import { CompatibleWorkflowRunSchema } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema } from '@graphql/contracts/wave25'
 import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
 
@@ -52,7 +52,7 @@ export async function lockWorkerExecution(
   const identity = result.rows[0]
   if (!identity) throw new DomainError('WORKER_EXECUTION_NOT_FOUND', 'The accepted execution identity was not found.', 409)
   const execution = HarnessExecutionSchema.parse(identity.execution_record)
-  const run = CompatibleWorkflowRunSchema.parse(identity.run_record)
+  const run = AcceptedWorkflowRunV3Schema.parse(identity.run_record)
   if (execution.id !== identity.execution_id || execution.runId !== identity.run_id
     || execution.agentId !== identity.agent_id || run.id !== identity.run_id
     || run.workspaceId !== identity.workspace_id || run.workflowId !== identity.workflow_id) {
@@ -63,7 +63,7 @@ export async function lockWorkerExecution(
 
 export function requireActiveWorkerExecution(identity: WorkerExecutionIdentity): void {
   const execution = HarnessExecutionSchema.parse(identity.execution_record)
-  const run = CompatibleWorkflowRunSchema.parse(identity.run_record)
+  const run = AcceptedWorkflowRunV3Schema.parse(identity.run_record)
   if (identity.execution_closed_at || identity.run_closed_at || identity.approval_stopped_at
     || !['starting', 'running', 'waiting'].includes(execution.state)
     || !['running', 'waiting'].includes(run.executionState)) {

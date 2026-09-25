@@ -4,7 +4,8 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { canonicalGraphJson, type GraphEffect } from '@graphql/contracts/wave25'
 import type { GraphSqlClient } from '../../run-graph/connection.js'
 import { beforeGraphCommit } from '../../run-graph/connection.js'
-import { graphSourceDigest } from '../../run-graph/publication.js'
+import { graphSourceDigest, type RunGraphPublication } from '../../run-graph/publication.js'
+import { assertPendingApprovalOriginalLocked, assertSavedPendingApprovalOriginalLocked } from '../nativeApprovalProof.js'
 import type pg from 'pg'
 import { assertBudget, fail, lockInteraction, readContext, transact } from './context.js'
 import { lockPrincipal } from './principal.js'
@@ -16,11 +17,13 @@ function requestIdentity(interaction: DurableInteraction): unknown {
   void _id; void _revision; void _createdAt; void _updatedAt; void _interrupt
   return immutable
 }
-export async function createRequest(pool: pg.Pool, input: DurableInteraction) {
+export async function createRequestLocked(publication: RunGraphPublication, input: DurableInteraction, originalProofId: string) {
   const accepted = DurableInteractionSchema.parse(JSON.parse(JSON.stringify(input)))
   if (accepted.status !== 'pending' || accepted.revision !== 0) return fail('APPROVAL_REQUEST_INVALID')
-  return transact(pool, accepted.runId, async (publication) => {
-    const sql = publication.sql
+  if (publication.scope.runId !== accepted.runId) return fail('GRAPH_SCOPE_MISMATCH')
+  const sql = publication.sql
+  await assertPendingApprovalOriginalLocked(sql, accepted, originalProofId)
+  {
     const found = (await sql.query<{ record: unknown }>(`select record from durable_interactions
       where harness=$1 and native_session_id=$2 and native_request_id=$3`,
     [accepted.harness, accepted.nativeSessionId, accepted.nativeRequestId])).rows[0]
@@ -32,6 +35,7 @@ export async function createRequest(pool: pg.Pool, input: DurableInteraction) {
         decidedAt: undefined, deliveredAt: undefined, auditReference: undefined }
       const strip = (value: unknown) => JSON.parse(JSON.stringify(value)) as unknown
       if (canonicalGraphJson(strip(requestIdentity(original))) !== canonicalGraphJson(requestIdentity(accepted))) return fail('INTERACTION_IDENTITY_CONFLICT')
+      await assertSavedPendingApprovalOriginalLocked(sql, existing)
       return { interaction: existing, created: false }
     }
     const context = await readContext(sql, accepted, true)
@@ -44,18 +48,18 @@ export async function createRequest(pool: pg.Pool, input: DurableInteraction) {
         ...await approvalAttentionFacts(sql, context, { interaction: accepted })] }, async (transaction) => {
       await transaction.query(`insert into durable_interactions
         (id,workspace_id,workflow_id,run_id,execution_id,requesting_agent_id,harness,native_session_id,native_request_id,status,revision,record,
-         approval_relationship_id,approval_reviewer_execution_id)
-        values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14)`,
+         approval_relationship_id,approval_reviewer_execution_id,approval_native_request_proof_id)
+        values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15)`,
       [accepted.id, accepted.workspaceId, accepted.workflowId, accepted.runId, accepted.executionId, accepted.requestingAgentId,
         accepted.harness, accepted.nativeSessionId, accepted.nativeRequestId, accepted.status, accepted.revision, JSON.stringify(accepted),
-        context.relationshipId ?? null, context.reviewer?.id ?? null])
+        context.relationshipId ?? null, context.reviewer?.id ?? null, originalProofId])
       await transaction.query(`update approval_execution_state set active_elapsed_ms=active_elapsed_ms+
           coalesce(extract(epoch from(clock_timestamp()-active_started_at))*1000,0)::bigint,
         active_started_at=null,approval_wait_started_at=coalesce(approval_wait_started_at,clock_timestamp()),revision=revision+1
         where execution_id=$1 and stopped_at is null`, [accepted.executionId])
     })
     return { interaction: accepted, created: true }
-  })
+  }
 }
 
 async function audit(sql: GraphSqlClient, principal: ManagementPrincipal, interaction: DurableInteraction, replayed: boolean): Promise<void> {

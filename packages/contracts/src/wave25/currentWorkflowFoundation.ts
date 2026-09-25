@@ -6,7 +6,7 @@ import {
   RunExecutionStateSchema, RunOutcomeSchema, RunInputSchema, ExecutionResultSchema,
   RunStopCauseSchema, TimestampSchema,
 } from '../index.js'
-import { GraphIdSchema } from './protocol.js'
+import { GraphIdSchema } from './graphPrimitives.js'
 import { canonicalGraphJson } from './json.js'
 import { ExecutionSemanticsVersionSchema as CurrentExecutionSemanticsSchema } from './workflow.js'
 export { ExecutionSemanticsVersionSchema as CurrentExecutionSemanticsSchema } from './workflow.js'

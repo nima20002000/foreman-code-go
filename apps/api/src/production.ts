@@ -1,3 +1,10 @@
+import { createWorkflowNativeCaptureChannel } from './modules/interactions/workflowNativeCapture.js'
+import { createReviewNativeCaptureChannel } from './modules/interactions/reviewNativeCapture.js'
+import { ReviewNativeProofServices } from './modules/interactions/reviewNativeProof.js'
+import { PostgresRepeatReviewerBindings } from './modules/interactions/repeatReviewer.js'
+import { createWorkflowRepositoryServices } from './modules/runs/workflowRepositoryServices.js'
+import { registerApprovalCheckpointResume } from './modules/runs/approvalCheckpointRegistration.js'
+import { createCurrentNativeProductionFactory, isCurrentNativeProductionBinding } from './modules/runs/workflowProduction.js'
 import { isDeepStrictEqual } from 'node:util'
 import { NativeResponseJournal } from './modules/harnesses/recovery/responseJournal.js'
 import { NativeProcessRegistry } from './modules/harnesses/recovery/processRegistry.js'
@@ -65,7 +72,7 @@ import { WorkspaceLocationService } from './modules/workspaces/location.js'
 import { WorkspaceManagementService } from './modules/workspaces/management.js'
 import { PostgresWorkspaceRepository } from './modules/workspaces/postgres.js'
 import { RunGraphReadService } from './modules/run-graph/readService.js'
-import type { CurrentRunProductionFactory } from './modules/runs/currentProduction.js'
+import type { CurrentRunProductionFactory, CurrentRunProductionBinding, CurrentStopContext } from './modules/runs/currentProduction.js'
 
 function inspectorFor(manager: NativeHarnessSessionManager) {
   if (manager instanceof CodexAppServerSessionManager) return codexMcpInspectorAdapter(manager)
@@ -85,12 +92,19 @@ export function buildProductionApp(
   const processRegistry = new NativeProcessRegistry(resolve(config.harnesses.workspaceRoot, 'native-process-registry'))
   const access = new PostgresAccessService(database.pool)
   const commands = new PostgresCommandCoordinator(database.pool)
-  const repository = new PostgresInteractionRepository(database.pool)
+  // Producer/consumer halves are installed during construction. Neither HTTP,
+  // MCP nor a caller-supplied JSON observation can manufacture these captures.
+  const workflowCapture = createWorkflowNativeCaptureChannel()
+  const reviewCapture = createReviewNativeCaptureChannel()
+  const workflowRuntime = createWorkflowRepositoryServices(workflowCapture.verify)
+  const reviewNativeProofs = new ReviewNativeProofServices(reviewCapture.verify)
+  const repository = new PostgresInteractionRepository(database.pool, reviewNativeProofs)
   const budgets = new PostgresApprovalBudgetRepository(database.pool)
   const projectRoot = config.workspaceStorageRoot ?? workspaceStorageRoot()
   const locations = new WorkspaceLocationService(database.pool, commands, config.harnesses.workspaceRoot, 'runner-local', projectRoot)
   const workflows = new PostgresWorkflowRepository(database.pool)
-  const runs = new PostgresRunRepository(database.pool, workflows, locations)
+  const runs = new PostgresRunRepository(database.pool, workflows, locations,
+    { runtimeRoot: config.harnesses.workspaceRoot, ...workflowRuntime })
   const workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
   const settings = new PostgresSettingsRepository(database.pool)
   const foundationSettings = new PostgresFoundationSettingsRepository(database.pool, projectRoot)
@@ -160,15 +174,10 @@ export function buildProductionApp(
       const { manager } = managers.resolve(context)
       const detection = new McpDetectionService(inspectorFor(manager), appMcpEndpoint)
       const launch = new WorkerLaunchCredentialService(detection, credentials, run.executionLocation.runnerId)
-      try {
-        return await launch.prepare(input)
-      } catch (error) {
-        // A model-free OpenCode preflight may have started its owned server.
-        // Never retain that unauthenticated process after rejected issuance.
-        if (manager instanceof OpenCodeNativeSessionManager) await manager.dispose().catch(() => undefined)
-        managers.release(context)
-        throw error
-      }
+      // The coordinator reserved and retained this exact manager lifetime
+      // BEFORE preflight. It owns disposal + durable closure on every failure;
+      // releasing an empty resolver here would destroy the only positive proof.
+      return launch.prepare(input)
     },
     revoke: (credential) => credentials.revoke(credential),
     revokeForExecution: (executionId) => credentials.revokeForExecution(executionId),
@@ -178,8 +187,8 @@ export function buildProductionApp(
   }
   const approvals = new ApprovalExecutionCoordinator(
     runs, repository, budgets, managers, config.harnesses.timeoutMs, launchCredentials, validateContinuation,
-    (executionId, signal) => processRegistry.closeOwner(`execution:${executionId}`, signal),
-    new PostgresWorkflowClosureStore(database.pool),
+    new PostgresWorkflowClosureStore(database.pool), new PostgresRepeatReviewerBindings(database.pool),
+    workflowCapture.capture, reviewCapture.capture,
   )
   const engine = new LangGraphWorkflowEngine(
     runs, workflows, approvals, checkpoints.saver, config.harnesses.workspaceRoot,
@@ -188,8 +197,7 @@ export function buildProductionApp(
   const interactions = new InteractionService(
     repository, budgets, approvals, (interaction) => engine.resumeInteraction(interaction), responseJournal,
   )
-  // A's current production assembly owns occurrence-qualified approval resume.
-  // Do not install the retired execution-semantics-2 registration here.
+  registerApprovalCheckpointResume(interactions, engine)
   const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
   const resolveOperatorManager: NativeManagerResolver = (configuration, conversationId) => {
@@ -232,13 +240,38 @@ export function buildProductionApp(
     async (runId) => {
       // AutomaticReviewService committed the exact review cause and durable Stop
       // intent first. A process restart or failed closure cannot lose that cause.
-      if (await engine.cancel(runId)) await engine.finishRunLifecycle(runId, 'The assigned Orchestrator review failed; see the Run stop cause.')
+      // The one engine owns negative settlement and cleanup. No extra terminal
+      // writer follows a successful cancel, and uncertainty remains retryable.
+      await engine.cancel(runId)
     })
-  // A installs the qualified real repository/engine/native lifecycle before
-  // returning this binding. Absence permits only verified existing Start
-  // receipts, never a new Run. No HTTP argument or environment flag sets it.
-  const currentProduction = createCurrentProduction?.({ primaryPool: database.pool, commands,
-    runs, workflows, locations, engine, nativeExecutions: approvals, interactions, checkpointer: checkpoints.saver })
+  let closing = false
+  let initialized = false
+  // The callback executes only after app construction; no factory can swap the
+  // actual constructor-held engine/repository/native/atomic-checkpoint ports.
+  const nativeFactory = createCurrentNativeProductionFactory({
+    isRuntimeOpen: () => initialized && !closing,
+    reportDispatchFailure: (runId, code) => app.log.error({ runId, code }, 'current workflow dispatch remains unresolved'),
+  })
+  const productionContext = { primaryPool: database.pool, commands,
+    runs, workflows, locations, engine, nativeExecutions: approvals, interactions, checkpointer: checkpoints.saver }
+  const binding = (createCurrentProduction ?? nativeFactory)(productionContext)
+  if (!isCurrentNativeProductionBinding(binding, productionContext)) throw new DomainError(
+    'CURRENT_PRODUCTION_BINDING_REQUIRED', 'Production requires the concrete constructor-bound native lifecycle, not a shape-only publisher.', 503)
+  // An injected genuine factory still cannot bypass the actual startup/shutdown
+  // owner gate by supplying its own readiness callback.
+  const assertRuntimeOpen = () => {
+    if (!initialized || closing) throw new DomainError('CURRENT_RUNTIME_UNAVAILABLE',
+      'The native runtime has not acquired ownership or is shutting down.', 503)
+  }
+  const currentProduction: CurrentRunProductionBinding = Object.freeze({
+    startPublication: binding.startPublication,
+    availability: () => initialized && !closing ? binding.availability() : { runtimeAdmission: false, stopAvailable: false },
+    assertStartReady: () => { assertRuntimeOpen(); binding.assertStartReady() },
+    assertStopReady: () => { assertRuntimeOpen(); binding.assertStopReady() },
+    stop: (context: CurrentStopContext) => { assertRuntimeOpen(); return binding.stop(context) },
+    reportDispatchFailure: (runId: string, error: unknown) => binding.reportDispatchFailure(runId, error),
+  })
+
   const operatorServices = {
     operatorChat: chat,
     workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings),
@@ -250,7 +283,7 @@ export function buildProductionApp(
     runs: new RunManagementService(database.pool, commands, runs, engine, locations, currentProduction),
     commands,
     interactions: new OperatorInteractionService(interactions),
-    // READ qualification only. No native lifecycle, Start or edit gate is opened.
+    // Reads and lifecycle mutations share the same canonical V3 journal.
     runGraph: new RunGraphReadService(database.pool, { qualifiedReads: true }),
   }
   const detection = new McpDetectionService({
@@ -296,9 +329,7 @@ export function buildProductionApp(
     mcpDetection: { pool: database.pool, service: detection },
     logger,
   })
-  let closing = false
   let httpClosing = false
-  let initialized = false
   let initialization: Promise<void> | undefined
   let reconciliation: Promise<void> | undefined
   let applicationClose: Promise<void> | undefined

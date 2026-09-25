@@ -27,6 +27,8 @@ export function executableNodeContent<T extends PresentedNode>(node: T): Omit<T,
 
 type PresentedWorkflow = {
   nodes: ReadonlyArray<PresentedNode>
+  name?: unknown
+  description?: unknown
   version?: unknown
   createdAt?: unknown
   updatedAt?: unknown

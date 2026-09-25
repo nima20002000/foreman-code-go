@@ -60,7 +60,10 @@ export async function graphFixture(db: GraphTestDatabase, options: { insert?: bo
         workspaceId: f.scope.workspaceId, workflowId, commandId: randomUUID(), executionSemanticsVersion: 3,
         expectedRevision: managed.revision, expectedWorkflowVersionId: null, expectedLocationRevision: 1,
         expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds,
-        graph: { ...f.version.definition, id: workflowId, createdAt: managed.workflow.createdAt },
+        // A fresh authorable workflow has no saved version yet. Preserve its
+        // exact creation stamps; publication assigns the first immutable V3.
+        graph: { ...f.version.definition, id: workflowId, version: managed.workflow.version,
+          createdAt: managed.workflow.createdAt, updatedAt: managed.workflow.updatedAt },
       } })
     if (response.statusCode !== 200) throw new Error(`Current typed fixture Save failed: ${response.statusCode} ${response.body}`)
     const saved = CurrentWorkflowSaveResultSchema.parse(response.json()).value

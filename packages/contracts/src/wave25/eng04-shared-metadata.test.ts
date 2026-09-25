@@ -32,7 +32,7 @@ describe('ENG04 shared content-free occurrence/decision metadata', () => {
     expect(validateRepeatMetadataSnapshotV1(f.version, snapshot)).toEqual(snapshot)
     const current = RepeatMetadataCurrentV1Schema.parse({ ...snapshot, kind: 'current' })
     expect({ ...current, kind: 'snapshot' }).toEqual(snapshot)
-    expect(RunGraphScopeSchema.safeParse(f.scope).success).toBe(false) // no accidental live feed activation
+    expect(RunGraphScopeSchema.safeParse(f.scope).success).toBe(true)
   })
   it('accepts contiguous complete-batch deltas, including batches without repeat facts', () => {
     const { f, first, second, decision, snapshot } = metadata()

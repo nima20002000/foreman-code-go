@@ -1,3 +1,4 @@
+import type { ReviewNativeCapture } from './reviewNativeCapture.js'
 import { DurableInteractionSchema, type DurableInteraction, IdSchema, TimestampSchema, NativeSessionLaneSchema, NativeSessionReferenceSchema, ReviewJobSchema, type NativeHarnessEvent, type NativeSessionReference, type NativeSessionLane, type ReviewJob } from '@graphql/contracts'
 import type pg from 'pg'
 
@@ -154,7 +155,7 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async appendReviewNativeEvent(job: ReviewJob, event: NativeHarnessEvent,
-    _projection?: { writer: WriterFence; live: boolean; terminalReady: boolean }): Promise<void> {
+    _projection?: { writer: WriterFence; live: boolean; terminalReady: boolean; nativeCapture?: ReviewNativeCapture }): Promise<void> {
     void _projection
     const result = await this.queryConnection.query<{ record: unknown; execution_id: string | null }>(
       'select record,execution_id from review_jobs where id=$1', [job.id],
@@ -251,7 +252,7 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async transitionReviewJob(id: string, leaseToken: string, state: ReviewJob['state'], fields: {
-    providerTurnOrMessageId?: string; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']; writerFence?: WriterFence; releaseLease?: boolean; retryAfter?: string
+    providerTurnOrMessageId?: string; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']; nativeCapture?: ReviewNativeCapture; writerFence?: WriterFence; releaseLease?: boolean; retryAfter?: string
   } = {}, expected?: { revision: number; fence: number }): Promise<ReviewJob> {
     const client = await this.pool.connect()
     try {

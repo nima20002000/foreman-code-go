@@ -7,6 +7,7 @@ import { DomainError } from '../errors.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
 import type { RunOwnership } from './ownership.js'
+import type { WorkflowNativeEntryPermit } from './workflowNativeEntry.js'
 import type { RepeatNativeBoundaryEvidence } from './repeatNativeRepository.js'
 import { repeatRuntimeDirectory, type RepeatRepositoryFactory } from './repeatRepositoryHost.js'
 import { executeRepeatRuntime, repeatExecutionDriver, repeatNativeObserver, type RepeatRuntimeLifecycle } from './repeatRuntime.js'
@@ -14,8 +15,8 @@ import { readAcceptedRepeatRunLocked, type AcceptedRepeatRunSnapshot } from './r
 import type { RunnerAdmission } from './runnerAdmission.js'
 
 /** These are existing-engine dependencies, not another owner, scheduler, gate
- * or checkpoint thread. The currently absent lifecycle/native/publication
- * adapters must be supplied by their real owners before production activation. */
+ * or checkpoint thread. Production composes the real current lifecycle and
+ * original-native-proof services on these same owners. */
 export interface RepeatEngineStartContext {
   owner: RunOwnership
   signal: AbortSignal
@@ -48,6 +49,8 @@ export function repeatNativeStartStore(input: Pick<RepeatEngineStartContext, 'ow
     workflowVersionId: version.id, executionSemanticsVersion: 3 as const }
   const paths = new Map<string, string>()
   const firstClaims = new Set<string>()
+  const entryPermits = new Map<string, WorkflowNativeEntryPermit>()
+  const availableEntries = new Set<string>()
   const owned = () => {
     owner.assertOwned()
     if (owner.runId !== run.id) throw new DomainError('GRAPH_SCOPE_MISMATCH', 'A repeat observer cannot borrow another Run owner.', 409)
@@ -78,7 +81,25 @@ export function repeatNativeStartStore(input: Pick<RepeatEngineStartContext, 'ow
         }
         return claimed
       },
-      consumeLaunch: (id) => { owned(); return firstClaims.has(id) && store.consumeLaunchPermit(id) },
+      beginNativeEntry: async (id) => {
+        owned()
+        if (!firstClaims.delete(id)) throw new DomainError('NATIVE_ENTRY_CONFLICT', 'No exact fresh launch claim exists.', 409)
+        const permit = await store.beginNativeEntry(id)
+        owned()
+        entryPermits.set(id, permit)
+        return permit
+      },
+      authorizeNativeSubmission: async (id) => {
+        owned()
+        const prepared = entryPermits.get(id)
+        if (!prepared || availableEntries.has(id)) throw new DomainError('NATIVE_ENTRY_CONFLICT', 'No one-use preparation permit exists.', 409)
+        entryPermits.delete(id)
+        const entered = await store.authorizeNativeSubmission(id, prepared)
+        owned()
+        entryPermits.set(id, entered); availableEntries.add(id)
+      },
+      consumeLaunch: (id) => { owned(); return availableEntries.delete(id) },
+      assertExecutionAdmission: async (id) => { owned(); await store.assertExecutionAdmission(id); owned() },
       recoverSession: async (id) => {
         owned()
         const current = await store.recoverSession(id)
@@ -90,10 +111,11 @@ export function repeatNativeStartStore(input: Pick<RepeatEngineStartContext, 'ow
       settleNativeExecution: async (id) => { owned(); await store.settleNativeExecution(id); owned() },
       assertNativeBoundary: async (id) => {
         owned()
-        const evidence = await nativeBoundaryEvidence(id)
+        const current = await store.readExecution(id)
+        const permit = entryPermits.get(id)
+        const evidence = !current.execution.nativeSessionId && permit
+          ? { kind: 'first_launch' as const, permit } : await nativeBoundaryEvidence(id)
         owned()
-        if (evidence.kind === 'first_launch' && !firstClaims.has(id)) throw new DomainError(
-          'NATIVE_SESSION_START_UNCERTAIN', 'Recovery has no known-COMMIT first-launch claim.', 409)
         await store.assertNativeBoundary(id, evidence)
         owned()
       },

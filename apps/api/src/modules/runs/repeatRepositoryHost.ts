@@ -1,11 +1,12 @@
 import { AgentConfigurationVersionSchema, type HarnessExecution } from '@graphql/contracts'
 import {
-  AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema, RepeatWorkflowVersionV1Schema,
-  SavedRunVersionSnapshotSchema, type AcceptedWorkflowRunV3, type RepeatWorkflowVersionV1,
+  AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema, WorkflowVersionV3Schema,
+  CurrentRunVersionSnapshotSchema, type AcceptedWorkflowRunV3, type WorkflowVersionV3,
 } from '@graphql/contracts/wave25'
 import type pg from 'pg'
+import type { WorkflowNativeProofRecord } from './workflowNativeProof.js'
 
-import { assertGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
+import { assertGraphTransaction, beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
 import { requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
@@ -37,15 +38,15 @@ export interface RepeatRepositoryServices {
   /** Existing coordinator/manager authority; verifies exact owner/session/lane,
    * generation, possible-submission, command and raw-event provenance. */
   assertNativeBoundaryLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
-    execution: HarnessExecution, ref: RepeatNodeRef, evidence: RepeatNativeBoundaryEvidence): Promise<void>
+    execution: HarnessExecution, ref: RepeatNodeRef, evidence: RepeatNativeBoundaryEvidence, owner: RunOwnership): Promise<void>
   assertNativeUpdateLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
-    previous: HarnessExecution, incoming: HarnessExecution, ref: RepeatNodeRef, evidence: RepeatNativeEvidence): Promise<void>
+    previous: HarnessExecution, incoming: HarnessExecution, ref: RepeatNodeRef, evidence: RepeatNativeEvidence, owner: RunOwnership): Promise<WorkflowNativeProofRecord>
   /** Existing engine/lifecycle policy, not a second scheduler or finishRun call. */
   assertSettlementLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3, ids: readonly string[], owner: RunOwnership): Promise<void>
   allowTechnicalRetryLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
-    version: RepeatWorkflowVersionV1, execution: HarnessExecution): Promise<boolean>
+    version: WorkflowVersionV3, execution: HarnessExecution): Promise<boolean>
   completeRunLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
-    version: RepeatWorkflowVersionV1, terminals: readonly RepeatSource[]): Promise<void>
+    version: WorkflowVersionV3, terminals: readonly RepeatSource[], owner: RunOwnership): Promise<void>
 }
 
 /** The same lexical isolation helper as native runs, with the globally unique
@@ -59,7 +60,7 @@ export function repeatRuntimeDirectory(root: string, scope: RepeatScope, executi
 /** One factory/store/ephemeral permit set per EXISTING Run owner. A recovered
  * owner gets a new repository and cannot inherit a prior native launch permit. */
 export class RepeatRepositoryFactory {
-  private readonly stores = new WeakMap<RunOwnership, { version: RepeatWorkflowVersionV1; store: RepeatRunRepository }>()
+  private readonly stores = new WeakMap<RunOwnership, { version: WorkflowVersionV3; store: RepeatRunRepository }>()
   constructor(private readonly locations: Pick<WorkspaceLocationService, 'revalidateRunAuthorization'>,
     private readonly runtimeRoot: string, private readonly services: RepeatRepositoryServices) {
     if (!locations || typeof locations.revalidateRunAuthorization !== 'function' || !runtimeRoot
@@ -67,9 +68,9 @@ export class RepeatRepositoryFactory {
         'assertSettlementLocked', 'allowTechnicalRetryLocked', 'completeRunLocked'].some((key) =>
         typeof services[key as keyof RepeatRepositoryServices] !== 'function')) return repeatConflict('REPEAT_NATIVE_HOST_REQUIRED')
   }
-  forOwner(owner: RunOwnership, suppliedVersion: RepeatWorkflowVersionV1): RepeatRunRepository {
+  forOwner(owner: RunOwnership, suppliedVersion: WorkflowVersionV3): RepeatRunRepository {
     owner.assertOwned()
-    const version = RepeatWorkflowVersionV1Schema.parse(suppliedVersion)
+    const version = WorkflowVersionV3Schema.parse(suppliedVersion)
     const prior = this.stores.get(owner)
     if (prior) {
       if (!sameRepeatValue(prior.version, version)) return repeatConflict('RUN_PIN_CONFLICT')
@@ -89,12 +90,12 @@ export class RepeatRepositoryFactory {
   }
 
   private async openLocked(owner: RunOwnership, sql: GraphTransactionSql, scope: RepeatScope,
-    record: unknown, version: RepeatWorkflowVersionV1): Promise<RepeatLockedHooks> {
+    record: unknown, version: WorkflowVersionV3): Promise<RepeatLockedHooks> {
     assertGraphTransaction(sql)
     owner.assertOwned()
     if (scope.runId !== owner.runId) return repeatConflict('REPEAT_SCOPE_CONFLICT')
     const run = AcceptedWorkflowRunV3Schema.parse(record)
-    SavedRunVersionSnapshotSchema.parse({ run, version })
+    CurrentRunVersionSnapshotSchema.parse({ run, version })
     if (run.id !== scope.runId || run.workspaceId !== scope.workspaceId || run.workflowId !== scope.workflowId
       || run.workflowVersionId !== scope.workflowVersionId || scope.executionSemanticsVersion !== 3) return repeatConflict('RUN_PIN_CONFLICT')
     // The enclosing RepeatRunRepository has the Run lock already. No new pool,
@@ -135,6 +136,7 @@ export class RepeatRepositoryFactory {
       for (const value of parsed) assertNativeWorkflowConfiguration(value.harness, run.approval,
         run.approval.handler === 'orchestrator' && value.agentId === run.approval.designatedOrchestratorAgentId)
     }
+    let authorityEnlisted = false
     const authority = async (transaction: GraphTransactionSql) => {
       sameTransaction(transaction)
       // Require the authenticated accepted Run authority. No uncredentialed-v3
@@ -148,6 +150,12 @@ export class RepeatRepositoryFactory {
       await this.locations.revalidateRunAuthorization(id, run.workspaceId, run.workflowId,
         sql as unknown as Pick<pg.PoolClient, 'query'>)
       await owner.readOneShotFence(sql)
+      if (!authorityEnlisted) {
+        authorityEnlisted = true
+        // Expiry is rechecked after the source/effect finalizers. Locked grants
+        // alone do not keep a credential valid through an arbitrary COMMIT.
+        beforeGraphCommit(sql, () => authority(sql))
+      }
     }
     const hooks: RepeatLockedHooks = {
       run,
@@ -183,7 +191,7 @@ export class RepeatRepositoryFactory {
       },
       completeRunLocked: async (transaction, terminals) => {
         sameTransaction(transaction)
-        await this.services.completeRunLocked(sql, run, version, terminals)
+        await this.services.completeRunLocked(sql, run, version, terminals, owner)
       },
       native: {
         assertLaunchLocked: async (transaction, execution, ref, paths) => {
@@ -199,13 +207,13 @@ export class RepeatRepositoryFactory {
           assertRepeatExecution(version, scope, ref, execution)
           await authority(sql)
           await configurations()
-          await this.services.assertNativeBoundaryLocked(sql, run, execution, ref, evidence)
+          await this.services.assertNativeBoundaryLocked(sql, run, execution, ref, evidence, owner)
         },
         assertUpdateLocked: async (transaction, previous, incoming, ref, evidence) => {
           sameTransaction(transaction)
           assertRepeatExecution(version, scope, ref, previous)
           assertRepeatExecution(version, scope, ref, incoming)
-          await this.services.assertNativeUpdateLocked(sql, run, previous, incoming, ref, evidence)
+          return this.services.assertNativeUpdateLocked(sql, run, previous, incoming, ref, evidence, owner)
         },
         publishLocked: async (transaction, change, mutate) => {
           sameTransaction(transaction)

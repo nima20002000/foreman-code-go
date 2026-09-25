@@ -1,3 +1,6 @@
+import type { ReviewNativeCapture } from '../reviewNativeCapture.js'
+import { ReviewNativeProofServices, reviewSourceEvents, reviewSourceReadiness } from '../reviewNativeProof.js'
+import { canonicalGraphJson } from '@graphql/contracts/wave25'
 import { HarnessExecutionSchema, ReviewJobSchema, type HarnessNativeEvent, type NativeHarnessEvent, type ReviewJob } from '@graphql/contracts'
 import { type NativeGraphObservation, type NativeGraphProjectionKey } from '@graphql/contracts/wave25'
 import type pg from 'pg'
@@ -56,7 +59,7 @@ function observationFor(job: ReviewJob, event: HarnessNativeEvent, scope: Native
 /** Called only from the existing reviewer writer lease. It retains the raw
  * native sequence while connecting the same source to graph and review facts. */
 export async function appendReviewNativeGraphEvent(pool: pg.Pool, supplied: ReviewJob, input: NativeHarnessEvent,
-  writer: WriterFence, live: boolean, terminalReady: boolean): Promise<void> {
+  writer: WriterFence, originals: ReviewNativeProofServices, nativeCapture: ReviewNativeCapture): Promise<void> {
   const runId = await runFor(pool, 'review', supplied.id)
   const executionId = (await pool.query<{ execution_id: string }>(
     'select execution_id from review_jobs where id=$1', [supplied.id])).rows[0]?.execution_id
@@ -114,7 +117,12 @@ export async function appendReviewNativeGraphEvent(pool: pg.Pool, supplied: Revi
         connectionGeneration: currentRow.generation ?? '0', ownership: held ? 'held' : 'lost',
         access: held ? 'project' : 'observe' }
     } }
+    const original = await originals.persistLocked(publication, job, nativeCapture)
     const event = normalized.event
+    if (!reviewSourceEvents(original).some((candidate) => canonicalGraphJson(candidate) === canonicalGraphJson(event))) {
+      return fail('REVIEW_ORIGINAL_SOURCE_CONFLICT')
+    }
+    const { live, terminalReady } = reviewSourceReadiness(original, job.providerTurnOrMessageId)
     const raw = await appendNormalizedNativeEvent(sql, { ...normalized, event })
     if (raw.rejected || !job.submittedAt) return
     const correlation = await readNativeGraphCorrelation(sql, publication.scope, key, job.correlationId)
@@ -149,6 +157,6 @@ export async function appendReviewNativeGraphEvent(pool: pg.Pool, supplied: Revi
         && previous.connectionGeneration === reconciled.connectionGeneration
         && previous.terminal.nativeSettled && previous.terminal.outcome === reconciled.terminal.outcome) observation = previous
     }
-    if (observation) await recordReviewObservation(publication, observation, guard)
+    if (observation) await recordReviewObservation(publication, observation, guard, original.proofId)
   })
 }

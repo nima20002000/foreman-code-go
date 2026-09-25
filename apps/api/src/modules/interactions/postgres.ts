@@ -93,6 +93,18 @@ export class PostgresInteractionRepository {
     return { interaction: persisted, created: false }
   }
 
+  async getNativeRequest(executionId: string, harness: string, nativeSessionId: string,
+    nativeRequestId: string): Promise<DurableInteraction | undefined> {
+    const row = (await this.pool.query<{ record: unknown }>(`select record from durable_interactions
+      where execution_id=$1 and harness=$2 and native_session_id=$3 and native_request_id=$4`,
+    [executionId, harness, nativeSessionId, nativeRequestId])).rows[0]
+    if (!row) return undefined
+    const value = DurableInteractionSchema.parse(row.record)
+    if (value.executionId !== executionId || value.harness !== harness || value.nativeSessionId !== nativeSessionId
+      || value.nativeRequestId !== nativeRequestId) throw new DomainError('INTERACTION_IDENTITY_CONFLICT',
+      'The native request readback does not match its physical identity.', 409)
+    return value
+  }
   async get(id: string): Promise<DurableInteraction | undefined> {
     const result = await this.pool.query<{ record: unknown }>('select record from durable_interactions where id=$1', [id])
     return result.rows[0] ? DurableInteractionSchema.parse(result.rows[0].record) : undefined

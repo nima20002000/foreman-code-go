@@ -46,7 +46,7 @@ async function ingest(publication: RunGraphPublication, input: HarnessNativeEven
   writer: PostgresNativeGraphProjectionWriter): Promise<NativeGraphIngestionResult> {
   const { sql, scope } = publication
   assertRunGraphPublication(sql, scope)
-  if (scope.executionSemanticsVersion !== 2 || !work.length || work.length > 16) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
+  if (scope.executionSemanticsVersion !== 3 || !work.length || work.length > 16) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
   const prepared = normalizeNativeProducerEvent(input)
   const event = HarnessNativeEventSchema.parse(prepared.event)
   if (!Number.isSafeInteger(event.sequence) || event.sequence > 2147483647) throw new RunGraphError('GRAPH_EVIDENCE_INVALID')

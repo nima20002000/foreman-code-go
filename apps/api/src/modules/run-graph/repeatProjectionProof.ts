@@ -72,7 +72,7 @@ export function repeatEffectFactsFromState(scope: RepeatGraphScopeV3, state: Rep
     }
     case 'run.complete':
       if (effect.entityId !== scope.runId) return fail()
-      return [{ type: 'repeat.run.state', state: { executionState: 'completed', outcome: 'succeeded', stopRequested: false } }]
+      return []
     default: return fail()
   }
 }
@@ -169,7 +169,7 @@ export async function assertRepeatGraphCommittedState(sql: GraphTransactionSql, 
   const currentRows = await readProofs(sql, scope, head, current)
   for (const [i, { native, launch }] of candidates.entries()) {
     const row = currentRows[native], execution = live[i]!
-    const exactSource = row && ['observation', 'session_recovery'].some((kind) => row.source_id === repeatId('repeat-native', scope.runId,
+    const exactSource = row && ['observation', 'native_entry', 'negative_settlement'].some((kind) => row.source_id === repeatId('repeat-native', scope.runId,
       execution.identity.occurrence?.occurrenceId ?? 'outside', execution.identity.executionId, kind, row.source_digest!))
     if (!(exactSource && validProof(row, current[native]!, head))
       && !(launch !== null && validProof(currentRows[launch], current[launch]!, head))) return fail()

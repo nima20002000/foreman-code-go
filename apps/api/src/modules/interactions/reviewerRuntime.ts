@@ -1,3 +1,5 @@
+import type { SessionWriteLease } from './sessionWriter.js'
+import type { ReviewNativeCapture, ReviewOriginalNativeSource } from './reviewNativeCapture.js'
 import type { NativeSessionReference, PendingNativeInteraction, ReviewJob } from '@graphql/contracts'
 
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
@@ -22,6 +24,8 @@ export interface ReviewCleanupSession {
 
 /** Reviewer-only hooks; the shared workflow/Operator runtime port is unchanged. */
 export interface ReviewerNativeRuntime extends InteractionNativeRuntime {
+  captureReviewNative(executionId: string, session: NativeSessionReference, job: ReviewJob,
+    lane: SessionWriteLease, source: ReviewOriginalNativeSource): ReviewNativeCapture
   /** Capture the exact assignment and local connection before dispatch. A late
    * callback must not look up a replacement session by execution ID. */
   captureReviewFinalizer?(executionId: string, session: NativeSessionReference, assigned: ReviewJob):

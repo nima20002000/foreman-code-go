@@ -1,6 +1,6 @@
 import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
 import { AcceptedCurrentNodeResultSchema, NodeResolutionSchema, parseRepeatExitResultV1,
-  type RepeatWorkflowVersionV1 } from '@graphql/contracts/wave25'
+  type WorkflowVersionV3 } from '@graphql/contracts/wave25'
 
 import { ExecutionLimiter } from './limiter.js'
 import { assertRepeatNativeUpdate } from '../interactions/repeatNativeEvidence.js'
@@ -37,7 +37,7 @@ export interface RepeatGraphState {
  * Already-written/accepted evidence must instead be checked, never normalized in place.
  * The shared parser accepts only the exact native text carrier, without changing
  * stored result bytes or accepting mixed carriers, prose or Markdown. */
-export function normalizeRepeatTerminal(version: RepeatWorkflowVersionV1, scope: RepeatScope,
+export function normalizeRepeatTerminal(version: WorkflowVersionV3, scope: RepeatScope,
   ref: RepeatNodeRef, value: HarnessExecution): HarnessExecution {
   const execution = HarnessExecutionSchema.parse(value)
   assertRepeatExecution(version, scope, ref, execution)
@@ -59,7 +59,7 @@ export function normalizeRepeatTerminal(version: RepeatWorkflowVersionV1, scope:
  * validate the exact native session/owner/lease, approval receipts and Stop and
  * publish the returned record atomically with its canonical lifecycle facts.
  * Do not use this on raw provider-event storage or result acceptance/replay. */
-export function prepareRepeatNativeUpdate(version: RepeatWorkflowVersionV1, scope: RepeatScope,
+export function prepareRepeatNativeUpdate(version: WorkflowVersionV3, scope: RepeatScope,
   ref: RepeatNodeRef, previousValue: HarnessExecution, incomingValue: HarnessExecution): HarnessExecution {
   const previous = HarnessExecutionSchema.parse(previousValue)
   const incoming = HarnessExecutionSchema.parse(incomingValue)
@@ -69,7 +69,7 @@ export function prepareRepeatNativeUpdate(version: RepeatWorkflowVersionV1, scop
   return normalizeRepeatTerminal(version, scope, ref, incoming)
 }
 
-export function repeatTerminalResolution(version: RepeatWorkflowVersionV1, scope: RepeatScope,
+export function repeatTerminalResolution(version: WorkflowVersionV3, scope: RepeatScope,
   ref: RepeatNodeRef, execution: HarnessExecution): RepeatResolution {
   assertRepeatExecution(version, scope, ref, execution)
   if (execution.state !== 'completed' || !execution.result || !execution.finishedAt) return repeatConflict('EXECUTION_RESULT_NOT_ACCEPTABLE')
@@ -98,7 +98,7 @@ export function repeatTerminalResolution(version: RepeatWorkflowVersionV1, scope
     unselectedRelationshipIds: outgoing.filter((id) => !selected.includes(id) && !deferred.includes(id)), resolvedAt: execution.finishedAt,
   }) }
 }
-export function inactiveRepeatResolution(version: RepeatWorkflowVersionV1, ref: RepeatNodeRef,
+export function inactiveRepeatResolution(version: WorkflowVersionV3, ref: RepeatNodeRef,
   kind: 'skipped' | 'excluded', resolvedAt: string): RepeatResolution {
   return { ref, deferredRelationshipIds: [], value: NodeResolutionSchema.parse({ workflowNodeId: ref.nodeId,
     resolution: kind, branchEnded: false, selectedRelationshipIds: [],

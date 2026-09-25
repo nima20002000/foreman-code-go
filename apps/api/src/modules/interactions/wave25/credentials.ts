@@ -1,7 +1,7 @@
 import type pg from 'pg'
 import { WorkerCredentialService, type IssuedWorkerCredential, APP_MCP_TOKEN_ENVIRONMENT_VARIABLE } from '../../access/workerCredentials.js'
 import type { PostgresAccessService } from '../../access/postgres.js'
-import { fail, isV2, runFor } from './context.js'
+import { fail, isCurrentApprovalRun, runFor } from './context.js'
 import { credentialAuthority, assertWave25WorkerBinding } from './credentialAuthority.js'
 type Purpose = 'workflow' | 'reviewer'
 
@@ -10,7 +10,7 @@ export class Wave25WorkerCredentialService extends WorkerCredentialService {
   constructor(private readonly approvalPool: pg.Pool, private readonly approvalAccess: PostgresAccessService, ttlMs?: number) {
     super(approvalPool, approvalAccess, ttlMs)
   }
-  private async v2(executionId: string) { return isV2(this.approvalPool, await runFor(this.approvalPool, 'execution', executionId)) }
+  private async subject(executionId: string) { return isCurrentApprovalRun(this.approvalPool, await runFor(this.approvalPool, 'execution', executionId)) }
   private async locked<T>(executionId: string, work: (client: pg.PoolClient) => Promise<T>): Promise<T> {
     const client = await this.approvalPool.connect()
     let broken = false, committing = false
@@ -43,10 +43,10 @@ export class Wave25WorkerCredentialService extends WorkerCredentialService {
         environment: { agentId: a.execution.agentId, variables: { [APP_MCP_TOKEN_ENVIRONMENT_VARIABLE]: issued.token } } }
     })
   }
-  override async issueForExecution(id: string): Promise<IssuedWorkerCredential> { return await this.v2(id) ? this.issueV2(id, 'workflow') : super.issueForExecution(id) }
-  override async issueForReviewer(id: string): Promise<IssuedWorkerCredential> { return await this.v2(id) ? this.issueV2(id, 'reviewer') : super.issueForReviewer(id) }
+  override async issueForExecution(id: string): Promise<IssuedWorkerCredential> { return await this.subject(id) ? this.issueV2(id, 'workflow') : super.issueForExecution(id) }
+  override async issueForReviewer(id: string): Promise<IssuedWorkerCredential> { return await this.subject(id) ? this.issueV2(id, 'reviewer') : super.issueForReviewer(id) }
   override async renewForExecution(id: string, credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<string> {
-    if (!await this.v2(id)) return super.renewForExecution(id, credential)
+    if (!await this.subject(id)) return super.renewForExecution(id, credential)
     return this.locked(id, async (client) => {
       await client.query('select id from management_principals where id=$1 for update', [credential.principalId])
       await client.query('select principal_id from worker_credential_bindings where principal_id=$1 for update', [credential.principalId])

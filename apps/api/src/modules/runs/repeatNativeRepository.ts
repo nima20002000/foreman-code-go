@@ -1,7 +1,9 @@
-import { NativeSessionReferenceSchema, type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import { type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
+import { retainWorkflowNativeCapture } from '../interactions/workflowNativeCapture.js'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
+import type { WorkflowNativeProofRecord } from './workflowNativeProof.js'
+import type { WorkflowNativeEntryPermit } from './workflowNativeEntry.js'
 import type { RepeatNodeRef, RepeatScope } from './repeatResolution.js'
 
 export interface RepeatLaunchPaths { workingDirectory: string; runtimeDirectory: string }
@@ -57,18 +59,13 @@ export interface RepeatNativeEvidence {
 /** Capture the private original source before asynchronous guards run. This is
  * shape/bounds validation only, NEVER authority or a substitute for raw receipts. */
 export function captureRepeatNativeEvidence(input: RepeatNativeEvidence): RepeatNativeEvidence {
-  if (!input || !['live', 'recovery'].includes(input.kind) || input.evidence === undefined) {
-    throw new DomainError('REPEAT_NATIVE_EVIDENCE_REQUIRED', 'Exact native lifetime/source evidence is required.', 409)
-  }
-  const session = NativeSessionReferenceSchema.parse(input.session)
-  const evidence: unknown = JSON.parse(canonicalGraphJson(input.evidence, 4 * 1024 * 1024))
-  return { kind: input.kind, session, evidence }
+  return retainWorkflowNativeCapture(input)
 }
 export type RepeatNativeBoundaryEvidence =
-  | { kind: 'first_launch' }
+  | { kind: 'first_launch'; permit: WorkflowNativeEntryPermit }
   | RepeatNativeEvidence
 export interface RepeatNativeChange {
-  kind: 'launch' | 'observation' | 'session_recovery'
+  kind: 'launch' | 'observation' | 'session_recovery' | 'native_entry' | 'negative_settlement'
   scope: RepeatScope
   ref: RepeatNodeRef
   previous: HarnessExecution
@@ -89,7 +86,7 @@ export interface RepeatNativeLockedHooks {
   assertBoundaryLocked(sql: GraphTransactionSql, execution: HarnessExecution, ref: RepeatNodeRef,
     evidence: RepeatNativeBoundaryEvidence): Promise<void>
   assertUpdateLocked(sql: GraphTransactionSql, previous: HarnessExecution, incoming: HarnessExecution,
-    ref: RepeatNodeRef, evidence: RepeatNativeEvidence): Promise<void>
+    ref: RepeatNodeRef, evidence: RepeatNativeEvidence): Promise<WorkflowNativeProofRecord>
   /** The canonical G1 producer must retain source/effect/reset receipts on this
    * transaction. A callback result is not a receipt. No second graph journal. */
   publishLocked(sql: GraphTransactionSql, change: RepeatNativeChange, mutate: () => Promise<void>): Promise<void>

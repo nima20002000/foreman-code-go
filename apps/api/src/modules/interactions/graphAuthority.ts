@@ -4,7 +4,7 @@ import {
   type DurableInteraction,
   type DirectApprovalConnection,
 } from '@graphql/contracts'
-import { CompatibleWorkflowRunSchema, CompatibleWorkflowVersionSchema } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 
 import { DomainError } from '../errors.js'
@@ -52,8 +52,8 @@ export async function assertOrchestratorGraphAuthority(
       interaction.requestingAgentId, reviewerId],
   )
   const row = found.rows[0]
-  const run = CompatibleWorkflowRunSchema.safeParse(row?.run_record)
-  const version = CompatibleWorkflowVersionSchema.safeParse(row?.version_record)
+  const run = AcceptedWorkflowRunV3Schema.safeParse(row?.run_record)
+  const version = WorkflowVersionV3Schema.safeParse(row?.version_record)
   const execution = HarnessExecutionSchema.safeParse(row?.execution_record)
   const configuration = AgentConfigurationVersionSchema.safeParse(row?.configuration_record)
   if (found.rows.length !== 1 || !run.success || !version.success || !execution.success || !configuration.success) return denied()
@@ -61,16 +61,12 @@ export async function assertOrchestratorGraphAuthority(
   const v = version.data
   const e = execution.data
   const c = configuration.data
-  const v2 = 'executionSemanticsVersion' in v
-  if (v2 !== ('executionSemanticsVersion' in r)) return denied()
-  if (v2) {
-    const requesterConfiguration = AgentConfigurationVersionSchema.safeParse(row?.requester_configuration_record)
-    if (!interaction.nativeSessionId || interaction.nativeSessionId !== e.nativeSessionId || !e.nativeSessionId || !interaction.harness
-      || !requesterConfiguration.success || requesterConfiguration.data.id !== e.agentConfigurationVersionId
-      || requesterConfiguration.data.workspaceId !== r.workspaceId || requesterConfiguration.data.agentId !== e.agentId
-      || requesterConfiguration.data.harness.harness !== interaction.harness
-      || usesNativeSelfReview(requesterConfiguration.data.harness)) return denied()
-  }
+  const requesterConfiguration = AgentConfigurationVersionSchema.safeParse(row?.requester_configuration_record)
+  if (!interaction.nativeSessionId || interaction.nativeSessionId !== e.nativeSessionId || !e.nativeSessionId || !interaction.harness
+    || !requesterConfiguration.success || requesterConfiguration.data.id !== e.agentConfigurationVersionId
+    || requesterConfiguration.data.workspaceId !== r.workspaceId || requesterConfiguration.data.agentId !== e.agentId
+    || requesterConfiguration.data.harness.harness !== interaction.harness
+    || usesNativeSelfReview(requesterConfiguration.data.harness)) return denied()
   if (r.id !== interaction.runId || r.workspaceId !== interaction.workspaceId || r.workflowId !== interaction.workflowId
     || v.id !== r.workflowVersionId || v.workspaceId !== r.workspaceId || v.workflowId !== r.workflowId
     || v.definition.id !== r.workflowId || v.definition.workspaceId !== r.workspaceId
@@ -106,13 +102,8 @@ export async function assertOrchestratorGraphAuthority(
       || bound.data.workflowNodeId !== connection.orchestratorNodeId || bound.data.agentId !== reviewerId
       || bound.data.agentConfigurationVersionId !== c.id
       || (reviewer.nativeSessionId !== undefined && bound.data.nativeSessionId !== reviewer.nativeSessionId)
-      || (v2 && !bound.data.nativeSessionId)) return denied()
-    // This supplements, never bypasses, the shared schema/route resolver above.
-    // Those owners must explicitly admit v3 before this branch is reachable.
-    if (row?.run_record && typeof row.run_record === 'object'
-      && 'executionSemanticsVersion' in row.run_record && row.run_record.executionSemanticsVersion === 3) {
-      await assertRepeatReviewerBinding(client, interaction, connection.orchestratorNodeId, bound.data.id)
-    }
+      || !bound.data.nativeSessionId) return denied()
+    await assertRepeatReviewerBinding(client, interaction, connection.orchestratorNodeId, bound.data.id)
   }
   return connection
 }

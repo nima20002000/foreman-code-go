@@ -10,6 +10,7 @@ import type { NativeGraphProjectionGuard } from '../../run-graph/records.js'
 import { fail, identity, lockInteraction, readContext, transact, requireLeaseAtCommit } from './context.js'
 import { decisionDigest, interactionFact, nextInteraction, writeInteraction } from './publication.js'
 import { approvalAttentionFacts } from './attention.js'
+import { approvalAckRecord, assertWorkflowApprovalAckLocked } from '../nativeApprovalProof.js'
 
 interface ResumeRow { lease_expires_at: Date | null; last_error: string | null; state: string; lease_token: string | null; lease_fence: string; revision: string; live: boolean;
   approval_dispatch_started_at: Date | null; approval_native_ack_id: string | null }
@@ -48,6 +49,7 @@ export async function assertApprovalTerminalSettlement(sql: GraphTransactionSql,
     // Acceptance may follow legitimate exact-session cleanup. These durable
     // receipts are settlement evidence, NOT a fresh native/credential authority.
     // The caller separately arbitrates Stop under its Run-owner lock.
+    await assertWorkflowApprovalAckLocked(sql, i)
     const row = await resumeRow(sql, i.id)
     if (i.status !== 'delivered' || i.deliveryState !== 'delivered' || !i.graphInterruptId
       || row?.state !== 'resumed' || !row.approval_native_ack_id || !await consumed(sql, i)) {
@@ -62,7 +64,9 @@ export async function assertApprovalTerminalSettlement(sql: GraphTransactionSql,
 export async function claimResume(pool: pg.Pool, runId: string, id: string, token: string,
   atomicCheckpointConsumer = false): Promise<GraphResumeClaim | undefined> {
   return transact(pool, runId, async (publication) => {
-    const sql = publication.sql, i = await lockInteraction(sql, id), context = await readContext(sql, i)
+    const sql = publication.sql, i = await lockInteraction(sql, id)
+    if (await consumed(sql, i)) return undefined
+    const context = await readContext(sql, i)
     if (i.deliveryState !== 'delivered' || i.status === 'canceled' || context.stopped || !i.graphInterruptId) return undefined
     if (i.approval.handler === 'orchestrator' && !(await sql.query(
       "select 1 from review_jobs where interaction_id=$1 and state='completed'", [id])).rowCount) return undefined
@@ -147,7 +151,7 @@ export async function consumeApprovalGraphResume(publication: RunGraphPublicatio
  * path on their own. The frozen projection guard is checked against live SQL. */
 export async function recordWorkerResumption(publication: RunGraphPublication,
   supplied: Extract<GraphFact, { type: 'worker.resumed' }>, source: GraphEvidence,
-  guard: NativeGraphProjectionGuard): Promise<void> {
+  guard: NativeGraphProjectionGuard, originalProofId: string): Promise<void> {
   const fact = GraphFactSchema.parse(supplied)
   if (fact.type !== 'worker.resumed' || source.sourceKind !== 'native_event') return fail('GRAPH_EVIDENCE_INVALID')
   const sql = publication.sql, i = await lockInteraction(sql, fact.interactionId), context = await readContext(sql, i)
@@ -157,29 +161,33 @@ export async function recordWorkerResumption(publication: RunGraphPublication,
     || guard.expected.key.workKind !== 'workflow' || guard.expected.key.workId !== i.executionId) return fail('GRAPH_SCOPE_MISMATCH')
   assertNativeGraphProjectionAuthority(guard.expected,
     await guard.readCurrentLocked(sql, publication.scope, guard.expected.key))
-  const correlation = await sql.query(`select 1 from run_native_correlations where run_id=$1 and execution_id=$2
-    and work_kind='workflow' and work_id=$2 and interaction_id=$3 and native_request_id=$4
-    and native_session_id=$5 and provider=$6 and connection_generation=$7::bigint`,
-  [i.runId, i.executionId, i.id, i.nativeRequestId, i.nativeSessionId, i.harness, guard.expected.connectionGeneration])
-  if (!correlation.rowCount) return fail('GRAPH_EVIDENCE_INVALID')
   const row = await resumeRow(sql, i.id)
   if (!row || row.state !== 'resumed' || !await consumed(sql, i)) return fail('GRAPH_RESUME_RECEIPT_MISSING')
   if (row.approval_native_ack_id) {
-    if (row.approval_native_ack_id !== fact.acknowledgementId) return fail('GRAPH_SOURCE_CONFLICT')
+    // Repeated complete histories retain the FIRST immutable acknowledgement.
+    // A newer source is not permission to retarget that receipt.
+    await assertWorkflowApprovalAckLocked(sql, i)
     return
   }
   const next = nextInteraction(i, {})
   const base = interactionFact(context, next, 'pending')
   if (base.type !== 'interaction.state') return fail('GRAPH_INVALID_FACT')
   const attention = await approvalAttentionFacts(sql, context, { interaction: next, nativeAcknowledged: true })
-  await publication.source({ evidence: { sourceKind: 'native_event', sourceId: i.id, sourceRevision: String(next.revision) },
-    sourceDigest: graphSourceDigest({ next, source, fact }), facts: [fact, { type: 'interaction.state',
-      interaction: GraphInteractionSchema.parse({ ...base.interaction, resumeState: 'acknowledged',
-        resumeAcknowledgementId: fact.acknowledgementId }) },
+  const evidence: GraphEvidence = { sourceKind: 'native_event', sourceId: i.id, sourceRevision: String(next.revision) }
+  const sourceDigest = graphSourceDigest({ next, source, fact })
+  const facts: GraphFact[] = [fact, { type: 'interaction.state',
+    interaction: GraphInteractionSchema.parse({ ...base.interaction, resumeState: 'acknowledged',
+      resumeAcknowledgementId: fact.acknowledgementId }) },
     { type: 'exchange.retired', exchangeKind: 'interaction', exchangeId: i.id, finalRevision: String(next.revision) },
-    ...attention] }, async (transaction) => {
+    ...attention]
+  const record = await approvalAckRecord(sql, next, { proofId: originalProofId, source,
+    requester: fact.requester, acknowledgementId: fact.acknowledgementId,
+    publication: { evidence, sourceDigest, semanticDigest: graphSourceDigest({ evidence, facts, effect: null }) } })
+  await publication.source({ evidence, sourceDigest, facts }, async (transaction) => {
     await writeInteraction(transaction, i, next)
     await transaction.query(`update interaction_graph_resumes set approval_native_ack_id=$2,approval_native_ack_source=$3::jsonb,
-      revision=revision+1,updated_at=clock_timestamp() where interaction_id=$1`, [i.id, fact.acknowledgementId, JSON.stringify(source)])
+      approval_native_ack_record=$4::jsonb,revision=revision+1,updated_at=clock_timestamp() where interaction_id=$1`,
+    [i.id, fact.acknowledgementId, JSON.stringify(source), JSON.stringify(record)])
   })
+  await assertWorkflowApprovalAckLocked(sql, next)
 }

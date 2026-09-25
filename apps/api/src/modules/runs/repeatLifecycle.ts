@@ -1,20 +1,23 @@
 import type pg from 'pg'
 import { AcceptedWorkflowRunV3Schema, RepeatGraphScopeV3Schema,
-  type AcceptedWorkflowRunV3 } from '@graphql/contracts/wave25'
+  type AcceptedWorkflowRunV3, type GraphEffectAuthority } from '@graphql/contracts/wave25'
 
 import { DomainError } from '../errors.js'
 import { beforeGraphCommit, withExclusiveGraphConnection, type GraphTransactionSql } from '../run-graph/connection.js'
-import { openRunGraphPublication, readRepeatRunSourceLocked } from '../run-graph/publication.js'
+import { currentRunGraphPublication, graphSourceDigest, openRunGraphPublication, readRepeatRunSourceLocked } from '../run-graph/publication.js'
+import { readPublicRunStateLocked } from '../run-graph/publicRunState.js'
+import { publicRunClosedFacts } from '../run-graph/publicProjection.js'
 import { publishRepeatRunStateLocked } from '../run-graph/repeatPublication.js'
 import { requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
-import type { AuthorizeOneShotStop } from './oneShotLifecycle.js'
+import type { WorkflowResumePermit } from './approvalCheckpointResume.js'
+import { assertConsumedWorkflowResumeLocked } from './approvalCheckpointResume.js'
 import type { RunOwnership } from './ownership.js'
 import type { RunStateUpdate } from './port.js'
 import { sameRepeatValue } from './repeatResolution.js'
 import { readAcceptedRepeatRunLocked } from './repeatStartRead.js'
 
-function scopeOf(run: AcceptedWorkflowRunV3) {
+export function workflowRunScope(run: AcceptedWorkflowRunV3) {
   return RepeatGraphScopeV3Schema.parse({ workspaceId: run.workspaceId, workflowId: run.workflowId,
     runId: run.id, workflowVersionId: run.workflowVersionId, executionSemanticsVersion: 3 })
 }
@@ -22,14 +25,14 @@ function scopeOf(run: AcceptedWorkflowRunV3) {
 /** Discovery is intentionally not FOR SHARE: openRunGraphPublication takes the
  * parent UPDATE lock before the head/children. Upgrading a prior shared parent
  * lock would deadlock two concurrent lifecycle writers. Never initialize a head. */
-async function openLifecycle(sql: GraphTransactionSql, runId: string) {
+export async function openWorkflowLifecycleLocked(sql: GraphTransactionSql, runId: string) {
   const found = await sql.query<{ record: unknown }>('select record from runs where id=$1', [runId])
   if (found.rows.length !== 1) throw new DomainError('RUN_NOT_FOUND', 'The exact Run was not found.', 404)
   const discovery = AcceptedWorkflowRunV3Schema.parse(found.rows[0]!.record)
   if (discovery.id !== runId) throw new DomainError('RUN_PIN_CONFLICT', 'Run identity changed during lifecycle discovery.', 409)
-  const publication = await openRunGraphPublication(sql, scopeOf(discovery))
+  const publication = await openRunGraphPublication(sql, workflowRunScope(discovery))
   const snapshot = await readAcceptedRepeatRunLocked(sql, runId)
-  if (!sameRepeatValue(scopeOf(snapshot.run), publication.scope)) throw new DomainError('RUN_PIN_CONFLICT', 'The locked Run scope differs from its canonical head.', 409)
+  if (!sameRepeatValue(workflowRunScope(snapshot.run), publication.scope)) throw new DomainError('RUN_PIN_CONFLICT', 'The locked Run scope differs from its canonical head.', 409)
   return { publication, snapshot }
 }
 
@@ -37,7 +40,7 @@ async function openLifecycle(sql: GraphTransactionSql, runId: string) {
  * transition or creates a new cleanup intent. The receipt is checked again after
  * G1 finalization, so returning from a producer is not mistaken for COMMIT. */
 async function verifyRunReplay(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3, stopped: boolean): Promise<void> {
-  const scope = scopeOf(run)
+  const scope = workflowRunScope(run)
   const source = await readRepeatRunSourceLocked(sql, scope)
   if (!source.replayed || source.stopped !== stopped || !sameRepeatValue(source.run, run)) throw new DomainError('GRAPH_SOURCE_CONFLICT', 'The exact persisted Run state has no matching canonical source.', 409)
   requireRepeatCanonicalReceiptBeforeCommit(sql, { scope, evidence: source.evidence,
@@ -52,20 +55,19 @@ async function verifyRunReplay(sql: GraphTransactionSql, run: AcceptedWorkflowRu
   })
 }
 
-/** Concrete first owner-state writer. Only queued -> running (or exact running
- * replay) is qualified here. Waiting -> running needs the missing atomic v3
- * approval consumer; terminal writes need selected-work/closure proof. Generic
- * updateState must not silently become either of those authorities. */
+/** Common owner-state writer. Waiting -> running needs the exact confirmed
+ * atomic checkpoint/effect permit. Terminal transitions have a separate proof
+ * writer; a generic state update cannot pretend to complete or resume work. */
 export async function markRepeatRunRunning(owner: RunOwnership,
-  locations: Pick<WorkspaceLocationService, 'revalidateRunAuthorization'>, input: RunStateUpdate): Promise<void> {
+  locations: Pick<WorkspaceLocationService, 'revalidateRunAuthorization'>, input: RunStateUpdate, resume?: WorkflowResumePermit): Promise<void> {
   const update = structuredClone(input)
   if (update.executionState !== 'running' || update.outcome !== 'pending'
     || Object.keys(update).some((key) => !['executionState', 'outcome', 'startedAt'].includes(key))) {
-    throw new DomainError('REPEAT_LIFECYCLE_PUBLICATION_REQUIRED', 'Only the first owner running transition is qualified by this writer.', 409)
+    throw new DomainError('REPEAT_LIFECYCLE_PUBLICATION_REQUIRED', 'Use the current proof-bearing writer for this lifecycle transition.', 409)
   }
   owner.assertOwned()
   await owner.oneShotConnection().transaction(async (sql) => {
-    const { publication, snapshot } = await openLifecycle(sql, owner.runId)
+    const { publication, snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
     const { run } = snapshot
     const fence = await owner.readOneShotFence(sql)
     const authorize = async () => {
@@ -84,8 +86,8 @@ export async function markRepeatRunRunning(owner: RunOwnership,
     await authorize()
     beforeGraphCommit(sql, authorize)
     if (snapshot.stopRequested || snapshot.cleanupPending) throw new DomainError('GRAPH_STOP_CONFLICT', 'Stop/cleanup fences block repeat progress.', 409)
-    if (run.executionState === 'waiting') throw new DomainError('REPEAT_APPROVAL_RESUME_REQUIRED', 'A waiting Run requires exact atomic approval consumption.', 409)
-    if (!['queued', 'running'].includes(run.executionState)) throw new DomainError('GRAPH_TERMINAL_CONFLICT', 'A terminal/interrupted Run cannot be started again.', 409)
+    if (run.executionState === 'waiting') await assertConsumedWorkflowResumeLocked(sql, owner, run, resume)
+    if (!['queued', 'running', 'waiting'].includes(run.executionState)) throw new DomainError('GRAPH_TERMINAL_CONFLICT', 'A terminal/interrupted Run cannot be started again.', 409)
     if (run.startedAt !== undefined && update.startedAt !== undefined && run.startedAt !== update.startedAt) {
       throw new DomainError('RUN_PIN_CONFLICT', 'The original Run start timestamp cannot be replaced.', 409)
     }
@@ -103,26 +105,57 @@ export async function markRepeatRunRunning(owner: RunOwnership,
   })
 }
 
-/** Authorized Stop only. This commits the parent fence and cleanup intent plus
- * the actual persisted v3 Run source in ONE G1 transaction. It does not cancel a
- * provider, terminalize an execution, issue a command receipt, or assert closure.
- * The management command retains its exact command identity and live policy. */
-export async function requestRepeatRunStop(pool: pg.Pool, runId: string, authorize: AuthorizeOneShotStop): Promise<void> {
-  if (typeof authorize !== 'function') throw new DomainError('REPEAT_STOP_AUTHORIZATION_REQUIRED', 'V3 Stop requires its live SQL command authorizer.', 409)
-  await withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
-    const { publication, snapshot } = await openLifecycle(sql, runId)
+export type AuthorizeWorkflowStop = (sql: GraphTransactionSql) => Promise<void>
+
+/** Shared SQL Stop writer. The authenticated command and an internal authorized
+ * Stop compose this on their existing G1. No provider/process work occurs here. */
+export async function requestWorkflowStopLocked(sql: GraphTransactionSql, runId: string,
+  authorize: AuthorizeWorkflowStop, opened?: Awaited<ReturnType<typeof openWorkflowLifecycleLocked>>): Promise<'accepted' | 'already_terminal'> {
+  if (typeof authorize !== 'function') throw new DomainError('REPEAT_STOP_AUTHORIZATION_REQUIRED', 'Stop requires its live SQL command authorizer.', 409)
+  const { publication, snapshot } = opened ?? await openWorkflowLifecycleLocked(sql, runId)
+  if (snapshot.run.id !== runId || publication.sql !== sql
+    || currentRunGraphPublication(sql, workflowRunScope(snapshot.run)) !== publication) throw new DomainError(
+    'GRAPH_SCOPE_MISMATCH', 'Stop must join the actual publication for this Run.', 409)
+  await authorize(sql)
+  beforeGraphCommit(sql, () => authorize(sql))
+  if (snapshot.stopRequested || snapshot.run.executionState === 'completed') {
+    await verifyRunReplay(sql, snapshot.run, snapshot.stopRequested)
+    return snapshot.stopRequested ? 'accepted' : 'already_terminal'
+  }
+  const effect = { identity: { kind: 'run.stop' as const, entityId: runId }, digest: graphSourceDigest({ runId, stop: true }) }
+  // This authority is the actual authorized command transaction, not a native
+  // session or replacement Run owner. Parent locking fences concurrent launch.
+  const readAuthority = async (): Promise<GraphEffectAuthority> => {
     await authorize(sql)
-    beforeGraphCommit(sql, () => authorize(sql))
-    if (snapshot.stopRequested || snapshot.run.executionState === 'completed') {
-      await verifyRunReplay(sql, snapshot.run, snapshot.stopRequested)
-      return
-    }
-    const changed = await sql.query('update runs set stop_requested_at=coalesce(stop_requested_at,clock_timestamp()) where id=$1', [runId])
-    if (changed.rowCount !== 1) throw new DomainError('RUN_NOT_FOUND', 'The Run disappeared during Stop publication.', 409)
+    const row = (await sql.query<{ owner: string; fence: string; record: unknown }>(
+      'select pg_backend_pid()::text as owner,txid_current()::text as fence,record from runs where id=$1', [runId])).rows[0]
+    if (!row) throw new DomainError('RUN_NOT_FOUND', 'The locked Run disappeared.', 404)
+    const actual = AcceptedWorkflowRunV3Schema.parse(row.record)
+    return { scope: workflowRunScope(actual), effect: effect.identity, effectDigest: effect.digest,
+      ownerId: row.owner, fence: row.fence, connectionGeneration: null, ownership: 'held',
+      access: 'effect', security: 'valid', effectClosed: actual.executionState === 'completed', submission: 'unknown' }
+  }
+  const authority = await readAuthority()
+  const expected = { scope: authority.scope, effect: effect.identity, effectDigest: effect.digest,
+    ownerId: authority.ownerId, fence: authority.fence, connectionGeneration: null }
+  const state = { ...await readPublicRunStateLocked(sql, publication.scope), stopRequested: true, cleanupPending: true }
+  const evidence = { sourceKind: 'run' as const, sourceId: `stop-${effect.digest.slice(7)}`, sourceRevision: '0' }
+  await publication.effect({ effect, sourceDigest: effect.digest, evidence,
+    facts: [{ type: 'run.state', state }, ...await publicRunClosedFacts(sql, publication.scope)] },
+  { expected, readCurrentLocked: readAuthority }, async () => {
     await sql.query(`insert into run_cleanup_intents(run_id) values($1)
       on conflict(run_id) do update set pending=true,updated_at=now()`, [runId])
-    const receipt = await publication.repeatStoppedRunReadback()
-    requireRepeatCanonicalReceiptBeforeCommit(sql, { scope: publication.scope, evidence: receipt.evidence,
-      sourceDigest: receipt.sourceDigest, semanticDigest: receipt.semanticDigest, effect: null })
+  })
+  requireRepeatCanonicalReceiptBeforeCommit(sql, { scope: publication.scope, evidence, sourceDigest: effect.digest,
+    effect: { kind: 'run.stop', entityId: runId, digest: effect.digest } })
+  const receipt = await publication.repeatStoppedRunReadback()
+  requireRepeatCanonicalReceiptBeforeCommit(sql, { scope: publication.scope, evidence: receipt.evidence,
+    sourceDigest: receipt.sourceDigest, semanticDigest: receipt.semanticDigest, effect: null })
+  return 'accepted'
+}
+
+export async function requestRepeatRunStop(pool: pg.Pool, runId: string, authorize: AuthorizeWorkflowStop): Promise<void> {
+  await withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
+    await requestWorkflowStopLocked(sql, runId, authorize)
   }))
 }
