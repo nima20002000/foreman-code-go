@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { RepeatGraphSnapshotV3Schema, RepeatGraphPageV3Schema, RepeatGraphResetV3Schema } from './repeatGraphMetadata.js'
 import { GraphSequenceSchema, RUN_GRAPH_LIMITS } from './protocol.js'
 import { canonicalGraphJson, graphJsonBytes } from './json.js'
 import {
@@ -158,3 +159,36 @@ export type RepeatMetadataEventV1 = z.infer<typeof RepeatMetadataEventV1Schema>
 export type RepeatMetadataBatchV1 = z.infer<typeof RepeatMetadataBatchV1Schema>
 export type RepeatMetadataResetV1 = z.infer<typeof RepeatMetadataResetV1Schema>
 export type RepeatMetadataReadV1 = z.infer<typeof RepeatMetadataReadV1Schema>
+
+// Explicit v3 arm. Do not widen or retag the legacy protocol schemas.
+export * from './repeatGraphMetadata.js'
+
+/** Both public occurrence-only views derive from ONE verified canonical cut.
+ * The API supplies readRepeatGraphSnapshot's result; this pure conversion does
+ * not create a receipt, read a second head or promote a partial page to current. */
+export function repeatMetadataSnapshotFromCanonicalV3(value: unknown): RepeatMetadataSnapshotV1 {
+  const snapshot = RepeatGraphSnapshotV3Schema.parse(value)
+  const decisions = new Map(snapshot.state.decisions.map((decision) => [decision.occurrence.identity.occurrenceId, decision]))
+  return RepeatMetadataSnapshotV1Schema.parse({ kind: 'snapshot', contractVersion: 1, scope: snapshot.scope,
+    throughSequence: snapshot.asOfSequence, headSequence: snapshot.asOfSequence, retentionFloor: snapshot.retentionFloor, complete: true,
+    items: snapshot.state.occurrences.map((occurrence) => ({ occurrence, decision: decisions.get(occurrence.identity.occurrenceId) ?? null })) })
+}
+export function repeatMetadataCurrentFromCanonicalV3(value: unknown): RepeatMetadataCurrentV1 {
+  return RepeatMetadataCurrentV1Schema.parse({ ...repeatMetadataSnapshotFromCanonicalV3(value), kind: 'current' })
+}
+export function repeatMetadataDeltaFromCanonicalV3(value: unknown): RepeatMetadataDeltaV1 {
+  const page = RepeatGraphPageV3Schema.parse(value)
+  return RepeatMetadataDeltaV1Schema.parse({ kind: 'delta', contractVersion: 1, scope: page.scope,
+    baseSequence: page.baseSequence, throughSequence: page.throughSequence, headSequence: page.headSequence,
+    retentionFloor: page.retentionFloor, hasMore: page.hasMore,
+    // An empty projection STILL carries its complete publication position.
+    batches: page.batches.map((batch) => ({ scope: batch.scope, previousSequence: batch.previousSequence, sequence: batch.sequence,
+      events: batch.events.flatMap(({ fact }) => fact.type === 'repeat.occurrence' || fact.type === 'repeat.decision' ? [fact] : []) })) })
+}
+export function repeatMetadataResetFromCanonicalV3(value: unknown): RepeatMetadataResetV1 {
+  const reset = RepeatGraphResetV3Schema.parse(value)
+  return RepeatMetadataResetV1Schema.parse({ kind: 'reset', contractVersion: 1, scope: reset.scope,
+    retentionFloor: reset.retentionFloor, headSequence: reset.headSequence,
+    reason: reset.reason === 'history_expired' ? 'retention'
+      : ['atomic_change_too_large', 'catchup_limit'].includes(reset.reason) ? 'capacity' : 'snapshot_required' })
+}

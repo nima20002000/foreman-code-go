@@ -3,6 +3,8 @@ import {
   RepeatCapabilityRequestSchema,
   RepeatRunReadInputSchema,
   RepeatSaveInputSchema,
+  RepeatEditMutationInputSchema,
+  RepeatEditReadInputSchema,
   RepeatWorkflowReadInputSchema,
 } from '@graphql/contracts/wave25'
 
@@ -13,6 +15,7 @@ import type { RepeatReadbackService } from '../modules/repeats/readback.js'
 
 type Params = Record<string, string>
 type Query = Record<string, string | undefined>
+const EditQuerySchema = RepeatEditReadInputSchema.pick({ draftId: true, intentId: true }).strict()
 const RunQuerySchema = RepeatRunReadInputSchema.pick({ cursor: true, limit: true, includeResultData: true }).strict()
 
 export interface RepeatRouteServices {
@@ -49,6 +52,14 @@ export function registerRepeatRoutes(app: FastifyInstance, services: RepeatRoute
 
   app.put<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/repeat', async (request) =>
     services.authoring.save(requirePrincipal(request), 'http', RepeatSaveInputSchema.parse(routeInput(request.params, request.body))))
+
+  app.get<{ Params: Params; Querystring: Query }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/repeat/edits', async (request) =>
+    services.authoring.editIntents.read(requirePrincipal(request), RepeatEditReadInputSchema.parse({
+      ...EditQuerySchema.parse(request.query), ...request.params, action: 'read_edits',
+    })))
+
+  app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/repeat/edits', async (request) =>
+    services.authoring.mutate(requirePrincipal(request), 'http', RepeatEditMutationInputSchema.parse(routeInput(request.params, request.body))))
 
   app.get<{ Params: Params; Querystring: Query }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/repeats', async (request) => {
     const principal = requirePrincipal(request)

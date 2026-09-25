@@ -5,10 +5,12 @@ import {
   RepeatCapabilityRequestSchema,
   RepeatRunReadInputSchema,
   RepeatRunReadbackSchema,
-  RepeatSaveInputSchema,
-  RepeatSaveResultSchema,
-  RepeatWorkflowReadInputSchema,
-  RepeatWorkflowReadbackSchema,
+  RepeatMutationInputSchema,
+  RepeatMutationToolInputSchema,
+  RepeatMutationToolResultSchema,
+  RepeatGetInputSchema,
+  RepeatGetToolInputSchema,
+  RepeatGetToolResultSchema,
 } from '@graphql/contracts/wave25'
 
 import type { PostgresCommandCoordinator } from '../../modules/commands/postgres.js'
@@ -42,25 +44,29 @@ async function invoke(context: RepeatOperatorContext, name: string, work: () => 
 
 export function registerRepeatTools(server: McpServer, context: RepeatOperatorContext): void {
   if (context.available('repeat_capabilities_get')) server.registerTool('repeat_capabilities_get', {
-    description: 'Discover saved bounded-repeat authoring/readback limits and explicit unavailable native Start and repeat edit-intent gates. supported=false is not permission to start; no nesting or arbitrary cycles.',
+    description: 'Discover saved bounded-repeat authoring/readback limits and explicit unavailable native Start/Stop completion gates. supported=false is not permission to start; no nesting or arbitrary cycles.',
     inputSchema: RepeatCapabilityRequestSchema,
     outputSchema: RepeatCapabilitiesResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invoke(context, 'repeat_capabilities_get', () => context.authoring.capabilities(context.principal, input)))
 
   if (context.available('repeat_get')) server.registerTool('repeat_get', {
-    description: 'Read the current persisted bounded-repeat workflow version and exact repeat plan.',
-    inputSchema: RepeatWorkflowReadInputSchema,
-    outputSchema: RepeatWorkflowReadbackSchema,
+    description: 'Read the saved repeat version, or action=read_edits with draftId and optional intentId to reconcile the caller-private durable edit journal. Private edits require Agent, workspace-location and affected-Run read grants. Read never Stops, publishes, or restarts.',
+    inputSchema: RepeatGetToolInputSchema,
+    outputSchema: RepeatGetToolResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invoke(context, 'repeat_get', () => context.readback.workflow(context.principal, input)))
+  }, async (input) => invoke(context, 'repeat_get', () => {
+    const value = RepeatGetInputSchema.parse(input)
+    return 'action' in value ? context.authoring.editIntents.read(context.principal, value)
+      : context.readback.workflow(context.principal, value)
+  }))
 
   if (context.available('repeat_update')) server.registerTool('repeat_update', {
-    description: 'Revision- and version-pinned bounded-repeat publication through the same HTTP service. Requires workflows read/update, graph read/edit/save and Agent read grants; skills and privileged harness pins require extra authority. Every affected Run must be terminal with exact cleanup settlement. This does not Stop, Stage, or Start. Native repeat Start and repeat edit intents remain unavailable. Reusing commandId with different input conflicts.',
-    inputSchema: RepeatSaveInputSchema,
-    outputSchema: RepeatSaveResultSchema,
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invoke(context, 'repeat_update', () => context.authoring.save(context.principal, 'mcp', input)))
+    description: 'Direct save without action; action=stage_edits privately journals a finite repeat plan with exact workflow revision/version, Agent map, location revision and stable editor draftId; action=stop_and_save or discard_edits uses ONLY the intent-returned commandId, intentId and draftId. Same durable board protocol and HTTP service. Requires workflow read/update, graph read/edit/save Agent read and workspace-location read; Stop separately requires every exact affected-Run Stop grant. Stage/Discard never Stop or publish. Advance may return waiting/blocked/uncertain: acceptance is not native/cleanup settlement. Read with repeat_get; retry exact identities, never restart. Native v3 Stop remains fail-closed until its owner registers support.',
+    inputSchema: RepeatMutationToolInputSchema,
+    outputSchema: RepeatMutationToolResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, async (input) => invoke(context, 'repeat_update', () => context.authoring.mutate(context.principal, 'mcp', RepeatMutationInputSchema.parse(input))))
 
   if (context.available('repeat_run_get')) server.registerTool('repeat_run_get', {
     description: 'Read persisted per-occurrence repeat identity and decision metadata for an exact Run. Authorized result detail is opt-in and bounded.',

@@ -120,7 +120,10 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   if (options.operator) registerBrowserAuthRoutes(app, options.browserAuth)
   if (options.operator) registerOperatorHttpSecurity(app, options.operator.access, options.browserAuth, options.localDevBrowserAccess)
   if (options.operator) registerManagementRoutes(app, options.operator.services)
-  if (options.operator?.services.repeats) registerRepeatRoutes(app, options.operator.services.repeats)
+  if (options.operator?.services.repeats) {
+    if (options.operator.services.runs) options.operator.services.repeats.authoring.bindEditStop(options.operator.services.runs.stop.bind(options.operator.services.runs))
+    registerRepeatRoutes(app, options.operator.services.repeats)
+  }
   if (options.operator?.services.runGraph) registerRunGraphRoutes(app, options.operator.services.runGraph,
     (principalId, code, route) => options.operator!.services.commands.recordDenied(principalId, 'http', code, route))
   if (options.operator && options.harnessCompatibility) registerHarnessCompatibilityRoutes(app, options.harnessCompatibility)

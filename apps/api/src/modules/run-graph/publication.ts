@@ -5,12 +5,18 @@ import {
   GraphEffectSchema, GraphEffectFenceSchema, assertGraphEffectAuthority, RunGraphErrorCodeSchema,
   type GraphEffect, type GraphEffectFence, type GraphEffectAuthority, type GraphEffectIdentity,
   type GraphEvidence, type GraphFact, type RunGraphEvent, type RunGraphScope,
+  CanonicalRunGraphScopeSchema, sameCanonicalGraphScope, RepeatGraphScopeV3Schema,
+  RepeatGraphFactV3Schema, RepeatGraphEffectV3Schema, RepeatGraphEventContentV3Schema, RepeatGraphBatchV3Schema,
+  assertRepeatGraphFactScope,
+  type CanonicalRunGraphScope, type RepeatGraphFactV3,
+  type RepeatGraphEventV3, type RepeatGraphEffectV3,
 } from '@graphql/contracts/wave25'
 import {
   assertGraphTransaction, beforeGraphCommit, didGraphTransactionCommit, poisonGraphTransaction,
   type ExclusiveGraphConnection, type GraphTransactionSql,
 } from './connection.js'
 import { RunGraphError } from './errors.js'
+import type { RunOwnership } from '../runs/ownership.js'
 
 export function graphSourceDigest(value: unknown): string {
   return 'sha256:' + createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
@@ -30,9 +36,9 @@ export interface GraphEffectGuard {
   readCurrentLocked(sql: GraphTransactionSql, scope: RunGraphScope, effect: GraphEffectIdentity): Promise<GraphEffectAuthority>
 }
 export interface GraphEffectChange extends GraphSourceChange { effect: GraphEffect }
-interface StagedEffect { effect: GraphEffect; semanticDigest: string }
+interface StagedEffect { effect: GraphEffect | RepeatGraphEffectV3; semanticDigest: string }
 interface StagedSource {
-  evidence: GraphEvidence; sourceDigest: string; semanticDigest: string; events: RunGraphEvent[]
+  evidence: GraphEvidence; sourceDigest: string; semanticDigest: string; events: (RunGraphEvent | RepeatGraphEventV3)[]
   /** Aliases of already committed effects point at their original publication. */
   firstSequence?: string
 }
@@ -41,20 +47,26 @@ export interface GraphPublicationReceipt {
   batchId: string | null
   kind: 'none' | 'events' | 'reset'
 }
-const publications = new WeakMap<GraphTransactionSql, RunGraphPublication>()
+const publications = new WeakMap<GraphTransactionSql, RunGraphPublication<CanonicalRunGraphScope>>()
 const constructionKey = Symbol('RunGraphPublication')
 
 /** All nested domain producers share this one transaction and ONE finalized batch. */
-export class RunGraphPublication {
+export interface RepeatGraphSourceChange {
+  evidence: GraphEvidence
+  sourceDigest: string
+  effect: RepeatGraphEffectV3 | null
+}
+
+export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScope> {
   readonly sql: GraphTransactionSql
-  readonly scope: RunGraphScope
+  readonly scope: S
   readonly #sources = new Map<string, StagedSource>()
   readonly #effects = new Map<string, StagedEffect>()
   #bytes = 0
   #busy = false
   #finalized = false
   #receipt: GraphPublicationReceipt = { sequence: null, batchId: null, kind: 'none' }
-  constructor(key: symbol, sql: GraphTransactionSql, scope: RunGraphScope) {
+  constructor(key: symbol, sql: GraphTransactionSql, scope: S) {
     if (key !== constructionKey) throw new RunGraphError('GRAPH_TRANSACTION_CLOSED')
     this.sql = sql
     this.scope = Object.freeze({ ...scope })
@@ -80,6 +92,7 @@ export class RunGraphPublication {
       if (this.#busy) throw new RunGraphError('GRAPH_TRANSACTION_CONCURRENT')
       this.#busy = true
       entered = true
+      const legacyScope = RunGraphScopeSchema.parse(this.scope)
       if (!guarded && Object.prototype.hasOwnProperty.call(input, 'effect')) throw new RunGraphError('GRAPH_INVALID_FACT')
       if (guarded && this.scope.executionSemanticsVersion !== 2) throw new RunGraphError('GRAPH_EFFECT_ACCESS_DENIED')
       const evidence = GraphEvidenceSchema.parse(input.evidence)
@@ -130,7 +143,7 @@ export class RunGraphPublication {
         }
         if (!guarded?.guard || typeof guarded.guard.readCurrentLocked !== 'function') throw new RunGraphError('GRAPH_AUTHORITY_INVALID')
         const expected = GraphEffectFenceSchema.parse(guarded.guard.expected)
-        if (!sameGraphScope(expected.scope, this.scope) || canonicalGraphJson(expected.effect) !== effectKey || expected.effectDigest !== effect.digest) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
+        if (!sameGraphScope(expected.scope, legacyScope) || canonicalGraphJson(expected.effect) !== effectKey || expected.effectDigest !== effect.digest) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
         // Parent Run already locked by openRunGraphPublication. Never use cleanup
         // as Stop or trust a caller-supplied terminal flag for this parent fence.
         const run = (await this.sql.query<{ execution_state: string; stopped: boolean }>(
@@ -140,7 +153,7 @@ export class RunGraphPublication {
           if (run.stopped) throw new RunGraphError('GRAPH_STOP_CONFLICT')
           if (['completed', 'interrupted'].includes(run.execution_state)) throw new RunGraphError('GRAPH_TERMINAL_CONFLICT')
         }
-        assertGraphEffectAuthority(expected, await guarded.guard.readCurrentLocked(this.sql, this.scope, effect.identity))
+        assertGraphEffectAuthority(expected, await guarded.guard.readCurrentLocked(this.sql, legacyScope, effect.identity))
         if (effect.identity.kind === 'run.stop') {
           if (effect.identity.entityId !== this.scope.runId) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
           if (!facts.some((fact) => fact.type === 'run.state' && fact.state.stopRequested === true)) throw new RunGraphError('GRAPH_INVALID_FACT')
@@ -170,6 +183,144 @@ export class RunGraphPublication {
       }
       const code = RunGraphErrorCodeSchema.safeParse(error instanceof Error ? error.message : undefined)
       if (code.success) throw new RunGraphError(code.data)
+      if (error instanceof Error && error.message === 'GRAPH_JSON_LIMIT') throw new RunGraphError('GRAPH_TRANSACTION_LIMIT')
+      throw new RunGraphError('GRAPH_INVALID_FACT')
+    } finally { if (entered) this.#busy = false }
+  }
+  /** V3 owner mutation and post-mutation metadata projection in the SAME journal.
+   * Private rows (notably input bindings) do not exist before mutate. No native
+   * I/O belongs here. Exact duplicates project immutable metadata but never call
+   * mutate; N1 additionally requires exactly one mutation on its fresh path.
+   * Source-only run readback is deliberately separate: it grants no mutation.
+   */
+  async repeatChange<T>(input: RepeatGraphSourceChange, owner: RunOwnership,
+    mutate: (sql: GraphTransactionSql) => Promise<T>,
+    projectLocked: (sql: GraphTransactionSql) => Promise<readonly RepeatGraphFactV3[]>,
+  ): Promise<{ replayed: boolean; semanticDigest: string; value?: T }> {
+    return this.repeatChangeInternal(input, owner, mutate, projectLocked, 'progress')
+  }
+
+  /** Enlist the already authorized Run writer's exact SQL state. This method
+   * cannot mutate a Run, request Stop, launch work or waive native settlement. */
+  async repeatRunReadback(input: Omit<RepeatGraphSourceChange, 'effect'>, owner: RunOwnership,
+    projectLocked: (sql: GraphTransactionSql) => Promise<readonly RepeatGraphFactV3[]>,
+  ): Promise<{ replayed: boolean; semanticDigest: string }> {
+    return this.repeatChangeInternal({ ...input, effect: null }, owner, async () => undefined, projectLocked, 'run_readback')
+  }
+
+  /** Exact native observation writes are authorized by the existing N1/N2 host.
+   * After Stop/terminal only terminal execution metadata may be enlisted. This
+   * does not accept a business result, route work, or create a launch permit. */
+  async repeatObservation<T>(input: Omit<RepeatGraphSourceChange, 'effect'>, owner: RunOwnership,
+    mutate: (sql: GraphTransactionSql) => Promise<T>,
+    projectLocked: (sql: GraphTransactionSql) => Promise<readonly RepeatGraphFactV3[]>,
+  ): Promise<{ replayed: boolean; semanticDigest: string; value?: T }> {
+    return this.repeatChangeInternal({ ...input, effect: null }, owner, mutate, projectLocked, 'native_evidence')
+  }
+
+  private async repeatChangeInternal<T>(input: RepeatGraphSourceChange, owner: RunOwnership,
+    mutate: (sql: GraphTransactionSql) => Promise<T>,
+    projectLocked: (sql: GraphTransactionSql) => Promise<readonly RepeatGraphFactV3[]>, mode: 'progress' | 'run_readback' | 'native_evidence',
+  ): Promise<{ replayed: boolean; semanticDigest: string; value?: T }> {
+    let entered = false
+    try {
+      assertGraphTransaction(this.sql)
+      const scope = RepeatGraphScopeV3Schema.parse(this.scope)
+      if (this.#finalized) throw new RunGraphError('GRAPH_TRANSACTION_CLOSED')
+      if (this.#busy) throw new RunGraphError('GRAPH_TRANSACTION_CONCURRENT')
+      this.#busy = true; entered = true
+      owner.assertOwned()
+      if (owner.runId !== scope.runId) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
+      const ownerFence = await owner.readOneShotFence(this.sql)
+      const checkOwner = async () => {
+        owner.assertOwned()
+        if (canonicalGraphJson(await owner.readOneShotFence(this.sql)) !== canonicalGraphJson(ownerFence)) {
+          throw new RunGraphError('GRAPH_OWNER_LOST')
+        }
+      }
+      const evidence = GraphEvidenceSchema.parse(input.evidence)
+      const sourceDigest = GraphDigestSchema.parse(input.sourceDigest)
+      const effect = input.effect === null ? null : RepeatGraphEffectV3Schema.parse(input.effect)
+      const runReadback = mode === 'run_readback'
+      if (mode === 'native_evidence' && (evidence.sourceKind !== 'execution' || effect !== null)) throw new RunGraphError('GRAPH_INVALID_FACT')
+      if (runReadback && (evidence.sourceKind !== 'run' || effect !== null)) throw new RunGraphError('GRAPH_INVALID_FACT')
+      const key = canonicalGraphJson(evidence), effectKey = effect ? canonicalGraphJson(effect.identity) : null
+      const staged = this.#sources.get(key)
+      const saved = staged ? undefined : (await this.sql.query<{
+        source_digest: string; semantic_digest: string; first_sequence: string
+      }>(`select source_digest,semantic_digest,first_sequence::text from run_graph_sources
+         where run_id=$1 and source_kind=$2 and source_id=$3 and source_revision=$4::bigint`,
+      [scope.runId, evidence.sourceKind, evidence.sourceId, evidence.sourceRevision])).rows[0]
+      const stagedEffect = effectKey ? this.#effects.get(effectKey) : undefined
+      const savedEffect = !effect || stagedEffect ? undefined : (await this.sql.query<{
+        effect_digest: string; semantic_digest: string; first_sequence: string
+      }>(`select effect_digest,semantic_digest,first_sequence::text from run_graph_effects
+         where run_id=$1 and effect_kind=$2 and entity_id=$3`,
+      [scope.runId, effect.identity.kind, effect.identity.entityId])).rows[0]
+      if ((staged && staged.sourceDigest !== sourceDigest) || (saved && saved.source_digest !== sourceDigest)) {
+        throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
+      }
+      if (effect && (stagedEffect || savedEffect)
+        && (stagedEffect?.effect.digest ?? savedEffect!.effect_digest) !== effect.digest) throw new RunGraphError('GRAPH_EFFECT_CONFLICT')
+      // A source with a missing effect is corruption, not permission to repair it.
+      if (effect && (staged || saved) && !stagedEffect && !savedEffect) throw new RunGraphError('GRAPH_EFFECT_CONFLICT')
+      const replayed = Boolean(staged || saved || stagedEffect || savedEffect)
+      let value: T | undefined
+      let terminalEvidenceOnly = false
+      if (!replayed) {
+        const run = (await this.sql.query<{ execution_state: string; stopped: boolean }>(
+          'select execution_state,stop_requested_at is not null as stopped from runs where id=$1', [scope.runId])).rows[0]
+        if (!run) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
+        terminalEvidenceOnly = run.stopped || ['completed', 'interrupted'].includes(run.execution_state)
+        if (mode === 'progress') {
+          if (run.stopped) throw new RunGraphError('GRAPH_STOP_CONFLICT')
+          if (['completed', 'interrupted'].includes(run.execution_state)) throw new RunGraphError('GRAPH_TERMINAL_CONFLICT')
+        }
+        if (this.#sources.size >= RUN_GRAPH_LIMITS.transactionSources) throw new RunGraphError('GRAPH_TRANSACTION_LIMIT')
+        value = await mutate(this.sql)
+      }
+      const projected = await projectLocked(this.sql)
+      canonicalGraphJson(projected, RUN_GRAPH_LIMITS.transactionBytes)
+      if (!projected.length) throw new RunGraphError('GRAPH_INVALID_FACT')
+      const facts = projected.map((fact) => RepeatGraphFactV3Schema.parse(fact))
+      for (const fact of facts) assertRepeatGraphFactScope(scope, fact)
+      if (mode === 'native_evidence' && (facts.length !== 1 || facts[0]!.type !== 'repeat.execution'
+        || terminalEvidenceOnly && facts[0]!.execution.state !== 'completed')) throw new RunGraphError('GRAPH_STOP_CONFLICT')
+      if (runReadback && (facts.length !== 1 || facts[0]!.type !== 'repeat.run.state')) throw new RunGraphError('GRAPH_INVALID_FACT')
+      const runFacts = facts.filter((fact) => fact.type === 'repeat.run.state')
+      if (runFacts.length) {
+        const row = (await this.sql.query<{ execution_state: string; outcome: string; stopped: boolean }>(
+          "select execution_state,record->>'outcome' as outcome,stop_requested_at is not null as stopped from runs where id=$1", [scope.runId])).rows[0]
+        if (!row || runFacts.some(({ state }) => state.executionState !== row.execution_state
+          || state.outcome !== row.outcome || state.stopRequested !== row.stopped)) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+      }
+      const semanticDigest = graphSourceDigest(effect ? { effect, facts } : facts)
+      if (staged) this.assertSame(staged, sourceDigest, semanticDigest)
+      if (saved) this.assertSame({ sourceDigest: saved.source_digest, semanticDigest: saved.semantic_digest }, sourceDigest, semanticDigest)
+      if (effect && (stagedEffect || savedEffect)
+        && (stagedEffect?.semanticDigest ?? savedEffect!.semantic_digest) !== semanticDigest) throw new RunGraphError('GRAPH_EFFECT_CONFLICT')
+      if (saved && savedEffect && saved.first_sequence !== savedEffect.first_sequence) throw new RunGraphError('GRAPH_EFFECT_CONFLICT')
+      if (!staged && !saved) {
+        const events = (replayed ? [] : facts.map((fact) => RepeatGraphEventContentV3Schema.parse({
+          eventId: randomUUID(), evidence, sourceDigest, semanticDigest, effect, fact,
+        })))
+        const bytes = Buffer.byteLength(canonicalGraphJson({ evidence, sourceDigest, semanticDigest, events }, RUN_GRAPH_LIMITS.transactionBytes))
+        if (this.#sources.size >= RUN_GRAPH_LIMITS.transactionSources || this.#bytes + bytes > RUN_GRAPH_LIMITS.transactionBytes) {
+          throw new RunGraphError('GRAPH_TRANSACTION_LIMIT')
+        }
+        this.#sources.set(key, { evidence, sourceDigest, semanticDigest, events,
+          ...(savedEffect ? { firstSequence: savedEffect.first_sequence } : {}) })
+        if (effect && !replayed) this.#effects.set(effectKey!, { effect, semanticDigest })
+        this.#bytes += bytes
+      }
+      await checkOwner()
+      // Registered after the existing publication finalizer. A caught owner
+      // failure cannot commit either domain rows or the staged batch/receipts.
+      beforeGraphCommit(this.sql, checkOwner)
+      return { replayed, semanticDigest, ...(!replayed && value !== undefined ? { value } : {}) }
+    } catch (error) {
+      poisonGraphTransaction(this.sql)
+      if (error instanceof RunGraphError) throw error
       if (error instanceof Error && error.message === 'GRAPH_JSON_LIMIT') throw new RunGraphError('GRAPH_TRANSACTION_LIMIT')
       throw new RunGraphError('GRAPH_INVALID_FACT')
     } finally { if (entered) this.#busy = false }
@@ -207,7 +358,8 @@ export class RunGraphPublication {
         || events.some((event) => graphJsonBytes(event) > RUN_GRAPH_LIMITS.eventBytes)
         || graphJsonBytes(candidate) > RUN_GRAPH_LIMITS.batchBytes
       kind = oversized ? 'reset' : 'events'
-      const parsed = oversized ? undefined : RunGraphBatchSchema.safeParse(candidate)
+      const parsed = oversized ? undefined : (this.scope.executionSemanticsVersion === 3
+        ? RepeatGraphBatchV3Schema.safeParse(candidate) : RunGraphBatchSchema.safeParse(candidate))
       if (parsed && !parsed.success) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
       // A size barrier preserves domain state and ALL source receipts. Invalid
       // semantic content is instead a rollback, never disguised as an oversized batch.
@@ -250,13 +402,13 @@ export class RunGraphPublication {
  * upgrade the Run lock after taking the head/child locks.
  * No arbitrary ClientBase overload exists. The commit finalizer cannot be forgotten.
  */
-export async function openRunGraphPublication(
-  sql: GraphTransactionSql, input: RunGraphScope,
+export async function openRunGraphPublication<S extends CanonicalRunGraphScope>(
+  sql: GraphTransactionSql, input: S,
   initialize?: { historyCoverage: 'from_admission' | 'from_snapshot' },
-): Promise<RunGraphPublication> {
+): Promise<RunGraphPublication<S>> {
   assertGraphTransaction(sql)
   try {
-    const scope = RunGraphScopeSchema.parse(input)
+    const scope = CanonicalRunGraphScopeSchema.parse(input) as S
     if (publications.has(sql)) throw new RunGraphError('GRAPH_TRANSACTION_NESTED')
     const found = await sql.query<{ workspace_id: string; workflow_id: string; workflow_version_id: string; execution_semantics_version: number }>(
       `select r.workspace_id,r.workflow_id,r.workflow_version_id,v.execution_semantics_version
@@ -279,10 +431,10 @@ export async function openRunGraphPublication(
   } catch (error) { poisonGraphTransaction(sql); throw error }
 }
 
-export function assertRunGraphPublication(sql: GraphTransactionSql, scope: RunGraphScope): void {
+export function assertRunGraphPublication(sql: GraphTransactionSql, scope: CanonicalRunGraphScope): void {
   assertGraphTransaction(sql)
   const publication = publications.get(sql)
-  if (!publication || !sameGraphScope(publication.scope, scope)) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
+  if (!publication || !sameCanonicalGraphScope(publication.scope, scope)) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
 }
 
 export async function withRunGraphPublication<T>(

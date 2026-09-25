@@ -10,6 +10,7 @@ import {
   RepeatCapabilityV1Schema,
   RepeatCapabilityRequestSchema,
   RepeatSaveInputSchema,
+  RepeatMutationInputSchema,
   RepeatSavedWorkflowSchema,
   RepeatWorkflowVersionV1Schema,
   WorkflowVersionV2Schema,
@@ -17,6 +18,7 @@ import {
   sameExecutableWorkflow,
   type RepeatCapabilityRequest,
   type RepeatSaveInput,
+  type RepeatMutationInput,
   type RepeatSavedWorkflow,
 } from '@graphql/contracts/wave25'
 import type pg from 'pg'
@@ -25,6 +27,8 @@ import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { commandInputHash, type PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
+import type { RunManagementService } from '../runs/management.js'
+import { createRepeatEditIntentService } from '../graph-drafts/repeatEditIntent.js'
 import { assertMeaningfulSaveAdmitted } from '../graph-drafts/saveAdmission.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
@@ -38,8 +42,63 @@ interface WorkflowRow {
 }
 
 export class RepeatAuthoringService {
+  readonly editIntents: ReturnType<typeof createRepeatEditIntentService>
+  private editStop: RunManagementService['stop'] | undefined
+  private repeatLifecycleReady = false
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
-    private readonly persistedReadback = false) {}
+    private readonly persistedReadback = false) {
+    this.editIntents = createRepeatEditIntentService(pool, commands, {
+      validate: async (client, principal, input) => {
+        this.authorize(principal, input)
+        return (await this.prepareVersion(client, principal, input, false)).candidate
+      },
+      publish: (principal, source, input, intentId) => this.publishEdit(principal, source, input, intentId),
+      repeatStopReady: () => this.repeatLifecycleReady,
+    })
+  }
+
+  /** Trusted application composition only; no request can opt into native v3.
+   * The native owner must register support only after its Stop/closure path is
+   * wired. This never substitutes for the authoritative settlement read. */
+  bindEditStop(stop: RunManagementService['stop'], repeatLifecycleReady = false): void {
+    this.editStop = stop
+    this.repeatLifecycleReady = repeatLifecycleReady
+  }
+
+  async mutate(principal: ManagementPrincipal, source: Source, raw: RepeatMutationInput) {
+    const input = RepeatMutationInputSchema.parse(raw)
+    if (!('action' in input)) return this.save(principal, source, input)
+    switch (input.action) {
+      case 'stage_edits': return this.editIntents.stage(principal, source, input)
+      case 'discard_edits': return this.editIntents.discard(principal, source, input)
+      case 'stop_and_save': return this.editIntents.advance(principal, source, input, async (...args) => {
+        if (!this.editStop) throw new DomainError('REPEAT_STOP_UNAVAILABLE',
+          'The existing Stop service is not composed. The staged payload and exact commands are retained.', 503)
+        return this.editStop(...args)
+      })
+    }
+  }
+
+  private async publishEdit(principal: ManagementPrincipal, source: Source, input: RepeatSaveInput, intentId: string) {
+    return this.commands.execute<RepeatSavedWorkflow>({
+      principal, source, operation: 'repeat.save', commandId: input.commandId,
+      targetKey: `workflow:${input.workflowId}:repeat`, payload: input,
+      replayResult: (result) => RepeatSavedWorkflowSchema.parse(result),
+      authorize: async (client) => {
+        principal = await readLiveManagementPrincipal(client, principal.id)
+        this.authorize(principal, input)
+        await this.editIntents.authorizeSave(client, principal, intentId, input)
+      },
+      perform: async (client) => {
+        await this.editIntents.publication(client, principal, intentId, input)
+        const value = await this.persist(client, principal, source, input)
+        // Same transaction as the typed witness, immutable version, pointer,
+        // command receipt and audit. A lost reply cannot leave a saved gap.
+        await this.editIntents.saved(client, principal, intentId, value)
+        return value
+      },
+    })
+  }
 
   capabilities(principal: ManagementPrincipal, value: RepeatCapabilityRequest) {
     const raw = RepeatCapabilityRequestSchema.parse(value)
@@ -103,12 +162,16 @@ export class RepeatAuthoringService {
       authorize: async (client) => {
         principal = await readLiveManagementPrincipal(client, principal.id)
         this.authorize(principal, input)
+        const reserved = await client.query(`select id from graph_edit_intents
+          where principal_id=$1 and record->'saveInput'->>'commandId'=$2 limit 1`, [principal.id, input.commandId])
+        if (reserved.rows[0]) throw new DomainError('GRAPH_EDIT_USE_INTENT',
+          'This save identity belongs to a durable edit intent. Advance/read that exact intent instead of publishing directly.', 409)
       },
       perform: async (client) => this.persist(client, principal, source, input),
     })
   }
 
-  private async persist(client: pg.PoolClient, principal: ManagementPrincipal, source: Source, input: RepeatSaveInput): Promise<RepeatSavedWorkflow> {
+  private async prepareVersion(client: pg.PoolClient, principal: ManagementPrincipal, input: Omit<RepeatSaveInput, 'commandId'>, publication: boolean) {
     await lockActiveWorkspace(client, input.workspaceId)
     const current = await client.query<WorkflowRow>(
       `select record, revision::text, current_version_id, archived_at
@@ -165,7 +228,7 @@ export class RepeatAuthoringService {
     }
     const presented = preserveWorkflowGeometry(base.data.definition, currentGraph.data)
 
-    await assertMeaningfulSaveAdmitted(client, {
+    if (publication) await assertMeaningfulSaveAdmitted(client, {
       workspaceId: input.workspaceId,
       workflowId: input.workflowId,
       stagedAgentIds: [],
@@ -248,18 +311,23 @@ export class RepeatAuthoringService {
       })
     }
 
+    return { candidate: candidate.data, contentJson }
+  }
+
+  private async persist(client: pg.PoolClient, principal: ManagementPrincipal, source: Source, input: RepeatSaveInput): Promise<RepeatSavedWorkflow> {
+    const { candidate, contentJson } = await this.prepareVersion(client, principal, input, true)
     await client.query(
       `insert into workflow_versions
         (id,workspace_id,workflow_id,version,entry_node_id,record,execution_semantics_version)
        values($1,$2,$3,$4,$5,$6::jsonb,$7)`,
-      [candidate.data.id, candidate.data.workspaceId, candidate.data.workflowId, candidate.data.version,
-        candidate.data.entryNodeId, JSON.stringify(candidate.data), REPEAT_EXECUTION_SEMANTICS_VERSION],
+      [candidate.id, candidate.workspaceId, candidate.workflowId, candidate.version,
+        candidate.entryNodeId, JSON.stringify(candidate), REPEAT_EXECUTION_SEMANTICS_VERSION],
     )
     const updated = await client.query<{ revision: string }>(
       // The additive writer validates the exact transition and requires this
       // command's receipt/audit at COMMIT. A GUC cannot authorize the upgrade.
       `select eng04_publish_repeat_workflow($1,$2,$3::jsonb,$4,$5,$6)::text as revision`,
-      [principal.id, source, JSON.stringify(input), commandInputHash(input), candidate.data.id, contentJson],
+      [principal.id, source, JSON.stringify(input), commandInputHash(input), candidate.id, contentJson],
     )
     if (updated.rowCount !== 1) throw new DomainError('REVISION_CONFLICT', 'The workflow changed during repeat publication.', 409)
 
@@ -267,8 +335,8 @@ export class RepeatAuthoringService {
       workspaceId: input.workspaceId,
       workflowId: input.workflowId,
       revision: Number(updated.rows[0]!.revision),
-      currentVersionId: candidate.data.id,
-      version: candidate.data,
+      currentVersionId: candidate.id,
+      version: candidate,
     })
   }
 }
