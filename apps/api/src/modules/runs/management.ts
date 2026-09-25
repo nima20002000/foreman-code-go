@@ -15,6 +15,9 @@ import { readRunHistory } from './runHistory.js'
 import { CompatibleWorkflowRunSchema as WorkflowRunSchema, RunStartV2InputSchema, assertWave25Admission } from '@graphql/contracts/wave25'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { admitOneShotRun } from './oneShotAdmission.js'
+import { RunStartV3InputSchema, WorkflowRunV3Schema, type RunStartV3Input } from '@graphql/contracts/wave25'
+import { admitRepeatRun } from './repeatStartAdmission.js'
+import { runStartSemantics } from './repeatStartDispatch.js'
 
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { authorizedPage } from '../access/authorizedPage.js'
@@ -129,9 +132,23 @@ export class RunManagementService {
     workspaceId: string; workflowId: string; workflowVersionId: string; expectedLocationRevision: number;
     commandId: string; input: RunInput; executionSemanticsVersion?: 2;
     draftId?: string | undefined; expectedDraftRevision?: number | undefined; triggerJobId?: string | undefined
-  }) {
+  } | (RunStartV3Input & { triggerJobId?: string | undefined })) {
     requireAuthorization(principal, 'runs:start', { workspaceId: input.workspaceId, workflowId: input.workflowId })
     requireAuthorization(principal, 'workspace_locations:read', { workspaceId: input.workspaceId })
+    runStartSemantics(input)
+    if (input.executionSemanticsVersion === 3) {
+      const { triggerJobId, ...command } = input
+      // Deliberately no production publisher at this base: the parallel G1
+      // producer AND existing engine/repository/native/resume/Stop adapters are
+      // required before new v3 admission. Exact receipt replay remains SQL-only.
+      const execution = await admitRepeatRun(this.pool, this.locations, principal, source,
+        RunStartV3InputSchema.parse(command), undefined, triggerJobId === undefined ? {} : { triggerJobId })
+      if (!execution.replayed) setImmediate(() => { void this.engine.start(execution.value.id).catch(() => undefined) })
+      const visible = WorkflowRunV3Schema.parse(execution.value)
+      delete visible.authorizationPrincipalId
+      if (!isAuthorized(principal, 'workspace_locations:read', { workspaceId: visible.workspaceId })) delete visible.executionLocation
+      return { run: visible, accepted: true as const, replayed: execution.replayed }
+    }
     if (input.executionSemanticsVersion === 2) {
       assertWave25Admission()
       const { triggerJobId, ...command } = input
