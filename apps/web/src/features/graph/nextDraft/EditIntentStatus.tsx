@@ -1,13 +1,14 @@
-import type { GraphEditReadResult } from '@graphql/contracts/wave25'
+import type { GraphEditReadResultV3 } from '@graphql/contracts/wave25'
 import { Alert } from '../../../shared/ui/nocturne'
 
 /** Progress of a save that waits for affected Runs to stop. Recovery stays on the board, never in a second Run page. */
-export function EditIntentStatus({ data }: { data: GraphEditReadResult }) {
+export function EditIntentStatus({ data }: { data: GraphEditReadResultV3 }) {
   const intent = data.intent
   if (!intent) return null
   const waiting = data.current.filter((item) => !item.settled).length
   const tone = intent.state === 'saved' ? 'success' : intent.error || data.affectedSetChanged ? 'danger' : intent.state === 'discarded' ? 'neutral' : 'warning'
   const title = intent.state === 'saved' ? 'Changes saved.' : intent.state === 'discarded' ? 'The pending save was discarded.'
+    : intent.state === 'staged' ? 'Edits staged. Stop has not been requested.' : intent.state === 'blocked' || intent.state === 'uncertain' ? 'Save is not confirmed.'
     : waiting ? `Saving once ${waiting} ${waiting === 1 ? 'run stops' : 'runs stop'}.` : 'Finishing the save…'
   return <Alert tone={tone} title={title}>
     <div className="board-edit-intent" aria-label="Retained edits and affected Runs">

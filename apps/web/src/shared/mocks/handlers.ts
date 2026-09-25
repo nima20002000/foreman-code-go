@@ -1,15 +1,9 @@
+import { createCurrentBoardMock } from './currentBoard'
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { settingsExperienceHandlers, resetSettingsExperienceFixtures } from './settingsExperienceHandlers'
-import { makeWave25Fixture } from '@graphql/contracts/wave25'
-import {
-  ApiErrorResponseSchema,
-  CreateRunRequestSchema,
-  CreateMessageRequestSchema,
-  SaveHarnessDefaultsRequestSchema,
-  SaveWorkflowRequestSchema,
-  type WorkflowDefinition,
-  type WorkflowRun,
-} from '@graphql/contracts'
+import { currentWorkflowFixture as makeWave25Fixture } from './currentWorkflow'
+import { ApiErrorResponseSchema, CreateMessageRequestSchema, SaveHarnessDefaultsRequestSchema, } from '@graphql/contracts'
+import { type WorkflowDefinitionV3 as WorkflowDefinition, type WorkflowRunV3 as WorkflowRun } from '@graphql/contracts/wave25'
 import {
   AgentDefaultsUpdateInputSchema,
   HarnessConfigurationCheckInputSchema,
@@ -34,7 +28,6 @@ import {
   serializeConversation,
   shouldFailMutation,
   updateMockWorkflow,
-  updateMockAgents,
   updateMockAgentDefaults,
   updateMockHarnessDefaults,
   updateMockManagedHarnessDefaults,
@@ -43,6 +36,7 @@ import {
   type MockFailureMode,
 } from './scenarios'
 
+const currentAuthoringMocks = new Map<string, ReturnType<typeof createCurrentBoardMock>>()
 const managedWorkspaceNames = new Map<string, string>()
 const managedWorkspaceDescriptions = new Map<string, string | undefined>()
 const managedWorkspaceArchives = new Set<string>()
@@ -59,6 +53,7 @@ function syncManagedFixtures() {
   managedWorkspaceArchives.clear()
   managedWorkspaces.clear()
   managedWorkflowArchives.clear()
+  currentAuthoringMocks.clear()
 }
 
 export function resetTestFixtures() {
@@ -69,6 +64,7 @@ export function resetTestFixtures() {
   managedWorkspaceArchives.clear()
   managedWorkspaces.clear()
   managedWorkflowArchives.clear()
+  currentAuthoringMocks.clear()
   mockLocations.clear()
   managedScenarioRevision = getMockScenarioRevision()
 }
@@ -122,6 +118,7 @@ async function readJson(request: Request): Promise<unknown> {
 }
 
 const mockStartedRun: WorkflowRun = {
+  executionSemanticsVersion: 3,
   id: 'run-mock-started',
   workspaceId: 'workspace-1',
   workflowId: 'workflow-editor-test',
@@ -178,12 +175,48 @@ function managedWorkflow(workflow: WorkflowDefinition) {
   return {
     workflow,
     revision: 1,
-    currentVersionId: `${workflow.id}-v1`,
+    currentVersionId: workflow.nodes.length ? `${workflow.id}-v${workflow.version ?? 1}` : null,
     archivedAt: managedWorkflowArchives.has(workflow.id) ? new Date().toISOString() : null,
   }
 }
 
+/** All ordinary/repeat authoring uses this same stateful CURRENT V3 MSW
+ * service. Capabilities never claim native Start. Scenario reset, not a GET,
+ * clears its command journal and saved versions. */
+function currentAuthoringMock(workspaceId: string) {
+  syncManagedFixtures()
+  const fixture = getMockFixture(workspaceId)
+  if (!fixture) return undefined
+  let service = currentAuthoringMocks.get(workspaceId)
+  if (!service) {
+    service = createCurrentBoardMock({ workspaceId, agents: fixture.agents,
+      onSaved: (graph) => { updateMockWorkflow(workspaceId, graph) } })
+    for (const graph of fixture.workflows) service.install(graph, graph.nodes.length > 0)
+    currentAuthoringMocks.set(workspaceId, service)
+  }
+  return service
+}
+const currentAuthoringHandler = http.all(/\/api\/management\/workspaces\/[^/]+\/(?:workflows|agents)(?:\/|$)/, async ({ request }) => {
+  const url = new URL(request.url), path = decodeURIComponent(url.pathname)
+  // Preserve unrelated metadata/archive/settings ownership.
+  if (!['GET', 'POST', 'PUT'].includes(request.method)) return undefined
+  const match = path.match(/^\/api\/management\/workspaces\/([^/]+)\/(workflows|agents)(.*)$/)
+  if (!match) return undefined
+  const [, workspaceId, family, tail] = match
+  if (family === 'agents' && !/^\/[^/]+\/versions\/[^/]+$/.test(tail!)) return undefined
+  if (family === 'workflows' && !/^(?:|\/[^/]+(?:\/(?:drafts|versions)(?:\/.*)?)?)$/.test(tail!)) return undefined
+  const failure = readFailure()
+  if (failure) return failure
+  const service = currentAuthoringMock(workspaceId!)
+  if (!service) return fixtureNotFound('workspace', workspaceId!)
+  if (request.method !== 'GET' && shouldFailMutation('graph-save')) return apiError('MOCK_GRAPH_SAVE_FAILED', 'Synthetic graph Save failure.', 409)
+  const result = await service.dispatch(request)
+  for (const graph of service.workflows.values()) updateMockWorkflow(workspaceId!, graph)
+  return result
+})
+
 export const handlers: RequestHandler[] = [
+  currentAuthoringHandler,
   ...settingsExperienceHandlers,
   http.get('/api/operator/setup', () => HttpResponse.json({ harness: getMockAgentDefaults().value.operator.harness.harness,
     status: 'configured', configurationVersionId: 'operator-config',
@@ -362,53 +395,13 @@ export const handlers: RequestHandler[] = [
     if (managedWorkspaces.has(workspaceId)) managedWorkspaces.set(workspaceId, value)
     return HttpResponse.json({ value, replayed: false })
   }),
-  http.get('/api/management/workspaces/:workspaceId/workflows', ({ params }) => {
-    const failure = readFailure()
-    if (failure) return failure
-    const fixture = getMockFixture(String(params.workspaceId))
-    if (!fixture) return HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })
-    const items = fixture.workflows
-      .filter((workflow) => !managedWorkflowArchives.has(workflow.id))
-      .map(managedWorkflow)
-    return HttpResponse.json({ items, pageInfo: { nextCursor: null } })
-  }),
   http.get('/api/management/repeats/capabilities', () => HttpResponse.json({
     contractVersion: 1, executionSemanticsVersion: 3, supported: false,
     authoring: { flatScopesOnly: true, nesting: false, arbitraryCycles: false, maxOccurrencesMin: 1,
       maxOccurrencesMax: 2147483647, explicitLimitExit: true, earlyExitOutcome: true },
-    availability: { savedAuthoring: true, persistedReadback: true, runtimeAdmission: false, meaningfulEdit: false,
-      reasons: ['NATIVE_START_NOT_READY', 'REPEAT_EDIT_INTENT_NOT_READY'] },
+    availability: { savedAuthoring: true, persistedReadback: true, runtimeAdmission: false, meaningfulEdit: true,
+      reasons: ['NATIVE_START_NOT_READY'] },
   })),
-  http.get('/api/management/workspaces/:workspaceId/workflows/:workflowId', ({ params }) => {
-    const workspaceId = String(params.workspaceId), workflowId = String(params.workflowId)
-    if (workspaceId === 'workspace' && workflowId === 'workflow') {
-      const workflow = { ...makeWave25Fixture('repeat-msw').version.definition, workspaceId, id: workflowId }
-      return HttpResponse.json({ workflow, revision: 7, currentVersionId: 'workflow-version-1', archivedAt: null })
-    }
-    const workflow = getMockFixture(workspaceId)?.workflows.find((item) => item.id === workflowId)
-    return workflow ? HttpResponse.json(managedWorkflow(workflow)) : fixtureNotFound('workflow', workflowId)
-  }),
-  http.get('/api/management/workspaces/:workspaceId/workflows/:workflowId/repeat', ({ params }) =>
-    apiError('WORKFLOW_VERSION_UNSUPPORTED', `Workflow '${String(params.workflowId)}' is not a saved repeat.`, 409)),
-  http.post('/api/management/workspaces/:workspaceId/workflows', async ({ params, request }) => {
-    const workspaceId = String(params.workspaceId)
-    if (!getMockFixture(workspaceId)) return fixtureNotFound('workspace', workspaceId)
-    const body = await readJson(request) as { name?: string; description?: string }
-    if (!body?.name?.trim()) return apiError('INVALID_REQUEST', 'A workflow name is required.', 400)
-    const now = new Date().toISOString()
-    const workflow = updateMockWorkflow(workspaceId, {
-      id: `workflow-${crypto.randomUUID()}`,
-      workspaceId,
-      name: body.name.trim(),
-      ...(body.description ? { description: body.description } : {}),
-      executionCondition: { kind: 'manual' },
-      nodes: [],
-      edges: [],
-      createdAt: now,
-      updatedAt: now,
-    })
-    return HttpResponse.json({ value: managedWorkflow(workflow), replayed: false }, { status: 201 })
-  }),
   http.patch('/api/management/workspaces/:workspaceId/workflows/:workflowId', async ({ params, request }) => {
     const workspaceId = String(params.workspaceId)
     const fixture = getMockFixture(workspaceId)
@@ -437,41 +430,6 @@ export const handlers: RequestHandler[] = [
     const fixture = getMockFixture(String(params.workspaceId))
     const items = fixture?.agents.map((agent) => ({ agent: serializeAgent(agent), metadataRevision: 1 })) ?? []
     return HttpResponse.json({ items, pageInfo: { nextCursor: null } })
-  }),
-  http.post('/api/management/workspaces/:workspaceId/workflows/:workflowId/drafts', ({ params }) => {
-    const workspaceId = String(params.workspaceId)
-    const fixture = getMockFixture(workspaceId)
-    const workflow = fixture?.workflows.find((item) => item.id === String(params.workflowId))
-    if (!workflow) return fixtureNotFound('workflow', String(params.workflowId))
-    return HttpResponse.json({
-      id: `draft-${workflow.id}`,
-      workspaceId,
-      workflowId: workflow.id,
-      revision: 0,
-      baseWorkflowVersionId: `${workflow.id}-v1`,
-      publishedRevision: 1,
-      graph: workflow,
-      stagedAgents: [],
-      updatedByPrincipalId: 'principal-test',
-      updatedAt: new Date().toISOString(),
-    })
-  }),
-  http.get('/api/management/workspaces/:workspaceId/workflows/:workflowId/drafts/:draftId', ({ params }) => {
-    const workspaceId = String(params.workspaceId)
-    const workflow = getMockFixture(workspaceId)?.workflows.find((item) => item.id === String(params.workflowId))
-    if (!workflow || String(params.draftId) !== `draft-${workflow.id}`) return fixtureNotFound('draft', String(params.draftId))
-    return HttpResponse.json({
-      id: `draft-${workflow.id}`,
-      workspaceId,
-      workflowId: workflow.id,
-      revision: 0,
-      baseWorkflowVersionId: `${workflow.id}-v1`,
-      publishedRevision: 1,
-      graph: workflow,
-      stagedAgents: [],
-      updatedByPrincipalId: 'principal-test',
-      updatedAt: new Date().toISOString(),
-    })
   }),
   http.get('/api/management/workspaces/:workspaceId/runs', () =>
     HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
@@ -539,23 +497,8 @@ export const handlers: RequestHandler[] = [
     return HttpResponse.json({ defaults: updateMockHarnessDefaults(parsed.data.defaults) })
   }),
 
-  http.post('/api/workspaces/:workspaceId/workflows/:workflowId/runs', async ({ request, params }) => {
-    const body = await readJson(request)
-    const parsed = CreateRunRequestSchema.safeParse(body)
-    if (!parsed.success) return apiError('INVALID_RUN', 'The run request is invalid.', 400)
-    return HttpResponse.json({
-      run: {
-        ...mockStartedRun,
-        workspaceId: String(params.workspaceId),
-        workflowId: String(params.workflowId),
-        executionState: 'queued',
-        outcome: 'pending',
-        result: undefined,
-        startedAt: undefined,
-        finishedAt: undefined,
-      },
-    }, { status: 202 })
-  }),
+  http.post('/api/workspaces/:workspaceId/workflows/:workflowId/runs', () =>
+    apiError('EXECUTION_SEMANTICS_UNSUPPORTED', 'Use the current authenticated managed Start service.', 409)),
   http.get('/api/workspaces/:workspaceId/runs/:runId', ({ params }) => HttpResponse.json({
     run: {
       ...mockStartedRun,
@@ -610,44 +553,10 @@ export const handlers: RequestHandler[] = [
     const workflow = fixture.workflows.find((item) => item.id === String(params.workflowId))
     return workflow ? HttpResponse.json({ workflow }) : fixtureNotFound('workflow', String(params.workflowId))
   }),
-  http.put('/api/workspaces/:workspaceId/workflows/:workflowId', async ({ request, params }) => {
-    const failure = readFailure()
-    if (failure) return failure
-    const workspaceId = String(params.workspaceId)
-    if (!getMockFixture(workspaceId)) return fixtureNotFound('workspace', workspaceId)
-    const body = await readJson(request)
-    const parsed = SaveWorkflowRequestSchema.safeParse(body)
-    if (!parsed.success || parsed.data.workspaceId !== workspaceId || parsed.data.workflow.id !== String(params.workflowId)) {
-      return apiError('INVALID_WORKFLOW', 'The workflow payload does not match the requested resource.', 400)
-    }
-    if (shouldFailMutation('graph-save', explicitFailureMode(request))) {
-      return apiError('MOCK_GRAPH_SAVE_FAILED', 'The selected mock mode rejects graph saves.', 503)
-    }
-    const workflow = updateMockWorkflow(parsed.data.workspaceId, parsed.data.workflow)
-    const agents = parsed.data.agents
-      ? updateMockAgents(parsed.data.workspaceId, parsed.data.agents)
-      : getMockFixture(workspaceId)!.agents
-    return HttpResponse.json({ workflow, agents })
-  }),
-  http.put('/api/workspaces/:workspaceId/graph', async ({ request, params }) => {
-    const failure = readFailure()
-    if (failure) return failure
-    const workspaceId = String(params.workspaceId)
-    if (!getMockFixture(workspaceId)) return fixtureNotFound('workspace', workspaceId)
-    const body = await readJson(request)
-    const parsed = SaveWorkflowRequestSchema.safeParse(body)
-    if (!parsed.success || parsed.data.workspaceId !== workspaceId) {
-      return apiError('INVALID_WORKFLOW', 'The graph payload does not match the requested workspace.', 400)
-    }
-    if (shouldFailMutation('graph-save', explicitFailureMode(request))) {
-      return apiError('MOCK_GRAPH_SAVE_FAILED', 'The selected mock mode rejects graph saves.', 503)
-    }
-    const workflow = updateMockWorkflow(parsed.data.workspaceId, parsed.data.workflow)
-    const agents = parsed.data.agents
-      ? updateMockAgents(parsed.data.workspaceId, parsed.data.agents)
-      : getMockFixture(workspaceId)!.agents
-    return HttpResponse.json({ workflow, agents })
-  }),
+  http.put('/api/workspaces/:workspaceId/workflows/:workflowId', () =>
+    apiError('EXECUTION_SEMANTICS_UNSUPPORTED', 'Use the current V3 draft/save service.', 409)),
+  http.put('/api/workspaces/:workspaceId/graph', () =>
+    apiError('EXECUTION_SEMANTICS_UNSUPPORTED', 'Use the current V3 draft/save service.', 409)),
   http.get('/api/workspaces/:workspaceId/conversations', ({ params }) => {
     const failure = readFailure()
     if (failure) return failure

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
-import { GraphDraftOperationV2Schema } from '@graphql/contracts/wave25'
+import { GraphDraftOperationV3Schema } from '@graphql/contracts/wave25'
 import { fixture } from './core.cases'
 import { draftOperations } from './model'
 import { newNextDraft, editNextDraft, undoNextDraft, nextDraftDirty } from './state'
@@ -21,7 +21,7 @@ describe('board Agent edits use the existing typed serial writer', () => {
       { type: 'agent.rename', agentId: agent.id, expectedAgentRevision: 3, name: 'Renamed' },
     ])
   })
-  it.each([{ busy: true }, { pending: { kind: 'save' as const, commandId: 'pending', workspaceId: 'workspace', workflowId: 'workflow', draftId: 'draft', expectedRevision: 7, executionSemanticsVersion: 2 as const } }])('does not replace an in-flight/uncertain command %#', (state) => {
+  it.each([{ busy: true }, { pending: { kind: 'save' as const, commandId: 'pending', workspaceId: 'workspace', workflowId: 'workflow', draftId: 'draft', expectedRevision: 7, executionSemanticsVersion: 3 as const } }])('does not replace an in-flight/uncertain command %#', (state) => {
     const c = context(), edit = { ...newNextDraft(c, 'instance'), ...state }
     expect(() => changeDraftAgent(edit, { ...c.agents[0]!.agent, name: 'New' }, c.draft.graph)).toThrow()
   })
@@ -39,7 +39,7 @@ describe('board Agent edits use the existing typed serial writer', () => {
     const operations = draftOperations(c, graph, { [agent.id]: agent })
     expect(operations.some((op) => op.type === 'agent.add')).toBe(true)
     expect(operations.some((op) => op.type === 'agent.attach')).toBe(false)
-    for (const operation of operations) expect(GraphDraftOperationV2Schema.safeParse(operation).success).toBe(true)
+    for (const operation of operations) expect(GraphDraftOperationV3Schema.safeParse(operation).success).toBe(true)
     expect(c.draft.sourceAgentPins).toBeUndefined()
   })
   it('keeps exact source pins for attaching an existing Agent', () => {

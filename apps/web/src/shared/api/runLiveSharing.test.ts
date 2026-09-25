@@ -1,5 +1,6 @@
 import { QueryClient, QueryObserver } from '@tanstack/react-query'
-import type { GetRunResponse, RunNodeLiveActivity } from '@graphql/contracts'
+import { type RunNodeLiveActivity } from '@graphql/contracts'
+import { type CurrentRunDetails as GetRunResponse } from '@graphql/contracts/wave25'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { keepLatestRunResponse, shareRunResponseOrSelection } from './runLiveCache'
 import { makeSyntheticRun } from '../../features/graph/fixtures/scaleData'

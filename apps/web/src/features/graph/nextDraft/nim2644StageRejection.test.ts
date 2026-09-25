@@ -12,7 +12,7 @@ function candidate(commandId = 'rejected-stage'): EditIntentOutbox {
   const context = repairFixture()
   return { request: { action: 'stage_edits', workspaceId: 'workspace', workflowId: 'workflow', draftId: context.draft.id,
     commandId, expectedRevision: context.draft.revision, expectedWorkflowVersionId: context.draft.baseWorkflowVersionId,
-    executionSemanticsVersion: 2, operations: [] }, target: context.draft.graph }
+    executionSemanticsVersion: 3, operations: [] }, target: context.draft.graph }
 }
 beforeEach(() => {
   localStorage.clear(); sessionStorage.clear()

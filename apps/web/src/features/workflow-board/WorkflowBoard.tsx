@@ -1,40 +1,37 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import type { WorkflowRunSummary } from '@graphql/contracts'
-import type { RunGraphScope, WorkspaceBoardInspection } from '@graphql/contracts/wave25'
+import type { RepeatGraphScopeV3, WorkspaceBoardInspection } from '@graphql/contracts/wave25'
 import { Button, Dialog, Drawer, Icon, IconButton } from '../../shared/ui/nocturne'
 import { WorkspaceExecutionLocationSettings } from '../settings/WorkspaceExecutionLocationSettings'
-import { RunGraphProvider } from '../run-graph/RunGraphProvider'
+import { CurrentRunObserver } from './currentRunQuery'
 import { WorkflowBoardContext } from './context'
 import { RunActivityPanel } from './RunActivityPanel'
-import { isActiveRun, runLabel } from './runFacts'
+import { isActiveRun } from './runFacts'
 import './workflowBoard.css'
 
 /** This component is keyed by workspace/workflow only, NEVER by selected Run. */
 export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, selectRun, inspection, selectInspection, summaries, children, selectedAgentId, selectDraftAgent }: {
-  workspaceId: string; workflowId: string; run?: RunGraphScope
+  workspaceId: string; workflowId: string; run?: RepeatGraphScopeV3
   selectedAgentId?: string; selectDraftAgent?(agentId?: string): void
   inspection: WorkspaceBoardInspection; selectInspection(inspection: WorkspaceBoardInspection): void
-  selectRun(scope?: RunGraphScope): void; summaries: readonly WorkflowRunSummary[]; children: ReactNode
+  selectRun(scope?: RepeatGraphScopeV3): void; summaries: readonly WorkflowRunSummary[]; children: ReactNode
 }) {
   // A Run from another workflow never labels this board.
   const run = requestedRun?.workspaceId === workspaceId && requestedRun.workflowId === workflowId ? requestedRun : undefined
-  const [conversionRequested, setConversionRequested] = useState(false)
   const [locationOpen, setLocationOpen] = useState(false)
   const [runsOpen, setRunsOpen] = useState(false)
   const activeRuns = summaries.filter((item) => item.workspaceId === workspaceId && isActiveRun(item)).length
-  const value = useMemo(() => ({ workspaceId, workflowId, run, selectRun, inspection, selectInspection, conversionRequested, selectedAgentId, selectDraftAgent,
-    requestConversion: () => setConversionRequested(true), closeConversion: () => setConversionRequested(false),
+  const value = useMemo(() => ({ workspaceId, workflowId, run, selectRun, inspection, selectInspection, selectedAgentId, selectDraftAgent,
     openLocation: () => setLocationOpen(true), openRuns: () => setRunsOpen(true), activeRuns,
-  }), [workspaceId, workflowId, run, selectRun, inspection, selectInspection, conversionRequested, selectedAgentId, selectDraftAgent, activeRuns])
-  const summary = run ? summaries.find((item) => item.id === run.runId) : undefined
+  }), [workspaceId, workflowId, run, selectRun, inspection, selectInspection, selectedAgentId, selectDraftAgent, activeRuns])
   return <WorkflowBoardContext.Provider value={value}>
     <div className="unified-workflow-board" data-testid="unified-workflow-board">
       <div className="workflow-board-authoring">{children}</div>
       {/* Holds the selected Run's sync so board nodes can show its state; renders nothing. */}
-      {run ? <RunGraphProvider scope={run}>{null}</RunGraphProvider> : null}
+      {run ? <CurrentRunObserver scope={run} /> : null}
       {run ? <div className="board-run-banner" role="status">
         <Icon name="history" size={15} />
-        <span>Showing run <code>{run.runId.slice(-8)}</code>{summary ? ` · ${runLabel(summary.executionState, summary.outcome)}` : ''}</span>
+        <span>Showing run <code>{run.runId.slice(-8)}</code></span>
         <Button size="sm" variant="ghost" onClick={() => setRunsOpen(true)}>Details</Button>
         <IconButton size="sm" variant="ghost" label="Stop showing this run" onClick={() => selectRun()}><Icon name="close" size={14} /></IconButton>
       </div> : null}

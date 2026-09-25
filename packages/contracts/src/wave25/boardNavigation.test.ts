@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { WorkspaceBoardSearchSchema, boardSearchForRun, boardSearchForInspection, resolveWorkflowBoardLocation, staysOnWorkflowBoard } from './boardNavigation.js'
 
-const scope = { workspaceId: 'workspace', workflowId: 'workflow', runId: 'run-1', workflowVersionId: 'version-1', executionSemanticsVersion: 2 as const }
+const scope = { workspaceId: 'workspace', workflowId: 'workflow', runId: 'run-1', workflowVersionId: 'version-1', executionSemanticsVersion: 3 as const }
 const search = { workflowId: 'workflow', agentId: 'agent-1' }
 const at = (value: unknown) => ({ pathname: '/workspaces/workspace', search: value })
 describe('unified board URL contract', () => {
@@ -18,18 +18,18 @@ describe('unified board URL contract', () => {
     const selected: Record<string, unknown> = boardSearchForRun(search, 'workflow', scope); delete selected[name]
     expect(() => WorkspaceBoardSearchSchema.parse(selected)).toThrow()
   })
-  it.each([0, 3, '02', 'unknown'])('rejects unknown semantics %s', (executionSemanticsVersion) => {
+  it.each([0, 1, 2, 4, '03', 'unknown'])('rejects retired or unknown semantics %s', (executionSemanticsVersion) => {
     expect(() => WorkspaceBoardSearchSchema.parse({ ...boardSearchForRun(search, 'workflow', scope), executionSemanticsVersion })).toThrow()
   })
   it('normalizes only the exact textual semantics tags', () => {
-    expect(WorkspaceBoardSearchSchema.parse({ ...boardSearchForRun(search, 'workflow', scope), executionSemanticsVersion: '2' }).executionSemanticsVersion).toBe(2)
+    expect(WorkspaceBoardSearchSchema.parse({ ...boardSearchForRun(search, 'workflow', scope), executionSemanticsVersion: '3' }).executionSemanticsVersion).toBe(3)
   })
-  it('keeps both legacy URL forms as board aliases', () => {
+  it('keeps existing URL forms on the current board', () => {
     expect(resolveWorkflowBoardLocation('/workspaces/workspace/workflows/workflow/draft', {}).draftAlias).toBe(true)
-    expect(resolveWorkflowBoardLocation('/workspaces/workspace/workflows/workflow/runs/run-1/graph/version-1/2', {}).run).toEqual(scope)
+    expect(resolveWorkflowBoardLocation('/workspaces/workspace/workflows/workflow/runs/run-1/graph/version-1/3', {}).run).toEqual(scope)
   })
   it('rejects conflicting path and query pins rather than using latest', () => {
-    expect(() => resolveWorkflowBoardLocation('/workspaces/workspace/workflows/workflow/runs/run-1/graph/version-1/2', {
+    expect(() => resolveWorkflowBoardLocation('/workspaces/workspace/workflows/workflow/runs/run-1/graph/version-1/3', {
       ...boardSearchForRun(search, 'workflow', scope), workflowVersionId: 'version-2',
     })).toThrow()
     expect(() => resolveWorkflowBoardLocation('/workspaces/workspace/workflows/workflow/draft', { workflowId: 'different' })).toThrow()
@@ -55,11 +55,11 @@ describe('unified board URL contract', () => {
   })
   it('recognizes the same board across aliases without losing a dirty editor', () => {
     expect(staysOnWorkflowBoard(at({ workflowId: 'workflow' }), {
-      pathname: '/workspaces/workspace/workflows/workflow/runs/run-1/graph/version-1/2', search: {},
+      pathname: '/workspaces/workspace/workflows/workflow/runs/run-1/graph/version-1/3', search: {},
     })).toBe(true)
   })
   it('does not hide malformed percent encoding or unsupported paths', () => {
     expect(() => resolveWorkflowBoardLocation('/workspaces/%ZZ', {})).toThrow()
-    expect(() => resolveWorkflowBoardLocation('/workspaces/workspace/workflows/workflow/runs/run-1/graph/version-1/3', {})).toThrow()
+    expect(() => resolveWorkflowBoardLocation('/workspaces/workspace/workflows/workflow/runs/run-1/graph/version-1/2', {})).toThrow()
   })
 })

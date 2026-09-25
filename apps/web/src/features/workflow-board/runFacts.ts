@@ -1,61 +1,62 @@
 import { useQuery } from '@tanstack/react-query'
 import type { WorkflowRunSummary } from '@graphql/contracts'
+import type { RepeatGraphCurrentV3 } from '@graphql/contracts/wave25'
 import type { AgentNodeState, Tone } from '../../shared/ui/nocturne'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
-import { graphRecordKey } from '../run-graph/cache'
-import { presentRunGraphNode } from '../run-graph/presentation'
-import type { RunGraphRecord } from '../run-graph/types'
 import type { EdgeSignal } from '../graph/signalEdge'
+import { currentRunKey } from './currentRunQuery'
 import { useWorkflowBoard } from './context'
 
-/** Cache-only observer of the selected Run. The board's Run sync owns fetching; the draft owns no Run facts. */
-export function useSelectedRunRecord(): RunGraphRecord | undefined {
+/** Cache-only subscriber: one selected-Run observer owns fetching. */
+export function useSelectedRunRecord(): RepeatGraphCurrentV3 | undefined {
   const scope = useWorkflowBoard()?.run
-  return useQuery<RunGraphRecord>({ queryKey: scope ? graphRecordKey(scope, sessionGeneration()) : ['workbench', 'no-board-run'],
-    enabled: false, queryFn: () => { throw new Error('Board nodes must never fetch Run facts.') } }).data
+  const query = useQuery<RepeatGraphCurrentV3>({ queryKey: scope ? currentRunKey(scope) : ['workbench', 'no-board-run', sessionGeneration()],
+    enabled: false, queryFn: () => { throw new Error('The current Run observer owns fetching.') } })
+  return query.isError ? undefined : query.data
 }
-
 export type RunNodeView = { state: AgentNodeState; label: string; activity?: string; inRun: boolean }
-type Lifecycle = NonNullable<ReturnType<typeof lifecycleOf>>
-const words: Record<Lifecycle, [AgentNodeState, string]> = {
+const words: Record<string, [AgentNodeState, string]> = {
   not_activated: ['idle', 'Not started'], queued: ['queued', 'Queued'], starting: ['queued', 'Starting'], running: ['running', 'Running'],
   waiting: ['waiting', 'Waiting'], succeeded: ['completed', 'Completed'], failed: ['failed', 'Failed'], canceled: ['idle', 'Cancelled'],
-  skipped: ['idle', 'Skipped'], interrupted: ['unavailable', 'Interrupted'], uncertain: ['unavailable', 'Unconfirmed'], unknown: ['unavailable', 'Unavailable'],
+  skipped: ['idle', 'Skipped'], excluded: ['idle', 'Not selected'], interrupted: ['unavailable', 'Interrupted'],
+  uncertain: ['unavailable', 'Unconfirmed'], unknown: ['unavailable', 'Unavailable'],
 }
-/** The canvas state and fixed status word for one recorded lifecycle. */
-export const lifecycleView = (lifecycle: string | undefined): [AgentNodeState, string] =>
-  (lifecycle && Object.hasOwn(words, lifecycle) ? words[lifecycle as Lifecycle] : undefined) ?? words.unknown
-function lifecycleOf(record: RunGraphRecord | undefined, nodeId: string) {
-  if (record?.facts?.reader !== 'graph') return undefined
-  return record.facts.snapshot.state.nodes.find((item) => item.state.workflowNodeId === nodeId)?.state.lifecycle
+export const lifecycleView = (lifecycle?: string): [AgentNodeState, string] => words[lifecycle ?? 'unknown'] ?? words.unknown!
+function latestNode(record: RepeatGraphCurrentV3, nodeId: string) {
+  // Occurrence index, then technical attempt. Timestamps and timers are never authority.
+  return record.state.executions.filter((item) => item.identity.workflowNodeId === nodeId).sort((a, b) =>
+    (b.identity.occurrence?.occurrenceIndex ?? 0) - (a.identity.occurrence?.occurrenceIndex ?? 0)
+    || b.identity.attempt - a.identity.attempt)[0]
 }
-
-/** A draft node's state in the selected Run, or Idle when no Run is selected. Unknown facts are never shown as success. */
-export function runNodeView(record: RunGraphRecord | undefined, selected: boolean, nodeId: string, agentId: string): RunNodeView {
+function lifecycleOf(record: RepeatGraphCurrentV3, nodeId: string): string {
+  const execution = latestNode(record, nodeId)
+  if (execution) return execution.state === 'completed' ? execution.resultOutcome ?? 'unknown' : execution.state
+  const resolved = record.state.resolutions.filter((item) => item.ref.nodeId === nodeId).sort((a, b) =>
+    (b.ref.occurrence?.occurrenceIndex ?? 0) - (a.ref.occurrence?.occurrenceIndex ?? 0))[0]
+  return resolved?.value.resolution ?? 'not_activated'
+}
+export function runNodeView(record: RepeatGraphCurrentV3 | undefined, selected: boolean, nodeId: string, agentId: string): RunNodeView {
   if (!selected) return { state: 'idle', label: 'Idle', inRun: false }
-  if (!record?.facts || record.transport.phase === 'denied') return { state: 'unavailable', label: 'Unavailable', inRun: false }
-  if (record.facts.reader === 'legacy') return { state: 'unavailable', label: 'Unavailable', inRun: false }
-  const snapshot = record.facts.snapshot
-  if (!snapshot.topology.nodes.some((item) => item.workflowNodeId === nodeId && item.agentId === agentId)) return { state: 'idle', label: 'Not in this Run', inRun: false }
-  const fact = snapshot.state.nodes.find((item) => item.state.workflowNodeId === nodeId)
-  const [state, label] = words[fact?.state.lifecycle ?? 'unknown'] ?? words.unknown
-  const view = presentRunGraphNode(fact, { stale: record.transport.phase !== 'live', stopped: snapshot.state.run.stopRequested === true })
-  const activity = view.activity.includes('unavailable') || view.activity === 'No current activity' ? undefined : view.activity
-  return { state, label: activity === 'Waiting for approval' ? activity : label, activity, inRun: true }
+  if (!record) return { state: 'unavailable', label: 'Unavailable', inRun: false }
+  if (!record.topology.nodes.some((node) => node.workflowNodeId === nodeId && node.agentId === agentId)) return { state: 'idle', label: 'Not in this Run', inRun: false }
+  const [state, label] = lifecycleView(lifecycleOf(record, nodeId))
+  const execution = latestNode(record, nodeId)
+  const occurrence = execution?.identity.occurrence
+  return { state, label, inRun: true, ...(occurrence ? { activity: `Business occurrence ${occurrence.occurrenceIndex} · technical attempt ${execution.identity.attempt}` } : {}) }
 }
-
-/** Light on a connection mirrors its receiver's recorded state: handed over while it works, red when it failed.
- * Only a relationship pinned in the selected Run can carry light; a draft-only connection never does. */
-export function runEdgeSignal(record: RunGraphRecord | undefined, relationshipId: string, source: string, target: string): EdgeSignal | undefined {
-  if (record?.facts?.reader !== 'graph' || !record.facts.snapshot.topology.relationships.some((item) =>
-    item.relationshipId === relationshipId && item.source === source && item.target === target && item.kind === 'execution')) return undefined
-  const from = lifecycleOf(record, source), to = lifecycleOf(record, target)
+export function runEdgeSignal(record: RepeatGraphCurrentV3 | undefined, relationshipId: string, source: string, target: string): EdgeSignal | undefined {
+  if (!record?.topology.relationships.some((edge) => edge.relationshipId === relationshipId && edge.kind === 'execution'
+    && edge.source === source && edge.target === target)) return undefined
+  const from = latestNode(record, source), to = latestNode(record, target)
   if (!from || !to) return undefined
-  if (to === 'failed') return 'error'
-  if (['queued', 'starting', 'running', 'waiting'].includes(to) && from === 'succeeded') return 'task'
+  // A prior round's success cannot light a later round's edge. A durable binding is required.
+  const bound = record.state.bindings.some((binding) => binding.relationshipId === relationshipId
+    && binding.sender.executionId === from.identity.executionId && binding.recipient.executionId === to.identity.executionId)
+  if (!bound) return undefined
+  if (to.resultOutcome === 'failed') return 'error'
+  if (['queued', 'starting', 'running', 'waiting'].includes(to.state) && from.resultOutcome === 'succeeded') return 'task'
   return undefined
 }
-
 const ACTIVE = ['queued', 'running', 'waiting', 'interrupted']
 export const isActiveRun = (run: Pick<WorkflowRunSummary, 'executionState' | 'cleanupPending'>) => ACTIVE.includes(run.executionState) || Boolean(run.cleanupPending)
 export function runLabel(state: string, outcome: string) {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
-import type { Agent, WorkflowDefinition, RunNodeLiveActivity } from '@graphql/contracts'
+import { type Agent, type RunNodeLiveActivity } from '@graphql/contracts'
+import { type WorkflowDefinitionV3 as WorkflowDefinition } from '@graphql/contracts/wave25'
 import { workflowToGraph } from './mapper'
 
 const workflow = { id: 'workflow', workspaceId: 'workspace', name: 'Workflow', requiredAgentCount: 2,

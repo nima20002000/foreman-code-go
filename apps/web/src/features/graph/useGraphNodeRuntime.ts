@@ -1,6 +1,7 @@
 import { useCallback, useContext } from 'react'
 import { skipToken, useQuery } from '@tanstack/react-query'
-import type { GetRunResponse, RunNodeLiveActivity } from '@graphql/contracts'
+import { type RunNodeLiveActivity } from '@graphql/contracts'
+import { type CurrentRunDetails as GetRunResponse } from '@graphql/contracts/wave25'
 import { queryKeys } from '../../shared/api/query'
 import { shareRunResponseOrSelection } from '../../shared/api/runLiveCache'
 import { GraphRuntimeContext } from './graphContexts'

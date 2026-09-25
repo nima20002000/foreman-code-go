@@ -3,11 +3,11 @@ import type { z } from 'zod'
 import { addAgentOperations, configureAgentOperations, type DraftAgentEdits } from './agentEdits'
 import type { Agent, WorkflowApprovalConfiguration } from '@graphql/contracts'
 import type { ManagedAgentSchema } from '@graphql/contracts/management'
-import type { GraphDraftOperationV2, GraphDraftV2, WorkflowDefinitionV2, WorkflowRelationship } from '@graphql/contracts/wave25'
+import type { GraphDraftOperationV3, GraphDraftV3, WorkflowDefinitionV3, WorkflowRelationship } from '@graphql/contracts/wave25'
 
 export type CatalogAgent = z.infer<typeof ManagedAgentSchema>
-export type NextDraftContext = { draft: GraphDraftV2; agents: CatalogAgent[] }
-export type DraftNode = WorkflowDefinitionV2['nodes'][number]
+export type NextDraftContext = { draft: GraphDraftV3; agents: CatalogAgent[] }
+export type DraftNode = WorkflowDefinitionV3['nodes'][number]
 export type AuthoringIssue = { code: string; message: string; nodeId?: string; relationshipId?: string }
 export type RoleEvidence = {
   role?: 'orchestrator' | 'coder'
@@ -43,7 +43,7 @@ export function roleEvidence(context: NextDraftContext, agentId: string, agentEd
   return { role, source: staged ? 'staged' : 'configuration', configurationVersionId: agent.configurationVersionId }
 }
 
-export function entryChoices(graph: WorkflowDefinitionV2, context: NextDraftContext, agentEdits: DraftAgentEdits = {}) {
+export function entryChoices(graph: WorkflowDefinitionV3, context: NextDraftContext, agentEdits: DraftAgentEdits = {}) {
   const roles = new Map(graph.nodes.map((node) => [node.id, roleEvidence(context, node.agentId, agentEdits)]))
   const unresolved = graph.nodes.filter((node) => !roles.get(node.id)?.role)
   const orchestrators = graph.nodes.filter((node) => roles.get(node.id)?.role === 'orchestrator')
@@ -55,13 +55,13 @@ export function entryChoices(graph: WorkflowDefinitionV2, context: NextDraftCont
   }
 }
 
-export function nodeTitle(graph: WorkflowDefinitionV2, id: string): string {
+export function nodeTitle(graph: WorkflowDefinitionV3, id: string): string {
   const node = graph.nodes.find((item) => item.id === id)
   return node?.name ?? node?.label ?? `Missing node (${id})`
 }
 
 /** Hints explain frozen acceptance rules. Only the shared service can accept a version. */
-export function authoringHints(graph: WorkflowDefinitionV2, context: NextDraftContext, agentEdits: DraftAgentEdits = {}): AuthoringIssue[] {
+export function authoringHints(graph: WorkflowDefinitionV3, context: NextDraftContext, agentEdits: DraftAgentEdits = {}): AuthoringIssue[] {
   const issues: AuthoringIssue[] = []
   const entry = entryChoices(graph, context, agentEdits)
   if (!graph.nodes.length) issues.push({ code: 'ENTRY_REQUIRED', message: 'Add an agent to start building this workflow.' })
@@ -111,20 +111,20 @@ export function authoringHints(graph: WorkflowDefinitionV2, context: NextDraftCo
   return issues
 }
 
-export function removeRelationship(graph: WorkflowDefinitionV2, relationshipId: string): WorkflowDefinitionV2 {
+export function removeRelationship(graph: WorkflowDefinitionV3, relationshipId: string): WorkflowDefinitionV3 {
   const edges = graph.edges.filter((edge) => edge.id !== relationshipId)
   // Deliberately retain now-incomplete choice references. Do not invent a branch end.
   return edges.length === graph.edges.length ? graph : { ...graph, edges }
 }
 
-export function removeNode(graph: WorkflowDefinitionV2, nodeId: string): WorkflowDefinitionV2 {
+export function removeNode(graph: WorkflowDefinitionV3, nodeId: string): WorkflowDefinitionV3 {
   if (!graph.nodes.some((node) => node.id === nodeId)) return graph
   return { ...graph, nodes: graph.nodes.filter((node) => node.id !== nodeId),
     edges: graph.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId),
     entryNodeId: graph.entryNodeId === nodeId ? null : graph.entryNodeId }
 }
 
-export function putRelationship(graph: WorkflowDefinitionV2, relationship: WorkflowRelationship): WorkflowDefinitionV2 {
+export function putRelationship(graph: WorkflowDefinitionV3, relationship: WorkflowRelationship): WorkflowDefinitionV3 {
   const previous = graph.edges.find((edge) => edge.id === relationship.id)
   if (previous && previous.kind !== relationship.kind) throw new Error('A relationship identity cannot change meaning. Remove that record and create a new one.')
   if (relationship.source === relationship.target || ![relationship.source, relationship.target].every((id) => graph.nodes.some((node) => node.id === id))) throw new Error('Choose distinct existing endpoints.')
@@ -133,21 +133,21 @@ export function putRelationship(graph: WorkflowDefinitionV2, relationship: Workf
   return { ...graph, edges: previous ? graph.edges.map((edge) => edge.id === relationship.id ? relationship : edge) : [...graph.edges, relationship] }
 }
 
-export function changeApprovalHandler(graph: WorkflowDefinitionV2, handler: WorkflowApprovalConfiguration['handler']): WorkflowDefinitionV2 {
+export function changeApprovalHandler(graph: WorkflowDefinitionV3, handler: WorkflowApprovalConfiguration['handler']): WorkflowDefinitionV3 {
   if (handler !== 'orchestrator' && graph.edges.some((edge) => edge.kind === 'approval')) throw new Error('Remove approval assignments individually before switching handler. Execution routes will be preserved.')
   return { ...graph, approval: handler === 'orchestrator' && graph.approval?.handler === handler ? graph.approval : { handler } }
 }
 
-export function attachAgent(graph: WorkflowDefinitionV2, record: CatalogAgent, nodeId: string): WorkflowDefinitionV2 {
+export function attachAgent(graph: WorkflowDefinitionV3, record: CatalogAgent, nodeId: string): WorkflowDefinitionV3 {
   if (record.archivedAt || !record.agent.configurationVersionId || !['coder', 'orchestrator'].includes(record.agent.productRole ?? '')) throw new Error('A board Agent with an available product-role configuration pin is required.')
-  if (graph.nodes.some((node) => node.agentId === record.agent.id || node.id === nodeId)) throw new Error('An Agent can occur only once in this one-shot board.')
+  if (graph.nodes.some((node) => node.agentId === record.agent.id || node.id === nodeId)) throw new Error('An Agent can occur only once in this workflow definition.')
   const node: DraftNode = { id: nodeId, agentId: record.agent.id, name: record.agent.name,
     position: { x: 80 + (graph.nodes.length % 4) * 280, y: 80 + Math.floor(graph.nodes.length / 4) * 180 } }
   return { ...graph, nodes: [...graph.nodes, node], entryNodeId: graph.nodes.length === 0 ? nodeId : graph.entryNodeId }
 }
 
 /** IDs/kinds/directions survive visual pair inspection; this does not coalesce records. */
-export function relationshipPairs(graph: WorkflowDefinitionV2): WorkflowRelationship[][] {
+export function relationshipPairs(graph: WorkflowDefinitionV3): WorkflowRelationship[][] {
   const pairs = new Map<string, WorkflowRelationship[]>()
   for (const edge of graph.edges) {
     const key = JSON.stringify([edge.source, edge.target].sort())
@@ -157,11 +157,11 @@ export function relationshipPairs(graph: WorkflowDefinitionV2): WorkflowRelation
   return [...pairs.values()]
 }
 
-/** Generate only the frozen v2 and legacy-safe operations, retaining exact revision/source pins. */
-export function draftOperations(context: NextDraftContext, graph: WorkflowDefinitionV2, agentEdits: DraftAgentEdits = {}): GraphDraftOperationV2[] {
+/** Generate only the current V3 operations, retaining exact revision/source pins. */
+export function draftOperations(context: NextDraftContext, graph: WorkflowDefinitionV3, agentEdits: DraftAgentEdits = {}): GraphDraftOperationV3[] {
   const base = context.draft.graph
   if (base.id !== graph.id || base.workspaceId !== graph.workspaceId) throw new Error('Draft scope changed; reload this workspace.')
-  const operations: GraphDraftOperationV2[] = []
+  const operations: GraphDraftOperationV3[] = []
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]))
   const oldNodes = new Map(base.nodes.map((node) => [node.id, node]))
   const edges = new Map(graph.edges.map((edge) => [edge.id, edge]))
@@ -180,12 +180,12 @@ export function draftOperations(context: NextDraftContext, graph: WorkflowDefini
           expectedAgentRevision: source.metadataRevision, expectedConfigurationVersionId: source.agent.configurationVersionId,
           name: node.name ?? node.label, ...(node.position ? { position: node.position } : {}) })
       }
-      operations.push({ type: 'node.replace_v2', node })
+      operations.push({ type: 'node.replace_v3', node })
     } else if (!sameValue(executableNodeContent(old), executableNodeContent(node))) {
       const { choice: oldChoice, ...oldMetadata } = executableNodeContent(old)
       const { choice, ...metadata } = executableNodeContent(node)
       if (sameValue(oldMetadata, metadata)) operations.push({ type: 'node.set_choice', nodeId: node.id, choice: choice ?? null })
-      else operations.push({ type: 'node.replace_v2', node: preserveNodeGeometry(node, old) })
+      else operations.push({ type: 'node.replace_v3', node: preserveNodeGeometry(node, old) })
       // Keep the destructured prior choice explicit: it is not copied into a new result.
       void oldChoice
     }
@@ -210,6 +210,7 @@ export function draftOperations(context: NextDraftContext, graph: WorkflowDefini
   if (base.requiredAgentCount !== graph.requiredAgentCount) operations.push(graph.requiredAgentCount !== undefined
     ? { type: 'workflow.set_required_agent_count', requiredAgentCount: graph.requiredAgentCount } : { type: 'workflow.reset_required_agent_count' })
   if (!sameValue(base.executionCondition, graph.executionCondition)) operations.push({ type: 'workflow.set_execution_condition', executionCondition: graph.executionCondition })
+  if (!sameValue(base.repeat, graph.repeat)) operations.push({ type: 'workflow.set_repeat', repeat: graph.repeat ?? null })
   return operations
 }
 
@@ -226,7 +227,7 @@ function mergeFields<T extends object>(current: T, sent: T, saved: T): T {
 }
 
 /** An acknowledged own command can normalize its submission, never erase newer typing. */
-export function mergeAcknowledgement(current: WorkflowDefinitionV2, sent: WorkflowDefinitionV2, saved: WorkflowDefinitionV2): WorkflowDefinitionV2 {
+export function mergeAcknowledgement(current: WorkflowDefinitionV3, sent: WorkflowDefinitionV3, saved: WorkflowDefinitionV3): WorkflowDefinitionV3 {
   if (sameValue(current, sent)) {
     const accepted = preserveWorkflowGeometry(saved, current)
     return sameValue(current, accepted) ? current : accepted
@@ -274,11 +275,11 @@ export function mergeAcknowledgement(current: WorkflowDefinitionV2, sent: Workfl
   return preserveWorkflowGeometry({ ...fields, entryNodeId, nodes, edges }, current)
 }
 
-export function hasLocalChanges(context: NextDraftContext, graph: WorkflowDefinitionV2): boolean {
+export function hasLocalChanges(context: NextDraftContext, graph: WorkflowDefinitionV3): boolean {
   return !sameExecutableWorkflow(context.draft.graph, graph)
 }
 
 /** Discard affects staged meaning only. It never dispatches a Run command. */
-export function discardMeaningfulChanges(context: NextDraftContext, graph: WorkflowDefinitionV2): WorkflowDefinitionV2 {
+export function discardMeaningfulChanges(context: NextDraftContext, graph: WorkflowDefinitionV3): WorkflowDefinitionV3 {
   return preserveWorkflowGeometry(context.draft.graph, graph)
 }

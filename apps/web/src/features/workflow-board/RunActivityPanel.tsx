@@ -1,14 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import type { WorkflowRunSummary } from '@graphql/contracts'
-import { sameGraphScope } from '@graphql/contracts/wave25'
+import { sameCanonicalGraphScope } from '@graphql/contracts/wave25'
 import { Alert, Button, EmptyState, Icon, LoadingState, StatusBadge } from '../../shared/ui/nocturne'
 import { isActiveRun, runLabel, runTone, when } from './runFacts'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { useProtectedAccessError } from '../auth/useProtectedAccessError'
-import { nextDraftApi } from '../graph/nextDraft/transport'
-import { RunGraphView } from '../run-graph/RunGraphView'
-import { readBoardRun, scopeForBoardRun } from './client'
+import { CurrentRunDetails } from './RunDetails'
+import { readBoardRun, readBoardRuns, scopeForBoardRun } from './client'
 import { useWorkflowBoard } from './context'
 
 import { boardRunListKey } from './keys'
@@ -20,14 +19,16 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
   const [error, setError] = useState<string>()
   const [reading, setReading] = useState<string>()
   const request = useRef(0)
+  // External URL/back navigation invalidates an outstanding discovery request.
+  useEffect(() => { ++request.current; setReading(undefined) }, [selected?.runId, selected?.workflowVersionId, selected?.executionSemanticsVersion])
   useEffect(() => () => { ++request.current }, [])
   const mounted = useRef({ workspaceId, workflowId })
   mounted.current = { workspaceId, workflowId }
   const runs = useInfiniteQuery({ queryKey: boardRunListKey(workspaceId, workflowId),
     initialPageParam: null as string | null,
-    queryFn: ({ pageParam, signal }) => nextDraftApi.runs(workspaceId, workflowId, pageParam, { signal }),
+    queryFn: ({ pageParam, signal }) => readBoardRuns(workspaceId, workflowId, pageParam, { signal }),
     getNextPageParam: (page) => page.pageInfo.nextCursor,
-    refetchOnWindowFocus: false, refetchOnReconnect: false, retry: false,
+    refetchOnWindowFocus: false, refetchOnReconnect: true, retry: false,
   })
   const denied = useProtectedAccessError(runs)
   const listed = denied ? [] : runs.data?.pages.flatMap((page) => page.items) ?? []
@@ -63,7 +64,7 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
         try { scope = scopeForBoardRun(run) } catch {
           return <li key={run.id}><p className="next-draft-hint">Run {run.id.slice(-8)} can’t be shown on this board.</p></li>
         }
-        const current = !!selected && sameGraphScope(scope, selected)
+        const current = !!selected && sameCanonicalGraphScope(scope, selected)
         return <li key={run.id}><button type="button" className="board-run-row" aria-pressed={current}
           aria-label={`Open Run ${run.id} · ${run.executionState} · ${run.outcome}`}
           onClick={() => { ++request.current; setReading(undefined); selectRun(current ? undefined : scope) }}>
@@ -79,7 +80,7 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
     {selected ? <section className="board-run-detail" aria-label="Selected run">
       <header><h3>Run {selected.runId.slice(-8)}</h3>
         <Button size="sm" variant="ghost" onClick={() => { ++request.current; setReading(undefined); selectRun() }}>Clear Run selection</Button></header>
-      <RunGraphView scope={selected} embedded />
+      <CurrentRunDetails key={JSON.stringify(selected)} scope={selected} />
     </section> : null}
   </div>
 }

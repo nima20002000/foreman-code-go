@@ -762,8 +762,8 @@ export const WorkflowExecutionPolicySchema = z
   .strict();
 export type WorkflowExecutionPolicy = z.infer<typeof WorkflowExecutionPolicySchema>;
 
-export const WorkflowNodeSchema = z
-  .object({
+/** Shared node presentation/content fields; execution rules belong to the current schema. */
+export const WorkflowNodeFields = {
     id: IdSchema,
     agentId: IdSchema,
     name: z.string().trim().min(1).optional(),
@@ -781,7 +781,9 @@ export const WorkflowNodeSchema = z
     width: z.number().finite().positive().optional(),
     height: z.number().finite().positive().optional(),
     join: WorkflowJoinSchema.optional(),
-  })
+};
+export const WorkflowNodeSchema = z
+  .object(WorkflowNodeFields)
   .strict()
   .superRefine((value, context) => {
     if (!value.name && !value.label) {
@@ -807,8 +809,8 @@ export const WorkflowEdgeSchema = z
   .strict();
 export type WorkflowEdge = z.infer<typeof WorkflowEdgeSchema>;
 
-export const WorkflowDefinitionSchema = z
-  .object({
+/** Common workflow metadata, independent of execution semantics. */
+export const WorkflowDefinitionFields = {
     id: IdSchema,
     workspaceId: IdSchema,
     name: z.string().trim().min(1),
@@ -818,12 +820,12 @@ export const WorkflowDefinitionSchema = z
     approval: WorkflowApprovalConfigurationSchema.optional(),
     /** Optional explicit cardinality invariant for workflows with a fixed agent topology. */
     requiredAgentCount: z.number().int().positive().max(10_000).optional(),
-    nodes: z.array(WorkflowNodeSchema),
-    edges: z.array(WorkflowEdgeSchema),
     version: z.number().int().positive().optional(),
     executionPolicy: WorkflowExecutionPolicySchema.optional(),
     ...OptionalTimestampFields,
-  })
+};
+export const WorkflowDefinitionSchema = z
+  .object({ ...WorkflowDefinitionFields, nodes: z.array(WorkflowNodeSchema), edges: z.array(WorkflowEdgeSchema) })
   .strict();
 export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;
 
@@ -876,20 +878,19 @@ export type CompatibleWorkflowDefinition = z.infer<typeof CompatibleWorkflowDefi
 
 
 /** Immutable workflow snapshot pinned by every run. */
-export const WorkflowVersionSchema = z
-  .object({
+/** Immutable identity/configuration fields shared by current storage and readers. */
+export const WorkflowVersionFields = {
     id: IdSchema,
     workspaceId: IdSchema,
     workflowId: IdSchema,
     version: z.number().int().positive(),
     entryNodeId: IdSchema,
-    definition: WorkflowDefinitionSchema,
     agentConfigurationVersionIds: z.record(IdSchema, IdSchema),
-    /** Accepted immutable approval assignment; missing only on legacy versions. */
-    approval: AcceptedWorkflowApprovalConfigurationSchema.optional(),
     contentHash: z.string().trim().min(1),
     createdAt: TimestampSchema,
-  })
+};
+export const WorkflowVersionSchema = z
+  .object({ ...WorkflowVersionFields, definition: WorkflowDefinitionSchema, approval: AcceptedWorkflowApprovalConfigurationSchema.optional() })
   .strict()
   .superRefine((snapshot, context) => {
     if (snapshot.definition.id !== snapshot.workflowId) {
@@ -1175,7 +1176,7 @@ export const HarnessExecutionSchema = z
 export type HarnessExecution = z.infer<typeof HarnessExecutionSchema>;
 
 /** Durable run identity; workflow/configuration pins never change after creation. */
-export const WorkflowRunSchema = z
+export const WorkflowRunRecordSchema = z
   .object({
     id: IdSchema,
     workspaceId: IdSchema,
@@ -1224,6 +1225,9 @@ export const WorkflowRunSchema = z
       });
     }
   });
+// Shared identity/lifecycle record; current execution adds its explicit tag.
+// The old exported name remains owned by the A/B product-wide retirement delta.
+export const WorkflowRunSchema = WorkflowRunRecordSchema;
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
 
 export const ActivitySourceSchema = z.enum(["backend", "langgraph", "harness", "operator"]);
@@ -1468,15 +1472,11 @@ export const GetRunRequestSchema = z
   .object({ workspaceId: IdSchema, runId: IdSchema })
   .strict();
 export type GetRunRequest = z.infer<typeof GetRunRequestSchema>;
-export const GetRunResponseSchema = z
-  .object({
-    run: WorkflowRunSchema,
-    executions: z.array(HarnessExecutionSchema),
-    activity: z.array(RunActivitySchema),
-    liveActivity: RunLiveActivitySchema.optional(),
-    cleanupPending: z.boolean().optional(),
-  })
-  .strict();
+export const RunDetailsRecordFields = {
+  executions: z.array(HarnessExecutionSchema), activity: z.array(RunActivitySchema),
+  liveActivity: RunLiveActivitySchema.optional(), cleanupPending: z.boolean().optional(),
+};
+export const GetRunResponseSchema = z.object({ ...RunDetailsRecordFields, run: WorkflowRunSchema }).strict();
 export type GetRunResponse = z.infer<typeof GetRunResponseSchema>;
 
 export const ListRunActivityRequestSchema = z
@@ -1493,17 +1493,13 @@ export const ListRunActivityResponseSchema = z
   .strict();
 export type ListRunActivityResponse = z.infer<typeof ListRunActivityResponseSchema>;
 
-export const WorkspaceDetailsSchema = z
-  .object({
-    workspace: WorkspaceSchema,
-    agents: z.array(AgentSchema),
-    workflows: z.array(CompatibleWorkflowDefinitionSchema),
-    runs: z.array(WorkflowRunSummarySchema),
-    resources: z.array(ResourceSummarySchema),
-    browserProfiles: z.array(BrowserProfileSummarySchema).optional(),
-    runners: z.array(RunnerSummarySchema).optional(),
-  })
-  .strict();
+export const WorkspaceDetailsRecordFields = {
+  workspace: WorkspaceSchema, agents: z.array(AgentSchema), runs: z.array(WorkflowRunSummarySchema),
+  resources: z.array(ResourceSummarySchema), browserProfiles: z.array(BrowserProfileSummarySchema).optional(),
+  runners: z.array(RunnerSummarySchema).optional(),
+};
+export const WorkspaceDetailsSchema = z.object({ ...WorkspaceDetailsRecordFields,
+  workflows: z.array(CompatibleWorkflowDefinitionSchema) }).strict();
 export type WorkspaceDetails = z.infer<typeof WorkspaceDetailsSchema>;
 
 export const WorkspaceDetailsRequestSchema = z

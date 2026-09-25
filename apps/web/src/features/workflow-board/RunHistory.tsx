@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
-import type { RunGraphScope } from '@graphql/contracts/wave25'
+import type { RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
 import { useProtectedAccessError } from '../auth/useProtectedAccessError'
 import { readBoardHistory } from './client'
 import { Button } from '../../shared/ui/nocturne'
 
 /** The parent mounts this only after a successful exact-scope Run read. */
-export function RunHistory({ scope }: { scope: RunGraphScope }) {
+export function RunHistory({ scope }: { scope: RepeatGraphScopeV3 }) {
   const [open, setOpen] = useState(false)
   const history = useInfiniteQuery({
     queryKey: ['workbench', 'board-history', sessionGeneration(), scope], enabled: open,

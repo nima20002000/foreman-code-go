@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
 import { HarnessConfigurationCheckResultSchema } from '@graphql/contracts/management'
-import { GraphDraftV2Schema, makeWave25Fixture } from '@graphql/contracts/wave25'
+import { GraphDraftV3Schema } from '@graphql/contracts/wave25'
+import { currentWorkflowFixture as makeWave25Fixture } from '../mocks/currentWorkflow'
 
 import { ApiError, ApiClient, apiClient } from './client'
 import { resetMockFixtures, setMockScenario } from '../mocks/scenarios'
@@ -23,7 +24,7 @@ describe('Phase 1 API boundary', () => {
       'Reviewer',
     ])
     expect(result.workflows[0]?.edges).toEqual([
-      { id: 'edge-researcher-developer', source: 'node-researcher', target: 'node-developer' },
+      { id: 'edge-researcher-developer', kind: 'execution', source: 'node-researcher', target: 'node-developer' },
       { id: 'edge-developer-reviewer', source: 'node-developer', target: 'node-reviewer' },
     ])
   })
@@ -102,7 +103,7 @@ describe('Phase 1 API boundary', () => {
 
   it('accepts an exact v2 Apply revert and its idempotent HTTP replay', async () => {
     const fixture = makeWave25Fixture('web-revert')
-    const draft = GraphDraftV2Schema.parse({
+    const draft = GraphDraftV3Schema.parse({
       id: 'draft-web-revert', workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId,
       revision: 9, publishedRevision: 9, baseWorkflowVersionId: fixture.version.id,
       graph: fixture.version.definition, stagedAgents: [], updatedByPrincipalId: 'principal-web-revert',

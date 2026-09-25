@@ -1,8 +1,9 @@
-import { makeWave25Fixture, type WorkflowDefinitionV2 } from '@graphql/contracts/wave25'
+import { type WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+import { currentWorkflowFixture as makeWave25Fixture } from '../../shared/mocks/currentWorkflow'
 import { describe, expect, it } from 'vitest'
 import { repeatPlanFromLocalDraft, validateRepeatDraft, type RepeatLocalDraft } from './repeatModel'
 
-function graph(): WorkflowDefinitionV2 {
+function graph(): WorkflowDefinitionV3 {
   const fixture = makeWave25Fixture('repeat-ui')
   const [entry, exit] = fixture.version.definition.nodes
   return {

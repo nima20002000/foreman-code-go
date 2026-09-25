@@ -1,29 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { GraphEditStageInputSchema, preserveWorkflowGeometry, sameExecutableWorkflow, sameWorkflowValue,
-  type GraphEditIntent, type GraphEditReadResult } from '@graphql/contracts/wave25'
+import { GraphEditStageInputV3Schema, preserveWorkflowGeometry, sameExecutableWorkflow, sameWorkflowValue,
+  type GraphEditIntentV3, type GraphEditReadResultV3 } from '@graphql/contracts/wave25'
 import { assertSession, sessionGeneration } from '../../../shared/api/sessionBoundary'
 import { useGraphDraftStore } from '../store'
 import { boardDraftContextKey } from '../../workflow-board/keys'
 import { acknowledgeAgentEdits, hasAgentEdits } from './agentEdits'
 import { draftOperations, hasLocalChanges, mergeAcknowledgement } from './model'
+import { readBoardStart } from '../../workflow-board/startOutbox'
 import { nextDraftDirty, type NextDraftEdit } from './state'
-import { nextDraftApi } from './transport'
+import { assertDraftSubmission, nextDraftApi } from './transport'
 import { acknowledgeEditOutbox, editSnapshotAcknowledged, editSnapshotSubmitted, matchesEditIntent, readEditOutbox, readEditSubmission,
   rejectEditOutbox, reserveEditOutbox, storeEditSnapshot, withEditIntentLock, type EditIntentOutbox } from './editIntentStorage'
 
-export const activeEditIntent = (intent: GraphEditIntent | null | undefined) => !!intent && !['saved', 'discarded'].includes(intent.state)
+export const activeEditIntent = (intent: GraphEditIntentV3 | null | undefined) => !!intent && !['saved', 'discarded'].includes(intent.state)
 export const graphEditIntentKey = (workspaceId: string, workflowId: string, draftId: string, generation = sessionGeneration()) =>
   ['graph-edit-intent', generation, workspaceId, workflowId, draftId] as const
 const readInput = (edit: NextDraftEdit) => ({ action: 'read_edits' as const, workspaceId: edit.context.draft.workspaceId,
   workflowId: edit.context.draft.workflowId, draftId: edit.context.draft.id })
-const commandInput = (intent: GraphEditIntent) => ({ workspaceId: intent.workspaceId, workflowId: intent.workflowId,
+const commandInput = (intent: GraphEditIntentV3) => ({ workspaceId: intent.workspaceId, workflowId: intent.workflowId,
   draftId: intent.draftId, intentId: intent.id })
 
 /** Reconcile only authenticated terminal readback for this exact form base.
  * Persist consumption with the resulting form before exposing it to new typing;
  * the shared outbox is not a per-tab acknowledgement marker. */
-export function acknowledgeEditIntentSnapshot(draftKey: string, current: NextDraftEdit, intent: GraphEditIntent): NextDraftEdit {
+export function acknowledgeEditIntentSnapshot(draftKey: string, current: NextDraftEdit, intent: GraphEditIntentV3): NextDraftEdit {
   const draft = current.context.draft
   if (current.busy || current.pending || !['saved', 'discarded'].includes(intent.state)
     || draft.workspaceId !== intent.workspaceId || draft.workflowId !== intent.workflowId || draft.id !== intent.draftId
@@ -33,13 +34,13 @@ export function acknowledgeEditIntentSnapshot(draftKey: string, current: NextDra
   // Without exact local evidence, a remote Discard says nothing about this form.
   if (intent.state === 'discarded' && !submission) return current
   const submittedHere = editSnapshotSubmitted(draftKey, current, intent.stageCommandId)
-  const exactLegacyForm = !!submission && sameExecutableWorkflow(current.graph, submission.target)
+  const exactSubmittedForm = !!submission && sameExecutableWorkflow(current.graph, submission.target)
     && sameWorkflowValue(current.agentEdits ?? {}, submission.agentTarget ?? {})
   const cleanRemoteForm = !hasLocalChanges(current.context, current.graph) && !hasAgentEdits(current)
   // A terminal command may be shared across tabs, but its saved revision is not.
   // Keep an independently-diverged unsent form pinned to its original base so
   // its next Stage receives the authoritative stale-revision conflict.
-  if (!submittedHere && !exactLegacyForm && !cleanRemoteForm) return current
+  if (!submittedHere && !exactSubmittedForm && !cleanRemoteForm) return current
   let context = current.context
   if (intent.state === 'saved') {
     if (!intent.result) return current
@@ -47,7 +48,7 @@ export function acknowledgeEditIntentSnapshot(draftKey: string, current: NextDra
     for (const item of intent.result.agents) catalog.set(item.agent.id, item)
     context = { draft: intent.result.draft, agents: [...catalog.values()] }
   }
-  const graph = intent.state === 'saved' && cleanRemoteForm && !submittedHere && !exactLegacyForm
+  const graph = intent.state === 'saved' && cleanRemoteForm && !submittedHere && !exactSubmittedForm
     ? preserveWorkflowGeometry(context.draft.graph, current.graph)
     : mergeAcknowledgement(current.graph, submission?.target ?? intent.stagedDraft.graph, context.draft.graph)
   const next = { ...current, context, graph,
@@ -99,7 +100,7 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
     return () => { unsubscribe(); window.removeEventListener('storage', changed) }
   }, [draftKey, queryClient, queryKey])
 
-  const accept = useCallback((data: GraphEditReadResult) => {
+  const accept = useCallback((data: GraphEditReadResultV3) => {
     queryClient.setQueryData(queryKey, data)
     const intent = data.intent
     if (!intent) return
@@ -135,17 +136,18 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
   }, [draftKey, queryClient, queryKey, workspaceId, workflowId])
   // Reconcile persisted results after refresh, independently of the HTTP reply
   // that first caused them. The query itself performs no Stop or publication.
-  const seen = useRef<GraphEditReadResult | undefined>(undefined)
+  const seen = useRef<GraphEditReadResultV3 | undefined>(undefined)
   useEffect(() => {
     if (!query.data || seen.current === query.data) return
     seen.current = query.data
     try { accept(query.data) } catch (error) { setStorageError(String(error)) }
   }, [accept, query.data])
 
-  const mutation = useMutation({ mutationFn: async (action: 'advance' | 'discard') => withEditIntentLock(draftKey, async () => {
+  const mutation = useMutation({ mutationFn: async (command: { action: 'advance' | 'discard'; allowStop?: boolean }) => withEditIntentLock(draftKey, async () => {
+    const { action, allowStop = false } = command
     const generation = sessionGeneration()
     const current = useGraphDraftStore.getState().nextDrafts[draftKey]
-    if (!current || current.busy || current.pending || useGraphDraftStore.getState().pendingRunStarts[draftKey]) {
+    if (!current || current.busy || current.pending || readBoardStart(draftKey)) {
       throw new Error('Reconcile the earlier draft or Start command first. No replacement command was sent.')
     }
     storeEditSnapshot(draftKey, current)
@@ -175,9 +177,10 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
       && useGraphDraftStore.getState().nextDrafts[draftKey] !== beforeAcknowledgement) return data
     if (action === 'advance' && !activeEditIntent(data.intent) && !retained) {
       if (!nextDraftDirty(current)) { accept(data); return data }
-      const request = GraphEditStageInputSchema.parse({ ...readInput(current), action: 'stage_edits',
+      assertDraftSubmission(current.graph, draftOperations(current.context, current.graph, current.agentEdits))
+      const request = GraphEditStageInputV3Schema.parse({ ...readInput(current), action: 'stage_edits',
         commandId: crypto.randomUUID(), expectedRevision: current.context.draft.revision,
-        expectedWorkflowVersionId: current.context.draft.baseWorkflowVersionId, executionSemanticsVersion: 2,
+        expectedWorkflowVersionId: current.context.draft.baseWorkflowVersionId, executionSemanticsVersion: 3,
         operations: draftOperations(current.context, current.graph, current.agentEdits) })
       const reserved = reserveEditOutbox(draftKey, { request, target: current.graph,
         ...(current.agentEdits ? { agentTarget: current.agentEdits } : {}) })
@@ -190,7 +193,8 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
     if (intent && activeEditIntent(intent)) {
       if (action === 'advance') {
         if (data.affectedSetChanged) throw new Error('The affected Run set changed. Retained commands will not Stop any newly discovered Run.')
-        if (!data.canStop) throw new Error('Stop permission is missing for one or more affected Runs. The exact staged edits remain retained.')
+        if (data.current.some((item) => !item.settled) && !allowStop) throw new Error('Affected Runs require explicit Stop-and-save confirmation. The staged edits are retained; no Stop was sent.')
+        if (data.current.some((item) => !item.settled) && !data.canStop) throw new Error('Stop permission is missing for one or more affected Runs. The exact staged edits remain retained.')
         data = await nextDraftApi.editAdvance({ ...commandInput(intent), action: 'stop_and_save', commandId: intent.advanceCommandId })
       } else data = await nextDraftApi.editDiscard({ ...commandInput(intent), action: 'discard_edits', commandId: intent.discardCommandId })
       assertSession(generation); accept(data)
@@ -209,13 +213,13 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
     const attempt = `${intent.id}:${intent.state}:${intent.updatedAt}`
     if (automaticAttempt.current === attempt) return
     automaticAttempt.current = attempt
-    mutate('advance')
+    mutate({ action: 'advance' })
   }, [query.data, isPending, storageError, mutate])
   const intent = query.data?.intent
   const locked = activeEditIntent(intent) || outboxPending || mutation.isPending
   return { query, mutation, intent, locked, storageError, outboxPending,
     sameDisplayedPayload: !intent || sameExecutableWorkflow(edit.graph, intent.stagedDraft.graph),
-    advance: () => mutation.mutateAsync('advance'),
-    discard: () => mutation.mutateAsync('discard'),
+    advance: (allowStop = false) => mutation.mutateAsync({ action: 'advance', allowStop }),
+    discard: () => mutation.mutateAsync({ action: 'discard' }),
   }
 }

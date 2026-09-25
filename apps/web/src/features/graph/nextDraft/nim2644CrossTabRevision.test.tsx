@@ -1,10 +1,11 @@
+import { boardStartClient } from '../../workflow-board/startClient'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createStore } from 'zustand/vanilla'
-import { GraphEditIntentSchema, GraphEditReadResultSchema,
-  type GraphEditReadResult, type GraphEditStageInput } from '@graphql/contracts/wave25'
+import { GraphEditIntentV3Schema, GraphEditReadResultV3Schema,
+  type GraphEditReadResultV3, type GraphEditStageInputV3 } from '@graphql/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
 import { queryKeys } from '../../../shared/api/query'
@@ -60,11 +61,11 @@ function outbox(current: NextDraftEdit, commandId: string): EditIntentOutbox {
   const { draft } = current.context
   return { request: { action: 'stage_edits', workspaceId: draft.workspaceId, workflowId: draft.workflowId,
     draftId: draft.id, commandId, expectedRevision: draft.revision,
-    expectedWorkflowVersionId: draft.baseWorkflowVersionId, executionSemanticsVersion: 2,
+    expectedWorkflowVersionId: draft.baseWorkflowVersionId, executionSemanticsVersion: 3,
     operations: draftOperations(current.context, current.graph, current.agentEdits) },
   target: current.graph, ...(current.agentEdits ? { agentTarget: current.agentEdits } : {}) }
 }
-function savedRead(current: NextDraftEdit, submitted: EditIntentOutbox): GraphEditReadResult {
+function savedRead(current: NextDraftEdit, submitted: EditIntentOutbox): GraphEditReadResultV3 {
   const request = submitted.request
   const stagedDraft = { ...current.context.draft, graph: submitted.target,
     stagedAgents: Object.values(submitted.agentTarget ?? {}).map((agent) => ({
@@ -72,7 +73,7 @@ function savedRead(current: NextDraftEdit, submitted: EditIntentOutbox): GraphEd
     })) }
   const graph = { ...submitted.target, version: 6 }
   const revision = request.expectedRevision + 1
-  const intent = GraphEditIntentSchema.parse({ id: `intent-${request.commandId}`, ownerPrincipalId: 'fixture',
+  const intent = GraphEditIntentV3Schema.parse({ id: `intent-${request.commandId}`, ownerPrincipalId: 'fixture',
     workspaceId: request.workspaceId, workflowId: request.workflowId, draftId: request.draftId,
     stageCommandId: request.commandId, stageInputHash: hash,
     advanceCommandId: `advance-${request.commandId}`, advanceInputHash: hash,
@@ -80,26 +81,26 @@ function savedRead(current: NextDraftEdit, submitted: EditIntentOutbox): GraphEd
     expectedRevision: request.expectedRevision, expectedWorkflowVersionId: request.expectedWorkflowVersionId,
     savedWorkflowRevision: 1, stagedDraft, agentPins: [], affected: [], stops: [],
     saveInput: { workspaceId: request.workspaceId, workflowId: request.workflowId, draftId: request.draftId,
-      commandId: `save-${request.commandId}`, expectedRevision: request.expectedRevision, executionSemanticsVersion: 2 },
+      commandId: `save-${request.commandId}`, expectedRevision: request.expectedRevision, executionSemanticsVersion: 3 },
     saveInputHash: hash, state: 'saved', saveAttempted: true, createdAt: now, updatedAt: now,
     result: { draft: { ...stagedDraft, graph, revision, publishedRevision: revision,
       baseWorkflowVersionId: 'version-6', stagedAgents: [], sourceAgentPins: [] },
     agents: current.context.agents,
     version: { id: 'version-6', workspaceId: request.workspaceId, workflowId: request.workflowId, version: 6,
-      executionSemanticsVersion: 2, definition: graph, entryNodeId: graph.entryNodeId, approval: graph.approval,
+      executionSemanticsVersion: 3, definition: graph, entryNodeId: graph.entryNodeId, approval: graph.approval,
       agentConfigurationVersionIds: Object.fromEntries(graph.nodes.map((node) => [node.agentId,
         current.context.agents.find((item) => item.agent.id === node.agentId)!.agent.configurationVersionId])),
       contentHash: hash, createdAt: now } } })
-  return GraphEditReadResultSchema.parse({ intent, current: [], canStop: false, affectedSetChanged: false })
+  return GraphEditReadResultV3Schema.parse({ intent, current: [], canStop: false, affectedSetChanged: false })
 }
-function stagedRead(request: GraphEditStageInput): GraphEditReadResult {
+function stagedRead(request: GraphEditStageInputV3): GraphEditReadResultV3 {
   const retained = readEditOutbox(key)!
   const context = edit().context
   expect(retained.request).toEqual(request)
   const pin = { workspaceId: request.workspaceId, workflowId: request.workflowId, runId: 'run-correction',
-    workflowVersionId: context.draft.baseWorkflowVersionId!, executionSemanticsVersion: 2 as const,
+    workflowVersionId: context.draft.baseWorkflowVersionId!, executionSemanticsVersion: 3 as const,
     agentConfigurationVersionIds: { 'agent-0': 'configuration-agent-0' } }
-  const intent = GraphEditIntentSchema.parse({ id: `intent-${request.commandId}`, ownerPrincipalId: 'fixture',
+  const intent = GraphEditIntentV3Schema.parse({ id: `intent-${request.commandId}`, ownerPrincipalId: 'fixture',
     workspaceId: request.workspaceId, workflowId: request.workflowId, draftId: request.draftId,
     stageCommandId: request.commandId, stageInputHash: hash,
     advanceCommandId: `advance-${request.commandId}`, advanceInputHash: hash,
@@ -109,9 +110,9 @@ function stagedRead(request: GraphEditStageInput): GraphEditReadResult {
     agentPins: [], affected: [pin], stops: [{ input: { workspaceId: request.workspaceId, runId: pin.runId,
       commandId: `stop-${request.commandId}` }, inputHash: hash }],
     saveInput: { workspaceId: request.workspaceId, workflowId: request.workflowId, draftId: request.draftId,
-      commandId: `save-${request.commandId}`, expectedRevision: request.expectedRevision, executionSemanticsVersion: 2 },
+      commandId: `save-${request.commandId}`, expectedRevision: request.expectedRevision, executionSemanticsVersion: 3 },
     saveInputHash: hash, state: 'staged', saveAttempted: false, createdAt: now, updatedAt: now })
-  return GraphEditReadResultSchema.parse({ intent, canStop: true, affectedSetChanged: false,
+  return GraphEditReadResultV3Schema.parse({ intent, canStop: true, affectedSetChanged: false,
     current: [{ pin, terminal: false, settled: false, outcome: 'pending', cleanupPending: false,
       nativePending: true, interactionPending: false, reviewPending: false }] })
 }
@@ -127,7 +128,7 @@ beforeEach(() => {
   useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); sessionStorage.clear()
   sessionStorage.setItem(tabKey, 'B')
   vi.stubGlobal('navigator', { ...navigator, locks: { request: async (_name: string, work: () => Promise<unknown>) => work() } })
-  vi.spyOn(nextDraftApi, 'start').mockRejectedValue(new Error('This regression must not Start a Run'))
+  vi.spyOn(boardStartClient, 'start').mockRejectedValue(new Error('This regression must not Start a Run'))
 })
 afterEach(() => {
   cleanup(); clients.splice(0).forEach((client) => client.clear())
@@ -175,7 +176,7 @@ describe('NIM-2644 typed-board cross-tab stale revision fence', () => {
     expect(edit().context.draft.baseWorkflowVersionId).toBe('version-5')
     expect(edit().graph.nodes[0]?.initialPrompt).toBe('marker B')
     expect(savedA.intent?.result?.version.id).toBe('version-6')
-    expect(nextDraftApi.start).not.toHaveBeenCalled()
+    expect(boardStartClient.start).not.toHaveBeenCalled()
 
     await user.click(screen.getByRole('button', { name: 'Workflow settings' }))
     await user.click(screen.getByRole('button', { name: 'Reload saved draft' }))
@@ -189,7 +190,7 @@ describe('NIM-2644 typed-board cross-tab stale revision fence', () => {
     await waitFor(() => expect(stage).toHaveBeenCalledTimes(2))
     expect(stage.mock.calls[1]![0].expectedRevision).toBe(11)
     await waitFor(() => expect(advance).toHaveBeenCalledOnce())
-    expect(nextDraftApi.start).not.toHaveBeenCalled()
+    expect(boardStartClient.start).not.toHaveBeenCalled()
   })
 
   it('same-form single-tab lineage can acknowledge once, keep newer typing, and replay idempotently', () => {

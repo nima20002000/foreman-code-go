@@ -1,10 +1,11 @@
+import { boardStartClient } from '../../workflow-board/startClient'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createStore } from 'zustand/vanilla'
-import { GraphEditIntentSchema, GraphEditReadResultSchema, sameExecutableWorkflow,
-  type GraphEditReadResult, type GraphEditStageInput } from '@graphql/contracts/wave25'
+import { GraphEditIntentV3Schema, GraphEditReadResultV3Schema, sameExecutableWorkflow,
+  type GraphEditReadResultV3, type GraphEditStageInputV3 } from '@graphql/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
 import { queryKeys } from '../../../shared/api/query'
 import { useGraphDraftStore } from '../store'
@@ -42,7 +43,7 @@ vi.mock('../../../shared/api/query', async (original) => {
   }
 })
 const key = nextDraftKey('workspace', 'workflow'), clients: QueryClient[] = []
-const empty: GraphEditReadResult = { intent: null, current: [], canStop: false, affectedSetChanged: false }
+const empty: GraphEditReadResultV3 = { intent: null, current: [], canStop: false, affectedSetChanged: false }
 const hash = 'sha256:' + '1'.repeat(64), now = '2026-09-24T00:00:00Z'
 const edit = () => useGraphDraftStore.getState().nextDrafts[key]!
 const saveButton = () => screen.getByRole('button', { name: /^Save changes$/ })
@@ -70,13 +71,13 @@ function reopen(first: ReturnType<typeof mount>) {
   act(() => useGraphDraftStore.setState({ nextDrafts: {} }))
   return mount()
 }
-function stageValue(request: GraphEditStageInput): GraphEditReadResult {
+function stageValue(request: GraphEditStageInputV3): GraphEditReadResultV3 {
   const retained = readEditOutbox(key)!, context = edit().context
   expect(retained.request).toEqual(request)
   const pin = { workspaceId: 'workspace', workflowId: 'workflow', runId: 'run-fixture',
-    workflowVersionId: 'version-1', executionSemanticsVersion: 2 as const,
+    workflowVersionId: 'version-1', executionSemanticsVersion: 3 as const,
     agentConfigurationVersionIds: { 'agent-0': 'configuration-agent-0' } }
-  const intent = GraphEditIntentSchema.parse({ id: `private-${request.commandId}`, ownerPrincipalId: 'fixture',
+  const intent = GraphEditIntentV3Schema.parse({ id: `private-${request.commandId}`, ownerPrincipalId: 'fixture',
     workspaceId: request.workspaceId, workflowId: request.workflowId, draftId: request.draftId,
     stageCommandId: request.commandId, stageInputHash: hash,
     advanceCommandId: `advance-${request.commandId}`, advanceInputHash: hash,
@@ -89,13 +90,13 @@ function stageValue(request: GraphEditStageInput): GraphEditReadResult {
       })) },
     agentPins: [], affected: [pin], stops: [{ input: { workspaceId: 'workspace', runId: pin.runId, commandId: 'exact-stop-fixture' }, inputHash: hash }],
     saveInput: { workspaceId: 'workspace', workflowId: 'workflow', draftId: request.draftId, commandId: 'exact-save-fixture',
-      expectedRevision: request.expectedRevision, executionSemanticsVersion: 2 }, saveInputHash: hash,
+      expectedRevision: request.expectedRevision, executionSemanticsVersion: 3 }, saveInputHash: hash,
     state: 'staged', saveAttempted: false, createdAt: now, updatedAt: now })
-  return GraphEditReadResultSchema.parse({ intent, canStop: true, affectedSetChanged: false,
+  return GraphEditReadResultV3Schema.parse({ intent, canStop: true, affectedSetChanged: false,
     current: [{ pin, terminal: false, settled: false, outcome: 'pending', cleanupPending: false,
       nativePending: true, interactionPending: false, reviewPending: false }] })
 }
-function published(value: GraphEditReadResult): GraphEditReadResult {
+function published(value: GraphEditReadResultV3): GraphEditReadResultV3 {
   const intent = value.intent!, graph = { ...intent.stagedDraft.graph, version: 2 }
   const agents = new Map(edit().context.agents.map((item) => [item.agent.id, item]))
   for (const { agent, baseRevision } of intent.stagedDraft.stagedAgents) agents.set(agent.id, {
@@ -103,18 +104,18 @@ function published(value: GraphEditReadResult): GraphEditReadResult {
     agent: { ...agent, configurationVersionId: `configuration-${agent.id}-saved`, createdAt: now, updatedAt: now },
   })
   const revision = intent.expectedRevision + 1, versionId = 'version-2'
-  return GraphEditReadResultSchema.parse({ ...value,
+  return GraphEditReadResultV3Schema.parse({ ...value,
     current: value.current.map((item) => ({ ...item, terminal: true, settled: true, outcome: 'canceled', nativePending: false })),
     intent: { ...intent, state: 'saved', saveAttempted: true,
       result: { draft: { ...intent.stagedDraft, graph, revision, publishedRevision: revision,
         baseWorkflowVersionId: versionId, stagedAgents: [], sourceAgentPins: [] },
       agents: [...agents.values()],
-      version: { id: versionId, workspaceId: 'workspace', workflowId: 'workflow', version: 2, executionSemanticsVersion: 2,
+      version: { id: versionId, workspaceId: 'workspace', workflowId: 'workflow', version: 2, executionSemanticsVersion: 3,
         definition: graph, entryNodeId: graph.entryNodeId, approval: graph.approval,
         agentConfigurationVersionIds: Object.fromEntries(graph.nodes.map((node) => [node.agentId, agents.get(node.agentId)!.agent.configurationVersionId])),
         contentHash: hash, createdAt: now } } } })
 }
-function waiting(value: GraphEditReadResult): GraphEditReadResult {
+function waiting(value: GraphEditReadResultV3): GraphEditReadResultV3 {
   return { ...value, intent: { ...value.intent!, state: 'waiting' } }
 }
 async function createWorker(user: ReturnType<typeof userEvent.setup>) {
@@ -132,7 +133,7 @@ beforeEach(() => {
   vi.stubGlobal('navigator', { ...navigator, locks: { request: async (_name: string, work: () => Promise<unknown>) => work() } })
   vi.spyOn(nextDraftApi, 'context').mockResolvedValue(repairFixture(1))
   vi.spyOn(nextDraftApi, 'editRead').mockResolvedValue(empty)
-  vi.spyOn(nextDraftApi, 'start').mockRejectedValue(new Error('These regressions must not start a Run'))
+  vi.spyOn(boardStartClient, 'start').mockRejectedValue(new Error('These regressions must not start a Run'))
 })
 afterEach(() => {
   cleanup(); clients.splice(0).forEach((client) => client.clear())
@@ -151,7 +152,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     expect(startButton()).toBeDisabled()
     await confirmDiscard(user)
     expect(edit().graph.nodes[0]?.initialPrompt).toBeUndefined()
-    expect(stage).toHaveBeenCalledOnce(); expect(advance).not.toHaveBeenCalled(); expect(nextDraftApi.start).not.toHaveBeenCalled()
+    expect(stage).toHaveBeenCalledOnce(); expect(advance).not.toHaveBeenCalled(); expect(boardStartClient.start).not.toHaveBeenCalled()
     await waitFor(() => expect(startButton()).toBeEnabled())
   })
   it('FE-001 reopens a safely rejected form and permits explicit reload/correction with a new Stage identity', async () => {
@@ -174,7 +175,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     expect(stage).toHaveBeenCalledTimes(2)
     expect(stage.mock.calls[1]![0].commandId).not.toBe(stage.mock.calls[0]![0].commandId)
     expect(stage.mock.calls[1]![0].expectedRevision).toBe(8)
-    expect(nextDraftApi.start).not.toHaveBeenCalled()
+    expect(boardStartClient.start).not.toHaveBeenCalled()
   })
   it.each([new Error('reply lost'), new ApiError({ code: 'INVALID_RESPONSE', message: 'bad reply' }),
     new ApiError({ code: 'FORBIDDEN', message: 'readback denied' }, 403), new ApiError({ code: 'INTERNAL_ERROR', message: 'post-commit failure' }, 500)])(
@@ -194,7 +195,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
       reopen(first); await screen.findByRole('region', { name: 'Workflow authoring' })
       await user.click(saveButton()); await waitFor(() => expect(advance).toHaveBeenCalledOnce())
       expect(stage.mock.calls[1]![0]).toEqual(request)
-      expect(readEditOutbox(key)?.request).toEqual(request); expect(nextDraftApi.start).not.toHaveBeenCalled()
+      expect(readEditOutbox(key)?.request).toEqual(request); expect(boardStartClient.start).not.toHaveBeenCalled()
     })
   it('FE-001 a REVISION_CONFLICT from Advance is not a rejected Stage and cannot release its reservation', async () => {
     let persisted = empty
@@ -234,7 +235,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     expect(editorAgents(edit()).find((agent) => agent.id === node.agentId)).toMatchObject({
       configurationVersionId: `configuration-${node.agentId}-saved`, prompt: {}, assignedSkills: [],
     })
-    expect(readEditOutbox(key)).toBeUndefined(); expect(nextDraftApi.start).not.toHaveBeenCalled()
+    expect(readEditOutbox(key)).toBeUndefined(); expect(boardStartClient.start).not.toHaveBeenCalled()
     reopen(first); await screen.findByRole('region', { name: 'Workflow authoring' })
     await waitFor(() => expect(startButton()).toBeEnabled())
     expect(nextDraftDirty(edit())).toBe(false); expect(edit().context.draft.baseWorkflowVersionId).toBe('version-2')
@@ -254,10 +255,10 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     await waitFor(() => expect(startButton()).toBeEnabled())
     expect(nextDraftDirty(edit())).toBe(false); expect(edit().agentEdits?.[node.agentId]).toBeUndefined()
     expect(edit().context.agents.find((item) => item.agent.id === node.agentId)?.metadataRevision).toBe(1)
-    expect(stage).toHaveBeenCalledOnce(); expect(advance).toHaveBeenCalledOnce(); expect(nextDraftApi.start).not.toHaveBeenCalled()
+    expect(stage).toHaveBeenCalledOnce(); expect(advance).toHaveBeenCalledOnce(); expect(boardStartClient.start).not.toHaveBeenCalled()
   })
   it('FE-002 publication retains independent newer Agent typing and installs saved metadata without enabling Start', async () => {
-    let persisted = empty, release!: (value: GraphEditReadResult) => void
+    let persisted = empty, release!: (value: GraphEditReadResultV3) => void
     vi.mocked(nextDraftApi.editRead).mockImplementation(async () => persisted)
     vi.spyOn(nextDraftApi, 'editStage').mockImplementation(async (input) => (persisted = stageValue(input)))
     const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => new Promise((resolve) => { release = resolve }))
@@ -271,7 +272,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     expect(edit().agentEdits?.[node.agentId]).toMatchObject({ name: 'Independently newer Worker',
       configurationVersionId: `configuration-${node.agentId}-saved`, createdAt: now, updatedAt: now })
     expect(edit().context.agents.find((item) => item.agent.id === node.agentId)?.agent.name).toBe('Worker 2')
-    expect(nextDraftDirty(edit())).toBe(true); expect(startButton()).toBeDisabled(); expect(nextDraftApi.start).not.toHaveBeenCalled()
+    expect(nextDraftDirty(edit())).toBe(true); expect(startButton()).toBeDisabled(); expect(boardStartClient.start).not.toHaveBeenCalled()
   })
   it.each([[true, false], [true, true], [false, false], [false, true]])('FE-003 topology Discard: dropped reply=%s, newer edits=%s', async (dropped, newer) => {
     const context = repairFixture()
@@ -312,7 +313,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     expect(sameExecutableWorkflow(edit().graph, context.draft.graph)).toBe(!newer)
     expect(readEditSnapshot(key)?.graph).toEqual(edit().graph)
     expect(stage).toHaveBeenCalledTimes(2); expect(stage.mock.calls[1]![0]).toEqual(stage.mock.calls[0]![0])
-    expect(advance).toHaveBeenCalledOnce(); expect(discard).toHaveBeenCalledOnce(); expect(nextDraftApi.start).not.toHaveBeenCalled()
+    expect(advance).toHaveBeenCalledOnce(); expect(discard).toHaveBeenCalledOnce(); expect(boardStartClient.start).not.toHaveBeenCalled()
   })
 })
 
@@ -362,14 +363,14 @@ describe('NIM-2644 follow-up stale existing-Agent attach', () => {
       expect(stage.mock.calls[1]![0].operations).toContainEqual(expect.objectContaining({ type: 'agent.attach',
         expectedAgentRevision: source.metadataRevision + 1, expectedConfigurationVersionId: 'configuration-updated-in-other-session' }))
     }
-    expect(nextDraftApi.start).not.toHaveBeenCalled()
+    expect(boardStartClient.start).not.toHaveBeenCalled()
   })
 })
 
 
 // The mounted board retains the real module store; the sibling has a separate
 // Zustand store and protected snapshot ID but shares the same localStorage.
-function siblingConsumes(value: GraphEditReadResult) {
+function siblingConsumes(value: GraphEditReadResultV3) {
   const sibling = createStore<{ edit: ReturnType<typeof edit> }>(() => ({ edit: structuredClone(edit()) }))
   inFollowupTab('independent-sibling', () => {
     storeEditSnapshot(key, sibling.getState().edit)
@@ -403,7 +404,7 @@ describe('NIM-2644 follow-up mounted stale-tab readback', () => {
     expect(nextDraftApi.editStage).toHaveBeenCalledOnce(); expect(nextDraftApi.editAdvance).toHaveBeenCalledOnce()
     expect(nextDraftDirty(edit())).toBe(false); expect(edit().agentEdits).toEqual({})
     expect(editorAgents(edit()).find((agent) => agent.id === node.agentId)?.configurationVersionId).toBe(`configuration-${node.agentId}-saved`)
-    expect(nextDraftApi.start).not.toHaveBeenCalled()
+    expect(boardStartClient.start).not.toHaveBeenCalled()
   })
   it.each([false, true])('FE-003 another store consumes lost Discard first; refresh restores topology with newer typing=%s', async (newer) => {
     const context = repairFixture(3)
@@ -436,6 +437,6 @@ describe('NIM-2644 follow-up mounted stale-tab readback', () => {
     expect(nextDraftDirty(edit())).toBe(newer)
     expect(advance).toHaveBeenCalledOnce(); expect(discard).toHaveBeenCalledOnce()
     expect(stage.mock.calls[1]![0]).toEqual(stage.mock.calls[0]![0])
-    expect(nextDraftApi.start).not.toHaveBeenCalled()
+    expect(boardStartClient.start).not.toHaveBeenCalled()
   })
 })

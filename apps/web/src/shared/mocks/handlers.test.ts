@@ -2,12 +2,11 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   apiClient,
-  saveGraph,
   sendUserMessage,
 } from '../api'
 import {
   getMockFixture,
-  getMockScenarioState,
+  updateMockWorkflow,
   setMockScenario,
 } from './scenarios'
 
@@ -56,51 +55,11 @@ describe('deterministic mock scenarios', () => {
     expect(after.messages.filter((message) => message.content === 'Continue.')).toHaveLength(1)
   })
 
-  it('supports graph mutation and explicit failure mode without timers or replies', async () => {
-    const details = await apiClient.getWorkspaceDetails({ workspaceId: 'workspace-1' })
-    const current = details.workflows[0]
-    if (!current) throw new Error('fixture workflow missing')
-
-    const saved = await saveGraph({
-      workspaceId: 'workspace-1',
-      agents: [{
-        id: 'agent-board-codex',
-        name: 'Codex agent',
-        harness: 'codex',
-        model: 'gpt-5.6-luna',
-        effort: 'medium',
-        prompt: {},
-        assignedSkills: [],
-      }],
-      workflow: {
-        ...current,
-        name: 'Saved graph',
-        nodes: [
-          ...current.nodes.map((node, index) => index === 0
-            ? { ...node, width: 306, height: 132, initialPrompt: 'Start with the supplied topic.' }
-            : node),
-          { id: 'node-board-codex', agentId: 'agent-board-codex', name: 'Codex agent' },
-        ],
-      },
-    })
-    expect(saved.workflow.name).toBe('Saved graph')
-    expect(saved.workflow.nodes[0]).toMatchObject({ width: 306, height: 132, initialPrompt: 'Start with the supplied topic.' })
-    expect(saved.agents).toContainEqual(expect.objectContaining({ id: 'agent-board-codex', harness: 'codex' }))
-    const readBack = await apiClient.getWorkflow({ workspaceId: 'workspace-1', workflowId: current.id })
-    expect(readBack.workflow.nodes[0]).toMatchObject({ width: 306, height: 132 })
-
-    setMockScenario('normal', 'graph-save')
-    await expect(saveGraph({ workspaceId: 'workspace-1', workflow: saved.workflow })).rejects.toMatchObject({
-      code: 'MOCK_GRAPH_SAVE_FAILED',
-    })
-    expect(getMockScenarioState().failureMode).toBe('graph-save')
-  })
-
   it('resets fixture mutations when selecting a new scenario', async () => {
     const details = await apiClient.getWorkspaceDetails({ workspaceId: 'workspace-1' })
     const current = details.workflows[0]
     if (!current) throw new Error('fixture workflow missing')
-    await saveGraph({ workspaceId: 'workspace-1', workflow: { ...current, name: 'Temporary' } })
+    updateMockWorkflow('workspace-1', { ...current, name: 'Temporary' })
     setMockScenario('normal')
 
     const reset = await apiClient.getWorkflow({ workspaceId: 'workspace-1', workflowId: current.id })
@@ -169,10 +128,7 @@ describe('deterministic mock scenarios', () => {
     const current = (await apiClient.getWorkspaceDetails({ workspaceId: 'workspace-1' })).workflows[0]
     if (!current) throw new Error('fixture workflow missing')
     await expect(
-      saveGraph({
-        workspaceId: foreignWorkspaceId,
-        workflow: { ...current, workspaceId: foreignWorkspaceId, name: 'Foreign mutation' },
-      }),
+      apiClient.createManagedWorkflow({ workspaceId: foreignWorkspaceId, name: 'Foreign mutation', commandId: 'foreign-create' }),
     ).rejects.toMatchObject(foreignError)
     await expect(
       sendUserMessage({

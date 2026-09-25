@@ -1,10 +1,10 @@
 import type { Agent } from '@graphql/contracts'
-import type { GraphDraftOperationV2, WorkflowDefinitionV2 } from '@graphql/contracts/wave25'
+import type { GraphDraftOperationV3, WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
 import { draftAgents, sameValue, type DraftNode, type NextDraftContext } from './model'
 import type { NextDraftEdit } from './state'
 
 export type DraftAgentEdits = Record<string, Agent>
-export function referencedAgentEdits(graph: WorkflowDefinitionV2, edits: DraftAgentEdits = {}): DraftAgentEdits {
+export function referencedAgentEdits(graph: WorkflowDefinitionV3, edits: DraftAgentEdits = {}): DraftAgentEdits {
   const ids = new Set(graph.nodes.map((node) => node.agentId))
   return Object.fromEntries(Object.entries(edits).filter(([id]) => ids.has(id)))
 }
@@ -21,7 +21,7 @@ function configuration(agent: Agent) {
   if (!agent.harnessConfiguration) throw new Error('Reload the complete Agent configuration before editing it.')
   return agent.harnessConfiguration
 }
-export function addAgentOperations(agent: Agent, node: DraftNode): GraphDraftOperationV2[] {
+export function addAgentOperations(agent: Agent, node: DraftNode): GraphDraftOperationV3[] {
   const harness = configuration(agent)
   if (!agent.productRole) throw new Error('Select an explicit Agent product role.')
   return [
@@ -30,8 +30,8 @@ export function addAgentOperations(agent: Agent, node: DraftNode): GraphDraftOpe
     { type: 'agent.configure', agentId: agent.id, expectedAgentRevision: 0, configuration: harness, ...content(agent) },
   ]
 }
-export function configureAgentOperations(context: NextDraftContext, graph: WorkflowDefinitionV2, edits: DraftAgentEdits): GraphDraftOperationV2[] {
-  const operations: GraphDraftOperationV2[] = []
+export function configureAgentOperations(context: NextDraftContext, graph: WorkflowDefinitionV3, edits: DraftAgentEdits): GraphDraftOperationV3[] {
+  const operations: GraphDraftOperationV3[] = []
   for (const [id, after] of Object.entries(referencedAgentEdits(graph, edits))) {
     const staged = context.draft.stagedAgents.find((item) => item.agent.id === id)
     const source = context.agents.find((item) => item.agent.id === id)
@@ -49,7 +49,7 @@ export function configureAgentOperations(context: NextDraftContext, graph: Workf
 }
 
 /** Content-only edit. No server revision, configuration pin or pending receipt is invented. */
-export function changeDraftAgent(edit: NextDraftEdit, agent: Agent, graph: WorkflowDefinitionV2): NextDraftEdit {
+export function changeDraftAgent(edit: NextDraftEdit, agent: Agent, graph: WorkflowDefinitionV3): NextDraftEdit {
   if (edit.busy || edit.pending) throw new Error('Reconcile the pending draft command before editing Agent settings.')
   const before = editorAgents(edit).find((item) => item.id === agent.id)
   if (sameValue(before, agent) && sameValue(graph, edit.graph)) return edit
@@ -61,7 +61,7 @@ export function changeDraftAgent(edit: NextDraftEdit, agent: Agent, graph: Workf
 }
 
 /** Clear only the submitted Agent edits. Later edits survive normalization and publication. */
-export function acknowledgeAgentEdits(current: DraftAgentEdits | undefined, sent: DraftAgentEdits | undefined, context: NextDraftContext, retainedGraph?: WorkflowDefinitionV2): DraftAgentEdits | undefined {
+export function acknowledgeAgentEdits(current: DraftAgentEdits | undefined, sent: DraftAgentEdits | undefined, context: NextDraftContext, retainedGraph?: WorkflowDefinitionV3): DraftAgentEdits | undefined {
   if (!current) return undefined
   const saved = new Map(draftAgents(context).map((agent) => [agent.id, agent]))
   return Object.fromEntries(Object.entries(current).flatMap(([id, agent]) => {

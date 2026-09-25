@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { UrlSearchSelectionSchema } from '../index.js'
-import { GraphIdSchema, RunGraphScopeSchema, sameGraphScope, type RunGraphScope } from './protocol.js'
+import { GraphIdSchema } from './protocol.js'
+import { RepeatGraphScopeV3Schema, sameCanonicalGraphScope, type RepeatGraphScopeV3 } from './repeatGraphMetadata.js'
 
 export const WorkspaceBoardInspectionSchema = z.object({
   runNodeId: GraphIdSchema.optional(), runRelationshipId: GraphIdSchema.optional(),
@@ -14,7 +15,7 @@ export const WorkspaceBoardSearchSchema = UrlSearchSelectionSchema.extend({
   runId: GraphIdSchema.optional(),
   workflowVersionId: GraphIdSchema.optional(),
   executionSemanticsVersion: z.union([
-    z.literal(1), z.literal(2), z.literal('1').transform(() => 1 as const), z.literal('2').transform(() => 2 as const),
+    z.literal(3), z.literal('3').transform(() => 3 as const),
   ]).optional(),
 }).strict().superRefine((value, context) => {
   if (value.runNodeId && value.runRelationshipId) context.addIssue({ code: 'custom', message: 'Inspect one Run node or relationship at a time.' })
@@ -26,12 +27,12 @@ export const WorkspaceBoardSearchSchema = UrlSearchSelectionSchema.extend({
 export type WorkspaceBoardSearch = z.infer<typeof WorkspaceBoardSearchSchema>
 export type WorkflowBoardLocation = {
   workspaceId: string; workflowId?: string; search: WorkspaceBoardSearch
-  run?: RunGraphScope; draftAlias: boolean
+  run?: RepeatGraphScopeV3; draftAlias: boolean
 }
 
-/** Old deep links resolve in the SAME mounted workspace route. No automatic redirect. */
+/** Pinned deep links resolve in the SAME mounted workspace route. No automatic redirect. */
 export function resolveWorkflowBoardLocation(pathname: string, rawSearch: unknown): WorkflowBoardLocation {
-  const match = /^\/workspaces\/([^/]+)(?:\/workflows\/([^/]+)\/(draft|runs\/([^/]+)\/graph\/([^/]+)\/([12])))?\/?$/.exec(pathname)
+  const match = /^\/workspaces\/([^/]+)(?:\/workflows\/([^/]+)\/(draft|runs\/([^/]+)\/graph\/([^/]+)\/(3)))?\/?$/.exec(pathname)
   if (!match) throw new Error('Invalid workflow board URL.')
   const workspaceId = decodeURIComponent(match[1]!)
   const pathWorkflowId = match[2] === undefined ? undefined : decodeURIComponent(match[2])
@@ -41,21 +42,24 @@ export function resolveWorkflowBoardLocation(pathname: string, rawSearch: unknow
     throw new Error('The board URL contains conflicting workspace or workflow identities.')
   }
   const workflowId = pathWorkflowId ?? search.workflowId
-  const requested = search.runId === undefined ? undefined : RunGraphScopeSchema.parse({
+  const requested = search.runId === undefined ? undefined : RepeatGraphScopeV3Schema.parse({
     workspaceId, workflowId, runId: search.runId, workflowVersionId: search.workflowVersionId,
     executionSemanticsVersion: search.executionSemanticsVersion,
   })
-  const pinned = match[4] === undefined ? undefined : RunGraphScopeSchema.parse({
+  const pinned = match[4] === undefined ? undefined : RepeatGraphScopeV3Schema.parse({
     workspaceId, workflowId, runId: decodeURIComponent(match[4]), workflowVersionId: decodeURIComponent(match[5]!),
-    executionSemanticsVersion: match[6] === '1' ? 1 : 2,
+    executionSemanticsVersion: Number(match[6]),
   })
-  if (pinned && requested && !sameGraphScope(pinned, requested)) throw new Error('The Run URL contains conflicting immutable pins.')
+  if (pinned && requested && !sameCanonicalGraphScope(pinned, requested)) throw new Error('The Run URL contains conflicting immutable pins.')
   if ((search.runNodeId || search.runRelationshipId || search.runExchangeKey) && !pinned && !requested) throw new Error('Run inspection needs a complete Run selection.')
   return { workspaceId, workflowId, search, run: pinned ?? requested, draftAlias: match[3] === 'draft' }
 }
 
-export function boardSearchForRun(search: WorkspaceBoardSearch, workflowId: string, run?: RunGraphScope): WorkspaceBoardSearch {
-  if (run && run.workflowId !== workflowId) throw new Error('Cannot select a Run from a different workflow.')
+export function boardSearchForRun(search: WorkspaceBoardSearch, workflowId: string, run?: RepeatGraphScopeV3): WorkspaceBoardSearch {
+  if (run && (run.workflowId !== workflowId || search.workspaceId !== undefined && run.workspaceId !== search.workspaceId)) {
+    throw new Error('Cannot select a Run from a different workspace or workflow.')
+  }
+  if (run) RepeatGraphScopeV3Schema.parse(run)
   const { runId: _run, workflowVersionId: _version, executionSemanticsVersion: _semantics,
     runNodeId: _node, runRelationshipId: _edge, runExchangeKey: _exchange, ...rest } = search
   void _run; void _version; void _semantics; void _node; void _edge; void _exchange
@@ -64,7 +68,7 @@ export function boardSearchForRun(search: WorkspaceBoardSearch, workflowId: stri
   } : {}) })
 }
 
-export function boardSearchForInspection(search: WorkspaceBoardSearch, workflowId: string, run: RunGraphScope, inspection: WorkspaceBoardInspection): WorkspaceBoardSearch {
+export function boardSearchForInspection(search: WorkspaceBoardSearch, workflowId: string, run: RepeatGraphScopeV3, inspection: WorkspaceBoardInspection): WorkspaceBoardSearch {
   return WorkspaceBoardSearchSchema.parse({ ...boardSearchForRun(search, workflowId, run), ...WorkspaceBoardInspectionSchema.parse(inspection) })
 }
 

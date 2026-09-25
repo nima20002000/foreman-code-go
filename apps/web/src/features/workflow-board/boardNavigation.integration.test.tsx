@@ -35,8 +35,7 @@ function Harness() {
   const selected = resolveWorkflowBoardLocation(location.pathname, location.search)
   const workflowId = selected.workflowId!
   return <WorkflowBoardContext.Provider value={{ workspaceId: 'workspace', workflowId, run: selected.run,
-    inspection: {}, selectInspection: () => undefined, conversionRequested: false, requestConversion: () => undefined,
-    closeConversion: () => undefined, openLocation: () => undefined, openRuns: () => undefined, activeRuns: 0,
+    inspection: {}, selectInspection: () => undefined, openLocation: () => undefined, openRuns: () => undefined, activeRuns: 0,
     selectRun: (run) => { void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId: 'workspace' }, search: boardSearchForRun(selected.search, workflowId, run) }) },
   }}>
     <p data-testid="selected-run">{selected.run ? `${selected.run.runId}:${selected.run.workflowVersionId}` : 'No Run selected'}</p>
@@ -60,7 +59,7 @@ function setup() {
 
 /** Real TanStack route hierarchy, draft owner and navigation guard. Buffered canvas is a test seam,
  * not browser gesture, production authentication or native execution evidence. */
-describe('one mounted board across compatibility URLs', () => {
+describe('one mounted board across current route aliases', () => {
   beforeEach(() => { mounts.canvas = 0; mounts.disposed = 0; useGraphDraftStore.getState().clearAllDrafts(); useGraphDraftStore.getState().installNextDraft(key, fixture()) })
   afterEach(() => { cleanup(); useGraphDraftStore.getState().clearAllDrafts(); vi.restoreAllMocks() })
   it('opens an old draft deep link in the same workspace and keeps the editor mounted', async () => {
@@ -85,7 +84,7 @@ describe('one mounted board across compatibility URLs', () => {
     })))
     await user.click(screen.getByRole('button', { name: 'Buffer geometry' }))
     await act(async () => { await router.navigate({ to: '/workspaces/$workspaceId', params: { workspaceId: 'workspace' },
-      search: { workflowId: 'workflow', runId: 'run-one', workflowVersionId: 'version-one', executionSemanticsVersion: 2 } }) })
+      search: { workflowId: 'workflow', runId: 'run-one', workflowVersionId: 'version-one', executionSemanticsVersion: 3 } }) })
     expect(screen.getByTestId('selected-run')).toHaveTextContent('run-one:version-one')
     await act(async () => { await router.navigate({ to: '/workspaces/$workspaceId/workflows/$workflowId/runs/$runId/graph/$workflowVersionId/$executionSemanticsVersion',
       params: { workspaceId: 'workspace', workflowId: 'workflow', runId: 'run-old', workflowVersionId: 'version-old', executionSemanticsVersion: '2' }, search: {} }) })

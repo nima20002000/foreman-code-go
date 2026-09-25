@@ -10,7 +10,7 @@ function candidate(commandId = 'exact-stage'): EditIntentOutbox {
   const context = fixture()
   return { request: { workspaceId: 'workspace', workflowId: 'workflow', draftId: context.draft.id,
     expectedRevision: context.draft.revision, expectedWorkflowVersionId: context.draft.baseWorkflowVersionId,
-    executionSemanticsVersion: 2, action: 'stage_edits', commandId, operations: [] }, target: context.draft.graph }
+    executionSemanticsVersion: 3, action: 'stage_edits', commandId, operations: [] }, target: context.draft.graph }
 }
 beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); clearEditIntentStorage() })

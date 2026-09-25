@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createStore } from 'zustand/vanilla'
 import type { Agent } from '@graphql/contracts'
-import { GraphEditIntentSchema, sameExecutableWorkflow, type GraphEditIntent } from '@graphql/contracts/wave25'
+import { GraphEditIntentV3Schema, sameExecutableWorkflow, type GraphEditIntentV3 } from '@graphql/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
 import { protectedKey, rotateProtectedSession } from '../../../shared/api/protectedChatStorage'
 import { acknowledgeEditIntentSnapshot } from './useGraphEditIntent'
@@ -30,7 +30,7 @@ function tab(id: string, initial: NextDraftEdit) {
   const change = (update: (edit: NextDraftEdit) => NextDraftEdit) => {
     store.setState(({ edit }) => ({ edit: update(edit) })); persist()
   }
-  const readback = (intent: GraphEditIntent) => run(() => {
+  const readback = (intent: GraphEditIntentV3) => run(() => {
     store.setState(({ edit }) => ({ edit: acknowledgeEditIntentSnapshot(key, edit, intent) }))
     const outbox = readEditOutbox(key)
     if (outbox && matchesEditIntent(outbox, intent)) acknowledgeEditOutbox(key, intent.stageCommandId)
@@ -46,10 +46,10 @@ function submission(edit: NextDraftEdit, commandId = 'stage-original'): EditInte
   const { draft } = edit.context
   return { request: { action: 'stage_edits', workspaceId: draft.workspaceId, workflowId: draft.workflowId,
     draftId: draft.id, expectedRevision: draft.revision, expectedWorkflowVersionId: draft.baseWorkflowVersionId,
-    commandId, executionSemanticsVersion: 2, operations: draftOperations(edit.context, edit.graph, edit.agentEdits) },
+    commandId, executionSemanticsVersion: 3, operations: draftOperations(edit.context, edit.graph, edit.agentEdits) },
   target: edit.graph, ...(edit.agentEdits ? { agentTarget: edit.agentEdits } : {}) }
 }
-function terminal(edit: NextDraftEdit, outbox: EditIntentOutbox, state: 'saved' | 'discarded'): GraphEditIntent {
+function terminal(edit: NextDraftEdit, outbox: EditIntentOutbox, state: 'saved' | 'discarded'): GraphEditIntentV3 {
   const { request, target, agentTarget } = outbox
   const stagedAgents = Object.values(agentTarget ?? {}).map((agent) => ({
     agent: { ...agent, prompt: agent.prompt ?? {}, assignedSkills: agent.assignedSkills ?? [] },
@@ -62,17 +62,17 @@ function terminal(edit: NextDraftEdit, outbox: EditIntentOutbox, state: 'saved' 
     advanceCommandId: `advance-${request.commandId}`, advanceInputHash: hash,
     discardCommandId: `discard-${request.commandId}`, discardInputHash: hash,
     saveInput: { workspaceId: 'workspace', workflowId: 'workflow', draftId: request.draftId,
-      commandId: `save-${request.commandId}`, expectedRevision: request.expectedRevision, executionSemanticsVersion: 2 },
+      commandId: `save-${request.commandId}`, expectedRevision: request.expectedRevision, executionSemanticsVersion: 3 },
     saveInputHash: hash, stagedDraft, agentPins: [], affected: [], stops: [], state, saveAttempted: state === 'saved', createdAt: now, updatedAt: now }
-  if (state === 'discarded') return GraphEditIntentSchema.parse(value)
+  if (state === 'discarded') return GraphEditIntentV3Schema.parse(value)
   const catalog = new Map(edit.context.agents.map((item) => [item.agent.id, item]))
   for (const { agent, baseRevision } of stagedAgents) catalog.set(agent.id, { metadataRevision: (baseRevision ?? 0) + 1,
     agent: { ...agent, configurationVersionId: `saved-${agent.id}`, createdAt: now, updatedAt: now } })
   const graph = { ...target, version: 2 }, revision = request.expectedRevision + 1
-  return GraphEditIntentSchema.parse({ ...value, result: {
+  return GraphEditIntentV3Schema.parse({ ...value, result: {
     draft: { ...stagedDraft, graph, revision, publishedRevision: revision, baseWorkflowVersionId: 'version-2', stagedAgents: [], sourceAgentPins: [] },
     agents: [...catalog.values()], version: { id: 'version-2', workspaceId: 'workspace', workflowId: 'workflow', version: 2,
-      executionSemanticsVersion: 2, definition: graph, entryNodeId: graph.entryNodeId, approval: graph.approval,
+      executionSemanticsVersion: 3, definition: graph, entryNodeId: graph.entryNodeId, approval: graph.approval,
       agentConfigurationVersionIds: Object.fromEntries(graph.nodes.map((node) => [node.agentId, catalog.get(node.agentId)!.agent.configurationVersionId])),
       contentHash: hash, createdAt: now },
   } })

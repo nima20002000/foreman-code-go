@@ -1,6 +1,6 @@
 import { createContext, forwardRef, memo, useContext, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Background, ConnectionMode, Controls, ReactFlow, type Edge, type EdgeProps, type NodeChange, type NodeProps } from '@xyflow/react'
-import { WorkflowRelationshipSchema, type WorkflowDefinitionV2, type WorkflowRelationship } from '@graphql/contracts/wave25'
+import { WorkflowRelationshipSchema, type WorkflowDefinitionV3, type WorkflowRelationship } from '@graphql/contracts/wave25'
 import type { Agent } from '@graphql/contracts'
 import { AgentNodeView, AgentPopover, type AgentPanel } from '../../../shared/ui/nocturne'
 import { createGraphTopologyProjector } from '../topology'
@@ -74,7 +74,7 @@ export type DraftCanvasHandle = { flush(): void; cancel(): void }
 
 /** Draft geometry and typed records only. Run state is read from the selected Run's cache, never written. */
 export const DraftCanvas = forwardRef<DraftCanvasHandle, {
-  draftKey: string; graph: WorkflowDefinitionV2; agents: readonly Agent[]; kind: WorkflowRelationship['kind']
+  draftKey: string; graph: WorkflowDefinitionV3; agents: readonly Agent[]; kind: WorkflowRelationship['kind']
   change: EditGraph; geometry: (changes: GraphGeometryChange[]) => void; pending: (pending: boolean) => void
   report: (error: unknown) => void; inspect?: (action: () => void) => void
   open?: OpenAgentPanel; setOpen?: (next?: OpenAgentPanel) => void; panels?: (nodeId: string) => AgentPanels

@@ -21,6 +21,7 @@ import {
   RunInputSchema,
   TimestampSchema,
   WorkflowDefinitionSchema,
+  WorkflowDefinitionFields,
   CompatibleWorkflowDefinitionSchema,
   WorkflowApprovalConfigurationSchema,
   WorkflowNodeSchema,
@@ -189,14 +190,10 @@ export const ManagedWorkspacePageSchema = z.object({
 }).strict();
 export const ManagedWorkspaceCommandResultSchema = z.object({ value: ManagedWorkspaceSchema, replayed: z.boolean() }).strict();
 
-export const ManagedWorkflowSchema = z
-  .object({
-    workflow: CompatibleWorkflowDefinitionSchema,
-    revision: ExpectedRevisionSchema,
-    currentVersionId: IdSchema.nullable(),
-    archivedAt: TimestampSchema.nullable(),
-  })
-  .strict();
+export const ManagedWorkflowRecordFields = {
+  revision: ExpectedRevisionSchema, currentVersionId: IdSchema.nullable(), archivedAt: TimestampSchema.nullable(),
+};
+export const ManagedWorkflowSchema = z.object({ ...ManagedWorkflowRecordFields, workflow: CompatibleWorkflowDefinitionSchema }).strict();
 export type ManagedWorkflow = z.infer<typeof ManagedWorkflowSchema>;
 export const ManagedWorkflowPageSchema = z.object({
   items: z.array(ManagedWorkflowSchema), pageInfo: ManagementPageInfoSchema,
@@ -382,6 +379,34 @@ const EdgePutOperationSchema = z.object({
 const ResetExecutionLimitsOperationSchema = z.object({ type: z.literal("workflow.reset_execution_limits") }).strict();
 const ResetRequiredAgentCountOperationSchema = z.object({ type: z.literal("workflow.reset_required_agent_count") }).strict();
 
+export const CurrentCommonGraphOperationSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("agent.attach"), agentId: IdSchema, nodeId: IdSchema,
+    expectedAgentRevision: ExpectedRevisionSchema, expectedConfigurationVersionId: IdSchema,
+    name: z.string().trim().min(1).max(200).optional(),
+    position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict().optional(),
+  }).strict(),
+  z.object({ type: z.literal("workflow.set_execution_condition"),
+    executionCondition: WorkflowDefinitionFields.executionCondition,
+  }).strict(),
+  WorkflowApprovalOperationSchema,
+  NodeOrderOperationSchema,
+  EdgeOrderOperationSchema,
+  ResetExecutionLimitsOperationSchema,
+  RequiredAgentCountOperationSchema,
+  ResetRequiredAgentCountOperationSchema,
+  AgentAddOperationSchema,
+  AgentAddFromTemplateOperationSchema,
+  AgentRenameOperationSchema,
+  AgentConfigureOperationSchema,
+  AgentCloneOperationSchema,
+  NodeRenameOperationSchema,
+  NodePromptOperationSchema,
+  NodeMoveOperationSchema,
+  NodeRemoveOperationSchema,
+  EdgeDisconnectOperationSchema,
+  ExecutionLimitsOperationSchema,
+]);
+
 export const GraphDraftOperationSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("agent.attach"), agentId: IdSchema, nodeId: IdSchema,
     expectedAgentRevision: ExpectedRevisionSchema, expectedConfigurationVersionId: IdSchema,
@@ -416,7 +441,7 @@ export const GraphDraftOperationSchema = z.discriminatedUnion("type", [
 export type GraphDraftOperation = z.infer<typeof GraphDraftOperationSchema>;
 
 export const StagedAgentSchema = z.object({ agent: AgentSchema, baseRevision: ExpectedRevisionSchema.nullable() }).strict();
-export const GraphDraftSchema = z.object({
+export const GraphDraftRecordFields = {
   id: IdSchema,
   workspaceId: IdSchema,
   workflowId: IdSchema,
@@ -425,12 +450,12 @@ export const GraphDraftSchema = z.object({
   baseWorkflowVersionId: IdSchema.nullable(),
   // Missing markers on older records are conservatively treated as unpublished.
   publishedRevision: ExpectedRevisionSchema.nullable().optional(),
-  graph: WorkflowDefinitionSchema,
   stagedAgents: z.array(StagedAgentSchema),
   sourceAgentPins: z.array(z.object({agentId: IdSchema, metadataRevision: ExpectedRevisionSchema, configurationVersionId: IdSchema}).strict()).optional(),
   updatedByPrincipalId: IdSchema,
   updatedAt: TimestampSchema,
-}).strict();
+};
+export const GraphDraftSchema = z.object({ ...GraphDraftRecordFields, graph: WorkflowDefinitionSchema }).strict();
 export type GraphDraft = z.infer<typeof GraphDraftSchema>;
 export const GraphDraftEffectSchema = z.discriminatedUnion("code", [
   z.object({

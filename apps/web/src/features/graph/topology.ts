@@ -1,4 +1,5 @@
-import type { Agent, WorkflowDefinition } from '@graphql/contracts'
+import type { WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
+import type { Agent } from '@graphql/contracts'
 import { workflowToGraph } from './mapper'
 import { retainArray, sameFields } from './graphReferences'
 import type { GraphMapperOptions, GraphNode, GraphProjection } from './types'
@@ -39,14 +40,14 @@ function retainNode(previous: GraphNode | undefined, next: GraphNode): GraphNode
  * In particular, a runtime-only Agent change does not call workflowToGraph at all.
  */
 export function createGraphTopologyProjector(project = workflowToGraph) {
-  let priorWorkflow: WorkflowDefinition | undefined
+  let priorWorkflow: WorkflowDefinitionV3 | undefined
   let priorActions: GraphTopologyActions | undefined
   let agents: Agent[] = []
   let labels = new Map<string, string | undefined>()
   let graph: GraphProjection = { nodes: [], edges: [] }
   const metadataBySource = new WeakMap<Agent, Agent>()
 
-  return (workflow: WorkflowDefinition, incomingAgents: readonly Agent[], actions: GraphTopologyActions = {}): GraphProjection => {
+  return (workflow: WorkflowDefinitionV3, incomingAgents: readonly Agent[], actions: GraphTopologyActions = {}): GraphProjection => {
     // Pick actions explicitly: structurally assignable wider option objects cannot leak runtime fields.
     const staticActions: GraphTopologyActions = {
       onSelectAgent: actions.onSelectAgent, onOpenNodeSettings: actions.onOpenNodeSettings,

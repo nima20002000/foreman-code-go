@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { GetRunResponse, RunNodeLiveActivity } from '@graphql/contracts'
+import { type RunNodeLiveActivity } from '@graphql/contracts'
+import { type CurrentRunDetails as GetRunResponse } from '@graphql/contracts/wave25'
 import type { NodeProps } from '@xyflow/react'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentNode } from './GraphElements'

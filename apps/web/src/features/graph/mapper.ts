@@ -1,9 +1,7 @@
+import type { WorkflowDefinitionV3, WorkflowNodeV3 } from '@graphql/contracts/wave25'
 import type {
   Agent,
   AgentExecutionState,
-  WorkflowDefinition,
-  WorkflowEdge,
-  WorkflowNode,
   WorkflowRunSummary,
 } from '@graphql/contracts'
 
@@ -51,7 +49,7 @@ function fallbackPosition(index: number): XYPosition {
   }
 }
 
-function workflowNodePosition(node: WorkflowNode, index: number): XYPosition {
+function workflowNodePosition(node: WorkflowNodeV3, index: number): XYPosition {
   return node.position ? { x: node.position.x, y: node.position.y } : fallbackPosition(index)
 }
 
@@ -71,7 +69,7 @@ function rectanglesOverlap(
  * that were moved or resized by the user.
  */
 export function findOpenNodePosition(
-  nodes: readonly WorkflowNode[],
+  nodes: readonly WorkflowNodeV3[],
   anchor: XYPosition,
   width = PLACEMENT_SIZE,
   height = PLACEMENT_SIZE,
@@ -187,12 +185,12 @@ function waitLabel(
   return undefined
 }
 
-function nodeLabel(workflowNode: WorkflowNode, agent: Agent | undefined): string {
+function nodeLabel(workflowNode: WorkflowNodeV3, agent: Agent | undefined): string {
   return workflowNode.name ?? workflowNode.label ?? agent?.name ?? workflowNode.agentId
 }
 
 export function workflowToGraph(
-  { workflow, agents }: { workflow: WorkflowDefinition; agents: readonly Agent[] },
+  { workflow, agents }: { workflow: WorkflowDefinitionV3; agents: readonly Agent[] },
   options: GraphMapperOptions = {},
 ): GraphProjection {
   const agentsById = new Map(agents.map((agent) => [agent.id, agent]))
@@ -272,64 +270,14 @@ export function workflowToGraph(
       source: workflowEdge.source,
       target: workflowEdge.target,
       type: AGENT_HANDOFF_EDGE_TYPE,
-      sourceHandle: workflowEdge.sourceHandle ?? sides.sourceHandle,
-      targetHandle: workflowEdge.targetHandle ?? sides.targetHandle,
+      sourceHandle: sides.sourceHandle,
+      targetHandle: sides.targetHandle,
       label: workflowEdge.label,
-      data: { explanation: 'Sequential handoff', onRemove: options.onRemoveEdge },
+      data: { explanation: workflowEdge.kind === 'approval' ? 'Approval relationship' : 'Execution relationship', onRemove: options.onRemoveEdge },
     }
   })
 
   return { nodes, edges }
-}
-
-function asDomainEdge(edge: GraphEdge, existing?: WorkflowEdge): WorkflowEdge {
-  const label = typeof edge.label === 'string' ? edge.label : existing?.label
-  return {
-    ...existing,
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    ...(edge.sourceHandle === undefined || (existing && existing.sourceHandle == null) ? {} : { sourceHandle: edge.sourceHandle as WorkflowEdge['sourceHandle'] }),
-    ...(edge.targetHandle === undefined || (existing && existing.targetHandle == null) ? {} : { targetHandle: edge.targetHandle as WorkflowEdge['targetHandle'] }),
-    ...(label === undefined ? {} : { label }),
-  }
-}
-
-/**
- * Convert only renderer-owned position and connection fields back to domain
- * data. All workflow metadata and node configuration are copied from the
- * saved definition, so a drag/connect cannot silently drop unrelated fields.
- */
-export function graphToWorkflow(
-  workflow: WorkflowDefinition,
-  nodes: readonly Pick<GraphNode, 'id' | 'position' | 'width' | 'height' | 'measured'>[],
-  edges: readonly Pick<GraphEdge, 'id' | 'source' | 'target' | 'label' | 'sourceHandle' | 'targetHandle'>[],
-): WorkflowDefinition {
-  const positions = new Map(nodes.map((node) => [node.id, node.position]))
-  const sizes = new Map(nodes.map((node) => [
-    node.id,
-    clampNodeSize(
-      node.width ?? node.measured?.width ?? DEFAULT_NODE_WIDTH,
-      node.height ?? node.measured?.height ?? DEFAULT_NODE_HEIGHT,
-    ),
-  ]))
-  const workflowNodes = workflow.nodes.map((node) => {
-    const position = positions.get(node.id)
-    const size = sizes.get(node.id)
-    return {
-      ...node,
-      ...(position ? { position: { x: position.x, y: position.y } } : {}),
-      ...(size ? size : {}),
-    }
-  })
-  const existingEdges = new Map(workflow.edges.map((edge) => [edge.id, edge]))
-  const workflowEdges = edges.map((edge) => asDomainEdge(edge as GraphEdge, existingEdges.get(edge.id)))
-
-  return {
-    ...workflow,
-    nodes: workflowNodes,
-    edges: workflowEdges,
-  }
 }
 
 export function makeSequentialHandoffEdge(source: string, target: string): GraphEdge {
@@ -368,7 +316,7 @@ function stableValue(value: unknown): unknown {
  * that only carries those derived values still compares equal to the saved
  * definition it was projected from.
  */
-export function normalizeWorkflow(workflow: WorkflowDefinition): WorkflowDefinition {
+export function normalizeWorkflow(workflow: WorkflowDefinitionV3): WorkflowDefinitionV3 {
   return {
     ...workflow,
     nodes: workflow.nodes.map((node, index) => ({
@@ -387,15 +335,15 @@ export function normalizeWorkflow(workflow: WorkflowDefinition): WorkflowDefinit
  * serialized with stable key order so an untouched draft never counts as a
  * persisted change.
  */
-export function sameWorkflow(left: WorkflowDefinition, right: WorkflowDefinition): boolean {
+export function sameWorkflow(left: WorkflowDefinitionV3, right: WorkflowDefinitionV3): boolean {
   return JSON.stringify(stableValue(normalizeWorkflow(left)))
     === JSON.stringify(stableValue(normalizeWorkflow(right)))
 }
 
 export function withoutAgentReferences(
-  workflow: WorkflowDefinition,
+  workflow: WorkflowDefinitionV3,
   agentIds: ReadonlySet<string>,
-): WorkflowDefinition {
+): WorkflowDefinitionV3 {
   if (agentIds.size === 0) return workflow
   const removedNodeIds = new Set(
     workflow.nodes.filter((node) => agentIds.has(node.agentId)).map((node) => node.id),
@@ -409,11 +357,11 @@ export function withoutAgentReferences(
 }
 
 export function resizeWorkflowNode(
-  workflow: WorkflowDefinition,
+  workflow: WorkflowDefinitionV3,
   workflowNodeId: string,
   width: number,
   height: number,
-): WorkflowDefinition {
+): WorkflowDefinitionV3 {
   const size = clampNodeSize(width, height)
   return {
     ...workflow,

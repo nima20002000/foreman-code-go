@@ -21,7 +21,7 @@ describe('NIM-2642 typed authoring seams', () => {
     const { context, graph } = moved()
     graph.nodes[0]!.initialPrompt = 'Exact staged prompt'
     const operations = draftOperations(context, graph)
-    expect(operations).toEqual([{ type: 'node.replace_v2', node: { ...graph.nodes[0]!, position: context.draft.graph.nodes[0]!.position } }])
+    expect(operations).toEqual([{ type: 'node.replace_v3', node: { ...graph.nodes[0]!, position: context.draft.graph.nodes[0]!.position } }])
     expect(graph.nodes[0]!.position).toEqual({ x: 700, y: -100 })
   })
   it('uses the existing narrow choice operation when choice and layout change together', () => {

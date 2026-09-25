@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { WorkflowDefinitionV2 } from '@graphql/contracts/wave25'
+import type { WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
 import { ApprovalFields, ChoiceFields, EntryFields, NodeConnections, NodeWorkflowFields, RelationshipFields } from './AuthoringFields'
 import { fixture } from './core.cases'
 import { putRelationship } from './model'
@@ -44,7 +44,7 @@ describe('Agent 6 accessible authoring forms (not browser performance evidence)'
   it('form action deletes only the chosen semantic record', async () => {
     const user = userEvent.setup(), report = vi.fn()
     function Relationships() {
-      const [graph, setGraph] = useState<WorkflowDefinitionV2>(() => putRelationship(fixture().draft.graph,
+      const [graph, setGraph] = useState<WorkflowDefinitionV3>(() => putRelationship(fixture().draft.graph,
         { id: 'approval', source: 'node-0', target: 'node-1', kind: 'approval' }))
       const relationship = graph.edges.find((edge) => edge.id === 'approval')
       return <>{relationship ? <RelationshipFields graph={graph} relationship={relationship} change={setGraph} report={report} /> : null}
@@ -59,7 +59,7 @@ describe('Agent 6 accessible authoring forms (not browser performance evidence)'
   it('lists and removes one agent’s connections and adds one by keyboard', async () => {
     const user = userEvent.setup(), report = vi.fn()
     function Connections() {
-      const [graph, setGraph] = useState<WorkflowDefinitionV2>(() => fixture(['orchestrator', 'coder']).draft.graph)
+      const [graph, setGraph] = useState<WorkflowDefinitionV3>(() => fixture(['orchestrator', 'coder']).draft.graph)
       return <><NodeConnections graph={graph} nodeId="node-0" change={setGraph} report={report} />
         <output data-testid="relationships">{graph.edges.map((edge) => `${edge.kind}:${edge.source}>${edge.target}`).join(',')}</output></>
     }
@@ -76,7 +76,7 @@ describe('Agent 6 accessible authoring forms (not browser performance evidence)'
     const user = userEvent.setup(), report = vi.fn(), context = fixture(['orchestrator', 'coder'])
     let graph = putRelationship(context.draft.graph, { id: 'approval', source: 'node-0', target: 'node-1', kind: 'approval' })
     graph = { ...graph, approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'agent-0' } }
-    const change = vi.fn((update: (value: WorkflowDefinitionV2) => WorkflowDefinitionV2) => { graph = update(graph) })
+    const change = vi.fn((update: (value: WorkflowDefinitionV3) => WorkflowDefinitionV3) => { graph = update(graph) })
     render(<ApprovalFields graph={graph} context={context} change={change} report={report} />)
     await user.selectOptions(screen.getByLabelText('Approval handler'), 'user')
     expect(report).toHaveBeenCalledOnce()

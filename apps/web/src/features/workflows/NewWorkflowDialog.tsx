@@ -3,8 +3,9 @@ import { useRef, useState } from 'react'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 
-import { useQueryClient } from '@tanstack/react-query'
-import type { WorkflowDefinition, WorkspaceDetailsResponse } from '@graphql/contracts'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { type CurrentWorkspaceDetails as WorkspaceDetailsResponse } from '@graphql/contracts/wave25'
+import { type WorkflowDefinitionV3 as WorkflowDefinition } from '@graphql/contracts/wave25'
 import { getWorkspaceDetails } from '../../shared/api/client'
 import { queryKeys, useCreateManagedWorkflowMutation } from '../../shared/api/query'
 import { Button, Dialog, Textarea, TextField } from '../../shared/ui/nocturne'
@@ -28,42 +29,38 @@ export function NewWorkflowDialog({
   const [nameError, setNameError] = useState<string>()
   const [createdWorkflow, setCreatedWorkflow] = useState<WorkflowDefinition>()
   const [openError, setOpenError] = useState<string>()
-  const [opening, setOpening] = useState(false)
   const nameInputRef = useRef<HTMLInputElement>(null)
   const inFlight = useRef(false)
   const created = useRef(false)
   const attempt = useRef(new CommandAttempt<{ workspaceId: string; name: string; description?: string }>())
-  const pending = createManagedWorkflow.isPending || opening
+  const openingMutation = useMutation({ retry: false, mutationFn: async (workflow: WorkflowDefinition) => {
+    const generation = sessionGeneration(), detailsKey = queryKeys.workspaceDetails(workspaceId)
+    await queryClient.cancelQueries({ queryKey: detailsKey })
+    if (!queryClient.getQueryData(detailsKey)) await queryClient.fetchQuery({
+      queryKey: detailsKey, queryFn: ({ signal }) => getWorkspaceDetails({ workspaceId }, { signal }),
+    })
+    assertSession(generation)
+    queryClient.setQueryData<WorkspaceDetailsResponse>(detailsKey, (current) => current && ({
+      ...current, workflows: current.workflows.some((item) => item.id === workflow.id)
+        ? current.workflows.map((item) => item.id === workflow.id ? workflow : item)
+        : [...current.workflows, workflow],
+    }))
+    void queryClient.invalidateQueries({ queryKey: detailsKey, refetchType: 'none' }).catch(() => undefined)
+  } })
+  const pending = createManagedWorkflow.isPending || openingMutation.isPending
   const uncertain = attempt.current.unresolved && !pending
 
   const openCreated = async (workflow: WorkflowDefinition) => {
     if (inFlight.current) return
     inFlight.current = true
-    setOpening(true)
     setOpenError(undefined)
     try {
-      const detailsKey = queryKeys.workspaceDetails(workspaceId)
-      // A pending older read must not replace the accepted create response.
-      await queryClient.cancelQueries({ queryKey: detailsKey })
-      if (!queryClient.getQueryData(detailsKey)) {
-        await queryClient.fetchQuery({
-          queryKey: detailsKey,
-          queryFn: ({ signal }) => getWorkspaceDetails({ workspaceId }, { signal }),
-        })
-      }
-      queryClient.setQueryData<WorkspaceDetailsResponse>(detailsKey, (current) => current && ({
-        ...current,
-        workflows: current.workflows.some((item) => item.id === workflow.id)
-          ? current.workflows.map((item) => item.id === workflow.id ? workflow : item)
-          : [...current.workflows, workflow],
-      }))
-      void queryClient.invalidateQueries({ queryKey: detailsKey, refetchType: 'none' }).catch(() => undefined)
+      await openingMutation.mutateAsync(workflow)
       onCreated(workflow.id)
     } catch {
       setOpenError('Workflow created, but its graph could not be opened. Retry opening it.')
     } finally {
       inFlight.current = false
-      setOpening(false)
     }
   }
 

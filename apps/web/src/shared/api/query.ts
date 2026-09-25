@@ -1,3 +1,4 @@
+import type { CurrentRunDetails, CurrentWorkspaceDetails } from '@graphql/contracts/wave25'
 import {
   useMutation,
   useInfiniteQuery,
@@ -9,20 +10,14 @@ import {
 import type {
   CreateMessageRequest,
   CreateMessageResponse,
-  CreateRunRequest,
-  CreateRunResponse,
   GetConversationResponse,
   GetHarnessDefaultsResponse,
-  GetRunResponse,
-  SaveWorkflowRequest,
-  SaveWorkflowResponse,
   SaveHarnessDefaultsRequest,
   SaveHarnessDefaultsResponse,
-  WorkspaceDetailsResponse,
 } from '@graphql/contracts'
 import type {
   ManagedWorkspace, WorkspaceArchiveInput, WorkspaceCreateInput, WorkspaceUpdateInput,
-  WorkflowArchiveInput, WorkflowCreateInput, WorkflowUpdateInput,
+  WorkflowArchiveInput, WorkflowUpdateInput,
 } from '@graphql/contracts/management'
 
 import {
@@ -37,9 +32,7 @@ import {
   listConversations,
   listMessages,
   listVisibleResources,
-  saveGraph,
   saveHarnessDefaults,
-  startWorkflowRun,
   sendUserMessage,
   listManagedWorkspaces, createManagedWorkspace, updateManagedWorkspace, archiveManagedWorkspace,
   getManagedWorkspace, validateWorkspaceLocation, setWorkspaceLocation,
@@ -100,7 +93,7 @@ type QueryOptions<T> = Omit<UseQueryOptions<T>, 'queryKey' | 'queryFn'>
 
 export function useWorkspaceDetailsQuery(
   workspaceId: string,
-  options?: QueryOptions<WorkspaceDetailsResponse>,
+  options?: QueryOptions<CurrentWorkspaceDetails>,
 ) {
   return useQuery({
     ...options,
@@ -193,7 +186,7 @@ export function useManagedWorkflowsQuery(workspaceId: string, enabled = true) {
 }
 
 export function useCreateManagedWorkflowMutation() {
-  return useMutation({ mutationFn: (input: WorkflowCreateInput) => createManagedWorkflow(input) })
+  return useMutation({ mutationFn: (input: Parameters<typeof createManagedWorkflow>[0]) => createManagedWorkflow(input) })
 }
 
 export function useUpdateManagedWorkflowMutation() {
@@ -434,7 +427,7 @@ export function useWorkflowQuery(
 export function useRunQuery(
   workspaceId: string,
   runId: string,
-  options?: QueryOptions<GetRunResponse>,
+  options?: QueryOptions<CurrentRunDetails>,
 ) {
   return useQuery({
     ...options,
@@ -496,32 +489,6 @@ export function useVisibleResourcesQuery(
     ...options,
     queryKey: queryKeys.resources(workspaceId),
     queryFn: ({ signal }) => listVisibleResources({ workspaceId }, { signal }),
-  })
-}
-
-type SaveGraphMutationOptions = Omit<
-  UseMutationOptions<SaveWorkflowResponse, Error, SaveWorkflowRequest>,
-  'mutationFn'
->
-
-export function useSaveGraphMutation(options?: SaveGraphMutationOptions) {
-  return useMutation({
-    ...options,
-    mutationFn: (input) => saveGraph(input),
-  })
-}
-
-export const useSaveWorkflowMutation = useSaveGraphMutation
-
-type StartRunMutationOptions = Omit<
-  UseMutationOptions<CreateRunResponse, Error, CreateRunRequest>,
-  'mutationFn'
->
-
-export function useStartWorkflowRunMutation(options?: StartRunMutationOptions) {
-  return useMutation({
-    ...options,
-    mutationFn: (input) => startWorkflowRun(input),
   })
 }
 

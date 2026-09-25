@@ -1,8 +1,9 @@
+import { boardStartClient } from '../../workflow-board/startClient'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { GraphEditIntentSchema, type GraphEditReadResult, type GraphEditStageInput } from '@graphql/contracts/wave25'
+import { GraphEditIntentV3Schema, type GraphEditReadResultV3, type GraphEditStageInputV3 } from '@graphql/contracts/wave25'
 import { queryKeys } from '../../../shared/api/query'
 import { useGraphDraftStore } from '../store'
 import { fixture } from './core.cases'
@@ -16,6 +17,11 @@ async function confirmDiscard(user: ReturnType<typeof userEvent.setup>) {
   await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Discard changes' }))
 }
 
+async function confirmStop(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole('button', { name: 'Stop affected Runs and save' }))
+  await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Stop runs and save' }))
+}
+
 // Mounted React state/form tests with a mocked transport and canvas. These do
 // not claim an authenticated browser, React Flow geometry or native Stop test.
 vi.mock('./DraftCanvas', () => ({ DraftCanvas: ({ open, panels }: { open?: { nodeId: string; panel: 'chat' | 'settings' | 'info' }; panels?: (nodeId: string) => Record<string, unknown> }) => <div>Canvas fixture{open && panels
@@ -25,7 +31,7 @@ vi.mock('../../../shared/api/query', async (original) => ({
   useInteractionsQuery: () => ({ data: { items: [] } }),
 }))
 const key = nextDraftKey('workspace', 'workflow')
-const empty: GraphEditReadResult = { intent: null, current: [], canStop: false, affectedSetChanged: false }
+const empty: GraphEditReadResultV3 = { intent: null, current: [], canStop: false, affectedSetChanged: false }
 const clients: QueryClient[] = []
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
@@ -39,12 +45,12 @@ function changeMeaning() {
     nodes: graph.nodes.map((node, index) => index ? node : { ...node, initialPrompt: 'Retained exact instruction', position: { x: 802, y: -71 } }),
   })))
 }
-function staged(request: GraphEditStageInput): GraphEditReadResult {
+function staged(request: GraphEditStageInputV3): GraphEditReadResultV3 {
   const context = fixture(), hash = 'sha256:' + '1'.repeat(64)
   const pins = ['run-one', 'run-two'].map((runId, index) => ({ workspaceId: 'workspace', workflowId: index ? 'shared-workflow' : 'workflow',
-    runId, workflowVersionId: `accepted-${runId}`, executionSemanticsVersion: 2 as const, agentConfigurationVersionIds: { agent: 'accepted-configuration' } }))
+    runId, workflowVersionId: `accepted-${runId}`, executionSemanticsVersion: 3 as const, agentConfigurationVersionIds: { agent: 'accepted-configuration' } }))
   const graph = useGraphDraftStore.getState().nextDrafts[key]!.graph
-  const intent = GraphEditIntentSchema.parse({ id: 'private-intent', ownerPrincipalId: 'principal',
+  const intent = GraphEditIntentV3Schema.parse({ id: 'private-intent', ownerPrincipalId: 'principal',
     workspaceId: request.workspaceId, workflowId: request.workflowId, draftId: request.draftId,
     stageCommandId: request.commandId, stageInputHash: hash,
     advanceCommandId: 'exact-advance', advanceInputHash: hash, discardCommandId: 'exact-discard', discardInputHash: hash,
@@ -52,7 +58,7 @@ function staged(request: GraphEditStageInput): GraphEditReadResult {
     stagedDraft: { ...context.draft, graph }, agentPins: [], affected: pins,
     stops: pins.map((pin) => ({ input: { workspaceId: pin.workspaceId, runId: pin.runId, commandId: `exact-stop-${pin.runId}` }, inputHash: hash })),
     saveInput: { workspaceId: 'workspace', workflowId: 'workflow', draftId: request.draftId,
-      commandId: 'exact-save', expectedRevision: request.expectedRevision, executionSemanticsVersion: 2 },
+      commandId: 'exact-save', expectedRevision: request.expectedRevision, executionSemanticsVersion: 3 },
     saveInputHash: hash, state: 'staged', saveAttempted: false, createdAt: '2026-09-24T00:00:00Z', updatedAt: '2026-09-24T00:00:00Z' })
   return { intent, canStop: true, affectedSetChanged: false, current: pins.map((pin) => ({ pin, terminal: false, settled: false,
     outcome: 'pending', cleanupPending: false, nativePending: true, interactionPending: true, reviewPending: false })) }
@@ -69,7 +75,7 @@ afterEach(() => {
   useGraphDraftStore.getState().clearAllDrafts(); vi.restoreAllMocks(); vi.unstubAllGlobals()
 })
 it('shows both exact board actions; Discard does not Stop, publish, or erase independent layout', async () => {
-  const stage = vi.spyOn(nextDraftApi, 'editStage'), advance = vi.spyOn(nextDraftApi, 'editAdvance'), start = vi.spyOn(nextDraftApi, 'start')
+  const stage = vi.spyOn(nextDraftApi, 'editStage'), advance = vi.spyOn(nextDraftApi, 'editAdvance'), start = vi.spyOn(boardStartClient, 'start')
   const user = userEvent.setup(); mount(); changeMeaning()
   expect(screen.getByRole('button', { name: /^Save changes$/ })).toBeInTheDocument()
   await confirmDiscard(user)
@@ -79,7 +85,7 @@ it('shows both exact board actions; Discard does not Stop, publish, or erase ind
   expect(stage).not.toHaveBeenCalled(); expect(advance).not.toHaveBeenCalled(); expect(start).not.toHaveBeenCalled()
 })
 it('recovers a dropped Stage reply after full form-memory loss and retries the same payload, without Start', async () => {
-  let persisted: GraphEditReadResult = empty
+  let persisted: GraphEditReadResultV3 = empty
   vi.mocked(nextDraftApi.editRead).mockImplementation(async () => persisted)
   const stage = vi.spyOn(nextDraftApi, 'editStage').mockImplementation(async (input) => {
     if (!persisted.intent) { persisted = staged(input); throw new Error('Stage reply lost') }
@@ -88,18 +94,18 @@ it('recovers a dropped Stage reply after full form-memory loss and retries the s
   const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => {
     persisted = { ...persisted, intent: { ...persisted.intent!, state: 'waiting' } }; return persisted
   })
-  const start = vi.spyOn(nextDraftApi, 'start'), user = userEvent.setup(), first = mount()
+  const start = vi.spyOn(boardStartClient, 'start'), user = userEvent.setup(), first = mount()
   changeMeaning()
   await user.click(screen.getByRole('button', { name: /^Save changes$/ }))
   await waitFor(() => expect(stage).toHaveBeenCalledOnce())
-  await waitFor(() => expect(screen.getByRole('button', { name: /^Save changes$/ })).toBeEnabled())
+  await waitFor(() => expect(readEditOutbox(key)).toBeDefined())
   const request = stage.mock.calls[0]![0]
   expect(readEditOutbox(key)?.request).toEqual(request)
   first.unmount()
   // Deliberate memory loss only; logout/clearAllDrafts would correctly purge the session.
   act(() => useGraphDraftStore.setState({ nextDrafts: {} }))
   mount()
-  await user.click(await screen.findByRole('button', { name: /^Save changes$/ }))
+  await confirmStop(user)
   await waitFor(() => expect(advance).toHaveBeenCalledOnce())
   expect(stage.mock.calls[1]![0]).toEqual(request)
   expect(advance.mock.calls[0]![0]).toMatchObject({ intentId: 'private-intent', commandId: 'exact-advance', action: 'stop_and_save' })
@@ -108,14 +114,17 @@ it('recovers a dropped Stage reply after full form-memory loss and retries the s
   expect(start).not.toHaveBeenCalled()
 })
 it('duplicate clicks share one stage/advance; private Discard reconciles without another Stop', async () => {
-  let persisted: GraphEditReadResult = empty
+  let persisted: GraphEditReadResultV3 = empty
   vi.mocked(nextDraftApi.editRead).mockImplementation(async () => persisted)
   const stage = vi.spyOn(nextDraftApi, 'editStage').mockImplementation(async (input) => persisted.intent ? persisted : (persisted = staged(input)))
-  let release!: (value: GraphEditReadResult) => void
+  let release!: (value: GraphEditReadResultV3) => void
   const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => new Promise((resolve) => { release = resolve }))
   const discard = vi.spyOn(nextDraftApi, 'editDiscard').mockImplementation(async () => (persisted = { ...persisted, intent: { ...persisted.intent!, state: 'discarded' } }))
   const user = userEvent.setup(); mount(); changeMeaning()
   await user.dblClick(screen.getByRole('button', { name: /^Save changes$/ }))
+  await waitFor(() => expect(stage).toHaveBeenCalledOnce())
+  expect(advance).not.toHaveBeenCalled()
+  await confirmStop(user)
   await waitFor(() => expect(advance).toHaveBeenCalledOnce())
   expect(stage).toHaveBeenCalledOnce()
   await act(async () => { persisted = { ...persisted, intent: { ...persisted.intent!, state: 'waiting' } }; release(persisted) })

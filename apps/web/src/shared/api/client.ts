@@ -1,9 +1,11 @@
 import {
+  CurrentWorkspaceDetailsSchema, CurrentGetWorkflowResponseSchema, CurrentRunDetailsSchema, CurrentManagedWorkflowCommandResultSchema, CurrentManagedWorkflowPageSchema, GraphDraftV3Schema, GraphDraftCommandV3ResultSchema, GraphSaveCommandV3ResultSchema, GraphDraftApplyV3InputSchema, GraphSaveV3InputSchema, RunStartV3InputSchema, RunStartV3ResultSchema, CurrentWorkflowCreateInputSchema, GraphDraftRevertAppliedV3ResultSchema,
+  type CurrentWorkspaceDetails, type CurrentGetWorkflowResponse, type CurrentRunDetails, type CurrentWorkflowCreateInput,
+} from '@graphql/contracts/wave25'
+import {
   ApiErrorResponseSchema,
   CreateMessageRequestSchema,
   CreateMessageResponseSchema,
-  CreateRunRequestSchema,
-  CreateRunResponseSchema,
   GetAgentRequestSchema,
   GetAgentResponseSchema,
   GetHarnessDefaultsResponseSchema,
@@ -16,9 +18,7 @@ import {
   GetConversationRequestSchema,
   GetConversationResponseSchema,
   GetRunRequestSchema,
-  GetRunResponseSchema,
   GetWorkflowRequestSchema,
-  GetWorkflowResponseSchema,
   ListAgentsRequestSchema,
   ListAgentsResponseSchema,
   ListConversationsRequestSchema,
@@ -36,25 +36,18 @@ import {
   CancelOperatorTurnResponseSchema,
   CancelOperatorTurnRequestSchema,
   RespondOperatorInteractionRequestSchema,
-  SaveWorkflowRequestSchema,
-  SaveWorkflowResponseSchema,
   SaveHarnessDefaultsRequestSchema,
   SaveHarnessDefaultsResponseSchema,
   WorkspaceDetailsRequestSchema,
-  WorkspaceDetailsResponseSchema,
   type CreateMessageRequest,
   type CreateMessageResponse,
-  type CreateRunRequest,
-  type CreateRunResponse,
   type GetAgentRequest,
   type GetAgentResponse,
   type GetHarnessDefaultsResponse,
   type GetConversationRequest,
   type GetConversationResponse,
   type GetRunRequest,
-  type GetRunResponse,
   type GetWorkflowRequest,
-  type GetWorkflowResponse,
   type ListAgentsRequest,
   type ListAgentsResponse,
   type ListConversationsRequest,
@@ -64,12 +57,9 @@ import {
   type ListVisibleResourcesRequest,
   type ListVisibleResourcesResponse,
   type OperatorConversationState,
-  type SaveWorkflowRequest,
-  type SaveWorkflowResponse,
   type SaveHarnessDefaultsRequest,
   type SaveHarnessDefaultsResponse,
   type WorkspaceDetailsRequest,
-  type WorkspaceDetailsResponse,
 } from '@graphql/contracts'
 import { z } from 'zod'
 import { notifyAuthenticationRequired } from './authEvents'
@@ -81,20 +71,11 @@ import {
   ManagedWorkspaceCommandResultSchema,
   ManagedWorkspaceSchema,
   ManagedWorkspacePageSchema,
-  ManagedWorkflowCommandResultSchema,
-  ManagedWorkflowPageSchema,
   ManagedAgentPageSchema,
-  GraphDraftSchema,
-  GraphDraftCommandResultSchema,
-  GraphSaveCommandResultSchema,
-  GraphDraftApplyInputSchema,
   GraphDraftLayoutInputSchema,
   GraphDraftLayoutResultSchema,
   GraphDraftRevertAppliedInputSchema,
-  GraphSaveInputSchema,
   GraphDraftDiscardInputSchema,
-  RunStartInputSchema,
-  RunStartResultSchema,
   RunStopInputSchema,
   RunStopResultSchema,
   HarnessCatalogSchema,
@@ -117,7 +98,6 @@ import {
   WorkspaceLocationValidateInputSchema,
   WorkspaceLocationValidationSchema,
   WorkflowArchiveInputSchema,
-  WorkflowCreateInputSchema,
   WorkflowUpdateInputSchema,
   type WorkspaceArchiveInput,
   type WorkspaceCreateInput,
@@ -125,11 +105,9 @@ import {
   type WorkspaceLocationSetInput,
   type WorkspaceLocationValidateInput,
   type WorkflowArchiveInput,
-  type WorkflowCreateInput,
   type WorkflowUpdateInput,
-  type GraphDraftOperation,
 } from '@graphql/contracts/management'
-import { CompatibleGraphDraftRevertAppliedResultSchema } from '@graphql/contracts/wave25'
+
 
 export type RequestOptions = Omit<RequestInit, 'body' | 'method'> & {
   /** The client uses this signal for query cancellation and component unmounts. */
@@ -366,23 +344,23 @@ export class ApiClient {
   listManagedWorkflows(workspaceId: string, options?: RequestOptions) {
     return collectManagementPages((cursor) => this.request(
       managementPageUrl(`/api/management/workspaces/${toPath(workspaceId)}/workflows`, cursor),
-      ManagedWorkflowPageSchema, options,
+      CurrentManagedWorkflowPageSchema, options,
     ), options?.signal)
   }
 
-  createManagedWorkflow(input: WorkflowCreateInput, options?: RequestOptions) {
-    const request = parseRequest(WorkflowCreateInputSchema, input)
-    return this.request(`/api/management/workspaces/${toPath(request.workspaceId)}/workflows`, ManagedWorkflowCommandResultSchema, { ...options, method: 'POST', body: request })
+  createManagedWorkflow(input: Omit<CurrentWorkflowCreateInput, 'executionSemanticsVersion'> & { executionSemanticsVersion?: 3 }, options?: RequestOptions) {
+    const request = parseRequest(CurrentWorkflowCreateInputSchema, { executionSemanticsVersion: 3, ...input })
+    return this.request(`/api/management/workspaces/${toPath(request.workspaceId)}/workflows`, CurrentManagedWorkflowCommandResultSchema, { ...options, method: 'POST', body: request })
   }
 
   updateManagedWorkflow(input: WorkflowUpdateInput, options?: RequestOptions) {
     const request = parseRequest(WorkflowUpdateInputSchema, input)
-    return this.request(`/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}`, ManagedWorkflowCommandResultSchema, { ...options, method: 'PATCH', body: request })
+    return this.request(`/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}`, CurrentManagedWorkflowCommandResultSchema, { ...options, method: 'PATCH', body: request })
   }
 
   archiveManagedWorkflow(input: WorkflowArchiveInput, options?: RequestOptions) {
     const request = parseRequest(WorkflowArchiveInputSchema, input)
-    return this.request(`/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}`, ManagedWorkflowCommandResultSchema, { ...options, method: 'DELETE', body: request })
+    return this.request(`/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}`, CurrentManagedWorkflowCommandResultSchema, { ...options, method: 'DELETE', body: request })
   }
 
   listManagedAgents(workspaceId: string, options?: RequestOptions) {
@@ -406,19 +384,16 @@ export class ApiClient {
   openManagedGraphDraft(workspaceId: string, workflowId: string, options?: RequestOptions) {
     return this.request(
       `/api/management/workspaces/${toPath(workspaceId)}/workflows/${toPath(workflowId)}/drafts`,
-      GraphDraftSchema,
+      GraphDraftV3Schema,
       { ...options, method: 'POST' },
     )
   }
 
-  applyManagedGraphDraft(input: {
-    workspaceId: string; workflowId: string; draftId: string; commandId: string;
-    expectedRevision: number; operations: GraphDraftOperation[]
-  }, options?: RequestOptions) {
-    const request = parseRequest(GraphDraftApplyInputSchema, input)
+  applyManagedGraphDraft(input: z.input<typeof GraphDraftApplyV3InputSchema>, options?: RequestOptions) {
+    const request = parseRequest(GraphDraftApplyV3InputSchema, input)
     return this.request(
       `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/drafts/${toPath(request.draftId)}/operations`,
-      GraphDraftCommandResultSchema,
+      GraphDraftCommandV3ResultSchema,
       { ...options, method: 'POST', body: request },
     )
   }
@@ -436,16 +411,16 @@ export class ApiClient {
     const request = parseRequest(GraphDraftRevertAppliedInputSchema, input)
     return this.request(
       `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/drafts/${toPath(request.draftId)}/revert-applied`,
-      CompatibleGraphDraftRevertAppliedResultSchema,
+      GraphDraftRevertAppliedV3ResultSchema,
       { ...options, method: 'POST', body: request },
     )
   }
 
-  saveManagedGraphDraft(input: { workspaceId: string; workflowId: string; draftId: string; commandId: string; expectedRevision: number }, options?: RequestOptions) {
-    const request = parseRequest(GraphSaveInputSchema, input)
+  saveManagedGraphDraft(input: z.input<typeof GraphSaveV3InputSchema>, options?: RequestOptions) {
+    const request = parseRequest(GraphSaveV3InputSchema, input)
     return this.request(
       `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/drafts/${toPath(request.draftId)}/save`,
-      GraphSaveCommandResultSchema,
+      GraphSaveCommandV3ResultSchema,
       { ...options, method: 'POST', body: request },
     )
   }
@@ -459,11 +434,11 @@ export class ApiClient {
     )
   }
 
-  startManagedRun(input: z.input<typeof RunStartInputSchema>, options?: RequestOptions) {
-    const request = parseRequest(RunStartInputSchema, input)
+  startManagedRun(input: z.input<typeof RunStartV3InputSchema>, options?: RequestOptions) {
+    const request = parseRequest(RunStartV3InputSchema, input)
     return this.request(
       `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/runs`,
-      RunStartResultSchema,
+      RunStartV3ResultSchema,
       { ...options, method: 'POST', body: request },
     )
   }
@@ -536,9 +511,9 @@ export class ApiClient {
 
   getWorkspaceDetails(input: WorkspaceDetailsRequest, options?: RequestOptions) {
     const request = parseRequest(WorkspaceDetailsRequestSchema, input)
-    return this.request<WorkspaceDetailsResponse>(
+    return this.request<CurrentWorkspaceDetails>(
       `/api/workspaces/${toPath(request.workspaceId)}`,
-      WorkspaceDetailsResponseSchema,
+      CurrentWorkspaceDetailsSchema,
       options,
     )
   }
@@ -584,46 +559,18 @@ export class ApiClient {
 
   getWorkflow(input: GetWorkflowRequest, options?: RequestOptions) {
     const request = parseRequest(GetWorkflowRequestSchema, input)
-    return this.request<GetWorkflowResponse>(
+    return this.request<CurrentGetWorkflowResponse>(
       `/api/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}`,
-      GetWorkflowResponseSchema,
+      CurrentGetWorkflowResponseSchema,
       options,
-    )
-  }
-
-  saveWorkflow(input: SaveWorkflowRequest, options?: RequestOptions) {
-    const request = parseRequest(SaveWorkflowRequestSchema, input)
-    return this.request<SaveWorkflowResponse>(
-      `/api/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflow.id)}`,
-      SaveWorkflowResponseSchema,
-      { ...options, method: 'PUT', body: request },
-    )
-  }
-
-  /** Alias used by the graph editor; graph persistence remains an ordinary HTTP mutation. */
-  saveGraph(input: SaveWorkflowRequest, options?: RequestOptions) {
-    const request = parseRequest(SaveWorkflowRequestSchema, input)
-    return this.request<SaveWorkflowResponse>(
-      `/api/workspaces/${toPath(request.workspaceId)}/graph`,
-      SaveWorkflowResponseSchema,
-      { ...options, method: 'PUT', body: request },
-    )
-  }
-
-  startWorkflowRun(input: CreateRunRequest, options?: RequestOptions) {
-    const request = parseRequest(CreateRunRequestSchema, input)
-    return this.request<CreateRunResponse>(
-      `/api/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/runs`,
-      CreateRunResponseSchema,
-      { ...options, method: 'POST', body: request },
     )
   }
 
   getRun(input: GetRunRequest, options?: RequestOptions) {
     const request = parseRequest(GetRunRequestSchema, input)
-    return this.request<GetRunResponse>(
+    return this.request<CurrentRunDetails>(
       `/api/workspaces/${toPath(request.workspaceId)}/runs/${toPath(request.runId)}`,
-      GetRunResponseSchema,
+      CurrentRunDetailsSchema,
       options,
     )
   }
@@ -726,9 +673,6 @@ export const saveHarnessDefaults = apiClient.saveHarnessDefaults.bind(apiClient)
 export const listAgents = apiClient.listAgents.bind(apiClient)
 export const getAgent = apiClient.getAgent.bind(apiClient)
 export const getWorkflow = apiClient.getWorkflow.bind(apiClient)
-export const saveWorkflow = apiClient.saveWorkflow.bind(apiClient)
-export const saveGraph = apiClient.saveGraph.bind(apiClient)
-export const startWorkflowRun = apiClient.startWorkflowRun.bind(apiClient)
 export const getRun = apiClient.getRun.bind(apiClient)
 export const listOperatorConversations = apiClient.listOperatorConversations.bind(apiClient)
 export const createOperatorConversation = apiClient.createOperatorConversation.bind(apiClient)

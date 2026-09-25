@@ -1,19 +1,19 @@
 import { useId, useState } from 'react'
-import type { WorkflowDefinitionV2, WorkflowRelationship } from '@graphql/contracts/wave25'
+import type { WorkflowDefinitionV3, WorkflowRelationship } from '@graphql/contracts/wave25'
 import type { DraftAgentEdits } from './agentEdits'
 import { attachAgent, changeApprovalHandler, entryChoices, nodeTitle, putRelationship,
   removeRelationship, roleEvidence, type DraftNode, type NextDraftContext } from './model'
 import { Button, Icon, IconButton, SegmentedControl, Select, Switch, TextField, type SelectOption } from '../../../shared/ui/nocturne'
 
-export type EditGraph = (update: (graph: WorkflowDefinitionV2) => WorkflowDefinitionV2) => void
-function nodeOptions(graph: WorkflowDefinitionV2, except?: string): SelectOption[] {
+export type EditGraph = (update: (graph: WorkflowDefinitionV3) => WorkflowDefinitionV3) => void
+function nodeOptions(graph: WorkflowDefinitionV3, except?: string): SelectOption[] {
   return graph.nodes.filter((node) => node.id !== except).map((node) => ({ value: node.id, label: nodeTitle(graph, node.id) }))
 }
 function changeNode(change: EditGraph, nodeId: string, update: (node: DraftNode) => DraftNode) {
   change((graph) => ({ ...graph, nodes: graph.nodes.map((node) => node.id === nodeId ? update(node) : node) }))
 }
 
-export function EntryFields({ graph, context, change, agentEdits }: { graph: WorkflowDefinitionV2; context: NextDraftContext; change: EditGraph; agentEdits?: DraftAgentEdits }) {
+export function EntryFields({ graph, context, change, agentEdits }: { graph: WorkflowDefinitionV3; context: NextDraftContext; change: EditGraph; agentEdits?: DraftAgentEdits }) {
   const choices = entryChoices(graph, context, agentEdits), id = useId()
   return <section aria-labelledby={id} className="next-draft-section">
     <h3 id={id}>Starting agent</h3>
@@ -27,7 +27,7 @@ export function EntryFields({ graph, context, change, agentEdits }: { graph: Wor
   </section>
 }
 
-export function ApprovalFields({ graph, context, change, report, agentEdits }: { graph: WorkflowDefinitionV2; context: NextDraftContext; change: EditGraph; report: (error: unknown) => void; agentEdits?: DraftAgentEdits }) {
+export function ApprovalFields({ graph, context, change, report, agentEdits }: { graph: WorkflowDefinitionV3; context: NextDraftContext; change: EditGraph; report: (error: unknown) => void; agentEdits?: DraftAgentEdits }) {
   return <section className="next-draft-section" aria-label="Approval handling">
     <h3>Approvals</h3>
     <Select label="Approval handler" value={graph.approval?.handler ?? ''} onChange={(event) => {
@@ -45,7 +45,7 @@ export function ApprovalFields({ graph, context, change, report, agentEdits }: {
   </section>
 }
 
-export function AttachAgentField({ graph, context, change, report }: { graph: WorkflowDefinitionV2; context: NextDraftContext; change: EditGraph; report: (error: unknown) => void }) {
+export function AttachAgentField({ graph, context, change, report }: { graph: WorkflowDefinitionV3; context: NextDraftContext; change: EditGraph; report: (error: unknown) => void }) {
   const [agentId, setAgentId] = useState('')
   const available = context.agents.filter((record) => !record.archivedAt && record.agent.configurationVersionId
     && record.agent.productRole && !graph.nodes.some((node) => node.agentId === record.agent.id))
@@ -69,7 +69,7 @@ export function AttachAgentField({ graph, context, change, report }: { graph: Wo
 }
 
 /** The node's place in this workflow: whether it starts it and where its result goes. */
-export function NodeWorkflowFields({ graph, node, context, change, agentEdits }: { graph: WorkflowDefinitionV2; node: DraftNode; context: NextDraftContext; change: EditGraph; agentEdits?: DraftAgentEdits }) {
+export function NodeWorkflowFields({ graph, node, context, change, agentEdits }: { graph: WorkflowDefinitionV3; node: DraftNode; context: NextDraftContext; change: EditGraph; agentEdits?: DraftAgentEdits }) {
   const choices = entryChoices(graph, context, agentEdits)
   const eligible = choices.eligible.some((item) => item.id === node.id)
   const starts = graph.entryNodeId === node.id
@@ -82,7 +82,7 @@ export function NodeWorkflowFields({ graph, node, context, change, agentEdits }:
   </section>
 }
 
-export function ChoiceFields({ graph, node, change }: { graph: WorkflowDefinitionV2; node: DraftNode; change: EditGraph }) {
+export function ChoiceFields({ graph, node, change }: { graph: WorkflowDefinitionV3; node: DraftNode; change: EditGraph }) {
   const outgoing = graph.edges.filter((edge) => edge.kind === 'execution' && edge.source === node.id)
   const outcomes = node.choice?.outcomes ?? []
   const setOutcomes = (update: (items: typeof outcomes) => typeof outcomes) => changeNode(change, node.id, (value) => ({ ...value, choice: { outcomes: update(value.choice?.outcomes ?? []) } }))
@@ -116,7 +116,7 @@ export function ChoiceFields({ graph, node, change }: { graph: WorkflowDefinitio
   </fieldset>
 }
 
-export function RelationshipFields({ graph, relationship, change, report }: { graph: WorkflowDefinitionV2; relationship: WorkflowRelationship; change: EditGraph; report: (error: unknown) => void }) {
+export function RelationshipFields({ graph, relationship, change, report }: { graph: WorkflowDefinitionV3; relationship: WorkflowRelationship; change: EditGraph; report: (error: unknown) => void }) {
   const put = (update: Partial<WorkflowRelationship>) => {
     try { change((value) => putRelationship(value, { ...relationship, ...update })) } catch (error) { report(error) }
   }
@@ -131,7 +131,7 @@ export function RelationshipFields({ graph, relationship, change, report }: { gr
 }
 
 /** Connections to and from one agent, with a keyboard way to add one (dragging from the rim port also works). */
-export function NodeConnections({ graph, nodeId, change, report }: { graph: WorkflowDefinitionV2; nodeId: string; change: EditGraph; report: (error: unknown) => void }) {
+export function NodeConnections({ graph, nodeId, change, report }: { graph: WorkflowDefinitionV3; nodeId: string; change: EditGraph; report: (error: unknown) => void }) {
   const [target, setTarget] = useState(''), [kind, setKind] = useState<WorkflowRelationship['kind']>('execution')
   const related = graph.edges.filter((edge) => edge.source === nodeId || edge.target === nodeId)
   return <section className="next-draft-section" aria-label="Connections">

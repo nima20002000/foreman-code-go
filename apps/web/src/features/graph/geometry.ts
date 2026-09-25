@@ -1,4 +1,3 @@
-import type { WorkflowDefinition } from '@graphql/contracts'
 import type { NodeChange } from '@xyflow/react'
 import type { GraphNode } from './types'
 import { GRAPH_NODE_MIN_WIDTH, GRAPH_NODE_MAX_WIDTH, GRAPH_NODE_MIN_HEIGHT, GRAPH_NODE_MAX_HEIGHT } from './mapper'
@@ -19,7 +18,7 @@ function size(width: number, height: number) {
 }
 
 /** Apply geometry only. Never replace metadata/edges or resurrect a remotely removed node. */
-export function applyGraphGeometry(workflow: WorkflowDefinition, changes: readonly GraphGeometryChange[]): WorkflowDefinition {
+export function applyGraphGeometry<T extends { nodes: readonly { id: string; position?: { x: number; y: number }; width?: number; height?: number }[] }>(workflow: T, changes: readonly GraphGeometryChange[]): T {
   const byId = new Map(changes.map((change) => [change.id, change]))
   let changed = false
   const nodes = workflow.nodes.map((node) => {

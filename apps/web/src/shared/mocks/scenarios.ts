@@ -1,25 +1,5 @@
-import {
-  DEFAULT_AGENT_DEFAULTS,
-  DEFAULT_HARNESS_DEFAULTS,
-  DEFAULT_WORKFLOW_APPROVAL_HANDLER,
-  AgentStatusSchema,
-  ApiErrorResponseSchema,
-  ScenarioIdSchema,
-  type AgentStatus,
-  type Agent,
-  type AgentDefaults,
-  type HarnessDefaults,
-  type BrowserProfileSummary,
-  type Conversation,
-  type Message,
-  type ResourceSummary,
-  type RunnerSummary,
-  type ScenarioId,
-  type WorkflowDefinition,
-  type WorkflowDefaults,
-  type WorkflowRunSummary,
-  type WorkspaceDetails,
-} from '@graphql/contracts'
+import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, DEFAULT_WORKFLOW_APPROVAL_HANDLER, AgentStatusSchema, ApiErrorResponseSchema, ScenarioIdSchema, type AgentStatus, type Agent, type AgentDefaults, type HarnessDefaults, type BrowserProfileSummary, type Conversation, type Message, type ResourceSummary, type RunnerSummary, type ScenarioId, type WorkflowDefaults, type WorkflowRunSummary } from '@graphql/contracts'
+import { type WorkflowDefinitionV3 as WorkflowDefinition, type CurrentWorkspaceDetails as WorkspaceDetails } from '@graphql/contracts/wave25'
 
 export const MOCK_SCENARIOS = [
   'normal',
@@ -126,6 +106,8 @@ const workflow: WorkflowDefinition = {
   workspaceId: 'workspace-1',
   name: 'Research to review',
   description: 'A visible hand-off from research to implementation to review.',
+  executionSemanticsVersion: 3, entryNodeId: 'node-researcher',
+  approval: { handler: 'user' }, executionPolicy: { maxParallelism: 4, maxNodeExecutions: 24 },
   executionCondition: { kind: 'manual', description: 'Started by the operator.' },
   nodes: [
     { id: 'node-researcher', agentId: 'agent-researcher', name: 'Researcher', position: { x: 120, y: 160 } },
@@ -133,8 +115,8 @@ const workflow: WorkflowDefinition = {
     { id: 'node-reviewer', agentId: 'agent-reviewer', name: 'Reviewer', position: { x: 680, y: 160 } },
   ],
   edges: [
-    { id: 'edge-researcher-developer', source: 'node-researcher', target: 'node-developer' },
-    { id: 'edge-developer-reviewer', source: 'node-developer', target: 'node-reviewer' },
+    { id: 'edge-researcher-developer', kind: 'execution', source: 'node-researcher', target: 'node-developer' },
+    { id: 'edge-developer-reviewer', kind: 'execution', source: 'node-developer', target: 'node-reviewer' },
   ],
   version: 1,
   createdAt: now,
@@ -228,7 +210,11 @@ const baseFixture: MockFixture = {
     createdAt: now,
     updatedAt: now,
   },
-  agents: agents.map((agent) => ({ ...agent, status: 'available' as const, executionState: 'available' as const })),
+  agents: agents.map((agent) => ({ ...agent, productRole: 'coder' as const,
+    configurationVersionId: `configuration-${agent.id}-1`, harness: 'codex' as const,
+    harnessConfiguration: { harness: 'codex' as const, model: 'synthetic-no-native-call', reasoningEffort: 'low' as const,
+      sandbox: 'read-only' as const, serviceTier: 'standard' as const }, prompt: {}, assignedSkills: [],
+    status: 'available' as const, executionState: 'available' as const })),
   workflows: [workflow],
   runs: [run],
   resources,

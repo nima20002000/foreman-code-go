@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import type { WorkflowDefinition } from '@graphql/contracts'
+import { type WorkflowDefinitionV3 as WorkflowDefinition } from '@graphql/contracts/wave25'
 
 import { useInteractionsQuery, useManagedWorkflowsQuery } from '../../shared/api/query'
 import { Badge } from '../../shared/ui/nocturne'

@@ -1,23 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { GraphDraftV2Schema, GraphDraftApplyV2InputSchema, WorkflowChoiceSchema,
-  WorkflowVersionV2Schema, ChoiceResultEnvelopeSchema } from '@graphql/contracts/wave25'
+import { GraphDraftV3Schema, GraphDraftApplyV3InputSchema, WorkflowChoiceSchema,
+  WorkflowVersionV3Schema, ChoiceResultEnvelopeSchema } from '@graphql/contracts/wave25'
 import { fixture } from './core.cases'
 import { draftOperations, removeRelationship } from './model'
 
 function version() {
   const { draft } = fixture()
   return { id: 'workflow-version-1', workspaceId: draft.workspaceId, workflowId: draft.workflowId,
-    version: 1, entryNodeId: 'node-0', executionSemanticsVersion: 2 as const, definition: draft.graph,
+    version: 1, entryNodeId: 'node-0', executionSemanticsVersion: 3 as const, definition: draft.graph,
     agentConfigurationVersionIds: { 'agent-0': 'configuration-0', 'agent-1': 'configuration-1' },
     approval: { handler: 'user' as const }, contentHash: 'fixture-not-production', createdAt: '2026-09-22T00:00:00Z' }
 }
 describe('Agent 6 consumes frozen S2 schemas without a private contract', () => {
   it('fixture draft and generated typed removal operations round-trip', () => {
     const context = fixture()
-    GraphDraftV2Schema.parse(context.draft)
+    GraphDraftV3Schema.parse(context.draft)
     const graph = removeRelationship(context.draft.graph, 'execution-1')
     const operations = draftOperations(context, graph)
-    expect(GraphDraftApplyV2InputSchema.parse({ executionSemanticsVersion: 2,
+    expect(GraphDraftApplyV3InputSchema.parse({ executionSemanticsVersion: 3,
       workspaceId: 'workspace', workflowId: 'workflow', draftId: 'draft', commandId: 'typed-removal-fixture', expectedRevision: 7, operations }).operations).toEqual(operations)
   })
   it('accepts an explicit branch end but rejects an incomplete or duplicate outcome', () => {
@@ -33,12 +33,12 @@ describe('Agent 6 consumes frozen S2 schemas without a private contract', () => 
     expect(ChoiceResultEnvelopeSchema.safeParse({ routing: { outcome: 'approved' }, data: {}, expression: 'true' }).success).toBe(false)
   })
   it('entry dependency, cycle and dangling choice targets fail immutable acceptance', () => {
-    expect(WorkflowVersionV2Schema.safeParse(version()).success).toBe(true)
+    expect(WorkflowVersionV3Schema.safeParse(version()).success).toBe(true)
     const dependency = version()
     dependency.definition.edges.push({ id: 'cycle', source: 'node-1', target: 'node-0', kind: 'execution' })
-    expect(WorkflowVersionV2Schema.safeParse(dependency).success).toBe(false)
+    expect(WorkflowVersionV3Schema.safeParse(dependency).success).toBe(false)
     const dangling = version()
     dangling.definition.nodes[0]!.choice = { outcomes: [{ outcome: 'selected', target: { kind: 'edge', relationshipId: 'missing' } }] }
-    expect(WorkflowVersionV2Schema.safeParse(dangling).success).toBe(false)
+    expect(WorkflowVersionV3Schema.safeParse(dangling).success).toBe(false)
   })
 })

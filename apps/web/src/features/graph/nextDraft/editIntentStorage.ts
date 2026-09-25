@@ -1,8 +1,9 @@
+import { LocalWorkflowFormSchema } from './localGraph'
 import { z } from 'zod'
 import { AgentSchema } from '@graphql/contracts'
 import { ManagedAgentSchema } from '@graphql/contracts/management'
-import { GraphDraftV2Schema, GraphEditStageInputSchema, WorkflowDefinitionV2Schema, sameExecutableWorkflow, sameWorkflowValue,
-  type GraphEditIntent, type GraphEditStageInput } from '@graphql/contracts/wave25'
+import { GraphDraftV3Schema, GraphEditStageInputV3Schema, WorkflowDefinitionV3Schema, sameExecutableWorkflow, sameWorkflowValue,
+  type GraphEditIntentV3, type GraphEditStageInputV3 } from '@graphql/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
 import { assertSession, sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../../shared/api/sessionBoundary'
@@ -10,11 +11,11 @@ import { nextDraftKey, type NextDraftEdit } from './state'
 
 const prefix = 'graph-edit-intent:'
 const SnapshotSchema = z.object({
-  context: z.object({ draft: GraphDraftV2Schema, agents: z.array(ManagedAgentSchema) }).strict(),
-  graph: WorkflowDefinitionV2Schema, agentEdits: z.record(z.string(), AgentSchema).optional(),
+  context: z.object({ draft: GraphDraftV3Schema, agents: z.array(ManagedAgentSchema) }).strict(),
+  graph: LocalWorkflowFormSchema, agentEdits: z.record(z.string(), AgentSchema).optional(),
   acknowledgedStageCommands: z.array(z.string()).optional(), submittedStageCommands: z.array(z.string()).optional(),
 }).strict()
-const OutboxSchema = z.object({ request: GraphEditStageInputSchema, target: WorkflowDefinitionV2Schema,
+const OutboxSchema = z.object({ request: GraphEditStageInputV3Schema, target: WorkflowDefinitionV3Schema,
   agentTarget: z.record(z.string(), AgentSchema).optional() }).strict()
 export type EditIntentOutbox = z.infer<typeof OutboxSchema>
 const storageFailure = 'Durable edit storage is unavailable. Edits remain in this tab; no Stop or save will be sent until storage is restored.'
@@ -162,7 +163,7 @@ function markSubmittedSnapshots(scope: string, value: EditIntentOutbox): void {
     try { const snapshot = read(name, SnapshotSchema); if (snapshot) mark(name, snapshot) } catch { /* fail closed for that sibling */ }
   }
 }
-export function matchesEditIntent(value: EditIntentOutbox, intent: GraphEditIntent): boolean {
+export function matchesEditIntent(value: EditIntentOutbox, intent: GraphEditIntentV3): boolean {
   const request = value.request
   return request.workspaceId === intent.workspaceId && request.workflowId === intent.workflowId
     && value.target.workspaceId === intent.workspaceId && value.target.id === intent.workflowId
@@ -171,7 +172,7 @@ export function matchesEditIntent(value: EditIntentOutbox, intent: GraphEditInte
 }
 /** Call only with authenticated, scope-checked readback. Local evidence supplies
  * the submitted form, never the terminal state, result, or authority. */
-export function readEditSubmission(scope: string, intent: GraphEditIntent): EditIntentOutbox | undefined {
+export function readEditSubmission(scope: string, intent: GraphEditIntentV3): EditIntentOutbox | undefined {
   assertScope(scope, intent.workspaceId, intent.workflowId)
   const value = read(submissionKey(scope, intent.stageCommandId), OutboxSchema)
   if (value) {
@@ -215,7 +216,7 @@ export function isDefinitiveStageRejection(error: unknown): boolean {
 }
 /** Call only for the exact editStage failure, under the same session/scope lock.
  * Releasing a rejected reservation never discards or rewrites the local form. */
-export function rejectEditOutbox(scope: string, request: GraphEditStageInput, error: unknown): boolean {
+export function rejectEditOutbox(scope: string, request: GraphEditStageInputV3, error: unknown): boolean {
   if (!isDefinitiveStageRejection(error)) return false
   const existing = readEditOutbox(scope)
   if (!existing) return false
@@ -223,7 +224,7 @@ export function rejectEditOutbox(scope: string, request: GraphEditStageInput, er
   removeEditOutbox(scope, request.commandId)
   return true
 }
-export function sameStageRequest(left: GraphEditStageInput, right: GraphEditStageInput) {
+export function sameStageRequest(left: GraphEditStageInputV3, right: GraphEditStageInputV3) {
   return sameWorkflowValue({ ...left, commandId: null }, { ...right, commandId: null })
 }
 export async function withEditIntentLock<T>(scope: string, work: () => Promise<T>): Promise<T> {

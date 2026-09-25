@@ -1,5 +1,5 @@
 import { acknowledgeAgentEdits, hasAgentEdits } from './agentEdits'
-import type { WorkflowDefinitionV2 } from '@graphql/contracts/wave25'
+import type { WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
 import { draftOperations, hasLocalChanges, mergeAcknowledgement, type AuthoringIssue } from './model'
 import type { DraftFailure, DraftRequest, NextDraftEdit } from './state'
 import type { NextDraftApi } from './transport'
@@ -33,7 +33,7 @@ export function draftFailure(error: unknown, commandMayHaveRun: boolean): DraftF
 export function createNextDraftWriter(
   api: NextDraftApi,
   access: DraftAccess,
-  validateSubmission: (graph: WorkflowDefinitionV2, operations: unknown[]) => void,
+  validateSubmission: (graph: WorkflowDefinitionV3, operations: unknown[]) => void,
   commandId: () => string = () => crypto.randomUUID(),
   captureSession: () => () => void = () => () => undefined,
 ) {
@@ -86,7 +86,7 @@ export function createNextDraftWriter(
               }
               const base = edit.context.draft
               const scope = { commandId: commandId(), workspaceId: base.workspaceId, workflowId: base.workflowId,
-                draftId: base.id, expectedRevision: base.revision, executionSemanticsVersion: 2 as const }
+                draftId: base.id, expectedRevision: base.revision, executionSemanticsVersion: 3 as const }
               request = plan.operations.length
                 ? { kind: 'apply', ...scope, operations: plan.operations.slice(0, 100) }
                 : { kind: 'save', ...scope }

@@ -2,11 +2,11 @@ import {
   REPEAT_CONTRACT_VERSION,
   RepeatBlockV1Schema,
   RepeatPlanV1Schema,
-  WorkflowDefinitionV2Schema,
+  CurrentWorkflowDefinitionBaseSchema,
   canonicalGraphJson,
   type RepeatBlockV1,
   type RepeatPlanV1,
-  type WorkflowDefinitionV2,
+  type WorkflowDefinitionV3,
 } from '@graphql/contracts/wave25'
 
 export type RepeatLocalBlockDraft = {
@@ -42,14 +42,14 @@ export function localDraftFromPlan(plan: RepeatPlanV1 | null | undefined): Repea
   } : emptyRepeatDraft()
 }
 
-function exitTargets(graph: WorkflowDefinitionV2, block: RepeatLocalBlockDraft) {
+function exitTargets(graph: WorkflowDefinitionV3, block: RepeatLocalBlockDraft) {
   const choice = graph.nodes.find((node) => node.id === block.exitNodeId)?.choice
   const repeat = choice?.outcomes.find((item) => item.outcome === block.repeatOutcome)
   return { choice, repeat }
 }
 
 /** Build the shared contract shape. The backend remains authoritative for full candidate-version validation. */
-export function repeatPlanFromLocalDraft(draft: RepeatLocalDraft, graph: WorkflowDefinitionV2): RepeatPlanV1 | null {
+export function repeatPlanFromLocalDraft(draft: RepeatLocalDraft, graph: WorkflowDefinitionV3): RepeatPlanV1 | null {
   const blocks: RepeatBlockV1[] = []
   for (const block of draft.blocks) {
     const { repeat } = exitTargets(graph, block)
@@ -66,9 +66,11 @@ export function repeatPlanFromLocalDraft(draft: RepeatLocalDraft, graph: Workflo
  * UI preflight only. It mirrors the frozen A0 shape rules so users get immediate explanations,
  * but save/admission must still run RepeatWorkflowVersionV1Schema and authenticated domain checks.
  */
-export function validateRepeatDraft(draft: RepeatLocalDraft, graphValue: WorkflowDefinitionV2): RepeatValidationIssue[] {
+export function validateRepeatDraft(draft: RepeatLocalDraft, graphValue: WorkflowDefinitionV3): RepeatValidationIssue[] {
   const issues: RepeatValidationIssue[] = []
-  const graph = WorkflowDefinitionV2Schema.safeParse(graphValue)
+  const { repeat: _repeat, ...ordinary } = graphValue
+  void _repeat
+  const graph = CurrentWorkflowDefinitionBaseSchema.safeParse(ordinary)
   if (!graph.success) {
     issues.push({ code: 'REPEAT_GRAPH_UNSUPPORTED', message: 'Repeats require the existing acyclic workflow graph. Back-edges and arbitrary cycles stay unsupported.' })
     return issues
@@ -145,7 +147,7 @@ export function validateRepeatDraft(draft: RepeatLocalDraft, graphValue: Workflo
   if (!Number.isSafeInteger(requiredExecutions) || (graph.data.executionPolicy?.maxNodeExecutions ?? 0) < requiredExecutions) {
     issues.push({ code: 'REPEAT_EXECUTION_BUDGET_INSUFFICIENT', message: `Execution policy must allow at least ${requiredExecutions} node executions for this repeat plan.` })
   }
-  if (!repeatPlanFromLocalDraft(draft, graph.data) && !issues.length) {
+  if (!repeatPlanFromLocalDraft(draft, graphValue) && !issues.length) {
     issues.push({ code: 'REPEAT_PLAN_INVALID', message: 'The repeat definition is incomplete or unsupported by contract v1.' })
   }
   return issues
@@ -155,7 +157,7 @@ export function repeatDraftEqual(left: RepeatLocalDraft, right: RepeatLocalDraft
   return canonicalGraphJson(left) === canonicalGraphJson(right)
 }
 
-export function blockOutcomeOptions(graph: WorkflowDefinitionV2, exitNodeId: string) {
+export function blockOutcomeOptions(graph: WorkflowDefinitionV3, exitNodeId: string) {
   return graph.nodes.find((node) => node.id === exitNodeId)?.choice?.outcomes.map((item) => item.outcome) ?? []
 }
 

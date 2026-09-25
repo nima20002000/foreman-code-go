@@ -1,19 +1,18 @@
 import { useCallback, useEffect } from 'react'
 import { useLocation, useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import type { WorkspaceDetailsResponse } from '@graphql/contracts'
-import { boardSearchForInspection, type WorkspaceBoardInspection, boardSearchForRun, resolveWorkflowBoardLocation, type RunGraphScope, type WorkflowBoardLocation } from '@graphql/contracts/wave25'
+import type { CurrentWorkspaceDetails } from '@graphql/contracts/wave25'
+import { boardSearchForInspection, type WorkspaceBoardInspection, boardSearchForRun, resolveWorkflowBoardLocation, type RepeatGraphScopeV3, type WorkflowBoardLocation } from '@graphql/contracts/wave25'
 import { Button, ErrorState } from '../shared/ui/nocturne'
-import { WorkflowGraph } from '../features/graph'
 import { PersistedWorkflowBoundary } from '../features/graph/PersistedWorkflowBoundary'
 import { WorkflowBoard } from '../features/workflow-board/WorkflowBoard'
 import { useProtectedAccessError } from '../features/auth/useProtectedAccessError'
-import { clearRunGraphAccess, revokeRunGraphWorkspace } from '../features/run-graph/sync'
+import { clearCurrentRunAccess, revokeCurrentRunWorkspace } from '../features/workflow-board/currentRunQuery'
 import { ApiError } from '../shared/api/client'
 import { queryKeys, useManagedWorkflowsQuery, useWorkspaceDetailsQuery } from '../shared/api/query'
 import { WorkspaceSelection } from './WorkspaceRoute'
 
-function cacheWorkspaceProjection(client: ReturnType<typeof useQueryClient>, workspaceId: string, details: WorkspaceDetailsResponse) {
+function cacheWorkspaceProjection(client: ReturnType<typeof useQueryClient>, workspaceId: string, details: CurrentWorkspaceDetails) {
   client.setQueryData(queryKeys.agents(workspaceId), { agents: details.agents })
   for (const workflow of details.workflows) client.setQueryData(queryKeys.workflow(workspaceId, workflow.id), { workflow })
 }
@@ -46,23 +45,23 @@ function WorkspaceBoardRoute({ selection }: { selection: WorkflowBoardLocation }
   const workflow = details?.workflows.find((item) => item.id === workflowId) ?? managedWorkflow
   useEffect(() => {
     if (!denied) return
-    if (denied.status === 401) clearRunGraphAccess(client)
-    else revokeRunGraphWorkspace(client, workspaceId)
+    if (denied.status === 401) clearCurrentRunAccess(client)
+    else revokeCurrentRunWorkspace(client, workspaceId)
   }, [denied, client, workspaceId])
   useEffect(() => { if (details) cacheWorkspaceProjection(client, workspaceId, details) }, [client, workspaceId, details])
   useEffect(() => {
-    // Preserve the legacy unknown-workflow fallback, but NEVER retarget a pinned Run.
+    // Resolve an unpinned workspace default only, but NEVER retarget a pinned Run.
     if (run) return
     const detailsKey = queryKeys.workspaceDetails(workspaceId), managedKey = queryKeys.managedWorkflows(workspaceId)
     type Managed = NonNullable<ReturnType<typeof useManagedWorkflowsQuery>['data']>
-    const latest = client.getQueryData<WorkspaceDetailsResponse>(detailsKey)
+    const latest = client.getQueryData<CurrentWorkspaceDetails>(detailsKey)
     const catalog = client.getQueryData<Managed>(managedKey)
     if (!latest || requestedId && (latest.workflows.some((item) => item.id === requestedId)
       || catalog?.items.some((item) => item.workflow.id === requestedId)
       || client.getQueryState(managedKey)?.fetchStatus === 'fetching')) return
     if (requestedId === latest.workflows[0]?.id) return
     void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, replace: true, search: (previous) => {
-      const current = client.getQueryData<WorkspaceDetailsResponse>(detailsKey)
+      const current = client.getQueryData<CurrentWorkspaceDetails>(detailsKey)
       const saved = client.getQueryData<Managed>(managedKey)
       if (!current || previous.runId || previous.workflowId !== search.workflowId || previous.workflowId && (
         current.workflows.some((item) => item.id === previous.workflowId)
@@ -75,7 +74,7 @@ function WorkspaceBoardRoute({ selection }: { selection: WorkflowBoardLocation }
       return next
     } })
   }, [requestedId, run, search.workflowId, workspaceId, navigate, client, details, managed.data, managed.fetchStatus])
-  const selectRun = useCallback((scope?: RunGraphScope) => {
+  const selectRun = useCallback((scope?: RepeatGraphScopeV3) => {
     if (!workflowId) return
     if (scope && (scope.workspaceId !== workspaceId || scope.workflowId !== workflowId)) throw new Error('Run selection belongs to a different board.')
     void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, search: boardSearchForRun(search, workflowId, scope) })
@@ -91,16 +90,6 @@ function WorkspaceBoardRoute({ selection }: { selection: WorkflowBoardLocation }
       runNodeId: search.runNodeId, runRelationshipId: search.runRelationshipId, runExchangeKey: search.runExchangeKey }
     if (agentId) next.agentId = agentId
     else delete next.agentId
-    void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, search: next })
-  }, [workflowId, workspaceId, search, run, navigate])
-  const selectAgent = useCallback((agentId: string) => {
-    if (workflowId) void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, search: {
-      ...boardSearchForRun(search, workflowId, run), agentId,
-    } })
-  }, [workflowId, workspaceId, search, run, navigate])
-  const clearAgent = useCallback(() => {
-    if (!workflowId) return
-    const next = boardSearchForRun(search, workflowId, run); delete next.agentId
     void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, search: next })
   }, [workflowId, workspaceId, search, run, navigate])
 
@@ -120,10 +109,7 @@ function WorkspaceBoardRoute({ selection }: { selection: WorkflowBoardLocation }
         selectedAgentId={search.agentId} selectDraftAgent={selectDraftAgent}
         inspection={{ runNodeId: search.runNodeId, runRelationshipId: search.runRelationshipId, runExchangeKey: search.runExchangeKey }}>
         {workspace.isError ? <p role="status">Workspace updates are unavailable. The local draft is retained.</p> : null}
-        <PersistedWorkflowBoundary workspaceId={workspaceId} workflowId={workflowId} workflow={workflow}>
-          <WorkflowGraph key={JSON.stringify([workspaceId, workflowId])} workspaceId={workspaceId} workflowId={workflowId}
-            selectedAgentId={search.agentId} onSelectAgent={selectAgent} onClearAgent={clearAgent} />
-        </PersistedWorkflowBoundary>
+        <PersistedWorkflowBoundary workspaceId={workspaceId} workflowId={workflowId} workflow={workflow} />
       </WorkflowBoard>
     ) : undefined }} />
 }

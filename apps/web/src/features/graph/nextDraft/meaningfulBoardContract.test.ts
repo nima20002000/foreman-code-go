@@ -39,7 +39,7 @@ describe('frozen board edit classification', () => {
     expect(nextDraftDirty(agentEdit)).toBe(true)
     expect(hasAgentEdits(agentEdit)).toBe(true)
     expect(draftOperations(context, agentEdit.graph, agentEdit.agentEdits)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'node.replace_v2' }),
+      expect.objectContaining({ type: 'node.replace_v3' }),
       expect.objectContaining({ type: 'agent.rename', agentId: 'agent-0', name: 'Reviewer' }),
     ]))
   })

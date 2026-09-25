@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import type { Agent } from '@graphql/contracts'
-import type { WorkflowDefinitionV2 } from '@graphql/contracts/wave25'
+import type { WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
 import { sameExecutableWorkflow } from '@graphql/contracts/wave25'
 import { acknowledgeAgentEdits } from './agentEdits'
 import { authoringHints, entryChoices, mergeAcknowledgement, removeNode, roleEvidence, type NextDraftContext } from './model'
 
 /** Synthetic frontend fixture; no server, native Run, configuration or authority is created. */
 export function repairFixture(count = 3): NextDraftContext {
-  const graph: WorkflowDefinitionV2 = {
-    id: 'workflow', workspaceId: 'workspace', name: 'NIM-2644 frontend fixture', executionSemanticsVersion: 2,
+  const graph: WorkflowDefinitionV3 = {
+    id: 'workflow', workspaceId: 'workspace', name: 'NIM-2644 frontend fixture', executionSemanticsVersion: 3,
     entryNodeId: 'node-0', executionCondition: { kind: 'manual' }, approval: { handler: 'user' },
     executionPolicy: { maxParallelism: 4, maxNodeExecutions: 1000 }, version: 1,
     nodes: Array.from({ length: count }, (_, i) => ({ id: `node-${i}`, agentId: `agent-${i}`, name: `Node ${i}`, position: { x: i * 250, y: 0 } })),
@@ -18,11 +18,11 @@ export function repairFixture(count = 3): NextDraftContext {
     baseWorkflowVersionId: 'version-1', graph, stagedAgents: [], updatedByPrincipalId: 'fixture', updatedAt: '2026-09-24T00:00:00Z' },
   agents: graph.nodes.map((node) => ({ metadataRevision: 3, agent: { id: node.agentId, name: node.name!, productRole: 'coder', configurationVersionId: `configuration-${node.agentId}` } })) }
 }
-const move = (graph: WorkflowDefinitionV2, nodeId = 'node-0') => ({ ...graph,
+const move = (graph: WorkflowDefinitionV3, nodeId = 'node-0') => ({ ...graph,
   nodes: graph.nodes.map((node) => node.id === nodeId ? { ...node, position: { x: 912, y: -41 }, width: 280, height: 190 } : node) })
-const instruction = (graph: WorkflowDefinitionV2, text: string, id = 'node-0') => ({ ...graph,
+const instruction = (graph: WorkflowDefinitionV3, text: string, id = 'node-0') => ({ ...graph,
   nodes: graph.nodes.map((node) => node.id === id ? { ...node, initialPrompt: text } : node) })
-const ids = (graph: WorkflowDefinitionV2) => graph.nodes.map((node) => node.id)
+const ids = (graph: WorkflowDefinitionV3) => graph.nodes.map((node) => node.id)
 const local: Agent = { id: 'new-agent', name: 'New Worker', productRole: 'coder' }
 const newNode = { id: 'new-node', agentId: local.id, name: local.name, position: { x: 700, y: 100 } }
 

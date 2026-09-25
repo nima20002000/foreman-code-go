@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
-import type { GetRunResponse } from '@graphql/contracts'
+import { type CurrentRunDetails as GetRunResponse } from '@graphql/contracts/wave25'
 import { keepLatestRunResponse } from './runLiveCache'
 
 function snapshot(sequence: string, eventCount = sequence, state = 'running', runId = 'run'): GetRunResponse {

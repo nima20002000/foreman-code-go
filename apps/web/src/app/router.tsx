@@ -54,7 +54,7 @@ const workspaceRoute = createRoute({
   component: WorkspaceRouteEntry,
 })
 
-// Compatibility aliases are children of the board, not independent screen mounts.
+// Linkable Board selections are children of the board, not independent screen mounts.
 const nextDraftRoute = createRoute({
   getParentRoute: () => workspaceRoute,
   path: 'workflows/$workflowId/draft',

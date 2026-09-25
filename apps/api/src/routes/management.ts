@@ -1,5 +1,6 @@
 import { CurrentWorkflowCreateInputSchema } from '@graphql/contracts/wave25'
 import { registerCurrentWorkflowRoutes } from './currentWorkflow.js'
+import { registerCurrentVersionReadRoutes } from './currentVersionReads.js'
 import type { FastifyInstance } from 'fastify'
 import { registerWorkspaceDefaultsRoutes } from './workspaceDefaults.js'
 import { registerHarnessSettingsRoutes } from './harnessSettings.js'
@@ -60,6 +61,7 @@ function page(query: Query) {
 
 export function registerManagementRoutes(app: FastifyInstance, services: OperatorServices): void {
   registerCurrentWorkflowRoutes(app, services.workflows, services.runs)
+  registerCurrentVersionReadRoutes(app, services)
   registerWorkspaceDefaultsRoutes(app, services)
   registerHarnessSettingsRoutes(app, services)
   app.get<{ Querystring: Query }>('/api/management/workspaces', async (request) =>
