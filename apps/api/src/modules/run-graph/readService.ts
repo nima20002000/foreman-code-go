@@ -22,10 +22,12 @@ export interface RunGraphReadApi {
 export class RunGraphReadService implements RunGraphReadApi {
   readonly repeat: RepeatGraphReadService
   constructor(private readonly primaryPool: pg.Pool, private readonly assemble: ReadCurrentRunGraph,
-    private readonly options: { qualifiedReads?: boolean; measurements?: GraphMeasurementSink; repeat?: RepeatGraphReadService } = {}) {
-    // Production uses this same service in HTTP and MCP. Installing concrete
-    // read composition is not qualification of the excluded engine writers.
-    this.repeat = options.repeat ?? new RepeatGraphReadService(primaryPool, { qualifiedReads: false })
+    private readonly options: { qualifiedReads?: boolean; qualifiedRepeatReads?: boolean; measurements?: GraphMeasurementSink; repeat?: RepeatGraphReadService } = {}) {
+    // Separate, trusted composition gates: qualifying persisted reads never
+    // qualifies native Start, Stop settlement or meaningful-edit publication.
+    this.repeat = options.repeat ?? new RepeatGraphReadService(primaryPool, {
+      qualifiedReads: options.qualifiedRepeatReads === true,
+    })
   }
 
   capabilities(principal: ManagementPrincipal) {

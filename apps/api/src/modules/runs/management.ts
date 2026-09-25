@@ -15,7 +15,7 @@ import { readRunHistory } from './runHistory.js'
 import { CompatibleWorkflowRunSchema as WorkflowRunSchema, RunStartV2InputSchema, assertWave25Admission } from '@graphql/contracts/wave25'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { admitOneShotRun } from './oneShotAdmission.js'
-import { RunStartV3InputSchema, WorkflowRunV3Schema, type RunStartV3Input } from '@graphql/contracts/wave25'
+import { RunStartV3InputSchema, SavedWorkflowRunSchema, WorkflowRunV3Schema, type RunStartV3Input } from '@graphql/contracts/wave25'
 import { admitRepeatRun } from './repeatStartAdmission.js'
 import { runStartSemantics } from './repeatStartDispatch.js'
 
@@ -138,9 +138,9 @@ export class RunManagementService {
     runStartSemantics(input)
     if (input.executionSemanticsVersion === 3) {
       const { triggerJobId, ...command } = input
-      // Deliberately no production publisher at this base: the parallel G1
-      // producer AND existing engine/repository/native/resume/Stop adapters are
-      // required before new v3 admission. Exact receipt replay remains SQL-only.
+      // The canonical producer is installed, but the complete native lifecycle
+      // is not qualified. Keep NEW admission closed; persisted READ qualification
+      // is independent. Exact verified Start receipt replay remains SQL-only.
       const execution = await admitRepeatRun(this.pool, this.locations, principal, source,
         RunStartV3InputSchema.parse(command), undefined, triggerJobId === undefined ? {} : { triggerJobId })
       if (!execution.replayed) setImmediate(() => { void this.engine.start(execution.value.id).catch(() => undefined) })
@@ -248,14 +248,27 @@ export class RunManagementService {
     const execution = await this.commands.execute({
       principal, source, operation: 'run.stop', commandId: input.commandId, dedicatedConnection: true,
       targetKey: `run:${input.runId}`, payload: input,
+      // Includes exact receipt replay: a captured principal is not live authority.
+      // The dedicated command releases these row locks before native cleanup.
+      authorize: async (client) => {
+        const live = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(live, 'runs:stop', { workspaceId: input.workspaceId, workflowId: run.workflowId, runId: input.runId })
+      },
       perform: async (client) => {
         // Reuse the coordinator's lease. Ownership uses its dedicated session;
         // neither this read nor orphan settlement needs a second pool lease.
         const latestRow = await client.query<{ record: unknown }>(
           'select record from runs where workspace_id = $1 and id = $2', [input.workspaceId, input.runId],
         )
-        const latest = latestRow.rows[0] ? WorkflowRunSchema.parse(latestRow.rows[0].record) : undefined
+        const latest = latestRow.rows[0] ? SavedWorkflowRunSchema.parse(latestRow.rows[0].record) : undefined
         if (!latest) throw new DomainError('RUN_NOT_FOUND', `Run '${input.runId}' was not found.`, 404)
+        // V3 must never fall through to legacy orphan/cleanup settlement. The
+        // native owner must replace this closed arm with its qualified exact
+        // Stop/receipt/cleanup adapter, not merely remove the check or flip a flag.
+        if ('executionSemanticsVersion' in latest && latest.executionSemanticsVersion === 3) {
+          throw new DomainError('REPEAT_STOP_RUNTIME_UNAVAILABLE',
+            'V3 Stop requires the qualified native occurrence lifecycle. No Stop success or cleanup settlement was recorded.', 409)
+        }
         if (latest.executionState === 'completed' && !await this.runs.hasPendingCleanup(input.runId, client)) {
           return { runId: input.runId, status: 'already_terminal' as const, processStopped: false }
         }
@@ -271,7 +284,10 @@ export class RunManagementService {
           : { runId: input.runId, status: 'not_owner' as const, processStopped: false }
       },
     })
-    if (execution.value.status === 'accepted' || execution.value.status === 'already_terminal') {
+    // A historical v3 receipt is readback, not permission to enter the still
+    // unqualified native cleanup path. Legacy retry/cleanup behavior is unchanged.
+    const repeatReplay = execution.replayed && 'executionSemanticsVersion' in run && run.executionSemanticsVersion === 3
+    if (!repeatReplay && (execution.value.status === 'accepted' || execution.value.status === 'already_terminal')) {
       await this.engine.finishRunLifecycle?.(input.runId, 'The Run was stopped.')
     }
     // Older receipts may have inferred termination from a terminal record.

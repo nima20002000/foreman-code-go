@@ -24,7 +24,6 @@ import {
   RunEventsListInputSchema,
   RunGetInputSchema,
   RunListInputSchema,
-  RunStartInputSchema,
   RunStopInputSchema,
   WorkflowArchiveInputSchema,
   WorkflowCreateInputSchema,
@@ -40,7 +39,7 @@ import {
   WorkspaceLocationValidateInputSchema,
   WorkflowDefaultsUpdateInputSchema,
 } from '@graphql/contracts/management'
-import { GraphDraftApplyV2InputSchema, GraphSaveV2InputSchema, RunStartV2InputSchema } from '@graphql/contracts/wave25'
+import { GraphDraftApplyV2InputSchema, GraphSaveV2InputSchema, ManualRunStartInputSchema } from '@graphql/contracts/wave25'
 import { requireBrowserSession, requirePrincipal } from '../modules/access/http.js'
 import type { OperatorServices } from '../mcp/operator/types.js'
 import { DomainError } from '../modules/errors.js'
@@ -188,7 +187,7 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
       ...(request.query.limit ? { limit: Number(request.query.limit) } : {}),
     })))
   app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/runs', async (request, reply) => {
-    const result = await services.runs.start(requirePrincipal(request), 'http', RunStartInputSchema.or(RunStartV2InputSchema).parse(routeInput(request.params, request.body)))
+    const result = await services.runs.start(requirePrincipal(request), 'http', ManualRunStartInputSchema.parse(routeInput(request.params, request.body)))
     reply.code(202)
     return result
   })

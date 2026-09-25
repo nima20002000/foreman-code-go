@@ -8,7 +8,6 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { readCurrentGraphExchanges } from '../src/modules/interactions/wave25/currentExchanges.js'
 import { createCompactSnapshotAssembler } from '../src/modules/run-graph/compactSnapshot.js'
 import { RunGraphReadService } from '../src/modules/run-graph/readService.js'
-import { RepeatGraphReadService } from '../src/modules/run-graph/repeatReadService.js'
 import { openRunGraphPublication } from '../src/modules/run-graph/publication.js'
 import { publishRepeatRunStateLocked } from '../src/modules/run-graph/repeatPublication.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
@@ -30,9 +29,12 @@ export async function graphFixture(db: GraphTestDatabase, options: { insert?: bo
   const { version, run, accepted, scope } = await insertFixtureRepeatRun(db.pool, f, saved,
     fixtureWriter.writer.principal.id, { insert: options.insert !== false, input: { canary: privateCanary } })
   const { access, commands, grantScope, credential, writer, repeats } = fixtureWriter
-  // Test-local opt-in to a REAL reader/producer. Production default remains false.
-  const repeat = new RepeatGraphReadService(db.pool, { qualifiedReads: options.qualifiedReads === true })
-  const graph = new RunGraphReadService(db.pool, createCompactSnapshotAssembler(readCurrentGraphExchanges), { qualifiedReads: true, repeat })
+  // Exercise the same PRIMARY-pool construction as production, not an injected
+  // repeat-reader override. Test opt-in remains independent of native admission.
+  const graph = new RunGraphReadService(db.pool, createCompactSnapshotAssembler(readCurrentGraphExchanges), {
+    qualifiedReads: true, qualifiedRepeatReads: options.qualifiedReads === true,
+  })
+  const repeat = graph.repeat
   // Unrelated services are not called. Authentication, commands/audit, graph
   // services, canonical publisher and database are actual production classes.
   const services = { commands, repeats, runGraph: graph } as unknown as OperatorServices

@@ -160,7 +160,7 @@ describe.skipIf(!postgresEnabled)('ENG04 repository activation PostgreSQL bounda
   it('blocks legacy lifecycle writers and checks real owner scope before SQL', async () => {
     const a = await fixture(), b = await fixture(), repo = repository(), owner = await own(a.run.id)
     await expect(repo.get(b.run.id, owner)).rejects.toMatchObject({ code: 'GRAPH_SCOPE_MISMATCH' })
-    await expect(repo.requestStop(a.run.id)).rejects.toMatchObject({ code: 'REPEAT_LIFECYCLE_PUBLICATION_REQUIRED' })
+    await expect(repo.requestStop(a.run.id)).rejects.toMatchObject({ code: 'REPEAT_STOP_AUTHORIZATION_REQUIRED' })
     await expect(repo.requestCleanup(a.run.id)).rejects.toMatchObject({ code: 'REPEAT_LIFECYCLE_PUBLICATION_REQUIRED' })
     await expect(repo.finishCleanup(a.run.id, false)).rejects.toMatchObject({ code: 'REPEAT_LIFECYCLE_PUBLICATION_REQUIRED' })
     expect((await db.pool.query('select stop_requested_at from runs where id=$1', [a.run.id])).rows[0].stop_requested_at).toBeNull()

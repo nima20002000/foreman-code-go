@@ -1,13 +1,14 @@
 import { z } from 'zod'
 import { AcceptedWorkflowApprovalConfigurationSchema, RunExecutionLocationSchema, IdSchema } from '../index.js'
 import { GraphDraftSchema, RunStartInputSchema, RunStartResultSchema } from '../management/index.js'
+import { RunStartV2InputSchema, RunStartV2ResultSchema } from './authoring.js'
 import { GraphDigestSchema, GraphIdSchema } from './protocol.js'
 import { ExecutableRepeatWorkflowV1Schema } from './repeat.js'
 import { WorkflowDefinitionV3Schema, WorkflowRunV3Schema, SavedRunVersionSnapshotSchema } from './saved.js'
 import { sameExecutableWorkflow, sameWorkflowValue } from './meaningfulEdit.js'
 
-/** Deliberately not added to the existing HTTP/MCP/engine Start union. A new
- * command must carry the exact displayed workflow revision and configuration
+/** Explicit manual HTTP/MCP v3 request arm, not native admission permission.
+ * A new command must carry the exact displayed workflow revision/configuration
  * map as well as the existing immutable version, location and optional draft. */
 export const RunStartV3InputSchema = RunStartInputSchema.safeExtend({
   executionSemanticsVersion: z.literal(3),
@@ -16,6 +17,14 @@ export const RunStartV3InputSchema = RunStartInputSchema.safeExtend({
 })
 export type RunStartV3Input = z.infer<typeof RunStartV3InputSchema>
 export const RunStartV3ResultSchema = RunStartResultSchema.extend({ run: WorkflowRunV3Schema }).strict()
+
+/** Same explicit boundary for HTTP and Operator MCP. Original 1/2 schemas remain
+ * strict and unchanged; unknown semantics, missing v3 pins and extra fields fail.
+ * Parsing this union never qualifies the native publisher/lifecycle. */
+export const ManualRunStartInputSchema = z.union([RunStartInputSchema, RunStartV2InputSchema, RunStartV3InputSchema])
+export const ManualRunStartResultSchema = z.union([RunStartResultSchema, RunStartV2ResultSchema, RunStartV3ResultSchema])
+export type ManualRunStartInput = z.infer<typeof ManualRunStartInputSchema>
+export type ManualRunStartResult = z.infer<typeof ManualRunStartResultSchema>
 
 /** Shape of a server-validated location, not a filesystem validation capability.
  * Preserve path bytes. Relative paths and incomplete identity hashes fail closed. */

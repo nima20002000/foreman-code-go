@@ -253,7 +253,10 @@ export function buildProductionApp(
     runs: new RunManagementService(database.pool, commands, runs, engine, locations),
     commands,
     interactions: new OperatorInteractionService(interactions),
-    runGraph: new RunGraphReadService(database.pool, createCompactSnapshotAssembler(readCurrentGraphExchanges), { qualifiedReads: true }),
+    // READ qualification only. No native lifecycle, Start or edit gate is opened.
+    runGraph: new RunGraphReadService(database.pool, createCompactSnapshotAssembler(readCurrentGraphExchanges), {
+      qualifiedReads: true, qualifiedRepeatReads: true,
+    }),
   }
   const detection = new McpDetectionService({
     async inspect(input) {

@@ -1,6 +1,7 @@
 import type pg from 'pg'
 import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
-import { CanonicalRunGraphScopeSchema, type RunGraphSnapshot, type RunGraphPage, type RunGraphReset,
+import { CanonicalRunGraphScopeSchema, CanonicalRunGraphReadCapabilitiesSchema, type CanonicalRunGraphReadCapabilities,
+  type RunGraphSnapshot, type RunGraphPage, type RunGraphReset,
   type RepeatGraphSnapshotV3, type RepeatGraphPageV3, type RepeatGraphResetV3, type RepeatGraphCurrentV3 } from '@graphql/contracts/wave25'
 import { hasAction, requireAuthorization } from '../access/policy.js'
 import type { RunGraphReadApi } from './readService.js'
@@ -11,14 +12,18 @@ import { RunGraphError } from './errors.js'
  * closed. Uses the SAME access policy and actual Run tuple as RunGraphReadService;
  * worker/App principals cannot be promoted into Operator read authority. */
 export class RepeatGraphReadService {
-  constructor(private readonly primaryPool: pg.Pool, private readonly options: { qualifiedReads?: boolean } = {}) {}
+  readonly qualifiedReads: boolean
+  constructor(private readonly primaryPool: pg.Pool, options: { qualifiedReads?: boolean } = {}) {
+    // Capture once at trusted composition, not from a mutable request/options object.
+    this.qualifiedReads = options.qualifiedReads === true
+  }
   private authorize(input: ManagementPrincipal): AuthorizeRepeatGraphRead {
     let principal: ManagementPrincipal
     try {
       principal = ManagementPrincipalSchema.parse(input)
       if (!hasAction(principal, 'runs:read')) throw new RunGraphError('GRAPH_READ_ACCESS_DENIED')
     } catch { throw new RunGraphError('GRAPH_READ_ACCESS_DENIED') }
-    if (!this.options.qualifiedReads) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
+    if (!this.qualifiedReads) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
     return async (sql, scope) => {
       const row = (await sql.query<{ workspace_id: string; workflow_id: string; id: string }>(
         'select workspace_id,workflow_id,id from runs where id=$1', [scope.runId])).rows[0]
@@ -43,12 +48,13 @@ export class RepeatGraphReadService {
 }
 export interface CanonicalRunGraphReadApi {
   capabilities: RunGraphReadApi['capabilities']
+  readCapabilities(principal: ManagementPrincipal): CanonicalRunGraphReadCapabilities
   current(principal: ManagementPrincipal, request: unknown): Promise<RunGraphSnapshot | RepeatGraphCurrentV3>
   snapshot(principal: ManagementPrincipal, request: unknown): Promise<RunGraphSnapshot | RepeatGraphSnapshotV3>
   events(principal: ManagementPrincipal, request: unknown): Promise<RunGraphPage | RunGraphReset | RepeatGraphPageV3 | RepeatGraphResetV3>
 }
-/** Shared dispatch for the canonical HTTP/MCP callers. No capabilities or
- * admission flag is widened here. Keep their existing policy/transport limits.
+/** Shared dispatch for the canonical HTTP/MCP callers. The original legacy
+ * capability response is unchanged; additive discovery describes READS only.
  * Unknown versions fail before either producer can coerce them to 1, 2 or 3. */
 export function canonicalRunGraphReadApi(legacy: RunGraphReadApi, repeat = legacy.repeat): CanonicalRunGraphReadApi {
   function target(request: unknown) {
@@ -61,6 +67,18 @@ export function canonicalRunGraphReadApi(legacy: RunGraphReadApi, repeat = legac
   }
   return {
     capabilities: (principal) => legacy.capabilities(principal),
+    readCapabilities: (principal) => {
+      // This call retains the same runs:read principal requirement as legacy
+      // discovery. Scope authorization still occurs against each actual Run.
+      const capabilities = legacy.capabilities(principal)
+      const persistedReads = repeat?.qualifiedReads === true
+      const readSemanticsVersions = [...capabilities.executionSemanticsVersions, ...(persistedReads ? [3] : [])]
+      return CanonicalRunGraphReadCapabilitiesSchema.parse({
+        capabilityVersion: 1, protocolVersions: readSemanticsVersions.length ? [1] : [],
+        readSemanticsVersions, transport: capabilities.transport, activePollMs: capabilities.activePollMs,
+        semantics3: { persistedReads, payload: 'metadata_only', runtimeAdmission: false, meaningfulEdit: false },
+      })
+    },
     current: (principal, request) => {
       const reader = target(request)
       // Legacy current/history are not reinterpreted as v3 envelopes.

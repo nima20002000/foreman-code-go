@@ -5,6 +5,7 @@ import { bearerToken, type PostgresAccessService } from '../../modules/access/po
 import { requireLocalRequest } from '../../modules/access/http.js'
 import { createOperatorMcpServer } from './server.js'
 import { unavailableRepeatToolCall } from './repeats.js'
+import { unavailableManualRunToolCall } from './tools/runs.js'
 import type { OperatorServices } from './types.js'
 
 export function registerOperatorMcp(
@@ -15,9 +16,10 @@ export function registerOperatorMcp(
   app.post('/mcp/operator', { bodyLimit: 1_000_000 }, async (request, reply) => {
     requireLocalRequest(request)
     const principal = await access.authenticate(bearerToken(request.headers.authorization), 'operator')
-    // Unlisted repeat writes must still produce an authenticated denial audit,
+    // Unlisted repeat and manual Run writes still need authenticated denial audit,
     // rather than disappearing into the SDK's generic unknown-tool response.
     const unavailable = await unavailableRepeatToolCall({ principal, services }, request.body)
+      ?? await unavailableManualRunToolCall({ principal, services }, request.body)
     if (unavailable) return reply.send(unavailable)
     const server = createOperatorMcpServer({ principal, services })
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })

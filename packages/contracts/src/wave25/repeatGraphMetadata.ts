@@ -492,6 +492,30 @@ export const CanonicalRunGraphHttpEventsQuerySchema = z.union([RunGraphHttpEvent
 export const CanonicalRunGraphCurrentSchema = z.union([RunGraphSnapshotSchema, RepeatGraphCurrentV3Schema])
 export type RepeatGraphCurrentV3 = z.infer<typeof RepeatGraphCurrentV3Schema>
 export const CANONICAL_RUN_GRAPH_ROUTES = Object.freeze({ ...RUN_GRAPH_ROUTES,
+  readCapabilities: '/api/capabilities/run-graph/reads/v1',
   current: '/api/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/graph/v1/current',
 })
-export const CANONICAL_RUN_GRAPH_MCP_TOOLS = Object.freeze({ ...RUN_GRAPH_MCP_TOOLS, current: 'run_graph_current_v1' })
+export const CANONICAL_RUN_GRAPH_MCP_TOOLS = Object.freeze({ ...RUN_GRAPH_MCP_TOOLS,
+  readCapabilities: 'run_graph_read_capabilities_v1', current: 'run_graph_current_v1',
+})
+
+/** Additive discovery, NOT a widening of RunGraphCapabilitiesSchema or admission.
+ * Semantics-3 support here means persisted current/snapshot/complete-batch reads,
+ * including explicit resets and retention. It grants no native or edit authority.
+ */
+export const CanonicalRunGraphReadCapabilitiesSchema = z.object({
+  capabilityVersion: z.literal(1), protocolVersions: z.array(z.literal(1)).max(1),
+  readSemanticsVersions: z.array(z.union([z.literal(1), z.literal(2), z.literal(3)])).max(3),
+  transport: z.literal('http_poll'), activePollMs: z.literal(1000),
+  semantics3: z.object({
+    persistedReads: z.boolean(), payload: z.literal('metadata_only'),
+    runtimeAdmission: z.literal(false), meaningfulEdit: z.literal(false),
+  }).strict(),
+}).strict().superRefine((value, context) => {
+  if (new Set(value.readSemanticsVersions).size !== value.readSemanticsVersions.length
+    || (value.protocolVersions.length > 0) !== (value.readSemanticsVersions.length > 0)
+    || value.semantics3.persistedReads !== value.readSemanticsVersions.includes(3)) {
+    context.addIssue({ code: 'custom', message: 'GRAPH_READ_CAPABILITIES_CONFLICT' })
+  }
+})
+export type CanonicalRunGraphReadCapabilities = z.infer<typeof CanonicalRunGraphReadCapabilitiesSchema>

@@ -6,7 +6,7 @@ import {
   CanonicalRunGraphEventsRequestSchema as RunGraphEventsRequestSchema,
   CanonicalRunGraphSnapshotSchema as RunGraphSnapshotSchema,
   CanonicalRunGraphEventsResponseSchema as RunGraphEventsResponseSchema,
-  CanonicalRunGraphCurrentSchema, RunGraphCapabilitiesSchema,
+  CanonicalRunGraphCurrentSchema, RunGraphCapabilitiesSchema, CanonicalRunGraphReadCapabilitiesSchema,
 } from '@graphql/contracts/wave25'
 import type { OperatorRequestContext } from '../types.js'
 import { canonicalRunGraphReadApi } from '../../../modules/run-graph/repeatReadService.js'
@@ -32,6 +32,10 @@ export function registerRunGraphTools(server: McpServer, context: OperatorReques
     description: 'Read graph v1 capabilities, including the source-controlled v2 authoring and new-Run admission state.',
     inputSchema: z.object({}).strict(), outputSchema: RunGraphCapabilitiesSchema, annotations,
   }, async () => invoke(RUN_GRAPH_MCP_TOOLS.capabilities, () => reads.capabilities(context.principal)))
+  server.registerTool(RUN_GRAPH_MCP_TOOLS.readCapabilities, {
+    description: 'Discover qualified persisted canonical graph READS: current, snapshot, complete batches, reset and retention. Semantics-3 payloads are metadata only. This grants no native Start, Stop settlement or meaningful-edit support; legacy capabilities are unchanged.',
+    inputSchema: z.object({}).strict(), outputSchema: CanonicalRunGraphReadCapabilitiesSchema, annotations,
+  }, async () => invoke(RUN_GRAPH_MCP_TOOLS.readCapabilities, () => canonical.readCapabilities(context.principal)))
   server.registerTool(RUN_GRAPH_MCP_TOOLS.snapshot, {
     description: 'Read a coherent, bounded graph snapshot for the exact authorized workspace/workflow/Run/version. No native bodies or filesystem details.',
     inputSchema: RunGraphReadRequestSchema, outputSchema: RunGraphSnapshotSchema, annotations,

@@ -31,6 +31,8 @@ export function registerRunGraphRoutes(app: FastifyInstance, reads: RunGraphRead
   }
   app.get(RUN_GRAPH_ROUTES.capabilities, (request, reply) => invoke(request, reply, RUN_GRAPH_ROUTES.capabilities,
     () => reads.capabilities(request.operatorPrincipal!)))
+  app.get(RUN_GRAPH_ROUTES.readCapabilities, (request, reply) => invoke(request, reply, RUN_GRAPH_ROUTES.readCapabilities,
+    () => canonical.readCapabilities(request.operatorPrincipal!)))
   for (const kind of ['snapshot', 'current'] as const) app.get(RUN_GRAPH_ROUTES[kind], (request, reply) =>
     invoke(request, reply, RUN_GRAPH_ROUTES[kind], async () => {
       const parameters = Params.safeParse(request.params), query = RunGraphHttpSnapshotQuerySchema.safeParse(request.query)
