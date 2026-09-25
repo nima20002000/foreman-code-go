@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { canonicalGraphJson } from './json.js'
 import { IdSchema } from '../index.js'
 import { ExpectedRevisionSchema, ManagementPageInfoSchema } from '../management/index.js'
 import {
@@ -48,15 +49,15 @@ export const RepeatOccurrenceReadItemSchema = z.object({
   decision: z.union([RepeatDecisionMetadataV1Schema, RepeatDecisionV1Schema]).nullable(),
 }).strict().superRefine((value, context) => {
   if (!value.decision) return
-  const left = value.occurrence.identity
-  const right = value.decision.occurrence.identity
-  if (left.scope.runId !== right.scope.runId || left.scope.workflowVersionId !== right.scope.workflowVersionId
-    || left.blockId !== right.blockId || left.occurrenceId !== right.occurrenceId
-    || left.occurrenceIndex !== right.occurrenceIndex) {
-    context.addIssue({ code: 'custom', message: 'occurrence and decision readback identities differ' })
+  // The input binding/ancestry is part of the immutable occurrence too. A
+  // matching counter or Run/version is not enough to substitute another record.
+  if (canonicalGraphJson(value.occurrence) !== canonicalGraphJson(value.decision.occurrence)) {
+    context.addIssue({ code: 'custom', message: 'occurrence and decision readback records differ' })
   }
 })
 export type RepeatOccurrenceReadItem = z.infer<typeof RepeatOccurrenceReadItemSchema>
+
+export const REPEAT_READBACK_MAX_BYTES = 512 * 1024
 
 export const RepeatRunReadbackSchema = z.object({
   contractVersion: z.literal(REPEAT_CONTRACT_VERSION),
@@ -66,5 +67,23 @@ export const RepeatRunReadbackSchema = z.object({
   runId: IdSchema,
   items: z.array(RepeatOccurrenceReadItemSchema).max(100),
   pageInfo: ManagementPageInfoSchema,
-}).strict()
+}).strict().superRefine((value, context) => {
+  const ids = new Set<string>()
+  const versions = new Set<string>()
+  for (const [index, item] of value.items.entries()) {
+    const identity = item.occurrence.identity
+    if (identity.scope.workspaceId !== value.workspaceId || identity.scope.workflowId !== value.workflowId
+      || identity.scope.runId !== value.runId || ids.has(identity.occurrenceId)) {
+      context.addIssue({ code: 'custom', path: ['items', index], message: 'repeat page has mismatched scope or duplicate occurrences' })
+    }
+    ids.add(identity.occurrenceId)
+    versions.add(identity.scope.workflowVersionId)
+  }
+  if (versions.size > 1) context.addIssue({ code: 'custom', message: 'repeat page mixes immutable workflow versions' })
+  if (value.pageInfo.nextCursor !== null && value.pageInfo.nextCursor !== value.items.at(-1)?.occurrence.identity.occurrenceId) {
+    context.addIssue({ code: 'custom', path: ['pageInfo', 'nextCursor'], message: 'repeat continuation must identify the last returned occurrence' })
+  }
+  try { canonicalGraphJson(value, REPEAT_READBACK_MAX_BYTES) }
+  catch { context.addIssue({ code: 'custom', message: 'repeat readback exceeds the bounded page size' }) }
+})
 export type RepeatRunReadback = z.infer<typeof RepeatRunReadbackSchema>

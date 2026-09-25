@@ -19,6 +19,13 @@ export interface RepeatRouteServices {
   readback: RepeatReadbackService
 }
 
+function resultDataFlag(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined
+  if (value === 'true') return true
+  if (value === 'false') return false
+  throw new DomainError('INVALID_INPUT', 'includeResultData must be true or false.', 400)
+}
+
 function routeInput(params: Params, body: unknown): Record<string, unknown> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     throw new DomainError('INVALID_INPUT', 'The request body must be an object.', 400)
@@ -51,6 +58,6 @@ export function registerRepeatRoutes(app: FastifyInstance, services: RepeatRoute
       ...(request.query.cursor ? { cursor: request.query.cursor } : {}),
       ...(request.query.limit ? { limit: Number(request.query.limit) } : {}),
       ...(request.query.includeResultData !== undefined
-        ? { includeResultData: request.query.includeResultData === 'true' } : {}),
+        ? { includeResultData: resultDataFlag(request.query.includeResultData) } : {}),
     })))
 }

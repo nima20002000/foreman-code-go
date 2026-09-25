@@ -98,7 +98,11 @@ describe('NIM-2648 ENG04-D provider-shaped and persisted readback regression', (
     const { decision } = exitDecision(fixture, first.occurrence, 'issues', 'readback-review-exec-1')
     const pool = { query: vi.fn().mockResolvedValue({ rows: [{
       workflow_version_id: fixture.version.id,
-      record: { executionSemanticsVersion: 3 },
+      record: fixture.run,
+      version_record: fixture.version,
+      version: fixture.version.version,
+      entry_node_id: fixture.version.entryNodeId,
+      execution_semantics_version: 3,
     }] }) } as unknown as pg.Pool
     const store = {
       list: vi.fn(async (input: { includeResultData: boolean }) => {

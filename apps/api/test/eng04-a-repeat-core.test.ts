@@ -159,12 +159,17 @@ describe('ENG04-A deterministic occurrence core', () => {
     expect(repeatExecutionDirectoryKey('x')).not.toBe(repeatExecutionDirectoryKey('y'))
     expect(() => repeatExecutionDirectoryKey('../escape')).toThrow()
   })
-  it('fails closed for text-carried or malformed repeat-exit success before first durable observation', () => {
+  it('preserves exact native text-carried results and fails closed for malformed repeat exits', () => {
     const f = fixture(), current = first(f), ref = { nodeId: 'review', occurrence: current.occurrence.identity }
     const { completed } = terminal(f, current.occurrence)
     expect(normalizeRepeatTerminal(f.version, f.scope, ref, completed)).toEqual(completed)
     const text = successful(completed, { text: JSON.stringify(completed.result!.outcome === 'succeeded' ? completed.result!.output : {}) })
-    expect(normalizeRepeatTerminal(f.version, f.scope, ref, text).result?.outcome).toBe('failed')
+    expect(normalizeRepeatTerminal(f.version, f.scope, ref, text)).toEqual(text)
+    const resolution = repeatTerminalResolution(f.version, f.scope, ref, text)
+    expect(resolution.value.acceptedResultDigest).toBe(repeatDigest(text.result))
+    expect(resolution.value.acceptedResultDigest).not.toBe(repeatDigest(completed.result))
+    const mixed = successful(completed, { text: JSON.stringify({}), routing: { outcome: 'pass' } })
+    expect(normalizeRepeatTerminal(f.version, f.scope, ref, mixed).result?.outcome).toBe('failed')
     expect(normalizeRepeatTerminal(f.version, f.scope, ref, successful(completed, {})).result?.outcome).toBe('failed')
   })
   it('skipped/resolved wrapper replay never creates a candidate or calls native observe', async () => {

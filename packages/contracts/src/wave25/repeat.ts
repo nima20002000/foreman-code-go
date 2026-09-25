@@ -1,10 +1,11 @@
 import { z } from 'zod'
-import { AcceptedWorkflowApprovalConfigurationSchema, TimestampSchema, WorkflowVersionSchema } from '../index.js'
+import { AgentConfigurationVersionSchema, AcceptedWorkflowApprovalConfigurationSchema, TimestampSchema, WorkflowRunSchema, WorkflowVersionSchema } from '../index.js'
 import { canonicalGraphJson } from './json.js'
 import {
   GraphDigestSchema, GraphExecutionIdentitySchema, GraphIdSchema, RunGraphScopeSchema,
 } from './protocol.js'
 import {
+  AcceptedNodeResultV2Schema, ExecutableWorkflowV2Schema,
   ChoiceOutcomeSchema, ChoiceTargetSchema, WorkflowDefinitionV2Schema, WorkflowVersionV2Schema,
   parseChoiceResultEnvelope, type WorkflowChoice,
 } from './workflow.js'
@@ -115,6 +116,43 @@ export const RepeatWorkflowVersionV1Schema = z.object({
 })
 export type RepeatWorkflowVersionV1 = z.infer<typeof RepeatWorkflowVersionV1Schema>
 
+/** Reuse all pinned configuration/role/native-approval checks without admitting
+ * or dispatching a retagged version. The projection exists only in validation;
+ * callers must still authenticate, lock admission and preserve the saved v3 ID.
+ */
+export const ExecutableRepeatWorkflowV1Schema = z.object({
+  version: RepeatWorkflowVersionV1Schema,
+  configurations: z.array(AgentConfigurationVersionSchema).max(1000),
+}).strict().superRefine(({ version, configurations }, context) => {
+  const { repeat, ...definition } = version.definition
+  void repeat
+  const checked = ExecutableWorkflowV2Schema.safeParse({
+    version: { ...version, executionSemanticsVersion: 2,
+      definition: { ...definition, executionSemanticsVersion: 2 } },
+    configurations,
+  })
+  if (!checked.success) for (const issue of checked.error.issues) {
+    context.addIssue({ code: 'custom', path: issue.path, message: issue.message })
+  }
+})
+export type ExecutableRepeatWorkflowV1 = z.infer<typeof ExecutableRepeatWorkflowV1Schema>
+
+/** Inherited Run lifecycle validation with an explicit v3 pin. Exporting this
+ * schema alone does not widen Start, engine dispatch or compatible read unions.
+ */
+export const RepeatWorkflowRunV1Schema = WorkflowRunSchema.safeExtend({ executionSemanticsVersion: z.literal(3) })
+export type RepeatWorkflowRunV1 = z.infer<typeof RepeatWorkflowRunV1Schema>
+export const RepeatRunVersionV1Schema = z.object({
+  run: RepeatWorkflowRunV1Schema, version: RepeatWorkflowVersionV1Schema,
+}).strict().superRefine(({ run, version }, context) => {
+  if (run.workspaceId !== version.workspaceId || run.workflowId !== version.workflowId
+    || run.workflowVersionId !== version.id
+    || canonicalGraphJson(run.agentConfigurationVersionIds) !== canonicalGraphJson(version.agentConfigurationVersionIds)
+    || canonicalGraphJson(run.approval ?? null) !== canonicalGraphJson(version.approval)) {
+    context.addIssue({ code: 'custom', message: 'REPEAT_RUN_VERSION_PIN_MISMATCH' })
+  }
+})
+
 /** One fixed carry/exit payload, not an expression or configurable mapping language. */
 export const RepeatExitDataV1Schema = z.unknown().superRefine((value, context) => {
   try { canonicalGraphJson(value, 64 * 1024) } catch { context.addIssue({ code: 'custom', message: 'REPEAT_EXIT_DATA_INVALID_OR_TOO_LARGE' }) }
@@ -124,9 +162,18 @@ export const RepeatExitDataV1Schema = z.unknown().superRefine((value, context) =
 }).strict())
 export type RepeatExitDataV1 = z.infer<typeof RepeatExitDataV1Schema>
 
-/** Complete successful accepted results only. No prose extraction, fallback, or fake pass. */
+/** Complete successful accepted results only. The exact native {text} carrier
+ * is a parsing-only view, matching the existing one-shot choice policy. Validate
+ * and bound the ORIGINAL result first; acceptance, digests, carries and history
+ * retain that original value. Mixed carriers, prose and Markdown stay invalid.
+ */
 export function parseRepeatExitResultV1(result: unknown, choice: WorkflowChoice) {
-  const envelope = parseChoiceResultEnvelope(result, choice)
+  canonicalGraphJson(result, 64 * 1024)
+  const accepted = AcceptedNodeResultV2Schema.parse(result)
+  const output = accepted.outcome === 'succeeded' ? accepted.output : undefined
+  const textCarrier = output !== null && typeof output === 'object' && !Array.isArray(output)
+    && Object.keys(output).length === 1 && 'text' in output && typeof output.text === 'string'
+  const envelope = parseChoiceResultEnvelope(textCarrier ? { ...accepted, output: output.text } : accepted, choice)
   return { ...envelope, data: RepeatExitDataV1Schema.parse(envelope.data) }
 }
 

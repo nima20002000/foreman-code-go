@@ -81,6 +81,7 @@ describe('NIM-2646 repeat HTTP/MCP lane', () => {
     const version = candidate()
     const pool = { query: vi.fn().mockResolvedValue({ rows: [{
       revision: '9', current_version_id: version.id, version_record: version, execution_semantics_version: 3,
+      version: version.version, entry_node_id: version.entryNodeId,
     }] }) } as unknown as pg.Pool
     const service = new RepeatReadbackService(pool)
     const p = principal(['workflows:read','graph:read'], ['workflow-repeat'])

@@ -34,7 +34,8 @@ export interface RepeatGraphState {
 
 /** MUST run before the native coordinator's FIRST durable terminal observation.
  * Already-written/accepted evidence must instead be checked, never normalized in place.
- * A0 remains strict: no {text: ...} salvage for repeat exits in this frozen contract. */
+ * The shared parser accepts only the exact native text carrier, without changing
+ * stored result bytes or accepting mixed carriers, prose or Markdown. */
 export function normalizeRepeatTerminal(version: RepeatWorkflowVersionV1, scope: RepeatScope,
   ref: RepeatNodeRef, value: HarnessExecution): HarnessExecution {
   const execution = HarnessExecutionSchema.parse(value)
