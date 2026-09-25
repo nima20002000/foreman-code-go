@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import {
   CANONICAL_RUN_GRAPH_MCP_TOOLS, CANONICAL_RUN_GRAPH_ROUTES,
-  CanonicalRunGraphReadCapabilitiesSchema, RunGraphCapabilitiesSchema,
+  CanonicalRunGraphReadCapabilitiesSchema, CURRENT_WORKFLOW_ROUTES,
   RepeatGraphPageV3Schema, RepeatGraphSnapshotV3Schema, reduceRepeatGraphPageV3,
   type CanonicalRunGraphScope,
 } from '@graphql/contracts/wave25'
 import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
-import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
+import { currentDatabase as agent3Database, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import {
   graphFixture, graphHeaders, graphRpc, graphRpcValue, changeRunState, ownedGraph,
   privateCanary, type GraphFixture, type GraphTestDatabase,
@@ -57,13 +57,13 @@ describe.skipIf(!postgresEnabled)('ENG04-B primary canonical read qualification'
     return http.json()
   }
 
-  it('advertises persisted v3 reads separately from unchanged legacy capabilities and closed runtime/edit gates', async () => {
+  it('advertises ONLY current persisted V3 reads separately from native runtime/edit gates', async () => {
     const t = await fixture()
     const response = await t.app.inject({ method: 'GET', url: CANONICAL_RUN_GRAPH_ROUTES.readCapabilities,
       headers: graphHeaders(t.writer.token) })
     expect(response.statusCode).toBe(200)
     const discovery = CanonicalRunGraphReadCapabilitiesSchema.parse(response.json())
-    expect(discovery.readSemanticsVersions).toEqual([2, 3])
+    expect(discovery.readSemanticsVersions).toEqual([3])
     expect(discovery.semantics3).toEqual({ persistedReads: true, payload: 'metadata_only', runtimeAdmission: false, meaningfulEdit: false })
     const remote = await graphRpc(t.app, t.writer.token, 'tools/call', { name: CANONICAL_RUN_GRAPH_MCP_TOOLS.readCapabilities, arguments: {} })
     expect(remote.result?.isError).not.toBe(true)
@@ -71,15 +71,15 @@ describe.skipIf(!postgresEnabled)('ENG04-B primary canonical read qualification'
     const list = await graphRpc(t.app, t.writer.token, 'tools/list')
     expect(list.result?.tools?.map((tool) => tool.name)).toContain(CANONICAL_RUN_GRAPH_MCP_TOOLS.readCapabilities)
     const legacy = await t.app.inject({ method: 'GET', url: CANONICAL_RUN_GRAPH_ROUTES.capabilities, headers: graphHeaders(t.writer.token) })
-    expect(RunGraphCapabilitiesSchema.parse(legacy.json())).toMatchObject({ executionSemanticsVersions: [2], authoringSemanticsVersions: [2] })
-    const repeat = await t.app.inject({ method: 'GET', url: '/api/management/repeats/capabilities', headers: graphHeaders(t.writer.token) })
-    expect(repeat.json()).toMatchObject({ supported: false, availability: { runtimeAdmission: false, meaningfulEdit: false } })
+    expect(CanonicalRunGraphReadCapabilitiesSchema.parse(legacy.json())).toEqual(discovery)
+    const repeat = await t.app.inject({ method: 'GET', url: CURRENT_WORKFLOW_ROUTES.capabilities, headers: graphHeaders(t.writer.token) })
+    expect(repeat.json()).toMatchObject({ executionSemanticsVersion: 3, repeatOptional: true, runtimeAdmission: false, meaningfulEdit: false })
   })
 
-  it('keeps repeat reads explicitly opt-in even when the original reader is qualified', async () => {
+  it('keeps current reads closed unless explicitly composed', async () => {
     const t = await fixture(false)
     const response = await t.app.inject({ method: 'GET', url: CANONICAL_RUN_GRAPH_ROUTES.readCapabilities, headers: graphHeaders(t.writer.token) })
-    expect(CanonicalRunGraphReadCapabilitiesSchema.parse(response.json())).toMatchObject({ readSemanticsVersions: [2], semantics3: { persistedReads: false } })
+    expect(CanonicalRunGraphReadCapabilitiesSchema.parse(response.json())).toMatchObject({ readSemanticsVersions: [], semantics3: { persistedReads: false } })
     for (const kind of kinds) {
       const { http, mcp, remote } = await pair(t, kind, t.writer.token, kind === 'events' ? '0' : undefined)
       expect(http.json()).toMatchObject({ error: { code: 'GRAPH_NOT_INITIALIZED' } })
@@ -111,7 +111,6 @@ describe.skipIf(!postgresEnabled)('ENG04-B primary canonical read qualification'
     const wrongScopes: CanonicalRunGraphScope[] = [
       { ...t.scope, workspaceId: other.scope.workspaceId }, { ...t.scope, workflowId: other.scope.workflowId },
       { ...t.scope, workflowVersionId: other.scope.workflowVersionId }, { ...t.scope, runId: other.scope.runId },
-      { ...t.scope, executionSemanticsVersion: 1 }, { ...t.scope, executionSemanticsVersion: 2 },
     ]
     for (const scope of wrongScopes) for (const kind of kinds) {
       const { http, mcp, remote } = await pair(t, kind, reader.token, kind === 'events' ? '0' : undefined, scope)
@@ -123,8 +122,11 @@ describe.skipIf(!postgresEnabled)('ENG04-B primary canonical read qualification'
     const absent = await pair(t, 'snapshot', reader.token, undefined, { ...t.scope, runId: `missing-${randomUUID()}` })
     expect(absent.http.json()).toMatchObject({ error: { code: 'GRAPH_READ_ACCESS_DENIED' } })
     expect(absent.remote).toMatchObject({ error: { code: 'GRAPH_READ_ACCESS_DENIED' } })
-    // Existing strict legacy schemas and malformed/unknown version tests remain in
-    // eng04-graph-composition-http-mcp.integration.test.ts; no coercion is added.
+    for (const semantics of [1, 2, 4, '3', null]) {
+      const response = await graphRpc(t.app, reader.token, 'tools/call', { name: CANONICAL_RUN_GRAPH_MCP_TOOLS.snapshot,
+        arguments: { protocolVersion: 1, scope: { ...t.scope, executionSemanticsVersion: semantics } } })
+      expect(response.error !== undefined || response.result?.isError === true).toBe(true)
+    }
   })
 
   it('returns complete persisted batches, equal reset/retention readback and no synthetic replacement head', async () => {

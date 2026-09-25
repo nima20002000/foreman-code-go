@@ -3,17 +3,19 @@ import { RunStartV3InputSchema } from '@graphql/contracts/wave25'
 import { runStartSemantics } from '../src/modules/runs/repeatStartDispatch.js'
 import { startFixture } from './eng04-start-fixtures.js'
 
-describe('ENG04 NATIVE-3 strict Start version/request discrimination', () => {
-  it('preserves legacy omission and explicit 1/2 while retaining a distinct literal3 arm', () => {
-    expect(runStartSemantics({})).toBe(1)
-    expect(runStartSemantics({ executionSemanticsVersion: 1 })).toBe(1)
-    expect(runStartSemantics({ executionSemanticsVersion: 2 })).toBe(2)
+describe('ENG04-D current semantics-3 Start discrimination', () => {
+  it('accepts explicit semantics 3 as the one current Start family', () => {
     expect(runStartSemantics({ executionSemanticsVersion: 3 })).toBe(3)
   })
-  it.each([null, 0, -1, 4, 99, 2.5, '2', '3', true, {}, []])('never coerces unsupported semantics %j to legacy', (value) => {
-    expect(() => runStartSemantics({ executionSemanticsVersion: value })).toThrowError(
-      expect.objectContaining({ code: 'EXECUTION_SEMANTICS_UNSUPPORTED' }))
-  })
+
+  it.each([undefined, 1, 2, null, 0, -1, 4, 99, 2.5, '2', '3', true, {}, []])(
+    'rejects retired or unsupported semantics %j instead of selecting another engine',
+    (value) => {
+      expect(() => runStartSemantics({ executionSemanticsVersion: value })).toThrowError(
+        expect.objectContaining({ code: 'EXECUTION_SEMANTICS_UNSUPPORTED' }))
+    },
+  )
+
   it('requires full displayed revision/configuration/version/location and paired draft pins', () => {
     const f = startFixture()
     expect(RunStartV3InputSchema.parse(f.request)).toEqual(f.request)

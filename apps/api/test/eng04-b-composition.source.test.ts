@@ -1,46 +1,55 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-
 const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
 
-describe('ENG04-B source composition fences (not native or PostgreSQL qualification)', () => {
-  it('qualifies the existing primary-pool reader without configuring native admission', () => {
+describe('ENG-S3-ONLY B wiring (source assertions, not native/PG qualification)', () => {
+  it('uses one primary canonical reader without changing graph protocol or admitting native work', () => {
     const production = source('../src/production.ts')
-    expect(production).toMatch(/new RunGraphReadService\(database\.pool,[\s\S]*?qualifiedReads: true, qualifiedRepeatReads: true/)
-    expect(production).not.toContain('new RepeatGraphReadService(')
+    expect(production).toContain('new RunGraphReadService(database.pool, { qualifiedReads: true })')
+    expect(production).not.toContain('createCompactSnapshotAssembler')
     expect(production).not.toContain('repeatStartPublication')
-    const service = source('../src/modules/run-graph/readService.ts')
-    expect(service).toMatch(/new RepeatGraphReadService\(primaryPool,\s*\{\s*qualifiedReads: options\.qualifiedRepeatReads === true/)
+    expect(source('../src/modules/run-graph/readService.ts')).toContain('new RepeatGraphReadService(primaryPool')
   })
-
-  it('makes HTTP and MCP share the strict manual Start schema and same domain service', () => {
+  it('connects both transports to the same current Save and exact manual Start services', () => {
     expect(source('../src/routes/management.ts')).toContain("services.runs.start(requirePrincipal(request), 'http', ManualRunStartInputSchema.parse(")
-    const mcp = source('../src/mcp/operator/tools/runs.ts')
-    expect(mcp).toContain('inputSchema: ManualRunStartInputSchema')
-    expect(mcp).toContain('outputSchema: ManualRunStartResultSchema')
-    expect(mcp).toContain("context.services.runs.start(context.principal, 'mcp', input)")
-    expect(source('../src/modules/runs/management.ts')).toContain('RunStartV3InputSchema.parse(command), undefined,')
+    expect(source('../src/mcp/operator/tools/runs.ts')).toContain("context.services.runs.start(context.principal, 'mcp', input)")
+    expect(source('../src/routes/currentWorkflow.ts')).toContain("workflows.current.save(requirePrincipal(request), 'http'")
+    expect(source('../src/mcp/operator/tools/currentWorkflow.ts')).toContain("context.services.workflows.current.save")
   })
-
-  it('keeps public v3 Stop closed before terminal/cleanup paths and checks live authority before receipt replay', () => {
-    const stop = source('../src/modules/runs/management.ts').split('  async stop(')[1]!
-    expect(stop.indexOf('authorize: async (client)')).toBeGreaterThan(0)
-    expect(stop.indexOf('authorize: async (client)')).toBeLessThan(stop.indexOf('perform: async (client)'))
-    expect(stop).toContain('readLiveManagementPrincipal(client, principal.id)')
-    const gate = stop.indexOf("throw new DomainError('REPEAT_STOP_RUNTIME_UNAVAILABLE'")
-    expect(gate).toBeGreaterThan(0)
-    expect(gate).toBeLessThan(stop.indexOf("latest.executionState === 'completed'"))
-    expect(gate).toBeLessThan(stop.indexOf('this.engine.cancel'))
-    expect(stop).toContain('if (!repeatReplay &&')
+  it('prepares A’s actual publisher and Stop seam without a fixture publisher or fabricated receipt', () => {
+    const management = source('../src/modules/runs/management.ts')
+    expect(management).toContain('production.startPublication.initializeLocked(...args)')
+    expect(management).toContain('production.assertStartReady()')
+    expect(management).toContain('admitRepeatRun(this.pool, this.locations, principal, source, input, publication,')
+    expect(management).toContain('if (!execution.replayed)')
+    expect(management).toContain('this.currentProduction!.stop(')
+    expect(management).toContain('readLiveManagementPrincipal(client, principal.id)')
+    expect(management).not.toContain('this.engine.cancel')
+    expect(management).not.toContain('admitOneShotRun')
+    expect(management).not.toContain('assertWave25Admission')
+    expect(source('../src/modules/runs/currentProduction.ts')).toContain('readonly startPublication: RepeatStartPublication')
   })
-
-  it('audits hidden manual Run invocations only after the existing Operator authentication', () => {
+  it('retires old public execution routes/registrations while preserving authenticated denial audit', () => {
     const transport = source('../src/mcp/operator/transport.ts')
-    expect(transport.indexOf('await access.authenticate')).toBeLessThan(transport.indexOf('?? await unavailableManualRunToolCall'))
-    expect(transport).toContain('if (unavailable) return reply.send(unavailable)')
-    const tools = source('../src/mcp/operator/tools/runs.ts')
-    expect(tools).toContain("z.enum(['run_start', 'run_stop'])")
-    expect(tools).toContain('operatorToolAvailable(context, request.data.params.name)')
-    expect(tools).toContain("context.services.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)")
+    expect(transport.indexOf('await access.authenticate')).toBeLessThan(transport.indexOf('await retiredExecutionToolCall'))
+    for (const hook of ['unavailableManualRunToolCall', 'unavailableCurrentWorkflowToolCall', 'unavailableRunGraphToolCall']) {
+      expect(transport).toContain(`?? await ${hook}`)
+    }
+    const routes = source('../src/routes/management.ts'), server = source('../src/mcp/operator/server.ts')
+    expect(routes).not.toContain('services.drafts')
+    expect(server).not.toContain('registerGraphTools')
+    expect(server).not.toContain('registerRepeatTools')
+    expect(existsSync(new URL('../src/modules/repeats/authoring.ts', import.meta.url))).toBe(false)
+    expect(source('../src/routes/product.ts')).not.toContain('createForWorkflow')
+    expect(source('../src/modules/workflows/postgres.ts')).not.toContain('CompatibleWorkflowVersionSchema')
+  })
+  it('keeps omission in the typed publication contract and rejects old execution tags', () => {
+    const sql = source('../src/infrastructure/currentWorkflowWriterMigration.ts')
+    expect(sql).toContain("if graph ? 'repeat' then perform eng04_validate_repeat_plan(graph); end if")
+    expect(sql).toContain('check (execution_semantics_version=3)')
+    expect(sql).not.toContain("set_config(")
+    expect(sql).not.toContain('disable trigger')
+    expect(sql).not.toContain('blocks: []')
+    expect(source('../src/modules/workflows/currentAuthoring.ts')).toContain("operation: 'workflow.save.v3'")
   })
 })

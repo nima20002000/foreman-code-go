@@ -1,68 +1,34 @@
 import type pg from 'pg'
-import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
-import {
-  DISABLED_RUN_GRAPH_CAPABILITIES, RunGraphCapabilitiesSchema, WAVE25_ADMISSION_ENABLED, graphJsonBytes,
-  type RunGraphSnapshot, type RunGraphPage, type RunGraphReset,
-} from '@graphql/contracts/wave25'
-import { hasAction, requireAuthorization } from '../access/policy.js'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { graphJsonBytes, type CanonicalRunGraphReadCapabilities,
+  type RepeatGraphCurrentV3, type RepeatGraphSnapshotV3, type RepeatGraphPageV3, type RepeatGraphResetV3 } from '@graphql/contracts/wave25'
 import { RepeatGraphReadService } from './repeatReadService.js'
 import { RunGraphError } from './errors.js'
-import { readRunGraphPage, readRunGraphSnapshot, type AuthorizeRunGraphRead, type ReadCurrentRunGraph } from './reader.js'
 import { observeGraph, type GraphMeasurementSink } from './measurements.js'
 
 export interface RunGraphReadApi {
-  /** Concrete primary-pool reader; absent or unqualified remains closed. */
-  readonly repeat?: RepeatGraphReadService
-  capabilities(principal: ManagementPrincipal): typeof DISABLED_RUN_GRAPH_CAPABILITIES
-  snapshot(principal: ManagementPrincipal, request: unknown): Promise<RunGraphSnapshot>
-  events(principal: ManagementPrincipal, request: unknown): Promise<RunGraphPage | RunGraphReset>
+  capabilities(principal: ManagementPrincipal): CanonicalRunGraphReadCapabilities
+  current(principal: ManagementPrincipal, request: unknown): Promise<RepeatGraphCurrentV3>
+  snapshot(principal: ManagementPrincipal, request: unknown): Promise<RepeatGraphSnapshotV3>
+  events(principal: ManagementPrincipal, request: unknown): Promise<RepeatGraphPageV3 | RepeatGraphResetV3>
 }
 
-/** Both HTTP and Operator MCP use this service. Supply the PRIMARY database pool. */
+/** One canonical current reader through the PRIMARY pool. Read qualification
+ * never enables native admission, Stop settlement or executable edits. */
 export class RunGraphReadService implements RunGraphReadApi {
-  readonly repeat: RepeatGraphReadService
-  constructor(private readonly primaryPool: pg.Pool, private readonly assemble: ReadCurrentRunGraph,
-    private readonly options: { qualifiedReads?: boolean; qualifiedRepeatReads?: boolean; measurements?: GraphMeasurementSink; repeat?: RepeatGraphReadService } = {}) {
-    // Separate, trusted composition gates: qualifying persisted reads never
-    // qualifies native Start, Stop settlement or meaningful-edit publication.
-    this.repeat = options.repeat ?? new RepeatGraphReadService(primaryPool, {
-      qualifiedReads: options.qualifiedRepeatReads === true,
-    })
+  private readonly reader: RepeatGraphReadService
+  constructor(primaryPool: pg.Pool, private readonly options: { qualifiedReads?: boolean; measurements?: GraphMeasurementSink } = {}) {
+    this.reader = new RepeatGraphReadService(primaryPool, { qualifiedReads: options.qualifiedReads === true })
   }
-
-  capabilities(principal: ManagementPrincipal) {
-    this.principal(principal)
-    if (!this.options.qualifiedReads) return DISABLED_RUN_GRAPH_CAPABILITIES
-    return RunGraphCapabilitiesSchema.parse({ ...DISABLED_RUN_GRAPH_CAPABILITIES,
-      protocolVersions: [1], executionSemanticsVersions: [2], authoringSemanticsVersions: [2],
-      admissionEnabled: WAVE25_ADMISSION_ENABLED })
+  capabilities(principal: ManagementPrincipal) { return this.reader.capabilities(principal) }
+  current(principal: ManagementPrincipal, request: unknown) {
+    return this.measured('snapshot', () => this.reader.current(principal, request))
   }
-  private principal(input: ManagementPrincipal): ManagementPrincipal {
-    try {
-      const principal = ManagementPrincipalSchema.parse(input)
-      if (hasAction(principal, 'runs:read')) return principal
-    } catch { /* App/worker principals and malformed/expired grants fail closed. */ }
-    throw new RunGraphError('GRAPH_READ_ACCESS_DENIED')
+  snapshot(principal: ManagementPrincipal, request: unknown) {
+    return this.measured('snapshot', () => this.reader.snapshot(principal, request))
   }
-  private authorize(principal: ManagementPrincipal): AuthorizeRunGraphRead {
-    return async (sql, scope) => {
-      // Authorize the ACTUAL tuple, not a caller's workspace/workflow claim. G1
-      // independently compares every requested pin against that tuple afterwards.
-      const row = (await sql.query<{ workspace_id: string; workflow_id: string; id: string }>(
-        'select workspace_id,workflow_id,id from runs where id=$1', [scope.runId])).rows[0]
-      if (!row) throw new RunGraphError('GRAPH_READ_ACCESS_DENIED')
-      requireAuthorization(principal, 'runs:read', { workspaceId: row.workspace_id, workflowId: row.workflow_id, runId: row.id })
-    }
-  }
-  async snapshot(input: ManagementPrincipal, request: unknown): Promise<RunGraphSnapshot> {
-    const principal = this.principal(input)
-    if (!this.options.qualifiedReads) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
-    return this.measured('snapshot', () => readRunGraphSnapshot(this.primaryPool, request, this.authorize(principal), this.assemble))
-  }
-  async events(input: ManagementPrincipal, request: unknown): Promise<RunGraphPage | RunGraphReset> {
-    const principal = this.principal(input)
-    if (!this.options.qualifiedReads) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
-    return this.measured('delta', () => readRunGraphPage(this.primaryPool, request, this.authorize(principal)))
+  events(principal: ManagementPrincipal, request: unknown) {
+    return this.measured('delta', () => this.reader.events(principal, request))
   }
   private async measured<T>(stage: 'snapshot' | 'delta', work: () => Promise<T>): Promise<T> {
     const start = performance.now()
@@ -72,7 +38,6 @@ export class RunGraphReadService implements RunGraphReadApi {
       return value
     } catch (error) {
       observeGraph(this.options.measurements, { stage, outcome: 'error', durationMs: performance.now() - start })
-      // A corrupt row / SQL error must not leak native data via transports or logs.
       throw error instanceof RunGraphError ? error : new RunGraphError('GRAPH_INVARIANT_VIOLATION')
     }
   }

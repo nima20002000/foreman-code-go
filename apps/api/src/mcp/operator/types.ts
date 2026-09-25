@@ -1,6 +1,5 @@
 import type { RunGraphReadApi } from '../../modules/run-graph/readService.js'
 import type { OperatorExtensions } from './extensions.js'
-import type { RepeatServices } from '../../modules/repeats/composition.js'
 import type { HarnessMcpSettingsService } from '../../modules/harnesses/mcpSettings.js'
 import type { HarnessDirectoryBrowser } from '../../modules/harnesses/directoryBrowser.js'
 import type { CodexPluginSettingsService } from '../../modules/harnesses/codexPluginSettings.js'
@@ -9,8 +8,6 @@ import type { OperatorChatService } from '../../modules/conversations/operatorCh
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
 import type { AgentManagementService } from '../../modules/workspaces/agents.js'
-import type { Wave25ApprovalDraftService } from '../../modules/workflows/approvalDraftService.js'
-import type { GraphDraftService } from '../../modules/graph-drafts/service.js'
 import type { HarnessCatalogService } from '../../modules/harnesses/catalog.js'
 import type { RunManagementService } from '../../modules/runs/management.js'
 import type { WorkflowManagementService } from '../../modules/workflows/management.js'
@@ -21,7 +18,6 @@ import type { FoundationSettingsManagementService } from '../../modules/settings
 import type { OperatorInteractionService } from '../../modules/interactions/operator.js'
 
 export interface OperatorServices {
-  repeats?: RepeatServices
   runGraph?: RunGraphReadApi
   operatorChat?: Pick<OperatorChatService, 'setup' | 'create' | 'get' | 'send' | 'handoffHistory'>
   harnessSettings?: { mcp: HarnessMcpSettingsService; directories: HarnessDirectoryBrowser; plugins?: CodexPluginSettingsService }
@@ -31,8 +27,6 @@ export interface OperatorServices {
   locations: WorkspaceLocationService
   workflows: WorkflowManagementService
   agents: AgentManagementService
-  drafts: GraphDraftService
-  approvalDrafts?: Wave25ApprovalDraftService
   harnesses: HarnessCatalogService
   settings?: FoundationSettingsManagementService
   runs: RunManagementService

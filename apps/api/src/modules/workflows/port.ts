@@ -1,14 +1,12 @@
-import type { WorkflowVersion } from '@graphql/contracts'
-import type { SavedWorkflowVersion } from '@graphql/contracts/wave25'
+import type { WorkflowVersionV3 } from '@graphql/contracts/wave25'
 
-/** Existing engine-facing contract. V3 must not enter an unconverted caller. */
+/** One current immutable reader for the existing engine and management clients.
+ * Publication belongs to authenticated CurrentWorkflowAuthoringService, never a
+ * raw repository INSERT that lacks a command, live grants or a typed witness. */
 export interface WorkflowRepository {
-  getVersion(workflowVersionId: string): Promise<WorkflowVersion | undefined>
-  insertVersion(workflowVersion: WorkflowVersion): Promise<void>
+  getVersion(workflowVersionId: string): Promise<WorkflowVersionV3 | undefined>
 }
-
-/** Opt-in immutable history/Run snapshot reader, not an engine or Start port. */
 export interface ImmutableWorkflowVersionReader {
-  getSavedVersion(workflowVersionId: string): Promise<SavedWorkflowVersion | undefined>
-  getCurrentSavedVersion(workspaceId: string, workflowId: string): Promise<SavedWorkflowVersion | undefined>
+  getSavedVersion(workflowVersionId: string): Promise<WorkflowVersionV3 | undefined>
+  getCurrentSavedVersion(workspaceId: string, workflowId: string): Promise<WorkflowVersionV3 | undefined>
 }

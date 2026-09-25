@@ -39,7 +39,7 @@ export function registerRunGraphRoutes(app: FastifyInstance, reads: RunGraphRead
       if (!parameters.success || !query.success) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
       const value = await canonical[kind](request.operatorPrincipal!, { protocolVersion: 1, scope: {
         ...parameters.data, workflowVersionId: query.data.workflowVersionId,
-        executionSemanticsVersion: Number(query.data.executionSemanticsVersion),
+        executionSemanticsVersion: 3,
       } })
       return (kind === 'snapshot' ? CanonicalRunGraphSnapshotSchema : CanonicalRunGraphCurrentSchema).parse(value)
     }))
@@ -51,7 +51,7 @@ export function registerRunGraphRoutes(app: FastifyInstance, reads: RunGraphRead
     if (!parameters.success || !query.success) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
     return CanonicalRunGraphEventsResponseSchema.parse(await canonical.events(request.operatorPrincipal!, { protocolVersion: 1, afterSequence: query.data.afterSequence, scope: {
       ...parameters.data, workflowVersionId: query.data.workflowVersionId,
-      executionSemanticsVersion: Number(query.data.executionSemanticsVersion),
+      executionSemanticsVersion: 3,
     } }))
   }))
 }

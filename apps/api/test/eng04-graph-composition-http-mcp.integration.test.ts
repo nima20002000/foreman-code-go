@@ -1,10 +1,9 @@
-import { randomUUID } from 'node:crypto'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import {
   CANONICAL_RUN_GRAPH_MCP_TOOLS, RepeatGraphPageV3Schema, RepeatGraphSnapshotV3Schema,
-  reduceRepeatGraphPageV3, makeWave25Fixture, RunGraphSnapshotSchema, RunGraphEventsResponseSchema,
+  reduceRepeatGraphPageV3, type CurrentFixtureForm,
 } from '@graphql/contracts/wave25'
-import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
+import { currentDatabase as agent3Database, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import {
   graphFixture, graphUrl, graphHeaders, graphRpc, graphRpcValue, changeRunState, privateCanary,
   type GraphFixture, type GraphTestDatabase,
@@ -20,8 +19,8 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / authenticated HTTP 
   beforeAll(async () => { db = await agent3Database() }, 60000)
   afterEach(async () => { await Promise.all(fixtures.splice(0).map((t) => t.app.close())) })
   afterAll(async () => { await db?.close() })
-  async function fixture(qualifiedReads = true) {
-    const t = await graphFixture(db, { qualifiedReads }); fixtures.push(t); return t
+  async function fixture(qualifiedReads = true, form: CurrentFixtureForm = 'repeat') {
+    const t = await graphFixture(db, { qualifiedReads, form }); fixtures.push(t); return t
   }
   const http = (t: GraphFixture, kind: 'current' | 'snapshot' | 'events', after?: string, token = t.writer.token) =>
     t.app.inject({ method: 'GET', url: graphUrl(t, kind, after), headers: graphHeaders(token) })
@@ -70,8 +69,8 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / authenticated HTTP 
     }
     const capabilities = await t.app.inject({ method: 'GET', url: '/api/capabilities/run-graph/v1', headers: graphHeaders(t.writer.token) })
     expect(capabilities.statusCode).toBe(200)
-    expect(capabilities.json().executionSemanticsVersions).toEqual([2])
-    expect(capabilities.json().authoringSemanticsVersions).toEqual([2])
+    expect(capabilities.json().readSemanticsVersions).toEqual([])
+    expect(capabilities.json().semantics3.persistedReads).toBe(false)
   })
 
   it('denies missing, revoked, wrong-scope and missing-runs:read credentials and audits both transport denials', async () => {
@@ -107,7 +106,7 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / authenticated HTTP 
       const remote = await mcp(t, 'events', text)
       expect(remote.error !== undefined || remote.result?.isError === true).toBe(true)
     }
-    for (const query of ['executionSemanticsVersion=4', 'executionSemanticsVersion=03', 'executionSemanticsVersion=3&extra=1']) {
+    for (const query of ['executionSemanticsVersion=1', 'executionSemanticsVersion=2', 'executionSemanticsVersion=4', 'executionSemanticsVersion=03', 'executionSemanticsVersion=3&extra=1']) {
       const url = graphUrl(t, 'snapshot').replace('executionSemanticsVersion=3', query)
       expect((await t.app.inject({ method: 'GET', url, headers: graphHeaders(t.writer.token) })).statusCode).not.toBe(200)
     }
@@ -120,26 +119,18 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / authenticated HTTP 
     }
   })
 
-  it('keeps semantics-2 snapshot and delta output equal across the original endpoint/tool names', async () => {
-    const t = await fixture()
-    const legacy = makeWave25Fixture(randomUUID())
-    await seedAgent3(db.pool, db.directory, legacy)
-    const credential = await t.credential([{ actions: ['runs:read'], scope: {
-      workspaceIds: [legacy.scope.workspaceId], workflowIds: [legacy.scope.workflowId],
-    } }])
-    for (const kind of ['snapshot', 'events'] as const) {
-      const scope = legacy.scope
-      const query = new URLSearchParams({ workflowVersionId: scope.workflowVersionId, executionSemanticsVersion: '2',
-        ...(kind === 'events' ? { afterSequence: '0' } : {}) })
-      const url = `/api/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/runs/${scope.runId}/graph/v1/${kind}?${query}`
-      const read = await t.app.inject({ method: 'GET', url, headers: graphHeaders(credential.token) })
-      const remote = await graphRpc(t.app, credential.token, 'tools/call', { name: CANONICAL_RUN_GRAPH_MCP_TOOLS[kind], arguments: {
-        protocolVersion: 1, scope, ...(kind === 'events' ? { afterSequence: '0' } : {}),
-      } })
-      expect(read.statusCode, read.body).toBe(200)
-      expect(remote.result?.isError).not.toBe(true)
-      expect(graphRpcValue(remote.result)).toEqual(read.json())
-      expect((kind === 'snapshot' ? RunGraphSnapshotSchema : RunGraphEventsResponseSchema).safeParse(read.json()).success).toBe(true)
-    }
-  })
+  it.each(['single', 'sequential', 'parallel', 'conditional', 'approval'] as const)(
+    '%s uses ordinary current V3 with omitted repeat on both transports', async (form) => {
+      const t = await fixture(true, form)
+      expect(Object.hasOwn(t.version.definition, 'repeat')).toBe(false)
+      for (const kind of ['snapshot', 'current', 'events'] as const) {
+        const after = kind === 'events' ? '0' : undefined
+        const read = await http(t, kind, after), remote = await mcp(t, kind, after)
+        expect(read.statusCode, read.body).toBe(200)
+        expect(remote.result?.isError).not.toBe(true)
+        expect(graphRpcValue(remote.result)).toEqual(read.json())
+        if (kind !== 'events') expect(Object.hasOwn(read.json().topology, 'repeat')).toBe(false)
+      }
+      expect(Object.hasOwn(t.run, 'repeat')).toBe(false)
+    })
 })

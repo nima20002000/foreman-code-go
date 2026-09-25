@@ -1,48 +1,78 @@
 import { randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
-import {
-  makeWave25Fixture, CANONICAL_RUN_GRAPH_ROUTES,
-} from '@graphql/contracts/wave25'
+import { AgentSchema } from '@graphql/contracts'
+import { ManagementActionSchema, type ManagementGrant } from '@graphql/contracts/management'
+import { makeCurrentWorkflowFixture, CANONICAL_RUN_GRAPH_ROUTES, CurrentWorkflowSaveResultSchema,
+  SavedManagedWorkflowCommandResultSchema, type CurrentFixtureForm } from '@graphql/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
-import { readCurrentGraphExchanges } from '../src/modules/interactions/wave25/currentExchanges.js'
-import { createCompactSnapshotAssembler } from '../src/modules/run-graph/compactSnapshot.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import { RunGraphReadService } from '../src/modules/run-graph/readService.js'
 import { openRunGraphPublication } from '../src/modules/run-graph/publication.js'
 import { publishRepeatRunStateLocked } from '../src/modules/run-graph/repeatPublication.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
-import { agent3Database, seedAgent3 } from './helpers/wave25Agent3.js'
-import { createRepeatFixtureWriter, insertFixtureRepeatRun, repeatReadyAgent3Fixture } from './eng04-repeat-fixture-writer.js'
+import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
+import { insertCurrentRunFixture } from './helpers/eng04CurrentRunFixture.js'
 
-export type GraphTestDatabase = Awaited<ReturnType<typeof agent3Database>>
+export type GraphTestDatabase = Awaited<ReturnType<typeof currentDatabase>>
 export const privateCanary = 'ENG04-PRIVATE-INPUT-MUST-NOT-REACH-GRAPH'
 
-/** Real database/transport fixture, not an engine, native host or qualification
- * adapter. Start authority/dispatch are not exercised by this SQL producer test.
- * Uses the repository's existing opt-in disposable schema/migration harness.
- */
-export async function graphFixture(db: GraphTestDatabase, options: { insert?: boolean; qualifiedReads?: boolean } = {}) {
-  const f = repeatReadyAgent3Fixture(makeWave25Fixture(randomUUID()))
-  await seedAgent3(db.pool, db.directory, f, { run: false })
-  const fixtureWriter = await createRepeatFixtureWriter(db.pool, f)
-  const saved = await fixtureWriter.publish(3)
-  const { version, run, accepted, scope } = await insertFixtureRepeatRun(db.pool, f, saved,
-    fixtureWriter.writer.principal.id, { insert: options.insert !== false, input: { canary: privateCanary } })
-  const { access, commands, grantScope, credential, writer, repeats } = fixtureWriter
-  // Exercise the same PRIMARY-pool construction as production, not an injected
-  // repeat-reader override. Test opt-in remains independent of native admission.
-  const graph = new RunGraphReadService(db.pool, createCompactSnapshotAssembler(readCurrentGraphExchanges), {
-    qualifiedReads: true, qualifiedRepeatReads: options.qualifiedReads === true,
-  })
-  const repeat = graph.repeat
-  // Unrelated services are not called. Authentication, commands/audit, graph
-  // services, canonical publisher and database are actual production classes.
-  const services = { commands, repeats, runGraph: graph } as unknown as OperatorServices
+/** Real current typed Create/Save + canonical Start-publication SQL fixture.
+ * No native/public Start acceptance is claimed. Current authoring, authentication,
+ * SQL receipts/audit and canonical publication are actual production services. */
+export async function graphFixture(db: GraphTestDatabase, options: { insert?: boolean; qualifiedReads?: boolean; form?: CurrentFixtureForm } = {}) {
+  const f = makeCurrentWorkflowFixture(randomUUID(), options.form ?? 'repeat')
+  await db.pool.query(`insert into workspaces(id,record,execution_location,execution_location_identity,location_revision)
+    values($1,$2::jsonb,$3::jsonb,$4::jsonb,1)`, [f.scope.workspaceId,
+  JSON.stringify({ id: f.scope.workspaceId, name: 'Current graph fixture' }),
+  JSON.stringify({ runnerId: 'runner-local', rootPath: db.directory }), JSON.stringify({ fixture: true })])
+  for (const config of f.configurations) {
+    const agent = AgentSchema.parse({ id: config.agentId, name: 'Fixture Worker', productRole: config.productRole,
+      harness: config.harness.harness, model: config.harness.model, effort: 'low', fastMode: false,
+      harnessConfiguration: config.harness, prompt: config.prompt, assignedSkills: config.assignedSkills, configurationVersionId: config.id })
+    await db.pool.query('insert into agents(id,workspace_id,record) values($1,$2,$3::jsonb)', [agent.id, f.scope.workspaceId, JSON.stringify(agent)])
+    await db.pool.query('insert into agent_configuration_versions(id,workspace_id,agent_id,version,record) values($1,$2,$3,1,$4::jsonb)',
+      [config.id, f.scope.workspaceId, config.agentId, JSON.stringify(config)])
+    await db.pool.query('update agents set current_configuration_version_id=$2 where id=$1', [agent.id, config.id])
+  }
+  const access = new PostgresAccessService(db.pool), commands = new PostgresCommandCoordinator(db.pool)
+  const credential = (grants: ManagementGrant[]) => access.issue({ name: 'Current graph fixture caller', audience: 'operator',
+    expiresAt: new Date(Date.now() + 300000), grants })
+  const writer = await credential([{ actions: ['capabilities:read'], scope: {} }, {
+    actions: ManagementActionSchema.options.filter((action) => action !== 'capabilities:read'), scope: { workspaceIds: [f.scope.workspaceId] },
+  }])
+  const graph = new RunGraphReadService(db.pool, { qualifiedReads: options.qualifiedReads === true })
+  const workflows = new WorkflowManagementService(db.pool, commands)
+  const services = { commands, workflows, runGraph: graph } as unknown as OperatorServices
   const app = buildApp({ readiness: { database: { ping: async () => { await db.pool.query('select 1') } },
     checkpoints: { ping: async () => undefined } }, operator: { access, services } })
   await app.ready()
-  const readRequest = { protocolVersion: 1, scope }
-  return { f, version, run, accepted, scope, grantScope, writer, credential, access, commands, repeat, graph, app, readRequest }
+  try {
+    const created = await app.inject({ method: 'POST', url: `/api/management/workspaces/${f.scope.workspaceId}/workflows`,
+      headers: graphHeaders(writer.token), payload: { workspaceId: f.scope.workspaceId, commandId: randomUUID(), name: 'Current graph' } })
+    if (created.statusCode !== 201) throw new Error(`Current fixture Create failed: ${created.statusCode} ${created.body}`)
+    const managed = SavedManagedWorkflowCommandResultSchema.parse(created.json()).value
+    const workflowId = managed.workflow.id
+    const response = await app.inject({ method: 'PUT', url: `/api/management/workspaces/${f.scope.workspaceId}/workflows/${workflowId}/definition`,
+      headers: graphHeaders(writer.token), payload: {
+        workspaceId: f.scope.workspaceId, workflowId, commandId: randomUUID(), executionSemanticsVersion: 3,
+        expectedRevision: managed.revision, expectedWorkflowVersionId: null, expectedLocationRevision: 1,
+        expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds,
+        graph: { ...f.version.definition, id: workflowId, createdAt: managed.workflow.createdAt },
+      } })
+    if (response.statusCode !== 200) throw new Error(`Current typed fixture Save failed: ${response.statusCode} ${response.body}`)
+    const saved = CurrentWorkflowSaveResultSchema.parse(response.json()).value
+    const { version, run, accepted, scope } = await insertCurrentRunFixture(db.pool, { ...f, run: { ...f.run,
+      workflowId, executionLocation: { runnerId: 'runner-local', rootPath: db.directory, locationRevision: 1,
+        identityHash: `sha256:${'1'.repeat(64)}` } } }, saved, writer.principal.id,
+    { insert: options.insert !== false, input: { canary: privateCanary } })
+    const grantScope = { workspaceIds: [scope.workspaceId], workflowIds: [scope.workflowId] }
+    const readRequest = { protocolVersion: 1, scope }
+    return { f: { ...f, version, run, scope }, version, run, accepted, scope, grantScope, writer, credential,
+      access, commands, repeat: graph, graph, app, readRequest }
+  } catch (error) { await app.close(); throw error }
 }
 export type GraphFixture = Awaited<ReturnType<typeof graphFixture>>
 export async function ownedGraph<T>(db: GraphTestDatabase, t: GraphFixture, work: (owner: RunOwnership) => Promise<T>): Promise<T> {

@@ -149,7 +149,7 @@ describe('repeat private edit contracts share durable actions without weakening 
     expect(RepeatEditIntentSchema.safeParse(saved).success).toBe(true)
     expect(RepeatEditIntentSchema.safeParse({ ...saved, state: 'waiting' }).success).toBe(false)
     expect(RepeatEditIntentSchema.safeParse({ ...saved, result: { ...f.saved, revision: 9 } }).success).toBe(false)
-    const wrong = structuredClone(f.saved); wrong.version.definition.repeat.blocks[0]!.maxOccurrences = 1
+    const wrong = structuredClone(f.saved); wrong.version.definition.repeat!.blocks[0]!.maxOccurrences = 1
     expect(RepeatEditIntentSchema.safeParse({ ...saved, result: wrong }).success).toBe(false)
   })
   it('uses strict complete output variants even when the MCP root is an object', () => {

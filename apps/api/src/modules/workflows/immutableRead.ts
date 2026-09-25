@@ -25,25 +25,24 @@ export const IMMUTABLE_WORKFLOW_VERSION_COLUMNS = 'id,workspace_id,workflow_id,v
 
 export function readImmutableWorkflowVersion(row: ImmutableWorkflowVersionRow,
   expected: { id?: string; workspaceId?: string; workflowId?: string } = {}): SavedWorkflowVersion {
+  if (row.execution_semantics_version !== 3) throw new DomainError('EXECUTION_SEMANTICS_UNSUPPORTED',
+    'Only explicitly pinned current execution semantics 3 can be read.', 409)
   const parsed = SavedWorkflowVersionSchema.safeParse(row.record)
   if (!parsed.success) throw new DomainError('WORKFLOW_VERSION_RECORD_INVALID', 'The immutable workflow version is invalid.', 409)
   const version = parsed.data
-  const semantics = 'executionSemanticsVersion' in version ? version.executionSemanticsVersion : 1
   if (version.id !== row.id || version.workspaceId !== row.workspace_id || version.workflowId !== row.workflow_id
-    || version.version !== row.version || version.entryNodeId !== row.entry_node_id || semantics !== row.execution_semantics_version
+    || version.version !== row.version || version.entryNodeId !== row.entry_node_id || version.executionSemanticsVersion !== row.execution_semantics_version
     || expected.id !== undefined && version.id !== expected.id
     || expected.workspaceId !== undefined && version.workspaceId !== expected.workspaceId
     || expected.workflowId !== undefined && version.workflowId !== expected.workflowId) {
     throw new DomainError('WORKFLOW_VERSION_PIN_MISMATCH', 'The immutable workflow version does not match its persisted identity.', 409)
   }
-  if (semantics === 3) {
-    // Exact repeat-authoring hash payload. Never recompute a legacy hash using a
-    // new algorithm, or replace/relabel a stored version to make a read succeed.
-    const digest = `sha256:${createHash('sha256').update(canonicalGraphJson({
-      definition: version.definition, configurations: version.agentConfigurationVersionIds, entryNodeId: version.entryNodeId,
-    })).digest('hex')}`
-    if (digest !== version.contentHash) throw new DomainError('WORKFLOW_VERSION_HASH_MISMATCH', 'The immutable workflow version content hash does not match.', 409)
-  }
+  // Hash the actual current definition, including optional-repeat presence.
+  // Reading never fills an omitted field or retags a saved record.
+  const digest = `sha256:${createHash('sha256').update(canonicalGraphJson({
+    definition: version.definition, configurations: version.agentConfigurationVersionIds, entryNodeId: version.entryNodeId,
+  })).digest('hex')}`
+  if (digest !== version.contentHash) throw new DomainError('WORKFLOW_VERSION_HASH_MISMATCH', 'The immutable workflow version content hash does not match.', 409)
   return version
 }
 

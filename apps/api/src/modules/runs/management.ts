@@ -1,47 +1,32 @@
-import { randomUUID } from 'node:crypto'
-
-import {
-  AgentConfigurationVersionSchema,
-  RunActivitySchema,
-  WorkflowVersionSchema,
-  type RunInput,
-} from '@graphql/contracts'
-import { GraphDraftSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import { RunActivitySchema } from '@graphql/contracts'
+import { RunStopInputSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
-import { RunCurrentRequestSchema, type RunCurrentRequest } from '@graphql/contracts/run-current'
-import { RunHistoryRequestSchema, type RunHistoryRequest } from '@graphql/contracts/run-history'
-import { readRunCurrent } from './liveSnapshot.js'
-import { readRunHistory } from './runHistory.js'
-import { CompatibleWorkflowRunSchema as WorkflowRunSchema, RunStartV2InputSchema, assertWave25Admission } from '@graphql/contracts/wave25'
+import { RunStartV3InputSchema, SavedWorkflowRunSchema, CurrentJournalStopSchema, canonicalGraphJson,
+  type RunStartV3Input } from '@graphql/contracts/wave25'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
-import { admitOneShotRun } from './oneShotAdmission.js'
-import { RunStartV3InputSchema, SavedWorkflowRunSchema, WorkflowRunV3Schema, type RunStartV3Input } from '@graphql/contracts/wave25'
+import { readCurrentRunDetails, withCurrentRunRead } from './currentRead.js'
+import { readAcceptedRepeatRunLocked } from './repeatStartRead.js'
 import { admitRepeatRun } from './repeatStartAdmission.js'
-import { runStartSemantics } from './repeatStartDispatch.js'
-
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { authorizedPage } from '../access/authorizedPage.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
-import { assertWorkflowRecovered } from './recoveryPolicy.js'
 import type { LangGraphWorkflowEngine } from './engine.js'
 import type { PostgresRunRepository } from './postgres.js'
-import { validateExecutableTopology } from './topology.js'
-import { requiredLocationAccess, WorkspaceLocationService } from '../workspaces/location.js'
-import { acceptedRunApproval, validateWorkflowApproval } from '../workflows/approval.js'
-import { acceptRunAuthority, bindRunAuthority } from '../access/runAuthority.js'
-import { assertTriggerDispatch } from '../workflows/triggerAuthority.js'
+import type { WorkspaceLocationService } from '../workspaces/location.js'
+import type { CurrentRunProductionBinding, CurrentRuntimeAvailability } from './currentProduction.js'
 
 export class RunManagementService {
   constructor(
     private readonly pool: pg.Pool,
     private readonly commands: PostgresCommandCoordinator,
-    private readonly runs: PostgresRunRepository,
+    _runs: PostgresRunRepository,
     private readonly engine: LangGraphWorkflowEngine,
     private readonly locations: WorkspaceLocationService,
+    private readonly currentProduction?: CurrentRunProductionBinding,
   ) {}
 
-  private visibleRun(principal: ManagementPrincipal, run: ReturnType<typeof WorkflowRunSchema.parse>) {
+  private visibleRun(principal: ManagementPrincipal, run: ReturnType<typeof SavedWorkflowRunSchema.parse>) {
     const visible = { ...run }
     delete visible.authorizationPrincipalId
     if (!isAuthorized(principal, 'workspace_locations:read', { workspaceId: run.workspaceId })) {
@@ -53,65 +38,33 @@ export class RunManagementService {
   async list(principal: ManagementPrincipal, input: { workspaceId: string; workflowId?: string | undefined; cursor?: string | undefined; limit: number }) {
     const page = await authorizedPage({
       principal, action: 'runs:read', cursor: input.cursor, limit: input.limit,
-      read: async (cursor, limit) => (await this.pool.query<{ record: unknown }>(
-        `select record from runs where workspace_id = $1
+      read: async (cursor, limit) => (await this.pool.query<{ id: string; workspace_id: string; workflow_id: string; record: unknown }>(
+        `select id,workspace_id,workflow_id,record from runs where workspace_id = $1
          and ($2::text is null or workflow_id = $2)
          and ($3::text is null or id > $3)
          order by id limit $4`, [input.workspaceId, input.workflowId ?? null, cursor ?? null, limit],
-      )).rows.map((row) => WorkflowRunSchema.parse(row.record)),
+      )).rows.map((row) => {
+        const run = SavedWorkflowRunSchema.parse(row.record)
+        if (run.id !== row.id || run.workspaceId !== row.workspace_id || run.workflowId !== row.workflow_id) {
+          throw new DomainError('RUN_PIN_CONFLICT', 'A Run list record does not match its persisted scope.', 409)
+        }
+        return run
+      }),
       id: (item) => item.id,
       resource: (item) => ({ workspaceId: item.workspaceId, workflowId: item.workflowId, runId: item.id }),
     })
-    return { ...page, items: page.items.map((item) => this.visibleRun(principal, item)) }
+    const items = await Promise.all(page.items.map((item) => withCurrentRunRead(this.pool, principal, item.workspaceId, item.id,
+      'runs:read', async (_sql, snapshot, live) => this.visibleRun(live, snapshot.run))))
+    return { ...page, items }
   }
 
-  async current(principal: ManagementPrincipal, input: RunCurrentRequest) {
-    const scope = RunCurrentRequestSchema.parse(input)
-    // URL/tool pins are requests, not authority. The read matches every saved
-    // identity in the same statement; a forged workflow pin cannot widen access.
-    requireAuthorization(principal, 'runs:read', {
-      workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId,
-    })
-    const current = await readRunCurrent(this.pool, scope)
-    if (!current) throw new DomainError('RUN_NOT_FOUND', `Run '${scope.runId}' was not found at the requested scope.`, 404)
-    // Compact fields contain no filesystem paths or authorization principal IDs.
-    return current
-  }
-
-  async history(principal: ManagementPrincipal, input: RunHistoryRequest) {
-    const scope = RunHistoryRequestSchema.parse(input)
-    requireAuthorization(principal, 'runs:read', {
-      workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId,
-    })
-    const history = await readRunHistory(this.pool, scope,
-      isAuthorized(principal, 'agents:read', { workspaceId: scope.workspaceId }))
-    if (!history) throw new DomainError('RUN_NOT_FOUND', `Run '${scope.runId}' was not found at the requested scope.`, 404)
-    return history
-  }
-
-  async get(principal: ManagementPrincipal, workspaceId: string, runId: string) {
-    const run = await this.runs.getForWorkspace(workspaceId, runId)
-    if (!run) throw new DomainError('RUN_NOT_FOUND', `Run '${runId}' was not found.`, 404)
-    requireAuthorization(principal, 'runs:read', { workspaceId, workflowId: run.workflowId, runId })
-    const details = await this.runs.getDetails(workspaceId, runId)
-    if (!details) return undefined
-    const canReadLocation = isAuthorized(principal, 'workspace_locations:read', { workspaceId })
-    const executions = details.executions.map((execution) => {
-      const visible = { ...execution }
-      if (!canReadLocation) {
-        delete visible.workingDirectory
-        delete visible.runtimeDirectory
-      }
-      return visible
-    })
-    return { ...details, run: this.visibleRun(principal, details.run), executions }
+  get(principal: ManagementPrincipal, workspaceId: string, runId: string) {
+    return readCurrentRunDetails(this.pool, principal, workspaceId, runId)
   }
 
   async events(principal: ManagementPrincipal, input: { workspaceId: string; runId: string; afterSequence?: number | undefined; limit: number }) {
-    const run = await this.runs.getForWorkspace(input.workspaceId, input.runId)
-    if (!run) throw new DomainError('RUN_NOT_FOUND', `Run '${input.runId}' was not found.`, 404)
-    requireAuthorization(principal, 'runs:read', { workspaceId: input.workspaceId, workflowId: run.workflowId, runId: input.runId })
-    const rows = await this.pool.query<{
+    return withCurrentRunRead(this.pool, principal, input.workspaceId, input.runId, 'runs:read', async (sql) => {
+    const rows = await sql.query<{
       sequence: string; source: string; kind: string; harness_execution_id: string | null;
       occurred_at: Date; payload: Record<string, unknown>
     }>(
@@ -126,172 +79,90 @@ export class RunManagementService {
       occurredAt: row.occurred_at.toISOString(), payload: row.payload,
     }))
     return { items, pageInfo: { nextCursor: rows.rows.length > input.limit ? String(items.at(-1)!.sequence) : null } }
+    })
   }
 
-  async start(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
-    workspaceId: string; workflowId: string; workflowVersionId: string; expectedLocationRevision: number;
-    commandId: string; input: RunInput; executionSemanticsVersion?: 2;
-    draftId?: string | undefined; expectedDraftRevision?: number | undefined; triggerJobId?: string | undefined
-  } | (RunStartV3Input & { triggerJobId?: string | undefined })) {
+  availability(): CurrentRuntimeAvailability {
+    return this.currentProduction?.availability() ?? { runtimeAdmission: false, stopAvailable: false }
+  }
+  assertCurrentStopReady(): void {
+    if (!this.currentProduction) throw new DomainError('REPEAT_STOP_RUNTIME_UNAVAILABLE',
+      'Current V3 Stop requires A’s qualified native lifecycle and cleanup binding. No Stop was submitted.', 409)
+    this.currentProduction.assertStopReady()
+  }
+
+  async start(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: RunStartV3Input & { triggerJobId?: string | undefined }) {
+    // No absent/retired/unknown tag can choose another execution path.
+    if (raw.executionSemanticsVersion !== 3) throw new DomainError('EXECUTION_SEMANTICS_UNSUPPORTED',
+      'Current execution requires explicit semantics 3.', 409)
+    const { triggerJobId, ...value } = raw
+    const input = RunStartV3InputSchema.parse(value)
     requireAuthorization(principal, 'runs:start', { workspaceId: input.workspaceId, workflowId: input.workflowId })
     requireAuthorization(principal, 'workspace_locations:read', { workspaceId: input.workspaceId })
-    runStartSemantics(input)
-    if (input.executionSemanticsVersion === 3) {
-      const { triggerJobId, ...command } = input
-      // The canonical producer is installed, but the complete native lifecycle
-      // is not qualified. Keep NEW admission closed; persisted READ qualification
-      // is independent. Exact verified Start receipt replay remains SQL-only.
-      const execution = await admitRepeatRun(this.pool, this.locations, principal, source,
-        RunStartV3InputSchema.parse(command), undefined, triggerJobId === undefined ? {} : { triggerJobId })
-      if (!execution.replayed) setImmediate(() => { void this.engine.start(execution.value.id).catch(() => undefined) })
-      const visible = WorkflowRunV3Schema.parse(execution.value)
-      delete visible.authorizationPrincipalId
-      if (!isAuthorized(principal, 'workspace_locations:read', { workspaceId: visible.workspaceId })) delete visible.executionLocation
-      return { run: visible, accepted: true as const, replayed: execution.replayed }
+    const production = this.currentProduction
+    // The unchanged admission layer verifies exact SQL receipts BEFORE trying a
+    // new publication. Replay neither invokes the native owner nor dispatches.
+    // New Run initialization always calls A's REAL publisher on this same G1.
+    const publication = production ? { initializeLocked: async (...args: Parameters<typeof production.startPublication.initializeLocked>) => {
+      production.assertStartReady()
+      return production.startPublication.initializeLocked(...args)
+    } } : undefined
+    const execution = await admitRepeatRun(this.pool, this.locations, principal, source, input, publication,
+      triggerJobId === undefined ? {} : { triggerJobId })
+    if (!execution.replayed) {
+      // Only a KNOWN admission COMMIT reaches dispatch. This is the existing
+      // configured engine entry for every current graph, not a repeat engine.
+      if (!production) throw new DomainError('REPEAT_START_RUNTIME_UNAVAILABLE', 'No current production binding is installed.', 409)
+      setImmediate(() => { void this.engine.start(execution.value.id)
+        .catch((error: unknown) => production.reportDispatchFailure(execution.value.id, error)) })
     }
-    if (input.executionSemanticsVersion === 2) {
-      assertWave25Admission()
-      const { triggerJobId, ...command } = input
-      const execution = await admitOneShotRun(this.pool, this.locations, principal, source,
-        RunStartV2InputSchema.parse(command), triggerJobId === undefined ? {} : { triggerJobId: triggerJobId as string })
-      if (!execution.replayed) setImmediate(() => { void this.engine.start(execution.value.id).catch(() => undefined) })
-      return { run: this.visibleRun(principal, execution.value), accepted: true as const, replayed: execution.replayed }
-    }
-    const execution = await this.commands.execute({
-      principal, source, operation: 'run.start', commandId: input.commandId,
-      targetKey: `workflow:${input.workflowId}:version:${input.workflowVersionId}`, payload: input,
-      perform: async (client) => {
-        await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.workspaceId}`])
-        await assertWorkflowRecovered(client, input.workspaceId, input.workflowId)
-        if (input.triggerJobId) await assertTriggerDispatch(client, principal, {...input, triggerJobId: input.triggerJobId})
-        const parents = await client.query<{
-          workspace_archived_at: Date | null; workflow_archived_at: Date | null; current_version_id: string | null
-        }>(
-          `select ws.archived_at as workspace_archived_at, wf.archived_at as workflow_archived_at, wf.current_version_id
-           from workspaces ws join workflows wf on wf.workspace_id = ws.id
-           where ws.id = $1 and wf.id = $2 for update of wf`, [input.workspaceId, input.workflowId],
-        )
-        const parent = parents.rows[0]
-        if (!parent) throw new DomainError('WORKFLOW_NOT_FOUND', `Workflow '${input.workflowId}' was not found.`, 404)
-        if (parent.workspace_archived_at || parent.workflow_archived_at) throw new DomainError('PARENT_ARCHIVED', 'Archived workspaces or workflows cannot start new runs.', 409)
-        if (parent.current_version_id !== input.workflowVersionId) {
-          throw new DomainError('WORKFLOW_VERSION_UNSUPPORTED', 'Only the current explicitly saved workflow version can be started.', 409, { currentVersionId: parent.current_version_id })
-        }
-        const versionRow = await client.query<{ record: unknown }>(
-          `select record from workflow_versions where id = $1 and workspace_id = $2 and workflow_id = $3`,
-          [input.workflowVersionId, input.workspaceId, input.workflowId],
-        )
-        if (!versionRow.rows[0]) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', `Workflow version '${input.workflowVersionId}' was not found.`, 404)
-        const semantics = (versionRow.rows[0].record as { executionSemanticsVersion?: unknown }).executionSemanticsVersion
-        if (semantics === 2) throw new DomainError('V2_ADMISSION_REQUIRED', 'Use the explicit v2 admission contract.', 409)
-        if (semantics !== undefined && semantics !== 1) throw new DomainError('EXECUTION_SEMANTICS_UNSUPPORTED', 'Unknown semantics cannot use the legacy admission path.', 409)
-        if ((input.draftId === undefined) !== (input.expectedDraftRevision === undefined)) {
-          throw new DomainError('DRAFT_IDENTITY_REQUIRED', 'Supply both draft identity and revision.', 400)
-        }
-        if (input.draftId !== undefined) {
-          const row = await client.query<{ record: unknown }>(
-            `select record from graph_drafts where id = $1 and workspace_id = $2 and workflow_id = $3
-             and discarded_at is null for share`, [input.draftId, input.workspaceId, input.workflowId],
-          )
-          const draft = row.rows[0] ? GraphDraftSchema.parse(row.rows[0].record) : undefined
-          if (!draft || draft.revision !== input.expectedDraftRevision || draft.publishedRevision !== draft.revision
-            || draft.baseWorkflowVersionId !== input.workflowVersionId) {
-            throw new DomainError('DISPLAYED_GRAPH_NOT_PUBLISHED', 'The displayed graph changed or is unpublished. Reload and save it before starting.', 409)
-          }
-        }
-        const version = WorkflowVersionSchema.parse(versionRow.rows[0].record)
-        validateExecutableTopology(version)
-        const approval = acceptedRunApproval(version)
-        const currentConfigurations = await client.query<{ id: string; current_configuration_version_id: string | null; configuration_record: unknown }>(
-          `select agents.id, agents.current_configuration_version_id, versions.record as configuration_record
-           from agents join agent_configuration_versions versions on versions.id = agents.current_configuration_version_id
-           where agents.workspace_id = $1 and agents.archived_at is null and agents.id = any($2::text[])`,
-          [input.workspaceId, Object.keys(version.agentConfigurationVersionIds)],
-        )
-        if (currentConfigurations.rows.length !== Object.keys(version.agentConfigurationVersionIds).length
-          || currentConfigurations.rows.some((row) => row.current_configuration_version_id !== version.agentConfigurationVersionIds[row.id])) {
-          throw new DomainError('WORKFLOW_CONFIGURATION_STALE', 'Agent settings changed. Save the graph again before starting it.', 409)
-        }
-        const configurations = currentConfigurations.rows.map((row) => AgentConfigurationVersionSchema.parse(row.configuration_record))
-        if (approval) validateWorkflowApproval(version.definition, approval, configurations.map((configuration) => ({
-          id: configuration.agentId, productRole: configuration.productRole, harnessConfiguration: configuration.harness,
-        })))
-        const executionLocation = await this.locations.snapshot(
-          client, input.workspaceId, input.expectedLocationRevision, requiredLocationAccess(configurations),
-        )
-        const authority = await acceptRunAuthority(client, principal)
-        requireAuthorization(authority.principal, 'runs:start', { workspaceId: input.workspaceId, workflowId: input.workflowId })
-        requireAuthorization(authority.principal, 'workspace_locations:read', { workspaceId: input.workspaceId })
-        const run = WorkflowRunSchema.parse({
-          id: `run-${randomUUID()}`, workspaceId: input.workspaceId, workflowId: input.workflowId,
-          workflowVersionId: version.id, agentConfigurationVersionIds: version.agentConfigurationVersionIds,
-          executionLocation,
-          ...(approval ? { approval } : {}),
-          authorizationPrincipalId: authority.principal.id,
-          executionCondition: version.definition.executionCondition, executionState: 'queued', outcome: 'pending',
-          input: input.input, createdAt: new Date().toISOString(),
-        })
-        await this.runs.create(run, client)
-        await bindRunAuthority(client, run.id, authority)
-        await this.runs.recordActivity(run.id, 'backend', 'run_state_changed', { executionState: 'queued' }, undefined, client)
-        return run
-      },
-    })
-    if (!execution.replayed) setImmediate(() => { void this.engine.start(execution.value.id).catch(() => undefined) })
     return { run: this.visibleRun(principal, execution.value), accepted: true as const, replayed: execution.replayed }
   }
 
-  async stop(principal: ManagementPrincipal, source: 'http' | 'mcp', input: { workspaceId: string; runId: string; commandId: string }) {
-    const run = await this.runs.getForWorkspace(input.workspaceId, input.runId)
-    if (!run) throw new DomainError('RUN_NOT_FOUND', `Run '${input.runId}' was not found.`, 404)
-    requireAuthorization(principal, 'runs:stop', { workspaceId: input.workspaceId, workflowId: run.workflowId, runId: input.runId })
+  async stop(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: { workspaceId: string; runId: string; commandId: string }) {
+    const input = RunStopInputSchema.parse(raw)
+    const run = await withCurrentRunRead(this.pool, principal, input.workspaceId, input.runId, 'runs:stop', async (_sql, snapshot) => snapshot.run)
+    const resource = { workspaceId: input.workspaceId, workflowId: run.workflowId, runId: input.runId }
+    requireAuthorization(principal, 'runs:stop', resource)
+    const receiptSchema = CurrentJournalStopSchema.shape.receipt.unwrap()
     const execution = await this.commands.execute({
       principal, source, operation: 'run.stop', commandId: input.commandId, dedicatedConnection: true,
       targetKey: `run:${input.runId}`, payload: input,
-      // Includes exact receipt replay: a captured principal is not live authority.
-      // The dedicated command releases these row locks before native cleanup.
+      replayResult: (value) => {
+        const receipt = receiptSchema.parse(value)
+        if (receipt.runId !== input.runId) throw new DomainError('COMMAND_ID_CONFLICT', 'The Stop receipt belongs to a different Run.', 409)
+        return receipt
+      },
+      // Live authority is checked even when returning a prior exact receipt.
       authorize: async (client) => {
         const live = await readLiveManagementPrincipal(client, principal.id)
-        requireAuthorization(live, 'runs:stop', { workspaceId: input.workspaceId, workflowId: run.workflowId, runId: input.runId })
+        requireAuthorization(live, 'runs:stop', resource)
       },
-      perform: async (client) => {
-        // Reuse the coordinator's lease. Ownership uses its dedicated session;
-        // neither this read nor orphan settlement needs a second pool lease.
-        const latestRow = await client.query<{ record: unknown }>(
-          'select record from runs where workspace_id = $1 and id = $2', [input.workspaceId, input.runId],
-        )
-        const latest = latestRow.rows[0] ? SavedWorkflowRunSchema.parse(latestRow.rows[0].record) : undefined
-        if (!latest) throw new DomainError('RUN_NOT_FOUND', `Run '${input.runId}' was not found.`, 404)
-        // V3 must never fall through to legacy orphan/cleanup settlement. The
-        // native owner must replace this closed arm with its qualified exact
-        // Stop/receipt/cleanup adapter, not merely remove the check or flip a flag.
-        if ('executionSemanticsVersion' in latest && latest.executionSemanticsVersion === 3) {
-          throw new DomainError('REPEAT_STOP_RUNTIME_UNAVAILABLE',
-            'V3 Stop requires the qualified native occurrence lifecycle. No Stop success or cleanup settlement was recorded.', 409)
-        }
-        if (latest.executionState === 'completed' && !await this.runs.hasPendingCleanup(input.runId, client)) {
-          return { runId: input.runId, status: 'already_terminal' as const, processStopped: false }
-        }
-        // Revalidate live command authority while the same parent Run lock that
-        // fences native launch/completion is held. Cleanup is not Stop intent.
-        if ('executionSemanticsVersion' in latest && latest.executionSemanticsVersion === 2) await this.runs.requestStop(input.runId, async (sql) => {
-          const live = await readLiveManagementPrincipal(sql as unknown as Pick<pg.ClientBase, 'query'>, principal.id)
-          requireAuthorization(live, 'runs:stop', { workspaceId: input.workspaceId, workflowId: latest.workflowId, runId: input.runId })
-        })
-        const accepted = await this.engine.cancel(input.runId, client)
-        return accepted
-          ? { runId: input.runId, status: 'accepted' as const, processStopped: false }
-          : { runId: input.runId, status: 'not_owner' as const, processStopped: false }
+      perform: async () => {
+        this.assertCurrentStopReady()
+        const receipt = receiptSchema.parse(await this.currentProduction!.stop({ principal, source, input, run,
+          authorizeLocked: async (sql) => {
+            const client = sql as unknown as Pick<pg.ClientBase, 'query'>
+            await sql.query('select id from runs where id=$1 for update', [input.runId])
+            const current = (await readAcceptedRepeatRunLocked(sql, input.runId)).run
+            const immutable = (value: typeof run) => ({ id: value.id, workspaceId: value.workspaceId, workflowId: value.workflowId,
+              workflowVersionId: value.workflowVersionId, executionSemanticsVersion: value.executionSemanticsVersion,
+              agentConfigurationVersionIds: value.agentConfigurationVersionIds, executionLocation: value.executionLocation,
+              authorizationPrincipalId: value.authorizationPrincipalId, approval: value.approval,
+              executionCondition: value.executionCondition, input: value.input, createdAt: value.createdAt })
+            if (canonicalGraphJson(immutable(current)) !== canonicalGraphJson(immutable(run))) {
+              throw new DomainError('RUN_PIN_CONFLICT', 'Stop cannot change any accepted immutable Run pin.', 409)
+            }
+            const live = await readLiveManagementPrincipal(client, principal.id)
+            requireAuthorization(live, 'runs:stop', resource)
+          },
+        }))
+        if (receipt.runId !== input.runId) throw new DomainError('COMMAND_ID_CONFLICT', 'The native Stop result changed its exact command scope.', 409)
+        return receipt
       },
     })
-    // A historical v3 receipt is readback, not permission to enter the still
-    // unqualified native cleanup path. Legacy retry/cleanup behavior is unchanged.
-    const repeatReplay = execution.replayed && 'executionSemanticsVersion' in run && run.executionSemanticsVersion === 3
-    if (!repeatReplay && (execution.value.status === 'accepted' || execution.value.status === 'already_terminal')) {
-      await this.engine.finishRunLifecycle?.(input.runId, 'The Run was stopped.')
-    }
-    // Older receipts may have inferred termination from a terminal record.
-    // This API has no process-exit observation, including on receipt replay.
-    return { ...execution.value, processStopped: false, replayed: execution.replayed }
+    // Acceptance/replay is not process closure. A owns durable native cleanup;
+    // B must not run any legacy terminalizer after a returned receipt.
+    return { ...execution.value, processStopped: false as const, replayed: execution.replayed }
   }
 }

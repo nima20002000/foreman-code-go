@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { currentWorkflowWriterMigration } from './currentWorkflowWriterMigration.js'
 import { repeatWriterMigration } from './repeatWriterMigration.js'
 import { repeatOccurrenceMigration } from './repeatOccurrenceMigration.js'
 import { workflowClosureMigration } from './workflowClosureMigration.js'
@@ -682,6 +683,7 @@ export const migrations = [
   workflowClosureMigration,
   repeatOccurrenceMigration,
   repeatWriterMigration,
+  currentWorkflowWriterMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

@@ -1,7 +1,6 @@
 import type pg from 'pg'
 import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import { CanonicalRunGraphScopeSchema, CanonicalRunGraphReadCapabilitiesSchema, type CanonicalRunGraphReadCapabilities,
-  type RunGraphSnapshot, type RunGraphPage, type RunGraphReset,
   type RepeatGraphSnapshotV3, type RepeatGraphPageV3, type RepeatGraphResetV3, type RepeatGraphCurrentV3 } from '@graphql/contracts/wave25'
 import { hasAction, requireAuthorization } from '../access/policy.js'
 import type { RunGraphReadApi } from './readService.js'
@@ -16,6 +15,18 @@ export class RepeatGraphReadService {
   constructor(private readonly primaryPool: pg.Pool, options: { qualifiedReads?: boolean } = {}) {
     // Capture once at trusted composition, not from a mutable request/options object.
     this.qualifiedReads = options.qualifiedReads === true
+  }
+  capabilities(input: ManagementPrincipal): CanonicalRunGraphReadCapabilities {
+    try {
+      const principal = ManagementPrincipalSchema.parse(input)
+      requireAuthorization(principal, 'capabilities:read')
+      if (!hasAction(principal, 'runs:read')) throw new RunGraphError('GRAPH_READ_ACCESS_DENIED')
+    } catch { throw new RunGraphError('GRAPH_READ_ACCESS_DENIED') }
+    return CanonicalRunGraphReadCapabilitiesSchema.parse({ capabilityVersion: 1,
+      protocolVersions: this.qualifiedReads ? [1] : [], readSemanticsVersions: this.qualifiedReads ? [3] : [],
+      transport: 'http_poll', activePollMs: 1000,
+      semantics3: { persistedReads: this.qualifiedReads, payload: 'metadata_only', runtimeAdmission: false, meaningfulEdit: false },
+    })
   }
   private authorize(input: ManagementPrincipal): AuthorizeRepeatGraphRead {
     let principal: ManagementPrincipal
@@ -49,42 +60,23 @@ export class RepeatGraphReadService {
 export interface CanonicalRunGraphReadApi {
   capabilities: RunGraphReadApi['capabilities']
   readCapabilities(principal: ManagementPrincipal): CanonicalRunGraphReadCapabilities
-  current(principal: ManagementPrincipal, request: unknown): Promise<RunGraphSnapshot | RepeatGraphCurrentV3>
-  snapshot(principal: ManagementPrincipal, request: unknown): Promise<RunGraphSnapshot | RepeatGraphSnapshotV3>
-  events(principal: ManagementPrincipal, request: unknown): Promise<RunGraphPage | RunGraphReset | RepeatGraphPageV3 | RepeatGraphResetV3>
+  current(principal: ManagementPrincipal, request: unknown): Promise<RepeatGraphCurrentV3>
+  snapshot(principal: ManagementPrincipal, request: unknown): Promise<RepeatGraphSnapshotV3>
+  events(principal: ManagementPrincipal, request: unknown): Promise<RepeatGraphPageV3 | RepeatGraphResetV3>
 }
-/** Shared dispatch for the canonical HTTP/MCP callers. The original legacy
- * capability response is unchanged; additive discovery describes READS only.
- * Unknown versions fail before either producer can coerce them to 1, 2 or 3. */
-export function canonicalRunGraphReadApi(legacy: RunGraphReadApi, repeat = legacy.repeat): CanonicalRunGraphReadApi {
-  function target(request: unknown) {
-    if (typeof request !== 'object' || request === null || !('scope' in request)) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
-    const scope = CanonicalRunGraphScopeSchema.safeParse(request.scope)
-    if (!scope.success) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
-    if (scope.data.executionSemanticsVersion !== 3) return { kind: 'legacy' as const, reader: legacy }
-    if (!repeat) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
-    return { kind: 'repeat' as const, reader: repeat }
+/** One current execution reader, not a semantics dispatcher. Retired/unknown
+ * tags fail before any database work. Wire protocol names remain unchanged. */
+export function canonicalRunGraphReadApi(reads: RunGraphReadApi): CanonicalRunGraphReadApi {
+  function checked(request: unknown): unknown {
+    if (typeof request !== 'object' || request === null || !('scope' in request)
+      || !CanonicalRunGraphScopeSchema.safeParse(request.scope).success) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
+    return request
   }
   return {
-    capabilities: (principal) => legacy.capabilities(principal),
-    readCapabilities: (principal) => {
-      // This call retains the same runs:read principal requirement as legacy
-      // discovery. Scope authorization still occurs against each actual Run.
-      const capabilities = legacy.capabilities(principal)
-      const persistedReads = repeat?.qualifiedReads === true
-      const readSemanticsVersions = [...capabilities.executionSemanticsVersions, ...(persistedReads ? [3] : [])]
-      return CanonicalRunGraphReadCapabilitiesSchema.parse({
-        capabilityVersion: 1, protocolVersions: readSemanticsVersions.length ? [1] : [],
-        readSemanticsVersions, transport: capabilities.transport, activePollMs: capabilities.activePollMs,
-        semantics3: { persistedReads, payload: 'metadata_only', runtimeAdmission: false, meaningfulEdit: false },
-      })
-    },
-    current: (principal, request) => {
-      const reader = target(request)
-      // Legacy current/history are not reinterpreted as v3 envelopes.
-      return reader.kind === 'repeat' ? reader.reader.current(principal, request) : reader.reader.snapshot(principal, request)
-    },
-    snapshot: (principal, request) => target(request).reader.snapshot(principal, request),
-    events: (principal, request) => target(request).reader.events(principal, request),
+    capabilities: (principal) => reads.capabilities(principal),
+    readCapabilities: (principal) => reads.capabilities(principal),
+    current: (principal, request) => reads.current(principal, checked(request)),
+    snapshot: (principal, request) => reads.snapshot(principal, checked(request)),
+    events: (principal, request) => reads.events(principal, checked(request)),
   }
 }

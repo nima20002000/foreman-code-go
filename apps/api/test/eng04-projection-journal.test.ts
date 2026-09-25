@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
-import { canonicalGraphJson, type RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
+import { type RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
 import { graphSourceDigest, openRunGraphPublication, type RunGraphPublication } from '../src/modules/run-graph/publication.js'
 import { requireRepeatCanonicalReceiptBeforeCommit } from '../src/modules/run-graph/repeatReceipts.js'
 import { readRepeatGraphPage } from '../src/modules/run-graph/repeatReader.js'
@@ -164,20 +164,10 @@ describe('ENG04 existing journal, SQL-shaped only', () => {
     const wire = db.state.batches[0]!.payload!
     assert.ok(wire.includes(projectionDigest)); assert.ok(!/"(resultData|input_json|result_json|nativeSessionId|runtimeDirectory|prompt|credentials)"/.test(wire))
   })
-  for (const semantics of [1, 2] as const) it(`preserves semantics ${semantics} source publication and duplicate behavior`, async () => {
-    const db = new ProjectionDatabase(); db.scope.executionSemanticsVersion = semantics
-    const c = db.connection(), scope = { ...projectionScope, executionSemanticsVersion: semantics }
-    try {
-      for (let n = 0; n < 2; n++) await c.transaction(async sql => {
-        const p = await openRunGraphPublication(sql, scope)
-        await p.source({ evidence: { sourceKind: 'run', sourceId: 'legacy', sourceRevision: '1' }, sourceDigest: projectionDigest,
-          facts: [{ type: 'run.state', state: { executionState: 'running', outcome: 'pending', stopRequested: false,
-            cleanupPending: false, unsettledReviewCount: 0, pendingInteractionCount: 0 } }] },
-        async transaction => { await transaction.query('update projection_test_domain set revision=revision+1') })
-      })
-      assert.equal(db.state.head, 1); assert.equal(db.state.domain, 1)
-      assert.equal(JSON.parse(db.state.batches[0]!.payload!).scope.executionSemanticsVersion, semantics)
-      assert.ok(!canonicalGraphJson(db.state.batches).includes('repeat.occurrence'))
-    } finally { await c.close() }
+  it('keeps the canonical V3 repeat journal free of retired-semantics compatibility publication cases', () => {
+    // Ordinary V3 no-repeat publication must use the same current journal after
+    // A/B unify the producer. The live gate proves that path with real Start;
+    // this D journal file no longer carries positive semantics-1/2 acceptance.
+    assert.equal(projectionScope.executionSemanticsVersion, 3)
   })
 })

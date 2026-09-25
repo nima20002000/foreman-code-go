@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
-  makeWave25Fixture, WorkflowVersionV3Schema, repeatGraphTopologyV3,
+  makeCurrentWorkflowFixture, WorkflowVersionV3Schema, repeatGraphTopologyV3,
   RepeatGraphSnapshotV3Schema, RepeatGraphCurrentV3Schema, RepeatGraphFactV3Schema,
   RepeatGraphPageV3Schema, RepeatGraphBatchV3Schema, reduceRepeatGraphPageV3,
   CanonicalRunGraphReadRequestSchema, CanonicalRunGraphEventsRequestSchema,
   CanonicalRunGraphHttpSnapshotQuerySchema, CanonicalRunGraphHttpEventsQuerySchema,
-  RunGraphReadRequestSchema, RunGraphSnapshotSchema,
   type RepeatGraphSnapshotV3, type RepeatGraphBatchV3,
 } from '@graphql/contracts/wave25'
 import { graphSourceDigest, repeatGraphBatchReceipt } from '../src/modules/run-graph/publication.js'
@@ -13,7 +12,7 @@ import { graphSourceDigest, repeatGraphBatchReceipt } from '../src/modules/run-g
 /** Pure actual shared-schema/reducer tests. Not PG, HTTP authentication, native
  * provider or browser evidence. No mock contract implementation is used. */
 function fixture(): RepeatGraphSnapshotV3 {
-  const f = makeWave25Fixture('eng04-graph-contract')
+  const f = makeCurrentWorkflowFixture('eng04-graph-contract')
   const entry = f.version.definition.nodes[0]!, exit = f.version.definition.nodes[1]!
   const version = WorkflowVersionV3Schema.parse({ ...f.version, executionSemanticsVersion: 3,
     definition: { ...f.version.definition, executionSemanticsVersion: 3,
@@ -47,27 +46,20 @@ function page(snapshot: RepeatGraphSnapshotV3, batches: RepeatGraphBatchV3[]) {
 }
 
 describe('ENG04 graph composition / shared contracts', () => {
-  it('has an explicit strict third request arm while preserving the old 1/2 request schema', () => {
+  it('accepts only current scope tags and rejects private extra fields', () => {
     const snapshot = fixture(), request = { protocolVersion: 1, scope: snapshot.scope }
     expect(CanonicalRunGraphReadRequestSchema.safeParse(request).success).toBe(true)
-    expect(RunGraphReadRequestSchema.safeParse(request).success).toBe(false)
-    for (const executionSemanticsVersion of [1, 2]) {
-      const legacy = { ...request, scope: { ...request.scope, executionSemanticsVersion } }
-      expect(RunGraphReadRequestSchema.safeParse(legacy).success).toBe(true)
-      expect(CanonicalRunGraphReadRequestSchema.safeParse(legacy).success).toBe(true)
-    }
-    for (const executionSemanticsVersion of [0, 4, 3.1, '3', null]) {
+    for (const executionSemanticsVersion of [0, 1, 2, 4, 3.1, '3', null, undefined]) {
       expect(CanonicalRunGraphReadRequestSchema.safeParse({ ...request, scope: { ...request.scope, executionSemanticsVersion } }).success).toBe(false)
     }
     expect(CanonicalRunGraphReadRequestSchema.safeParse({ ...request, privatePayload: {} }).success).toBe(false)
-    expect(CanonicalRunGraphReadRequestSchema.safeParse({ ...request, scope: { ...request.scope, nativeSessionId: 'hidden' } }).success).toBe(false)
   })
   it('accepts only literal HTTP semantics and canonical bounded decimal cursors', () => {
     const snapshot = fixture()
-    for (const executionSemanticsVersion of ['1', '2', '3']) {
+    for (const executionSemanticsVersion of ['3']) {
       expect(CanonicalRunGraphHttpSnapshotQuerySchema.safeParse({ workflowVersionId: snapshot.scope.workflowVersionId, executionSemanticsVersion }).success).toBe(true)
     }
-    for (const executionSemanticsVersion of ['03', '3.0', '4', 3]) {
+    for (const executionSemanticsVersion of ['1', '2', '03', '3.0', '4', 3]) {
       expect(CanonicalRunGraphHttpSnapshotQuerySchema.safeParse({ workflowVersionId: snapshot.scope.workflowVersionId, executionSemanticsVersion }).success).toBe(false)
     }
     for (const afterSequence of ['01', '-1', '1e0', '9223372036854775808', 1]) {
@@ -76,11 +68,10 @@ describe('ENG04 graph composition / shared contracts', () => {
         executionSemanticsVersion: '3', afterSequence }).success).toBe(false)
     }
   })
-  it('keeps current and snapshot tags explicit and cannot parse v3 as legacy history', () => {
+  it('keeps current and snapshot wire tags explicit', () => {
     const snapshot = fixture(), current = { ...snapshot, kind: 'current' }
     expect(RepeatGraphCurrentV3Schema.parse(current)).toEqual(current)
     expect(RepeatGraphSnapshotV3Schema.safeParse(current).success).toBe(false)
-    expect(RunGraphSnapshotSchema.safeParse(snapshot).success).toBe(false)
   })
   it('reduces complete batches atomically and never labels an unfinished empty page complete', () => {
     const snapshot = fixture(), running = { ...snapshot.state.run, executionState: 'running' as const }

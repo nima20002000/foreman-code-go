@@ -1,16 +1,20 @@
 import { z } from 'zod'
-import { AgentConfigurationVersionSchema, AcceptedWorkflowApprovalConfigurationSchema, TimestampSchema, WorkflowRunSchema, WorkflowVersionSchema } from '../index.js'
+import { AgentConfigurationVersionSchema, TimestampSchema } from '../index.js'
 import { canonicalGraphJson } from './json.js'
 import {
-  GraphDigestSchema, GraphExecutionIdentitySchema, GraphIdSchema, RunGraphScopeSchema,
+  GraphDigestSchema, GraphExecutionIdentitySchema, GraphIdSchema,
 } from './protocol.js'
 import {
-  AcceptedNodeResultV2Schema, ExecutableWorkflowV2Schema,
-  ChoiceOutcomeSchema, ChoiceTargetSchema, WorkflowDefinitionV2Schema, WorkflowVersionV2Schema,
+  ChoiceOutcomeSchema, ChoiceTargetSchema,
   parseChoiceResultEnvelope, type WorkflowChoice,
-} from './workflow.js'
+} from './currentResult.js'
+import {
+  CurrentWorkflowDefinitionBaseSchema, CurrentWorkflowVersionBaseSchema, CurrentWorkflowRunSchema, CurrentRunScopeSchema,
+  validateCurrentWorkflowTopology, validateCurrentWorkflowConfigurations, AcceptedCurrentNodeResultSchema,
+} from './currentWorkflowFoundation.js'
 
-/** A0 candidate contracts ONLY. Neither constant extends an admission/read union. */
+/** Current execution semantics for every workflow. Repeat is optional; these
+ * constants and validators are not runtime admission permission. */
 export const REPEAT_CONTRACT_VERSION = 1 as const
 export const REPEAT_EXECUTION_SEMANTICS_VERSION = 3 as const
 const Ordinal = z.number().int().min(1).max(2147483647)
@@ -52,26 +56,14 @@ export const RepeatPlanV1Schema = z.object({
 })
 export type RepeatPlanV1 = z.infer<typeof RepeatPlanV1Schema>
 
-/** Validation-only projection: never persisted, dispatched, or returned as a saved v2 version. */
-export const RepeatWorkflowVersionV1Schema = z.object({
-  ...WorkflowVersionSchema.shape,
-  executionSemanticsVersion: z.literal(REPEAT_EXECUTION_SEMANTICS_VERSION),
-  definition: WorkflowDefinitionV2Schema.extend({
-    executionSemanticsVersion: z.literal(REPEAT_EXECUTION_SEMANTICS_VERSION),
-    repeat: RepeatPlanV1Schema,
-  }).strict(),
-  approval: AcceptedWorkflowApprovalConfigurationSchema,
+/** ONE current V3 family. Omission is the canonical no-repeat representation.
+ * Null/empty plans are invalid. No default, transform or fake occurrence is made. */
+export const RepeatWorkflowVersionV1Schema = CurrentWorkflowVersionBaseSchema.extend({
+  definition: CurrentWorkflowDefinitionBaseSchema.extend({ repeat: RepeatPlanV1Schema.optional() }).strict(),
 }).strict().superRefine((version, context) => {
+  validateCurrentWorkflowTopology(version, context)
   const { repeat, ...definition } = version.definition
-  // Reuse ALL immutable one-shot structural guards, including the cycle guard.
-  // This is not ExecutableWorkflowV2Schema, authorization, or Run admission.
-  const base = WorkflowVersionV2Schema.safeParse({
-    ...version, executionSemanticsVersion: 2, definition: { ...definition, executionSemanticsVersion: 2 },
-  })
-  if (!base.success) {
-    for (const issue of base.error.issues) context.addIssue({ code: 'custom', path: issue.path, message: `REPEAT_BASE_INVALID: ${issue.message}` })
-    return
-  }
+  if (repeat === undefined || !definition.executionPolicy) return
   const nodes = new Map(definition.nodes.map((node) => [node.id, node]))
   const edges = definition.edges.filter((edge) => edge.kind === 'execution')
   let requiredExecutions = definition.nodes.length
@@ -116,31 +108,17 @@ export const RepeatWorkflowVersionV1Schema = z.object({
 })
 export type RepeatWorkflowVersionV1 = z.infer<typeof RepeatWorkflowVersionV1Schema>
 
-/** Reuse all pinned configuration/role/native-approval checks without admitting
- * or dispatching a retagged version. The projection exists only in validation;
- * callers must still authenticate, lock admission and preserve the saved v3 ID.
- */
+/** Exact scoped configuration/role/native-approval checks on the V3 value. */
 export const ExecutableRepeatWorkflowV1Schema = z.object({
   version: RepeatWorkflowVersionV1Schema,
   configurations: z.array(AgentConfigurationVersionSchema).max(1000),
-}).strict().superRefine(({ version, configurations }, context) => {
-  const { repeat, ...definition } = version.definition
-  void repeat
-  const checked = ExecutableWorkflowV2Schema.safeParse({
-    version: { ...version, executionSemanticsVersion: 2,
-      definition: { ...definition, executionSemanticsVersion: 2 } },
-    configurations,
-  })
-  if (!checked.success) for (const issue of checked.error.issues) {
-    context.addIssue({ code: 'custom', path: issue.path, message: issue.message })
-  }
-})
+}).strict().superRefine(validateCurrentWorkflowConfigurations)
 export type ExecutableRepeatWorkflowV1 = z.infer<typeof ExecutableRepeatWorkflowV1Schema>
 
 /** Inherited Run lifecycle validation with an explicit v3 pin. Exporting this
  * schema alone does not widen Start, engine dispatch or compatible read unions.
  */
-export const RepeatWorkflowRunV1Schema = WorkflowRunSchema.safeExtend({ executionSemanticsVersion: z.literal(3) })
+export const RepeatWorkflowRunV1Schema = CurrentWorkflowRunSchema
 export type RepeatWorkflowRunV1 = z.infer<typeof RepeatWorkflowRunV1Schema>
 export const RepeatRunVersionV1Schema = z.object({
   run: RepeatWorkflowRunV1Schema, version: RepeatWorkflowVersionV1Schema,
@@ -169,7 +147,7 @@ export type RepeatExitDataV1 = z.infer<typeof RepeatExitDataV1Schema>
  */
 export function parseRepeatExitResultV1(result: unknown, choice: WorkflowChoice) {
   canonicalGraphJson(result, 64 * 1024)
-  const accepted = AcceptedNodeResultV2Schema.parse(result)
+  const accepted = AcceptedCurrentNodeResultSchema.parse(result)
   const output = accepted.outcome === 'succeeded' ? accepted.output : undefined
   const textCarrier = output !== null && typeof output === 'object' && !Array.isArray(output)
     && Object.keys(output).length === 1 && 'text' in output && typeof output.text === 'string'
@@ -178,7 +156,7 @@ export function parseRepeatExitResultV1(result: unknown, choice: WorkflowChoice)
 }
 
 export const RepeatOccurrenceIdentityV1Schema = z.object({
-  scope: RunGraphScopeSchema.extend({ executionSemanticsVersion: z.literal(REPEAT_EXECUTION_SEMANTICS_VERSION) }),
+  scope: CurrentRunScopeSchema,
   blockId: GraphIdSchema, occurrenceId: GraphIdSchema, occurrenceIndex: Ordinal,
 }).strict()
 export type RepeatOccurrenceIdentityV1 = z.infer<typeof RepeatOccurrenceIdentityV1Schema>
@@ -241,7 +219,7 @@ export function validateRepeatDecisionV1(versionValue: unknown, decisionValue: u
   const version = RepeatWorkflowVersionV1Schema.parse(versionValue)
   const decision = RepeatDecisionV1Schema.parse(decisionValue)
   const { scope, blockId, occurrenceIndex } = decision.occurrence.identity
-  const block = version.definition.repeat.blocks.find((candidate) => candidate.id === blockId)
+  const block = version.definition.repeat?.blocks.find((candidate) => candidate.id === blockId)
   if (!block || scope.workflowVersionId !== version.id || scope.workspaceId !== version.workspaceId
     || scope.workflowId !== version.workflowId || occurrenceIndex > block.maxOccurrences) throw new Error('REPEAT_DECISION_SCOPE_INVALID')
   const exit = version.definition.nodes.find((node) => node.id === block.exitNodeId)!

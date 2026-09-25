@@ -83,7 +83,7 @@ function occurrence(v: RepeatWorkflowVersionV1, index = 1, previous: RepeatOccur
 
 function decision(v: RepeatWorkflowVersionV1, occ: RepeatOccurrenceV1, result: ReturnType<typeof accepted>): RepeatDecisionV1 {
   const outcome = result.output.routing.outcome
-  const cap = v.definition.repeat.blocks[0]!.maxOccurrences
+  const cap = v.definition.repeat!.blocks[0]!.maxOccurrences
   const reason = outcome === 'pass' ? 'early_exit' : occ.identity.occurrenceIndex === cap ? 'limit_exit' : 'repeat'
   const target = reason === 'early_exit' ? { kind: 'edge' as const, relationshipId: 'review-done' }
     : reason === 'limit_exit' ? { kind: 'edge' as const, relationshipId: 'review-limit' }
@@ -107,13 +107,13 @@ function decision(v: RepeatWorkflowVersionV1, occ: RepeatOccurrenceV1, result: R
 }
 
 describe('NIM-2648 ENG04-D repeat shared-contract regressions', () => {
-  it('keeps legacy semantics 1/2 parseable while repeat remains an explicit semantics-3 contract', () => {
-    expect(ExecutionSemanticsVersionSchema.parse(1)).toBe(1)
-    expect(ExecutionSemanticsVersionSchema.parse(2)).toBe(2)
+  it('rejects retired execution semantics while repeat remains an explicit semantics-3 contract', () => {
+    expect(ExecutionSemanticsVersionSchema.safeParse(1).success).toBe(false)
+    expect(ExecutionSemanticsVersionSchema.safeParse(2).success).toBe(false)
     const repeat = version(1)
     expect(repeat.executionSemanticsVersion).toBe(3)
     expect(repeat.definition.executionSemanticsVersion).toBe(3)
-    expect(repeat.definition.repeat.contractVersion).toBe(1)
+    expect(repeat.definition.repeat!.contractVersion).toBe(1)
   })
 
   it('accepts only the complete strict repeat-exit envelope and rejects prose, null deliverable and missing findings', () => {

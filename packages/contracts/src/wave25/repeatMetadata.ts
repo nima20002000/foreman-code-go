@@ -127,7 +127,7 @@ export function validateRepeatMetadataSnapshotV1(versionValue: unknown, snapshot
   const byId = new Map(snapshot.items.map((item) => [item.occurrence.identity.occurrenceId, item]))
   for (const { occurrence, decision } of snapshot.items) {
     const { identity, input } = occurrence
-    const block = version.definition.repeat.blocks.find((item) => item.id === identity.blockId)
+    const block = version.definition.repeat?.blocks.find((item) => item.id === identity.blockId)
     if (!block || identity.occurrenceIndex > block.maxOccurrences) return fail()
     if (input.previous) {
       const previous = byId.get(input.previous.occurrenceId)

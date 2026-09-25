@@ -2,10 +2,8 @@ import { z } from 'zod'
 import {
   GraphDigestSchema, GraphEvidenceSchema, GraphExecutionIdentitySchema, GraphIdSchema,
   GraphRunStateSchema, GraphSequenceSchema, NodeResolutionSchema, RUN_GRAPH_LIMITS,
-  RunGraphScopeSchema, RunGraphTopologySchema, GraphResetReasonSchema,
-  RunGraphSnapshotSchema, RunGraphPageSchema, RunGraphResetSchema,
-  RunGraphReadRequestSchema, RunGraphEventsRequestSchema,
-  RunGraphHttpSnapshotQuerySchema, RunGraphHttpEventsQuerySchema, RUN_GRAPH_ROUTES, RUN_GRAPH_MCP_TOOLS,
+  RunGraphTopologySchema, GraphResetReasonSchema,
+  RUN_GRAPH_ROUTES, RUN_GRAPH_MCP_TOOLS,
   type GraphExecutionIdentity,
 } from './protocol.js'
 import {
@@ -14,14 +12,14 @@ import {
   type RepeatOccurrenceIdentityV1, type RepeatWorkflowVersionV1,
 } from './repeat.js'
 import { canonicalGraphJson, graphJsonBytes } from './json.js'
-import { ChoiceOutcomeSchema, ChoiceTargetSchema } from './workflow.js'
+import { ChoiceOutcomeSchema, ChoiceTargetSchema } from './currentResult.js'
 
 /** Semantics 3 on protocol 1 and the EXISTING per-Run complete-batch cursor.
  * Legacy schemas remain unchanged. A v3 envelope cannot parse as a legacy one.
  * These are metadata, not a second result, acknowledgement or execution API. */
 export const RepeatGraphScopeV3Schema = RepeatOccurrenceIdentityV1Schema.shape.scope
 export type RepeatGraphScopeV3 = z.infer<typeof RepeatGraphScopeV3Schema>
-export const CanonicalRunGraphScopeSchema = z.union([RunGraphScopeSchema, RepeatGraphScopeV3Schema])
+export const CanonicalRunGraphScopeSchema = RepeatGraphScopeV3Schema
 export type CanonicalRunGraphScope = z.infer<typeof CanonicalRunGraphScopeSchema>
 export function sameCanonicalGraphScope(a: CanonicalRunGraphScope, b: CanonicalRunGraphScope): boolean {
   return a.workspaceId === b.workspaceId && a.workflowId === b.workflowId && a.runId === b.runId
@@ -283,14 +281,14 @@ export const RepeatGraphStateV3Schema = z.object({
 })
 export type RepeatGraphStateV3 = z.infer<typeof RepeatGraphStateV3Schema>
 export const RepeatGraphTopologyV3Schema = RunGraphTopologySchema.safeExtend({
-  repeat: RepeatPlanV1Schema,
+  repeat: RepeatPlanV1Schema.optional(),
   nodes: z.array(RunGraphTopologySchema.shape.nodes.element.extend({
     choice: z.object({ outcomes: z.array(z.object({ outcome: ChoiceOutcomeSchema, target: ChoiceTargetSchema }).strict())
       .min(1).max(RUN_GRAPH_LIMITS.relationships) }).strict().optional(),
   })).min(1).max(RUN_GRAPH_LIMITS.nodes),
 }).superRefine((value, context) => {
   const nodes = new Set(value.nodes.map((node) => node.workflowNodeId))
-  if (value.repeat.blocks.some((block) => block.nodeIds.some((id) => !nodes.has(id)))) {
+  if (value.repeat?.blocks.some((block) => block.nodeIds.some((id) => !nodes.has(id)))) {
     context.addIssue({ code: 'custom', message: 'REPEAT_GRAPH_TOPOLOGY_CONFLICT' })
   }
 })
@@ -337,7 +335,7 @@ function assertTopologyFact(topology: RepeatGraphTopologyV3, fact: RepeatGraphFa
   const fail = (): never => { throw new Error('REPEAT_GRAPH_PIN_CONFLICT') }
   const ref = (nodeId: string, occurrence: RepeatOccurrenceIdentityV1 | null) => {
     const node = topology.nodes.find((item) => item.workflowNodeId === nodeId)
-    const block = topology.repeat.blocks.find((item) => item.nodeIds.includes(nodeId))
+    const block = topology.repeat?.blocks.find((item) => item.nodeIds.includes(nodeId))
     if (!node || (block ? !occurrence || occurrence.blockId !== block.id || occurrence.occurrenceIndex > block.maxOccurrences : occurrence !== null)) fail()
     return node!
   }
@@ -347,7 +345,7 @@ function assertTopologyFact(topology: RepeatGraphTopologyV3, fact: RepeatGraphFa
   }
   if (fact.type === 'repeat.occurrence' || fact.type === 'repeat.decision') {
     const occurrence = fact.type === 'repeat.occurrence' ? fact.occurrence : fact.decision.occurrence
-    const block = topology.repeat.blocks.find((item) => item.id === occurrence.identity.blockId)
+    const block = topology.repeat?.blocks.find((item) => item.id === occurrence.identity.blockId)
     if (!block || occurrence.identity.occurrenceIndex > block.maxOccurrences) fail()
     if (fact.type === 'repeat.decision') {
       const decision = fact.decision
@@ -369,7 +367,7 @@ function assertTopologyFact(topology: RepeatGraphTopologyV3, fact: RepeatGraphFa
   if (fact.type === 'repeat.node.resolved') {
     const value = fact.resolution
     // An inactive outside block placeholder may have no occurrence at all.
-    const block = topology.repeat.blocks.find((item) => item.nodeIds.includes(value.ref.nodeId))
+    const block = topology.repeat?.blocks.find((item) => item.nodeIds.includes(value.ref.nodeId))
     if (!topology.nodes.some((node) => node.workflowNodeId === value.ref.nodeId)) fail()
     if (!(value.outside && value.ref.occurrence === null && !value.value.execution)) ref(value.ref.nodeId, value.ref.occurrence)
     if (value.outside && value.ref.occurrence && (!block || block.exitNodeId !== value.ref.nodeId)) fail()
@@ -390,7 +388,8 @@ function assertTopologyFact(topology: RepeatGraphTopologyV3, fact: RepeatGraphFa
 export function repeatGraphTopologyV3(versionValue: unknown): RepeatGraphTopologyV3 {
   const version = RepeatWorkflowVersionV1Schema.parse(versionValue)
   return RepeatGraphTopologyV3Schema.parse({
-    entryNodeId: version.entryNodeId, repeat: version.definition.repeat,
+    entryNodeId: version.entryNodeId,
+    ...(version.definition.repeat === undefined ? {} : { repeat: version.definition.repeat }),
     nodes: version.definition.nodes.map((node) => ({ workflowNodeId: node.id, agentId: node.agentId,
       agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId], productRole: 'unknown',
       ...(node.choice ? { choice: node.choice } : {}) })),
@@ -467,29 +466,27 @@ export function reduceRepeatGraphPageV3(snapshotValue: unknown, pageValue: unkno
     retentionFloor: page.retentionFloor, state: sortRepeatGraphState(state) })
 }
 
-/** Explicit conversion; never parse a bare v2 identity as occurrence-qualified. */
+/** Qualify an execution identity only when its real occurrence is known. */
 export function qualifyRepeatGraphExecution(identity: GraphExecutionIdentity, occurrence: RepeatOccurrenceIdentityV1 | null): RepeatGraphExecutionIdentityV3 {
   return RepeatGraphExecutionIdentityV3Schema.parse({ ...identity, occurrence })
 }
 
-/** Explicit transport response arms; original 1/2 schemas are unchanged. */
-export const CanonicalRunGraphSnapshotSchema = z.union([RunGraphSnapshotSchema, RepeatGraphSnapshotV3Schema])
-export const CanonicalRunGraphEventsResponseSchema = z.union([RunGraphPageSchema, RunGraphResetSchema, RepeatGraphPageV3Schema, RepeatGraphResetV3Schema])
+/** Current execution semantics only. Graph protocol version remains 1. */
+export const CanonicalRunGraphSnapshotSchema = RepeatGraphSnapshotV3Schema
+export const CanonicalRunGraphEventsResponseSchema = z.union([RepeatGraphPageV3Schema, RepeatGraphResetV3Schema])
 
 
-/** The existing canonical transport, with an explicit semantics-3 arm. These
- * unions do not broaden the original 1/2 schemas or advertise v3 qualification.
- * Current is a snapshot alias for legacy callers; v3 has its explicit kind.
- */
+/** Existing canonical transport names, now with one explicit V3 execution
+ * scope. Independent graph protocol versions and cursor rules are unchanged. */
 export const CanonicalRunGraphReadRequestSchema = z.object({
-  protocolVersion: RunGraphReadRequestSchema.shape.protocolVersion, scope: CanonicalRunGraphScopeSchema,
+  protocolVersion: z.literal(1), scope: CanonicalRunGraphScopeSchema,
 }).strict()
 export const CanonicalRunGraphEventsRequestSchema = CanonicalRunGraphReadRequestSchema.extend({
-  afterSequence: RunGraphEventsRequestSchema.shape.afterSequence,
+  afterSequence: GraphSequenceSchema,
 }).strict()
-export const CanonicalRunGraphHttpSnapshotQuerySchema = z.union([RunGraphHttpSnapshotQuerySchema, RepeatGraphHttpSnapshotQueryV3Schema])
-export const CanonicalRunGraphHttpEventsQuerySchema = z.union([RunGraphHttpEventsQuerySchema, RepeatGraphHttpEventsQueryV3Schema])
-export const CanonicalRunGraphCurrentSchema = z.union([RunGraphSnapshotSchema, RepeatGraphCurrentV3Schema])
+export const CanonicalRunGraphHttpSnapshotQuerySchema = RepeatGraphHttpSnapshotQueryV3Schema
+export const CanonicalRunGraphHttpEventsQuerySchema = RepeatGraphHttpEventsQueryV3Schema
+export const CanonicalRunGraphCurrentSchema = RepeatGraphCurrentV3Schema
 export type RepeatGraphCurrentV3 = z.infer<typeof RepeatGraphCurrentV3Schema>
 export const CANONICAL_RUN_GRAPH_ROUTES = Object.freeze({ ...RUN_GRAPH_ROUTES,
   readCapabilities: '/api/capabilities/run-graph/reads/v1',
@@ -499,13 +496,13 @@ export const CANONICAL_RUN_GRAPH_MCP_TOOLS = Object.freeze({ ...RUN_GRAPH_MCP_TO
   readCapabilities: 'run_graph_read_capabilities_v1', current: 'run_graph_current_v1',
 })
 
-/** Additive discovery, NOT a widening of RunGraphCapabilitiesSchema or admission.
+/** Current read discovery, not runtime admission.
  * Semantics-3 support here means persisted current/snapshot/complete-batch reads,
  * including explicit resets and retention. It grants no native or edit authority.
  */
 export const CanonicalRunGraphReadCapabilitiesSchema = z.object({
   capabilityVersion: z.literal(1), protocolVersions: z.array(z.literal(1)).max(1),
-  readSemanticsVersions: z.array(z.union([z.literal(1), z.literal(2), z.literal(3)])).max(3),
+  readSemanticsVersions: z.array(z.literal(3)).max(1),
   transport: z.literal('http_poll'), activePollMs: z.literal(1000),
   semantics3: z.object({
     persistedReads: z.boolean(), payload: z.literal('metadata_only'),

@@ -1,7 +1,6 @@
 import { z } from 'zod'
-import { AcceptedWorkflowApprovalConfigurationSchema, RunExecutionLocationSchema, IdSchema } from '../index.js'
-import { GraphDraftSchema, RunStartInputSchema, RunStartResultSchema } from '../management/index.js'
-import { RunStartV2InputSchema, RunStartV2ResultSchema } from './authoring.js'
+import { AcceptedWorkflowApprovalConfigurationSchema, RunExecutionLocationSchema, RunInputSchema, TimestampSchema, IdSchema } from '../index.js'
+import { CommandIdSchema, ExpectedRevisionSchema } from '../management/index.js'
 import { GraphDigestSchema, GraphIdSchema } from './protocol.js'
 import { ExecutableRepeatWorkflowV1Schema } from './repeat.js'
 import { WorkflowDefinitionV3Schema, WorkflowRunV3Schema, SavedRunVersionSnapshotSchema } from './saved.js'
@@ -10,19 +9,25 @@ import { sameExecutableWorkflow, sameWorkflowValue } from './meaningfulEdit.js'
 /** Explicit manual HTTP/MCP v3 request arm, not native admission permission.
  * A new command must carry the exact displayed workflow revision/configuration
  * map as well as the existing immutable version, location and optional draft. */
-export const RunStartV3InputSchema = RunStartInputSchema.safeExtend({
-  executionSemanticsVersion: z.literal(3),
-  expectedWorkflowRevision: z.number().int().nonnegative(),
+export const RunStartV3InputSchema = z.object({
+  workspaceId: GraphIdSchema, workflowId: GraphIdSchema, workflowVersionId: GraphIdSchema,
+  commandId: CommandIdSchema, executionSemanticsVersion: z.literal(3),
+  expectedWorkflowRevision: ExpectedRevisionSchema,
   expectedAgentConfigurationVersionIds: z.record(GraphIdSchema, GraphIdSchema),
-})
+  expectedLocationRevision: ExpectedRevisionSchema,
+  draftId: GraphIdSchema.optional(), expectedDraftRevision: ExpectedRevisionSchema.optional(),
+  input: RunInputSchema,
+}).strict().refine((value) => (value.draftId === undefined) === (value.expectedDraftRevision === undefined),
+  'draftId and expectedDraftRevision must be supplied together')
 export type RunStartV3Input = z.infer<typeof RunStartV3InputSchema>
-export const RunStartV3ResultSchema = RunStartResultSchema.extend({ run: WorkflowRunV3Schema }).strict()
+export const RunStartV3ResultSchema = z.object({
+  run: WorkflowRunV3Schema, accepted: z.literal(true), replayed: z.boolean(),
+}).strict()
 
-/** Same explicit boundary for HTTP and Operator MCP. Original 1/2 schemas remain
- * strict and unchanged; unknown semantics, missing v3 pins and extra fields fail.
- * Parsing this union never qualifies the native publisher/lifecycle. */
-export const ManualRunStartInputSchema = z.union([RunStartInputSchema, RunStartV2InputSchema, RunStartV3InputSchema])
-export const ManualRunStartResultSchema = z.union([RunStartResultSchema, RunStartV2ResultSchema, RunStartV3ResultSchema])
+/** One current manual Start contract for every graph shape. Historical data is
+ * not a selector for new execution. Parsing never qualifies native lifecycle. */
+export const ManualRunStartInputSchema = RunStartV3InputSchema
+export const ManualRunStartResultSchema = RunStartV3ResultSchema
 export type ManualRunStartInput = z.infer<typeof ManualRunStartInputSchema>
 export type ManualRunStartResult = z.infer<typeof ManualRunStartResultSchema>
 
@@ -40,7 +45,18 @@ export const AcceptedWorkflowRunV3Schema = WorkflowRunV3Schema.safeExtend({
 })
 export type AcceptedWorkflowRunV3 = z.infer<typeof AcceptedWorkflowRunV3Schema>
 export const ExecutableWorkflowV3Schema = ExecutableRepeatWorkflowV1Schema
-export const GraphDraftV3Schema = GraphDraftSchema.extend({ graph: WorkflowDefinitionV3Schema }).strict()
+/** Optional already-published current draft pin. It is NOT a legacy authoring
+ * adapter. New complete-definition clients need no graph_drafts row. */
+export const GraphDraftV3Schema = z.object({
+  id: GraphIdSchema, workspaceId: GraphIdSchema, workflowId: GraphIdSchema,
+  revision: ExpectedRevisionSchema, layoutRevision: ExpectedRevisionSchema.optional(),
+  baseWorkflowVersionId: GraphIdSchema, publishedRevision: ExpectedRevisionSchema,
+  graph: WorkflowDefinitionV3Schema,
+  stagedAgents: z.array(z.never()).length(0),
+  sourceAgentPins: z.array(z.object({ agentId: GraphIdSchema, metadataRevision: ExpectedRevisionSchema,
+    configurationVersionId: GraphIdSchema }).strict()).optional(),
+  updatedByPrincipalId: IdSchema, updatedAt: TimestampSchema,
+}).strict()
 
 /** A read/preflight contract. It supplies no command receipt, owner lease,
  * native qualification, live grant, launch, or publication permission. Both

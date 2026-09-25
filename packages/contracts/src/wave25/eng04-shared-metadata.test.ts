@@ -97,7 +97,7 @@ describe('ENG04 shared content-free occurrence/decision metadata', () => {
       { ...snapshot, items: [{ occurrence: decision.occurrence, decision: { ...decision, reason: 'limit_exit', target: { kind: 'branch_end' } } }] },
     ]) expect(() => validateRepeatMetadataSnapshotV1(f.version, value)).toThrow()
     const capped = { ...f.version, definition: { ...f.version.definition, repeat: { contractVersion: 1,
-      blocks: f.version.definition.repeat.blocks.map((block) => ({ ...block, maxOccurrences: 1 })) } } }
+      blocks: f.version.definition.repeat!.blocks.map((block) => ({ ...block, maxOccurrences: 1 })) } } }
     expect(() => validateRepeatMetadataSnapshotV1(capped, snapshot)).toThrow()
   })
   it('accepts explicit early and cap exits but never treats them as native activation', () => {
@@ -105,7 +105,7 @@ describe('ENG04 shared content-free occurrence/decision metadata', () => {
     const early = { ...decision, reason: 'early_exit', outcome: 'pass', target: { kind: 'branch_end' } }
     expect(validateRepeatMetadataSnapshotV1(f.version, { ...snapshot, items: [{ occurrence: first, decision: early }] }).items).toHaveLength(1)
     const version = { ...f.version, definition: { ...f.version.definition, repeat: { contractVersion: 1,
-      blocks: f.version.definition.repeat.blocks.map((block) => ({ ...block, maxOccurrences: 1 })) } } }
+      blocks: f.version.definition.repeat!.blocks.map((block) => ({ ...block, maxOccurrences: 1 })) } } }
     const limit = { ...decision, reason: 'limit_exit', target: { kind: 'branch_end' } }
     expect(validateRepeatMetadataSnapshotV1(version, { ...snapshot, items: [{ occurrence: first, decision: limit }] }).items[0]!.decision!.reason).toBe('limit_exit')
   })

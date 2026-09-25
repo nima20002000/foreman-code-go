@@ -1,4 +1,3 @@
-import { registerApprovalCheckpointResume } from './modules/runs/approvalCheckpointRegistration.js'
 import { isDeepStrictEqual } from 'node:util'
 import { NativeResponseJournal } from './modules/harnesses/recovery/responseJournal.js'
 import { NativeProcessRegistry } from './modules/harnesses/recovery/processRegistry.js'
@@ -32,9 +31,6 @@ import {
 import { OPERATOR_MCP_ENVIRONMENT_VARIABLE, PostgresOperatorChatAuthority } from './modules/conversations/operatorChatAuthority.js'
 import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
 import { DomainError } from './modules/errors.js'
-import { GraphDraftService } from './modules/graph-drafts/service.js'
-import { createRepeatServices } from './modules/repeats/composition.js'
-import { Wave25ApprovalDraftService } from './modules/workflows/approvalDraftService.js'
 import { HarnessCatalogService } from './modules/harnesses/catalog.js'
 import { createHarnessCompatibility } from './modules/harnesses/compatibility/service.js'
 import { CodexAppServerSessionManager } from './modules/harnesses/codexAppServer.js'
@@ -69,8 +65,7 @@ import { WorkspaceLocationService } from './modules/workspaces/location.js'
 import { WorkspaceManagementService } from './modules/workspaces/management.js'
 import { PostgresWorkspaceRepository } from './modules/workspaces/postgres.js'
 import { RunGraphReadService } from './modules/run-graph/readService.js'
-import { createCompactSnapshotAssembler } from './modules/run-graph/compactSnapshot.js'
-import { readCurrentGraphExchanges } from './modules/interactions/wave25/currentExchanges.js'
+import type { CurrentRunProductionFactory } from './modules/runs/currentProduction.js'
 
 function inspectorFor(manager: NativeHarnessSessionManager) {
   if (manager instanceof CodexAppServerSessionManager) return codexMcpInspectorAdapter(manager)
@@ -84,6 +79,7 @@ export function buildProductionApp(
   database: ReturnType<typeof createDatabase>,
   checkpoints: CheckpointStore,
   logger = true,
+  createCurrentProduction?: CurrentRunProductionFactory,
 ) {
   const responseJournal = new NativeResponseJournal(resolve(config.harnesses.workspaceRoot, 'native-response-receipts'))
   const processRegistry = new NativeProcessRegistry(resolve(config.harnesses.workspaceRoot, 'native-process-registry'))
@@ -192,9 +188,8 @@ export function buildProductionApp(
   const interactions = new InteractionService(
     repository, budgets, approvals, (interaction) => engine.resumeInteraction(interaction), responseJournal,
   )
-  // V2 responses and engine recovery consume the actual checkpoint and receipt
-  // on the same Run-owner transaction before any native continuation.
-  registerApprovalCheckpointResume(interactions, engine)
+  // A's current production assembly owns occurrence-qualified approval resume.
+  // Do not install the retired execution-semantics-2 registration here.
   const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
   const resolveOperatorManager: NativeManagerResolver = (configuration, conversationId) => {
@@ -239,24 +234,24 @@ export function buildProductionApp(
       // intent first. A process restart or failed closure cannot lose that cause.
       if (await engine.cancel(runId)) await engine.finishRunLifecycle(runId, 'The assigned Orchestrator review failed; see the Run stop cause.')
     })
+  // A installs the qualified real repository/engine/native lifecycle before
+  // returning this binding. Absence permits only verified existing Start
+  // receipts, never a new Run. No HTTP argument or environment flag sets it.
+  const currentProduction = createCurrentProduction?.({ primaryPool: database.pool, commands,
+    runs, workflows, locations, engine, nativeExecutions: approvals, interactions, checkpointer: checkpoints.saver })
   const operatorServices = {
-    repeats: createRepeatServices(database.pool, commands),
     operatorChat: chat,
     workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings),
     locations,
     workflows: new WorkflowManagementService(database.pool, commands),
     agents: new AgentManagementService(database.pool),
-    drafts: new GraphDraftService(database.pool, commands),
-    approvalDrafts: new Wave25ApprovalDraftService(database.pool, commands),
     harnesses: harnessCatalog,
     settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators),
-    runs: new RunManagementService(database.pool, commands, runs, engine, locations),
+    runs: new RunManagementService(database.pool, commands, runs, engine, locations, currentProduction),
     commands,
     interactions: new OperatorInteractionService(interactions),
     // READ qualification only. No native lifecycle, Start or edit gate is opened.
-    runGraph: new RunGraphReadService(database.pool, createCompactSnapshotAssembler(readCurrentGraphExchanges), {
-      qualifiedReads: true, qualifiedRepeatReads: true,
-    }),
+    runGraph: new RunGraphReadService(database.pool, { qualifiedReads: true }),
   }
   const detection = new McpDetectionService({
     async inspect(input) {
@@ -284,7 +279,7 @@ export function buildProductionApp(
   }, appMcpEndpoint)
   const operatorExtensions = createOperatorExtensions({
     pool: database.pool, commands, catalog: harnessCatalog, native: nativeConfigurations,
-    detection, engine, runs: operatorServices.runs, locations,
+    detection, locations,
     provisioningRoot: projectRoot,
   })
   const app = buildApp({
@@ -322,7 +317,6 @@ export function buildProductionApp(
       { name: 'native MCP settings', run: () => harnessSettings.mcp.shutdown() },
       { name: 'Codex plugin settings', run: () => harnessSettings.plugins.shutdown() },
       { name: 'harness qualification checks', run: () => Promise.all([harnessCatalog.shutdownChecks(), nativeConfigurations.shutdownChecks()]).then(() => undefined) },
-      { name: 'workflow triggers', run: () => operatorExtensions.triggers.shutdown() },
       { name: 'Operator chat', run: () => chat.shutdown() },
       { name: 'automatic reviews', run: () => reviews.shutdown() },
       { name: 'workflow engine', run: () => engine.shutdown() },
@@ -415,7 +409,6 @@ export function buildProductionApp(
         await chat.reconcileActive()
         if (closing) return
         await reviews.tick()
-        if (!closing) await operatorExtensions.triggers.tick(report)
       }
       let afterId: string | undefined
       do {

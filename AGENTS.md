@@ -11,6 +11,16 @@ integrations unless the current workstream explicitly authorizes them.
 Keep feature work behind the shared contracts package. The web app should not
 redefine API/domain shapes locally or import server-only code.
 
+## Current workflow execution semantics
+
+All newly created executable workflows use execution semantics 3 through one
+Board, shared save/read/Start services, and the same engine. `repeat` is absent
+for ordinary workflows and configured only for explicit finite repeat blocks.
+Retire active execution-semantics 1/2 paths and compatibility-only tests; fix
+current consumers instead of restoring a legacy fallback. Preserve exact saved
+WorkflowVersion and Run facts, and keep unrelated native, MCP, and graph protocol
+version labels and historical ENG-03 evidence.
+
 ## Operator MCP parity
 
 Every critical product capability added or changed in the app must ship with equivalent Operator MCP support in the same change. This includes workspace and workflow creation, edits, execution locations, global defaults, workspace settings, and workflow settings.

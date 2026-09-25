@@ -1,7 +1,9 @@
 import type pg from 'pg'
 import { RunOutcomeSchema } from '@graphql/contracts'
-import { GraphEditRunPinSchema, GraphEditRunStateSchema, AcceptedWorkflowRunV3Schema,
-  SavedRunVersionSnapshotSchema, ExecutableWorkflowV3Schema, type GraphEditRunState } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema,
+  SavedRunVersionSnapshotSchema, ExecutableWorkflowV3Schema } from '@graphql/contracts/wave25'
+import { CurrentJournalRunPinSchema as GraphEditRunPinSchema, CurrentJournalRunStateSchema as GraphEditRunStateSchema,
+  type CurrentJournalRunState as GraphEditRunState } from '@graphql/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { readImmutableWorkflowVersion, readImmutableAgentConfiguration,
   type ImmutableWorkflowVersionRow, type ImmutableAgentConfigurationRow } from '../workflows/immutableRead.js'
@@ -20,10 +22,10 @@ const invalidTerminal = `r.execution_state<>'completed'
   or r.record->>'workspaceId' is distinct from r.workspace_id
   or r.record->>'workflowId' is distinct from r.workflow_id
   or r.record->>'workflowVersionId' is distinct from r.workflow_version_id
-  or coalesce(r.record->>'executionSemanticsVersion','1') not in ('1','2','3')
+  or r.record->'executionSemanticsVersion' is distinct from '3'::jsonb
   or not exists (select 1 from workflow_versions v where v.id=r.workflow_version_id
     and v.workspace_id=r.workspace_id and v.workflow_id=r.workflow_id
-    and v.execution_semantics_version::text=coalesce(r.record->>'executionSemanticsVersion','1')
+    and v.execution_semantics_version=3 and v.record->'executionSemanticsVersion'='3'::jsonb
     and v.record->>'id'=v.id and v.record->>'workspaceId'=r.workspace_id and v.record->>'workflowId'=r.workflow_id
     and v.record->'agentConfigurationVersionIds'=r.record->'agentConfigurationVersionIds')`
 const cleanup = `exists (select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending)`
@@ -41,10 +43,8 @@ const interactions = `exists (
   select 1 from durable_interactions i
   left join harness_executions e on e.id=i.execution_id and e.run_id=i.run_id
   left join interaction_graph_resumes g on g.interaction_id=i.id
-  where i.run_id=r.id and (e.id is null or
-    (r.record->>'executionSemanticsVersion' in ('2','3') and ((${PUBLIC_PENDING_INTERACTION_SQL})
-      or (i.status='canceled' and not (${CANCELED_INTERACTION_RETIRED_SQL}))))
-    or (coalesce(r.record->>'executionSemanticsVersion','1')='1' and i.status not in ('canceled','delivered')))
+  where i.run_id=r.id and (e.id is null or (${PUBLIC_PENDING_INTERACTION_SQL})
+    or (i.status='canceled' and not (${CANCELED_INTERACTION_RETIRED_SQL})))
 )`
 // A queued review may not have an execution ID yet. Its owning interaction,
 // not an optional launched execution, determines the affected Run.
@@ -56,7 +56,7 @@ const reviews = `exists (select 1 from review_jobs j join durable_interactions r
 // insufficient after a new preflight: require the exact latest durable close,
 // all prior lifetimes closed, and finalization AFTER that close. A missing
 // process, provider, session, receipt or closure is not negative launch proof.
-const repeatNative = `coalesce(r.record->>'executionSemanticsVersion','1')='3' and (
+const currentNative = `(
   exists (select 1 from harness_executions e where e.run_id=r.id and (
     e.record->>'id' is distinct from e.id or e.record->>'runId' is distinct from e.run_id
     or e.record->>'workflowNodeId' is distinct from e.workflow_node_id
@@ -68,10 +68,7 @@ const repeatNative = `coalesce(r.record->>'executionSemanticsVersion','1')='3' a
       jsonb_array_elements(case when jsonb_typeof(v.record->'definition'->'nodes')='array'
         then v.record->'definition'->'nodes' else '[]'::jsonb end) n
       where v.id=r.workflow_version_id and n->>'id'=e.workflow_node_id and n->>'agentId'=e.agent_id)
-    or (e.record->>'nativeSessionId' is null and (
-      e.record->>'startedAt' is not null
-      or exists(select 1 from execution_native_sessions s where s.execution_id=e.id)
-      or exists(select 1 from execution_native_closures c where c.execution_id=e.id)))
+    or e.record->>'nativeSessionId' is null
     or (e.record->>'nativeSessionId' is not null and not exists (
       select 1 from execution_native_sessions s
       join lateral (select * from execution_native_closures c where c.execution_id=e.id
@@ -93,7 +90,7 @@ const repeatNative = `coalesce(r.record->>'executionSemanticsVersion','1')='3' a
   or exists(select 1 from worker_credential_bindings b left join management_principals p on p.id=b.principal_id
     where b.run_id=r.id and (b.revoked_at is null or p.id is null or p.revoked_at is null))
 )`
-const repeatTerminal = `coalesce(r.record->>'executionSemanticsVersion','1')='3' and (
+const currentTerminal = `(
   r.record->'result'->>'outcome' is distinct from r.record->>'outcome'
   or r.record->>'finishedAt' is null
   or r.record->'executionLocation'->>'runnerId' is distinct from r.runner_id
@@ -102,7 +99,7 @@ const repeatTerminal = `coalesce(r.record->>'executionSemanticsVersion','1')='3'
 )`
 // Existing native writers bind g to the exact requester and graph continuation.
 // Non-null acknowledgement from another Run/execution is never settlement.
-const repeatInteractions = `coalesce(r.record->>'executionSemanticsVersion','1')='3' and exists (
+const currentInteractions = `exists (
   select 1 from durable_interactions i
   left join harness_executions e on e.id=i.execution_id and e.run_id=i.run_id
   left join interaction_graph_resumes g on g.interaction_id=i.id
@@ -132,7 +129,7 @@ const repeatInteractions = `coalesce(r.record->>'executionSemanticsVersion','1')
 
   ))`
 
-const repeatReviews = `coalesce(r.record->>'executionSemanticsVersion','1')='3' and exists (
+const currentReviews = `exists (
   select 1 from review_jobs j join durable_interactions i on i.id=j.interaction_id
   where i.run_id=r.id and (j.record->>'id' is distinct from j.id
     or j.record->>'interactionId' is distinct from j.interaction_id or j.record->>'state' is distinct from j.state
@@ -154,29 +151,28 @@ interface AffectedRow {
  * paging, mutable Agent pins or follow-up reads that can see another head. */
 async function readAffectedRows(client: Pick<pg.PoolClient, 'query'>, input: AffectedGraphScope): Promise<AffectedRow[]> {
   const rows = await client.query<AffectedRow>(`select r.id,r.workspace_id,r.workflow_id,r.workflow_version_id,r.record,
-    not ((${invalidTerminal}) or (${repeatTerminal})) as terminal, ${cleanup} as cleanup,
-    ((${native}) or (${repeatNative})) as native,
-    ((${interactions}) or (${repeatInteractions})) as interactions, ((${reviews}) or (${repeatReviews})) as reviews,
-    case when r.record->>'executionSemanticsVersion'='3' then (
+    not ((${invalidTerminal}) or (${currentTerminal})) as terminal, ${cleanup} as cleanup,
+    ((${native}) or (${currentNative})) as native,
+    ((${interactions}) or (${currentInteractions})) as interactions, ((${reviews}) or (${currentReviews})) as reviews,
+    (
       select jsonb_build_object('id',v.id,'workspace_id',v.workspace_id,'workflow_id',v.workflow_id,
         'version',v.version,'entry_node_id',v.entry_node_id,'execution_semantics_version',v.execution_semantics_version,'record',v.record)
       from workflow_versions v where v.id=r.workflow_version_id
-    ) else null end as version_row,
-    case when r.record->>'executionSemanticsVersion'='3' then (
+    ) as version_row,
+    (
       select coalesce(jsonb_agg(jsonb_build_object('id',c.id,'workspace_id',c.workspace_id,'agent_id',c.agent_id,'version',c.version,'record',c.record) order by c.id),'[]'::jsonb)
       from agent_configuration_versions c where c.workspace_id=r.workspace_id and c.id in (
         select value from jsonb_each_text(case when jsonb_typeof(r.record->'agentConfigurationVersionIds')='object'
           then r.record->'agentConfigurationVersionIds' else '{}'::jsonb end))
-    ) else null end as configurations
+    ) as configurations
     from runs r where ${affected} order by r.id`, values(input))
   return rows.rows
 }
 
-function validRepeatSnapshot(row: AffectedRow): boolean {
+function validCurrentSnapshot(row: AffectedRow): boolean {
   if (!row.record || typeof row.record !== 'object' || Array.isArray(row.record)) return false
   const semantics = row.record.executionSemanticsVersion
-  if (semantics === undefined || semantics === 1 || semantics === 2) return true
-  if (semantics !== 3) return false // Strings, null and unknown versions are not legacy.
+  if (semantics !== 3) return false // Missing, retired, string and unknown pins never acquire current authority.
   try {
     if (!row.version_row || !Array.isArray(row.configurations)) return false
     const run = AcceptedWorkflowRunV3Schema.parse(row.record)
@@ -193,7 +189,7 @@ function validRepeatSnapshot(row: AffectedRow): boolean {
 function settled(row: AffectedRow): boolean {
   // Missing/corrupt flags are never interpreted as settlement.
   return row.terminal === true && row.cleanup === false && row.native === false
-    && row.interactions === false && row.reviews === false && validRepeatSnapshot(row)
+    && row.interactions === false && row.reviews === false && validCurrentSnapshot(row)
 }
 function unsettled(): never {
   throw new DomainError('WORKFLOW_RUNS_UNSETTLED',
@@ -212,10 +208,10 @@ export async function assertMeaningfulSaveAdmitted(client: Pick<pg.PoolClient, '
 export async function readAffectedGraphRuns(client: Pick<pg.PoolClient, 'query'>, input: AffectedGraphScope): Promise<GraphEditRunState[]> {
   const rows = await readAffectedRows(client, input)
   return rows.map((row) => {
-    if (!validRepeatSnapshot(row)) return unsettled()
+    if (!validCurrentSnapshot(row)) return unsettled()
     const pin = GraphEditRunPinSchema.parse({ workspaceId: row.workspace_id, workflowId: row.workflow_id,
       runId: row.id, workflowVersionId: row.workflow_version_id,
-      executionSemanticsVersion: row.record.executionSemanticsVersion ?? 1,
+      executionSemanticsVersion: row.record.executionSemanticsVersion,
       agentConfigurationVersionIds: row.record.agentConfigurationVersionIds })
     const terminal = row.terminal === true
     const cleanupPending = row.cleanup !== false, nativePending = row.native !== false

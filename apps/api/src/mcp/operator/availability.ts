@@ -1,6 +1,7 @@
-import { REPEAT_OPERATOR_TOOL_NAMES, type ManagementAction, type ManagementScope, type OperatorToolName } from '@graphql/contracts/management'
+import { type ManagementAction, type ManagementScope, type OperatorToolName } from '@graphql/contracts/management'
 import { hasAction, isAuthorized, type AuthorizedResource } from '../../modules/access/policy.js'
 import { OPERATOR_TOOL_ACTIONS } from './catalog.js'
+import { retiredExecutionTool } from './retiredExecutionTools.js'
 import type { OperatorRequestContext } from './types.js'
 
 type ScopeKind = 'global' | 'workspace' | 'workflow' | 'run' | 'resource' | 'caller'
@@ -98,59 +99,10 @@ const extensions: Partial<Record<OperatorToolName,{scope:ScopeKind;extension:key
     "scope": "workspace",
     "extension": "skills"
   },
-  "workflow_trigger_get": {
-    "scope": "workflow",
-    "extension": "triggers"
-  },
-  "workflow_trigger_update": {
-    "scope": "workflow",
-    "extension": "triggers"
-  },
-  "workflow_trigger_disable": {
-    "scope": "workflow",
-    "extension": "triggers"
-  },
-  "workflow_trigger_fire": {
-    "scope": "workflow",
-    "extension": "triggers"
-  },
-  "workflow_trigger_jobs_list": {
-    "scope": "workflow",
-    "extension": "triggers"
-  },
-  "run_resume": {
-    "scope": "run",
-    "extension": "runs"
-  },
-  "run_retry": {
-    "scope": "workflow",
-    "extension": "runs"
-  }
 }
 
 export function operatorToolRequirements(name: OperatorToolName, resource?: AuthorizedResource): Requirement[] {
-  // Discovery and concrete execution use the same scope projections. Optional
-  // capability scope adds read requirements; it never scopes the global grant.
-  if (name === 'repeat_capabilities_get') return [
-    { action: 'capabilities:read', scope: 'global' },
-    ...(resource?.workflowId ? [
-      { action: 'workflows:read', scope: 'workflow' }, { action: 'graph:read', scope: 'workflow' },
-    ] satisfies Requirement[] : resource?.workspaceId ? [
-      { action: 'workspaces:read', scope: 'workspace' },
-    ] satisfies Requirement[] : []),
-  ]
-  if (name === 'repeat_get') return [
-    { action: 'workflows:read', scope: 'workflow' }, { action: 'graph:read', scope: 'workflow' },
-  ]
-  if (name === 'repeat_update') return [
-    { action: 'workflows:read', scope: 'workflow' }, { action: 'workflows:update', scope: 'workflow' },
-    { action: 'graph:read', scope: 'workflow' }, { action: 'graph:edit', scope: 'workflow' },
-    { action: 'graph:save', scope: 'workflow' }, { action: 'agents:read', scope: 'workflow' },
-  ]
-  if (name === 'repeat_run_get') return [
-    { action: 'runs:read', scope: 'run' }, { action: 'workflows:read', scope: 'run' },
-    { action: 'graph:read', scope: 'run' },
-  ]
+  void resource
   const entry = OPERATOR_TOOL_ACTIONS.find((item) => item.name === name)!
   const extended = extensions[name]
   let scope: ScopeKind = extended?.scope ?? 'resource'
@@ -197,9 +149,11 @@ function intersect(left: ManagementScope, right: ManagementScope): ManagementSco
   return result
 }
 export function operatorToolAvailable(context: OperatorRequestContext, name: OperatorToolName, resource?: AuthorizedResource): boolean {
+  if (retiredExecutionTool(name)) return false
   if (!OPERATOR_TOOL_ACTIONS.some((entry)=>entry.name===name)) return false
   const service = context.services
-  if (REPEAT_OPERATOR_TOOL_NAMES.some((tool) => tool === name) && !service.repeats) return false
+  if (name.startsWith('run_') && !service.runs) return false
+  if (name.startsWith('workflow_') && !service.workflows) return false
   if ((name === 'operator_mcp_setup_get' || name.startsWith('operator_chat_') || name === 'operator_handoff_history_get')
     && !service.operatorChat) return false
   if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name) && !service.harnessSettings) return false

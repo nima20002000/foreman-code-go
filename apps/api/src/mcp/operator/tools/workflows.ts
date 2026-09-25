@@ -1,15 +1,19 @@
+import { CurrentWorkflowCreateInputSchema } from '@graphql/contracts/wave25'
+import { registerCurrentWorkflowTools } from './currentWorkflow.js'
+import { SavedManagedWorkflowCommandResultSchema as ManagedWorkflowCommandResultSchema,
+  SavedManagedWorkflowPageSchema as ManagedWorkflowPageSchema, SavedManagedWorkflowSchema as ManagedWorkflowSchema } from '@graphql/contracts/wave25'
 import type { McpServer } from '@modelcontextprotocol/server'
 
 import {
-  WorkflowArchiveInputSchema, WorkflowCreateInputSchema, WorkflowGetInputSchema,
+  WorkflowArchiveInputSchema, WorkflowGetInputSchema,
   WorkflowListInputSchema, WorkflowUpdateInputSchema,
-  ManagedWorkflowCommandResultSchema, ManagedWorkflowPageSchema, ManagedWorkflowSchema,
 } from '@graphql/contracts/management'
 import { invokeOperatorTool } from '../invoke.js'
 import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'
 
 export function registerWorkflowTools(server: McpServer, context: OperatorRequestContext): void {
+  registerCurrentWorkflowTools(server, context)
   if (operatorToolAvailable(context, 'workflow_list')) server.registerTool('workflow_list', {
     description: 'List authorized workflows, including empty workflows.', inputSchema: WorkflowListInputSchema,
     outputSchema: ManagedWorkflowPageSchema,
@@ -21,12 +25,12 @@ export function registerWorkflowTools(server: McpServer, context: OperatorReques
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workflow_get', () => context.services.workflows.get(context.principal, input.workspaceId, input.workflowId)))
   if (operatorToolAvailable(context, 'workflow_create')) server.registerTool('workflow_create', {
-    description: 'Create a named durable workflow using global workflow defaults. It inherits the workspace execution folder; do not configure a separate workflow path.', inputSchema: WorkflowCreateInputSchema,
+    description: 'Create a named, unsaved semantics-3 workflow using global workflow defaults. Use workflow_validate_v3 and workflow_save_v3 for any graph, with or without repeat. It inherits the workspace execution folder; do not configure a separate workflow path.', inputSchema: CurrentWorkflowCreateInputSchema,
     outputSchema: ManagedWorkflowCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workflow_create', () => context.services.workflows.create(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workflow_update')) server.registerTool('workflow_update', {
-    description: 'Revision-check and rename or describe a workflow. For workflow settings, open a graph draft, apply workflow.set_approval, workflow.set_execution_condition, workflow.set_execution_limits or workflow.set_required_agent_count, then graph_save. Global workflow_defaults_update affects only future workflows.', inputSchema: WorkflowUpdateInputSchema,
+    description: 'Revision-check and rename or describe a workflow. For current graph and workflow settings use workflow_validate_v3 and workflow_save_v3 with exact pins; unresolved staged edits require their existing Stop-and-save/Discard protocol. Global workflow_defaults_update affects only future workflows.', inputSchema: WorkflowUpdateInputSchema,
     outputSchema: ManagedWorkflowCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workflow_update', () => context.services.workflows.update(context.principal, 'mcp', input)))

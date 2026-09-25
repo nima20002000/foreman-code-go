@@ -3,7 +3,7 @@ import {
   canonicalGraphJson, RepeatGraphPageV3Schema, reduceRepeatGraphPageV3, RUN_GRAPH_LIMITS,
   type RepeatGraphFactV3,
 } from '@graphql/contracts/wave25'
-import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
+import { currentDatabase as agent3Database, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import {
   graphFixture, graphPosition, ownedGraph, changeRunState, privateCanary,
   type GraphFixture, type GraphTestDatabase,

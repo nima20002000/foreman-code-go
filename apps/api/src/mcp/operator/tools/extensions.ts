@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/server'
 import { requireAuthorization } from '../../../modules/access/policy.js'
 import * as contracts from '@graphql/contracts/management'
-import { CompatibleWorkflowVersionSchema, RunStartV2ResultSchema } from '@graphql/contracts/wave25'
+import { SavedWorkflowVersionPageSchema, SavedWorkflowVersionDetailSchema } from '@graphql/contracts/wave25'
 import { operatorToolAvailable } from '../availability.js'
 import { invokeOperatorTool } from '../invoke.js'
 import type { OperatorRequestContext } from '../types.js'
@@ -54,11 +54,11 @@ export function registerExtendedOperatorTools(server: McpServer, context: Operat
     annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'agent_clone', () => extension.agents.clone(context.principal,input)))
   if (operatorToolAvailable(context, 'workflow_versions_list')) server.registerTool('workflow_versions_list', {
-    description: "List immutable workflow versions in increasing numeric version order.", inputSchema: contracts.WorkflowVersionListInputSchema, outputSchema: contracts.WorkflowVersionPageSchema.extend({ items: CompatibleWorkflowVersionSchema.array() }),
+    description: "List immutable workflow versions in increasing numeric version order.", inputSchema: contracts.WorkflowVersionListInputSchema, outputSchema: SavedWorkflowVersionPageSchema,
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'workflow_versions_list', () => extension.history.workflows(context.principal,input)))
   if (operatorToolAvailable(context, 'workflow_version_get')) server.registerTool('workflow_version_get', {
-    description: "Inspect one immutable workflow version. Restore it through graph_draft_apply workflow.restore_version, then validate and publish a new current version.", inputSchema: contracts.WorkflowVersionGetInputSchema, outputSchema: contracts.WorkflowVersionResultSchema.extend({ version: CompatibleWorkflowVersionSchema }),
+    description: "Inspect one immutable current-semantics-3 version. Re-author its definition through workflow_validate_v3 and workflow_save_v3 with today’s exact base/configuration/location pins; historical versions are never edited.", inputSchema: contracts.WorkflowVersionGetInputSchema, outputSchema: SavedWorkflowVersionDetailSchema,
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'workflow_version_get', () => extension.history.workflow(context.principal,input)))
   if (operatorToolAvailable(context, 'agent_configuration_versions_list')) server.registerTool('agent_configuration_versions_list', {
@@ -113,32 +113,4 @@ export function registerExtendedOperatorTools(server: McpServer, context: Operat
     description: "Publish a new immutable workspace skill version from supplied text. This does not install packages or rewrite existing versions.", inputSchema: contracts.SkillPublishInputSchema, outputSchema: contracts.SkillPublishResultSchema,
     annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'skill_publish', () => extension.skills.publish(context.principal,input)))
-  if (operatorToolAvailable(context, 'workflow_trigger_get')) server.registerTool('workflow_trigger_get', {
-    description: "Read the saved trigger revision, version/location pins, enabled state, next scheduled time, and last error.", inputSchema: contracts.WorkflowTriggerGetInputSchema, outputSchema: contracts.WorkflowTriggerGetResultSchema,
-    annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
-  }, async (input) => invokeOperatorTool(context, 'workflow_trigger_get', () => extension.triggers.get(context.principal,input)))
-  if (operatorToolAvailable(context, 'workflow_trigger_update')) server.registerTool('workflow_trigger_update', {
-    description: "Configure a saved manual/message/event/interval-schedule trigger. Enabling requires Runs/start and location-read authority. Every launch revalidates the principal and all delegated owners.", inputSchema: contracts.WorkflowTriggerUpdateInputSchema, outputSchema: contracts.WorkflowTriggerUpdateResultSchema,
-    annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false},
-  }, async (input) => invokeOperatorTool(context, 'workflow_trigger_update', () => extension.triggers.update(context.principal,input)))
-  if (operatorToolAvailable(context, 'workflow_trigger_disable')) server.registerTool('workflow_trigger_disable', {
-    description: "Disable a trigger and block unstarted jobs even if the parent is archived or its saved version changed.", inputSchema: contracts.WorkflowTriggerDisableInputSchema, outputSchema: contracts.WorkflowTriggerUpdateResultSchema,
-    annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false},
-  }, async (input) => invokeOperatorTool(context, 'workflow_trigger_disable', () => extension.triggers.disable(context.principal,input)))
-  if (operatorToolAvailable(context, 'workflow_trigger_fire')) server.registerTool('workflow_trigger_fire', {
-    description: "Enqueue an explicitly supplied matching event or message through a durable idempotent outbox. This is not an external webhook subscription.", inputSchema: contracts.WorkflowTriggerFireInputSchema, outputSchema: contracts.WorkflowTriggerFireResultSchema,
-    annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false},
-  }, async (input) => invokeOperatorTool(context, 'workflow_trigger_fire', () => extension.triggers.fire(context.principal,input)))
-  if (operatorToolAvailable(context, 'workflow_trigger_jobs_list')) server.registerTool('workflow_trigger_jobs_list', {
-    description: "Inspect queued, leased, started, and blocked trigger jobs. Queued is not confirmation that a Run started.", inputSchema: contracts.TriggerJobListInputSchema, outputSchema: contracts.TriggerJobPageSchema,
-    annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
-  }, async (input) => invokeOperatorTool(context, 'workflow_trigger_jobs_list', () => extension.triggers.jobs(context.principal,input)))
-  if (operatorToolAvailable(context, 'run_resume')) server.registerTool('run_resume', {
-    description: "Reconcile a healthy, already-approved checkpoint through the existing engine. Does not approve requests or replay interrupted native side effects.", inputSchema: contracts.RunResumeInputSchema, outputSchema: contracts.RunResumeResultSchema,
-    annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false},
-  }, async (input) => invokeOperatorTool(context, 'run_resume', () => extension.runs.resume(context.principal,input)))
-  if (operatorToolAvailable(context, 'run_retry')) server.registerTool('run_retry', {
-    description: "Explicitly start a new full Run from the input of a failed/canceled terminal Run. The caller selects the current saved workflow version; its persisted execution semantics determine legacy or v2 admission. Not a selected-node retry.", inputSchema: contracts.RunRetryInputSchema, outputSchema: contracts.RunStartResultSchema.or(RunStartV2ResultSchema),
-    annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false},
-  }, async (input) => invokeOperatorTool(context, 'run_retry', () => extension.runs.retry(context.principal,input)))
 }

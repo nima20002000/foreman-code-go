@@ -2,10 +2,14 @@ import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import {
-  GraphEditAdvanceInputSchema, GraphEditDiscardInputSchema, GraphEditReadInputSchema,
-  GraphEditStopSchema, sameWorkflowValue,
-  type GraphEditAdvanceInput, type GraphEditDiscardInput, type GraphEditIntent,
-  type GraphEditReadInput, type GraphEditRunState,
+  CurrentJournalAdvanceInputSchema as GraphEditAdvanceInputSchema,
+  CurrentJournalDiscardInputSchema as GraphEditDiscardInputSchema,
+  CurrentJournalReadInputSchema as GraphEditReadInputSchema,
+  CurrentJournalStopSchema as GraphEditStopSchema, sameWorkflowValue,
+  type CurrentJournalAdvanceInput as GraphEditAdvanceInput,
+  type CurrentJournalDiscardInput as GraphEditDiscardInput,
+  type CurrentJournal as GraphEditIntent, type CurrentJournalReadInput as GraphEditReadInput,
+  type CurrentJournalRunState as GraphEditRunState,
 } from '@graphql/contracts/wave25'
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -32,7 +36,7 @@ export type EditIntentReadResult<I extends DurableEditIntent> = {
   intent: I | null; current: GraphEditRunState[]; canStop: boolean; affectedSetChanged: boolean
 }
 export interface EditIntentBoundary<S extends EditStageScope, I extends DurableEditIntent> {
-  kind: 'graph' | 'repeat'
+  kind: 'current'
   stageSchema: { parse(raw: unknown): S }
   intentSchema: { parse(raw: unknown): I }
   readResultSchema: { parse(raw: unknown): EditIntentReadResult<I> }
@@ -117,8 +121,8 @@ export class DurableEditIntentService<S extends EditStageScope, I extends Durabl
     [input.intentId, principalId, input.workspaceId, input.workflowId])
     if (!row.rows[0]) throw new DomainError('GRAPH_EDIT_INTENT_NOT_FOUND', 'The private edit intent is unavailable in this scope.', 404)
     const raw = row.rows[0].record
-    const repeat = !!raw && typeof raw === 'object' && 'kind' in raw && raw.kind === 'repeat'
-    if (repeat !== (this.drafts.kind === 'repeat')) throw new DomainError('GRAPH_EDIT_INTENT_KIND_CONFLICT',
+    const current = !!raw && typeof raw === 'object' && 'kind' in raw && raw.kind === 'current'
+    if (!current) throw new DomainError('GRAPH_EDIT_INTENT_KIND_CONFLICT',
       'An intent of another supported edit kind occupies this scope. Reconcile it through its matching read surface.', 409)
     const intent = this.drafts.intentSchema.parse(raw)
     if (intent.id !== input.intentId || intent.ownerPrincipalId !== principalId
@@ -153,7 +157,7 @@ export class DurableEditIntentService<S extends EditStageScope, I extends Durabl
         // its unresolved intent instead of silently hiding it on the new board.
         const row = await client.query<{ id: string }>(`select id from graph_edit_intents
           where principal_id=$1 and workspace_id=$2 and workflow_id=$3
-            and (state not in ('saved','discarded') or coalesce(record->>'kind','graph')=$4)
+            and (state not in ('saved','discarded') or record->>'kind'=$4)
           order by (state not in ('saved','discarded')) desc,created_at desc,id desc limit 1`,
         [live.id, input.workspaceId, input.workflowId, this.drafts.kind])
         id = row.rows[0]?.id
@@ -188,7 +192,7 @@ export class DurableEditIntentService<S extends EditStageScope, I extends Durabl
         const id = `graph-edit-${randomUUID()}`, now = new Date().toISOString()
         const advanceCommandId = randomUUID(), discardCommandId = randomUUID()
         const commandScope = { workspaceId: input.workspaceId, workflowId: input.workflowId, draftId: input.draftId, intentId: id }
-        const intent = this.drafts.intentSchema.parse({ ...(this.drafts.kind === 'repeat' ? { kind: 'repeat' } : {}), id, ownerPrincipalId: principal.id,
+        const intent = this.drafts.intentSchema.parse({ kind: 'current', id, ownerPrincipalId: principal.id,
           workspaceId: input.workspaceId, workflowId: input.workflowId, draftId: input.draftId,
           stageCommandId: input.commandId, stageInputHash: commandInputHash(input),
           advanceCommandId, advanceInputHash: commandInputHash({ ...commandScope, action: 'stop_and_save', commandId: advanceCommandId }),

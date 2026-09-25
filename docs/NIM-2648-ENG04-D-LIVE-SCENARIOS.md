@@ -1,69 +1,108 @@
-# NIM-2648 / ENG04-D — reproducible real-app/native scenarios
+# NIM-2648 / ENG04-D — ENG-S3-ONLY reusable gate scenarios
 
-These are instructions for the later NIM-2649 live testers. This Web lane did **not** run a hosted native provider, browser, shared app database, or production-like local app.
+This document prepares the later NIM-2649 live testers. This Web lane did **not** run the mounted browser, a hosted/local native Codex or OpenCode session, the authenticated production app, or a PostgreSQL-17 qualification cluster.
 
-## Evidence rule
+Source delta base: `c6c9e61e8a1991e7c8a67f2dd0ba82aa47fdf26a`.
+The observed PR head while this handoff was prepared was `13a43e6eea2256c0cb44076a76dfd0227829886d`; its only delta from the declared base is the independent code-line reporting commit. The D bundle intentionally does not touch those files.
 
-For every case record exact raw values, not UI labels or timing guesses:
+## ENG-S3-ONLY evidence rule
 
-- candidate commit SHA;
-- workspace, workflow, workflow-version and Run IDs;
-- repeat block ID, occurrence ID/index and occurrence `inputDigest`;
-- raw harness execution ID, provider session/thread ID where exposed, attempt, and accepted result digest;
-- decision ID, exit execution ID, decision reason/target, accepted-result digest;
-- graph snapshot sequence and complete-delta sequence range;
-- Stop/approval command ID + receipt/replay/conflict result where applicable.
+Every **positive** current workflow in this gate is execution semantics 3. For S3-01 through S3-04 the saved workflow definition must have the `repeat` property **absent**. `null`, `{ blocks: [] }`, a cap-one block, a hidden wrapper, or a V3-to-V2 projection does not satisfy the scenario. S3-05 alone has a real configured finite repeat block.
 
-Never treat a spinner, node color, process absence, or prose completion as native evidence.
+For each live case record raw evidence, not UI labels or timing guesses:
 
-## Scenario matrix
+- candidate Git SHA;
+- workspace ID, workflow ID, every saved workflow-version ID/revision and exact semantics pin;
+- exact `agentConfigurationVersionIds` map and accepted workspace execution-location snapshot/revision;
+- Start command ID, authenticated caller/source, receipt ID/result and replay/conflict result;
+- Run ID and raw node/execution/technical-attempt IDs;
+- exact bound input bytes/digest and accepted result bytes/digest;
+- provider harness, provider/native session/thread ID and native terminal identity where applicable;
+- approval interaction/resume/ack/cleanup identities where applicable;
+- repeat block/occurrence/input/decision IDs only for S3-05;
+- graph snapshot `asOfSequence`, complete delta base/through/head sequences and reconstructed-state parity;
+- Stop/edit command IDs and receipts when the scenario exercises them.
 
-### D1 — one occurrence / early exit
-Create a semantics-3 repeat with cap > 1. Make occurrence 1 exit with the declared early-exit outcome. Verify exactly one occurrence, no successor, exact raw exit execution ID and accepted-result digest, and persisted readback after refresh.
+A spinner, card state, node color, process absence, test double, old ENG-03 result, or source inspection is not live native evidence.
 
-### D2 — multiple occurrences / predecessor binding
-Drive at least two business occurrences. Verify occurrence 2 has a different raw occurrence ID, binding ID and input digest, and its `previous` points to occurrence 1's exact decision ID and accepted-result digest. Use distinct raw provider result IDs for the two accepted exit results.
+## Mandatory reusable architecture smoke
 
-### D3 — finite cap / exhaustion
-Set cap 2 and return the repeat outcome twice. Verify occurrence 2 records `limit_exit`, uses the configured limit route, preserves the latest deliverable + remaining findings, and no occurrence 3 or launch is created.
+### S3-01 — single and sequential V3, no repeat
 
-### D4 — unequal-depth selected join
-Use one fast selected branch and one deeper selected branch plus an unselected branch. Verify the join waits for both selected predecessors inside the same occurrence, the unselected branch is durably skipped, and occurrence-1 resolutions cannot satisfy occurrence 2.
+On the actual mounted Board, create and save (a) a one-agent workflow and (b) A → B. Reopen each saved workflow before Start. Verify the saved definition omits `repeat`, persisted semantics is exactly 3, and the same Board Start uses the current shared service. Repeat equivalent create/save/read/Start through authenticated HTTP and Operator MCP using the shared domain family rather than a compatibility endpoint.
 
-### D5 — invalid result rejection
-Return success-shaped provider output with an invalid repeat exit envelope (for example missing findings/null deliverable/prose-wrapped JSON). Verify no accepted result, decision, successor, route effect, or fake success is persisted.
+Verify exact version/configuration/location pins survive Start. For A → B, verify B receives A's exact accepted result through a durable predecessor binding. Ordinary runs must have real execution/attempt/input/result rows and **zero** synthetic repeat occurrence/carry/decision rows. Fetch snapshot plus complete delta at the same head and prove reconstructed state equals the snapshot cut.
 
-### D6 — duplicate observation and command replay
-Deliver the same terminal observation twice for the same raw execution ID, including one reconnect/replay. Verify one accepted result digest and one publication. Replay the same Start/Stop/edit command ID + payload and verify the exact stored receipt; replay the ID with a different payload and verify conflict.
+### S3-02 — parallel/all-required unequal-depth join V3, no repeat
 
-### D7 — technical retry vs business repeat vs full-Run retry
-Cause a retryable provider failure. Verify attempt 2 reuses the business occurrence and slot lineage. Then cause a business repeat and verify a new occurrence ID/index. Finally retry the whole Run and verify occurrence index restarts at 1 with no prior-Run ancestry.
+Create/save/reopen a V3 graph with one fast branch and one deeper branch feeding the same all-required join. `repeat` is absent. Start through Board and one authenticated programmatic surface, then verify the join does not run until every selected required predecessor has an accepted result. Record each raw branch execution/result identity and the join's exact bound predecessor set/digests.
 
-### D8 — Stop mid-occurrence and between occurrences
-For mid-occurrence Stop, capture already observed terminal bytes then Stop before acceptance; verify the terminal can remain observed but no accepted result/route/successor is committed. For between-occurrences Stop, capture the predecessor decision and durable successor input, then Stop; verify no next raw execution launches and predecessor IDs/digests remain unchanged.
+Repeat-specific tables/projection facts must remain empty for the ordinary run. Snapshot/complete-delta parity must preserve both branch histories and the single join activation.
 
-### D9 — approval wait with sibling progress
-Hold the repeat exit at approval settlement while an independently selected sibling completes. Verify the waiting exit is not accepted, sibling progress persists, and no repeat decision/successor appears until the exact approval/cleanup/boundary settlement clears.
+### S3-03 — conditional selected/unselected V3, no repeat
 
-### D10 — snapshot/complete-delta + compatibility
-After multiple repeat facts, fetch one authoritative snapshot and a complete delta from the first sequence; reconstructed state must equal the snapshot cut. Refresh/reconnect and re-read persisted repeat state. Also open/run legacy semantics-1/2 fixtures to verify they remain readable/executable under their existing contracts and are not silently treated as semantics 3.
+Create/save/reopen a V3 conditional with two explicitly named outcomes leading to alternative branches and a downstream join/continuation. `repeat` is absent. Drive each outcome in isolated runs. Verify only the declared selected edge activates, the other branch is durably unselected/skipped as the current graph contract requires, and no fallback is inferred from prose or canvas geometry.
+
+Record the exact accepted routing result, selected/unselected relationship identities, downstream input digest and no repeat-only persistence. Run replay must not change the chosen route or duplicate an execution.
+
+### S3-04 — approval V3, no repeat
+
+Create/save/reopen a supported approval workflow with `repeat` absent and persisted semantics 3. Start it through the same current Start family as S3-01..03. Hold the exact approval, allow any independent selected sibling work to make legitimate progress, then deliver the approved decision through the supported reviewer path.
+
+Verify a delivered UI response alone is insufficient: the exact graph-resume/native acknowledgement/cleanup evidence required by production must settle before progression. Record interaction, requesting execution, reviewer/native session, receipt and acknowledgement IDs. No repeat occurrence is created merely because an approval waits/resumes.
+
+### S3-05 — real bounded repeat V3
+
+Use one real configured finite repeat block. Qualify both:
+
+1. **Early exit:** occurrence 1 (or a later occurrence below the cap) emits the declared early-exit outcome. Verify no unnecessary successor occurrence is created.
+2. **Limit exit:** return the repeat outcome through the exact configured maximum occurrence. Verify the final decision is `limit_exit`, follows the saved limit target, preserves the latest deliverable + remaining findings and creates no extra occurrence/launch.
+
+Retain all existing D evidence: distinct occurrence/input/result/decision identities, unequal selected joins inside each occurrence, unselected work, invalid-result rejection, duplicate observation, technical retry vs business repeat vs whole-Run retry, Stop mid-occurrence/between occurrences, approval settlement and provider-shaped/native identity checks.
+
+## V3 add/remove repeat journey
+
+Using one workflow, save V3 version N with `repeat` absent, version N+1 after adding a valid bounded block, then version N+2 after removing it. All three versions remain semantics 3 and preserve the exact configuration pins unless an intentional configuration edit is separately saved. Reopen each version/current workflow through the supported product path.
+
+Run the no-repeat and repeat versions in separate Runs. No-repeat Runs must not receive repeat occurrence/round/carry/decision rows. The repeated Run must use real occurrence identities. Adding/removing repeat is a normal meaningful V3 version change, not an engine/complexity selector.
+
+## Denial, replay, conflict and retired-tag cases
+
+For Board-equivalent authenticated HTTP/MCP operations:
+
+- a caller lacking the exact grant must fail before persistence/native dispatch;
+- replaying the same command ID + canonical payload returns the stored receipt without duplicate work;
+- reusing the same command ID with changed input fails conflict without another Run/version/effect;
+- stale workflow revision, workflow-version/configuration pins or location revision fail before Start;
+- explicit retired execution tags `1` and `2`, omitted saved semantics where a saved pin is required, and malformed/unknown tags fail clearly with no Run/native effect;
+- never convert a retired tag to V3 and never route it to a legacy engine.
+
+## Publication and read parity
+
+Positive Start evidence must use A's real production V3 Start/lifecycle publisher as connected by B, not the old D test publisher or a mocked `admitRepeatRun` result. Verify the admitted Run opens the canonical current graph history and publishes native/accepted-result changes through the production path.
+
+At a stable head sequence:
+
+1. fetch the authoritative V3 snapshot;
+2. fetch complete delta from the required base until `hasMore=false` at that same head;
+3. reconstruct state from the delta and compare it to the snapshot state/topology cut;
+4. refresh/reconnect and repeat the read without creating duplicate facts;
+5. verify denied readers cannot learn graph payloads.
+
+Protocol version `1` in this graph feed is an independent wire-protocol version and is allowed; it is not execution semantics 1.
 
 ## PostgreSQL qualification
 
-Use only the D-owned disposable PostgreSQL-17 database/role flow from `eng04-repeat-postgres.test.ts`; never point destructive tests at the shared app database. Run with the explicit `RUN_ENG04_REPEAT_POSTGRES=1` opt-in and an admin URL dedicated to test-object creation. Preserve the exact raw database evidence needed to tie occurrence/input/result/decision rows together.
+Use only a D-owned disposable PostgreSQL-17 database/role. Never point destructive D tests at the shared app database. The opt-in repeat suite uses `RUN_ENG04_REPEAT_POSTGRES=1` plus an explicitly supplied admin URL dedicated to task-owned database/role creation.
 
-## Provider pairing
+The D suite now includes a no-repeat V3 persistence case that removes `repeat` from the fixture version and asserts all repeat evidence tables stay empty while an ordinary execution retains exact Run/node/Agent/configuration/attempt/input identity. On the current pre-A base that positive may be red if production schema/migration validation still requires repeat; that is a blocking A/integration dependency, not permission to fake a block.
 
-Pair the matrix across available Codex/OpenCode combinations only within native capacity. A provider-shaped unit test is not proof of a real native session. Native evidence must come from the later live gate and must include the provider/session/raw execution identity actually observed there.
+## Provider pairing and native proof
 
-## Stored-execution and settlement evidence added by the correction
+Pair S3/T cases across available Codex/OpenCode combinations within native capacity. Provider-shaped deterministic tests are regression coverage only, never live proof. A live positive needs the actual raw provider/native session and terminal evidence captured from the frozen candidate.
 
-The corrected deterministic D harness now mirrors the production `readStoredRepeatExecution` row contract instead of rebuilding duplicated SQL columns from the mutable JSON record. The later live gate should capture the same invariants from real persisted rows when diagnosing any mismatch:
+## Retirement check before ENG-04 closes
 
-- `harness_executions`: raw execution ID, Run ID, workflow-node ID, agent ID, technical attempt and `repeat_occurrence_id` must agree with the immutable execution record;
-- `run_repeat_executions`: slot ID, occurrence ID, technical attempt and durable identity must agree with the execution and slot;
-- `run_repeat_slots`: canonical `input_json` and `input_digest` must agree byte-for-canonical-byte with the execution's bound input;
-- a successful terminal may not pass repeat settlement merely because a test/provider reports success: its exact native-session reference and current durable closure generation must settle first;
-- host/approval boundary settlement is checked only after that concrete native settlement proof. A missing successful-terminal session is `REPEAT_BOUNDARY_PENDING`, not an approval acknowledgement and not success.
+The frozen candidate must have zero active V1/V2 **execution-semantics** dependency in current contracts, save/read/Start/runtime, mounted Board, bootstrap/fixtures and positive gate tests. The D source guard intentionally identifies remaining compatibility-only migration fixtures until they are retired/rebased to V3.
 
-The provider/session rows used by the deterministic unit harness are synthetic fixtures only. They are deliberately visible in assertions and are **not** native evidence. NIM-2649 must still obtain real Codex/OpenCode session/closure/approval evidence from the frozen candidate.
+Do not confuse this with independent values that may legitimately remain: graph/MCP/native protocol versions, repeat contract version, provider versions, ordinary workflow revision numbers, or historical ENG-03 documentation/evidence.

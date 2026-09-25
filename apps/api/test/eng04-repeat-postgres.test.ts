@@ -150,7 +150,42 @@ async function completeTwoOccurrences(pool: pg.Pool, id: string) {
 }
 
 postgresDescribe('NIM-2648 ENG04-D real PostgreSQL repeat regression', () => {
-  it('uses the production registry and preserves lineage, legacy/repeat uniqueness, technical attempts and exact readback', async () => {
+  it('persists an ordinary semantics-3 Run with repeat absent and creates no repeat-specific rows', async () => {
+    await disposableRepeatDatabase(async (pool) => {
+      const run = await transaction(pool, (sql) => seedRun(sql, 'eng04-d-v3-no-repeat', 3, { versionPatch(version) {
+        const definition = version.definition as JsonObject
+        delete definition.repeat
+      } }))
+      expect((run.version.definition as JsonObject).repeat).toBeUndefined()
+      expect(run.version.executionSemanticsVersion).toBe(3)
+      expect(run.record.executionSemanticsVersion).toBe(3)
+
+      const record = {
+        id: 'eng04-d-v3-no-repeat-execution-1',
+        runId: run.id,
+        workflowNodeId: 'outside',
+        agentId: run.agentIds.outside,
+        agentConfigurationVersionId: run.configIds.outside,
+        attempt: 1,
+        state: 'queued',
+        input: { executionSemanticsVersion: 3, runInput: run.record.input, predecessors: [] },
+        createdAt: now,
+      }
+      await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,repeat_occurrence_id,record)
+        values($1,$2,$3,$4,1,null,$5::jsonb)`, [record.id, run.id, record.workflowNodeId, record.agentId, text(record)])
+
+      expect(await counts(pool, run.id)).toEqual(Object.fromEntries(evidenceTables.map((table) => [table, 0])))
+      const stored = (await pool.query<{ record: JsonObject; repeat_occurrence_id: string | null }>(
+        'select record,repeat_occurrence_id from harness_executions where id=$1 and run_id=$2', [record.id, run.id],
+      )).rows[0]!
+      expect(stored.repeat_occurrence_id).toBeNull()
+      expect(stored.record).toEqual(record)
+      expect((await pool.query(`select execution_semantics_version,record from workflow_versions where id=$1`,
+        [run.versionId])).rows[0]).toMatchObject({ execution_semantics_version: 3 })
+    })
+  }, timeout)
+
+  it('uses the production registry and preserves V3 lineage, ordinary/repeat uniqueness, technical attempts and exact readback', async () => {
     await disposableRepeatDatabase(async (pool) => {
       const installed = await pool.query<{ version: number }>(
         'select version from application_migrations where version=$1',
@@ -203,27 +238,6 @@ postgresDescribe('NIM-2648 ENG04-D real PostgreSQL repeat regression', () => {
         (sql) => insertExecution(sql, execution(seeded.run, null, { nodeId: 'outside', id: 'eng04-d-outside-duplicate' }), false),
         ['23505'],
       )
-
-      const legacy = await transaction(pool, async (sql) => {
-        const run = await seedRun(sql, 'eng04-d-legacy', 1)
-        const record = {
-          id: 'eng04-d-legacy-attempt-1',
-          runId: run.id,
-          workflowNodeId: 'body',
-          agentId: run.agentIds.body,
-          agentConfigurationVersionId: run.configIds.body,
-          attempt: 1,
-          state: 'queued',
-          input: {},
-        }
-        await sql.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
-          values($1,$2,$3,$4,1,$5::jsonb)`, [record.id, run.id, record.workflowNodeId, record.agentId, text(record)])
-        return { run, record }
-      })
-      await rejectsTransaction(pool, (sql) => sql.query(`insert into harness_executions
-        (id,run_id,workflow_node_id,agent_id,attempt,record) values($1,$2,$3,$4,1,$5::jsonb)`,
-      ['eng04-d-legacy-attempt-duplicate', legacy.run.id, 'body', legacy.run.agentIds.body,
-        text({ ...legacy.record, id: 'eng04-d-legacy-attempt-duplicate' })]), ['23505'])
 
       const scope = repeatScope(seeded.run)
       const occurrences = await readRepeatOccurrences(pool, scope, seeded.first.blockId)

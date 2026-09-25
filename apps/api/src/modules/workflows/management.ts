@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto'
 
-import { WorkflowDefinitionSchema } from '@graphql/contracts'
-import { SavedWorkflowDefinitionSchema as CompatibleWorkflowDefinitionSchema, SavedManagedWorkflowSchema as ManagedWorkflowSchema,
+import { WorkflowDefinitionV3Schema as WorkflowDefinitionSchema, CurrentWorkflowCreateInputSchema, type CurrentWorkflowCreateInput } from '@graphql/contracts/wave25'
+import { CurrentWorkflowAuthoring } from './currentAuthoring.js'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
+import { SavedWorkflowDefinitionSchema as CurrentDefinitionSchema, SavedManagedWorkflowSchema as ManagedWorkflowSchema,
   type SavedManagedWorkflow as ManagedWorkflow } from '@graphql/contracts/wave25'
 import {
-  type ManagementPrincipal,
+  WorkflowUpdateInputSchema, WorkflowArchiveInputSchema, type ManagementPrincipal,
 } from '@graphql/contracts/management'
 import type pg from 'pg'
 
@@ -28,7 +30,10 @@ function managed(row: WorkflowRow): ManagedWorkflow {
 }
 
 export class WorkflowManagementService {
-  constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator) {}
+  readonly current: CurrentWorkflowAuthoring
+  constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator) {
+    this.current = new CurrentWorkflowAuthoring(pool, commands)
+  }
 
   async list(principal: ManagementPrincipal, input: {
     workspaceId: string; cursor?: string | undefined; limit: number; includeArchived: boolean
@@ -56,13 +61,17 @@ export class WorkflowManagementService {
     return managed(result.rows[0])
   }
 
-  async create(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
-    workspaceId: string; commandId: string; name: string; description?: string | undefined
-  }) {
+  async create(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: CurrentWorkflowCreateInput) {
+    const input = CurrentWorkflowCreateInputSchema.parse(raw)
     requireAuthorization(principal, 'workflows:create', { workspaceId: input.workspaceId })
     return this.commands.execute({
       principal, source, operation: 'workflow.create', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}:workflows:new`, payload: input,
+      replayResult: (value) => ManagedWorkflowSchema.parse(value),
+      authorize: async (client) => {
+        const live = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(live, 'workflows:create', { workspaceId: input.workspaceId })
+      },
       perform: async (client) => {
         await lockActiveWorkspace(client, input.workspaceId)
         const defaults = await new PostgresFoundationSettingsRepository(this.pool).getWorkflowDefaults(client)
@@ -71,6 +80,7 @@ export class WorkflowManagementService {
           id: `workflow-${randomUUID()}`, workspaceId: input.workspaceId, name: input.name,
           ...(input.description !== undefined ? { description: input.description } : {}),
           approval: { handler: defaults.value.approvalHandler },
+          executionSemanticsVersion: 3, entryNodeId: null,
           executionCondition: { kind: 'manual' }, nodes: [], edges: [], createdAt: now, updatedAt: now,
         })
         const result = await client.query<WorkflowRow>(
@@ -87,10 +97,16 @@ export class WorkflowManagementService {
     workspaceId: string; workflowId: string; commandId: string; expectedRevision: number;
     name?: string | undefined; description?: string | null | undefined
   }) {
+    input = WorkflowUpdateInputSchema.parse(input)
     requireAuthorization(principal, 'workflows:update', { workspaceId: input.workspaceId, workflowId: input.workflowId })
     return this.commands.execute({
       principal, source, operation: 'workflow.update', commandId: input.commandId,
       targetKey: `workflow:${input.workflowId}`, payload: input,
+      replayResult: (value) => ManagedWorkflowSchema.parse(value),
+      authorize: async (client) => {
+        const live = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(live, 'workflows:update', { workspaceId: input.workspaceId, workflowId: input.workflowId })
+      },
       perform: async (client) => {
         await lockActiveWorkspace(client, input.workspaceId)
         const current = await client.query<WorkflowRow>(
@@ -104,7 +120,7 @@ export class WorkflowManagementService {
           throw new DomainError('REVISION_CONFLICT', 'The workflow changed since it was read.', 409, { currentRevision: Number(row.revision) })
         }
         const previous = readSavedWorkflowDefinition(row, { workspaceId: input.workspaceId, workflowId: input.workflowId })
-        const workflow = CompatibleWorkflowDefinitionSchema.parse({
+        const workflow = CurrentDefinitionSchema.parse({
           ...previous,
           ...(input.name !== undefined ? { name: input.name } : {}),
           ...(input.description === null ? { description: undefined }
@@ -124,10 +140,16 @@ export class WorkflowManagementService {
   async archive(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
     workspaceId: string; workflowId: string; commandId: string; expectedRevision: number
   }) {
+    input = WorkflowArchiveInputSchema.parse(input)
     requireAuthorization(principal, 'workflows:archive', { workspaceId: input.workspaceId, workflowId: input.workflowId })
     return this.commands.execute({
       principal, source, operation: 'workflow.archive', commandId: input.commandId,
       targetKey: `workflow:${input.workflowId}`, payload: input,
+      replayResult: (value) => ManagedWorkflowSchema.parse(value),
+      authorize: async (client) => {
+        const live = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(live, 'workflows:archive', { workspaceId: input.workspaceId, workflowId: input.workflowId })
+      },
       perform: async (client) => {
         await lockActiveWorkspace(client, input.workspaceId)
         const current = await client.query<WorkflowRow>(
@@ -140,9 +162,8 @@ export class WorkflowManagementService {
           throw new DomainError('REVISION_CONFLICT', 'The workflow changed since it was read.', 409, { currentRevision: Number(row.revision) })
         }
         const definition = readSavedWorkflowDefinition(row, { workspaceId: input.workspaceId, workflowId: input.workflowId })
-        if ('executionSemanticsVersion' in definition && definition.executionSemanticsVersion === 3) {
-          await assertMeaningfulSaveAdmitted(client, { workspaceId: input.workspaceId, workflowId: input.workflowId, stagedAgentIds: [] })
-        }
+        void definition
+        await assertMeaningfulSaveAdmitted(client, { workspaceId: input.workspaceId, workflowId: input.workflowId, stagedAgentIds: [] })
         const active = await client.query<{ count: string }>(
           `select count(*) from runs where workspace_id = $1 and workflow_id = $2 and execution_state <> 'completed'`,
           [input.workspaceId, input.workflowId],

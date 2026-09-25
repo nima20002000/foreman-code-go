@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
-import { makeWave25Fixture } from './fixtures.js'
+import { makeCurrentWorkflowFixture } from './currentFixture.js'
 import { RepeatWorkflowVersionV1Schema } from './repeat.js'
 import { RunGraphScopeSchema, RUN_GRAPH_LIMITS } from './protocol.js'
 import {
@@ -13,7 +13,7 @@ import { repeatMetadataSnapshotFromCanonicalV3, repeatMetadataCurrentFromCanonic
 
 const digest = `sha256:${'a'.repeat(64)}`, time = '2026-09-25T00:00:00.000Z'
 function fixture() {
-  const base = makeWave25Fixture('eng04-projection'), [entry, exit] = base.version.definition.nodes
+  const base = makeCurrentWorkflowFixture('eng04-projection'), [entry, exit] = base.version.definition.nodes
   assert.ok(entry && exit)
   const version = RepeatWorkflowVersionV1Schema.parse({ ...base.version, id: `${base.version.id}-v3`, executionSemanticsVersion: 3,
     definition: { ...base.version.definition, executionSemanticsVersion: 3, nodes: [entry, { ...exit, choice: { outcomes: [
@@ -106,7 +106,7 @@ describe('ENG04 explicit v3 graph metadata contracts', () => {
     const f = fixture()
     assert.equal(RunGraphScopeSchema.safeParse(f.scope).success, false)
     assert.equal(CanonicalRunGraphScopeSchema.safeParse({ ...f.scope, executionSemanticsVersion: 4 }).success, false)
-    for (const executionSemanticsVersion of [1,2]) assert.equal(CanonicalRunGraphScopeSchema.safeParse({ ...f.scope, executionSemanticsVersion }).success, true)
+    for (const executionSemanticsVersion of [1,2]) assert.equal(CanonicalRunGraphScopeSchema.safeParse({ ...f.scope, executionSemanticsVersion }).success, false)
   })
   it('a retained reset is an instruction to fetch a snapshot, not a reducer event', () => {
     const f = fixture(), reset = { kind: 'reset', protocolVersion: 1, scope: f.scope, requestedSequence: '0', headSequence: '2',
