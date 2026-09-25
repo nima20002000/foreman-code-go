@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
+import { HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
 import {
   RepeatWorkflowVersionV1Schema,
   canonicalGraphJson,
@@ -260,11 +260,33 @@ export function resolutionFor(
 }
 
 interface HarnessExecutionRow {
+  execution_id: string
   record: HarnessExecution
   accepted: boolean
   slot_id: string
   identity: unknown
   previous: string | null
+  execution_run_id: string
+  execution_node_id: string
+  execution_agent_id: string
+  execution_attempt: number
+  execution_occurrence_id: string | null
+  identity_occurrence_id: string | null
+  technical_attempt: number
+}
+
+interface HarnessNativeSessionRow {
+  reference: NativeSessionReference
+  finalized: boolean
+}
+
+interface HarnessNativeClosureRow {
+  generation: string
+  execution_identity: Record<string, unknown>
+  expected_reference: NativeSessionReference
+  closed_reference: NativeSessionReference
+  closed: boolean
+  prior_unclosed: boolean
 }
 
 export interface RepeatHarnessPublication {
@@ -279,6 +301,8 @@ export interface RepeatHarnessState {
   occurrences: Map<string, { record: RepeatOccurrenceV1; input_json: string; input_digest: string }>
   slots: Map<string, { slot_id: string; occurrence_id: string | null; workflow_node_id: string; input_json: string; input_digest: string }>
   executions: Map<string, HarnessExecutionRow>
+  nativeSessions: Map<string, HarnessNativeSessionRow>
+  nativeClosures: Map<string, HarnessNativeClosureRow>
   resolutions: Map<string, RepeatResolution>
   bindings: Array<{ recipient: string; record: unknown }>
   results: Map<string, { result_json: string; result_digest: string }>
@@ -293,6 +317,7 @@ export interface RepeatHarness {
   store: RepeatRunRepository
   repository(): RepeatRunRepository
   connection: ExclusiveGraphConnection
+  renewConnection(): void
   owner: {
     runId: string
     assertOwned(): void
@@ -331,6 +356,8 @@ export function createRepeatHarness(fixture = makeSimpleRepeatFixture()): Repeat
     occurrences: new Map(),
     slots: new Map(),
     executions: new Map(),
+    nativeSessions: new Map(),
+    nativeClosures: new Map(),
     resolutions: new Map(),
     bindings: [],
     results: new Map(),
@@ -347,6 +374,35 @@ export function createRepeatHarness(fixture = makeSimpleRepeatFixture()): Repeat
   let settlementExecutionId: string | undefined
   let technicalRetry = true
   const effectKey = (kind: unknown, id: unknown) => `${kind}:${id}`
+  const closureExecutionIdentity = (execution: HarnessExecution): Record<string, unknown> => ({
+    id: execution.id,
+    runId: execution.runId,
+    workflowNodeId: execution.workflowNodeId,
+    agentId: execution.agentId,
+    agentConfigurationVersionId: execution.agentConfigurationVersionId,
+    attempt: execution.attempt,
+    ...(execution.workingDirectory ? { workingDirectory: execution.workingDirectory } : {}),
+    ...(execution.runtimeDirectory ? { runtimeDirectory: execution.runtimeDirectory } : {}),
+  })
+  const providerSession = (executionId: string): NativeSessionReference => NativeSessionReferenceSchema.parse({
+    harness: 'codex',
+    providerVersion: 'eng04-d-provider-shaped-current',
+    nativeSessionId: `native-session-${executionId}`,
+  })
+  const recordProviderSettlementEvidence = (executionId: string, terminal: HarnessExecution): HarnessExecution => {
+    const session = providerSession(executionId)
+    const execution = HarnessExecutionSchema.parse({ ...terminal, nativeSessionId: session.nativeSessionId })
+    state.nativeSessions.set(executionId, { reference: session, finalized: false })
+    state.nativeClosures.set(executionId, {
+      generation: '1',
+      execution_identity: closureExecutionIdentity(execution),
+      expected_reference: session,
+      closed_reference: session,
+      closed: true,
+      prior_unclosed: false,
+    })
+    return execution
+  }
 
   const client = {
     query: async (text: string, values: unknown[] = []) => {
@@ -384,20 +440,112 @@ export function createRepeatHarness(fixture = makeSimpleRepeatFixture()): Repeat
       } else if (q.startsWith('insert into run_repeat_slots')) {
         state.slots.set(v[0]!, { slot_id: v[0]!, occurrence_id: v[2] ?? null, workflow_node_id: v[3]!, input_json: v[4]!, input_digest: v[5]! })
       } else if (q.startsWith('insert into harness_executions')) {
-        state.executions.set(v[0]!, { record: JSON.parse(v[6]!) as HarnessExecution, accepted: false, slot_id: '', identity: {}, previous: null })
+        state.executions.set(v[0]!, {
+          execution_id: v[0]!,
+          record: JSON.parse(v[6]!) as HarnessExecution,
+          accepted: false,
+          slot_id: '',
+          identity: {},
+          previous: null,
+          execution_run_id: v[1]!,
+          execution_node_id: v[2]!,
+          execution_agent_id: v[3]!,
+          execution_attempt: Number(v[4]),
+          execution_occurrence_id: v[5] ?? null,
+          identity_occurrence_id: null,
+          technical_attempt: 0,
+        })
       } else if (q.startsWith('insert into run_repeat_executions')) {
         const row = state.executions.get(v[0]!)
         if (!row) throw new Error(`Missing execution ${v[0]}`)
-        Object.assign(row, { slot_id: v[2], identity: JSON.parse(v[6]!), previous: v[5] })
+        Object.assign(row, {
+          slot_id: v[2]!,
+          identity_occurrence_id: v[3] ?? null,
+          technical_attempt: Number(v[4]),
+          previous: v[5] ?? null,
+          identity: JSON.parse(v[6]!),
+        })
+      } else if (q.startsWith('select e.id from harness_executions e')) {
+        const after = v[1] ?? ''
+        const kind = v[2]
+        const selectedId = v[3]
+        const throughAttempt = v[4] === null || v[4] === undefined ? null : Number(v[4])
+        rows = [...state.executions.values()]
+          .filter((item) => item.execution_run_id === v[0] && item.execution_id > after)
+          .filter((item) => kind === 'run'
+            || kind === 'occurrence' && item.execution_occurrence_id === selectedId
+            || kind === 'slot' && item.slot_id === selectedId && item.technical_attempt <= (throughAttempt ?? 0))
+          .sort((a, b) => a.execution_id.localeCompare(b.execution_id))
+          .slice(0, 100)
+          .map((item) => ({ id: item.execution_id }))
       } else if (q.startsWith('select execution_id from run_repeat_executions')) {
         rows = [...state.executions.values()]
           .filter((item) => q.includes('previous_execution_id') ? item.previous === v[0] : item.slot_id === v[0])
           .sort((a, b) => b.record.attempt - a.record.attempt)
           .slice(0, 1)
-          .map((item) => ({ execution_id: item.record.id }))
+          .map((item) => ({ execution_id: item.execution_id }))
+      } else if (q.startsWith('select x.execution_id from run_repeat_executions x join run_repeat_slots')) {
+        rows = [...state.executions.values()]
+          .filter((item) => item.execution_run_id === v[0] && item.identity_occurrence_id === v[1]
+            && item.technical_attempt === 1 && state.slots.get(item.slot_id)?.workflow_node_id === v[2])
+          .map((item) => ({ execution_id: item.execution_id }))
       } else if (q.startsWith('select e.record,e.accepted')) {
         const item = state.executions.get(v[0]!)
-        if (item) rows = [{ ...item, ...state.slots.get(item.slot_id)! }]
+        if (item) {
+          const slot = state.slots.get(item.slot_id)
+          if (!slot) throw new Error(`Missing slot ${item.slot_id}`)
+          rows = [{ ...item, ...slot }]
+        }
+      } else if (q.includes("record->>'executionsemanticsversion' as semantics") && q.includes('from runs where id=$1 for update')) {
+        rows = [{
+          id: state.run.id,
+          semantics: String(state.run.executionSemanticsVersion),
+          workspace_id: state.run.workspaceId,
+          workflow_id: state.run.workflowId,
+          pins_match: true,
+          negative_cleanup: false,
+        }]
+      } else if (q.startsWith('select id,run_id,workflow_node_id,agent_id,attempt,record from harness_executions')) {
+        const item = state.executions.get(v[0]!)
+        if (item && item.execution_run_id === v[1]) rows = [{
+          id: item.execution_id,
+          run_id: item.execution_run_id,
+          workflow_node_id: item.execution_node_id,
+          agent_id: item.execution_agent_id,
+          attempt: item.execution_attempt,
+          record: item.record,
+        }]
+      } else if (q.startsWith('select j.id,j.execution_id,j.state,j.record,i.run_id')) {
+        rows = []
+      } else if (q.includes('as outstanding') && q.includes('worker_credential_bindings')) {
+        rows = [{ outstanding: false }]
+      } else if (q.startsWith('select reference,workflow_finalized_at is not null as finalized')) {
+        const native = state.nativeSessions.get(v[0]!)
+        if (native) rows = [native]
+      } else if (q.startsWith("select c.record#>>'{harness,harness}' as harness")) {
+        const pinned = Object.entries(fixture.version.agentConfigurationVersionIds)
+          .find(([, configurationId]) => configurationId === v[0])
+        if (pinned && v[1] === fixture.scope.runId) rows = [{
+          harness: 'codex',
+          agent_id: pinned[0],
+          workspace_id: fixture.scope.workspaceId,
+          pinned: true,
+        }]
+      } else if (q.includes('join lateral (select * from execution_native_closures')) {
+        const item = state.executions.get(v[0]!)
+        const native = state.nativeSessions.get(v[0]!)
+        const closure = state.nativeClosures.get(v[0]!)
+        if (item && native && closure) rows = [{ ...closure, record: item.record, reference: native.reference }]
+      } else if (q.startsWith('update execution_native_sessions set workflow_finalized_at')) {
+        const native = state.nativeSessions.get(v[0]!)
+        if (native && JSON.stringify(native.reference) === v[1]) {
+          native.finalized = true
+          rows = [{ execution_id: v[0] }]
+        }
+      } else if (q.includes('as possible_submission') && q.includes('run_graph_effects')) {
+        rows = [{ possible_submission: false }]
+      } else if (q.startsWith('select i.id,i.execution_id,i.status,i.record')) {
+        rows = []
       } else if (q.startsWith('insert into run_repeat_bindings')) {
         state.bindings.push({ recipient: v[2]!, record: JSON.parse(v[8]!) })
       } else if (q.startsWith('select record from run_repeat_bindings')) {
@@ -425,9 +573,14 @@ export function createRepeatHarness(fixture = makeSimpleRepeatFixture()): Repeat
     },
   }
 
-  const connection = new ExclusiveGraphConnection(client as unknown as pg.ClientBase, () => {
+  const makeConnection = () => new ExclusiveGraphConnection({ query: client.query } as unknown as pg.ClientBase, () => {
     if (fault === 'owner') throw new DomainError('RUN_OWNERSHIP_LOST', 'Synthetic owner lost.', 409)
   })
+  let connection = makeConnection()
+  const renewConnection = () => {
+    if (!connection.unusable) throw new Error('ENG04-D connection renewal requires an unusable prior lease')
+    connection = makeConnection()
+  }
   const gate = (name: string) => {
     events.push(name)
     if (fault === name) throw new Error(name)
@@ -486,13 +639,13 @@ export function createRepeatHarness(fixture = makeSimpleRepeatFixture()): Repeat
   const finish = (executionId: string, output: unknown = {}) => {
     const row = state.executions.get(executionId)
     if (!row) throw new Error(`Missing execution ${executionId}`)
-    row.record = successfulExecution(row.record, output)
+    row.record = recordProviderSettlementEvidence(executionId, successfulExecution(row.record, output))
     return row.record
   }
   const failExecution = (executionId: string, code = 'PROVIDER_TRANSIENT') => {
     const row = state.executions.get(executionId)
     if (!row) throw new Error(`Missing execution ${executionId}`)
-    row.record = retryableFailure(row.record, code)
+    row.record = recordProviderSettlementEvidence(executionId, retryableFailure(row.record, code))
     return row.record
   }
   const accept = (executionId: string) => store.acceptTerminal(executionId, (attempt) => {
@@ -514,7 +667,8 @@ export function createRepeatHarness(fixture = makeSimpleRepeatFixture()): Repeat
     fixture,
     store,
     repository,
-    connection,
+    get connection() { return connection },
+    renewConnection,
     owner,
     state: () => state,
     events,

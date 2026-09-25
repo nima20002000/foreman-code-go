@@ -58,3 +58,32 @@ describe('NIM-2648 ENG04-D Stop fences', () => {
     }
   })
 })
+
+// Stop is a launch/acceptance fence, not a reason to rewrite already durable
+// predecessor provenance.
+describe('NIM-2648 ENG04-D Stop provenance preservation', () => {
+  it('preserves the exact predecessor decision/result digest while denying the next raw execution', async () => {
+    const harness = createRepeatHarness(makeSimpleRepeatFixture(2, { suffix: 'eng04-d-stop-provenance' }))
+    const first = await harness.enter()
+    await harness.runBody(first, 'issues')
+    const transition = await harness.store.transition(first.identity.occurrenceId)
+    const next = transition.next!
+    const decision = harness.state().decisions.get(first.identity.occurrenceId)!
+    const result = harness.state().results.get(decision.exitExecution.executionId)!
+
+    expect(next.input.previous).toEqual({
+      occurrenceId: first.identity.occurrenceId,
+      occurrenceIndex: first.identity.occurrenceIndex,
+      decisionId: decision.decisionId,
+      acceptedResultDigest: result.result_digest,
+    })
+
+    harness.setStopped(true)
+    await expect(harness.admit(next, 'work', 'raw-work-after-stop-must-not-exist'))
+      .rejects.toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
+
+    expect(harness.state().executions.has('raw-work-after-stop-must-not-exist')).toBe(false)
+    expect(harness.state().decisions.get(first.identity.occurrenceId)?.decisionId).toBe(decision.decisionId)
+    expect(harness.state().results.get(decision.exitExecution.executionId)?.result_digest).toBe(result.result_digest)
+  })
+})

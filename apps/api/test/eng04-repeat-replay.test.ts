@@ -115,3 +115,36 @@ describe('NIM-2648 ENG04-D replay and retry separation', () => {
     expect(JSON.stringify(decisionFacts)).not.toContain('remainingFindings')
   })
 })
+
+// NIM-2648 successor regression: a lost COMMIT reply must replay from durable
+// state without minting a second accepted result, decision or publication.
+describe('NIM-2648 ENG04-D durable replay after ambiguous commit', () => {
+  it('reuses exact raw identities and digests after the first commit acknowledgement is lost', async () => {
+    const harness = createRepeatHarness(makeSimpleRepeatFixture(2, { suffix: 'eng04-d-lost-commit' }))
+    const occurrence = await harness.enter()
+    const work = await harness.admit(occurrence, 'work', 'raw-work-lost-commit-1')
+    harness.finish(work.id, { rawProviderResultId: 'raw-result-lost-commit-1' })
+    harness.loseCommit()
+
+    await expect(harness.accept(work.id)).rejects.toThrow('COMMIT reply lost')
+
+    const afterAmbiguousCommit = harness.state()
+    expect(afterAmbiguousCommit.results.get(work.id)?.result_digest).toBeDefined()
+    expect(afterAmbiguousCommit.executions.get(work.id)?.accepted).toBe(true)
+    const digest = afterAmbiguousCommit.results.get(work.id)!.result_digest
+    const publicationCount = afterAmbiguousCommit.publications.length
+    const resultCount = afterAmbiguousCommit.results.size
+    expect(harness.connection.unusable).toBe(true)
+    harness.renewConnection()
+    expect(harness.connection.unusable).toBe(false)
+
+    await harness.repository().acceptTerminal(work.id, () => {
+      throw new Error('durable accepted replay must not allocate another execution')
+    })
+
+    expect(harness.state().results.get(work.id)?.result_digest).toBe(digest)
+    expect(harness.state().results.size).toBe(resultCount)
+    expect(harness.state().publications.length).toBe(publicationCount)
+    expect(harness.state().executions.get(work.id)?.record.id).toBe('raw-work-lost-commit-1')
+  })
+})

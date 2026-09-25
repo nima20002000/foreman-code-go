@@ -79,3 +79,28 @@ describe('NIM-2648 ENG04-D approval wait, sibling progress and cleanup settlemen
     expect(serialized).not.toContain('worker.resumed')
   })
 })
+
+// Boundary settlement is distinct from provider/approval completion.  A durable
+// terminal may exist, but it must not be accepted or advance the business repeat
+// until the exact occurrence boundary is settled.
+describe('NIM-2648 ENG04-D occurrence-boundary settlement', () => {
+  it('keeps the same occurrence/execution identity while REPEAT_BOUNDARY_PENDING clears', async () => {
+    const harness = createRepeatHarness(makeSimpleRepeatFixture(2, { suffix: 'eng04-d-boundary-pending' }))
+    const occurrence = await harness.enter()
+    const work = await harness.admit(occurrence, 'work', 'raw-work-boundary-pending-1')
+    harness.finish(work.id, { rawProviderResultId: 'raw-result-boundary-pending-1' })
+    harness.blockSettlement('REPEAT_BOUNDARY_PENDING', work.id)
+
+    await expect(harness.accept(work.id)).rejects.toMatchObject({ code: 'REPEAT_BOUNDARY_PENDING' })
+    expect(harness.state().executions.get(work.id)?.accepted).toBe(false)
+    expect(harness.state().results.has(work.id)).toBe(false)
+    expect(harness.state().occurrences.size).toBe(1)
+    expect(harness.state().decisions.size).toBe(0)
+
+    harness.blockSettlement(null)
+    await harness.accept(work.id)
+    expect(harness.state().executions.get(work.id)?.accepted).toBe(true)
+    expect(harness.state().executions.get(work.id)?.record.id).toBe('raw-work-boundary-pending-1')
+    expect(harness.state().occurrences.size).toBe(1)
+  })
+})

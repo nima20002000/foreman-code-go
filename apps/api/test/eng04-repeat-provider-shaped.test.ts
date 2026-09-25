@@ -63,6 +63,7 @@ describe('NIM-2648 ENG04-D provider-shaped and persisted readback regression', (
         observed.push({ ...trace, executionId: stored.id })
         started()
         await boundary
+        harness.finish(stored.id, { rawProviderResultId: `${trace.harness}-observed-result` })
       },
     })
     const signal = new AbortController().signal
