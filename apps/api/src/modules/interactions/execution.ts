@@ -47,6 +47,9 @@ import type {
 } from './runtimePorts.js'
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
 import type { WorkflowClosureStore } from './workflowClosure.js'
+import type { RepeatReviewerBindings } from './repeatReviewer.js'
+import { assertSameRepeatExecution, assertSameReviewJob, repeatPhysicalSettlementPending,
+  reviewPhysicallySettled, type RepeatNativeObservationStore } from './repeatObservation.js'
 
 export type ApprovalExecutionObservation =
   | { state: 'waiting'; execution: HarnessExecution; interaction: DurableInteraction; interactions: DurableInteraction[] }
@@ -65,6 +68,18 @@ interface OwnedNativeSession {
   opening?: Promise<NativeSessionReference>
   openingFailed?: boolean
   cleanup?: Promise<Error[]>
+  reviewFinalizer?: symbol
+  reviewFinishing?: boolean
+}
+
+interface ApprovalObservationInput {
+  candidate: HarnessExecution
+  request: HarnessExecutionRequest
+  approval?: WorkflowApprovalConfiguration | undefined
+  workflowId: string
+  graphThreadId: string
+  owner: RunOwnership
+  signal: AbortSignal
 }
 
 /** Idempotent ensure/observe boundary called first on every LangGraph node entry. */
@@ -215,6 +230,169 @@ export class ApprovalExecutionCoordinator {
     owned.cleanup = task
     return task
   }
+  /** Close only the captured, registered native lifetime. Unlike Stop recovery,
+   * this path has no resolver, capability query, orphan-process fallback or new
+   * credential. Failure leaves the owner resident and the durable barrier closed. */
+  private async closeRepeatLifetime(owned: OwnedNativeSession, assertCurrent: () => void): Promise<void> {
+    const session = owned.session
+    const generation = owned.generation
+    const registration = owned.closureGeneration
+    const credential = this.managerCredentials.get(owned.manager)
+    const check = () => {
+      assertCurrent()
+      if (this.ownedSessions.get(owned.execution.id) !== owned || owned.generation !== generation
+        || owned.opening || owned.openingFailed || !session || !registration || !this.workflowClosures
+        || owned.closureGeneration !== registration || owned.session !== session
+        || this.credentials && (!credential
+          || this.managerCredentials.get(owned.manager)?.principalId !== credential.principalId
+          || this.managerCredentials.get(owned.manager)?.environment !== credential.environment)) {
+        throw new DomainError('REPEAT_CLEANUP_PENDING', 'The exact native lifetime cannot yet be closed.', 409)
+      }
+    }
+    check()
+    if (owned.cleanup) throw new DomainError('REPEAT_CLEANUP_PENDING', 'Native cleanup is already in progress.', 409)
+    // Keep the actual operation registered even when a caller's outer deadline
+    // expires. A timeout is not closure and cannot start a competing finalizer.
+    const task = (async (): Promise<Error[]> => {
+      check()
+      const proof = await this.workflowClosures!.read(owned.execution)
+      check()
+      if (!proof || proof.durableGeneration !== registration) await this.closeWorkflowSession(owned)
+      check()
+      if (credential) await this.credentials?.revoke({ principalId: credential.principalId })
+      check()
+      this.managerCredentials.delete(owned.manager)
+      this.managers.release?.(owned.context, this.rawManagers.get(owned.manager) ?? owned.manager,
+        owned.failed ? 'failed' : 'released')
+      if (this.ownedSessions.get(owned.execution.id) === owned) this.ownedSessions.delete(owned.execution.id)
+      return []
+    })()
+    const failures: Error[] = []
+    const bounded = (async () => {
+      await attemptCleanup(failures, `${owned.execution.id}: close exact repeat lifetime`, () => task)
+      const safe = nativePersistenceRedactor(Object.values(credential?.environment.variables ?? {}))
+      return failures.map((error) => safe.error(error) as Error)
+    })()
+    owned.cleanup = bounded
+    // A timeout returns uncertainty but retains the in-flight operation. Stop
+    // observes the same bounded failure; it does not race another native close.
+    void task.finally(() => { if (owned.cleanup === bounded) delete owned.cleanup }).catch(() => undefined)
+    const errors = await bounded
+    if (errors.length) throw new AggregateError(errors, 'Exact native lifetime cleanup is incomplete.')
+  }
+
+  /** First repair durable receipts. A terminal input cannot obtain a replacement
+   * native process merely to clean it up. Related reviewers close via their own
+   * captured job finalizers; the repository checks all their receipts together. */
+  private async finishRepeatExecution(execution: HarnessExecution, store: RepeatNativeObservationStore,
+    owner: RunOwnership, signal: AbortSignal): Promise<void> {
+    const check = () => { signal.throwIfAborted(); owner.assertOwned() }
+    check()
+    if (execution.state !== 'completed' || !execution.result || !execution.finishedAt) throw new DomainError(
+      'REPEAT_BOUNDARY_PENDING', 'Cleanup requires the exact durable terminal result.', 409)
+    try { await store.settleNativeExecution(execution.id); check(); return }
+    catch (error) { if (!repeatPhysicalSettlementPending(error)) throw error; check() }
+    const owned = this.ownedSessions.get(execution.id)
+    if (owned) {
+      // Workflow terminal repair must never close a later reviewer lifetime on
+      // the same execution. Only its captured review job may do that.
+      if (owned.context.purpose === 'reviewer') throw new DomainError('REPEAT_CLEANUP_PENDING',
+        'The exact reviewer lifetime is still responsible for its cleanup.', 409)
+      assertSameRepeatExecution(owned.execution, execution)
+      if (!owned.session || owned.session.nativeSessionId !== execution.nativeSessionId) throw new DomainError(
+        'REPEAT_CLEANUP_PENDING', 'No captured session matches the terminal execution.', 409)
+      owned.execution = execution
+      await this.budgets.finish(execution.id, execution.finishedAt)
+      check()
+      await this.closeRepeatLifetime(owned, check)
+    } else {
+      // A crash after close/COMMIT is repaired without touching a native manager.
+      // The proof reader rejects newer generations and any older unclosed one.
+      const proof = await this.workflowClosures?.read(execution)
+      check()
+      if (!proof) throw new DomainError('REPEAT_CLEANUP_PENDING',
+        'No durable exact-session closure exists. Native work will not be restarted.', 409)
+      await this.budgets.finish(execution.id, execution.finishedAt)
+      check()
+      // A read of workflow_finalized_at is not an atomic revocation fence:
+      // another owner could finalize and attach a reviewer after that read.
+      // Without captured principal IDs, leave any credential gap pending.
+      // The repository gate below can still repair already-revoked/budget gaps.
+    }
+    check()
+    await store.settleNativeExecution(execution.id)
+    check()
+  }
+
+  /** Capture at reviewer attachment, not in its eventual finally callback. The
+   * marker also distinguishes two jobs reusing the same resident connection. */
+  captureReviewFinalizer(executionId: string, session: NativeSessionReference, assigned: ReviewJob):
+    ((settled: ReviewJob) => Promise<void>) | undefined {
+    // Do not let a mutable dispatch argument retarget the captured identity.
+    assigned = { ...assigned }
+    session = { ...session }
+    const owned = this.ownedSessions.get(executionId)
+    if (!owned?.session) return undefined
+    this.assertSessionIdentity(owned.session, session)
+    if (owned.context.purpose !== 'reviewer' || owned.execution.agentId !== assigned.reviewerAgentId
+      || session.harness !== assigned.provider || session.nativeSessionId !== assigned.nativeSessionId) {
+      throw new DomainError('REVIEW_JOB_IDENTITY_CONFLICT', 'The reviewer finalizer has no captured assignment.', 409)
+    }
+    const generation = owned.generation
+    const marker = Symbol(assigned.id)
+    owned.reviewFinalizer = marker
+    const check = () => {
+      if (this.ownedSessions.get(executionId) !== owned || owned.generation !== generation
+        || owned.reviewFinalizer !== marker || owned.opening || owned.controller.signal.aborted) {
+        throw new DomainError('REVIEW_JOB_IDENTITY_CONFLICT', 'The reviewer finalizer lost its native lifetime.', 409)
+      }
+      this.assertSessionIdentity(owned.session!, session)
+    }
+    return async (settled) => {
+      assertSameReviewJob(assigned, settled)
+      check()
+      const run = await this.runs.get(owned.execution.runId)
+      check()
+      if (!run || !('executionSemanticsVersion' in run) || run.executionSemanticsVersion !== 3) {
+        await this.finishReview(executionId)
+        return
+      }
+      if (!reviewPhysicallySettled(settled)) return
+      owned.reviewFinishing = true
+      try {
+        const context = await this.interactions.coordination.getReviewJobContext(assigned.id)
+        check()
+        if (context.executionId !== executionId || context.workingDirectory !== owned.context.workingDirectory
+          || context.providerVersion !== session.providerVersion) throw new DomainError('REVIEW_JOB_IDENTITY_CONFLICT',
+          'The review job no longer names the captured execution and provider.', 409)
+        // The same native writer lane fences a successor in another process.
+        await owned.manager.withLane(session, assigned.correlationId, undefined, async (_manager, lane) => {
+          const guard = async () => { check(); await lane.guard.check(); check() }
+          await guard()
+          const current = await this.interactions.coordination.findReviewJob(assigned.interactionId, assigned.reviewerAgentId)
+          await guard()
+          if (!current) throw new DomainError('REVIEW_JOB_IDENTITY_CONFLICT', 'The captured review job is missing.', 409)
+          assertSameReviewJob(settled, current)
+          if (!reviewPhysicallySettled(current) || current.state !== settled.state) throw new DomainError(
+            'REPEAT_CLEANUP_PENDING', 'The exact reviewer terminal receipt is not settled.', 409)
+          const notStarted = current.state === 'failed' && current.cleanup?.nativeState === 'not_started'
+          if (lane.previous.correlationId !== assigned.correlationId
+            && !(notStarted && lane.previous.correlationId === `execution:${executionId}`)
+            || current.providerTurnOrMessageId && lane.previous.currentTurnOrMessageId !== current.providerTurnOrMessageId) {
+            throw new DomainError('REVIEW_JOB_IDENTITY_CONFLICT', 'The captured review no longer owns the native turn.', 409)
+          }
+          // A sibling's queued/uncertain review remains responsible for this
+          // session. It is not closed under an earlier job's callback.
+          if (await this.interactions.coordination.hasUnsettledReview(executionId)) return
+          await guard()
+          await this.closeRepeatLifetime(owned, check)
+          lane.observedStatus = 'idle'
+          await lane.guard.check()
+        })
+      } finally { if (owned.reviewFinalizer === marker) delete owned.reviewFinishing }
+    }
+  }
+
   constructor(
     private readonly runs: PostgresRunRepository,
     private readonly interactions: PostgresInteractionRepository,
@@ -225,6 +403,7 @@ export class ApprovalExecutionCoordinator {
     private readonly validateContinuation?: (executionId: string, signal?: AbortSignal) => Promise<void>,
     private readonly recoverNativeProcesses?: (executionId: string, signal: AbortSignal) => Promise<boolean>,
     private readonly workflowClosures?: WorkflowClosureStore,
+    private readonly repeatReviewerBindings?: RepeatReviewerBindings,
   ) {
     this.reviewers = new ReviewerDispatcher(interactions.coordination, this)
   }
@@ -235,8 +414,19 @@ export class ApprovalExecutionCoordinator {
     const agentId = interaction.approval.designatedOrchestratorAgentId
     if (!agentId || agentId === interaction.requestingAgentId) return
     const connection = await this.interactions.assertOrchestratorConnection(interaction)
-    if (await this.interactions.coordination.findReviewJob(interaction.id, agentId)) return
-    const candidates = (await this.runs.listExecutions(interaction.runId))
+    const existingJob = await this.interactions.coordination.findReviewJob(interaction.id, agentId)
+    if (existingJob) {
+      await this.interactions.coordination.assertReviewConnection(existingJob)
+      return
+    }
+    const run = await this.runs.get(interaction.runId)
+    const repeat = run && 'executionSemanticsVersion' in run && run.executionSemanticsVersion === 3
+    if (repeat && (!this.repeatReviewerBindings || !connection)) throw new DomainError('REPEAT_REVIEW_IDENTITY_CONFLICT',
+      'The occurrence-qualified reviewer binding is unavailable.', 409)
+    const executions = repeat
+      ? [(await this.repeatReviewerBindings!.select(interaction, connection!.orchestratorNodeId)).execution]
+      : await this.runs.listExecutions(interaction.runId)
+    const candidates = executions
       .filter((execution) => execution.agentId === agentId && execution.workflowNodeId === connection?.orchestratorNodeId
         && execution.nativeSessionId && execution.workingDirectory && execution.runtimeDirectory)
     // No guessing between attempts/sessions. The pending interaction remains the recovery source.
@@ -584,7 +774,12 @@ export class ApprovalExecutionCoordinator {
 
   async finishReview(executionId: string): Promise<void> {
     const owned = this.ownedSessions.get(executionId)
-    if (!owned || (await this.runs.get(owned.execution.runId))?.executionState !== 'completed') return
+    if (!owned) return
+    const run = await this.runs.get(owned.execution.runId)
+    // v3 must use the captured job finalizer; an execution ID alone is not an
+    // occurrence/reviewer lifetime barrier, even when the whole Run has ended.
+    if (run && 'executionSemanticsVersion' in run && run.executionSemanticsVersion === 3) return
+    if (run?.executionState !== 'completed') return
     const failures = await this.cleanupSession(owned, false)
     if (failures.length) throw new AggregateError(failures, 'Review session cleanup was incomplete.')
   }
@@ -625,6 +820,9 @@ export class ApprovalExecutionCoordinator {
     const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
     if (!configuration || configuration.harness.harness !== context.harness) throw new Error('The durable execution configuration is unavailable or mismatched.')
     if (context.purpose === 'reviewer') {
+      const previous = this.ownedSessions.get(execution.id)
+      if (previous?.cleanup || previous?.reviewFinishing) throw new DomainError('SESSION_LANE_BUSY',
+        'The captured reviewer lifetime is still closing.', 409)
       const native = await this.interactions.coordination.workflowSession(execution.id)
       if (configuration.productRole !== 'orchestrator' || !['running', 'waiting'].includes(run.executionState)
         || run.outcome !== 'pending' || execution.state !== 'completed' || !native?.finalized || run.approval?.handler !== 'orchestrator'
@@ -869,15 +1067,45 @@ export class ApprovalExecutionCoordinator {
     return finish(task)
   }
 
-  async ensureObserve(input: {
-    candidate: HarnessExecution
-    request: HarnessExecutionRequest
-    approval?: WorkflowApprovalConfiguration | undefined
-    workflowId: string
-    graphThreadId: string
-    owner: RunOwnership
-    signal: AbortSignal
+  async ensureObserve(input: ApprovalObservationInput): Promise<ApprovalExecutionObservation> {
+    input.signal.throwIfAborted()
+    assertNativeWorkflowConfiguration(input.request.configuration.harness, input.approval,
+      input.approval?.handler === 'orchestrator'
+        && input.request.configuration.agentId === input.approval.designatedOrchestratorAgentId)
+    return this.observeExecution(input, await this.runs.ensureExecution(input.candidate, input.owner))
+  }
+
+  /** An occurrence is already admitted. Never enter legacy ensureExecution here.
+   * Completed re-entry has no request/configuration/preflight/native-start path. */
+  async observeExact(input: Omit<ApprovalObservationInput, 'candidate' | 'request'> & {
+    execution: HarnessExecution; request?: HarnessExecutionRequest; store: RepeatNativeObservationStore
   }): Promise<ApprovalExecutionObservation> {
+    input.signal.throwIfAborted()
+    input.owner.assertOwned()
+    const { execution } = await input.store.readExecution(input.execution.id)
+    assertSameRepeatExecution(input.execution, execution)
+    if (execution.runId !== input.owner.runId || input.graphThreadId !== execution.runId) {
+      throw new DomainError('GRAPH_SCOPE_MISMATCH', 'Native observation cannot cross Run owners or checkpoints.', 409)
+    }
+    if (execution.state === 'completed') {
+      await this.finishRepeatExecution(execution, input.store, input.owner, input.signal)
+      return { state: 'completed', execution, result: execution.result! }
+    }
+    const request = input.request
+    if (!request || request.executionId !== execution.id || request.runId !== execution.runId
+      || request.workflowNodeId !== execution.workflowNodeId
+      || request.configuration.agentId !== execution.agentId
+      || request.configuration.id !== execution.agentConfigurationVersionId) {
+      throw new DomainError('REPEAT_EXECUTION_INPUT_CONFLICT', 'Native work requires its exact pinned request.', 409)
+    }
+    await input.store.assertNativeBoundary(execution.id)
+    input.signal.throwIfAborted()
+    input.owner.assertOwned()
+    return this.observeExecution({ ...input, candidate: execution, request }, { execution, created: false }, input.store)
+  }
+
+  private async observeExecution(input: ApprovalObservationInput,
+    ensured: { execution: HarnessExecution; created: boolean }, repeat?: RepeatNativeObservationStore): Promise<ApprovalExecutionObservation> {
     const credentialFailure = new AbortController()
     let signal = AbortSignal.any([input.signal, credentialFailure.signal])
     let stopRenewal: (() => Promise<void>) | undefined
@@ -885,8 +1113,16 @@ export class ApprovalExecutionCoordinator {
     assertNativeWorkflowConfiguration(input.request.configuration.harness, input.approval,
       input.approval?.handler === 'orchestrator'
         && input.request.configuration.agentId === input.approval.designatedOrchestratorAgentId)
-    const ensured = await this.runs.ensureExecution(input.candidate, input.owner)
     let execution = ensured.execution
+    let repeatLaunch = false
+    const assertBoundary = async () => {
+      signal.throwIfAborted()
+      input.owner.assertOwned()
+      if (repeat) await repeat.assertNativeBoundary(execution.id)
+      else await this.runs.assertOneShotNativeBoundary?.(execution.id, input.owner)
+      signal.throwIfAborted()
+      input.owner.assertOwned()
+    }
     let context: NativeManagerResolutionContext | undefined
     let manager: SingleWriterSessionManager | undefined
     let resolved: (ResolvedNativeSessionManager & { manager: SingleWriterSessionManager }) | undefined
@@ -950,6 +1186,10 @@ export class ApprovalExecutionCoordinator {
       input.owner.assertOwned()
       if (execution.state === 'completed') {
         if (!execution.result) throw new Error('The completed execution has no durable result.')
+        if (repeat) {
+          await this.finishRepeatExecution(execution, repeat, input.owner, signal)
+          return { state: 'completed', execution, result: execution.result }
+        }
         const native = await this.interactions.coordination.workflowSession(execution.id)
         if (!native?.finalized) {
           await this.budgets.finish(execution.id, execution.finishedAt)
@@ -981,6 +1221,28 @@ export class ApprovalExecutionCoordinator {
         runtimeDirectory: execution.runtimeDirectory, input: execution.input,
       })
       await this.validateContinuation?.(execution.id, signal)
+      if (repeat) {
+        await assertBoundary()
+        // Consume before manager startup, capabilities or credential preflight.
+        if (!execution.nativeSessionId) {
+          repeatLaunch = repeat.consumeLaunch(execution.id)
+          if (!repeatLaunch) throw new DomainError('NATIVE_SESSION_START_UNCERTAIN',
+            'No exact committed launch permit exists. Native work was not started.', 409)
+        } else {
+          session = await repeat.exactSession(execution.id)
+          if (session.harness !== context.harness || session.nativeSessionId !== execution.nativeSessionId) {
+            throw new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH', 'Recovery changed the captured native session.', 409)
+          }
+        }
+        const resident = this.ownedSessions.get(execution.id)
+        if (resident) {
+          assertSameRepeatExecution(execution, resident.execution)
+          if (resident.context.purpose === 'reviewer' || resident.cleanup || resident.reviewFinishing) {
+            throw new DomainError('SESSION_LANE_BUSY', 'The exact native lifetime is finishing other work.', 409)
+          }
+          if (resident.session && session) this.assertSessionIdentity(resident.session, session)
+        }
+      }
       resolved = this.resolveManager(context)
       if (resolved.processState === 'needs_start') resolved.beginStart?.()
       manager = resolved.manager
@@ -1049,7 +1311,7 @@ export class ApprovalExecutionCoordinator {
       }
 
       if (!execution.nativeSessionId) {
-        if (!ensured.created && !this.runs.consumeOneShotLaunch?.(execution.id, input.owner)) {
+        if (repeat ? !repeatLaunch : !ensured.created && !this.runs.consumeOneShotLaunch?.(execution.id, input.owner)) {
           throw new DomainError('NATIVE_SESSION_START_UNCERTAIN', 'The existing execution has no recorded native session. Native side effects will not be replayed.', 409)
         }
         const environment = await this.prepareEnvironment(context, resolved, signal)
@@ -1057,19 +1319,20 @@ export class ApprovalExecutionCoordinator {
         await this.validateContinuation?.(execution.id, signal)
         signal.throwIfAborted()
         input.owner.assertOwned()
-        await this.runs.assertOneShotNativeBoundary?.(execution.id, input.owner)
+        await assertBoundary()
         session = await this.openingSession(ownedSession, manager.createSession({ request, ...(environment ? { environment } : {}) }, signal))
         if (session.harness !== context.harness) throw new Error('The created native session has the wrong harness.')
         resolved.markResident?.()
         await this.interactions.coordination.bindWorkflowSession(execution.id, session)
         execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: session.nativeSessionId, state: 'running' })
         await this.runs.updateExecution(execution, input.owner)
+        ownedSession.execution = execution
         // Qualification and credential preparation may await external work.
         // Recheck accepted authority/location at the actual turn boundary.
         await this.validateContinuation?.(execution.id, signal)
         signal.throwIfAborted()
         input.owner.assertOwned()
-        await this.runs.assertOneShotNativeBoundary?.(execution.id, input.owner)
+        await assertBoundary()
         for await (const event of manager.startTurn(session, {
           prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
         }, signal)) {
@@ -1082,7 +1345,7 @@ export class ApprovalExecutionCoordinator {
           if (waiting) return waiting
         }
       } else {
-        session = await this.runs.exactOneShotSession?.(execution.id, input.owner) ?? {
+        session = repeat ? session! : await this.runs.exactOneShotSession?.(execution.id, input.owner) ?? {
           harness: context.harness,
           providerVersion: existing?.providerVersion ?? (await manager.capabilities(signal)).providerVersion,
           nativeSessionId: execution.nativeSessionId,
@@ -1094,7 +1357,7 @@ export class ApprovalExecutionCoordinator {
         await this.validateContinuation?.(execution.id, signal)
         signal.throwIfAborted()
         input.owner.assertOwned()
-        await this.runs.assertOneShotNativeBoundary?.(execution.id, input.owner)
+        await assertBoundary()
         if (resolved.processState === 'needs_start') {
           const attached = await this.openingSession(ownedSession, manager.attachSession(session, {
             kind: 'workflow', correlationId: `execution:${execution.id}`, request,
@@ -1115,6 +1378,7 @@ export class ApprovalExecutionCoordinator {
         const observed = await manager.withLane(session, `execution:${execution.id}`, signal, async (nativeManager, lane) => {
           const observed = await nativeManager.reconcile(session!, `execution:${execution.id}`, lane.guard.signal)
           const exactTerminal = observed.terminalTurn?.correlationId === `execution:${execution.id}`
+            && (!repeat || observed.correlationId === `execution:${execution.id}` && Boolean(observed.nativeTurnId))
             && (!observed.nativeTurnId || observed.terminalTurn.providerId === observed.nativeTurnId)
             && !observed.pendingInteraction && observed.pendingInteractions.length === 0
           if (exactTerminal) {
@@ -1131,18 +1395,28 @@ export class ApprovalExecutionCoordinator {
             await this.runs.appendNativeEvent(redactKnownSecrets({ ...event, executionId: execution.id }, knownSecrets),
               input.owner, lease, undefined, continuation)
           }
-          return { history: observed, waiting: await observePending(observed, observed.events.at(-1), lease) }
+          return { history: observed, exactTerminal, waiting: await observePending(observed, observed.events.at(-1), lease) }
         })
         const { history, waiting } = observed
         if (waiting) return waiting
-        if (history.terminalTurn?.correlationId === `execution:${execution.id}`) {
+        if (history.terminalTurn?.correlationId === `execution:${execution.id}` && (!repeat || observed.exactTerminal)) {
           const result = redactKnownSecrets(history.terminalTurn.result, knownSecrets)
           const completed = HarnessExecutionSchema.parse({
             ...execution, state: 'completed', result, finishedAt: new Date().toISOString(),
           })
           await this.runs.updateExecution(completed, input.owner)
           // A rejected settlement gate has not made this execution terminal.
-          execution = completed
+          execution = repeat ? (await repeat.readExecution(completed.id)).execution : completed
+          if (repeat) {
+            // The NATIVE-1 first-terminal writer normalizes before commit. Re-read
+            // that immutable result; never normalize raw events or rewrite a replay.
+            assertSameRepeatExecution(ensured.execution, execution)
+            if (execution.state !== 'completed' || !execution.result || !execution.finishedAt) throw new DomainError(
+              'REPEAT_BOUNDARY_PENDING', 'The exact native terminal has not committed.', 409)
+            ownedSession.execution = execution
+            await this.finishRepeatExecution(execution, repeat, input.owner, signal)
+            return { state: 'completed', execution, result: execution.result }
+          }
           const failures: unknown[] = []
           try { await this.budgets.finish(execution.id, execution.finishedAt) }
           catch (error) { failures.push(error) }
@@ -1167,6 +1441,10 @@ export class ApprovalExecutionCoordinator {
       if (credential) knownSecrets.push(...Object.values(credential.environment.variables))
       const error = safeError(signal.aborted && signal.reason instanceof DomainError
         && signal.reason.code === 'WORKER_CREDENTIAL_EXPIRING' ? signal.reason : rawError)
+      if (repeat && execution.state === 'completed' && !signal.aborted) {
+        input.owner.assertOwned()
+        throw error
+      }
       if (error instanceof DomainError && error.code === 'APPROVAL_SETTLEMENT_PENDING' && !signal.aborted) {
         input.owner.assertOwned()
         // Waiting for durable proof is not active model time or a reason to
@@ -1177,6 +1455,16 @@ export class ApprovalExecutionCoordinator {
           throw new DomainError('APPROVAL_SETTLEMENT_PENDING',
             'Exact approval settlement is pending and its budget pause could not be confirmed. Reconcile the same execution; no native work was replayed.', 409)
         }
+        input.owner.assertOwned()
+        throw error
+      }
+      // A v3 transport/receipt/identity error is not a proved terminal result.
+      // Keep possible submission and the exact manager for observation or Stop.
+      // Explicit harness failure and owner-requested cancellation retain the
+      // existing negative settlement/cleanup path below.
+      if (repeat && !signal.aborted && !(rawError instanceof HarnessExecutionError)) {
+        input.owner.assertOwned()
+        if (repeatPhysicalSettlementPending(error)) await this.budgets.beginWait(execution.id)
         input.owner.assertOwned()
         throw error
       }

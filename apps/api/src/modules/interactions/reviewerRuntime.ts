@@ -22,6 +22,10 @@ export interface ReviewCleanupSession {
 
 /** Reviewer-only hooks; the shared workflow/Operator runtime port is unchanged. */
 export interface ReviewerNativeRuntime extends InteractionNativeRuntime {
+  /** Capture the exact assignment and local connection before dispatch. A late
+   * callback must not look up a replacement session by execution ID. */
+  captureReviewFinalizer?(executionId: string, session: NativeSessionReference, assigned: ReviewJob):
+    ((settled: ReviewJob) => Promise<void>) | undefined
   reviewCredentialIdentity?(executionId: string, session: NativeSessionReference): { required: boolean; principalId?: string }
   revokeReviewCredential?(principalId: string): Promise<void>
   recoverReviewCleanup?(executionId: string, session: NativeSessionReference, job: ReviewJob,

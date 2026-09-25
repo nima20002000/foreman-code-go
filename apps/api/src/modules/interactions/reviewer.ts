@@ -89,7 +89,15 @@ export class ReviewerDispatcher {
       () => this.coordination.renewReviewJob(job.id, jobToken, this.leaseMs),
       this.stopping.signal, job.leaseExpiresAt, 'REVIEW_JOB_LEASE_LOST')
     let executionId: string | undefined
+    let finishCapturedReview: ((settled: ReviewJob) => Promise<void>) | undefined
     let safe = nativePersistenceRedactor([])
+    const finalizeCapturedReview = async () => {
+      if (!executionId || guard.signal.aborted || job.cleanup && !job.cleanup.completedAt) return
+      try {
+        if (finishCapturedReview) await finishCapturedReview(job)
+        else await this.nativeRuntime.finishReview?.(executionId)
+      } catch (error) { throw safe.error(error) }
+    }
     const recovering = Boolean(job.submittedAt || job.acknowledgedAt || job.providerTurnOrMessageId
       || ['submitted', 'acknowledged', 'uncertain'].includes(available.state))
     try {
@@ -108,6 +116,7 @@ export class ReviewerDispatcher {
         const session: NativeSessionReference = { harness: job.provider, providerVersion, nativeSessionId: job.nativeSessionId }
         const recovery = await guard.wait(this.nativeRuntime.recoverReviewCleanup?.(executionId, session, job, guard.signal)
           ?? Promise.reject(new Error('The reviewer runtime cannot recover native cleanup.')))
+        finishCapturedReview = this.nativeRuntime.captureReviewFinalizer?.(executionId, session, job)
         const writer = coordinateSessionManager(recovery.manager, this.coordination, job.reviewerAgentId, this.leaseMs)
         return await writer.withLane(session, job.correlationId, guard.signal, async (manager, lane) => {
           const check = async () => { await guard.check(); await lane.guard.check() }
@@ -162,6 +171,7 @@ export class ReviewerDispatcher {
       if (attached.session.harness !== job.provider || attached.session.nativeSessionId !== job.nativeSessionId
         || attached.session.providerVersion !== providerVersion) throw new Error('Reviewer attach changed its durable native identity.')
       safe = this.nativeRuntime.reviewPersistence?.(executionId) ?? safe
+      finishCapturedReview = this.nativeRuntime.captureReviewFinalizer?.(executionId, attached.session, job)
       const writer = coordinateSessionManager(attached.manager, this.coordination, job.reviewerAgentId, this.leaseMs)
       return await writer.withLane(attached.session, job.correlationId, attached.signal ? AbortSignal.any([guard.signal, attached.signal]) : guard.signal, async (manager, lane) => {
         const session = attached.session
@@ -390,9 +400,7 @@ export class ReviewerDispatcher {
         })
     } finally {
       await guard.stop()
-      if (executionId && !guard.signal.aborted && (!job.cleanup || job.cleanup.completedAt)) {
-        await this.nativeRuntime.finishReview?.(executionId).catch((error) => Promise.reject(safe.error(error)))
-      }
+      await finalizeCapturedReview()
     }
   }
 }

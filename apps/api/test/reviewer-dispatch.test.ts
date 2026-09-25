@@ -699,7 +699,8 @@ function queueFixture() {
     agentConfigurationVersionId: 'pinned-reviewer-config', workingDirectory: '/accepted', runtimeDirectory: '/runtime' }]
   const configuration = { id: 'pinned-reviewer-config', agentId: 'reviewer', productRole: 'orchestrator', harness: { harness: 'codex' } }
   const resolvedContexts: unknown[] = []
-  const runs = { listExecutions: async (runId: string) => { assert.equal(runId, interaction.runId); return executions },
+  const runs = { get: async () => ({ id: interaction.runId, executionSemanticsVersion: 2 }),
+    listExecutions: async (runId: string) => { assert.equal(runId, interaction.runId); return executions },
     getExecutionConfiguration: async () => configuration }
   const repository = { coordination: Object.assign(f.coordination.asRepository(), { workflowSession: async () => ({ session, finalized: true }) }),
     assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'reviewer-node' }), list: async () => [interaction] }

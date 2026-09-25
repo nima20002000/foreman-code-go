@@ -8,6 +8,7 @@ import { CompatibleWorkflowRunSchema, CompatibleWorkflowVersionSchema } from '@g
 import type { GraphSqlClient } from '../run-graph/connection.js'
 
 import { DomainError } from '../errors.js'
+import { assertRepeatReviewerBinding } from './repeatReviewer.js'
 import { resolveImmutableApprovalRoute, usesNativeSelfReview } from '../workflows/approvalRoutes.js'
 
 type RequestIdentity = Pick<DurableInteraction,
@@ -106,6 +107,12 @@ export async function assertOrchestratorGraphAuthority(
       || bound.data.agentConfigurationVersionId !== c.id
       || (reviewer.nativeSessionId !== undefined && bound.data.nativeSessionId !== reviewer.nativeSessionId)
       || (v2 && !bound.data.nativeSessionId)) return denied()
+    // This supplements, never bypasses, the shared schema/route resolver above.
+    // Those owners must explicitly admit v3 before this branch is reachable.
+    if (row?.run_record && typeof row.run_record === 'object'
+      && 'executionSemanticsVersion' in row.run_record && row.run_record.executionSemanticsVersion === 3) {
+      await assertRepeatReviewerBinding(client, interaction, connection.orchestratorNodeId, bound.data.id)
+    }
   }
   return connection
 }

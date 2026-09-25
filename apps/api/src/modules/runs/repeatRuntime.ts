@@ -1,6 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
-import type { RepeatWorkflowVersionV1 } from '@graphql/contracts/wave25'
+import { mkdir } from 'node:fs/promises'
+import { interrupt, isGraphInterrupt } from '@langchain/langgraph'
+import { HarnessExecutionSchema, HarnessExecutionRequestSchema, type HarnessExecution } from '@graphql/contracts'
+import { AcceptedWorkflowRunV3Schema, SavedRunVersionSnapshotSchema,
+  type AcceptedWorkflowRunV3, type RepeatWorkflowVersionV1 } from '@graphql/contracts/wave25'
+import { DomainError } from '../errors.js'
+import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
+import type { ApprovalExecutionCoordinator } from '../interactions/execution.js'
+import { assertSameRepeatExecution, type RepeatNativeLaunchStore, type RepeatNativeObservationStore } from '../interactions/repeatObservation.js'
+import { withFilesystemDeadline } from '../workspaces/filesystem.js'
+import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
+import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
+import type { RunnerAdmission } from './runnerAdmission.js'
+import { oneShotInitialPrompt } from './oneShotPrompt.js'
 
 import type { RunOwnership } from './ownership.js'
 import { normalizeRepeatTerminal, type RepeatExecutionDriver } from './repeatNode.js'
@@ -65,6 +77,7 @@ export function repeatExecutionDriver(input: {
         // nonterminal input uses the existing claim/session/owner native boundary.
         try { await input.observeExact(stored.execution, signal) }
         catch (error) {
+          if (isGraphInterrupt(error)) throw error
           input.owner.assertOwned()
           signal.throwIfAborted()
           const terminal = await input.store.readExecution(execution.id)
@@ -87,6 +100,131 @@ export function repeatExecutionDriver(input: {
       inFlight.set(execution.id, task)
       return task
     },
+  }
+}
+
+export interface RepeatNativeObserverContext {
+  run: AcceptedWorkflowRunV3
+  version: RepeatWorkflowVersionV1
+  owner: RunOwnership
+  store: RepeatNativeLaunchStore
+  native: Pick<ApprovalExecutionCoordinator, 'observeExact' | 'assertResume'>
+  /** The existing engine-wide worker gate; never construct another gate here. */
+  admission: RunnerAdmission
+  workflows: Pick<PostgresWorkflowRepository, 'getAgentConfiguration'>
+  locations: Pick<WorkspaceLocationService, 'revalidateRunAuthorization' | 'revalidateSnapshot'>
+  /** Existing accepted runtime root + repeatExecutionDirectoryKey(executionId). */
+  directory(executionId: string): string
+}
+
+/** Physical adapter for repeatExecutionDriver.observeExact. The same coordinator
+ * owns native events, response delivery, approval checkpointing and cleanup.
+ * No Run-wide finishRun, candidate allocation, new scheduler or provider shim. */
+export function repeatNativeObserver(context: RepeatNativeObserverContext):
+  (admitted: HarnessExecution, signal: AbortSignal) => Promise<void> {
+  const run = AcceptedWorkflowRunV3Schema.parse(context.run)
+  SavedRunVersionSnapshotSchema.parse({ run, version: context.version })
+  const { owner, store, native, locations } = context
+  const common = { workflowId: run.workflowId, graphThreadId: run.id, approval: run.approval, owner }
+  return async (admitted, signal) => {
+    const check = () => {
+      signal.throwIfAborted()
+      owner.assertOwned()
+      if (admitted.runId !== run.id || owner.runId !== run.id) throw new DomainError(
+        'GRAPH_SCOPE_MISMATCH', 'An occurrence cannot borrow another Run owner or admission slot.', 409)
+    }
+    const reload = async () => {
+      check()
+      const stored = await store.readExecution(admitted.id)
+      assertSameRepeatExecution(admitted, stored.execution)
+      assertRepeatExecution(context.version, { workspaceId: run.workspaceId, workflowId: run.workflowId,
+        workflowVersionId: run.workflowVersionId, runId: run.id, executionSemanticsVersion: 3 }, stored.ref, stored.execution)
+      check()
+      return stored.execution
+    }
+    let execution = await reload()
+    // Do not even enter capacity or compute a directory for terminal replay.
+    if (execution.state === 'completed') {
+      await native.observeExact({ ...common, execution, store, signal })
+      return
+    }
+    await context.admission.run(run.id, signal, async () => {
+      execution = await reload() // Stop or another exact observation may win while queued.
+      if (execution.state === 'completed') {
+        await native.observeExact({ ...common, execution, store, signal })
+        return
+      }
+      const node = context.version.definition.nodes.find((item) => item.id === execution.workflowNodeId)
+      const configuration = await context.workflows.getAgentConfiguration(execution.agentConfigurationVersionId)
+      check()
+      if (!node || !configuration || configuration.id !== context.version.agentConfigurationVersionIds[node.agentId]
+        || configuration.agentId !== node.agentId || configuration.workspaceId !== run.workspaceId) {
+        throw new DomainError('REPEAT_EXECUTION_INPUT_CONFLICT', 'Native work requires the immutable occurrence configuration.', 409)
+      }
+      assertNativeWorkflowConfiguration(configuration.harness, run.approval,
+        run.approval.handler === 'orchestrator' && configuration.agentId === run.approval.designatedOrchestratorAgentId)
+      const validate = async () => {
+        check()
+        await locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId, owner.client)
+        check()
+        await locations.revalidateSnapshot(run.workspaceId, run.executionLocation, requiredLocationAccess([configuration]), signal)
+        check()
+      }
+      await validate()
+      const paths = { workingDirectory: run.executionLocation.rootPath, runtimeDirectory: context.directory(execution.id) }
+      const claimed = await store.claimLaunch(execution.id, paths)
+      check()
+      execution = claimed ?? await store.recoverSession(execution.id)
+      check()
+      assertSameRepeatExecution(admitted, execution)
+      if (execution.state === 'completed') {
+        await native.observeExact({ ...common, execution, store, signal })
+        return
+      }
+      if (execution.workingDirectory !== paths.workingDirectory || execution.runtimeDirectory !== paths.runtimeDirectory) {
+        throw new DomainError('REPEAT_EXECUTION_INPUT_CONFLICT', 'Recovery cannot replace the accepted occurrence directories.', 409)
+      }
+      if (!claimed && !execution.nativeSessionId) throw new DomainError('NATIVE_SESSION_START_UNCERTAIN',
+        'Dispatch may have occurred. No second native session or turn was started.', 409)
+      await validate()
+      await store.assertNativeBoundary(execution.id)
+      check()
+      let launchAvailable = false
+      if (claimed) {
+        // Consume the repository's known-COMMIT permit BEFORE filesystem or
+        // credential preflight. A reply gap never reaches this branch again.
+        if (execution.nativeSessionId || !store.consumeLaunch(execution.id)) throw new DomainError(
+          'NATIVE_SESSION_START_UNCERTAIN', 'The exact first-launch permit was not available.', 409)
+        launchAvailable = true
+        await withFilesystemDeadline((checkFilesystem) => checkFilesystem(() => mkdir(paths.runtimeDirectory, { recursive: true })), signal)
+        check()
+      }
+      const boundary: RepeatNativeObservationStore = {
+        readExecution: (id) => store.readExecution(id),
+        settleNativeExecution: (id) => store.settleNativeExecution(id),
+        exactSession: (id) => store.exactSession(id),
+        assertNativeBoundary: async (id) => { await validate(); await store.assertNativeBoundary(id); check() },
+        consumeLaunch: (id) => {
+          check()
+          if (id !== execution.id || !launchAvailable) return false
+          launchAvailable = false
+          return true
+        },
+      }
+      const initialPrompt = oneShotInitialPrompt(node)
+      const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: run.id,
+        workspaceId: run.workspaceId, workflowNodeId: node.id, ...paths,
+        ...(initialPrompt ? { initialPrompt } : {}), configuration, input: execution.input })
+      for (;;) {
+        const observation = await native.observeExact({ ...common, execution, request, store: boundary, signal })
+        execution = observation.execution
+        if (observation.state === 'completed') return
+        const resumed: unknown = interrupt({ interactionId: observation.interaction.id,
+          interactionIds: observation.interactions.map((item) => item.id) })
+        // Same delivered interaction checkpoint; never a new decision/delivery.
+        await native.assertResume(execution, resumed)
+      }
+    })
   }
 }
 

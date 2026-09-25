@@ -111,7 +111,7 @@ describe.skipIf(!postgresEnabled)('ENG04 composition authenticated HTTP/MCP publ
   it('publishes over MCP and replays over HTTP; conflicting command reuse and stale revisions cannot publish twice', async () => {
     const t = await fixture()
     const save = await call(t, t.writer.token, 'repeat_update', t.input)
-    expect(save.isError, JSON.stringify(save.content)).not.toBe(true)
+    expect(save.isError, JSON.stringify(save.structuredContent)).not.toBe(true)
     const retry = await t.app.inject({ method: 'PUT', url: t.url, headers: headers(t.writer.token), payload: t.input })
     expect(RepeatSaveResultSchema.parse(retry.json()).replayed).toBe(true)
     const changed = { ...t.input, repeat: { ...t.input.repeat, blocks: t.input.repeat.blocks.map((block) => ({ ...block, maxOccurrences: 1 })) } }
