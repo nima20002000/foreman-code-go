@@ -265,10 +265,11 @@ export class WorkspaceLocationService {
     workspaceId: string,
     workflowId: string,
     client?: Pick<pg.PoolClient, 'query'>,
+    atCommit = false,
   ): Promise<void> {
     // Preserve the accepted ceiling and live root owner without acquiring a nested connection.
     try {
-      const { principal } = await currentOperatorAuthority(client ?? this.pool, principalId)
+      const { principal } = await currentOperatorAuthority(client ?? this.pool, principalId, atCommit)
       requireAuthorization(principal, 'runs:start', { workspaceId, workflowId })
       requireAuthorization(principal, 'workspace_locations:read', { workspaceId })
     } catch {

@@ -28,7 +28,10 @@ async function row(database: Database, id: string): Promise<Row | undefined> {
 }
 
 /** Only root human authority or a tokenless, Run-bound snapshot is durable authority. */
-export async function currentOperatorAuthority(database: Database, id: string): Promise<{
+/** `atCommit` rechecks a transaction that may itself be the Run's terminal
+ * transition. It keeps revocation/expiry/grant checks but tolerates the Run
+ * completion and cleanup intent written by that same COMMIT. */
+export async function currentOperatorAuthority(database: Database, id: string, atCommit = false): Promise<{
   principal: ManagementPrincipal; owner: ManagementPrincipal
 }> {
   const stored = await row(database, id)
@@ -42,7 +45,7 @@ export async function currentOperatorAuthority(database: Database, id: string): 
   if (!binding || binding.owner_principal_id !== stored!.delegated_from) {
     throw new DomainError('AUTH_INVALID', 'A temporary chat credential is not durable Run authority.', 401)
   }
-  if (binding.execution_state === 'completed' || binding.cleanup_pending) {
+  if (!atCommit && (binding.execution_state === 'completed' || binding.cleanup_pending)) {
     throw new DomainError('AUTH_RUN_ENDED', 'The accepted Run authority cannot act after Stop or terminal completion.', 401)
   }
   const ownerRow = await row(database, binding.owner_principal_id)

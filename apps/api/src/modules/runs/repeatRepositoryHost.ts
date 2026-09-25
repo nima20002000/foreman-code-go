@@ -137,7 +137,7 @@ export class RepeatRepositoryFactory {
         run.approval.handler === 'orchestrator' && value.agentId === run.approval.designatedOrchestratorAgentId)
     }
     let authorityEnlisted = false
-    const authority = async (transaction: GraphTransactionSql) => {
+    const authority = async (transaction: GraphTransactionSql, atCommit = false) => {
       sameTransaction(transaction)
       // Require the authenticated accepted Run authority. No uncredentialed-v3
       // fixture exception, inherited new grant, or read-only promotion exists.
@@ -148,13 +148,13 @@ export class RepeatRepositoryFactory {
         or p.id=(select owner_principal_id from run_authority_principals where principal_id=$1 and run_id=$2)
         order by p.id for share`, [id, run.id])
       await this.locations.revalidateRunAuthorization(id, run.workspaceId, run.workflowId,
-        sql as unknown as Pick<pg.PoolClient, 'query'>)
+        sql as unknown as Pick<pg.PoolClient, 'query'>, atCommit)
       await owner.readOneShotFence(sql)
       if (!authorityEnlisted) {
         authorityEnlisted = true
         // Expiry is rechecked after the source/effect finalizers. Locked grants
         // alone do not keep a credential valid through an arbitrary COMMIT.
-        beforeGraphCommit(sql, () => authority(sql))
+        beforeGraphCommit(sql, () => authority(sql, true))
       }
     }
     const hooks: RepeatLockedHooks = {

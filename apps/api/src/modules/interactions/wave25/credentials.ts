@@ -64,7 +64,7 @@ export class Wave25WorkerCredentialService extends WorkerCredentialService {
     const rows = (await this.approvalPool.query<{ principal_id: string; execution_id: string }>(`select b.principal_id,b.execution_id
       from worker_credential_bindings b join runs r on r.id=b.run_id
       join workflow_versions v on v.id=r.workflow_version_id join management_principals p on p.id=b.principal_id
-      where v.execution_semantics_version=2 and (b.revoked_at is null or p.revoked_at is null)
+      where v.execution_semantics_version=3 and (b.revoked_at is null or p.revoked_at is null)
         and ($1::text is null or b.principal_id>$1) order by b.principal_id limit 100`, [this.sweepAfter])).rows
     for (const row of rows) {
       await this.locked(row.execution_id, async (client) => {

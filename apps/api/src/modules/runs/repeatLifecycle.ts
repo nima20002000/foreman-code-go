@@ -70,7 +70,7 @@ export async function markRepeatRunRunning(owner: RunOwnership,
     const { publication, snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
     const { run } = snapshot
     const fence = await owner.readOneShotFence(sql)
-    const authorize = async () => {
+    const authorize = async (atCommit = false) => {
       owner.assertOwned()
       // Same accepted authority and revocation locks as the occurrence host. No
       // caller-supplied principal, fresh grant, location or version is accepted.
@@ -80,11 +80,11 @@ export async function markRepeatRunRunning(owner: RunOwnership,
         or p.id=(select owner_principal_id from run_authority_principals where principal_id=$1 and run_id=$2)
         order by p.id for share`, [run.authorizationPrincipalId, run.id])
       await locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId,
-        sql as unknown as Pick<pg.PoolClient, 'query'>)
+        sql as unknown as Pick<pg.PoolClient, 'query'>, atCommit)
       if (!sameRepeatValue(fence, await owner.readOneShotFence(sql))) throw new DomainError('RUN_OWNERSHIP_LOST', 'The exact Run owner changed before lifecycle COMMIT.', 409)
     }
     await authorize()
-    beforeGraphCommit(sql, authorize)
+    beforeGraphCommit(sql, () => authorize(true))
     if (snapshot.stopRequested || snapshot.cleanupPending) throw new DomainError('GRAPH_STOP_CONFLICT', 'Stop/cleanup fences block repeat progress.', 409)
     if (run.executionState === 'waiting') await assertConsumedWorkflowResumeLocked(sql, owner, run, resume)
     if (!['queued', 'running', 'waiting'].includes(run.executionState)) throw new DomainError('GRAPH_TERMINAL_CONFLICT', 'A terminal/interrupted Run cannot be started again.', 409)

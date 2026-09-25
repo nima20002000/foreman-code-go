@@ -21,7 +21,7 @@ export async function credentialAuthority(sql: GraphSqlClient, executionId: stri
      left join execution_native_sessions s on s.execution_id=e.id
      left join native_session_lanes l on l.harness=s.reference->>'harness' and l.native_session_id=s.reference->>'nativeSessionId'
      left join approval_execution_state b on b.execution_id=e.id
-     where e.id=$1 and v.execution_semantics_version=2`, [executionId])).rows[0]
+     where e.id=$1 and v.execution_semantics_version=3`, [executionId])).rows[0]
   if (!row) return fail('AUTH_REVOKED')
   const r = WorkflowRunV3Schema.parse(row.run), v = WorkflowVersionV3Schema.parse(row.version)
   const e = HarnessExecutionSchema.parse(row.execution), c = AgentConfigurationVersionSchema.parse(row.configuration)
@@ -71,7 +71,7 @@ export async function assertWave25WorkerBinding(sql: GraphSqlClient, principalId
      from worker_credential_bindings b join management_principals p on p.id=b.principal_id
      join runs r on r.id=b.run_id join workflow_versions v on v.id=r.workflow_version_id where b.principal_id=$1`, [principalId])).rows[0]
   if (!row) return fail('AUTH_REVOKED')
-  if (row.execution_semantics_version !== 2) return
+  if (row.execution_semantics_version !== 3) return fail('AUTH_REVOKED')
   if (!row.live || !['workflow','reviewer'].includes(row.purpose) || row.environment_variable !== 'GRAPHQL_APP_MCP_TOKEN') return fail('AUTH_REVOKED')
   if (row.purpose === 'reviewer' && row.approval_review_job_id) {
     const epoch = await sql.query(`select 1 from review_jobs where id=$1 and execution_id=$2 and lease_fence=$3::bigint`,

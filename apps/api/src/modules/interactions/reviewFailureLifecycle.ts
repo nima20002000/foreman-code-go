@@ -19,7 +19,7 @@ export async function requestReviewFailureStop(pool: pg.Pool, reference: Failure
     : `select i.run_id,v.execution_semantics_version from durable_interactions i join runs r on r.id=i.run_id
        join workflow_versions v on v.id=r.workflow_version_id where i.id=$1`,
   ['reviewJobId' in reference ? reference.reviewJobId : reference.interactionId])).rows[0]
-  if (target?.execution_semantics_version === 2) return transact(pool, target.run_id, (publication) => recoverApprovalFailure(publication, reference))
+  if (target?.execution_semantics_version === 3) return transact(pool, target.run_id, (publication) => recoverApprovalFailure(publication, reference))
   return requestLegacyReviewFailureStop(pool, reference)
 }
 
