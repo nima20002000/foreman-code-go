@@ -117,7 +117,8 @@ describe('ENG04 central repository strict dispatch', () => {
   it.each(['requestStop', 'requestCleanup', 'finishCleanup'] as const)('%s remains closed rather than calling legacy SQL', async (method) => {
     const t = fixture()
     const result = method === 'finishCleanup' ? t.repository.finishCleanup(t.f.run.id, false) : t.repository[method](t.f.run.id)
-    await expect(result).rejects.toMatchObject({ code: 'REPEAT_LIFECYCLE_PUBLICATION_REQUIRED' })
+    await expect(result).rejects.toMatchObject({ code: method === 'requestStop'
+      ? 'REPEAT_STOP_AUTHORIZATION_REQUIRED' : 'REPEAT_LIFECYCLE_PUBLICATION_REQUIRED' })
     expect(t.calls.every((sql) => sql.startsWith('select'))).toBe(true)
   })
   it('does not insert a repeat execution through either legacy admission method', async () => {

@@ -42,6 +42,7 @@ import { readAcceptedRepeatRunLocked, type AcceptedRepeatRunSnapshot } from './r
 import { captureRepeatNativeEvidence, type RepeatLaunchPaths, type RepeatNativeBoundaryEvidence,
   type RepeatNativeEvidence } from './repeatNativeRepository.js'
 import { sameRepeatValue, type RepeatNodeRef } from './repeatResolution.js'
+import { markRepeatRunRunning, requestRepeatRunStop } from './repeatLifecycle.js'
 
 /** The JSON tag itself must be a known literal. ->> would silently accept "3"
  * and conflate explicit null with legacy absence. Parsing remains arm-specific. */
@@ -255,7 +256,10 @@ export class PostgresRunRepository implements RunRepository {
 
   async requestStop(runId: string, authorize?: AuthorizeOneShotStop): Promise<void> {
     const semantics = await this.executionSemantics(runId)
-    if (semantics === 3) return repeatLifecycleRequired()
+    if (semantics === 3) {
+      if (!authorize) throw new DomainError('REPEAT_STOP_AUTHORIZATION_REQUIRED', 'V3 Stop requires the live command authorizer.', 409)
+      return requestRepeatRunStop(this.pool, runId, authorize)
+    }
     if (semantics === 2) await changeOneShotLifecycle(this.pool, runId, { kind: 'stop', ...(authorize ? { authorize } : {}) })
   }
 
@@ -484,7 +488,7 @@ export class PostgresRunRepository implements RunRepository {
     const current = await this.get(runId, owner)
     if (!current) throw new DomainError('RUN_NOT_FOUND', `Run '${runId}' was not found.`, 404)
     const semantics = runRepositorySemantics(current)
-    if (semantics === 3) return repeatLifecycleRequired()
+    if (semantics === 3) return markRepeatRunRunning(this.requireOwner(runId, owner), this.locations, update)
     if (semantics === 2) {
       if (!owner) throw new DomainError('RUN_OWNERSHIP_REQUIRED', 'One-shot execution mutations require the current Run owner.', 409)
       return this.oneShot(owner).updateRun(update)

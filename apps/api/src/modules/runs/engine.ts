@@ -14,7 +14,9 @@ import {
   type DurableInteraction,
 } from '@graphql/contracts'
 
-import { WorkflowVersionV2Schema } from '@graphql/contracts/wave25'
+import { WorkflowVersionV2Schema, type AcceptedWorkflowRunV3 } from '@graphql/contracts/wave25'
+import { executeRepeatEngineStart, type RepeatEngineStartContext } from './repeatStartComposition.js'
+import { runStartSemantics } from './repeatStartDispatch.js'
 import { executeOneShotRuntime } from './oneShotRuntime.js'
 import { consumeDeliveredApprovals } from './approvalCheckpointResume.js'
 import type { GraphResumeClaim } from '../interactions/deliveryPostgres.js'
@@ -29,7 +31,7 @@ import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowCo
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
 import { withFilesystemDeadline } from '../workspaces/filesystem.js'
-import type { WorkflowOrchestrator } from './port.js'
+import type { RepositoryWorkflowRun, WorkflowOrchestrator } from './port.js'
 import type { PostgresRunRepository } from './postgres.js'
 import type { RunOwnership } from './ownership.js'
 import { ExecutionLimiter } from './limiter.js'
@@ -115,6 +117,18 @@ function isOneShotRun(run: WorkflowRun): boolean {
   return 'executionSemanticsVersion' in run && run.executionSemanticsVersion === 2
 }
 
+/** Mandatory real lifecycle/native adapters on the existing owner. This is not
+ * an admission switch: production deliberately supplies no binding until native
+ * source ingestion, Stop/cleanup and atomic v3 approval consumption are qualified.
+ * The callback cannot replace the owner, thread, repository, gate or coordinator. */
+export type RepeatEngineRuntimeBinding = (owner: RunOwnership, signal: AbortSignal) =>
+  Pick<RepeatEngineStartContext, 'lifecycle' | 'nativeBoundaryEvidence'>
+
+function isRepeatRun(run: RepositoryWorkflowRun): run is AcceptedWorkflowRunV3 {
+  return runStartSemantics({ executionSemanticsVersion: 'executionSemanticsVersion' in run
+    ? run.executionSemanticsVersion : undefined }) === 3
+}
+
 export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   private readonly workerAdmission: RunnerAdmission
   private readonly configuredParallelism: number
@@ -137,6 +151,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     private readonly interactions?: PostgresInteractionRepository,
     private readonly onRunTerminal?: (runId: string, reason: string) => Promise<void>,
     limits: { workerParallelism?: number; maximumWaiting?: number; maximumActiveRuns?: number } = {},
+    private readonly repeatRuntimeBinding?: RepeatEngineRuntimeBinding,
   ) {
     this.workspaceRoot = resolve(workspaceRoot)
     this.configuredParallelism = limits.workerParallelism ?? 4
@@ -180,6 +195,11 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       if (!run) throw new DomainError('RUN_NOT_FOUND', `Run '${runId}' was not found.`, 404)
       if (run.executionState !== 'queued') {
         throw new DomainError('RUN_NOT_STARTABLE', `Run '${runId}' is not queued.`, 409)
+      }
+      if (isRepeatRun(run)) {
+        controller.signal.throwIfAborted()
+        await this.executeRun(run, controller.signal, owner)
+        return
       }
       if (controller.signal.aborted) {
         const cleanupFailure = await this.cleanupApprovals(runId)
@@ -225,11 +245,22 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       new DomainError('RUN_OWNERSHIP_LOST', 'The database execution owner disconnected.', 409),
     ))
     if (!owner) return
+    let repeat = false
     try {
       // Candidate records can be stale by the time database ownership is acquired.
       const run = await this.runs.get(runId, owner)
       if (!run || (run.executionState !== 'running' && run.executionState !== 'waiting')) return
+      repeat = isRepeatRun(run)
       controller.signal.throwIfAborted()
+      if (isRepeatRun(run)) {
+        if (run.executionState === 'waiting') throw new DomainError('REPEAT_APPROVAL_RESUME_REQUIRED',
+          'Cold approval recovery requires exact atomic v3 checkpoint/receipt consumption.', 409)
+        // The occurrence runtime reads the same checkpoint and exact admitted
+        // execution IDs. A legacy/static graph cannot inspect or replay v3.
+        // Approval Command consumption remains explicitly unavailable below.
+        await this.executeRun(run, controller.signal, owner)
+        return
+      }
       {
         const { version, snapshot } = await this.readCheckpoint(run)
         if (this.isApprovalWait(snapshot)) {
@@ -261,7 +292,9 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       await this.workerCredentials?.revokeForRun?.(runId)
     } finally {
       try {
-        if (controller.signal.aborted) await this.settleCanceledRun(runId, owner)
+        // executeRepeatRuntime owns its exact occurrence cancellation/drain.
+        // Never route its failure into the legacy orphan terminalizer.
+        if (controller.signal.aborted && !repeat) await this.settleCanceledRun(runId, owner)
       } finally { await owner.release() }
     }
   }
@@ -310,6 +343,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
   private async resumeRun(runId: string, controller: AbortController, requestedIds?: string[], claim?: GraphResumeClaim): Promise<void> {
     let owner: RunOwnership | undefined
+    let repeat = false
     try {
       owner = await this.runs.acquireOwnership(runId, () => controller.abort(
         new DomainError('RUN_OWNERSHIP_LOST', 'The database execution owner disconnected.', 409),
@@ -317,8 +351,11 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       if (!owner) throw new DomainError('RUN_ALREADY_OWNED', `Run '${runId}' is owned by another engine.`, 409)
       const run = await this.runs.get(runId, owner)
       if (!run) throw new DomainError('RUN_NOT_FOUND', `Run '${runId}' was not found.`, 404)
+      repeat = isRepeatRun(run)
       // A preceding queued resume may already have consumed this notification.
       if (run.executionState === 'completed' && requestedIds) return
+      if (isRepeatRun(run)) throw new DomainError('REPEAT_APPROVAL_RESUME_REQUIRED',
+        'V3 approval resume requires exact atomic checkpoint/receipt consumption; no resume value was injected.', 409)
       if (!run.approval || (run.executionState !== 'waiting' && run.executionState !== 'running')) throw new DomainError('RUN_NOT_RESUMABLE', `Run '${runId}' is not waiting.`, 409)
       controller.signal.throwIfAborted()
       const { version, snapshot } = await this.readCheckpoint(run)
@@ -340,7 +377,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       await this.resumeCheckpoint(run, delivered, controller, owner, claim)
     } finally {
       try {
-        if (owner && controller.signal.aborted) await this.settleCanceledRun(runId, owner)
+        if (owner && controller.signal.aborted && !repeat) await this.settleCanceledRun(runId, owner)
       } finally { await owner?.release() }
     }
   }
@@ -398,7 +435,10 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   }
 
   private buildGraph(version: WorkflowVersion, action: (nodeId: string, state: EngineStateValue) => Promise<Partial<EngineStateValue>>): DynamicCompiledGraph {
-    if ('executionSemanticsVersion' in version && version.executionSemanticsVersion === 2) {
+    const semantics = runStartSemantics({ executionSemanticsVersion: 'executionSemanticsVersion' in version
+      ? version.executionSemanticsVersion : undefined })
+    if (semantics === 3) throw new DomainError('REPEAT_GRAPH_DISPATCH_REQUIRED', 'The occurrence graph must use its existing repeat runtime, not the legacy/static graph.', 409)
+    if (semantics === 2) {
       const pinned = WorkflowVersionV2Schema.parse(version)
       const compiled = compileOneShotGraph(pinned, this.checkpointer, action)
       return { getState: (config) => compiled.getState(config),
@@ -594,7 +634,24 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     if (errors.length) throw new AggregateError(errors, 'Workflow shutdown cleanup was incomplete.')
   }
 
-  private async executeRun(run: WorkflowRun, signal: AbortSignal, owner: RunOwnership, resumeCommand?: Command): Promise<void> {
+  private async executeRun(run: RepositoryWorkflowRun, signal: AbortSignal, owner: RunOwnership, resumeCommand?: Command): Promise<void> {
+    if (isRepeatRun(run)) {
+      signal.throwIfAborted()
+      owner.assertOwned()
+      if (owner.runId !== run.id) throw new DomainError('GRAPH_SCOPE_MISMATCH', 'An occurrence cannot borrow another Run owner.', 409)
+      if (resumeCommand) throw new DomainError('REPEAT_APPROVAL_RESUME_REQUIRED', 'A v3 resume cannot inject an unreceipted Command.', 409)
+      if (typeof this.repeatRuntimeBinding !== 'function') throw new DomainError('REPEAT_NATIVE_HOST_REQUIRED',
+        'Real repeat lifecycle/native adapters are not composed. No occurrence or native work was started.', 409)
+      const factory = this.runs.repeatRepositoryFactory()
+      const binding = this.repeatRuntimeBinding(owner, signal)
+      if (!binding || typeof binding.nativeBoundaryEvidence !== 'function') throw new DomainError(
+        'REPEAT_NATIVE_HOST_REQUIRED', 'The exact native boundary evidence adapter is missing.', 409)
+      return executeRepeatEngineStart({ owner, signal, factory,
+        lifecycle: binding.lifecycle, nativeBoundaryEvidence: binding.nativeBoundaryEvidence.bind(binding),
+        runtimeRoot: this.workspaceRoot, checkpointer: this.checkpointer,
+        admission: this.workerAdmission, configuredParallelism: this.configuredParallelism,
+        native: this.nativeExecutions, workflows: this.workflows, locations: this.locations })
+    }
     if (isOneShotRun(run)) {
       return executeOneShotRuntime({ run, version: await this.runs.getOneShotVersion(run.workflowVersionId),
         runs: this.runs, workflows: this.workflows, native: this.nativeExecutions, locations: this.locations,

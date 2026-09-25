@@ -504,9 +504,11 @@ it('a genuine sibling error after an interrupt still fails the run with the real
 it('remaining approval budget uses the owner connection, deduplicates IDs and selects the tightest remaining budget', async () => {
   const queries: Array<{ sql: string; values: unknown[] }> = []
   const owner = {
+    runId: 'run',
     assertOwned() {},
     client: { async query(sql: string, values: unknown[]) {
       queries.push({ sql, values })
+      if (sql.includes('select r.record,v.record as version')) return { rows: [{ record: { id: 'run' }, version: {}, execution_semantics_version: 1 }] }
       return { rows: [{ remaining_ms: '80.5', stopped_at: null }, { remaining_ms: '20', stopped_at: null }] }
     } },
   } as unknown as RunOwnership
@@ -515,10 +517,11 @@ it('remaining approval budget uses the owner connection, deduplicates IDs and se
     {} as ConstructorParameters<typeof PostgresRunRepository>[1], {} as ConstructorParameters<typeof PostgresRunRepository>[2],
   )
   assert.equal(await repository.remainingApprovalTime('run', ['a', 'b', 'a'], owner), 20)
-  assert.deepEqual(queries[0]!.values, ['run', ['a', 'b']])
-  assert.match(queries[0]!.sql, /approval_wait_started_at is not null then 0/)
-  assert.match(queries[0]!.sql, /active_timeout_ms - budget.active_elapsed_ms/)
-  assert.match(queries[0]!.sql, /clock_timestamp\(\)-budget.active_started_at/)
+  const budget = queries.find((query) => query.sql.includes('approval_execution_state'))!
+  assert.deepEqual(budget.values, ['run', ['a', 'b']])
+  assert.match(budget.sql, /approval_wait_started_at is not null then 0/)
+  assert.match(budget.sql, /active_timeout_ms - budget.active_elapsed_ms/)
+  assert.match(budget.sql, /clock_timestamp\(\)-budget.active_started_at/)
 })
 
 for (const rows of [[], [{ remaining_ms: '100', stopped_at: new Date() }]]) {
@@ -526,7 +529,8 @@ for (const rows of [[], [{ remaining_ms: '100', stopped_at: new Date() }]]) {
     const repository = new PostgresRunRepository(
       {} as ConstructorParameters<typeof PostgresRunRepository>[0], {} as ConstructorParameters<typeof PostgresRunRepository>[1], {} as ConstructorParameters<typeof PostgresRunRepository>[2],
     )
-    const owner = { assertOwned() {}, client: { query: async () => ({ rows }) } } as unknown as RunOwnership
+    const owner = { runId: 'run', assertOwned() {}, client: { query: async (sql: string) => ({ rows: sql.includes('select r.record,v.record as version')
+      ? [{ record: { id: 'run' }, version: {}, execution_semantics_version: 1 }] : rows }) } } as unknown as RunOwnership
     await assert.rejects(repository.remainingApprovalTime('run', ['a'], owner), { code: 'EXECUTION_STOPPED' })
   })
 }
