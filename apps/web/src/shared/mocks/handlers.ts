@@ -1,5 +1,6 @@
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { settingsExperienceHandlers, resetSettingsExperienceFixtures } from './settingsExperienceHandlers'
+import { makeWave25Fixture } from '@graphql/contracts/wave25'
 import {
   ApiErrorResponseSchema,
   CreateRunRequestSchema,
@@ -371,6 +372,24 @@ export const handlers: RequestHandler[] = [
       .map(managedWorkflow)
     return HttpResponse.json({ items, pageInfo: { nextCursor: null } })
   }),
+  http.get('/api/management/repeats/capabilities', () => HttpResponse.json({
+    contractVersion: 1, executionSemanticsVersion: 3, supported: false,
+    authoring: { flatScopesOnly: true, nesting: false, arbitraryCycles: false, maxOccurrencesMin: 1,
+      maxOccurrencesMax: 2147483647, explicitLimitExit: true, earlyExitOutcome: true },
+    availability: { savedAuthoring: true, persistedReadback: true, runtimeAdmission: false, meaningfulEdit: false,
+      reasons: ['NATIVE_START_NOT_READY', 'REPEAT_EDIT_INTENT_NOT_READY'] },
+  })),
+  http.get('/api/management/workspaces/:workspaceId/workflows/:workflowId', ({ params }) => {
+    const workspaceId = String(params.workspaceId), workflowId = String(params.workflowId)
+    if (workspaceId === 'workspace' && workflowId === 'workflow') {
+      const workflow = { ...makeWave25Fixture('repeat-msw').version.definition, workspaceId, id: workflowId }
+      return HttpResponse.json({ workflow, revision: 7, currentVersionId: 'workflow-version-1', archivedAt: null })
+    }
+    const workflow = getMockFixture(workspaceId)?.workflows.find((item) => item.id === workflowId)
+    return workflow ? HttpResponse.json(managedWorkflow(workflow)) : fixtureNotFound('workflow', workflowId)
+  }),
+  http.get('/api/management/workspaces/:workspaceId/workflows/:workflowId/repeat', ({ params }) =>
+    apiError('WORKFLOW_VERSION_UNSUPPORTED', `Workflow '${String(params.workflowId)}' is not a saved repeat.`, 409)),
   http.post('/api/management/workspaces/:workspaceId/workflows', async ({ params, request }) => {
     const workspaceId = String(params.workspaceId)
     if (!getMockFixture(workspaceId)) return fixtureNotFound('workspace', workspaceId)
@@ -459,6 +478,12 @@ export const handlers: RequestHandler[] = [
   http.get('/api/management/workspaces/:workspaceId', ({ params }) => {
     const failure = readFailure()
     if (failure) return failure
+    if (params.workspaceId === 'workspace') return HttpResponse.json({
+      workspace: { id: 'workspace', name: 'Fixture', agentIds: [], workflowIds: ['workflow'],
+        createdAt: '2026-09-21T00:00:00.000Z', updatedAt: '2026-09-21T00:00:00.000Z' },
+      revision: 1, archivedAt: null, executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' },
+      locationRevision: 1, locationValidation: { status: 'ready', checkedAt: '2026-09-21T00:00:00.000Z' },
+    })
     const result = visibleManagedWorkspace(String(params.workspaceId))
     return result ? HttpResponse.json(result) : fixtureNotFound('workspace', String(params.workspaceId))
   }),

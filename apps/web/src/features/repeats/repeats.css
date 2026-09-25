@@ -26,3 +26,6 @@
   .repeat-grid, .repeat-node-grid { grid-template-columns: minmax(0, 1fr); }
   .repeat-occurrence dl > div { grid-template-columns: minmax(0, 1fr); }
 }
+
+.repeat-result code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.repeat-findings { display: grid; gap: var(--space-1); margin: 0; padding-left: var(--space-4); }

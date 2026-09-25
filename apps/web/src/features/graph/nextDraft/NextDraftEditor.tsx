@@ -28,6 +28,7 @@ import { useWorkflowBoard } from '../../workflow-board/context'
 import { BoardAgentSettings, NewBoardAgent } from '../../workflow-board/AgentControls'
 import { boardDraftContextKey, boardRunListKey } from '../../workflow-board/keys'
 import { useApprovalInboxStore } from '../../approvals'
+import { RepeatEditor, type RepeatRuntimeGuard } from '../../repeats'
 import '../graph.css'
 import './nextDraft.css'
 
@@ -100,12 +101,14 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext }: {
   </section>
 }
 
-type Panel = 'workflow' | 'agents' | 'readiness' | null
+type Panel = 'workflow' | 'agents' | 'readiness' | 'repeat' | null
 function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit }) {
   const graph = edit.graph, context = edit.context, board = useWorkflowBoard()
   const editIntent = useGraphEditIntent(draftKey, edit)
   const guard = useContext(UnsavedChangesContext)
   const [panel, setPanel] = useState<Panel>(null)
+  const [repeatGuard, setRepeatGuard] = useState<RepeatRuntimeGuard>({ checking: true, hasSavedRepeat: false,
+    runtimeAdmission: false, meaningfulEdit: false })
   const [openNode, setOpenNode] = useState<OpenAgentPanel>()
   const [confirm, setConfirm] = useState<'save' | 'discard' | 'reload'>()
   const runRecord = useSelectedRunRecord()
@@ -244,6 +247,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     const current = useGraphDraftStore.getState().nextDrafts[draftKey]
     if (!current || current.busy || current.pending || current.startRejectedVersionId === current.context.draft.baseWorkflowVersionId || startLock.current || editIntent.locked) return
     const existing = useGraphDraftStore.getState().pendingRunStarts[draftKey]
+    if (!existing && (repeatGuard.checking || repeatGuard.hasSavedRepeat)) return
     if (!existing && (nextDraftDirty(current) || geometryPending || !current.context.draft.baseWorkflowVersionId || workspace.data?.locationValidation.status !== 'ready')) return
     const generation = sessionGeneration()
     let sent: PendingRunStart | undefined
@@ -292,9 +296,11 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   }
   const dirty = nextDraftDirty(edit)
   const startReloadRequired = !!edit.startRejectedVersionId && edit.startRejectedVersionId === context.draft.baseWorkflowVersionId
-  const startDisabled = storageFailed || starting || startReloadRequired || editIntent.locked || edit.busy || !!edit.pending || (!pendingStart
+  const repeatStartBlocked = !pendingStart && (repeatGuard.checking || repeatGuard.hasSavedRepeat)
+  const startDisabled = repeatStartBlocked || storageFailed || starting || startReloadRequired || editIntent.locked || edit.busy || !!edit.pending || (!pendingStart
     && (dirty || !context.draft.baseWorkflowVersionId || workspace.data?.locationValidation.status !== 'ready'))
-  const startReason = startReloadRequired ? 'Reload the saved draft before starting a run'
+  const startReason = repeatStartBlocked ? (repeatGuard.checking ? repeatGuard.reason ?? 'Checking repeat runtime availability'
+    : !repeatGuard.runtimeAdmission ? 'Repeat runtime admission is unavailable for this saved workflow' : 'Shared v3 Start transport is unavailable in this source revision') : startReloadRequired ? 'Reload the saved draft before starting a run'
     : pendingStart ? 'Confirm whether the earlier start went through' : dirty ? 'Save your changes before starting a run'
     : !context.draft.baseWorkflowVersionId ? 'Save the workflow before starting a run'
       : workspace.data?.locationValidation.status !== 'ready' ? 'Choose an execution folder first' : 'Start a run of the saved workflow'
@@ -358,6 +364,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
           <Button variant="secondary" className="n-icon-button workflow-approval-inbox" aria-label={`Open human approval inbox${pendingApprovals ? `, ${pendingApprovals} pending` : ''}`}
             title="Approval inbox" onClick={() => useApprovalInboxStore.getState().openInbox({ workspaceId: graph.workspaceId, workflowId: graph.id })}><Inbox aria-hidden="true" size={16} />
             {pendingApprovals ? <span className="workflow-approval-inbox-badge" aria-hidden="true">{pendingApprovals}</span> : null}</Button>
+          <Button size="sm" variant="ghost" onClick={() => openPanel('repeat')}>Repeats</Button>
           {board ? <IconButton label="Runs" onClick={board.openRuns}><Icon name="history" size={16} /></IconButton> : null}
           <Button variant="primary" leading={<Icon name="play" size={14} />} aria-label={pendingStart ? 'Reconcile Start' : 'Start saved version'}
             title={startReason} disabled={startDisabled} loading={starting} onClick={() => void prepare(start).catch(report)}>{pendingStart ? 'Confirm start' : 'Start run'}</Button>
@@ -382,7 +389,13 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
           {errorText}{edit.error?.issues?.length ? <ul>{edit.error.issues.map((issue, i) => <li key={i}>{issue.message}</li>)}</ul> : null}
         </Alert> : null}
       </div>
-      {panel || selectedEdge ? <aside className="board-side-panel" aria-label={panelTitle || 'Board controls'}>
+      <aside className="board-side-panel" hidden={panel !== 'repeat'} style={panel === 'repeat' ? undefined : { display: 'none' }} aria-label="Business repeats">
+        <header><h2>Business repeats</h2><IconButton variant="ghost" label="Close panel" onClick={() => openPanel(null)}><Icon name="close" size={16} /></IconButton></header>
+        <RepeatEditor workspaceId={graph.workspaceId} workflowId={graph.id} graph={graph} activeRuns={board?.activeRuns ?? 0}
+          sourceAgentPins={context.draft.sourceAgentPins} disabled={edit.busy || reloading || editIntent.locked || !!edit.pending || hasLocalChanges(context, graph) || hasAgentEdits(edit)}
+          onRuntimeGuardChange={setRepeatGuard} />
+      </aside>
+      {(panel && panel !== 'repeat') || selectedEdge ? <aside className="board-side-panel" aria-label={panelTitle || 'Board controls'}>
         <header><h2>{panelTitle}</h2><IconButton variant="ghost" label="Close panel" onClick={() => openPanel(null)}><Icon name="close" size={16} /></IconButton></header>
         <fieldset disabled={edit.busy || reloading || editIntent.locked}>
           {selectedEdge && !panel ? <RelationshipFields graph={graph} relationship={selectedEdge} change={change} report={report} /> : null}
