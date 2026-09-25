@@ -1,25 +1,19 @@
 import { randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
-import type { ManagementGrant } from '@graphql/contracts/management'
 import {
-  makeWave25Fixture, WorkflowVersionV3Schema, AcceptedWorkflowRunV3Schema, AcceptedRepeatStartV1Schema,
-  CANONICAL_RUN_GRAPH_ROUTES, type RepeatGraphScopeV3,
+  makeWave25Fixture, CANONICAL_RUN_GRAPH_ROUTES,
 } from '@graphql/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
-import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { readCurrentGraphExchanges } from '../src/modules/interactions/wave25/currentExchanges.js'
 import { createCompactSnapshotAssembler } from '../src/modules/run-graph/compactSnapshot.js'
-import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { RunGraphReadService } from '../src/modules/run-graph/readService.js'
 import { RepeatGraphReadService } from '../src/modules/run-graph/repeatReadService.js'
-import { graphSourceDigest, openRunGraphPublication } from '../src/modules/run-graph/publication.js'
-import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
+import { openRunGraphPublication } from '../src/modules/run-graph/publication.js'
 import { publishRepeatRunStateLocked } from '../src/modules/run-graph/repeatPublication.js'
-import { insertRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { agent3Database, seedAgent3 } from './helpers/wave25Agent3.js'
+import { createRepeatFixtureWriter, insertFixtureRepeatRun, repeatReadyAgent3Fixture } from './eng04-repeat-fixture-writer.js'
 
 export type GraphTestDatabase = Awaited<ReturnType<typeof agent3Database>>
 export const privateCanary = 'ENG04-PRIVATE-INPUT-MUST-NOT-REACH-GRAPH'
@@ -29,50 +23,19 @@ export const privateCanary = 'ENG04-PRIVATE-INPUT-MUST-NOT-REACH-GRAPH'
  * Uses the repository's existing opt-in disposable schema/migration harness.
  */
 export async function graphFixture(db: GraphTestDatabase, options: { insert?: boolean; qualifiedReads?: boolean } = {}) {
-  const f = makeWave25Fixture(randomUUID())
+  const f = repeatReadyAgent3Fixture(makeWave25Fixture(randomUUID()))
   await seedAgent3(db.pool, db.directory, f, { run: false })
-  const entry = f.version.definition.nodes[0]!, exit = f.version.definition.nodes[1]!
-  const version = WorkflowVersionV3Schema.parse({ ...f.version, id: `${f.version.id}-repeat`, version: 2,
-    executionSemanticsVersion: 3, definition: { ...f.version.definition, version: 2, executionSemanticsVersion: 3,
-      executionPolicy: { maxParallelism: 1, maxNodeExecutions: 6 }, nodes: [entry, { ...exit, choice: { outcomes: [
-        { outcome: 'pass', target: { kind: 'branch_end' } }, { outcome: 'issues', target: { kind: 'branch_end' } },
-      ] } }], repeat: { contractVersion: 1, blocks: [{ id: 'repair', nodeIds: [entry.id, exit.id], entryNodeId: entry.id,
-        exitNodeId: exit.id, maxOccurrences: 3, repeatOutcome: 'issues', earlyExitOutcome: 'pass', limitExit: { kind: 'branch_end' } }] },
-    } })
-  version.contentHash = graphSourceDigest({ definition: version.definition,
-    configurations: version.agentConfigurationVersionIds, entryNodeId: version.entryNodeId })
-  await db.pool.query(`insert into workflow_versions(id,workspace_id,workflow_id,version,entry_node_id,execution_semantics_version,record)
-    values($1,$2,$3,2,$4,3,$5::jsonb)`, [version.id, version.workspaceId, version.workflowId, version.entryNodeId, JSON.stringify(version)])
-  await db.pool.query('update workflows set current_version_id=$2,record=$3::jsonb where id=$1',
-    [version.workflowId, version.id, JSON.stringify(version.definition)])
-  const revision = Number((await db.pool.query<{ revision: string }>('select revision::text from workflows where id=$1', [version.workflowId])).rows[0]!.revision)
-  const access = new PostgresAccessService(db.pool), commands = new PostgresCommandCoordinator(db.pool)
-  const grantScope = { workspaceIds: [version.workspaceId], workflowIds: [version.workflowId] }
-  const credential = (grants: ManagementGrant[]) => access.issue({ name: 'ENG04 graph disposable-test Operator', audience: 'operator',
-    expiresAt: new Date(Date.now() + 300000), grants })
-  const writer = await credential([{ actions: ['capabilities:read'], scope: {} }, { actions: ['runs:read'], scope: grantScope }])
-  const run = AcceptedWorkflowRunV3Schema.parse({ ...f.run, workflowVersionId: version.id, executionSemanticsVersion: 3,
-    authorizationPrincipalId: writer.principal.id, input: { canary: privateCanary } })
-  const request = { workspaceId: version.workspaceId, workflowId: version.workflowId, workflowVersionId: version.id,
-    executionSemanticsVersion: 3, commandId: randomUUID(), expectedWorkflowRevision: revision,
-    expectedAgentConfigurationVersionIds: version.agentConfigurationVersionIds,
-    expectedLocationRevision: run.executionLocation.locationRevision, input: run.input }
-  const accepted = AcceptedRepeatStartV1Schema.parse({ run, snapshot: { request,
-    authorizationPrincipalId: writer.principal.id, executable: { version, configurations: f.configurations },
-    workflow: { id: version.workflowId, workspaceId: version.workspaceId, revision, currentVersionId: version.id,
-      archived: false, definition: version.definition },
-    workspace: { id: version.workspaceId, archived: false, location: run.executionLocation }, draft: null,
-  } })
-  if (options.insert !== false) await withExclusiveGraphConnection(db.pool,
-    (connection) => connection.transaction((sql) => insertRepeatRun(sql, accepted, repeatStartPublication)))
-  const scope: RepeatGraphScopeV3 = { workspaceId: run.workspaceId, workflowId: run.workflowId,
-    workflowVersionId: version.id, runId: run.id, executionSemanticsVersion: 3 }
+  const fixtureWriter = await createRepeatFixtureWriter(db.pool, f)
+  const saved = await fixtureWriter.publish(3)
+  const { version, run, accepted, scope } = await insertFixtureRepeatRun(db.pool, f, saved,
+    fixtureWriter.writer.principal.id, { insert: options.insert !== false, input: { canary: privateCanary } })
+  const { access, commands, grantScope, credential, writer, repeats } = fixtureWriter
   // Test-local opt-in to a REAL reader/producer. Production default remains false.
   const repeat = new RepeatGraphReadService(db.pool, { qualifiedReads: options.qualifiedReads === true })
   const graph = new RunGraphReadService(db.pool, createCompactSnapshotAssembler(readCurrentGraphExchanges), { qualifiedReads: true, repeat })
   // Unrelated services are not called. Authentication, commands/audit, graph
   // services, canonical publisher and database are actual production classes.
-  const services = { commands, runGraph: graph } as unknown as OperatorServices
+  const services = { commands, repeats, runGraph: graph } as unknown as OperatorServices
   const app = buildApp({ readiness: { database: { ping: async () => { await db.pool.query('select 1') } },
     checkpoints: { ping: async () => undefined } }, operator: { access, services } })
   await app.ready()

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { HarnessExecutionSchema, WorkflowRunSchema } from '@graphql/contracts'
-import { AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema, canonicalGraphJson, makeWave25Fixture } from '@graphql/contracts/wave25'
+import { canonicalGraphJson, makeWave25Fixture } from '@graphql/contracts/wave25'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import type { RepeatRepositoryActivation } from '../src/modules/runs/port.js'
 import type { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
@@ -10,9 +10,10 @@ import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { openRunGraphPublication } from '../src/modules/run-graph/publication.js'
 import { openRepeatCanonicalPublicationLocked, publishRepeatRunStateLocked } from '../src/modules/run-graph/repeatPublication.js'
 import { bindRepeatNodeInput, freezeRepeatEntry, makeRepeatOccurrence, repeatDigest, repeatExecutionIdentity,
-  repeatSlotId, type RepeatScope } from '../src/modules/runs/repeatResolution.js'
+  repeatSlotId } from '../src/modules/runs/repeatResolution.js'
 import type { RepeatEffect } from '../src/modules/runs/repeatPostgres.js'
 import { agent3Database, candidateFor, graphHead, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
+import { createRepeatFixtureWriter, insertFixtureRepeatRun, repeatReadyAgent3Fixture } from './eng04-repeat-fixture-writer.js'
 
 // REAL PostgreSQL, migrations, owner sessions, canonical producer and receipts.
 // Synthetic database setup is not authenticated Start/admission or native proof.
@@ -37,31 +38,11 @@ describe.skipIf(!postgresEnabled)('ENG04 repository activation PostgreSQL bounda
     owners.push(owner); return owner
   }
   async function fixture() {
-    const f = await seedAgent3(db.pool, db.directory, makeWave25Fixture(randomUUID()), { run: false })
-    const entry = f.version.definition.nodes[0]!, exit = f.version.definition.nodes[1]!
-    const version = WorkflowVersionV3Schema.parse({ ...f.version, id: `${f.version.id}-repeat`, version: 2, executionSemanticsVersion: 3,
-      definition: { ...f.version.definition, executionSemanticsVersion: 3,
-        nodes: [entry, { ...exit, choice: { outcomes: [
-          { outcome: 'pass', target: { kind: 'branch_end' } }, { outcome: 'issues', target: { kind: 'branch_end' } },
-        ] } }], executionPolicy: { maxParallelism: 1, maxNodeExecutions: 6 },
-        repeat: { contractVersion: 1, blocks: [{ id: 'repair', nodeIds: [entry.id, exit.id], entryNodeId: entry.id,
-          exitNodeId: exit.id, maxOccurrences: 3, repeatOutcome: 'issues', earlyExitOutcome: 'pass', limitExit: { kind: 'branch_end' } }] },
-      } })
-    version.contentHash = repeatDigest({ definition: version.definition,
-      configurations: version.agentConfigurationVersionIds, entryNodeId: version.entryNodeId })
-    await db.pool.query(`insert into workflow_versions(id,workspace_id,workflow_id,version,entry_node_id,record,execution_semantics_version)
-      values($1,$2,$3,$4,$5,$6::jsonb,3)`, [version.id, version.workspaceId, version.workflowId, version.version,
-      version.entryNodeId, JSON.stringify(version)])
-    // Keep the *current* workflow at its old version deliberately. Exact reads
-    // must follow historical immutable Run pins rather than today's head.
-    const run = AcceptedWorkflowRunV3Schema.parse({ ...f.run, executionSemanticsVersion: 3, workflowVersionId: version.id,
-      approval: version.approval, authorizationPrincipalId: 'synthetic-read-fixture-not-a-credential' })
-    await db.pool.query(`insert into runs(id,workspace_id,workflow_id,workflow_version_id,execution_state,record,
-      runner_id,working_directory,location_revision) values($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)`,
-    [run.id, run.workspaceId, run.workflowId, run.workflowVersionId, run.executionState, JSON.stringify(run),
-      run.executionLocation.runnerId, run.executionLocation.rootPath, run.executionLocation.locationRevision])
-    const scope: RepeatScope = { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
-      workflowVersionId: version.id, executionSemanticsVersion: 3 }
+    const f = repeatReadyAgent3Fixture(makeWave25Fixture(randomUUID()))
+    await seedAgent3(db.pool, db.directory, f, { run: false })
+    const fixtureWriter = await createRepeatFixtureWriter(db.pool, f)
+    const saved = await fixtureWriter.publish(3)
+    const { run, version, scope } = await insertFixtureRepeatRun(db.pool, f, saved, fixtureWriter.writer.principal.id)
     return { f, run, version, scope }
   }
 
@@ -117,7 +98,7 @@ describe.skipIf(!postgresEnabled)('ENG04 repository activation PostgreSQL bounda
     return { ...t, owner, queued, ref, occurrence }
   }
 
-  it('reads the exact v3 immutable Run/version without native services or the current workflow head', async () => {
+  it('reads the exact v3 immutable Run/version without native services and rejects a different physical pin', async () => {
     const t = await fixture(), repo = repository()
     expect(await repo.get(t.run.id)).toEqual(t.run)
     expect(await repo.getRepeatVersion(t.run.id, t.version.id)).toEqual(t.version)

@@ -78,13 +78,14 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / authenticated HTTP 
     const t = await fixture()
     const missing = await t.app.inject({ method: 'GET', url: graphUrl(t, 'snapshot'), headers: graphHeaders() })
     expect(missing.statusCode).toBe(401)
-    const wrong = await t.credential([{ actions: ['runs:read'], scope: { workspaceIds: ['another-workspace'] } }])
+    const wrong = await t.credential([{ actions: ['capabilities:read'], scope: {} },
+      { actions: ['runs:read'], scope: { workspaceIds: ['another-workspace'] } }])
     const noRead = await t.credential([{ actions: ['capabilities:read'], scope: {} }])
     for (const credential of [wrong, noRead]) {
       const deniedHttp = await http(t, 'snapshot', undefined, credential.token)
       const deniedMcp = await mcp(t, 'snapshot', undefined, credential.token)
       expect(deniedHttp.statusCode).toBe(403)
-      expect(deniedHttp.json()).toMatchObject({ error: { code: 'GRAPH_READ_ACCESS_DENIED' } })
+      expect(deniedHttp.json()).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
       expect(deniedMcp.result?.isError).toBe(true)
       expect(graphRpcValue(deniedMcp.result)).toMatchObject({ error: { code: 'GRAPH_READ_ACCESS_DENIED' } })
       const audit = (await db.pool.query('select source,outcome from management_audit where principal_id=$1', [credential.principal.id])).rows
