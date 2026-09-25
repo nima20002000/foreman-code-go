@@ -9,7 +9,9 @@ describe('ENG04 migration successor registry/static guardrails', () => {
   it('has one collision-free final registration and retains the original raw SQL export', () => {
     expect(repeatOccurrenceMigration.version).toBe(264501)
     expect(repeatOccurrenceMigration.sql).toBe(repeatOccurrenceMigrationSql)
-    expect(migrations.at(-1)).toBe(repeatOccurrenceMigration)
+    const index = migrations.findIndex((migration) => migration.version === repeatOccurrenceMigration.version)
+    expect(index).toBeGreaterThan(-1)
+    expect(migrations[index]).toBe(repeatOccurrenceMigration)
     expect(migrations.filter((migration) => migration.version === 264501)).toHaveLength(1)
     expect(new Set(migrations.map((migration) => migration.version)).size).toBe(migrations.length)
   })
@@ -17,6 +19,8 @@ describe('ENG04 migration successor registry/static guardrails', () => {
   it('leaves the full pinned registry byte-for-byte unchanged apart from import and tail append', () => {
     const source = readFileSync(new URL('../src/infrastructure/migrations.ts', import.meta.url), 'utf8')
     const original = source
+      .replace("import { repeatWriterMigration } from './repeatWriterMigration.js'\n", '')
+      .replace('  repeatWriterMigration,\n', '')
       .replace("import { repeatOccurrenceMigration } from './repeatOccurrenceMigration.js'\n", '')
       .replace('  repeatOccurrenceMigration,\n', '')
     expect(createHash('sha256').update(original).digest('hex')).toBe('cb8847ce0d3b0a05aae57018d0d3e38dfc4fe38f4e23b06b1299fbe8bd0aadee')

@@ -71,7 +71,7 @@ export async function installLegacy(pool: pg.Pool): Promise<void> {
   await transaction(pool, async (sql) => {
     await sql.query('select pg_advisory_xact_lock($1)', [810_001])
     for (const migration of migrations) {
-      if (migration.version === repeatOccurrenceMigration.version) continue
+      if (migration.version === repeatOccurrenceMigration.version) break
       await sql.query(migration.sql)
       await sql.query('insert into application_migrations(version) values($1)', [migration.version])
     }

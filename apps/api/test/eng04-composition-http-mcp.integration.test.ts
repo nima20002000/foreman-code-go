@@ -55,14 +55,24 @@ describe.skipIf(!postgresEnabled)('ENG04 composition authenticated HTTP/MCP publ
   function headers(token?: string) {
     return { host: 'localhost', accept: 'application/json, text/event-stream', ...(token ? { authorization: `Bearer ${token}` } : {}) }
   }
+  const rpcOrigins = new WeakMap<FastifyInstance, Promise<string>>()
   async function rpc(app: FastifyInstance, token: string, method: string, params: Record<string, unknown> = {}) {
-    const response = await app.inject({ method: 'POST', url: '/mcp/operator', headers: headers(token),
-      payload: { jsonrpc: '2.0', id: 1, method, params } })
-    expect(response.statusCode).toBe(200)
+    let origin = rpcOrigins.get(app)
+    if (!origin) {
+      origin = app.listen({ host: '127.0.0.1', port: 0 })
+      rpcOrigins.set(app, origin)
+    }
+    const response = await fetch(new URL('/mcp/operator', await origin), {
+      method: 'POST',
+      headers: { accept: 'application/json, text/event-stream', authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    })
+    expect(response.status).toBe(200)
+    const body = await response.text()
     // The SDK may use a JSON reply or an SSE message, both on the same endpoint.
-    const message: unknown = response.headers['content-type']?.includes('text/event-stream')
-      ? JSON.parse(response.body.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n'))
-      : response.json()
+    const message: unknown = response.headers.get('content-type')?.includes('text/event-stream')
+      ? JSON.parse(body.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n'))
+      : JSON.parse(body)
     return message as { result: { tools?: Array<{ name: string }>; isError?: boolean; structuredContent: Record<string, unknown> } }
   }
   async function call(t: Awaited<ReturnType<typeof fixture>>, token: string, name: string, args: unknown) {

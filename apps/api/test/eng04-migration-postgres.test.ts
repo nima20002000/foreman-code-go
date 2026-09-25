@@ -96,8 +96,8 @@ postgresDescribe('ENG04 migration successor — real PostgreSQL 17 compatibility
       const oldVersions = (await pool.query('select version,applied_at::text from application_migrations order by version')).rows
       await applyApplicationMigrations(pool)
       expect(await snapshots()).toEqual(before)
-      expect((await pool.query('select version,applied_at::text from application_migrations where version<>$1 order by version',
-        [repeatOccurrenceMigration.version])).rows).toEqual(oldVersions)
+      expect((await pool.query('select version,applied_at::text from application_migrations where version=any($1::integer[]) order by version',
+        [oldVersions.map((row) => row.version)])).rows).toEqual(oldVersions)
       expect((await pool.query('select count(*)::integer as n from application_migrations where version=$1',
         [repeatOccurrenceMigration.version])).rows[0]!.n).toBe(1)
       const installed = await schemaState(pool)

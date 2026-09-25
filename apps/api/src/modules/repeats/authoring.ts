@@ -23,7 +23,7 @@ import type pg from 'pg'
 
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
-import type { PostgresCommandCoordinator } from '../commands/postgres.js'
+import { commandInputHash, type PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { assertMeaningfulSaveAdmitted } from '../graph-drafts/saveAdmission.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
@@ -104,11 +104,11 @@ export class RepeatAuthoringService {
         principal = await readLiveManagementPrincipal(client, principal.id)
         this.authorize(principal, input)
       },
-      perform: async (client) => this.persist(client, principal, input),
+      perform: async (client) => this.persist(client, principal, source, input),
     })
   }
 
-  private async persist(client: pg.PoolClient, principal: ManagementPrincipal, input: RepeatSaveInput): Promise<RepeatSavedWorkflow> {
+  private async persist(client: pg.PoolClient, principal: ManagementPrincipal, source: Source, input: RepeatSaveInput): Promise<RepeatSavedWorkflow> {
     await lockActiveWorkspace(client, input.workspaceId)
     const current = await client.query<WorkflowRow>(
       `select record, revision::text, current_version_id, archived_at
@@ -234,11 +234,12 @@ export class RepeatAuthoringService {
 
     // Same canonical hash payload as the v2 publisher, with the actual v3
     // definition (including the repeat plan), never the inherited base hash.
-    candidate.data.contentHash = `sha256:${createHash('sha256').update(canonicalGraphJson({
+    const contentJson = canonicalGraphJson({
       definition: candidate.data.definition,
       configurations: candidate.data.agentConfigurationVersionIds,
       entryNodeId: candidate.data.entryNodeId,
-    })).digest('hex')}`
+    })
+    candidate.data.contentHash = `sha256:${createHash('sha256').update(contentJson).digest('hex')}`
 
     const executable = ExecutableRepeatWorkflowV1Schema.safeParse({ version: candidate.data, configurations })
     if (!executable.success) {
@@ -255,10 +256,10 @@ export class RepeatAuthoringService {
         candidate.data.entryNodeId, JSON.stringify(candidate.data), REPEAT_EXECUTION_SEMANTICS_VERSION],
     )
     const updated = await client.query<{ revision: string }>(
-      `update workflows set current_version_id=$3,record=$4::jsonb,revision=revision+1
-       where workspace_id=$1 and id=$2 and revision=$5
-       returning revision::text`,
-      [input.workspaceId, input.workflowId, candidate.data.id, JSON.stringify(candidate.data.definition), input.expectedRevision],
+      // The additive writer validates the exact transition and requires this
+      // command's receipt/audit at COMMIT. A GUC cannot authorize the upgrade.
+      `select eng04_publish_repeat_workflow($1,$2,$3::jsonb,$4,$5,$6)::text as revision`,
+      [principal.id, source, JSON.stringify(input), commandInputHash(input), candidate.data.id, contentJson],
     )
     if (updated.rowCount !== 1) throw new DomainError('REVISION_CONFLICT', 'The workflow changed during repeat publication.', 409)
 
