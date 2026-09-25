@@ -339,7 +339,8 @@ export class PostgresRunRepository implements RunRepository {
       `with occurrence as (
          insert into harness_executions (id, run_id, workflow_node_id, agent_id, attempt, record)
          values ($1,$2,$3,$4,$5,$6::jsonb)
-         on conflict (run_id, workflow_node_id, attempt) do nothing returning record
+         on conflict (run_id, workflow_node_id, attempt)
+           where repeat_occurrence_id is null do nothing returning record
        ), scheduled as (
          insert into run_activity (run_id, source, kind, harness_execution_id, occurred_at, payload)
          select $2, 'langgraph', 'node_scheduled', $1, $7::timestamptz, $8::jsonb from occurrence
@@ -350,7 +351,7 @@ export class PostgresRunRepository implements RunRepository {
     )
     if (result.rows[0]) return { execution: parsed, created: true }
     const found = await (owner?.client ?? this.pool).query<{ record: unknown }>(
-      'select record from harness_executions where run_id=$1 and workflow_node_id=$2 and attempt=$3',
+      'select record from harness_executions where run_id=$1 and workflow_node_id=$2 and attempt=$3 and repeat_occurrence_id is null',
       [parsed.runId, parsed.workflowNodeId, parsed.attempt],
     )
     const current = HarnessExecutionSchema.parse(found.rows[0]?.record)
