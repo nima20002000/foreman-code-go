@@ -1,156 +1,328 @@
-import { randomUUID } from 'node:crypto'
+import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
 
 import pg from 'pg'
 import { describe, expect, it } from 'vitest'
-import { canonicalGraphJson } from '@graphql/contracts/wave25'
 
-import { repeatOccurrenceMigrationSql } from '../src/infrastructure/repeatOccurrenceMigration.js'
+import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
+import { repeatOccurrenceMigration } from '../src/infrastructure/repeatOccurrenceMigration.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { readRepeatDecision, readRepeatOccurrences } from '../src/modules/runs/repeatPostgres.js'
-import { makeRepeatOccurrence, repeatDigest, repeatExecutionIdentity, repeatSuccessorInput } from '../src/modules/runs/repeatResolution.js'
 import {
-  ENG04_REPEAT_AT,
-  exitDecision,
-  firstOccurrence,
-  makeSimpleRepeatFixture,
-} from './helpers/eng04RepeatFixtures.js'
+  acceptedResult,
+  acceptResult,
+  decision,
+  digest,
+  evidenceTables,
+  execution,
+  finishOccurrence,
+  insertDecision,
+  insertExecution,
+  insertOccurrence,
+  insertResolution,
+  now,
+  occurrence,
+  seedRun,
+  text,
+  transaction,
+  type JsonObject,
+  type RunFixture,
+} from './eng04-migration-fixtures.js'
 
 const enabled = process.env.RUN_ENG04_REPEAT_POSTGRES === '1'
-const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
-const schemaName = () => `eng04_d_${randomUUID().replaceAll('-', '')}`
+const timeout = 120_000
+const postgresDescribe = describe.skipIf(!enabled)
 
-describe.skipIf(!enabled)('NIM-2648 ENG04-D real PostgreSQL repeat regression', () => {
-  it('enforces occurrence lineage and legacy/repeat execution uniqueness with exact persisted readback', async () => {
-    const schema = schemaName()
-    const admin = new pg.Pool({ connectionString, connectionTimeoutMillis: 5000, query_timeout: 5000 })
-    await admin.query(`create schema "${schema}"`)
-    const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema},public`, connectionTimeoutMillis: 5000, query_timeout: 5000 })
-    const fixture = makeSimpleRepeatFixture(2, { suffix: 'eng04-d-pg', runId: 'run-eng04-d-pg' })
+function repeatScope(run: RunFixture) {
+  return {
+    workspaceId: run.workspaceId,
+    workflowId: run.workflowId,
+    workflowVersionId: run.versionId,
+    runId: run.id,
+    executionSemanticsVersion: 3 as const,
+  }
+}
+
+async function rejectsTransaction(
+  pool: pg.Pool,
+  work: (sql: pg.PoolClient) => Promise<unknown>,
+  codes: readonly string[],
+  message?: RegExp,
+): Promise<void> {
+  let failure: unknown
+  try {
+    await transaction(pool, work)
+  } catch (error) {
+    failure = error
+  }
+  expect(failure, 'The invalid transaction must fail, including deferred COMMIT checks').toBeInstanceOf(Error)
+  expect(codes).toContain((failure as { code?: string }).code)
+  if (message) expect((failure as Error).message).toMatch(message)
+}
+
+/**
+ * D uses its own cluster-global random role and database. The configured admin
+ * connection is used only to create/drop those task-owned objects and inspect
+ * PostgreSQL's major version. No application database, schema, or retained data
+ * is used as a fallback. Cleanup never terminates unrelated sessions or uses
+ * DROP DATABASE ... WITH (FORCE).
+ */
+async function disposableRepeatDatabase<T>(work: (pool: pg.Pool) => Promise<T>): Promise<T> {
+  assert.equal(process.env.RUN_ENG04_REPEAT_POSTGRES, '1', 'Explicit ENG04-D PostgreSQL opt-in is required')
+  const configured = process.env.ENG04_REPEAT_POSTGRES_ADMIN_DATABASE_URL
+    ?? process.env.ENG04_MIGRATION_ADMIN_DATABASE_URL
+  assert.ok(configured, 'ENG04_REPEAT_POSTGRES_ADMIN_DATABASE_URL (or ENG04_MIGRATION_ADMIN_DATABASE_URL) must be explicitly supplied')
+
+  const adminUrl = new URL(configured)
+  assert.ok(['postgres:', 'postgresql:'].includes(adminUrl.protocol), 'A PostgreSQL connection URL is required')
+  const suffix = randomBytes(12).toString('hex')
+  const database = `eng04_d_${suffix}`
+  const role = `eng04_d_role_${suffix}`
+  const password = randomBytes(24).toString('hex')
+  assert.match(database, /^eng04_d_[a-f0-9]{24}$/)
+  assert.match(role, /^eng04_d_role_[a-f0-9]{24}$/)
+
+  const admin = new pg.Client({ connectionString: configured, connectionTimeoutMillis: 10_000 })
+  let pool: pg.Pool | undefined
+  let roleCreated = false
+  let databaseCreated = false
+  try {
+    await admin.connect()
+    const version = await admin.query<{ server_version_num: string }>('show server_version_num')
+    const number = Number(version.rows[0]?.server_version_num)
+    assert.ok(number >= 170000 && number < 180000, 'Run ENG04-D PostgreSQL qualification on PostgreSQL 17')
+
+    await admin.query(`create role "${role}" login password '${password}' nosuperuser nocreatedb nocreaterole`)
+    roleCreated = true
+    await admin.query(`create database "${database}" owner "${role}" template template0 encoding 'UTF8'`)
+    databaseCreated = true
+
+    const taskUrl = new URL(configured)
+    taskUrl.pathname = `/${database}`
+    taskUrl.username = role
+    taskUrl.password = password
+    pool = new pg.Pool({ connectionString: taskUrl.toString(), max: 4, connectionTimeoutMillis: 10_000 })
+    const identity = await pool.query<{ database: string; role: string }>(
+      'select current_database() as database,current_user as role',
+    )
+    expect(identity.rows[0]).toEqual({ database, role })
+
+    await applyApplicationMigrations(pool)
+    return await work(pool)
+  } finally {
+    if (pool) await pool.end()
     try {
-      await pool.query(`
-        create table workspaces (id text primary key);
-        create table workflows (id text primary key, workspace_id text not null references workspaces(id));
-        create table workflow_versions (id text primary key, workspace_id text not null, workflow_id text not null, record jsonb not null);
-        create table runs (
-          id text primary key, workspace_id text not null, workflow_id text not null,
-          workflow_version_id text not null, record jsonb not null
-        );
-        create table harness_executions (
-          id text primary key, run_id text not null, workflow_node_id text not null, agent_id text not null,
-          attempt integer not null, record jsonb not null,
-          unique (run_id, workflow_node_id, attempt)
-        );
-        create table management_command_receipts (
-          principal_id text not null, operation text not null, command_id text not null,
-          target_key text not null, input_hash text not null, result jsonb not null,
-          primary key (principal_id,operation,command_id)
-        );
-        create table management_audit (
-          id bigint generated always as identity primary key, principal_id text, source text not null,
-          action text not null, target_key text not null, outcome text not null, details jsonb not null
-        );
-      `)
-      await pool.query('insert into workspaces(id) values($1)', [fixture.scope.workspaceId])
-      await pool.query('insert into workflows(id,workspace_id) values($1,$2)', [fixture.scope.workflowId, fixture.scope.workspaceId])
-      await pool.query('insert into workflow_versions(id,workspace_id,workflow_id,record) values($1,$2,$3,$4::jsonb)', [
-        fixture.version.id, fixture.scope.workspaceId, fixture.scope.workflowId, JSON.stringify(fixture.version),
-      ])
-      await pool.query('insert into runs(id,workspace_id,workflow_id,workflow_version_id,record) values($1,$2,$3,$4,$5::jsonb)', [
-        fixture.scope.runId, fixture.scope.workspaceId, fixture.scope.workflowId, fixture.version.id, JSON.stringify(fixture.run),
-      ])
-      await pool.query(repeatOccurrenceMigrationSql)
-
-      const first = firstOccurrence(fixture)
-      const insertOccurrence = async (value: typeof first) => {
-        const occurrence = value.occurrence
-        const previous = occurrence.input.previous
-        await pool.query(`insert into run_repeat_occurrences
-          (occurrence_id,run_id,workspace_id,workflow_id,workflow_version_id,block_id,occurrence_index,binding_id,input_json,input_digest,
-           previous_occurrence_id,previous_occurrence_index,previous_decision_id,previous_result_digest,record)
-          values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb)`, [
-          occurrence.identity.occurrenceId, fixture.scope.runId, fixture.scope.workspaceId, fixture.scope.workflowId,
-          fixture.version.id, fixture.block.id, occurrence.identity.occurrenceIndex, occurrence.input.bindingId,
-          canonicalGraphJson(value.input), occurrence.input.inputDigest, previous?.occurrenceId ?? null,
-          previous?.occurrenceIndex ?? null, previous?.decisionId ?? null, previous?.acceptedResultDigest ?? null,
-          JSON.stringify(occurrence),
-        ])
+      if (databaseCreated) await admin.query(`drop database "${database}"`)
+    } finally {
+      try {
+        if (roleCreated) await admin.query(`drop role "${role}"`)
+      } finally {
+        await admin.end()
       }
-      await insertOccurrence(first)
-      await expect(pool.query(`insert into run_repeat_occurrences
-        (occurrence_id,run_id,workspace_id,workflow_id,workflow_version_id,block_id,occurrence_index,binding_id,input_json,input_digest,record)
-        values($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10::jsonb)`, [
-        'duplicate-index-occurrence', fixture.scope.runId, fixture.scope.workspaceId, fixture.scope.workflowId, fixture.version.id,
-        fixture.block.id, 'duplicate-binding', canonicalGraphJson(first.input), repeatDigest(first.input),
-        JSON.stringify({ ...first.occurrence, identity: { ...first.occurrence.identity, occurrenceId: 'duplicate-index-occurrence' }, input: { ...first.occurrence.input, bindingId: 'duplicate-binding' } }),
-      ])).rejects.toThrow()
+    }
+  }
+}
 
-      const one = exitDecision(fixture, first.occurrence, 'issues', 'pg-review-1')
-      const slotInput = canonicalGraphJson({ exact: 'pg-review-1' })
-      const slotDigest = repeatDigest({ exact: 'pg-review-1' })
-      const execIdentity = { ...repeatExecutionIdentity(one.completed), occurrence: first.occurrence.identity }
-      await pool.query(`insert into run_repeat_slots(slot_id,run_id,occurrence_id,workflow_node_id,input_json,input_digest)
-        values($1,$2,$3,$4,$5,$6)`, ['pg-slot-review-1', fixture.scope.runId, first.occurrence.identity.occurrenceId, 'review', slotInput, slotDigest])
-      await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,repeat_occurrence_id,record)
-        values($1,$2,$3,$4,1,$5,$6::jsonb)`, [one.completed.id, fixture.scope.runId, 'review', 'agent-review', first.occurrence.identity.occurrenceId, JSON.stringify(one.completed)])
-      await pool.query(`insert into run_repeat_executions(execution_id,run_id,slot_id,occurrence_id,technical_attempt,previous_execution_id,identity)
-        values($1,$2,$3,$4,1,null,$5::jsonb)`, [one.completed.id, fixture.scope.runId, 'pg-slot-review-1', first.occurrence.identity.occurrenceId, JSON.stringify(execIdentity)])
-      const resultJson = canonicalGraphJson(one.completed.result)
-      const resultDigest = repeatDigest(one.completed.result)
-      await pool.query(`insert into run_repeat_results(execution_id,run_id,occurrence_id,result_json,result_digest,accepted_at)
-        values($1,$2,$3,$4,$5,$6)`, [one.completed.id, fixture.scope.runId, first.occurrence.identity.occurrenceId, resultJson, resultDigest, ENG04_REPEAT_AT])
-      await pool.query(`insert into run_repeat_decisions(decision_id,occurrence_id,exit_execution_id,result_digest,record)
-        values($1,$2,$3,$4,$5::jsonb)`, [one.decision.decisionId, first.occurrence.identity.occurrenceId, one.completed.id, resultDigest, JSON.stringify(one.decision)])
+async function counts(pool: pg.Pool, runId: string): Promise<Record<string, number>> {
+  const result: Record<string, number> = {}
+  for (const table of evidenceTables) {
+    const rows = await pool.query<{ n: string }>(`select count(*) as n from ${table} where run_id=$1`, [runId])
+    result[table] = Number(rows.rows[0]!.n)
+  }
+  return result
+}
 
-      const second = makeRepeatOccurrence(
-        fixture.scope,
-        fixture.block,
-        repeatSuccessorInput(first.input, one.decision, one.completed.result!),
-        one.decision,
+async function completeTwoOccurrences(pool: pg.Pool, id: string) {
+  return transaction(pool, async (sql) => {
+    const run = await seedRun(sql, id, 3, { cap: 2 })
+    const first = occurrence(run)
+    await insertOccurrence(sql, first)
+    const one = execution(run, first)
+    await insertExecution(sql, one)
+    const progressed = await finishOccurrence(sql, one)
+    assert.ok(progressed.successor)
+    const two = execution(run, progressed.successor)
+    await insertExecution(sql, two)
+    const finished = await finishOccurrence(sql, two)
+    assert.equal(finished.decision.record.reason, 'limit_exit')
+    return { run, first, one, second: progressed.successor, two, firstDecision: progressed.decision, finalDecision: finished.decision }
+  })
+}
+
+postgresDescribe('NIM-2648 ENG04-D real PostgreSQL repeat regression', () => {
+  it('uses the production registry and preserves lineage, legacy/repeat uniqueness, technical attempts and exact readback', async () => {
+    await disposableRepeatDatabase(async (pool) => {
+      const installed = await pool.query<{ version: number }>(
+        'select version from application_migrations where version=$1',
+        [repeatOccurrenceMigration.version],
       )
-      await insertOccurrence(second)
-      expect((await readRepeatOccurrences(pool, fixture.scope, fixture.block.id)).map((row) => row.identity.occurrenceIndex)).toEqual([1, 2])
-      const metadata = await readRepeatDecision(pool, fixture.scope, first.occurrence.identity.occurrenceId)
-      expect(metadata).toMatchObject({ decisionId: one.decision.decisionId, acceptedResultDigest: resultDigest, reason: 'repeat' })
+      expect(installed.rows).toEqual([{ version: repeatOccurrenceMigration.version }])
+
+      const seeded = await transaction(pool, async (sql) => {
+        const run = await seedRun(sql, 'eng04-d-lineage', 3, { cap: 2 })
+        const first = occurrence(run)
+        await insertOccurrence(sql, first)
+        const initial = execution(run, first)
+        await insertExecution(sql, initial)
+        const failedRecord = {
+          ...initial.record,
+          state: 'completed',
+          finishedAt: now,
+          result: { outcome: 'failed', error: { code: 'PROVIDER_TRANSIENT', message: 'retryable', retryable: true } },
+        }
+        await sql.query('update harness_executions set record=$2::jsonb where id=$1', [initial.id, text(failedRecord)])
+        const retry = execution(run, first, { attempt: 2, previous: initial })
+        await insertExecution(sql, retry, false)
+        return { run, first, initial, retry }
+      })
+
+      await rejectsTransaction(
+        pool,
+        (sql) => insertExecution(sql, execution(seeded.run, seeded.first, { id: 'eng04-d-duplicate-business-attempt' }), false),
+        ['23505'],
+      )
+      await rejectsTransaction(
+        pool,
+        (sql) => insertExecution(sql, execution(seeded.run, seeded.first, {
+          id: 'eng04-d-technical-gap', attempt: 4, previous: seeded.retry,
+        }), false),
+        ['23503'],
+      )
+
+      const progressed = await transaction(pool, (sql) => finishOccurrence(sql, seeded.retry))
+      assert.ok(progressed.successor)
+      const secondExecution = execution(seeded.run, progressed.successor)
+      await transaction(pool, (sql) => insertExecution(sql, secondExecution))
+      expect((await pool.query('select attempt from harness_executions where id=$1', [secondExecution.id])).rows[0]!.attempt).toBe(1)
+      expect((await pool.query('select previous_technical_attempt from run_repeat_executions where execution_id=$1', [seeded.retry.id])).rows[0]!.previous_technical_attempt).toBe(1)
+
+      const outside = execution(seeded.run, null, { nodeId: 'outside', id: 'eng04-d-outside-1' })
+      await transaction(pool, (sql) => insertExecution(sql, outside))
+      await rejectsTransaction(
+        pool,
+        (sql) => insertExecution(sql, execution(seeded.run, null, { nodeId: 'outside', id: 'eng04-d-outside-duplicate' }), false),
+        ['23505'],
+      )
+
+      const legacy = await transaction(pool, async (sql) => {
+        const run = await seedRun(sql, 'eng04-d-legacy', 1)
+        const record = {
+          id: 'eng04-d-legacy-attempt-1',
+          runId: run.id,
+          workflowNodeId: 'body',
+          agentId: run.agentIds.body,
+          agentConfigurationVersionId: run.configIds.body,
+          attempt: 1,
+          state: 'queued',
+          input: {},
+        }
+        await sql.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
+          values($1,$2,$3,$4,1,$5::jsonb)`, [record.id, run.id, record.workflowNodeId, record.agentId, text(record)])
+        return { run, record }
+      })
+      await rejectsTransaction(pool, (sql) => sql.query(`insert into harness_executions
+        (id,run_id,workflow_node_id,agent_id,attempt,record) values($1,$2,$3,$4,1,$5::jsonb)`,
+      ['eng04-d-legacy-attempt-duplicate', legacy.run.id, 'body', legacy.run.agentIds.body,
+        text({ ...legacy.record, id: 'eng04-d-legacy-attempt-duplicate' })]), ['23505'])
+
+      const scope = repeatScope(seeded.run)
+      const occurrences = await readRepeatOccurrences(pool, scope, seeded.first.blockId)
+      expect(occurrences.map((value) => value.identity.occurrenceIndex)).toEqual([1, 2])
+      expect(occurrences[1]!.input.previous).toEqual({
+        occurrenceId: seeded.first.id,
+        occurrenceIndex: 1,
+        decisionId: progressed.decision.id,
+        acceptedResultDigest: digest(progressed.decision.accepted),
+      })
+      const metadata = await readRepeatDecision(pool, scope, seeded.first.id)
+      expect(metadata).toMatchObject({
+        decisionId: progressed.decision.id,
+        acceptedResultDigest: digest(progressed.decision.accepted),
+        reason: 'repeat',
+      })
       expect(metadata && 'resultData' in metadata).toBe(false)
 
-      const secondExecution = { ...one.completed, id: 'pg-review-2', attempt: 1, input: {} }
-      await pool.query(`insert into run_repeat_slots(slot_id,run_id,occurrence_id,workflow_node_id,input_json,input_digest)
-        values($1,$2,$3,$4,$5,$6)`, ['pg-slot-review-2', fixture.scope.runId, second.occurrence.identity.occurrenceId, 'review', slotInput, slotDigest])
-      await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,repeat_occurrence_id,record)
-        values($1,$2,$3,$4,1,$5,$6::jsonb)`, ['pg-review-2', fixture.scope.runId, 'review', 'agent-review', second.occurrence.identity.occurrenceId, JSON.stringify(secondExecution)])
-      await expect(pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,repeat_occurrence_id,record)
-        values($1,$2,$3,$4,1,$5,$6::jsonb)`, ['pg-review-2-duplicate', fixture.scope.runId, 'review', 'agent-review', second.occurrence.identity.occurrenceId, JSON.stringify({ ...secondExecution, id: 'pg-review-2-duplicate' })])).rejects.toThrow()
+      const storedOccurrence = (await pool.query<{ input_json: string; input_digest: string }>(
+        'select input_json,input_digest from run_repeat_occurrences where occurrence_id=$1',
+        [progressed.successor.id],
+      )).rows[0]!
+      expect(storedOccurrence.input_digest).toBe(digest(JSON.parse(storedOccurrence.input_json)))
+      expect(JSON.parse(storedOccurrence.input_json).carry).toEqual({
+        decisionId: progressed.decision.id,
+        execution: progressed.decision.execution.identity,
+        acceptedResultDigest: digest(progressed.decision.accepted),
+        acceptedResult: progressed.decision.accepted,
+      })
 
-      await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
-        values('legacy-done-1',$1,'done','agent-done',1,'{}'::jsonb)`, [fixture.scope.runId])
-      await expect(pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
-        values('legacy-done-duplicate',$1,'done','agent-done',1,'{}'::jsonb)`, [fixture.scope.runId])).rejects.toThrow()
-    } finally {
-      await pool.end()
-      await admin.query(`drop schema if exists "${schema}" cascade`)
-      await admin.end()
-    }
-  }, 30000)
+      const storedSlot = (await pool.query<{ input_json: string; input_digest: string }>(
+        'select input_json,input_digest from run_repeat_slots where slot_id=$1',
+        [seeded.retry.slotId],
+      )).rows[0]!
+      expect(storedSlot.input_json).toBe(text(seeded.retry.input))
+      expect(storedSlot.input_digest).toBe(digest(seeded.retry.input))
 
-  it('replays an exact repeat command receipt once and rejects the same raw command ID with changed input', async () => {
-    const schema = schemaName()
-    const admin = new pg.Pool({ connectionString, connectionTimeoutMillis: 5000, query_timeout: 5000 })
-    await admin.query(`create schema "${schema}"`)
-    const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema},public`, connectionTimeoutMillis: 5000, query_timeout: 5000 })
-    try {
-      await pool.query(`
-        create table management_command_receipts (
-          principal_id text not null, operation text not null, command_id text not null,
-          target_key text not null, input_hash text not null, result jsonb not null,
-          primary key (principal_id,operation,command_id)
-        );
-        create table management_audit (
-          id bigint generated always as identity primary key, principal_id text, source text not null,
-          action text not null, target_key text not null, outcome text not null, details jsonb not null
-        );
-      `)
+      const storedResult = (await pool.query<{ result_json: string; result_digest: string }>(
+        'select result_json,result_digest from run_repeat_results where execution_id=$1',
+        [seeded.retry.id],
+      )).rows[0]!
+      expect(storedResult.result_json).toBe(text(progressed.decision.accepted))
+      expect(storedResult.result_digest).toBe(digest(progressed.decision.accepted))
+      const persistedDecision = (await pool.query<{ record: JsonObject }>(
+        'select record from run_repeat_decisions where decision_id=$1',
+        [progressed.decision.id],
+      )).rows[0]!
+      expect(persistedDecision.record).toEqual(progressed.decision.record)
+
+      const native = (await pool.query<{ accepted: boolean; record: JsonObject }>(
+        'select accepted,record from harness_executions where id=$1',
+        [seeded.retry.id],
+      )).rows[0]!
+      expect(native.accepted).toBe(true)
+      expect(native.record).toMatchObject({
+        id: seeded.retry.id,
+        runId: seeded.run.id,
+        agentConfigurationVersionId: seeded.retry.identity.agentConfigurationVersionId,
+        input: seeded.retry.input,
+        state: 'completed',
+        result: progressed.decision.accepted,
+      })
+      const versionAndRun = (await pool.query<{
+        version_semantics: number
+        run_semantics: string
+        pinned: JsonObject
+        version_record: JsonObject
+        run_record: JsonObject
+      }>(`
+        select v.execution_semantics_version as version_semantics,
+          r.record->>'executionSemanticsVersion' as run_semantics,
+          r.record->'agentConfigurationVersionIds' as pinned,
+          v.record as version_record,r.record as run_record
+        from runs r join workflow_versions v on v.id=r.workflow_version_id where r.id=$1`, [seeded.run.id])).rows[0]!
+      expect(versionAndRun).toEqual({
+        version_semantics: 3,
+        run_semantics: '3',
+        pinned: seeded.run.record.agentConfigurationVersionIds,
+        version_record: seeded.run.version,
+        run_record: seeded.run.record,
+      })
+    })
+  }, timeout)
+
+  it('replays one exact command receipt and rejects the same raw command ID with changed input', async () => {
+    await disposableRepeatDatabase(async (pool) => {
+      const principal = {
+        id: 'operator-eng04-d',
+        name: 'ENG04 D',
+        audience: 'operator' as const,
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        revokedAt: null,
+        grants: [],
+      }
+      await pool.query(`insert into management_principals(id,name,audience,token_hash,grants,expires_at,revoked_at)
+        values($1,$2,$3,$4,$5::jsonb,$6,$7)`, [principal.id, principal.name, principal.audience,
+        `sha256:${'d'.repeat(64)}`, text(principal.grants), principal.expiresAt, principal.revokedAt])
+
       const coordinator = new PostgresCommandCoordinator(pool)
-      const principal = { id: 'operator-eng04-d', name: 'ENG04 D', audience: 'operator' as const, expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null, grants: [] }
       let performs = 0
       const execute = (payload: unknown) => coordinator.execute({
         principal,
@@ -168,10 +340,115 @@ describe.skipIf(!enabled)('NIM-2648 ENG04-D real PostgreSQL repeat regression', 
       expect(performs).toBe(1)
       await expect(execute({ cap: 2, expectedRevision: 7 })).rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
       expect(performs).toBe(1)
-    } finally {
-      await pool.end()
-      await admin.query(`drop schema if exists "${schema}" cascade`)
-      await admin.end()
-    }
-  }, 15000)
+
+      const receipts = await pool.query<{ command_id: string; result: JsonObject }>(
+        'select command_id,result from management_command_receipts where principal_id=$1 and operation=$2',
+        [principal.id, 'repeat.save'],
+      )
+      expect(receipts.rows).toEqual([{ command_id: 'raw-command-eng04-d-0001', result: first.value }])
+    })
+  }, timeout)
+
+  it('fails closed on malformed scope, digests and decision provenance without residual evidence', async () => {
+    await disposableRepeatDatabase(async (pool) => {
+      const [scopeRun, foreignRun] = await transaction(pool, async (sql) => [
+        await seedRun(sql, 'eng04-d-scope'),
+        await seedRun(sql, 'eng04-d-foreign'),
+      ])
+      assert.ok(scopeRun && foreignRun)
+      const foreignScope = occurrence(scopeRun)
+      foreignScope.record.identity.scope.workspaceId = foreignRun.workspaceId
+      await rejectsTransaction(pool, (sql) => insertOccurrence(sql, foreignScope), ['P0001'], /REPEAT_SCOPE_CONFLICT/)
+
+      const badDigest = occurrence(scopeRun)
+      badDigest.record.input.inputDigest = `sha256:${'0'.repeat(64)}`
+      await rejectsTransaction(pool, (sql) => insertOccurrence(sql, badDigest), ['23514'])
+      expect((await pool.query('select count(*)::integer as n from run_repeat_occurrences where run_id=$1', [scopeRun.id])).rows[0]!.n).toBe(0)
+
+      const evidence = await transaction(pool, async (sql) => {
+        const run = await seedRun(sql, 'eng04-d-evidence')
+        const first = occurrence(run)
+        const value = execution(run, first)
+        await insertOccurrence(sql, first)
+        await insertExecution(sql, value)
+        return { run, first, value }
+      })
+      const accepted = acceptedResult()
+      await rejectsTransaction(pool, (sql) => sql.query(`insert into run_repeat_results
+        (execution_id,run_id,occurrence_id,result_json,result_digest,accepted_at)
+        values($1,$2,$3,$4,$5,$6)`, [evidence.value.id, evidence.run.id, evidence.first.id,
+        text(accepted), `sha256:${'0'.repeat(64)}`, now]), ['23514'])
+
+      const forged = decision(evidence.value, accepted, 'issues')
+      forged.record.resultData = { ...(forged.record.resultData as JsonObject), latestDeliverable: { forged: true } }
+      await rejectsTransaction(pool, async (sql) => {
+        await acceptResult(sql, evidence.value, accepted)
+        await insertResolution(sql, evidence.value, accepted)
+        await insertDecision(sql, forged)
+      }, ['P0001'], /REPEAT_DECISION_PROVENANCE_CONFLICT/)
+
+      const valid = decision(evidence.value, accepted, 'issues')
+      await rejectsTransaction(pool, async (sql) => {
+        await acceptResult(sql, evidence.value, accepted)
+        await insertResolution(sql, evidence.value, accepted)
+        await insertDecision(sql, valid)
+      }, ['P0001'], /REPEAT_SUCCESSOR_MISSING/)
+
+      expect(await counts(pool, evidence.run.id)).toMatchObject({
+        run_repeat_occurrences: 1,
+        run_repeat_results: 0,
+        run_repeat_decisions: 0,
+      })
+      const progressed = await transaction(pool, (sql) => finishOccurrence(sql, evidence.value))
+      assert.ok(progressed.successor)
+      expect(progressed.successor.record.input.previous!.occurrenceId).toBe(evidence.first.id)
+    })
+  }, timeout)
+
+  it('retains repeat evidence with its Run and permits only whole-Run cascade retention cleanup', async () => {
+    await disposableRepeatDatabase(async (pool) => {
+      const chain = await completeTwoOccurrences(pool, 'eng04-d-retention')
+      const other = await completeTwoOccurrences(pool, 'eng04-d-retention-other')
+      const before = await counts(pool, chain.run.id)
+      const untouched = await counts(pool, other.run.id)
+      expect(Object.values(before).every((count) => count > 0)).toBe(true)
+
+      for (const table of evidenceTables) {
+        await rejectsTransaction(
+          pool,
+          (sql) => sql.query(`delete from ${table} where run_id=$1`, [chain.run.id]),
+          ['P0001', '23503'],
+        )
+        expect(await counts(pool, chain.run.id)).toEqual(before)
+      }
+      await rejectsTransaction(
+        pool,
+        (sql) => sql.query('delete from harness_executions where id=$1', [chain.one.id]),
+        ['P0001', '23503'],
+      )
+      await rejectsTransaction(
+        pool,
+        (sql) => sql.query("update harness_executions set record=jsonb_set(record,'{result}','{}') where id=$1", [chain.one.id]),
+        ['P0001'],
+        /REPEAT_ACCEPTED_RESULT_IMMUTABLE/,
+      )
+      await rejectsTransaction(
+        pool,
+        (sql) => sql.query("update runs set record=jsonb_set(record,'{input}','{}') where id=$1", [chain.run.id]),
+        ['P0001'],
+        /REPEAT_RUN_PIN_IMMUTABLE/,
+      )
+      await rejectsTransaction(pool, async (sql) => {
+        await sql.query('delete from runs where id=$1', [chain.run.id])
+        await sql.query('select 1/0')
+      }, ['22012'])
+      expect(await counts(pool, chain.run.id)).toEqual(before)
+
+      await transaction(pool, (sql) => sql.query('delete from runs where id=$1', [chain.run.id]))
+      expect(Object.values(await counts(pool, chain.run.id))).toEqual(evidenceTables.map(() => 0))
+      expect((await pool.query('select id from harness_executions where run_id=$1', [chain.run.id])).rows).toHaveLength(0)
+      expect(await counts(pool, other.run.id)).toEqual(untouched)
+      expect((await pool.query('select id from workflow_versions where id=$1', [chain.run.versionId])).rows).toHaveLength(1)
+    })
+  }, timeout)
 })
