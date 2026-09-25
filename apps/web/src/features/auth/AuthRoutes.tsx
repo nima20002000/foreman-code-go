@@ -4,6 +4,7 @@ import { useContext, useEffect, useRef, useState, type FormEvent } from 'react'
 import { safeAuthReturnTo, type BrowserSignInRequest, type OwnerSetupRequest } from '@graphql/contracts/management'
 import { ApiError } from '../../shared/api/client'
 import { browserAuthClient, useOwnerSetupStatus } from '../../shared/api/browserAuth'
+import { useBrowserAccessQuery } from '../../shared/api/settingsExperience'
 import { finishSessionChange } from '../../shared/api/sessionBoundary'
 import { Alert, Button, TextField } from '../../shared/ui/nocturne'
 import { ToastContext } from '../../shared/ui/nocturne/toastContext'
@@ -24,6 +25,7 @@ export function SignInRoute() {
   const toasts = useContext(ToastContext)
   const shownNotice = useRef<string | undefined>(undefined)
   const status = useOwnerSetupStatus()
+  const access = useBrowserAccessQuery()
   const client = useQueryClient()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -53,9 +55,15 @@ export function SignInRoute() {
     if (mutation.error) toasts?.notify({ tone: 'danger', title: 'Sign-in failed',
       description: mutation.error instanceof Error ? mutation.error.message : 'Check the message beside the form.' })
   }, [mutation.error, toasts])
+  useEffect(() => {
+    if (access.data?.localDev && !access.isFetching) window.location.replace(safeAuthReturnTo(search.returnTo))
+  }, [access.data?.localDev, access.isFetching, search.returnTo])
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!mutation.isPending) mutation.mutate({ email, password })
+  }
+  if (access.isPending || access.data?.localDev && !access.isError) {
+    return <main className="auth-screen" role="status">Checking local development access…</main>
   }
   return <main className="auth-screen"><section className="auth-card" aria-labelledby="sign-in-title">
     <p className="auth-brand">graphql · Owner access</p>
@@ -76,7 +84,7 @@ export function SignInRoute() {
     {status.data?.state === 'ready' ? <Link to="/setup" search={{ returnTo: search.returnTo }}>Set up the owner account</Link> : null}
     {status.data?.state === 'locked' ? <p className="auth-note">Owner setup is locked. Existing installations must select the owner Operator principal on the server.</p> : null}
     {status.isError ? <Alert live tone="danger" title="Browser authentication could not be checked"
-      action={<Button size="sm" onClick={() => void status.refetch()}>Check again</Button>}>Verify the server configuration.</Alert> : null}
+      action={<Button size="sm" onClick={() => { void status.refetch(); void access.refetch() }}>Check again</Button>}>Verify the server configuration.</Alert> : null}
     <p className="auth-note">CLI and MCP bearer credentials still work. Browser sign-in does not change your Codex or OpenCode account.</p>
   </section></main>
 }
