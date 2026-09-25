@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import { HarnessExecutionSchema, type DurableInteraction, type HarnessExecution } from '@graphql/contracts'
-import { AcceptedNodeResultV2Schema, NodeResolutionSchema, RepeatOccurrenceV1Schema,
+import { AcceptedCurrentNodeResultSchema, NodeResolutionSchema, RepeatOccurrenceV1Schema,
   SavedRunVersionSnapshotSchema, type RepeatWorkflowVersionV1 } from '@graphql/contracts/wave25'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { assertRepeatExecution, repeatDigest, repeatExecutionIdentity, repeatSlotId,
@@ -128,7 +128,7 @@ export class PostgresRepeatReviewerBindings implements RepeatReviewerBindings {
     const accepted = result.rows[0]
     if (result.rows.length !== 1 || !accepted || accepted.execution_id !== selected.execution.id
       || accepted.run_id !== run.id || accepted.occurrence_id !== occurrenceId || accepted.result_digest !== value.acceptedResultDigest
-      || !isDeepStrictEqual(AcceptedNodeResultV2Schema.parse(JSON.parse(accepted.result_json)), selected.execution.result)
+      || !isDeepStrictEqual(AcceptedCurrentNodeResultSchema.parse(JSON.parse(accepted.result_json)), selected.execution.result)
       || repeatDigest(selected.execution.result, 64 * 1024) !== accepted.result_digest) return conflict()
     return { execution: selected.execution, relationshipId: relationships[0]!.id,
       requesterOccurrenceId: requester.ref.occurrence?.occurrenceId ?? null, reviewerOccurrenceId: occurrenceId }

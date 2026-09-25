@@ -1,17 +1,13 @@
-/** Additive, explicitly imported boundary. Legacy root/management exports stay unchanged. */
+/** Current shared V3 boundary. Native/MCP/graph protocol versions are independent. */
 export * from './json.js'
 export * from './workflow.js'
 export * from './protocol.js'
 export * from './storage.js'
-export * from './authoring.js'
-export * from './fixtures.js'
 export * from './consumerFixture.js'
 export * from './reliability.js'
 export * from './boardNavigation.js'
 export * from './meaningfulEdit.js'
-export * from './editIntent.js'
 export * from './repeat.js'
-export * from './repeatAuthoring.js'
 export * from './repeatReadback.js'
 export * from './saved.js'
 export * from './repeatAdmission.js'
@@ -30,4 +26,3 @@ export {
   type CurrentManagedWorkflow, type CurrentWorkspaceDetails, type CurrentGetWorkflowResponse,
   type CurrentRunDetails,
 } from './currentRead.js'
-export { parseChoiceResultEnvelope, CurrentChoiceResultEnvelopeSchema as ChoiceResultEnvelopeSchema } from './currentResult.js'

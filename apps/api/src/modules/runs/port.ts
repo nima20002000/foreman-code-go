@@ -3,15 +3,14 @@ import type {
   RunExecutionState,
   RunOutcome,
   Timestamp,
-  WorkflowRun,
   HarnessExecution,
 } from '@graphql/contracts'
-import type { AcceptedWorkflowRunV3, WorkflowRunV2 } from '@graphql/contracts/wave25'
+import type { AcceptedWorkflowRunV3 } from '@graphql/contracts/wave25'
 import type { RepeatRepositoryServices } from './repeatRepositoryHost.js'
 
-/** Explicit third arm; never reinterpret a persisted tag through a Boolean. */
-export type RepositoryExecutionSemantics = 1 | 2 | 3
-export type RepositoryWorkflowRun = WorkflowRun | WorkflowRunV2 | AcceptedWorkflowRunV3
+/** Current execution pins only. A3 implements storage; no missing-pin default. */
+export type RepositoryExecutionSemantics = 3
+export type RepositoryWorkflowRun = AcceptedWorkflowRunV3
 
 /** Internal composition, not an activation flag. The central repository always
  * supplies the real canonical publisher. Native/lifecycle owners supply these
@@ -32,7 +31,7 @@ export interface RunStateUpdate {
 /** Run writes must retain their immutable workflow and agent-configuration pins. */
 export interface RunRepository {
   get(runId: string): Promise<RepositoryWorkflowRun | undefined>
-  create(run: WorkflowRun): Promise<void>
+  create(run: RepositoryWorkflowRun): Promise<void>
   updateState(runId: string, update: RunStateUpdate): Promise<void>
   /** Stable occurrence identity used by interrupt/resume node re-entry. */
   ensureExecution?(execution: HarnessExecution): Promise<{ execution: HarnessExecution; created: boolean }>

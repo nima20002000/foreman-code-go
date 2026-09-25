@@ -8,10 +8,11 @@ import {
 } from '../index.js'
 import { GraphIdSchema } from './protocol.js'
 import { canonicalGraphJson } from './json.js'
+import { ExecutionSemanticsVersionSchema as CurrentExecutionSemanticsSchema } from './workflow.js'
+export { ExecutionSemanticsVersionSchema as CurrentExecutionSemanticsSchema } from './workflow.js'
 
 /** Extracted current topology/lifecycle rules. No old WorkflowVersion validator,
  * validation projection, complexity-selected semantics or legacy dispatch. */
-export const CurrentExecutionSemanticsSchema = z.literal(3)
 export const CurrentRunScopeSchema = z.object({
   workspaceId: GraphIdSchema, workflowId: GraphIdSchema, runId: GraphIdSchema,
   workflowVersionId: GraphIdSchema, executionSemanticsVersion: CurrentExecutionSemanticsSchema,

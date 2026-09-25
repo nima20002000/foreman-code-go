@@ -103,8 +103,8 @@ export const GraphAttentionSchema = z.object({
 export type GraphAttention = z.infer<typeof GraphAttentionSchema>
 export const GraphRunStateSchema = z.object({
   executionState: RunExecutionStateSchema, outcome: RunOutcomeSchema,
-  /** Durable Stop intent; null means unavailable legacy evidence, never inferred from cleanup. */
-  stopRequested: z.boolean().nullable(),
+  /** Durable current Stop intent; never inferred from cleanup or process absence. */
+  stopRequested: z.boolean(),
   cleanupPending: z.boolean(), unsettledReviewCount: z.number().int().min(0).max(100000),
   pendingInteractionCount: z.number().int().min(0).max(100000),
 }).strict().superRefine((value, context) => {
@@ -181,7 +181,6 @@ export const RunGraphBatchSchema = z.object({
 }).strict().superRefine((value, context) => {
   if (!GraphSequenceSchema.safeParse(value.sequence).success || !GraphSequenceSchema.safeParse(value.previousSequence).success) return
   if (BigInt(value.sequence) !== BigInt(value.previousSequence) + 1n) context.addIssue({ code: 'custom', message: 'batch must advance exactly one complete publication position' })
-  if (value.scope.executionSemanticsVersion === 2 && value.events.some((event) => !isOneShotGraphFact(event.fact))) context.addIssue({ code: 'custom', message: 'v2 is one-shot, not a generalized retry/activation protocol' })
   if (new Set(value.events.map((event) => event.eventId)).size !== value.events.length) context.addIssue({ code: 'custom', message: 'event IDs must be unique within a batch' })
   if (graphJsonBytes(value) > RUN_GRAPH_LIMITS.batchBytes) context.addIssue({ code: 'custom', message: 'batch exceeds byte limit' })
 })
@@ -262,7 +261,6 @@ export const RunGraphSnapshotSchema = z.object({
   historyCoverage: z.enum(['from_admission', 'from_snapshot']), topology: RunGraphTopologySchema, state: RunGraphCurrentStateSchema,
 }).strict().superRefine((value, context) => {
   if (![value.retentionFloor, value.asOfSequence].every((cursor) => GraphSequenceSchema.safeParse(cursor).success)) return
-  if (value.scope.executionSemanticsVersion === 2 && value.state.run.stopRequested === null) context.addIssue({ code: 'custom', message: 'v2 requires a durable Stop fence' })
   if (BigInt(value.retentionFloor) > BigInt(value.asOfSequence)) context.addIssue({ code: 'custom', message: 'snapshot cursor predates retention floor' })
   const nodeIds = new Set(value.topology.nodes.map((node) => node.workflowNodeId))
   if (nodeIds.size !== value.state.nodes.length || value.state.nodes.some((node) => !nodeIds.has(node.state.workflowNodeId))) context.addIssue({ code: 'custom', message: 'snapshot must cover every node of the pinned topology' })
@@ -275,8 +273,7 @@ export const RunGraphSnapshotSchema = z.object({
   ]
   for (const identity of identities) {
     const pinned = topology.get(identity.workflowNodeId)
-    if (!pinned || pinned.agentId !== identity.agentId || pinned.agentConfigurationVersionId !== identity.agentConfigurationVersionId
-      || (value.scope.executionSemanticsVersion === 2 && identity.attempt !== 1)) context.addIssue({ code: 'custom', message: 'runtime identity conflicts with immutable topology' })
+    if (!pinned || pinned.agentId !== identity.agentId || pinned.agentConfigurationVersionId !== identity.agentConfigurationVersionId) context.addIssue({ code: 'custom', message: 'runtime identity conflicts with immutable topology' })
   }
   const relationships = new Map(value.topology.relationships.map((relationship) => [relationship.relationshipId, relationship]))
   for (const binding of value.state.inputBindings) {
@@ -304,8 +301,8 @@ export const RunGraphErrorResponseSchema = z.object({
 }).strict()
 export const RunGraphCapabilitiesSchema = z.object({
   capabilityVersion: z.literal(1), protocolVersions: z.array(z.literal(1)).max(1),
-  executionSemanticsVersions: z.array(ExecutionSemanticsVersionSchema).max(2),
-  authoringSemanticsVersions: z.array(z.literal(2)).max(1), admissionEnabled: z.boolean(),
+  executionSemanticsVersions: z.array(ExecutionSemanticsVersionSchema).max(1),
+  authoringSemanticsVersions: z.array(ExecutionSemanticsVersionSchema).max(1), admissionEnabled: z.boolean(),
   transport: z.literal('http_poll'), activePollMs: z.literal(1000),
 }).strict()
 export const DISABLED_RUN_GRAPH_CAPABILITIES = RunGraphCapabilitiesSchema.parse({
@@ -326,7 +323,7 @@ export function sameGraphScope(a: RunGraphScope, b: RunGraphScope): boolean {
 }
 
 export const RunGraphHttpSnapshotQuerySchema = z.object({
-  workflowVersionId: GraphIdSchema, executionSemanticsVersion: z.enum(['1', '2']),
+  workflowVersionId: GraphIdSchema, executionSemanticsVersion: z.literal('3'),
 }).strict()
 export const RunGraphHttpEventsQuerySchema = RunGraphHttpSnapshotQuerySchema.extend({ afterSequence: GraphSequenceSchema }).strict()
 
@@ -343,8 +340,4 @@ export function graphFactExecutions(fact: GraphFact): GraphExecutionIdentity[] {
     case 'worker.resumed': return [fact.requester]
     default: return []
   }
-}
-export function isOneShotGraphFact(fact: GraphFact): boolean {
-  return (fact.type !== 'run.state' || fact.state.stopRequested !== null)
-    && graphFactExecutions(fact).every((execution) => execution.attempt === 1)
 }

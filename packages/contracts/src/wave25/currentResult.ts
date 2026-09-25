@@ -11,6 +11,7 @@ export const CurrentChoiceResultEnvelopeSchema = z.object({
 }).strict().superRefine((value, context) => {
   try { canonicalGraphJson(value, 64 * 1024) } catch { context.addIssue({ code: 'custom', message: 'accepted result envelope exceeds bounded JSON limits' }) }
 })
+export type CurrentChoiceResultEnvelope = z.infer<typeof CurrentChoiceResultEnvelopeSchema>
 export function parseChoiceResultEnvelope(result: unknown, choice: WorkflowChoice) {
   canonicalGraphJson(result, 128 * 1024)
   const accepted = ExecutionResultSchema.parse(result)

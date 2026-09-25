@@ -15,7 +15,7 @@ import { canonicalGraphJson, graphJsonBytes } from './json.js'
 import { ChoiceOutcomeSchema, ChoiceTargetSchema } from './currentResult.js'
 
 /** Semantics 3 on protocol 1 and the EXISTING per-Run complete-batch cursor.
- * Legacy schemas remain unchanged. A v3 envelope cannot parse as a legacy one.
+ * Execution pins are V3-only. The graph wire protocol remains version 1.
  * These are metadata, not a second result, acknowledgement or execution API. */
 export const RepeatGraphScopeV3Schema = RepeatOccurrenceIdentityV1Schema.shape.scope
 export type RepeatGraphScopeV3 = z.infer<typeof RepeatGraphScopeV3Schema>

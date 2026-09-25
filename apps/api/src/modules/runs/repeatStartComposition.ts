@@ -110,7 +110,7 @@ export function repeatNativeStartStore(input: Pick<RepeatEngineStartContext, 'ow
 /** Entry for queued Start or active recovery on the EXISTING engine owner and
  * checkpointer. No public resume Command is accepted: approval recovery must
  * first commit the exact atomic graph.resume/checkpoint consumption elsewhere.
- * This function is not registered in engine.ts in this partial bundle. */
+ * The existing engine calls this for every ordinary/repeated V3 graph. */
 export async function executeRepeatEngineStart(input: RepeatEngineStartContext): Promise<void> {
   const check = () => { input.owner.assertOwned(); input.signal.throwIfAborted() }
   check()

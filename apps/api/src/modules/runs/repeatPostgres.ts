@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecution, type WorkflowRun } from '@graphql/contracts'
 import {
-  AcceptedNodeResultV2Schema, GraphDigestSchema, GraphExecutionIdentitySchema, GraphIdSchema, NodeResolutionSchema,
+  AcceptedCurrentNodeResultSchema, GraphDigestSchema, GraphExecutionIdentitySchema, GraphIdSchema, NodeResolutionSchema,
   RepeatDecisionMetadataV1Schema, RepeatDecisionV1Schema, RepeatExecutionIdentityV1Schema,
   RepeatOccurrenceIdentityV1Schema, RepeatOccurrenceV1Schema, RepeatWorkflowVersionV1Schema,
   canonicalGraphJson, parseRepeatExitResultV1, validateRepeatDecisionV1, validateRepeatSuccessorV1,
@@ -83,10 +83,10 @@ export interface StoredRepeatExecution {
   execution: HarnessExecution; ref: RepeatNodeRef; slotId: string; input: RepeatNodeInput; inputDigest: string; accepted: boolean
 }
 const SourceSchema = z.object({ relationshipId: GraphIdSchema, execution: GraphExecutionIdentitySchema,
-  occurrence: RepeatOccurrenceIdentityV1Schema.nullable(), acceptedResultDigest: GraphDigestSchema, acceptedResult: AcceptedNodeResultV2Schema }).strict()
+  occurrence: RepeatOccurrenceIdentityV1Schema.nullable(), acceptedResultDigest: GraphDigestSchema, acceptedResult: AcceptedCurrentNodeResultSchema }).strict()
 const EntrySchema = z.object({ runInput: z.unknown(), external: z.array(SourceSchema).max(8000), carry: z.object({
   decisionId: GraphIdSchema, execution: RepeatExecutionIdentityV1Schema,
-  acceptedResultDigest: GraphDigestSchema, acceptedResult: AcceptedNodeResultV2Schema,
+  acceptedResultDigest: GraphDigestSchema, acceptedResult: AcceptedCurrentNodeResultSchema,
 }).strict().nullable() }).strict()
 const BindingSchema = z.object({
   bindingId: GraphIdSchema, recipient: GraphExecutionIdentitySchema,
@@ -261,7 +261,7 @@ export class RepeatRunRepository {
     const accepted = result.rows[0]
     if (!accepted || accepted.result_digest !== row.value.acceptedResultDigest) return repeatConflict('REPEAT_INPUT_NOT_ACCEPTED')
     const source: RepeatSource = { relationshipId, execution: identity, occurrence: row.ref.occurrence,
-      acceptedResultDigest: accepted.result_digest, acceptedResult: AcceptedNodeResultV2Schema.parse(JSON.parse(accepted.result_json)) }
+      acceptedResultDigest: accepted.result_digest, acceptedResult: AcceptedCurrentNodeResultSchema.parse(JSON.parse(accepted.result_json)) }
     if (!sameRepeatValue(stored.ref, row.ref)) return repeatConflict('REPEAT_INPUT_NOT_ACCEPTED')
     assertRepeatSource(context.version, context.scope, source, stored.execution, stored.accepted)
     return source
@@ -851,7 +851,7 @@ export async function readRepeatAcceptedResultLocked(sql: GraphTransactionSql, s
   if (rows.rows.length !== 1 || resolutions.rows.length !== 1 || !result || !resolution
     || execution.state !== 'completed' || execution.result?.outcome !== 'succeeded'
     || result.occurrence_id !== (ref.occurrence?.occurrenceId ?? null)
-    || !sameRepeatValue(AcceptedNodeResultV2Schema.parse(JSON.parse(result.result_json)), execution.result)
+    || !sameRepeatValue(AcceptedCurrentNodeResultSchema.parse(JSON.parse(result.result_json)), execution.result)
     || result.result_digest !== repeatDigest(execution.result, 64 * 1024)
     || !sameRepeatValue(ResolutionSchema.parse(resolution.record), repeatTerminalResolution(version, scope, ref, execution))) {
     return repeatConflict('REPEAT_INPUT_NOT_ACCEPTED')

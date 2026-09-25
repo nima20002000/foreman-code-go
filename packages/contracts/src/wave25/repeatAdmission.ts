@@ -6,7 +6,7 @@ import { ExecutableRepeatWorkflowV1Schema } from './repeat.js'
 import { WorkflowDefinitionV3Schema, WorkflowRunV3Schema, SavedRunVersionSnapshotSchema } from './saved.js'
 import { sameExecutableWorkflow, sameWorkflowValue } from './meaningfulEdit.js'
 
-/** Explicit manual HTTP/MCP v3 request arm, not native admission permission.
+/** The manual HTTP/MCP V3 request for all graph shapes, not native admission permission.
  * A new command must carry the exact displayed workflow revision/configuration
  * map as well as the existing immutable version, location and optional draft. */
 export const RunStartV3InputSchema = z.object({

@@ -106,7 +106,6 @@ export const NativeGraphObservationSchema = z.discriminatedUnion('kind', [
     terminal: NativeTerminalEvidenceSchema }).strict(),
 ]).superRefine((value, context) => {
   if (value.source.sourceKind !== 'native_event') context.addIssue({ code: 'custom', message: 'normalized native observations retain native source identity' })
-  if (value.scope.executionSemanticsVersion === 2 && value.work.execution.attempt !== 1) context.addIssue({ code: 'custom', message: 'one-shot execution only' })
 })
 export type NativeGraphObservation = z.infer<typeof NativeGraphObservationSchema>
 export const NATIVE_GRAPH_EVIDENCE_MAX_BYTES = 32768

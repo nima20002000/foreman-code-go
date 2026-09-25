@@ -8,7 +8,7 @@ import type {
 } from '@graphql/contracts/wave25'
 
 import { DomainError } from '../errors.js'
-import { compileExecutionTopology, decideOneShotAdmission, type OneShotTopology } from './topology.js'
+import { compileExecutionTopology, decideExecutionAdmission, type ExecutionTopology } from './topology.js'
 
 export type RepeatScope = RepeatOccurrenceIdentityV1['scope']
 export interface RepeatNodeRef { nodeId: string; occurrence: RepeatOccurrenceIdentityV1 | null }
@@ -75,12 +75,12 @@ export function repeatSlotId(runId: string, ref: RepeatNodeRef): string {
   return repeatId('repeat-slot', runId, ref.occurrence?.occurrenceId ?? 'outside', ref.nodeId)
 }
 export function repeatBlock(version: RepeatWorkflowVersionV1, blockId: string): RepeatBlockV1 {
-  const block = version.definition.repeat.blocks.find((item) => item.id === blockId)
+  const block = version.definition.repeat?.blocks.find((item) => item.id === blockId)
   if (!block) return repeatConflict('REPEAT_BLOCK_NOT_FOUND')
   return block
 }
 export function blockForNode(version: RepeatWorkflowVersionV1, nodeId: string): RepeatBlockV1 | undefined {
-  return version.definition.repeat.blocks.find((block) => block.nodeIds.includes(nodeId))
+  return version.definition.repeat?.blocks.find((block) => block.nodeIds.includes(nodeId))
 }
 export function assertRepeatScope(version: RepeatWorkflowVersionV1, scope: RepeatScope): void {
   if (scope.executionSemanticsVersion !== 3 || version.executionSemanticsVersion !== 3
@@ -112,8 +112,8 @@ export function assertRepeatExecution(version: RepeatWorkflowVersionV1, scope: R
   }
 }
 
-/** Same DAG/barrier algorithm as v2; no saved-version projection or cycle relaxation. */
-export function occurrenceTopology(version: RepeatWorkflowVersionV1, occurrence: RepeatOccurrenceIdentityV1): OneShotTopology {
+/** Current DAG/barrier algorithm on the validated block-induced subgraph. No saved-version retagging. */
+export function occurrenceTopology(version: RepeatWorkflowVersionV1, occurrence: RepeatOccurrenceIdentityV1): ExecutionTopology {
   assertRepeatScope(version, occurrence.scope)
   const block = repeatBlock(version, occurrence.blockId)
   const members = new Set(block.nodeIds)
@@ -124,6 +124,9 @@ export function occurrenceTopology(version: RepeatWorkflowVersionV1, occurrence:
 }
 export function decideRepeatAdmission(version: RepeatWorkflowVersionV1, ref: RepeatNodeRef,
   resolutions: ReadonlyMap<string, RepeatResolution>) {
+  if (!version.definition.nodes.some((node) => node.id === ref.nodeId)) repeatConflict('WORKFLOW_NODE_NOT_FOUND')
+  if (ref.occurrence) assertRepeatRef(version, ref.occurrence.scope, ref)
+  else if (blockForNode(version, ref.nodeId)) repeatConflict('REPEAT_OCCURRENCE_CONFLICT')
   const values = new Map<string, NodeResolution>()
   for (const [id, resolution] of resolutions) {
     if (id !== resolution.ref.nodeId || id !== resolution.value.workflowNodeId) repeatConflict('REPEAT_RESOLUTION_CONFLICT')
@@ -135,7 +138,7 @@ export function decideRepeatAdmission(version: RepeatWorkflowVersionV1, ref: Rep
     }
     values.set(id, resolution.value)
   }
-  return decideOneShotAdmission(ref.occurrence ? occurrenceTopology(version, ref.occurrence)
+  return decideExecutionAdmission(ref.occurrence ? occurrenceTopology(version, ref.occurrence)
     : compileExecutionTopology(version), ref.nodeId, values)
 }
 export function assertRepeatBodyComplete(version: RepeatWorkflowVersionV1, occurrence: RepeatOccurrenceIdentityV1,

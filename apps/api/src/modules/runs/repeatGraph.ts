@@ -49,6 +49,7 @@ export function buildRepeatGraph(input: {
     const id = state.occurrences[blockId]
     if (!id) return repeatConflict('REPEAT_CHECKPOINT_OCCURRENCE_MISSING')
     const value = await input.store.readOccurrence(id)
+    input.signal.throwIfAborted()
     if (value.identity.scope.runId !== input.runId || value.identity.scope.workflowVersionId !== version.id
       || value.identity.blockId !== blockId) return repeatConflict('REPEAT_CHECKPOINT_OCCURRENCE_CONFLICT')
     return value
@@ -60,12 +61,14 @@ export function buildRepeatGraph(input: {
       if (node.kind === 'done') return {}
       if (node.kind === 'enter') {
         const admission = await input.store.enterBlock(node.blockId!)
+        input.signal.throwIfAborted()
         return admission.kind === 'inactive' ? { boundaries: { [node.blockId!]: 'done' } }
           : { occurrences: { [node.blockId!]: admission.occurrence.identity.occurrenceId }, boundaries: { [node.blockId!]: 'body' } }
       }
       if (node.kind === 'advance') {
         const occurrence = await current(node.blockId!, state)
         const transition = await input.store.transition(occurrence.identity.occurrenceId)
+        input.signal.throwIfAborted()
         return transition.next ? { occurrences: { [node.blockId!]: transition.next.identity.occurrenceId }, boundaries: { [node.blockId!]: 'body' } }
           : { boundaries: { [node.blockId!]: 'done' } }
       }

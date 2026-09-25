@@ -12,7 +12,7 @@ import { withFilesystemDeadline } from '../workspaces/filesystem.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import type { RunnerAdmission } from './runnerAdmission.js'
-import { oneShotInitialPrompt } from './oneShotPrompt.js'
+import { currentInitialPrompt } from './currentRouting.js'
 
 import type { RunOwnership } from './ownership.js'
 import { normalizeRepeatTerminal, type RepeatExecutionDriver } from './repeatNode.js'
@@ -211,7 +211,7 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
           return true
         },
       }
-      const initialPrompt = oneShotInitialPrompt(node)
+      const initialPrompt = currentInitialPrompt(node, version.definition.repeat?.blocks.some((block) => block.exitNodeId === node.id) ?? false)
       const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: run.id,
         workspaceId: run.workspaceId, workflowNodeId: node.id, ...paths,
         ...(initialPrompt ? { initialPrompt } : {}), configuration, input: execution.input })
@@ -276,7 +276,6 @@ export async function executeRepeatRuntime(input: {
   store: Pick<RepeatRunRepository, 'admit' | 'acceptTerminal' | 'enterBlock' | 'readOccurrence' | 'transition' | 'resolveExcluded' | 'completeRun'>
   driver: RepeatExecutionDriver; lifecycle: RepeatRuntimeLifecycle
   checkpointer: import('@langchain/langgraph-checkpoint').BaseCheckpointSaver
-  resumeCommand?: import('@langchain/langgraph').Command
   configuredParallelism?: number
 }): Promise<void> {
   const { buildRepeatGraph } = await import('./repeatGraph.js')
@@ -320,8 +319,10 @@ export async function executeRepeatRuntime(input: {
     await input.store.resolveExcluded()
     const snapshot = await graph.getState(config)
     if (snapshot.values.runId && snapshot.values.runId !== input.runId) return repeatConflict('RUN_PIN_CONFLICT')
-    const state = input.resumeCommand ?? (snapshot.values.runId === input.runId ? null
-      : { runId: input.runId, occurrences: {}, boundaries: {}, executionIds: {} })
+    // A2 commits authenticated task-local resume writes on this checkpointer.
+    // The runtime never accepts an unreceipted raw resume Command.
+    const state = snapshot.values.runId === input.runId ? null
+      : { runId: input.runId, occurrences: {}, boundaries: {}, executionIds: {} }
     // Native iterators need not honor cancellation; the graph invocation is raced
     // independently, then existing exact native cleanup and wrapper drain run below.
     let onAbort: (() => void) | undefined
@@ -342,6 +343,13 @@ export async function executeRepeatRuntime(input: {
     await input.lifecycle.finishCleanup()
   } catch (error) {
     input.owner.assertOwned()
+    if (input.signal.aborted && input.signal.reason instanceof DomainError && input.signal.reason.code === 'ENGINE_RESTART') {
+      // The owning engine closes the original native sessions before releasing
+      // ownership. Restart is not a synthetic Stop or terminal business result.
+      failed.abort(error)
+      await drain()
+      throw error
+    }
     const current = await input.lifecycle.currentState()
     if (current.executionState === 'completed') throw error // immutable terminal, cleanup may still be pending
     const terminalFailure = !preflightComplete || !!firstFailure || definitive(error) || input.signal.aborted || current.stopRequested

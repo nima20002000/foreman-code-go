@@ -1,13 +1,9 @@
 import { DomainError } from '../errors.js'
 
-/** Version discovery only, never admission. Keep 3 a distinct arm; neither
- * String/Number coercion nor a false isOneShot result may send it to legacy. */
-export function runStartSemantics(input: { executionSemanticsVersion?: unknown }): 1 | 2 | 3 {
-  switch (input.executionSemanticsVersion) {
-    case undefined:
-    case 1: return 1
-    case 2: return 2
-    case 3: return 3
-    default: throw new DomainError('EXECUTION_SEMANTICS_UNSUPPORTED', 'Unknown execution semantics cannot use Run Start.', 409)
-  }
+/** Saved execution pins are mandatory and exact. Untagged create commands may
+ * select V3 in the authoring service, but a missing saved pin is never legacy. */
+export function runStartSemantics(input: { executionSemanticsVersion?: unknown }): 3 {
+  if (input.executionSemanticsVersion !== 3) throw new DomainError(
+    'EXECUTION_SEMANTICS_UNSUPPORTED', 'Only explicitly pinned execution semantics 3 may run.', 409)
+  return 3
 }

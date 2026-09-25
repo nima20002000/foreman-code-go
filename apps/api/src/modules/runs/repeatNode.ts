@@ -1,10 +1,10 @@
 import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
-import { AcceptedNodeResultV2Schema, NodeResolutionSchema, parseRepeatExitResultV1,
+import { AcceptedCurrentNodeResultSchema, NodeResolutionSchema, parseRepeatExitResultV1,
   type RepeatWorkflowVersionV1 } from '@graphql/contracts/wave25'
 
 import { ExecutionLimiter } from './limiter.js'
 import { assertRepeatNativeUpdate } from '../interactions/repeatNativeEvidence.js'
-import { parseOneShotChoiceResult } from './oneShotResolution.js'
+import { parseCurrentChoiceResult } from './currentRouting.js'
 import {
   assertRepeatExecution, blockForNode, repeatConflict, repeatDigest, repeatExecutionIdentity,
   type RepeatNodeRef, type RepeatResolution, type RepeatScope,
@@ -18,7 +18,7 @@ export interface RepeatNodeStore {
   admit(ref: RepeatNodeRef, candidate: () => HarnessExecution): Promise<RepeatAdmission>
   acceptTerminal(executionId: string, candidate: (attempt: number) => HarnessExecution): Promise<RepeatAcceptance>
 }
-/** SAME exact-session native adapter as one-shot. Candidate allocates only a record.
+/** Common exact-session native adapter for every current V3 graph. Candidate allocates only a record.
  * Observe must claim through the existing receipt/owner/security path, or reconcile
  * the exact session. An occurrence or input receipt is NEVER a launch capability. */
 export interface RepeatExecutionDriver {
@@ -79,10 +79,10 @@ export function repeatTerminalResolution(version: RepeatWorkflowVersionV1, scope
   const exit = block?.exitNodeId === ref.nodeId
   let selected: string[] = [], deferred: string[] = [], outcome: string | undefined, branchEnded = false
   if (execution.result.outcome === 'succeeded') {
-    AcceptedNodeResultV2Schema.parse(execution.result)
+    AcceptedCurrentNodeResultSchema.parse(execution.result)
     if (node.choice) {
       outcome = (exit ? parseRepeatExitResultV1(execution.result, node.choice)
-        : parseOneShotChoiceResult(execution.result, node.choice)).routing.outcome
+        : parseCurrentChoiceResult(execution.result, node.choice)).routing.outcome
       const target = node.choice.outcomes.find((item) => item.outcome === outcome)!.target
       if (exit) deferred = outgoing
       else {

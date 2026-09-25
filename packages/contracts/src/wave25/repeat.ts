@@ -39,7 +39,7 @@ export const RepeatBlockV1Schema = z.object({
 })
 export type RepeatBlockV1 = z.infer<typeof RepeatBlockV1Schema>
 
-/** Context-free plan shape; immutable candidates MUST use RepeatWorkflowVersionV1Schema. */
+/** Context-free configured-repeat shape. Absent repeat is handled by the V3 family; an empty plan is not a workflow mode. */
 export const RepeatPlanV1Schema = z.object({
   ...Header, blocks: z.array(RepeatBlockV1Schema).min(1).max(1000),
 }).strict().superRefine(({ blocks }, context) => {
@@ -115,9 +115,8 @@ export const ExecutableRepeatWorkflowV1Schema = z.object({
 }).strict().superRefine(validateCurrentWorkflowConfigurations)
 export type ExecutableRepeatWorkflowV1 = z.infer<typeof ExecutableRepeatWorkflowV1Schema>
 
-/** Inherited Run lifecycle validation with an explicit v3 pin. Exporting this
- * schema alone does not widen Start, engine dispatch or compatible read unions.
- */
+/** Same current Run lifecycle schema for ordinary work and real configured blocks.
+ * The V1 suffix versions only the repeat contract, never execution semantics. */
 export const RepeatWorkflowRunV1Schema = CurrentWorkflowRunSchema
 export type RepeatWorkflowRunV1 = z.infer<typeof RepeatWorkflowRunV1Schema>
 export const RepeatRunVersionV1Schema = z.object({
@@ -126,7 +125,8 @@ export const RepeatRunVersionV1Schema = z.object({
   if (run.workspaceId !== version.workspaceId || run.workflowId !== version.workflowId
     || run.workflowVersionId !== version.id
     || canonicalGraphJson(run.agentConfigurationVersionIds) !== canonicalGraphJson(version.agentConfigurationVersionIds)
-    || canonicalGraphJson(run.approval ?? null) !== canonicalGraphJson(version.approval)) {
+    || canonicalGraphJson(run.approval ?? null) !== canonicalGraphJson(version.approval)
+    || canonicalGraphJson(run.executionCondition) !== canonicalGraphJson(version.definition.executionCondition)) {
     context.addIssue({ code: 'custom', message: 'REPEAT_RUN_VERSION_PIN_MISMATCH' })
   }
 })
