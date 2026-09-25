@@ -38,7 +38,16 @@ corepack pnpm test
 corepack pnpm test:integration
 corepack pnpm test:acceptance
 corepack pnpm build
+corepack pnpm lines
 ```
+
+`corepack pnpm lines` counts physical lines in tracked code files, including
+blank lines and comments. It reports source code, default/integration/acceptance/
+smoke test files, test helpers and fixtures, and tooling separately. Test types
+follow filenames; "default" means other `.test`/`.spec` files and does not
+assert that every one is a unit test. The report does not imply that every
+smoke file runs in CI.
+Docs, JSON configuration, lockfiles, and generated files are excluded.
 
 `corepack pnpm dev` starts the local stack: it creates `apps/api/.env` from the
 example if missing, starts and waits for the Compose PostgreSQL service, builds

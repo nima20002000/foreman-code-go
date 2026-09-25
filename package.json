@@ -10,6 +10,7 @@
   },
   "scripts": {
     "preinstall": "node scripts/require-pnpm.mjs",
+    "lines": "node scripts/code-lines.mjs",
     "dev": "node scripts/dev.mjs",
     "dev:web": "corepack pnpm --filter @graphql/contracts build && corepack pnpm --parallel --filter @graphql/contracts --filter @graphql/web dev",
     "dev:api": "corepack pnpm --filter @graphql/contracts build && corepack pnpm --parallel --filter @graphql/contracts --filter @graphql/api dev",
