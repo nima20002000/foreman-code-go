@@ -3,6 +3,7 @@ import { AcceptedNodeResultV2Schema, NodeResolutionSchema, parseRepeatExitResult
   type RepeatWorkflowVersionV1 } from '@graphql/contracts/wave25'
 
 import { ExecutionLimiter } from './limiter.js'
+import { assertRepeatNativeUpdate } from '../interactions/repeatNativeEvidence.js'
 import { parseOneShotChoiceResult } from './oneShotResolution.js'
 import {
   assertRepeatExecution, blockForNode, repeatConflict, repeatDigest, repeatExecutionIdentity,
@@ -51,6 +52,21 @@ export function normalizeRepeatTerminal(version: RepeatWorkflowVersionV1, scope:
       code: 'REPEAT_RESULT_INVALID', message: 'The complete result did not satisfy its pinned bounded result contract.', retryable: false,
     } } })
   }
+}
+
+/** Native repository first-observation entry point. Identity and existing
+ * terminal evidence are checked BEFORE normalization. The caller must still
+ * validate the exact native session/owner/lease, approval receipts and Stop and
+ * publish the returned record atomically with its canonical lifecycle facts.
+ * Do not use this on raw provider-event storage or result acceptance/replay. */
+export function prepareRepeatNativeUpdate(version: RepeatWorkflowVersionV1, scope: RepeatScope,
+  ref: RepeatNodeRef, previousValue: HarnessExecution, incomingValue: HarnessExecution): HarnessExecution {
+  const previous = HarnessExecutionSchema.parse(previousValue)
+  const incoming = HarnessExecutionSchema.parse(incomingValue)
+  assertRepeatExecution(version, scope, ref, previous)
+  assertRepeatExecution(version, scope, ref, incoming)
+  if (assertRepeatNativeUpdate(previous, incoming) === 'replay') return previous
+  return normalizeRepeatTerminal(version, scope, ref, incoming)
 }
 
 export function repeatTerminalResolution(version: RepeatWorkflowVersionV1, scope: RepeatScope,
@@ -110,7 +126,12 @@ export function repeatNodeAction(input: {
     let execution = admitted.execution
     for (;;) {
       input.signal.throwIfAborted()
-      if (execution.state !== 'completed') await input.limiter.run(input.signal, async () => {
+      if (execution.state === 'completed') {
+        // A crash can leave a terminal result before exact cleanup/finalization.
+        // Re-enter observation for settlement, never for a new native launch.
+        // Do not hold native launch capacity for this SQL/cleanup-only replay.
+        await input.driver.observe(execution, input.signal)
+      } else await input.limiter.run(input.signal, async () => {
         input.signal.throwIfAborted()
         await input.driver.observe(execution, input.signal)
       })

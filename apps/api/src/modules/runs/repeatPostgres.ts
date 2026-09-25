@@ -10,6 +10,8 @@ import {
 
 import type { GraphSqlClient, GraphTransactionSql } from '../run-graph/connection.js'
 import type { RunOwnership } from './ownership.js'
+import { settleRepeatNativeExecutionLocked } from '../interactions/repeatNativeSettlement.js'
+import { visitRepeatNativeAttemptsLocked, type RepeatNativeAttemptSelection } from './repeatNativeAttempts.js'
 import { compileExecutionTopology } from './topology.js'
 import { inactiveRepeatResolution, repeatTerminalResolution, type RepeatAcceptance, type RepeatAdmission } from './repeatNode.js'
 import {
@@ -172,6 +174,8 @@ export class RepeatRunRepository {
         values($1,$2,$3,$4,$5,$6)`, [context.scope.runId, kind, entityId, effect.digest, context.fence.ownerId, context.fence.fence])
     })
     if (mutations !== 1) return repeatConflict('REPEAT_PUBLICATION_CONFLICT')
+    // A successful callback alone is not a canonical publication receipt.
+    await context.hooks.assertPublicationReceiptLocked(context.sql, effect)
   }
   private async recordedEffect(context: Context, kind: RepeatEffect['kind'], entityId: string): Promise<void> {
     const rows = await context.sql.query<{ payload_digest: string }>(
@@ -233,8 +237,10 @@ export class RepeatRunRepository {
   }
   private async execution(context: Context, executionId: string): Promise<StoredExecution> {
     const rows = await context.sql.query<{ record: unknown; accepted: boolean; identity: unknown; slot_id: string;
-      occurrence_id: string | null; workflow_node_id: string; input_json: string; input_digest: string }>(
-      `select e.record,e.accepted,x.identity,s.slot_id,s.occurrence_id,s.workflow_node_id,s.input_json,s.input_digest
+      occurrence_id: string | null; execution_run_id: string; execution_node_id: string; execution_agent_id: string; execution_attempt: number; execution_occurrence_id: string | null; identity_occurrence_id: string | null; technical_attempt: number; workflow_node_id: string; input_json: string; input_digest: string }>(
+      `select e.record,e.accepted,x.identity,s.slot_id,s.occurrence_id,s.workflow_node_id,s.input_json,s.input_digest,
+         e.repeat_occurrence_id as execution_occurrence_id,x.occurrence_id as identity_occurrence_id,x.technical_attempt,
+         e.run_id as execution_run_id,e.workflow_node_id as execution_node_id,e.agent_id as execution_agent_id,e.attempt as execution_attempt
        from run_repeat_executions x join harness_executions e on e.id=x.execution_id
        join run_repeat_slots s on s.slot_id=x.slot_id where x.execution_id=$1 and x.run_id=$2 for update of e`, [executionId, context.scope.runId])
     const row = rows.rows[0]
@@ -245,7 +251,11 @@ export class RepeatRunRepository {
     assertRepeatExecution(context.version, context.scope, ref, execution)
     const identity = occurrence ? RepeatExecutionIdentityV1Schema.parse({ ...repeatExecutionIdentity(execution), occurrence }) : repeatExecutionIdentity(execution)
     const input = JSON.parse(row.input_json) as RepeatNodeInput
-    if (execution.id !== executionId || !sameRepeatValue(identity, row.identity)
+    if (execution.id !== executionId || row.execution_run_id !== execution.runId
+      || row.execution_node_id !== execution.workflowNodeId || row.execution_agent_id !== execution.agentId
+      || row.execution_attempt !== execution.attempt || row.execution_occurrence_id !== row.occurrence_id
+      || row.identity_occurrence_id !== row.occurrence_id || row.technical_attempt !== execution.attempt
+      || !sameRepeatValue(identity, row.identity)
       || row.slot_id !== repeatSlotId(context.scope.runId, ref) || repeatDigest(input, 4 * 1024 * 1024) !== row.input_digest
       || !sameRepeatValue(execution.input, input)) return repeatConflict('REPEAT_EXECUTION_INPUT_CONFLICT')
     return { execution, ref, slotId: row.slot_id, input, inputDigest: row.input_digest, accepted: row.accepted }
@@ -269,6 +279,29 @@ export class RepeatRunRepository {
     await this.effect(context, 'node.inactive', repeatSlotId(context.scope.runId, ref), value,
       [{ type: 'repeat.node.resolved', resolution: value, outside: ref.occurrence === null }], () => this.putResolution(context, value))
     return value
+  }
+
+  /** SQL-only close/finalization repair. The native coordinator has already
+   * supplied exact durable close/credential/approval evidence. This method never
+   * calls finishRun and does not activate a successor or rewrite an execution.
+   * It remains usable during Stop cleanup under the same owner. */
+  async settleNativeExecution(executionId: string): Promise<void> {
+    await this.transaction(async (context) => { await this.settlement(context, [executionId]) })
+  }
+  private async settlement(context: Context, executionIds: readonly string[]): Promise<void> {
+    const ids = [...new Set(executionIds)].sort()
+    for (const executionId of ids) {
+      const stored = await this.execution(context, executionId)
+      await this.recordedEffect(context, 'input.bind', executionId)
+      await settleRepeatNativeExecutionLocked(context.sql, context.scope.runId, stored.execution)
+    }
+    // Preserve host-specific native, authorization and publication fences in
+    // addition to the mandatory concrete per-execution settlement proof above.
+    await context.hooks.assertSettlementLocked(context.sql, ids)
+  }
+  private async settleAttempts(context: Context, selected: RepeatNativeAttemptSelection): Promise<void> {
+    await visitRepeatNativeAttemptsLocked(context.sql, context.scope.runId, selected,
+      (ids) => this.settlement(context, ids))
   }
 
   async readOccurrence(occurrenceId: string): Promise<RepeatOccurrenceV1> {
@@ -342,6 +375,10 @@ export class RepeatRunRepository {
         const decided = await context.sql.query('select 1 from run_repeat_decisions where occurrence_id=$1', [occurrence.occurrence.identity.occurrenceId])
         if (decided.rowCount) return repeatConflict('REPEAT_OCCURRENCE_CLOSED')
       }
+      if (occurrence?.occurrence.input.previous
+        && repeatBlock(context.version, occurrence.occurrence.identity.blockId).entryNodeId === ref.nodeId) {
+        await this.settleAttempts(context, { kind: 'occurrence', id: occurrence.occurrence.input.previous.occurrenceId })
+      }
       const execution = HarnessExecutionSchema.parse(candidate())
       this.assertCandidate(context, ref, execution, 1)
       const sources: RepeatSource[] = []
@@ -394,7 +431,7 @@ export class RepeatRunRepository {
         return { kind: 'resolved', resolution: previous }
       }
       this.active(context)
-      await context.hooks.assertSettlementLocked(context.sql, [executionId])
+      await this.settleAttempts(context, { kind: 'slot', id: stored.slotId, throughAttempt: execution.attempt })
       const next = await context.sql.query<{ execution_id: string }>('select execution_id from run_repeat_executions where previous_execution_id=$1', [executionId])
       if (next.rows[0]) {
         await this.recordedEffect(context, 'input.bind', next.rows[0].execution_id)
@@ -427,8 +464,7 @@ export class RepeatRunRepository {
       if (block && block.exitNodeId === ref.nodeId && resolution.value.resolution === 'succeeded') {
         resolutions.set(ref.nodeId, resolution)
         assertRepeatBodyComplete(context.version, ref.occurrence!, resolutions)
-        const ids = [...resolutions.values()].flatMap((value) => value.value.execution ? [value.value.execution.executionId] : []).sort()
-        await context.hooks.assertSettlementLocked(context.sql, ids)
+        await this.settleAttempts(context, { kind: 'occurrence', id: ref.occurrence!.occurrenceId })
         const current = await this.occurrence(context, ref.occurrence!.occurrenceId)
         const choice = context.version.definition.nodes.find((node) => node.id === ref.nodeId)!.choice!
         decision = validateRepeatDecisionV1(context.version, decideRepeatExit(context.version, current.occurrence, execution,
@@ -487,6 +523,12 @@ export class RepeatRunRepository {
       const next = await this.occurrence(context, found.rows[0].occurrence_id)
       validateRepeatSuccessorV1(context.version, decision, next.occurrence, execution.execution.result)
       if (!sameRepeatValue(next.input, repeatSuccessorInput(current.input, decision, execution.execution.result!))) return repeatConflict('REPEAT_CARRY_CONFLICT')
+      const activated = await context.sql.query<{ execution_id: string }>(`select x.execution_id
+        from run_repeat_executions x join run_repeat_slots s on s.slot_id=x.slot_id
+        where x.run_id=$1 and x.occurrence_id=$2 and s.workflow_node_id=$3 and x.technical_attempt=1`,
+      [context.scope.runId, next.occurrence.identity.occurrenceId, repeatBlock(context.version, current.occurrence.identity.blockId).entryNodeId])
+      if (!activated.rows[0]) await this.settleAttempts(context, { kind: 'occurrence', id: occurrenceId })
+      else await this.recordedEffect(context, 'input.bind', activated.rows[0].execution_id)
       return { decision, next: next.occurrence }
     })
   }
@@ -510,12 +552,11 @@ export class RepeatRunRepository {
         const block = blockForNode(context.version, nodeId)
         return !block || block.exitNodeId === nodeId
       })
-      const terminals: RepeatSource[] = [], executionIds: string[] = []
+      const terminals: RepeatSource[] = []
       for (const nodeId of required) {
         const row = outside.get(nodeId)
         if (!row || row.deferredRelationshipIds.length) return repeatConflict('REPEAT_SELECTED_WORK_UNRESOLVED')
         if (!['succeeded', 'skipped'].includes(row.value.resolution)) return repeatConflict('REPEAT_SELECTED_WORK_FAILED')
-        if (row.value.execution) executionIds.push(row.value.execution.executionId)
         if (row.value.resolution === 'succeeded' && row.value.selectedRelationshipIds.length === 0) terminals.push(await this.acceptedSource(context, row, 'terminal'))
       }
       // Recovery of our already committed success is read-only, not permission
@@ -532,7 +573,7 @@ export class RepeatRunRepository {
       this.active(context)
       // Required global approval/cleanup/pending transition checks belong to the
       // same existing terminal writer. A single final block is never Run completion.
-      await context.hooks.assertSettlementLocked(context.sql, executionIds.sort())
+      await this.settleAttempts(context, { kind: 'run' })
       await this.effect(context, 'run.complete', context.scope.runId, terminals, [],
         () => context.hooks.completeRunLocked(context.sql, terminals))
     })

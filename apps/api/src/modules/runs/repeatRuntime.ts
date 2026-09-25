@@ -17,8 +17,10 @@ import type { RepeatRunRepository } from './repeatPostgres.js'
 export function repeatExecutionDriver(input: {
   scope: RepeatScope; version: RepeatWorkflowVersionV1
   owner: Pick<RunOwnership, 'assertOwned'>
-  store: Pick<RepeatRunRepository, 'readExecution'>
-  /** Required existing native boundary; never supply native.ensureObserve directly. */
+  store: Pick<RepeatRunRepository, 'readExecution' | 'settleNativeExecution'>
+  /** Required existing native boundary; never supply native.ensureObserve directly.
+   * Completed input is per-execution cleanup/reconciliation ONLY. It must never
+   * allocate a candidate, directory, credential, session or turn, or call finishRun. */
   observeExact(execution: HarnessExecution, signal: AbortSignal): Promise<void>
 }): RepeatExecutionDriver {
   const inFlight = new Map<string, Promise<void>>()
@@ -44,9 +46,43 @@ export function repeatExecutionDriver(input: {
         if (stored.execution.id !== execution.id || stored.execution.runId !== input.scope.runId) return repeatConflict('REPEAT_EXECUTION_INPUT_CONFLICT')
         input.owner.assertOwned()
         signal.throwIfAborted()
+        // A completed replay first repairs finalization from durable closure.
+        // No native callback at all is needed for a close/COMMIT reply gap.
+        if (stored.execution.state === 'completed') {
+          try {
+            await input.store.settleNativeExecution(execution.id)
+            input.owner.assertOwned()
+            signal.throwIfAborted()
+            return
+          } catch (error) {
+            if (!repeatSettlementPending(error)) throw error
+            input.owner.assertOwned()
+            signal.throwIfAborted()
+          }
+        }
         // Reload rather than trusting checkpoint/native caller input or location.
-        // The exact adapter rechecks Stop/authority and claims/reconciles at I/O.
-        await input.observeExact(stored.execution, signal)
+        // Completed input requests ONLY this execution's outstanding cleanup;
+        // nonterminal input uses the existing claim/session/owner native boundary.
+        try { await input.observeExact(stored.execution, signal) }
+        catch (error) {
+          input.owner.assertOwned()
+          signal.throwIfAborted()
+          const terminal = await input.store.readExecution(execution.id)
+          if (terminal.execution.state !== 'completed') throw error
+          // Native cleanup can throw after the terminal committed. Preserve it,
+          // but never let that fact alone unblock a repeat or technical retry.
+          await input.store.settleNativeExecution(execution.id)
+          input.owner.assertOwned()
+          signal.throwIfAborted()
+          return
+        }
+        input.owner.assertOwned()
+        signal.throwIfAborted()
+        const terminal = await input.store.readExecution(execution.id)
+        if (terminal.execution.state !== 'completed') return repeatConflict('REPEAT_BOUNDARY_PENDING')
+        await input.store.settleNativeExecution(execution.id)
+        input.owner.assertOwned()
+        signal.throwIfAborted()
       })().finally(() => { if (inFlight.get(execution.id) === task) inFlight.delete(execution.id) })
       inFlight.set(execution.id, task)
       return task

@@ -1,5 +1,7 @@
 import { HarnessExecutionSchema, NativeSessionReferenceSchema, RunOutcomeSchema,
   type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
+import { RepeatRunVersionV1Schema } from '@graphql/contracts/wave25'
+import { settleRepeatNativeExecutionLocked } from './repeatNativeSettlement.js'
 import { DomainError } from '../errors.js'
 import { readWorkflowClosure } from './workflowClosure.js'
 import type { RunOwnership } from '../runs/ownership.js'
@@ -36,12 +38,24 @@ export async function finalizeStoppedWorkflowSessions(runId: string, owner: RunO
   const terminalOutcomes = RunOutcomeSchema.options.filter((outcome) => outcome !== 'pending')
   await owner.oneShotConnection().transaction(async (sql) => {
     await owner.readOneShotFence(sql)
-    const run = await sql.query<{ terminal: boolean }>(`select
+    const run = await sql.query<{ terminal: boolean; semantics: string }>(`select
       (execution_state='completed' and record->>'executionState'=execution_state
         and record->>'id'=id and record->>'outcome'=any($2::text[])
-        and coalesce(record->>'executionSemanticsVersion','1') in ('1','2')) as terminal
+        and coalesce(record->>'executionSemanticsVersion','1') in ('1','2','3')) as terminal,
+      coalesce(record->>'executionSemanticsVersion','1') as semantics
       from runs where id=$1 for update`, [runId, terminalOutcomes])
     if (run.rows[0]?.terminal !== true) return unsettled()
+    const repeat = run.rows[0].semantics === '3'
+    if (repeat) {
+      const pinned = (await sql.query<{ run: unknown; version: unknown; pins_match: boolean }>(`select r.record as run,v.record as version,
+        (r.record->>'workspaceId'=r.workspace_id and r.record->>'workflowId'=r.workflow_id
+          and r.record->>'workflowVersionId'=r.workflow_version_id and v.record->>'id'=v.id
+          and v.workspace_id=r.workspace_id and v.workflow_id=r.workflow_id) as pins_match
+        from runs r join workflow_versions v on v.id=r.workflow_version_id where r.id=$1`, [runId])).rows[0]
+      if (!pinned?.pins_match) return unsettled()
+      const value = RepeatRunVersionV1Schema.parse({ run: pinned.run, version: pinned.version })
+      if (value.run.id !== runId || value.run.executionState !== 'completed') return unsettled()
+    }
     const executions = await sql.query<{ id: string; record: unknown }>(
       'select id,record from harness_executions where run_id=$1 order by id for update', [runId])
     const sessions = await sql.query<{ execution_id: string; reference: unknown; finalized: boolean }>(
@@ -54,6 +68,13 @@ export async function finalizeStoppedWorkflowSessions(runId: string, owner: RunO
       const execution = HarnessExecutionSchema.parse(row.record)
       if (execution.id !== row.id || execution.runId !== runId || execution.state !== 'completed'
         || !execution.result || !terminalOutcomes.some((outcome) => outcome === execution.result?.outcome)) return unsettled()
+      if (repeat) {
+        // An empty coordinator cache after restart is not proof either way.
+        // Re-read exact durable closure generations and all per-execution
+        // obligations; never synthesize a native acknowledgment or a close.
+        await settleRepeatNativeExecutionLocked(sql, runId, execution)
+        continue
+      }
       const native = byExecution.get(execution.id)
       if (!native) {
         if (execution.nativeSessionId) return unsettled()
@@ -84,7 +105,7 @@ export async function finalizeStoppedWorkflowSessions(runId: string, owner: RunO
         left join harness_executions e on e.id=i.execution_id and e.run_id=i.run_id
         left join interaction_graph_resumes g on g.interaction_id=i.id
         where i.run_id=r.id and (e.id is null
-          or (r.record->>'executionSemanticsVersion'='2' and ((${PUBLIC_PENDING_INTERACTION_SQL})
+          or (r.record->>'executionSemanticsVersion' in ('2','3') and ((${PUBLIC_PENDING_INTERACTION_SQL})
             or (i.status='canceled' and not (${CANCELED_INTERACTION_RETIRED_SQL}))))
           or (coalesce(r.record->>'executionSemanticsVersion','1')='1' and i.status not in ('canceled','delivered'))))
       or exists (select 1 from review_jobs j join durable_interactions i on i.id=j.interaction_id

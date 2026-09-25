@@ -41,7 +41,8 @@ describe('NIM-2642 exact affected-set and current settlement mapping', () => {
     expect(sql).toContain('workflow_finalized_at is not null')
     expect(sql).toContain('b.revoked_at is null')
     expect(sql).toContain("v.record->'agentConfigurationVersionIds'=r.record->'agentConfigurationVersionIds'")
-    expect(sql).not.toMatch(/\b(insert|update|delete|limit)\b/i)
+    expect(sql).not.toMatch(/\b(insert|update|delete)\b/i)
+    expect(sql).not.toMatch(/order by r\.id\s+limit/i)
   })
   it.each(['cleanup', 'native', 'interactions', 'reviews'] as const)('waits beyond terminal on %s, including absent evidence', async (field) => {
     for (const value of [true, null, undefined]) {

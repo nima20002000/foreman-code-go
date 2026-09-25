@@ -19,7 +19,8 @@ export const GraphEditAdvanceInputSchema = GraphEditCommandInputSchema.extend({ 
 export const GraphEditDiscardInputSchema = GraphEditCommandInputSchema.extend({ action: z.literal('discard_edits') }).strict()
 export const GraphEditRunPinSchema = z.object({
   workspaceId: IdSchema, workflowId: IdSchema, runId: IdSchema, workflowVersionId: IdSchema,
-  executionSemanticsVersion: z.union([z.literal(1), z.literal(2)]),
+  // Affected Runs may be v3 even while the edited board still uses v2 commands.
+  executionSemanticsVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   agentConfigurationVersionIds: z.record(z.string(), IdSchema),
 }).strict()
 export const GraphEditRunStateSchema = z.object({

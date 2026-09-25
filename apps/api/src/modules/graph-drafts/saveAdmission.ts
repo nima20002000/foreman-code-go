@@ -1,7 +1,10 @@
 import type pg from 'pg'
 import { RunOutcomeSchema } from '@graphql/contracts'
-import { GraphEditRunPinSchema, GraphEditRunStateSchema, type GraphEditRunState } from '@graphql/contracts/wave25'
+import { GraphEditRunPinSchema, GraphEditRunStateSchema, AcceptedWorkflowRunV3Schema,
+  SavedRunVersionSnapshotSchema, ExecutableWorkflowV3Schema, type GraphEditRunState } from '@graphql/contracts/wave25'
 import { DomainError } from '../errors.js'
+import { readImmutableWorkflowVersion, readImmutableAgentConfiguration,
+  type ImmutableWorkflowVersionRow, type ImmutableAgentConfigurationRow } from '../workflows/immutableRead.js'
 import { CANCELED_INTERACTION_RETIRED_SQL } from '../interactions/wave25/publication.js'
 import { PUBLIC_PENDING_INTERACTION_SQL, PUBLIC_UNSETTLED_REVIEW_SQL } from '../run-graph/publicObligations.js'
 
@@ -17,7 +20,7 @@ const invalidTerminal = `r.execution_state<>'completed'
   or r.record->>'workspaceId' is distinct from r.workspace_id
   or r.record->>'workflowId' is distinct from r.workflow_id
   or r.record->>'workflowVersionId' is distinct from r.workflow_version_id
-  or coalesce(r.record->>'executionSemanticsVersion','1') not in ('1','2')
+  or coalesce(r.record->>'executionSemanticsVersion','1') not in ('1','2','3')
   or not exists (select 1 from workflow_versions v where v.id=r.workflow_version_id
     and v.workspace_id=r.workspace_id and v.workflow_id=r.workflow_id
     and v.execution_semantics_version::text=coalesce(r.record->>'executionSemanticsVersion','1')
@@ -39,7 +42,7 @@ const interactions = `exists (
   left join harness_executions e on e.id=i.execution_id and e.run_id=i.run_id
   left join interaction_graph_resumes g on g.interaction_id=i.id
   where i.run_id=r.id and (e.id is null or
-    (r.record->>'executionSemanticsVersion'='2' and ((${PUBLIC_PENDING_INTERACTION_SQL})
+    (r.record->>'executionSemanticsVersion' in ('2','3') and ((${PUBLIC_PENDING_INTERACTION_SQL})
       or (i.status='canceled' and not (${CANCELED_INTERACTION_RETIRED_SQL}))))
     or (coalesce(r.record->>'executionSemanticsVersion','1')='1' and i.status not in ('canceled','delivered')))
 )`
@@ -48,43 +51,176 @@ const interactions = `exists (
 const reviews = `exists (select 1 from review_jobs j join durable_interactions review_owner on review_owner.id=j.interaction_id
   where review_owner.run_id=r.id and ((${PUBLIC_UNSETTLED_REVIEW_SQL})
     or j.record->'cleanup'->>'nativeState'='pending' or j.record->'cleanup'->>'credentialState'='pending'))`
+
+// V3 has no pre-upgrade native-history exemption. A finalized session alone is
+// insufficient after a new preflight: require the exact latest durable close,
+// all prior lifetimes closed, and finalization AFTER that close. A missing
+// process, provider, session, receipt or closure is not negative launch proof.
+const repeatNative = `coalesce(r.record->>'executionSemanticsVersion','1')='3' and (
+  exists (select 1 from harness_executions e where e.run_id=r.id and (
+    e.record->>'id' is distinct from e.id or e.record->>'runId' is distinct from e.run_id
+    or e.record->>'workflowNodeId' is distinct from e.workflow_node_id
+    or e.record->>'agentId' is distinct from e.agent_id
+    or e.record->>'attempt' is distinct from e.attempt::text
+    or e.record->>'agentConfigurationVersionId' is distinct from r.record->'agentConfigurationVersionIds'->>e.agent_id
+    or e.record->>'finishedAt' is null
+    or not exists (select 1 from workflow_versions v,
+      jsonb_array_elements(case when jsonb_typeof(v.record->'definition'->'nodes')='array'
+        then v.record->'definition'->'nodes' else '[]'::jsonb end) n
+      where v.id=r.workflow_version_id and n->>'id'=e.workflow_node_id and n->>'agentId'=e.agent_id)
+    or (e.record->>'nativeSessionId' is null and (
+      e.record->>'startedAt' is not null
+      or exists(select 1 from execution_native_sessions s where s.execution_id=e.id)
+      or exists(select 1 from execution_native_closures c where c.execution_id=e.id)))
+    or (e.record->>'nativeSessionId' is not null and not exists (
+      select 1 from execution_native_sessions s
+      join lateral (select * from execution_native_closures c where c.execution_id=e.id
+        order by c.generation desc limit 1) c on true
+      where s.execution_id=e.id and s.reference->>'nativeSessionId'=e.record->>'nativeSessionId'
+        and e.record->>'workingDirectory'=r.working_directory
+        and s.reference->>'harness'=(select cfg.record->'harness'->>'harness' from agent_configuration_versions cfg
+          where cfg.id=e.record->>'agentConfigurationVersionId' and cfg.workspace_id=r.workspace_id and cfg.agent_id=e.agent_id)
+        and jsonb_typeof(s.reference->'providerVersion')='string' and length(s.reference->>'providerVersion')>0
+        and c.closed_at is not null and s.workflow_finalized_at>=c.closed_at
+        and c.closed_reference=s.reference and (c.expected_reference is null or c.expected_reference=s.reference)
+        and c.execution_identity=jsonb_strip_nulls(jsonb_build_object(
+          'id',e.id,'runId',e.run_id,'workflowNodeId',e.workflow_node_id,'agentId',e.agent_id,
+          'agentConfigurationVersionId',e.record->>'agentConfigurationVersionId','attempt',e.attempt,
+          'workingDirectory',e.record->>'workingDirectory','runtimeDirectory',e.record->>'runtimeDirectory'))
+        and not exists(select 1 from execution_native_closures prior
+          where prior.execution_id=e.id and prior.generation<c.generation and prior.closed_at is null)))
+  ))
+  or exists(select 1 from worker_credential_bindings b left join management_principals p on p.id=b.principal_id
+    where b.run_id=r.id and (b.revoked_at is null or p.id is null or p.revoked_at is null))
+)`
+const repeatTerminal = `coalesce(r.record->>'executionSemanticsVersion','1')='3' and (
+  r.record->'result'->>'outcome' is distinct from r.record->>'outcome'
+  or r.record->>'finishedAt' is null
+  or r.record->'executionLocation'->>'runnerId' is distinct from r.runner_id
+  or r.record->'executionLocation'->>'rootPath' is distinct from r.working_directory
+  or r.record->'executionLocation'->>'locationRevision' is distinct from r.location_revision::text
+)`
+// Existing native writers bind g to the exact requester and graph continuation.
+// Non-null acknowledgement from another Run/execution is never settlement.
+const repeatInteractions = `coalesce(r.record->>'executionSemanticsVersion','1')='3' and exists (
+  select 1 from durable_interactions i
+  left join harness_executions e on e.id=i.execution_id and e.run_id=i.run_id
+  left join interaction_graph_resumes g on g.interaction_id=i.id
+  where i.run_id=r.id and (
+    i.record->>'id' is distinct from i.id or i.record->>'runId' is distinct from r.id
+    or i.record->>'workspaceId' is distinct from r.workspace_id or i.record->>'workflowId' is distinct from r.workflow_id
+    or i.record->>'executionId' is distinct from i.execution_id
+    or i.record->>'status' is distinct from i.status or i.record->>'revision' is distinct from i.revision::text
+    or i.record->>'requestingAgentId' is distinct from e.agent_id
+    or i.record->>'nativeSessionId' is distinct from e.record->>'nativeSessionId'
+    or i.record->'approval' is distinct from r.record->'approval'
+    or (i.status='delivered' and (
+      i.record->>'deliveryState' is distinct from 'delivered' or i.record->>'deliveredAt' is null
+      or g.run_id is distinct from r.id or g.execution_id is distinct from i.execution_id
+      or g.graph_thread_id is distinct from i.record->>'graphThreadId'
+      or g.graph_interrupt_id is null or g.graph_interrupt_id is distinct from i.record->>'graphInterruptId'
+      or g.state is distinct from 'resumed' or g.completed_at is null
+      or g.approval_native_ack_source->>'sourceKind' is distinct from 'native_event'
+      or g.approval_native_ack_source->>'sourceId' is null or g.approval_native_ack_source->>'sourceRevision' is null
+      or not exists(select 1 from run_graph_effects f where f.run_id=r.id and f.effect_kind='graph.resume' and f.entity_id=i.id)
+      or not exists(select 1 from run_graph_sources s where s.run_id=r.id and s.source_kind='native_event'
+        and s.source_id=i.id and s.source_revision=i.revision)
+      or not exists(select 1 from run_native_correlations c where c.run_id=r.id and c.execution_id=i.execution_id
+        and c.work_kind='workflow' and c.work_id=i.execution_id and c.interaction_id=i.id
+        and c.native_request_id=i.record->>'nativeRequestId' and c.native_session_id=i.record->>'nativeSessionId'
+        and c.provider=i.record->>'harness')))
+
+  ))`
+
+const repeatReviews = `coalesce(r.record->>'executionSemanticsVersion','1')='3' and exists (
+  select 1 from review_jobs j join durable_interactions i on i.id=j.interaction_id
+  where i.run_id=r.id and (j.record->>'id' is distinct from j.id
+    or j.record->>'interactionId' is distinct from j.interaction_id or j.record->>'state' is distinct from j.state
+    or (j.state='completed' and (j.approval_native_evidence->>'kind' is distinct from 'terminal'
+      or j.approval_native_evidence->'terminal'->>'nativeSettled' is distinct from 'true'))
+  ))`
+
 const values = (input: AffectedGraphScope) => [input.workspaceId, input.workflowId,
   [...new Set(input.stagedAgentIds)].sort(), RunOutcomeSchema.options.filter((outcome) => outcome !== 'pending')]
 
-/** Caller holds workspace admission + workflow locks until COMMIT. Same
- * predicate as planning; no selected-Run shortcut, paging, history or mutation. */
-export async function assertMeaningfulSaveAdmitted(client: Pick<pg.PoolClient, 'query'>, input: AffectedGraphScope): Promise<void> {
-  const blocked = await client.query<{ blocked: boolean }>(`select exists (
-    select 1 from runs r where ${affected} and (
-      ${invalidTerminal} or ${cleanup} or ${native} or ${interactions} or ${reviews}
-    )
-  ) as blocked`, values(input))
-  // Do not disclose Run identities to a caller with graph:save but no runs:read.
-  if (blocked.rows[0]?.blocked !== false) throw new DomainError('WORKFLOW_RUNS_UNSETTLED',
+interface AffectedRow {
+  id: string; workspace_id: string; workflow_id: string; workflow_version_id: string; record: Record<string, unknown>
+  terminal: boolean; cleanup: boolean; native: boolean; interactions: boolean; reviews: boolean
+  version_row: ImmutableWorkflowVersionRow | null
+  configurations: ImmutableAgentConfigurationRow[] | null
+}
+
+/** One MVCC statement for BOTH admission and plan. No selected-Run shortcut,
+ * paging, mutable Agent pins or follow-up reads that can see another head. */
+async function readAffectedRows(client: Pick<pg.PoolClient, 'query'>, input: AffectedGraphScope): Promise<AffectedRow[]> {
+  const rows = await client.query<AffectedRow>(`select r.id,r.workspace_id,r.workflow_id,r.workflow_version_id,r.record,
+    not ((${invalidTerminal}) or (${repeatTerminal})) as terminal, ${cleanup} as cleanup,
+    ((${native}) or (${repeatNative})) as native,
+    ((${interactions}) or (${repeatInteractions})) as interactions, ((${reviews}) or (${repeatReviews})) as reviews,
+    case when r.record->>'executionSemanticsVersion'='3' then (
+      select jsonb_build_object('id',v.id,'workspace_id',v.workspace_id,'workflow_id',v.workflow_id,
+        'version',v.version,'entry_node_id',v.entry_node_id,'execution_semantics_version',v.execution_semantics_version,'record',v.record)
+      from workflow_versions v where v.id=r.workflow_version_id
+    ) else null end as version_row,
+    case when r.record->>'executionSemanticsVersion'='3' then (
+      select coalesce(jsonb_agg(jsonb_build_object('id',c.id,'workspace_id',c.workspace_id,'agent_id',c.agent_id,'version',c.version,'record',c.record) order by c.id),'[]'::jsonb)
+      from agent_configuration_versions c where c.workspace_id=r.workspace_id and c.id in (
+        select value from jsonb_each_text(case when jsonb_typeof(r.record->'agentConfigurationVersionIds')='object'
+          then r.record->'agentConfigurationVersionIds' else '{}'::jsonb end))
+    ) else null end as configurations
+    from runs r where ${affected} order by r.id`, values(input))
+  return rows.rows
+}
+
+function validRepeatSnapshot(row: AffectedRow): boolean {
+  if (!row.record || typeof row.record !== 'object' || Array.isArray(row.record)) return false
+  const semantics = row.record.executionSemanticsVersion
+  if (semantics === undefined || semantics === 1 || semantics === 2) return true
+  if (semantics !== 3) return false // Strings, null and unknown versions are not legacy.
+  try {
+    if (!row.version_row || !Array.isArray(row.configurations)) return false
+    const run = AcceptedWorkflowRunV3Schema.parse(row.record)
+    if (run.id !== row.id || run.workspaceId !== row.workspace_id || run.workflowId !== row.workflow_id
+      || run.workflowVersionId !== row.workflow_version_id) return false
+    const version = readImmutableWorkflowVersion(row.version_row, { id: row.workflow_version_id,
+      workspaceId: row.workspace_id, workflowId: row.workflow_id })
+    const configurations = row.configurations.map((configuration) => readImmutableAgentConfiguration(configuration,
+      { workspaceId: row.workspace_id }))
+    return SavedRunVersionSnapshotSchema.safeParse({ run, version }).success
+      && ExecutableWorkflowV3Schema.safeParse({ version, configurations }).success
+  } catch { return false } // Never disclose private input, result, configuration or Zod issues.
+}
+function settled(row: AffectedRow): boolean {
+  // Missing/corrupt flags are never interpreted as settlement.
+  return row.terminal === true && row.cleanup === false && row.native === false
+    && row.interactions === false && row.reviews === false && validRepeatSnapshot(row)
+}
+function unsettled(): never {
+  throw new DomainError('WORKFLOW_RUNS_UNSETTLED',
     'Meaningful edits cannot be published while an affected Run is active or has unresolved native, cleanup, interaction or review obligations. The draft is retained; Stop acceptance alone is not settlement.', 409)
 }
 
-/** Read-only plan/readback. Caller must authorize every returned exact scope
- * before returning ANY of it. One MVCC statement reads all current facts. */
+/** Caller holds workspace admission + workflow locks until COMMIT. Admission
+ * does not require runs:read and therefore never returns affected identities. */
+export async function assertMeaningfulSaveAdmitted(client: Pick<pg.PoolClient, 'query'>, input: AffectedGraphScope): Promise<void> {
+  const rows = await readAffectedRows(client, input)
+  if (rows.some((row) => !settled(row))) return unsettled()
+}
+
+/** Caller must authorize EVERY returned exact scope before returning any plan.
+ * Only pins/obligation flags leave this function, never the private evidence. */
 export async function readAffectedGraphRuns(client: Pick<pg.PoolClient, 'query'>, input: AffectedGraphScope): Promise<GraphEditRunState[]> {
-  const rows = await client.query<{
-    id: string; workspace_id: string; workflow_id: string; workflow_version_id: string; record: Record<string, unknown>;
-    terminal: boolean; cleanup: boolean; native: boolean; interactions: boolean; reviews: boolean
-  }>(`select r.id,r.workspace_id,r.workflow_id,r.workflow_version_id,r.record,
-    not (${invalidTerminal}) as terminal, ${cleanup} as cleanup, (${native}) as native,
-    ${interactions} as interactions, ${reviews} as reviews
-    from runs r where ${affected} order by r.id`, values(input))
-  return rows.rows.map((row) => {
+  const rows = await readAffectedRows(client, input)
+  return rows.map((row) => {
+    if (!validRepeatSnapshot(row)) return unsettled()
     const pin = GraphEditRunPinSchema.parse({ workspaceId: row.workspace_id, workflowId: row.workflow_id,
       runId: row.id, workflowVersionId: row.workflow_version_id,
       executionSemanticsVersion: row.record.executionSemanticsVersion ?? 1,
       agentConfigurationVersionIds: row.record.agentConfigurationVersionIds })
-    // Missing/corrupt flags are never interpreted as settlement.
     const terminal = row.terminal === true
     const cleanupPending = row.cleanup !== false, nativePending = row.native !== false
     const interactionPending = row.interactions !== false, reviewPending = row.reviews !== false
     return GraphEditRunStateSchema.parse({ pin, terminal, outcome: row.record.outcome,
-      settled: terminal && !cleanupPending && !nativePending && !interactionPending && !reviewPending,
-      cleanupPending, nativePending, interactionPending, reviewPending })
+      settled: settled(row), cleanupPending, nativePending, interactionPending, reviewPending })
   })
 }
