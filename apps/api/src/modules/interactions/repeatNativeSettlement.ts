@@ -3,7 +3,7 @@ import {
   DurableInteractionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema, ReviewJobSchema,
   type HarnessExecution, type NativeSessionReference,
 } from '@graphql/contracts'
-import type { GraphTransactionSql } from '../run-graph/connection.js'
+import { assertGraphTransaction, beforeGraphCommit, poisonGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import { graphSourceDigest } from '../run-graph/publication.js'
 import { readWorkflowClosure } from './workflowClosure.js'
 import { CANCELED_INTERACTION_RETIRED_SQL, decisionDigest } from './wave25/publication.js'
@@ -11,6 +11,13 @@ import { assertRepeatNativeClosure, repeatNativePending } from './repeatNativeEv
 
 interface SessionRow { reference: unknown; finalized: boolean }
 interface ClosedExecution { execution: HarnessExecution; session: NativeSessionReference; generation: string; finalized: boolean }
+/** Private readback of existing coordinator close receipts, NOT a dispatch,
+ * no-submission or graph-publication capability. No caller-supplied proof is read. */
+export interface RepeatNativeSettlementCheckpoint {
+  execution: HarnessExecution
+  session: NativeSessionReference
+  generation: string
+}
 
 /** SQL-only boundary, on the SAME Run/head/owner transaction as repeat routing.
  * It neither closes a process nor acknowledges an approval. Those operations
@@ -25,6 +32,41 @@ interface ClosedExecution { execution: HarnessExecution; session: NativeSessionR
  */
 export async function settleRepeatNativeExecutionLocked(sql: GraphTransactionSql, runId: string,
   supplied: HarnessExecution): Promise<void> {
+  await settleRepeatNativeExecutionWithProofLocked(sql, runId, supplied)
+}
+
+/** Retain exact receipt generations until G1 finalization, including on replay.
+ * An application catching a failed assertion must not commit partial private
+ * finalization updates. This uses the existing branded transaction's poison and
+ * finalizers; it neither opens a transaction nor issues native/resource calls. */
+export async function settleRepeatNativeExecutionWithProofLocked(sql: GraphTransactionSql, runId: string,
+  supplied: HarnessExecution): Promise<readonly RepeatNativeSettlementCheckpoint[]> {
+  assertGraphTransaction(sql)
+  try {
+    const captured = HarnessExecutionSchema.parse(structuredClone(supplied))
+    const checkpoint = await settleExact(sql, runId, captured)
+    // Do not expose the finalizer's retained objects to a caller who may mutate
+    // the returned checkpoint after this await.
+    const retained = structuredClone(checkpoint)
+    beforeGraphCommit(sql, async () => {
+      try {
+        const final = await settleExact(sql, runId, captured)
+        if (!isDeepStrictEqual(final, retained)) return repeatNativePending('REPEAT_NATIVE_IDENTITY_CONFLICT')
+      } catch (error) {
+        poisonGraphTransaction(sql)
+        throw error
+      }
+    })
+    return checkpoint
+  } catch (error) {
+    poisonGraphTransaction(sql)
+    throw error
+  }
+}
+
+async function settleExact(sql: GraphTransactionSql, runId: string,
+  supplied: HarnessExecution): Promise<RepeatNativeSettlementCheckpoint[]> {
+  assertGraphTransaction(sql)
   const parent = await sql.query<{ semantics: string; id: string; workspace_id: string; workflow_id: string; pins_match: boolean; negative_cleanup: boolean }>(
     `select id,record->>'executionSemanticsVersion' as semantics,workspace_id,workflow_id,
       (record->>'id'=id and record->>'workspaceId'=workspace_id and record->>'workflowId'=workflow_id) as pins_match,
@@ -53,8 +95,10 @@ export async function settleRepeatNativeExecutionLocked(sql: GraphTransactionSql
     const session = native ? NativeSessionReferenceSchema.parse(native.reference) : null
     await assertInteractionsSettled(sql, runId, execution, session, parent.rows[0], parent.rows[0].negative_cleanup === true)
     if (!native || !session) {
-      await assertNeverSubmitted(sql, execution)
-      continue // Proven pre-dispatch negative work has no native row to invent.
+      // Neither an empty SQL ledger nor a failed/canceled business result is an
+      // original no-submission receipt. Until the coordinator has an explicit,
+      // durable pre-dispatch proof port, this negative cleanup stays pending.
+      return repeatNativePending('REPEAT_BOUNDARY_PENDING')
     }
     const configuration = (await sql.query<{ harness: string; agent_id: string; workspace_id: string; pinned: boolean }>(
       `select c.record#>>'{harness,harness}' as harness,c.agent_id,c.workspace_id,
@@ -85,6 +129,7 @@ export async function settleRepeatNativeExecutionLocked(sql: GraphTransactionSql
     [item.execution.id, JSON.stringify(item.session)])
     if (updated.rowCount !== 1) return repeatNativePending('REPEAT_NATIVE_IDENTITY_CONFLICT')
   }
+  return closed.map(({ execution, session, generation }) => structuredClone({ execution, session, generation }))
 }
 
 async function readExecution(sql: GraphTransactionSql, runId: string, id: string): Promise<HarnessExecution> {
@@ -112,27 +157,6 @@ async function assertExecutionResourcesSettled(sql: GraphTransactionSql, runId: 
   if (row?.outstanding !== false) return repeatNativePending()
 }
 
-/** Absence of a process is NEVER used. This is the stronger, durable negative
- * case: the exact admitted slot has never crossed the canonical launch claim,
- * native preflight, event, interaction, credential or reviewer boundary. Paths
- * or startedAt without a claim are corruption/uncertainty, not launch permission.
- * The v3 native adapter MUST use execution.launch before any resource allocation.
- */
-async function assertNeverSubmitted(sql: GraphTransactionSql, execution: HarnessExecution): Promise<void> {
-  if (execution.result?.outcome === 'succeeded' || execution.nativeSessionId || execution.startedAt
-    || execution.workingDirectory || execution.runtimeDirectory) return repeatNativePending('REPEAT_BOUNDARY_PENDING')
-  const row = (await sql.query<{ possible_submission: boolean }>(`select (
-    exists(select 1 from run_graph_effects where run_id=$1 and effect_kind='execution.launch' and entity_id=$2)
-    or exists(select 1 from execution_native_closures where execution_id=$2)
-    or exists(select 1 from harness_native_events where execution_id=$2)
-    or exists(select 1 from run_native_correlations where run_id=$1 and execution_id=$2)
-    or exists(select 1 from worker_credential_bindings where execution_id=$2)
-    or exists(select 1 from durable_interactions where execution_id=$2)
-    or exists(select 1 from review_jobs where execution_id=$2)
-    ) as possible_submission`, [execution.runId, execution.id])).rows[0]
-  if (row?.possible_submission !== false) return repeatNativePending('REPEAT_BOUNDARY_PENDING')
-}
-
 async function readSettledReviewers(sql: GraphTransactionSql, runId: string,
   requester: HarnessExecution): Promise<HarnessExecution[]> {
   const result = new Map<string, HarnessExecution>()
@@ -150,8 +174,9 @@ async function readSettledReviewers(sql: GraphTransactionSql, runId: string,
       if (!['completed', 'failed'].includes(job.state) || job.state === 'failed' && !job.cleanup?.completedAt
         || job.cleanup?.nativeState === 'pending' || job.cleanup?.credentialState === 'pending') return repeatNativePending()
       if (!row.execution_id) {
-        if (job.state !== 'failed' || job.cleanup?.nativeState !== 'not_started') return repeatNativePending()
-        continue
+        // A cleanup enum supplied by a failed job cannot prove that its native
+        // preflight or credential boundary was never crossed.
+        return repeatNativePending('REPEAT_BOUNDARY_PENDING')
       }
       const execution = result.get(row.execution_id) ?? await readExecution(sql, runId, row.execution_id)
       const native = NativeSessionReferenceSchema.parse(row.native_reference)
@@ -204,6 +229,10 @@ async function assertInteractionsSettled(sql: GraphTransactionSql, runId: string
         decision: decisionDigest(interaction) })
       if (receipt && receipt.effect_digest !== expected) return repeatNativePending('REPEAT_APPROVAL_RECEIPT_CONFLICT')
       if (resume?.state !== 'resumed' || !resume.approval_native_ack_id || !receipt) return repeatNativePending('APPROVAL_SETTLEMENT_PENDING')
+      // The legacy ack ID plus graph.resume is not an occurrence-qualified v3
+      // original-source proof. Until that producer/readback is composed, do not
+      // let even a delivered, resumed enum retire this approval or route work.
+      return repeatNativePending('REPEAT_APPROVAL_SOURCE_PROOF_REQUIRED')
     }
     if (rows.length < 100) return
     after = rows[rows.length - 1]!.id

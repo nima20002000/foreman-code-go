@@ -41,7 +41,7 @@ export interface RepeatRepositoryServices {
   assertNativeUpdateLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
     previous: HarnessExecution, incoming: HarnessExecution, ref: RepeatNodeRef, evidence: RepeatNativeEvidence): Promise<void>
   /** Existing engine/lifecycle policy, not a second scheduler or finishRun call. */
-  assertSettlementLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3, ids: readonly string[]): Promise<void>
+  assertSettlementLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3, ids: readonly string[], owner: RunOwnership): Promise<void>
   allowTechnicalRetryLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
     version: RepeatWorkflowVersionV1, execution: HarnessExecution): Promise<boolean>
   completeRunLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
@@ -162,7 +162,10 @@ export class RepeatRepositoryFactory {
         sameTransaction(transaction)
         // Concrete per-execution closure proof has already run in the repository.
         // This retains additional existing global/owner obligations, not grants.
-        await this.services.assertSettlementLocked(sql, run, ids)
+        const fence = await owner.readOneShotFence(sql)
+        await this.services.assertSettlementLocked(sql, run, ids, owner)
+        sameTransaction(transaction)
+        if (!sameRepeatValue(fence, await owner.readOneShotFence(sql))) return repeatConflict('RUN_OWNERSHIP_LOST')
       },
       allowTechnicalRetryLocked: async (transaction, execution) => {
         sameTransaction(transaction)

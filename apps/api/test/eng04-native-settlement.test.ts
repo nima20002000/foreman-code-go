@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import type pg from 'pg'
 import { DurableInteractionSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction, type HarnessExecution } from '@graphql/contracts'
-import type { GraphTransactionSql } from '../src/modules/run-graph/connection.js'
+import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
 import { decisionDigest } from '../src/modules/interactions/wave25/publication.js'
 import { settleRepeatNativeExecutionLocked } from '../src/modules/interactions/repeatNativeSettlement.js'
@@ -47,6 +48,7 @@ class NativePgShape {
     const q = text.replace(/\s+/g, ' ').trim()
     this.calls.push(q)
     const rows = (result: unknown[]) => ({ rows: result, rowCount: result.length })
+    if (q.startsWith('begin ') || q === 'commit' || q === 'rollback') return rows([])
     if (q.startsWith("select id,record->>'executionSemanticsVersion'")) {
       expect(values).toEqual([this.execution.runId])
       return rows([{ id: this.execution.runId, semantics: this.semantics, workspace_id: this.fixture.scope.workspaceId, workflow_id: this.fixture.scope.workflowId, pins_match: true, negative_cleanup: this.negativeCleanup }])
@@ -106,8 +108,10 @@ class NativePgShape {
   }
   async settle(): Promise<void> {
     const original = this.finalized
-    try { await settleRepeatNativeExecutionLocked(this as unknown as GraphTransactionSql, this.execution.runId, this.execution) }
+    const connection = new ExclusiveGraphConnection(this as unknown as pg.ClientBase, () => undefined)
+    try { await connection.transaction((sql) => settleRepeatNativeExecutionLocked(sql, this.execution.runId, this.execution)) }
     catch (error) { this.finalized = original; throw error }
+    finally { await connection.close() }
   }
   delivered() {
     const value = DurableInteractionSchema.parse({ ...NATIVE_INTERACTION_FIXTURES.codex,
@@ -138,7 +142,7 @@ describe('ENG04 native SQL-shaped exact per-execution settlement', () => {
     const sql = new NativePgShape()
     // This fixture has no manager, fake native acknowledgment or native callback.
     await sql.settle()
-    expect(sql.closureReads).toBe(2)
+    expect(sql.closureReads).toBe(4) // Entry and before-COMMIT both recheck current and final close generations.
     expect(sql.finalized).toBe(true)
   })
   it.each(['hasClosure', 'closed'] as const)('keeps %s uncertainty open even when workflow finalization was previously set', async (key) => {
@@ -208,13 +212,13 @@ describe('ENG04 native SQL-shaped exact per-execution settlement', () => {
     sql.hasSession = false
     await expect(sql.settle()).rejects.toMatchObject({ code: 'REPEAT_BOUNDARY_PENDING' })
   })
-  it('permits only a durably never-dispatched negative execution with no native row', async () => {
+  it('keeps a negative execution without a native row pending until original no-dispatch proof exists', async () => {
     const sql = new NativePgShape()
     sql.hasSession = false
     sql.execution = { id: sql.execution.id, runId: sql.execution.runId, workflowNodeId: 'review', agentId: 'agent-review',
       agentConfigurationVersionId: 'config-review', attempt: 1, input: {}, createdAt: nativeAt,
       state: 'completed', finishedAt: nativeAt, result: { outcome: 'failed', error: { code: 'ADMISSION_FAILED', message: 'not launched', retryable: false } } }
-    await sql.settle()
+    await expect(sql.settle()).rejects.toMatchObject({ code: 'REPEAT_BOUNDARY_PENDING' })
     expect(sql.updateCount).toBe(0)
     sql.possibleSubmission = true
     await expect(sql.settle()).rejects.toMatchObject({ code: 'REPEAT_BOUNDARY_PENDING' })
@@ -227,8 +231,8 @@ describe('ENG04 native SQL-shaped exact per-execution settlement', () => {
     sql.resume = { state: 'resuming', approval_native_ack_id: 'real-history-ack' }
     await expect(sql.settle()).rejects.toMatchObject({ code: 'APPROVAL_SETTLEMENT_PENDING' })
     sql.resume = { state: 'resumed', approval_native_ack_id: 'real-history-ack' }
-    await sql.settle()
-    expect(sql.finalized).toBe(true)
+    await expect(sql.settle()).rejects.toMatchObject({ code: 'REPEAT_APPROVAL_SOURCE_PROOF_REQUIRED' })
+    expect(sql.finalized).toBe(false)
   })
   it.each(['workspaceId', 'workflowId', 'providerVersion'] as const)('rejects an approval from another %s', async (key) => {
     const sql = new NativePgShape(), delivered = sql.delivered()
