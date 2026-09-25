@@ -2,7 +2,7 @@ import {
   GraphExecutionIdentitySchema, RepeatOccurrenceV1Schema, RepeatDecisionMetadataV1Schema,
   RepeatGraphExecutionV3Schema, RepeatGraphBindingV3Schema, RepeatGraphResolutionV3Schema,
   RepeatGraphRunStateV3Schema, RepeatGraphScopeV3Schema, RepeatWorkflowVersionV1Schema,
-  SavedRunVersionSnapshotSchema, AcceptedWorkflowRunV3Schema, REPEAT_GRAPH_LIMITS,
+  SavedRunVersionSnapshotSchema, AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema, REPEAT_GRAPH_LIMITS,
   sameCanonicalGraphScope, canonicalGraphJson, qualifyRepeatGraphExecution,
   type RepeatGraphScopeV3, type RepeatGraphExecutionV3, type RepeatGraphBindingV3,
   type RepeatGraphResolutionV3, type RepeatGraphFactV3,
@@ -11,6 +11,8 @@ import type { GraphTransactionSql } from './connection.js'
 import { assertGraphTransaction } from './connection.js'
 import { RunGraphError } from './errors.js'
 import { repeatSlotId } from '../runs/repeatResolution.js'
+import { readImmutableWorkflowVersion, readImmutableAgentConfiguration,
+  type ImmutableAgentConfigurationRow } from '../workflows/immutableRead.js'
 
 const conflict = (): never => { throw new RunGraphError('GRAPH_INVARIANT_VIOLATION') }
 const equal = (a: unknown, b: unknown) => canonicalGraphJson(a) === canonicalGraphJson(b)
@@ -25,19 +27,34 @@ export async function readRepeatGraphPinsLocked(sql: GraphTransactionSql, input:
   assertGraphTransaction(sql)
   const scope = RepeatGraphScopeV3Schema.parse(input)
   const rows = await sql.query<{ workspace_id: string; workflow_id: string; workflow_version_id: string;
-    execution_state: string; execution_semantics_version: number; version_workspace_id: string; version_workflow_id: string; run_record: unknown; version_record: unknown }>(
+    version_id: string; version_number: number; entry_node_id: string; execution_state: string; execution_semantics_version: number; version_workspace_id: string; version_workflow_id: string; run_record: unknown; version_record: unknown }>(
     `select r.workspace_id,r.workflow_id,r.workflow_version_id,r.execution_state,v.execution_semantics_version,
+      v.id as version_id,v.version as version_number,v.entry_node_id,
       r.record as run_record,v.record as version_record,v.workspace_id as version_workspace_id,v.workflow_id as version_workflow_id
      from runs r join workflow_versions v on v.id=r.workflow_version_id where r.id=$1`, [scope.runId])
   const row = rows.rows[0]
   if (rows.rows.length !== 1 || !row || row.workspace_id !== scope.workspaceId || row.workflow_id !== scope.workflowId
     || row.workflow_version_id !== scope.workflowVersionId || row.execution_semantics_version !== 3
     || row.version_workspace_id !== scope.workspaceId || row.version_workflow_id !== scope.workflowId) return conflict()
-  const run = AcceptedWorkflowRunV3Schema.parse(row.run_record), version = RepeatWorkflowVersionV1Schema.parse(row.version_record)
+  const run = AcceptedWorkflowRunV3Schema.parse(row.run_record)
+  const version = RepeatWorkflowVersionV1Schema.parse(readImmutableWorkflowVersion({
+    id: row.version_id, workspace_id: row.version_workspace_id, workflow_id: row.version_workflow_id,
+    version: row.version_number, entry_node_id: row.entry_node_id, execution_semantics_version: row.execution_semantics_version,
+    record: row.version_record,
+  }, { id: scope.workflowVersionId, workspaceId: scope.workspaceId, workflowId: scope.workflowId }))
   SavedRunVersionSnapshotSchema.parse({ run, version })
   if (run.id !== scope.runId || run.workspaceId !== scope.workspaceId || run.workflowId !== scope.workflowId
     || run.workflowVersionId !== scope.workflowVersionId || run.executionState !== row.execution_state) return conflict()
-  return { scope, run, version }
+  const configs = await sql.query<ImmutableAgentConfigurationRow>(
+    'select id,workspace_id,agent_id,version,record from agent_configuration_versions where id=any($1::text[]) order by id',
+    [Object.values(version.agentConfigurationVersionIds)])
+  const configurations = configs.rows.map((record) => {
+    const id = version.agentConfigurationVersionIds[record.agent_id]
+    if (!id) return conflict()
+    return readImmutableAgentConfiguration(record, { id, workspaceId: scope.workspaceId, agentId: record.agent_id })
+  })
+  ExecutableWorkflowV3Schema.parse({ version, configurations })
+  return { scope, run, version, configurations }
 }
 export async function readRepeatRunStateLocked(sql: GraphTransactionSql, scope: RepeatGraphScopeV3) {
   const row = (await sql.query<{ execution_state: string; outcome: string; stopped: boolean }>(

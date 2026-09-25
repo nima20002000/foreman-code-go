@@ -9,10 +9,11 @@ import type { RepeatCanonicalPublication } from '../runs/repeatRepositoryHost.js
 import { repeatDigest, repeatId, repeatSlotId, repeatExecutionIdentity } from '../runs/repeatResolution.js'
 import { repeatLaunchClaim, type RepeatLaunchClaim, type RepeatNativeChange } from '../runs/repeatNativeRepository.js'
 import type { RunOwnership } from '../runs/ownership.js'
-import { assertGraphTransaction, poisonGraphTransaction, type GraphTransactionSql } from './connection.js'
-import { assertRunGraphPublication, graphSourceDigest, openRunGraphPublication, type RunGraphPublication } from './publication.js'
+import { assertGraphTransaction, beforeGraphCommit, poisonGraphTransaction, type GraphTransactionSql } from './connection.js'
+import { assertRunGraphPublication, readRepeatRunSourceLocked, openRunGraphPublication, type RunGraphPublication } from './publication.js'
 import { requireRepeatCanonicalReceiptBeforeCommit, type RepeatCanonicalReceipt } from './repeatReceipts.js'
 import { readRepeatGraphBindingsLocked, readRepeatGraphExecutionsLocked, readRepeatGraphPinsLocked, readRepeatRunStateLocked } from './repeatProjectionRows.js'
+import { publishRepeatExecutionStateLocked } from './repeatExecutionPublication.js'
 import { RunGraphError } from './errors.js'
 
 const same = (left: unknown, right: unknown) => canonicalGraphJson(left) === canonicalGraphJson(right)
@@ -204,6 +205,10 @@ export async function openRepeatCanonicalPublicationLocked(sql: GraphTransaction
             return metadata
           })
         verify(canonicalRepeatEffectReceipt(scope, effect, result.semanticDigest))
+        if (effect.kind === 'run.complete') await publishRepeatRunStateLocked(publication, owner)
+        if (effect.kind === 'input.bind' || effect.kind === 'terminal.accept') {
+          await publishRepeatExecutionStateLocked(publication, owner, effect.entityId)
+        }
       }),
       assertEffectReceiptLocked: (effect) => protect(async () => { verify(canonicalRepeatEffectReceipt(scope, structuredClone(effect))) }),
       publishNativeLocked: (changeValue, mutate) => protect(async () => {
@@ -232,6 +237,7 @@ export async function openRepeatCanonicalPublicationLocked(sql: GraphTransaction
           ? await publication.repeatChange({ evidence, sourceDigest: change.sourceDigest, effect }, owner, mutation, project)
           : await publication.repeatObservation({ evidence, sourceDigest: change.sourceDigest }, owner, mutation, project)
         verify({ scope, evidence, sourceDigest: change.sourceDigest, effect: change.effect, semanticDigest: result.semanticDigest })
+        await publishRepeatExecutionStateLocked(publication, owner, change.next.id)
       }),
       assertNativeReceiptLocked: (change) => protect(async () => {
         checkNative(change)
@@ -250,7 +256,7 @@ export async function openRepeatCanonicalPublicationLocked(sql: GraphTransaction
   } catch (error) { poisonGraphTransaction(sql); throw error }
 }
 
-/** Call AFTER the excluded authorized Start/Stop/lifecycle SQL writer, before
+/** Call AFTER the excluded authorized owner-scoped lifecycle SQL writer, before
  * COMMIT, on its existing owner transaction/publication. No new authority,
  * mutation, counter, head, command receipt or native acknowledgement is created.
  * Full private Run data contributes only to its digest, never to graph facts. */
@@ -259,13 +265,15 @@ export async function publishRepeatRunStateLocked(publication: RunGraphPublicati
   try {
     assertGraphTransaction(sql)
     await readRepeatGraphPinsLocked(sql, scope)
-    const row = (await sql.query<{ record: unknown; stopped: boolean }>(
-      'select record,stop_requested_at is not null as stopped from runs where id=$1', [scope.runId])).rows[0]
-    if (!row) return fail()
-    const sourceDigest = graphSourceDigest({ scope, record: row.record, stopRequested: row.stopped })
-    const evidence = { sourceKind: 'run' as const, sourceId: repeatId('repeat-run', scope.runId, sourceDigest), sourceRevision: '1' }
+    const current = await readRepeatRunSourceLocked(sql, scope)
+    const { evidence, sourceDigest } = current
     const result = await publication.repeatRunReadback({ evidence, sourceDigest }, owner,
-      async () => [{ type: 'repeat.run.state', state: await readRepeatRunStateLocked(sql, scope) }])
+      async () => [current.fact])
     requireRepeatCanonicalReceiptBeforeCommit(sql, { scope, evidence, sourceDigest, effect: null, semanticDigest: result.semanticDigest })
+    // Publishing a later mutation in another callback is not atomic readback.
+    beforeGraphCommit(sql, async () => {
+      const latest = await readRepeatRunSourceLocked(sql, scope)
+      if (!same(latest.run, current.run) || latest.stopped !== current.stopped) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
+    })
   } catch (error) { poisonGraphTransaction(sql); throw error }
 }

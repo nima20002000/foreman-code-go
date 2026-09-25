@@ -5,11 +5,14 @@ import {
   type RunGraphSnapshot, type RunGraphPage, type RunGraphReset,
 } from '@graphql/contracts/wave25'
 import { hasAction, requireAuthorization } from '../access/policy.js'
+import { RepeatGraphReadService } from './repeatReadService.js'
 import { RunGraphError } from './errors.js'
 import { readRunGraphPage, readRunGraphSnapshot, type AuthorizeRunGraphRead, type ReadCurrentRunGraph } from './reader.js'
 import { observeGraph, type GraphMeasurementSink } from './measurements.js'
 
 export interface RunGraphReadApi {
+  /** Concrete primary-pool reader; absent or unqualified remains closed. */
+  readonly repeat?: RepeatGraphReadService
   capabilities(principal: ManagementPrincipal): typeof DISABLED_RUN_GRAPH_CAPABILITIES
   snapshot(principal: ManagementPrincipal, request: unknown): Promise<RunGraphSnapshot>
   events(principal: ManagementPrincipal, request: unknown): Promise<RunGraphPage | RunGraphReset>
@@ -17,8 +20,13 @@ export interface RunGraphReadApi {
 
 /** Both HTTP and Operator MCP use this service. Supply the PRIMARY database pool. */
 export class RunGraphReadService implements RunGraphReadApi {
+  readonly repeat: RepeatGraphReadService
   constructor(private readonly primaryPool: pg.Pool, private readonly assemble: ReadCurrentRunGraph,
-    private readonly options: { qualifiedReads?: boolean; measurements?: GraphMeasurementSink } = {}) {}
+    private readonly options: { qualifiedReads?: boolean; measurements?: GraphMeasurementSink; repeat?: RepeatGraphReadService } = {}) {
+    // Production uses this same service in HTTP and MCP. Installing concrete
+    // read composition is not qualification of the excluded engine writers.
+    this.repeat = options.repeat ?? new RepeatGraphReadService(primaryPool, { qualifiedReads: false })
+  }
 
   capabilities(principal: ManagementPrincipal) {
     this.principal(principal)

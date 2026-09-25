@@ -7,9 +7,10 @@ import {
 import type { RepeatEffect } from '../runs/repeatPostgres.js'
 import { repeatId, repeatSlotId } from '../runs/repeatResolution.js'
 import type { GraphTransactionSql } from './connection.js'
-import { graphSourceDigest } from './publication.js'
+import { graphSourceDigest, readRepeatRunSourceLocked, repeatGraphBatchReceipt } from './publication.js'
 import { canonicalRepeatEffect, canonicalRepeatEffectReceipt } from './repeatPublication.js'
 import { boundedRepeatRows } from './repeatProjectionRows.js'
+import { repeatExecutionStateDigest } from './repeatExecutionPublication.js'
 import { RunGraphError } from './errors.js'
 
 const fail = (): never => { throw new RunGraphError('GRAPH_INVARIANT_VIOLATION') }
@@ -165,8 +166,6 @@ export async function assertRepeatGraphCommittedState(sql: GraphTransactionSql, 
     }
     candidates.push({ native, launch })
   }
-  const runIndex = covered.has('repeat.run.state') ? null : current.push({ source_kind: 'run', source_revision: '1', source_id: null, source_digest: null,
-    semantic_digest: graphSourceDigest([{ type: 'repeat.run.state', state: state.run }]), effect_kind: null, entity_id: null, effect_digest: null }) - 1
   const currentRows = await readProofs(sql, scope, head, current)
   for (const [i, { native, launch }] of candidates.entries()) {
     const row = currentRows[native], execution = live[i]!
@@ -175,10 +174,26 @@ export async function assertRepeatGraphCommittedState(sql: GraphTransactionSql, 
     if (!(exactSource && validProof(row, current[native]!, head))
       && !(launch !== null && validProof(currentRows[launch], current[launch]!, head))) return fail()
   }
-  if (runIndex !== null) {
-    const row = currentRows[runIndex]
-    if (!validProof(row, current[runIndex]!, head) || row!.source_id !== repeatId('repeat-run', scope.runId, row!.source_digest!)) return fail()
+  // A historical native receipt with the same semantic state cannot prove
+  // that state is still latest (running -> waiting -> running is a real cycle).
+  // Supplemental exact-execution sources retain the last public cut permanently.
+  const latestRows = state.executions.length ? (await sql.query<{
+    source_id: string; source_revision: string; first_sequence: string; source_digest: string; semantic_digest: string
+  }>(`select distinct on (s.source_id) s.source_id,s.source_revision::text,s.first_sequence::text,s.source_digest,s.semantic_digest
+      from run_graph_sources s where s.run_id=$1 and s.source_kind='execution' and s.source_id=any($2::text[])
+      order by s.source_id,s.source_revision desc`, [scope.runId, state.executions.map((execution) => execution.identity.executionId)])).rows : []
+  const latest = new Map(latestRows.map((row) => [row.source_id, row]))
+  if (latest.size !== state.executions.length) return fail()
+  for (const execution of state.executions) {
+    const row = latest.get(execution.identity.executionId)
+    if (!row || !GraphSequenceSchema.safeParse(row.first_sequence).success || row.source_revision !== row.first_sequence
+      || BigInt(row.first_sequence) < 1n || BigInt(row.first_sequence) > BigInt(head)
+      || row.source_digest !== repeatExecutionStateDigest(scope, execution)
+      || row.semantic_digest !== graphSourceDigest([{ type: 'repeat.execution', execution }])) return fail()
   }
+  const runSource = await readRepeatRunSourceLocked(sql, scope)
+  if (!runSource.replayed || !equal(runSource.fact, { type: 'repeat.run.state', state: state.run })) return fail()
+
 }
 
 /** A schema-valid retained payload is not enough: recompute each source's exact
@@ -190,6 +205,11 @@ export async function assertRepeatGraphBatchesCommitted(sql: GraphTransactionSql
   const proofs: SourceProof[] = [], sequences: string[] = [], seen = new Set<string>()
   for (const batch of batches) {
     if (!sameCanonicalGraphScope(batch.scope, scope)) return fail()
+    const envelope = repeatGraphBatchReceipt(batch)
+    proofs.push({ source_kind: envelope.evidence.sourceKind, source_revision: envelope.evidence.sourceRevision,
+      source_id: envelope.evidence.sourceId, source_digest: envelope.sourceDigest, semantic_digest: envelope.semanticDigest,
+      effect_kind: null, entity_id: null, effect_digest: null })
+    sequences.push(batch.sequence)
     const groups = new Map<string, RepeatGraphBatchV3['events']>()
     for (const event of batch.events) {
       const key = canonicalGraphJson(event.evidence)

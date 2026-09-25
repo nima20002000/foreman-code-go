@@ -146,6 +146,7 @@ export const ExecutableWorkflowV2Schema = z.object({
 export const CompatibleWorkflowVersionSchema = z.union([WorkflowVersionSchema, WorkflowVersionV2Schema])
 // safeExtend preserves the legacy Run lifecycle refinements while adding only the new-mode pin.
 export const WorkflowRunV2Schema = WorkflowRunSchema.safeExtend({ executionSemanticsVersion: z.literal(2) })
+export type WorkflowRunV2 = z.infer<typeof WorkflowRunV2Schema>
 export const CompatibleWorkflowRunSchema = z.union([WorkflowRunSchema, WorkflowRunV2Schema])
 export const RunDetailsV2Schema = GetRunResponseSchema.extend({ run: WorkflowRunV2Schema }).strict()
 export const CompatibleRunDetailsSchema = z.union([GetRunResponseSchema, RunDetailsV2Schema])

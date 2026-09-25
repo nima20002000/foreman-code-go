@@ -8,6 +8,8 @@ import {
   CanonicalRunGraphScopeSchema, sameCanonicalGraphScope, RepeatGraphScopeV3Schema,
   RepeatGraphFactV3Schema, RepeatGraphEffectV3Schema, RepeatGraphEventContentV3Schema, RepeatGraphBatchV3Schema,
   assertRepeatGraphFactScope,
+  GraphSequenceSchema, RepeatGraphRunStateV3Schema, AcceptedWorkflowRunV3Schema,
+  type AcceptedWorkflowRunV3, type RepeatGraphScopeV3, type RepeatGraphBatchV3,
   type CanonicalRunGraphScope, type RepeatGraphFactV3,
   type RepeatGraphEventV3, type RepeatGraphEffectV3,
 } from '@graphql/contracts/wave25'
@@ -21,6 +23,65 @@ import type { RunOwnership } from '../runs/ownership.js'
 export function graphSourceDigest(value: unknown): string {
   return 'sha256:' + createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
 }
+/** Digest-only receipt for the complete ordered envelope, in the EXISTING
+ * source table. Per-source digests alone cannot prove source-group ordering.
+ * This reserved source never emits another event or allocates another counter.
+ */
+export function repeatGraphBatchReceipt(batch: Pick<RepeatGraphBatchV3,
+  'protocolVersion' | 'scope' | 'batchId' | 'previousSequence' | 'sequence' | 'events'>) {
+  const digest = graphSourceDigest(batch)
+  return { evidence: { sourceKind: 'run' as const, sourceId: `repeat-batch:${batch.batchId}`, sourceRevision: '1' },
+    sourceDigest: digest, semanticDigest: digest }
+}
+
+/** Exact private Run readback. Public state is deliberately a three-field
+ * whitelist. The source revision uses the existing complete-batch head, never
+ * a new counter. Reusing a historical state after an intervening transition
+ * therefore cannot be mistaken for a duplicate source.
+ */
+export async function readRepeatRunSourceLocked(sql: GraphTransactionSql, input: RepeatGraphScopeV3) {
+  assertGraphTransaction(sql)
+  const scope = RepeatGraphScopeV3Schema.parse(input)
+  const row = (await sql.query<{ record: unknown; workspace_id: string; workflow_id: string; workflow_version_id: string;
+    execution_state: string; stopped: boolean; written_here: boolean; created_here: boolean }>(
+    `select record,workspace_id,workflow_id,workflow_version_id,execution_state,stop_requested_at is not null as stopped,
+       xmin=pg_current_xact_id_if_assigned()::xid as written_here,
+       created_at=transaction_timestamp() as created_here from runs where id=$1`, [scope.runId])).rows[0]
+  if (!row) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
+  const run = AcceptedWorkflowRunV3Schema.parse(row.record)
+  if (row.workspace_id !== scope.workspaceId || row.workflow_id !== scope.workflowId || row.workflow_version_id !== scope.workflowVersionId
+    || run.id !== scope.runId || run.workspaceId !== scope.workspaceId || run.workflowId !== scope.workflowId
+    || run.workflowVersionId !== scope.workflowVersionId || run.executionState !== row.execution_state) {
+    throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
+  }
+  const state = RepeatGraphRunStateV3Schema.parse({ executionState: run.executionState, outcome: run.outcome, stopRequested: row.stopped })
+  const fact = RepeatGraphFactV3Schema.parse({ type: 'repeat.run.state', state })
+  const semanticDigest = graphSourceDigest([fact])
+  const sourceDigest = graphSourceDigest({ scope, record: run, stopRequested: row.stopped })
+  const head = (await sql.query<{ head_sequence: string }>('select head_sequence::text from run_graph_heads where run_id=$1', [scope.runId])).rows[0]
+  if (!head) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
+  GraphSequenceSchema.parse(head.head_sequence)
+  const latest = (await sql.query<{ source_revision: string; source_digest: string; semantic_digest: string; first_sequence: string }>(
+    `select s.source_revision::text,s.source_digest,s.semantic_digest,s.first_sequence::text from run_graph_sources s
+     where s.run_id=$1 and s.source_kind='run' and s.source_id=$1 order by s.source_revision desc limit 1`, [scope.runId])).rows[0]
+  if (!latest && head.head_sequence !== '0') throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+  if (latest && (!GraphSequenceSchema.safeParse(latest.source_revision).success
+    || !GraphSequenceSchema.safeParse(latest.first_sequence).success || BigInt(latest.first_sequence) < 1n
+    || BigInt(latest.first_sequence) > BigInt(head.head_sequence)
+    || (latest.source_revision === '0' ? latest.first_sequence !== '1' : latest.source_revision !== latest.first_sequence))) {
+    throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+  }
+  const baseline = latest?.source_revision === '0' && run.executionState === 'queued' && run.outcome === 'pending' && !row.stopped
+    && latest.source_digest === graphSourceDigest(run)
+  const replayed = Boolean(latest && latest.semantic_digest === semanticDigest && (baseline || latest.source_digest === sourceDigest))
+  const revision = replayed ? latest!.source_revision : String(BigInt(head.head_sequence) + 1n)
+  if (!GraphSequenceSchema.safeParse(revision).success) throw new RunGraphError('GRAPH_SEQUENCE_EXHAUSTED')
+  return { run, stopped: row.stopped, writtenHere: row.written_here === true, createdHere: row.created_here === true,
+    head: head.head_sequence, fact, semanticDigest, replayed,
+    evidence: { sourceKind: 'run' as const, sourceId: scope.runId, sourceRevision: revision },
+    sourceDigest: replayed ? latest!.source_digest : sourceDigest }
+}
+
 export interface GraphSourceChange {
   evidence: GraphEvidence
   /** Hash the immutable source fact INCLUDING private fields; never send those fields to the journal. */
@@ -64,6 +125,7 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
   readonly #effects = new Map<string, StagedEffect>()
   #bytes = 0
   #busy = false
+  #admissionOnly = false
   #finalized = false
   #receipt: GraphPublicationReceipt = { sequence: null, batchId: null, kind: 'none' }
   constructor(key: symbol, sql: GraphTransactionSql, scope: S) {
@@ -218,6 +280,97 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
     return this.repeatChangeInternal({ ...input, effect: null }, owner, mutate, projectLocked, 'native_evidence')
   }
 
+  /** Only the actual newly INSERTed queued Run can establish from-admission
+   * coverage. This readback cannot write a Run, enter a block or mint an owner.
+   * The authorized Start caller still owns command/live-authority validation.
+   */
+  repeatInsertedRunReadback(run: AcceptedWorkflowRunV3) {
+    return this.repeatSqlRunReadback(AcceptedWorkflowRunV3Schema.parse(JSON.parse(canonicalGraphJson(run))))
+  }
+
+  /** An ownerless authenticated Stop writer may enlist its actual same-tx SQL
+   * Stop, never progress work. A retry of an already published Stop may only
+   * verify its exact receipt. No mutation/authorization callback is accepted.
+   */
+  repeatStoppedRunReadback() { return this.repeatSqlRunReadback() }
+
+  private async repeatSqlRunReadback(accepted?: AcceptedWorkflowRunV3) {
+    let entered = false
+    try {
+      assertGraphTransaction(this.sql)
+      if (this.#finalized) throw new RunGraphError('GRAPH_TRANSACTION_CLOSED')
+      if (this.#busy) throw new RunGraphError('GRAPH_TRANSACTION_CONCURRENT')
+      this.#busy = true; entered = true
+      const scope = RepeatGraphScopeV3Schema.parse(this.scope)
+      if (this.#admissionOnly) throw new RunGraphError('GRAPH_TRANSACTION_NESTED')
+      const current = await readRepeatRunSourceLocked(this.sql, scope)
+      const sameRecord = (run: AcceptedWorkflowRunV3) => canonicalGraphJson(run) === canonicalGraphJson(current.run)
+      if (accepted) {
+        if (!sameRecord(accepted) || !current.writtenHere || !current.createdHere || current.stopped
+          || current.head !== '0' || this.#sources.size || accepted.executionState !== 'queued' || accepted.outcome !== 'pending'
+          || accepted.startedAt !== undefined || accepted.finishedAt !== undefined || accepted.result !== undefined) {
+          throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+        }
+        const empty = (await this.sql.query<{ empty: boolean }>(`select
+          not exists(select 1 from harness_executions where run_id=$1)
+          and not exists(select 1 from run_repeat_occurrences where run_id=$1)
+          and not exists(select 1 from run_repeat_slots where run_id=$1)
+          and not exists(select 1 from run_repeat_effects where run_id=$1)
+          and not exists(select 1 from run_cleanup_intents where run_id=$1)
+          and not exists(select 1 from run_graph_sources where run_id=$1)
+          and not exists(select 1 from run_graph_effects where run_id=$1)
+          and exists(select 1 from run_graph_heads where run_id=$1 and head_sequence=0
+            and retention_floor=0 and history_coverage='from_admission') as empty`, [scope.runId])).rows[0]
+        if (empty?.empty !== true) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+        this.#admissionOnly = true
+      } else if (!current.stopped || !current.replayed && !current.writtenHere) {
+        throw new RunGraphError('GRAPH_STOP_CONFLICT')
+      }
+      const evidence = accepted ? { sourceKind: 'run' as const, sourceId: scope.runId, sourceRevision: '0' } : current.evidence
+      const sourceDigest = accepted ? graphSourceDigest(accepted) : current.sourceDigest
+      const semanticDigest = current.semanticDigest
+      const key = canonicalGraphJson(evidence), staged = this.#sources.get(key)
+      if (staged) this.assertSame(staged, sourceDigest, semanticDigest)
+      const replayed = !accepted && current.replayed || Boolean(staged)
+      if (!replayed) {
+        const event = RepeatGraphEventContentV3Schema.parse({ eventId: randomUUID(), evidence, sourceDigest, semanticDigest,
+          effect: null, fact: current.fact })
+        const bytes = graphJsonBytes(event)
+        if (this.#sources.size >= RUN_GRAPH_LIMITS.transactionSources || this.#bytes + bytes > RUN_GRAPH_LIMITS.transactionBytes) {
+          throw new RunGraphError('GRAPH_TRANSACTION_LIMIT')
+        }
+        this.#sources.set(key, { evidence, sourceDigest, semanticDigest, events: [event] }); this.#bytes += bytes
+      }
+      beforeGraphCommit(this.sql, async () => {
+        const row = await readRepeatRunSourceLocked(this.sql, scope)
+        if (!sameRecord(row.run) || row.stopped !== current.stopped || !row.replayed) {
+          throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
+        }
+        if (accepted) {
+          const children = await this.sql.query(`select 1 where
+            exists(select 1 from harness_executions where run_id=$1)
+            or exists(select 1 from run_repeat_occurrences where run_id=$1)
+            or exists(select 1 from run_repeat_slots where run_id=$1)
+            or exists(select 1 from run_repeat_effects where run_id=$1)
+            or exists(select 1 from run_cleanup_intents where run_id=$1)`, [scope.runId])
+          if (children.rowCount !== 0) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+        }
+      })
+      return { replayed, evidence, sourceDigest, semanticDigest }
+    } catch (error) {
+      poisonGraphTransaction(this.sql)
+      throw error instanceof RunGraphError ? error : new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+    } finally { if (entered) this.#busy = false }
+  }
+
+  /** Read back the concrete N1 writer's physical execution metadata without
+   * accepting a result, changing native state or granting another launch. */
+  repeatExecutionReadback(input: Omit<RepeatGraphSourceChange, 'effect'>, owner: RunOwnership,
+    projectLocked: (sql: GraphTransactionSql) => Promise<readonly RepeatGraphFactV3[]>,
+  ) {
+    return this.repeatChangeInternal({ ...input, effect: null }, owner, async () => undefined, projectLocked, 'native_evidence')
+  }
+
   private async repeatChangeInternal<T>(input: RepeatGraphSourceChange, owner: RunOwnership,
     mutate: (sql: GraphTransactionSql) => Promise<T>,
     projectLocked: (sql: GraphTransactionSql) => Promise<readonly RepeatGraphFactV3[]>, mode: 'progress' | 'run_readback' | 'native_evidence',
@@ -226,6 +379,7 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
     try {
       assertGraphTransaction(this.sql)
       const scope = RepeatGraphScopeV3Schema.parse(this.scope)
+      if (this.#admissionOnly) throw new RunGraphError('GRAPH_TRANSACTION_NESTED')
       if (this.#finalized) throw new RunGraphError('GRAPH_TRANSACTION_CLOSED')
       if (this.#busy) throw new RunGraphError('GRAPH_TRANSACTION_CONCURRENT')
       this.#busy = true; entered = true
@@ -348,6 +502,7 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
     if (events.length && !sequence) throw new RunGraphError('GRAPH_SEQUENCE_EXHAUSTED')
     let batchId: string | null = null
     let kind: GraphPublicationReceipt['kind'] = 'none'
+    let batchProof: ReturnType<typeof repeatGraphBatchReceipt> | undefined
     if (sequence) {
       batchId = randomUUID()
       const candidate = {
@@ -358,6 +513,9 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
         || events.some((event) => graphJsonBytes(event) > RUN_GRAPH_LIMITS.eventBytes)
         || graphJsonBytes(candidate) > RUN_GRAPH_LIMITS.batchBytes
       kind = oversized ? 'reset' : 'events'
+      if (!oversized && this.scope.executionSemanticsVersion === 3) batchProof = repeatGraphBatchReceipt({
+        ...candidate, scope: RepeatGraphScopeV3Schema.parse(this.scope), events: events as RepeatGraphEventV3[],
+      })
       const parsed = oversized ? undefined : (this.scope.executionSemanticsVersion === 3
         ? RepeatGraphBatchV3Schema.safeParse(candidate) : RunGraphBatchSchema.safeParse(candidate))
       if (parsed && !parsed.success) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
@@ -375,6 +533,9 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
       source_kind: source.evidence.sourceKind, source_id: source.evidence.sourceId, source_revision: source.evidence.sourceRevision,
       source_digest: source.sourceDigest, semantic_digest: source.semanticDigest,
     }))
+    if (batchProof) receipts.push({ first_sequence: sequence,
+      source_kind: batchProof.evidence.sourceKind, source_id: batchProof.evidence.sourceId,
+      source_revision: batchProof.evidence.sourceRevision, source_digest: batchProof.sourceDigest, semantic_digest: batchProof.semanticDigest })
     await this.sql.query(
       `insert into run_graph_sources(run_id,source_kind,source_id,source_revision,source_digest,semantic_digest,first_sequence)
        select $1,x.source_kind,x.source_id,x.source_revision,x.source_digest,x.semantic_digest,x.first_sequence

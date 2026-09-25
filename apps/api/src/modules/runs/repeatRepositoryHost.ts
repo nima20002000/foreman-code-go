@@ -16,10 +16,9 @@ import { requireRepeatNativeHooks, type RepeatNativeBoundaryEvidence, type Repea
   type RepeatNativeEvidence, type RepeatLaunchClaim } from './repeatNativeRepository.js'
 import { assertRepeatExecution, repeatConflict, repeatId, sameRepeatValue, type RepeatNodeRef, type RepeatScope, type RepeatSource } from './repeatResolution.js'
 
-/** Required canonical-publication adapter. This is PRIVATE composition, not a
- * new public graph protocol. No v3 -> v2 coercion is permitted. The pinned public
- * G1 contracts do not yet represent occurrence-qualified native facts, so no
- * default implementation (or native activation switch) is provided here. */
+/** Required canonical-publication adapter on the existing Run/head transaction.
+ * The central repository binds the real N1 producer; native authority and Run
+ * lifecycle services remain mandatory. No v3 -> v2 coercion is permitted. */
 export interface RepeatCanonicalPublication {
   readonly sql: GraphTransactionSql
   readonly scope: RepeatScope
@@ -34,7 +33,7 @@ export interface RepeatCanonicalPublication {
 export interface RepeatRepositoryServices {
   /** Must open the EXISTING canonical publication on this exact transaction and
    * existing head. It must enlist same-transaction receipt checks before COMMIT. */
-  openPublicationLocked(sql: GraphTransactionSql, scope: RepeatScope): Promise<RepeatCanonicalPublication>
+  openPublicationLocked(sql: GraphTransactionSql, scope: RepeatScope, owner: RunOwnership): Promise<RepeatCanonicalPublication>
   /** Existing coordinator/manager authority; verifies exact owner/session/lane,
    * generation, possible-submission, command and raw-event provenance. */
   assertNativeBoundaryLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
@@ -83,6 +82,12 @@ export class RepeatRepositoryFactory {
     return store
   }
 
+  /** Consumption never constructs a store or recreates a capability from SQL. */
+  consumeLaunchPermit(owner: RunOwnership, executionId: string): boolean {
+    owner.assertOwned()
+    return this.stores.get(owner)?.store.consumeLaunchPermit(executionId) === true
+  }
+
   private async openLocked(owner: RunOwnership, sql: GraphTransactionSql, scope: RepeatScope,
     record: unknown, version: RepeatWorkflowVersionV1): Promise<RepeatLockedHooks> {
     assertGraphTransaction(sql)
@@ -104,7 +109,7 @@ export class RepeatRepositoryFactory {
     const head = await sql.query<{ protocol_version: number }>(
       'select protocol_version from run_graph_heads where run_id=$1 for update', [run.id])
     if (!head.rows[0] || head.rows[0].protocol_version !== 1) return repeatConflict('GRAPH_NOT_INITIALIZED')
-    const publication = await this.services.openPublicationLocked(sql, scope)
+    const publication = await this.services.openPublicationLocked(sql, scope, owner)
     if (publication.sql !== sql || !sameRepeatValue(publication.scope, scope)
       || ['publishEffectLocked', 'assertEffectReceiptLocked', 'publishNativeLocked', 'assertNativeReceiptLocked',
         'assertLaunchReceiptLocked'].some((key) => typeof publication[key as keyof RepeatCanonicalPublication] !== 'function')) {

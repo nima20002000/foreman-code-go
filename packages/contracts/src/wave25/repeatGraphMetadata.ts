@@ -4,6 +4,8 @@ import {
   GraphRunStateSchema, GraphSequenceSchema, NodeResolutionSchema, RUN_GRAPH_LIMITS,
   RunGraphScopeSchema, RunGraphTopologySchema, GraphResetReasonSchema,
   RunGraphSnapshotSchema, RunGraphPageSchema, RunGraphResetSchema,
+  RunGraphReadRequestSchema, RunGraphEventsRequestSchema,
+  RunGraphHttpSnapshotQuerySchema, RunGraphHttpEventsQuerySchema, RUN_GRAPH_ROUTES, RUN_GRAPH_MCP_TOOLS,
   type GraphExecutionIdentity,
 } from './protocol.js'
 import {
@@ -473,3 +475,23 @@ export function qualifyRepeatGraphExecution(identity: GraphExecutionIdentity, oc
 /** Explicit transport response arms; original 1/2 schemas are unchanged. */
 export const CanonicalRunGraphSnapshotSchema = z.union([RunGraphSnapshotSchema, RepeatGraphSnapshotV3Schema])
 export const CanonicalRunGraphEventsResponseSchema = z.union([RunGraphPageSchema, RunGraphResetSchema, RepeatGraphPageV3Schema, RepeatGraphResetV3Schema])
+
+
+/** The existing canonical transport, with an explicit semantics-3 arm. These
+ * unions do not broaden the original 1/2 schemas or advertise v3 qualification.
+ * Current is a snapshot alias for legacy callers; v3 has its explicit kind.
+ */
+export const CanonicalRunGraphReadRequestSchema = z.object({
+  protocolVersion: RunGraphReadRequestSchema.shape.protocolVersion, scope: CanonicalRunGraphScopeSchema,
+}).strict()
+export const CanonicalRunGraphEventsRequestSchema = CanonicalRunGraphReadRequestSchema.extend({
+  afterSequence: RunGraphEventsRequestSchema.shape.afterSequence,
+}).strict()
+export const CanonicalRunGraphHttpSnapshotQuerySchema = z.union([RunGraphHttpSnapshotQuerySchema, RepeatGraphHttpSnapshotQueryV3Schema])
+export const CanonicalRunGraphHttpEventsQuerySchema = z.union([RunGraphHttpEventsQuerySchema, RepeatGraphHttpEventsQueryV3Schema])
+export const CanonicalRunGraphCurrentSchema = z.union([RunGraphSnapshotSchema, RepeatGraphCurrentV3Schema])
+export type RepeatGraphCurrentV3 = z.infer<typeof RepeatGraphCurrentV3Schema>
+export const CANONICAL_RUN_GRAPH_ROUTES = Object.freeze({ ...RUN_GRAPH_ROUTES,
+  current: '/api/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/graph/v1/current',
+})
+export const CANONICAL_RUN_GRAPH_MCP_TOOLS = Object.freeze({ ...RUN_GRAPH_MCP_TOOLS, current: 'run_graph_current_v1' })

@@ -56,6 +56,36 @@ function reset(scope: RepeatGraphScopeV3, requestedSequence: string, head: Repea
     headSequence: head.head_sequence, retentionFloor: head.retention_floor, reason, action: 'fetch_snapshot' })
 }
 
+/** Reused by snapshot AND delta, including an empty delta. Otherwise a
+ * domain update missing publication could masquerade as a complete empty page.
+ * One bounded primary repeatable-read cut; no second source of live facts. */
+async function verifiedRepeatCut(sql: GraphTransactionSql, scope: RepeatGraphScopeV3, head: RepeatGraphHead): Promise<RepeatGraphSnapshotV3> {
+  try {
+    const { version } = await readRepeatGraphPinsLocked(sql, scope)
+    const run = await readRepeatRunStateLocked(sql, scope)
+    const occurrences = await readRepeatGraphOccurrencesLocked(sql, scope)
+    const executions = await readRepeatGraphExecutionsLocked(sql, scope)
+    const bindings = await readRepeatGraphBindingsLocked(sql, scope, undefined, executions)
+    const resolutions = await readRepeatGraphResolutionsLocked(sql, scope)
+    const results = await readRepeatGraphResultsLocked(sql, scope, executions)
+    const decisions = await readRepeatGraphDecisionsLocked(sql, scope)
+    const data = { run, occurrences, executions, bindings, resolutions, results, decisions }
+    if (graphJsonBytes(data) > RUN_GRAPH_LIMITS.snapshotBytes) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
+    const state = sortRepeatGraphState(RepeatGraphStateV3Schema.parse(data))
+    const candidate = { kind: 'snapshot' as const, protocolVersion: 1 as const, scope,
+      asOfSequence: head.head_sequence, retentionFloor: head.retention_floor, historyCoverage: head.history_coverage,
+      topology: repeatGraphTopologyV3(version), state }
+    if (graphJsonBytes(candidate) > RUN_GRAPH_LIMITS.snapshotBytes) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
+    const snapshot = validateRepeatGraphSnapshotV3(version, candidate)
+    await assertRepeatGraphCommittedState(sql, scope, head.head_sequence, snapshot.state)
+    return snapshot
+  } catch (error) {
+    if (error instanceof RunGraphError) throw error
+    // No parser fragments, private source records or paths cross this boundary.
+    throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+  }
+}
+
 /** Same primary repeatable-read cut for head, immutable pins, domain rows AND
  * permanent receipt verification. No retained-batch replay used as a new store.
  * A capacity excess returns an error; never partial state labelled complete. */
@@ -64,30 +94,7 @@ export async function readRepeatGraphSnapshot(pool: pg.Pool, input: unknown,
   const request = readRequest(input)
   return withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
     const head = await authorizedHead(sql, request.scope, authorize)
-    try {
-      const { version } = await readRepeatGraphPinsLocked(sql, request.scope)
-      const run = await readRepeatRunStateLocked(sql, request.scope)
-      const occurrences = await readRepeatGraphOccurrencesLocked(sql, request.scope)
-      const executions = await readRepeatGraphExecutionsLocked(sql, request.scope)
-      const bindings = await readRepeatGraphBindingsLocked(sql, request.scope, undefined, executions)
-      const resolutions = await readRepeatGraphResolutionsLocked(sql, request.scope)
-      const results = await readRepeatGraphResultsLocked(sql, request.scope, executions)
-      const decisions = await readRepeatGraphDecisionsLocked(sql, request.scope)
-      const data = { run, occurrences, executions, bindings, resolutions, results, decisions }
-      if (graphJsonBytes(data) > RUN_GRAPH_LIMITS.snapshotBytes) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
-      const state = sortRepeatGraphState(RepeatGraphStateV3Schema.parse(data))
-      const candidate = { kind: 'snapshot' as const, protocolVersion: 1 as const, scope: request.scope,
-        asOfSequence: head.head_sequence, retentionFloor: head.retention_floor, historyCoverage: head.history_coverage,
-        topology: repeatGraphTopologyV3(version), state }
-      if (graphJsonBytes(candidate) > RUN_GRAPH_LIMITS.snapshotBytes) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
-      const snapshot = validateRepeatGraphSnapshotV3(version, candidate)
-      await assertRepeatGraphCommittedState(sql, request.scope, head.head_sequence, snapshot.state)
-      return snapshot
-    } catch (error) {
-      if (error instanceof RunGraphError) throw error
-      // No parser fragments, private source records or paths cross this boundary.
-      throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
-    }
+    return verifiedRepeatCut(sql, request.scope, head)
   }, true))
 }
 export async function readRepeatGraphCurrent(pool: pg.Pool, input: unknown, authorize: AuthorizeRepeatGraphRead) {
@@ -105,6 +112,8 @@ export async function readRepeatGraphPage(pool: pg.Pool, input: unknown,
   return withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
     const { scope, afterSequence } = request
     const head = await authorizedHead(sql, scope, authorize), after = BigInt(afterSequence)
+    // Do not label a stale unjournaled domain cut as a complete empty page.
+    await verifiedRepeatCut(sql, scope, head)
     if (after < BigInt(head.retention_floor)) return reset(scope, afterSequence, head, 'history_expired')
     if (after > BigInt(head.head_sequence)) return reset(scope, afterSequence, head, 'cursor_ahead')
     if (BigInt(head.head_sequence) - after > BigInt(RUN_GRAPH_LIMITS.catchupBatches)) return reset(scope, afterSequence, head, 'catchup_limit')

@@ -1,4 +1,5 @@
-import type { HarnessExecution, NativeSessionReference } from '@graphql/contracts'
+import { NativeSessionReferenceSchema, type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
+import { canonicalGraphJson } from '@graphql/contracts/wave25'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
 import type { RepeatNodeRef, RepeatScope } from './repeatResolution.js'
@@ -52,6 +53,16 @@ export interface RepeatNativeEvidence {
   kind: 'live' | 'recovery'
   session: NativeSessionReference
   evidence: unknown
+}
+/** Capture the private original source before asynchronous guards run. This is
+ * shape/bounds validation only, NEVER authority or a substitute for raw receipts. */
+export function captureRepeatNativeEvidence(input: RepeatNativeEvidence): RepeatNativeEvidence {
+  if (!input || !['live', 'recovery'].includes(input.kind) || input.evidence === undefined) {
+    throw new DomainError('REPEAT_NATIVE_EVIDENCE_REQUIRED', 'Exact native lifetime/source evidence is required.', 409)
+  }
+  const session = NativeSessionReferenceSchema.parse(input.session)
+  const evidence: unknown = JSON.parse(canonicalGraphJson(input.evidence, 4 * 1024 * 1024))
+  return { kind: input.kind, session, evidence }
 }
 export type RepeatNativeBoundaryEvidence =
   | { kind: 'first_launch' }
