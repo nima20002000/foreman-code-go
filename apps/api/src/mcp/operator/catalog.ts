@@ -1,6 +1,10 @@
 import type { ManagementAction, OperatorToolName } from '@graphql/contracts/management'
 
 export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; action: ManagementAction }> = [
+  { name: 'repeat_capabilities_get', action: 'capabilities:read' },
+  { name: 'repeat_get', action: 'workflows:read' },
+  { name: 'repeat_update', action: 'workflows:update' },
+  { name: 'repeat_run_get', action: 'runs:read' },
   { name: 'operator_mcp_setup_get', action: 'harnesses:read' },
   { name: 'operator_chat_create', action: 'operator_chat:write' },
   { name: 'operator_chat_get', action: 'operator_chat:read' },

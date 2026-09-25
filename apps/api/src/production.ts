@@ -33,6 +33,7 @@ import { OPERATOR_MCP_ENVIRONMENT_VARIABLE, PostgresOperatorChatAuthority } from
 import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
 import { DomainError } from './modules/errors.js'
 import { GraphDraftService } from './modules/graph-drafts/service.js'
+import { createRepeatServices } from './modules/repeats/composition.js'
 import { Wave25ApprovalDraftService } from './modules/workflows/approvalDraftService.js'
 import { HarnessCatalogService } from './modules/harnesses/catalog.js'
 import { createHarnessCompatibility } from './modules/harnesses/compatibility/service.js'
@@ -239,6 +240,7 @@ export function buildProductionApp(
       if (await engine.cancel(runId)) await engine.finishRunLifecycle(runId, 'The assigned Orchestrator review failed; see the Run stop cause.')
     })
   const operatorServices = {
+    repeats: createRepeatServices(database.pool, commands),
     operatorChat: chat,
     workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings),
     locations,

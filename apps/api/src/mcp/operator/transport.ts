@@ -4,6 +4,7 @@ import type { FastifyInstance } from 'fastify'
 import { bearerToken, type PostgresAccessService } from '../../modules/access/postgres.js'
 import { requireLocalRequest } from '../../modules/access/http.js'
 import { createOperatorMcpServer } from './server.js'
+import { unavailableRepeatToolCall } from './repeats.js'
 import type { OperatorServices } from './types.js'
 
 export function registerOperatorMcp(
@@ -14,6 +15,10 @@ export function registerOperatorMcp(
   app.post('/mcp/operator', { bodyLimit: 1_000_000 }, async (request, reply) => {
     requireLocalRequest(request)
     const principal = await access.authenticate(bearerToken(request.headers.authorization), 'operator')
+    // Unlisted repeat writes must still produce an authenticated denial audit,
+    // rather than disappearing into the SDK's generic unknown-tool response.
+    const unavailable = await unavailableRepeatToolCall({ principal, services }, request.body)
+    if (unavailable) return reply.send(unavailable)
     const server = createOperatorMcpServer({ principal, services })
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
     reply.raw.once('close', () => { void Promise.allSettled([transport.close(), server.close()]) })

@@ -1,5 +1,6 @@
 import type { RunGraphReadApi } from '../../modules/run-graph/readService.js'
 import type { OperatorExtensions } from './extensions.js'
+import type { RepeatServices } from '../../modules/repeats/composition.js'
 import type { HarnessMcpSettingsService } from '../../modules/harnesses/mcpSettings.js'
 import type { HarnessDirectoryBrowser } from '../../modules/harnesses/directoryBrowser.js'
 import type { CodexPluginSettingsService } from '../../modules/harnesses/codexPluginSettings.js'
@@ -20,6 +21,7 @@ import type { FoundationSettingsManagementService } from '../../modules/settings
 import type { OperatorInteractionService } from '../../modules/interactions/operator.js'
 
 export interface OperatorServices {
+  repeats?: RepeatServices
   runGraph?: RunGraphReadApi
   operatorChat?: Pick<OperatorChatService, 'setup' | 'create' | 'get' | 'send' | 'handoffHistory'>
   harnessSettings?: { mcp: HarnessMcpSettingsService; directories: HarnessDirectoryBrowser; plugins?: CodexPluginSettingsService }

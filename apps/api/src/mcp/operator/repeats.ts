@@ -1,8 +1,8 @@
 import type { McpServer } from '@modelcontextprotocol/server'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { REPEAT_OPERATOR_TOOL_NAMES, RepeatCapabilitiesResultSchema, type ManagementPrincipal, type RepeatOperatorToolName } from '@graphql/contracts/management'
+import { z } from 'zod'
 import {
   RepeatCapabilityRequestSchema,
-  RepeatCapabilityV1Schema,
   RepeatRunReadInputSchema,
   RepeatRunReadbackSchema,
   RepeatSaveInputSchema,
@@ -17,7 +17,10 @@ import type { RepeatAuthoringService } from '../../modules/repeats/authoring.js'
 import type { RepeatReadbackService } from '../../modules/repeats/readback.js'
 import { toolFailure, toolResult } from '../shared/results.js'
 
-export type RepeatOperatorToolName = 'repeat_capabilities_get' | 'repeat_get' | 'repeat_update' | 'repeat_run_get'
+import { operatorToolAvailable } from './availability.js'
+import type { OperatorRequestContext } from './types.js'
+
+export type { RepeatOperatorToolName } from '@graphql/contracts/management'
 
 export interface RepeatOperatorContext {
   principal: ManagementPrincipal
@@ -39,9 +42,9 @@ async function invoke(context: RepeatOperatorContext, name: string, work: () => 
 
 export function registerRepeatTools(server: McpServer, context: RepeatOperatorContext): void {
   if (context.available('repeat_capabilities_get')) server.registerTool('repeat_capabilities_get', {
-    description: 'Discover bounded business-repeat contract/version and supported authoring limits. This never enables unsupported nesting or arbitrary cycles.',
+    description: 'Discover saved bounded-repeat authoring/readback limits and explicit unavailable native Start and repeat edit-intent gates. supported=false is not permission to start; no nesting or arbitrary cycles.',
     inputSchema: RepeatCapabilityRequestSchema,
-    outputSchema: RepeatCapabilityV1Schema,
+    outputSchema: RepeatCapabilitiesResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invoke(context, 'repeat_capabilities_get', () => context.authoring.capabilities(context.principal, input)))
 
@@ -53,7 +56,7 @@ export function registerRepeatTools(server: McpServer, context: RepeatOperatorCo
   }, async (input) => invoke(context, 'repeat_get', () => context.readback.workflow(context.principal, input)))
 
   if (context.available('repeat_update')) server.registerTool('repeat_update', {
-    description: 'Revision- and version-pinned bounded-repeat publication. Requires explicit finite cap, early exit, limit exit, and settled affected Runs. Reusing commandId with different input conflicts.',
+    description: 'Revision- and version-pinned bounded-repeat publication through the same HTTP service. Requires workflows read/update, graph read/edit/save and Agent read grants; skills and privileged harness pins require extra authority. Every affected Run must be terminal with exact cleanup settlement. This does not Stop, Stage, or Start. Native repeat Start and repeat edit intents remain unavailable. Reusing commandId with different input conflicts.',
     inputSchema: RepeatSaveInputSchema,
     outputSchema: RepeatSaveResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -65,4 +68,22 @@ export function registerRepeatTools(server: McpServer, context: RepeatOperatorCo
     outputSchema: RepeatRunReadbackSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invoke(context, 'repeat_run_get', () => context.readback.run(context.principal, input)))
+}
+
+const RepeatToolCallSchema = z.object({
+  jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
+  method: z.literal('tools/call'), params: z.object({ name: z.enum(REPEAT_OPERATOR_TOOL_NAMES) }).passthrough(),
+}).passthrough()
+
+/** Authentication/host/origin checks precede this function in the existing MCP
+ * transport. No alternate endpoint or injected privileged principal is used. */
+export async function unavailableRepeatToolCall(context: OperatorRequestContext, body: unknown) {
+  const request = RepeatToolCallSchema.safeParse(body)
+  if (!request.success || operatorToolAvailable(context, request.data.params.name)) return undefined
+  const name = request.data.params.name
+  const error = context.services.repeats
+    ? new DomainError('ACCESS_DENIED', 'The repeat tool is not permitted by compatible scoped grants.', 403)
+    : new DomainError('REPEAT_SERVICES_UNAVAILABLE', 'Repeat services are not composed in this application.', 503)
+  if (error.status === 403) await context.services.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)
+  return { jsonrpc: '2.0' as const, id: request.data.id, result: toolFailure(error) }
 }

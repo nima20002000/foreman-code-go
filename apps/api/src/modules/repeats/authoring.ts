@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 import { AgentConfigurationVersionSchema, type AgentConfigurationVersion } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { RepeatCapabilitiesResultSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import {
   ExecutableRepeatWorkflowV1Schema,
   canonicalGraphJson,
@@ -38,7 +38,8 @@ interface WorkflowRow {
 }
 
 export class RepeatAuthoringService {
-  constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator) {}
+  constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
+    private readonly persistedReadback = false) {}
 
   capabilities(principal: ManagementPrincipal, value: RepeatCapabilityRequest) {
     const raw = RepeatCapabilityRequestSchema.parse(value)
@@ -53,7 +54,7 @@ export class RepeatAuthoringService {
     } else {
       requireAuthorization(principal, 'capabilities:read', {})
     }
-    return RepeatCapabilityV1Schema.parse({
+    const contract = RepeatCapabilityV1Schema.parse({
       contractVersion: REPEAT_CONTRACT_VERSION,
       executionSemanticsVersion: REPEAT_EXECUTION_SEMANTICS_VERSION,
       supported: true,
@@ -65,6 +66,15 @@ export class RepeatAuthoringService {
         maxOccurrencesMax: 2147483647,
         explicitLimitExit: true,
         earlyExitOutcome: true,
+      },
+    })
+    return RepeatCapabilitiesResultSchema.parse({
+      ...contract,
+      supported: false,
+      availability: {
+        savedAuthoring: true, persistedReadback: this.persistedReadback,
+        runtimeAdmission: false, meaningfulEdit: false,
+        reasons: ['NATIVE_START_NOT_READY', 'REPEAT_EDIT_INTENT_NOT_READY'],
       },
     })
   }

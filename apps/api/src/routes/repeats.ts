@@ -13,6 +13,7 @@ import type { RepeatReadbackService } from '../modules/repeats/readback.js'
 
 type Params = Record<string, string>
 type Query = Record<string, string | undefined>
+const RunQuerySchema = RepeatRunReadInputSchema.pick({ cursor: true, limit: true, includeResultData: true }).strict()
 
 export interface RepeatRouteServices {
   authoring: RepeatAuthoringService
@@ -41,10 +42,7 @@ function routeInput(params: Params, body: unknown): Record<string, unknown> {
 
 export function registerRepeatRoutes(app: FastifyInstance, services: RepeatRouteServices): void {
   app.get<{ Querystring: Query }>('/api/management/repeats/capabilities', async (request) =>
-    services.authoring.capabilities(requirePrincipal(request), RepeatCapabilityRequestSchema.parse({
-      ...(request.query.workspaceId ? { workspaceId: request.query.workspaceId } : {}),
-      ...(request.query.workflowId ? { workflowId: request.query.workflowId } : {}),
-    })))
+    services.authoring.capabilities(requirePrincipal(request), RepeatCapabilityRequestSchema.parse(request.query)))
 
   app.get<{ Params: Params }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/repeat', async (request) =>
     services.readback.workflow(requirePrincipal(request), RepeatWorkflowReadInputSchema.parse(request.params)))
@@ -52,12 +50,14 @@ export function registerRepeatRoutes(app: FastifyInstance, services: RepeatRoute
   app.put<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/repeat', async (request) =>
     services.authoring.save(requirePrincipal(request), 'http', RepeatSaveInputSchema.parse(routeInput(request.params, request.body))))
 
-  app.get<{ Params: Params; Querystring: Query }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/repeats', async (request) =>
-    services.readback.run(requirePrincipal(request), RepeatRunReadInputSchema.parse({
-      ...request.params,
-      ...(request.query.cursor ? { cursor: request.query.cursor } : {}),
-      ...(request.query.limit ? { limit: Number(request.query.limit) } : {}),
+  app.get<{ Params: Params; Querystring: Query }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/repeats', async (request) => {
+    const principal = requirePrincipal(request)
+    const query = RunQuerySchema.parse({
+      ...request.query,
+      ...(request.query.limit !== undefined ? { limit: Number(request.query.limit) } : {}),
       ...(request.query.includeResultData !== undefined
         ? { includeResultData: resultDataFlag(request.query.includeResultData) } : {}),
-    })))
+    })
+    return services.readback.run(principal, RepeatRunReadInputSchema.parse({ ...query, ...request.params }))
+  })
 }

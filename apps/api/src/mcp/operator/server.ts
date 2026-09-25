@@ -14,6 +14,8 @@ import { registerWorkspaceTools } from './tools/workspaces.js'
 import { registerInteractionTools } from './tools/interactions.js'
 import { registerSettingsTools } from './tools/settings.js'
 import { registerWorkspaceDefaultsTools } from './tools/workspaceDefaults.js'
+import { registerRepeatTools } from './repeats.js'
+import { operatorToolAvailable } from './availability.js'
 
 export function createOperatorMcpServer(context: OperatorRequestContext): McpServer {
   const server = new McpServer({ name: 'graphql-operator', version: '1.0.0' })
@@ -30,5 +32,9 @@ export function createOperatorMcpServer(context: OperatorRequestContext): McpSer
   if (context.services.runGraph) registerRunGraphTools(server, context, context.services.runGraph)
   registerInteractionTools(server, context)
   registerExtendedOperatorTools(server, context)
+  if (context.services.repeats) registerRepeatTools(server, {
+    principal: context.principal, commands: context.services.commands,
+    ...context.services.repeats, available: (name) => operatorToolAvailable(context, name),
+  })
   return server
 }

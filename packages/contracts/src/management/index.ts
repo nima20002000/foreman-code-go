@@ -566,7 +566,35 @@ export const ManagedInteractionPageSchema = z.object({
 }).strict();
 export const ManagedInteractionSchema = z.object({ interaction: DurableInteractionSchema, review: ReviewStatusSchema.optional() }).strict();
 
+/** Deployment capability, separate from the candidate-only A0 schema. False
+ * stays literal until native admission AND durable repeat edit intents qualify.
+ * No caller-controlled flag can enable either unfinished runtime boundary. */
+export const RepeatCapabilitiesResultSchema = z.object({
+  contractVersion: z.literal(1),
+  executionSemanticsVersion: z.literal(3),
+  supported: z.literal(false),
+  authoring: z.object({
+    flatScopesOnly: z.literal(true), nesting: z.literal(false), arbitraryCycles: z.literal(false),
+    maxOccurrencesMin: z.literal(1), maxOccurrencesMax: z.literal(2147483647),
+    explicitLimitExit: z.literal(true), earlyExitOutcome: z.literal(true),
+  }).strict(),
+  availability: z.object({
+    savedAuthoring: z.literal(true),
+    persistedReadback: z.boolean(),
+    runtimeAdmission: z.literal(false),
+    meaningfulEdit: z.literal(false),
+    reasons: z.tuple([z.literal("NATIVE_START_NOT_READY"), z.literal("REPEAT_EDIT_INTENT_NOT_READY")]),
+  }).strict(),
+}).strict();
+export type RepeatCapabilitiesResult = z.infer<typeof RepeatCapabilitiesResultSchema>;
+
+export const REPEAT_OPERATOR_TOOL_NAMES = [
+  "repeat_capabilities_get", "repeat_get", "repeat_update", "repeat_run_get",
+] as const;
+export type RepeatOperatorToolName = typeof REPEAT_OPERATOR_TOOL_NAMES[number];
+
 export const OperatorToolNameSchema = z.enum([
+  ...REPEAT_OPERATOR_TOOL_NAMES,
   "operator_mcp_setup_get",
   "operator_chat_create", "operator_chat_get", "operator_chat_send", "operator_handoff_history_get",
   "workspace_defaults_get",
