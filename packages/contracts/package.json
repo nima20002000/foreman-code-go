@@ -27,6 +27,10 @@
     "./management": {
       "types": "./dist/management/index.d.ts",
       "import": "./dist/management/index.js"
+    },
+    "./browser-origin": {
+      "types": "./dist/browserOrigin.d.ts",
+      "import": "./dist/browserOrigin.js"
     }
   },
   "scripts": {
