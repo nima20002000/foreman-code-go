@@ -1,3 +1,5 @@
+import { workerLauncherConnection } from '../src/modules/harnesses/workerMcpLauncher.js'
+import { nativeConnection } from '../src/modules/harnesses/nativeMcpCommon.js'
 import assert from 'node:assert/strict'
 import { appendFile, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -73,6 +75,17 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await rm(f.directory, { recursive: true, force: true })
     const failure = results.find((value) => value.status === 'rejected')
     if (failure?.status === 'rejected') throw failure.reason
+  })
+
+  it('recognizes the managed worker launcher and permits only its scoped execution credential', async () => {
+    const entry = nativeConnection('codex', workerLauncherConnection())
+    await json('mcp.json', { enabled: true, transport: { ...entry, type: 'stdio' } })
+    const inspected = await manager.inspectMcpConfiguration(f.directory)
+    assert.equal(inspected.configured.automaticWorkerEndpoint, true)
+    assert.equal(inspected.configured.bearerTokenEnvironmentVariable, 'GRAPHQL_APP_MCP_TOKEN')
+    const session = await manager.createSession(source)
+    assert.equal(session.harness, 'codex')
+    assert(session.nativeSessionId)
   })
 
   it('F01: refuses another Agent, workspace, run, or workflow-node owner on loaded attachment', async () => {

@@ -15,6 +15,7 @@ export type NativeMcpStatus = 'connected' | 'disabled' | 'authentication_require
 export type McpInspectionPhase = 'configuration' | 'health'
 
 export interface NativeMcpEntryEvidence {
+  automaticWorkerEndpoint?: boolean
   automaticOperatorEndpoint?: boolean
   name: string
   transport: 'streamable-http' | 'sse' | 'stdio' | 'unknown'
@@ -119,11 +120,12 @@ export class McpDetectionService {
         throw new DomainError('MCP_INSPECTION_CONTEXT_MISMATCH', 'Native MCP inspection returned evidence for another launch context.', 500)
       }
       const entry = evidence.entry
-      const matches = entry ? endpointMatches(entry.endpoint, this.expectedEndpoint) : null
+      const automatic = entry?.automaticWorkerEndpoint === true && entry.transport === 'stdio' && this.serverName === 'graphql-app'
+      const matches = entry ? automatic || endpointMatches(entry.endpoint, this.expectedEndpoint) : null
       const credentialMatches = entry?.credentialEnvironmentVariable === APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
       let state: McpDetection['state']
       if (!entry) state = 'not_detected'
-      else if (entry.name !== this.serverName || !matches || !credentialMatches || entry.transport !== 'streamable-http') state = 'misconfigured'
+      else if (entry.name !== this.serverName || !matches || !credentialMatches || (entry.transport !== 'streamable-http' && !automatic)) state = 'misconfigured'
       else if (entry.enabled === false || entry.status === 'disabled') state = 'disabled'
       else if (entry.status === 'connected' || entry.status === 'authentication_required' || entry.status === 'broken') state = entry.status
       else state = 'status_unavailable'
