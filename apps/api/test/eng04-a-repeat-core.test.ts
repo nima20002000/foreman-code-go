@@ -333,6 +333,12 @@ function postgresShape(cap = 3) {
         expected_reference: native.session, closed_reference: native.session, record: e.record, reference: native.session,
         closed: native.closed, detached: false, closed_without_session: false, prior_unclosed: false }]
     }
+    else if (q.startsWith('select p.generation::text,p.execution_identity,p.reference')) {
+      expect(values).toHaveLength(1)
+      expect(state.executions.has(v[0]!)).toBe(true)
+      expect(q).toContain('from execution_native_recoveries p join execution_native_closures c')
+      rows = [] // No recovery receipt is seeded; a terminal enum is still not closure.
+    }
     else if (q.startsWith('update execution_native_sessions')) {
       const native = state.native.get(v[0]!)
       if (native && canonicalGraphJson(native.session) === canonicalGraphJson(JSON.parse(v[1]!))) {

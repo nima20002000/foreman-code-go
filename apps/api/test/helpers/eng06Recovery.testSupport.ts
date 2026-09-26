@@ -27,7 +27,7 @@ export function recoveryDatabase(options: { bound?: boolean; detached?: boolean;
     execution: recoveryExecution(),
     others: new Map<string, HarnessExecution>(),
     session: { harness: 'opencode', providerVersion: '1.0.0', nativeSessionId: 'session-a' } as NativeSessionReference | null,
-    entryPhase: 'entered',
+    entryPhase: 'entered', finalized: false,
     semantics: '3', fenced: true, active: false, lost: false, fence: '9001',
     inserts: 0, commits: 0, rollbacks: 0,
     afterInsert: undefined as (() => void) | undefined,
@@ -62,7 +62,7 @@ export function recoveryDatabase(options: { bound?: boolean; detached?: boolean;
       if (text.includes('from execution_native_recoveries p')) return rows(state.proof && state.lifetime
         && state.proof.generation === state.lifetime.generation && !state.lifetime.prior_unclosed ? [state.proof] : [])
       if (text.startsWith('select e.record,s.reference')) return rows([{ record: state.execution, reference: state.session }])
-      if (text.startsWith('select reference from execution_native_sessions')) return rows(state.session ? [{ reference: state.session }] : [])
+      if (text.startsWith('select reference') && text.includes('from execution_native_sessions')) return rows(state.session ? [{ reference: state.session, finalized: state.finalized }] : [])
       if (text.startsWith('select e.record,') && text.includes(' as bound')) return rows([{ record: state.execution, bound: Boolean(state.session) }])
       if (text.startsWith('insert into execution_native_recoveries')) {
         assert.equal(state.active, true)

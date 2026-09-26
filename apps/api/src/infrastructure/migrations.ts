@@ -1,3 +1,4 @@
+import { workflowTerminalRecoveryMigration } from './workflowTerminalRecoveryMigration.js'
 import { workflowRestartRecoveryMigration } from './workflowRestartRecoveryMigration.js'
 import { runInspectionMigration } from './runInspectionMigration.js'
 import { currentApprovalAckMigration } from './currentApprovalAckMigration.js'
@@ -694,6 +695,7 @@ export const migrations = [
   currentStagedAgentsMigration,
   runInspectionMigration,
   workflowRestartRecoveryMigration,
+  workflowTerminalRecoveryMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

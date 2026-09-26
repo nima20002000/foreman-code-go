@@ -1,9 +1,11 @@
+import { DurableInteractionSchema } from '@graphql/contracts'
 import type {
   AgentConfigurationVersion, AgentHarness, HarnessExecution, HarnessExecutionRequest,
   NativeHarnessEvent, NativeSessionReference,
 } from '@graphql/contracts'
 import { afterEach, expect, it, vi } from 'vitest'
 import { nativeLanes } from './helpers/nativeLanes.js'
+import { reviewerFixture } from './helpers/reviewerAudit.js'
 
 import { DEFAULT_WORKER_CREDENTIAL_TTL_MS, type IssuedWorkerCredential } from '../src/modules/access/workerCredentials.js'
 import { WorkerLaunchCredentialService } from '../src/modules/harnesses/mcpDetection.js'
@@ -99,7 +101,19 @@ function fixture(harness: AgentHarness = 'codex', started = true) {
     recordActivity: vi.fn(async () => undefined),
     appendNativeEvent: vi.fn(async () => undefined),
   }
-  const interactions = { cancelPendingForExecution: vi.fn(async () => undefined), coordination: nativeLanes(),
+  const pendingApproval = DurableInteractionSchema.parse({
+    id: 'worker-pending', revision: 0, workspaceId: configuration.workspaceId, workflowId: 'workflow-1',
+    runId: execution.runId, executionId: execution.id, requestingAgentId: configuration.agentId,
+    ...session, nativeRequestId: 'worker-request', nativeRequestType: 'approval', graphThreadId: execution.runId,
+    request: { command: 'unit-only' }, approval: { handler: 'user' },
+    responseOptions: [{ optionId: 'approve', semantic: 'approve_once', label: 'Approve once', persistence: 'request',
+      affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false }],
+    status: 'pending', deliveryState: 'not_started', createdAt, updatedAt: createdAt,
+  })
+  const interactions = { getNativeRequest: vi.fn(async (id: string, provider: AgentHarness, sessionId: string, requestId: string) => {
+    expect([id, provider, sessionId, requestId]).toEqual([execution.id, harness, session.nativeSessionId, pendingApproval.nativeRequestId])
+    return pendingApproval
+  }), cancelPendingForExecution: vi.fn(async () => undefined), coordination: nativeLanes(),
     assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'node-reviewer' }), getForExecution: vi.fn(async () => undefined) }
   const capture = createWorkflowNativeCaptureChannel()
   let closed: Awaited<ReturnType<WorkflowClosureStore['read']>>
@@ -127,7 +141,23 @@ function fixture(harness: AgentHarness = 'codex', started = true) {
     execution, store, request, approval: { handler: 'user' }, workflowId: 'workflow-1', graphThreadId: execution.runId,
     owner: { runId: execution.runId, client: {}, assertOwned() {} } as never, signal: new AbortController().signal,
   })
-  return { configuration, context, session, resolver, managers, coordinator, credentials, issued, budgets, runs, observe }
+  // Establish the original owner-scoped observation before exercising resident
+  // control/renewal. This runs the real coordinator, writer and lease checks;
+  // a saved nativeSessionId alone must never be used as a residence fixture.
+  const observeRequester = async () => {
+    resolver.resolve(context)
+    const raw = managers[0]!
+    raw.reconcile.mockResolvedValueOnce({ events: [], correlationId: `execution:${execution.id}`, nativeTurnId: 'workflow-turn',
+      pendingInteractions: [{ session, turn: { nativeTurnId: 'workflow-turn', nativeRequestId: pendingApproval.nativeRequestId },
+        nativeRequestType: pendingApproval.nativeRequestType, request: pendingApproval.request, responseOptions: pendingApproval.responseOptions }] })
+    const result = await observe()
+    expect(result.state).toBe('waiting')
+    expect(resolver.resolve(context).processState).toBe('resident')
+    expect(raw.createSession).not.toHaveBeenCalled()
+    expect(raw.startTurn).not.toHaveBeenCalled()
+    return result
+  }
+  return { configuration, context, session, resolver, managers, coordinator, credentials, issued, budgets, runs, observe, observeRequester }
 }
 
 it('does not mistake allocation or startup for residency, and fences stale handles', () => {
@@ -150,17 +180,18 @@ it('does not mistake allocation or startup for residency, and fences stale handl
   expect(() => first.markResident!()).toThrow('released')
 })
 
-it('keeps failed cold attachment fenced until its original lifetime has closure proof', async () => {
+it('rejects a cold requester before preflight and never allocates a replacement lifetime', async () => {
   const f = fixture()
   const first = f.resolver.resolve(f.context)
-  f.credentials.prepare.mockRejectedValueOnce(new Error('preflight failed'))
-  await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('preflight failed')
-  expect(first.lifecycle).toBe('failed')
-  expect(f.managers[0]!.attachSession).not.toHaveBeenCalled()
-  expect(f.credentials.revokeForExecution).toHaveBeenCalledWith(f.context.executionId)
-  await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('being released')
+  f.credentials.prepare.mockRejectedValueOnce(new Error('preflight must not run'))
+  for (let replay = 0; replay < 2; replay++) {
+    await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toMatchObject({ code: 'NATIVE_SESSION_RECOVERY_REQUIRED' })
+  }
+  expect(first.lifecycle).toBe('allocated')
+  expect(f.credentials.prepare).not.toHaveBeenCalled()
+  expect(f.credentials.revokeForExecution).not.toHaveBeenCalled()
   expect(f.managers).toHaveLength(1)
-  expect(first.lifecycle).toBe('failed')
+  expect(f.managers[0]!.attachSession).not.toHaveBeenCalled()
   expect(f.managers[0]!.createSession).not.toHaveBeenCalled()
   expect(f.managers[0]!.startTurn).not.toHaveBeenCalled()
 })
@@ -182,7 +213,7 @@ for (const started of [false, true]) {
 
 it('revokes resident credentials after attachment failure without preparing another environment', async () => {
   const f = fixture()
-  await f.coordinator.attachOwnedSession(f.context, f.session)
+  await f.observeRequester()
   const resident = f.resolver.resolve(f.context)
   f.managers[0]!.history.mockRejectedValueOnce(new Error('attachment failed'))
   await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('attachment failed')
@@ -195,7 +226,7 @@ it('revokes resident credentials after attachment failure without preparing anot
 for (const harness of ['codex', 'opencode'] as const) {
   it(`renews ${harness} after a two-hour wait without changing its process, environment, or native identity`, async () => {
     const f = fixture(harness)
-    await f.coordinator.attachOwnedSession(f.context, f.session)
+    await f.observeRequester()
     const credential = f.issued[0]!
     const originalExpiry = credential.expiresAt
     vi.spyOn(Date, 'now').mockReturnValue(Date.parse(originalExpiry) + 2 * 60 * 60 * 1000)
@@ -219,7 +250,7 @@ for (const harness of ['codex', 'opencode'] as const) {
 
 it('fails closed when renewal is refused rather than replacing a paused native process', async () => {
   const f = fixture()
-  await f.coordinator.attachOwnedSession(f.context, f.session)
+  await f.observeRequester()
   vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.issued[0]!.expiresAt) + 1)
   f.credentials.renew.mockRejectedValueOnce(new Error('revoked credential'))
   await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('revoked credential')
@@ -233,7 +264,7 @@ it('never rotates a paused process when a provider has no same-token renewal sup
   const f = fixture()
   // Exercise the optional provider seam without changing an active process environment.
   Reflect.deleteProperty(f.credentials, 'renew')
-  await f.coordinator.attachOwnedSession(f.context, f.session)
+  await f.observeRequester()
   vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.issued[0]!.expiresAt) + 1)
   await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('cannot be renewed')
   expect(f.credentials.prepare).toHaveBeenCalledTimes(1)
@@ -245,7 +276,7 @@ it('never rotates a paused process when a provider has no same-token renewal sup
 
 it('cannot replace the captured native manager through a bare resolver release', async () => {
   const f = fixture()
-  await f.coordinator.attachOwnedSession(f.context, f.session)
+  await f.observeRequester()
   const old = f.managers[0]!
   await old.close()
   f.resolver.release(f.context, old as unknown as NativeHarnessSessionManager)
@@ -256,16 +287,14 @@ it('cannot replace the captured native manager through a bare resolver release',
   expect(f.managers[1]!.startTurn).not.toHaveBeenCalled()
 })
 
-it('does not start a process with an expired prepared credential', async () => {
-  const f = fixture()
-  f.credentials.prepare.mockResolvedValueOnce({
-    credential: { principalId: 'expired', environment: { agentId: 'agent-1', variables: {} }, expiresAt: createdAt },
-    detection: {} as never,
-  })
-  vi.spyOn(Date, 'now').mockReturnValue(Date.parse(createdAt) + 1)
-  await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('not live')
-  expect(f.managers[0]!.attachSession).not.toHaveBeenCalled()
-  expect(f.credentials.revokeForExecution).toHaveBeenCalledWith(f.context.executionId)
+it('does not start a reviewer process with an expired prepared credential', async () => {
+  const f = await reviewerFixture()
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.credential.expiresAt) + 1)
+  await expect(f.attach()).rejects.toThrow('not live')
+  expect(f.prepared).toEqual(['reviewer'])
+  expect(f.attaches).toEqual([])
+  expect(f.starts).toEqual([])
+  expect(f.revoked).toContain(`execution:${f.execution.id}`)
 })
 
 it('a concurrent startup loser does not revoke the winning startup credentials', async () => {
@@ -277,8 +306,8 @@ it('a concurrent startup loser does not revoke the winning startup credentials',
   const started = new Promise<void>((resolve) => { announce = resolve })
   const gate = new Promise<void>((resolve) => { unblock = resolve })
   f.credentials.prepare.mockImplementationOnce(async () => { announce(); await gate; return prepared })
-  const first = f.coordinator.attachOwnedSession(f.context, f.session)
-  await started
+  const first = f.observeRequester()
+  await Promise.race([started, first.then(() => { throw new Error('Startup completed before the preflight barrier') })])
   await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('already starting')
   expect(f.credentials.revokeForExecution).not.toHaveBeenCalled()
   unblock()
@@ -288,7 +317,7 @@ it('a concurrent startup loser does not revoke the winning startup credentials',
 
 it('fences reuse until failed resident cleanup finishes', async () => {
   const f = fixture()
-  await f.coordinator.attachOwnedSession(f.context, f.session)
+  await f.observeRequester()
   let unblock!: () => void
   let announce!: () => void
   const closing = new Promise<void>((resolve) => { announce = resolve })

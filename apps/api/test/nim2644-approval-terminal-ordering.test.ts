@@ -1,26 +1,30 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HarnessExecutionRequestSchema } from '@graphql/contracts'
 import type { CanonicalRunGraphScope } from '@graphql/contracts/wave25'
 import { DomainError } from '../src/modules/errors.js'
-import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
+import * as publication from '../src/modules/run-graph/publication.js'
 import type { GraphTransactionSql } from '../src/modules/run-graph/connection.js'
 import { assertRepeatCanonicalReceiptLocked, type RepeatCanonicalReceipt } from '../src/modules/run-graph/repeatReceipts.js'
 import { repeatExecutionDriver } from '../src/modules/runs/repeatRuntime.js'
 import { currentApprovalSettlementUnit } from './helpers/currentApprovalSettlementUnit.js'
 import { native2Fixture } from './eng04-native2-fixtures.js'
 
+const { graphSourceDigest } = publication
+
 // Only the read-only publication lookup is a port. It cannot return a successful
 // proof by itself: every lookup executes the real canonical SQL receipt verifier.
 // Original pending/continuation sources and the ACK descriptor are all checked
 // by the actual nativeApprovalProof implementation, not mocked away.
-vi.mock('../src/modules/run-graph/publication.js', async (original) => ({
-  ...await original<typeof import('../src/modules/run-graph/publication.js')>(),
-  currentRunGraphPublication: (sql: GraphTransactionSql, scope: CanonicalRunGraphScope) => ({
+// Install the lookup after the publication/proof-reader module cycle has
+// evaluated, rather than importing the actual module inside a hoisted partial
+// factory. This keeps every consumer on the same spied lookup.
+beforeEach(() => {
+  vi.spyOn(publication, 'currentRunGraphPublication').mockImplementation(((sql: GraphTransactionSql, scope: CanonicalRunGraphScope) => ({
     sql, scope,
     assertSourceEnlisted: (evidence: RepeatCanonicalReceipt['evidence'], sourceDigest: string, semanticDigest: string) =>
       assertRepeatCanonicalReceiptLocked(sql, { scope, evidence, sourceDigest, semanticDigest, effect: null }),
-  }),
-}))
+  })) as typeof publication.currentRunGraphPublication)
+})
 const connections: Array<{ close(): Promise<void> }> = []
 function gateFixture() { const f = currentApprovalSettlementUnit(); connections.push(f.model.connection); return f }
 afterEach(async () => { await Promise.all(connections.splice(0).map((connection) => connection.close())); vi.restoreAllMocks() })
@@ -71,6 +75,7 @@ describe('NIM-2644 current native terminal / approval settlement ordering', () =
   it('accepts exact settled replay without writing or dispatching anything', async () => {
     const f = gateFixture()
     await f.check(); await f.check()
+    expect(publication.currentRunGraphPublication).toHaveBeenCalled()
     expect(f.model.calls.every(({ q }) => /^(select|begin|commit)\b/.test(q))).toBe(true)
     expect(f.model.calls.filter(({ q }) => q === 'commit')).toHaveLength(2)
     expect(f.model.calls.some(({ q }) => q.includes('from workflow_native_proofs'))).toBe(true)

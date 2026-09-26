@@ -64,7 +64,7 @@ export async function until(condition: () => boolean): Promise<void> {
 
 /** Database and native transport are doubles; dispatch, evidence, fences, attach,
  * credential maintenance and redaction execute the production implementations. */
-export async function reviewerFixture(options: { recovering?: boolean; workflow?: boolean; silent?: boolean; events?: number } = {}) {
+export async function reviewerFixture(options: { recovering?: boolean; workflow?: boolean; silent?: boolean; events?: number; closedWorkflow?: boolean } = {}) {
   const configuration: AgentConfigurationVersion = {
     id: 'configuration-pinned', workspaceId: 'workspace-1', agentId: 'reviewer-1', version: 1,
     productRole: 'orchestrator', prompt: {}, assignedSkills: [], contentHash: 'sha256:fixture', createdAt: now,
@@ -251,9 +251,15 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
     async revoke(actual) { revoked.push(actual.principalId) },
     async revokeForExecution(id) { revoked.push(`execution:${id}`); return 1 },
   }
-  let closure: Awaited<ReturnType<WorkflowClosureStore['read']>>
+  // Reviewer fixtures start AFTER a positively closed workflow lifetime. Its
+  // terminal execution and finalized lane alone are not physical-close proof.
+  // Keep an explicit missing-receipt variant for the cold-attach guard.
+  let closure: Awaited<ReturnType<WorkflowClosureStore['read']>> = !options.workflow && options.closedWorkflow !== false
+    ? { execution: structuredClone(execution), session: { ...session }, durableGeneration: '1' }
+    : undefined
+  let generation = closure ? 1 : 0
   const closures: WorkflowClosureStore = {
-    async begin() { closure = undefined; return '1' },
+    async begin() { closure = undefined; return String(++generation) },
     async record(execution, session, durableGeneration, check) { check(); closure = { execution, session, durableGeneration }; return closure },
     async read() { return closure },
     async recordDetached(_execution, _session, _generation, check) { check() },

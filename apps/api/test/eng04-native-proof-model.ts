@@ -64,6 +64,12 @@ export function nativeProofModel() {
       assert.deepEqual(values, [execution.id, execution.runId])
       return result(state.hasClosure ? [{ ...state.closure, record: state.execution, reference: state.session }] : [])
     }
+    if (text.includes('from execution_native_recoveries p join execution_native_closures c')) {
+      assert.deepEqual(values, [execution.id])
+      // No recovery receipt is seeded by this model. In particular, a missing
+      // original close must still fail the real settlement gate.
+      return result([])
+    }
     if (text.startsWith('update execution_native_sessions')) {
       assert.deepEqual(values, [execution.id, JSON.stringify(state.session)])
       state.finalized = true; state.finalizedWrites += 1

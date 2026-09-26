@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
 import type pg from 'pg'
-import { HarnessExecutionSchema, type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
+import { DurableInteractionSchema, HarnessExecutionSchema, type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
 import { graphSourceDigest } from '../../src/modules/run-graph/publication.js'
 import { ExclusiveGraphConnection } from '../../src/modules/run-graph/connection.js'
 import { RepeatRunRepository, type RepeatRepositoryHost } from '../../src/modules/runs/repeatPostgres.js'
 import { bindRepeatNodeInput, repeatExecutionIdentity, repeatSlotId } from '../../src/modules/runs/repeatResolution.js'
 import type { RunOwnership } from '../../src/modules/runs/ownership.js'
 import { ApprovalExecutionCoordinator } from '../../src/modules/interactions/execution.js'
+import { createWorkflowNativeCaptureChannel } from '../../src/modules/interactions/workflowNativeCapture.js'
+import type { RepeatNativeObservationStore } from '../../src/modules/interactions/repeatObservation.js'
 import { PostgresWorkflowClosureStore } from '../../src/modules/interactions/workflowClosure.js'
 import type { NativeHarnessSessionManager } from '../../src/modules/harnesses/port.js'
 import type { NativeSessionManagerResolver } from '../../src/modules/interactions/runtimePorts.js'
@@ -49,7 +51,17 @@ export function currentRestartUnit(reviewer = false) {
     finalizationWrites: 0, revocations: 0, retirementCalls: 0, closeWrites: 0, beginCalls: 0,
     preflightCalls: 0, closes: 0, restartCloses: 0, attaches: 0, cancels: 0, creates: 0, turns: 0, reads: 0,
     resolutions: 0, budgetStops: 0, interactionCancels: 0 }
-  let rows: RestartClosureRow[] = []
+  // The reviewer fixture starts after a positively closed workflow lifetime.
+  // Keep that real predecessor in the SQL model so all generation checks see it.
+  const priorWorkflow: RestartClosureRow = {
+    generation: '1', execution_identity: { id: execution.id, runId: execution.runId, workflowNodeId: execution.workflowNodeId,
+      agentId: execution.agentId, agentConfigurationVersionId: execution.agentConfigurationVersionId, attempt: execution.attempt,
+      workingDirectory: execution.workingDirectory, runtimeDirectory: execution.runtimeDirectory },
+    expected_reference: session, closed_reference: session, closed: true, detached: false,
+    detached_reference: null, closed_without_session: false,
+  }
+  let rows: RestartClosureRow[] = reviewer ? [structuredClone(priorWorkflow)] : []
+  let originalSetupClaimed = false
   let before: { rows: RestartClosureRow[]; finalized: boolean; writes: number; closeWrites: number } | undefined
   let closureWritten = false
   let beforePreflight = () => undefined as void, beforeClose = async () => undefined as void
@@ -75,6 +87,16 @@ export function currentRestartUnit(reviewer = false) {
     if (q === 'rollback') {
       if (before) { rows = before.rows; state.finalized = before.finalized; state.finalizationWrites = before.writes; state.closeWrites = before.closeWrites }
       before = undefined; closureWritten = false; return result()
+    }
+    if (q.startsWith("select r.record->>'executionSemanticsVersion' as semantics,")) {
+      assert.deepEqual(values, [f.run.id]); assert.ok(q.endsWith('from runs r where r.id=$1 for update'))
+      return result([{ semantics: '3', fenced: state.stopped || state.cleanup || f.run.executionState === 'completed' }])
+    }
+    if (q.startsWith('select p.generation::text,p.execution_identity,p.reference')) {
+      assert.deepEqual(values, [execution.id])
+      assert.ok(q.includes('from execution_native_recoveries p join execution_native_closures c'))
+      // This model has original close/detach receipts, never a kernel-recovery receipt.
+      return result()
     }
     if (q === 'select id from runs where id=$1 for update') {
       assert.deepEqual(values, [f.run.id]); return result([{ id: f.run.id }])
@@ -168,15 +190,37 @@ export function currentRestartUnit(reviewer = false) {
       } }
   } }
   const repository = new RepeatRunRepository(owner, host, f.version)
-  const runs = { get: async () => f.run, getExecution: async () => execution,
+  const captures = createWorkflowNativeCaptureChannel()
+  const runs = { requestCleanup: async () => { assertOwned(); state.cleanup = true }, get: async () => f.run, getExecution: async () => execution,
     getRepeatSnapshot: async () => ({ run: f.run, version: f.version, configurations: f.configurations, stopRequested: state.stopped, cleanupPending: state.cleanup }),
     repeat: async () => repository, async *executionPages() { yield [execution] },
-    getExecutionConfiguration: async () => configuration, updateExecution: async (next: HarnessExecution) => { execution = next } }
+    getExecutionConfiguration: async () => configuration, updateExecution: async (next: HarnessExecution, actualOwner: RunOwnership,
+      evidence: Parameters<typeof captures.verify.read>[0]) => {
+      assert.equal(actualOwner, owner); assertOwned()
+      const original = captures.verify.read(evidence)
+      assert.equal(original.execution.id, execution.id)
+      assert.equal(next.nativeSessionId, session.nativeSessionId)
+      execution = next
+    } }
   const coordination = { ...nativeLanes(), workflowSession: async () => ({ session, finalized: state.finalized, reviewerActive: false }),
     hasUnsettledReview: async () => false, finishStoppedReviews: async () => { state.retirementCalls++ } }
+  const pendingApproval = DurableInteractionSchema.parse({
+    id: 'be001-original-pending', revision: 0, workspaceId: f.run.workspaceId, workflowId: f.run.workflowId,
+    runId: f.run.id, executionId: execution.id, requestingAgentId: configuration.agentId, ...session,
+    nativeRequestId: 'be001-request', nativeRequestType: 'item/commandExecution/requestApproval', graphThreadId: f.run.id,
+    request: { command: 'unit-only' }, approval: { handler: 'user' }, status: 'pending', deliveryState: 'not_started',
+    responseOptions: [{ optionId: 'approve', semantic: 'approve_once', label: 'Approve once', persistence: 'request',
+      affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false }],
+    createdAt: f.createdAt, updatedAt: f.createdAt,
+  })
   const interactions = { coordination, getForExecution: async () => undefined,
+    getNativeRequest: async (id: string, harness: string, nativeId: string, requestId: string) => {
+      assert.deepEqual([id, harness, nativeId, requestId], [execution.id, session.harness, session.nativeSessionId, pendingApproval.nativeRequestId])
+      return pendingApproval
+    },
     cancelPendingForRun: async () => { state.interactionCancels++; return 0 } }
-  const budgets = { stop: async () => { state.budgetStops++ } }
+  const budgets = { ensure: async () => undefined, resume: async () => undefined, remaining: async () => 60_000,
+    assertActive: async () => undefined, beginWait: async () => undefined, stop: async () => { state.budgetStops++ } }
   const credentials = { prepare: async () => {
     state.preflightCalls++; beforePreflight()
     return { credential: { principalId: 'synthetic-credential', expiresAt: new Date(Date.now() + 300_000).toISOString(),
@@ -205,8 +249,35 @@ export function currentRestartUnit(reviewer = false) {
     const store = new PostgresWorkflowClosureStore(pool)
     type Args = ConstructorParameters<typeof ApprovalExecutionCoordinator>
     const coordinator = new ApprovalExecutionCoordinator(runs as unknown as Args[0], interactions as unknown as Args[1],
-      budgets as unknown as Args[2], resolver, 60_000, credentials as unknown as Args[5], undefined, store)
-    return { coordinator, store, resolver, manager }
+      budgets as unknown as Args[2], resolver, 60_000, credentials as unknown as Args[5], undefined, store, undefined, captures.capture)
+    const observation: RepeatNativeObservationStore = {
+      async readExecution(id) {
+        assert.equal(id, execution.id)
+        return { execution, ref, slotId: slot, input: bound.input, inputDigest: bound.digest, accepted: reviewer }
+      },
+      async assertExecutionAdmission(id) { assertOwned(); assert.equal(id, execution.id) },
+      async assertNativeBoundary(id) { assertOwned(); assert.equal(id, execution.id) },
+      async exactSession(id) { assert.equal(id, execution.id); return session },
+      authorizeNativeSubmission: forbidden, consumeLaunch() { return false }, settleNativeExecution: forbidden,
+    }
+    const attachOriginal = async () => {
+      // First-lifetime setup only. Fresh coordinators in recovery tests must use
+      // the public cold path; they cannot claim this original observation again.
+      assert.equal(originalSetupClaimed, false, 'only the original fixture lifetime may be observed')
+      originalSetupClaimed = true
+      if (reviewer) return coordinator.attachOwnedSession(context(), session)
+      manager.reconcile = async (_session, correlationId) => ({ events: [], correlationId, nativeTurnId: 'be001-turn',
+        pendingInteractions: [{ session, turn: { nativeTurnId: 'be001-turn', nativeRequestId: pendingApproval.nativeRequestId },
+          nativeRequestType: pendingApproval.nativeRequestType, request: pendingApproval.request, responseOptions: pendingApproval.responseOptions }] })
+      const result = await coordinator.observeExact({ execution, store: observation, owner,
+        workflowId: f.run.workflowId, graphThreadId: f.run.id, approval: { handler: 'user' }, signal: new AbortController().signal,
+        request: { executionId: execution.id, runId: f.run.id, workspaceId: f.run.workspaceId, workflowNodeId: execution.workflowNodeId,
+          workingDirectory: execution.workingDirectory!, runtimeDirectory: execution.runtimeDirectory!, configuration, input: execution.input } })
+      assert.equal(result.state, 'waiting'); assert.equal(resident, true)
+      assert.equal(state.creates, 0); assert.equal(state.turns, 0)
+      return result
+    }
+    return { coordinator, store, resolver, manager, attachOriginal }
   }
   const context = () => ({ executionId: execution.id, agentId: execution.agentId, workingDirectory: execution.workingDirectory!, harness: 'codex' as const,
     ...(reviewer ? { purpose: 'reviewer' as const } : {}) })

@@ -171,6 +171,13 @@ class NativePgShape {
         return rows([]) // Entered is possible submission, not a positive dispose receipt.
       }
     }
+    if (q.startsWith('select p.generation::text,p.execution_identity,p.reference')) {
+      expect(values).toEqual([this.execution.id])
+      expect(q).toContain('from execution_native_recoveries p join execution_native_closures c')
+      // This model seeds no kernel-backed recovery receipt. An absent original
+      // close must reach the real pending gate, not become an unscripted query.
+      return rows([])
+    }
     if (q.startsWith('update execution_native_sessions')) {
       expect(q).toContain('reference=$2::jsonb')
       if (!this.casMatches) return rows([])

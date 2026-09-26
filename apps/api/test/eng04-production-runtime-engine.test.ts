@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { test, vi } from 'vitest'
+import type pg from 'pg'
+import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import type { DurableInteraction } from '@graphql/contracts'
 import type { GraphResumeClaim } from '../src/modules/interactions/deliveryPostgres.js'
@@ -40,7 +42,17 @@ async function fixture(options: { form?: 'single' | 'parallel' | 'conditional' |
     factoryReads: 0, nativeCancel: 0, clean: true, events: [] as string[] }
   const snapshot = () => ({ run: state.run, version: f.version, configurations: f.configurations,
     stopRequested: state.stopRequested, cleanupPending: state.cleanupPending })
-  const owner = { runId: run.id, assertOwned() { if (!state.owned) throw new Error('owner-lost') },
+  const connection = new ExclusiveGraphConnection({ query: async (text: string, values: unknown[]) => {
+    const q = text.replace(/\s+/g, ' ').trim()
+    assert.match(q, /select exists\(/)
+    assert.match(q, /from execution_native_recoveries p join harness_executions e/)
+    assert.match(q, /where e\.run_id=\$1\) as recovered/)
+    assert.deepEqual(values, [run.id])
+    // Registration-only fixtures have no recovered physical lifetime. This is
+    // the diagnostic read, never a fabricated closure or settlement receipt.
+    return { rows: [{ recovered: false }], rowCount: 1, command: 'SELECT', oid: 0, fields: [] }
+  } } as unknown as pg.ClientBase, () => { if (!state.owned) throw new Error('owner-lost') })
+  const owner = { runId: run.id, oneShotConnection: () => connection, assertOwned() { if (!state.owned) throw new Error('owner-lost') },
     release: async () => { state.released++; state.events.push('release') } } as unknown as RunOwnership
   const factory = {} as RepeatEngineStartContext['factory']
   const runs = { acquireOwnership: async () => owner, getRepeatSnapshot: async () => {

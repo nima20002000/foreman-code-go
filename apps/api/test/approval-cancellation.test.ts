@@ -20,6 +20,7 @@ import type { Wave25InteractionRepository } from '../src/modules/interactions/wa
 import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
 import type { WorkflowClosureStore } from '../src/modules/interactions/workflowClosure.js'
 import type { RepeatNativeObservationStore } from '../src/modules/interactions/repeatObservation.js'
+import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { DomainError } from '../src/modules/errors.js'
 import type { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
 import { ExecutionScopedNativeSessionManagerResolver, type NativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
@@ -118,7 +119,7 @@ class Manager implements NativeHarnessSessionManager {
   async reconcile(_session: NativeSessionReference, correlationId: string) {
     if (!this.started) return { events: [], pendingInteractions: [] }
     const history = await this.history()
-    return { ...history, ...(history.terminalResult ? { terminalTurn: { correlationId, providerId: 'turn-1', result: history.terminalResult } } : {}) }
+    return { ...history, correlationId, nativeTurnId: 'turn-1', ...(history.terminalResult ? { terminalTurn: { correlationId, providerId: 'turn-1', result: history.terminalResult } } : {}) }
   }
 }
 
@@ -203,7 +204,14 @@ async function fixture(items: HarnessExecution[], cold = false) {
   })
   if (!cold) for (const item of items) if (item.nativeSessionId) {
     rows.set(item.id, { ...item, state: 'waiting', result: undefined, finishedAt: undefined })
-    await coordinator.attachOwnedSession(contextFor(item), await store.exactSession(item.id))
+    // Capture the live requester through the real owner-scoped observer. A
+    // durable session reference does not, by itself, authorize cold attachment.
+    const manager = managers.get(item.id)!
+    manager.pendingValue = interaction(item); manager.started = true
+    const observed = await observe(rows.get(item.id)!)
+    assert.equal(observed.state, 'waiting')
+    assert.equal(rawResolver.resolve(contextFor(item)).processState, 'resident')
+    manager.pendingValue = undefined; manager.started = false; pending.delete(item.id)
     rows.set(item.id, item)
   }
   calls.length = 0
@@ -385,7 +393,15 @@ function engineFixture(approvals: ApprovalExecutionCoordinator) {
   let run = AcceptedWorkflowRunV3Schema.parse({ ...f.run, id: 'run-1', executionState: 'waiting',
     authorizationPrincipalId: 'stop-authority', executionLocation: { runnerId: 'runner', rootPath: '/project',
       locationRevision: 1, identityHash: `sha256:${'1'.repeat(64)}` } })
-  const owner = { runId: run.id, client: {}, assertOwned() { if (!owned) throw new Error('ownership lost') },
+  const connection = new ExclusiveGraphConnection({ query: async (text: string, values: unknown[]) => {
+    const sql = text.replace(/\s+/g, ' ').trim()
+    assert.match(sql, /^select exists\(/)
+    assert.match(sql, /from execution_native_recoveries p join harness_executions e on e.id=p.execution_id/)
+    assert.match(sql, /where e.run_id=\$1\) as recovered$/)
+    assert.deepEqual(values, [run.id])
+    return { rows: [{ recovered: false }], rowCount: 1 }
+  } } as unknown as pg.ClientBase, () => { if (!owned) throw new Error('ownership lost') })
+  const owner = { runId: run.id, client: {}, oneShotConnection: () => connection, assertOwned() { if (!owned) throw new Error('ownership lost') },
     release: async () => { calls.push('release-owner') } } as unknown as RunOwnership
   const runs = {
     repeatRepositoryFactory() { return {} }, acquireOwnership: async () => owner,

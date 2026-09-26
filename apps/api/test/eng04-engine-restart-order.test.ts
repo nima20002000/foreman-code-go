@@ -29,6 +29,10 @@ for (const uncertain of [false, true]) test(`restart holds owner until captured 
       stopRequested: false, cleanupPending: false }),
   }
   const native = {
+    requestColdRunCleanup: vi.fn(async (actual: typeof owner) => {
+      assert.equal(actual, owner)
+      return false
+    }),
     closeForRestart: vi.fn(async () => {
       events.push('close-start')
       try { await closure.promise } finally { events.push('close-settled') }
@@ -46,7 +50,9 @@ for (const uncertain of [false, true]) test(`restart holds owner until captured 
   }
   const active = engine.start(f.run.id)
   const activeResult = assert.rejects(active)
-  await entered.promise
+  // A broken port should fail with its original error, not a barrier timeout.
+  await Promise.race([entered.promise, active.then(() => { throw new Error('Runtime entry was not reached') })])
+  assert.equal(native.requestColdRunCleanup.mock.calls.length, 1)
   const shutdown = engine.shutdown()
   const shutdownResult = uncertain ? assert.rejects(shutdown, /closure or task draining remains unconfirmed/) : shutdown
   assert.equal(engine.shutdown(), shutdown)

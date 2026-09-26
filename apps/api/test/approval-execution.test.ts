@@ -5,7 +5,9 @@ import type {
   ExecutionResult, HarnessExecution, HarnessExecutionRequest, McpDetection,
   NativeHarnessCapabilities, NativeHarnessEvent, NativeSessionReference, PendingNativeInteraction,
 } from '@graphql/contracts'
-import { it } from 'vitest'
+import { afterEach, it } from 'vitest'
+import type pg from 'pg'
+import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { nativeLanes } from './helpers/nativeLanes.js'
 
 import { DomainError } from '../src/modules/errors.js'
@@ -23,6 +25,9 @@ import { nativeApprovalContext } from '../src/modules/interactions/nativeApprova
 import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import type { PostgresRunRepository } from '../src/modules/runs/postgres.js'
+
+const connections: ExclusiveGraphConnection[] = []
+afterEach(async () => { await Promise.all(connections.splice(0).map((connection) => connection.close())) })
 
 const now = '2026-09-16T00:00:00.000Z'
 const success: ExecutionResult = { outcome: 'succeeded', output: { done: true } }
@@ -126,12 +131,58 @@ function fixture(harness: AgentHarness = 'codex') {
   let cancelPendingCalls = 0
   let stopRequested = false, cleanupPending = false
   const negativeSettlements: Array<{ id: string; canceled: boolean }> = []
-  const owner = { runId: candidate.runId, assertOwned() {}, client: {} } as unknown as RunOwnership
+  // The owner-only Stop pass now re-reads a physical receipt even after the
+  // original resident manager closed. Model ONLY that exact persisted close;
+  // no SQL arm fabricates recovery evidence from a missing manager.
+  const identity = (execution: HarnessExecution) => ({ id: execution.id, runId: execution.runId,
+    workflowNodeId: execution.workflowNodeId, agentId: execution.agentId,
+    agentConfigurationVersionId: execution.agentConfigurationVersionId, attempt: execution.attempt,
+    workingDirectory: execution.workingDirectory, runtimeDirectory: execution.runtimeDirectory })
+  const connection = new ExclusiveGraphConnection({ query: async (text: string, values: unknown[] = []) => {
+    const q = text.replace(/\s+/g, ' ').trim()
+    const result = (rows: unknown[] = []) => ({ rows, rowCount: rows.length, command: '', oid: 0, fields: [] })
+    if (q.startsWith('begin ') || q === 'commit' || q === 'rollback') return result()
+    if (q.startsWith("select r.record->>'executionSemanticsVersion' as semantics,")) {
+      assert.deepEqual(values, [candidate.runId])
+      return result([{ semantics: '3', fenced: stopRequested || cleanupPending }])
+    }
+    if (q === 'select record from harness_executions where id=$1 and run_id=$2 for update') {
+      assert.deepEqual(values, [candidate.id, candidate.runId])
+      return result([{ record: executions.get(candidate.id) }])
+    }
+    if (q.startsWith('select generation::text,execution_identity,')) {
+      assert.deepEqual(values, [candidate.id])
+      assert.ok(closed, 'the original manager must commit its close before cold cleanup')
+      return result([{ generation: closed.durableGeneration, execution_identity: identity(closed.execution as HarnessExecution),
+        expected_reference: closed.session, closed_reference: closed.session, closed: true,
+        detached: false, detached_reference: null, closed_without_session: false, prior_unclosed: false }])
+    }
+    if (q.startsWith('select c.generation::text,c.execution_identity,')) {
+      assert.deepEqual(values, [candidate.id, candidate.runId])
+      assert.ok(closed, 'only the exact original-session close is available in this fixture')
+      return result([{ generation: closed.durableGeneration, execution_identity: identity(closed.execution as HarnessExecution),
+        expected_reference: closed.session, closed_reference: closed.session, closed: true,
+        detached: false, detached_reference: null, closed_without_session: false, prior_unclosed: false,
+        record: executions.get(candidate.id), reference: closed.session }])
+    }
+    throw new Error(`Unscripted approval execution recovery SQL: ${q}`)
+  } } as unknown as pg.ClientBase, () => owner.assertOwned())
+  connections.push(connection)
+  const owner = { runId: candidate.runId, assertOwned() {}, client: {}, oneShotConnection: () => connection,
+    readOneShotFence: async () => { owner.assertOwned(); return { ownerId: 'approval-unit-owner', fence: '1' } },
+  } as unknown as RunOwnership
   const runs = {
     async getRepeatSnapshot() { return { run: { executionState: 'running' }, stopRequested, cleanupPending } },
     async requestCleanup() { cleanupPending = true },
     async *executionPages() { yield [...executions.values()] },
-    async repeat() { return { async settleNegativeExecution(id: string, canceled: boolean) { negativeSettlements.push({ id, canceled }) } } },
+    async repeat() { return { async settleNegativeExecution(id: string, canceled: boolean) {
+      // This recording repository port models idempotent disposition receipts,
+      // not native evidence or the production execution/result SQL writer.
+      // A later caller cannot silently change an already recorded disposition.
+      const prior = negativeSettlements.find((receipt) => receipt.id === id)
+      if (prior) assert.deepEqual(prior, { id, canceled })
+      else negativeSettlements.push({ id, canceled })
+    } } },
     async ensureExecution(input: HarnessExecution) {
       const existing = [...executions.values()].find((item) => item.runId === input.runId
         && item.workflowNodeId === input.workflowNodeId && item.attempt === input.attempt)
@@ -468,9 +519,12 @@ it('handles cancellation during post-approval observation without replay', async
   await f.coordinator.observeExact(f.input)
   f.delivered('request-a')
   f.snapshot()
-  f.manager.onHistory = () => f.controller.abort()
+  f.manager.onHistory = () => {
+    // The authorized Stop commits before its cancellation signal reaches native work.
+    f.stopFence()
+    f.controller.abort()
+  }
   await assert.rejects(f.coordinator.observeExact(f.input))
-  f.stopFence()
   await f.coordinator.cancelRun(f.candidate.runId, f.owner)
   assert.notEqual(f.executions.get(f.candidate.id)?.result?.outcome, 'succeeded')
   assert.equal(f.manager.turns.length, 1)
