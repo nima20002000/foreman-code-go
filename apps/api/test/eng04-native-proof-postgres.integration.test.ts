@@ -5,12 +5,12 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import type { ManagementGrant } from '@graphql/contracts/management'
-import { makeWave25Fixture, RepeatSaveResultSchema, RunStartV3InputSchema, WorkflowVersionV2Schema,
-  type AcceptedWorkflowRunV3, type RepeatSaveInput } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture, CurrentWorkflowSaveResultSchema, RunStartV3InputSchema, WorkflowVersionV3Schema,
+  type AcceptedWorkflowRunV3, type CurrentWorkflowSaveInput } from '@graphql/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
-import { createRepeatServices } from '../src/modules/repeats/composition.js'
+import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { admitRepeatRun, repeatStartReceipt } from '../src/modules/runs/repeatStartAdmission.js'
@@ -42,8 +42,8 @@ describe.skipIf(!enabled)('ENG04 native proof accepted v3 PostgreSQL guard slice
 
   async function fixture() {
     const directory = await mkdtemp(join(db.directory, 'native-proof-'))
-    const f = makeWave25Fixture(randomUUID()), entry = f.version.definition.nodes[0]!, exit = f.version.definition.nodes[1]!
-    f.version = WorkflowVersionV2Schema.parse({ ...f.version, definition: { ...f.version.definition,
+    const f = makeCurrentWorkflowFixture(randomUUID()), entry = f.version.definition.nodes[0]!, exit = f.version.definition.nodes[1]!
+    f.version = WorkflowVersionV3Schema.parse({ ...f.version, definition: { ...f.version.definition,
       executionPolicy: { maxParallelism: 1, maxNodeExecutions: 6 }, nodes: [entry, { ...exit, choice: { outcomes: [
         { outcome: 'pass', target: { kind: 'branch_end' } }, { outcome: 'issues', target: { kind: 'branch_end' } },
       ] } }],
@@ -65,21 +65,23 @@ describe.skipIf(!enabled)('ENG04 native proof accepted v3 PostgreSQL guard slice
     // filesystem identity checks before admission. Do not mock snapshot().
     const location = await locations.set(principal, 'http', { workspaceId: f.scope.workspaceId,
       commandId: randomUUID(), expectedLocationRevision: 1, runnerId: locations.runnerId, rootPath: directory })
-    const services = { commands, repeats: createRepeatServices(db.pool, commands) } as OperatorServices
+    const services = { commands, workflows: new WorkflowManagementService(db.pool, commands) } as OperatorServices
     const app = buildApp({ readiness: { database: { ping: async () => { await db.pool.query('select 1') } },
       checkpoints: { ping: async () => undefined } }, operator: { access, services } })
     apps.push(app); await app.ready()
     const revision = Number((await db.pool.query<{ revision: string }>(
       'select revision::text from workflows where id=$1', [f.scope.workflowId])).rows[0]!.revision)
-    const save: RepeatSaveInput = { workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId,
+    const save: CurrentWorkflowSaveInput = { workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId,
       commandId: randomUUID(), expectedRevision: revision, expectedWorkflowVersionId: f.version.id, executionSemanticsVersion: 3,
-      repeat: { contractVersion: 1, blocks: [{ id: 'repair', nodeIds: [entry.id, exit.id], entryNodeId: entry.id,
-        exitNodeId: exit.id, maxOccurrences: 2, repeatOutcome: 'issues', earlyExitOutcome: 'pass', limitExit: { kind: 'branch_end' } }] } }
-    const url = `/api/management/workspaces/${save.workspaceId}/workflows/${save.workflowId}/repeat`
+      expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds,
+      expectedLocationRevision: location.value.locationRevision,
+      graph: { ...f.version.definition, repeat: { contractVersion: 1, blocks: [{ id: 'repair', nodeIds: [entry.id, exit.id], entryNodeId: entry.id,
+        exitNodeId: exit.id, maxOccurrences: 2, repeatOutcome: 'issues', earlyExitOutcome: 'pass', limitExit: { kind: 'branch_end' } }] } } }
+    const url = `/api/management/workspaces/${save.workspaceId}/workflows/${save.workflowId}/definition`
     const headers = (token: string) => ({ host: 'localhost', authorization: `Bearer ${token}` })
     const response = await app.inject({ method: 'PUT', url, headers: headers(writer.token), payload: save })
     assert.equal(response.statusCode, 200, response.body)
-    const saved = RepeatSaveResultSchema.parse(response.json())
+    const saved = CurrentWorkflowSaveResultSchema.parse(response.json())
     const input = RunStartV3InputSchema.parse({ workspaceId: save.workspaceId, workflowId: save.workflowId,
       workflowVersionId: saved.value.currentVersionId, expectedWorkflowRevision: saved.value.revision,
       expectedAgentConfigurationVersionIds: saved.value.version.agentConfigurationVersionIds,

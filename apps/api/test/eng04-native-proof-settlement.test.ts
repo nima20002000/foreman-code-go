@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
+import * as snapshots from '../src/modules/runs/repeatStartRead.js'
+import * as executions from '../src/modules/runs/repeatPostgres.js'
 import { HarnessExecutionSchema } from '@graphql/contracts'
 import { type GraphTransactionSql } from '../src/modules/run-graph/connection.js'
 import { settleRepeatNativeExecutionLocked, settleRepeatNativeExecutionWithProofLocked } from '../src/modules/interactions/repeatNativeSettlement.js'
@@ -27,16 +29,23 @@ test('native proof model: exact durable close readback and replay finalize once 
 
 test('native proof model: absent SQL rows plus negative terminal do not prove no submission', async () => {
   const f = model()
+  // Only accepted input readers are doubles; the entry reservation authority stays real.
+  const snapshot = vi.spyOn(snapshots, 'readAcceptedRepeatRunLocked').mockResolvedValue({
+    run: { workspaceId: 'workspace-proof-1', workflowId: 'workflow-proof-1', workflowVersionId: 'version-proof-1' },
+  } as never)
+  const execution = vi.spyOn(executions, 'readRepeatExecutionLocked').mockResolvedValue({
+    ref: { nodeId: f.execution.workflowNodeId, occurrence: null }, inputDigest: `sha256:${'1'.repeat(64)}`,
+  } as never)
   try {
     const negative = HarnessExecutionSchema.parse({ ...f.execution, nativeSessionId: undefined,
       workingDirectory: undefined, runtimeDirectory: undefined, startedAt: undefined,
       result: { outcome: 'canceled' } })
     f.state.execution = negative; f.state.hasSession = false; f.state.hasClosure = false; f.state.negativeCleanup = true
-    await assert.rejects(f.settle(negative), { code: 'REPEAT_BOUNDARY_PENDING' })
+    await assert.rejects(f.settle(negative), { code: 'NATIVE_ENTRY_CONFLICT' })
     assert.equal(f.state.finalized, false)
     assert.ok(!f.statements.some((text) => text.includes('possible_submission')))
     noCommit(f.statements)
-  } finally { await f.connection.close() }
+  } finally { snapshot.mockRestore(); execution.mockRestore(); await f.connection.close() }
 })
 
 for (const [label, alter, code] of [
@@ -107,7 +116,7 @@ test('native proof model: caller mutation of returned evidence cannot change the
     await f.connection.transaction(async (sql) => {
       const proof = await settleRepeatNativeExecutionWithProofLocked(sql, incoming.runId, incoming)
       incoming.input = { tampered: true }; proof[0]!.generation = '999'
-      proof[0]!.session.nativeSessionId = 'caller-forged-session'
+      proof[0]!.session!.nativeSessionId = 'caller-forged-session'
     })
     assert.equal(f.state.finalizedWrites, 1)
     assert.deepEqual(f.state.execution.input, { original: 'input-1' })

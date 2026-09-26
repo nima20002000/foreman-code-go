@@ -83,7 +83,7 @@ test('NATIVE-2 settled negative reviewer cleanup closes without response or posi
 
 test('NATIVE-2 execution-ID-only finishReview is not a v3 occurrence barrier', async () => {
   const f = reviewFixture()
-  await f.coordinator.finishReview(f.get().id)
+  assert.equal('finishReview' in f.coordinator, false)
   assert.ok(!f.calls.some((call) => call.startsWith('close:')))
 })
 
@@ -104,4 +104,14 @@ test('NATIVE-2 immutable execution/input and review identity conflicts fail clos
   assert.throws(() => assertSameReviewJob(f.job, { ...f.job, interactionId: 'other' }), { code: 'REVIEW_JOB_IDENTITY_CONFLICT' })
   assert.equal(reviewPhysicallySettled({ ...f.job, providerTurnOrMessageId: undefined }), false)
   assert.equal(reviewPhysicallySettled({ ...f.job, state: 'uncertain' }), false)
+})
+
+test('NATIVE-2 missing physical review proof cannot close or revoke the captured lifetime', async () => {
+  const f = reviewFixture()
+  f.interactions.coordination.assertReviewPhysicalSettlement = async () => {
+    throw Object.assign(new Error('Original terminal proof missing'), { code: 'REPEAT_CLEANUP_PENDING' })
+  }
+  await assert.rejects(f.coordinator.captureReviewFinalizer(f.get().id, f.session, f.job)!(f.job),
+    { code: 'REPEAT_CLEANUP_PENDING' })
+  assert.ok(!f.calls.some((call) => /close:|revoke:/.test(call)))
 })

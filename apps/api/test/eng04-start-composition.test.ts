@@ -22,22 +22,30 @@ function fixture() {
   const snapshot: AcceptedRepeatRunSnapshot = { run: f.run, version: f.version,
     configurations: f.f.configurations, stopRequested: false, cleanupPending: false }
   const controller = new AbortController()
-  let owned = true, permit = false, evidence: RepeatNativeBoundaryEvidence = { kind: 'first_launch' }
+  let owned = true
+  let evidence: RepeatNativeBoundaryEvidence | undefined
+  const prepared = { executionId: 'execution-start-first' }, entered = { executionId: 'execution-start-first' }
   let execution = HarnessExecutionSchema.parse({ id: 'execution-start-first', runId: f.run.id,
     workflowNodeId: f.version.entryNodeId, agentId: f.version.definition.nodes[0]!.agentId,
     agentConfigurationVersionId: f.version.agentConfigurationVersionIds[f.version.definition.nodes[0]!.agentId],
     attempt: 1, input: {}, state: 'queued', createdAt: '2026-09-25T00:00:00.000Z' })
   const boundary = vi.fn(async () => undefined)
-  const consume = vi.fn(() => { const value = permit; permit = false; return value })
+  const consume = vi.fn()
   const repository = { readExecution: vi.fn(async () => ({ execution: structuredClone(execution) })),
-    claimLaunch: vi.fn(async () => { permit = true; return structuredClone(execution) }),
+    claimLaunch: vi.fn(async () => structuredClone(execution)),
+    beginNativeEntry: vi.fn(async () => prepared),
+    authorizeNativeSubmission: vi.fn(async () => entered),
+    assertExecutionAdmission: vi.fn(async () => undefined),
     consumeLaunchPermit: consume, recoverSession: vi.fn(async () => structuredClone(execution)),
     exactSession: vi.fn(async () => ({ harness: 'codex', providerVersion: 'synthetic-1', nativeSessionId: 'session-start-test' })),
     settleNativeExecution: vi.fn(async () => undefined), assertNativeBoundary: boundary } as unknown as Store
   const owner = { runId: f.run.id, assertOwned: () => {
     if (!owned) throw new DomainError('RUN_OWNERSHIP_LOST', 'synthetic owner lost', 409)
   }, oneShotConnection: () => ({ transaction: async (work: (sql: object) => Promise<unknown>) => work({ transaction: true }) }) }
-  const proof = vi.fn(async () => evidence)
+  const proof = vi.fn(async () => {
+    if (!evidence) throw new DomainError('NATIVE_SESSION_START_UNCERTAIN', 'No captured native evidence', 409)
+    return evidence
+  })
   const context = { owner, signal: controller.signal, checkpointer: {}, admission: {}, configuredParallelism: 4,
     runtimeRoot: '/synthetic/runtime', factory: { forOwner: vi.fn(() => repository) }, native: {}, workflows: {}, locations: {},
     nativeBoundaryEvidence: proof, lifecycle: { preflight: vi.fn(async () => undefined), markRunning: vi.fn(async () => undefined),
@@ -46,7 +54,7 @@ function fixture() {
       finishNative: vi.fn(async () => undefined), finishCleanup: vi.fn(async () => undefined) } } as unknown as RepeatEngineStartContext
   calls.read.mockResolvedValue(snapshot)
   const adapter = repeatNativeStartStore(context, snapshot, repository)
-  return { ...f, context, snapshot, controller, adapter, repository, proof, boundary, consume,
+  return { ...f, context, snapshot, controller, adapter, repository, proof, boundary, consume, prepared, entered,
     execution: () => execution, changeExecution: (next: typeof execution) => { execution = next },
     loseOwner: () => { owned = false }, setProof: (next: RepeatNativeBoundaryEvidence) => { evidence = next } }
 }
@@ -70,10 +78,15 @@ describe('ENG04 NATIVE-3 N1 to N2 exact observer bridge', () => {
     expect(f.adapter.store.consumeLaunch(id)).toBe(false)
     expect(f.consume).not.toHaveBeenCalled()
     await f.adapter.store.claimLaunch(id, { workingDirectory: f.location.rootPath, runtimeDirectory: '/synthetic/runtime' })
+    expect(f.adapter.store.consumeLaunch(id)).toBe(false)
+    expect(await f.adapter.store.beginNativeEntry(id)).toBe(f.prepared)
+    expect(f.adapter.store.consumeLaunch(id)).toBe(false)
+    await f.adapter.store.authorizeNativeSubmission(id)
+    expect(f.repository.authorizeNativeSubmission).toHaveBeenCalledWith(id, f.prepared)
     expect(f.adapter.store.consumeLaunch(id)).toBe(true)
     expect(f.adapter.store.consumeLaunch(id)).toBe(false)
     await f.adapter.store.assertNativeBoundary(id)
-    expect(f.boundary).toHaveBeenCalledWith(id, { kind: 'first_launch' })
+    expect(f.boundary).toHaveBeenCalledWith(id, { kind: 'first_launch', permit: f.entered })
   })
   it('lost claim reply / recovered candidate cannot recreate the first-launch boundary', async () => {
     const f = fixture(), id = f.execution().id

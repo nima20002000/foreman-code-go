@@ -5,6 +5,8 @@ import { beforeGraphCommit, ExclusiveGraphConnection } from '../src/modules/run-
 import { RepeatRunRepository, type RepeatLockedHooks } from '../src/modules/runs/repeatPostgres.js'
 import { repeatDigest, repeatExecutionIdentity, repeatSlotId, freezeRepeatEntry } from '../src/modules/runs/repeatResolution.js'
 import type { RepeatNativeChange } from '../src/modules/runs/repeatNativeRepository.js'
+import { workflowNativeReservation } from '../src/modules/runs/workflowNativeEntry.js'
+import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
 import { nativeAt, nativeCompleted, nativeFixture } from './eng04-native-fixtures.js'
 
 /** Real repository + transaction facade over scripted, rollback-capable pg
@@ -55,6 +57,10 @@ function fixture() {
       record: f.occurrence, input_json: JSON.stringify(entry), input_digest: repeatDigest(entry),
     }])
     if (q.startsWith('select payload_digest from run_repeat_effects')) return rows([{ payload_digest: repeatDigest(input) }])
+    if (q.includes('from workflow_native_entries where')) {
+      const reservation = workflowNativeReservation(f.scope, f.ref, execution, repeatDigest(input))
+      return rows([{ reservation, reservation_digest: repeatDigest(reservation), phase: 'reserved', transition: null }])
+    }
     if (q.startsWith('select effect_digest from run_graph_effects')) return rows(launchDigest ? [{ effect_digest: launchDigest }] : [])
     if (q.startsWith('select ( exists(select 1 from run_graph_effects')) return rows([{ possible_submission: state.possible }])
     if (q.startsWith('update harness_executions set record=$3::jsonb')) {
@@ -81,7 +87,7 @@ function fixture() {
       native: {
         assertLaunchLocked: async () => { calls.push('launch-authority') },
         assertBoundaryLocked: async () => { calls.push('native-boundary') },
-        assertUpdateLocked: async () => { calls.push('native-update') },
+        assertUpdateLocked: async () => { throw new Error('not a native observation operation') },
         publishLocked: async (sql, change, mutate) => {
           changes.push(structuredClone(change)); calls.push('publish')
           expect(store.consumeLaunchPermit(execution.id)).toBe(false)
@@ -102,7 +108,12 @@ function fixture() {
     }
   } }
   const store = new RepeatRunRepository(owner, host, f.version)
-  return { f, state, calls, changes, connection, store,
+  const channel = createWorkflowNativeCaptureChannel()
+  const evidence = () => channel.capture.capture({ owner: owner as never, execution,
+    session: { harness: 'codex', providerVersion: 'synthetic-only', nativeSessionId: execution.nativeSessionId! },
+    manager: { harness: 'codex' } as never, source: { type: 'boundary' }, kind: 'recovery',
+    lifetimeGeneration: 1, closureGeneration: null, assertCurrent: assertOwned })
+  return { evidence, f, state, calls, changes, connection, store,
     record: () => structuredClone(execution),
     terminal: () => { execution = nativeCompleted(HarnessExecutionSchema.parse({ ...f.execution, input })) },
     recover: () => new RepeatRunRepository(owner, host, f.version),
@@ -160,7 +171,7 @@ describe('ENG04 NATIVE-1 launch commit, denial and immutable replay', () => {
   it('exact already-terminal replay after Stop has no mutation or native callback', async () => {
     const f = fixture(); f.terminal(); f.state.stopped = true
     const saved = f.record()
-    await f.store.updateExecution(saved, { kind: 'recovery', session: { harness: 'codex', providerVersion: '0.154.0', nativeSessionId: saved.nativeSessionId! }, evidence: {} })
+    await f.store.updateExecution(saved, f.evidence())
     expect(f.record()).toEqual(saved)
     expect(f.calls).not.toContain('native-update')
     expect(f.changes).toHaveLength(0)
@@ -169,9 +180,7 @@ describe('ENG04 NATIVE-1 launch commit, denial and immutable replay', () => {
   it('contradictory terminal replay fails before normalization or publication', async () => {
     const f = fixture(); f.terminal()
     const saved = f.record()
-    await expect(f.store.updateExecution({ ...saved, result: { outcome: 'canceled' } }, {
-      kind: 'recovery', session: { harness: 'codex', providerVersion: '0.154.0', nativeSessionId: saved.nativeSessionId! }, evidence: {},
-    })).rejects.toMatchObject({ code: 'REPEAT_TERMINAL_CONFLICT' })
+    await expect(f.store.updateExecution({ ...saved, result: { outcome: 'canceled' } }, f.evidence())).rejects.toMatchObject({ code: 'REPEAT_TERMINAL_CONFLICT' })
     expect(f.record()).toEqual(saved)
     expect(f.calls).not.toContain('native-update')
     expect(f.changes).toHaveLength(0)

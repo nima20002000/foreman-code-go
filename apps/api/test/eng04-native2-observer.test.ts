@@ -14,6 +14,7 @@ import { native2Fixture } from './eng04-native2-fixtures.js'
 function observerFixture(completed = false) {
   const f = native2Fixture(completed)
   const store: RepeatNativeLaunchStore = { ...f.store,
+    beginNativeEntry: async () => { throw Object.assign(new Error('No preparation permit'), { code: 'NATIVE_ENTRY_CONFLICT' }) },
     claimLaunch: async () => { throw new Error('claim not configured') },
     recoverSession: async () => f.get(),
   }
@@ -58,28 +59,30 @@ test('NATIVE-2 a claimed execution without its one-use permit allocates nothing'
   try {
     f.set({ ...f.get(), nativeSessionId: undefined, runtimeDirectory: directory })
     f.store.claimLaunch = async () => f.get()
-    await assert.rejects(f.observer()(f.get(), new AbortController().signal), { code: 'NATIVE_SESSION_START_UNCERTAIN' })
+    await assert.rejects(f.observer()(f.get(), new AbortController().signal), { code: 'NATIVE_ENTRY_CONFLICT' })
     assert.equal(existsSync(directory), false)
     assert.ok(!f.calls.includes('live-observe'))
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-test('NATIVE-2 launch permit is consumed before mkdir and passed exactly once to coordinator', async () => {
+test('NATIVE-2 preparation precedes mkdir and submission authorization remains with the coordinator', async () => {
   const f = observerFixture(), root = await mkdtemp(join(tmpdir(), 'eng04-native2-'))
   const directory = join(root, 'occurrence')
   try {
     f.set({ ...f.get(), nativeSessionId: undefined, runtimeDirectory: directory })
     f.store.claimLaunch = async () => f.get()
     let permits = 0
-    f.store.consumeLaunch = (id) => { assert.equal(id, f.get().id); assert.equal(existsSync(directory), false); permits++; return true }
+    f.store.beginNativeEntry = async (id) => { assert.equal(existsSync(directory), false); return { executionId: id } }
+    f.store.consumeLaunch = (id) => { assert.equal(id, f.get().id); assert.equal(existsSync(directory), true); permits++; return permits === 1 }
     f.native.observeExact = async ({ execution, store }) => {
       assert.equal(existsSync(directory), true)
+      await store.authorizeNativeSubmission(execution.id)
       assert.equal(store.consumeLaunch(execution.id), true)
       assert.equal(store.consumeLaunch(execution.id), false)
       return { state: 'completed', execution: nativeCompleted(execution), result: nativeCompleted(execution).result! }
     }
     await f.observer()(f.get(), new AbortController().signal)
-    assert.equal(permits, 1)
+    assert.equal(permits, 2)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

@@ -47,6 +47,7 @@ export function nativeProofModel() {
       return result([{ id: execution.id, run_id: execution.runId, workflow_node_id: state.rowNodeId,
         agent_id: execution.agentId, attempt: execution.attempt, record: state.execution }])
     }
+    if (text.includes('from workflow_native_entries where execution_id=$1 and run_id=$2')) return result([])
     if (text.includes('select j.id,j.execution_id,j.state,j.record')) return result([])
     if (text.includes('exists(select 1 from worker_credential_bindings')) return result([{ outstanding: state.outstanding }])
     if (text.includes('select reference,workflow_finalized_at is not null as finalized')) {

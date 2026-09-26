@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test, vi } from 'vitest'
-import { AcceptedWorkflowRunV3Schema, makeWave25Fixture } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import type { StoredRepeatExecution } from '../src/modules/runs/repeatPostgres.js'
 import type { AcceptedRepeatRunSnapshot } from '../src/modules/runs/repeatStartRead.js'
@@ -13,7 +13,7 @@ import { nativeProofModel } from './eng04-native-proof-model.js'
  * The service, G1, native settlement and durable closure reader execute. This
  * suite verifies checkpoint retention, not actual SQL receipt/owner provenance. */
 function fixture() {
-  const f = nativeProofModel(), base = makeWave25Fixture('native-proof-service')
+  const f = nativeProofModel(), base = makeCurrentWorkflowFixture('native-proof-service')
   const run = AcceptedWorkflowRunV3Schema.parse({ ...base.run, id: f.execution.runId,
     workspaceId: 'workspace-proof-1', workflowId: 'workflow-proof-1', executionSemanticsVersion: 3,
     executionState: 'running', authorizationPrincipalId: 'principal-proof-model',

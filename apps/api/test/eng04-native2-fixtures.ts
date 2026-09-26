@@ -1,8 +1,9 @@
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, type HarnessExecution,
   type NativeSessionReference, type ReviewJob } from '@graphql/contracts'
-import { AcceptedWorkflowRunV3Schema, makeWave25Fixture } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import type { RepeatNativeObservationStore } from '../src/modules/interactions/repeatObservation.js'
+import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
 import { DomainError } from '../src/modules/errors.js'
 import type { NativeHistory } from '../src/modules/harnesses/port.js'
 import { nativeCompleted, nativeFixture, nativeStored, nativeAt } from './eng04-native-fixtures.js'
@@ -10,7 +11,7 @@ import { nativeCompleted, nativeFixture, nativeStored, nativeAt } from './eng04-
 /** Doubles only. These tests never start a provider, DB, native process or browser. */
 export function native2Fixture(completed = true) {
   const fixture = nativeFixture()
-  const base = makeWave25Fixture('eng04-native')
+  const base = makeCurrentWorkflowFixture('eng04-native')
   const configuration = AgentConfigurationVersionSchema.parse({ ...base.configurations[0],
     id: fixture.execution.agentConfigurationVersionId, agentId: fixture.execution.agentId })
   const run = AcceptedWorkflowRunV3Schema.parse({ ...base.run, executionSemanticsVersion: 3,
@@ -37,6 +38,8 @@ export function native2Fixture(completed = true) {
     },
     assertNativeBoundary: async (id: string) => { owner.assertOwned(); calls.push(`boundary:${id}`) },
     exactSession: async (id: string) => { calls.push(`session:${id}`); return session },
+    assertExecutionAdmission: async () => { owner.assertOwned(); calls.push('admission') },
+    authorizeNativeSubmission: async () => { owner.assertOwned(); calls.push('authorize-submission') },
     consumeLaunch: (): boolean => false,
   } satisfies RepeatNativeObservationStore
   const runs = {
@@ -46,11 +49,13 @@ export function native2Fixture(completed = true) {
     getExecution: async () => execution,
     updateExecution: async (next: HarnessExecution) => { calls.push(`terminal:${next.result?.outcome ?? next.state}`); execution = next },
     recordActivity: async () => undefined,
-    appendNativeEvent: async (event: unknown, owner?: unknown, lease?: unknown, _approval?: unknown, evidence?: unknown) => {
+    appendNativeEvent: async (event: unknown, owner?: unknown, lease?: unknown, _approval?: unknown, _legacy?: unknown, evidence?: unknown) => {
       calls.push('raw-event'); persisted.push({ event, owner, lease, evidence })
     },
   }
+  const captureChannel = createWorkflowNativeCaptureChannel()
   const interactions = { coordination: {
+    assertReviewPhysicalSettlement: async () => { calls.push('review-physical-settlement') },
     workflowSession: async () => ({ session, finalized: false, reviewerActive: false }),
     finalizeWorkflowSession: forbidden('unqualified-finalize'),
     bindWorkflowSession: async () => undefined,
@@ -72,6 +77,8 @@ export function native2Fixture(completed = true) {
   const managers = { resolve: forbidden('resolve'), release: () => { calls.push('release-manager') } }
   const closures = {
     begin: async () => '41',
+    recordDetached: forbidden('detached-close'), recordUnbound: forbidden('unbound-close'),
+    readUnbound: async () => undefined,
     read: async () => proof,
     record: async (value: HarnessExecution, reference: NativeSessionReference, generation: string, check: () => void) => {
       check(); calls.push(`closure:${generation}`); closed = true
@@ -80,12 +87,15 @@ export function native2Fixture(completed = true) {
     },
   }
   const coordinator = new ApprovalExecutionCoordinator(runs as never, interactions as never, budgets as never,
-    managers as never, 60_000, credentials as never, async () => undefined, forbidden('process-recovery'), closures)
+    managers as never, 60_000, credentials as never, async () => undefined, closures, undefined, captureChannel.capture)
   const history = () => ({ correlationId: `execution:${execution.id}`, nativeTurnId: 'turn-native2-exact',
     terminalTurn: { correlationId: `execution:${execution.id}`, providerId: 'turn-native2-exact', result: nativeCompleted(execution).result! },
     pendingInteractions: [], events: [], responseDeliveries: [] } as unknown as NativeHistory)
   const manager = {
     harness: 'codex' as const,
+    assertCapturedLease: () => undefined,
+    capturedLease: () => ({ fence: { id: 'lane-native2-exact', token: 'lease-native2-exact' },
+      previous: { connectionGeneration: 1 }, providerId: 'turn-native2-exact' }),
     close: async (reference: NativeSessionReference) => { calls.push(`close:${reference.nativeSessionId}`) },
     capabilities: forbidden('capabilities'), createSession: forbidden('createSession'),
     attachSession: forbidden('attachSession'), startTurn: forbidden('startTurn'), respond: forbidden('respond'), cancel: forbidden('cancel'),
@@ -95,7 +105,7 @@ export function native2Fixture(completed = true) {
     withLane: async (_reference: NativeSessionReference, correlation: string, _signal: AbortSignal | undefined,
       work: (manager: unknown, lane: unknown) => Promise<unknown>) => work(manager, {
         fence: { id: 'lane-native2-exact', token: 'lease-native2-exact' }, providerId: 'turn-native2-exact',
-        previous: { correlationId: correlation, currentTurnOrMessageId: 'turn-native2-exact', observedStatus: 'idle' },
+        previous: { connectionGeneration: 1, correlationId: correlation, currentTurnOrMessageId: 'turn-native2-exact', observedStatus: 'idle' },
         guard: { check: async () => undefined, signal: new AbortController().signal }, observedStatus: 'idle',
       }),
   }
@@ -106,20 +116,20 @@ export function native2Fixture(completed = true) {
     ownedSessions: Map<string, typeof resident>
     managerCredentials: WeakMap<object, unknown>
     resolveManager: () => { manager: typeof manager; processState: 'resident' | 'needs_start'; beginStart?(): void; markResident?(): void }
-    prepareEnvironment: () => Promise<undefined>
+    prepareEnvironment: (context?: unknown, resolved?: unknown, signal?: AbortSignal, purpose?: unknown, enterNative?: () => Promise<void>) => Promise<undefined>
     closeRepeatLifetime: (value: typeof resident, check: () => void) => Promise<void>
   }
   const installResident = (reviewer = false) => {
     if (reviewer) resident.context.purpose = 'reviewer'
     internals.ownedSessions.set(execution.id, resident)
     internals.managerCredentials.set(manager, { principalId: 'principal-native2-captured',
-      expiresAt: '2099-01-01T00:00:00.000Z', environment: { variables: {} } })
+      expiresAt: new Date(Date.now() + 300_000).toISOString(), environment: { variables: {} } })
   }
   const observe = () => coordinator.observeExact({ execution, store,
     workflowId: run.workflowId, graphThreadId: run.id, owner: owner as never, signal: new AbortController().signal })
   return { fixture, configuration, run, owner, store, coordinator, internals, resident, installResident, observe,
-    calls, persisted, closures, credentials, budgets, manager, managers, interactions, runs, session, history,
-    get: () => execution, set: (value: HarnessExecution) => { execution = HarnessExecutionSchema.parse(value) },
+    calls, persisted, captureChannel, closures, credentials, budgets, manager, managers, interactions, runs, session, history,
+    get: () => execution, set: (value: HarnessExecution) => { execution = HarnessExecutionSchema.parse(JSON.parse(JSON.stringify(value))) },
     loseOwner: () => { owned = false }, settled: () => { settled = true },
     closed: () => { closed = true; proof = { execution, session, durableGeneration: '41' } },
     getProof: () => proof, revoked: () => { revoked = true }, at: nativeAt }

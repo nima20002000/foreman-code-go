@@ -100,12 +100,14 @@ function liveRequest(f: ReturnType<typeof native2Fixture>) {
     configuration: f.configuration, input: f.get().input })
 }
 
-test('NATIVE-2 nonterminal missing permit cannot allocate a manager or silently fail the execution', async () => {
+test('NATIVE-2 nonterminal missing permit cannot prepare credentials or start native work', async () => {
   const f = native2Fixture(false); f.set({ ...f.get(), nativeSessionId: undefined })
+  f.internals.resolveManager = () => ({ manager: f.manager, processState: 'needs_start' })
+  f.store.authorizeNativeSubmission = async () => { throw new DomainError('NATIVE_ENTRY_CONFLICT', 'Missing committed entry permit', 409) }
   await assert.rejects(f.coordinator.observeExact({ execution: f.get(), request: liveRequest(f), approval: f.run.approval, store: f.store,
     owner: f.owner as never, workflowId: f.run.workflowId, graphThreadId: f.run.id, signal: new AbortController().signal }),
-  (error: unknown) => error instanceof DomainError && error.code === 'NATIVE_SESSION_START_UNCERTAIN')
-  assert.ok(!f.calls.includes('resolve'))
+  (error: unknown) => error instanceof DomainError && error.code === 'NATIVE_ENTRY_CONFLICT')
+  assert.ok(!f.calls.some((call) => /credential-prepare|createSession|startTurn/.test(call)))
   assert.ok(!f.calls.some((call) => call.startsWith('terminal:')))
 })
 
@@ -148,14 +150,18 @@ test('NATIVE-2 raw provider payload keeps exact source tuple, session and contin
   f.internals.prepareEnvironment = async () => undefined
   const raw = { executionId: f.get().id, connectionId: 'connection-occurrence-1', sequence: 17,
     occurredAt: f.at, type: 'native2.raw.telemetry', payload: { message: 'unaltered provider carrier', extra: { count: 9 } } }
-  f.manager.reconcile = async () => ({ ...f.history(), events: [raw] })
+  let reads = 0
+  f.manager.reconcile = async () => ++reads === 1
+    ? JSON.parse(JSON.stringify({ ...f.history(), terminalTurn: undefined, events: [raw] })) : f.history()
   await f.coordinator.observeExact({ execution: f.get(), request: liveRequest(f), approval: f.run.approval, store: f.store,
     owner: f.owner as never, workflowId: f.run.workflowId, graphThreadId: f.run.id, signal: new AbortController().signal })
   assert.deepEqual(f.persisted[0]?.event, raw)
   assert.equal(f.persisted[0]?.owner, f.owner)
   assert.deepEqual(f.persisted[0]?.lease, { id: 'lane-native2-exact', token: 'lease-native2-exact', providerId: 'turn-native2-exact', live: false })
-  assert.deepEqual(f.persisted[0]?.evidence, { session: f.session, correlationId: `execution:${f.get().id}`,
-    providerId: 'turn-native2-exact', responseDeliveries: [], historyEvents: [raw] })
+  const captured = f.persisted[0]?.evidence as { evidence: { source: unknown; session: unknown; lifetimeGeneration: number } }
+  assert.deepEqual(captured.evidence.source, { type: 'event', event: raw })
+  assert.deepEqual(captured.evidence.session, f.session)
+  assert.equal(captured.evidence.lifetimeGeneration, 7)
 })
 
 test('NATIVE-2 first launch and terminal replay use one exact session and one turn', async () => {
@@ -174,11 +180,12 @@ test('NATIVE-2 first launch and terminal replay use one exact session and one tu
   }
   f.internals.resolveManager = () => ({ manager: physical as never, processState: 'needs_start',
     beginStart: () => { f.calls.push('begin-start') }, markResident: () => { f.calls.push('resident') } })
-  f.internals.prepareEnvironment = async () => {
+  f.internals.prepareEnvironment = async (_context, _resolved, _signal, _purpose, enterNative) => {
+    await enterNative!()
     const owned = f.internals.ownedSessions.get(f.get().id)!
     owned.closureGeneration = '41'; owned.closureRegistration = Promise.resolve('41')
     f.internals.managerCredentials.set(physical, { principalId: 'principal-native2-captured',
-      expiresAt: '2099-01-01T00:00:00.000Z', environment: { variables: {} } })
+      expiresAt: new Date(Date.now() + 300_000).toISOString(), environment: { variables: {} } })
     return undefined
   }
   await f.coordinator.observeExact({ execution: f.get(), request: liveRequest(f), approval: f.run.approval, store: f.store,
@@ -188,3 +195,22 @@ test('NATIVE-2 first launch and terminal replay use one exact session and one tu
   assert.equal(f.get().nativeSessionId, f.session.nativeSessionId)
   assert.equal(f.calls.filter((call) => call === 'closure:41').length, 1)
 })
+
+for (const replacement of ['owner', 'generation', 'session', 'copy'] as const) {
+  test(`NATIVE-2 original boundary capture rejects ${replacement} replacement`, async () => {
+    const f = native2Fixture(false); f.installResident()
+    const evidence = await f.coordinator.nativeBoundaryEvidence(f.get().id, f.owner as never)
+    const original = f.captureChannel.verify.read(evidence)
+    assert.equal(original.owner, f.owner)
+    assert.equal(original.lifetimeGeneration, 7)
+    assert.deepEqual(original.session, f.session)
+    assert.deepEqual(original.source, { type: 'boundary' })
+    if (replacement === 'owner') f.loseOwner()
+    if (replacement === 'generation') f.resident.generation++
+    if (replacement === 'session') f.resident.session = { ...f.session, nativeSessionId: 'replacement-session' }
+    assert.throws(() => f.captureChannel.verify.read(replacement === 'copy' ? structuredClone(evidence) : evidence),
+      { code: replacement === 'owner' ? 'RUN_OWNERSHIP_LOST'
+        : replacement === 'copy' ? 'NATIVE_SOURCE_NOT_CAPTURED' : 'NATIVE_LIFETIME_CHANGED' })
+    assert.ok(!f.calls.some((call) => /terminal:|close:|revoke:/.test(call)))
+  })
+}
