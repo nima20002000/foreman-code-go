@@ -14,6 +14,8 @@ import { acknowledgeEditOutbox, editSnapshotAcknowledged, editSnapshotSubmitted,
   rejectEditOutbox, reserveEditOutbox, storeEditSnapshot, withEditIntentLock, type EditIntentOutbox } from './editIntentStorage'
 
 export const activeEditIntent = (intent: GraphEditIntentV3 | null | undefined) => !!intent && !['saved', 'discarded'].includes(intent.state)
+/** Shared by every Start surface: a Save/Advance/Discard command is in flight from its first request. */
+export const editIntentCommandKey = (draftKey: string) => ['graph-edit-intent-command', draftKey] as const
 export const graphEditIntentKey = (workspaceId: string, workflowId: string, draftId: string, generation = sessionGeneration()) =>
   ['graph-edit-intent', generation, workspaceId, workflowId, draftId] as const
 const readInput = (edit: NextDraftEdit) => ({ action: 'read_edits' as const, workspaceId: edit.context.draft.workspaceId,
@@ -169,7 +171,7 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
     try { accept(query.data) } catch (error) { setStorageError(String(error)) }
   }, [accept, query.data])
 
-  const mutation = useMutation({ mutationFn: async (command: { action: 'save' | 'advance' | 'discard'; allowStop?: boolean }) => withEditIntentLock(draftKey, async () => {
+  const mutation = useMutation({ mutationKey: editIntentCommandKey(draftKey), mutationFn: async (command: { action: 'save' | 'advance' | 'discard'; allowStop?: boolean }) => withEditIntentLock(draftKey, async () => {
     const { action, allowStop = false } = command
     const generation = sessionGeneration()
     const current = useGraphDraftStore.getState().nextDrafts[draftKey]

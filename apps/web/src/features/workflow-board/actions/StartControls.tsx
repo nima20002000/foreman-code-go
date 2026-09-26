@@ -5,7 +5,7 @@ import { useGraphDraftStore } from '../../graph/store'
 import { ApiError } from '../../../shared/api/client'
 import { nextDraftKey } from '../../graph/nextDraft/state'
 import { readEditOutbox } from '../../graph/nextDraft/editIntentStorage'
-import { activeEditIntent, graphEditIntentKey } from '../../graph/nextDraft/useGraphEditIntent'
+import { activeEditIntent, editIntentCommandKey, graphEditIntentKey } from '../../graph/nextDraft/useGraphEditIntent'
 import { boardStartClient, type BoardStartInput } from '../startClient'
 import { acknowledgeBoardStart, readBoardStart, reserveBoardStart, useBoardStartOutbox } from '../startOutbox'
 import { scopeForBoardRun } from '../client'
@@ -24,6 +24,7 @@ export function StartControls({ scope, run, permitted, available, refresh, viewR
   // outbox and the authoritative (cached) edit intent for this draft.
   const hasPendingEdit = (edit = useGraphDraftStore.getState().nextDrafts[key]) => {
     if (edit?.busy || edit?.pending || edit?.remoteEditIntent || readEditOutbox(key)) return true
+    if (cache.isMutating({ mutationKey: editIntentCommandKey(key) }) > 0) return true
     const draftId = edit?.context.draft.id
     const intent = draftId ? cache.getQueryData<{ intent?: GraphEditIntentV3 | null }>(graphEditIntentKey(scope.workspaceId, scope.workflowId, draftId))?.intent : undefined
     return activeEditIntent(intent)

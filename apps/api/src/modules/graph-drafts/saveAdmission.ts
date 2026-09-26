@@ -185,8 +185,13 @@ function validCurrentSnapshot(row: AffectedRow): boolean {
       workspaceId: row.workspace_id, workflowId: row.workflow_id })
     const configurations = row.configurations.map((configuration) => readImmutableAgentConfiguration(configuration,
       { workspaceId: row.workspace_id }))
-    return SavedRunVersionSnapshotSchema.safeParse({ run, version }).success
-      && ExecutableWorkflowV3Schema.safeParse({ version, configurations }).success
+    if (!SavedRunVersionSnapshotSchema.safeParse({ run, version }).success) return false
+    const executable = ExecutableWorkflowV3Schema.safeParse({ version, configurations })
+    // Historical settlement checks snapshot integrity, not newer admission rules:
+    // an already-accepted Run must not block a corrective Save only because its
+    // immutable topology fails the later cross-repeat reviewer restriction.
+    return executable.success || executable.error.issues.every((issue) => issue.code === 'custom'
+      && (issue as { params?: { publicCode?: string } }).params?.publicCode === 'REPEAT_REVIEW_SCOPE_UNSUPPORTED')
   } catch { return false } // Never disclose private input, result, configuration or Zod issues.
 }
 function settled(row: AffectedRow): boolean {
