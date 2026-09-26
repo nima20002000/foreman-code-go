@@ -1,779 +1,373 @@
 import { randomUUID } from 'node:crypto'
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { ManagementActionSchema, GraphDraftSchema, GraphDraftLayoutResultSchema } from '@graphql/contracts/management'
-import { GraphDraftV2Schema, GraphDraftCommandV2ResultSchema, GraphSaveCommandV2ResultSchema, RunStartV2ResultSchema, WorkflowRunV2Schema, WorkflowVersionV2Schema, GraphEditReadResultSchema, type GraphEditIntent } from '@graphql/contracts/wave25'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { AgentSchema } from '@graphql/contracts'
+import { ManagementActionSchema, type ManagementGrant } from '@graphql/contracts/management'
+import {
+  CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
+  CurrentWorkflowReadResultSchema, SavedManagedWorkflowCommandResultSchema, makeCurrentWorkflowFixture,
+  CurrentEditReadResultSchema,
+} from '@graphql/contracts/wave25'
 import { buildApp } from '../src/app.js'
+import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { PostgresCommandCoordinator, commandInputHash } from '../src/modules/commands/postgres.js'
-import { GraphDraftService } from '../src/modules/graph-drafts/service.js'
-import { HarnessCatalogService } from '../src/modules/harnesses/catalog.js'
-import type { HarnessConfigurationQualifier } from '../src/modules/harnesses/port.js'
-import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
-import { RunManagementService } from '../src/modules/runs/management.js'
-import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
-import type { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
-import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
-import { VersionHistoryService } from '../src/modules/workflows/historyManagement.js'
-import { AgentManagementService } from '../src/modules/workspaces/agents.js'
-import { WorkspaceManagementService } from '../src/modules/workspaces/management.js'
+import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
+import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
+import { createWorkflowRepositoryServices } from '../src/modules/runs/workflowRepositoryServices.js'
+import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
+import { RunManagementService } from '../src/modules/runs/management.js'
+import type { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
-import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
-import { insertOneShotRun } from '../src/modules/runs/oneShotAdmission.js'
-import { changeOneShotLifecycle } from '../src/modules/runs/oneShotLifecycle.js'
-import { agent3Database, seedAgent3, postgresEnabled, ownedAgent3, deferred } from './helpers/wave25Agent3.js'
+import { RunGraphReadService } from '../src/modules/run-graph/readService.js'
+import { currentDatabase as agent3Database, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
+import { graphRpc, graphRpcValue, graphHeaders } from './eng04-graph-composition-fixture.js'
+import { insertCurrentRunFixture as insertFixtureRepeatRun } from './helpers/eng04CurrentRunFixture.js'
 
-/** Actual loopback Streamable HTTP MCP endpoint, real persisted principals,
- * scopes, commands and PostgreSQL drafts/versions. No mocked authentication. */
-describe.skipIf(!postgresEnabled)('Agent 3 authenticated entry/route editing parity', () => {
-  let db: Awaited<ReturnType<typeof agent3Database>>, app: ReturnType<typeof buildApp>
-  let access: PostgresAccessService, drafts: GraphDraftService, history: VersionHistoryService, address: string
-  const clients: Client[] = []
-  beforeAll(async () => {
-    db = await agent3Database()
-    access = new PostgresAccessService(db.pool)
-    const commands = new PostgresCommandCoordinator(db.pool)
-    const locations = new WorkspaceLocationService(db.pool, commands, db.directory)
-    const workflows = new PostgresWorkflowRepository(db.pool)
-    const runs = new PostgresRunRepository(db.pool, workflows, locations)
-    drafts = new GraphDraftService(db.pool, commands); history = new VersionHistoryService(db.pool)
-    const engine = { start: vi.fn(async () => undefined), cancel: vi.fn(async () => false) } as unknown as LangGraphWorkflowEngine
-    const qualifier: HarnessConfigurationQualifier = { async qualify(configuration) {
-      return { harness: configuration.harness, version: 'synthetic-no-native-call', authenticated: true, ready: true,
-        structuredEvents: true, supportsResume: true, supportsCancellation: true, supportsWorkingDirectory: true,
-        supportsStartupPrompt: true, supportedNativeTools: [], supportedSettings: ['model'], unsupportedCapabilities: [] }
-    } }
-    const services = {
-      commands, locations, drafts, runs: new RunManagementService(db.pool, commands, runs, engine, locations),
-      workflows: new WorkflowManagementService(db.pool, commands), agents: new AgentManagementService(db.pool),
-      workspaces: new WorkspaceManagementService(db.pool, commands, locations),
-      harnesses: new HarnessCatalogService(qualifier, new PostgresSettingsRepository(db.pool), commands, db.directory),
+/** Ports management invariants to current definitions and private edit intents.
+ * V1/V2 migration, Apply/revert and legacy node-copy scenarios were compatibility-only.
+ * Every test owns a migrated schema. Real issued bearer auth, typed writer, command/audit and
+ * stateless Operator MCP. The engine below is a FAILING tripwire only for denied
+ * admission tests; this suite does not claim native execution or native closure. */
+describe.skipIf(!postgresEnabled)('Current authenticated management editing parity', () => {
+  let db: Awaited<ReturnType<typeof agent3Database>>
+  const apps: ReturnType<typeof buildApp>[] = []
+  beforeEach(async () => { db = await agent3Database() }, 60000)
+  afterEach(async () => {
+    await Promise.all(apps.splice(0).map((app) => app.close()))
+    await db?.close()
+  })
+  async function fixture(form: 'single' | 'sequential' = 'sequential') {
+    const f = makeCurrentWorkflowFixture(randomUUID(), form)
+    const configurations = f.configurations
+    // Only workspace/Agent configuration fixtures are seeded. No workflow or
+    // immutable v3 version is inserted here; both travel through product HTTP/MCP.
+    await db.pool.query(`insert into workspaces(id,record,execution_location,execution_location_identity,location_revision)
+      values($1,$2::jsonb,$3::jsonb,$4::jsonb,1)`, [f.scope.workspaceId,
+    JSON.stringify({ id: f.scope.workspaceId, name: 'Current workflow fixture' }),
+    JSON.stringify({ runnerId: 'runner-local', rootPath: db.directory }), JSON.stringify({ fixture: true })])
+    for (const config of configurations) {
+      const agent = AgentSchema.parse({ id: config.agentId, name: 'Fixture Worker', productRole: config.productRole,
+        harness: config.harness.harness, model: config.harness.model, effort: 'low', fastMode: false,
+        harnessConfiguration: config.harness, prompt: config.prompt, assignedSkills: config.assignedSkills, configurationVersionId: config.id })
+      await db.pool.query('insert into agents(id,workspace_id,record) values($1,$2,$3::jsonb)', [agent.id, f.scope.workspaceId, JSON.stringify(agent)])
+      await db.pool.query('insert into agent_configuration_versions(id,workspace_id,agent_id,version,record) values($1,$2,$3,1,$4::jsonb)',
+        [config.id, f.scope.workspaceId, config.agentId, JSON.stringify(config)])
+      await db.pool.query('update agents set current_configuration_version_id=$2 where id=$1', [agent.id, config.id])
     }
-    app = buildApp({ readiness: { database: { ping: async () => { await db.pool.query('select 1') } }, checkpoints: { ping: async () => undefined } },
+    const access = new PostgresAccessService(db.pool), commands = new PostgresCommandCoordinator(db.pool)
+    const credential = (grants: ManagementGrant[]) => access.issue({ name: 'Current workflow test caller', audience: 'operator',
+      expiresAt: new Date(Date.now() + 300000), grants })
+    const writer = await credential([{ actions: ['capabilities:read'], scope: {} }, {
+      actions: ManagementActionSchema.options.filter((action) => action !== 'capabilities:read'), scope: { workspaceIds: [f.scope.workspaceId] },
+    }])
+    const workflows = new WorkflowManagementService(db.pool, commands)
+    const locations = new WorkspaceLocationService(db.pool, commands, db.directory, 'runner-local', db.directory)
+    const workflowRepository = new PostgresWorkflowRepository(db.pool)
+    const repository = new PostgresRunRepository(db.pool, workflowRepository, locations, { runtimeRoot: db.directory,
+      ...createWorkflowRepositoryServices(createWorkflowNativeCaptureChannel().verify) })
+    const start = vi.fn(async () => { throw new Error('UNQUALIFIED_NATIVE_START_REACHED') })
+    const cancel = vi.fn(async () => { throw new Error('UNQUALIFIED_NATIVE_STOP_REACHED') })
+    const runs = new RunManagementService(db.pool, commands, repository, { start, cancel } as unknown as LangGraphWorkflowEngine, locations)
+    const services = { workflows, commands, runs,
+      runGraph: new RunGraphReadService(db.pool, { qualifiedReads: true }) } as unknown as OperatorServices
+    const app = buildApp({ readiness: { database: { ping: async () => { await db.pool.query('select 1') } }, checkpoints: { ping: async () => undefined } },
       operator: { access, services } })
-    address = await app.listen({ host: '127.0.0.1', port: 0 })
-  }, 60000)
-  afterAll(async () => {
-    for (const client of clients) await client.close().catch(() => undefined)
-    await app?.close(); await db?.close()
-  })
-  async function connect(token: string) {
-    const client = new Client({ name: 'wave25-a3-authenticated-fixture', version: '1.0.0' })
-    try { await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => token } })) }
-    catch (error) { await client.close().catch(() => undefined); throw error }
-    clients.push(client); return client
+    apps.push(app); await app.ready()
+    const createInput = { workspaceId: f.scope.workspaceId, commandId: randomUUID(), name: `Current ${form}` }
+    const created = await app.inject({ method: 'POST', url: `/api/management/workspaces/${f.scope.workspaceId}/workflows`,
+      headers: graphHeaders(writer.token), payload: createInput })
+    expect(created.statusCode, created.body).toBe(201)
+    const managed = SavedManagedWorkflowCommandResultSchema.parse(created.json()).value
+    expect(managed.workflow.executionSemanticsVersion).toBe(3)
+    expect(Object.hasOwn(managed.workflow, 'repeat')).toBe(false)
+    const createReplay = await graphRpc(app, writer.token, 'tools/call', { name: 'workflow_create', arguments: createInput })
+    expect(createReplay.result?.isError).not.toBe(true)
+    expect(graphRpcValue(createReplay.result)).toMatchObject({ value: managed, replayed: true })
+    const graph = { ...f.version.definition, id: managed.workflow.id,
+      version: managed.workflow.version, createdAt: managed.workflow.createdAt, updatedAt: managed.workflow.updatedAt,
+      name: managed.workflow.name }
+    const input = CurrentWorkflowSaveInputSchema.parse({ workspaceId: f.scope.workspaceId, workflowId: managed.workflow.id,
+      commandId: randomUUID(), executionSemanticsVersion: 3, expectedRevision: managed.revision,
+      expectedWorkflowVersionId: null, expectedAgentConfigurationVersionIds: Object.fromEntries(configurations.map((config) => [config.agentId, config.id])),
+      expectedLocationRevision: 1, graph })
+    const url = `/api/management/workspaces/${input.workspaceId}/workflows/${input.workflowId}/definition`
+    const call = async (name: string, args: unknown, token = writer.token) => graphRpc(app, token, 'tools/call', { name, arguments: args })
+    return { app, input, url, writer, access, credential, commands, workflows, call, f, configurations, start, cancel }
   }
-  async function fixture(legacy = false, withRun = false) {
-    const f = await seedAgent3(db.pool, db.directory, undefined, { run: withRun && !legacy, legacy })
-    if (legacy && withRun) {
-      const record = { ...f.run, executionSemanticsVersion: undefined, executionState: 'running' }
-      await db.pool.query(`insert into runs(id,workspace_id,workflow_id,workflow_version_id,execution_state,record)
-        values($1,$2,$3,$4,'running',$5::jsonb)`,
-      [f.run.id, f.scope.workspaceId, f.scope.workflowId, f.version.id, JSON.stringify(record)])
+  type Fixture = Awaited<ReturnType<typeof fixture>>
+  const httpSave = (t: Fixture, input = t.input, token = t.writer.token) => t.app.inject({ method: 'PUT', url: t.url, headers: graphHeaders(token), payload: input })
+  async function save(t: Fixture) {
+    const result = await httpSave(t); expect(result.statusCode, result.body).toBe(200)
+    return CurrentWorkflowSaveResultSchema.parse(result.json())
+  }
+  async function count(t: Fixture, table: 'workflow_versions' | 'runs') {
+    return Number((await db.pool.query<{ n: string }>(`select count(*)::text as n from ${table} where workflow_id=$1`, [t.input.workflowId])).rows[0]!.n)
+  }
+  it('publishes through MCP, conflicts on changed command input, and retains exact old versions after a later Save', async () => {
+    const t = await fixture()
+    const result = await t.call(CURRENT_WORKFLOW_TOOLS.save, t.input)
+    expect(result.result?.isError).not.toBe(true)
+    const first = CurrentWorkflowSaveResultSchema.parse(graphRpcValue(result.result))
+    expect(CurrentWorkflowSaveResultSchema.parse((await httpSave(t)).json()).replayed).toBe(true)
+    const conflict = await httpSave(t, { ...t.input, graph: { ...t.input.graph, name: 'different input' } })
+    expect(conflict.statusCode).toBe(409); expect(conflict.json()).toMatchObject({ error: { code: 'COMMAND_ID_CONFLICT' } })
+    const next = { ...t.input, commandId: randomUUID(), expectedRevision: first.value.revision,
+      expectedWorkflowVersionId: first.value.currentVersionId, graph: { ...first.value.version.definition, name: 'Next exact immutable version' } }
+    const second = CurrentWorkflowSaveResultSchema.parse((await httpSave(t, next)).json())
+    expect(second.value.currentVersionId).not.toBe(first.value.currentVersionId)
+    const historical = await t.app.inject({ method: 'GET', url: `${t.url}?workflowVersionId=${first.value.currentVersionId}`, headers: graphHeaders(t.writer.token) })
+    expect(historical.json()).toMatchObject({ currentVersionId: second.value.currentVersionId, version: first.value.version })
+    expect(CurrentWorkflowSaveResultSchema.parse((await httpSave(t)).json())).toEqual({ ...first, replayed: true })
+  })
+  it('rejects stale revision/version/configuration/location pins without creating an immutable version', async () => {
+    const t = await fixture()
+    for (const changed of [{ expectedRevision: t.input.expectedRevision + 1 }, { expectedWorkflowVersionId: 'wrong-version' },
+      { expectedAgentConfigurationVersionIds: {} }, { expectedLocationRevision: 2 }]) {
+      const input = { ...t.input, ...changed, commandId: randomUUID() }
+      const http = await httpSave(t, input)
+      expect(http.statusCode).toBe(409)
+      const remote = await t.call(CURRENT_WORKFLOW_TOOLS.save, input)
+      expect(remote.result?.isError).toBe(true)
     }
-    const issued = await access.issue({ name: 'Synthetic editing owner', audience: 'operator',
-      grants: [{ actions: ManagementActionSchema.options, scope: { workspaceIds: [f.scope.workspaceId] } }], expiresAt: new Date(Date.now() + 300_000) })
-    const client = await connect(issued.token)
-    return { f, issued, client }
-  }
-  async function tool(client: Client, name: string, args: Record<string, unknown>) {
-    const result = await client.callTool({ name, arguments: args })
-    expect(result.isError).not.toBe(true)
-    expect(result.structuredContent).toBeTypeOf('object')
-    return result.structuredContent
-  }
-  async function denied(client: Client, name: string, args: Record<string, unknown>) {
-    let result
-    try { result = await client.callTool({ name, arguments: args }) }
-    catch (error) { expect(error).toBeTruthy(); return }
-    expect(result.isError).toBe(true)
-  }
-  const scoped = (f: Awaited<ReturnType<typeof fixture>>['f']) => ({ workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId })
-
-  it('edits through MCP, reads the persisted draft through authenticated HTTP, and saves exact immutable entry/routes', async () => {
-    const { f, issued, client } = await fixture()
-    const draft = GraphDraftV2Schema.parse(await tool(client, 'graph_draft_open', scoped(f)))
-    const input = { ...scoped(f), draftId: draft.id, commandId: randomUUID(), expectedRevision: draft.revision, executionSemanticsVersion: 2,
-      operations: [{ type: 'workflow.set_entry', entryNodeId: f.version.entryNodeId },
-        { type: 'relationship.put', relationship: { ...f.version.definition.edges[0]!, label: 'Exact execution receipt' } },
-        { type: 'node.set_choice', nodeId: f.version.entryNodeId, choice: { outcomes: [
-          { outcome: 'pass', target: { kind: 'branch_end' } },
-          { outcome: 'issues', target: { kind: 'edge', relationshipId: f.version.definition.edges[0]!.id } },
-        ] } }, { type: 'nodes.reorder', nodeIds: [...f.version.definition.nodes].reverse().map((node) => node.id) }] }
-    const edited = GraphDraftCommandV2ResultSchema.parse(await tool(client, 'graph_draft_apply', input))
-    const replay = GraphDraftCommandV2ResultSchema.parse(await tool(client, 'graph_draft_apply', input))
-    expect(replay.replayed).toBe(true); expect(replay.value.draft.revision).toBe(edited.value.draft.revision)
-    const path = `/api/management/workspaces/${f.scope.workspaceId}/workflows/${f.scope.workflowId}/drafts/${draft.id}`
-    // First-party browser authentication uses the existing local enrollment path.
-    const enrolled = await app.inject({ method: 'POST', url: '/api/auth/enroll', headers: { host: 'localhost' }, payload: { token: issued.token } })
-    expect(enrolled.statusCode).toBe(200)
-    const cookie = String(enrolled.headers['set-cookie']).split(';')[0]!
-    const read = await app.inject({ method: 'GET', url: path, headers: { host: 'localhost', cookie } })
-    expect(read.statusCode).toBe(200)
-    expect(GraphDraftV2Schema.parse(read.json()).graph).toEqual(edited.value.draft.graph)
-    const moved = await app.inject({ method: 'POST', url: `${path}/operations`, headers: { host: 'localhost', origin: 'http://localhost', cookie },
-      payload: { ...scoped(f), draftId: draft.id, commandId: randomUUID(), expectedRevision: edited.value.draft.revision, executionSemanticsVersion: 2,
-        operations: [{ type: 'node.move', nodeId: f.version.entryNodeId, position: { x: 345, y: 123 } }] } })
-    expect(moved.statusCode).toBe(200)
-    const fromMcp = GraphDraftV2Schema.parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: draft.id }))
-    expect(fromMcp.graph.entryNodeId).toBe(f.version.entryNodeId)
-    expect(fromMcp.graph.nodes.find((node) => node.id === f.version.entryNodeId)!.position).toEqual({ x: 345, y: 123 })
-    const saved = GraphSaveCommandV2ResultSchema.parse(await tool(client, 'graph_save', {
-      ...scoped(f), draftId: draft.id, commandId: randomUUID(), expectedRevision: fromMcp.revision, executionSemanticsVersion: 2,
-    }))
-    // Fresh service/connection: readback is not the request echoed to the client.
-    const persisted = await history.workflow(issued.principal, { ...scoped(f), versionId: saved.value.version.id })
-    expect(persisted.version).toEqual(saved.value.version)
-    expect((await db.pool.query<{ entry_node_id: string; execution_semantics_version: number }>(
-      'select entry_node_id,execution_semantics_version from workflow_versions where id=$1', [saved.value.version.id])).rows[0]).toEqual({ entry_node_id: f.version.entryNodeId, execution_semantics_version: 2 })
-    const reread = GraphDraftV2Schema.parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: draft.id }))
-    expect(reread.baseWorkflowVersionId).toBe(saved.value.version.id)
-    expect(reread.graph.nodes.find((node) => node.id === f.version.entryNodeId)?.choice).toEqual(fromMcp.graph.nodes.find((node) => node.id === f.version.entryNodeId)?.choice)
+    expect(await count(t, 'workflow_versions')).toBe(0)
   })
-  it('rejects cross-workspace and insufficient-grant MCP calls without a persisted edit', async () => {
-    const { f, client } = await fixture()
-    const draft = GraphDraftV2Schema.parse(await tool(client, 'graph_draft_open', scoped(f)))
-    const input = { ...scoped(f), draftId: draft.id, commandId: randomUUID(), expectedRevision: draft.revision, executionSemanticsVersion: 2,
-      operations: [{ type: 'workflow.set_entry', entryNodeId: null }] }
-    const otherScope = await access.issue({ name: 'Different scope', audience: 'operator', grants: [{ actions: ManagementActionSchema.options, scope: { workspaceIds: ['not-this-workspace'] } }], expiresAt: new Date(Date.now() + 300_000) })
-    const readOnly = await access.issue({ name: 'Read only', audience: 'operator', grants: [{ actions: ['graph:read', 'workflows:read', 'agents:read'], scope: { workspaceIds: [f.scope.workspaceId] } }], expiresAt: new Date(Date.now() + 300_000) })
-    await denied(await connect(otherScope.token), 'graph_draft_apply', input)
-    await denied(await connect(readOnly.token), 'graph_draft_apply', input)
-    const after = GraphDraftV2Schema.parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: draft.id }))
-    expect(after).toEqual(draft)
-    const noAuth = await app.inject({ method: 'POST', url: `/api/management/workspaces/${f.scope.workspaceId}/workflows/${f.scope.workflowId}/drafts/${draft.id}/operations`, headers: { host: 'localhost' }, payload: input })
-    expect(noAuth.statusCode).toBe(401)
-  })
-  it('never treats an App/Worker credential as Operator management authority, and honors revocation', async () => {
-    const { f, issued, client } = await fixture()
-    const draft = GraphDraftV2Schema.parse(await tool(client, 'graph_draft_open', scoped(f)))
-    const worker = await access.issue({ name: 'App worker', audience: 'worker', agentId: f.configurations[0]!.agentId,
-      grants: [{ actions: ManagementActionSchema.options, scope: {} }], expiresAt: new Date(Date.now() + 300_000) })
-    await expect(connect(worker.token)).rejects.toThrow()
-    await db.pool.query('update management_principals set revoked_at=clock_timestamp() where id=$1', [issued.principal.id])
-    await denied(client, 'graph_draft_apply', { ...scoped(f), draftId: draft.id, commandId: randomUUID(), expectedRevision: draft.revision,
-      executionSemanticsVersion: 2, operations: [{ type: 'workflow.set_entry', entryNodeId: null }] })
-    expect((await db.pool.query<{ revision: string }>('select revision::text from graph_drafts where id=$1', [draft.id])).rows[0]!.revision).toBe(String(draft.revision))
-  })
-  it('migrates only by an explicit v2 edit and keeps saved legacy versions byte-for-byte intact', async () => {
-    const { f, issued, client } = await fixture(true)
-    const before = (await db.pool.query<{ record: unknown }>('select record from workflow_versions where id=$1', [f.version.id])).rows[0]!.record
-    const opened = GraphDraftSchema.parse(await tool(client, 'graph_draft_open', scoped(f)))
-    const upgraded = GraphDraftCommandV2ResultSchema.parse(await tool(client, 'graph_draft_apply', { ...scoped(f), draftId: opened.id,
-      commandId: randomUUID(), expectedRevision: opened.revision, executionSemanticsVersion: 2,
-      operations: [{ type: 'nodes.reorder', nodeIds: [...f.version.definition.nodes].reverse().map((node) => node.id) }] }))
-    expect(upgraded.value.draft.graph.entryNodeId).toBe(f.version.entryNodeId)
-    expect((await history.workflow(issued.principal, { ...scoped(f), versionId: f.version.id })).version).toEqual(before)
-    expect((await db.pool.query<{ record: unknown }>('select record from workflow_versions where id=$1', [f.version.id])).rows[0]!.record).toEqual(before)
-  })
-  it('clears a removed entry and rejects dangling routes and conflicting command replay', async () => {
-    const { f, issued, client } = await fixture()
-    let draft = GraphDraftV2Schema.parse(await tool(client, 'graph_draft_open', scoped(f)))
-    const choice = { outcomes: [{ outcome: 'go', target: { kind: 'edge', relationshipId: f.version.definition.edges[0]!.id } }] }
-    draft = GraphDraftCommandV2ResultSchema.parse(await tool(client, 'graph_draft_apply', { ...scoped(f), draftId: draft.id, commandId: randomUUID(),
-      expectedRevision: draft.revision, executionSemanticsVersion: 2,
-      operations: [{ type: 'node.set_choice', nodeId: f.version.entryNodeId, choice }, { type: 'edge.disconnect', edgeId: f.version.definition.edges[0]!.id }] })).value.draft
-    expect((await drafts.validate(issued.principal, f.scope.workspaceId, f.scope.workflowId, draft.id)).valid).toBe(false)
-    const command = { ...scoped(f), draftId: draft.id, commandId: randomUUID(), expectedRevision: draft.revision, executionSemanticsVersion: 2,
-      operations: [{ type: 'node.remove', nodeId: f.version.entryNodeId }] }
-    draft = GraphDraftCommandV2ResultSchema.parse(await tool(client, 'graph_draft_apply', command)).value.draft
-    expect(draft.graph.entryNodeId).toBeNull()
-    await denied(client, 'graph_draft_apply', { ...command, operations: [{ type: 'workflow.set_entry', entryNodeId: null }] })
-    expect(GraphDraftV2Schema.parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: draft.id })).revision).toBe(draft.revision)
-  })
-
-  // NIM-2642: real authenticated transports and persisted readback. These
-  // fixtures model domain lifecycle cuts without starting a native provider.
-  const draftPath = (f: Awaited<ReturnType<typeof fixture>>['f'], draftId: string) =>
-    `/api/management/workspaces/${f.scope.workspaceId}/workflows/${f.scope.workflowId}/drafts/${draftId}`
-  async function browserHeaders(token: string) {
-    const enrolled = await app.inject({ method: 'POST', url: '/api/auth/enroll',
-      headers: { host: 'localhost' }, payload: { token } })
-    expect(enrolled.statusCode).toBe(200)
-    return { host: 'localhost', origin: 'http://localhost', cookie: String(enrolled.headers['set-cookie']).split(';')[0]! }
-  }
-  async function stagedPrompt(f: Awaited<ReturnType<typeof fixture>>['f'], client: Client) {
-    const opened = GraphDraftV2Schema.parse(await tool(client, 'graph_draft_open', scoped(f)))
-    return GraphDraftCommandV2ResultSchema.parse(await tool(client, 'graph_draft_apply', {
-      ...scoped(f), draftId: opened.id, commandId: randomUUID(), expectedRevision: opened.revision,
-      executionSemanticsVersion: 2, operations: [{ type: 'node.replace_v2',
-        node: { ...opened.graph.nodes[0]!, initialPrompt: 'NIM-2642 retained exact prompt' } }],
-    })).value.draft
-  }
-  const saveInput = (f: Awaited<ReturnType<typeof fixture>>['f'], draft: ReturnType<typeof GraphDraftV2Schema.parse>) => ({
-    ...scoped(f), draftId: draft.id, commandId: randomUUID(), expectedRevision: draft.revision, executionSemanticsVersion: 2 as const,
-  })
-  async function counts(f: Awaited<ReturnType<typeof fixture>>['f']) {
-    return (await db.pool.query<{ versions: string; runs: string }>(
-      `select (select count(*)::text from workflow_versions where workflow_id=$1) as versions,
-        (select count(*)::text from runs where workflow_id=$1) as runs`, [f.scope.workflowId])).rows[0]!
-  }
-
-  it.each(['queued', 'running', 'waiting'] as const)('NIM-2642 rejects meaningful publication for %s through HTTP and MCP without changing accepted facts', async (state) => {
-    const { f, issued, client } = await fixture(false, true)
-    const owned = await ownedAgent3(db.pool, f)
-    try {
-      await owned.store.updateRun({ executionState: state, outcome: 'pending' })
-      const before = (await db.pool.query<{ record: unknown }>('select record from runs where id=$1', [f.run.id])).rows[0]!.record
-      const draft = await stagedPrompt(f, client), input = saveInput(f, draft)
-      const response = await app.inject({ method: 'POST', url: `${draftPath(f, draft.id)}/save`,
-        headers: await browserHeaders(issued.token), payload: input })
-      expect(response.statusCode).toBe(409)
-      expect(JSON.stringify(response.json())).toContain('WORKFLOW_RUNS_UNSETTLED')
-      await denied(client, 'graph_save', input)
-      expect(await counts(f)).toEqual({ versions: '1', runs: '1' })
-      expect((await db.pool.query<{ record: unknown }>('select record from runs where id=$1', [f.run.id])).rows[0]!.record).toEqual(before)
-      expect(GraphDraftV2Schema.parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: draft.id }))).toEqual(draft)
-      expect((await db.pool.query('select 1 from management_command_receipts where operation=$1 and command_id=$2',
-        ['graph.save', input.commandId])).rowCount).toBe(0)
-      expect((await db.pool.query('select 1 from management_command_receipts where operation=$1 and target_key=$2',
-        ['run.stop', `run:${f.run.id}`])).rowCount).toBe(0)
-    } finally { await owned.owner.release() }
-  })
-
-  it('NIM-2642 permits layout during execution, reuses the immutable version, reconciles a dropped reply across transports, and revokes replay authority', async () => {
-    const { f, issued, client } = await fixture(false, true)
-    const before = (await db.pool.query<{ record: unknown }>('select record from workflow_versions where id=$1', [f.version.id])).rows[0]!.record
-    const opened = GraphDraftV2Schema.parse(await tool(client, 'graph_draft_open', scoped(f)))
-    const moved = GraphDraftCommandV2ResultSchema.parse(await tool(client, 'graph_draft_apply', {
-      ...scoped(f), draftId: opened.id, commandId: randomUUID(), expectedRevision: opened.revision,
-      executionSemanticsVersion: 2, operations: [{ type: 'node.move', nodeId: opened.graph.nodes[0]!.id, position: { x: 987, y: -123 } }],
-    })).value.draft
-    expect(moved.publishedRevision).toBe(moved.revision)
-    const input = saveInput(f, moved), headers = await browserHeaders(issued.token)
-    // Intentionally ignore the first successful body: retry is the exact same
-    // graph.save command through the other authenticated transport.
-    expect((await app.inject({ method: 'POST', url: `${draftPath(f, moved.id)}/save`, headers, payload: input })).statusCode).toBe(200)
-    const replay = GraphSaveCommandV2ResultSchema.parse(await tool(client, 'graph_save', input))
-    expect(replay.replayed).toBe(true)
-    expect(replay.value.version.id).toBe(f.version.id)
-    expect(replay.value.draft.revision).toBe(input.expectedRevision + 1)
-    expect(replay.value.draft.graph.nodes[0]!.position).toEqual({ x: 987, y: -123 })
-    expect(await counts(f)).toEqual({ versions: '1', runs: '1' })
-    expect((await db.pool.query<{ record: unknown }>('select record from workflow_versions where id=$1', [f.version.id])).rows[0]!.record).toEqual(before)
-    expect((await db.pool.query('select 1 from management_command_receipts where principal_id=$1 and operation=$2 and command_id=$3',
-      [issued.principal.id, 'graph.save', input.commandId])).rowCount).toBe(1)
-    const read = await app.inject({ method: 'GET', url: draftPath(f, moved.id), headers })
-    expect(GraphDraftV2Schema.parse(read.json())).toEqual(replay.value.draft)
-    await db.pool.query('update management_principals set revoked_at=clock_timestamp() where id=$1', [issued.principal.id])
-    // Exercise the service too: a previously authenticated in-memory principal
-    // cannot bypass revocation by replaying an already successful receipt.
-    await expect(drafts.save(issued.principal, 'mcp', input)).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
-    await denied(client, 'graph_save', input)
-  })
-
-  it('NIM-2642 requires every active Run and post-terminal cleanup, preserves one exact Stop receipt and saves once without restarting', async () => {
-    const { f, issued, client } = await fixture(false, true)
-    const secondId = randomUUID()
-    const second = { ...f, scope: { ...f.scope, runId: secondId }, run: WorkflowRunV2Schema.parse({ ...f.run, id: secondId }) }
-    await withExclusiveGraphConnection(db.pool, (connection) => connection.transaction((sql) => insertOneShotRun(sql, second.run)))
-    const firstOwner = await ownedAgent3(db.pool, f), secondOwner = await ownedAgent3(db.pool, second)
-    try {
-      const draft = await stagedPrompt(f, client), input = saveInput(f, draft)
-      const stop = { workspaceId: f.scope.workspaceId, runId: f.run.id, commandId: randomUUID() }
-      // The fixture engine returns not_owner, not an invented process exit.
-      expect(await tool(client, 'run_stop', stop)).toMatchObject({ runId: f.run.id, processStopped: false })
-      expect(await tool(client, 'run_stop', stop)).toMatchObject({ replayed: true, processStopped: false })
-      await denied(client, 'graph_save', input)
-      expect((await db.pool.query('select 1 from management_command_receipts where principal_id=$1 and operation=$2 and command_id=$3',
-        [issued.principal.id, 'run.stop', stop.commandId])).rowCount).toBe(1)
-      expect((await db.pool.query<{ stopped: boolean }>('select stop_requested_at is not null as stopped from runs where id=$1', [secondId])).rows[0]!.stopped).toBe(false)
-      await changeOneShotLifecycle(db.pool, f.run.id, { kind: 'cleanup', pending: true })
-      await firstOwner.store.settleRun(true)
-      // One business terminal is not all-Run settlement.
-      await denied(client, 'graph_save', input)
-      await secondOwner.store.settleRun(false) // natural failed completion; no Stop is fabricated for this Run
-      await denied(client, 'graph_save', input) // first Run still has pending cleanup
-      // No native work was launched. This is synthetic cleanup evidence through
-      // the existing lifecycle service, not a native-provider verification.
-      await changeOneShotLifecycle(db.pool, f.run.id, { kind: 'cleanup', pending: false })
-      const saved = GraphSaveCommandV2ResultSchema.parse(await tool(client, 'graph_save', input))
-      expect(saved.value.version.id).not.toBe(f.version.id)
-      expect(GraphSaveCommandV2ResultSchema.parse(await tool(client, 'graph_save', input)).replayed).toBe(true)
-      expect(await counts(f)).toEqual({ versions: '2', runs: '2' })
-      const accepted = await db.pool.query<{ workflow_version_id: string; pins: unknown }>(
-        `select workflow_version_id,record->'agentConfigurationVersionIds' as pins from runs where workflow_id=$1`, [f.scope.workflowId])
-      expect(accepted.rows).toHaveLength(2)
-      for (const run of accepted.rows) {
-        expect(run.workflow_version_id).toBe(f.version.id)
-        expect(run.pins).toEqual(f.run.agentConfigurationVersionIds)
-      }
-      expect((await history.workflow(issued.principal, { ...scoped(f), versionId: f.version.id })).version).toEqual(f.version)
-      expect((await db.pool.query('select 1 from management_command_receipts where principal_id=$1 and operation=$2 and command_id=$3',
-        [issued.principal.id, 'graph.save', input.commandId])).rowCount).toBe(1)
-    } finally { await firstOwner.owner.release(); await secondOwner.owner.release() }
-  })
-
-  it('NIM-2642 does not give read-only/wrong-scope callers a layout-save bypass', async () => {
-    const { f, client } = await fixture(false, true)
-    const draft = GraphDraftV2Schema.parse(await tool(client, 'graph_draft_open', scoped(f)))
-    const input = saveInput(f, draft)
-    for (const wrongScope of [false, true]) {
-      const limited = await access.issue({ name: 'NIM-2642 denied save caller', audience: 'operator',
-        grants: [{ actions: wrongScope ? ManagementActionSchema.options : ['graph:read', 'workflows:read', 'agents:read'],
-          scope: { workspaceIds: [wrongScope ? 'another-workspace' : f.scope.workspaceId] } }],
-        expiresAt: new Date(Date.now() + 300_000) })
-      await denied(await connect(limited.token), 'graph_save', input)
-      const response = await app.inject({ method: 'POST', url: `${draftPath(f, draft.id)}/save`,
-        headers: await browserHeaders(limited.token), payload: input })
-      expect(response.statusCode).toBe(403)
+  it('denies read-only, wrong-scope, revoked and missing callers; both transports audit denied writes', async () => {
+    const t = await fixture()
+    const readonly = await t.credential([{ actions: ['workflows:read', 'graph:read'], scope: { workspaceIds: [t.input.workspaceId] } }])
+    const wrong = await t.credential([{ actions: ManagementActionSchema.options, scope: { workspaceIds: ['wrong'] } }])
+    const tools = await graphRpc(t.app, readonly.token, 'tools/list')
+    expect(tools.result?.tools?.map((tool) => tool.name)).not.toContain(CURRENT_WORKFLOW_TOOLS.save)
+    for (const caller of [readonly, wrong]) {
+      expect((await httpSave(t, t.input, caller.token)).statusCode).toBe(403)
+      expect((await t.call(CURRENT_WORKFLOW_TOOLS.save, t.input, caller.token)).result?.isError).toBe(true)
+      const audit = (await db.pool.query('select source,outcome from management_audit where principal_id=$1', [caller.principal.id])).rows
+      expect(audit).toEqual(expect.arrayContaining([expect.objectContaining({ source: 'http', outcome: 'denied' }), expect.objectContaining({ source: 'mcp', outcome: 'denied' })]))
     }
-    expect(GraphDraftV2Schema.parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: draft.id }))).toEqual(draft)
-    expect(await counts(f)).toEqual({ versions: '1', runs: '1' })
+    expect((await t.app.inject({ method: 'PUT', url: t.url, headers: graphHeaders(), payload: t.input })).statusCode).toBe(401)
+    await t.access.revoke(t.writer.principal.id)
+    expect((await httpSave(t)).statusCode).toBe(401)
+    expect((await t.call(CURRENT_WORKFLOW_TOOLS.save, t.input)).status).toBe(401)
+    expect(await count(t, 'workflow_versions')).toBe(0)
   })
-
-
-  // Private intent protocol: real authenticated HTTP/MCP and independent SQL
-  // readback. The existing fixture engine launches no native work; these tests
-  // MUST NOT be described as provider/real-browser evidence.
-  const intentCommand = (intent: GraphEditIntent, discard = false) => ({
-    action: discard ? 'discard_edits' as const : 'stop_and_save' as const,
-    workspaceId: intent.workspaceId, workflowId: intent.workflowId, draftId: intent.draftId,
-    intentId: intent.id, commandId: discard ? intent.discardCommandId : intent.advanceCommandId,
-  })
-  async function privateRequest(f: Awaited<ReturnType<typeof fixture>>['f'], client: Client) {
-    const draft = GraphDraftV2Schema.parse(await tool(client, 'graph_draft_open', scoped(f)))
-    return { draft, request: { ...saveInput(f, draft), action: 'stage_edits' as const,
-      expectedWorkflowVersionId: draft.baseWorkflowVersionId,
-      operations: [{ type: 'node.replace_v2' as const, node: { ...draft.graph.nodes[0]!, initialPrompt: 'Private exact payload' } }] } }
+  async function agentStage(t: Fixture, first: Awaited<ReturnType<typeof save>>) {
+    const original = (await db.pool.query('select record,metadata_revision::text from agents where id=$1', [t.configurations[0]!.agentId])).rows[0]!
+    const agent = AgentSchema.parse(original.record)
+    return { ...t.input, action: 'stage_edits' as const, draftId: `editor-${randomUUID()}`, commandId: randomUUID(),
+      expectedRevision: first.value.revision, expectedWorkflowVersionId: first.value.currentVersionId,
+      graph: first.value.version.definition, stagedAgents: [{ agent: { ...agent, name: 'Private new name',
+        prompt: { ...agent.prompt, system: 'Use the staged instructions.' } }, baseRevision: Number(original.metadata_revision) }] }
   }
-  async function readPrivate(client: Client, intent: GraphEditIntent) {
-    return GraphEditReadResultSchema.parse(await tool(client, 'graph_draft_get', { action: 'read_edits',
-      workspaceId: intent.workspaceId, workflowId: intent.workflowId, draftId: intent.draftId, intentId: intent.id }))
-  }
-  it('NIM-2642 privately stages, recovers a lost reply across transports, then atomically saves and reads the SAME command once', async () => {
-    const { f, issued, client } = await fixture()
-    const { draft, request } = await privateRequest(f, client), headers = await browserHeaders(issued.token)
-    const root = `${draftPath(f, draft.id)}/edit-intents`
-    expect((await app.inject({ method: 'POST', url: root, headers, payload: request })).statusCode).toBe(200)
-    // Ignore the first body, then reconcile the exact Stage receipt via MCP.
-    const staged = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', request)), intent = staged.intent!
-    expect(intent.state).toBe('staged'); expect(intent.stageCommandId).toBe(request.commandId)
-    expect(intent.stageInputHash).toBe(commandInputHash(request))
-    expect(intent.advanceInputHash).toBe(commandInputHash(intentCommand(intent)))
-    expect(intent.discardInputHash).toBe(commandInputHash(intentCommand(intent, true)))
-    expect(intent.saveInputHash).toBe(commandInputHash({ ...intent.saveInput, editIntentId: intent.id }))
-    expect(intent.stops).toEqual([])
-    expect(GraphDraftV2Schema.parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: draft.id }))).toEqual(draft)
-    expect(await counts(f)).toEqual({ versions: '1', runs: '0' })
-    expect((await db.pool.query('select 1 from management_command_receipts where operation=$1 and command_id=$2',
-      ['graph.stage_edits', request.commandId])).rowCount).toBe(1)
-    const savedResponse = await app.inject({ method: 'POST', url: `${root}/${intent.id}/advance`, headers, payload: intentCommand(intent) })
-    expect(savedResponse.statusCode).toBe(200) // Body may be dropped; durable read is authoritative.
-    const saved = await readPrivate(client, intent)
-    expect(saved.intent?.state).toBe('saved')
-    const replay = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', intentCommand(intent)))
-    expect(replay.intent).toEqual(saved.intent)
-    expect((await db.pool.query<{ record: unknown }>('select record from graph_edit_intents where id=$1', [intent.id])).rows[0]!.record).toEqual(saved.intent)
-    expect(await counts(f)).toEqual({ versions: '2', runs: '0' })
-    expect((await db.pool.query('select 1 from management_command_receipts where principal_id=$1 and operation=$2 and command_id=$3',
-      [issued.principal.id, 'graph.save', intent.saveInput.commandId])).rowCount).toBe(1)
-    expect((await db.pool.query('select 1 from management_command_receipts where principal_id=$1 and operation=$2',
-      [issued.principal.id, 'run.stop'])).rowCount).toBe(0)
-    expect((await history.workflow(issued.principal, { ...scoped(f), versionId: saved.intent!.result!.version.id })).version)
-      .toEqual(saved.intent!.result!.version)
-    // A caller cannot impersonate the journal's internal-only save context.
-    await denied(client, 'graph_save', intent.saveInput)
-    await denied(client, 'graph_save', { ...intentCommand(intent), commandId: randomUUID() })
-  })
-
-  it.each(['queued', 'running', 'waiting'] as const)('NIM-2642 retains private %s intent; Discard issues no Stop and never rewrites the shared layout', async (state) => {
-    const { f, issued, client } = await fixture(false, true), owned = await ownedAgent3(db.pool, f)
-    try {
-      await owned.store.updateRun({ executionState: state, outcome: 'pending' })
-      const { draft, request } = await privateRequest(f, client)
-      const staged = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', request)), intent = staged.intent!
-      expect(staged.current).toHaveLength(1); expect(staged.current[0]?.settled).toBe(false)
-      expect(intent.affected[0]).toMatchObject({ runId: f.run.id, workflowVersionId: f.version.id, agentConfigurationVersionIds: f.run.agentConfigurationVersionIds })
-      expect(intent.stops[0]?.inputHash).toBe(commandInputHash(intent.stops[0]!.input))
-      const before = (await db.pool.query<{ record: unknown }>('select record from runs where id=$1', [f.run.id])).rows[0]!.record
-      // Another tab may independently change layout. Private discard must not
-      // call the shared draft discard or rewind that separately acknowledged edit.
-      const moved = GraphDraftCommandV2ResultSchema.parse(await tool(client, 'graph_draft_apply', { ...saveInput(f, draft),
-        operations: [{ type: 'node.move', nodeId: draft.graph.nodes[0]!.id, position: { x: 440, y: -220 } }] })).value.draft
-      const response = await app.inject({ method: 'POST', url: `${draftPath(f, draft.id)}/edit-intents/${intent.id}/discard`,
-        headers: await browserHeaders(issued.token), payload: intentCommand(intent, true) })
-      expect(response.statusCode).toBe(200)
-      const discarded = GraphEditReadResultSchema.parse(await tool(client, 'graph_draft_discard', intentCommand(intent, true)))
-      expect(discarded.intent?.state).toBe('discarded'); expect(discarded.intent?.stagedDraft).toEqual(intent.stagedDraft)
-      expect(GraphDraftV2Schema.parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: draft.id }))).toEqual(moved)
-      expect((await db.pool.query<{ record: unknown }>('select record from runs where id=$1', [f.run.id])).rows[0]!.record).toEqual(before)
-      expect((await db.pool.query('select 1 from management_command_receipts where principal_id=$1 and operation=$2',
-        [issued.principal.id, 'run.stop'])).rowCount).toBe(0)
-      expect(await counts(f)).toEqual({ versions: '1', runs: '1' })
-    } finally { await owned.owner.release() }
-  })
-
-  it('NIM-2642 reuses every Stop receipt after dropped replies/duplicate clicks and waits beyond terminal cleanup before save', async () => {
-    const { f, issued, client } = await fixture(false, true)
-    const secondId = randomUUID(), second = { ...f, scope: { ...f.scope, runId: secondId }, run: WorkflowRunV2Schema.parse({ ...f.run, id: secondId }) }
-    await withExclusiveGraphConnection(db.pool, (connection) => connection.transaction((sql) => insertOneShotRun(sql, second.run)))
-    const first = await ownedAgent3(db.pool, f), other = await ownedAgent3(db.pool, second)
-    const originalStop = RunManagementService.prototype.stop
-    const lostReply = vi.spyOn(RunManagementService.prototype, 'stop').mockImplementationOnce(async function (this: RunManagementService, ...args: Parameters<RunManagementService['stop']>) {
-      await originalStop.apply(this, args)
-      throw new Error('Synthetic lost Stop reply AFTER its command receipt committed')
+  it('MCP stages Agent configuration privately then atomically publishes exact resulting snapshots, and HTTP replay does not write twice', async () => {
+    const t = await fixture(), first = await save(t), stage = await agentStage(t, first)
+    const before = (await db.pool.query('select record,metadata_revision,current_configuration_version_id from agents where id=$1', [stage.stagedAgents[0]!.agent.id])).rows[0]
+    const staged = await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)
+    expect(staged.result?.isError, JSON.stringify(staged)).not.toBe(true)
+    const intent = CurrentEditReadResultSchema.parse(graphRpcValue(staged.result)).intent!
+    expect(intent.saveInput.expectedAgentConfigurationVersionIds).toEqual(stage.expectedAgentConfigurationVersionIds)
+    expect(intent.saveInput.resultantAgentConfigurationVersionIds?.[stage.stagedAgents[0]!.agent.id]).not.toBe(stage.stagedAgents[0]!.agent.configurationVersionId)
+    expect((await db.pool.query('select record,metadata_revision,current_configuration_version_id from agents where id=$1', [stage.stagedAgents[0]!.agent.id])).rows[0]).toEqual(before)
+    const advance = { workspaceId: stage.workspaceId, workflowId: stage.workflowId, draftId: stage.draftId, intentId: intent.id,
+      action: 'stop_and_save', commandId: intent.advanceCommandId }
+    const execute = t.commands.execute.bind(t.commands)
+    vi.spyOn(t.commands, 'execute').mockImplementationOnce(async (request) => {
+      await execute(request)
+      throw new Error('SIMULATED_LOST_REPLY_AFTER_COMMIT')
     })
-    try {
-      const { draft, request } = await privateRequest(f, client)
-      const staged = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', request)), intent = staged.intent!
-      expect(intent.stops).toHaveLength(2)
-      const command = intentCommand(intent), headers = await browserHeaders(issued.token)
-      const replies = await Promise.all([
-        app.inject({ method: 'POST', url: `${draftPath(f, draft.id)}/edit-intents/${intent.id}/advance`, headers, payload: command }),
-        tool(client, 'graph_save', command),
-      ])
-      expect(replies[0].statusCode).toBe(200)
-      let read = await readPrivate(client, intent)
-      expect(read.intent?.state).toBe('waiting')
-      expect(read.intent?.stops.map((entry) => entry.input)).toEqual(intent.stops.map((entry) => entry.input))
-      for (const entry of read.intent!.stops) {
-        expect(entry.receipt).toMatchObject({ runId: entry.input.runId, status: 'not_owner', processStopped: false })
-        expect((await db.pool.query('select 1 from management_command_receipts where principal_id=$1 and operation=$2 and command_id=$3',
-          [issued.principal.id, 'run.stop', entry.input.commandId])).rowCount).toBe(1)
-      }
-      await changeOneShotLifecycle(db.pool, f.run.id, { kind: 'cleanup', pending: true })
-      await first.store.settleRun(true); await other.store.settleRun(false)
-      read = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', command))
-      expect(read.intent?.state).toBe('waiting'); expect(read.current.some((item) => item.cleanupPending)).toBe(true)
-      expect(await counts(f)).toEqual({ versions: '1', runs: '2' })
-      await changeOneShotLifecycle(db.pool, f.run.id, { kind: 'cleanup', pending: false })
-      const siblingPending = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', command))
-      expect(siblingPending.intent?.state).toBe('waiting')
-      expect(siblingPending.current.find((item) => item.pin.runId === second.run.id)?.cleanupPending).toBe(true)
-      await changeOneShotLifecycle(db.pool, second.run.id, { kind: 'cleanup', pending: false })
-      const saved = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', command))
-      expect(saved.intent?.state).toBe('saved')
-      expect((await readPrivate(client, intent)).intent).toEqual(saved.intent)
-      expect(await counts(f)).toEqual({ versions: '2', runs: '2' })
-      const accepted = await db.pool.query<{ workflow_version_id: string; pins: unknown }>(
-        `select workflow_version_id,record->'agentConfigurationVersionIds' as pins from runs where workflow_id=$1`, [f.scope.workflowId])
-      for (const run of accepted.rows) { expect(run.workflow_version_id).toBe(f.version.id); expect(run.pins).toEqual(f.run.agentConfigurationVersionIds) }
-      expect((await history.workflow(issued.principal, { ...scoped(f), versionId: f.version.id })).version).toEqual(f.version)
-    } finally { lostReply.mockRestore(); await first.owner.release(); await other.owner.release() }
+    const remote = await t.call(CURRENT_WORKFLOW_TOOLS.edits, advance)
+    const finished = CurrentEditReadResultSchema.parse(graphRpcValue(remote.result))
+    expect(finished.intent?.state, JSON.stringify(finished.intent?.error)).toBe('saved')
+    expect(finished.intent?.result?.agents).toHaveLength(1)
+    const snapshot = finished.intent!.result!.agents![0]!
+    expect(snapshot.agent.name).toBe('Private new name')
+    expect(snapshot.metadataRevision).toBe(stage.stagedAgents[0]!.baseRevision + 1)
+    expect(finished.intent!.result!.version.agentConfigurationVersionIds).toEqual(intent.saveInput.resultantAgentConfigurationVersionIds)
+    const persisted = (await db.pool.query('select record,metadata_revision::text from agents where id=$1', [snapshot.agent.id])).rows[0]!
+    expect(persisted.record).toEqual(snapshot.agent); expect(Number(persisted.metadata_revision)).toBe(snapshot.metadataRevision)
+    const retry = await t.app.inject({ method: 'POST', url: `${t.url}/edits`, headers: graphHeaders(t.writer.token), payload: advance })
+    expect(retry.statusCode, retry.body).toBe(200); expect(retry.json()).toEqual(finished)
+    const read = await t.call(CURRENT_WORKFLOW_TOOLS.editRead, { ...advance, action: 'read_edits', commandId: undefined })
+    expect(graphRpcValue(read.result)).toEqual(finished)
+    expect(await count(t, 'workflow_versions')).toBe(2)
+    expect((await db.pool.query('select 1 from agent_configuration_versions where agent_id=$1', [snapshot.agent.id])).rowCount).toBe(2)
+  })
+  it('active Run Stage and Discard never mutate Agents or stop the Run; unqualified Stop retains the same payload', async () => {
+    const t = await fixture('single'), first = await save(t), stage = await agentStage(t, first)
+    const accepted = await insertFixtureRepeatRun(db.pool, { ...t.f, run: { ...t.f.run,
+      executionLocation: { runnerId: 'runner-local', rootPath: db.directory, locationRevision: 1, identityHash: `sha256:${'a'.repeat(64)}` } } }, first.value, t.writer.principal.id)
+    const original = (await db.pool.query('select record,metadata_revision,current_configuration_version_id from agents where id=$1', [stage.stagedAgents[0]!.agent.id])).rows[0]
+    const staged = await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)
+    expect(staged.result?.isError, JSON.stringify(staged)).not.toBe(true)
+    const intent = CurrentEditReadResultSchema.parse(graphRpcValue(staged.result)).intent!
+    expect(intent.affected.map((pin) => pin.runId)).toEqual([accepted.run.id])
+    const scope = { workspaceId: stage.workspaceId, workflowId: stage.workflowId, draftId: stage.draftId, intentId: intent.id }
+    const advance = await t.call(CURRENT_WORKFLOW_TOOLS.edits, { ...scope, action: 'stop_and_save', commandId: intent.advanceCommandId })
+    expect(CurrentEditReadResultSchema.parse(graphRpcValue(advance.result)).intent).toMatchObject({ state: 'blocked', saveInput: intent.saveInput })
+    const discard = await t.call(CURRENT_WORKFLOW_TOOLS.edits, { ...scope, action: 'discard_edits', commandId: intent.discardCommandId })
+    expect(CurrentEditReadResultSchema.parse(graphRpcValue(discard.result)).intent?.state).toBe('discarded')
+    expect((await db.pool.query('select record,metadata_revision,current_configuration_version_id from agents where id=$1', [stage.stagedAgents[0]!.agent.id])).rows[0]).toEqual(original)
+    expect((await db.pool.query('select execution_state,stop_requested_at from runs where id=$1', [accepted.run.id])).rows[0]).toMatchObject({ execution_state: 'queued', stop_requested_at: null })
+    expect(t.cancel).not.toHaveBeenCalled(); expect(await count(t, 'workflow_versions')).toBe(1)
+  })
+  it('a changed Agent metadata head after Stage blocks publication and preserves original payload and pins', async () => {
+    const t = await fixture(), first = await save(t), stage = await agentStage(t, first)
+    const intent = CurrentEditReadResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)).result)).intent!
+    await db.pool.query('update agents set metadata_revision=metadata_revision+1 where id=$1', [stage.stagedAgents[0]!.agent.id])
+    const remote = await t.call(CURRENT_WORKFLOW_TOOLS.edits, { workspaceId: stage.workspaceId, workflowId: stage.workflowId,
+      draftId: stage.draftId, intentId: intent.id, action: 'stop_and_save', commandId: intent.advanceCommandId })
+    const blocked = CurrentEditReadResultSchema.parse(graphRpcValue(remote.result)).intent!
+    expect(blocked).toMatchObject({ state: 'blocked', error: { code: 'AGENT_REVISION_CONFLICT' }, saveInput: intent.saveInput,
+      agentPins: intent.agentPins, stops: intent.stops })
+    expect(await count(t, 'workflow_versions')).toBe(1)
+    expect((await db.pool.query('select 1 from agent_configuration_versions where agent_id=$1', [stage.stagedAgents[0]!.agent.id])).rowCount).toBe(1)
+  })
+  it('staged shared Agent edits include exact affected Runs and location pins from another workflow', async () => {
+    const t = await fixture('single'), first = await save(t), stage = await agentStage(t, first)
+    const created = await t.app.inject({ method: 'POST', url: `/api/management/workspaces/${stage.workspaceId}/workflows`,
+      headers: graphHeaders(t.writer.token), payload: { workspaceId: stage.workspaceId, commandId: randomUUID(), name: 'Other workflow' } })
+    const other = SavedManagedWorkflowCommandResultSchema.parse(created.json()).value
+    const otherInput = { ...t.input, workflowId: other.workflow.id, commandId: randomUUID(), expectedRevision: other.revision,
+      graph: { ...t.input.graph, id: other.workflow.id, version: other.workflow.version,
+        createdAt: other.workflow.createdAt, updatedAt: other.workflow.updatedAt, name: other.workflow.name } }
+    const otherSaved = CurrentWorkflowSaveResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.save, otherInput)).result)).value
+    const accepted = await insertFixtureRepeatRun(db.pool, { ...t.f, run: { ...t.f.run,
+      executionLocation: { runnerId: 'runner-local', rootPath: db.directory, locationRevision: 1, identityHash: `sha256:${'a'.repeat(64)}` } } }, otherSaved, t.writer.principal.id)
+    const remote = await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)
+    expect(remote.result?.isError, JSON.stringify(remote)).not.toBe(true)
+    const intent = CurrentEditReadResultSchema.parse(graphRpcValue(remote.result)).intent!
+    expect(intent.affected).toHaveLength(1)
+    expect(intent.affected[0]).toMatchObject({ runId: accepted.run.id, workflowId: other.workflow.id })
+    expect(intent.stagedDraft.runLocationPins.map((pin) => pin.runId)).toEqual([accepted.run.id])
+    expect(intent.stops[0]!.input.runId).toBe(accepted.run.id)
+  })
+  it('MCP rejects a missing Agent mutation grant and stale displayed metadata before Stage', async () => {
+    const t = await fixture(), first = await save(t), stage = await agentStage(t, first)
+    const denied = await t.credential([{ actions: ManagementActionSchema.options.filter((action) => action !== 'agents:update'), scope: { workspaceIds: [stage.workspaceId] } }])
+    const remote = await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage, denied.token)
+    expect(graphRpcValue(remote.result)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+    const stale = { ...stage, stagedAgents: stage.stagedAgents.map((item) => ({ ...item, baseRevision: item.baseRevision + 1 })) }
+    const http = await t.app.inject({ method: 'POST', url: `${t.url}/edits`, headers: graphHeaders(t.writer.token), payload: stale })
+    expect(http.statusCode, http.body).toBe(409); expect(http.json()).toMatchObject({ error: { code: 'AGENT_REVISION_CONFLICT' } })
+    expect((await db.pool.query('select 1 from graph_edit_intents where workflow_id=$1', [stage.workflowId])).rowCount).toBe(0)
+  })
+  it('full-definition Discard preserves the saved head and exact command conflicts; another caller cannot read a private intent', async () => {
+    const t = await fixture(), first = await save(t)
+    const stage = { ...t.input, action: 'stage_edits', draftId: `editor-${randomUUID()}`, commandId: randomUUID(),
+      expectedRevision: first.value.revision, expectedWorkflowVersionId: first.value.currentVersionId,
+      graph: { ...first.value.version.definition, name: 'Private unsaved label' } }
+    const result = await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)
+    expect(result.result?.isError).not.toBe(true)
+    const intent = CurrentEditReadResultSchema.parse(graphRpcValue(result.result)).intent!
+    const scope = { workspaceId: t.input.workspaceId, workflowId: t.input.workflowId, draftId: stage.draftId, intentId: intent.id }
+    const other = await t.credential([{ actions: ManagementActionSchema.options, scope: { workspaceIds: [t.input.workspaceId] } }])
+    expect((await t.call(CURRENT_WORKFLOW_TOOLS.editRead, { ...scope, action: 'read_edits' }, other.token)).result?.isError).toBe(true)
+    const changed = await t.call(CURRENT_WORKFLOW_TOOLS.edits, { ...scope, action: 'discard_edits', commandId: randomUUID() })
+    expect(graphRpcValue(changed.result)).toMatchObject({ error: { code: 'COMMAND_ID_CONFLICT' } })
+    const discard = { ...scope, action: 'discard_edits', commandId: intent.discardCommandId }
+    const dropped = await t.app.inject({ method: 'POST', url: `${t.url}/edits`, headers: graphHeaders(t.writer.token), payload: discard })
+    expect(dropped.statusCode, dropped.body).toBe(200); expect(dropped.json().intent.state).toBe('discarded')
+    expect(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, discard)).result)).toEqual(dropped.json())
+    expect(await count(t, 'workflow_versions')).toBe(1)
+    expect(CurrentWorkflowReadResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.saved,
+      { workspaceId: t.input.workspaceId, workflowId: t.input.workflowId })).result)).version).toEqual(first.value.version)
+    expect(t.cancel).not.toHaveBeenCalled()
   })
 
-  it('NIM-2644 blocks publication when a new authenticated Start wins the gap after Stop cleanup', async () => {
-    const { f, issued, client } = await fixture(false, true)
-    const locationReply = await client.callTool({ name: 'workspace_location_set', arguments: {
-      workspaceId: f.scope.workspaceId, commandId: randomUUID(), expectedLocationRevision: 1,
-      runnerId: 'runner-local', rootPath: process.cwd(),
-    } })
-    expect(locationReply.isError, JSON.stringify(locationReply.structuredContent ?? locationReply.content)).not.toBe(true)
-    const location = locationReply.structuredContent as { value: { locationRevision: number } }
-    const { request } = await privateRequest(f, client)
-    const intent = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', request)).intent!
-    const command = intentCommand(intent)
-    const waiting = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', command))
-    expect(waiting.intent?.state).toBe('waiting')
-    expect(waiting.intent?.stops[0]?.receipt).toMatchObject({ runId: f.run.id, status: 'not_owner' })
-    const owned = await ownedAgent3(db.pool, f)
-    try {
-      await owned.store.settleRun(true)
-      await changeOneShotLifecycle(db.pool, f.run.id, { kind: 'cleanup', pending: false })
-    } finally { await owned.owner.release() }
-
-    const entered = deferred(), release = deferred()
-    const originalSave = drafts.save.bind(drafts)
-    const pausedSave = vi.spyOn(drafts, 'save').mockImplementation(async (...args) => {
-      entered.resolve()
-      await release.promise
-      return originalSave(...args)
-    })
-    let advancing: Promise<ReturnType<typeof GraphEditReadResultSchema.parse>> | undefined
-    try {
-      advancing = (async () => GraphEditReadResultSchema.parse(await tool(client, 'graph_save', command)))()
-      await Promise.race([entered.promise, advancing.then(() => { throw new Error('Advance completed before publication pause') })])
-      const startReply = await client.callTool({ name: 'run_start', arguments: {
-        ...scoped(f), workflowVersionId: f.version.id, executionSemanticsVersion: 2,
-        expectedLocationRevision: location.value.locationRevision, commandId: randomUUID(), input: {},
-      } })
-      expect(startReply.isError, JSON.stringify(startReply.structuredContent ?? startReply.content)).not.toBe(true)
-      const started = RunStartV2ResultSchema.parse(startReply.structuredContent)
-      expect(started).toMatchObject({ accepted: true, replayed: false, run: {
-        workflowVersionId: f.version.id, executionSemanticsVersion: 2,
-      } })
-      expect(started.run.id).not.toBe(f.run.id)
-      expect(await counts(f)).toEqual({ versions: '1', runs: '2' })
-      expect((await db.pool.query('select 1 from management_command_receipts where principal_id=$1 and operation=$2 and target_key=$3',
-        [issued.principal.id, 'run.start', `workflow:${f.scope.workflowId}:version:${f.version.id}`])).rowCount).toBe(1)
-      release.resolve()
-      const blocked = await advancing
-      expect(blocked.intent?.state).toBe('blocked')
-      expect(blocked.intent?.error?.code).toBe('AFFECTED_RUN_SET_CHANGED')
-      expect(blocked.intent?.stagedDraft).toEqual(intent.stagedDraft)
-      expect(blocked.intent?.stops).toEqual(waiting.intent?.stops)
-      expect(blocked.intent?.advanceCommandId).toBe(intent.advanceCommandId)
-      expect(blocked.intent?.saveInput).toEqual(intent.saveInput)
-      expect((await readPrivate(client, intent)).intent).toEqual(blocked.intent)
-      expect(await counts(f)).toEqual({ versions: '1', runs: '2' })
-      expect((await db.pool.query('select 1 from management_command_receipts where principal_id=$1 and operation=$2 and command_id=$3',
-        [issued.principal.id, 'graph.save', intent.saveInput.commandId])).rowCount).toBe(0)
-      expect((await db.pool.query('select 1 from management_command_receipts where principal_id=$1 and operation=$2 and target_key=$3',
-        [issued.principal.id, 'run.stop', `run:${started.run.id}`])).rowCount).toBe(0)
-      expect((await db.pool.query<{ stopped: boolean }>('select stop_requested_at is not null as stopped from runs where id=$1',
-        [started.run.id])).rows[0]?.stopped).toBe(false)
-    } finally {
-      release.resolve()
-      await advancing?.catch(() => undefined)
-      pausedSave.mockRestore()
+  it('serializes concurrent Saves at the displayed version and replays the winning exact command', async () => {
+    const t = await fixture(), first = await save(t)
+    const candidates = ['First writer', 'Second writer'].map((name) => ({ ...t.input, commandId: randomUUID(),
+      expectedRevision: first.value.revision, expectedWorkflowVersionId: first.value.currentVersionId,
+      graph: { ...first.value.version.definition, name } }))
+    const replies = await Promise.all(candidates.map((input) => httpSave(t, input)))
+    expect(replies.map((reply) => reply.statusCode).sort()).toEqual([200, 409])
+    const winnerIndex = replies.findIndex((reply) => reply.statusCode === 200)
+    const winner = CurrentWorkflowSaveResultSchema.parse(replies[winnerIndex]!.json())
+    expect(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.save, candidates[winnerIndex]!)).result)).toEqual({ ...winner, replayed: true })
+    const rows = (await db.pool.query('select record from workflow_versions where workflow_id=$1 order by version', [t.input.workflowId])).rows
+    expect(rows.map((row) => row.record)).toEqual([first.value.version, winner.value.version])
+  })
+  it('a private Stage prevents an intervening meaningful Save from changing its accepted base', async () => {
+    const t = await fixture(), first = await save(t), stage = await agentStage(t, first)
+    const intent = CurrentEditReadResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)).result)).intent!
+    const next = { ...t.input, commandId: randomUUID(), expectedRevision: first.value.revision,
+      expectedWorkflowVersionId: first.value.currentVersionId, graph: { ...first.value.version.definition, name: 'Concurrent saved head' } }
+    const rejected = await httpSave(t, next)
+    expect(rejected.statusCode).toBe(409)
+    expect(rejected.json()).toMatchObject({ error: { code: 'WORKFLOW_EDITS_UNRESOLVED' } })
+    expect(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.save, next)).result)).toMatchObject({ error: { code: 'WORKFLOW_EDITS_UNRESOLVED' } })
+    const read = await t.app.inject({ method: 'GET', url: t.url, headers: graphHeaders(t.writer.token) })
+    expect(CurrentWorkflowReadResultSchema.parse(read.json()).version).toEqual(first.value.version)
+    const scope = { workspaceId: stage.workspaceId, workflowId: stage.workflowId, draftId: stage.draftId, intentId: intent.id }
+    const reopened = CurrentEditReadResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.editRead, { ...scope, action: 'read_edits' })).result)).intent!
+    expect(reopened.saveInput).toEqual(intent.saveInput)
+    expect(reopened.agentPins).toEqual(intent.agentPins)
+    expect(await count(t, 'workflow_versions')).toBe(1)
+    expect(t.cancel).not.toHaveBeenCalled()
+  })
+  it('active meaningful edits retain exact Stop plans across transport retries without fabricated receipts', async () => {
+    const t = await fixture('single'), first = await save(t), stage = await agentStage(t, first)
+    const accepted = await insertFixtureRepeatRun(db.pool, { ...t.f, run: { ...t.f.run,
+      executionLocation: { runnerId: 'runner-local', rootPath: db.directory, locationRevision: 1, identityHash: `sha256:${'a'.repeat(64)}` } } }, first.value, t.writer.principal.id)
+    const before = (await db.pool.query('select record,stop_requested_at from runs where id=$1', [accepted.run.id])).rows[0]
+    const direct = await httpSave(t, { ...t.input, commandId: randomUUID(), expectedRevision: first.value.revision,
+      expectedWorkflowVersionId: first.value.currentVersionId, graph: { ...first.value.version.definition, name: 'Active meaningful edit' } })
+    expect(direct.statusCode).toBe(409)
+    const intent = CurrentEditReadResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)).result)).intent!
+    const scope = { workspaceId: stage.workspaceId, workflowId: stage.workflowId, draftId: stage.draftId, intentId: intent.id }
+    expect(intent.affected).toHaveLength(1)
+    expect(intent.affected[0]).toMatchObject({ runId: accepted.run.id, workflowVersionId: first.value.currentVersionId,
+      agentConfigurationVersionIds: first.value.version.agentConfigurationVersionIds })
+    const advance = { ...scope, action: 'stop_and_save', commandId: intent.advanceCommandId }
+    for (const reply of [
+      graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, advance)).result),
+      (await t.app.inject({ method: 'POST', url: `${t.url}/edits`, headers: graphHeaders(t.writer.token), payload: advance })).json(),
+    ]) {
+      expect(CurrentEditReadResultSchema.parse(reply).intent).toMatchObject({ state: 'blocked',
+        error: { code: 'REPEAT_STOP_RUNTIME_UNAVAILABLE', uncertain: false }, saveInput: intent.saveInput, stops: intent.stops })
     }
+    expect((await db.pool.query("select 1 from management_command_receipts where principal_id=$1 and operation='run.stop'", [t.writer.principal.id])).rowCount).toBe(0)
+    const discard = { ...scope, action: 'discard_edits', commandId: intent.discardCommandId }
+    const dropped = CurrentEditReadResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, discard)).result))
+    expect(dropped.intent?.state).toBe('discarded')
+    expect((await t.app.inject({ method: 'POST', url: `${t.url}/edits`, headers: graphHeaders(t.writer.token), payload: discard })).json()).toEqual(dropped)
+    expect((await db.pool.query('select record,stop_requested_at from runs where id=$1', [accepted.run.id])).rows[0]).toEqual(before)
+    expect(await count(t, 'workflow_versions')).toBe(1)
+    expect(t.cancel).not.toHaveBeenCalled(); expect(t.start).not.toHaveBeenCalled()
   })
-
-  it('NIM-2642 records natural completion without a fabricated Stop and retains stale revision/Start conflicts without expanding the plan', async () => {
-    const { f, issued, client } = await fixture(false, true), owned = await ownedAgent3(db.pool, f)
-    try {
-      const { draft, request } = await privateRequest(f, client)
-      const intent = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', request)).intent!
-      await owned.store.settleRun(false) // No Stop has been requested.
-      const naturallySaved = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', intentCommand(intent)))
-      expect(naturallySaved.intent?.state).toBe('saved')
-      expect(naturallySaved.current[0]).toMatchObject({ settled: true, outcome: 'failed' })
-      expect(naturallySaved.intent?.stops[0]?.receipt).toBeUndefined()
-      expect((await db.pool.query('select 1 from management_command_receipts where operation=$1 and principal_id=$2', ['run.stop', issued.principal.id])).rowCount).toBe(0)
-      const next = await privateRequest(f, client)
-      const pending = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', next.request)).intent!
-      const fresh = naturallySaved.intent!.result!.version
-      const added = WorkflowRunV2Schema.parse({ ...f.run, id: randomUUID(), workflowVersionId: fresh.id,
-        agentConfigurationVersionIds: fresh.agentConfigurationVersionIds })
-      await withExclusiveGraphConnection(db.pool, (connection) => connection.transaction((sql) => insertOneShotRun(sql, added)))
-      const conflict = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', intentCommand(pending)))
-      expect(conflict.intent?.state).toBe('blocked'); expect(conflict.intent?.error?.code).toBe('AFFECTED_RUN_SET_CHANGED')
-      expect(conflict.intent?.stops).toEqual(pending.stops)
-      expect((await db.pool.query<{ stopped: boolean }>('select stop_requested_at is not null as stopped from runs where id=$1', [added.id])).rows[0]!.stopped).toBe(false)
-      await tool(client, 'graph_draft_discard', intentCommand(pending, true))
-      const again = await privateRequest(f, client)
-      const stale = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', again.request)).intent!
-      await tool(client, 'graph_draft_apply', { ...saveInput(f, again.draft), operations: [{ type: 'node.move',
-        nodeId: draft.graph.nodes[0]!.id, position: { x: 91, y: 92 } }] })
-      const rejected = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', intentCommand(stale)))
-      expect(rejected.intent?.error?.code).toBe('REVISION_CONFLICT')
-      expect(rejected.intent?.stagedDraft).toEqual(stale.stagedDraft)
-      expect(rejected.intent?.advanceCommandId).toBe(stale.advanceCommandId)
-      expect(rejected.intent?.saveInput).toEqual(stale.saveInput)
-    } finally { await owned.owner.release() }
+  it('denies worker credentials and revalidates withdrawn Stop grants before any intent effect', async () => {
+    const t = await fixture('single'), first = await save(t), stage = await agentStage(t, first)
+    await insertFixtureRepeatRun(db.pool, { ...t.f, run: { ...t.f.run,
+      executionLocation: { runnerId: 'runner-local', rootPath: db.directory, locationRevision: 1, identityHash: `sha256:${'a'.repeat(64)}` } } }, first.value, t.writer.principal.id)
+    const worker = await t.access.issue({ name: 'Worker has no management authority', audience: 'worker', agentId: t.configurations[0]!.agentId,
+      grants: [{ actions: ManagementActionSchema.options, scope: {} }], expiresAt: new Date(Date.now() + 300000) })
+    expect((await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage, worker.token)).status).toBe(403)
+    const intent = CurrentEditReadResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)).result)).intent!
+    const scope = { workspaceId: stage.workspaceId, workflowId: stage.workflowId, draftId: stage.draftId, intentId: intent.id }
+    await db.pool.query('update management_principals set grants=$2::jsonb where id=$1', [t.writer.principal.id,
+      JSON.stringify([{ actions: ManagementActionSchema.options.filter((action) => action !== 'runs:stop'), scope: { workspaceIds: [stage.workspaceId] } }])])
+    const advance = { ...scope, action: 'stop_and_save', commandId: intent.advanceCommandId }
+    expect((await t.call(CURRENT_WORKFLOW_TOOLS.edits, advance)).result?.isError).toBe(true)
+    expect((await t.app.inject({ method: 'POST', url: `${t.url}/edits`, headers: graphHeaders(t.writer.token), payload: advance })).statusCode).toBe(403)
+    const read = CurrentEditReadResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.editRead, { ...scope, action: 'read_edits' })).result))
+    expect(read.intent?.saveInput).toEqual(intent.saveInput)
+    expect(read.intent?.stops).toEqual(intent.stops)
+    expect((await db.pool.query("select 1 from management_command_receipts where principal_id=$1 and operation='run.stop'", [t.writer.principal.id])).rowCount).toBe(0)
+    expect(t.cancel).not.toHaveBeenCalled(); expect(await count(t, 'workflow_versions')).toBe(1)
   })
-
-  it('NIM-2642 denies read-only/wrong-scope/other-principal access and revalidates Stop grants before any effect', async () => {
-    const { f, issued, client } = await fixture(false, true)
-    const { draft, request } = await privateRequest(f, client)
-    const intent = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', request)).intent!
-    for (const kind of ['readonly', 'wrong-scope', 'other-owner'] as const) {
-      const limited = await access.issue({ name: `Intent ${kind}`, audience: 'operator', grants: [{
-        actions: kind === 'readonly' ? ['graph:read', 'workflows:read', 'agents:read', 'runs:read'] : ManagementActionSchema.options,
-        scope: { workspaceIds: [kind === 'wrong-scope' ? 'different-workspace' : f.scope.workspaceId] },
-      }], expiresAt: new Date(Date.now() + 300_000) })
-      const other = await connect(limited.token), headers = await browserHeaders(limited.token)
-      await denied(other, 'graph_draft_get', { ...scoped(f), draftId: draft.id, intentId: intent.id, action: 'read_edits' })
-      const response = await app.inject({ method: 'GET', url: `${draftPath(f, draft.id)}/edit-intents/${intent.id}`, headers })
-      expect([403, 404]).toContain(response.statusCode)
-      expect(JSON.stringify(response.json())).not.toContain('Private exact payload')
-      if (kind !== 'other-owner') await denied(other, 'graph_save', request)
-    }
-    await db.pool.query('update management_principals set grants=$2::jsonb where id=$1', [issued.principal.id,
-      JSON.stringify([{ actions: ManagementActionSchema.options.filter((action) => action !== 'runs:stop'), scope: { workspaceIds: [f.scope.workspaceId] } }])])
-    await denied(client, 'graph_save', intentCommand(intent))
-    const noStop = await app.inject({ method: 'POST', url: `${draftPath(f, draft.id)}/edit-intents/${intent.id}/advance`,
-      headers: await browserHeaders(issued.token), payload: intentCommand(intent) })
-    expect(noStop.statusCode).toBe(403)
-    expect((await db.pool.query('select 1 from management_command_receipts where principal_id=$1 and operation=$2', [issued.principal.id, 'run.stop'])).rowCount).toBe(0)
-    expect((await readPrivate(client, intent)).intent?.stagedDraft).toEqual(intent.stagedDraft)
-    await db.pool.query('update management_principals set revoked_at=clock_timestamp() where id=$1', [issued.principal.id])
-    await expect(drafts.editIntents.read(issued.principal, { ...scoped(f), draftId: draft.id, intentId: intent.id, action: 'read_edits' }))
-      .rejects.toMatchObject({ code: 'AUTH_REVOKED' })
-  })
-
-  it('NIM-2642 includes shared-Agent cross-workflow Runs, preserves their accepted pins and never stops an unplanned Run', async () => {
-    const { f, client } = await fixture(false, true)
-    const workflowId = randomUUID(), versionId = randomUUID(), runId = randomUUID()
-    const version = WorkflowVersionV2Schema.parse({ ...f.version, id: versionId, workflowId,
-      definition: { ...f.version.definition, id: workflowId } })
-    const run = WorkflowRunV2Schema.parse({ ...f.run, id: runId, workflowId, workflowVersionId: version.id })
-    await db.pool.query('insert into workflows(id,workspace_id,current_version_id,record) values($1,$2,null,$3::jsonb)',
-      [workflowId, f.scope.workspaceId, JSON.stringify(version.definition)])
-    await db.pool.query(`insert into workflow_versions(id,workspace_id,workflow_id,version,entry_node_id,record,execution_semantics_version)
-      values($1,$2,$3,1,$4,$5::jsonb,2)`, [version.id, f.scope.workspaceId, workflowId, version.entryNodeId, JSON.stringify(version)])
-    await db.pool.query('update workflows set current_version_id=$2 where id=$1', [workflowId, version.id])
-    await withExclusiveGraphConnection(db.pool, (connection) => connection.transaction((sql) => insertOneShotRun(sql, run)))
-    const { draft, request } = await privateRequest(f, client)
-    const staged = GraphEditReadResultSchema.parse(await tool(client, 'graph_save', { ...request,
-      operations: [{ type: 'agent.rename', agentId: f.configurations[0]!.agentId, expectedAgentRevision: 1, name: 'Shared staged Agent' }] }))
-    const intent = staged.intent!
-    expect(new Set(intent.affected.map((pin) => pin.runId))).toEqual(new Set([f.run.id, run.id]))
-    expect(intent.affected.find((pin) => pin.runId === run.id)).toMatchObject({ workflowId, workflowVersionId: version.id,
-      agentConfigurationVersionIds: version.agentConfigurationVersionIds })
-    const sharedBefore = (await db.pool.query<{ record: unknown }>('select record from runs where id=$1', [run.id])).rows[0]!.record
-    // Private staging itself is neither Stop nor Agent publication.
-    expect((await db.pool.query<{ record: unknown }>('select record from runs where id=$1', [run.id])).rows[0]!.record).toEqual(sharedBefore)
-    expect(GraphDraftV2Schema.parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: draft.id }))).toEqual(draft)
-    await tool(client, 'graph_draft_discard', intentCommand(intent, true))
-    expect((await db.pool.query<{ stopped: boolean }>('select stop_requested_at is not null as stopped from runs where id=$1', [run.id])).rows[0]!.stopped).toBe(false)
-  })
-
-  it.each([false, true])('persists independent layout during a Run for legacy=%s, with MCP parity and denied scope', async (legacy) => {
-    const { f, issued, client } = await fixture(legacy, true)
-    const opened = GraphDraftSchema.or(GraphDraftV2Schema).parse(await tool(client, 'graph_draft_open', scoped(f)))
-    const nodeId = opened.graph.nodes[0]!.id
-    const legacyMove = await tool(client, 'graph_draft_apply', {
-      ...scoped(f), draftId: opened.id, commandId: randomUUID(), expectedRevision: opened.revision,
-      ...(legacy ? {} : { executionSemanticsVersion: 2 }),
-      operations: [{ type: 'node.move', nodeId, position: { x: 700, y: 80 } }],
-    }) as { value: { draft: typeof opened } }
-    expect(legacyMove.value.draft.revision).toBe(opened.revision + 1)
-    expect(legacyMove.value.draft.layoutRevision).toBe(1)
-    const input = { ...scoped(f), draftId: opened.id, commandId: randomUUID(),
-      expectedLayoutRevision: opened.layoutRevision ?? 0, nodeId, position: { x: 811, y: -94 } }
-    const headers = await browserHeaders(issued.token)
-    const staleHttp = await app.inject({ method: 'PUT', url: `${draftPath(f, opened.id)}/layout`, headers, payload: input })
-    expect(staleHttp.statusCode).toBe(409)
-    expect(JSON.stringify(staleHttp.json())).toContain('LAYOUT_REVISION_CONFLICT')
-    await denied(client, 'graph_draft_layout', { ...input, commandId: randomUUID() })
-    const current = GraphDraftSchema.or(GraphDraftV2Schema).parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: opened.id }))
-    expect(current.graph.nodes.find((node) => node.id === nodeId)?.position).toEqual({ x: 700, y: 80 })
-    const accepted = { ...input, commandId: randomUUID(), expectedLayoutRevision: current.layoutRevision! }
-    const moved = GraphDraftLayoutResultSchema.parse(await tool(client, 'graph_draft_layout', accepted))
-    expect(moved.value.layoutRevision).toBe(2)
-    expect(GraphDraftLayoutResultSchema.parse(await tool(client, 'graph_draft_layout', accepted))).toMatchObject({ replayed: true, value: moved.value })
-    const read = GraphDraftSchema.or(GraphDraftV2Schema).parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: opened.id }))
-    expect(read.revision).toBe(legacyMove.value.draft.revision)
-    expect(read.layoutRevision).toBe(2)
-    expect(read.graph.nodes.find((node) => node.id === nodeId)?.position).toEqual(input.position)
-    expect(read.baseWorkflowVersionId).toBe(opened.baseWorkflowVersionId)
-    expect((await db.pool.query<{ count: string }>('select count(*)::text as count from workflow_versions where workflow_id=$1', [f.scope.workflowId])).rows[0]?.count).toBe('1')
-    const readOnly = await access.issue({ name: 'Layout reader', audience: 'operator',
-      grants: [{ actions: ['graph:read', 'agents:read'], scope: { workspaceIds: [f.scope.workspaceId] } }],
-      expiresAt: new Date(Date.now() + 300_000) })
-    await denied(await connect(readOnly.token), 'graph_draft_layout', { ...input, commandId: randomUUID(), expectedLayoutRevision: 2 })
-    const http = await app.inject({ method: 'GET', url: draftPath(f, opened.id), headers })
-    expect(http.statusCode).toBe(200)
-    expect(GraphDraftSchema.or(GraphDraftV2Schema).parse(http.json()).layoutRevision).toBe(2)
-  })
-
-  it.each([false, true])('reverts an exact applied semantic edit after active-Run save rejection for legacy=%s, preserving layout', async (legacy) => {
-    const { f, issued, client } = await fixture(legacy, true)
-    const opened = GraphDraftSchema.or(GraphDraftV2Schema).parse(await tool(client, 'graph_draft_open', scoped(f)))
-    const node = opened.graph.nodes[0]!
-    const applyInput = { ...scoped(f), draftId: opened.id, commandId: randomUUID(), expectedRevision: opened.revision,
-      ...(legacy ? {} : { executionSemanticsVersion: 2 as const }),
-      operations: [{ type: 'node.rename' as const, nodeId: node.id, name: 'Discard this staged name' }] }
-    const applied = await tool(client, 'graph_draft_apply', applyInput) as { value: { draft: typeof opened } }
-    const secondInput = { ...applyInput, commandId: randomUUID(), expectedRevision: applied.value.draft.revision,
-      operations: [{ type: 'node.set_initial_prompt' as const, nodeId: node.id, initialPrompt: 'Discard this staged prompt' }] }
-    const second = await tool(client, 'graph_draft_apply', secondInput) as { value: { draft: typeof opened } }
-    const layout = GraphDraftLayoutResultSchema.parse(await tool(client, 'graph_draft_layout', {
-      ...scoped(f), draftId: opened.id, commandId: randomUUID(), expectedLayoutRevision: 0,
-      nodeId: node.id, position: { x: 987, y: 123 },
-    }))
-    expect(layout.value.layoutRevision).toBe(1)
-    const blockedSave = await client.callTool({ name: 'graph_save', arguments: {
-      ...scoped(f), draftId: opened.id, commandId: randomUUID(),
-      expectedRevision: second.value.draft.revision, ...(legacy ? {} : { executionSemanticsVersion: 2 }),
-    } })
-    expect(blockedSave.isError).toBe(true)
-    expect(JSON.stringify(blockedSave)).toContain('WORKFLOW_RUNS_UNSETTLED')
-    const stale = { ...scoped(f), draftId: opened.id, commandId: randomUUID(),
-      expectedRevision: second.value.draft.revision, applyCommandId: applyInput.commandId }
-    const readOnly = await access.issue({ name: 'Revert reader', audience: 'operator',
-      grants: [{ actions: ['graph:read', 'agents:read'], scope: { workspaceIds: [f.scope.workspaceId] } }],
-      expiresAt: new Date(Date.now() + 300_000) })
-    await denied(await connect(readOnly.token), 'graph_draft_revert_applied', stale)
-    await denied(client, 'graph_draft_revert_applied', stale)
-    const firstRevert = await tool(client, 'graph_draft_revert_applied', { ...stale,
-      commandId: randomUUID(), applyCommandId: secondInput.commandId }) as { value: { draft: typeof opened } }
-    const revert = { ...stale, commandId: randomUUID(), expectedRevision: firstRevert.value.draft.revision }
-    let reverted: { value: { draft: unknown }; replayed: boolean }
-    let httpHeaders: Awaited<ReturnType<typeof browserHeaders>> | undefined
-    if (legacy) {
-      reverted = await tool(client, 'graph_draft_revert_applied', revert) as typeof reverted
-    } else {
-      httpHeaders = await browserHeaders(issued.token)
-      const response = await app.inject({ method: 'POST', url: `${draftPath(f, opened.id)}/revert-applied`,
-        headers: httpHeaders, payload: revert })
-      expect(response.statusCode).toBe(200)
-      reverted = response.json() as typeof reverted
-      GraphDraftV2Schema.parse(reverted.value.draft)
-    }
-    const result = GraphDraftSchema.or(GraphDraftV2Schema).parse(reverted.value.draft)
-    expect(result.graph.nodes.find((item) => item.id === node.id)).toMatchObject({ name: node.name, position: { x: 987, y: 123 } })
-    expect(result.layoutRevision).toBe(1)
-    expect(result.revision).toBe(firstRevert.value.draft.revision + 1)
-    expect(result.publishedRevision).toBe(result.revision)
-    let replay: { value: { draft: unknown }; replayed: boolean }
-    if (legacy) {
-      replay = await tool(client, 'graph_draft_revert_applied', revert) as typeof replay
-    } else {
-      const response = await app.inject({ method: 'POST', url: `${draftPath(f, opened.id)}/revert-applied`,
-        headers: httpHeaders!, payload: revert })
-      expect(response.statusCode).toBe(200)
-      replay = response.json() as typeof replay
-      expect(GraphDraftV2Schema.parse(replay.value.draft)).toEqual(result)
-    }
-    expect(replay.replayed).toBe(true)
-    const persisted = GraphDraftSchema.or(GraphDraftV2Schema).parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: opened.id }))
-    expect(persisted).toEqual(result)
-    expect((await db.pool.query('select 1 from management_command_receipts where principal_id=$1 and operation=$2',
-      [issued.principal.id, 'run.stop'])).rowCount).toBe(0)
-  })
-
-  it('allows graph-only Apply/revert with graph grants and denies Agent-sensitive revert after Agent read revocation', async () => {
-    const { f, issued, client } = await fixture(true)
-    const opened = GraphDraftSchema.parse(await tool(client, 'graph_draft_open', scoped(f)))
-    const limited = await access.issue({ name: 'Graph-only editor', audience: 'operator',
-      grants: [{ actions: ['graph:read', 'graph:edit'], scope: { workspaceIds: [f.scope.workspaceId] } }],
-      expiresAt: new Date(Date.now() + 300_000) })
-    const editor = await connect(limited.token)
-    const applyInput = { ...scoped(f), draftId: opened.id, commandId: randomUUID(), expectedRevision: opened.revision,
-      operations: [{ type: 'node.rename', nodeId: opened.graph.nodes[0]!.id, name: 'Graph-only change' }] }
-    const applied = await tool(editor, 'graph_draft_apply', applyInput) as { value: { draft: typeof opened } }
-    const revertInput = { ...scoped(f), draftId: opened.id, commandId: randomUUID(),
-      expectedRevision: applied.value.draft.revision, applyCommandId: applyInput.commandId }
-    const response = await app.inject({ method: 'POST', url: `${draftPath(f, opened.id)}/revert-applied`,
-      headers: await browserHeaders(limited.token), payload: revertInput })
-    expect(response.statusCode).toBe(200)
-    expect(GraphDraftSchema.parse(response.json().value.draft).graph.nodes[0]!.name).toBe(opened.graph.nodes[0]!.name)
-    expect((await tool(editor, 'graph_draft_revert_applied', revertInput) as { replayed: boolean }).replayed).toBe(true)
-    const current = GraphDraftSchema.parse(await tool(editor, 'graph_draft_get', { ...scoped(f), draftId: opened.id }))
-    expect(current.revision).toBe(applied.value.draft.revision + 1)
-
-    const agentInput = { ...scoped(f), draftId: opened.id, commandId: randomUUID(), expectedRevision: current.revision,
-      operations: [{ type: 'agent.rename', agentId: f.configurations[0]!.agentId,
-        expectedAgentRevision: 1, name: 'Staged Agent name' }] }
-    const staged = await tool(client, 'graph_draft_apply', agentInput) as { value: { draft: typeof opened } }
-    await db.pool.query('update management_principals set grants=$2::jsonb where id=$1', [issued.principal.id,
-      JSON.stringify([{ actions: ['graph:read', 'graph:edit'], scope: { workspaceIds: [f.scope.workspaceId] } }])])
-    await denied(client, 'graph_draft_revert_applied', { ...scoped(f), draftId: opened.id, commandId: randomUUID(),
-      expectedRevision: staged.value.draft.revision, applyCommandId: agentInput.commandId })
-    const stored = (await db.pool.query<{ record: unknown }>('select record from graph_drafts where id=$1', [opened.id])).rows[0]!.record
-    expect(GraphDraftSchema.parse(stored).stagedAgents).toHaveLength(1)
-  })
-
-  it('retains a newly copied legacy node position when the same Apply replaces its metadata and Save reloads', async () => {
-    const { f, client } = await fixture(true)
-    const opened = GraphDraftSchema.parse(await tool(client, 'graph_draft_open', scoped(f)))
-    const agentId = `agent-clone-${randomUUID()}`, nodeId = `node-clone-${randomUUID()}`
-    const position = { x: 641, y: -73 }
-    const appliedResponse = await client.callTool({ name: 'graph_draft_apply', arguments: {
-      ...scoped(f), draftId: opened.id, commandId: randomUUID(), expectedRevision: opened.revision,
-      operations: [
-        { type: 'agent.clone', sourceAgentId: f.configurations[0]!.agentId, agentId, nodeId, name: 'Copied Coder' },
-        { type: 'node.replace', node: { id: nodeId, agentId, name: 'Copied Coder', position } },
-        { type: 'edge.connect', edgeId: `edge-clone-${randomUUID()}`,
-          sourceNodeId: opened.graph.nodes.at(-1)!.id, targetNodeId: nodeId },
-        { type: 'workflow.set_execution_limits', maxParallelism: opened.graph.executionPolicy?.maxParallelism ?? 1,
-          maxNodeExecutions: opened.graph.nodes.length + 1 },
-      ],
-    } })
-    expect(appliedResponse.isError, JSON.stringify(appliedResponse.content)).not.toBe(true)
-    const applied = appliedResponse.structuredContent as { value: { draft: typeof opened } }
-    expect(applied.value.draft.graph.nodes.find((node) => node.id === nodeId)?.position).toEqual(position)
-    expect(applied.value.draft.layoutRevision).toBe(1)
-    const saveResponse = await client.callTool({ name: 'graph_save', arguments: { ...scoped(f), draftId: opened.id,
-      commandId: randomUUID(), expectedRevision: applied.value.draft.revision } })
-    expect(saveResponse.isError, JSON.stringify(saveResponse.content)).not.toBe(true)
-    const saved = saveResponse.structuredContent as { value: { draft: typeof opened } }
-    expect(saved.value.draft.graph.nodes.find((node) => node.id === nodeId)?.position).toEqual(position)
-    const reopened = GraphDraftSchema.parse(await tool(client, 'graph_draft_get', { ...scoped(f), draftId: opened.id }))
-    expect(reopened.graph.nodes.find((node) => node.id === nodeId)?.position).toEqual(position)
+  it('location drift blocks the private publication while preserving its original displayed location pin', async () => {
+    const t = await fixture(), first = await save(t), stage = await agentStage(t, first)
+    const intent = CurrentEditReadResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)).result)).intent!
+    await db.pool.query('update workspaces set location_revision=location_revision+1 where id=$1', [stage.workspaceId])
+    const advance = { workspaceId: stage.workspaceId, workflowId: stage.workflowId, draftId: stage.draftId,
+      intentId: intent.id, action: 'stop_and_save', commandId: intent.advanceCommandId }
+    const response = await t.app.inject({ method: 'POST', url: `${t.url}/edits`, headers: graphHeaders(t.writer.token), payload: advance })
+    expect(response.statusCode, response.body).toBe(200)
+    const blocked = CurrentEditReadResultSchema.parse(response.json()).intent!
+    expect(blocked.state).toBe('blocked')
+    expect(blocked.error?.code).toBe('CURRENT_EDIT_LOCATION_CONFLICT')
+    expect(blocked.saveInput).toEqual(intent.saveInput)
+    expect(blocked.stagedDraft).toEqual(intent.stagedDraft)
+    expect(await count(t, 'workflow_versions')).toBe(1)
+    expect(t.cancel).not.toHaveBeenCalled()
   })
 })
