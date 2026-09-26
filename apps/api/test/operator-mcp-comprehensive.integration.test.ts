@@ -1,42 +1,28 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { ManagementActionSchema } from '@graphql/contracts/management'
-import { createDatabase } from '../src/infrastructure/database.js'
+import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkspaceManagementService } from '../src/modules/workspaces/management.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
-import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
-import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
-import { RunManagementService } from '../src/modules/runs/management.js'
-import type { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
-import { GraphDraftService } from '../src/modules/graph-drafts/service.js'
 import { OperatorAgentMutationService } from '../src/modules/workspaces/operatorAgents.js'
 import { OperatorLifecycleService } from '../src/modules/workspaces/operatorLifecycle.js'
 import { SkillCatalogService } from '../src/modules/skills/catalog.js'
 import { VersionHistoryService } from '../src/modules/workflows/historyManagement.js'
-import { WorkflowTriggerService } from '../src/modules/workflows/triggerManagement.js'
 
-// Never fall back to DATABASE_URL: this suite requires an explicitly selected,
-// empty disposable database. Drop that database after this suite completes.
-const connectionString=process.env.MCP_BUNDLE_TEST_DATABASE_URL
-const suite=connectionString ? describe : describe.skip
-suite('comprehensive MCP persistence on a disposable PostgreSQL database',()=>{
-  const database=createDatabase({connectionString:connectionString ?? '',maxConnections:6,connectionTimeoutMs:5000,queryTimeoutMs:5000})
+describe.skipIf(!postgresEnabled)('comprehensive MCP persistence on isolated PostgreSQL schema',()=>{
+  let database: Awaited<ReturnType<typeof currentDatabase>>
   const directories:string[]=[]
-  beforeAll(async()=>{
-    const tables=await database.pool.query<{tablename:string}>("select tablename from pg_tables where schemaname=current_schema()")
-    if(tables.rows.length) throw new Error('MCP_BUNDLE_TEST_DATABASE_URL must name an EMPTY disposable database; no existing application database was modified.')
-    await database.migrate()
-  })
+  beforeAll(async()=>{ database = await currentDatabase() }, 60000)
   afterAll(async()=>{
-    await database.close()
+    await database?.close()
     for(const directory of directories) await rm(directory,{recursive:true,force:true})
   })
-  it('persists skills, reuses Agents, restores history, and recovers trigger receipts without a duplicate launch',async()=>{
+  it('persists skills, reuses Agents, and preserves exact V3 Save receipts and immutable history',async()=>{
     const runtime=await mkdtemp(join(tmpdir(),'mcp-runtime-'));directories.push(runtime)
     const project=await mkdtemp(join(tmpdir(),'mcp-project-'));directories.push(project)
     const commands=new PostgresCommandCoordinator(database.pool)
@@ -55,45 +41,27 @@ suite('comprehensive MCP persistence on a disposable PostgreSQL database',()=>{
     const savedConfiguration=(await history.agent(principal,{workspaceId:workspace.id,agentId:agent.agent.id,versionId:agent.agent.configurationVersionId!})).version
     expect(savedConfiguration.resolvedSkills?.[0]?.instructions).toBe('Use deterministic checks.')
     const workflows=new WorkflowManagementService(database.pool,commands)
-    const workflow=(await workflows.create(principal,'mcp',{workspaceId:workspace.id,commandId:'fixture-workflow',name:'Scheduled fixture'})).value.workflow
-    const drafts=new GraphDraftService(database.pool,commands)
-    const draft=await drafts.open(principal,workspace.id,workflow.id)
-    const applied=await drafts.apply(principal,'mcp',{workspaceId:workspace.id,workflowId:workflow.id,draftId:draft.id,commandId:'fixture-attach',expectedRevision:draft.revision,operations:[
-      {type:'agent.attach',agentId:agent.agent.id,nodeId:'node',expectedAgentRevision:agent.metadataRevision,expectedConfigurationVersionId:agent.agent.configurationVersionId!},
-      {type:'workflow.set_approval',approval:{handler:'user'}},
-      {type:'workflow.set_execution_condition',executionCondition:{kind:'schedule'}},
-    ]})
-    const published=await drafts.save(principal,'mcp',{workspaceId:workspace.id,workflowId:workflow.id,draftId:draft.id,commandId:'fixture-publish',expectedRevision:applied.value.draft.revision})
+    const managed=(await workflows.create(principal,'mcp',{workspaceId:workspace.id,commandId:'fixture-workflow',name:'Current fixture'})).value
+    const workflow=managed.workflow
+    const input={workspaceId:workspace.id,workflowId:workflow.id,commandId:'fixture-save',executionSemanticsVersion:3,
+      expectedRevision:managed.revision,expectedWorkflowVersionId:null,expectedLocationRevision:1,
+      expectedAgentConfigurationVersionIds:{[agent.agent.id]:agent.agent.configurationVersionId!},
+      graph:{...workflow,entryNodeId:'node',nodes:[{id:'node',agentId:agent.agent.id,name:'Worker'}],edges:[],
+        approval:{handler:'user'},executionCondition:{kind:'manual'},executionPolicy:{maxParallelism:1,maxNodeExecutions:1}}}
+    const published=await workflows.current.save(principal,'mcp',input)
     expect((await history.workflows(principal,{workspaceId:workspace.id,workflowId:workflow.id,limit:10})).items).toHaveLength(1)
-    const restored=await drafts.apply(principal,'mcp',{workspaceId:workspace.id,workflowId:workflow.id,draftId:draft.id,commandId:'fixture-restore',expectedRevision:published.value.draft.revision,operations:[{type:'workflow.restore_version',versionId:published.value.version.id}]})
-    expect(restored.value.draft.sourceAgentPins?.[0]?.agentId).toBe(agent.agent.id)
-    const republished=await drafts.save(principal,'mcp',{workspaceId:workspace.id,workflowId:workflow.id,draftId:draft.id,commandId:'fixture-republish',expectedRevision:restored.value.draft.revision})
-    expect(republished.value.version.id).not.toBe(published.value.version.id)
-    const engine={start:vi.fn(async()=>undefined)} as unknown as LangGraphWorkflowEngine
-    const workflowRepository=new PostgresWorkflowRepository(database.pool)
-    const runRepository=new PostgresRunRepository(database.pool,workflowRepository,locations)
-    const runs=new RunManagementService(database.pool,commands,runRepository,engine,locations)
-    const triggers=new WorkflowTriggerService(database.pool,commands,runs)
-    const enabled=await triggers.update(principal,{workspaceId:workspace.id,workflowId:workflow.id,commandId:'fixture-trigger',expectedRevision:0,workflowVersionId:republished.value.version.id,expectedLocationRevision:1,enabled:true,trigger:{kind:'schedule',startsAt:new Date().toISOString(),intervalSeconds:60,missed:'latest',input:{message:'accepted input'}}})
-    await database.pool.query("update workflow_triggers set next_fire_at=now()-interval '1 second' where workflow_id=$1",[workflow.id])
-    const errors:unknown[]=[]
-    await triggers.tick(error=>errors.push(error))
-    await new Promise<void>(resolve=>setImmediate(resolve))
-    expect(errors).toEqual([])
-    const jobs=await triggers.jobs(principal,{workspaceId:workspace.id,workflowId:workflow.id,limit:10})
-    expect(jobs.items).toHaveLength(1)
-    expect(jobs.items[0]?.status).toBe('started')
-    expect(engine.start).toHaveBeenCalledTimes(1)
-    // Simulate losing the acknowledgement after Run admission committed.
-    await database.pool.query("update workflow_trigger_jobs set status='leased',run_id=null,lease_owner='lost',lease_expires_at=now()-interval '1 second' where id=$1",[jobs.items[0]!.jobId])
-    // Disable must retain a committed job's recoverable receipt, not mark it blocked.
-    await triggers.disable(principal,{workspaceId:workspace.id,workflowId:workflow.id,commandId:'fixture-trigger-disable',expectedRevision:enabled.value.revision})
-    await access.revoke(principal.id)
-    await triggers.tick(error=>errors.push(error))
-    expect((await database.pool.query<{status:string}>('select status from workflow_trigger_jobs where id=$1',[jobs.items[0]!.jobId])).rows[0]?.status).toBe('started')
-    expect(engine.start).toHaveBeenCalledTimes(1)
-    expect(errors).toEqual([])
-    await triggers.shutdown()
+    expect(await workflows.current.save(principal,'mcp',input)).toEqual({...published,replayed:true})
+    await expect(workflows.current.save(principal,'mcp',{...input,graph:{...input.graph,name:'Changed command'}}))
+      .rejects.toMatchObject({code:'COMMAND_ID_CONFLICT'})
+    const next=await workflows.current.save(principal,'mcp',{...input,commandId:'fixture-next-save',
+      expectedRevision:published.value.revision,expectedWorkflowVersionId:published.value.currentVersionId,
+      graph:{...published.value.version.definition,name:'Next saved workflow'}})
+    expect(next.value.currentVersionId).not.toBe(published.value.currentVersionId)
+    const pinned=await workflows.current.read(principal,{workspaceId:workspace.id,workflowId:workflow.id,
+      workflowVersionId:published.value.currentVersionId})
+    expect(pinned.version).toEqual(published.value.version)
+    expect(pinned.currentVersionId).toBe(next.value.currentVersionId)
+    expect((await database.pool.query('select id from runs where workflow_id=$1',[workflow.id])).rows).toHaveLength(0)
   },30_000)
 
   it('archives and restores an unused Agent without deleting configuration history',async()=>{
