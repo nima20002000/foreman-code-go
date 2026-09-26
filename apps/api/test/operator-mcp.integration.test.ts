@@ -1,3 +1,5 @@
+import { ExecutionReadinessService } from '../src/modules/harnesses/executionReadiness.js'
+import { NativeRollout } from '../src/modules/harnesses/nativeRollout.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -107,6 +109,7 @@ describe('Operator MCP with PostgreSQL', () => {
     const foundationSettings = new PostgresFoundationSettingsRepository(database.pool)
     const harnessCatalog = new HarnessCatalogService(deterministicHarnesses(), settings, commands, process.cwd())
     const services = {
+      executionReadiness: new ExecutionReadinessService(new NativeRollout({ GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: '1' }), harnessCatalog),
       workspaces: new WorkspaceManagementService(database.pool, commands, locations),
       locations,
       workflows: new WorkflowManagementService(database.pool, commands),
@@ -191,6 +194,11 @@ describe('Operator MCP with PostgreSQL', () => {
     expect((agentDefaultsUpdate.value as { value: { operator: { uiEnabled: boolean } } }).value.operator.uiEnabled)
       .toBe(!agentDefaults.value.operator.uiEnabled)
 
+    const readiness = structured(await client.callTool({ name: 'execution_readiness_get', arguments: { harness: 'codex' } }))
+    expect(readiness).toMatchObject({ status: 'eligible', scope: 'saved-harness-defaults', defaultsRevision: (defaultsUpdate.value as { revision: number }).revision })
+    const persisted = await settings.getManagedHarnessDefaults()
+    expect(readiness.defaultsRevision).toBe(persisted.revision)
+
     const restrictedClient = new Client({ name: 'restricted-operator', version: '1.0.0' })
     await restrictedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), {
       authProvider: { token: async () => restricted.token },
@@ -199,6 +207,8 @@ describe('Operator MCP with PostgreSQL', () => {
     expect((await restrictedClient.listTools()).tools.map((tool) => tool.name).sort()).toEqual([
       'operator_get_capabilities', 'workspace_get', 'workspace_list', 'workspace_location_validate',
     ])
+
+    await expect(restrictedClient.callTool({ name: 'execution_readiness_get', arguments: { harness: 'codex' } })).rejects.toThrow('not found')
 
     const workspaceCommand = `workspace-${randomUUID()}`
     const createdWorkspace = structured(await client.callTool({
