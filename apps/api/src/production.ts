@@ -3,6 +3,8 @@ import { createReviewNativeCaptureChannel } from './modules/interactions/reviewN
 import { ReviewNativeProofServices } from './modules/interactions/reviewNativeProof.js'
 import { PostgresRepeatReviewerBindings } from './modules/interactions/repeatReviewer.js'
 import { createWorkflowRepositoryServices } from './modules/runs/workflowRepositoryServices.js'
+import { readRuntimeIdentity } from './infrastructure/runtimeIdentity.js'
+import { fileURLToPath } from 'node:url'
 import { OperatorMcpRoutes } from './modules/harnesses/operatorMcpRoutes.js'
 import { registerApprovalCheckpointResume } from './modules/runs/approvalCheckpointRegistration.js'
 import { createCurrentNativeProductionFactory, isCurrentNativeProductionBinding } from './modules/runs/workflowProduction.js'
@@ -334,6 +336,7 @@ export function buildProductionApp(
     provisioningRoot: projectRoot,
   })
   const app = buildApp({
+    runtimeIdentity: () => readRuntimeIdentity(database.pool, fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString),
     ...(config.browserAuth ? { browserAuth: new BrowserAuthentication(database.pool, access, config.browserAuth) } : {}),
     ...(config.localDevBrowserAccess ? { localDevBrowserAccess: new LocalDevBrowserAccess(
       database.pool, access, config.localDevBrowserAccess.origin, config.localDevBrowserAccess.principalId,

@@ -4,6 +4,7 @@ import {
   ApiErrorResponseSchema,
   ServiceHealthSchema,
   type ServiceHealth,
+  type RuntimeIdentity,
 } from '@graphql/contracts'
 import Fastify, { LogController, type FastifyBaseLogger, type FastifyInstance } from 'fastify'
 import { localhostHostValidation, localhostOriginValidation } from '@modelcontextprotocol/fastify'
@@ -35,6 +36,7 @@ export interface ReadinessDependencies {
 }
 
 export interface BuildAppOptions {
+  runtimeIdentity?: () => Promise<RuntimeIdentity>
   browserAuth?: BrowserAuthentication
   localDevBrowserAccess?: LocalDevBrowserAccess
   harnessCompatibility?: HarnessCompatibilityService
@@ -113,6 +115,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   const checkCheckpoints = createDependencyCheck(
     (signal) => options.readiness.checkpoints.ping(signal), timeoutMs,
   )
+
+  if (options.runtimeIdentity) {
+    app.get('/health/identity', async (_request, reply) => { reply.header('cache-control', 'no-store'); return options.runtimeIdentity!() })
+    app.get('/api/runtime/identity', async (_request, reply) => { reply.header('cache-control', 'no-store'); return options.runtimeIdentity!() })
+  }
 
   app.get('/health/live', async () => ServiceHealthSchema.parse({ status: 'ok', service: 'graphql-api' }))
 

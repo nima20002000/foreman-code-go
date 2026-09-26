@@ -3,6 +3,7 @@ import { workflowRestartRecoveryMigration } from './workflowRestartRecoveryMigra
 import { runInspectionMigration } from './runInspectionMigration.js'
 import { currentApprovalAckMigration } from './currentApprovalAckMigration.js'
 import { workflowNativeLifecycleMigration } from './workflowNativeLifecycleMigration.js'
+import { installationIdentityMigration } from './runtimeIdentity.js'
 import type pg from 'pg'
 import { currentWorkflowWriterMigration } from './currentWorkflowWriterMigration.js'
 import { currentStagedAgentsMigration } from './currentStagedAgentsMigration.js'
@@ -699,6 +700,7 @@ export const migrations = [
   { version: 264402, sql: `
     create index workflows_workspace_id_page_idx on workflows (workspace_id, id);
   ` },
+  installationIdentityMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
