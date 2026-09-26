@@ -11,7 +11,7 @@ import { nextDraftKey, type NextDraftEdit } from './state'
 
 const prefix = 'graph-edit-intent:'
 const SnapshotSchema = z.object({
-  context: z.object({ draft: GraphDraftV3Schema, agents: z.array(ManagedAgentSchema) }).strict(),
+  context: z.object({ draft: GraphDraftV3Schema, savedDraft: GraphDraftV3Schema.optional(), agents: z.array(ManagedAgentSchema) }).strict(),
   graph: LocalWorkflowFormSchema, agentEdits: z.record(z.string(), AgentSchema).optional(),
   acknowledgedStageCommands: z.array(z.string()).optional(), submittedStageCommands: z.array(z.string()).optional(),
 }).strict()

@@ -106,7 +106,7 @@ export function createNextDraftWriter(
               const catalog = new Map(state.context.agents.map((record) => [record.agent.id, record]))
               for (const record of result.agents ?? []) catalog.set(record.agent.id, record)
               const complete = sent.kind === 'save' || remaining.length === 0
-              return { ...state, context: { draft: result.draft, agents: result.agents ? [...catalog.values()] : state.context.agents },
+              return { ...state, context: { draft: result.draft, savedDraft: sent.kind === 'save' ? result.draft : state.context.savedDraft ?? state.context.draft, agents: result.agents ? [...catalog.values()] : state.context.agents },
                 // Intermediate batches are not the whole submitted document. Never replace unapplied edits with them.
                 graph: complete ? mergeAcknowledgement(state.graph, state.plan.target, result.draft.graph) : state.graph,
                 agentEdits: complete ? acknowledgeAgentEdits(state.agentEdits, state.plan.agentTarget, {

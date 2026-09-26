@@ -14,7 +14,7 @@ import type { NextDraftContext } from './model'
 import { coalesceAgentEdits } from './agentEdits'
 
 export type CurrentDraft = z.infer<typeof GraphDraftV3Schema>
-export type AuthoringContext = { draft: CurrentDraft; agents: NextDraftContext['agents'] }
+export type AuthoringContext = NextDraftContext
 const part = encodeURIComponent
 const workflowPath = (workspaceId: string, workflowId: string) =>
   `/api/management/workspaces/${part(workspaceId)}/workflows/${part(workflowId)}`
@@ -39,7 +39,7 @@ function assertIntentScope(value: GraphEditReadResultV3, input: { workspaceId: s
 /** The Board's draft is local. Its revision counts local acknowledgements; the
  * saved workflow revision and version it was opened from are retained as the
  * optimistic-concurrency pins for the shared current definition writer. */
-type Opened = { draft: CurrentDraft; savedRevision: number }
+type Opened = { draft: CurrentDraft; savedDraft: CurrentDraft; savedRevision: number }
 
 /** Uses the existing session-generation-fenced, same-origin HTTP boundary. No bearer fallback. */
 export function createNextDraftApi(client: ApiClient = apiClient) {
@@ -64,7 +64,7 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
       updatedByPrincipalId: 'board', updatedAt: new Date().toISOString(),
     })
     assertScope(draft, workspaceId, workflowId)
-    return { draft, savedRevision: workflow.revision }
+    return { draft, savedDraft: draft, savedRevision: workflow.revision }
   }
   const open = async (workspaceId: string, workflowId: string, options?: RequestOptions) => {
     const current = opened.get(key(workspaceId, workflowId))
@@ -142,6 +142,10 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
   }
   return {
     open, get,
+    discardLocal(workspaceId: string, workflowId: string) {
+      const entry = opened.get(key(workspaceId, workflowId))
+      if (entry) opened.set(key(workspaceId, workflowId), { ...entry, draft: entry.savedDraft })
+    },
     /** Current Agent configuration and location pins for a complete-definition command. */
     pins: (workspaceId: string, graph: WorkflowDefinitionV3) => expectedPins(workspaceId, graph),
     async editRead(raw: GraphEditReadInputV3, options?: RequestOptions) {
@@ -165,7 +169,7 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
       return assertIntentScope(await client.request(route(CURRENT_WORKFLOW_ROUTES.edits, input.workspaceId, input.workflowId),
         GraphEditReadResultV3Schema, { method: 'POST', body: input }), input)
     },
-    async context(workspaceId: string, workflowId: string, options?: RequestOptions): Promise<AuthoringContext> {
+    async context(workspaceId: string, workflowId: string, options?: RequestOptions, reload = false): Promise<AuthoringContext> {
       for (let attempt = 0; attempt < 3; ++attempt) {
         const before = await load(workspaceId, workflowId, options)
         const agents = await client.listManagedAgents(workspaceId, options)
@@ -173,10 +177,10 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
         if (before.savedRevision === after.savedRevision) {
           // Keep local acknowledgements while the saved base has not moved.
           const current = opened.get(key(workspaceId, workflowId))
-          if (current && current.savedRevision === after.savedRevision
-            && current.draft.baseWorkflowVersionId === after.draft.baseWorkflowVersionId) return { draft: current.draft, agents: agents.items }
+          if (!reload && current && current.savedRevision === after.savedRevision
+            && current.draft.baseWorkflowVersionId === after.draft.baseWorkflowVersionId) return { draft: current.draft, savedDraft: current.savedDraft, agents: agents.items }
           opened.set(key(workspaceId, workflowId), after)
-          return { draft: after.draft, agents: agents.items }
+          return { draft: after.draft, savedDraft: after.savedDraft, agents: agents.items }
         }
       }
       throw new ApiError({ code: 'GRAPH_CHANGING', message: 'The saved workflow changed while loading. Retry after the current edit.' }, 409)
@@ -210,7 +214,7 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
       // edit intents and Start use. Local apply counts restart from it.
       const draft = GraphDraftV3Schema.parse({ ...base, revision: saved.revision, publishedRevision: saved.revision, baseWorkflowVersionId: saved.currentVersionId,
         graph: saved.version.definition, updatedAt: new Date().toISOString() })
-      opened.set(key(request.workspaceId, request.workflowId), { draft, savedRevision: saved.revision })
+      opened.set(key(request.workspaceId, request.workflowId), { draft, savedDraft: draft, savedRevision: saved.revision })
       return { draft, agents: pins.agents, version: saved.version }
     },
     async validate(workspaceId: string, workflowId: string, draftId: string): Promise<z.infer<typeof GraphValidationResultSchema>> {

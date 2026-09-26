@@ -12,7 +12,7 @@ import { applyGraphGeometry, type GraphGeometryChange } from '../geometry'
 import { useGraphDraftStore } from '../store'
 import { UnsavedChangesContext, useUnsavedChanges } from '../../../shared/ui/unsavedChanges'
 import { authoringHints, discardMeaningfulChanges, hasLocalChanges, nodeTitle, removeNode, roleEvidence } from './model'
-import { editorAgents, hasAgentEdits } from './agentEdits'
+import { editorAgents } from './agentEdits'
 import { nextDraftDirty, nextDraftKey, type NextDraftEdit } from './state'
 import { nextDraftApi, type AuthoringContext } from './transport'
 import { nextDraftWriter } from './managed'
@@ -74,7 +74,7 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext }: {
         useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state,
           graph: retained.graph, agentEdits: retained.agentEdits }))
       } else if (source.data && !source.isError) {
-        useGraphDraftStore.getState().installNextDraft(draftKey, { draft: GraphDraftV3Schema.parse(source.data.draft), agents: source.data.agents })
+        useGraphDraftStore.getState().installNextDraft(draftKey, { draft: GraphDraftV3Schema.parse(source.data.draft), agents: source.data.agents, savedDraft: source.data.savedDraft })
       }
     } catch (error) { setStorageError(error instanceof Error ? error.message : 'Retained edits are unavailable.') }
   }, [draftKey, source.data, source.isError])
@@ -99,7 +99,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const [message, setMessage] = useState<string>()
   const [localError, setLocalError] = useState<string>()
   const [, setGeometryPending] = useState(false)
-  const reloadMutation = useMutation({ mutationFn: () => nextDraftApi.context(graph.workspaceId, graph.id), retry: false })
+  const reloadMutation = useMutation({ mutationFn: () => nextDraftApi.context(graph.workspaceId, graph.id, undefined, true), retry: false })
   const reloading = reloadMutation.isPending
   const layout = useDraftLayout(draftKey)
   const preflight = useBoardStartPreflight(context.draft)
@@ -185,7 +185,9 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     // Flush any buffered drag before restoring meaning, so independent layout survives.
     canvas.current?.flush()
     useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state, graph: discardMeaningfulChanges(state.context, state.graph),
+      context: { ...state.context, draft: { ...(state.context.savedDraft ?? state.context.draft), layoutRevision: state.context.draft.layoutRevision } },
       history: [], agentEdits: undefined, agentHistory: undefined, error: undefined, validation: undefined }))
+    nextDraftApi.discardLocal(graph.workspaceId, graph.id)
     setLocalError(undefined); setMessage('Changes discarded.')
   }
   const stopAndSave = async (allowStop = false) => {
@@ -222,7 +224,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     canvas.current?.flush()
     const before = useGraphDraftStore.getState().nextDrafts[draftKey]
     if (!before || before.busy || before.pending) return
-    if (!confirmed && (hasLocalChanges(before.context, before.graph) || hasAgentEdits(before))) { setConfirm('reload'); return }
+    if (!confirmed && nextDraftDirty(before)) { setConfirm('reload'); return }
     try {
       const fresh = await reloadMutation.mutateAsync()
       const current = useGraphDraftStore.getState().nextDrafts[draftKey]
@@ -231,7 +233,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
       if (before.startRejectedVersionId && fresh.draft.baseWorkflowVersionId === before.startRejectedVersionId) {
         throw new Error('The saved draft still points to the rejected version. Reload after a newer version is available.')
       }
-      useGraphDraftStore.getState().installNextDraft(draftKey, { draft: GraphDraftV3Schema.parse(fresh.draft), agents: fresh.agents }, true)
+      useGraphDraftStore.getState().installNextDraft(draftKey, { draft: GraphDraftV3Schema.parse(fresh.draft), agents: fresh.agents, savedDraft: fresh.savedDraft }, true)
       setLocalError(undefined); setMessage(pendingStart ? 'Loaded the saved draft. Confirm the earlier start before starting again.' : 'Loaded the saved draft.')
     } catch (error) { report(error) }
   }
@@ -285,7 +287,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const starting = startMutation.isPending
   const start = () => startMutation.mutateAsync()
   useUnsavedChanges({ label: `${graph.name} next draft`,
-    dirty: hasLocalChanges(context, graph) || hasAgentEdits(edit) || !!edit.pending || edit.busy || !!pendingStart || editIntent.locked,
+    dirty: nextDraftDirty(edit) || edit.busy || !!pendingStart || editIntent.locked,
     busy: edit.busy || reloading || starting || editIntent.mutation.isPending, uncertain: edit.error?.uncertain || !!pendingStart || editIntent.intent?.state === 'uncertain',
     error: edit.error?.message ?? localError,
     // A generic navigation Save must not implicitly issue Stop. The board
@@ -432,7 +434,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
             <section className="next-draft-section"><h3>Draft</h3>
               <p className="next-draft-hint">{context.draft.baseWorkflowVersionId ? <>Based on saved version <code>{context.draft.baseWorkflowVersionId}</code>.</> : 'This workflow hasn’t been saved yet.'}</p>
               <Button size="sm" disabled={!!edit.pending} onClick={() => {
-                if (hasLocalChanges(context, graph) || hasAgentEdits(edit)) setConfirm('reload'); else void reload()
+                if (nextDraftDirty(edit)) setConfirm('reload'); else void reload()
               }}>Reload saved draft</Button>
             </section>
           </> : null}

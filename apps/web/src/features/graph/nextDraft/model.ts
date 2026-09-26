@@ -6,7 +6,8 @@ import type { ManagedAgentSchema } from '@graphql/contracts/management'
 import type { GraphDraftOperationV3, GraphDraftV3, WorkflowDefinitionV3, WorkflowRelationship } from '@graphql/contracts/wave25'
 
 export type CatalogAgent = z.infer<typeof ManagedAgentSchema>
-export type NextDraftContext = { draft: GraphDraftV3; agents: CatalogAgent[] }
+/** savedDraft retains the authoritative base while draft acknowledges local batches. */
+export type NextDraftContext = { draft: GraphDraftV3; savedDraft?: GraphDraftV3; agents: CatalogAgent[] }
 export type DraftNode = WorkflowDefinitionV3['nodes'][number]
 export type AuthoringIssue = { code: string; message: string; nodeId?: string; relationshipId?: string }
 export type RoleEvidence = {
@@ -279,5 +280,5 @@ export function hasLocalChanges(context: NextDraftContext, graph: WorkflowDefini
 
 /** Discard affects staged meaning only. It never dispatches a Run command. */
 export function discardMeaningfulChanges(context: NextDraftContext, graph: WorkflowDefinitionV3): WorkflowDefinitionV3 {
-  return preserveWorkflowGeometry(context.draft.graph, graph)
+  return preserveWorkflowGeometry((context.savedDraft ?? context.draft).graph, graph)
 }

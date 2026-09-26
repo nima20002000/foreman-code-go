@@ -48,6 +48,7 @@ export function acknowledgeEditIntentSnapshot(draftKey: string, current: NextDra
     const saved = intent.result
     context = { ...context, draft: { ...context.draft, revision: saved.revision, publishedRevision: saved.revision,
       baseWorkflowVersionId: saved.currentVersionId, graph: saved.version.definition } }
+    context = { ...context, savedDraft: context.draft }
   }
   const graph = intent.state === 'saved' && cleanRemoteForm && !submittedHere && !exactSubmittedForm
     ? preserveWorkflowGeometry(context.draft.graph, current.graph)
