@@ -1,4 +1,5 @@
 import type { CallToolResult } from '@modelcontextprotocol/server'
+import { ZodError } from 'zod'
 
 import { DomainError } from '../../modules/errors.js'
 
@@ -17,6 +18,16 @@ export function toolResult(value: unknown): CallToolResult {
 export const TEXT_MIRROR_BYTES = 256 * 1024
 
 export function toolFailure(error: unknown, internalMessage = 'The Operator service could not complete the request.'): CallToolResult {
+  // Only this explicitly public, static executable-validation issue is safe
+  // to disclose. Other schema failures can contain private stored evidence and
+  // retain their existing generic error. Match HTTP's INVALID_REQUEST shape.
+  if (error instanceof ZodError) {
+    const issues = error.issues.filter((issue) => issue.code === 'custom'
+      && issue.params?.publicCode === 'REPEAT_REVIEW_SCOPE_UNSUPPORTED')
+    if (issues.length) error = new DomainError('INVALID_REQUEST', 'The request does not match its shared contract.', 400, {
+      issues: issues.map((issue) => ({ path: issue.path, message: issue.message })),
+    })
+  }
   const body = error instanceof DomainError
     ? { error: { code: error.code, message: error.message, ...(error.details ? { details: error.details } : {}) } }
     : { error: { code: 'INTERNAL_ERROR', message: internalMessage } }

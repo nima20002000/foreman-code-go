@@ -2,8 +2,8 @@ import type { HarnessExecution } from '@graphql/contracts'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { assertGraphTransaction, beforeGraphCommit, didGraphTransactionCommit, poisonGraphTransaction,
-  type GraphTransactionSql } from '../run-graph/connection.js'
-import { requireRepeatCanonicalReceiptBeforeCommit, assertRepeatCanonicalReceiptLocked,
+  type GraphSqlClient, type GraphTransactionSql } from '../run-graph/connection.js'
+import { requireRepeatCanonicalReceiptBeforeCommit, assertRepeatCanonicalReceiptLocked, assertRepeatCanonicalReceipt,
   type RepeatCanonicalReceipt } from '../run-graph/repeatReceipts.js'
 import type { RunOwnership } from './ownership.js'
 import { repeatDigest, repeatExecutionIdentity, repeatId, sameRepeatValue,
@@ -54,10 +54,26 @@ export async function reserveWorkflowNativeEntryLocked(sql: GraphTransactionSql,
 }
 export async function readWorkflowNativeEntryLocked(sql: GraphTransactionSql, reservation: WorkflowNativeReservation) {
   assertGraphTransaction(sql)
-  const row = (await sql.query<{ phase: 'reserved' | 'prepared' | 'entered' | 'not_submitted'; reservation: unknown;
-    reservation_digest: string; transition: WorkflowNativeEntryRecord | null; source_id: string | null; source_digest: string | null }>(
+  return readNativeEntry(sql, reservation, true)
+}
+
+/** Readback is not an entry permit. In particular reserved/prepared and a
+ * missing row are NOT no-submission proof; only an exact canonical seal is. */
+export async function readWorkflowNativeEntry(sql: GraphSqlClient, reservation: WorkflowNativeReservation) {
+  return readNativeEntry(sql, reservation, false)
+}
+interface NativeEntryRow {
+  phase: 'reserved' | 'prepared' | 'entered' | 'not_submitted'
+  reservation: unknown
+  reservation_digest: string
+  transition: WorkflowNativeEntryRecord | null
+  source_id: string | null
+  source_digest: string | null
+}
+async function readNativeEntry(sql: GraphSqlClient, reservation: WorkflowNativeReservation, locked: boolean) {
+  const row = (await sql.query<NativeEntryRow>(
     `select phase,reservation,reservation_digest,transition,source_id,source_digest
-     from workflow_native_entries where execution_id=$1 and run_id=$2 for update`,
+     from workflow_native_entries where execution_id=$1 and run_id=$2${locked ? ' for update' : ''}`,
     [reservation.execution.executionId, reservation.scope.runId])).rows[0]
   if (!row || !sameRepeatValue(row.reservation, reservation) || row.reservation_digest !== repeatDigest(reservation)) return conflict()
   return row
@@ -187,10 +203,22 @@ export async function sealWorkflowNativeEntryLocked(sql: GraphTransactionSql, ow
 export async function assertWorkflowNativeNotSubmittedLocked(sql: GraphTransactionSql,
   reservation: WorkflowNativeReservation): Promise<WorkflowNativeEntryRecord> {
   const row = await readWorkflowNativeEntryLocked(sql, reservation)
+  await assertRepeatCanonicalReceiptLocked(sql, notSubmittedReceipt(row, reservation))
+  return structuredClone(row.transition!)
+}
+
+/** Read-only counterpart for Save admission. It cannot seal an entry, finalize
+ * a session, or reconstruct the one-use launch capability from persisted data. */
+export async function readWorkflowNativeNotSubmitted(sql: GraphSqlClient,
+  reservation: WorkflowNativeReservation): Promise<WorkflowNativeEntryRecord> {
+  const row = await readWorkflowNativeEntry(sql, reservation)
+  await assertRepeatCanonicalReceipt(sql, notSubmittedReceipt(row, reservation))
+  return structuredClone(row.transition!)
+}
+function notSubmittedReceipt(row: NativeEntryRow, reservation: WorkflowNativeReservation): RepeatCanonicalReceipt {
   if (row.phase !== 'not_submitted' || row.transition?.phase !== 'not_submitted'
     || !sameRepeatValue(row.transition.reservation, reservation) || !row.source_id || !row.source_digest) return conflict()
-  await assertRepeatCanonicalReceiptLocked(sql, { scope: reservation.scope,
+  return { scope: reservation.scope,
     evidence: { sourceKind: 'execution', sourceId: row.source_id, sourceRevision: '1' },
-    sourceDigest: row.source_digest, effect: null })
-  return structuredClone(row.transition)
+    sourceDigest: row.source_digest, effect: null }
 }

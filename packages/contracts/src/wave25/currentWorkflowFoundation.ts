@@ -9,7 +9,7 @@ import { canonicalGraphJson } from './json.js'
 import { ExecutionSemanticsVersionSchema as CurrentExecutionSemanticsSchema } from './workflowShape.js'
 export { ExecutionSemanticsVersionSchema as CurrentExecutionSemanticsSchema } from './workflowShape.js'
 
-import { CurrentWorkflowDefinitionBaseSchema } from './workflowShape.js'
+import { CurrentWorkflowDefinitionBaseSchema, type RepeatPlanV1 } from './workflowShape.js'
 export { CurrentWorkflowNodeSchema, CurrentWorkflowRelationshipSchema, CurrentWorkflowDefinitionBaseSchema } from './workflowShape.js'
 
 /** Extracted current topology/lifecycle rules. No old WorkflowVersion validator,
@@ -92,7 +92,7 @@ export function validateCurrentWorkflowTopology(version: Version, context: z.Ref
   }
 }
 
-export function validateCurrentWorkflowConfigurations(value: { version: Version; configurations: z.infer<typeof AgentConfigurationVersionSchema>[] }, context: z.RefinementCtx): void {
+export function validateCurrentWorkflowConfigurations(value: { version: Version & { definition: { repeat?: RepeatPlanV1 } }; configurations: z.infer<typeof AgentConfigurationVersionSchema>[] }, context: z.RefinementCtx): void {
   const { version, configurations } = value
   const fail = (message: string) => context.addIssue({ code: 'custom', message })
   const configs = new Map(configurations.map((configuration) => [configuration.id, configuration]))
@@ -124,6 +124,22 @@ export function validateCurrentWorkflowConfigurations(value: { version: Version;
   const entry = nodes.find((node) => node.id === version.entryNodeId)
   if (entry?.agentId !== version.approval.designatedOrchestratorAgentId || role(version.entryNodeId) !== 'orchestrator') fail('the supported initialized reviewer must be the explicit entry Orchestrator')
   for (const edge of approvals) if (edge.source !== version.entryNodeId || edge.target === version.entryNodeId) fail('independent or recursive reviewer startup is unsupported')
+  // Match repeatReviewerOccurrence: an outside reviewer is reusable, but an
+  // in-block reviewer has no exported execution binding for another scope.
+  // This is executable admission, not an authoring-shape/history restriction.
+  const blocks = new Map<string, string>()
+  for (const block of version.definition.repeat?.blocks ?? []) {
+    for (const nodeId of block.nodeIds) blocks.set(nodeId, block.id)
+  }
+  for (const [index, edge] of version.definition.edges.entries()) {
+    if (edge.kind !== 'approval') continue
+    const reviewerBlock = blocks.get(edge.source)
+    if (reviewerBlock !== undefined && blocks.get(edge.target) !== reviewerBlock) {
+      context.addIssue({ code: 'custom', path: ['version', 'definition', 'edges', index],
+        params: { publicCode: 'REPEAT_REVIEW_SCOPE_UNSUPPORTED' },
+        message: 'REPEAT_REVIEW_SCOPE_UNSUPPORTED: an in-block reviewer can only review requesters in the same repeat block; use an outside entry Orchestrator for cross-scope review.' })
+    }
+  }
   for (const node of nodes) {
     const configuration = configs.get(version.agentConfigurationVersionIds[node.agentId]!)
     const nativeSelfReview = configuration?.harness.harness === 'codex'

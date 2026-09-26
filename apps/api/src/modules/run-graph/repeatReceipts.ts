@@ -4,7 +4,7 @@ import {
 } from '@graphql/contracts/wave25'
 
 import { DomainError } from '../errors.js'
-import { assertGraphTransaction, beforeGraphCommit, poisonGraphTransaction, type GraphTransactionSql } from './connection.js'
+import { assertGraphTransaction, beforeGraphCommit, poisonGraphTransaction, type GraphSqlClient, type GraphTransactionSql } from './connection.js'
 import type { RepeatScope } from '../runs/repeatResolution.js'
 
 /** A private assertion about the EXISTING canonical source/effect tables. This
@@ -44,6 +44,20 @@ export async function assertRepeatCanonicalReceiptLocked(sql: GraphTransactionSq
   input: RepeatCanonicalReceipt): Promise<void> {
   assertGraphTransaction(sql)
   try {
+    await assertRepeatCanonicalReceipt(sql, input)
+  } catch (error) {
+    // Catching a missing proof must not accidentally commit the domain mutation.
+    poisonGraphTransaction(sql)
+    throw error
+  }
+}
+
+/** Read-only validation of an already persisted receipt. This grants no
+ * publication, settlement, owner or native-entry capability. Mutation callers
+ * must retain the branded/poisoning wrapper above and their commit finalizers. */
+export async function assertRepeatCanonicalReceipt(sql: GraphSqlClient,
+  input: RepeatCanonicalReceipt): Promise<void> {
+  try {
     const scope = RepeatMetadataScopeV1Schema.parse(input.scope)
     const evidence = GraphEvidenceSchema.parse(input.evidence)
     GraphDigestSchema.parse(input.sourceDigest)
@@ -79,8 +93,6 @@ export async function assertRepeatCanonicalReceiptLocked(sql: GraphTransactionSq
       || row.effect_semantic_digest !== row.source_semantic_digest
       || row.effect_sequence !== row.source_sequence)) return conflict()
   } catch (error) {
-    // Catching a missing proof must not accidentally commit the domain mutation.
-    poisonGraphTransaction(sql)
     if (error instanceof DomainError) throw error
     return conflict()
   }

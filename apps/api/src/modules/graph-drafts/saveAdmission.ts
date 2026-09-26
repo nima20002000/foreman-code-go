@@ -5,6 +5,7 @@ import { AcceptedWorkflowRunV3Schema,
 import { CurrentJournalRunPinSchema as GraphEditRunPinSchema, CurrentJournalRunStateSchema as GraphEditRunStateSchema,
   type CurrentJournalRunState as GraphEditRunState } from '@graphql/contracts/wave25'
 import { DomainError } from '../errors.js'
+import { hasSaveNativeSettlement } from './saveNativeSettlement.js'
 import { readImmutableWorkflowVersion, readImmutableAgentConfiguration,
   type ImmutableWorkflowVersionRow, type ImmutableAgentConfigurationRow } from '../workflows/immutableRead.js'
 import { CANCELED_INTERACTION_RETIRED_SQL } from '../interactions/wave25/publication.js'
@@ -52,10 +53,10 @@ const reviews = `exists (select 1 from review_jobs j join durable_interactions r
   where review_owner.run_id=r.id and ((${PUBLIC_UNSETTLED_REVIEW_SQL})
     or j.record->'cleanup'->>'nativeState'='pending' or j.record->'cleanup'->>'credentialState'='pending'))`
 
-// V3 has no pre-upgrade native-history exemption. A finalized session alone is
-// insufficient after a new preflight: require the exact latest durable close,
-// all prior lifetimes closed, and finalization AFTER that close. A missing
-// process, provider, session, receipt or closure is not negative launch proof.
+// Keep the Run/configuration/resource fences here. Exact current-generation
+// close, recovery, unbound-disposal and no-submission receipts are checked by
+// the canonical readers below, not a second closed_at-only SQL definition.
+// Neither a terminal outcome nor an absent session/process proves settlement.
 const currentNative = `(
   exists (select 1 from harness_executions e where e.run_id=r.id and (
     e.record->>'id' is distinct from e.id or e.record->>'runId' is distinct from e.run_id
@@ -68,24 +69,14 @@ const currentNative = `(
       jsonb_array_elements(case when jsonb_typeof(v.record->'definition'->'nodes')='array'
         then v.record->'definition'->'nodes' else '[]'::jsonb end) n
       where v.id=r.workflow_version_id and n->>'id'=e.workflow_node_id and n->>'agentId'=e.agent_id)
-    or e.record->>'nativeSessionId' is null
     or (e.record->>'nativeSessionId' is not null and not exists (
       select 1 from execution_native_sessions s
-      join lateral (select * from execution_native_closures c where c.execution_id=e.id
-        order by c.generation desc limit 1) c on true
       where s.execution_id=e.id and s.reference->>'nativeSessionId'=e.record->>'nativeSessionId'
         and e.record->>'workingDirectory'=r.working_directory
         and s.reference->>'harness'=(select cfg.record->'harness'->>'harness' from agent_configuration_versions cfg
           where cfg.id=e.record->>'agentConfigurationVersionId' and cfg.workspace_id=r.workspace_id and cfg.agent_id=e.agent_id)
         and jsonb_typeof(s.reference->'providerVersion')='string' and length(s.reference->>'providerVersion')>0
-        and c.closed_at is not null and s.workflow_finalized_at>=c.closed_at
-        and c.closed_reference=s.reference and (c.expected_reference is null or c.expected_reference=s.reference)
-        and c.execution_identity=jsonb_strip_nulls(jsonb_build_object(
-          'id',e.id,'runId',e.run_id,'workflowNodeId',e.workflow_node_id,'agentId',e.agent_id,
-          'agentConfigurationVersionId',e.record->>'agentConfigurationVersionId','attempt',e.attempt,
-          'workingDirectory',e.record->>'workingDirectory','runtimeDirectory',e.record->>'runtimeDirectory'))
-        and not exists(select 1 from execution_native_closures prior
-          where prior.execution_id=e.id and prior.generation<c.generation and prior.closed_at is null)))
+        and s.workflow_finalized_at is not null))
   ))
   or exists(select 1 from worker_credential_bindings b left join management_principals p on p.id=b.principal_id
     where b.run_id=r.id and (b.revoked_at is null or p.id is null or p.revoked_at is null))
@@ -147,9 +138,14 @@ interface AffectedRow {
   configurations: ImmutableAgentConfigurationRow[] | null
 }
 
-/** One MVCC statement for BOTH admission and plan. No selected-Run shortcut,
- * paging, mutable Agent pins or follow-up reads that can see another head. */
+/** BOTH admission and the edit plan use the same read-only proof checks. Hold
+ * existing affected parents in stable order until COMMIT: native entry/closure,
+ * recovery and settlement writers lock the parent before changing evidence.
+ * Save/stage/advance also hold workspace/workflow admission locks against new
+ * Runs. Advisory edit readback is revalidated under those locks before any Stop
+ * or publication; it never grants authority from a stale affected-Run set. */
 async function readAffectedRows(client: Pick<pg.PoolClient, 'query'>, input: AffectedGraphScope): Promise<AffectedRow[]> {
+  await client.query(`select r.id from runs r where ${affected} order by r.id for share of r`, values(input).slice(0, 3))
   const rows = await client.query<AffectedRow>(`select r.id,r.workspace_id,r.workflow_id,r.workflow_version_id,r.record,
     not ((${invalidTerminal}) or (${currentTerminal})) as terminal, ${cleanup} as cleanup,
     ((${native}) or (${currentNative})) as native,
@@ -166,6 +162,13 @@ async function readAffectedRows(client: Pick<pg.PoolClient, 'query'>, input: Aff
           then r.record->'agentConfigurationVersionIds' else '{}'::jsonb end))
     ) as configurations
     from runs r where ${affected} order by r.id`, values(input))
+  for (const row of rows.rows) {
+    if (row.native !== false || !validCurrentSnapshot(row)) continue
+    const version = readImmutableWorkflowVersion(row.version_row!, { id: row.workflow_version_id,
+      workspaceId: row.workspace_id, workflowId: row.workflow_id })
+    row.native = !await hasSaveNativeSettlement(client, { workspaceId: row.workspace_id, workflowId: row.workflow_id,
+      workflowVersionId: row.workflow_version_id, runId: row.id, executionSemanticsVersion: 3 }, version)
+  }
   return rows.rows
 }
 
