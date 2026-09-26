@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto'
 import {
-  makeWave25Fixture, WorkflowVersionV3Schema, WorkflowRunV3Schema, canonicalGraphJson,
+  makeCurrentWorkflowFixture, WorkflowVersionV3Schema, WorkflowRunV3Schema, canonicalGraphJson,
 } from '@graphql/contracts/wave25'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
 /** SQL-shaped tests only. No live DB, credentials or native session. */
 export function sharedFixture() {
-  const f = makeWave25Fixture('eng04-shared-api')
+  const f = makeCurrentWorkflowFixture('eng04-shared-api')
   const entry = f.version.definition.nodes[0]!, exit = f.version.definition.nodes[1]!
   const version = WorkflowVersionV3Schema.parse({ ...f.version, id: `${f.version.id}-v3`, executionSemanticsVersion: 3,
     definition: { ...f.version.definition, executionSemanticsVersion: 3,

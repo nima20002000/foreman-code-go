@@ -1,10 +1,10 @@
 import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
-import { RepeatWorkflowVersionV1Schema, makeWave25Fixture } from '@graphql/contracts/wave25'
+import { RepeatWorkflowVersionV1Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { freezeRepeatEntry, makeRepeatOccurrence, type RepeatScope } from '../src/modules/runs/repeatResolution.js'
 
 export const nativeAt = '2026-09-25T00:00:00.000Z'
 export function nativeFixture() {
-  const base = makeWave25Fixture('eng04-native')
+  const base = makeCurrentWorkflowFixture('eng04-native')
   const names = ['work', 'review', 'done', 'limit']
   const edge = (source: string, target: string) => ({ id: `${source}-${target}`, kind: 'execution' as const, source, target })
   const version = RepeatWorkflowVersionV1Schema.parse({ ...base.version, executionSemanticsVersion: 3, entryNodeId: 'work',
@@ -20,7 +20,7 @@ export function nativeFixture() {
         maxOccurrences: 3, repeatOutcome: 'issues', earlyExitOutcome: 'pass', limitExit: { kind: 'edge', relationshipId: 'review-limit' } }] },
     } })
   const scope: RepeatScope = { ...base.scope, executionSemanticsVersion: 3 }
-  const occurrence = makeRepeatOccurrence(scope, version.definition.repeat.blocks[0]!, freezeRepeatEntry({}, []), null).occurrence
+  const occurrence = makeRepeatOccurrence(scope, version.definition.repeat!.blocks[0]!, freezeRepeatEntry({}, []), null).occurrence
   const ref = { nodeId: 'review', occurrence: occurrence.identity }
   const execution = HarnessExecutionSchema.parse({ id: 'native-execution-1', runId: scope.runId, workflowNodeId: 'review',
     agentId: 'agent-review', agentConfigurationVersionId: 'config-review', attempt: 1, state: 'running', input: {},

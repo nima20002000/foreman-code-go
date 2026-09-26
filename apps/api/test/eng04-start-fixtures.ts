@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import type pg from 'pg'
 import {
-  AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema, makeWave25Fixture, canonicalGraphJson,
+  AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture, canonicalGraphJson,
   type AcceptedWorkflowRunV3,
 } from '@graphql/contracts/wave25'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -14,7 +14,7 @@ import type { WorkspaceLocationService } from '../src/modules/workspaces/locatio
 /** Synthetic records, not an authenticated/native/DB fixture. All IDs and paths
  * are test data. The real schemas, immutable readers and G1 facade remain used. */
 export function startFixture() {
-  const f = makeWave25Fixture('eng04-start-native3')
+  const f = makeCurrentWorkflowFixture('eng04-start-native3')
   const entry = f.version.definition.nodes[0]!, exit = f.version.definition.nodes[1]!
   const version = WorkflowVersionV3Schema.parse({ ...f.version, id: `${f.version.id}-v3`, executionSemanticsVersion: 3,
     definition: { ...f.version.definition, executionSemanticsVersion: 3,
