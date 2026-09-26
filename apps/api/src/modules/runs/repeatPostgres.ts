@@ -26,7 +26,7 @@ import { captureRepeatNativeEvidence, repeatLaunchClaim, repeatPossibleSubmissio
 import { inactiveRepeatResolution, prepareRepeatNativeUpdate, repeatTerminalResolution, type RepeatAcceptance, type RepeatAdmission } from './repeatNode.js'
 import {
   assertRepeatBodyComplete, assertRepeatExecution, assertRepeatRef, assertRepeatSource,
-  bindRepeatNodeInput, blockForNode, decideRepeatAdmission, decideRepeatExit, finalRepeatExport,
+  bindRepeatNodeInput, blockForNode, decideRepeatAdmission, decideRepeatBlockEntry, decideRepeatExit, finalRepeatExport,
   freezeRepeatEntry, makeRepeatOccurrence, repeatBlock, repeatConflict, repeatDigest,
   repeatExecutionIdentity, repeatId, repeatSlotId, repeatSuccessorInput, sameRepeatValue,
   type RepeatEntryInput, type RepeatInputBinding, type RepeatNodeInput, type RepeatNodeRef,
@@ -614,7 +614,7 @@ export class RepeatRunRepository {
         if (!['skipped', 'excluded'].includes(outside.get(block.exitNodeId)!.value.resolution)) return repeatConflict('REPEAT_EXPORT_CONFLICT')
         return { kind: 'inactive' }
       }
-      const admission = decideRepeatAdmission(context.version, { nodeId: block.entryNodeId, occurrence: null }, outside)
+      const admission = decideRepeatBlockEntry(context.version, block, outside)
       if (admission.kind === 'waiting' || admission.kind === 'resolved') return repeatConflict('REPEAT_ENTRY_UNRESOLVED')
       if (admission.kind === 'skipped' || admission.kind === 'excluded') {
         await this.inactive(context, { nodeId: block.exitNodeId, occurrence: null }, admission.kind)

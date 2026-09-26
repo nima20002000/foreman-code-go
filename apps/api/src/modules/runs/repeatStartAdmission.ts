@@ -24,6 +24,7 @@ import { readLockedRepeatStartSnapshot, type PreparedRepeatStartLocation } from 
 import { assertWorkflowRecovered } from './recoveryPolicy.js'
 import { repeatDigest } from './repeatResolution.js'
 import { readAcceptedRepeatRunLocked } from './repeatStartRead.js'
+import { validateReviewerBootstrap } from '../workflows/reviewerBootstrap.js'
 
 /** Internal canonical producer, not a rollout flag or an admission capability.
  * The production management arm intentionally supplies no producer at this base.
@@ -129,6 +130,8 @@ async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationServic
     ExecutableWorkflowV3Schema.parse({ version, configurations })
     for (const configuration of configurations) assertNativeWorkflowConfiguration(configuration.harness, version.approval,
       version.approval.handler === 'orchestrator' && configuration.agentId === version.approval.designatedOrchestratorAgentId)
+    if (version.approval.handler === 'orchestrator') validateReviewerBootstrap(version.definition, version.approval,
+      configurations.find((config) => config.agentId === version.approval.designatedOrchestratorAgentId)?.harness, version.entryNodeId)
     const before = await client.query<PreparedRepeatStartLocation['row']>(`select ${locationColumns} from workspaces where id=$1`, [input.workspaceId])
     const row = before.rows[0]
     if (!row) throw new DomainError('WORKSPACE_NOT_FOUND', 'The workspace was not found.', 404)

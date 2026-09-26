@@ -1128,7 +1128,12 @@ export class ApprovalExecutionCoordinator {
       await this.budgets.ensure(execution.id, input.graphThreadId, this.activeTimeoutMs)
       if (execution.state === 'waiting') await this.budgets.resume(execution.id)
       const budgetStarted = performance.now()
-      const remainingMs = await this.budgets.remaining(execution.id)
+      // An exhausted budget found on recovery takes the same deadline path as a
+      // live timeout: abort, close the exact session and settle negatively.
+      const remainingMs = await this.budgets.remaining(execution.id).catch((error: unknown) => {
+        if (error instanceof DomainError && error.code === 'EXECUTION_ACTIVE_TIMEOUT') return 0
+        throw error
+      })
       const deadline = new AbortController()
       budgetTimer = setTimeout(() => deadline.abort(new DomainError('EXECUTION_ACTIVE_TIMEOUT', 'The execution exhausted its active-time budget.', 409)),
         Math.max(0, remainingMs - (performance.now() - budgetStarted)))

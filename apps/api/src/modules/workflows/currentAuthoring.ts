@@ -1,3 +1,4 @@
+import { validateReviewerBootstrap } from './reviewerBootstrap.js'
 import { requireCurrentWorkflowAccess } from './currentWorkflowPolicy.js'
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
@@ -290,6 +291,8 @@ export class CurrentWorkflowAuthoring {
       assertNativeWorkflowConfiguration(config.harness, version.approval,
         version.approval.handler === 'orchestrator' && config.agentId === version.approval.designatedOrchestratorAgentId)
     }
+    if (version.approval.handler === 'orchestrator') validateReviewerBootstrap(version.definition, version.approval,
+      configurations.find((config) => config.agentId === version.approval.designatedOrchestratorAgentId)?.harness, version.entryNodeId)
     const content = canonicalGraphJson({ definition: version.definition, configurations: version.agentConfigurationVersionIds, entryNodeId: version.entryNodeId })
     version.contentHash = digest(content)
     return { presentationOnly: false, version, definition: version.definition, content }

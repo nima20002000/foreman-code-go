@@ -64,6 +64,8 @@ export function repeatId(kind: string, ...parts: (string | number)[]): string {
   return `${kind}-${createHash('sha256').update(canonicalGraphJson(parts)).digest('hex')}`
 }
 export function sameRepeatValue(left: unknown, right: unknown): boolean {
+  // An absent optional field is not JSON; it only equals another absent field.
+  if (left === undefined || right === undefined) return left === right
   return canonicalGraphJson(left) === canonicalGraphJson(right)
 }
 export function repeatExecutionIdentity(execution: HarnessExecution): GraphExecutionIdentity {
@@ -140,6 +142,20 @@ export function decideRepeatAdmission(version: WorkflowVersionV3, ref: RepeatNod
   }
   return decideExecutionAdmission(ref.occurrence ? occurrenceTopology(version, ref.occurrence)
     : compileExecutionTopology(version), ref.nodeId, values)
+}
+/** Whether a repeat block may open its first occurrence, decided on the whole
+ * graph from resolutions OUTSIDE any occurrence. The entry node itself belongs
+ * to the block, so the per-node admission above (which forbids a block member
+ * without an occurrence) cannot answer this. */
+export function decideRepeatBlockEntry(version: WorkflowVersionV3, block: RepeatBlockV1,
+  resolutions: ReadonlyMap<string, RepeatResolution>) {
+  const values = new Map<string, NodeResolution>()
+  for (const [id, resolution] of resolutions) {
+    if (id !== resolution.ref.nodeId || id !== resolution.value.workflowNodeId || resolution.ref.occurrence
+      || resolution.deferredRelationshipIds.length) repeatConflict('REPEAT_RESOLUTION_CONFLICT')
+    values.set(id, resolution.value)
+  }
+  return decideExecutionAdmission(compileExecutionTopology(version), block.entryNodeId, values)
 }
 export function assertRepeatBodyComplete(version: WorkflowVersionV3, occurrence: RepeatOccurrenceIdentityV1,
   resolutions: ReadonlyMap<string, RepeatResolution>): void {

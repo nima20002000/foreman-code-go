@@ -2,7 +2,7 @@ import { HarnessExecutionSchema, NativeSessionReferenceSchema, ReviewJobSchema, 
 import { canonicalGraphJson, type NativeGraphObservation } from '@graphql/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
-import { currentRunGraphPublication, graphSourceDigest, type RunGraphPublication } from '../run-graph/publication.js'
+import { currentRunGraphPublication, hasRunGraphPublication, graphSourceDigest, type RunGraphPublication } from '../run-graph/publication.js'
 import { requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
 import { normalizeNativeProducerEvent } from '../run-graph/nativeProducerNormalization.js'
 import { nativeGraphSource } from '../run-graph/nativeIngestion.js'
@@ -144,6 +144,9 @@ export async function assertReviewOriginalProofLocked(sql: GraphTransactionSql, 
     || !reviewSourceEvents(row.record).some((event) => sameRepeatValue(nativeGraphSource({ ...event,
       executionId: row.record.execution.executionId }), observation.source))) return fail()
   const evidence = proofEvidence(proofId), semanticDigest = graphSourceDigest({ evidence, facts: [], effect: null })
+  // Opening a publication re-reads the committed projection, which includes this
+  // proof; enlistment is only checkable once the publication exists.
+  if (!hasRunGraphPublication(sql, row.record.scope)) return row.record
   await currentRunGraphPublication(sql, row.record.scope).assertSourceEnlisted(evidence, row.source_digest, semanticDigest)
   requireRepeatCanonicalReceiptBeforeCommit(sql, { scope: row.record.scope, evidence,
     sourceDigest: row.source_digest, semanticDigest, effect: null })

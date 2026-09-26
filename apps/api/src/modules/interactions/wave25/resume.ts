@@ -182,7 +182,7 @@ export async function recordWorkerResumption(publication: RunGraphPublication,
     ...attention]
   const record = await approvalAckRecord(sql, next, { proofId: originalProofId, source,
     requester: fact.requester, acknowledgementId: fact.acknowledgementId,
-    publication: { evidence, sourceDigest, semanticDigest: graphSourceDigest({ evidence, facts, effect: null }) } })
+    publication: { evidence, sourceDigest, semanticDigest: graphSourceDigest(facts.map((item) => GraphFactSchema.parse(item))) } })
   await publication.source({ evidence, sourceDigest, facts }, async (transaction) => {
     await writeInteraction(transaction, i, next)
     await transaction.query(`update interaction_graph_resumes set approval_native_ack_id=$2,approval_native_ack_source=$3::jsonb,

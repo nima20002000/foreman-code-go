@@ -780,6 +780,13 @@ export async function withRunGraphPublication<T>(
   return { value, publication: publication!.receipt }
 }
 
+/** False while a publication is still being opened (its committed projection is
+ * being re-read), so read-only proof verification can skip enlistment. */
+export function hasRunGraphPublication(sql: GraphTransactionSql, scope: CanonicalRunGraphScope): boolean {
+  const publication = publications.get(sql)
+  return !!publication && sameCanonicalGraphScope(publication.scope, scope)
+}
+
 export function currentRunGraphPublication<S extends CanonicalRunGraphScope>(sql: GraphTransactionSql, scope: S): RunGraphPublication<S> {
   assertRunGraphPublication(sql, scope)
   return publications.get(sql)! as RunGraphPublication<S>

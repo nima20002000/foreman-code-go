@@ -1,3 +1,4 @@
+import { currentApprovalAckMigration } from './currentApprovalAckMigration.js'
 import { workflowNativeLifecycleMigration } from './workflowNativeLifecycleMigration.js'
 import type pg from 'pg'
 import { currentWorkflowWriterMigration } from './currentWorkflowWriterMigration.js'
@@ -686,6 +687,7 @@ export const migrations = [
   repeatWriterMigration,
   currentWorkflowWriterMigration,
   workflowNativeLifecycleMigration,
+  currentApprovalAckMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
