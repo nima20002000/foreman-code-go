@@ -1,593 +1,453 @@
 import assert from 'node:assert/strict'
 import { setTimeout as delay } from 'node:timers/promises'
-
 import { Command, GraphInterrupt, MemorySaver, interrupt } from '@langchain/langgraph'
-import type { DurableInteraction, HarnessExecution, WorkflowRun, WorkflowVersion } from '@graphql/contracts'
-import { it } from 'vitest'
-
+import { DurableInteractionSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction } from '@graphql/contracts'
+import { it, vi } from 'vitest'
+import { DomainError } from '../src/modules/errors.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
+import type { RepeatEngineStartContext } from '../src/modules/runs/repeatStartComposition.js'
+import { buildRepeatGraph, readWorkflowCheckpoint, type RepeatCheckpoint } from '../src/modules/runs/repeatGraph.js'
+import { executeRepeatRuntime } from '../src/modules/runs/repeatRuntime.js'
+import { compileRepeatLayout } from '../src/modules/runs/repeatResolution.js'
+import { currentUnitSnapshot } from './helpers/currentUnitSnapshot.js'
+import { syntheticCurrentWorkflow } from './helpers/currentSynthetic.js'
 
-type State = { runId: string; executionIds: Record<string, string> }
-type Snapshot = {
-  values: Partial<State>
-  next: string[]
-  tasks: Array<{ name: string; error?: unknown; result?: unknown; interrupts?: Array<{ id: string; value: unknown }> }>
-}
-type NodeAction = (nodeId: string, state: State) => Promise<Partial<State>>
-type Graph = {
-  invoke(input: State | Command, config: { configurable: { thread_id: string }; signal?: AbortSignal }): Promise<State>
-  getState(): Promise<Snapshot>
-}
+type EngineArguments = ConstructorParameters<typeof LangGraphWorkflowEngine>
 type Internals = {
   activeRuns: Map<string, AbortController>
   activeTasks: Map<string, Promise<void>>
   resumeTasks: Map<string, Promise<void>>
-  buildGraph(version: WorkflowVersion, action: NodeAction): Graph
-  executeNode(run: WorkflowRun, version: WorkflowVersion, nodeId: string, predecessors: string[], state: State, signal: AbortSignal, owner: RunOwnership): Promise<Partial<State>>
 }
-type EngineArguments = ConstructorParameters<typeof LangGraphWorkflowEngine>
-
+interface EnginePorts {
+  read(): Promise<RepeatCheckpoint>
+  wait(checkpoint: RepeatCheckpoint): Promise<DurableInteraction[]>
+  consume(items: readonly DurableInteraction[]): Promise<object | undefined>
+  enter(context: RepeatEngineStartContext): Promise<void>
+  settle(): Promise<boolean>
+}
+const ports = vi.hoisted(() => ({ owners: new WeakMap<object, EnginePorts>(), savers: new WeakMap<object, EnginePorts>() }))
+// Real engine scheduling/ownership, recording SQL-composition ports. Never patch
+// removed buildGraph/executeNode methods. The actual common graph/runtime is used
+// separately below; these ports do not claim PostgreSQL or native qualification.
+vi.mock('../src/modules/runs/repeatStartComposition.js', async (original) => ({
+  ...await original<typeof import('../src/modules/runs/repeatStartComposition.js')>(),
+  executeRepeatEngineStart: async (context: RepeatEngineStartContext) => {
+    const host = ports.owners.get(context.owner); assert.ok(host); await host.enter(context)
+  },
+}))
+vi.mock('../src/modules/runs/repeatGraph.js', async (original) => {
+  const actual = await original<typeof import('../src/modules/runs/repeatGraph.js')>()
+  return { ...actual, readWorkflowCheckpoint: (...args: Parameters<typeof actual.readWorkflowCheckpoint>) => {
+    const host = ports.savers.get(args[2]); return host ? host.read() : actual.readWorkflowCheckpoint(...args)
+  } }
+})
+vi.mock('../src/modules/runs/workflowLifecycle.js', async (original) => ({
+  ...await original<typeof import('../src/modules/runs/workflowLifecycle.js')>(),
+  persistWorkflowApprovalWait: async (owner: RunOwnership, _saver: unknown, checkpoint: RepeatCheckpoint) => {
+    const host = ports.owners.get(owner); assert.ok(host); return host.wait(checkpoint)
+  },
+  settleWorkflowRun: async (owner: RunOwnership) => {
+    const host = ports.owners.get(owner); assert.ok(host); return host.settle()
+  },
+}))
+vi.mock('../src/modules/runs/approvalCheckpointResume.js', async (original) => ({
+  ...await original<typeof import('../src/modules/runs/approvalCheckpointResume.js')>(),
+  consumeDeliveredApprovals: async (owner: RunOwnership, _saver: unknown, _repository: unknown, items: DurableInteraction[]) => {
+    const host = ports.owners.get(owner); assert.ok(host); return host.consume(items)
+  },
+}))
 function deferred() {
   let resolve!: () => void
   const promise = new Promise<void>((done) => { resolve = done })
   return { promise, resolve }
 }
-
-function fixture(options: { realGraph?: boolean; timeoutMs?: number; nodes?: string[] } = {}) {
-  const nodeIds = options.nodes ?? ['approval']
-  const run = {
-    id: 'run', workspaceId: 'workspace', workflowId: 'workflow', workflowVersionId: 'version',
-    executionState: 'waiting', outcome: 'pending', approval: { handler: 'user' },
-    agentConfigurationVersionIds: {}, executionLocation: { rootPath: '/accepted-project' },
-    startedAt: '2026-09-01T00:00:00.000Z', createdAt: '2026-09-01T00:00:00.000Z',
-  } as unknown as WorkflowRun
-  const version: WorkflowVersion = {
-    id: 'version', workflowId: 'workflow', workspaceId: 'workspace', version: 1,
-    entryNodeId: nodeIds[0]!, contentHash: 'sha256:test', createdAt: run.createdAt,
-    agentConfigurationVersionIds: {},
-    definition: {
-      id: 'workflow', workspaceId: 'workspace', name: 'Test', version: 1,
-      executionCondition: { kind: 'manual' }, executionPolicy: { maxParallelism: 4, maxNodeExecutions: nodeIds.length },
-      nodes: nodeIds.map((id) => ({ id, agentId: 'agent', name: id })),
-      edges: nodeIds.slice(1).map((id) => ({ id: `edge-${id}`, source: nodeIds[0]!, target: id, route: { outcomes: ['succeeded'] } })),
-    },
-  }
+function fixture() {
+  const f = currentUnitSnapshot('run-lifecycle', 'parallel'), saver = new MemorySaver()
+  const run = { ...f.run, executionState: 'waiting' as typeof f.run.executionState }
   const items = new Map<string, DurableInteraction>()
-  const executions = new Map<string, HarnessExecution>()
-  const calls = { invocations: [] as Array<State | Command>, cancel: 0, settled: [] as boolean[], bound: [] as string[], owners: 0, peakOwners: 0, releases: 0 }
+  const calls = { entries: [] as RepeatEngineStartContext[], consumed: [] as string[][], bound: [] as string[],
+    cancel: 0, finish: 0, settled: 0, owners: 0, peakOwners: 0, releases: 0, factory: 0 }
   const control = {
-    remainingMs: 5_000,
-    snapshot: { values: { runId: run.id, executionIds: {} }, next: ['approval'], tasks: [] } as Snapshot,
-    invoke: async (_input: State | Command, _action: NodeAction): Promise<State> => {
-      void _input; void _action
-      throw new Error('Unexpected graph invocation')
-    },
-    read: async (): Promise<Snapshot> => structuredClone(control.snapshot),
+    checkpoint: { values: { runId: run.id }, next: [], tasks: [] } as RepeatCheckpoint,
+    stopRequested: false, cleanupPending: false,
+    read: async (): Promise<RepeatCheckpoint> => structuredClone(control.checkpoint),
+    work: async (_context: RepeatEngineStartContext) => { void _context; throw new Error('Unexpected runtime entry') },
+    waitFailure: undefined as Error | undefined,
   }
-  const runs = {
-    acquireOwnership: async () => {
-      assert.equal(calls.owners, 0, 'concurrent resume attempted to overwrite database ownership')
-      calls.owners += 1
-      calls.peakOwners = Math.max(calls.peakOwners, calls.owners)
-      let released = false
-      return {
-        client: {},
-        assertOwned() { assert.equal(released, false) },
-        async release() {
-          assert.equal(released, false)
-          released = true
-          calls.owners -= 1
-          calls.releases += 1
-        },
+  const host: EnginePorts = {
+    read: () => control.read(),
+    wait: async (checkpoint) => {
+      if (control.waitFailure) throw control.waitFailure
+      assert.equal(checkpoint.values.runId, run.id)
+      const current: DurableInteraction[] = []
+      for (const task of checkpoint.tasks) for (const pending of task.interrupts ?? []) {
+        const id = (pending.value as { interactionId: string }).interactionId
+        const item = items.get(id); assert.ok(item, 'only the current saved interrupt is a fixture binding')
+        if (!item.graphInterruptId) { item.graphInterruptId = pending.id; calls.bound.push(pending.id) }
+        current.push(structuredClone(item))
       }
+      run.executionState = 'waiting'
+      return current
     },
-    get: async () => ({ ...run }),
-    reconciliationCandidates: async () => [{ ...run }],
-    updateState: async (_id: string, update: Partial<WorkflowRun>) => { Object.assign(run, update) },
-    getExecution: async (id: string) => executions.get(id),
-    getAcceptedResult: async (id: string) => ({ outcome: 'succeeded' as const, output: { executionId: id } }),
-    remainingApprovalTime: async () => control.remainingMs,
-    settleOrphan: async (_id: string, _owner: unknown, canceled: boolean) => {
-      void _owner
-      if (run.executionState === 'completed') return false
-      calls.settled.push(canceled)
-      Object.assign(run, { executionState: canceled ? 'completed' : 'interrupted', outcome: canceled ? 'canceled' : 'pending' })
+    consume: async (current) => {
+      assert.ok(current.length)
+      for (const item of current) {
+        assert.equal(item.status, 'delivered'); assert.equal(item.deliveryState, 'delivered')
+        assert.equal(item.graphInterruptId, items.get(item.id)?.graphInterruptId)
+      }
+      calls.consumed.push(current.map((item) => item.id))
+      const ids = new Set(current.map((item) => item.id))
+      // Explicit checkpoint-consumer port; not native ACK evidence. Production
+      // atomic receipt/claim tests live in wave25-r1-checkpoint.integration.test.ts.
+      control.checkpoint.tasks = control.checkpoint.tasks.filter((task) =>
+        !task.interrupts?.some((pending) => ids.has((pending.value as { interactionId: string }).interactionId)))
+      control.checkpoint.next = control.checkpoint.tasks.map((task) => task.name)
+      run.executionState = 'running'
+      return {}
+    },
+    enter: async (context) => { calls.entries.push(context); await control.work(context) },
+    settle: async () => {
+      assert.ok(control.stopRequested || control.cleanupPending)
+      calls.settled++
+      Object.assign(run, { executionState: 'completed', outcome: control.stopRequested ? 'canceled' : 'failed' })
       return true
     },
   }
-  const interactions = {
-    get: async (id: string) => items.get(id),
-    bindGraphInterrupt: async (id: string, graphInterruptId: string) => {
-      const item = items.get(id)!
-      assert.ok(!item.graphInterruptId || item.graphInterruptId === graphInterruptId)
-      const bound = { ...item, graphInterruptId }
-      items.set(id, bound)
-      calls.bound.push(graphInterruptId)
-      return bound
+  ports.savers.set(saver, host)
+  const factory = {} as RepeatEngineStartContext['factory']
+  const runs = {
+    repeatRepositoryFactory: () => { calls.factory++; return factory },
+    acquireOwnership: async () => {
+      assert.equal(calls.owners, 0, 'another resume must not overwrite the current owner')
+      calls.owners++; calls.peakOwners = Math.max(calls.peakOwners, calls.owners)
+      let released = false
+      const owner = { runId: run.id, client: {}, assertOwned() { assert.equal(released, false) },
+        async release() { assert.equal(released, false); released = true; calls.owners--; calls.releases++ } }
+      ports.owners.set(owner, host)
+      return owner
     },
-    list: async () => { throw new Error('Historical interaction pagination must not drive resume') },
+    getRepeatSnapshot: async () => ({ run: structuredClone(run), version: f.version, configurations: f.configurations,
+      stopRequested: control.stopRequested, cleanupPending: control.cleanupPending }),
+    reconciliationCandidates: async () => [structuredClone(run)],
+    updateState: async (_id: string, update: Partial<typeof run>) => { Object.assign(run, update) },
+    requestCleanup: async () => { control.cleanupPending = true },
+    finishCleanup: async (_id: string, pending: boolean) => { control.cleanupPending = pending },
   }
-  const workflows = { getVersion: async () => version }
-  const approvals = {
-    cancelRun: async () => { calls.cancel += 1 },
-    finishRun: async () => undefined, reconcileReviews: async () => undefined,
-    residentRunIds: () => [] as string[],
-    reviewers: { shutdown: async () => undefined },
-  }
-  const engine = new LangGraphWorkflowEngine(
-    runs as unknown as EngineArguments[0], workflows as unknown as EngineArguments[1],
-    approvals as unknown as EngineArguments[2], new MemorySaver(), '/runtime',
-    { revalidateSnapshot: async () => undefined } as unknown as EngineArguments[5], undefined,
-    interactions as unknown as EngineArguments[7],
-  )
+  const native = { cancelRun: async () => { calls.cancel++ }, finishRun: async () => { calls.finish++ },
+    reconcileReviews: async () => undefined, closeForRestart: async () => undefined,
+    nativeBoundaryEvidence: async () => { throw new Error('No native evidence is fabricated in engine port tests') } }
+  const interactions = { list: async () => { throw new Error('Historical pagination must never select resume IDs') } }
+  const engine = new LangGraphWorkflowEngine(runs as unknown as EngineArguments[0], {} as EngineArguments[1],
+    native as unknown as EngineArguments[2], saver, '/synthetic/runtime', {} as EngineArguments[5],
+    {} as EngineArguments[6], interactions as unknown as EngineArguments[7])
   const internals = engine as unknown as Internals
-  if (!options.realGraph) {
-    internals.buildGraph = (_version, action) => ({
-      invoke: async (input) => {
-        calls.invocations.push(input)
-        return control.invoke(input, action)
-      },
-      getState: () => control.read(),
-    })
+  function addInteraction(node = 1, delivered = false, suffix = String(node)) {
+    const identity = f.identities[node]!
+    const item = DurableInteractionSchema.parse({ ...NATIVE_INTERACTION_FIXTURES.codex, id: `interaction-${suffix}`,
+      workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id, graphThreadId: run.id,
+      executionId: identity.executionId, requestingAgentId: identity.agentId, nativeSessionId: `native-${suffix}`,
+      nativeRequestId: `request-${suffix}`, graphInterruptId: `interrupt-${suffix}`, approval: { handler: 'user' },
+      ...(delivered ? { status: 'delivered', deliveryState: 'delivered', selectedOptionId: 'codex-approve-once',
+        selectedSemantic: 'approve_once', nativeResponse: { decision: 'accept' }, decidedAt: f.createdAt, deliveredAt: f.createdAt } : {}) })
+    items.set(item.id, item); return item
   }
-  function addInteraction(nodeId = 'approval', delivered = false, graphInterruptId: string | undefined = `interrupt-${nodeId}`) {
-    const item = {
-      id: `interaction-${nodeId}`, runId: run.id, graphThreadId: run.id,
-      workspaceId: run.workspaceId, workflowId: run.workflowId, requestingAgentId: 'agent',
-      executionId: `execution-${nodeId}`, nativeSessionId: `native-${nodeId}`, nativeRequestId: `request-${nodeId}`,
-      status: delivered ? 'delivered' : 'pending', deliveryState: delivered ? 'delivered' : 'not_started',
-      ...(graphInterruptId ? { graphInterruptId } : {}),
-    } as DurableInteraction
-    items.set(item.id, item)
-    executions.set(item.executionId, {
-      id: item.executionId, runId: run.id, workflowNodeId: nodeId, agentId: 'agent',
-      nativeSessionId: item.nativeSessionId, state: 'waiting',
-    } as HarnessExecution)
-    return item
-  }
-  function waiting(...pending: DurableInteraction[]) {
-    control.snapshot = {
-      values: { runId: run.id, executionIds: {} }, next: pending.map((item) => item.id),
-      tasks: pending.map((item) => ({ name: item.id, interrupts: [{ id: item.graphInterruptId ?? `interrupt-${item.id}`, value: { interactionId: item.id } }] })),
-    }
+  function waiting(...current: DurableInteraction[]) {
+    const layout = compileRepeatLayout(f.version)
+    control.checkpoint = { values: { runId: run.id }, next: [], tasks: current.map((item) => {
+      const identity = f.identities.find((row) => row.executionId === item.executionId)!
+      return { name: layout.nodes.find((node) => node.nodeId === identity.workflowNodeId)!.name,
+        interrupts: [{ id: item.graphInterruptId ?? `saved-${item.id}`, value: { interactionId: item.id } }] }
+    }) }
+    control.checkpoint.next = control.checkpoint.tasks.map((task) => task.name)
   }
   function complete() {
-    const state = { runId: run.id, executionIds: Object.fromEntries(nodeIds.map((id) => [id, `execution-${id}`])) }
-    control.snapshot = { values: state, next: [], tasks: [] }
-    return state
+    Object.assign(run, { executionState: 'completed', outcome: 'succeeded', result: { outcome: 'succeeded' }, finishedAt: f.createdAt })
+    control.checkpoint = { values: { runId: run.id }, next: [], tasks: [] }
   }
-  return { run, version, items, executions, calls, control, runs, workflows, interactions, approvals, engine, internals, addInteraction, waiting, complete }
+  async function reconcile() {
+    const errors: unknown[] = []
+    await engine.reconcile((error) => { errors.push(error) })
+    // reconcile schedules bounded work; it is not a promise for all Run drives.
+    await Promise.allSettled([...internals.activeTasks.values()])
+    await Promise.resolve()
+    return errors
+  }
+  return { ...f, run, calls, control, engine, internals, runs, native, items, host, addInteraction, waiting, complete, reconcile }
 }
 
 it('reconciliation preserves healthy approval waits across repeated ticks', async () => {
-  const f = fixture()
-  const item = f.addInteraction()
-  f.waiting(item)
-  for (let tick = 0; tick < 3; tick += 1) await f.engine.reconcile((error) => { throw error })
-  assert.equal(f.run.executionState, 'waiting')
-  assert.deepEqual(f.items.get(item.id), item)
-  assert.equal(f.calls.cancel, 0)
-  assert.deepEqual(f.calls.settled, [])
-  assert.deepEqual(f.calls.invocations, [])
+  const f = fixture(), item = f.addInteraction(); f.waiting(item)
+  for (let tick = 0; tick < 3; tick++) assert.deepEqual(await f.reconcile(), [])
+  assert.equal(f.run.executionState, 'waiting'); assert.deepEqual(f.items.get(item.id), item)
+  assert.equal(f.calls.cancel, 0); assert.equal(f.calls.settled, 0); assert.equal(f.calls.entries.length, 0)
   assert.equal(f.calls.owners, 0)
 })
-
 it('reconciliation repairs only a missing binding after the checkpoint was saved', async () => {
-  const f = fixture()
-  f.run.executionState = 'running'
-  const item = f.addInteraction()
-  delete item.graphInterruptId
-  f.waiting(item)
-  await f.engine.reconcile((error) => { throw error })
-  assert.equal(f.run.executionState, 'waiting')
-  assert.deepEqual(f.calls.bound, [`interrupt-${item.id}`])
+  const f = fixture(), item = f.addInteraction(); delete item.graphInterruptId
+  f.run.executionState = 'running'; f.waiting(item)
+  assert.deepEqual(await f.reconcile(), [])
+  assert.deepEqual(f.calls.bound, [`saved-${item.id}`]); assert.equal(f.run.executionState, 'waiting')
   assert.equal(f.items.get(item.id)?.nativeSessionId, item.nativeSessionId)
   assert.equal(f.items.get(item.id)?.nativeRequestId, item.nativeRequestId)
-  assert.deepEqual(f.calls.settled, [])
-  assert.deepEqual(f.calls.invocations, [])
+  assert.equal(f.calls.entries.length, 0); assert.equal(f.calls.settled, 0)
 })
-
-it('reconciliation resumes delivered current interrupts without native response replay', async () => {
-  const f = fixture()
-  const item = f.addInteraction('approval', true)
-  f.waiting(item)
-  f.control.invoke = async () => f.complete()
-  await f.engine.reconcile((error) => { throw error })
-  assert.equal(f.run.executionState, 'completed')
-  assert.deepEqual((f.calls.invocations[0] as Command).resume, { [item.graphInterruptId!]: { interactionId: item.id } })
+it('reconciliation consumes delivered current interrupts without native response replay', async () => {
+  const f = fixture(), item = f.addInteraction(1, true); f.waiting(item)
+  f.control.work = async () => f.complete()
+  assert.deepEqual(await f.reconcile(), [])
+  assert.equal(f.run.outcome, 'succeeded'); assert.deepEqual(f.calls.consumed, [[item.id]])
   assert.equal(f.calls.cancel, 0)
-  assert.deepEqual(f.calls.settled, [])
 })
-
 it('reconciliation rereads terminal runs under ownership instead of settling stale candidates', async () => {
   const f = fixture()
-  f.runs.reconciliationCandidates = async () => {
-    const candidate = { ...f.run }
-    f.run.executionState = 'completed'
-    return [candidate]
+  f.runs.reconciliationCandidates = async () => { const old = structuredClone(f.run); f.complete(); return [old] }
+  assert.deepEqual(await f.reconcile(), [])
+  assert.equal(f.calls.settled, 0); assert.equal(f.calls.entries.length, 0); assert.equal(f.calls.cancel, 0)
+  assert.equal(f.control.cleanupPending, false)
+})
+
+/** Actual LangGraph/node/runtime tests. Only the repository/native observation
+ * and lifecycle writes are in-memory ports; never database/native qualification. */
+function runtimeFixture(names = ['entry', 'approval', 'sibling'], edges: Array<[string, string]> = [['entry', 'approval'], ['entry', 'sibling']]) {
+  const f = syntheticCurrentWorkflow(names, edges), checkpointer = new MemorySaver(), controller = new AbortController()
+  const state = { executionState: 'queued', stopRequested: false, outcome: 'pending', cancel: 0, cleanup: false, settled: 0 }
+  const driver = f.driver()
+  const store = { ...f.store,
+    resolveExcluded: async () => undefined, // All nodes in these fixtures are reachable.
+    completeRun: async () => {
+      assert.equal(f.resolutions.size, names.length)
+      for (const resolution of f.resolutions.values()) assert.ok(['succeeded', 'skipped'].includes(resolution.resolution))
+      state.executionState = 'completed'; state.outcome = 'succeeded'
+    },
   }
-  await f.engine.reconcile((error) => { throw error })
-  assert.deepEqual(f.calls.settled, [])
-  assert.deepEqual(f.calls.invocations, [])
-  assert.equal(f.calls.cancel, 0)
-})
-
-it('reconciliation finishes a terminal checkpoint using accepted results without invoking nodes', async () => {
-  const f = fixture()
-  f.run.executionState = 'running'
-  f.complete()
-  await f.engine.reconcile((error) => { throw error })
-  assert.equal(f.run.outcome, 'succeeded')
-  assert.deepEqual(f.calls.invocations, [])
-  assert.deepEqual(f.calls.settled, [])
-})
-
-for (const hasApprovalSibling of [false, true]) {
-  it(`reconciliation does not replay genuinely orphaned work (approval sibling: ${hasApprovalSibling})`, async () => {
-    const f = fixture()
-    f.run.executionState = 'running'
-    if (hasApprovalSibling) f.waiting(f.addInteraction())
-    f.control.snapshot.tasks.push({ name: 'orphan', interrupts: [] })
-    f.control.snapshot.next.push('orphan')
-    await f.engine.reconcile((error) => { throw error })
-    assert.equal(f.run.executionState, 'interrupted')
-    assert.deepEqual(f.calls.settled, [false])
-    assert.deepEqual(f.calls.invocations, [])
-  })
+  const lifecycle = {
+    preflight: async () => undefined, markRunning: async () => { state.executionState = 'running' },
+    currentState: async () => ({ executionState: state.executionState, stopRequested: state.stopRequested }),
+    persistWait: async (checkpoint: RepeatCheckpoint) => {
+      const waiting = checkpoint.tasks.some((task) => task.interrupts?.length)
+      if (waiting) state.executionState = 'waiting'
+      return waiting
+    },
+    cancelNativeAndRequestCleanup: async () => { state.cleanup = true; state.cancel++; return true },
+    settleRun: async () => { assert.equal(state.cleanup, true); state.settled++; state.executionState = 'completed'; state.outcome = 'failed' },
+    requestCleanup: async () => { state.cleanup = true }, finishNative: async () => undefined,
+    finishCleanup: async () => { assert.equal(state.executionState, 'completed'); state.cleanup = false },
+  }
+  const input = { runId: f.runId, version: f.version, owner: { assertOwned() {} }, signal: controller.signal,
+    checkpointer, store, driver, lifecycle }
+  return { ...f, state, driver, store, input, controller, checkpointer,
+    execute: () => executeRepeatRuntime(input),
+    checkpoint: () => readWorkflowCheckpoint(f.runId, f.version, checkpointer) }
 }
-
-it('a checkpoint read failure leaves approval state recoverable for the next tick', async () => {
-  const f = fixture()
-  const item = f.addInteraction('approval', true)
-  f.waiting(item)
-  const read = f.control.read
-  f.control.read = async () => { throw new Error('checkpoint unavailable') }
-  const errors: unknown[] = []
-  await f.engine.reconcile((error) => { errors.push(error) })
-  assert.equal(errors.length, 1)
-  assert.equal(f.run.executionState, 'waiting')
-  assert.equal(f.items.get(item.id)?.deliveryState, 'delivered')
-  assert.equal(f.calls.cancel, 0)
-  f.control.read = read
-  f.control.invoke = async () => f.complete()
-  await f.engine.reconcile((error) => { throw error })
-  assert.equal(f.run.outcome, 'succeeded')
+it('reconciliation finishes a terminal checkpoint from accepted results without invoking nodes again', async () => {
+  const f = runtimeFixture(['entry'], [])
+  await f.execute(); const calls = [...f.nativeCalls]
+  // Crash cut: graph and accepted execution are saved; Run settlement is not.
+  f.state.executionState = 'running'; f.state.outcome = 'pending'
+  await f.execute()
+  assert.equal(f.state.outcome, 'succeeded'); assert.deepEqual(f.nativeCalls, calls)
+  assert.equal(f.state.cancel, 0); assert.equal(f.constructed.length, 1)
 })
-
-it('run-level resume resolves only current checkpoint IDs, including interactions beyond 100 old rows', async () => {
-  const f = fixture()
-  for (let index = 0; index < 150; index += 1) f.addInteraction(`old-${index}`, true)
-  const left = f.addInteraction('approval', true)
-  const right = f.addInteraction('other', true)
-  f.waiting(left, right)
-  f.control.invoke = async () => f.complete()
-  await f.engine.resume(f.run.id)
-  assert.deepEqual((f.calls.invocations[0] as Command).resume, {
-    [left.graphInterruptId!]: { interactionId: left.id },
-    [right.graphInterruptId!]: { interactionId: right.id },
-  })
-  assert.equal(f.calls.invocations.length, 1)
-})
-
-it('a resume map combines delivered branches but excludes undecided current interrupts', async () => {
-  const f = fixture()
-  const delivered = f.addInteraction('approval', true)
-  const pending = f.addInteraction('other')
-  f.waiting(delivered, pending)
-  f.control.invoke = async () => {
-    f.waiting(pending)
-    return { runId: f.run.id, executionIds: {} }
+for (const hasApprovalSibling of [false, true]) it(`reconciliation does not replay orphaned native work (approval sibling: ${hasApprovalSibling})`, async () => {
+  const f = fixture(); f.run.executionState = 'running'
+  if (hasApprovalSibling) f.waiting(f.addInteraction())
+  f.control.checkpoint.tasks.push({ name: 'unconfirmed-native-task', interrupts: [] })
+  f.control.work = async () => { throw new DomainError('NATIVE_SESSION_START_UNCERTAIN', 'No original continuation; never relaunch.', 409) }
+  const errors = await f.reconcile()
+  if (hasApprovalSibling) {
+    assert.deepEqual(errors, []); assert.equal(f.run.executionState, 'waiting'); assert.equal(f.calls.entries.length, 0)
+  } else {
+    assert.equal(errors.length, 1); assert.equal((errors[0] as DomainError).code, 'NATIVE_SESSION_START_UNCERTAIN')
+    assert.equal(f.run.executionState, 'running')
   }
+  // V3 requires positive closure to terminalize; absence is not an interrupted
+  // result. Retain the recovery obligation rather than manufacturing settlement.
+  assert.equal(f.run.outcome, 'pending'); assert.equal(f.calls.settled, 0); assert.equal(f.calls.cancel, 0)
+})
+it('a checkpoint read failure leaves delivered approval state recoverable for the next tick', async () => {
+  const f = fixture(), item = f.addInteraction(1, true); f.waiting(item)
+  const read = f.control.read; f.control.read = async () => { throw new Error('checkpoint unavailable') }
+  assert.equal((await f.reconcile()).length, 1); assert.equal(f.run.executionState, 'waiting')
+  assert.equal(f.items.get(item.id)?.deliveryState, 'delivered'); assert.equal(f.calls.cancel, 0)
+  f.control.read = read; f.control.work = async () => f.complete()
+  assert.deepEqual(await f.reconcile(), []); assert.equal(f.run.outcome, 'succeeded')
+})
+it('run-level resume selects only current IDs even beyond 150 old interactions', async () => {
+  const f = fixture()
+  for (let n = 0; n < 150; n++) f.addInteraction(1, true, `old-${n}`)
+  const left = f.addInteraction(1, true), right = f.addInteraction(2, true); f.waiting(left, right)
+  f.control.work = async () => f.complete(); await f.engine.resume(f.run.id)
+  assert.deepEqual(f.calls.consumed, [[left.id, right.id]]); assert.equal(f.calls.entries.length, 1)
+})
+it('consumption combines delivered branches but excludes undecided current interrupts', async () => {
+  const f = fixture(), delivered = f.addInteraction(1, true), pending = f.addInteraction(2); f.waiting(delivered, pending)
+  f.control.work = async (context) => { await context.lifecycle.persistWait(f.control.checkpoint) }
   await f.engine.resumeInteraction(delivered)
-  assert.deepEqual((f.calls.invocations[0] as Command).resume, { [delivered.graphInterruptId!]: { interactionId: delivered.id } })
-  assert.equal(f.run.executionState, 'waiting')
+  assert.deepEqual(f.calls.consumed, [[delivered.id]]); assert.equal(f.run.executionState, 'waiting')
   assert.equal(f.items.get(pending.id)?.deliveryState, 'not_started')
 })
-
 it('concurrent resume callers wait behind the active run and retain one task/controller owner', async () => {
-  const f = fixture()
-  const starting = deferred()
-  const resumeEntered = deferred()
-  const finishing = deferred()
-  f.run.executionState = 'queued'
-  const left = f.addInteraction('approval', true)
-  const right = f.addInteraction('other', true)
-  f.waiting(left, right)
-  f.control.invoke = async (input) => {
-    if (!(input instanceof Command)) {
-      await starting.promise
-      return { runId: f.run.id, executionIds: {} }
-    }
-    resumeEntered.resolve()
-    await finishing.promise
-    return f.complete()
+  const f = fixture(), starting = deferred(), resumed = deferred(), finishing = deferred()
+  f.run.executionState = 'queued'; const left = f.addInteraction(1, true), right = f.addInteraction(2, true)
+  f.control.work = async () => {
+    if (f.calls.entries.length === 1) { await starting.promise; f.waiting(left, right); f.run.executionState = 'waiting'; return }
+    resumed.resolve(); await finishing.promise; f.complete()
   }
-  const start = f.engine.start(f.run.id)
-  const first = f.engine.resumeInteraction(left)
-  const second = f.engine.resumeInteraction(right)
-  starting.resolve()
-  await start
-  await resumeEntered.promise
-  const activeTask = f.internals.activeTasks.get(f.run.id)
-  const activeController = f.internals.activeRuns.get(f.run.id)
-  assert.ok(activeTask)
-  assert.ok(activeController)
-  const third = f.engine.resumeInteraction(left)
-  await Promise.resolve()
-  assert.equal(f.internals.activeTasks.get(f.run.id), activeTask)
-  assert.equal(f.internals.activeRuns.get(f.run.id), activeController)
-  finishing.resolve()
-  await Promise.all([first, second, third])
-  assert.equal(f.calls.peakOwners, 1)
-  assert.equal(f.calls.invocations.filter((input) => input instanceof Command).length, 1)
-  assert.equal(f.internals.activeTasks.size, 0)
-  assert.equal(f.internals.activeRuns.size, 0)
-  assert.equal(f.internals.resumeTasks.size, 0)
+  const start = f.engine.start(f.run.id), first = f.engine.resumeInteraction(left), second = f.engine.resumeInteraction(right)
+  starting.resolve(); await start; await resumed.promise
+  const task = f.internals.activeTasks.get(f.run.id), controller = f.internals.activeRuns.get(f.run.id)
+  assert.ok(task); assert.ok(controller)
+  const third = f.engine.resumeInteraction(left); await Promise.resolve()
+  assert.equal(f.internals.activeTasks.get(f.run.id), task); assert.equal(f.internals.activeRuns.get(f.run.id), controller)
+  finishing.resolve(); await Promise.all([first, second, third])
+  assert.equal(f.calls.peakOwners, 1); assert.equal(f.calls.consumed.length, 1)
+  assert.equal(f.internals.activeTasks.size, 0); assert.equal(f.internals.activeRuns.size, 0); assert.equal(f.internals.resumeTasks.size, 0)
 })
-
 it('a failed queued resume does not discard another caller or the durable delivered intent', async () => {
-  const f = fixture()
-  const item = f.addInteraction('approval', true)
-  f.waiting(item)
-  let reads = 0
-  const read = f.control.read
-  f.control.read = async () => {
-    reads += 1
-    if (reads === 1) throw new Error('temporary checkpoint read failure')
-    return read()
-  }
-  f.control.invoke = async () => f.complete()
+  const f = fixture(), item = f.addInteraction(1, true); f.waiting(item)
+  const read = f.control.read; let reads = 0
+  f.control.read = async () => { if (++reads === 1) throw new Error('temporary checkpoint failure'); return read() }
+  f.control.work = async () => f.complete()
   const first = assert.rejects(f.engine.resumeInteraction(item), /temporary checkpoint/)
-  const second = f.engine.resumeInteraction(item)
-  await Promise.all([first, second])
-  assert.equal(f.items.get(item.id)?.deliveryState, 'delivered')
-  assert.equal(f.run.outcome, 'succeeded')
-  assert.equal(f.calls.peakOwners, 1)
+  await Promise.all([first, f.engine.resumeInteraction(item)])
+  assert.equal(f.items.get(item.id)?.deliveryState, 'delivered'); assert.equal(f.run.outcome, 'succeeded'); assert.equal(f.calls.peakOwners, 1)
 })
-
-it('failed graph resume I/O remains recoverable without canceling approvals', async () => {
-  const f = fixture()
-  const item = f.addInteraction('approval', true)
-  f.waiting(item)
-  f.control.invoke = async () => { throw new Error('checkpoint write failed') }
+it('failed graph resume I/O remains recoverable without canceling or reconsuming approvals', async () => {
+  const f = fixture(), item = f.addInteraction(1, true); f.waiting(item)
+  f.control.work = async () => { throw new Error('checkpoint write failed') }
   await assert.rejects(f.engine.resumeInteraction(item), /checkpoint write failed/)
-  assert.notEqual(f.run.executionState, 'completed')
-  assert.equal(f.items.get(item.id)?.deliveryState, 'delivered')
-  assert.equal(f.calls.cancel, 0)
-  f.control.invoke = async () => f.complete()
-  await f.engine.reconcile((error) => { throw error })
-  assert.equal(f.run.outcome, 'succeeded')
+  assert.notEqual(f.run.executionState, 'completed'); assert.equal(f.items.get(item.id)?.deliveryState, 'delivered')
+  assert.equal(f.calls.cancel, 0); f.control.work = async () => f.complete()
+  assert.deepEqual(await f.reconcile(), []); assert.equal(f.run.outcome, 'succeeded'); assert.equal(f.calls.consumed.length, 1)
 })
-
 it('finishing tasks remove tracking only when they still own the registered entries', async () => {
-  const f = fixture()
-  const finishing = deferred()
-  f.run.executionState = 'queued'
-  f.control.invoke = async () => { await finishing.promise; return f.complete() }
-  const start = f.engine.start(f.run.id)
-  const replacementController = new AbortController()
-  const replacementTask = Promise.resolve()
-  f.internals.activeRuns.set(f.run.id, replacementController)
-  f.internals.activeTasks.set(f.run.id, replacementTask)
-  finishing.resolve()
-  await start
-  assert.equal(f.internals.activeRuns.get(f.run.id), replacementController)
-  assert.equal(f.internals.activeTasks.get(f.run.id), replacementTask)
+  const f = fixture(), finishing = deferred(); f.run.executionState = 'queued'
+  f.control.work = async () => { await finishing.promise; f.complete() }
+  const start = f.engine.start(f.run.id), replacementController = new AbortController(), replacementTask = Promise.resolve()
+  f.internals.activeRuns.set(f.run.id, replacementController); f.internals.activeTasks.set(f.run.id, replacementTask)
+  finishing.resolve(); await start
+  assert.equal(f.internals.activeRuns.get(f.run.id), replacementController); assert.equal(f.internals.activeTasks.get(f.run.id), replacementTask)
 })
-
-it('a finished short-budget branch does not arm a timer against other branches or successors', async () => {
-  const f = fixture({ timeoutMs: 60_000, nodes: ['short', 'long', 'successor'] })
-  f.control.remainingMs = 1
-  const short = f.addInteraction('short', true)
-  const long = f.addInteraction('long', true)
-  f.waiting(short, long)
-  const visited: string[] = []
-  f.internals.executeNode = async (_run, _version, nodeId, _predecessors, _state, signal) => {
-    if (nodeId !== 'short') await delay(25)
-    signal.throwIfAborted()
-    visited.push(nodeId)
-    return { executionIds: { [nodeId]: `execution-${nodeId}` } }
-  }
-  f.control.invoke = async (_input, action) => {
-    const state = { runId: f.run.id, executionIds: {} }
-    await Promise.all([action('short', state), action('long', state)])
-    await action('successor', state)
-    return f.complete()
-  }
-  await f.engine.resumeInteraction(short)
-  assert.deepEqual(visited, ['short', 'long', 'successor'])
-  assert.equal(f.run.outcome, 'succeeded')
-  assert.equal(f.calls.cancel, 0)
+it('a finished branch does not arm a run-wide timer against siblings or successors', async () => {
+  const f = runtimeFixture(['entry', 'short', 'long', 'successor'], [['entry', 'short'], ['entry', 'long'], ['long', 'successor']])
+  const observe = f.driver.observe
+  f.driver.observe = async (execution, signal) => { if (execution.workflowNodeId === 'long') await delay(25); await observe(execution, signal) }
+  await f.execute()
+  assert.ok(f.completionOrder.indexOf('short') < f.completionOrder.indexOf('long'))
+  assert.ok(f.completionOrder.indexOf('long') < f.completionOrder.indexOf('successor'))
+  assert.equal(f.state.outcome, 'succeeded'); assert.equal(f.state.cancel, 0)
 })
-
-it('approval waiting is not bounded by the active run timer', async () => {
-  const f = fixture({ timeoutMs: 10 })
-  const item = f.addInteraction()
-  f.waiting(item)
-  await f.engine.reconcile((error) => { throw error })
-  await delay(30)
-  assert.equal(f.run.executionState, 'waiting')
-  assert.equal(f.calls.cancel, 0)
-  Object.assign(item, { status: 'delivered', deliveryState: 'delivered' })
-  f.control.invoke = async () => f.complete()
-  await f.engine.resumeInteraction(item)
-  assert.equal(f.run.outcome, 'succeeded')
+it('approval waiting is not bounded by an active run timer', async () => {
+  const f = fixture(), item = f.addInteraction(); f.waiting(item)
+  assert.deepEqual(await f.reconcile(), []); await delay(30)
+  assert.equal(f.run.executionState, 'waiting'); assert.equal(f.calls.cancel, 0)
+  Object.assign(item, { status: 'delivered', deliveryState: 'delivered' }); f.control.work = async () => f.complete()
+  await f.engine.resumeInteraction(item); assert.equal(f.run.outcome, 'succeeded')
 })
-
-it('shutdown drains the active resume and rejects queued work without launching another owner', async () => {
-  const f = fixture()
-  const entered = deferred()
-  const item = f.addInteraction('approval', true)
-  f.waiting(item)
-  f.internals.executeNode = async (_run, _version, _nodeId, _predecessors, _state, signal) => {
-    entered.resolve()
-    await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
-    return {}
-  }
-  f.control.invoke = async (_input, action) => {
-    await action('approval', { runId: f.run.id, executionIds: {} })
-    return f.complete()
-  }
-  const first = f.engine.resumeInteraction(item)
-  await entered.promise
+it('shutdown drains the active resume and rejects queued work without another owner or synthetic Stop', async () => {
+  const f = fixture(), entered = deferred(), item = f.addInteraction(1, true); f.waiting(item)
+  f.control.work = async (context) => { entered.resolve(); await new Promise<void>((_done, reject) => {
+    context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true })
+  }) }
+  const first = assert.rejects(f.engine.resumeInteraction(item), { code: 'ENGINE_RESTART' }); await entered.promise
   const second = assert.rejects(f.engine.resumeInteraction(item), { code: 'ENGINE_CLOSING' })
-  await f.engine.shutdown()
-  await Promise.all([first, second])
-  assert.equal(f.calls.invocations.length, 1)
-  assert.equal(f.calls.owners, 0)
-  assert.equal(f.internals.activeRuns.size, 0)
-  assert.equal(f.internals.resumeTasks.size, 0)
+  await f.engine.shutdown(); await Promise.all([first, second])
+  assert.equal(f.calls.entries.length, 1); assert.equal(f.calls.owners, 0); assert.equal(f.calls.cancel, 0); assert.equal(f.calls.settled, 0)
+  assert.equal(f.internals.activeRuns.size, 0); assert.equal(f.internals.resumeTasks.size, 0)
 })
-
-it('conflicting checkpoint identity fails closed instead of replacing durable/native IDs', async () => {
-  const f = fixture()
-  const item = f.addInteraction('approval', true)
-  f.waiting(item)
-  f.control.snapshot.tasks[0]!.interrupts![0]!.id = 'different-interrupt'
-  await assert.rejects(f.engine.resumeInteraction(item), { code: 'INTERACTION_INTERRUPT_CONFLICT' })
-  assert.equal(f.items.get(item.id)?.graphInterruptId, item.graphInterruptId)
-  assert.deepEqual(f.calls.bound, [])
-  assert.deepEqual(f.calls.invocations, [])
-  assert.equal(f.run.executionState, 'waiting')
+it('a checkpoint identity rejection propagates before consumption without replacing saved native IDs', async () => {
+  const f = fixture(), item = f.addInteraction(1, true); f.waiting(item)
+  f.control.waitFailure = new DomainError('INTERACTION_IDENTITY_CONFLICT', 'Original checkpoint identity differs', 409)
+  const before = structuredClone(item)
+  await assert.rejects(f.engine.resumeInteraction(item), { code: 'INTERACTION_IDENTITY_CONFLICT' })
+  assert.deepEqual(f.items.get(item.id), before); assert.deepEqual(f.calls.bound, []); assert.deepEqual(f.calls.consumed, [])
+  assert.equal(f.calls.entries.length, 0); assert.equal(f.run.executionState, 'waiting')
 })
-
-for (const bubble of [false, true]) {
-  it(`ordinary GraphInterrupt does not cancel delayed sibling work (bubbled: ${bubble})`, async () => {
-    const f = fixture({ nodes: ['entry', 'approval', 'sibling'] })
-    const item = f.addInteraction()
-    f.waiting(item)
-    f.run.executionState = 'queued'
-    let siblingFinished = false
-    let siblingAborted = false
-    f.internals.executeNode = async (_run, _version, nodeId, _predecessors, _state, signal) => {
-      if (nodeId === 'approval') throw new GraphInterrupt([{ id: item.graphInterruptId!, value: { interactionId: item.id } }])
+for (const bubble of [false, true]) it(`ordinary GraphInterrupt does not cancel delayed sibling work (bubbled: ${bubble})`, async () => {
+  const f = runtimeFixture(), observe = f.driver.observe
+  let siblingFinished = false, siblingAborted = false
+  f.driver.observe = async (execution, signal) => {
+    if (execution.workflowNodeId === 'approval') {
+      if (bubble) throw new GraphInterrupt([{ id: 'unit-interrupt', value: { interactionId: 'unit-approval' } }])
+      interrupt({ interactionId: 'unit-approval' }); throw new Error('Undecided approval must remain interrupted')
+    }
+    if (execution.workflowNodeId === 'sibling') {
       try { await delay(15, undefined, { signal }) } catch (error) { siblingAborted = true; throw error }
       siblingFinished = true
-      return { executionIds: { sibling: 'execution-sibling' } }
     }
-    f.control.invoke = async (_input, action) => {
-      const work = [action('approval', { runId: f.run.id, executionIds: {} }), action('sibling', { runId: f.run.id, executionIds: {} })]
-      if (bubble) await Promise.all(work)
-      else await Promise.allSettled(work)
-      return { runId: f.run.id, executionIds: {} }
-    }
-    await f.engine.start(f.run.id)
-    assert.equal(siblingFinished, true)
-    assert.equal(siblingAborted, false)
-    assert.equal(f.run.executionState, 'waiting')
-    assert.equal(f.calls.cancel, 0)
-    assert.equal(f.calls.owners, 0)
-  })
-}
-
-it('a genuine sibling error after an interrupt still fails the run with the real cause', async () => {
-  const f = fixture({ nodes: ['entry', 'approval', 'failed'] })
-  const item = f.addInteraction()
-  f.waiting(item)
-  f.run.executionState = 'queued'
-  f.internals.executeNode = async (_run, _version, nodeId) => {
-    if (nodeId === 'approval') throw new GraphInterrupt([{ id: item.graphInterruptId!, value: { interactionId: item.id } }])
-    await delay(5)
-    throw new Error('actual sibling failure')
+    await observe(execution, signal)
   }
-  f.control.invoke = async (_input, action) => {
-    await Promise.allSettled([action('approval', { runId: f.run.id, executionIds: {} }), action('failed', { runId: f.run.id, executionIds: {} })])
-    return { runId: f.run.id, executionIds: {} }
+  await f.execute()
+  assert.equal(siblingFinished, true); assert.equal(siblingAborted, false); assert.equal(f.state.executionState, 'waiting'); assert.equal(f.state.cancel, 0)
+})
+it('a definitive sibling error after an interrupt retains its real cause and fails the Run', async () => {
+  const f = runtimeFixture(['entry', 'approval', 'failed'], [['entry', 'approval'], ['entry', 'failed']]), observe = f.driver.observe
+  const failure = new DomainError('WORKFLOW_SELECTED_EXECUTION_FAILED', 'actual sibling failure', 409)
+  f.driver.observe = async (execution, signal) => {
+    if (execution.workflowNodeId === 'approval') { interrupt({ interactionId: 'unit-approval' }); throw new Error('Still pending') }
+    if (execution.workflowNodeId === 'failed') { await delay(5); throw failure }
+    await observe(execution, signal)
   }
-  await f.engine.start(f.run.id)
-  assert.equal(f.run.outcome, 'failed')
-  assert.equal(f.run.result?.error?.message, 'actual sibling failure')
+  await assert.rejects(f.execute(), (error) => error === failure)
+  assert.equal(f.state.outcome, 'failed'); assert.equal(f.state.settled, 1); assert.equal(f.state.cancel, 1)
 })
 
-it('remaining approval budget uses the owner connection, deduplicates IDs and selects the tightest remaining budget', async () => {
+// Method-level repository unit tests: this method uses only requireOwner/client.
+// The prototype receiver is not a production repository or a runtime composition.
+const budgetRepository = () => Object.create(PostgresRunRepository.prototype) as PostgresRunRepository
+it('remaining approval budget uses the owner connection, deduplicates IDs and selects the tightest budget', async () => {
   const queries: Array<{ sql: string; values: unknown[] }> = []
-  const owner = {
-    runId: 'run',
-    assertOwned() {},
-    client: { async query(sql: string, values: unknown[]) {
-      queries.push({ sql, values })
-      if (sql.includes('select r.record,v.record as version')) return { rows: [{ record: { id: 'run' }, version: {}, execution_semantics_version: 1 }] }
-      return { rows: [{ remaining_ms: '80.5', stopped_at: null }, { remaining_ms: '20', stopped_at: null }] }
-    } },
-  } as unknown as RunOwnership
-  const repository = new PostgresRunRepository(
-    { query() { throw new Error('must not acquire another pool connection') } } as unknown as ConstructorParameters<typeof PostgresRunRepository>[0],
-    {} as ConstructorParameters<typeof PostgresRunRepository>[1], {} as ConstructorParameters<typeof PostgresRunRepository>[2],
-  )
-  assert.equal(await repository.remainingApprovalTime('run', ['a', 'b', 'a'], owner), 20)
-  const budget = queries.find((query) => query.sql.includes('approval_execution_state'))!
-  assert.deepEqual(budget.values, ['run', ['a', 'b']])
-  assert.match(budget.sql, /approval_wait_started_at is not null then 0/)
-  assert.match(budget.sql, /active_timeout_ms - budget.active_elapsed_ms/)
-  assert.match(budget.sql, /clock_timestamp\(\)-budget.active_started_at/)
+  const owner = { runId: 'run', assertOwned() {}, client: { async query(sql: string, values: unknown[]) {
+    queries.push({ sql, values }); return { rows: [{ remaining_ms: '80.5', stopped_at: null }, { remaining_ms: '20', stopped_at: null }] }
+  } } } as unknown as RunOwnership
+  assert.equal(await budgetRepository().remainingApprovalTime('run', ['a', 'b', 'a'], owner), 20)
+  assert.equal(queries.length, 1); assert.deepEqual(queries[0]!.values, ['run', ['a', 'b']])
+  assert.match(queries[0]!.sql, /b\.approval_wait_started_at is not null then 0/)
+  assert.match(queries[0]!.sql, /b\.active_timeout_ms-b\.active_elapsed_ms/)
+  assert.match(queries[0]!.sql, /clock_timestamp\(\)-b\.active_started_at/)
 })
-
-for (const rows of [[], [{ remaining_ms: '100', stopped_at: new Date() }]]) {
-  it(`missing or stopped persisted budgets fail closed (${rows.length} rows)`, async () => {
-    const repository = new PostgresRunRepository(
-      {} as ConstructorParameters<typeof PostgresRunRepository>[0], {} as ConstructorParameters<typeof PostgresRunRepository>[1], {} as ConstructorParameters<typeof PostgresRunRepository>[2],
-    )
-    const owner = { runId: 'run', assertOwned() {}, client: { query: async (sql: string) => ({ rows: sql.includes('select r.record,v.record as version')
-      ? [{ record: { id: 'run' }, version: {}, execution_semantics_version: 1 }] : rows }) } } as unknown as RunOwnership
-    await assert.rejects(repository.remainingApprovalTime('run', ['a'], owner), { code: 'EXECUTION_STOPPED' })
-  })
-}
-
-it('[real LangGraph] parallel interrupts preserve completed predecessor work and exact current resume identities', async () => {
-  const f = fixture({ realGraph: true, nodes: ['entry', 'left', 'right'] })
-  f.run.executionState = 'queued'
-  const left = f.addInteraction('left')
-  const right = f.addInteraction('right')
-  delete left.graphInterruptId
-  delete right.graphInterruptId
+for (const rows of [[], [{ remaining_ms: '100', stopped_at: new Date() }]]) it(`missing or stopped persisted budgets fail closed (${rows.length} rows)`, async () => {
+  const owner = { runId: 'run', assertOwned() {}, client: { query: async () => ({ rows }) } } as unknown as RunOwnership
+  await assert.rejects(budgetRepository().remainingApprovalTime('run', ['a'], owner), { code: 'EXECUTION_STOPPED' })
+})
+it('[real LangGraph] parallel interrupts preserve predecessors and exact task-local resume identities', async () => {
+  const f = runtimeFixture(['entry', 'left', 'right'], [['entry', 'left'], ['entry', 'right']]), observe = f.driver.observe
   const entries = new Map<string, number>()
-  let effects = 0
-  f.internals.executeNode = async (_run, _version, nodeId, _predecessors, _state, signal) => {
-    entries.set(nodeId, (entries.get(nodeId) ?? 0) + 1)
-    if (nodeId === 'entry') effects += 1
-    const item = f.items.get(`interaction-${nodeId}`)
-    if (item?.deliveryState !== 'delivered' && item) {
-      if (nodeId === 'right') await delay(15, undefined, { signal })
-      interrupt({ interactionId: item.id })
-      throw new Error('An undelivered interaction must not receive a resume value')
+  f.driver.observe = async (execution, signal) => {
+    const id = execution.workflowNodeId; entries.set(id, (entries.get(id) ?? 0) + 1)
+    if (id !== 'entry') {
+      if (id === 'right') await delay(15)
+      const resumed = interrupt({ interactionId: `approval-${id}` }) as { interactionId: string }
+      assert.equal(resumed.interactionId, `approval-${id}`)
     }
-    return { executionIds: { [nodeId]: `execution-${nodeId}` } }
+    await observe(execution, signal)
   }
-  await f.engine.start(f.run.id)
-  assert.equal(f.run.executionState, 'waiting')
-  assert.equal(f.items.get(left.id)?.graphInterruptId != null, true)
-  assert.equal(f.items.get(right.id)?.graphInterruptId != null, true)
-  await f.engine.reconcile((error) => { throw error })
-  for (const item of f.items.values()) Object.assign(item, { status: 'delivered', deliveryState: 'delivered' })
-  await Promise.all([f.engine.resumeInteraction(f.items.get(left.id)!), f.engine.resumeInteraction(f.items.get(right.id)!)])
-  assert.equal(f.run.outcome, 'succeeded')
-  assert.equal(entries.get('entry'), 1)
-  assert.equal(entries.get('left'), 2)
-  assert.equal(entries.get('right'), 2)
-  assert.equal(effects, 1)
-  assert.equal(f.calls.peakOwners, 1)
+  const { graph, config } = buildRepeatGraph(f.input)
+  await graph.invoke({ runId: f.runId, executionIds: {}, occurrences: {}, boundaries: {} }, config)
+  const saved = await f.checkpoint(), pending = saved.tasks.flatMap((task) => task.interrupts ?? [])
+  assert.equal(pending.length, 2)
+  // Raw Commands belong only to this compiler unit test, not the engine's
+  // authenticated production resume API. Atomic SQL consumption is separate.
+  const map = Object.fromEntries(pending.map((item) => [item.id, item.value]))
+  await graph.invoke(new Command({ resume: map }), config)
+  await f.store.completeRun()
+  assert.equal(f.state.outcome, 'succeeded'); assert.equal(entries.get('entry'), 1)
+  assert.equal(entries.get('left'), 2); assert.equal(entries.get('right'), 2)
+  assert.equal(f.nativeCalls.filter((id) => id === 'entry').length, 1)
+  assert.deepEqual((await f.checkpoint()).next, [])
 })
-
-it('[real LangGraph] an approval wait with a completed sibling remains healthy during reconciliation', async () => {
-  const f = fixture({ realGraph: true, nodes: ['entry', 'approval', 'sibling'] })
-  f.run.executionState = 'queued'
-  const item = f.addInteraction()
-  delete item.graphInterruptId
-  let siblingEntries = 0
-  f.internals.executeNode = async (_run, _version, nodeId, _predecessors, _state, signal) => {
-    if (nodeId === 'approval') {
-      interrupt({ interactionId: item.id })
-      throw new Error('Approval remains undecided')
-    }
-    if (nodeId === 'sibling') { await delay(15, undefined, { signal }); siblingEntries += 1 }
-    return { executionIds: { [nodeId]: `execution-${nodeId}` } }
+it('[real LangGraph] a pending approval with a completed sibling stays healthy during checkpoint inspection', async () => {
+  const f = runtimeFixture(), observe = f.driver.observe
+  f.driver.observe = async (execution, signal) => {
+    if (execution.workflowNodeId === 'approval') { interrupt({ interactionId: 'unit-approval' }); throw new Error('Still pending') }
+    if (execution.workflowNodeId === 'sibling') await delay(15)
+    await observe(execution, signal)
   }
-  await f.engine.start(f.run.id)
-  await f.engine.reconcile((error) => { throw error })
-  assert.equal(f.run.executionState, 'waiting')
-  assert.equal(siblingEntries, 1)
-  assert.equal(f.calls.cancel, 0)
-  assert.deepEqual(f.calls.settled, [])
+  await f.execute()
+  const before = [...f.nativeCalls]
+  for (let tick = 0; tick < 3; tick++) assert.equal((await f.checkpoint()).tasks.flatMap((task) => task.interrupts ?? []).length, 1)
+  assert.deepEqual(f.nativeCalls, before); assert.equal(before.filter((id) => id === 'sibling').length, 1)
+  assert.equal(f.state.executionState, 'waiting'); assert.equal(f.state.cancel, 0); assert.equal(f.state.settled, 0)
 })

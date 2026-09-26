@@ -99,9 +99,25 @@ class NativePgShape {
     }
     if (q.startsWith('select state,approval_native_ack_id,approval_native_ack_record,approval_native_ack_source')) {
       expect(values).toEqual([this.interactions[0]!.value.id])
-      // An ID is not an original ACK descriptor. This fixture intentionally has
-      // no captured native source, even when delivery and checkpoint are done.
-      return rows(this.resume ? [{ ...this.resume, approval_native_ack_record: null, approval_native_ack_source: null }] : [])
+      // A structurally valid ACK descriptor is still only a claim. Its named
+      // ORIGINAL proof is deliberately absent below, so the production reader
+      // must reject it for missing authority, not stop at a Zod parsing error.
+      const interaction = this.interactions[0]!.value
+      const nativeSource = { sourceKind: 'native_event', sourceId: 'missing-original-proof', sourceRevision: '1' }
+      const digest = `sha256:${'a'.repeat(64)}`
+      const descriptor = { scope: this.fixture.scope, interaction,
+        requester: repeatExecutionIdentity(this.execution), occurrence: this.fixture.ref.occurrence,
+        inputDigest: digest, acknowledgementId: this.resume?.approval_native_ack_id,
+        originalProofId: nativeSource.sourceId, originalProofDigest: digest,
+        nativeSource, nativeSourceDigest: digest,
+        publication: { evidence: { sourceKind: 'native_event', sourceId: interaction.id,
+          sourceRevision: String(interaction.revision) }, sourceDigest: digest, semanticDigest: digest } }
+      return rows(this.resume ? [{ ...this.resume, approval_native_ack_record: descriptor,
+        approval_native_ack_source: nativeSource }] : [])
+    }
+    if (q.startsWith('select record,source_digest from workflow_native_proofs')) {
+      expect(values).toEqual(['missing-original-proof', this.execution.runId, this.execution.id])
+      return rows([]) // No coordinator capture exists; never manufacture one.
     }
     if (this.entryFixture && this.entryReservation) {
       const f = this.entryFixture, reservation = this.entryReservation
@@ -324,6 +340,7 @@ describe('ENG04 native SQL-shaped exact per-execution settlement', () => {
     sql.resume = { state: 'resumed', approval_native_ack_id: 'real-history-ack' }
     await expect(sql.settle()).rejects.toMatchObject({ code: 'APPROVAL_SETTLEMENT_PENDING' })
     expect(sql.calls.some((q) => q.startsWith('select state,approval_native_ack_id,approval_native_ack_record'))).toBe(true)
+    expect(sql.calls.some((q) => q.startsWith('select record,source_digest from workflow_native_proofs'))).toBe(true)
     expect(sql.updateCount).toBe(0)
     expect(sql.finalized).toBe(false)
   })

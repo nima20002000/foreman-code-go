@@ -1,65 +1,44 @@
-import { describe, expect, it, vi } from 'vitest'
-import { HarnessExecutionRequestSchema, HarnessExecutionSchema, type DurableInteraction } from '@graphql/contracts'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { HarnessExecutionRequestSchema } from '@graphql/contracts'
+import type { CanonicalRunGraphScope } from '@graphql/contracts/wave25'
 import { DomainError } from '../src/modules/errors.js'
-import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
-import { assertApprovalTerminalSettlement } from '../src/modules/interactions/wave25/resume.js'
-import { decisionDigest } from '../src/modules/interactions/wave25/publication.js'
 import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
 import type { GraphTransactionSql } from '../src/modules/run-graph/connection.js'
-import { oneShotExecutionDriver, type OneShotRuntimeContext } from '../src/modules/runs/oneShotRuntime.js'
-import { approvalFixture, deliveryFixture } from './helpers/wave25ApprovalFixture.js'
+import { assertRepeatCanonicalReceiptLocked, type RepeatCanonicalReceipt } from '../src/modules/run-graph/repeatReceipts.js'
+import { repeatExecutionDriver } from '../src/modules/runs/repeatRuntime.js'
+import { currentApprovalSettlementUnit } from './helpers/currentApprovalSettlementUnit.js'
+import { native2Fixture } from './eng04-native2-fixtures.js'
 
-// The companion PostgreSQL suite exercises ownership/checkpoint/native evidence.
-// This suite isolates receipt composition and coordinator error classification.
-
+// Only the read-only publication lookup is a port. It cannot return a successful
+// proof by itself: every lookup executes the real canonical SQL receipt verifier.
+// Original pending/continuation sources and the ACK descriptor are all checked
+// by the actual nativeApprovalProof implementation, not mocked away.
+vi.mock('../src/modules/run-graph/publication.js', async (original) => ({
+  ...await original<typeof import('../src/modules/run-graph/publication.js')>(),
+  currentRunGraphPublication: (sql: GraphTransactionSql, scope: CanonicalRunGraphScope) => ({
+    sql, scope,
+    assertSourceEnlisted: (evidence: RepeatCanonicalReceipt['evidence'], sourceDigest: string, semanticDigest: string) =>
+      assertRepeatCanonicalReceiptLocked(sql, { scope, evidence, sourceDigest, semanticDigest, effect: null }),
+  }),
+}))
+const connections: Array<{ close(): Promise<void> }> = []
+function gateFixture() { const f = currentApprovalSettlementUnit(); connections.push(f.model.connection); return f }
+afterEach(async () => { await Promise.all(connections.splice(0).map((connection) => connection.close())); vi.restoreAllMocks() })
 const pending = () => new DomainError('APPROVAL_SETTLEMENT_PENDING', 'Exact settlement is pending.', 409)
-function settledInteraction(): DurableInteraction {
-  const i = deliveryFixture().interaction
-  return { ...i, graphThreadId: i.runId, graphInterruptId: 'exact-interrupt', status: 'delivered', deliveryState: 'delivered', deliveredAt: i.updatedAt }
-}
-function receiptDigest(i: DurableInteraction) {
-  return graphSourceDigest({ interactionId: i.id, runId: i.runId, executionId: i.executionId,
-    graphThreadId: i.graphThreadId, graphInterruptId: i.graphInterruptId ?? null, decision: decisionDigest(i) })
-}
-function gateFixture() {
-  const interaction = settledInteraction()
-  const state = {
-    records: [interaction], resume: { state: 'resumed', approval_native_ack_id: 'qualified-native-ack' as string | null },
-    receipt: receiptDigest(interaction) as string | undefined,
-  }
-  const query = vi.fn(async (text: string) => {
-    if (text.includes('from durable_interactions')) return {
-      rows: state.records.map((i) => ({ id: i.id, execution_id: i.executionId, record: i })), rowCount: state.records.length,
-    }
-    if (text.includes('from interaction_graph_resumes')) return { rows: [state.resume], rowCount: 1 }
-    if (text.includes('from run_graph_effects')) return {
-      rows: state.receipt ? [{ effect_digest: state.receipt }] : [], rowCount: state.receipt ? 1 : 0,
-    }
-    throw new Error(`Unexpected SQL: ${text}`)
-  })
-  const check = () => assertApprovalTerminalSettlement({ query } as unknown as GraphTransactionSql, interaction.runId, interaction.executionId)
-  return { interaction, state, query, check }
-}
 
-describe('NIM-2644 native terminal / approval settlement ordering', () => {
+describe('NIM-2644 current native terminal / approval settlement ordering', () => {
   it.each(['submitted', 'uncertain'] as const)('does not recover a terminal execution through %s delivery', async (deliveryState) => {
-    const runs = { getExecution: vi.fn(), appendNativeEvent: vi.fn(), updateExecution: vi.fn() }
-    const resolver = { resolve: vi.fn(() => { throw new Error('Unconfirmed delivery must not attach or respond') }) }
-    const coordinator = new ApprovalExecutionCoordinator(
-      runs as unknown as ConstructorParameters<typeof ApprovalExecutionCoordinator>[0],
-      { coordination: {} } as ConstructorParameters<typeof ApprovalExecutionCoordinator>[1],
-      {} as ConstructorParameters<typeof ApprovalExecutionCoordinator>[2],
-      resolver as unknown as ConstructorParameters<typeof ApprovalExecutionCoordinator>[3], 60_000)
-    const owner = { assertOwned: vi.fn() } as unknown as Parameters<typeof coordinator.recoverTerminalInteraction>[1]
-    for (const option of ['approve-once', 'reject']) {
-      const i = { ...deliveryFixture().interaction, deliveryState, selectedOptionId: option }
-      expect(await coordinator.recoverTerminalInteraction(i, owner, new AbortController().signal)).toBe(false)
-    }
-    expect(runs.getExecution).not.toHaveBeenCalled()
-    expect(runs.updateExecution).not.toHaveBeenCalled()
-    expect(resolver.resolve).not.toHaveBeenCalled()
+    const f = gateFixture(), native = native2Fixture()
+    native.closed(); native.revoked()
+    f.state.records = [{ ...f.interaction, status: 'delivery_pending', deliveryState, deliveredAt: undefined }]
+    // Current terminal re-entry delegates to the exact SQL settlement gate. There
+    // is no removed recoverTerminalInteraction escape hatch or new native turn.
+    native.store.settleNativeExecution = async () => { await f.check() }
+    const before = structuredClone(native.get())
+    await expect(native.observe()).rejects.toMatchObject({ code: 'APPROVAL_SETTLEMENT_PENDING' })
+    expect(native.get()).toEqual(before)
+    expect(native.calls.some((call) => /resolve|attachSession|createSession|startTurn|respond|terminal:/.test(call))).toBe(false)
   })
-
   it.each(['not_started', 'submitted', 'uncertain', 'failed'] as const)('rejects %s even with terminal-looking resume rows', async (deliveryState) => {
     const f = gateFixture()
     f.state.records = [{ ...f.interaction, status: deliveryState === 'not_started' ? 'decided' : deliveryState === 'failed' ? 'delivery_failed' : 'delivery_pending', deliveryState, deliveredAt: undefined }]
@@ -79,7 +58,11 @@ describe('NIM-2644 native terminal / approval settlement ordering', () => {
   })
   it('rejects a contradictory receipt rather than rewriting it', async () => {
     const f = gateFixture(); f.state.receipt = graphSourceDigest({ otherDecision: true })
-    await expect(f.check()).rejects.toMatchObject({ code: 'GRAPH_EFFECT_CONFLICT' })
+    const before = f.state.receipt
+    // The original-source verifier now reads this receipt before the outer gate.
+    await expect(f.check()).rejects.toMatchObject({ code: 'APPROVAL_SETTLEMENT_PENDING' })
+    expect(f.state.receipt).toBe(before)
+    expect(f.model.calls.some(({ q }) => /^(insert|update|delete)\b/.test(q))).toBe(false)
   })
   it('does not hide a canceled delivered obligation during normal completion', async () => {
     const f = gateFixture(); f.state.records = [{ ...f.interaction, status: 'canceled' }]
@@ -88,100 +71,75 @@ describe('NIM-2644 native terminal / approval settlement ordering', () => {
   it('accepts exact settled replay without writing or dispatching anything', async () => {
     const f = gateFixture()
     await f.check(); await f.check()
-    expect(f.query.mock.calls.every(([text]) => text.trimStart().startsWith('select'))).toBe(true)
+    expect(f.model.calls.every(({ q }) => /^(select|begin|commit)\b/.test(q))).toBe(true)
+    expect(f.model.calls.filter(({ q }) => q === 'commit')).toHaveLength(2)
+    expect(f.model.calls.some(({ q }) => q.includes('from workflow_native_proofs'))).toBe(true)
+    expect(f.model.calls.some(({ q }) => q.includes('join run_graph_sources s'))).toBe(true)
   })
   it('checks every selected sibling rather than just the first receipt', async () => {
     const f = gateFixture()
     f.state.records.push({ ...f.interaction, id: 'unsettled-sibling', deliveryState: 'uncertain', status: 'delivery_pending', deliveredAt: undefined })
     await expect(f.check()).rejects.toMatchObject({ code: 'APPROVAL_SETTLEMENT_PENDING' })
+    expect(f.model.calls.some(({ q, values }) => q.startsWith('select state,approval_native_ack_id,approval_native_ack_record')
+      && values[0] === 'unsettled-sibling')).toBe(true)
   })
   it('cannot accept a foreign graph thread', async () => {
     const f = gateFixture(); f.state.records = [{ ...f.interaction, graphThreadId: 'other-run' }]
     await expect(f.check()).rejects.toMatchObject({ code: 'APPROVAL_IDENTITY_MISMATCH' })
   })
+  it.each(['pending', 'continuation'] as const)('requires the immutable original %s source, not only ACK metadata', async (kind) => {
+    const f = gateFixture()
+    f.state.proofs.delete(kind === 'pending' ? 'unit-pending-source' : 'unit-continuation-source')
+    await expect(f.check()).rejects.toMatchObject({ code: 'APPROVAL_SETTLEMENT_PENDING' })
+    expect(f.model.calls.some(({ q }) => q === 'commit')).toBe(false)
+  })
 })
 
 function coordinatorFixture() {
-  const f = approvalFixture(), configuration = f.configurations[1]!
-  const execution = HarnessExecutionSchema.parse({ ...f.executions[1]!, workingDirectory: '/task/project', runtimeDirectory: '/task/runtime' })
-  const session = { harness: 'codex' as const, providerVersion: 'synthetic-test', nativeSessionId: execution.nativeSessionId! }
-  const interaction = { ...settledInteraction(), graphThreadId: f.run.id }
-  const history = { events: [], pendingInteractions: [], correlationId: `execution:${execution.id}`, nativeTurnId: 'turn-pwd',
-    terminalTurn: { correlationId: `execution:${execution.id}`, providerId: 'turn-pwd', result: { outcome: 'succeeded', output: { exitCode: 0 } } } }
-  const manager = { reconcile: vi.fn(async () => history), close: vi.fn(), cancel: vi.fn(),
-    withLane: vi.fn(async (_session: unknown, _correlation: unknown, _signal: unknown,
-      work: (native: unknown, lane: unknown) => Promise<unknown>) => work(manager, {
-      fence: { id: 'lane', token: 'token' }, guard: { signal: new AbortController().signal, check: vi.fn() },
-    })) }
-  const runs = { ensureExecution: vi.fn(async () => ({ execution, created: false })),
-    updateExecution: vi.fn(async () => { throw pending() }), appendNativeEvent: vi.fn() }
-  const budgets = { ensure: vi.fn(), resume: vi.fn(), remaining: vi.fn(async () => 60_000),
-    assertActive: vi.fn(), beginWait: vi.fn(), finish: vi.fn() }
-  const interactions = { getForExecution: vi.fn(async () => interaction), cancelPendingForExecution: vi.fn(),
-    coordination: { finalizeWorkflowSession: vi.fn() } }
-  const coordinator = new ApprovalExecutionCoordinator(
-    runs as unknown as ConstructorParameters<typeof ApprovalExecutionCoordinator>[0],
-    interactions as unknown as ConstructorParameters<typeof ApprovalExecutionCoordinator>[1],
-    budgets as unknown as ConstructorParameters<typeof ApprovalExecutionCoordinator>[2],
-    {} as ConstructorParameters<typeof ApprovalExecutionCoordinator>[3], 60_000)
-  vi.spyOn(coordinator as unknown as { resolveManager(): unknown }, 'resolveManager')
-    .mockReturnValue({ manager, processState: 'resident' })
-  const owner = { runId: f.run.id, assertOwned: vi.fn() } as unknown as Parameters<typeof coordinator.ensureObserve>[0]['owner']
-  const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: execution.runId,
-    workspaceId: configuration.workspaceId, workflowNodeId: execution.workflowNodeId,
-    workingDirectory: execution.workingDirectory, runtimeDirectory: execution.runtimeDirectory,
-    configuration, input: execution.input })
-  const observe = () => coordinator.ensureObserve({ candidate: execution, request, approval: f.run.approval,
-    workflowId: f.run.workflowId, graphThreadId: f.run.id, owner, signal: new AbortController().signal })
-  return { execution, session, runs, budgets, interactions, manager, observe }
+  const f = native2Fixture(false)
+  f.set({ ...f.get(), state: 'waiting' })
+  f.installResident()
+  f.internals.resolveManager = () => ({ manager: f.manager, processState: 'resident' })
+  f.internals.prepareEnvironment = async () => undefined
+  const update = vi.fn(async () => { throw pending() })
+  f.runs.updateExecution = update
+  const pause = vi.spyOn(f.budgets, 'beginWait')
+  const request = HarnessExecutionRequestSchema.parse({ executionId: f.get().id, runId: f.run.id,
+    workspaceId: f.run.workspaceId, workflowNodeId: f.get().workflowNodeId,
+    workingDirectory: f.get().workingDirectory, runtimeDirectory: f.get().runtimeDirectory,
+    configuration: f.configuration, input: f.get().input })
+  const observe = () => f.coordinator.observeExact({ execution: f.get(), request, approval: f.run.approval,
+    store: f.store, owner: f.owner as never, workflowId: f.run.workflowId, graphThreadId: f.run.id,
+    signal: new AbortController().signal })
+  return { ...f, observe, update, pause }
 }
-
 describe('NIM-2644 pending receipt is not native failure cleanup', () => {
   it('retains requester, budget wait and credential lifetime after terminal publication is refused', async () => {
     const f = coordinatorFixture()
     await expect(f.observe()).rejects.toMatchObject({ code: 'APPROVAL_SETTLEMENT_PENDING' })
-    expect(f.execution.state).toBe('waiting')
-    expect(f.runs.updateExecution).toHaveBeenCalledTimes(1)
-    expect(f.budgets.beginWait).toHaveBeenCalledWith(f.execution.id)
-    expect(f.budgets.finish).not.toHaveBeenCalled()
-    expect(f.manager.close).not.toHaveBeenCalled()
-    expect(f.manager.cancel).not.toHaveBeenCalled()
-    expect(f.interactions.cancelPendingForExecution).not.toHaveBeenCalled()
-    expect(f.interactions.coordination.finalizeWorkflowSession).not.toHaveBeenCalled()
+    expect(f.get().state).toBe('waiting'); expect(f.update).toHaveBeenCalledTimes(1)
+    expect(f.pause).toHaveBeenCalledWith(f.get().id)
+    expect(f.calls.some((call) => /close:|cancel|revoke|unqualified-finalize|budget:/.test(call))).toBe(false)
+    expect(f.coordinator.residentRunIds()).toContain(f.run.id)
   })
-
   it('keeps a failed budget-pause write recoverable instead of canceling the approval', async () => {
-    const f = coordinatorFixture()
-    f.budgets.beginWait.mockRejectedValueOnce(new Error('Synthetic budget persistence gap'))
+    const f = coordinatorFixture(); f.pause.mockRejectedValueOnce(new Error('Synthetic budget persistence gap'))
     await expect(f.observe()).rejects.toMatchObject({ code: 'APPROVAL_SETTLEMENT_PENDING' })
-    expect(f.execution.state).toBe('waiting')
-    expect(f.budgets.finish).not.toHaveBeenCalled()
-    expect(f.manager.close).not.toHaveBeenCalled()
-    expect(f.manager.cancel).not.toHaveBeenCalled()
-    expect(f.interactions.cancelPendingForExecution).not.toHaveBeenCalled()
-    expect(f.interactions.coordination.finalizeWorkflowSession).not.toHaveBeenCalled()
+    expect(f.get().state).toBe('waiting')
+    expect(f.calls.some((call) => /close:|cancel|revoke|unqualified-finalize|budget:/.test(call))).toBe(false)
+    expect(f.coordinator.residentRunIds()).toContain(f.run.id)
   })
-
-  it.each([false, true])('one-shot driver preserves receipt gap; explicit Stop=%s stays distinct', async (stop) => {
-    const f = approvalFixture(), configuration = f.configurations[1]!
-    const execution = HarnessExecutionSchema.parse({ ...f.executions[1]!, workingDirectory: '/task/project', runtimeDirectory: '/task/runtime' })
-    const controller = new AbortController()
-    const store = { claimLaunch: vi.fn(async () => undefined), recoverSession: vi.fn(async () => execution),
-      assertNativeBoundary: vi.fn(), failExecution: vi.fn() }
-    const runs = { oneShot: () => store, getExecution: vi.fn(), hasRequestedStop: vi.fn(async () => stop), requestCleanup: vi.fn() }
-    const context = {
-      run: { ...f.run, executionLocation: { rootPath: '/task/project' } }, version: f.version, runs,
-      workflows: { getAgentConfiguration: vi.fn(async () => configuration) },
-      native: { ensureObserve: vi.fn(async () => { if (stop) controller.abort(); throw pending() }) },
-      locations: { revalidateSnapshot: vi.fn() }, owner: { assertOwned: vi.fn() }, signal: controller.signal,
-      admission: { run: async (_id: string, _signal: AbortSignal, work: () => Promise<void>) => work() },
-      directory: () => '/task/runtime',
-    } as unknown as OneShotRuntimeContext
-    await expect(oneShotExecutionDriver(context).observe(execution, controller.signal)).rejects.toMatchObject({
-      code: stop ? 'WORKFLOW_SELECTED_EXECUTION_FAILED' : 'APPROVAL_SETTLEMENT_PENDING',
+  it.each([false, true])('current driver preserves receipt gap; explicit Stop=%s stays distinct', async (stop) => {
+    const f = native2Fixture(false), controller = new AbortController(), before = structuredClone(f.get())
+    const observeExact = vi.fn(async () => {
+      if (stop) controller.abort(new DomainError('GRAPH_STOP_CONFLICT', 'Committed Stop fixture', 409))
+      throw pending()
     })
-    if (stop) expect(store.failExecution).toHaveBeenCalledWith(execution.id, 'EXECUTION_INTERRUPTED', true)
-    else expect(store.failExecution).not.toHaveBeenCalled()
-    expect(runs.requestCleanup).not.toHaveBeenCalled()
+    const driver = repeatExecutionDriver({ scope: f.fixture.scope, version: f.fixture.version, owner: f.owner,
+      store: f.store, observeExact })
+    await expect(driver.observe(f.get(), controller.signal)).rejects.toMatchObject({ code: stop ? 'GRAPH_STOP_CONFLICT' : 'APPROVAL_SETTLEMENT_PENDING' })
+    expect(observeExact).toHaveBeenCalledTimes(1)
+    expect(f.get()).toEqual(before)
+    expect(f.calls.some((call) => /terminal:|cancel|revoke|close:/.test(call))).toBe(false)
   })
 })
