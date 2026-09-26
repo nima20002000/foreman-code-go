@@ -25,9 +25,9 @@ function fixture(samples: Array<{ intent: Intent; record: RunRecordDetail }>) {
 const checked = { pending: false, attempts: 1 }
 
 describe('ENG07-B successful Run settlement barrier', () => {
-  it('waits through the terminal-before-intent gap, pending cleanup, and lagging public readback', async () => {
+  it('rejects missing or unchecked evidence and waits for settled public readback', async () => {
     const expected = record(), f = fixture([
-      { intent: undefined, record: expected }, // The original false-positive cut.
+      { intent: undefined, record: expected }, // Fault sample: missing evidence, not a normal successful commit.
       { intent: { pending: true, attempts: 0 }, record: record({ cleanupPending: true }) },
       { intent: { pending: false, attempts: 0 }, record: expected }, // Not a positive cleanup check.
       { intent: checked, record: record({ cleanupPending: true }) },

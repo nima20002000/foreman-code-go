@@ -3,9 +3,9 @@ import type pg from 'pg'
 import type { RunRecordDetail } from '@graphql/contracts/wave25'
 
 /** Read-only barrier for successful fixture Runs, ordinary or repeated.
- * completeRun commits BEFORE requestCleanup. A terminal record with
- * cleanupPending=false and NO intent is therefore not settlement evidence.
- * Require the actual intent's successful check, then read the public record.
+ * completeRunLocked commits the terminal Run WITH its pending cleanup intent.
+ * Completion alone is not settlement: require the original writer's successful
+ * check and matching public readback. Missing or unchecked evidence fails closed.
  * Never call Start, resume, reconcile, finishCleanup or manufacture a receipt. */
 export async function waitForSuccessfulRunCleanup(input: {
   pool: Pick<pg.Pool, 'query'>

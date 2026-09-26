@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { GetInteractionResponseSchema, ListInteractionsResponseSchema, RespondToInteractionResponseSchema } from '@graphql/contracts'
+import { GetInteractionResponseSchema, ListInteractionsResponseSchema, RespondToInteractionRequestSchema, RespondToInteractionResponseSchema } from '@graphql/contracts'
 import { ManagedInteractionPageSchema } from '@graphql/contracts/management'
 import { RepeatGraphSnapshotV3Schema, RunExecutionsPageSchema, RunRecordDetailSchema } from '@graphql/contracts/wave25'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
@@ -28,7 +28,8 @@ async function approveThroughHttp(f: Harness, started: Started) {
     expect(page.items).toHaveLength(1)
     expect(page.items[0]).toMatchObject({ runId, status: 'pending' })
     const record = RunRecordDetailSchema.parse(await f.http('GET', `${runPath(started.scope)}/record`))
-    expect(record.run.executionState).toBe('waiting')
+    expect(record).toMatchObject({ run: { executionState: 'waiting', outcome: 'pending' },
+      stopRequested: false, cleanupPending: false })
   }, { timeout: 25000, interval: 50 })
   const page = ListInteractionsResponseSchema.parse(await list()), interaction = page.items[0]!
   const monitoring = ManagedInteractionPageSchema.parse(await f.mcp('interaction_list', { workspaceId, workflowId, runId, limit: 10 }))
@@ -41,8 +42,8 @@ async function approveThroughHttp(f: Harness, started: Started) {
   expect(detail.canRespond).toBe(true); expect(detail.interaction).toEqual(interaction)
   const option = interaction.responseOptions.find((item) => item.semantic === 'approve_once')
   expect(option).toBeDefined()
-  const input = { interactionId: interaction.id, expectedRevision: interaction.revision,
-    optionId: option!.optionId }
+  const input = RespondToInteractionRequestSchema.parse({ interactionId: interaction.id,
+    expectedRevision: interaction.revision, optionId: option!.optionId })
   const path = `/api/user/interactions/${interaction.id}/respond`
   // Operator MCP is read-only monitoring of a human-handled interaction.
   const tools = await f.client.listTools()
@@ -51,15 +52,55 @@ async function approveThroughHttp(f: Harness, started: Started) {
   expect(denied.status).toBe(403)
   expect(denied.body).toMatchObject({ error: { code: 'AUTH_WRONG_AUDIENCE' } })
   expect(f.base.provider.counts.responses).toBe(0)
-  const decision = RespondToInteractionResponseSchema.parse(await f.http('POST', path, input, user.token))
-  expect(decision.interaction).toMatchObject({ id: interaction.id, runId, deliveryState: 'delivered' })
-  const replay = RespondToInteractionResponseSchema.parse(await f.http('POST', path, input, user.token))
-  expect(replay.interaction.id).toBe(interaction.id)
-  expect(replay.interaction.deliveryState).toBe('delivered')
-  expect(f.base.provider.counts.responses).toBe(1)
+  // Prove that the original approval is still open BEFORE the first response.
+  // These are observations only; no authority, budget or cleanup fence is reset.
+  const authority = (await f.base.db.pool.query(`select r.execution_state as run_state,
+    r.stop_requested_at is not null as stop_requested,
+    r.worker_credentials_closed_at is not null as run_credentials_closed,
+    e.record->>'state' as execution_state,
+    e.worker_credentials_closed_at is not null as execution_credentials_closed
+    from runs r join harness_executions e on e.run_id=r.id where r.id=$1 and e.id=$2`,
+  [runId, interaction.executionId])).rows
+  expect(authority).toEqual([{ run_state: 'waiting', stop_requested: false,
+    run_credentials_closed: false, execution_state: 'waiting', execution_credentials_closed: false }])
+
+  // respondToApproval awaits the real graph resume. With this fast provider an
+  // awaited first response completes the entire Run, so a subsequent response
+  // correctly hits EXECUTION_STOPPED. Hold the successor, not the requester,
+  // and replay after delivery/ACK while the first response is still in flight.
+  const successor = f.scenario.nodes[2]!, releaseSuccessor = f.hold(successor.id)
+  const response = f.http('POST', path, input, user.token)
+  void response.catch(() => undefined) // Keep failures handled until the awaited read below.
+  try {
+    await f.waitUntilParked(started.scope, successor.id)
+    const active = RunRecordDetailSchema.parse(await f.http('GET', `${runPath(started.scope)}/record`))
+    expect(active).toMatchObject({ run: { executionState: 'running', outcome: 'pending' },
+      stopRequested: false, cleanupPending: false })
+    expect(f.base.provider.counts.responses).toBe(1)
+    const delivered = GetInteractionResponseSchema.parse(await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, user.token))
+    expect(delivered.interaction).toMatchObject({ id: interaction.id, runId, deliveryState: 'delivered' })
+    const replay = RespondToInteractionResponseSchema.parse(await f.http('POST', path, input, user.token))
+    expect(replay).toMatchObject({ replayed: true,
+      interaction: { id: interaction.id, runId, deliveryState: 'delivered' } })
+    expect(f.parked.has(successor.id)).toBe(true)
+    expect(f.base.provider.counts.responses).toBe(1)
+  } finally {
+    releaseSuccessor()
+    await response.catch(() => undefined)
+  }
+  const decision = RespondToInteractionResponseSchema.parse(await response)
+  expect(decision).toMatchObject({ replayed: false,
+    interaction: { id: interaction.id, runId, deliveryState: 'delivered' } })
   await f.settled(started.scope)
+  // Terminal replay is a separate fail-closed case, not an open-Run replay.
+  // It must neither redeliver the native response nor change accepted evidence.
+  const counts = { ...f.base.provider.counts }
+  const terminalReplay = await f.rawHttp('POST', path, input, user.token)
+  expect(terminalReplay.status).toBe(409)
+  expect(terminalReplay.body).toMatchObject({ error: { code: 'EXECUTION_STOPPED' } })
+  expect(f.base.provider.counts).toEqual(counts)
   const final = GetInteractionResponseSchema.parse(await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, user.token))
-  expect(final.interaction).toMatchObject({ id: interaction.id, deliveryState: 'delivered' })
+  expect(final.interaction).toEqual(decision.interaction)
   const finalMonitor = ManagedInteractionPageSchema.parse(await f.mcp('interaction_list', { workspaceId, workflowId, runId, limit: 10 }))
   expect(finalMonitor.items).toEqual(ListInteractionsResponseSchema.parse(await list()).items)
 }

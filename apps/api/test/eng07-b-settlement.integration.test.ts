@@ -13,17 +13,18 @@ function latch() {
 }
 afterEach(() => vi.restoreAllMocks())
 
-describe.skipIf(!postgresEnabled)('ENG07-B real terminal-before-cleanup commit gap', () => {
+describe.skipIf(!postgresEnabled)('ENG07-B real terminal-before-cleanup-check gap', () => {
   it.each(['S3-01', 'S3-05-early'] as const)('%s waits for the original cleanup writer, without driving the engine', async (id) => {
     const f = await scenarioHarness(scenarioFixture(id, randomUUID()))
     const cleanupEntered = latch(), releaseCleanup = latch(), readOnce = latch()
-    const requestCleanup = f.base.runs.requestCleanup.bind(f.base.runs)
-    // Timing gate only: the ORIGINAL writer still runs with the same arguments,
-    // owner, locks and proof checks. No Run, intent or receipt row is fabricated.
-    const gate = vi.spyOn(f.base.runs, 'requestCleanup').mockImplementation(async (...args) => {
+    const finishCleanup = f.base.runs.finishCleanup.bind(f.base.runs)
+    // completeRunLocked commits a pending intent WITH the terminal Run. Pause
+    // before its successful cleanup check, not before a supposed intent insert.
+    // The ORIGINAL writer retains the same owner, arguments and proof checks.
+    const gate = vi.spyOn(f.base.runs, 'finishCleanup').mockImplementation(async (...args) => {
       cleanupEntered.release()
       await releaseCleanup.promise
-      return requestCleanup(...args)
+      return finishCleanup(...args)
     })
     let pending: Promise<unknown> | undefined
     try {
@@ -33,9 +34,10 @@ describe.skipIf(!postgresEnabled)('ENG07-B real terminal-before-cleanup commit g
       await vi.waitFor(() => expect(entered).toBe(true), { timeout: 25000 })
       const read = async () => RunRecordDetailSchema.parse(await f.http('GET', `${runPath(started.scope)}/record`))
       const before = await read()
-      expect(before).toMatchObject({ run: { executionState: 'completed', outcome: 'succeeded' }, cleanupPending: false })
+      expect(before).toMatchObject({ run: { executionState: 'completed', outcome: 'succeeded' },
+        stopRequested: false, cleanupPending: true })
       expect((await f.base.db.pool.query('select pending,attempts from run_cleanup_intents where run_id=$1',
-        [started.scope.runId])).rows).toEqual([])
+        [started.scope.runId])).rows).toEqual([{ pending: true, attempts: 0 }])
       const counts = { ...f.base.provider.counts }
       let returned = false
       pending = waitForSuccessfulRunCleanup({ pool: f.base.db.pool, runId: started.scope.runId,
@@ -44,16 +46,17 @@ describe.skipIf(!postgresEnabled)('ENG07-B real terminal-before-cleanup commit g
       void pending.catch(() => undefined) // The awaited promise below retains failure.
       await Promise.race([readOnce.promise, pending])
       // Drain promise reactions; the cleanup gate, not a wall-clock sleep, keeps
-      // the real Run at the formerly false-positive public cut.
+      // the real Run terminal with an unverified, still-pending cleanup intent.
       await new Promise<void>((resolve) => setImmediate(resolve))
-      expect(returned, 'A terminal Run with no cleanup intent must not pass the barrier').toBe(false)
+      expect(returned, 'A terminal Run with unchecked pending cleanup must not pass the barrier').toBe(false)
       releaseCleanup.release()
       const after = await pending
       expect(after).toEqual(await f.readParity(`${runPath(started.scope)}/record`, RUN_INSPECTION_TOOLS.record,
         { workspaceId: started.scope.workspaceId, runId: started.scope.runId }))
-      expect((await f.base.db.pool.query<{ pending: boolean; attempts: number }>(
-        'select pending,attempts from run_cleanup_intents where run_id=$1', [started.scope.runId])).rows[0])
-        .toMatchObject({ pending: false, attempts: expect.any(Number) })
+      const intent = (await f.base.db.pool.query<{ pending: boolean; attempts: number }>(
+        'select pending,attempts from run_cleanup_intents where run_id=$1', [started.scope.runId])).rows[0]!
+      expect(intent.pending).toBe(false)
+      expect(intent.attempts).toBeGreaterThan(0)
       await f.settled(started.scope)
       expect(f.base.provider.counts).toEqual(counts)
       expect(f.base.dispatchErrors).toEqual([])
