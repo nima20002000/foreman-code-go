@@ -20,6 +20,7 @@ import { useOperatorSettings } from './useOperatorSettings'
 import { useOperatorChatSetup } from '../../shared/api/operatorChatSetup'
 import { pendingOperatorSetupTarget } from '../../shared/api/operatorSetupTarget'
 import { OperatorSetupNotice } from './OperatorSetupNotice'
+import { isMissingOperatorConversation, useMissingOperatorConversation } from './useMissingOperatorConversation'
 import { SettingsFormFeedback } from '../settings/SettingsFormActions'
 import { acknowledgeOperatorMessage, assertOperatorMessageReserved, beginOperatorMessageAttempt, discardDefinitivelyRejectedOperatorMessage,
   readPendingOperatorMessage, recordOperatorMessageFailure, reserveOperatorMessage } from './operatorOutbox'
@@ -94,7 +95,7 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
     queryFn: async ({ signal }) => {
       const state = await getOperatorConversation(selectedId ?? '', { signal })
       return newer(queryClient.getQueryData<OperatorConversationState>(detailKey(selectedId ?? '')), state)
-    }, refetchInterval: 3_000 })
+    }, retry: false, refetchInterval: 3_000 })
   const selectedDenied = useAccessFailureLatch(selected)
   const accessDenied = listDenied || selectedDenied
   const pending = selectedId && !accessDenied && enabled && !sessionIsSwitching() ? readPendingOperatorMessage(selectedId) : {}
@@ -103,6 +104,10 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
   const retrySetup = useOperatorChatSetup(enabled && open && Boolean(pending.command) && !accessDenied, undefined,
     pendingOperatorSetupTarget(selectedId, pending.command))
   const shownSetup = pending.command ? retrySetup : setup
+  const setupDenied = ApiError.is(shownSetup.error) && [401, 403].includes(shownSetup.error.status)
+  const missingSelection = Boolean(selectedId) && !accessDenied && !preferencesDenied && !setupDenied
+    && (isMissingOperatorConversation(selected.error) || isMissingOperatorConversation(shownSetup.error))
+  const recoveredSelection = useMissingOperatorConversation(selectedId, missingSelection)
   const acceptState = useCallback((id: string, state: OperatorConversationState) => {
     if (deletedIds.current.has(id)) return
     const accepted = newer(queryClient.getQueryData<OperatorConversationState>(detailKey(id)), state)
@@ -425,13 +430,14 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
         <main className="operator-chat-main">
           {handoffNotice && handoffNotice.epoch === identityEpoch() ? <p role="status">Your continued chat is ready. <Button size="sm" variant="ghost"
             onClick={() => { select(handoffNotice.id); setHandoffNotice(undefined) }}>Open continued chat</Button></p> : null}
-          <OperatorSetupNotice data={shownSetup.data} checking={shownSetup.isFetching || shownSetup.isPending} failed={shownSetup.isError} onRetry={() => void shownSetup.refetch()} />
+          {recoveredSelection ? <p role="status">The previous conversation is no longer available. Start a new chat. Any saved draft or pending message has been kept on this device.</p> : null}
+          {!missingSelection ? <OperatorSetupNotice data={shownSetup.data} checking={shownSetup.isFetching || shownSetup.isPending} failed={shownSetup.isError} onRetry={() => void shownSetup.refetch()} /> : null}
           {remove.error instanceof Error ? <Alert live tone="danger" title="Chat could not be deleted">{remove.error.message}</Alert> : null}
           {restore.error instanceof Error ? <Alert live tone="danger" title="Chat could not be restored">{restore.error.message}</Alert> : null}
           {create.error instanceof Error ? <Alert live tone="danger" title="Conversation could not be created">{create.error.message}</Alert> : null}
           {!selectedId && !accessDenied ? <Button variant="primary" leading={<Icon name="plus" size={15} />} onClick={createConversation} disabled={create.isPending} loading={create.isPending}>Start a new conversation</Button> : null}
           {selected.isLoading ? <LoadingState label="Loading conversation…" rows={4} /> : null}
-          {selected.isError ? <Alert live tone="danger" title={conversation ? 'Conversation refresh failed' : 'Conversation could not be loaded'} action={<Button size="sm" disabled={selected.isFetching} loading={selected.isFetching} onClick={() => void selected.refetch()}>Retry conversation</Button>}>{conversation ? 'Previously loaded messages are still shown.' : 'Try the request again.'}</Alert> : null}
+          {selected.isError && !missingSelection ? <Alert live tone="danger" title={conversation ? 'Conversation refresh failed' : 'Conversation could not be loaded'} action={<Button size="sm" disabled={selected.isFetching} loading={selected.isFetching} onClick={() => void selected.refetch()}>Retry conversation</Button>}>{conversation ? 'Previously loaded messages are still shown.' : 'Try the request again.'}</Alert> : null}
           {conversation ? <>
             {archived ? <Alert tone="warning" title="Conversation ended">This conversation is read-only. Its history and pending receipt remain available.</Alert> : null}
             {conversation.handoff ? <p className="operator-chat-handoff">Continued from <Button size="sm" variant="ghost" onClick={() => select(conversation.handoff!.parentConversationId)}>{conversation.handoff.sourceHarness} chat</Button>
