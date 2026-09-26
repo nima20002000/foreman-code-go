@@ -1,3 +1,4 @@
+import { readCurrentExecutions } from './helpers/wave25Agent3.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { acknowledgementId } from '../src/modules/interactions/wave25/nativeEvidence.js'
 import { deliverApproval } from '../src/modules/interactions/wave25/service.js'
@@ -18,7 +19,7 @@ async function start(f: Br1002Runtime) {
   if (!interaction?.approval.designatedOrchestratorAgentId) throw new Error('Expected routed native Worker approval')
   const job = await f.repository.coordination.findReviewJob(interaction.id, interaction.approval.designatedOrchestratorAgentId)
   if (!job) throw new Error('Actual coordinator did not enqueue a review')
-  const host = (await f.runs.listExecutions(f.f.run.id)).find((execution) => execution.agentId === job.reviewerAgentId)!
+  const host = (await readCurrentExecutions(f.runs, f.f.run.id)).find((execution) => execution.agentId === job.reviewerAgentId)!
   const server = f.servers.get(host.id)!
   return { interaction, job, host, server }
 }

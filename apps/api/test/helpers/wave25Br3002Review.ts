@@ -1,3 +1,4 @@
+import { readCurrentExecutions } from './wave25Agent3.js'
 import { vi } from 'vitest'
 import type { NativeGraphObservation } from '@graphql/contracts/wave25'
 import { nativeMessageId, object, type OpenCodeMessage } from '../../src/modules/harnesses/opencodeProtocol.js'
@@ -95,7 +96,7 @@ export async function br3002Evidence(f: Br1002Runtime, jobId: string) {
 }
 export async function br3002Decision(f: Br1002Runtime, args: Br3002ReviewArgs) {
   const job = args[0], interaction = (await f.repository.get(job.interactionId))!
-  const host = (await f.runs.listExecutions(f.f.run.id)).find((execution) => execution.agentId === job.reviewerAgentId)!
+  const host = (await readCurrentExecutions(f.runs, f.f.run.id)).find((execution) => execution.agentId === job.reviewerAgentId)!
   const credential = await f.credentials.issueForReviewer(host.id)
   try {
     const principal = await f.access.authenticate(credential.environment.variables.GRAPHQL_APP_MCP_TOKEN, 'worker')

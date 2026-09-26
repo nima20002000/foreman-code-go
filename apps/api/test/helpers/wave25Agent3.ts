@@ -14,6 +14,7 @@ import { insertRepeatRun } from '../../src/modules/runs/repeatStartAdmission.js'
 import { repeatStartPublication } from '../../src/modules/run-graph/repeatStartPublication.js'
 import { RunOwnership } from '../../src/modules/runs/ownership.js'
 import { RepeatRunRepository, type RepeatRepositoryHost } from '../../src/modules/runs/repeatPostgres.js'
+import type { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import type { RepeatNativeEvidence } from '../../src/modules/runs/repeatNativeRepository.js'
 
 export const postgresEnabled = process.env.RUN_WAVE25_POSTGRES_TESTS === '1'
@@ -147,4 +148,11 @@ export function setFixtureVersion(fixture: Agent3Fixture, version: WorkflowVersi
   fixture.version = version
   fixture.run = WorkflowRunV3Schema.parse({ ...fixture.run, workflowVersionId: version.id, agentConfigurationVersionIds: version.agentConfigurationVersionIds, approval: version.approval })
   return fixture
+}
+
+/** Consume the current paged repository reader without truncating test evidence. */
+export async function readCurrentExecutions(runs: Pick<PostgresRunRepository, 'executionPages'>, runId: string): Promise<HarnessExecution[]> {
+  const executions: HarnessExecution[] = []
+  for await (const page of runs.executionPages(runId)) executions.push(...page)
+  return executions
 }

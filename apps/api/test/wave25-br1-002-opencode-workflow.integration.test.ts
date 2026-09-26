@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { WorkflowRunV2Schema } from '@graphql/contracts/wave25'
-import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
-import { insertOneShotRun } from '../src/modules/runs/oneShotAdmission.js'
+import { insertCurrentRunFixture } from './helpers/eng04CurrentRunFixture.js'
 import { nativeGraphSource } from '../src/modules/run-graph/nativeIngestion.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
@@ -243,8 +241,12 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual OpenCode coordinator / Postgre
             to_jsonb((record->>'connectionGeneration')::integer+1)) where id=$1`, [lease.id])
           await cut.original(...args)
         } else if (boundary === 'foreign-run-owner') {
-          const otherRun = WorkflowRunV2Schema.parse({ ...f.f.run, id: `${f.f.run.id}-foreign` })
-          await withExclusiveGraphConnection(f.db.pool, (connection) => connection.transaction((sql) => insertOneShotRun(sql, otherRun)))
+          const revision = Number((await f.db.pool.query<{ revision: string }>(
+            'select revision::text from workflows where id=$1', [f.f.scope.workflowId])).rows[0]!.revision)
+          const { run: otherRun } = await insertCurrentRunFixture(f.db.pool,
+            { ...f.f, run: { ...f.f.run, id: `${f.f.run.id}-foreign` } },
+            { workspaceId: f.f.scope.workspaceId, workflowId: f.f.scope.workflowId, revision,
+              currentVersionId: f.f.version.id, version: f.f.version }, f.f.run.authorizationPrincipalId!)
           const otherOwner = await RunOwnership.acquire(f.db.pool, otherRun.id, () => undefined)
           if (!otherOwner) throw new Error('Expected an actual independent foreign Run owner')
           const otherPublications = (await f.db.pool.query('select sequence::text,payload from run_graph_batches where run_id=$1 order by sequence', [otherRun.id])).rows
@@ -258,7 +260,7 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual OpenCode coordinator / Postgre
           await owner.release()
           await expect(cut.original(...args)).rejects.toBeDefined()
         } else {
-          await f.runs.requestStop(f.f.run.id)
+          await f.stop()
           await cut.original(...args)
         }
         expect((await br1002Ack(f, i.id))?.approval_native_ack_id ?? null).toBeNull()

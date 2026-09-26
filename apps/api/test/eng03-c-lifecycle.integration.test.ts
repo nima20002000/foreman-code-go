@@ -1,3 +1,4 @@
+import { readCurrentExecutions } from './helpers/wave25Agent3.js'
 import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -49,7 +50,7 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     const directory = process.env.ENG03_C_EVIDENCE_DIR ?? join(tmpdir(), 'eng03-c-evidence')
     await mkdir(directory, { recursive: true })
     const artifactPath = join(directory, `${scenario}-${randomUUID().replaceAll('-', '')}.json`)
-    const executions = await runs.listExecutions(runId)
+    const executions = await readCurrentExecutions(runs, runId)
     const cleanup = (await db.pool.query<{ pending: boolean }>(
       'select pending from run_cleanup_intents where run_id=$1', [runId],
     )).rows[0]?.pending ?? false
@@ -171,7 +172,7 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     await expect(stopping).resolves.toMatchObject({ status: 'accepted', replayed: false, processStopped: false })
     expect((await r.runs.get(f.run.id))?.outcome).toBe('canceled')
     expect(await r.runs.hasPendingCleanup(f.run.id)).toBe(false)
-    expect(await r.runs.listExecutions(f.run.id)).toHaveLength(0)
+    expect(await readCurrentExecutions(r.runs, f.run.id)).toHaveLength(0)
     expect(r.starts).toHaveLength(0)
     await r.engine.shutdown()
   }, 30_000)
@@ -234,7 +235,7 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     expect(r.native.cancelRun).toHaveBeenCalledWith(f.run.id)
     await evidence('E03-L02', f.run.id, r.runs, { outcome: 'failed', siblingCanceled: true },
       { outcome: (await r.runs.get(f.run.id))?.outcome, siblingNativeStarts: r.starts.filter((id) => id === sibling).length,
-        siblingOutcome: (await r.runs.listExecutions(f.run.id)).find((item) => item.workflowNodeId === sibling)?.result?.outcome })
+        siblingOutcome: (await readCurrentExecutions(r.runs, f.run.id)).find((item) => item.workflowNodeId === sibling)?.result?.outcome })
     await r.engine.shutdown()
   }, 30_000)
 
@@ -296,7 +297,7 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     await evidence('E03-L04', f.run.id, r.runs,
       { acceptedSiblingPreserved: true, replacementNativeStarts: 0, exactSessionId: `native-${unfinishedId}` },
       { outcome: (await r.runs.get(f.run.id))?.outcome, replacementNativeStarts: r.starts.length,
-        acceptedSiblingOutcome: (await r.runs.listExecutions(f.run.id)).find((item) => item.workflowNodeId === first)?.result?.outcome,
+        acceptedSiblingOutcome: (await readCurrentExecutions(r.runs, f.run.id)).find((item) => item.workflowNodeId === first)?.result?.outcome,
         nativeSessionId: (await r.runs.getExecution(unfinishedId))?.nativeSessionId })
     await r.engine.shutdown()
   }, 30_000)
@@ -389,7 +390,7 @@ describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parall
     await releasedSibling.promise
     await start
     expect((await r.runs.get(f.run.id))?.executionState).toBe('waiting')
-    expect((await r.runs.listExecutions(f.run.id)).find((item) => item.workflowNodeId === sibling)?.result?.outcome).toBe('succeeded')
+    expect((await readCurrentExecutions(r.runs, f.run.id)).find((item) => item.workflowNodeId === sibling)?.result?.outcome).toBe('succeeded')
     const pending = (await interactions.get(waitingInteractionId))!
     expect(pending.graphInterruptId).toBeTruthy()
     const paused = (await db.pool.query<{ active_started_at: Date | null; approval_wait_started_at: Date | null }>(

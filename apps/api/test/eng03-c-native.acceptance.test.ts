@@ -1,3 +1,4 @@
+import { readCurrentExecutions } from './helpers/wave25Agent3.js'
 import { createHash } from 'node:crypto'
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -180,7 +181,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
       control: async (context) => {
         const { pool, runId, nodeIds, runs, approvals, startTask } = context
         const started = await startedBranches(context)
-        const execution = (await runs.listExecutions(runId)).find((item) => item.id === started[0]!.execution_id)!
+        const execution = (await readCurrentExecutions(runs, runId)).find((item) => item.id === started[0]!.execution_id)!
         const sessions = Reflect.get(approvals, 'ownedSessions') as Map<string, {
           session?: NativeSessionReference; manager: SingleWriterSessionManager
         }>
@@ -238,7 +239,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
             if (row) {
               pending = DurableInteractionSchema.parse(row.record)
               interactionId = pending.id; sessionId = pending.nativeSessionId
-              const sibling = (await runs.listExecutions(runId)).find((item) => item.workflowNodeId === nodeIds[2])
+              const sibling = (await readCurrentExecutions(runs, runId)).find((item) => item.workflowNodeId === nodeIds[2])
               const nativeStarted = (await pool.query(`select 1 from harness_native_events where execution_id=$1
                 and record->>'type'='turn.started' limit 1`, [sibling?.id ?? ''])).rowCount === 1
               if (nativeStarted && sibling?.state !== 'completed') siblingActiveAtWait = true

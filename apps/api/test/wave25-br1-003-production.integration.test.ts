@@ -178,10 +178,10 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
       expect(saver.crashed).toBe(true)
       const receipts = await f.receipts(), committed = (await f.saver.getTuple(cut.config))?.pendingWrites
       expect(receipts).toHaveLength(1)
-      if (race === 'stop') await f.runs.requestStop(f.f.run.id)
+      if (race === 'stop') await f.stop()
       if (race === 'revoked_authority') await f.db.pool.query('update management_principals set revoked_at=clock_timestamp() where id=$1', [f.authorizationPrincipalId])
       if (race === 'closed_execution') await f.db.pool.query('update harness_executions set worker_credentials_closed_at=clock_timestamp() where id=$1', [interaction!.executionId])
-      const successor = f.compose(), observe = vi.spyOn(successor.native, 'ensureObserve')
+      const successor = f.compose(), observe = vi.spyOn(successor.native, 'observeExact')
       await expect(successor.engine.resumeInteraction(result.interaction)).rejects.toMatchObject({
         code: race === 'revoked_authority' ? 'RUN_AUTHORIZATION_REVOKED' : 'EXECUTION_STOPPED',
       })
@@ -218,7 +218,7 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
         expect((await f.db.pool.query('select state from interaction_graph_resumes where interaction_id=$1', [interaction!.id])).rows[0])
           .toEqual({ state: 'resuming' })
         if (race === 'lease_expiry') await expireAbandonedClaims(f)
-        if (race === 'stop') await f.runs.requestStop(f.f.run.id)
+        if (race === 'stop') await f.stop()
         if (race === 'revoked_authority') await f.db.pool.query('update management_principals set revoked_at=clock_timestamp() where id=$1', [f.authorizationPrincipalId])
         if (race === 'closed_execution') await f.db.pool.query('update harness_executions set worker_credentials_closed_at=clock_timestamp() where id=$1', [interaction!.executionId])
         release.resolve()

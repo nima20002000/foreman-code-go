@@ -1,3 +1,4 @@
+import { readCurrentExecutions } from './helpers/wave25Agent3.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { NativeSessionReference } from '@graphql/contracts'
 import type { NativeGraphObservation } from '@graphql/contracts/wave25'
@@ -26,7 +27,7 @@ async function startReview(f: Br1002Runtime) {
     return authority.mock.calls.map(([request]) => request)
   } catch (cause) {
     const [executions, counts] = await Promise.allSettled([
-      f.runs.listExecutions(f.f.run.id),
+      readCurrentExecutions(f.runs, f.f.run.id),
       f.db.pool.query<{ interactions: string; review_jobs: string }>(`select
         (select count(*)::text from durable_interactions where run_id=$1) as interactions,
         (select count(*)::text from review_jobs j join durable_interactions i on i.id=j.interaction_id
@@ -82,7 +83,7 @@ async function evidence(f: Br1002Runtime, jobId: string) {
 }
 async function decision(f: Br1002Runtime, args: ReviewArgs) {
   const job = args[0], interaction = (await f.repository.get(job.interactionId))!
-  const host = (await f.runs.listExecutions(f.f.run.id)).find((e) => e.agentId === job.reviewerAgentId)!
+  const host = (await readCurrentExecutions(f.runs, f.f.run.id)).find((e) => e.agentId === job.reviewerAgentId)!
   const credential = await f.credentials.issueForReviewer(host.id)
   try {
     const principal = await f.access.authenticate(credential.environment.variables.GRAPHQL_APP_MCP_TOKEN, 'worker')
@@ -104,7 +105,7 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual reviewer dispatcher / OpenCode
       const { compare } = await graphParity(f.db.pool, f.f.scope)
       await compare()
       const requests = await startReview(f)
-      const executions = await f.runs.listExecutions(f.f.run.id)
+      const executions = await readCurrentExecutions(f.runs, f.f.run.id)
       expect(executions).toHaveLength(2)
       const entry = executions.find((execution) => execution.workflowNodeId === f.f.version.entryNodeId)!
       const worker = executions.find((execution) => execution.workflowNodeId !== f.f.version.entryNodeId)!
@@ -160,7 +161,7 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual reviewer dispatcher / OpenCode
       try {
         await expect(f.engine.start(f.f.run.id)).rejects.toMatchObject({ code: 'WORKFLOW_SELECTED_EXECUTION_FAILED' })
         expect(corrupted).toBeGreaterThan(0)
-        const executions = await f.runs.listExecutions(f.f.run.id)
+        const executions = await readCurrentExecutions(f.runs, f.f.run.id)
         expect(executions).toHaveLength(2)
         const entry = executions.find((execution) => execution.workflowNodeId === f.f.version.entryNodeId)!
         const worker = executions.find((execution) => execution.workflowNodeId !== f.f.version.entryNodeId)!
@@ -218,7 +219,7 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual reviewer dispatcher / OpenCode
       expect((await deliverApproval({ repository: f.repository, nativeRuntime: f.native }, i.id)).deliveryState).toBe('pending')
       expect(f.counts().responses).toBe(0)
       await compare()
-      const host = (await f.runs.listExecutions(f.f.run.id)).find((e) => e.agentId === job.reviewerAgentId)!
+      const host = (await readCurrentExecutions(f.runs, f.f.run.id)).find((e) => e.agentId === job.reviewerAgentId)!
       const server = f.servers.get(host.id)!
       const generation = server.generation
       server.finishFromHistory(job.correlationId, job.nativeSessionId)
@@ -297,7 +298,7 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual reviewer dispatcher / OpenCode
         dispatch = f.native.reviewers.dispatchNext(job.reviewerAgentId, `br1-002-${cut}`)
         const started = await br1002At(cuts.live.promise, dispatch)
         await decision(f, started)
-        const host = (await f.runs.listExecutions(f.f.run.id)).find((e) => e.agentId === job.reviewerAgentId)!
+        const host = (await readCurrentExecutions(f.runs, f.f.run.id)).find((e) => e.agentId === job.reviewerAgentId)!
         const server = f.servers.get(host.id)!
         server.finishFromHistory(job.correlationId, job.nativeSessionId); server.closeStreams()
         const args = await br1002At(cuts.before.promise, dispatch)
