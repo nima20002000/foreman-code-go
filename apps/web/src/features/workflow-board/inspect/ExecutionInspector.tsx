@@ -4,7 +4,7 @@ import {
   readRunInspectionKey, runInspectionKey, type RepeatGraphScopeV3, type RunExecutionDetail,
   type RunExecutionSummary, type WorkflowVersionV3, type WorkspaceBoardExecutionSelection,
 } from '@graphql/contracts/wave25'
-import { Alert, Button } from '../../../shared/ui/nocturne'
+import { Alert, Button, Select } from '../../../shared/ui/nocturne'
 import { useProtectedAccessError } from '../../auth/useProtectedAccessError'
 import { useWorkflowBoard } from '../context'
 import { assertExecutionVersion } from '../runDetailsClient'
@@ -48,14 +48,12 @@ export function ExecutionInspector({ scope, version }: { scope: RepeatGraphScope
     <header><h3>Execution inputs and accepted results</h3>
       {(nodeId || inspection.runRelationshipId || inspection.runExchangeKey) ? <Button size="sm" onClick={() => board?.selectInspection({})}>Clear detail filter</Button> : null}
     </header>
-    <label>Run node
-      <select aria-label="Run node" value={inspection.runNodeId ?? ''} onChange={(event) =>
-        board?.selectInspection(event.target.value ? { runNodeId: event.target.value } : {})}>
-        <option value="">All nodes in this saved version</option>
-        {inspection.runNodeId && !node ? <option value={inspection.runNodeId}>{inspection.runNodeId} — not in this Run</option> : null}
-        {version.definition.nodes.map((item) => <option key={item.id} value={item.id}>{item.name ?? item.label ?? item.id} · {item.id}</option>)}
-      </select>
-    </label>
+    <Select label="Run node" value={inspection.runNodeId ?? ''} onChange={(event) =>
+      board?.selectInspection(event.target.value ? { runNodeId: event.target.value } : {})} options={[
+      { value: '', label: 'All nodes in this saved version' },
+      ...(inspection.runNodeId && !node ? [{ value: inspection.runNodeId, label: `${inspection.runNodeId} — not in this Run` }] : []),
+      ...version.definition.nodes.map((item) => ({ value: item.id, label: `${item.name ?? item.label ?? item.id} · ${item.id}` })),
+    ]} />
     {unavailable ? <Alert tone="warning" title="This selection is not in the Run’s saved version.">
       A node or repetition in the current draft is not historical evidence. Clear the filter to inspect this exact version.
     </Alert> : <>
@@ -64,15 +62,12 @@ export function ExecutionInspector({ scope, version }: { scope: RepeatGraphScope
         summary="Saved node configuration (this Run)" label={`Saved Run node ${node.id}`}
         value={{ node, agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId] }} /> : null}
       {version.definition.repeat ? <div className="run-occurrence-picker">
-        <label>Business repetition
-          <select aria-label="Business repetition" value={selection.occurrenceId ?? ''} onChange={(event) => select(event.target.value ? { occurrenceId: event.target.value } : {})}>
-            <option value="">All recorded repetitions</option>
-            {selection.occurrenceId && !occurrences.has(selection.occurrenceId)
-              ? <option value={selection.occurrenceId}>Requested occurrence {selection.occurrenceId}</option> : null}
-            {[...occurrences.values()].sort((a, b) => a.blockId.localeCompare(b.blockId) || a.occurrenceIndex - b.occurrenceIndex)
-              .map((item) => <option key={item.occurrenceId} value={item.occurrenceId}>{item.blockId} · repetition {item.occurrenceIndex} · {item.occurrenceId}</option>)}
-          </select>
-        </label>
+        <Select label="Business repetition" value={selection.occurrenceId ?? ''} onChange={(event) => select(event.target.value ? { occurrenceId: event.target.value } : {})} options={[
+          { value: '', label: 'All recorded repetitions' },
+          ...(selection.occurrenceId && !occurrences.has(selection.occurrenceId) ? [{ value: selection.occurrenceId, label: `Requested occurrence ${selection.occurrenceId}` }] : []),
+          ...[...occurrences.values()].sort((x, y) => x.blockId.localeCompare(y.blockId) || x.occurrenceIndex - y.occurrenceIndex)
+            .map((item) => ({ value: item.occurrenceId, label: `${item.blockId} · repetition ${item.occurrenceIndex} · ${item.occurrenceId}` })),
+        ]} />
         <p>Options come from loaded execution pages only. Load more executions to discover older or later repetitions. An attempt is not a repetition.</p>
       </div> : <p>This saved version has no repeat blocks. Its execution attempts are not manufactured repetition rounds.</p>}
       {denied ? <Alert tone="warning" title="Execution history access is unavailable." /> : pages.isError ? <Alert tone="warning" title="Execution history could not be refreshed.">
