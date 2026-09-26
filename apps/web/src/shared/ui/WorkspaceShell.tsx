@@ -11,6 +11,7 @@ import { ChevronLeft, ChevronRight, UserRound } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 
 import { ThemeToggle } from '../../features/theme'
+import { HarnessStatusMenu } from '../../features/settings/HarnessStatusMenu'
 import { useWorkspacePages } from '../api/query'
 import { EmptyState, IconButton } from './nocturne'
 import {
@@ -202,7 +203,7 @@ export function WorkspaceShell({
         </nav>
 
         <div className="sidebar-footer">
-          <p className="sidebar-note">Local backend</p>
+          <HarnessStatusMenu />
           <div className="sidebar-account-row">
             <Link to="/account" className={`sidebar-account-link${activeGlobalSection === 'account' ? ' sidebar-account-link-active' : ''}`}
               aria-current={activeGlobalSection === 'account' ? 'page' : undefined} aria-label={navigationCollapsed ? 'Account' : undefined}

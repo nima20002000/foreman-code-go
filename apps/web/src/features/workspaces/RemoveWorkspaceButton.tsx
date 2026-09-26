@@ -42,7 +42,7 @@ export function RemoveWorkspaceButton({ workspaceId, name, revision }: {
   }
 
   return <>
-    <IconButton label="Remove workspace" variant="ghost" onClick={() => {
+    <IconButton label="Remove workspace" variant="ghost" className="workspace-remove-button" onClick={() => {
       setBaseRevision(revision); mutation.reset(); setOpen(true)
     }}><Icon name="trash" size={16} /></IconButton>
     <Dialog open={open} onOpenChange={(value) => { if (!value) close() }}

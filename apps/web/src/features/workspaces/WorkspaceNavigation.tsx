@@ -297,8 +297,6 @@ function WorkspaceTreeItem({
   const sectionsId = `${idPrefix}-sections`
   const workflowsPanelId = `${idPrefix}-workflows`
 
-  const workflowsActive = active && activeSection === 'workflows'
-
   const sections = useReorderableNavigation(
     workspaceSectionsOrderKey(entry.id),
     workspaceSectionItems,
@@ -310,20 +308,16 @@ function WorkspaceTreeItem({
       return (
         <>
           <div className="nav-item-row" {...reorderProps}>
-            <Link
-              to="/workspaces/$workspaceId/workflows"
-              params={{ workspaceId: entry.id }}
-              className={`nav-item${workflowsActive ? ' nav-item-active' : ''}`}
-              aria-current={workflowsActive ? 'page' : undefined}
+            <span
+              className="nav-item nav-section-label"
               aria-label={navigationCollapsed ? 'Workflows' : undefined}
               title="Workflows"
-              {...sections.getKeyboardProps(section)}
             >
               <span className="nav-item-primary">
                 <Workflow aria-hidden="true" className="nav-item-icon" size={16} />
                 <span className="nav-item-label">Workflows</span>
               </span>
-            </Link>
+            </span>
             <IconButton
               className="nav-item-toggle"
               label={`${workflowsExpanded ? 'Collapse' : 'Expand'} workflows in ${entry.name}`}

@@ -91,6 +91,7 @@
 .resource-card :is(.workflow-card-actions, .workspace-card-actions) .n-button { min-height: 44px; font-size: 13px; }
 .resource-card :is(.workflow-card-actions, .workspace-card-actions) .n-input { min-height: 44px; font-size: 15px; }
 .workspace-overview { display: grid; align-content: start; gap: var(--space-6); }
+.workspace-remove-button.n-button { color: var(--n-danger); }
 .workspace-overview > .workflow-directory { width: 100%; margin: 0; padding: var(--space-4) 0 0; border-top: 1px solid var(--n-border); }
 .workspace-overview > .workflow-directory .n-page-header { padding: 0; flex-wrap: wrap; gap: var(--space-3); }
 .workspace-overview > .workflow-directory h2 { font-size: 15px; font-weight: 500; }

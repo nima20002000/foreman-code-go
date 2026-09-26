@@ -85,17 +85,13 @@ describe('workspace section routes', () => {
     expect(screen.getByRole('link', { name: 'Terminal' })).toHaveAttribute('aria-current', 'page')
   })
 
-  it('navigates between nested workspace destinations through router links', async () => {
-    const { router } = renderRoute('/workspaces/workspace-1/agents')
-
-    expect(await screen.findByRole('heading', { name: 'Agents', level: 1 })).toBeVisible()
-    await userEvent.setup().click(screen.getByRole('link', { name: 'Workflows' }))
-
-    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/workflows'))
-    expect(await screen.findByRole('heading', { name: 'Workflows', level: 1 })).toBeVisible()
-    expect(await screen.findByTestId('workflow-card-workflow-content-pipeline')).toHaveTextContent('Research to review')
-    expect(screen.getByRole('link', { name: 'Workflows' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
+  it('keeps the Workflows sidebar label on the current workspace settings page', async () => {
+    const user = userEvent.setup()
+    const { router } = renderRoute('/workspaces/workspace-1/settings')
+    await user.click(await screen.findByTitle('Workflows'))
+    expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings')
+    expect(screen.queryByRole('link', { name: 'Workflows' })).not.toBeInTheDocument()
+    expect(await screen.findByTestId('workflow-card-workflow-content-pipeline')).toBeVisible()
   })
 
   it('keeps workflow submenu expansion state while workspace routes replace the shell', async () => {
@@ -167,6 +163,8 @@ describe('workspace section routes', () => {
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
     expect(await screen.findByTestId('workflow-card-workflow-content-pipeline')).toBeVisible()
     expect(screen.queryByRole('button', { name: /Approvals Review requests in this workspace/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'App connections' })).not.toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Harness availability' })).toBeVisible()
   })
 
   it('confirms workspace removal in settings and returns to the workspace list', async () => {

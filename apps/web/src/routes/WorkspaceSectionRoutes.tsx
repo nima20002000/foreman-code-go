@@ -6,7 +6,7 @@ import { useManagedWorkspaceQuery } from '../shared/api/query'
 import '../shared/ui/resourceDirectory.css'
 
 import { AgentsDirectory } from '../features/agents'
-import { McpDetectionSettings, WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
+import { WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
 import { useApprovalInboxStore } from '../features/approvals'
 import { WorkflowDirectory } from '../features/workflows'
 import { RemoveWorkspaceButton } from '../features/workspaces/RemoveWorkspaceButton'
@@ -148,9 +148,9 @@ export function SettingsRouteEntry() {
               /> : undefined}
             />
             <ul className="settings-card-list">
-              {workspace.data?.locationValidation.status === 'ready' ? <li>
+              <li>
                 <WorkspaceExecutionLocationSettings workspaceId={workspaceId} presentation="tile" />
-              </li> : null}
+              </li>
               <li>
                 <Card className="settings-card">
                   <Link to="/workspaces/$workspaceId/browsers" params={{ workspaceId }} className="settings-card-open">
@@ -160,7 +160,6 @@ export function SettingsRouteEntry() {
               </li>
             </ul>
             <WorkflowDirectory workspaceId={workspaceId} headingLevel={2} />
-            <McpDetectionSettings workspaceId={workspaceId} />
           </div>
         ),
       }}

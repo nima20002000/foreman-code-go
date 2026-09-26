@@ -44,9 +44,9 @@ describe('WorkspaceShell', () => {
     expect(workspaces).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
 
-    const workflows = await screen.findByRole('link', { name: 'Workflows' })
-    expect(workflows).toHaveAttribute('href', '/workspaces/workspace-1/workflows')
-    expect(workflows).toHaveAttribute('aria-current', 'page')
+    const workflows = await screen.findByTitle('Workflows')
+    expect(workflows).not.toHaveAttribute('href')
+    expect(workflows).toHaveTextContent('Workflows')
 
     expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
 
@@ -89,7 +89,7 @@ describe('WorkspaceShell', () => {
     await user.click(workspaces)
 
     expect(workspaces).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByRole('link', { name: 'Workflows' })).toBeVisible()
+    expect(screen.getByTitle('Workflows')).toBeVisible()
   })
 
   it('collapses to an accessible icon rail and expands again', async () => {
@@ -102,7 +102,7 @@ describe('WorkspaceShell', () => {
     expect(screen.getByTestId('workspace-shell')).toHaveClass('workspace-shell-navigation-collapsed')
     expect(screen.getByRole('complementary', { name: 'Primary navigation' })).toHaveAttribute('data-collapsed', 'true')
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveAttribute('title', 'Workspaces')
-    expect(screen.getByRole('link', { name: 'Workflows' })).toHaveAttribute('title', 'Workflows')
+    expect(screen.getByTitle('Workflows')).toHaveAttribute('title', 'Workflows')
     expect(screen.queryByRole('button', { name: 'New workspace' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'New workflow' })).not.toBeInTheDocument()
 
@@ -142,7 +142,7 @@ describe('WorkspaceShell', () => {
     expect(await screen.findByRole('region', { name: 'Workspace content' })).toHaveTextContent('Directory')
     expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Workspaces' })).not.toHaveClass('nav-item-active')
-    expect(await screen.findByRole('link', { name: 'Workflows' })).not.toHaveAttribute('aria-current')
+    expect(await screen.findByTitle('Workflows')).not.toHaveAttribute('aria-current')
   })
 
   it('keeps Terminal top-level and active outside the workspace tree', async () => {
@@ -195,7 +195,7 @@ describe('WorkspaceShell', () => {
   it('starts section reordering only from the direct workflow row, not submenu links', async () => {
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
 
-    const workflowsRow = (await screen.findByRole('link', { name: 'Workflows' })).closest('.nav-item-row')
+    const workflowsRow = (await screen.findByTitle('Workflows')).closest('.nav-item-row')
     expect(workflowsRow).toHaveAttribute('data-reorder-id', 'workflows')
 
     const nestedWorkflow = await screen.findByRole('link', { name: 'Research to review' })
@@ -225,8 +225,9 @@ describe('WorkspaceShell', () => {
     expect(docsToggle).toHaveAttribute('aria-expanded', 'true')
     const filesLinks = screen.getAllByRole('link', { name: 'Files' })
     expect(filesLinks.some((link) => link.getAttribute('href') === '/workspaces/workspace-2/files')).toBe(true)
-    const workflowsLinks = screen.getAllByRole('link', { name: 'Workflows' })
-    expect(workflowsLinks.some((link) => link.getAttribute('href') === '/workspaces/workspace-2/workflows')).toBe(true)
+    const workflowsLinks = screen.getAllByTitle('Workflows')
+    expect(workflowsLinks).toHaveLength(2)
+    expect(workflowsLinks.every((label) => !label.hasAttribute('href'))).toBe(true)
   })
 
   it('resizes the navigation by pointer and keyboard within safe bounds', async () => {

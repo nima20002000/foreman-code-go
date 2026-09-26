@@ -373,7 +373,7 @@ h1 {
     opacity var(--motion-duration-fast) ease;
 }
 
-.nav-item:hover:not(:disabled) {
+.nav-item:hover:not(:disabled):not(.nav-section-label) {
   color: var(--text);
   background: var(--surface-raised);
 }
