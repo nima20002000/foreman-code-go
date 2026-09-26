@@ -12,9 +12,9 @@ import { cgroupBoundary, killCgroup } from '../src/modules/harnesses/recovery/cg
 import { bootIdentity, identityAlive } from '../src/modules/harnesses/recovery/linuxIdentity.js'
 import { InteractionService } from '../src/modules/interactions/service.js'
 import type { SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
-import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
+import { repeatDigest, type RepeatNodeInput, type RepeatInputBinding } from '../src/modules/runs/repeatResolution.js'
 import { registerApprovalCheckpointResume } from '../src/modules/runs/approvalCheckpointRegistration.js'
-import { OneShotRunRepository } from '../src/modules/runs/oneShotPostgres.js'
+import { RepeatRunRepository } from '../src/modules/runs/repeatPostgres.js'
 import { runEng03NativeScenario, type Eng03NativeControl } from './helpers/eng03NativeAcceptance.js'
 
 async function startedBranches({ pool, runId, nodeIds, runs }: Eng03NativeControl) {
@@ -42,9 +42,9 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
     let started: Array<{ execution_id: string; native_session_id: string }> = []
     const result = await runEng03NativeScenario('E03-L01', 'codex', 'codex', {
       control: async (context) => {
-        const { pool, runId, nodeIds, engine, runs, startTask } = context
+        const { pool, runId, nodeIds, stop, runs, startTask } = context
         started = await startedBranches(context)
-        await engine.cancel(runId)
+        await stop()
         await startTask.catch(() => undefined)
         expect((await runs.get(runId))?.outcome).toBe('canceled')
         expect((await pool.query('select 1 from harness_executions where run_id=$1 and workflow_node_id=$2',
@@ -320,9 +320,8 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
       const artifact = JSON.parse(await readFile(result.artifactPath, 'utf8')) as {
         runOutcome: string; cleanup: boolean; sourceGraph: { nodes: Array<{ id: string }> }
         executions: Array<{ id: string; nativeSessionId?: string; nodeId: string; result?: unknown; input: unknown }>
-        accepted: Array<{ relationshipId: string; senderExecutionId: string; acceptedResult: unknown }>
-        bindings: Array<{ relationshipId: string; inputOrdinal: number; acceptedResultDigest: string;
-          recipientInputDigest: string; sender: { executionId: string }; recipient: { executionId: string } }>
+        accepted: RepeatNodeInput['predecessors']
+        bindings: RepeatInputBinding[]
       }
       expect(artifact.runOutcome).toBe('succeeded')
       expect(artifact.cleanup).toBe(true)
@@ -330,19 +329,17 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
       expect(artifact.executions.some((item) => item.nativeSessionId === sessionId)).toBe(true)
       expect(await readFile(target, 'utf8')).toBe('APPROVED\n')
       const reviewer = artifact.executions.find((item) => item.nodeId === artifact.sourceGraph.nodes[3]?.id)!
-      const input = reviewer.input as { predecessors: Array<{ relationshipId: string; senderExecutionId: string;
-        acceptedResult: unknown }> }
+      const input = reviewer.input as RepeatNodeInput
       expect(input.predecessors).toHaveLength(2)
       expect(artifact.accepted).toEqual(input.predecessors)
       expect(artifact.bindings).toHaveLength(2)
-      const recipientDigest = graphSourceDigest(reviewer.input)
+      const recipientDigest = repeatDigest(reviewer.input)
       for (const [ordinal, predecessor] of input.predecessors.entries()) {
-        const sender = artifact.executions.find((item) => item.id === predecessor.senderExecutionId)!
-        const binding = artifact.bindings.find((item) => item.relationshipId === predecessor.relationshipId)!
+        const sender = artifact.executions.find((item) => item.id === predecessor.execution.executionId)!
+        const binding = artifact.bindings.find((item) => 'relationshipId' in item.source && item.source.relationshipId === predecessor.relationshipId)!
         expect(predecessor.acceptedResult).toEqual(sender.result)
-        expect(binding).toMatchObject({ inputOrdinal: ordinal, sender: { executionId: sender.id },
-          recipient: { executionId: reviewer.id }, acceptedResultDigest: graphSourceDigest(sender.result),
-          recipientInputDigest: recipientDigest })
+        expect(binding).toMatchObject({ ordinal, source: { execution: { executionId: sender.id }, acceptedResultDigest: repeatDigest(sender.result) },
+          recipient: { executionId: reviewer.id }, inputDigest: recipientDigest })
       }
       await writeFile(result.artifactPath.replace('.json', '-approval.json'), JSON.stringify({
         scenario: 'E03-A01', mode: 'native internal User approval',
@@ -350,7 +347,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
         outcome: artifact.runOutcome, cleanup: artifact.cleanup,
         exactJoin: { reviewerExecutionId: reviewer.id, recipientInputDigest: recipientDigest,
           predecessors: input.predecessors.map((item) => ({ relationshipId: item.relationshipId,
-            senderExecutionId: item.senderExecutionId, acceptedResultDigest: graphSourceDigest(item.acceptedResult) })) },
+            senderExecutionId: item.execution.executionId, acceptedResultDigest: repeatDigest(item.acceptedResult) })) },
       }, null, 2))
     } finally { await rm(outside, { recursive: true, force: true }) }
   }, 180_000)
@@ -366,10 +363,11 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
         Reviewer: 'Read the two accepted predecessor results and return exactly RECOVERED. Do not use tools or files.',
       },
       control: async ({ pool, runId, nodeIds, runs, startTask, restartRecoverableRuntime }) => {
-        const original = OneShotRunRepository.prototype.acceptTerminal
+        const original = RepeatRunRepository.prototype.acceptTerminal
         let injected = false
-        const spy = vi.spyOn(OneShotRunRepository.prototype, 'acceptTerminal').mockImplementation(
-          async function (this: OneShotRunRepository, executionId: string) {
+        const spy = vi.spyOn(RepeatRunRepository.prototype, 'acceptTerminal').mockImplementation(
+          async function (this: RepeatRunRepository, ...args: Parameters<RepeatRunRepository['acceptTerminal']>) {
+            const [executionId] = args
             const row = (await pool.query<{ workflow_node_id: string; accepted: boolean; record: unknown }>(
               'select workflow_node_id,accepted,record from harness_executions where id=$1 and run_id=$2',
               [executionId, runId],
@@ -390,7 +388,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
                 throw new Error('ENG03_C_ACCEPTANCE_CUT')
               }
             }
-            return original.call(this, executionId)
+            return original.apply(this, args)
           },
         )
         try {
@@ -431,8 +429,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
       runOutcome: string; cleanup: boolean; runtimeRestart?: { kind: string; preservedNativeSessionIds: string[] }
       finalText: string; joinExact: boolean; sourceGraph: { nodes: Array<{ id: string }> }
       executions: Array<{ id: string; nodeId: string; nativeSessionId?: string; result?: unknown; input: unknown }>
-      bindings: Array<{ relationshipId: string; inputOrdinal: number; acceptedResultDigest: string;
-        recipientInputDigest: string; sender: { executionId: string }; recipient: { executionId: string } }>
+      bindings: RepeatInputBinding[]
     }
     expect(artifact.runOutcome).toBe('succeeded')
     expect(artifact.cleanup).toBe(true)
@@ -442,30 +439,26 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
     expect(artifact.finalText).toBe('RECOVERED')
     expect(artifact.joinExact).toBe(true)
     const reviewer = artifact.executions.find((item) => item.nodeId === artifact.sourceGraph.nodes[3]?.id)!
-    const input = reviewer.input as { predecessors: Array<{ relationshipId: string; senderExecutionId: string;
-      acceptedResult: unknown }> }
+    const input = reviewer.input as RepeatNodeInput
     expect(input.predecessors).toHaveLength(2)
     expect(artifact.bindings).toHaveLength(2)
-    const recipientInputDigest = graphSourceDigest(reviewer.input)
+    const recipientInputDigest = repeatDigest(reviewer.input)
     for (const [ordinal, predecessor] of input.predecessors.entries()) {
-      const sender = artifact.executions.find((item) => item.id === predecessor.senderExecutionId)!
-      const binding = artifact.bindings.find((item) => item.relationshipId === predecessor.relationshipId)!
+      const sender = artifact.executions.find((item) => item.id === predecessor.execution.executionId)!
+      const binding = artifact.bindings.find((item) => 'relationshipId' in item.source && item.source.relationshipId === predecessor.relationshipId)!
       expect(predecessor.acceptedResult).toEqual(sender.result)
-      expect(binding).toMatchObject({ inputOrdinal: ordinal, sender: { executionId: sender.id },
-        recipient: { executionId: reviewer.id }, acceptedResultDigest: graphSourceDigest(sender.result),
-        recipientInputDigest })
+      expect(binding).toMatchObject({ ordinal, source: { execution: { executionId: sender.id }, acceptedResultDigest: repeatDigest(sender.result) },
+        recipient: { executionId: reviewer.id }, inputDigest: recipientInputDigest })
     }
     expect(beforeNativeEventCount).toBeGreaterThan(0)
     expect(afterNativeEventCount).toBe(beforeNativeEventCount)
     await writeFile(result.artifactPath.replace('.json', '-recovery.json'), JSON.stringify({
       scenario: 'E03-L04', mode: 'native internal post-terminal recovery', providerEvidence: result.artifactPath,
       recovered: true, runOutcome: artifact.runOutcome, cleanup: artifact.cleanup,
-      acceptedSiblingId, cutExecutionId, cutNativeSessionId, cutResultDigest: graphSourceDigest(cutResult),
+      acceptedSiblingId, cutExecutionId, cutNativeSessionId, cutResultDigest: repeatDigest(cutResult),
       nativeEventCountBeforeRestart: beforeNativeEventCount, nativeEventCountAfterRestart: afterNativeEventCount,
       reviewerExecutionId: reviewer.id, reviewerInputDigest: recipientInputDigest,
-      bindings: artifact.bindings.map((item) => ({ relationshipId: item.relationshipId, inputOrdinal: item.inputOrdinal,
-        senderExecutionId: item.sender.executionId, recipientExecutionId: item.recipient.executionId,
-        acceptedResultDigest: item.acceptedResultDigest, recipientInputDigest: item.recipientInputDigest })),
+      bindings: artifact.bindings,
       finalText: artifact.finalText,
     }, null, 2))
   }, 180_000)

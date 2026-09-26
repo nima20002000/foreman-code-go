@@ -1,17 +1,17 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import {
   AgentConfigurationVersionSchema, HarnessConfigurationSchema, HarnessExecutionSchema,
-  type AgentConfigurationVersion, type HarnessConfiguration, type HarnessExecution, type HarnessNativeEvent,
+  type AgentConfigurationVersion, type HarnessConfiguration, type HarnessExecution, type HarnessNativeEvent, type NativeSessionReference,
 } from '@graphql/contracts'
 import {
-  ExecutableWorkflowV2Schema, RunNodeInputV2Schema, WorkflowRunV2Schema, makeWave25Fixture,
+  ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture,
 } from '@graphql/contracts/wave25'
 import { applyApplicationMigrations } from '../../src/infrastructure/migrations.js'
 import { createCheckpointStore } from '../../src/infrastructure/checkpoints.js'
@@ -28,12 +28,21 @@ import { PostgresApprovalBudgetRepository } from '../../src/modules/interactions
 import { ApprovalExecutionCoordinator } from '../../src/modules/interactions/execution.js'
 import { Wave25InteractionRepository } from '../../src/modules/interactions/wave25/repository.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../../src/modules/interactions/runtimePorts.js'
-import { graphSourceDigest } from '../../src/modules/run-graph/publication.js'
+import { repeatDigest, type RepeatNodeInput, type RepeatInputBinding } from '../../src/modules/runs/repeatResolution.js'
 import { LangGraphWorkflowEngine } from '../../src/modules/runs/engine.js'
-import { insertOneShotRun } from '../../src/modules/runs/oneShotAdmission.js'
+import { admitRepeatRun } from '../../src/modules/runs/repeatStartAdmission.js'
+import { repeatStartPublication } from '../../src/modules/run-graph/repeatStartPublication.js'
+import { createWorkflowRepositoryServices } from '../../src/modules/runs/workflowRepositoryServices.js'
+import { createWorkflowNativeCaptureChannel } from '../../src/modules/interactions/workflowNativeCapture.js'
+import { createReviewNativeCaptureChannel } from '../../src/modules/interactions/reviewNativeCapture.js'
+import { ReviewNativeProofServices } from '../../src/modules/interactions/reviewNativeProof.js'
+import { PostgresWorkflowClosureStore } from '../../src/modules/interactions/workflowClosure.js'
+import { PostgresRepeatReviewerBindings } from '../../src/modules/interactions/repeatReviewer.js'
+import { requireAuthorization } from '../../src/modules/access/policy.js'
+import { readLiveManagementPrincipal } from '../../src/modules/access/liveManagementPrincipal.js'
 import { continuationValidator } from '../../src/modules/runs/continuation.js'
 import { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
-import { withExclusiveGraphConnection } from '../../src/modules/run-graph/connection.js'
+import type { AuthorizeWorkflowStop } from '../../src/modules/runs/repeatLifecycle.js'
 import { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres.js'
 import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
 import { seedAgent3 } from './wave25Agent3.js'
@@ -60,6 +69,7 @@ export interface Eng03NativeControl extends Eng03NativeRuntime {
   projectDirectory: string
   runtimeDirectory: string
   startTask: Promise<void>
+  stop(): Promise<boolean>
   restartWaitingRuntime(): Promise<Eng03NativeRuntime>
   restartRecoverableRuntime(): Promise<Eng03NativeRuntime>
 }
@@ -112,14 +122,14 @@ async function version(binary: string): Promise<string> {
   return stdout.trim()
 }
 
-/** Internal-service qualification while normal v2 admission remains closed. */
+/** Opt-in live-provider qualification through current V3 admission and native proof composition. */
 export async function runEng03NativeScenario(scenario: Scenario, first: Harness, second: Harness,
   options: Eng03NativeOptions = {}) {
   if (options.queryTimeoutMs !== undefined
     && (!Number.isSafeInteger(options.queryTimeoutMs) || options.queryTimeoutMs < 1 || options.queryTimeoutMs > 60_000)) {
     throw new Error('queryTimeoutMs must be a positive integer at most 60000.')
   }
-  const baseUrl = process.env.ENG03_A_TEST_DATABASE_URL
+  const baseUrl = process.env.ENG03_A_TEST_DATABASE_URL ?? process.env.WAVE25_TEST_DATABASE_URL
   if (!baseUrl) throw new Error('ENG03_A_TEST_DATABASE_URL must name a task-owned loopback test database.')
   const parsed = new URL(baseUrl)
   if (!['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || !parsed.pathname.includes('test')) {
@@ -138,7 +148,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   let engine: LangGraphWorkflowEngine | undefined
   let activeRuntime: RuntimeInstance | undefined
   let runId: string | undefined
-  const evidence: Record<string, unknown> = { scenario, mode: 'native internal preliminary', artifactPath,
+  let stopRun: (() => Promise<boolean>) | undefined
+  const evidence: Record<string, unknown> = { scenario, mode: 'current V3 native internal acceptance', artifactPath,
     sourceSha: (await runCommand('git', ['rev-parse', 'HEAD'])).stdout.trim(),
     binaries: { codex: { path: codexBinary, version: await version(codexBinary) },
       opencode: { path: openCodeBinary, version: await version(openCodeBinary) } },
@@ -156,7 +167,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
         statement_timeout: options.queryTimeoutMs } : {}) })
     checkpoints = createCheckpointStore(url.toString(), schema)
     await checkpoints.setup()
-    const fixture = makeWave25Fixture(suffix)
+    const fixture = makeCurrentWorkflowFixture(suffix, 'parallel')
     const nodeNames = ['Entry', 'A', 'B', 'Reviewer'] as const
     const harnesses: Harness[] = ['codex', first, second, 'codex']
     const tokens = [`ENTRY-${suffix.slice(0, 6)}`, `A-${suffix.slice(0, 6)}`, `B-${suffix.slice(0, 6)}`]
@@ -191,38 +202,50 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     const edges = ([[0, 1], [0, 2], [1, 3], [2, 3]] as const).map(([source, target], index) => ({
       id: `edge-${suffix}-${index}`, kind: 'execution' as const, source: nodes[source]!.id, target: nodes[target]!.id,
     }))
-    const { version: workflowVersion } = ExecutableWorkflowV2Schema.parse({
+    const { version: workflowVersion } = ExecutableWorkflowV3Schema.parse({
       version: { ...fixture.version, entryNodeId: nodes[0]!.id,
         agentConfigurationVersionIds: Object.fromEntries(configurations.map((item) => [item.agentId, item.id])),
         definition: { ...fixture.version.definition, entryNodeId: nodes[0]!.id, nodes, edges,
-          executionPolicy: { maxParallelism: 2, maxNodeExecutions: 4 }, requiredAgentCount: 4 } },
+          executionPolicy: { maxParallelism: 2, maxNodeExecutions: 4 } } },
       configurations,
     })
     fixture.configurations = configurations
     fixture.version = workflowVersion
     await seedAgent3(pool, projectDirectory, fixture, { run: false })
-    const directory = await realpath(projectDirectory)
-    const identity = await stat(directory, { bigint: true })
-    const locationIdentity = { device: String(identity.dev), inode: String(identity.ino) }
-    const identityHash = `sha256:${createHash('sha256').update(`${locationIdentity.device}:${locationIdentity.inode}`).digest('hex')}`
-    await pool.query(`update workspaces set execution_location=$2::jsonb, execution_location_identity=$3::jsonb,
-      location_revision=1 where id=$1`, [fixture.scope.workspaceId,
-      JSON.stringify({ runnerId: 'runner-local', rootPath: directory }), JSON.stringify(locationIdentity)])
-    const run = WorkflowRunV2Schema.parse({ ...fixture.run,
-      agentConfigurationVersionIds: workflowVersion.agentConfigurationVersionIds,
-      executionLocation: {
-      runnerId: 'runner-local', rootPath: directory, locationRevision: 1, identityHash }, createdAt: new Date().toISOString() })
+    const access = new PostgresAccessService(pool)
+    const authority = await access.issue({ name: 'Current native acceptance authority', audience: 'operator',
+      expiresAt: new Date(Date.now() + 600_000), grants: [
+        { actions: ['runs:start', 'runs:stop', 'runs:read'], scope: { workspaceIds: [fixture.scope.workspaceId], workflowIds: [fixture.scope.workflowId] } },
+        { actions: ['workspace_locations:read', 'workspace_locations:update'], scope: { workspaceIds: [fixture.scope.workspaceId] } },
+      ] })
+    const locations = new WorkspaceLocationService(pool, new PostgresCommandCoordinator(pool), runtimeDirectory)
+    const location = await locations.set(authority.principal, 'http', { workspaceId: fixture.scope.workspaceId,
+      commandId: randomUUID(), expectedLocationRevision: 1, runnerId: locations.runnerId, rootPath: projectDirectory })
+    const revision = Number((await pool.query<{ revision: string }>('select revision::text from workflows where id=$1',
+      [fixture.scope.workflowId])).rows[0]!.revision)
+    const admitted = await admitRepeatRun(pool, locations, await access.authenticate(authority.token), 'http', {
+      workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId,
+      workflowVersionId: fixture.version.id, executionSemanticsVersion: 3, commandId: randomUUID(),
+      expectedWorkflowRevision: revision, expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
+      expectedLocationRevision: location.value.locationRevision, input: fixture.run.input,
+    }, repeatStartPublication)
+    const run = admitted.value
     fixture.run = run
     runId = run.id
-    await withExclusiveGraphConnection(pool, (connection) => connection.transaction((sql) => insertOneShotRun(sql, run)))
+    const authorizeStop: AuthorizeWorkflowStop = async (sql) => {
+      const principal = await readLiveManagementPrincipal(sql as unknown as Pick<pg.ClientBase, 'query'>, authority.principal.id)
+      requireAuthorization(principal, 'runs:stop', { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id })
+    }
     const livePool = pool
     const endpoint = process.env.APP_MCP_ENDPOINT ?? 'http://127.0.0.1:3000/mcp/tools'
     const makeRuntime = (saver: BaseCheckpointSaver): RuntimeInstance => {
       const commands = new PostgresCommandCoordinator(livePool)
       const locations = new WorkspaceLocationService(livePool, commands, runtimeDirectory)
       const workflows = new PostgresWorkflowRepository(livePool)
-      const runs = new PostgresRunRepository(livePool, workflows, locations)
-      const interactions = new Wave25InteractionRepository(livePool)
+      const workflowCapture = createWorkflowNativeCaptureChannel(), reviewCapture = createReviewNativeCaptureChannel()
+      const runs = new PostgresRunRepository(livePool, workflows, locations,
+        { runtimeRoot: runtimeDirectory, ...createWorkflowRepositoryServices(workflowCapture.verify) })
+      const interactions = new Wave25InteractionRepository(livePool, new ReviewNativeProofServices(reviewCapture.verify))
       const registry = new NativeProcessRegistry(join(runtimeDirectory, 'native-process-registry'))
       const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
         const config = context.configuration.harness
@@ -257,13 +280,15 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       }
       const budgets = new PostgresApprovalBudgetRepository(livePool)
       const approvals = new ApprovalExecutionCoordinator(runs, interactions, budgets,
-        managers, 180_000, credentials, validateContinuation, (id, signal) => registry.closeOwner(`execution:${id}`, signal))
+        managers, 180_000, credentials, validateContinuation, new PostgresWorkflowClosureStore(livePool),
+        new PostgresRepeatReviewerBindings(livePool), workflowCapture.capture, reviewCapture.capture)
       const engine = new LangGraphWorkflowEngine(runs, workflows, approvals, saver, runtimeDirectory, locations,
         credentials, interactions, undefined, { workerParallelism: 2 })
       return { engine, runs, approvals, interactions, budgets, registry, managers }
     }
     activeRuntime = makeRuntime(checkpoints.saver)
     engine = activeRuntime.engine
+    stopRun = () => engine!.cancel(run.id, authorizeStop)
     const startTask = engine.start(run.id)
     if (options.control) void startTask.catch(() => undefined)
     const restartRuntime = async (kind: 'waiting' | 'terminal_unaccepted'): Promise<Eng03NativeRuntime> => {
@@ -326,7 +351,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     try {
       const work = options.control
         ? options.control({ pool, runId: run.id, nodeIds: nodes.map((node) => node.id), projectDirectory,
-          runtimeDirectory, ...activeRuntime, startTask, restartWaitingRuntime, restartRecoverableRuntime })
+          runtimeDirectory, ...activeRuntime, startTask, stop: () => engine!.cancel(run.id, authorizeStop), restartWaitingRuntime, restartRecoverableRuntime })
           .then(() => startTask.catch(() => undefined))
         : startTask
       await Promise.race([work, new Promise<never>((_resolve, reject) => {
@@ -341,8 +366,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       'select record from harness_native_events where execution_id=any($1::text[]) order by execution_id,sequence',
       [executions.map((execution) => execution.id)])
     const nativeEvents = nativeRows.rows.map((row) => row.record)
-    const sessionRows = await pool.query<{ execution_id: string; reference: { providerVersion: string } }>(
-      'select execution_id,reference from execution_native_sessions where execution_id=any($1::text[])',
+    const sessionRows = await pool.query<{ execution_id: string; workflow_finalized_at: Date | null; reference: NativeSessionReference }>(
+      'select execution_id,reference,workflow_finalized_at from execution_native_sessions where execution_id=any($1::text[])',
       [executions.map((execution) => execution.id)])
     const nativeSessions = new Map(sessionRows.rows.map((row) => [row.execution_id, row.reference]))
     const intervals = [1, 2].map((index) => {
@@ -353,23 +378,23 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     const overlap = intervals.every(Boolean) && Math.max(...intervals.map((item) => Date.parse(item!.start.occurredAt)))
       < Math.min(...intervals.map((item) => Date.parse(item!.finish.occurredAt)))
     const reviewer = byNode(3)
-    const reviewerInput = reviewer && RunNodeInputV2Schema.safeParse(reviewer.input)
-    const accepted = reviewerInput?.success ? reviewerInput.data.predecessors : []
-    const bindings = (await pool.query<{ record: { relationshipId: string; sender: { executionId: string };
-      recipient: { executionId: string }; inputOrdinal: number; acceptedResultDigest: string; recipientInputDigest: string } }>(
-      'select record from run_input_bindings where run_id=$1 and recipient_node_id=$2 order by input_ordinal',
-      [run.id, nodes[3]!.id])).rows.map((row) => row.record)
-    const joined = Boolean(reviewer && reviewerInput?.success && accepted.length === 2 && bindings.length === 2
+    // getExecution rereads the current repository's exact canonical input receipt.
+    const reviewerInput = reviewer && (await activeRuntime.runs.getExecution(reviewer.id))!.input as unknown as RepeatNodeInput | undefined
+    const accepted = reviewerInput?.predecessors ?? []
+    const bindings = (await pool.query<{ record: RepeatInputBinding }>(
+      'select record from run_repeat_bindings where run_id=$1 and recipient_execution_id=$2 order by ordinal',
+      [run.id, reviewer?.id ?? 'no-reviewer'])).rows.map((row) => row.record)
+    const joined = Boolean(reviewer && reviewerInput?.executionSemanticsVersion === 3 && accepted.length === 2 && bindings.length === 2
       && accepted.map((item) => item.relationshipId).join('|') === [edges[2]!.id, edges[3]!.id].sort().join('|')
       && accepted.every((item) => {
-        const sender = executions.find((execution) => execution.id === item.senderExecutionId)
-        const binding = bindings.find((candidate) => candidate.relationshipId === item.relationshipId)
+        const sender = executions.find((execution) => execution.id === item.execution.executionId)
+        const binding = bindings.find((candidate) => 'relationshipId' in candidate.source && candidate.source.relationshipId === item.relationshipId)
         return sender?.result?.outcome === 'succeeded' && JSON.stringify(item.acceptedResult) === JSON.stringify(sender.result)
-          && binding?.sender.executionId === sender.id && binding.recipient.executionId === reviewer.id
-          && binding.inputOrdinal === accepted.indexOf(item)
-          && binding.acceptedResultDigest === graphSourceDigest(sender.result)
-          && binding.recipientInputDigest === graphSourceDigest(reviewer.input)
-      }) && reviewer.createdAt && intervals.every((item) => item && Date.parse(reviewer.createdAt) > Date.parse(item.finish.occurredAt)))
+          && binding?.source.execution.executionId === sender.id && binding.recipient.executionId === reviewer.id
+          && binding.ordinal === accepted.indexOf(item)
+          && binding.source.acceptedResultDigest === repeatDigest(sender.result, 64 * 1024)
+          && binding.inputDigest === repeatDigest(reviewer.input, 4 * 1024 * 1024)
+      }) && intervals.every((item) => item && Date.parse(reviewer.createdAt) > Date.parse(item.finish.occurredAt)))
     const finalText = resultText(reviewer)
     const branchTexts = [resultText(byNode(1)), resultText(byNode(2))]
     const outcome = final?.outcome === 'succeeded' && JSON.stringify(final.result?.output) === JSON.stringify(reviewer?.result?.output)
@@ -382,10 +407,17 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       && new Set([1, 2].map((index) => byNode(index)?.runtimeDirectory)).size === 2
     const activeCredentials = await pool.query<{ count: string }>(`select count(*) from worker_credential_bindings b
       join management_principals p on p.id=b.principal_id where b.run_id=$1 and p.revoked_at is null`, [run.id])
-    const registry = activeRuntime.registry
+    // Read persisted engine closure before best-effort final disposal; actively
+    // closing owners here would conceal a missing product cleanup operation.
+    const unresolvedClosures = await pool.query<{ count: string }>(`select count(*) from execution_native_closures
+      where execution_id=any($1::text[]) and closed_at is null and detached_at is null`,
+    [executions.map((execution) => execution.id)])
     const cleanup = Number(activeCredentials.rows[0]?.count) === 0
-      && (await Promise.all(executions.map((execution) => registry.closeOwner(`execution:${execution.id}`)))).every(Boolean)
-    Object.assign(evidence, { runId: run.id, workflowVersionId: workflowVersion.id, sourceGraph: { nodes, edges },
+      && Number(unresolvedClosures.rows[0]?.count) === 0
+      && executions.filter((execution) => execution.nativeSessionId).every((execution) =>
+        sessionRows.rows.some((row) => row.execution_id === execution.id && row.reference.nativeSessionId === execution.nativeSessionId
+          && row.workflow_finalized_at !== null))
+    Object.assign(evidence, { runId: run.id, workflowVersionId: fixture.version.id, sourceGraph: { nodes, edges },
       outcome, runOutcome: final?.outcome, runResult: final?.result, executions: executions.map((execution) => ({
         id: execution.id, nodeId: execution.workflowNodeId, agentId: execution.agentId,
         nativeSessionId: execution.nativeSessionId, runtimeDirectory: execution.runtimeDirectory,
@@ -411,7 +443,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
          order by execution_id,sequence`, [runId]).catch(() => undefined)
       evidence.failureNativeEvents = events?.rows
     }
-    if (runId && engine) await engine.cancel(runId).catch(() => undefined)
+    await stopRun?.().catch(() => undefined)
     throw error
   } finally {
     await engine?.shutdown().catch(() => undefined)
