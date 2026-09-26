@@ -1,5 +1,4 @@
 import {
-  AgentConfigurationVersionSchema,
   DEFAULT_AGENT_DEFAULTS,
   DEFAULT_HARNESS_DEFAULTS,
   DurableInteractionSchema,
@@ -7,10 +6,8 @@ import {
   HarnessWorkflowCompatibilitySchema,
   NATIVE_INTERACTION_FIXTURES,
   OperatorConfigurationVersionSchema,
-  WorkflowDefinitionSchema,
   projectHarnessEffort,
   type AgentHarness,
-  type HarnessConfiguration,
 } from '@graphql/contracts'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
@@ -20,74 +17,42 @@ import { inTransaction } from '../src/infrastructure/transaction.js'
 import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
-import { acceptedRunApproval } from '../src/modules/workflows/approval.js'
-import { buildExecutableWorkflowVersion } from '../src/modules/workflows/executableVersion.js'
+import { ExecutableWorkflowV3Schema, SavedRunVersionSnapshotSchema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { configurationInput } from '../src/modules/workspaces/agentConfiguration.js'
 import { DeterministicNativeSessionManager } from '../src/testing/deterministicNativeSession.js'
 
 const now = '2026-09-16T00:00:00.000Z'
-function configuration(agentId: string, productRole: 'orchestrator' | 'coder', harness = DEFAULT_HARNESS_DEFAULTS.codex as HarnessConfiguration) {
-  return AgentConfigurationVersionSchema.parse({
-    id: `${agentId}-config`, workspaceId: 'workspace', agentId, productRole,
-    version: 1, harness, prompt: {}, assignedSkills: [], contentHash: 'fixture', createdAt: now,
-  })
-}
-function executable() {
-  const orchestratorHarness = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
-  orchestratorHarness.advanced!.approvalPolicy = 'on-request'
-  orchestratorHarness.advanced!.approvalsReviewer = 'auto_review'
-  return {
-    id: 'version', version: 1, createdAt: now,
-    configurations: [configuration('orchestrator', 'orchestrator', orchestratorHarness), configuration('coder', 'coder')],
-    definition: WorkflowDefinitionSchema.parse({
-      id: 'workflow', workspaceId: 'workspace', name: 'Approval fixture',
-      approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'orchestrator' },
-      executionCondition: { kind: 'manual' },
-      nodes: [{ id: 'first', name: 'Orchestrator', agentId: 'orchestrator' }, { id: 'second', name: 'Coder', agentId: 'coder' }],
-      edges: [{ id: 'handoff', source: 'first', target: 'second' }],
-    }),
-  }
-}
-
-describe('PR8 executable approval acceptance', () => {
-  it('uses accepted roles, preserves approval on omission and clones Run authority', () => {
-    const input = executable()
-    const previousDefinition = input.definition
-    const definition = { ...previousDefinition, approval: undefined }
-    const version = buildExecutableWorkflowVersion({ ...input, definition, previousDefinition })
-    expect(version.approval).toEqual(previousDefinition.approval)
-    const snapshot = acceptedRunApproval(version)!
-    version.approval!.handler = 'user'
-    expect(snapshot.handler).toBe('orchestrator')
+describe('PR8 current executable approval acceptance', () => {
+  it('pins explicit orchestrator authority in both the saved version and Run', () => {
+    const fixture = makeCurrentWorkflowFixture('pr8-approval', 'approval')
+    const accepted = SavedRunVersionSnapshotSchema.parse({ run: fixture.run, version: fixture.version })
+    fixture.version.approval.handler = 'user'
+    expect(accepted.run.approval.handler).toBe('orchestrator')
+    expect(accepted.version.approval).toEqual(accepted.run.approval)
   })
 
-  it.each([
-    ['missing designation', 'WORKFLOW_APPROVAL_INCOMPLETE'],
-    ['wrong workflow', 'APPROVAL_ORCHESTRATOR_WRONG_WORKFLOW'],
-    ['wrong role', 'APPROVAL_ORCHESTRATOR_ROLE_REQUIRED'],
-    ['no coder', 'APPROVAL_DISTINCT_CODER_REQUIRED'],
-  ])('rejects %s', (scenario, code) => {
-    const input = executable()
-    if (scenario === 'missing designation') input.definition.approval = { handler: 'orchestrator' }
-    if (scenario === 'wrong workflow') input.definition.approval!.designatedOrchestratorAgentId = 'elsewhere'
-    if (scenario === 'wrong role') input.configurations[0]!.productRole = 'coder'
-    if (scenario === 'no coder') input.configurations[1]!.productRole = 'orchestrator'
-    expect(() => buildExecutableWorkflowVersion(input)).toThrow(expect.objectContaining({ code }))
+  it.each(['missing designation', 'wrong workflow', 'wrong role', 'missing reviewer edge'])('rejects %s', (scenario) => {
+    const { version, configurations } = makeCurrentWorkflowFixture('pr8-invalid', 'approval')
+    if (scenario === 'missing designation') delete version.approval.designatedOrchestratorAgentId
+    if (scenario === 'wrong workflow') version.approval.designatedOrchestratorAgentId = 'elsewhere'
+    if (scenario === 'wrong role') configurations[0]!.productRole = 'coder'
+    if (scenario === 'missing reviewer edge') version.definition.edges = version.definition.edges.filter((edge) => edge.kind !== 'approval')
+    expect(ExecutableWorkflowV3Schema.safeParse({ version, configurations }).success).toBe(false)
   })
 
   it('allows a self-reviewed Codex Coder in an Orchestrator-routed workflow', () => {
-    const input = executable()
+    const fixture = makeCurrentWorkflowFixture('pr8-self-reviewed', 'approval')
     const selfReviewed = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
     selfReviewed.advanced!.approvalsReviewer = 'auto_review'
-    input.configurations[1] = configuration('coder', 'coder', selfReviewed)
-    expect(() => buildExecutableWorkflowVersion(input)).not.toThrow()
+    fixture.configurations[1]!.harness = selfReviewed
+    expect(ExecutableWorkflowV3Schema.safeParse({ version: fixture.version, configurations: fixture.configurations }).success).toBe(true)
   })
 
-  it('rejects missing or mismatched configured snapshots but retains true legacy versions', () => {
-    const version = buildExecutableWorkflowVersion(executable())
-    expect(() => acceptedRunApproval({ ...version, approval: undefined })).toThrow(/inconsistent/)
-    expect(() => acceptedRunApproval({ ...version, approval: { handler: 'user' } })).toThrow(/inconsistent/)
-    expect(acceptedRunApproval({ ...version, approval: undefined, definition: { ...version.definition, approval: undefined } })).toBeUndefined()
+  it('rejects absent and mismatched Run authority instead of inferring it from the workflow', () => {
+    const fixture = makeCurrentWorkflowFixture('pr8-authority', 'approval')
+    for (const approval of [undefined, { handler: 'user' }]) {
+      expect(SavedRunVersionSnapshotSchema.safeParse({ version: fixture.version, run: { ...fixture.run, approval } }).success).toBe(false)
+    }
   })
 
   it.each([false, true])('rejects legacy automatic OpenCode approval; Advanced present=%s', (advanced) => {

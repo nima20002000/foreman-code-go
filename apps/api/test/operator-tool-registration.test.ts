@@ -1,3 +1,4 @@
+import { CURRENT_WORKFLOW_TOOLS } from '@graphql/contracts/wave25'
 import type { McpServer } from '@modelcontextprotocol/server'
 import {
   ManagementActionSchema,
@@ -9,7 +10,6 @@ import {
 import { describe, expect, it } from 'vitest'
 
 import { registerAgentTools } from '../src/mcp/operator/tools/agents.js'
-import { registerGraphTools } from '../src/mcp/operator/tools/graph.js'
 import { registerHarnessTools } from '../src/mcp/operator/tools/harnesses.js'
 import { registerInteractionTools } from '../src/mcp/operator/tools/interactions.js'
 import { registerRunTools } from '../src/mcp/operator/tools/runs.js'
@@ -22,13 +22,13 @@ import type { OperatorRequestContext } from '../src/mcp/operator/types.js'
 // Independent expectations, not generated from the production permission catalog.
 const actionTools: Array<[ManagementAction, OperatorToolName[]]> = [
   ['agents:read', ['agent_get', 'agent_list']],
-  ['graph:read', ['graph_draft_get', 'graph_draft_open', 'graph_validate']],
-  ['graph:edit', ['graph_draft_apply', 'graph_draft_discard', 'graph_draft_layout', 'graph_draft_revert_applied']],
-  ['graph:save', ['graph_save']],
+  ['graph:read', []],
+  ['graph:edit', []],
+  ['graph:save', []],
   ['harnesses:read', ['harness_get', 'harness_list']],
   ['harnesses:update', ['harness_defaults_update']],
   ['interactions:read', ['interaction_get', 'interaction_list', 'interaction_summary']],
-  ['runs:read', ['run_current_get_v1', 'run_events_list', 'run_get', 'run_history_get_v1', 'run_list']],
+  ['runs:read', ['run_events_list', 'run_get', 'run_list']],
   ['runs:stop', ['run_stop']],
   ['settings:read', ['agent_defaults_get', 'workflow_defaults_get', 'workspace_defaults_get']],
   ['settings:update', ['agent_defaults_update', 'workflow_defaults_update', 'workspace_defaults_update']],
@@ -51,14 +51,14 @@ function context(grants: ManagementGrant[] = []): OperatorRequestContext {
       expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null, grants,
     },
     // No service callback is executed in these registration-only tests.
-    services: { settings: {}, interactions: {} },
+    services: { settings: {}, interactions: {}, runs: {}, workflows: {} },
   } as unknown as OperatorRequestContext
 }
 
 function registered(context: OperatorRequestContext): string[] {
   const names: string[] = []
   const server = { registerTool: (name: string) => { names.push(name) } } as unknown as McpServer
-  for (const register of [registerAgentTools, registerGraphTools, registerHarnessTools,
+  for (const register of [registerAgentTools, registerHarnessTools,
     registerInteractionTools, registerRunTools, registerSettingsTools,
     registerWorkflowTools, registerWorkspaceTools, registerWorkspaceDefaultsTools]) {
     register(server, context)
@@ -74,6 +74,27 @@ describe('Operator tool registration permissions', () => {
   it('registers every supported tool for an unrestricted owner', () => {
     const expected = [...actionTools.flatMap(([, names]) => names), 'run_start'].sort()
     expect(registered(context([{ actions: [...ManagementActionSchema.options], scope: {} }]))).toEqual(expected)
+  })
+
+  it('registers current V3 authoring with complete grants and hides retired graph tools', () => {
+    const candidate = context([{ actions: [...ManagementActionSchema.options], scope: {} }])
+    candidate.services.workflows = { current: {} } as OperatorRequestContext['services']['workflows']
+    const names = registered(candidate)
+    for (const name of Object.values(CURRENT_WORKFLOW_TOOLS)) expect(names).toContain(name)
+    expect(names).not.toContain('graph_save')
+    expect(names).not.toContain('graph_draft_apply')
+    expect(names).not.toContain('run_history_get_v1')
+  })
+
+  it('does not advertise V3 Save when graph write and read grants have disjoint scopes', () => {
+    const candidate = context([
+      { actions: ['workflows:read', 'agents:read', 'graph:read', 'workspace_locations:read'], scope: { workspaceIds: ['a'] } },
+      { actions: ['workflows:update', 'graph:edit', 'graph:save'], scope: { workspaceIds: ['b'] } },
+    ])
+    candidate.services.workflows = { current: {} } as OperatorRequestContext['services']['workflows']
+    expect(registered(candidate)).toContain(CURRENT_WORKFLOW_TOOLS.validate)
+    expect(registered(candidate)).not.toContain(CURRENT_WORKFLOW_TOOLS.save)
+    expect(registered(candidate)).not.toContain(CURRENT_WORKFLOW_TOOLS.edits)
   })
 
   it('does not register tools without grants', () => {

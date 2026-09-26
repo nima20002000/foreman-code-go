@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_HARNESS_DEFAULTS,
   type Agent,
-  type WorkflowDefinition,
 } from '@graphql/contracts'
 import type pg from 'pg'
 
@@ -12,12 +11,6 @@ import { configurationInput } from '../src/modules/workspaces/agentConfiguration
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
 
 const workspaceId = 'workspace-pr3'
-const workflow: WorkflowDefinition = {
-  id: 'workflow-pr3', workspaceId, name: 'Regression workflow',
-  executionCondition: { kind: 'manual' },
-  nodes: [{ id: 'node-one', agentId: 'agent-one', name: 'Agent' }], edges: [],
-}
-
 function staleClient() {
   const newer: Agent = {
     id: 'agent-one', name: 'Agent', harness: 'codex', model: 'gpt-5.6-terra',
@@ -38,17 +31,6 @@ function staleClient() {
 }
 
 describe('PR #3 agent persistence regressions', () => {
-  it.each(['configuration-old', undefined])('rejects stale board version %s before any writes', async (configurationVersionId) => {
-    const { pool, query, release, newer } = staleClient()
-    const old: Agent = { ...newer, name: 'Older editor rename', model: 'gpt-5.6-luna', configurationVersionId }
-    await expect(new PostgresWorkflowRepository(pool).save(workspaceId, workflow, [old]))
-      .rejects.toMatchObject({ code: 'AGENT_CONFIGURATION_CONFLICT', status: 409 })
-    expect(query.mock.calls.some(([sql]) => /^\s*(insert|update|delete)\b/i.test(sql))).toBe(false)
-    expect(query).toHaveBeenLastCalledWith('rollback')
-    expect(newer.model).toBe('gpt-5.6-terra')
-    expect(release).toHaveBeenCalledOnce()
-  })
-
   it('uses advisory-then-row locking for standalone saves as well', async () => {
     const { pool, query, newer } = staleClient()
     const workflows = new PostgresWorkflowRepository(pool)

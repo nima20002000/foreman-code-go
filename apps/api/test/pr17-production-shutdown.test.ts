@@ -10,7 +10,6 @@ import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/inte
 import { InteractionService } from '../src/modules/interactions/service.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
-import { WorkflowTriggerService } from '../src/modules/workflows/triggerManagement.js'
 import { buildProductionApp } from '../src/production.js'
 
 function gate() {
@@ -30,7 +29,6 @@ beforeEach(() => {
   vi.spyOn(OperatorRuntimeOwner.prototype, 'close').mockResolvedValue()
   vi.spyOn(OperatorChatService.prototype, 'shutdown').mockResolvedValue()
   vi.spyOn(AutomaticReviewService.prototype, 'shutdown').mockResolvedValue()
-  vi.spyOn(WorkflowTriggerService.prototype, 'shutdown').mockResolvedValue()
   vi.spyOn(LangGraphWorkflowEngine.prototype, 'shutdown').mockResolvedValue()
   vi.spyOn(ExecutionScopedNativeSessionManagerResolver.prototype, 'dispose').mockResolvedValue()
   database = createDatabase(config.database)
@@ -53,28 +51,12 @@ describe('PR17 F7 production shutdown composition', () => {
     try {
       await entered.promise
       expect(AutomaticReviewService.prototype.shutdown).toHaveBeenCalledTimes(1)
-      expect(WorkflowTriggerService.prototype.shutdown).toHaveBeenCalledTimes(1)
       expect(LangGraphWorkflowEngine.prototype.shutdown).toHaveBeenCalledTimes(1)
       expect(ExecutionScopedNativeSessionManagerResolver.prototype.dispose).not.toHaveBeenCalled()
       expect(OperatorRuntimeOwner.prototype.close).not.toHaveBeenCalled()
       pending.resolve()
       await closing
       expect(ExecutionScopedNativeSessionManagerResolver.prototype.dispose).toHaveBeenCalledTimes(1)
-      expect(OperatorRuntimeOwner.prototype.close).toHaveBeenCalledTimes(1)
-    } finally { pending.resolve(); await closing }
-  })
-
-  it('waits for an already-admitted workflow trigger tick before releasing the runtime owner', async () => {
-    const pending = gate(); const entered = gate()
-    vi.mocked(WorkflowTriggerService.prototype.shutdown).mockImplementation(() => { entered.resolve(); return pending.promise })
-    const closing = production.shutdown()
-    try {
-      await entered.promise
-      expect(OperatorChatService.prototype.shutdown).toHaveBeenCalledTimes(1)
-      expect(OperatorRuntimeOwner.prototype.close).not.toHaveBeenCalled()
-      expect(ExecutionScopedNativeSessionManagerResolver.prototype.dispose).not.toHaveBeenCalled()
-      pending.resolve()
-      await closing
       expect(OperatorRuntimeOwner.prototype.close).toHaveBeenCalledTimes(1)
     } finally { pending.resolve(); await closing }
   })
@@ -150,11 +132,10 @@ describe('PR17 F7 production shutdown composition', () => {
     } finally { pending.resolve(); await Promise.allSettled([initializing, closing]) }
   })
 
-  for (const boundary of ['triggers', 'chat', 'reviews', 'engine', 'managers'] as const) {
+  for (const boundary of ['chat', 'reviews', 'engine', 'managers'] as const) {
     it(`reports a public ${boundary} cleanup failure and never releases ownership`, async () => {
       const failure = new Error('unconfirmed protected cleanup')
-      const method = boundary === 'triggers' ? WorkflowTriggerService.prototype.shutdown
-        : boundary === 'chat' ? OperatorChatService.prototype.shutdown
+      const method = boundary === 'chat' ? OperatorChatService.prototype.shutdown
         : boundary === 'reviews' ? AutomaticReviewService.prototype.shutdown
           : boundary === 'engine' ? LangGraphWorkflowEngine.prototype.shutdown
             : ExecutionScopedNativeSessionManagerResolver.prototype.dispose
