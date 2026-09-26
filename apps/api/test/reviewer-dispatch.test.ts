@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 
 import { test } from 'vitest'
-import { NATIVE_INTERACTION_FIXTURES, type DurableInteraction, type NativeHarnessEvent, type NativeSessionLane, type NativeSessionReference, type ReviewJob } from '@graphql/contracts'
+import { HarnessExecutionSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction, type NativeHarnessEvent, type NativeSessionLane, type NativeSessionReference, type ReviewJob } from '@graphql/contracts'
 
 import { DomainError } from '../src/modules/errors.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart } from '../src/modules/harnesses/port.js'
@@ -11,6 +12,9 @@ import { PostgresInteractionCoordinationRepository, type WriterFence } from '../
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { ReviewerDispatcher } from '../src/modules/interactions/reviewer.js'
 import type { ReviewerNativeRuntime } from '../src/modules/interactions/reviewerRuntime.js'
+import type { ReviewNativeCapture, ReviewOriginalNativeSource } from '../src/modules/interactions/reviewNativeCapture.js'
+import type { RepeatReviewerBindings } from '../src/modules/interactions/repeatReviewer.js'
+import { normalizeNativeProducerEvent } from '../src/modules/run-graph/nativeProducerNormalization.js'
 import { reviewTurnEvidence } from '../src/modules/interactions/reviewerEvidence.js'
 import { LeaseGuard, ownedEvents, SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
 
@@ -50,8 +54,52 @@ class CoordinationFake {
   }
   async assertReviewConnection() { await this.assertOrchestratorConnection() }
 
-  async appendReviewNativeEvent(_job: ReviewJob, event: NativeHarnessEvent) {
-    assert.equal(_job.id, this.job?.id)
+  // This is a scheduler/coordination double, NOT production native-proof
+  // qualification. Still require the original capture to reach its consumer;
+  // a fabricated token or a different writer/job must never satisfy this seam.
+  private readonly captures = new WeakMap<ReviewNativeCapture, {
+    jobId: string; jobToken: string; writer: WriterFence; generation: number
+    reference: NativeSessionReference; source: ReviewOriginalNativeSource
+  }>()
+  readonly captureNative: ReviewerNativeRuntime['captureReviewNative'] = (executionId, reference, job, lane, source) => {
+    lane.guard.signal.throwIfAborted()
+    assert.equal(executionId, this.context.executionId)
+    assert.equal(job.id, this.job?.id)
+    assert.ok(job.leaseToken)
+    assert.equal(job.leaseToken, this.job?.leaseToken)
+    assert.equal(reference.harness, job.provider)
+    assert.equal(reference.nativeSessionId, job.nativeSessionId)
+    assert.equal(reference.providerVersion, this.context.providerVersion)
+    assert.equal(lane.fence.id, this.lane.id)
+    assert.equal(lane.fence.token, this.lane.leaseToken)
+    assert.equal(lane.previous.connectionGeneration, this.lane.connectionGeneration)
+    const token = Object.freeze({ executionId })
+    this.captures.set(token, { jobId: job.id, jobToken: job.leaseToken,
+      writer: clone(lane.fence), generation: lane.previous.connectionGeneration,
+      reference: clone(reference), source: clone(source) })
+    return token
+  }
+  private readCapture(token: ReviewNativeCapture | undefined, job: ReviewJob, writer: WriterFence | undefined) {
+    const captured = token && this.captures.get(token)
+    assert.ok(captured, 'Original scheduler capture is required')
+    assert.equal(token!.executionId, this.context.executionId)
+    assert.equal(captured.jobId, job.id)
+    assert.equal(captured.jobToken, job.leaseToken)
+    assert.equal(captured.jobToken, this.job?.leaseToken)
+    assert.deepEqual(captured.writer, writer)
+    assert.equal(captured.writer.token, this.lane.leaseToken)
+    assert.equal(captured.generation, this.lane.connectionGeneration)
+    assert.equal(captured.reference.harness, job.provider)
+    assert.equal(captured.reference.nativeSessionId, job.nativeSessionId)
+    return captured.source
+  }
+  async appendReviewNativeEvent(job: ReviewJob, event: NativeHarnessEvent,
+    options: { writer?: WriterFence; nativeCapture?: ReviewNativeCapture }) {
+    const source = this.readCapture(options.nativeCapture, job, options.writer)
+    const originals = source.type === 'event' ? [source.event] : source.type === 'history' ? source.history.events : []
+    assert.ok(originals.some((original) => isDeepStrictEqual(event,
+      normalizeNativeProducerEvent({ ...original, executionId: this.context.executionId }).event)),
+    'Projected event must come from the exact captured original event/history')
     this.nativeEvents.push(clone(event))
   }
 
@@ -96,9 +144,11 @@ class CoordinationFake {
   }
   async transitionReviewJob(id: string, token: string, state: ReviewJob['state'], fields: {
     providerTurnOrMessageId?: string; writerFence?: WriterFence; releaseLease?: boolean; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']; retryAfter?: string
+    nativeCapture?: ReviewNativeCapture
   } = {}) {
     await this.assertReviewJobLease(id, token)
     if (fields.writerFence) await this.assertLaneLease(fields.writerFence.id, fields.writerFence.token)
+    if (state === 'submitted') assert.equal(this.readCapture(fields.nativeCapture, this.job!, fields.writerFence).type, 'entry')
     this.transitions.push(state)
     this.job = { ...this.job!, state, updatedAt: new Date().toISOString(),
       ...(fields.providerTurnOrMessageId ? { providerTurnOrMessageId: fields.providerTurnOrMessageId } : {}),
@@ -174,7 +224,10 @@ function fixture(ms = 30_000) {
     cancel: async () => { canceled++; return true },
     close: async () => undefined,
   } as unknown as NativeHarnessSessionManager
-  const runtime: ReviewerNativeRuntime = { attachInteraction: async () => ({ manager, session }), attachOwnedSession: async () => ({ manager, session }) }
+  const runtime: ReviewerNativeRuntime = {
+    attachInteraction: async () => ({ manager, session }), attachOwnedSession: async () => ({ manager, session }),
+    captureReviewNative: coordination.captureNative,
+  }
   const dispatcher = new ReviewerDispatcher(coordination.asRepository(), runtime, ms)
   return { coordination, manager, runtime, dispatcher, counts: () => ({ started, attached, reconciled, canceled, responded }) }
 }
@@ -699,15 +752,30 @@ function queueFixture() {
     agentConfigurationVersionId: 'pinned-reviewer-config', workingDirectory: '/accepted', runtimeDirectory: '/runtime' }]
   const configuration = { id: 'pinned-reviewer-config', agentId: 'reviewer', productRole: 'orchestrator', harness: { harness: 'codex' } }
   const resolvedContexts: unknown[] = []
-  const runs = { get: async () => ({ id: interaction.runId, executionSemanticsVersion: 2 }),
-    listExecutions: async (runId: string) => { assert.equal(runId, interaction.runId); return executions },
+  const runs = { get: async () => ({ id: interaction.runId, executionSemanticsVersion: 3 }),
     getExecutionConfiguration: async () => configuration }
+  // Discovery now receives the exact immutable relationship/occurrence binding,
+  // rather than scanning all executions for the latest matching Agent.
+  const selections: unknown[] = []
+  const bindings: RepeatReviewerBindings = { async select(request, nodeId) {
+    assert.deepEqual(request, interaction)
+    assert.equal(nodeId, 'reviewer-node')
+    selections.push({ request: clone(request), nodeId })
+    const selected = executions[0]
+    if (executions.length !== 1 || !selected) throw new DomainError('REPEAT_REVIEW_IDENTITY_CONFLICT',
+      'No accepted execution of the exact reviewer relationship is available.', 409)
+    const at = '2026-09-26T00:00:00.000Z'
+    return { execution: HarnessExecutionSchema.parse({ runId: interaction.runId, attempt: 1, input: {},
+      createdAt: at, startedAt: at, finishedAt: at, result: { outcome: 'succeeded', output: {} }, ...selected }),
+      relationshipId: 'approval-reviewer-requester', requesterOccurrenceId: null, reviewerOccurrenceId: null }
+  } }
   const repository = { coordination: Object.assign(f.coordination.asRepository(), { workflowSession: async () => ({ session, finalized: true }) }),
     assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'reviewer-node' }), list: async () => [interaction] }
   type Args = ConstructorParameters<typeof ApprovalExecutionCoordinator>
   const coordinator = new ApprovalExecutionCoordinator(runs as unknown as Args[0], repository as unknown as Args[1],
-    {} as Args[2], { resolve: (context) => { resolvedContexts.push(context); return { manager: f.manager, processState: 'resident' } } }, 30_000)
-  return { ...f, coordinator, resolvedContexts, setExecutions: (value: typeof executions) => { executions = value } }
+    {} as Args[2], { resolve: (context) => { resolvedContexts.push(context); return { manager: f.manager, processState: 'resident' } } },
+    30_000, undefined, undefined, undefined, bindings)
+  return { ...f, coordinator, resolvedContexts, selections, setExecutions: (value: typeof executions) => { executions = value } }
 }
 
 test('creation recovery binds the designated Agent real durable execution and native context', async () => {
@@ -722,6 +790,7 @@ test('creation recovery binds the designated Agent real durable execution and na
   assert.equal(f.coordination.context.providerVersion, session.providerVersion)
   assert.equal(f.counts().started, 0)
   assert.equal(scheduled, 1)
+  assert.deepEqual(f.selections, [{ request: interaction, nodeId: 'reviewer-node' }])
 })
 
 test('queue recovery reuses an existing durable job without rebinding to a later execution', async () => {
@@ -733,12 +802,13 @@ test('queue recovery reuses an existing durable job without rebinding to a later
   await f.coordinator.enqueueReview(interaction)
   assert.deepEqual(f.coordination.job, first)
   assert.equal(f.resolvedContexts.length, 0)
+  assert.equal(f.selections.length, 1)
 })
 
-test('a missing designated session is deferred, never replaced with the requester session', async () => {
+test('a missing exact reviewer binding fails closed, never replaced with the requester session', async () => {
   const f = queueFixture()
   f.setExecutions([])
-  await f.coordinator.enqueueReview(interaction)
+  await assert.rejects(f.coordinator.enqueueReview(interaction), { code: 'REPEAT_REVIEW_IDENTITY_CONFLICT' })
   assert.equal(f.coordination.job, undefined)
   assert.equal(f.resolvedContexts.length, 0)
   assert.equal(f.counts().started, 0)

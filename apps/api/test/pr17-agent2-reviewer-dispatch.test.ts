@@ -9,8 +9,7 @@ import { ReviewerDispatcher } from '../src/modules/interactions/reviewer.js'
 import type { ReviewerNativeRuntime } from '../src/modules/interactions/reviewerRuntime.js'
 import { reviewCoordination, reviewJob, reviewSession } from './pr17-agent2-fixtures.js'
 
-function fixture() {
-  const coordination = reviewCoordination()
+function fixture(coordination = reviewCoordination()) {
   const calls = { attach: 0, maintain: 0, cancel: 0, revoke: 0, recover: 0, starts: 0 }
   const request: PendingNativeInteraction = { session: reviewSession,
     turn: { nativeTurnId: 'review-turn', nativeRequestId: 'permission' }, nativeRequestType: 'item/commandExecution/requestApproval',
@@ -29,6 +28,7 @@ function fixture() {
     startTurn: async function* () { calls.starts++; yield* []; throw new Error('must never replay') },
   } as unknown as NativeHarnessSessionManager
   const runtime = {
+    captureReviewNative: coordination.captureReviewNative,
     attachOwnedSession: async () => { calls.attach++; return { manager, session: reviewSession } },
     reviewCredentialIdentity: () => ({ required: true, principalId: 'captured-principal' }),
     maintainReviewCredential: async (_id: string, _session: unknown, signal: AbortSignal) => {
@@ -94,7 +94,7 @@ describe('PR17 #2: dispatcher failure recovery', () => {
     const initial = { ...reviewJob(), state: 'failed' as const, error: { code: 'REVIEWER_CREDENTIAL_LOST', message: 'original failure' },
       cleanup: { nativeState: 'pending' as const, credentialState: 'revoked' as const, interruptState: 'acknowledged' as const } }
     const coordination = reviewCoordination(initial)
-    const f = fixture()
+    const f = fixture(coordination)
     const dispatcher = new ReviewerDispatcher(coordination.repository, f.runtime)
     await dispatcher.dispatchNext('reviewer', 'worker')
     assert.equal(f.calls.attach, 0)
@@ -124,7 +124,8 @@ it('PR17 #2/#5: OpenCode cleanup reads history without invoking side-effecting r
           finish: 'stop', time: { completed: Date.now() } } } }] }
     },
   } as unknown as NativeHarnessSessionManager
-  const runtime = { recoverReviewCleanup: async () => ({ manager, resident: true, closed: false }) } as unknown as ReviewerNativeRuntime
+  const runtime = { captureReviewNative: coordination.captureReviewNative,
+    recoverReviewCleanup: async () => ({ manager, resident: true, closed: false }) } as unknown as ReviewerNativeRuntime
   const dispatcher = new ReviewerDispatcher(coordination.repository, runtime)
   const settled = await dispatcher.dispatchNext('reviewer', 'worker')
   assert.equal(historyReads, 1)

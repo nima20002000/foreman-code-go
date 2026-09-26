@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
 import { test, vi } from 'vitest'
 import type pg from 'pg'
-import type { AcceptedWorkflowRunV3 } from '@graphql/contracts/wave25'
+import { GraphRunStateSchema, type AcceptedWorkflowRunV3 } from '@graphql/contracts/wave25'
 import { beforeGraphCommit, ExclusiveGraphConnection, type GraphTransactionSql } from '../src/modules/run-graph/connection.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import type { RunStateUpdate } from '../src/modules/runs/port.js'
@@ -11,7 +11,12 @@ import { startFixture } from './eng04-start-fixtures.js'
 
 // Real exclusive-connection/finalizer implementation; SQL, immutable readers and
 // canonical producers below are EXPLICIT doubles. Real PG coverage is separate.
-interface Database { run: AcceptedWorkflowRunV3; stopped: boolean; cleanup: boolean; head: number; published: string }
+interface Database {
+  run: AcceptedWorkflowRunV3; stopped: boolean; cleanup: boolean; head: number; published: string
+  stopEffect?: { digest: string; entityId: string }
+}
+type EffectInput = import('../src/modules/run-graph/publication.js').GraphEffectChange
+type EffectGuard = import('../src/modules/run-graph/publication.js').GraphEffectGuard
 interface Fixture {
   db(): Database
   missingReceipt: boolean
@@ -39,15 +44,65 @@ function stage(sql: GraphTransactionSql) {
   })
   return receipt
 }
-vi.mock('../src/modules/run-graph/publication.js', () => ({
-  openRunGraphPublication: async (sql: GraphTransactionSql, scope: unknown, options?: unknown) => {
-    assert.equal(options, undefined, 'lifecycle must not initialize a missing head')
-    if (current().missingHead) throw Object.assign(new Error('missing head'), { code: 'GRAPH_NOT_INITIALIZED' })
-    return { sql, scope, repeatStoppedRunReadback: async () => {
-      assert.equal(current().db().stopped, true); return stage(sql)
-    } }
+vi.mock('../src/modules/run-graph/publication.js', () => {
+  const publications = new WeakMap<GraphTransactionSql, {
+    sql: GraphTransactionSql; scope: EffectGuard['expected']['scope']
+    effect(input: EffectInput, guard: EffectGuard, mutate: (sql: GraphTransactionSql) => Promise<void>): Promise<void>
+    repeatStoppedRunReadback(): Promise<ReturnType<typeof stage>>
+  }>()
+  return {
+    graphSourceDigest: digest,
+    currentRunGraphPublication: (sql: GraphTransactionSql, scope: unknown) => {
+      const publication = publications.get(sql)
+      assert.deepEqual(publication?.scope, scope)
+      return publication
+    },
+    openRunGraphPublication: async (sql: GraphTransactionSql, scope: EffectGuard['expected']['scope'], options?: unknown) => {
+      assert.equal(options, undefined, 'lifecycle must not initialize a missing head')
+      if (current().missingHead) throw Object.assign(new Error('missing head'), { code: 'GRAPH_NOT_INITIALIZED' })
+      const publication = { sql, scope,
+        effect: async (input: EffectInput, guard: EffectGuard, mutate: (sql: GraphTransactionSql) => Promise<void>) => {
+          // Explicit producer double: retain the current Stop effect's identity,
+          // live authority read, transactional fence, and cleanup mutation.
+          assert.deepEqual(input.effect.identity, { kind: 'run.stop', entityId: scope.runId })
+          assert.equal(input.effect.digest, digest({ runId: scope.runId, stop: true }))
+          assert.equal(input.sourceDigest, input.effect.digest)
+          const actual = await guard.readCurrentLocked(sql, scope, input.effect.identity)
+          assert.deepEqual(actual.scope, guard.expected.scope)
+          assert.deepEqual(actual.effect, guard.expected.effect)
+          assert.equal(actual.effectDigest, guard.expected.effectDigest)
+          assert.equal(actual.ownerId, guard.expected.ownerId)
+          assert.equal(actual.fence, guard.expected.fence)
+          assert.equal(actual.connectionGeneration, guard.expected.connectionGeneration)
+          assert.equal(actual.ownership, 'held'); assert.equal(actual.access, 'effect')
+          assert.equal(actual.security, 'valid'); assert.equal(actual.effectClosed, false)
+          assert.ok(input.facts.some((fact) => fact.type === 'run.state'
+            && fact.state.stopRequested && fact.state.cleanupPending))
+          assert.equal(current().db().stopEffect, undefined, 'a replay must not produce Stop again')
+          await sql.query('update runs set stop_requested_at=coalesce(stop_requested_at,clock_timestamp()) where id=$1', [scope.runId])
+          await mutate(sql)
+          current().db().stopEffect = { digest: input.effect.digest, entityId: scope.runId }
+        },
+        repeatStoppedRunReadback: async () => {
+          assert.equal(current().db().stopped, true); return stage(sql)
+        },
+      }
+      publications.set(sql, publication)
+      return publication
+    },
+    readRepeatRunSourceLocked: async () => readback(),
+  }
+})
+vi.mock('../src/modules/run-graph/publicRunState.js', () => ({
+  readPublicRunStateLocked: async () => {
+    const db = current().db()
+    return GraphRunStateSchema.parse({ executionState: db.run.executionState, outcome: db.run.outcome,
+      stopRequested: db.stopped, cleanupPending: db.cleanup, pendingInteractionCount: 0, unsettledReviewCount: 0 })
   },
-  readRepeatRunSourceLocked: async () => readback(),
+}))
+vi.mock('../src/modules/run-graph/publicProjection.js', () => ({
+  // These lifecycle fixtures are queued Runs with no admitted executions.
+  publicRunClosedFacts: async () => [],
 }))
 vi.mock('../src/modules/runs/repeatStartRead.js', () => ({
   readAcceptedRepeatRunLocked: async () => {
@@ -56,10 +111,19 @@ vi.mock('../src/modules/runs/repeatStartRead.js', () => ({
   },
 }))
 vi.mock('../src/modules/run-graph/repeatReceipts.js', () => ({
-  requireRepeatCanonicalReceiptBeforeCommit: (sql: GraphTransactionSql, receipt: ReturnType<typeof readback>) => {
+  requireRepeatCanonicalReceiptBeforeCommit: (sql: GraphTransactionSql, receipt: {
+    sourceDigest: string; effect: { kind: string; entityId: string; digest: string } | null
+  }) => {
     beforeGraphCommit(sql, async () => {
-      const source = readback()
-      if (current().missingReceipt || !source.replayed || source.sourceDigest !== receipt.sourceDigest) throw new Error('fixture-missing-receipt')
+      if (current().missingReceipt) throw new Error('fixture-missing-receipt')
+      if (receipt.effect) {
+        assert.equal(receipt.effect.kind, 'run.stop')
+        assert.deepEqual(current().db().stopEffect, { digest: receipt.effect.digest, entityId: receipt.effect.entityId })
+        assert.equal(receipt.sourceDigest, receipt.effect.digest)
+      } else {
+        const source = readback()
+        if (!source.replayed || source.sourceDigest !== receipt.sourceDigest) throw new Error('fixture-missing-receipt')
+      }
     })
   },
 }))
@@ -97,6 +161,10 @@ async function fixture() {
       if (sql === 'rollback') { transaction = undefined; return rows() }
       assert.ok(transaction, 'all lifecycle SQL must be in one transaction')
       if (sql === 'select record from runs where id=$1') return rows([{ record: transaction.run }])
+      if (sql === 'select pg_backend_pid()::text as owner,txid_current()::text as fence,record from runs where id=$1') {
+        assert.deepEqual(values, [run.id])
+        return rows([{ owner: 'fixture-backend', fence: 'fixture-transaction', record: transaction.run }])
+      }
       if (sql.startsWith('select principal_id from run_authority_principals') || sql.startsWith('select p.id from management_principals')) return rows([{}])
       if (sql.startsWith('update runs set execution_state')) { transaction.run = JSON.parse(String(values[2])); return rows([{}]) }
       if (sql.startsWith('update runs set stop_requested_at')) { transaction.stopped = true; return rows([{}]) }
@@ -181,7 +249,10 @@ test('ENG04 lifecycle: Stop commits fence, cleanup intent and source in one tran
   try {
     await f.requestRepeatRunStop(f.pool, f.owner.runId, f.authorize)
     assert.equal(f.saved().stopped, true); assert.equal(f.saved().cleanup, true); assert.equal(f.saved().head, 2)
-    assert.equal(f.saved().run.executionState, 'queued'); assert.equal(f.flags.authorityCalls, 2)
+    assert.equal(f.saved().run.executionState, 'queued')
+    // Entry, effect-authority capture, producer guard, and final live authorization.
+    assert.equal(f.flags.authorityCalls, 4)
+    assert.equal(f.saved().stopEffect?.entityId, f.owner.runId)
     const count = f.statements.filter((sql) => sql.startsWith('insert into run_cleanup_intents')).length
     // Synthetic independent cleanup completion; Stop replay cannot undo it.
     f.saved().cleanup = false
@@ -192,11 +263,13 @@ test('ENG04 lifecycle: Stop commits fence, cleanup intent and source in one tran
 })
 
 test('ENG04 lifecycle: denied Stop or missing canonical receipt leaves neither fence nor intent', async () => {
-  for (const deniedAt of [1, 2, 0]) {
+  for (const deniedAt of [1, 2, 3, 4, 0]) {
     const f = await fixture(); f.flags.denyAt = deniedAt; f.f.missingReceipt = deniedAt === 0
     try {
       await assert.rejects(f.requestRepeatRunStop(f.pool, f.owner.runId, f.authorize))
       assert.equal(f.saved().stopped, false); assert.equal(f.saved().cleanup, false); assert.equal(f.saved().head, 1)
+      assert.equal(f.saved().stopEffect, undefined)
+      assert.equal(f.statements.includes('commit'), false)
     } finally { await f.connection.close() }
   }
 })

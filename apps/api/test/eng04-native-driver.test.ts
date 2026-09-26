@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { HarnessExecution } from '@graphql/contracts'
 import { DomainError } from '../src/modules/errors.js'
+import { REPEAT_NATIVE_PENDING_MESSAGE } from '../src/modules/interactions/repeatNativeEvidence.js'
 import { ExecutionLimiter } from '../src/modules/runs/limiter.js'
 import { repeatNodeAction, repeatTerminalResolution, type RepeatAcceptance } from '../src/modules/runs/repeatNode.js'
 import { repeatExecutionDriver } from '../src/modules/runs/repeatRuntime.js'
@@ -46,7 +47,14 @@ describe('ENG04 exact native occurrence driver', () => {
     const pending = new DomainError('REPEAT_CLEANUP_PENDING', 'pending', 409)
     f.observeExact.mockImplementation(async () => { f.set(nativeCompleted(f.get())); throw new Error('native close rejected') })
     f.store.settleNativeExecution.mockRejectedValue(pending)
-    await expect(f.driver.observe(f.get(), new AbortController().signal)).rejects.toBe(pending)
+    const observation = f.driver.observe(f.get(), new AbortController().signal)
+    await expect(observation).rejects.toMatchObject({
+      code: 'REPEAT_CLEANUP_PENDING', message: REPEAT_NATIVE_PENDING_MESSAGE,
+    })
+    // The LangGraph-safe retry wrapper must retain the exact local diagnostic.
+    const failure: unknown = await observation.catch((error: unknown) => error)
+    if (!(failure instanceof DomainError)) throw new Error('Expected the current DomainError retry wrapper')
+    expect(failure.cause).toBe(pending)
     expect(f.get().result?.outcome).toBe('succeeded')
     expect(f.observeExact).toHaveBeenCalledOnce()
   })

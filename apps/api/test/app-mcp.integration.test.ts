@@ -8,7 +8,6 @@ import {
   NATIVE_INTERACTION_FIXTURES,
   WorkflowRunSchema,
 } from '@graphql/contracts'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { buildApp } from '../src/app.js'
@@ -34,6 +33,17 @@ function structured(result: { structuredContent?: unknown }): Record<string, unk
   return result.structuredContent as Record<string, unknown>
 }
 
+function failureText(result: { isError?: boolean; structuredContent?: unknown; content?: unknown }): string {
+  expect(result.isError).toBe(true)
+  expect(result.structuredContent).toBeUndefined()
+  if (!Array.isArray(result.content) || !result.content.length) throw new Error('Expected a nonempty text-only MCP failure')
+  return result.content.map((part: unknown) => {
+    if (!part || typeof part !== 'object' || !('type' in part) || part.type !== 'text'
+      || !('text' in part) || typeof part.text !== 'string') throw new Error('MCP failure included non-text content')
+    return part.text
+  }).join('\n')
+}
+
 describe('App MCP real transport and PostgreSQL policy', () => {
   it('isolates identities, catalogs, scopes, responses, replay, revocation, and audience', async () => {
     const suffix = randomUUID()
@@ -54,7 +64,10 @@ describe('App MCP real transport and PostgreSQL policy', () => {
     const commands = new PostgresCommandCoordinator(database.pool)
     const interactions = new PostgresInteractionRepository(database.pool)
     const appInteractions = new PostgresAppInteractionService(database.pool, interactions, commands, {
-      respond: async (responder: { principal?: ManagementPrincipal; beforeCommit?: Parameters<PostgresInteractionRepository['decide']>[0]['beforeCommit'] }, input: { interactionId: string; optionId: string; expectedRevision: number }) => {
+      respond: async (responder, input) => {
+        // Current App MCP delegates auditing to the shared decision writer; it
+        // must not pass a caller-supplied transaction callback to this port.
+        expect('beforeCommit' in responder ? responder.beforeCommit : undefined).toBeUndefined()
         const current = await interactions.get(input.interactionId)
         if (!current) throw new Error('interaction missing')
         const option = current.responseOptions.find((candidate) => candidate.optionId === input.optionId)
@@ -63,7 +76,6 @@ describe('App MCP real transport and PostgreSQL policy', () => {
           id: current.id, optionId: option.optionId, expectedRevision: input.expectedRevision,
           nativeResponse: { optionId: option.optionId, semantic: option.semantic },
           ...(responder.principal ? { principal: responder.principal } : {}),
-          ...(responder.beforeCommit ? { beforeCommit: responder.beforeCommit } : {}),
         })
       },
     })
@@ -198,17 +210,14 @@ describe('App MCP real transport and PostgreSQL policy', () => {
     })) as unknown as { items: Array<{ id: string }> }
     expect(secondPage.items[0]?.id).not.toBe(firstPage.items[0]?.id)
     const invalidCursor = await orchestrator.callTool({ name: 'interaction_list', arguments: { cursor: 'not-a-cursor' } })
-    expect(invalidCursor.isError).toBe(true)
-    expect(JSON.stringify(invalidCursor.structuredContent)).toContain('INVALID_CURSOR')
+    expect(failureText(invalidCursor)).toContain('INVALID_CURSOR')
 
     const foreignGet = await orchestrator.callTool({ name: 'interaction_get', arguments: { interactionId: foreign.id } })
-    expect(foreignGet.isError).toBe(true)
-    expect(JSON.stringify(foreignGet.structuredContent)).toContain('INTERACTION_NOT_FOUND')
+    expect(failureText(foreignGet)).toContain('INTERACTION_NOT_FOUND')
     const selfResponse = await orchestrator.callTool({ name: 'interaction_respond', arguments: {
       interactionId: self.id, optionId: self.responseOptions[0]!.optionId, expectedRevision: 0,
     } })
-    expect(selfResponse.isError).toBe(true)
-    expect(JSON.stringify(selfResponse.structuredContent)).toContain('INTERACTION_NOT_FOUND')
+    expect(failureText(selfResponse)).toContain('INTERACTION_NOT_FOUND')
     await expect(coder.callTool({ name: 'interaction_respond', arguments: {
       interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: 0,
     } })).rejects.toThrow()
