@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
+import { currentRepositoryFixture } from './helpers/wave25CurrentRepository.js'
+import { agent3Database, candidateFor, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
 
 // Regression for CURRENT_TYPED_WRITER_REQUIRED: fixture setup must use the same
 // authenticated typed Save service as /definition, not a direct version update.
@@ -22,4 +23,20 @@ describe.skipIf(!postgresEnabled)('Current Agent3 fixture publication', () => {
     const head = await db.pool.query('select run_id from run_graph_heads where run_id=$1', [f.run.id])
     expect(head.rowCount).toBe(run ? 1 : 0)
   })
+  it('admits an ordinary node through the real current repository and accepted root authority', async () => {
+    const t = await currentRepositoryFixture(db)
+    const owner = await t.repository.acquireOwnership(t.f.run.id, () => undefined)
+    expect(owner).toBeDefined()
+    try {
+      const store = await t.repository.repeat(owner!)
+      const admitted = await store.admit({ nodeId: t.f.version.entryNodeId, occurrence: null }, () => candidateFor(t.f))
+      expect(admitted).toMatchObject({ kind: 'admitted', reused: false, execution: { state: 'queued' } })
+      const rows = await t.repository.listRepeatExecutions(t.f.run.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]!.ref.occurrence).toBeNull()
+      expect(rows[0]!.execution).not.toHaveProperty('nativeSessionId')
+      expect(rows[0]!.execution).not.toHaveProperty('runtimeDirectory')
+    } finally { await owner?.release() }
+  })
+
 })
