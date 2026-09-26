@@ -2,13 +2,11 @@ import type pg from 'pg'
 import { expect } from 'vitest'
 import { applyRunGraphPageFixture, type RunGraphScope, type RunGraphSnapshot } from '@graphql/contracts/wave25'
 import { RunGraphReadService } from '../../src/modules/run-graph/readService.js'
-import { createCompactSnapshotAssembler } from '../../src/modules/run-graph/compactSnapshot.js'
-import { readCurrentGraphExchanges } from '../../src/modules/interactions/wave25/currentExchanges.js'
 
 /** Actual read service plus the COMPLETE frozen reference consumer. No fact
  * filtering, activity-only reducer, SQL mutation, or sorting-away differences. */
 export async function graphParity(pool: pg.Pool, scope: RunGraphScope, initial?: RunGraphSnapshot) {
-  const reads = new RunGraphReadService(pool, createCompactSnapshotAssembler(readCurrentGraphExchanges), { qualifiedReads: true })
+  const reads = new RunGraphReadService(pool, { qualifiedReads: true })
   const principal = { id: 'r1-parity-reader', name: 'Synthetic reader', audience: 'operator' as const,
     expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null,
     grants: [{ actions: ['runs:read' as const], scope: { workspaceIds: [scope.workspaceId], workflowIds: [scope.workflowId], runIds: [scope.runId] } }] }

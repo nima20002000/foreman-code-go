@@ -3,10 +3,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HarnessExecutionSchema, type HarnessExecutionRequest } from '@graphql/contracts'
-import { makeWave25Fixture, parseChoiceResultEnvelope, type WorkflowChoice } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture, parseChoiceResultEnvelope, type WorkflowChoice } from '@graphql/contracts/wave25'
 import { buildHarnessPrompt } from '../src/modules/harnesses/prompt.js'
-import { oneShotInitialPrompt } from '../src/modules/runs/oneShotPrompt.js'
-import { oneShotExecutionDriver, type OneShotRuntimeContext } from '../src/modules/runs/oneShotRuntime.js'
+import { currentInitialPrompt } from '../src/modules/runs/currentRouting.js'
+import { candidateFor } from './helpers/wave25Agent3.js'
+import { repeatNativeObserver, type RepeatNativeObserverContext } from '../src/modules/runs/repeatRuntime.js'
 
 const directories: string[] = []
 afterEach(async () => { while (directories.length) await rm(directories.pop()!, { recursive: true, force: true }) })
@@ -18,20 +19,21 @@ const choice = (first = 'pass', second = 'issues'): WorkflowChoice => ({ outcome
 /** Exercises the real driver/request builder. Only the coordinator boundary is
  * synthetic here: this is NOT native acceptance, journal, or routing coverage. */
 async function providerRequest(declaration: WorkflowChoice, selected = 0) {
-  const f = makeWave25Fixture('r1-choice-request')
+  const f = makeCurrentWorkflowFixture('r1-choice-request')
   const directory = await mkdtemp(join(tmpdir(), 'wave25-r1-choice-')); directories.push(directory)
   const node = f.version.definition.nodes[0]!
   node.choice = declaration
+  f.version.definition.edges[0]!.id = 'private-edge'
   delete node.initialPrompt
   const configuration = f.configurations[0]!
   const original = structuredClone(configuration)
-  const run = { ...f.run, executionLocation: { runnerId: 'local', rootPath: directory,
+  const run = { ...f.run, authorizationPrincipalId: 'request-author', executionLocation: { runnerId: 'local', rootPath: directory,
     locationRevision: 1, identityHash: `sha256:${'1'.repeat(64)}` } }
-  const execution = HarnessExecutionSchema.parse({ ...f.executions[0]!, state: 'starting',
-    workingDirectory: directory, runtimeDirectory: join(directory, node.id) })
+  const execution = HarnessExecutionSchema.parse({ ...candidateFor(f), state: 'starting',
+    workingDirectory: directory, runtimeDirectory: join(directory, f.identities[0]!.executionId) })
   let captured: HarnessExecutionRequest | undefined, rendered = '', produced: unknown
   const native = {
-    ensureObserve: vi.fn(async ({ request }: { request: HarnessExecutionRequest }) => {
+    observeExact: vi.fn(async ({ request }: { request: HarnessExecutionRequest }) => {
       captured = request
       // Exactly what the native coordinator passes to the provider: no version-
       // table lookup, saved-choice access, or manually synchronized user prompt.
@@ -45,17 +47,19 @@ async function providerRequest(declaration: WorkflowChoice, selected = 0) {
         result: produced, finishedAt: new Date().toISOString() }), result: produced }
     }),
   }
-  const store = { claimLaunch: vi.fn(async () => execution), assertNativeBoundary: vi.fn(async () => undefined) }
+  const store = { readExecution: vi.fn(async () => ({ execution, ref: { nodeId: node.id, occurrence: null } })),
+    claimLaunch: vi.fn(async () => execution), assertExecutionAdmission: vi.fn(async () => undefined),
+    beginNativeEntry: vi.fn(async () => undefined) }
   const signal = new AbortController().signal
   const context = {
-    run, version: f.version, signal, owner: { assertOwned: vi.fn() }, native,
-    runs: { oneShot: () => store }, workflows: { getAgentConfiguration: async () => configuration },
-    locations: { revalidateSnapshot: vi.fn(async () => undefined) },
+    run, version: f.version, signal, owner: { runId: run.id, assertOwned: vi.fn() }, native,
+    store, workflows: { getAgentConfiguration: async () => configuration },
+    locations: { revalidateRunAuthorization: vi.fn(async () => undefined), revalidateSnapshot: vi.fn(async () => undefined) },
     admission: { run: async (_runId: string, _signal: AbortSignal, work: () => Promise<void>) => work() },
     directory: (id: string) => join(directory, id),
-  } as unknown as OneShotRuntimeContext
-  await oneShotExecutionDriver(context).observe(execution, signal)
-  expect(native.ensureObserve).toHaveBeenCalledTimes(1)
+  } as unknown as RepeatNativeObserverContext
+  await repeatNativeObserver(context)(execution, signal)
+  expect(native.observeExact).toHaveBeenCalledTimes(1)
   expect(configuration).toEqual(original)
   expect(captured?.input).toEqual(execution.input)
   return { request: captured!, rendered, result: produced }
@@ -76,12 +80,12 @@ describe('BR1-007: immutable finite choices reach the actual request builder', (
     expect(second.request.initialPrompt).toContain('["ready","revise"]')
   })
   it('leaves ordinary node prompts unchanged', () => {
-    expect(oneShotInitialPrompt({})).toBeUndefined()
-    expect(oneShotInitialPrompt({ initialPrompt: 'Do the accepted task.' })).toBe('Do the accepted task.')
+    expect(currentInitialPrompt({})).toBeUndefined()
+    expect(currentInitialPrompt({ initialPrompt: 'Do the accepted task.' })).toBe('Do the accepted task.')
   })
   it('preserves the authored task and never mutates the declaration', () => {
     const declaration = choice(), before = structuredClone(declaration)
-    expect(oneShotInitialPrompt({ initialPrompt: 'Check the implementation.', choice: declaration }))
+    expect(currentInitialPrompt({ initialPrompt: 'Check the implementation.', choice: declaration }))
       .toMatch(/^Check the implementation\.\n\nGraphQL finite-choice/)
     expect(declaration).toEqual(before)
   })
@@ -89,7 +93,7 @@ describe('BR1-007: immutable finite choices reach the actual request builder', (
     const declaration: WorkflowChoice = { outcomes: Array.from({ length: 16 }, (_, index) => ({
       outcome: `o${index.toString().padStart(2, '0')}${'x'.repeat(45)}`, target: { kind: 'branch_end' as const },
     })) }
-    expect(Buffer.byteLength(oneShotInitialPrompt({ choice: declaration })!, 'utf8')).toBeLessThan(4096)
+    expect(Buffer.byteLength(currentInitialPrompt({ choice: declaration })!, 'utf8')).toBeLessThan(4096)
   })
   it('does not relax strict acceptance to compensate for the request fix', () => {
     const declaration = choice()
