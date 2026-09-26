@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, operatorChatSettings } from '@graphql/contracts'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../mocks/server'
-import { getManagedAgentDefaults, updateManagedAgentDefaults } from '../../shared/api/client'
+import { ApiError, getManagedAgentDefaults, updateManagedAgentDefaults } from '../../shared/api/client'
 import { queryKeys } from '../../shared/api/query'
 import { OperatorComposerSettings } from './OperatorComposerSettings'
 import { OperatorChat } from './OperatorChat'
@@ -43,6 +43,24 @@ beforeEach(() => {
 afterEach(() => { cleanup(); client.clear(); vi.restoreAllMocks() })
 function chat() { render(<QueryClientProvider client={client}><OperatorChatVisibilityProvider enabled><OperatorChat /></OperatorChatVisibilityProvider></QueryClientProvider>) }
 describe('Operator chat UX', () => {
+  it('recovers a stale selected chat without showing an MCP failure', async () => {
+    api.get.mockRejectedValue(new ApiError({ code: 'CONVERSATION_NOT_FOUND', message: 'Missing conversation' }, 404))
+    const setupTargets: Array<string | null> = []
+    server.use(http.get('/api/operator/setup', ({ request }) => {
+      const id = new URL(request.url).searchParams.get('conversationId')
+      setupTargets.push(id)
+      return id ? HttpResponse.json({ code: 'CONVERSATION_NOT_FOUND', message: 'Missing conversation' }, { status: 404 })
+        : HttpResponse.json(configuredOperatorSetup('codex'))
+    }))
+    chat()
+    expect(await screen.findByText(/The previous conversation is no longer available/)).toBeVisible()
+    await waitFor(() => expect(setupTargets).toContain(null))
+    expect(screen.queryByText('Operator MCP could not be checked')).not.toBeInTheDocument()
+    expect(screen.queryByText('Conversation could not be loaded')).not.toBeInTheDocument()
+    expect(api.get).toHaveBeenCalledTimes(1)
+    expect(useOperatorChatStore.getState().selectedConversationId).toBeUndefined()
+  })
+
   it('keeps saved settings usable on refresh failure and hides them after access is denied', async () => {
     chat()
     const input = await screen.findByRole('textbox', { name: 'Message' })
