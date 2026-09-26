@@ -162,15 +162,11 @@ describe('workspace section routes', () => {
     expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
   })
 
-  it('opens human approvals over the selected workspace without leaving settings', async () => {
-    const user = userEvent.setup()
-    const { router } = renderRoute('/workspaces/workspace-1/settings')
+  it('omits the approvals shortcut from workspace settings', async () => {
+    renderRoute('/workspaces/workspace-1/settings')
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
     expect(screen.queryByTestId('workflow-card-workflow-content-pipeline')).not.toBeInTheDocument()
-    const approvals = screen.getByRole('button', { name: /Approvals Review requests in this workspace/ })
-    await user.click(approvals)
-    expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings')
-    expect(await screen.findByRole('dialog', { name: 'Human approval inbox' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: /Approvals Review requests in this workspace/ })).not.toBeInTheDocument()
   })
 
   it('redirects an old approval deep link back to its workflow board and opens the panel', async () => {

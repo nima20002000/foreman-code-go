@@ -149,13 +149,6 @@ export function SettingsRouteEntry() {
               </li> : null}
               <li>
                 <Card className="settings-card">
-                  <button type="button" className="settings-card-open" onClick={() => useApprovalInboxStore.getState().openInbox({ workspaceId })}>
-                    <SettingsCardBody icon="shield" title="Approvals" description="Review requests in this workspace" />
-                  </button>
-                </Card>
-              </li>
-              <li>
-                <Card className="settings-card">
                   <Link to="/workspaces/$workspaceId/browsers" params={{ workspaceId }} className="settings-card-open">
                     <SettingsCardBody icon="globe" title="Browsers" description="Browser profiles and access" />
                   </Link>
