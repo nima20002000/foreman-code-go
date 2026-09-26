@@ -23,6 +23,10 @@
     "./management": {
       "types": "./dist/management/index.d.ts",
       "import": "./dist/management/index.js"
+    },
+    "./runtime-identity-node": {
+      "types": "./dist/runtimeIdentityNode.d.ts",
+      "import": "./dist/runtimeIdentityNode.js"
     }
   },
   "scripts": {

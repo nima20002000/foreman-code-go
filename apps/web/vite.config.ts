@@ -1,9 +1,10 @@
+import { devIdentity } from './dev-identity'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), devIdentity(process.env.VITE_API_URL ?? 'http://127.0.0.1:3000')],
   server: {
     host: '127.0.0.1',
     port: 5173,

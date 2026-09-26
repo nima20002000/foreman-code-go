@@ -1,3 +1,5 @@
+import { readRuntimeIdentity } from './infrastructure/runtimeIdentity.js'
+import { fileURLToPath } from 'node:url'
 import { OperatorMcpRoutes } from './modules/harnesses/operatorMcpRoutes.js'
 import { registerApprovalCheckpointResume } from './modules/runs/approvalCheckpointRegistration.js'
 import { isDeepStrictEqual } from 'node:util'
@@ -285,6 +287,7 @@ export function buildProductionApp(
     provisioningRoot: projectRoot,
   })
   const app = buildApp({
+    runtimeIdentity: () => readRuntimeIdentity(database.pool, fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString),
     ...(config.browserAuth ? { browserAuth: new BrowserAuthentication(database.pool, access, config.browserAuth) } : {}),
     ...(config.localDevBrowserAccess ? { localDevBrowserAccess: new LocalDevBrowserAccess(
       database.pool, access, config.localDevBrowserAccess.principalId,
