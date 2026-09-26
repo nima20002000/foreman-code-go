@@ -13,6 +13,7 @@ export function newFullRunReason(run: ActionRun): string | undefined {
 export function approvalDeliveryMessage(status: string, deliveryState: string): string {
   if (status === 'delivered' && deliveryState === 'delivered') return 'Native delivery is recorded. This does not prove execution completion or cleanup settlement.'
   if (status === 'delivery_failed') return 'Approval delivery failed. The decision is not permission to send a replacement native response.'
+  if (status === 'canceled' && deliveryState === 'uncertain') return 'This interaction is canceled, but whether an earlier response reached the provider is unknown. It will not be resent.'
   if (deliveryState === 'uncertain') return 'Native delivery is uncertain. Recovery is backend-owned; a client refresh is not provider restart recovery.'
   if (status === 'canceled') return 'This interaction is canceled. No approval response is available.'
   if (status === 'pending') return 'A human decision is pending. No native acknowledgement is recorded.'

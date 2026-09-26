@@ -92,11 +92,12 @@ export class Wave25InteractionRepository extends PostgresInteractionRepository {
           continue
         }
         canceled += 1
+        // Cancellation never proves a submitted/uncertain response failed.
         const next = nextInteraction(current, { status: 'canceled', deliveryState: current.deliveryState === 'not_started' ? 'not_started'
-          : current.deliveryState === 'delivered' ? 'delivered' : 'failed' })
+          : current.deliveryState === 'delivered' ? 'delivered'
+            : current.deliveryState === 'submitted' || current.deliveryState === 'uncertain' ? 'uncertain' : 'failed' })
         await publishInteraction(publication, context, current, next, { resumeState: 'unknown', mutate: async (transaction) => {
-          // The frozen canceled shape cannot carry deliveryState=uncertain. The
-          // private attempt retains uncertainty; cancellation never proves failure.
+          // The private attempt keeps the same uncertainty as the public record.
           await transaction.query(`update interaction_delivery_attempts set state=case when state='submitted' then 'uncertain' else state end,
             lease_expires_at=null where interaction_id=$1`, [id])
           await transaction.query(`update interaction_graph_resumes set state='canceled',lease_owner=null,lease_token=null,lease_expires_at=null,

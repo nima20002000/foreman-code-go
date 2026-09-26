@@ -545,7 +545,7 @@ export const DurableInteractionSchema = z.object({
   const allowedDeliveryStates: Record<typeof value.status, readonly typeof value.deliveryState[]> = {
     pending: ["not_started"], decided: ["not_started"],
     delivery_pending: ["pending", "submitted", "uncertain"],
-    delivered: ["delivered"], delivery_failed: ["failed"], canceled: ["not_started", "delivered", "failed"],
+    delivered: ["delivered"], delivery_failed: ["failed"], canceled: ["not_started", "delivered", "failed", "uncertain"],
   };
   if (!allowedDeliveryStates[value.status].includes(value.deliveryState)) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["deliveryState"], message: "delivery state contradicts the interaction lifecycle" });

@@ -277,25 +277,34 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   }
 
   /** Bounded current recovery. Never reset an existing checkpoint to initial state. */
+  private reconcileCursor = ''
   reconcile(onError: (error: unknown) => void = console.error): Promise<void> {
     if (this.reconciliation) return this.reconciliation
     if (this.closing) return Promise.resolve()
     const task = (async () => {
       await this.workerCredentials.reconcileTerminalCredentials?.().catch(onError)
       await this.nativeExecutions.reconcileReviews(onError)
-      let after = ''
-      while (!this.closing) {
+      // Fair sweep: a capacity-limited pass resumes after the last candidate it
+      // handled, wrapping once, so a persistently unresolved prefix cannot starve
+      // later Runs.
+      const start = this.reconcileCursor
+      let after = start, wrapped = start === ''
+      sweep: while (!this.closing) {
         const page = await this.runs.reconciliationCandidates(after, 100)
-        if (!page.length) break
         for (const candidate of page) {
+          if (this.closing) break sweep
+          if (wrapped && start !== '' && candidate.id > start) break sweep
+          if (this.activeTasks.has(candidate.id) || this.resumeTasks.has(candidate.id) || this.cleanupTasks.has(candidate.id)) { after = candidate.id; continue }
+          if (this.activeTasks.size >= this.maximumActiveRuns) { this.reconcileCursor = after; return }
           after = candidate.id
-          if (this.closing) break
-          if (this.activeTasks.has(candidate.id) || this.resumeTasks.has(candidate.id) || this.cleanupTasks.has(candidate.id)) continue
-          if (this.activeTasks.size >= this.maximumActiveRuns) break
           void this.start(candidate.id).catch(onError)
         }
-        if (page.length < 100 || this.activeTasks.size >= this.maximumActiveRuns) break
+        if (page.length < 100) {
+          if (wrapped) break
+          wrapped = true; after = ''
+        }
       }
+      this.reconcileCursor = ''
     })().finally(() => { if (this.reconciliation === task) this.reconciliation = undefined })
     this.reconciliation = task
     return task

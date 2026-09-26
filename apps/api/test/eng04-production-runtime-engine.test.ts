@@ -55,7 +55,7 @@ async function fixture(options: { form?: 'single' | 'parallel' | 'conditional' |
   const native = { cancelRun: async () => { state.nativeCancel++; if (!state.clean) throw new Error('native closure uncertain') },
     finishRun: async () => { state.events.push('finish-native') },
     nativeBoundaryEvidence: async () => { throw new Error('No fake native evidence in registration tests') },
-    closeForRestart: async () => { state.events.push('restart-close') }, reconcileReviews: async () => undefined }
+    closeForRestart: async () => { state.events.push('restart-close') }, reconcileReviews: async () => undefined, requestColdRunCleanup: async () => false }
   const { LangGraphWorkflowEngine: Engine } = await import('../src/modules/runs/engine.js')
   type Args = ConstructorParameters<typeof LangGraphWorkflowEngine>
   const engine = new Engine(runs as unknown as Args[0], {} as Args[1], native as unknown as Args[2], {} as Args[3],

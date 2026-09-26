@@ -128,7 +128,7 @@ export const GraphInteractionSchema = z.object({
   if (!['pending', 'canceled'].includes(value.status) && !decided) fail('decision required')
   const allowed: Record<typeof value.status, readonly typeof value.deliveryState[]> = {
     pending: ['not_started'], decided: ['not_started'], delivery_pending: ['pending', 'submitted', 'uncertain'],
-    delivered: ['delivered'], delivery_failed: ['failed'], canceled: ['not_started', 'delivered', 'failed'],
+    delivered: ['delivered'], delivery_failed: ['failed'], canceled: ['not_started', 'delivered', 'failed', 'uncertain'],
   }
   if (!allowed[value.status].includes(value.deliveryState)) fail('delivery is independent but must not contradict interaction lifecycle')
 })

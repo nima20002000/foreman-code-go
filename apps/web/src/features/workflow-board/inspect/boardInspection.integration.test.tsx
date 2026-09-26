@@ -262,7 +262,7 @@ describe('Run inspection inside the one mounted Board', () => {
     expect(within(article).queryByLabelText(`Accepted result ${id}`)).not.toBeInTheDocument()
     expect(article).toHaveTextContent('No accepted result is recorded for this exact execution.')
     expect(within(article).queryByLabelText(`Reported result ${id}`)).not.toBeInTheDocument()
-    fireEvent.click(within(article).getByText('Native reported result (not proof of acceptance)'))
+    fireEvent.click(within(article).getByText('Recorded execution result (not proof of acceptance)'))
     expect(await within(article).findByLabelText(`Reported result ${id}`)).toHaveTextContent('FIXTURE_INTERRUPTED')
     const acceptedId = fixture.repeatedExecutions[2]!.detail.execution.executionId
     await userEvent.setup().click(await within(inspector()).findByRole('button', { name: new RegExp(acceptedId) }))

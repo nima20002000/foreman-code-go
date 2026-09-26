@@ -22,10 +22,10 @@ function ExecutionReport({ scope, row }: { scope: RepeatGraphScopeV3; row: RunEx
       {value ? <>
         <p>Recorded state: {value.execution.state}.</p>
         {value.reportedResult ? <>
-          <h5>Native reported result — not an accepted predecessor result</h5>
+          <h5>Recorded execution result — not an accepted predecessor result</h5>
           <pre tabIndex={0} aria-label={`Reported result ${row.executionId}`}>{JSON.stringify(value.reportedResult, null, 2)}</pre>
-          {value.reportedResult.outcome === 'failed' && value.reportedResult.error?.retryable ? <p>The native error is marked retryable. This is diagnostic information, not a permission or capability to retry this node.</p> : null}
-        </> : <p>No native terminal report is recorded for this execution.</p>}
+          {value.reportedResult.outcome === 'failed' && value.reportedResult.error?.retryable ? <p>The recorded error is marked retryable. This is diagnostic information, not a permission or capability to retry this node.</p> : null}
+        </> : <p>No execution result is recorded for this execution.</p>}
         {value.acceptedResult.status === 'accepted' ? <>
           <h5>Accepted successful predecessor result</h5>
           <pre tabIndex={0} aria-label={`Accepted result ${row.executionId}`}>{JSON.stringify(value.acceptedResult.value, null, 2)}</pre>

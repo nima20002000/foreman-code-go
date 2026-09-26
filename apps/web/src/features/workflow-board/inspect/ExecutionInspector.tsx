@@ -142,7 +142,7 @@ function ExactExecution({ scope, version, executionId, nodeId, occurrenceId, rel
       <JsonValue label={`Accepted result ${executionId}`} value={checked.acceptedResult.value} />
     </> : <p>No accepted result is recorded for this exact execution. A native terminal report is not an accepted predecessor result.</p>}
     {checked.reportedResult ? <JsonDisclosure disclosureKey={JSON.stringify([scope, executionId, 'native-report'])}
-      summary="Native reported result (not proof of acceptance)" label={`Reported result ${executionId}`} value={checked.reportedResult} /> : null}
+      summary="Recorded execution result (not proof of acceptance)" label={`Reported result ${executionId}`} value={checked.reportedResult} /> : null}
     <Button size="sm" variant="ghost" disabled={query.isFetching} onClick={() => void query.refetch()}>Refresh exact execution</Button>
     <ExecutionBindings scope={scope} detail={checked} relationshipId={relationshipId} />
   </article>

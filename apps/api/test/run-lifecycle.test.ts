@@ -136,7 +136,7 @@ function fixture() {
     finishCleanup: async (_id: string, pending: boolean) => { control.cleanupPending = pending },
   }
   const native = { cancelRun: async () => { calls.cancel++ }, finishRun: async () => { calls.finish++ },
-    reconcileReviews: async () => undefined, closeForRestart: async () => undefined,
+    reconcileReviews: async () => undefined, closeForRestart: async () => undefined, requestColdRunCleanup: async () => false,
     nativeBoundaryEvidence: async () => { throw new Error('No native evidence is fabricated in engine port tests') } }
   const interactions = { list: async () => { throw new Error('Historical pagination must never select resume IDs') } }
   const engine = new LangGraphWorkflowEngine(runs as unknown as EngineArguments[0], {} as EngineArguments[1],
