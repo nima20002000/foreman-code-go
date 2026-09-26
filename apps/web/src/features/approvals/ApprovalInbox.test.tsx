@@ -84,4 +84,17 @@ describe('floating human approval inbox', () => {
     expect(document.getElementById(info.getAttribute('aria-describedby')!)).toHaveTextContent('pnpm test')
     expect(screen.queryByRole('dialog', { name: 'Run a command' })).not.toBeInTheDocument()
   })
+  it('shows the correlated target and proposed change in current request details', () => {
+    api.list.mockReturnValue(queue([{ ...humanA, reviewContext: {
+      target: '/project/src/app.ts', changeSummary: 'Change two lines in the startup handler.',
+    } }]))
+    useApprovalInboxStore.getState().openInbox({ workspaceId: base.workspaceId })
+    render(<ApprovalInbox />)
+    const info = screen.getByRole('button', { name: 'More details: Run a command' })
+    const details = document.getElementById(info.getAttribute('aria-describedby')!)!
+    expect(details).toHaveTextContent('Target: /project/src/app.ts')
+    expect(details).toHaveTextContent('Proposed change: Change two lines in the startup handler.')
+    expect(details).toHaveTextContent('pnpm test')
+  })
+
 })
