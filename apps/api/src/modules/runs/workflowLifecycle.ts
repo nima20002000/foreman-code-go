@@ -19,6 +19,7 @@ import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import { lockInteraction, readContext } from '../interactions/wave25/context.js'
 import { nextInteraction, publishInteraction } from '../interactions/wave25/publication.js'
 import { assertSavedPendingApprovalOriginalLocked } from '../interactions/nativeApprovalProof.js'
+import { isSettlementPendingCheckpointError } from '../interactions/repeatNativeEvidence.js'
 
 function fail(code: string): never {
   throw new DomainError(code, 'The workflow lifecycle requires its exact persisted owner, checkpoint and settlement evidence.', 409)
@@ -41,7 +42,10 @@ export async function persistWorkflowApprovalWait(owner: RunOwnership, saver: Ba
   const checkpoint = structuredClone(supplied)
   if (!checkpoint.tasks.some((task) => task.interrupts?.length)) return []
   if (checkpoint.values.runId !== owner.runId || checkpoint.tasks.length > 1000
-    || checkpoint.tasks.some((task) => task.error != null)) return fail('GRAPH_INTERRUPT_INVALID')
+    // A parallel branch can observe its native terminal before its own approval
+    // resume is consumed; that settlement-pending error re-runs with the resume.
+    || checkpoint.tasks.some((task) => task.error != null
+      && !(task.interrupts?.length && isSettlementPendingCheckpointError(task.error)))) return fail('GRAPH_INTERRUPT_INVALID')
   return owner.oneShotConnection().transaction(async (sql) => {
     try {
       const { publication, snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
@@ -95,7 +99,12 @@ export async function persistWorkflowApprovalWait(owner: RunOwnership, saver: Ba
       if (!current.length) return fail('GRAPH_INTERRUPT_INVALID')
       if (run.executionState !== 'waiting') {
         const next = AcceptedWorkflowRunV3Schema.parse({ ...run, executionState: 'waiting' })
-        await lifecycleSource(publication, { kind: 'approval_wait', next, bindings: retained.map(({ item, checkpointId }) => ({
+        // A Run can re-enter the same wait after a sibling branch resumed; the
+        // locked graph head distinguishes that new transition from a replay.
+        const head = (await sql.query<{ sequence: string }>('select head_sequence::text as sequence from run_graph_heads where run_id=$1',
+          [run.id])).rows[0]?.sequence
+        if (head === undefined) return fail('GRAPH_NOT_INITIALIZED')
+        await lifecycleSource(publication, { kind: 'approval_wait', next, afterSequence: head, bindings: retained.map(({ item, checkpointId }) => ({
           interactionId: item.id, graphInterruptId: item.graphInterruptId, checkpointId,
         })) }, async () => {
           await sql.query('update runs set execution_state=$2,record=$3::jsonb where id=$1', [run.id, next.executionState, JSON.stringify(next)])

@@ -14,6 +14,7 @@ import { matchingDeliveryEvidence } from './delivery.js'
 import { nativeApprovalContext } from './nativeApprovalContext.js'
 import { decisionDigest } from './wave25/publication.js'
 import { DomainError } from '../errors.js'
+import { APPROVAL_SETTLEMENT_PENDING_MESSAGE } from './repeatNativeEvidence.js'
 
 const AckSchema = z.object({
   scope: RunGraphScopeSchema, interaction: DurableInteractionSchema,
@@ -23,7 +24,7 @@ const AckSchema = z.object({
   publication: z.object({ evidence: GraphEvidenceSchema, sourceDigest: GraphDigestSchema, semanticDigest: GraphDigestSchema }).strict(),
 }).strict()
 export type WorkflowApprovalAck = z.infer<typeof AckSchema>
-function pending(): never { throw new DomainError('APPROVAL_SETTLEMENT_PENDING', 'The exact approval still requires its original native continuation and canonical receipt.', 409) }
+function pending(): never { throw new DomainError('APPROVAL_SETTLEMENT_PENDING', APPROVAL_SETTLEMENT_PENDING_MESSAGE, 409) }
 
 /** The pending request is anchored in a coordinator-minted ORIGINAL history,
  * not in a body supplied to an interaction endpoint. Caller identity fields,

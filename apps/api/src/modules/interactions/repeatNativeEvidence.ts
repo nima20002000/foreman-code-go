@@ -6,8 +6,16 @@ import { DomainError } from '../errors.js'
 const identityKeys = ['id', 'runId', 'workflowNodeId', 'agentId', 'agentConfigurationVersionId',
   'attempt', 'workingDirectory', 'runtimeDirectory', 'nativeSessionId'] as const
 
+export const REPEAT_NATIVE_PENDING_MESSAGE = 'The exact repeat execution still has unsettled native or approval evidence.'
+export const APPROVAL_SETTLEMENT_PENDING_MESSAGE = 'The exact approval still requires its original native continuation and canonical receipt.'
 export function repeatNativePending(code = 'REPEAT_CLEANUP_PENDING'): never {
-  throw new DomainError(code, 'The exact repeat execution still has unsettled native or approval evidence.', 409)
+  throw new DomainError(code, REPEAT_NATIVE_PENDING_MESSAGE, 409)
+}
+/** LangGraph persists only a task error's name and message, not its code. */
+export function isSettlementPendingCheckpointError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const { name, message } = error as { name?: unknown; message?: unknown }
+  return name === 'DomainError' && (message === REPEAT_NATIVE_PENDING_MESSAGE || message === APPROVAL_SETTLEMENT_PENDING_MESSAGE)
 }
 
 /** A terminal result, an expired lease and a missing local process are not close
