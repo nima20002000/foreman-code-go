@@ -5,6 +5,9 @@ import { join } from 'node:path'
 import pg from 'pg'
 import { AgentSchema, HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
 import { makeCurrentWorkflowFixture, AcceptedRepeatStartV1Schema, WorkflowRunV3Schema, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import { PostgresAccessService } from '../../src/modules/access/postgres.js'
+import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
+import { WorkflowManagementService } from '../../src/modules/workflows/management.js'
 import { applyApplicationMigrations } from '../../src/infrastructure/migrations.js'
 import { withExclusiveGraphConnection } from '../../src/modules/run-graph/connection.js'
 import { insertRepeatRun } from '../../src/modules/runs/repeatStartAdmission.js'
@@ -49,8 +52,6 @@ export async function agent3Database() {
 export async function seedAgent3(pool: pg.Pool, directory: string, fixture = makeCurrentWorkflowFixture(randomUUID()), options: { run?: boolean } = {}) {
   const location = { runnerId: 'local', rootPath: directory, locationRevision: 1, identityHash: 'sha256:' + '1'.repeat(64) }
   fixture.run = WorkflowRunV3Schema.parse({ ...fixture.run, executionLocation: location })
-  const version: Record<string, unknown> = structuredClone(fixture.version)
-  const definition = version.definition as Record<string, unknown>
   await pool.query(`insert into workspaces(id,record,execution_location,execution_location_identity,location_revision)
     values($1,$2::jsonb,$3::jsonb,$4::jsonb,1)`, [fixture.scope.workspaceId, JSON.stringify({ id: fixture.scope.workspaceId, name: 'Synthetic Agent 3 test' }),
   JSON.stringify({ runnerId: location.runnerId, rootPath: location.rootPath }), JSON.stringify({ synthetic: true })])
@@ -64,22 +65,40 @@ export async function seedAgent3(pool: pg.Pool, directory: string, fixture = mak
       [config.id, fixture.scope.workspaceId, config.agentId, JSON.stringify(config)])
     await pool.query('update agents set current_configuration_version_id=$2 where id=$1', [config.agentId, config.id])
   }
-  await pool.query('insert into workflows(id,workspace_id,current_version_id,record) values($1,$2,null,$3::jsonb)',
-    [fixture.scope.workflowId, fixture.scope.workspaceId, JSON.stringify(definition)])
-  await pool.query(`insert into workflow_versions(id,workspace_id,workflow_id,version,entry_node_id,record,execution_semantics_version)
-    values($1,$2,$3,1,$4,$5::jsonb,$6)`, [fixture.version.id, fixture.scope.workspaceId, fixture.scope.workflowId,
-  fixture.version.entryNodeId, JSON.stringify(version), 3])
-  await pool.query('update workflows set current_version_id=$2 where id=$1', [fixture.scope.workflowId, fixture.version.id])
+  const access = new PostgresAccessService(pool)
+  const writer = await access.issue({ name: 'Current fixture author', audience: 'operator',
+    expiresAt: new Date(Date.now() + 300000), grants: [{ actions: [
+      'workflows:create', 'workflows:read', 'workflows:update', 'graph:read', 'graph:edit', 'graph:save',
+      'agents:read', 'workspace_locations:read', 'skills:read', 'harnesses:update',
+    ], scope: { workspaceIds: [fixture.scope.workspaceId] } }] })
+  const workflows = new WorkflowManagementService(pool, new PostgresCommandCoordinator(pool))
+  const created = (await workflows.create(writer.principal, 'http', { workspaceId: fixture.scope.workspaceId,
+    commandId: randomUUID(), name: fixture.version.definition.name })).value
+  // This is the same typed writer used by /definition. It assigns saved IDs and
+  // immutable version facts; no direct current-version update is permitted.
+  const saved = (await workflows.current.save(writer.principal, 'http', JSON.parse(JSON.stringify({
+    workspaceId: fixture.scope.workspaceId, workflowId: created.workflow.id,
+    commandId: randomUUID(), executionSemanticsVersion: 3, expectedRevision: created.revision,
+    expectedWorkflowVersionId: null, expectedLocationRevision: location.locationRevision,
+    expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
+    graph: { ...fixture.version.definition, id: created.workflow.id, version: created.workflow.version,
+      createdAt: created.workflow.createdAt, updatedAt: created.workflow.updatedAt },
+  })))).value
+  fixture.version = saved.version
+  fixture.scope = { ...fixture.scope, workflowId: saved.workflowId, workflowVersionId: saved.version.id }
+  fixture.run = WorkflowRunV3Schema.parse({ ...fixture.run, workflowId: saved.workflowId,
+    workflowVersionId: saved.version.id, agentConfigurationVersionIds: saved.version.agentConfigurationVersionIds,
+    approval: saved.version.approval, authorizationPrincipalId: writer.principal.id })
   if (options.run !== false) {
-    const authorizationPrincipalId = `fixture-author-${fixture.scope.workspaceId}`
+    const authorizationPrincipalId = writer.principal.id
     fixture.run = WorkflowRunV3Schema.parse({ ...fixture.run, authorizationPrincipalId })
     const accepted = AcceptedRepeatStartV1Schema.parse({ run: fixture.run, snapshot: {
       request: { workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId,
         workflowVersionId: fixture.version.id, executionSemanticsVersion: 3, commandId: randomUUID(),
-        expectedWorkflowRevision: 0, expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
+        expectedWorkflowRevision: saved.revision, expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
         expectedLocationRevision: location.locationRevision, input: fixture.run.input },
       authorizationPrincipalId, executable: { version: fixture.version, configurations: fixture.configurations },
-      workflow: { id: fixture.scope.workflowId, workspaceId: fixture.scope.workspaceId, revision: 0,
+      workflow: { id: fixture.scope.workflowId, workspaceId: fixture.scope.workspaceId, revision: saved.revision,
         currentVersionId: fixture.version.id, archived: false, definition: fixture.version.definition },
       workspace: { id: fixture.scope.workspaceId, archived: false, location }, draft: null,
     } })
