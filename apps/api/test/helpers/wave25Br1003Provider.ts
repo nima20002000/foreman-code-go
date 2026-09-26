@@ -22,7 +22,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
   beforeRespond?: () => Promise<void>
 
   constructor(private readonly approvalNodes: ReadonlySet<string>, private readonly pendingPerExecution: 1 | 2 = 1,
-    private readonly acknowledgeStarts = false, private readonly disconnectAfterStart = false) {}
+    private readonly acknowledgeStarts = true, private readonly disconnectAfterStart = false) {}
 
   connection(): NativeHarnessSessionManager {
     // Separate transport facades per execution; only external history is shared.
@@ -81,7 +81,11 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
       return
     }
     this.terminals.set(session.nativeSessionId, { outcome: 'succeeded', output: { node: request.workflowNodeId } })
-    yield NativeHarnessEventSchema.parse({ sequence: 1, type: 'turn.completed', occurredAt: new Date().toISOString(), payload: { turnId } })
+    const terminal = NativeHarnessEventSchema.parse({ sequence: 1, type: 'turn.completed', occurredAt: new Date().toISOString(),
+      payload: { turnId, threadId: session.nativeSessionId, clientCorrelationId: input.clientCorrelationId,
+        turn: { id: turnId, status: 'completed' } } })
+    this.continuationEvents.set(session.nativeSessionId, terminal)
+    yield terminal
   }
   async pending(session: NativeSessionReference) { return this.waits.get(session.nativeSessionId)?.[0] }
   async respond(session: NativeSessionReference, requestId: string,
@@ -121,8 +125,9 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
   }
   async reconcile(session: NativeSessionReference, correlationId: string): Promise<NativeHistory> {
     const history = await this.history(session), request = this.requests.get(session.nativeSessionId)
-    return { ...history, ...(request && correlationId === `execution:${request.executionId}` && history.terminalResult ? {
-      terminalTurn: { correlationId, providerId: `turn-${request.executionId}`, result: history.terminalResult },
+    return { ...history, ...(request && correlationId === `execution:${request.executionId}` ? {
+      correlationId, nativeTurnId: `turn-${request.executionId}`,
+      ...(history.terminalResult ? { terminalTurn: { correlationId, providerId: `turn-${request.executionId}`, result: history.terminalResult } } : {}),
     } : {}) }
   }
   async cancel() { return true }
