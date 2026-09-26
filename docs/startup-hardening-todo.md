@@ -71,4 +71,4 @@ is the user's authorized change to the initial diagnostic-only approach.
 
 ## Publication
 
-User requested one PR per job, merge into GitHub main, then rebase local main onto origin/main. Publication in progress; preserve newer upstream work and unrelated branches.
+User requested one PR per job, merge into GitHub main, then rebase local main onto origin/main. All implementation jobs were published and merged in PRs #33–#43, preserving newer upstream work. Redundant worktrees were removed after ancestry verification; the canonical checkout is local main.

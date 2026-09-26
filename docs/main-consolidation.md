@@ -26,3 +26,13 @@ those are distinguished from the application-source and focused checks.
 Temporary and historical checkouts are removed only after their heads are
 reachable from main. Local environment files are kept outside Git, and the
 running application is moved to the canonical checkout with its data preserved.
+
+## Completed state
+
+Implementation PRs #33–#43 are merged. The twelve obsolete PR records are closed
+as already incorporated. All additional registered worktrees have been removed
+after verifying their heads are reachable from main. The API and frontend now
+run from `/home/nima/Desktop/graphql/apps/api` and `apps/web` respectively, on
+3040 and 5182, using the preserved app database. Historical non-main branch tips
+are archived as tags before branch cleanup; generated handoff artifacts are not
+reintroduced into the application tree.
