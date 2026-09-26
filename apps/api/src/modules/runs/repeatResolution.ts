@@ -144,15 +144,26 @@ export function decideRepeatAdmission(version: WorkflowVersionV3, ref: RepeatNod
     : compileExecutionTopology(version), ref.nodeId, values)
 }
 /** Whether a repeat block may open its first occurrence, decided on the whole
- * graph from resolutions OUTSIDE any occurrence. The entry node itself belongs
+ * graph from outside resolutions, including final exports with occurrence provenance. The entry node itself belongs
  * to the block, so the per-node admission above (which forbids a block member
  * without an occurrence) cannot answer this. */
 export function decideRepeatBlockEntry(version: WorkflowVersionV3, block: RepeatBlockV1,
   resolutions: ReadonlyMap<string, RepeatResolution>) {
   const values = new Map<string, NodeResolution>()
   for (const [id, resolution] of resolutions) {
-    if (id !== resolution.ref.nodeId || id !== resolution.value.workflowNodeId || resolution.ref.occurrence
+    if (id !== resolution.ref.nodeId || id !== resolution.value.workflowNodeId
       || resolution.deferredRelationshipIds.length) repeatConflict('REPEAT_RESOLUTION_CONFLICT')
+    if (resolution.ref.occurrence) {
+      assertRepeatRef(version, resolution.ref.occurrence.scope, resolution.ref)
+      // Final exports retain the source occurrence. Local body rows and exits
+      // whose routing has not been published cannot open another block.
+      const sourceBlock = blockForNode(version, id)!
+      if (sourceBlock.exitNodeId !== id || resolution.value.resolution !== 'succeeded'
+        || !resolution.value.execution || !resolution.value.acceptedResultDigest
+        || (!resolution.value.branchEnded && resolution.value.selectedRelationshipIds.length !== 1)) {
+        repeatConflict('REPEAT_RESOLUTION_CONFLICT')
+      }
+    }
     values.set(id, resolution.value)
   }
   return decideExecutionAdmission(compileExecutionTopology(version), block.entryNodeId, values)

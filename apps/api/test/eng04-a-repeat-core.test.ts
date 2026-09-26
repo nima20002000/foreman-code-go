@@ -13,7 +13,7 @@ import { normalizeRepeatTerminal, repeatNodeAction, repeatTerminalResolution } f
 import { RepeatRunRepository, type RepeatRepositoryHost, type RepeatRuntimeRun } from '../src/modules/runs/repeatPostgres.js'
 import {
   assertRepeatBodyComplete, assertRepeatSource, bindRepeatNodeInput, compileRepeatLayout,
-  decideRepeatAdmission, decideRepeatExit, finalRepeatExport, freezeRepeatEntry,
+  decideRepeatAdmission, decideRepeatBlockEntry, decideRepeatExit, finalRepeatExport, freezeRepeatEntry,
   makeRepeatOccurrence, repeatDigest, repeatExecutionIdentity, repeatSlotId, repeatSuccessorInput,
   type RepeatResolution, type RepeatScope, type RepeatSource,
 } from '../src/modules/runs/repeatResolution.js'
@@ -63,6 +63,42 @@ function resolved(f: ReturnType<typeof fixture>, occurrence: RepeatOccurrenceV1,
 }
 
 describe('ENG04-A deterministic occurrence core', () => {
+  it('admits a second disjoint repeat block from the first final export with its occurrence provenance', () => {
+    const f = fixture(2)
+    const second = { ...f.block, id: 'second', maxOccurrences: 1, nodeIds: ['done'], entryNodeId: 'done', exitNodeId: 'done',
+      limitExit: { kind: 'branch_end' as const } }
+    f.version = RepeatWorkflowVersionV1Schema.parse({ ...f.version, definition: { ...f.version.definition,
+      nodes: f.version.definition.nodes.map((node) => node.id === 'done' ? { ...node, choice: { outcomes: [
+        { outcome: 'pass', target: { kind: 'branch_end' } },
+        { outcome: 'issues', target: { kind: 'branch_end' } },
+      ] } } : node),
+      repeat: { contractVersion: 1, blocks: [f.block, second] },
+    } })
+    const current = first(f)
+    const { completed, decision } = terminal(f, current.occurrence, 'pass')
+    const local = repeatTerminalResolution(f.version, f.scope,
+      { nodeId: 'review', occurrence: current.occurrence.identity }, completed)
+    expect(() => decideRepeatBlockEntry(f.version, second, new Map([['review', local]]))).toThrow()
+    expect(() => decideRepeatBlockEntry(f.version, second,
+      new Map([['work', resolved(f, current.occurrence, 'work')]]))).toThrow()
+    const exported = finalRepeatExport(f.version, local, decision)
+    expect(exported.ref.occurrence).toEqual(current.occurrence.identity)
+    const admission = decideRepeatBlockEntry(f.version, second, new Map([['review', exported]]))
+    expect(admission.kind).toBe('run')
+    if (admission.kind !== 'run') throw new Error('second block should be selected')
+    expect(admission.selected.map((edge) => edge.id)).toEqual(['review-done'])
+    const next = makeRepeatOccurrence(f.scope, second, freezeRepeatEntry({}, []), null)
+    expect(next.occurrence.identity.blockId).toBe('second')
+    expect(decideRepeatAdmission(f.version, { nodeId: 'done', occurrence: next.occurrence.identity }, new Map()).kind).toBe('run')
+    const end = successful(execution(f, 'done', 'second-exit'), {
+      routing: { outcome: 'pass' }, data: { latestDeliverable: {}, remainingFindings: [] },
+    })
+    const endDecision = decideRepeatExit(f.version, next.occurrence, end,
+      parseRepeatExitResultV1(end.result, f.version.definition.nodes.find((node) => node.id === 'done')!.choice!), at)
+    const endLocal = repeatTerminalResolution(f.version, f.scope, { nodeId: 'done', occurrence: next.occurrence.identity }, end)
+    expect(() => decideRepeatBlockEntry(f.version, second, new Map([['done', endLocal]]))).toThrow()
+    expect(finalRepeatExport(f.version, endLocal, endDecision).value.branchEnded).toBe(true)
+  })
   it('repeats to the explicit cap, carries exact previous accepted result, and never creates cap+1', () => {
     const f = fixture(3)
     let current = first(f)
