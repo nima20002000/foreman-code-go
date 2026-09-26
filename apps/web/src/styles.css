@@ -155,21 +155,28 @@ h1 {
     gap var(--motion-duration) var(--motion-ease);
 }
 
-.sidebar-collapse-button {
+.shell-sidebar .sidebar-collapse-button {
   position: absolute;
   z-index: 3;
-  top: 0.75rem;
-  right: -1rem;
+  top: 0.875rem;
+  right: 0.625rem;
   display: grid;
-  width: 2rem;
-  height: 2rem;
+  width: 1.75rem;
+  height: 1.75rem;
   place-items: center;
   padding: 0;
-  border: 1px solid var(--color-border-strong);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   color: var(--color-text-muted);
-  background: var(--color-surface-raised);
+  background: transparent;
   cursor: pointer;
+}
+
+/* Collapsed, the rail is too narrow to share its top row: the button rides the edge. */
+.workspace-shell-navigation-collapsed .shell-sidebar .sidebar-collapse-button {
+  right: -0.875rem;
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-raised);
 }
 
 .sidebar-collapse-button:hover {
@@ -225,6 +232,12 @@ h1 {
   gap: var(--space-2);
   overflow-y: auto;
   overflow-x: hidden;
+  /* A thin scrollbar at the sidebar's edge instead of a native bar mid-panel. */
+  margin-right: calc(-1 * var(--space-3) + 2px);
+  padding-right: calc(var(--space-3) - 8px);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text-muted) 35%, transparent) transparent;
+  scrollbar-gutter: stable;
 }
 
 .nav-label {
@@ -291,7 +304,7 @@ h1 {
 .nav-item {
   display: flex;
   width: 100%;
-  min-height: 38px;
+  min-height: 34px;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
@@ -313,8 +326,8 @@ h1 {
 
 .shell-navigation .nav-submenu {
   position: relative;
-  margin-top: 0.25rem;
-  padding-left: 1.375rem;
+  margin-top: 0.125rem;
+  padding-left: 0.875rem;
   transition: padding-left var(--motion-duration) var(--motion-ease);
 }
 
@@ -323,7 +336,7 @@ h1 {
   position: absolute;
   top: 0.125rem;
   bottom: 0.125rem;
-  left: 0.9375rem;
+  left: 0.4375rem;
   width: 1px;
   background: var(--color-border);
 }

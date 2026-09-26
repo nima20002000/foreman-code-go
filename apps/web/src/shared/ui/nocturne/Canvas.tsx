@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useId, useLayoutEffect, useRef, type MouseEvent, type ReactNode, type RefObject } from 'react'
+import { forwardRef, useEffect, useId, useLayoutEffect, useRef, type CSSProperties, type MouseEvent, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon, type IconName } from './Icon'
 import { IconButton } from './Button'
@@ -6,7 +6,9 @@ import { Tabs } from './Navigation'
 import { cx } from './utils'
 
 /** Visual state only. Feature code maps runtime facts to one of these; the canvas never infers progress. */
-export type AgentNodeState = 'idle' | 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'unavailable'
+export type AgentNodeState = 'idle' | 'queued' | 'running' | 'waiting' | 'approved' | 'completed' | 'failed' | 'unavailable'
+/** A one-shot cue: a pulse landing (arrive, and the colored ask/grant landings), ignition, completion, failure or a new wait. */
+export type AgentNodeTransition = 'arrive' | 'ask' | 'grant' | 'ignite' | 'complete' | 'fail' | 'wait'
 export type AgentPanel = 'chat' | 'settings' | 'info'
 
 const actionLabels: Record<AgentPanel, string> = { chat: 'chat', settings: 'settings', info: 'information' }
@@ -21,6 +23,9 @@ export interface AgentNodeViewProps {
   icon?: IconName
   statusLabel: string
   state?: AgentNodeState
+  transition?: AgentNodeTransition
+  /** Changes for every new cue, so the same cue twice in a row still plays twice. */
+  transitionKey?: string | number
   /** Up to two short facts under the divider, such as effort and role. */
   meta?: readonly { label: string; value: string }[]
   entry?: boolean
@@ -38,16 +43,20 @@ export interface AgentNodeViewProps {
 
 /** The design-system AgentNode: a circle with harness rim, status word and rim actions (Chat, Settings, Info). */
 export const AgentNodeView = forwardRef<HTMLButtonElement, AgentNodeViewProps>(function AgentNodeView({
-  name, harness, harnessLabel, model, icon = 'bot', statusLabel, state = 'idle', meta = [],
+  name, harness, harnessLabel, model, icon = 'bot', statusLabel, state = 'idle', transition, transitionKey, meta = [],
   entry, selected, openPanel, pending, ariaLabel, className, onSelect, onAction, children,
 }, ref) {
   const known = harness === 'codex' || harness === 'opencode' ? harness : 'neutral'
-  return <div className={cx('n-agent', className)} data-state={state} data-harness={known} data-selected={selected || undefined}
+  return <div className={cx('n-agent', className)} data-state={state} data-transition={transition} data-harness={known} data-selected={selected || undefined}
     data-open={openPanel ? '' : undefined} data-pending={pending || undefined} data-entry={entry || undefined}>
     <span className="n-agent-energy" aria-hidden="true" />
+    {transition ? <span key={transitionKey ?? transition} className="n-agent-wave" aria-hidden="true">
+      {transition === 'arrive' || transition === 'ask' || transition === 'grant' || transition === 'ignite'
+        ? Array.from({ length: 10 }, (_, index) => <i key={index} style={{ '--spark': `${index * 36 + 8}deg` } as CSSProperties} />) : null}
+    </span> : null}
     <button ref={ref} type="button" className="n-agent-core" aria-pressed={onSelect ? Boolean(selected) : undefined}
       aria-label={ariaLabel ?? `${name}, ${harnessLabel}${model ? `, ${model}` : ''}, ${statusLabel}`} onClick={onSelect}>
-      <span className="n-agent-status"><i aria-hidden="true" />{statusLabel}</span>
+      <span key={statusLabel} className="n-agent-status"><i aria-hidden="true" />{statusLabel}</span>
       <span className="n-agent-glyph" aria-hidden="true"><Icon name={icon} size={20} /></span>
       <strong className="n-agent-name">{name}</strong>
       <span className="n-agent-harness">{harnessLabel}</span>

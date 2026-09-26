@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { Link } from '@tanstack/react-router'
 import { type WorkflowDefinitionV3 as WorkflowDefinition } from '@graphql/contracts/wave25'
 
@@ -23,8 +24,11 @@ function WorkflowNavigationItem({
   active: boolean
   pendingCount: number | undefined
 }) {
+  // The open workflow stays in sight in a long list instead of sitting clipped below the fold.
+  const row = useRef<HTMLLIElement>(null)
+  useEffect(() => { if (active) row.current?.scrollIntoView?.({ block: 'nearest' }) }, [active])
   return (
-    <li className="workflow-navigation-row">
+    <li ref={row} className="workflow-navigation-row">
       <Link
         to="/workspaces/$workspaceId"
         params={{ workspaceId }}

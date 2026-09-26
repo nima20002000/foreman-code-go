@@ -200,11 +200,11 @@
 }
 
 .shell-navigation .workspace-navigation .nav-submenu {
-  padding-left: 1.125rem;
+  padding-left: 0.75rem;
 }
 
 .shell-navigation .workspace-navigation .nav-submenu::before {
-  left: 0.6875rem;
+  left: 0.375rem;
 }
 
 .workspace-create-error {

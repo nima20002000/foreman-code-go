@@ -8,7 +8,7 @@ import { createGraphGeometryAdapter, type GraphGeometryChange } from '../geometr
 import { useGraphDraftStore } from '../store'
 import { useGraphPresentation, useGraphPresentationStore } from '../useGraphPresentation'
 import { AgentHandles } from '../AgentHandles'
-import { agentNodeFacts, edgeBend, useFloatingCurve } from '../signalEdge'
+import { agentNodeFacts, edgeBend, relationshipLines, useFloatingCurve } from '../signalEdge'
 import { SignalEdgeShape } from '../SignalEdgeShape'
 import type { GraphNode } from '../types'
 import { nodeTitle, putRelationship } from './model'
@@ -63,7 +63,7 @@ const TypedEdge = memo(function TypedEdge({ id, source, target, data, selected }
   if (!curve) return null
   return <g onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
     <SignalEdgeShape id={id} curve={curve} kind={data?.kind}
-      label={data?.label} showLabel={hovered || selected || data?.explicit} />
+      label={data?.label} showLabel={data?.explicit && (hovered || selected)} />
   </g>
 })
 const nodeTypes = { agent: DraftAgent }, edgeTypes = { typed: TypedEdge }
@@ -100,11 +100,12 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
   useImperativeHandle(ref, () => ({ flush, cancel: () => { setNodes(adapter.cancel()); pending(false) } }))
   const edges = useMemo<DraftEdge[]>(() => {
     const counts = new Map<string, number>()
-    return graph.edges.map((edge) => {
+    // One line per agent pair: an approval beside a handoff is drawn on the handoff's line.
+    return relationshipLines(graph.edges).lines.map(({ members, ...edge }) => {
       const pair = JSON.stringify([edge.source, edge.target].sort()), count = counts.get(pair) ?? 0
       counts.set(pair, count + 1)
-      const kindLabel = edge.kind === 'approval' ? 'Approval' : 'Handoff'
-      return { ...edge, type: 'typed', selected: edge.id === focusedEdge,
+      const kindLabel = members.length > 1 ? 'Handoff · approval' : edge.kind === 'approval' ? 'Approval' : 'Handoff'
+      return { ...edge, type: 'typed', selected: members.some((member) => member.id === focusedEdge),
         ariaLabel: `${kindLabel} from ${nodeTitle(graph, edge.source)} to ${nodeTitle(graph, edge.target)}${edge.label ? `: ${edge.label}` : ''}`,
         data: { kind: edge.kind, bend: edgeBend(count, edge.source < edge.target), label: edge.label || kindLabel, explicit: Boolean(edge.label) } }
     })
@@ -122,7 +123,9 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
   const context = useMemo(() => ({ draftKey, inspect, open, setOpen, panels }), [draftKey, inspect, open, setOpen, panels])
   return <CanvasContext.Provider value={context}>
     <div className={`next-draft-canvas board-draft-canvas${connecting ? ' is-connecting' : ''}`} style={selectedRun ? { display: 'none' } : undefined} aria-hidden={!!selectedRun} inert={!!selectedRun} aria-label="Editable workflow graph">
-      <ReactFlow<GraphNode, DraftEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+      {/* While a Run is shown, the draft's data stays mounted but its flow does not: a hidden
+          flow measures a zero-size box and would come back empty on Return to draft. */}
+      {selectedRun ? null : <ReactFlow<GraphNode, DraftEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         onNodesChange={onNodesChange} connectionMode={ConnectionMode.Loose} connectionRadius={120} deleteKeyCode={null}
         fitView fitViewOptions={fitViewOptions} proOptions={proOptions} minZoom={0.3} maxZoom={1.6}
         isValidConnection={(connection) => connection.source !== connection.target}
@@ -138,7 +141,7 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
         }}>
         <Background color="var(--border)" gap={24} size={1} />
         <Controls position="bottom-left" showInteractive={false} fitViewOptions={fitViewOptions} />
-      </ReactFlow>
+      </ReactFlow>}
       {children}
     </div>
     {selectedRun ? <SelectedRunCanvas key={JSON.stringify(selectedRun)} scope={selectedRun} /> : null}

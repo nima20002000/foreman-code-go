@@ -101,7 +101,9 @@
 .n-agent[data-state='unavailable'] .n-agent-core { opacity: .7; }
 .n-agent[data-state='running'] .n-agent-core {
   border-color: color-mix(in srgb, var(--agent-hue) 70%, var(--border));
-  background: color-mix(in srgb, var(--agent-hue) 7%, var(--surface-raised));
+  background: color-mix(in srgb, var(--agent-hue) 9%, var(--surface-raised));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--agent-hue) 24%, transparent),
+    0 0 24px color-mix(in srgb, var(--agent-hue) 14%, transparent);
 }
 
 /* Energy field: a harness-colored light circling a running agent. Decoration only. */
@@ -115,20 +117,156 @@
   background: radial-gradient(closest-side, transparent 88%, color-mix(in srgb, var(--agent-hue) 22%, transparent) 94%, transparent 100%);
   transition: opacity 400ms ease;
 }
+.n-agent-energy::before {
+  content: '';
+  position: absolute;
+  inset: 7px;
+  border: 1px solid color-mix(in srgb, var(--agent-hue) 60%, transparent);
+  border-radius: inherit;
+  box-shadow: 0 0 14px color-mix(in srgb, var(--agent-hue) 26%, transparent);
+  opacity: .3;
+}
 .n-agent-energy::after {
   content: '';
   position: absolute;
   inset: 6px;
   border-radius: inherit;
-  background: conic-gradient(from 0deg, transparent 0 62%, color-mix(in srgb, var(--agent-hue) 70%, transparent) 88%, transparent 100%);
+  background: conic-gradient(from 0deg, transparent 0 72%, color-mix(in srgb, var(--agent-hue) 22%, transparent) 82%, var(--agent-hue) 96%, transparent 100%);
   -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
   mask: radial-gradient(closest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
 }
+.n-agent[data-state='queued'] .n-agent-energy { opacity: .35; }
 .n-agent[data-state='running'] .n-agent-energy { opacity: 1; }
+/* Waiting on someone else: the field turns amber and slows down. */
+.n-agent[data-state='waiting'] .n-agent-energy { --agent-hue: var(--warning); opacity: .75; }
+.n-agent[data-state='waiting'] .n-agent-core { border-color: color-mix(in srgb, var(--warning) 55%, var(--border)); }
+
+/* Approved: the answer came back; the field turns green until the agent resumes. */
+.n-agent[data-state='approved'] .n-agent-status { color: var(--success); }
+.n-agent[data-state='approved'] .n-agent-core { border-color: color-mix(in srgb, var(--success) 60%, var(--border)); background: color-mix(in srgb, var(--success) 6%, var(--surface-raised)); }
+.n-agent[data-state='approved'] .n-agent-energy { --agent-hue: var(--success); opacity: .85; }
+
+/* Arrival bang: rings and sparks leave the rim in the color of what arrived. */
+.n-agent { --wave: var(--agent-hue); }
+.n-agent[data-transition='ask'], .n-agent[data-transition='wait'] { --wave: var(--warning); }
+.n-agent[data-transition='grant'], .n-agent[data-transition='complete'] { --wave: var(--success); }
+.n-agent[data-transition='fail'] { --wave: var(--danger); }
+.n-agent-wave {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: var(--radius-full);
+  pointer-events: none;
+  opacity: 0;
+}
+.n-agent-wave::before,
+.n-agent-wave::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--wave);
+  border-radius: inherit;
+  box-shadow: 0 0 22px color-mix(in srgb, var(--wave) 55%, transparent), inset 0 0 18px color-mix(in srgb, var(--wave) 30%, transparent);
+}
+.n-agent-wave i {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 22px;
+  height: 3px;
+  margin: -1.5px 0 0 -11px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--wave));
+  box-shadow: 0 0 8px var(--wave);
+  opacity: 0;
+  transform: rotate(var(--spark)) translateX(100px);
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .n-agent[data-state='running'] .n-agent-energy::after { animation: n-agent-orbit 3.2s linear infinite; }
+  .n-agent[data-state='waiting'] .n-agent-energy::after { animation: n-agent-orbit 7s linear infinite; }
+  .n-agent[data-state='approved'] .n-agent-energy::after { animation: n-agent-orbit 4.5s linear infinite; }
+  .n-agent[data-state='running'] .n-agent-core { animation: n-agent-breathe 2.8s ease-in-out infinite; }
+  .n-agent[data-state='waiting'] .n-agent-energy::before { animation: n-agent-waiting 1.8s ease-in-out infinite; }
+  .n-agent[data-state='queued'] .n-agent-energy { animation: n-agent-queued 1.6s ease-in-out infinite; }
+
+  /* Ignition: the pulse lands, a shockwave leaves the rim, the core kicks, the orbit spins up and settles. */
+  .n-agent[data-transition] .n-agent-wave { opacity: 1; }
+  .n-agent[data-transition] .n-agent-wave::before { animation: n-agent-wave 900ms cubic-bezier(.16, .84, .3, 1) both; }
+  .n-agent:is([data-transition='ignite'], [data-transition='arrive'], [data-transition='ask'], [data-transition='grant']) .n-agent-wave::after {
+    animation: n-agent-wave 1050ms cubic-bezier(.16, .84, .3, 1) 140ms both; }
+  .n-agent-wave i { animation: n-agent-spark 720ms cubic-bezier(.1, .8, .3, 1) both; }
+  .n-agent:is([data-transition='arrive'], [data-transition='ask'], [data-transition='grant']) .n-agent-core {
+    animation: n-agent-bang 760ms cubic-bezier(.2, .9, .25, 1.35) both, n-agent-bang-flash 950ms ease-out both; }
+  .n-agent:is([data-transition='arrive'], [data-transition='ask'], [data-transition='grant']) .n-agent-glyph {
+    animation: n-agent-glyph-bang 700ms cubic-bezier(.2, .9, .25, 1.5) 60ms both; }
+  .n-agent[data-transition='grant'] .n-agent-energy { animation: n-agent-energy-in 700ms ease-out both; }
+  .n-agent[data-transition='ignite'] .n-agent-core { animation: n-agent-kick 820ms cubic-bezier(.2, .9, .25, 1.35) both, n-agent-flash 1000ms ease-out both; }
+  .n-agent[data-transition='ignite'] .n-agent-glyph { animation: n-agent-glyph-pop 760ms cubic-bezier(.2, .9, .25, 1.5) 80ms both; }
+  .n-agent[data-transition='ignite'] .n-agent-energy { animation: n-agent-energy-in 700ms ease-out both; }
+  .n-agent[data-transition='ignite'] .n-agent-energy::after { animation: n-agent-spin-up 1100ms cubic-bezier(.1, .75, .25, 1) both; }
+  .n-agent[data-transition='complete'] .n-agent-core { animation: n-agent-settle 700ms cubic-bezier(.2, .9, .25, 1.2) both; }
+  .n-agent[data-transition='complete'] .n-agent-done { animation: n-agent-glyph-pop 620ms cubic-bezier(.2, .9, .25, 1.6) 120ms both; }
+  .n-agent[data-transition='fail'] .n-agent-core { animation: n-agent-shake 520ms cubic-bezier(.36, .07, .19, .97) both; }
+  .n-agent[data-transition='wait'] .n-agent-core { animation: n-agent-settle 700ms ease-out both; }
+  .n-agent-status { animation: n-agent-status-in 380ms cubic-bezier(.2, .8, .2, 1) both; }
 }
 @keyframes n-agent-orbit { to { transform: rotate(1turn); } }
+@keyframes n-agent-spark {
+  0% { opacity: 0; transform: rotate(var(--spark)) translateX(96px) scaleX(.3); }
+  25% { opacity: 1; }
+  100% { opacity: 0; transform: rotate(var(--spark)) translateX(150px) scaleX(1.2); }
+}
+@keyframes n-agent-bang {
+  0% { transform: scale(.92); }
+  35% { transform: scale(1.06); }
+  100% { transform: scale(1); }
+}
+@keyframes n-agent-bang-flash {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--wave) 80%, transparent); }
+  30% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--wave) 30%, transparent), 0 0 52px color-mix(in srgb, var(--wave) 50%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes n-agent-glyph-bang {
+  0% { transform: scale(.5) rotate(14deg); }
+  55% { transform: scale(1.35) rotate(-4deg); }
+  100% { transform: none; }
+}
+@keyframes n-agent-spin-up { from { transform: rotate(-1.5turn); } to { transform: rotate(0turn); } }
+@keyframes n-agent-energy-in { from { opacity: 0; transform: scale(.86); } 55% { opacity: 1; transform: scale(1.04); } to { opacity: 1; transform: scale(1); } }
+@keyframes n-agent-wave {
+  from { opacity: .95; transform: scale(.98); }
+  to { opacity: 0; transform: scale(1.42); }
+}
+@keyframes n-agent-kick {
+  0% { transform: scale(.93); }
+  38% { transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+@keyframes n-agent-flash {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--agent-hue) 70%, transparent), 0 0 0 color-mix(in srgb, var(--agent-hue) 0%, transparent); }
+  30% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--agent-hue) 28%, transparent), 0 0 48px color-mix(in srgb, var(--agent-hue) 45%, transparent); }
+  100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--agent-hue) 24%, transparent), 0 0 24px color-mix(in srgb, var(--agent-hue) 14%, transparent); }
+}
+@keyframes n-agent-breathe {
+  0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--agent-hue) 24%, transparent), 0 0 20px color-mix(in srgb, var(--agent-hue) 12%, transparent); }
+  50% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--agent-hue) 36%, transparent), 0 0 34px color-mix(in srgb, var(--agent-hue) 24%, transparent); }
+}
+@keyframes n-agent-glyph-pop {
+  0% { transform: scale(.4) rotate(-18deg); opacity: 0; }
+  60% { transform: scale(1.28) rotate(4deg); opacity: 1; }
+  100% { transform: none; opacity: 1; }
+}
+@keyframes n-agent-settle { 0% { transform: scale(1.03); } 100% { transform: scale(1); } }
+@keyframes n-agent-shake {
+  10%, 90% { transform: translateX(-1px); }
+  20%, 80% { transform: translateX(3px); }
+  30%, 50%, 70% { transform: translateX(-5px); }
+  40%, 60% { transform: translateX(5px); }
+}
+@keyframes n-agent-waiting { 0%, 100% { opacity: .25; } 50% { opacity: .85; } }
+@keyframes n-agent-queued { 0%, 100% { opacity: .2; } 50% { opacity: .5; } }
+@keyframes n-agent-status-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 
 .n-agent-done {
   position: absolute;
@@ -250,10 +388,13 @@
   .n-agent-core, .n-agent-action, .n-agent-energy { transition: none; }
 }
 
-/* SignalEdge: direction is a mid chevron; light marks a handoff (task), a result coming home (return) or a failure. */
-.n-signal-edge { --edge-signal: var(--signal-task); }
-.n-signal-edge[data-signal='return'] { --edge-signal: var(--signal-return); }
-.n-signal-edge[data-signal='error'] { --edge-signal: var(--danger); }
+/* SignalEdge: direction is a mid chevron; light marks a handoff (task), a result coming home (return),
+   an approval request, its answer (grant) or a failure. A pulse charges the wire behind it as it travels. */
+.n-signal-edge, .n-signal-edge-flight { --edge-signal: var(--signal-task); }
+.n-signal-edge[data-signal='return'], .n-signal-edge-flight[data-signal='return'] { --edge-signal: var(--signal-return); }
+.n-signal-edge[data-signal='approval'], .n-signal-edge-flight[data-signal='approval'] { --edge-signal: var(--warning); }
+.n-signal-edge[data-signal='grant'], .n-signal-edge-flight[data-signal='grant'] { --edge-signal: var(--success); }
+.n-signal-edge[data-signal='error'], .n-signal-edge-flight[data-signal='error'] { --edge-signal: var(--danger); }
 .react-flow__edge .n-signal-edge .n-signal-edge-base, .n-signal-edge .n-signal-edge-base { fill: none; stroke: var(--border-strong); stroke-width: 1.4; stroke-linecap: round; transition: stroke 140ms ease; }
 .n-signal-edge[data-kind='approval'] .n-signal-edge-base { stroke-dasharray: 5 4; }
 .react-flow__edge:hover .n-signal-edge .n-signal-edge-base,
@@ -261,19 +402,53 @@
 .react-flow__edge:focus-visible .n-signal-edge .n-signal-edge-base,
 .n-signal-edge[data-focused] .n-signal-edge-base { stroke: var(--text-muted); stroke-width: 2; }
 .n-signal-edge-trace { fill: none; stroke: var(--edge-signal); stroke-width: 2.4; stroke-linecap: round; opacity: .45; pointer-events: none; }
-.n-signal-edge-chevron { fill: none; stroke: var(--text-faint); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+.n-signal-edge[data-kind='approval'] .n-signal-edge-trace { stroke-dasharray: 5 4; }
+.n-signal-edge-chevron { fill: none; stroke: var(--text-faint); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; pointer-events: none;
+  transform-box: view-box; transform-origin: 0 0; transition: stroke 200ms ease, transform 420ms cubic-bezier(.3, 1.4, .5, 1); }
+.n-signal-edge-chevron[data-reversed] { transform: rotate(180deg); }
 .n-signal-edge[data-signal] .n-signal-edge-chevron { stroke: var(--edge-signal); }
-.n-signal-edge-pulse { display: none; fill: var(--surface-raised); stroke: var(--edge-signal); stroke-width: 2; pointer-events: none; offset-rotate: 0deg; }
+.n-signal-edge-flight { pointer-events: none; }
+.n-signal-edge-charge, .n-signal-edge-pulse, .n-signal-edge-tag { display: none; }
+.n-signal-edge-tag { offset-rotate: 0deg; offset-distance: 0%; opacity: 0; }
+.n-signal-edge-tag rect { fill: color-mix(in srgb, var(--edge-signal) 18%, var(--surface-raised)); stroke: var(--edge-signal); stroke-width: 1.2;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--edge-signal) 45%, transparent)); }
+.n-signal-edge-tag text { fill: var(--edge-signal); font: var(--type-eyebrow); letter-spacing: var(--type-eyebrow-tracking); text-transform: uppercase; }
+.n-signal-edge-charge { fill: none; stroke: var(--edge-signal); stroke-width: 2.6; stroke-linecap: round; stroke-dasharray: 1 1; stroke-dashoffset: 1; filter: drop-shadow(0 0 4px var(--edge-signal)); }
+.n-signal-edge-flight[data-reversed] .n-signal-edge-charge { stroke-dashoffset: -1; }
+.n-signal-edge-pulse { fill: var(--edge-signal); offset-rotate: 0deg; transform-box: fill-box; transform-origin: center; offset-distance: 0%; opacity: 0; filter: drop-shadow(0 0 6px var(--edge-signal)); }
+.n-signal-edge-pulse[data-tail] { opacity: 0; filter: none; }
 @media (prefers-reduced-motion: no-preference) {
-  .n-signal-edge-pulse { display: block; animation: n-signal-travel 1.6s cubic-bezier(.45, 0, .25, 1) 1 both; }
-  .n-signal-edge-pulse[data-reversed] { animation-direction: reverse; }
+  .n-signal-edge-charge { display: block; animation: n-signal-charge 1400ms cubic-bezier(.45, 0, .25, 1) var(--flight-delay) both,
+    n-signal-discharge 520ms ease-out calc(var(--flight-delay) + 1400ms) both; }
+  .n-signal-edge-flight[data-reversed] .n-signal-edge-charge { animation-name: n-signal-charge-back, n-signal-discharge; }
+  .n-signal-edge-pulse { display: block; animation: n-signal-travel 1400ms cubic-bezier(.45, 0, .25, 1) calc(var(--flight-delay) + var(--tail, 0ms)) 1 both; }
+  .n-signal-edge-pulse[data-tail] { animation-name: n-signal-travel-tail; }
+  .n-signal-edge-tag { display: block; animation: n-signal-tag 1400ms cubic-bezier(.45, 0, .25, 1) var(--flight-delay) 1 both; }
+  .n-signal-edge-flight[data-reversed] :is(.n-signal-edge-pulse, .n-signal-edge-tag) { animation-direction: reverse; }
 }
 @keyframes n-signal-travel {
+  0% { offset-distance: 0%; opacity: 0; transform: scale(.4); }
+  10% { opacity: 1; transform: scale(1.25); }
+  90% { opacity: 1; transform: scale(1); }
+  100% { offset-distance: 100%; opacity: 0; transform: scale(1.8); }
+}
+/* The word is readable mid-flight and gone before it would slide under a node. */
+@keyframes n-signal-tag {
   0% { offset-distance: 0%; opacity: 0; }
-  12% { opacity: 1; }
-  88% { opacity: 1; }
+  14% { opacity: 0; }
+  26%, 70% { opacity: 1; }
+  82% { opacity: 0; }
   100% { offset-distance: 100%; opacity: 0; }
 }
+@keyframes n-signal-travel-tail {
+  0% { offset-distance: 0%; opacity: 0; }
+  12% { opacity: .55; }
+  86% { opacity: .4; }
+  100% { offset-distance: 100%; opacity: 0; }
+}
+@keyframes n-signal-charge { from { stroke-dashoffset: 1; opacity: .9; } to { stroke-dashoffset: 0; opacity: .9; } }
+@keyframes n-signal-charge-back { from { stroke-dashoffset: -1; opacity: .9; } to { stroke-dashoffset: 0; opacity: .9; } }
+@keyframes n-signal-discharge { from { opacity: .9; } to { opacity: 0; } }
 .n-signal-edge-badge rect { fill: var(--surface-raised); stroke: var(--border); }
 .n-signal-edge-badge text { fill: var(--text-muted); font: var(--type-eyebrow); letter-spacing: var(--type-eyebrow-tracking); text-transform: uppercase; }
 .n-signal-edge[data-signal] .n-signal-edge-badge text { fill: var(--edge-signal); }

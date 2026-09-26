@@ -4,7 +4,6 @@ import type { WorkflowRunSummary } from '@graphql/contracts'
 import type { RepeatGraphCurrentV3 } from '@graphql/contracts/wave25'
 import type { AgentNodeState, Tone } from '../../shared/ui/nocturne'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
-import type { EdgeSignal } from '../graph/signalEdge'
 import { currentRunKey } from './currentRunQuery'
 import { useWorkflowBoard } from './context'
 
@@ -50,19 +49,6 @@ export function runNodeView(record: RepeatGraphCurrentV3 | undefined, selected: 
   const execution = latestNode(record, nodeId)
   const occurrence = execution?.identity.occurrence
   return { state, label, inRun: true, ...(occurrence ? { activity: `Business occurrence ${occurrence.occurrenceIndex} · technical attempt ${execution.identity.attempt}` } : {}) }
-}
-export function runEdgeSignal(record: RepeatGraphCurrentV3 | undefined, relationshipId: string, source: string, target: string): EdgeSignal | undefined {
-  if (!record?.topology.relationships.some((edge) => edge.relationshipId === relationshipId && edge.kind === 'execution'
-    && edge.source === source && edge.target === target)) return undefined
-  const from = latestNode(record, source), to = latestNode(record, target)
-  if (!from || !to) return undefined
-  // A prior round's success cannot light a later round's edge. A durable binding is required.
-  const bound = record.state.bindings.some((binding) => binding.relationshipId === relationshipId
-    && binding.sender.executionId === from.identity.executionId && binding.recipient.executionId === to.identity.executionId)
-  if (!bound) return undefined
-  if (to.resultOutcome === 'failed') return 'error'
-  if (['queued', 'starting', 'running', 'waiting'].includes(to.state) && from.resultOutcome === 'succeeded') return 'task'
-  return undefined
 }
 const ACTIVE = ['queued', 'running', 'waiting', 'interrupted']
 export const isActiveRun = (run: Pick<WorkflowRunSummary, 'executionState' | 'cleanupPending'>) => ACTIVE.includes(run.executionState) || Boolean(run.cleanupPending)

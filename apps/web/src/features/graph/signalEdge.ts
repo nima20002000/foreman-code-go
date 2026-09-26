@@ -7,7 +7,8 @@ export const AGENT_NODE_SIZE = 212
 const RIM_GAP = 7
 
 type Point = { x: number; y: number }
-export type EdgeSignal = 'task' | 'return' | 'error'
+/** task: a handoff; return: a repeat carry; approval: a request for review; grant: its answer; error: a failed receiver. */
+export type EdgeSignal = 'task' | 'return' | 'approval' | 'grant' | 'error'
 export type FloatingCurve = { path: string; mid: Point & { angle: number } }
 
 function center(node: InternalNode<Node>): Point {
@@ -78,4 +79,20 @@ export function agentSettingRows(agent: Agent): { label: string; value: string; 
     ...(configuration?.harness === 'codex' ? [{ label: 'Sandbox', value: sandboxLabels[configuration.sandbox] }] : []),
     ...(configuration?.harness === 'opencode' ? [{ label: 'Permissions', value: configuration.autoApprove ? 'Approves automatically' : 'Asks when needed' }] : []),
   ]
+}
+
+type Relationship = { id: string; kind: 'execution' | 'approval'; source: string; target: string }
+type LineMember = { id: string; kind: Relationship['kind']; flipped: boolean }
+/** One drawn line per agent pair: an approval beside a handoff shares the handoff's line.
+ * `flipped` marks a member that runs against the line's drawn direction. */
+export function relationshipLines<T extends Relationship>(relationships: readonly T[]) {
+  const lines = relationships.filter((item) => item.kind === 'execution').map((item) => ({ ...item, members: [{ id: item.id, kind: item.kind, flipped: false }] as LineMember[] }))
+  for (const approval of relationships.filter((item) => item.kind === 'approval')) {
+    const host = lines.find((line) => line.kind === 'execution' && !line.members.some((member) => member.kind === 'approval')
+      && (line.source === approval.source && line.target === approval.target || line.source === approval.target && line.target === approval.source))
+    if (host) host.members.push({ id: approval.id, kind: 'approval', flipped: host.source !== approval.source })
+    else lines.push({ ...approval, members: [{ id: approval.id, kind: 'approval', flipped: false }] })
+  }
+  const alias = new Map(lines.flatMap((line) => line.members.map((member) => [member.id, { lineId: line.id, flipped: member.flipped }] as const)))
+  return { lines, alias }
 }
