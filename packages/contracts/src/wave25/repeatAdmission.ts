@@ -1,25 +1,15 @@
 import { z } from 'zod'
-import { AcceptedWorkflowApprovalConfigurationSchema, RunExecutionLocationSchema, RunInputSchema, TimestampSchema, IdSchema } from '../index.js'
-import { CommandIdSchema, ExpectedRevisionSchema } from '../management/index.js'
+import { AcceptedWorkflowApprovalConfigurationSchema, RunExecutionLocationSchema, TimestampSchema, IdSchema } from '../index.js'
+import { ExpectedRevisionSchema } from '../management/index.js'
 import { GraphDigestSchema, GraphIdSchema } from './protocol.js'
 import { ExecutableRepeatWorkflowV1Schema } from './repeat.js'
 import { WorkflowDefinitionV3Schema, WorkflowRunV3Schema, SavedRunVersionSnapshotSchema } from './saved.js'
 import { sameExecutableWorkflow, sameWorkflowValue } from './meaningfulEdit.js'
 
-/** The manual HTTP/MCP V3 request for all graph shapes, not native admission permission.
- * A new command must carry the exact displayed workflow revision/configuration
- * map as well as the existing immutable version, location and optional draft. */
-export const RunStartV3InputSchema = z.object({
-  workspaceId: GraphIdSchema, workflowId: GraphIdSchema, workflowVersionId: GraphIdSchema,
-  commandId: CommandIdSchema, executionSemanticsVersion: z.literal(3),
-  expectedWorkflowRevision: ExpectedRevisionSchema,
-  expectedAgentConfigurationVersionIds: z.record(GraphIdSchema, GraphIdSchema),
-  expectedLocationRevision: ExpectedRevisionSchema,
-  draftId: GraphIdSchema.optional(), expectedDraftRevision: ExpectedRevisionSchema.optional(),
-  input: RunInputSchema,
-}).strict().refine((value) => (value.draftId === undefined) === (value.expectedDraftRevision === undefined),
-  'draftId and expectedDraftRevision must be supplied together')
-export type RunStartV3Input = z.infer<typeof RunStartV3InputSchema>
+import { RunStartV3InputSchema } from './startRequest.js'
+export { RunStartV3InputSchema } from './startRequest.js'
+export type { RunStartV3Input } from './startRequest.js'
+
 export const RunStartV3ResultSchema = z.object({
   run: WorkflowRunV3Schema, accepted: z.literal(true), replayed: z.boolean(),
 }).strict()

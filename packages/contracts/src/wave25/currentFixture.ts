@@ -1,4 +1,4 @@
-import { AgentConfigurationVersionSchema } from '../index.js'
+import { AgentConfigurationVersionSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '../index.js'
 import { WorkflowRunV3Schema, WorkflowVersionV3Schema } from './saved.js'
 import { ExecutableWorkflowV3Schema } from './repeatAdmission.js'
 
@@ -13,7 +13,9 @@ export function makeCurrentWorkflowFixture(suffix = 'current-fixture', form: Cur
   const configurations = Array.from({ length: size }, (_, index) => AgentConfigurationVersionSchema.parse({
     id: `cfg-${suffix}-${index}`, workspaceId, agentId: `agent-${suffix}-${index}`, version: 1,
     productRole: form === 'approval' && index === 0 ? 'orchestrator' : 'coder',
-    harness: { harness: 'codex', model: 'contract-fixture-no-native-call', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' },
+    harness: { harness: 'codex', model: 'contract-fixture-no-native-call', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard',
+      // A designated Codex Orchestrator must review App MCP approvals without a person.
+      ...(form === 'approval' && index === 0 ? { advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalsReviewer: 'auto_review' as const } } : {}) },
     prompt: {}, assignedSkills: [], contentHash: `sha256:${'0'.repeat(64)}`, createdAt,
   }))
   const nodes = configurations.map((config, index) => ({ id: `node-${suffix}-${index}`, agentId: config.agentId, name: `Worker ${index}` }))

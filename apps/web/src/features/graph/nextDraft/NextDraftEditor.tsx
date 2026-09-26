@@ -176,7 +176,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     canvas.current?.flush(); setLocalError(undefined); setMessage(undefined)
     const result = await nextDraftWriter.write(draftKey, publish)
     void queryClient.invalidateQueries({ queryKey: boardDraftContextKey(graph.workspaceId, graph.id) })
-    setMessage(result.published ? 'Saved. Runs that already started are unchanged.' : 'Draft saved. Check what to fix before running.')
+    setMessage(result.published ? 'Saved. Historical Run settings are unchanged. Start a new Run explicitly to use executable changes.' : 'Draft saved. Check what to fix before running.')
     if (result.newerLocalEdits) throw new Error('The submitted snapshot was saved, but newer local edits remain. Save them before leaving.')
     if (publish && !result.published) throw new Error('The earlier command was reconciled. Save the current draft as a version before leaving.')
   }
@@ -198,7 +198,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     if (result.intent?.state === 'saved') setMessage(result.intent.stops.length ? 'Saved. Stopped runs were not restarted.' : 'Saved.')
     else if (result.intent?.state === 'blocked' || result.intent?.state === 'uncertain') {
       setLocalError(result.intent.error?.message ?? 'Saving isn’t confirmed yet. Your changes are still here.')
-    } else setMessage('Saving once the affected runs have stopped.')
+    } else setMessage('Edits retained. Save waits for every affected Run to stop and finish cleanup.')
   }
   const discardChanges = async () => {
     canvas.current?.flush()
@@ -333,7 +333,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     return {
       chat: <AgentChatPanel name={nodeTitle(graph, node.id)} activity={run.activity} running={run.state === 'running'} />,
       settings: <fieldset className="board-popover-fields" disabled={edit.busy || reloading || editIntent.locked}>
-        <p className="agent-panel-note">Saved changes apply to the next run. A run that already started keeps its settings.</p>
+        <p className="agent-panel-note">Executable changes require every affected Run to stop and finish cleanup before Save. Use Stop-and-save or discard the edits. Moving Agents on the Board does not require Stop.</p>
         <BoardAgentSettings draftKey={draftKey} edit={edit} nodeId={node.id} close={() => setOpenNode(undefined)}
           remove={() => { setOpenNode(undefined); change((value) => removeNode(value, node.id)) }} />
         <NodeWorkflowFields graph={graph} node={node} context={context} agentEdits={edit.agentEdits} change={change} />
@@ -474,7 +474,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
       </nav>
     </div>
     <ConfirmDialog open={confirm === 'save'} onOpenChange={(open) => { if (!open) setConfirm(undefined) }} title="Stop running work and save?"
-      description={`${board?.activeRuns ?? 0} ${board?.activeRuns === 1 ? 'run is' : 'runs are'} active for this workflow. Saving stops them. Stopped runs are not restarted.`}
+      description={`${board?.activeRuns ?? 0} ${board?.activeRuns === 1 ? 'run is' : 'runs are'} active for this workflow. Stop-and-save stops every affected Run and waits for full cleanup before saving. Stopped runs are not restarted.`}
       confirmLabel="Stop runs and save" onConfirm={() => { setConfirm(undefined); void prepare(() => stopAndSave(true)).catch(report) }} />
     <ConfirmDialog open={confirm === 'discard'} onOpenChange={(open) => { if (!open) setConfirm(undefined) }} title="Discard your changes?"
       description="Your unsaved edits are removed. Agent positions on the board are kept. Running work isn’t affected."

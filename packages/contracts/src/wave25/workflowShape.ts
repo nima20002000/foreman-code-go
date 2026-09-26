@@ -1,0 +1,167 @@
+import { z } from 'zod'
+import { IdSchema, GraphIdSchema, TimestampSchema } from '../schemaPrimitives.js'
+
+/** Leaf schemas: do not import the root, management or saved DTO entrypoints.
+ * Both public management DTOs and the execution validators use these same
+ * objects. There is no legacy parser, retagging, fallback or execution mode. */
+export const EXECUTION_SEMANTICS_VERSION = 3 as const
+export const ExecutionSemanticsVersionSchema = z.literal(EXECUTION_SEMANTICS_VERSION)
+const CurrentExecutionSemanticsSchema = ExecutionSemanticsVersionSchema
+
+export const ApprovalHandlerSchema = z.enum(["user", "orchestrator"]);
+export type ApprovalHandler = z.infer<typeof ApprovalHandlerSchema>;
+
+/** Editable selection. Orchestrator designation may remain incomplete until executable save. */
+export const WorkflowApprovalConfigurationSchema = z
+  .object({
+    handler: ApprovalHandlerSchema,
+    designatedOrchestratorAgentId: IdSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.handler !== "orchestrator" && value.designatedOrchestratorAgentId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["designatedOrchestratorAgentId"], message: "only orchestrator handling may designate an Orchestrator" });
+    }
+  });
+export type WorkflowApprovalConfiguration = z.infer<typeof WorkflowApprovalConfigurationSchema>;
+
+/** Complete immutable assignment accepted into workflow and Run snapshots. */
+export const AcceptedWorkflowApprovalConfigurationSchema = z
+  .object({
+    handler: ApprovalHandlerSchema,
+    designatedOrchestratorAgentId: IdSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.handler === "orchestrator" && !value.designatedOrchestratorAgentId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["designatedOrchestratorAgentId"], message: "accepted orchestrator handling requires a designated Orchestrator" });
+    }
+    if (value.handler !== "orchestrator" && value.designatedOrchestratorAgentId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["designatedOrchestratorAgentId"], message: "only orchestrator handling may designate an Orchestrator" });
+    }
+  });
+export type AcceptedWorkflowApprovalConfiguration = z.infer<typeof AcceptedWorkflowApprovalConfigurationSchema>;
+
+export const ExecutionConditionKindSchema = z.enum([
+  "manual",
+  "on_message",
+  "on_event",
+  "schedule",
+]);
+export type ExecutionConditionKind = z.infer<typeof ExecutionConditionKindSchema>;
+
+/** The condition that makes a workflow eligible to start. It is not a run outcome. */
+export const ExecutionConditionSchema = z
+  .object({
+    kind: ExecutionConditionKindSchema,
+    description: z.string().trim().min(1).optional(),
+  })
+  .strict();
+export type ExecutionCondition = z.infer<typeof ExecutionConditionSchema>;
+
+export const WorkflowExecutionPolicySchema = z
+  .object({
+    maxParallelism: z.number().int().positive(),
+    /** Global safety bound across first attempts and repeats. */
+    maxNodeExecutions: z.number().int().positive(),
+  })
+  .strict();
+export type WorkflowExecutionPolicy = z.infer<typeof WorkflowExecutionPolicySchema>;
+
+export const ChoiceOutcomeSchema = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/)
+export const ChoiceTargetSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('edge'), relationshipId: IdSchema }).strict(),
+  z.object({ kind: z.literal('branch_end') }).strict(),
+])
+export const WorkflowChoiceSchema = z.object({
+  outcomes: z.array(z.object({ outcome: ChoiceOutcomeSchema, target: ChoiceTargetSchema }).strict()).min(1).max(16),
+}).strict().superRefine((value, context) => {
+  const outcomes = new Set<string>()
+  for (const [index, declaration] of value.outcomes.entries()) {
+    if (outcomes.has(declaration.outcome)) context.addIssue({ code: 'custom', path: ['outcomes', index], message: 'outcomes must be unique' })
+    outcomes.add(declaration.outcome)
+  }
+})
+export type WorkflowChoice = z.infer<typeof WorkflowChoiceSchema>
+
+const Handle = z.enum(['top', 'right', 'bottom', 'left']).nullable().optional()
+export const CurrentWorkflowNodeSchema = z.object({
+  id: GraphIdSchema, agentId: GraphIdSchema,
+  name: z.string().trim().min(1).optional(), label: z.string().trim().min(1).optional(),
+  description: z.string().optional(), initialPrompt: z.string().trim().min(1).optional(),
+  position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict().optional(),
+  width: z.number().finite().positive().optional(), height: z.number().finite().positive().optional(),
+  join: z.object({ mode: z.literal('all') }).strict().optional(), choice: WorkflowChoiceSchema.optional(),
+}).strict().superRefine((node, context) => {
+  if (!node.name && !node.label) context.addIssue({ code: 'custom', path: ['name'], message: 'a workflow node requires name or label' })
+})
+export const CurrentWorkflowRelationshipSchema = z.object({
+  id: GraphIdSchema, source: GraphIdSchema, target: GraphIdSchema,
+  sourceHandle: Handle, targetHandle: Handle, label: z.string().optional(), kind: z.enum(['execution', 'approval']),
+}).strict()
+/** Incomplete authoring is allowed here; immutable executable validation below
+ * requires a real entry, complete approval and enough execution budget. */
+export const CurrentWorkflowDefinitionBaseSchema = z.object({
+  id: GraphIdSchema, workspaceId: GraphIdSchema, name: z.string().trim().min(1), description: z.string().optional(),
+  executionSemanticsVersion: CurrentExecutionSemanticsSchema, entryNodeId: GraphIdSchema.nullable(),
+  executionCondition: ExecutionConditionSchema, approval: WorkflowApprovalConfigurationSchema.optional(),
+  requiredAgentCount: z.number().int().positive().max(10000).optional(),
+  nodes: z.array(CurrentWorkflowNodeSchema).max(1000), edges: z.array(CurrentWorkflowRelationshipSchema).max(8000),
+  version: z.number().int().positive().optional(), executionPolicy: WorkflowExecutionPolicySchema.optional(),
+  createdAt: TimestampSchema.optional(), updatedAt: TimestampSchema.optional(),
+}).strict()
+
+export const WorkflowExecutionRelationshipSchema = CurrentWorkflowRelationshipSchema.extend({ kind: z.literal('execution') }).strict()
+export const WorkflowApprovalRelationshipSchema = CurrentWorkflowRelationshipSchema.extend({ kind: z.literal('approval') }).strict()
+export const WorkflowRelationshipSchema = CurrentWorkflowRelationshipSchema
+export type WorkflowRelationship = z.infer<typeof WorkflowRelationshipSchema>
+
+/** Current execution semantics for every workflow. Repeat is optional; these
+ * constants and validators are not runtime admission permission. */
+export const REPEAT_CONTRACT_VERSION = 1 as const
+export const REPEAT_EXECUTION_SEMANTICS_VERSION = 3 as const
+const Ordinal = z.number().int().min(1).max(2147483647)
+const Header = { contractVersion: z.literal(REPEAT_CONTRACT_VERSION) }
+
+export const RepeatBlockV1Schema = z.object({
+  id: GraphIdSchema,
+  nodeIds: z.array(GraphIdSchema).min(1).max(1000),
+  entryNodeId: GraphIdSchema,
+  exitNodeId: GraphIdSchema,
+  /** Includes the first occurrence; 1 allows no business repeat. No default. */
+  maxOccurrences: Ordinal,
+  repeatOutcome: ChoiceOutcomeSchema,
+  earlyExitOutcome: ChoiceOutcomeSchema,
+  /** The exit choice's repeatOutcome target, taken ONLY on limit exhaustion. */
+  limitExit: ChoiceTargetSchema,
+}).strict().superRefine((block, context) => {
+  const fail = (message: string) => context.addIssue({ code: 'custom', message })
+  if (new Set(block.nodeIds).size !== block.nodeIds.length) fail('REPEAT_DUPLICATE_MEMBER')
+  if (!block.nodeIds.includes(block.entryNodeId) || !block.nodeIds.includes(block.exitNodeId)) fail('REPEAT_BOUNDARY_NOT_IN_SCOPE')
+  if (block.repeatOutcome === block.earlyExitOutcome) fail('REPEAT_OUTCOMES_MUST_DIFFER')
+})
+export type RepeatBlockV1 = z.infer<typeof RepeatBlockV1Schema>
+
+/** Context-free configured-repeat shape. Absent repeat is handled by the V3 family; an empty plan is not a workflow mode. */
+export const RepeatPlanV1Schema = z.object({
+  ...Header, blocks: z.array(RepeatBlockV1Schema).min(1).max(1000),
+}).strict().superRefine(({ blocks }, context) => {
+  const ids = new Set<string>(), members = new Set<string>()
+  for (const [index, block] of blocks.entries()) {
+    const fail = (message: string) => context.addIssue({ code: 'custom', path: ['blocks', index], message })
+    if (ids.has(block.id)) fail('REPEAT_DUPLICATE_BLOCK')
+    ids.add(block.id)
+    for (const nodeId of block.nodeIds) {
+      if (members.has(nodeId)) fail('REPEAT_OVERLAP_OR_NESTING_UNSUPPORTED')
+      members.add(nodeId)
+    }
+  }
+})
+export type RepeatPlanV1 = z.infer<typeof RepeatPlanV1Schema>
+
+/** One authoring definition for all current workflows. A missing repeat means
+ * ordinary execution; a missing executionSemanticsVersion is never repaired. */
+export const WorkflowDefinitionV3Schema = CurrentWorkflowDefinitionBaseSchema.extend({
+  repeat: RepeatPlanV1Schema.optional(),
+}).strict()
+export type WorkflowDefinitionV3 = z.infer<typeof WorkflowDefinitionV3Schema>

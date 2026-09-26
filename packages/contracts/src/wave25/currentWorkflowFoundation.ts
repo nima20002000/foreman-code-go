@@ -1,47 +1,22 @@
 import { z } from 'zod'
 import {
   AgentConfigurationVersionSchema, AcceptedWorkflowApprovalConfigurationSchema,
-  WorkflowApprovalConfigurationSchema, ExecutionConditionSchema, WorkflowExecutionPolicySchema,
-  HarnessWorkflowCompatibilitySchema, WorkflowChoiceSchema, RunExecutionLocationSchema,
-  RunExecutionStateSchema, RunOutcomeSchema, RunInputSchema, ExecutionResultSchema,
-  RunStopCauseSchema, TimestampSchema,
+  HarnessWorkflowCompatibilitySchema,
+  WorkflowRunRecordSchema, ExecutionResultSchema, TimestampSchema,
 } from '../index.js'
-import { GraphIdSchema } from './graphPrimitives.js'
+import { GraphIdSchema } from '../schemaPrimitives.js'
 import { canonicalGraphJson } from './json.js'
-import { ExecutionSemanticsVersionSchema as CurrentExecutionSemanticsSchema } from './workflow.js'
-export { ExecutionSemanticsVersionSchema as CurrentExecutionSemanticsSchema } from './workflow.js'
+import { ExecutionSemanticsVersionSchema as CurrentExecutionSemanticsSchema } from './workflowShape.js'
+export { ExecutionSemanticsVersionSchema as CurrentExecutionSemanticsSchema } from './workflowShape.js'
+
+import { CurrentWorkflowDefinitionBaseSchema } from './workflowShape.js'
+export { CurrentWorkflowNodeSchema, CurrentWorkflowRelationshipSchema, CurrentWorkflowDefinitionBaseSchema } from './workflowShape.js'
 
 /** Extracted current topology/lifecycle rules. No old WorkflowVersion validator,
  * validation projection, complexity-selected semantics or legacy dispatch. */
 export const CurrentRunScopeSchema = z.object({
   workspaceId: GraphIdSchema, workflowId: GraphIdSchema, runId: GraphIdSchema,
   workflowVersionId: GraphIdSchema, executionSemanticsVersion: CurrentExecutionSemanticsSchema,
-}).strict()
-const Handle = z.enum(['top', 'right', 'bottom', 'left']).nullable().optional()
-export const CurrentWorkflowNodeSchema = z.object({
-  id: GraphIdSchema, agentId: GraphIdSchema,
-  name: z.string().trim().min(1).optional(), label: z.string().trim().min(1).optional(),
-  description: z.string().optional(), initialPrompt: z.string().trim().min(1).optional(),
-  position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict().optional(),
-  width: z.number().finite().positive().optional(), height: z.number().finite().positive().optional(),
-  join: z.object({ mode: z.literal('all') }).strict().optional(), choice: WorkflowChoiceSchema.optional(),
-}).strict().superRefine((node, context) => {
-  if (!node.name && !node.label) context.addIssue({ code: 'custom', path: ['name'], message: 'a workflow node requires name or label' })
-})
-export const CurrentWorkflowRelationshipSchema = z.object({
-  id: GraphIdSchema, source: GraphIdSchema, target: GraphIdSchema,
-  sourceHandle: Handle, targetHandle: Handle, label: z.string().optional(), kind: z.enum(['execution', 'approval']),
-}).strict()
-/** Incomplete authoring is allowed here; immutable executable validation below
- * requires a real entry, complete approval and enough execution budget. */
-export const CurrentWorkflowDefinitionBaseSchema = z.object({
-  id: GraphIdSchema, workspaceId: GraphIdSchema, name: z.string().trim().min(1), description: z.string().optional(),
-  executionSemanticsVersion: CurrentExecutionSemanticsSchema, entryNodeId: GraphIdSchema.nullable(),
-  executionCondition: ExecutionConditionSchema, approval: WorkflowApprovalConfigurationSchema.optional(),
-  requiredAgentCount: z.number().int().positive().max(10000).optional(),
-  nodes: z.array(CurrentWorkflowNodeSchema).max(1000), edges: z.array(CurrentWorkflowRelationshipSchema).max(8000),
-  version: z.number().int().positive().optional(), executionPolicy: WorkflowExecutionPolicySchema.optional(),
-  createdAt: TimestampSchema.optional(), updatedAt: TimestampSchema.optional(),
 }).strict()
 export const CurrentWorkflowVersionBaseSchema = z.object({
   id: GraphIdSchema, workspaceId: GraphIdSchema, workflowId: GraphIdSchema,
@@ -159,21 +134,7 @@ export function validateCurrentWorkflowConfigurations(value: { version: Version;
 
 /** Public current Run. Private accepted Runs require location/principal below
  * the admission boundary; redacted public reads may omit those two fields. */
-export const CurrentWorkflowRunSchema = z.object({
-  id: GraphIdSchema, workspaceId: GraphIdSchema, workflowId: GraphIdSchema, workflowVersionId: GraphIdSchema,
-  executionSemanticsVersion: CurrentExecutionSemanticsSchema,
-  executionLocation: RunExecutionLocationSchema.optional(), authorizationPrincipalId: GraphIdSchema.optional(),
-  stopCause: RunStopCauseSchema.optional(), agentConfigurationVersionIds: z.record(GraphIdSchema, GraphIdSchema),
-  approval: AcceptedWorkflowApprovalConfigurationSchema, executionCondition: ExecutionConditionSchema,
-  executionState: RunExecutionStateSchema, outcome: RunOutcomeSchema, input: RunInputSchema,
-  result: ExecutionResultSchema.optional(), createdAt: TimestampSchema,
-  startedAt: TimestampSchema.optional(), finishedAt: TimestampSchema.optional(),
-}).strict().superRefine((run, context) => {
-  const terminal = run.executionState === 'completed'
-  if (terminal && (run.outcome === 'pending' || !run.result || !run.finishedAt)) context.addIssue({ code: 'custom', path: ['result'], message: 'a completed run requires a terminal outcome, result, and finishedAt' })
-  if (!terminal && (run.outcome !== 'pending' || run.result || run.finishedAt)) context.addIssue({ code: 'custom', path: ['outcome'], message: 'a non-completed run must retain a pending outcome without a result or finishedAt' })
-  if (run.result && run.result.outcome !== run.outcome) context.addIssue({ code: 'custom', path: ['result', 'outcome'], message: 'result.outcome must match outcome' })
-})
+export const CurrentWorkflowRunSchema = WorkflowRunRecordSchema
 export const AcceptedCurrentNodeResultSchema = ExecutionResultSchema.superRefine((value, context) => {
   if (value.outcome !== 'succeeded') context.addIssue({ code: 'custom', message: 'only successful results are accepted inputs' })
   try { canonicalGraphJson(value, 64 * 1024) } catch { context.addIssue({ code: 'custom', message: 'accepted result exceeds bounds' }) }

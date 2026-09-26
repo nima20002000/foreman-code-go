@@ -1,4 +1,7 @@
+import { RunStartV3InputSchema } from '../wave25/startRequest.js'
 import { z } from "zod";
+import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema, WorkflowRunV3Schema } from "../wave25/workflowSchemas.js";
+import { CurrentWorkflowNodeSchema, CurrentWorkflowRelationshipSchema } from "../wave25/workflowShape.js";
 
 export * from "./extensions.js";
 export * from "./harnessSettings.js";
@@ -20,14 +23,8 @@ import {
   IdSchema,
   RunInputSchema,
   TimestampSchema,
-  WorkflowDefinitionSchema,
-  WorkflowDefinitionFields,
-  CompatibleWorkflowDefinitionSchema,
   WorkflowApprovalConfigurationSchema,
-  WorkflowNodeSchema,
-  WorkflowEdgeSchema,
-  WorkflowRunSchema,
-  WorkflowVersionSchema,
+  ExecutionConditionSchema,
   WorkspaceSchema,
   DurableInteractionSchema,
   InteractionStatusSchema,
@@ -193,7 +190,7 @@ export const ManagedWorkspaceCommandResultSchema = z.object({ value: ManagedWork
 export const ManagedWorkflowRecordFields = {
   revision: ExpectedRevisionSchema, currentVersionId: IdSchema.nullable(), archivedAt: TimestampSchema.nullable(),
 };
-export const ManagedWorkflowSchema = z.object({ ...ManagedWorkflowRecordFields, workflow: CompatibleWorkflowDefinitionSchema }).strict();
+export const ManagedWorkflowSchema = z.object({ ...ManagedWorkflowRecordFields, workflow: WorkflowDefinitionV3Schema }).strict();
 export type ManagedWorkflow = z.infer<typeof ManagedWorkflowSchema>;
 export const ManagedWorkflowPageSchema = z.object({
   items: z.array(ManagedWorkflowSchema), pageInfo: ManagementPageInfoSchema,
@@ -351,7 +348,7 @@ const NodeMoveOperationSchema = z.object({
 }).strict();
 const NodeRemoveOperationSchema = z.object({ type: z.literal("node.remove"), nodeId: IdSchema }).strict();
 const EdgeConnectOperationSchema = z.object({
-  type: z.literal("edge.connect"), edgeId: IdSchema, sourceNodeId: IdSchema, targetNodeId: IdSchema,
+  type: z.literal("edge.connect"), kind: z.enum(["execution", "approval"]), edgeId: IdSchema, sourceNodeId: IdSchema, targetNodeId: IdSchema,
 }).strict();
 const EdgeDisconnectOperationSchema = z.object({ type: z.literal("edge.disconnect"), edgeId: IdSchema }).strict();
 const ExecutionLimitsOperationSchema = z.object({
@@ -365,7 +362,7 @@ const RequiredAgentCountOperationSchema = z.object({
 }).strict();
 
 const NodeReplaceOperationSchema = z.object({
-  type: z.literal("node.replace"), node: WorkflowNodeSchema,
+  type: z.literal("node.replace"), node: CurrentWorkflowNodeSchema,
 }).strict();
 const NodeOrderOperationSchema = z.object({
   type: z.literal("nodes.reorder"), nodeIds: z.array(IdSchema).max(10_000),
@@ -374,7 +371,7 @@ const EdgeOrderOperationSchema = z.object({
   type: z.literal("edges.reorder"), edgeIds: z.array(IdSchema).max(50_000),
 }).strict();
 const EdgePutOperationSchema = z.object({
-  type: z.literal("edge.put"), edge: WorkflowEdgeSchema,
+  type: z.literal("edge.put"), edge: CurrentWorkflowRelationshipSchema,
 }).strict();
 const ResetExecutionLimitsOperationSchema = z.object({ type: z.literal("workflow.reset_execution_limits") }).strict();
 const ResetRequiredAgentCountOperationSchema = z.object({ type: z.literal("workflow.reset_required_agent_count") }).strict();
@@ -386,7 +383,7 @@ export const CurrentCommonGraphOperationSchema = z.discriminatedUnion("type", [
     position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict().optional(),
   }).strict(),
   z.object({ type: z.literal("workflow.set_execution_condition"),
-    executionCondition: WorkflowDefinitionFields.executionCondition,
+    executionCondition: ExecutionConditionSchema,
   }).strict(),
   WorkflowApprovalOperationSchema,
   NodeOrderOperationSchema,
@@ -415,7 +412,7 @@ export const GraphDraftOperationSchema = z.discriminatedUnion("type", [
   }).strict(),
   z.object({ type: z.literal("workflow.restore_version"), versionId: IdSchema }).strict(),
   z.object({ type: z.literal("workflow.set_execution_condition"),
-    executionCondition: WorkflowDefinitionSchema.shape.executionCondition,
+    executionCondition: ExecutionConditionSchema,
   }).strict(),
   WorkflowApprovalOperationSchema,
   NodeReplaceOperationSchema,
@@ -455,7 +452,7 @@ export const GraphDraftRecordFields = {
   updatedByPrincipalId: IdSchema,
   updatedAt: TimestampSchema,
 };
-export const GraphDraftSchema = z.object({ ...GraphDraftRecordFields, graph: WorkflowDefinitionSchema }).strict();
+export const GraphDraftSchema = z.object({ ...GraphDraftRecordFields, graph: WorkflowDefinitionV3Schema }).strict();
 export type GraphDraft = z.infer<typeof GraphDraftSchema>;
 export const GraphDraftEffectSchema = z.discriminatedUnion("code", [
   z.object({
@@ -561,16 +558,8 @@ export const RunEventsListInputSchema = z.object({
   afterSequence: z.number().int().nonnegative().optional(),
   limit: z.number().int().min(1).max(500).default(100),
 }).strict();
-export const RunStartInputSchema = z.object({
-  ...WorkflowScopeSchema.shape,
-  ...MutationFields,
-  workflowVersionId: IdSchema,
-  draftId: IdSchema.optional(),
-  expectedDraftRevision: ExpectedRevisionSchema.optional(),
-  expectedLocationRevision: ExpectedRevisionSchema,
-  input: RunInputSchema,
-}).strict().refine((value) => (value.draftId === undefined) === (value.expectedDraftRevision === undefined),
-  "draftId and expectedDraftRevision must be supplied together");
+/** Generic management spelling, one canonical explicit V3 Start request. */
+export const RunStartInputSchema = RunStartV3InputSchema;
 export const RunStopInputSchema = z.object({
   workspaceId: IdSchema,
   runId: IdSchema,
@@ -675,12 +664,12 @@ export const GraphValidationResultSchema = z.object({
   issues: z.array(z.object({ code: z.string().trim().min(1), message: z.string().trim().min(1) }).strict()),
 }).strict();
 export const GraphSaveResultSchema = z.object({
-  draft: GraphDraftSchema, version: WorkflowVersionSchema,
+  draft: GraphDraftSchema, version: WorkflowVersionV3Schema,
   // Returned by the publication transaction, not an optional follow-up read.
   agents: z.array(ManagedAgentSchema).default([]),
 }).strict();
 export const GraphSaveCommandResultSchema = z.object({ value: GraphSaveResultSchema, replayed: z.boolean() }).strict();
-export const RunStartResultSchema = z.object({ run: WorkflowRunSchema, accepted: z.literal(true), replayed: z.boolean() }).strict();
+export const RunStartResultSchema = z.object({ run: WorkflowRunV3Schema, accepted: z.literal(true), replayed: z.boolean() }).strict();
 export const RunStopResultSchema = z.object({
   runId: IdSchema,
   status: z.enum(["accepted", "already_terminal", "not_owner"]),
@@ -688,7 +677,7 @@ export const RunStopResultSchema = z.object({
   processStopped: z.boolean(),
   replayed: z.boolean(),
 }).strict();
-export const RunPageSchema = z.object({ items: z.array(WorkflowRunSchema), pageInfo: ManagementPageInfoSchema }).strict();
+export const RunPageSchema = z.object({ items: z.array(WorkflowRunV3Schema), pageInfo: ManagementPageInfoSchema }).strict();
 export const RunDetailsSchema = GetRunResponseSchema;
 export const RunEventsPageSchema = z.object({ items: z.array(RunActivitySchema), pageInfo: ManagementPageInfoSchema }).strict();
 export const GraphDraftDiscardResultSchema = z.object({

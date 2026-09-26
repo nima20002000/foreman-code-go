@@ -6,12 +6,14 @@ const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'u
 describe('NIM-2648 ENG04-D active execution-semantics retirement source guard', () => {
   it('keeps the current save/read/Start contracts V3-only and makes repeat optional instead of projecting through V2', () => {
     const repeat = source('../../../packages/contracts/src/wave25/repeat.ts')
+    const shape = source('../../../packages/contracts/src/wave25/workflowShape.ts')
     const saved = source('../../../packages/contracts/src/wave25/saved.ts')
     const admission = source('../../../packages/contracts/src/wave25/repeatAdmission.ts')
 
     expect(repeat).not.toContain('WorkflowVersionV2Schema.safeParse')
     expect(repeat).not.toContain('ExecutableWorkflowV2Schema.safeParse')
-    expect(repeat).toMatch(/repeat:\s*RepeatPlanV1Schema\.optional\(\)/)
+    expect(shape).toMatch(/repeat:\s*RepeatPlanV1Schema\.optional\(\)/)
+    expect(repeat).toContain('definition: WorkflowDefinitionV3Schema')
     expect(saved).not.toContain('WorkflowVersionV2Schema')
     expect(saved).not.toContain('WorkflowRunV2Schema')
     expect(admission).not.toContain('RunStartV2InputSchema')

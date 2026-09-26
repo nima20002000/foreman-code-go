@@ -1,24 +1,23 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  HarnessExecutionSchema,
-  WorkflowDefinitionSchema,
-  WorkflowVersionSchema,
-  type WorkflowVersion,
-} from "../src/index.js";
+import { HarnessExecutionSchema } from "../src/index.js";
+import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema, type WorkflowVersionV3 } from "../src/wave25/saved.js";
+import { makeCurrentWorkflowFixture } from "../src/wave25/currentFixture.js";
 
 const timestamp = "2026-09-14T12:00:00.000Z";
-const version: WorkflowVersion = {
+const version: WorkflowVersionV3 = {
   id: "version-1",
   workspaceId: "workspace-1",
   workflowId: "workflow-1",
   version: 1,
+  executionSemanticsVersion: 3, approval: { handler: "user" },
   entryNodeId: "node-1",
   definition: {
     id: "workflow-1",
     workspaceId: "workspace-1",
     name: "Review",
     version: 1,
+    executionSemanticsVersion: 3, entryNodeId: "node-1", approval: { handler: "user" },
     executionCondition: { kind: "manual" },
     executionPolicy: { maxParallelism: 2, maxNodeExecutions: 20 },
     nodes: [
@@ -27,59 +26,65 @@ const version: WorkflowVersion = {
     ],
     edges: [{
       id: "edge-1", source: "node-1", target: "node-2",
-      route: { outcomes: ["succeeded"], maxTraversals: 2 },
+      kind: "execution",
     }],
   },
   agentConfigurationVersionIds: { "agent-1": "config-1", "agent-2": "config-2" },
-  contentHash: "test-hash",
+  contentHash: `sha256:${"0".repeat(64)}`,
   createdAt: timestamp,
 };
 
 describe("executable workflow graph integrity", () => {
   it("accepts a valid pinned graph", () => {
-    expect(WorkflowVersionSchema.safeParse(version).success).toBe(true);
+    expect(WorkflowVersionV3Schema.safeParse(version).success).toBe(true);
   });
 
   it.each(["source", "target"] as const)("rejects a missing %s", (endpoint) => {
     const candidate = structuredClone(version);
     candidate.definition.edges[0]![endpoint] = "missing-node";
-    const result = WorkflowVersionSchema.safeParse(candidate);
+    const result = WorkflowVersionV3Schema.safeParse(candidate);
     expect(result.success).toBe(false);
     expect(result.error?.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ path: ["definition", "edges", 0, endpoint] }),
+      expect.objectContaining({ path: ["definition"], message: "relationships require distinct existing endpoints" }),
     ]));
     // Drafts remain editable; only executable snapshots enforce graph integrity.
-    expect(WorkflowDefinitionSchema.safeParse(candidate.definition).success).toBe(true);
+    expect(WorkflowDefinitionV3Schema.safeParse(candidate.definition).success).toBe(true);
   });
 
   it("rejects duplicate node IDs", () => {
     const candidate = structuredClone(version);
     candidate.definition.nodes.push({ ...candidate.definition.nodes[0]! });
-    const result = WorkflowVersionSchema.safeParse(candidate);
+    const result = WorkflowVersionV3Schema.safeParse(candidate);
     expect(result.success).toBe(false);
     expect(result.error?.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ path: ["definition", "nodes", 2, "id"] }),
+      expect.objectContaining({ path: ["definition"], message: "node and relationship IDs must be unique" }),
     ]));
   });
 
   it("rejects duplicate edge IDs", () => {
     const candidate = structuredClone(version);
     candidate.definition.edges.push({ ...candidate.definition.edges[0]! });
-    const result = WorkflowVersionSchema.safeParse(candidate);
+    const result = WorkflowVersionV3Schema.safeParse(candidate);
     expect(result.success).toBe(false);
     expect(result.error?.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ path: ["definition", "edges", 1, "id"] }),
+      expect.objectContaining({ path: ["definition"], message: "node and relationship IDs must be unique" }),
     ]));
   });
 
-  it("allows distinct nodes to share an agent and permits explicitly bounded loops", () => {
-    const candidate = structuredClone(version);
-    candidate.definition.nodes[1]!.agentId = "agent-1";
-    candidate.definition.edges.push({
-      id: "loop", source: "node-2", target: "node-1",
-      route: { outcomes: ["succeeded"], maxTraversals: 2 },
-    });
-    expect(WorkflowVersionSchema.safeParse(candidate).success).toBe(true);
+  it("rejects duplicate Agent activations and arbitrary execution back-edges", () => {
+    const duplicateAgent = structuredClone(version);
+    duplicateAgent.definition.nodes[1]!.agentId = "agent-1";
+    expect(WorkflowVersionV3Schema.safeParse(duplicateAgent).success).toBe(false);
+    const cyclic = structuredClone(version);
+    cyclic.definition.edges.push({ id: "loop", source: "node-2", target: "node-1", kind: "execution" });
+    expect(WorkflowVersionV3Schema.safeParse(cyclic).success).toBe(false);
+  });
+
+  it("represents finite business repetition through the optional explicit plan", () => {
+    const repeated = makeCurrentWorkflowFixture("integrity-repeat", "repeat");
+    expect(WorkflowVersionV3Schema.parse(repeated.version)).toEqual(repeated.version);
+    expect(repeated.version.definition.repeat?.blocks[0]?.maxOccurrences).toBe(3);
+    expect(version.definition).not.toHaveProperty("repeat");
   });
 });
 

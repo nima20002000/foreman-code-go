@@ -9,57 +9,22 @@ import {
   parseChoiceResultEnvelope, type WorkflowChoice,
 } from './currentResult.js'
 import {
-  CurrentWorkflowDefinitionBaseSchema, CurrentWorkflowVersionBaseSchema, CurrentWorkflowRunSchema, CurrentRunScopeSchema,
+  CurrentWorkflowVersionBaseSchema, CurrentWorkflowRunSchema, CurrentRunScopeSchema,
   validateCurrentWorkflowTopology, validateCurrentWorkflowConfigurations, AcceptedCurrentNodeResultSchema,
 } from './currentWorkflowFoundation.js'
 
-/** Current execution semantics for every workflow. Repeat is optional; these
- * constants and validators are not runtime admission permission. */
-export const REPEAT_CONTRACT_VERSION = 1 as const
-export const REPEAT_EXECUTION_SEMANTICS_VERSION = 3 as const
+export {
+  REPEAT_CONTRACT_VERSION, REPEAT_EXECUTION_SEMANTICS_VERSION, RepeatBlockV1Schema, RepeatPlanV1Schema,
+} from './workflowShape.js'
+export type { RepeatBlockV1, RepeatPlanV1 } from './workflowShape.js'
+import { REPEAT_CONTRACT_VERSION, WorkflowDefinitionV3Schema } from './workflowShape.js'
 const Ordinal = z.number().int().min(1).max(2147483647)
 const Header = { contractVersion: z.literal(REPEAT_CONTRACT_VERSION) }
-
-export const RepeatBlockV1Schema = z.object({
-  id: GraphIdSchema,
-  nodeIds: z.array(GraphIdSchema).min(1).max(1000),
-  entryNodeId: GraphIdSchema,
-  exitNodeId: GraphIdSchema,
-  /** Includes the first occurrence; 1 allows no business repeat. No default. */
-  maxOccurrences: Ordinal,
-  repeatOutcome: ChoiceOutcomeSchema,
-  earlyExitOutcome: ChoiceOutcomeSchema,
-  /** The exit choice's repeatOutcome target, taken ONLY on limit exhaustion. */
-  limitExit: ChoiceTargetSchema,
-}).strict().superRefine((block, context) => {
-  const fail = (message: string) => context.addIssue({ code: 'custom', message })
-  if (new Set(block.nodeIds).size !== block.nodeIds.length) fail('REPEAT_DUPLICATE_MEMBER')
-  if (!block.nodeIds.includes(block.entryNodeId) || !block.nodeIds.includes(block.exitNodeId)) fail('REPEAT_BOUNDARY_NOT_IN_SCOPE')
-  if (block.repeatOutcome === block.earlyExitOutcome) fail('REPEAT_OUTCOMES_MUST_DIFFER')
-})
-export type RepeatBlockV1 = z.infer<typeof RepeatBlockV1Schema>
-
-/** Context-free configured-repeat shape. Absent repeat is handled by the V3 family; an empty plan is not a workflow mode. */
-export const RepeatPlanV1Schema = z.object({
-  ...Header, blocks: z.array(RepeatBlockV1Schema).min(1).max(1000),
-}).strict().superRefine(({ blocks }, context) => {
-  const ids = new Set<string>(), members = new Set<string>()
-  for (const [index, block] of blocks.entries()) {
-    const fail = (message: string) => context.addIssue({ code: 'custom', path: ['blocks', index], message })
-    if (ids.has(block.id)) fail('REPEAT_DUPLICATE_BLOCK')
-    ids.add(block.id)
-    for (const nodeId of block.nodeIds) {
-      if (members.has(nodeId)) fail('REPEAT_OVERLAP_OR_NESTING_UNSUPPORTED')
-      members.add(nodeId)
-    }
-  }
-})
-export type RepeatPlanV1 = z.infer<typeof RepeatPlanV1Schema>
 
 /** ONE current V3 family. Omission is the canonical no-repeat representation.
  * Null/empty plans are invalid. No default, transform or fake occurrence is made. */
 export const RepeatWorkflowVersionV1Schema = CurrentWorkflowVersionBaseSchema.extend({
-  definition: CurrentWorkflowDefinitionBaseSchema.extend({ repeat: RepeatPlanV1Schema.optional() }).strict(),
+  definition: WorkflowDefinitionV3Schema,
 }).strict().superRefine((version, context) => {
   validateCurrentWorkflowTopology(version, context)
   const { repeat, ...definition } = version.definition

@@ -1,4 +1,25 @@
+import { RunStartV3InputSchema } from "./wave25/startRequest.js";
 import { z } from "zod";
+import { IdSchema, TimestampSchema, GraphIdSchema, RunInputSchema } from "./schemaPrimitives.js";
+export { IdSchema, TimestampSchema } from "./schemaPrimitives.js";
+export type { Id, Timestamp } from "./schemaPrimitives.js";
+import {
+  ApprovalHandlerSchema, AcceptedWorkflowApprovalConfigurationSchema,
+  WorkflowApprovalConfigurationSchema, ExecutionConditionSchema,
+  CurrentWorkflowNodeSchema, CurrentWorkflowRelationshipSchema, CurrentWorkflowDefinitionBaseSchema,
+  WorkflowDefinitionV3Schema, ExecutionSemanticsVersionSchema,
+} from "./wave25/workflowShape.js";
+export {
+  ApprovalHandlerSchema, AcceptedWorkflowApprovalConfigurationSchema, WorkflowApprovalConfigurationSchema,
+  ExecutionConditionKindSchema, ExecutionConditionSchema, WorkflowExecutionPolicySchema,
+  ChoiceOutcomeSchema, ChoiceTargetSchema, WorkflowChoiceSchema,
+  WorkflowExecutionRelationshipSchema, WorkflowApprovalRelationshipSchema, WorkflowRelationshipSchema,
+} from "./wave25/workflowShape.js";
+export type {
+  ApprovalHandler, AcceptedWorkflowApprovalConfiguration, WorkflowApprovalConfiguration,
+  ExecutionConditionKind, ExecutionCondition, WorkflowExecutionPolicy, WorkflowChoice, WorkflowRelationship,
+} from "./wave25/workflowShape.js";
+import type { ApprovalHandler } from "./wave25/workflowShape.js";
 import { RunLiveActivitySchema } from "./runLiveActivity.js";
 import { RunStopCauseSchema } from "./runStopCause.js";
 export * from "./runStopCause.js";
@@ -8,13 +29,6 @@ export * from "./runLiveActivity.js";
 export * from "./harnessEditing.js";
 export * from "./harnessCompatibility.js";
 export * from "./approvalTopology.js";
-
-/** A non-empty identifier. IDs are intentionally unbranded at the API boundary. */
-export const IdSchema = z.string().trim().min(1);
-export type Id = z.infer<typeof IdSchema>;
-
-export const TimestampSchema = z.string().datetime({ offset: true });
-export type Timestamp = z.infer<typeof TimestampSchema>;
 
 /** Runner-owned directory inherited by every workflow and Agent in a workspace. */
 export const ExecutionLocationSchema = z
@@ -240,9 +254,6 @@ export function projectHarnessEffort(configuration: HarnessConfiguration): Agent
   return effort.success ? effort.data : undefined;
 }
 
-export const ApprovalHandlerSchema = z.enum(["user", "orchestrator"]);
-export type ApprovalHandler = z.infer<typeof ApprovalHandlerSchema>;
-
 export const HarnessWorkflowCompatibilitySchema = z.object({
   configuration: HarnessConfigurationSchema,
   workflowApprovalHandler: ApprovalHandlerSchema.optional(),
@@ -278,37 +289,6 @@ export function validateHarnessWorkflowCompatibility(
 ): HarnessConfiguration {
   return HarnessWorkflowCompatibilitySchema.parse({ configuration, workflowApprovalHandler, designatedOrchestrator }).configuration;
 }
-
-/** Editable selection. Orchestrator designation may remain incomplete until executable save. */
-export const WorkflowApprovalConfigurationSchema = z
-  .object({
-    handler: ApprovalHandlerSchema,
-    designatedOrchestratorAgentId: IdSchema.optional(),
-  })
-  .strict()
-  .superRefine((value, context) => {
-    if (value.handler !== "orchestrator" && value.designatedOrchestratorAgentId) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["designatedOrchestratorAgentId"], message: "only orchestrator handling may designate an Orchestrator" });
-    }
-  });
-export type WorkflowApprovalConfiguration = z.infer<typeof WorkflowApprovalConfigurationSchema>;
-
-/** Complete immutable assignment accepted into workflow and Run snapshots. */
-export const AcceptedWorkflowApprovalConfigurationSchema = z
-  .object({
-    handler: ApprovalHandlerSchema,
-    designatedOrchestratorAgentId: IdSchema.optional(),
-  })
-  .strict()
-  .superRefine((value, context) => {
-    if (value.handler === "orchestrator" && !value.designatedOrchestratorAgentId) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["designatedOrchestratorAgentId"], message: "accepted orchestrator handling requires a designated Orchestrator" });
-    }
-    if (value.handler !== "orchestrator" && value.designatedOrchestratorAgentId) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["designatedOrchestratorAgentId"], message: "only orchestrator handling may designate an Orchestrator" });
-    }
-  });
-export type AcceptedWorkflowApprovalConfiguration = z.infer<typeof AcceptedWorkflowApprovalConfigurationSchema>;
 
 export const AgentTemplateSchema = z.object({
   role: AgentProductRoleSchema,
@@ -692,297 +672,15 @@ export const AgentSchema = z
   .strict();
 export type Agent = z.infer<typeof AgentSchema>;
 
-export const ExecutionConditionKindSchema = z.enum([
-  "manual",
-  "on_message",
-  "on_event",
-  "schedule",
-]);
-export type ExecutionConditionKind = z.infer<typeof ExecutionConditionKindSchema>;
-
-/** The condition that makes a workflow eligible to start. It is not a run outcome. */
-export const ExecutionConditionSchema = z
-  .object({
-    kind: ExecutionConditionKindSchema,
-    description: z.string().trim().min(1).optional(),
-  })
-  .strict();
-export type ExecutionCondition = z.infer<typeof ExecutionConditionSchema>;
-
-export const WorkflowJoinSchema = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("all") }).strict(),
-  z.object({ mode: z.literal("any") }).strict(),
-  z
-    .object({
-      mode: z.literal("threshold"),
-      required: z.number().int().positive(),
-    })
-    .strict(),
-]);
-export type WorkflowJoin = z.infer<typeof WorkflowJoinSchema>;
-
-export const ResultConditionOperatorSchema = z.enum(["exists", "equals", "not_equals"]);
-export type ResultConditionOperator = z.infer<typeof ResultConditionOperatorSchema>;
-
-export const ResultConditionSchema = z
-  .object({
-    path: z.array(z.string().trim().min(1)).min(1),
-    operator: ResultConditionOperatorSchema,
-    value: z.json().optional(),
-  })
-  .strict()
-  .superRefine((condition, context) => {
-    if (condition.operator !== "exists" && condition.value === undefined) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["value"],
-        message: "equals and not_equals conditions require a value",
-      });
-    }
-  });
-export type ResultCondition = z.infer<typeof ResultConditionSchema>;
-
-/** Explicit routing facts evaluated after a source node reaches a terminal outcome. */
-export const WorkflowRouteSchema = z
-  .object({
-    outcomes: z.array(z.enum(["succeeded", "failed", "canceled"])).min(1),
-    result: ResultConditionSchema.optional(),
-    /** Bounds loop edges. Omit for a one-time dependency. */
-    maxTraversals: z.number().int().positive().optional(),
-  })
-  .strict();
-export type WorkflowRoute = z.infer<typeof WorkflowRouteSchema>;
-
-export const WorkflowExecutionPolicySchema = z
-  .object({
-    maxParallelism: z.number().int().positive(),
-    /** Global safety bound across first attempts and repeats. */
-    maxNodeExecutions: z.number().int().positive(),
-  })
-  .strict();
-export type WorkflowExecutionPolicy = z.infer<typeof WorkflowExecutionPolicySchema>;
-
-/** Shared node presentation/content fields; execution rules belong to the current schema. */
-export const WorkflowNodeFields = {
-    id: IdSchema,
-    agentId: IdSchema,
-    name: z.string().trim().min(1).optional(),
-    label: z.string().trim().min(1).optional(),
-    description: z.string().optional(),
-    /** User instruction sent to this workflow step, separate from the Agent system prompt. */
-    initialPrompt: z.string().trim().min(1).optional(),
-    position: z
-      .object({
-        x: z.number().finite(),
-        y: z.number().finite(),
-      })
-      .strict()
-      .optional(),
-    width: z.number().finite().positive().optional(),
-    height: z.number().finite().positive().optional(),
-    join: WorkflowJoinSchema.optional(),
-};
-export const WorkflowNodeSchema = z
-  .object(WorkflowNodeFields)
-  .strict()
-  .superRefine((value, context) => {
-    if (!value.name && !value.label) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["name"],
-        message: "a workflow node requires name or label",
-      });
-    }
-  });
-export type WorkflowNode = z.infer<typeof WorkflowNodeSchema>;
-
-export const WorkflowEdgeSchema = z
-  .object({
-    id: IdSchema,
-    source: IdSchema,
-    target: IdSchema,
-    sourceHandle: z.enum(["top", "right", "bottom", "left"]).nullable().optional(),
-    targetHandle: z.enum(["top", "right", "bottom", "left"]).nullable().optional(),
-    label: z.string().optional(),
-    route: WorkflowRouteSchema.optional(),
-  })
-  .strict();
-export type WorkflowEdge = z.infer<typeof WorkflowEdgeSchema>;
-
-/** Common workflow metadata, independent of execution semantics. */
-export const WorkflowDefinitionFields = {
-    id: IdSchema,
-    workspaceId: IdSchema,
-    name: z.string().trim().min(1),
-    description: z.string().optional(),
-    executionCondition: ExecutionConditionSchema,
-    /** Missing or incomplete only for legacy/unconfigured records and editable drafts. */
-    approval: WorkflowApprovalConfigurationSchema.optional(),
-    /** Optional explicit cardinality invariant for workflows with a fixed agent topology. */
-    requiredAgentCount: z.number().int().positive().max(10_000).optional(),
-    version: z.number().int().positive().optional(),
-    executionPolicy: WorkflowExecutionPolicySchema.optional(),
-    ...OptionalTimestampFields,
-};
-export const WorkflowDefinitionSchema = z
-  .object({ ...WorkflowDefinitionFields, nodes: z.array(WorkflowNodeSchema), edges: z.array(WorkflowEdgeSchema) })
-  .strict();
-export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;
-
-export const ChoiceOutcomeSchema = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/)
-export const ChoiceTargetSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('edge'), relationshipId: IdSchema }).strict(),
-  z.object({ kind: z.literal('branch_end') }).strict(),
-])
-export const WorkflowChoiceSchema = z.object({
-  outcomes: z.array(z.object({ outcome: ChoiceOutcomeSchema, target: ChoiceTargetSchema }).strict()).min(1).max(16),
-}).strict().superRefine((value, context) => {
-  const outcomes = new Set<string>()
-  for (const [index, declaration] of value.outcomes.entries()) {
-    if (outcomes.has(declaration.outcome)) context.addIssue({ code: 'custom', path: ['outcomes', index], message: 'outcomes must be unique' })
-    outcomes.add(declaration.outcome)
-  }
-})
-export type WorkflowChoice = z.infer<typeof WorkflowChoiceSchema>
-
-export const WorkflowNodeV2Schema = z.object({
-  ...WorkflowNodeSchema.shape,
-  join: z.object({ mode: z.literal('all') }).strict().optional(),
-  choice: WorkflowChoiceSchema.optional(),
-}).strict().superRefine((node, context) => {
-  if (!node.name && !node.label) context.addIssue({ code: 'custom', path: ['name'], message: 'a workflow node requires name or label' })
-})
-const relationshipShape = WorkflowEdgeSchema.omit({ route: true }).shape
-export const WorkflowExecutionRelationshipSchema = z.object({
-  ...relationshipShape, kind: z.literal('execution'),
-}).strict()
-export const WorkflowApprovalRelationshipSchema = z.object({
-  ...relationshipShape, kind: z.literal('approval'),
-}).strict()
-export const WorkflowRelationshipSchema = z.discriminatedUnion('kind', [
-  WorkflowExecutionRelationshipSchema, WorkflowApprovalRelationshipSchema,
-])
-export type WorkflowRelationship = z.infer<typeof WorkflowRelationshipSchema>
-
-/** Editable v2 records can be incomplete; executable acceptance in wave25 is separate. */
-export const WorkflowDefinitionV2Schema = WorkflowDefinitionSchema.extend({
-  executionSemanticsVersion: z.literal(2), entryNodeId: IdSchema.nullable(),
-  nodes: z.array(WorkflowNodeV2Schema).max(1000),
-  edges: z.array(WorkflowRelationshipSchema).max(8000),
-}).strict()
-export type WorkflowDefinitionV2 = z.infer<typeof WorkflowDefinitionV2Schema>
-/** Persisted reads accept strict legacy definitions or explicitly tagged typed definitions.
- * This is not an execution-admission boundary and never strips v2 metadata. */
-export const CompatibleWorkflowDefinitionSchema = z.union([WorkflowDefinitionSchema, WorkflowDefinitionV2Schema])
-export type CompatibleWorkflowDefinition = z.infer<typeof CompatibleWorkflowDefinitionSchema>
-
-
-/** Immutable workflow snapshot pinned by every run. */
-/** Immutable identity/configuration fields shared by current storage and readers. */
-export const WorkflowVersionFields = {
-    id: IdSchema,
-    workspaceId: IdSchema,
-    workflowId: IdSchema,
-    version: z.number().int().positive(),
-    entryNodeId: IdSchema,
-    agentConfigurationVersionIds: z.record(IdSchema, IdSchema),
-    contentHash: z.string().trim().min(1),
-    createdAt: TimestampSchema,
-};
-export const WorkflowVersionSchema = z
-  .object({ ...WorkflowVersionFields, definition: WorkflowDefinitionSchema, approval: AcceptedWorkflowApprovalConfigurationSchema.optional() })
-  .strict()
-  .superRefine((snapshot, context) => {
-    if (snapshot.definition.id !== snapshot.workflowId) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["definition", "id"],
-        message: "definition.id must match workflowId",
-      });
-    }
-    if (snapshot.definition.workspaceId !== snapshot.workspaceId) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["definition", "workspaceId"],
-        message: "definition.workspaceId must match workspaceId",
-      });
-    }
-    if (snapshot.definition.version !== snapshot.version) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["definition", "version"],
-        message: "definition.version must match version",
-      });
-    }
-    if (!snapshot.definition.nodes.some((node) => node.id === snapshot.entryNodeId)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["entryNodeId"],
-        message: "entryNodeId must reference a node in the workflow version",
-      });
-    }
-    if (!snapshot.definition.executionPolicy) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["definition", "executionPolicy"],
-        message: "an executable workflow version requires an execution policy",
-      });
-    } else if (snapshot.definition.executionPolicy.maxNodeExecutions < snapshot.definition.nodes.length) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["definition", "executionPolicy", "maxNodeExecutions"],
-        message: "maxNodeExecutions must allow every workflow node to run once",
-      });
-    }
-    const nodeIds = new Set<string>();
-    snapshot.definition.nodes.forEach((node, index) => {
-      if (nodeIds.has(node.id)) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["definition", "nodes", index, "id"],
-          message: "workflow node IDs must be unique",
-        });
-      }
-      nodeIds.add(node.id);
-    });
-    const edgeIds = new Set<string>();
-    snapshot.definition.edges.forEach((edge, index) => {
-      if (edgeIds.has(edge.id)) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["definition", "edges", index, "id"],
-          message: "workflow edge IDs must be unique",
-        });
-      }
-      edgeIds.add(edge.id);
-      for (const endpoint of ["source", "target"] as const) {
-        if (!nodeIds.has(edge[endpoint])) {
-          context.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["definition", "edges", index, endpoint],
-            message: `edge ${endpoint} must reference an existing workflow node`,
-          });
-        }
-      }
-      if (!edge.route) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["definition", "edges", index, "route"],
-          message: "an executable workflow edge requires explicit routing",
-        });
-      }
-    });
-    for (const node of snapshot.definition.nodes) {
-      if (!snapshot.agentConfigurationVersionIds[node.agentId]) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["agentConfigurationVersionIds", node.agentId],
-          message: "every workflow agent must have a pinned configuration version",
-        });
-      }
-    }
-  });
-export type WorkflowVersion = z.infer<typeof WorkflowVersionSchema>;
+/** Generic presentation names refer to the one current shape, never retired validators. */
+export const WorkflowNodeSchema = CurrentWorkflowNodeSchema;
+export const WorkflowNodeFields = CurrentWorkflowNodeSchema.shape;
+export const WorkflowEdgeSchema = CurrentWorkflowRelationshipSchema;
+export const WorkflowDefinitionFields = CurrentWorkflowDefinitionBaseSchema.omit({ nodes: true, edges: true }).shape;
+export type WorkflowNode = z.infer<typeof CurrentWorkflowNodeSchema>;
+export type WorkflowEdge = z.infer<typeof CurrentWorkflowRelationshipSchema>;
+export type WorkflowDefinition = import('./wave25/workflowShape.js').WorkflowDefinitionV3;
+export type WorkflowVersion = import('./wave25/workflowSchemas.js').WorkflowVersionV3;
 
 /** Immutable prompt, skill, model and harness settings used to start a native session. */
 export const AgentConfigurationVersionSchema = z
@@ -1086,7 +784,7 @@ export type RunExecutionState = z.infer<typeof RunExecutionStateSchema>;
 export const RunOutcomeSchema = z.enum(["pending", "succeeded", "failed", "canceled"]);
 export type RunOutcome = z.infer<typeof RunOutcomeSchema>;
 
-export const RunInputSchema = z.record(z.string(), z.json());
+export { RunInputSchema } from "./schemaPrimitives.js";
 export type RunInput = z.infer<typeof RunInputSchema>;
 
 export const ExecutionResultSchema = z
@@ -1178,19 +876,20 @@ export type HarnessExecution = z.infer<typeof HarnessExecutionSchema>;
 /** Durable run identity; workflow/configuration pins never change after creation. */
 export const WorkflowRunRecordSchema = z
   .object({
-    id: IdSchema,
-    workspaceId: IdSchema,
-    workflowId: IdSchema,
-    workflowVersionId: IdSchema,
-    /** Accepted workspace location snapshot. Absent only on legacy history. */
+    id: GraphIdSchema,
+    workspaceId: GraphIdSchema,
+    workflowId: GraphIdSchema,
+    workflowVersionId: GraphIdSchema,
+    executionSemanticsVersion: ExecutionSemanticsVersionSchema,
+    /** Accepted workspace location snapshot. Public redacted reads may omit this. */
     executionLocation: RunExecutionLocationSchema.optional(),
     /** Operator authority rechecked before queued and later node execution. */
-    authorizationPrincipalId: IdSchema.optional(),
+    authorizationPrincipalId: GraphIdSchema.optional(),
     /** Automatic Stop cause; does not imply confirmed native closure. */
     stopCause: RunStopCauseSchema.optional(),
-    agentConfigurationVersionIds: z.record(IdSchema, IdSchema),
-    /** Immutable accepted approval assignment; absent only for legacy Runs. */
-    approval: AcceptedWorkflowApprovalConfigurationSchema.optional(),
+    agentConfigurationVersionIds: z.record(GraphIdSchema, GraphIdSchema),
+    /** Immutable accepted approval assignment. */
+    approval: AcceptedWorkflowApprovalConfigurationSchema,
     executionCondition: ExecutionConditionSchema,
     executionState: RunExecutionStateSchema,
     outcome: RunOutcomeSchema,
@@ -1225,8 +924,7 @@ export const WorkflowRunRecordSchema = z
       });
     }
   });
-// Shared identity/lifecycle record; current execution adds its explicit tag.
-// The old exported name remains owned by the A/B product-wide retirement delta.
+// Generic Run DTOs enforce the same current family as execution admission.
 export const WorkflowRunSchema = WorkflowRunRecordSchema;
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
 
@@ -1456,14 +1154,8 @@ export const ServiceHealthSchema = z
   .strict();
 export type ServiceHealth = z.infer<typeof ServiceHealthSchema>;
 
-export const CreateRunRequestSchema = z
-  .object({
-    workspaceId: IdSchema,
-    workflowId: IdSchema,
-    expectedLocationRevision: z.number().int().nonnegative(),
-    input: RunInputSchema,
-  })
-  .strict();
+/** The same explicit V3 request as HTTP/Operator MCP; no unpinned Start DTO. */
+export const CreateRunRequestSchema = RunStartV3InputSchema;
 export type CreateRunRequest = z.infer<typeof CreateRunRequestSchema>;
 export const CreateRunResponseSchema = z.object({ run: WorkflowRunSchema }).strict();
 export type CreateRunResponse = z.infer<typeof CreateRunResponseSchema>;
@@ -1499,7 +1191,7 @@ export const WorkspaceDetailsRecordFields = {
   runners: z.array(RunnerSummarySchema).optional(),
 };
 export const WorkspaceDetailsSchema = z.object({ ...WorkspaceDetailsRecordFields,
-  workflows: z.array(CompatibleWorkflowDefinitionSchema) }).strict();
+  workflows: z.array(WorkflowDefinitionV3Schema) }).strict();
 export type WorkspaceDetails = z.infer<typeof WorkspaceDetailsSchema>;
 
 export const WorkspaceDetailsRequestSchema = z
@@ -1534,7 +1226,7 @@ export const GetWorkflowRequestSchema = z
   .strict();
 export type GetWorkflowRequest = z.infer<typeof GetWorkflowRequestSchema>;
 export const GetWorkflowResponseSchema = z
-  .object({ workflow: CompatibleWorkflowDefinitionSchema })
+  .object({ workflow: WorkflowDefinitionV3Schema })
   .strict();
 export type GetWorkflowResponse = z.infer<typeof GetWorkflowResponseSchema>;
 export const ReadWorkflowRequestSchema = GetWorkflowRequestSchema;
@@ -1545,7 +1237,7 @@ export type ReadWorkflowResponse = GetWorkflowResponse;
 export const SaveWorkflowRequestSchema = z
   .object({
     workspaceId: IdSchema,
-    workflow: WorkflowDefinitionSchema,
+    workflow: WorkflowDefinitionV3Schema,
     agents: z.array(AgentSchema).optional(),
   })
   .strict()
@@ -1561,7 +1253,7 @@ export const SaveWorkflowRequestSchema = z
 export type SaveWorkflowRequest = z.infer<typeof SaveWorkflowRequestSchema>;
 export const SaveWorkflowResponseSchema = z
   .object({
-    workflow: WorkflowDefinitionSchema,
+    workflow: WorkflowDefinitionV3Schema,
     agents: z.array(AgentSchema).optional(),
   })
   .strict();

@@ -4,18 +4,14 @@ import {
   ResourceSummarySchema, BrowserProfileSummarySchema, RunnerSummarySchema, TimestampSchema,
 } from '../index.js'
 import { ExpectedRevisionSchema, ManagementPageInfoSchema } from '../management/index.js'
-import { RepeatWorkflowVersionV1Schema, RepeatWorkflowRunV1Schema } from './repeat.js'
+import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema, WorkflowRunV3Schema } from './workflowSchemas.js'
 import { GraphIdSchema } from './graphPrimitives.js'
 import { sameWorkflowValue } from './meaningfulEdit.js'
 
 /** Current persisted V3 records only. Unsupported/missing execution tags fail;
  * historical version IDs remain immutable, not converted or reinterpreted. */
-export const WorkflowDefinitionV3Schema = RepeatWorkflowVersionV1Schema.shape.definition
-export const WorkflowVersionV3Schema = RepeatWorkflowVersionV1Schema
-export const WorkflowRunV3Schema = RepeatWorkflowRunV1Schema
-export type WorkflowDefinitionV3 = z.infer<typeof WorkflowDefinitionV3Schema>
-export type WorkflowVersionV3 = z.infer<typeof WorkflowVersionV3Schema>
-export type WorkflowRunV3 = z.infer<typeof WorkflowRunV3Schema>
+export { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema, WorkflowRunV3Schema } from './workflowSchemas.js'
+export type { WorkflowDefinitionV3, WorkflowVersionV3, WorkflowRunV3 } from './workflowSchemas.js'
 
 export const SavedWorkflowDefinitionSchema = WorkflowDefinitionV3Schema
 export const SavedWorkflowVersionSchema = WorkflowVersionV3Schema
