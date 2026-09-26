@@ -9,7 +9,7 @@ describe('browser authentication configuration', () => {
   it('allows local development access only with an explicit flag and loopback services', () => {
     const base = { DATABASE_URL: 'postgresql://graphql:graphql@127.0.0.1:5432/graphql' }
     expect(loadConfig(base).localDevBrowserAccess).toBeUndefined()
-    expect(loadConfig({ ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1' }).localDevBrowserAccess).toEqual({})
+    expect(loadConfig({ ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1' }).localDevBrowserAccess).toEqual({ origin: 'http://127.0.0.1:5173' })
     for (const environment of [
       { ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1', HOST: '0.0.0.0' },
       { ...base, GRAPHQL_DEV_BROWSER_ACCESS: '1', NODE_ENV: 'production' },

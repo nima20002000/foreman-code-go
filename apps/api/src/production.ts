@@ -287,7 +287,7 @@ export function buildProductionApp(
   const app = buildApp({
     ...(config.browserAuth ? { browserAuth: new BrowserAuthentication(database.pool, access, config.browserAuth) } : {}),
     ...(config.localDevBrowserAccess ? { localDevBrowserAccess: new LocalDevBrowserAccess(
-      database.pool, access, config.localDevBrowserAccess.principalId,
+      database.pool, access, config.localDevBrowserAccess.principalId, config.localDevBrowserAccess.origin,
     ) } : {}),
     readiness: { database, checkpoints },
     readinessTimeoutMs: config.readinessTimeoutMs,
