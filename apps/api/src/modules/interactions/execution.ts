@@ -21,6 +21,7 @@ import type { NativeHarnessSessionManager, NativeHistory } from '../harnesses/po
 import { DomainError } from '../errors.js'
 import { ReviewerDispatcher } from './reviewer.js'
 import { nativePersistenceRedactor } from './nativePersistence.js'
+import { nativeApprovalContext } from './nativeApprovalContext.js'
 import type { ReviewCleanupSession, ReviewCredentialMaintenance } from './reviewerRuntime.js'
 import { coordinateSessionManager, isLeaseLost, type SingleWriterSessionManager } from './sessionWriter.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
@@ -852,6 +853,7 @@ export class ApprovalExecutionCoordinator {
             nativeSessionId: session!.nativeSessionId, nativeRequestId: pending.turn.nativeRequestId,
             nativeRequestType: pending.nativeRequestType, graphThreadId: input.graphThreadId,
             request: redactKnownSecrets(pending.request, knownSecrets), approval: input.approval, responseOptions: pending.responseOptions,
+            reviewContext: redactKnownSecrets(nativeApprovalContext(pending, history.events), knownSecrets),
             status: 'pending', deliveryState: 'not_started', createdAt: now, updatedAt: now,
           }))
           // A provider may briefly report an already-delivered request. Observe

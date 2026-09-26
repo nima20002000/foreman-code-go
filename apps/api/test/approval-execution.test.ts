@@ -256,6 +256,22 @@ it('persists a later approval under its own exact request and does not return th
   assert.equal(f.manager.turns.length, 1)
 })
 
+it('persists redacted context from the exact native file-change item with the pending approval', async () => {
+  const f = fixture()
+  const request = { ...f.pending('request-file'), nativeRequestType: 'item/fileChange/requestApproval',
+    request: { turnId: 'turn-exact', itemId: 'item-file' } }
+  f.manager.snapshot = { pendingInteractions: [request], events: [{ sequence: 49, type: 'item.started', occurredAt: now,
+    payload: { threadId: f.manager.session.nativeSessionId, turnId: 'turn-exact', item: { id: 'item-file', type: 'fileChange',
+      changes: [{ path: '/accepted/test-scoped-token.ts', diff: '--- a/file\n+++ b/file\n@@ -1 +1 @@\n-secret\n+test-scoped-token' }] } } }] }
+  const observed = await f.coordinator.ensureObserve(f.input)
+  assert.equal(observed.state, 'waiting')
+  if (observed.state !== 'waiting') throw new Error('expected approval')
+  assert.deepEqual(observed.interaction.reviewContext, {
+    target: '/accepted/[REDACTED].ts', changeSummary: '1 file; 1 added, 1 removed lines. Patch contents are not shown here.',
+  })
+  assert.equal(JSON.stringify(observed.interaction).includes('test-scoped-token'), false)
+})
+
 it('persists all simultaneous OpenCode approvals and tolerates out-of-order delivery', async () => {
   const f = fixture('opencode')
   f.snapshot('request-a', 'request-b', 'request-c')

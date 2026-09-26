@@ -496,6 +496,7 @@ export const DurableInteractionSchema = z.object({
   graphThreadId: IdSchema,
   graphInterruptId: IdSchema.optional(),
   request: z.json(),
+  reviewContext: z.object({ target: z.string().min(1), changeSummary: z.string().min(1) }).strict().optional(),
   approval: AcceptedWorkflowApprovalConfigurationSchema,
   responseOptions: z.array(ApprovalResponseOptionSchema).min(1),
   status: InteractionStatusSchema,

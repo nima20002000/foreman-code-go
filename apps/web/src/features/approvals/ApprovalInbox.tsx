@@ -66,7 +66,7 @@ function ApprovalDetail({ interactionId, workspaceId, workflowId, onClear }: {
   return <article className="approval-detail">
     <header><div><p className="panel-kicker">{selected.harness === 'codex' ? 'Codex' : 'OpenCode'} permission request</p><h2>{summarizeApprovalRequest(selected.request, selected.nativeRequestType).operation}</h2></div><StateBadge state={selected.status} /></header>
     <ApprovalNames interaction={selected} />
-    <ApprovalRequestSummary request={selected.request} nativeRequestType={selected.nativeRequestType} />
+    <ApprovalRequestSummary request={selected.request} nativeRequestType={selected.nativeRequestType} reviewContext={selected.reviewContext} />
     <details className="approval-request"><summary>Technical details</summary>
       <dl className="approval-context">
         <div><dt>Workspace ID</dt><dd>{selected.workspaceId}</dd></div><div><dt>Workflow ID</dt><dd>{selected.workflowId}</dd></div>
