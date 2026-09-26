@@ -8,9 +8,9 @@ import { fail } from './context.js'
 type Purpose = 'workflow' | 'reviewer'
 export async function credentialAuthority(sql: GraphSqlClient, executionId: string, purpose: Purpose) {
   const row = (await sql.query<{ run: unknown; version: unknown; execution: unknown; configuration: unknown;
-    stopped: boolean; execution_closed: boolean; native_reference: unknown; finalized: boolean;
+    attempt: number; stopped: boolean; execution_closed: boolean; native_reference: unknown; finalized: boolean;
     generation: string | null; native_owner: string | null; budget_active: boolean }>(
-    `select r.record as run,v.record as version,e.record as execution,c.record as configuration,
+    `select r.record as run,v.record as version,e.record as execution,c.record as configuration,e.attempt,
       r.stop_requested_at is not null or r.worker_credentials_closed_at is not null as stopped,
       e.worker_credentials_closed_at is not null as execution_closed,s.reference as native_reference,
       s.workflow_finalized_at is not null as finalized,l.record->>'connectionGeneration' as generation,
@@ -25,8 +25,10 @@ export async function credentialAuthority(sql: GraphSqlClient, executionId: stri
   if (!row) return fail('AUTH_REVOKED')
   const r = WorkflowRunV3Schema.parse(row.run), v = WorkflowVersionV3Schema.parse(row.version)
   const e = HarnessExecutionSchema.parse(row.execution), c = AgentConfigurationVersionSchema.parse(row.configuration)
+  // Retry admission owns the budget. Credentials bind to that exact persisted
+  // execution/attempt, not an attempt-one-only workflow or a reused credential.
   if (row.stopped || !['running','waiting','queued'].includes(r.executionState) || r.outcome !== 'pending'
-    || e.id !== executionId || e.runId !== r.id || e.attempt !== 1 || r.workflowVersionId !== v.id
+    || e.id !== executionId || e.runId !== r.id || e.attempt !== row.attempt || r.workflowVersionId !== v.id
     || v.workspaceId !== r.workspaceId || v.workflowId !== r.workflowId || c.workspaceId !== r.workspaceId
     || c.agentId !== e.agentId || c.id !== e.agentConfigurationVersionId || !c.productRole
     || r.agentConfigurationVersionIds[e.agentId] !== c.id || v.agentConfigurationVersionIds[e.agentId] !== c.id
