@@ -43,7 +43,9 @@ function SelectedRunActions({ selection, access }: {
       // scope/identity failures stop until an explicit refresh.
       const error = query.state.error
       if (error && (!ApiError.is(error) || [401, 403, 404].includes(error.status))) return false
-      return query.state.data && needsRunRefresh(query.state.data) ? 5000 : false
+      // No accepted status yet after a transient failure: keep trying (bounded).
+      if (!query.state.data) return error ? 5000 : false
+      return needsRunRefresh(query.state.data) ? 5000 : false
     },
     refetchIntervalInBackground: false })
   const capability = useQuery({ queryKey: actionKey(selection, 'capabilities'), enabled: allowed('runs:read'),

@@ -1,9 +1,11 @@
 import { memo, useMemo, useRef } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react'
 import type { RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
 import { Alert, Button } from '../../../shared/ui/nocturne'
 import { useProtectedAccessError } from '../../auth/useProtectedAccessError'
 import { useWorkflowBoard } from '../context'
+import { currentRunKey } from '../currentRunQuery'
 import { useSelectedRunRecord } from '../runFacts'
 import { useRunVersionQuery } from './queries'
 import { pinnedNodeStates, pinnedTopology } from './pinnedTopology'
@@ -36,7 +38,10 @@ export function SelectedRunCanvas({ scope }: { scope: RepeatGraphScopeV3 }) {
   const board = useWorkflowBoard()!
   const query = useRunVersionQuery(scope)
   const denied = useProtectedAccessError(query)
-  const version = query.isError || denied ? undefined : query.data?.version
+  // Observe (never fetch) the canonical Run read: its confirmed denial hides the pinned topology too.
+  const canonical = useQuery({ queryKey: currentRunKey(scope), enabled: false })
+  const canonicalDenied = useProtectedAccessError(canonical)
+  const version = query.isError || denied || canonicalDenied ? undefined : query.data?.version
   const record = useSelectedRunRecord()
   const topology = useMemo(() => version ? pinnedTopology(version) : undefined, [version])
   const states = useMemo(() => pinnedNodeStates(record), [record])
@@ -82,14 +87,20 @@ export function SelectedRunCanvas({ scope }: { scope: RepeatGraphScopeV3 }) {
     </header>
     {query.isPaused ? <p role="status">Pinned topology refresh is paused. Any retained topology is a previously verified saved version.</p>
       : query.isPending ? <p role="status">Loading this Run’s exact saved topology…</p> : null}
-    {query.isError || denied ? <Alert tone="warning" title="The selected Run topology is unavailable.">
+    {query.isError || denied || canonicalDenied ? <Alert tone="warning" title="The selected Run topology is unavailable.">
       The current draft is not shown as historical fact.
-      {!denied ? <Button size="sm" onClick={() => void query.refetch()}>Retry pinned topology</Button> : null}
+      {!denied && !canonicalDenied ? <Button size="sm" onClick={() => void query.refetch()}>Retry pinned topology</Button> : null}
     </Alert> : null}
     {missingNode ? <Alert tone="warning" title="The linked node is not in this Run’s saved version.">
       <Button size="sm" onClick={() => board.selectInspection({})}>Clear missing node selection</Button>
     </Alert> : null}
-    {version ? <div className="pinned-run-flow">
+    {version ? <div className="pinned-run-flow" onKeyDown={(event) => {
+      // Keyboard parity with onEdgeClick: Enter/Space on a focused relationship opens it.
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      const edgeId = (event.target as Element).closest?.('.react-flow__edge')?.getAttribute('data-id')
+      if (!edgeId || !topology?.edges.some((edge) => edge.id === edgeId)) return
+      event.preventDefault(); board.selectInspection({ runRelationshipId: edgeId }); board.openRuns()
+    }}>
       <ReactFlow<RunNode, Edge> nodes={nodes} edges={edges} nodeTypes={nodeTypes}
         nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable
         elementsSelectable deleteKeyCode={null} onlyRenderVisibleElements

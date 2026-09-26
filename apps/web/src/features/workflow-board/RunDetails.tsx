@@ -27,6 +27,12 @@ export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
     staleTime: Infinity, refetchOnMount: 'always', refetchOnReconnect: false, refetchOnWindowFocus: false })
   const runDenied = useProtectedAccessError(run), canonicalDenied = useProtectedAccessError(canonical)
   const detail = run.isError || runDenied || canonicalDenied ? undefined : run.data
+  const denied = !!runDenied || !!canonicalDenied
+  // A confirmed same-scope denial also withdraws sibling private views: the
+  // action slot's independently cached status and reports are dropped.
+  useEffect(() => {
+    if (denied) cache.removeQueries({ queryKey: ['workbench', 'pinned-v3-run-details', generation, scope.workspaceId, scope.workflowId, scope.runId, 'actions'] })
+  }, [denied, cache, generation, scope.workspaceId, scope.workflowId, scope.runId])
   const pinned = useRunVersionQuery(scope, !runDenied && !canonicalDenied)
   const pinnedDenied = useProtectedAccessError(pinned)
   const version = pinned.isError || pinnedDenied || runDenied || canonicalDenied ? undefined : pinned.data?.version
@@ -91,7 +97,7 @@ export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
     {detail ? <p>Accepted Run facts below are from an explicit authenticated read.
       <Button size="sm" variant="ghost" disabled={run.isFetching} onClick={() => void run.refetch()}>Refresh accepted Run facts</Button></p> : null}
     {run.isError ? <Alert tone="warning" title="Private Run details are unavailable."><Button size="sm" onClick={() => void run.refetch()}>Retry pinned details</Button></Alert> : null}
-    <div data-testid="run-details-actions-slot">{runActions !== undefined ? runActions : <>
+    <div data-testid="run-details-actions-slot">{denied ? null : runActions !== undefined ? runActions : <>
     {canNeedStop ? <div className="n-actions"><Button variant="danger" disabled={!permitted || !snapshot || stop.isPending || !!outbox.error}
       onClick={() => stop.mutate()}>{stop.isPending ? 'Sending exact Stop…' : outbox.journal ? 'Reconcile Stop' : 'Stop this Run'}</Button>
       {!permitted ? <span>Stop permission is unavailable for this exact Run.</span> : null}</div> : null}
