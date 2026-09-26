@@ -11,6 +11,26 @@ const signal = new AbortController().signal
 afterEach(() => vi.restoreAllMocks())
 
 describe('Operator chat installation evidence', () => {
+  it.each(['codex', 'opencode'] as const)('accepts a proven %s automatic launcher at any app port, while respecting disable', async (harness) => {
+    for (const port of [3012, 4567]) {
+      const owner = new PostgresOperatorChatAuthority({} as never, {} as never, {} as never, '/operator', `http://127.0.0.1:${port}/mcp/operator`)
+      const manager = harness === 'codex' ? new CodexAppServerSessionManager('unused')
+        : Object.assign(Object.create(OpenCodeNativeSessionManager.prototype), { harness }) as OpenCodeNativeSessionManager
+      if (manager instanceof CodexAppServerSessionManager) {
+        const inspect = vi.spyOn(manager, 'inspectMcpConfiguration').mockResolvedValue({ serverName: 'graphql-operator', configured: {
+          enabled: true, automaticOperatorEndpoint: true, transport: 'stdio', url: null, bearerTokenEnvironmentVariable: 'GRAPHQL_OPERATOR_MCP_TOKEN',
+        } } as never)
+        expect(await owner.setup(manager, signal)).toMatchObject({ status: 'configured' })
+        inspect.mockResolvedValue({ serverName: 'graphql-operator', configured: { enabled: false, automaticOperatorEndpoint: true } } as never)
+      } else {
+        const inspect = vi.spyOn(manager, 'inspectNativeMcp').mockResolvedValue({ serverName: 'graphql-operator', automaticOperatorEndpoint: true,
+          transport: 'stdio', endpoint: null, nativeStatus: 'status_unavailable', credentialEnvironmentVariable: 'GRAPHQL_OPERATOR_MCP_TOKEN' } as never)
+        expect(await owner.setup(manager, signal)).toMatchObject({ status: 'configured' })
+        inspect.mockResolvedValue({ serverName: 'graphql-operator', automaticOperatorEndpoint: true, nativeStatus: 'disabled' } as never)
+      }
+      expect(await owner.setup(manager, signal)).toMatchObject({ status: 'setup_required' })
+    }
+  })
   it('blocks an accepted OpenCode Operator disable switch but permits disabling another server', async () => {
     const manager = Object.assign(Object.create(OpenCodeNativeSessionManager.prototype), { harness: 'opencode' }) as OpenCodeNativeSessionManager
     const inspect = vi.spyOn(manager, 'inspectNativeMcp').mockResolvedValue({ serverName: 'graphql-operator', endpoint,

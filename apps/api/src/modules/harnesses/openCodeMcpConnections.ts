@@ -1,3 +1,4 @@
+import { installOperatorLauncher } from './operatorMcpLauncher.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { lstat, open, realpath, rename, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
@@ -96,6 +97,7 @@ export class OpenCodeMcpConnections implements NativeMcpAdapter {
         if (fingerprint(await this.contents(current.file)) !== current.version) throw new DomainError('REVISION_CONFLICT', 'A native editor changed this file. Nothing was overwritten.', 409)
         // The backup and temporary file are not a delivered configuration change.
         writing()
+        if (managed?.preset === 'operator' && change.kind === 'add') await installOperatorLauncher()
         await rename(temporary, current.file)
         await syncNativeConfigDirectory(current.file)
         const written = await readNativeUserFile(current.file)
