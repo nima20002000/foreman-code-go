@@ -121,7 +121,9 @@ async function main() {
     console.log(`Using the GraphQL API already running at ${apiUrl}.`)
   } else {
     api = start('API', ['--filter', '@graphql/api', 'dev'], {
-      env: { ...process.env, GRAPHQL_DEV_BROWSER_ACCESS: '1', GRAPHQL_DEV_BROWSER_ORIGIN: webUrl },
+      // Keep API logs on disk by default (.logs/api.*.log) unless the caller chose a destination.
+      env: { ...process.env, ...(!process.env.LOG_DIR && !process.env.LOG_FILE ? { LOG_DIR: join(root, '.logs') } : {}),
+        GRAPHQL_DEV_BROWSER_ACCESS: '1', GRAPHQL_DEV_BROWSER_ORIGIN: webUrl },
     })
   }
   await waitFor('API', `${apiUrl}/health/ready`, apiReady, api)

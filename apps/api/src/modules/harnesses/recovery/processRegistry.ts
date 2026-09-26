@@ -2,8 +2,9 @@ import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'n
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { lstatSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { connect } from 'node:net'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import { componentLogger } from '../../../infrastructure/logger.js'
 import { bootIdentity, identityAlive, processIdentity, type LinuxProcessIdentity } from './linuxIdentity.js'
 import { cgroupBoundary, cgroupPopulated, killCgroup, retireCgroup, type NativeCgroupBoundary } from './cgroupBoundary.js'
 import { NATIVE_GUARDIAN_SOURCE } from './nativeGuardian.js'
@@ -404,6 +405,24 @@ function takeLaunch(scope: NativeProcessRecovery): LaunchRecord {
  * Native stdin/stdout/stderr retain their original pipe semantics.
  */
 export function spawnNativeProcess(binary: string, args: string[], options: {
+  cwd: string; env: NodeJS.ProcessEnv; recovery?: NativeProcessRecovery
+}): ChildProcessWithoutNullStreams {
+  return observeNativeProcess(spawnNativeProcessUnobserved(binary, args, options), binary, options.recovery?.owner)
+}
+
+const harnessLog = componentLogger('harness')
+/** Every native harness start and end is logged: binary name, pid, exit code or signal.
+ * Arguments and environment are never logged; they can carry prompts and credentials. */
+function observeNativeProcess(child: ChildProcessWithoutNullStreams, binary: string, owner: string | undefined) {
+  const facts = { binary: basename(binary), ...(owner ? { owner } : {}) }
+  child.once('spawn', () => harnessLog.info({ ...facts, childPid: child.pid }, 'harness process started'))
+  // No 'error' listener here: adding one would change whether an unhandled spawn error crashes the caller.
+  child.once('exit', (exitCode, signal) => harnessLog[exitCode === 0 ? 'info' : 'warn']({ ...facts, childPid: child.pid, exitCode, signal },
+    'harness process exited'))
+  return child
+}
+
+function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
   cwd: string; env: NodeJS.ProcessEnv; recovery?: NativeProcessRecovery
 }): ChildProcessWithoutNullStreams {
   if (!options.recovery || process.platform !== 'linux') return spawn(binary, args, {

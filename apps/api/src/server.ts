@@ -6,7 +6,13 @@ import { pathsOverlap } from './modules/workspaces/filesystem.js'
 import { loadConfig } from './config.js'
 import { createCheckpointStore } from './infrastructure/checkpoints.js'
 import { createDatabase } from './infrastructure/database.js'
+import { componentLogger, enableFileLogging } from './infrastructure/logger.js'
+import { installProcessLifecycleLogging } from './infrastructure/processLifecycle.js'
 import { buildProductionApp } from './production.js'
+
+const lifecycle = componentLogger('lifecycle')
+// First, before configuration or infrastructure can fail: nothing may end silently.
+installProcessLifecycleLogging(lifecycle)
 
 async function main() {
   // loadEnvFile is available at the declared Node 22.0 runtime baseline, unlike
@@ -18,6 +24,8 @@ async function main() {
       throw error
     }
   }
+  await enableFileLogging(process.env)
+  lifecycle.info({ node: process.version }, 'api starting')
   const config = loadConfig(process.env)
   const database = createDatabase(config.database)
   const checkpoints = createCheckpointStore(
@@ -25,14 +33,19 @@ async function main() {
     config.checkpoints.schema,
     config.database,
   )
-  const { app, initialize, reconcile, drainShutdown } = buildProductionApp(config, database, checkpoints)
+  const { app, initialize, reconcile, drainShutdown } = buildProductionApp(config, database, checkpoints, componentLogger('http'))
   let reconciliationTimer: NodeJS.Timeout | undefined
-  const reportReconciliationError = (error: unknown) => app.log.error({ err: error }, 'run reconciliation failed')
+  const engineLog = componentLogger('engine')
+  const reportReconciliationError = (error: unknown) => engineLog.error({ err: error }, 'run reconciliation failed')
 
   app.addHook('onClose', async () => {
+    lifecycle.info('api shutting down')
     if (reconciliationTimer) clearInterval(reconciliationTimer)
     try { await drainShutdown() }
-    finally { await Promise.allSettled([checkpoints.close(), database.close()]) }
+    finally {
+      await Promise.allSettled([checkpoints.close(), database.close()])
+      lifecycle.info('api stopped')
+    }
   })
 
   let closing: Promise<void> | undefined
@@ -41,7 +54,7 @@ async function main() {
     return closing
   }
   const onSignal = () => { void close().catch((error: unknown) => {
-    app.log.error({ err: error }, 'shutdown failed')
+    lifecycle.error({ err: error }, 'shutdown failed')
     process.exitCode = 1
   }) }
   // Recovery can run native work. Signals must own cleanup before listening or
@@ -81,6 +94,7 @@ async function main() {
       void reconcile(reportReconciliationError).catch(reportReconciliationError)
     }, 5_000)
     reconciliationTimer.unref()
+    lifecycle.info({ host: config.host, port: config.port }, 'api ready')
   } catch (error) {
     if (closing) { await closing; return }
     await close()
@@ -89,7 +103,6 @@ async function main() {
 }
 
 main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : 'Unknown startup error'
-  process.stderr.write(`graphql-api failed to start: ${message}\n`)
+  lifecycle.fatal({ err: error }, 'api failed to start')
   process.exitCode = 1
 })

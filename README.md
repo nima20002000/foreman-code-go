@@ -59,6 +59,28 @@ Ctrl-C stops only the processes started by this command. PostgreSQL stays up.
 For individual processes, use `corepack pnpm dev:api` or
 `corepack pnpm dev:web` after `corepack pnpm db:up`.
 
+## API logs
+
+The API writes one JSON object per line through pino
+(`apps/api/src/infrastructure/logger.ts`). Every line has `level`, `time`,
+`service`, `pid` and a `component`: `lifecycle`, `http` (requests and MCP),
+`engine`, `harness` or `db`. HTTP lines carry a `reqId`. Tokens, credentials, cookies, prompts
+and harness input/output are redacted.
+
+- `LOG_LEVEL`: `fatal`, `error`, `warn`, `info` (default), `debug`, `trace` or
+  `silent`. Unit tests default to `silent`.
+- `LOG_DIR` or `LOG_FILE`: also write to a rotating file (`api.<n>.log` plus a
+  `current.log` link), rolled daily or at `LOG_MAX_SIZE` (default `20m`),
+  keeping `LOG_MAX_FILES` (default 14). `corepack pnpm dev` sets
+  `LOG_DIR=.logs` unless you choose a destination.
+
+Nothing ends silently: startup, readiness, shutdown signals, stop, uncaught
+exceptions, unhandled rejections, failed startup and every process exit are
+logged (fatal lines are written synchronously before exit), as are PostgreSQL
+pool errors, reconciliation failures and each Codex/OpenCode process start and
+exit code. Only SIGKILL and the kernel OOM killer cannot be caught; a log that
+stops without a final `process exiting` line points to one of those.
+
 The API port is `PORT` in `apps/api/.env` (3000 in the example, also the config
 default). Vite uses port 5173 and proxies `/api` to the API. The startup command
 passes the configured API port to Vite. The API and Vite run on the host; Docker

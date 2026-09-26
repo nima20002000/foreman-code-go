@@ -23,6 +23,7 @@ import type { PostgresRunRepository } from './postgres.js'
 import type { RunOwnership } from './ownership.js'
 import type { WorkflowOrchestrator } from './port.js'
 import { RunnerAdmission } from './runnerAdmission.js'
+import { componentLogger } from '../../infrastructure/logger.js'
 
 /** One engine, Run owner, checkpoint thread and repository for all current V3
  * graphs. Optional bounded blocks are compiled into this same LangGraph; an
@@ -278,7 +279,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
   /** Bounded current recovery. Never reset an existing checkpoint to initial state. */
   private reconcileCursor = ''
-  reconcile(onError: (error: unknown) => void = console.error): Promise<void> {
+  reconcile(onError: (error: unknown) => void = (error) => componentLogger('engine').error({ err: error }, 'run reconciliation failed')): Promise<void> {
     if (this.reconciliation) return this.reconciliation
     if (this.closing) return Promise.resolve()
     const task = (async () => {

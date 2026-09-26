@@ -1,4 +1,5 @@
 import pg from 'pg'
+import { componentLogger } from './logger.js'
 
 export interface DatabaseOptions {
   connectionString: string
@@ -20,7 +21,7 @@ export function createPool(options: DatabaseOptions, applicationName: string): p
     application_name: applicationName,
   })
   pool.on('error', options.onError ?? ((error: Error) => {
-    console.error(`${applicationName}: idle PostgreSQL connection failed`, error)
+    componentLogger('db').error({ err: error, pool: applicationName }, 'idle PostgreSQL connection failed')
   }))
   return pool
 }
