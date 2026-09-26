@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { HarnessExecutionSchema } from '@graphql/contracts'
 import { canonicalGraphJson, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import type pg from 'pg'
+import { currentOperatorAuthority } from '../src/modules/access/runAuthority.js'
+import { requireAuthorization } from '../src/modules/access/policy.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { unavailableRuntime } from './eng04-runtime-repository-fixture.js'
 import type { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
@@ -39,7 +42,7 @@ describe.skipIf(!postgresEnabled)('ENG04 repository activation PostgreSQL bounda
     const fixtureWriter = await createRepeatFixtureWriter(db.pool, f)
     const saved = await fixtureWriter.publish(3)
     const { run, version, scope } = await insertFixtureRepeatRun(db.pool, f, saved, fixtureWriter.writer.principal.id)
-    return { f, run, version, scope }
+    return { f, run, version, scope, principal: fixtureWriter.writer.principal }
   }
 
   /** Seed first-occurrence read data through the REAL canonical producer. There
@@ -113,12 +116,17 @@ describe.skipIf(!postgresEnabled)('ENG04 repository activation PostgreSQL bounda
     expect((await repo.listRepeatExecutions(t.run.id, '', 10, t.owner)).map((item) => item.ref)).toEqual([t.ref])
     expect(await repo.listRepeatExecutions(t.run.id, t.queued.id, 10, t.owner)).toEqual([])
     expect(await graphHead(db.pool, t.run.id)).toBe(before)
-    await expect(repo.ensureExecution({ ...t.queued, input: { changed: true } }, t.owner)).rejects.toMatchObject({ code: 'EXECUTION_OCCURRENCE_CONFLICT' })
+    await expect(repo.ensureExecution({ ...t.queued, input: { changed: true } }, t.owner)).rejects.toMatchObject({ code: 'REPEAT_EXECUTION_INPUT_CONFLICT' })
     expect(repo.consumeRepeatLaunch(t.queued.id, t.owner)).toBe(false)
   })
   it('Stop rejects launch before any native/authority dependency and cannot mutate the execution', async () => {
     const t = await canonicalFixture(), repo = repository()
-    await db.pool.query('update runs set stop_requested_at=now() where id=$1', [t.run.id])
+    await repo.requestStop(t.run.id, async (sql) => {
+      const live = await currentOperatorAuthority(sql as unknown as Pick<pg.Pool, 'query'>, t.principal.id)
+      requireAuthorization(live.principal, 'runs:stop', {
+        workspaceId: t.run.workspaceId, workflowId: t.run.workflowId, runId: t.run.id,
+      })
+    })
     await expect(repo.claimRepeatLaunch(t.queued.id, { workingDirectory: db.directory,
       runtimeDirectory: '/must-not-be-allocated' }, t.owner)).rejects.toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
     expect(await repo.getExecution(t.queued.id, t.owner)).toEqual(t.queued)
