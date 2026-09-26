@@ -8,8 +8,8 @@ import {
   CurrentWorkflowSavedSchema, CurrentWorkflowReadInputSchema, CurrentWorkflowReadResultSchema,
   CurrentWorkflowValidationSchema, WorkflowDefinitionV3Schema, WorkflowVersionV3Schema,
   ExecutableWorkflowV3Schema, canonicalGraphJson, sameExecutableWorkflow, sameWorkflowValue,
-  CurrentEditMutationInputSchema, CurrentEditReadInputSchema, preserveWorkflowGeometry,
-  type CurrentWorkflowValidateInput, type CurrentWorkflowSaveInput,
+  CurrentEditSaveInputSchema, CurrentEditMutationInputSchema, CurrentEditReadInputSchema, preserveWorkflowGeometry,
+  type CurrentWorkflowValidateInput, type CurrentEditSaveInput,
 } from '@graphql/contracts/wave25'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -18,6 +18,7 @@ import { DomainError } from '../errors.js'
 import type { RunManagementService } from '../runs/management.js'
 import type { CurrentRuntimeAvailability } from '../runs/currentProduction.js'
 import { createCurrentEditIntentService } from '../graph-drafts/currentEditIntent.js'
+import { prepareCurrentStagedAgents, persistCurrentStagedAgents } from '../graph-drafts/currentStagedAgents.js'
 import { assertMeaningfulSaveAdmitted } from '../graph-drafts/saveAdmission.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
@@ -144,7 +145,7 @@ export class CurrentWorkflowAuthoring {
   }
   private async write(principal: ManagementPrincipal, source: Source, raw: unknown, intentId?: string) {
     // Preserve optional-repeat omission in the exact HTTP/MCP command hash.
-    const input = CurrentWorkflowSaveInputSchema.parse(raw)
+    const input: CurrentEditSaveInput = intentId ? CurrentEditSaveInputSchema.parse(raw) : CurrentWorkflowSaveInputSchema.parse(raw)
     authorize(principal, input, true)
     return this.commands.execute({ principal, source, operation: 'workflow.save.v3', commandId: input.commandId,
       targetKey: `workflow:${input.workflowId}:definition`, payload: input,
@@ -172,7 +173,7 @@ export class CurrentWorkflowAuthoring {
           }
           const saved = CurrentWorkflowSavedSchema.parse(receipt.result)
           const version = await versionAt(client, input, saved.currentVersionId)
-          if (!sameWorkflowValue(version, saved.version) || !sameWorkflowValue(version.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)) {
+          if (!sameWorkflowValue(version, saved.version) || !sameWorkflowValue(version.agentConfigurationVersionIds, input.resultantAgentConfigurationVersionIds ?? input.expectedAgentConfigurationVersionIds)) {
             return fail('WORKFLOW_RECEIPT_CONFLICT', 'The receipt differs from its exact immutable version/configuration pins.')
           }
           const witness = (await client.query<{ workflow_version_id: string; input_hash: string; input: unknown }>(
@@ -191,6 +192,7 @@ export class CurrentWorkflowAuthoring {
       perform: async (client) => {
         if (intentId) await this.editIntents.publication(client, principal, intentId, input)
         const prepared = await this.prepare(client, principal, input, true, intentId)
+        const agents = prepared.staged ? await persistCurrentStagedAgents(client, input.workspaceId, prepared.staged.prepared) : undefined
         let revision: number
         if (prepared.presentationOnly) {
           // This changes presentation, not accepted execution. No Stop, no new
@@ -215,7 +217,7 @@ export class CurrentWorkflowAuthoring {
         const live = await readLiveManagementPrincipal(client, principal.id)
         authorize(live, input, true)
         const value = CurrentWorkflowSavedSchema.parse({ workspaceId: input.workspaceId, workflowId: input.workflowId,
-          revision, currentVersionId: prepared.version.id, version: prepared.version })
+          revision, currentVersionId: prepared.version.id, version: prepared.version, ...(agents ? { agents } : {}) })
         if (intentId) await this.editIntents.saved(client, principal, intentId, value)
         return value
       },
@@ -223,7 +225,7 @@ export class CurrentWorkflowAuthoring {
   }
 
   private async prepare(client: pg.PoolClient, principal: ManagementPrincipal,
-    input: CurrentWorkflowValidateInput | CurrentWorkflowSaveInput, publication: boolean, intentId?: string) {
+    input: CurrentWorkflowValidateInput | CurrentEditSaveInput, publication: boolean, intentId?: string) {
     await lockActiveWorkspace(client, input.workspaceId)
     const row = (await client.query<{ record: unknown; revision: string; current_version_id: string | null; archived_at: Date | null }>(
       'select record,revision::text,current_version_id,archived_at from workflows where workspace_id=$1 and id=$2 for update',
@@ -245,37 +247,41 @@ export class CurrentWorkflowAuthoring {
       name: base.definition.name, description: base.definition.description }, base.definition))) {
       return fail('WORKFLOW_BASE_CONFLICT', 'The current definition disagrees with its immutable executable version.')
     }
-    const presentationOnly = !!base && sameExecutableWorkflow(current, input.graph)
+    const stagedInput = 'stagedAgents' in input && input.stagedAgents?.length ? input as CurrentEditSaveInput : undefined
+    const staged = stagedInput ? await prepareCurrentStagedAgents(client, principal, stagedInput) : undefined
+    const configurationPins = staged?.resultant ?? input.expectedAgentConfigurationVersionIds
+    const presentationOnly = !staged && !!base && sameExecutableWorkflow(current, input.graph)
       && sameWorkflowValue(base.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)
     if (presentationOnly && base) return { presentationOnly, version: base, content: '',
       definition: WorkflowDefinitionV3Schema.parse({ ...input.graph, updatedAt: new Date().toISOString() }) }
 
     if (publication) {
-      await assertMeaningfulSaveAdmitted(client, { ...input, stagedAgentIds: [] })
+      await assertMeaningfulSaveAdmitted(client, { ...input, stagedAgentIds: staged?.prepared.map((item) => item.agent.id) ?? [] })
       // Every meaningful edit shares this current journal. No old draft row is
       // a prerequisite or a source of current execution authority.
       if ((await client.query(`select 1 from graph_edit_intents where workspace_id=$1 and workflow_id=$2
         and state not in ('saved','discarded') and ($3::text is null or id<>$3) limit 1`,
       [input.workspaceId, input.workflowId, intentId ?? null])).rowCount) return fail('WORKFLOW_EDITS_UNRESOLVED', 'Reconcile the existing staged edit before publishing another definition.')
     }
-    const agentIds = Object.keys(input.expectedAgentConfigurationVersionIds).sort()
+    const agentIds = Object.keys(configurationPins).sort()
     const nodeAgents = input.graph.nodes.map((node) => node.agentId).sort()
     if (!sameWorkflowValue(agentIds, nodeAgents)) return fail('AGENT_CONFIGURATION_CONFLICT', 'Pins must describe exactly the authored Agent set.')
     await lockAgentConfigurations(client, agentIds)
     const heads = (await client.query<{ id: string; current_configuration_version_id: string | null }>(
       'select id,current_configuration_version_id from agents where workspace_id=$1 and id=any($2::text[]) and archived_at is null order by id for share',
       [input.workspaceId, agentIds])).rows
-    if (heads.length !== agentIds.length || heads.some((head) => head.current_configuration_version_id !== input.expectedAgentConfigurationVersionIds[head.id])) {
+    if (heads.length !== agentIds.length - (staged?.prepared.filter((item) => item.baseRevision === null).length ?? 0) || heads.some((head) => head.current_configuration_version_id !== input.expectedAgentConfigurationVersionIds[head.id])) {
       return fail('AGENT_CONFIGURATION_CONFLICT', 'The exact displayed current Agent configuration map changed.')
     }
     const rows = (await client.query<ImmutableAgentConfigurationRow>(
       'select id,workspace_id,agent_id,version,record from agent_configuration_versions where id=any($1::text[]) order by id for share',
       [Object.values(input.expectedAgentConfigurationVersionIds)])).rows
-    const configurations = rows.map((config) => {
+    const configurations = rows.filter((config) => !staged?.prepared.some((item) => item.agent.id === config.agent_id)).map((config) => {
       const id = input.expectedAgentConfigurationVersionIds[config.agent_id]
       if (!id) return fail('AGENT_CONFIGURATION_CONFLICT', 'A configuration escaped the displayed Agent map.')
       return readImmutableAgentConfiguration(config, { workspaceId: input.workspaceId, agentId: config.agent_id, id })
     })
+    configurations.push(...(staged?.prepared.map((item) => item.configuration) ?? []))
     const number = Number((await client.query<{ next: string }>('select coalesce(max(version),0)+1 as next from workflow_versions where workflow_id=$1',
       [input.workflowId])).rows[0]?.next)
     if (!Number.isSafeInteger(number) || number < 1 || base && number <= base.version) return fail('WORKFLOW_BASE_CONFLICT', 'The next immutable version is invalid.')
@@ -283,7 +289,7 @@ export class CurrentWorkflowAuthoring {
     const version = WorkflowVersionV3Schema.parse({ id: `workflow-version-${randomUUID()}`, workspaceId: input.workspaceId,
       workflowId: input.workflowId, version: number, executionSemanticsVersion: 3, entryNodeId: input.graph.entryNodeId,
       definition: { ...preserveWorkflowGeometry(input.graph, current), version: number, updatedAt: now }, approval: input.graph.approval,
-      agentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds, contentHash: `sha256:${'0'.repeat(64)}`, createdAt: now })
+      agentConfigurationVersionIds: configurationPins, contentHash: `sha256:${'0'.repeat(64)}`, createdAt: now })
     ExecutableWorkflowV3Schema.parse({ version, configurations })
     for (const config of configurations) {
       if (config.assignedSkills?.length) requireAuthorization(principal, 'skills:read', { workspaceId: input.workspaceId })
@@ -295,6 +301,6 @@ export class CurrentWorkflowAuthoring {
       configurations.find((config) => config.agentId === version.approval.designatedOrchestratorAgentId)?.harness, version.entryNodeId)
     const content = canonicalGraphJson({ definition: version.definition, configurations: version.agentConfigurationVersionIds, entryNodeId: version.entryNodeId })
     version.contentHash = digest(content)
-    return { presentationOnly: false, version, definition: version.definition, content }
+    return { presentationOnly: false, version, definition: version.definition, content, staged }
   }
 }

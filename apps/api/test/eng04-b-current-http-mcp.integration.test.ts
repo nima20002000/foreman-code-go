@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { AgentSchema } from '@graphql/contracts'
+import { AgentSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@graphql/contracts'
 import { ManagementActionSchema, type ManagementGrant } from '@graphql/contracts/management'
 import {
   CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
@@ -13,6 +13,8 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
+import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
+import { createWorkflowRepositoryServices } from '../src/modules/runs/workflowRepositoryServices.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
 import type { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
@@ -34,6 +36,11 @@ describe.skipIf(!postgresEnabled)('ENG04-B unified current workflow HTTP/MCP', (
   async function fixture(form: CurrentFixtureForm = 'sequential') {
     const f = makeCurrentWorkflowFixture(randomUUID(), form)
     const configurations = f.configurations
+    if (form === 'approval') {
+      const reviewer = configurations[0]!
+      if (reviewer.harness.harness !== 'codex') throw new Error('Expected the Codex approval fixture')
+      reviewer.harness.advanced = { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalsReviewer: 'auto_review' }
+    }
     // Only workspace/Agent configuration fixtures are seeded. No workflow or
     // immutable v3 version is inserted here; both travel through product HTTP/MCP.
     await db.pool.query(`insert into workspaces(id,record,execution_location,execution_location_identity,location_revision)
@@ -58,7 +65,8 @@ describe.skipIf(!postgresEnabled)('ENG04-B unified current workflow HTTP/MCP', (
     const workflows = new WorkflowManagementService(db.pool, commands)
     const locations = new WorkspaceLocationService(db.pool, commands, db.directory, 'runner-local', db.directory)
     const workflowRepository = new PostgresWorkflowRepository(db.pool)
-    const repository = new PostgresRunRepository(db.pool, workflowRepository, locations)
+    const repository = new PostgresRunRepository(db.pool, workflowRepository, locations, { runtimeRoot: db.directory,
+      ...createWorkflowRepositoryServices(createWorkflowNativeCaptureChannel().verify) })
     const start = vi.fn(async () => { throw new Error('UNQUALIFIED_NATIVE_START_REACHED') })
     const cancel = vi.fn(async () => { throw new Error('UNQUALIFIED_NATIVE_STOP_REACHED') })
     const runs = new RunManagementService(db.pool, commands, repository, { start, cancel } as unknown as LangGraphWorkflowEngine, locations)
@@ -179,6 +187,146 @@ describe.skipIf(!postgresEnabled)('ENG04-B unified current workflow HTTP/MCP', (
     expect((await httpSave(t)).statusCode).toBe(401)
     expect((await t.call(CURRENT_WORKFLOW_TOOLS.save, t.input)).status).toBe(401)
     expect(await count(t, 'workflow_versions')).toBe(0)
+  })
+  async function agentStage(t: Fixture, first: Awaited<ReturnType<typeof save>>) {
+    const original = (await db.pool.query('select record,metadata_revision::text from agents where id=$1', [t.configurations[0]!.agentId])).rows[0]!
+    const agent = AgentSchema.parse(original.record)
+    return { ...t.input, action: 'stage_edits' as const, draftId: `editor-${randomUUID()}`, commandId: randomUUID(),
+      expectedRevision: first.value.revision, expectedWorkflowVersionId: first.value.currentVersionId,
+      graph: first.value.version.definition, stagedAgents: [{ agent: { ...agent, name: 'Private new name',
+        prompt: { ...agent.prompt, system: 'Use the staged instructions.' } }, baseRevision: Number(original.metadata_revision) }] }
+  }
+  it('MCP stages Agent configuration privately then atomically publishes exact resulting snapshots, and HTTP replay does not write twice', async () => {
+    const t = await fixture(), first = await save(t), stage = await agentStage(t, first)
+    const before = (await db.pool.query('select record,metadata_revision,current_configuration_version_id from agents where id=$1', [stage.stagedAgents[0]!.agent.id])).rows[0]
+    const staged = await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)
+    expect(staged.result?.isError, JSON.stringify(staged)).not.toBe(true)
+    const intent = CurrentEditReadResultSchema.parse(graphRpcValue(staged.result)).intent!
+    expect(intent.saveInput.expectedAgentConfigurationVersionIds).toEqual(stage.expectedAgentConfigurationVersionIds)
+    expect(intent.saveInput.resultantAgentConfigurationVersionIds?.[stage.stagedAgents[0]!.agent.id]).not.toBe(stage.stagedAgents[0]!.agent.configurationVersionId)
+    expect((await db.pool.query('select record,metadata_revision,current_configuration_version_id from agents where id=$1', [stage.stagedAgents[0]!.agent.id])).rows[0]).toEqual(before)
+    const advance = { workspaceId: stage.workspaceId, workflowId: stage.workflowId, draftId: stage.draftId, intentId: intent.id,
+      action: 'stop_and_save', commandId: intent.advanceCommandId }
+    const execute = t.commands.execute.bind(t.commands)
+    vi.spyOn(t.commands, 'execute').mockImplementationOnce(async (request) => {
+      await execute(request)
+      throw new Error('SIMULATED_LOST_REPLY_AFTER_COMMIT')
+    })
+    const remote = await t.call(CURRENT_WORKFLOW_TOOLS.edits, advance)
+    const finished = CurrentEditReadResultSchema.parse(graphRpcValue(remote.result))
+    expect(finished.intent?.state, JSON.stringify(finished.intent?.error)).toBe('saved')
+    expect(finished.intent?.result?.agents).toHaveLength(1)
+    const snapshot = finished.intent!.result!.agents![0]!
+    expect(snapshot.agent.name).toBe('Private new name')
+    expect(snapshot.metadataRevision).toBe(stage.stagedAgents[0]!.baseRevision + 1)
+    expect(finished.intent!.result!.version.agentConfigurationVersionIds).toEqual(intent.saveInput.resultantAgentConfigurationVersionIds)
+    const persisted = (await db.pool.query('select record,metadata_revision::text from agents where id=$1', [snapshot.agent.id])).rows[0]!
+    expect(persisted.record).toEqual(snapshot.agent); expect(Number(persisted.metadata_revision)).toBe(snapshot.metadataRevision)
+    const retry = await t.app.inject({ method: 'POST', url: `${t.url}/edits`, headers: graphHeaders(t.writer.token), payload: advance })
+    expect(retry.statusCode, retry.body).toBe(200); expect(retry.json()).toEqual(finished)
+    const read = await t.call(CURRENT_WORKFLOW_TOOLS.editRead, { ...advance, action: 'read_edits', commandId: undefined })
+    expect(graphRpcValue(read.result)).toEqual(finished)
+    expect(await count(t, 'workflow_versions')).toBe(2)
+    expect((await db.pool.query('select 1 from agent_configuration_versions where agent_id=$1', [snapshot.agent.id])).rowCount).toBe(2)
+  })
+  it('failure after staged Agent/version writes rolls back everything and retries the identical reserved publication', async () => {
+    const t = await fixture(), first = await save(t), stage = await agentStage(t, first)
+    const original = (await db.pool.query('select record,metadata_revision,current_configuration_version_id from agents where id=$1', [stage.stagedAgents[0]!.agent.id])).rows[0]
+    const intent = CurrentEditReadResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)).result)).intent!
+    const markSaved = t.workflows.current.editIntents.saved.bind(t.workflows.current.editIntents)
+    vi.spyOn(t.workflows.current.editIntents, 'saved').mockImplementationOnce(async (...args) => {
+      await markSaved(...args)
+      throw new Error('SIMULATED_FAILURE_BEFORE_COMMIT')
+    })
+    const advance = { workspaceId: stage.workspaceId, workflowId: stage.workflowId, draftId: stage.draftId, intentId: intent.id,
+      action: 'stop_and_save', commandId: intent.advanceCommandId }
+    const failed = CurrentEditReadResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, advance)).result)).intent!
+    expect(failed).toMatchObject({ state: 'uncertain', saveAttempted: true, saveInput: intent.saveInput, saveInputHash: intent.saveInputHash })
+    expect((await db.pool.query('select record,metadata_revision,current_configuration_version_id from agents where id=$1', [stage.stagedAgents[0]!.agent.id])).rows[0]).toEqual(original)
+    expect(await count(t, 'workflow_versions')).toBe(1)
+    expect((await db.pool.query('select 1 from agent_configuration_versions where agent_id=$1', [stage.stagedAgents[0]!.agent.id])).rowCount).toBe(1)
+    const retry = CurrentEditReadResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, advance)).result)).intent!
+    expect(retry.state, JSON.stringify(retry.error)).toBe('saved')
+    expect(retry.saveInput).toEqual(intent.saveInput)
+    expect(await count(t, 'workflow_versions')).toBe(2)
+  })
+  it('staged Agent creation is private until Save and returns the created metadata/configuration pins', async () => {
+    const t = await fixture('single'), first = await save(t)
+    const existing = AgentSchema.parse((await db.pool.query('select record from agents where id=$1', [t.configurations[0]!.agentId])).rows[0]!.record)
+    const newAgent = { ...existing, id: `new-agent-${randomUUID()}`, configurationVersionId: undefined }
+    const graph = { ...first.value.version.definition, nodes: first.value.version.definition.nodes.map((node) => ({ ...node, agentId: newAgent.id })) }
+    const stage = { ...t.input, action: 'stage_edits', commandId: randomUUID(), draftId: `editor-${randomUUID()}`,
+      expectedRevision: first.value.revision, expectedWorkflowVersionId: first.value.currentVersionId,
+      expectedAgentConfigurationVersionIds: {}, graph, stagedAgents: [{ agent: newAgent, baseRevision: null }] }
+    const http = await t.app.inject({ method: 'POST', url: `${t.url}/edits`, headers: graphHeaders(t.writer.token), payload: stage })
+    expect(http.statusCode, http.body).toBe(200)
+    const intent = CurrentEditReadResultSchema.parse(http.json()).intent!
+    expect((await db.pool.query('select 1 from agents where id=$1', [newAgent.id])).rowCount).toBe(0)
+    const remote = await t.call(CURRENT_WORKFLOW_TOOLS.edits, { workspaceId: stage.workspaceId, workflowId: stage.workflowId,
+      draftId: stage.draftId, intentId: intent.id, action: 'stop_and_save', commandId: intent.advanceCommandId })
+    const finished = CurrentEditReadResultSchema.parse(graphRpcValue(remote.result)).intent!
+    expect(finished.state, JSON.stringify(finished.error)).toBe('saved')
+    expect(finished.result!.agents![0]).toMatchObject({ agent: { id: newAgent.id }, metadataRevision: 1 })
+    expect(finished.result!.version.agentConfigurationVersionIds[newAgent.id]).toBe(finished.result!.agents![0]!.agent.configurationVersionId)
+  })
+  it('active Run Stage and Discard never mutate Agents or stop the Run; unqualified Stop retains the same payload', async () => {
+    const t = await fixture('single'), first = await save(t), stage = await agentStage(t, first)
+    const accepted = await insertFixtureRepeatRun(db.pool, { ...t.f, run: { ...t.f.run,
+      executionLocation: { runnerId: 'runner-local', rootPath: db.directory, locationRevision: 1, identityHash: `sha256:${'a'.repeat(64)}` } } }, first.value, t.writer.principal.id)
+    const original = (await db.pool.query('select record,metadata_revision,current_configuration_version_id from agents where id=$1', [stage.stagedAgents[0]!.agent.id])).rows[0]
+    const staged = await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)
+    expect(staged.result?.isError, JSON.stringify(staged)).not.toBe(true)
+    const intent = CurrentEditReadResultSchema.parse(graphRpcValue(staged.result)).intent!
+    expect(intent.affected.map((pin) => pin.runId)).toEqual([accepted.run.id])
+    const scope = { workspaceId: stage.workspaceId, workflowId: stage.workflowId, draftId: stage.draftId, intentId: intent.id }
+    const advance = await t.call(CURRENT_WORKFLOW_TOOLS.edits, { ...scope, action: 'stop_and_save', commandId: intent.advanceCommandId })
+    expect(CurrentEditReadResultSchema.parse(graphRpcValue(advance.result)).intent).toMatchObject({ state: 'blocked', saveInput: intent.saveInput })
+    const discard = await t.call(CURRENT_WORKFLOW_TOOLS.edits, { ...scope, action: 'discard_edits', commandId: intent.discardCommandId })
+    expect(CurrentEditReadResultSchema.parse(graphRpcValue(discard.result)).intent?.state).toBe('discarded')
+    expect((await db.pool.query('select record,metadata_revision,current_configuration_version_id from agents where id=$1', [stage.stagedAgents[0]!.agent.id])).rows[0]).toEqual(original)
+    expect((await db.pool.query('select execution_state,stop_requested_at from runs where id=$1', [accepted.run.id])).rows[0]).toMatchObject({ execution_state: 'queued', stop_requested_at: null })
+    expect(t.cancel).not.toHaveBeenCalled(); expect(await count(t, 'workflow_versions')).toBe(1)
+  })
+  it('a changed Agent metadata head after Stage blocks publication and preserves original payload and pins', async () => {
+    const t = await fixture(), first = await save(t), stage = await agentStage(t, first)
+    const intent = CurrentEditReadResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)).result)).intent!
+    await db.pool.query('update agents set metadata_revision=metadata_revision+1 where id=$1', [stage.stagedAgents[0]!.agent.id])
+    const remote = await t.call(CURRENT_WORKFLOW_TOOLS.edits, { workspaceId: stage.workspaceId, workflowId: stage.workflowId,
+      draftId: stage.draftId, intentId: intent.id, action: 'stop_and_save', commandId: intent.advanceCommandId })
+    const blocked = CurrentEditReadResultSchema.parse(graphRpcValue(remote.result)).intent!
+    expect(blocked).toMatchObject({ state: 'blocked', error: { code: 'AGENT_REVISION_CONFLICT' }, saveInput: intent.saveInput,
+      agentPins: intent.agentPins, stops: intent.stops })
+    expect(await count(t, 'workflow_versions')).toBe(1)
+    expect((await db.pool.query('select 1 from agent_configuration_versions where agent_id=$1', [stage.stagedAgents[0]!.agent.id])).rowCount).toBe(1)
+  })
+  it('staged shared Agent edits include exact affected Runs and location pins from another workflow', async () => {
+    const t = await fixture('single'), first = await save(t), stage = await agentStage(t, first)
+    const created = await t.app.inject({ method: 'POST', url: `/api/management/workspaces/${stage.workspaceId}/workflows`,
+      headers: graphHeaders(t.writer.token), payload: { workspaceId: stage.workspaceId, commandId: randomUUID(), name: 'Other workflow' } })
+    const other = SavedManagedWorkflowCommandResultSchema.parse(created.json()).value
+    const otherInput = { ...t.input, workflowId: other.workflow.id, commandId: randomUUID(), expectedRevision: other.revision,
+      graph: { ...t.input.graph, id: other.workflow.id, version: other.workflow.version,
+        createdAt: other.workflow.createdAt, updatedAt: other.workflow.updatedAt, name: other.workflow.name } }
+    const otherSaved = CurrentWorkflowSaveResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.save, otherInput)).result)).value
+    const accepted = await insertFixtureRepeatRun(db.pool, { ...t.f, run: { ...t.f.run,
+      executionLocation: { runnerId: 'runner-local', rootPath: db.directory, locationRevision: 1, identityHash: `sha256:${'a'.repeat(64)}` } } }, otherSaved, t.writer.principal.id)
+    const remote = await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)
+    expect(remote.result?.isError, JSON.stringify(remote)).not.toBe(true)
+    const intent = CurrentEditReadResultSchema.parse(graphRpcValue(remote.result)).intent!
+    expect(intent.affected).toHaveLength(1)
+    expect(intent.affected[0]).toMatchObject({ runId: accepted.run.id, workflowId: other.workflow.id })
+    expect(intent.stagedDraft.runLocationPins.map((pin) => pin.runId)).toEqual([accepted.run.id])
+    expect(intent.stops[0]!.input.runId).toBe(accepted.run.id)
+  })
+  it('MCP rejects a missing Agent mutation grant and stale displayed metadata before Stage', async () => {
+    const t = await fixture(), first = await save(t), stage = await agentStage(t, first)
+    const denied = await t.credential([{ actions: ManagementActionSchema.options.filter((action) => action !== 'agents:update'), scope: { workspaceIds: [stage.workspaceId] } }])
+    const remote = await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage, denied.token)
+    expect(graphRpcValue(remote.result)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+    const stale = { ...stage, stagedAgents: stage.stagedAgents.map((item) => ({ ...item, baseRevision: item.baseRevision + 1 })) }
+    const http = await t.app.inject({ method: 'POST', url: `${t.url}/edits`, headers: graphHeaders(t.writer.token), payload: stale })
+    expect(http.statusCode, http.body).toBe(409); expect(http.json()).toMatchObject({ error: { code: 'AGENT_REVISION_CONFLICT' } })
+    expect((await db.pool.query('select 1 from graph_edit_intents where workflow_id=$1', [stage.workflowId])).rowCount).toBe(0)
   })
   it.each(['sequential', 'parallel', 'repeat'] as const)('%s stages/reopens/replays a full definition and preserves later layout during atomic Save', async (form) => {
     const t = await fixture(form), first = await save(t)

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { StagedAgentSchema } from '../management/index.js'
 import { GraphDigestSchema, GraphIdSchema } from './protocol.js'
 import {
   CurrentJournalIdentitySchema, CurrentJournalReadInputSchema as GraphEditReadInputSchema,
@@ -12,7 +13,15 @@ import { sameExecutableWorkflow, sameWorkflowValue } from './meaningfulEdit.js'
  * selected Run or caller-provided Stop IDs. All graph forms use this one arm. */
 export const CurrentEditStageInputSchema = CurrentWorkflowSaveInputSchema.extend({
   action: z.literal('stage_edits'), draftId: GraphIdSchema,
+  stagedAgents: z.array(StagedAgentSchema).max(1000).optional(),
 }).strict()
+/** Private journal publication only. Ordinary workflow_save_v3 deliberately
+ * rejects these Agent mutations and server-reserved resultant pins. */
+export const CurrentEditSaveInputSchema = CurrentWorkflowSaveInputSchema.extend({
+  stagedAgents: z.array(StagedAgentSchema).max(1000).optional(),
+  resultantAgentConfigurationVersionIds: CurrentWorkflowSaveInputSchema.shape.expectedAgentConfigurationVersionIds.optional(),
+}).strict()
+export type CurrentEditSaveInput = z.infer<typeof CurrentEditSaveInputSchema>
 export type CurrentEditStageInput = z.infer<typeof CurrentEditStageInputSchema>
 export const CurrentEditReadInputSchema = GraphEditReadInputSchema
 export const CurrentEditAdvanceInputSchema = GraphEditAdvanceInputSchema
@@ -23,6 +32,9 @@ export const CurrentEditDraftSchema = z.object({
   baseWorkflowVersionId: CurrentWorkflowSaveInputSchema.shape.expectedWorkflowVersionId,
   graph: CurrentWorkflowSaveInputSchema.shape.graph,
   agentConfigurationVersionIds: CurrentWorkflowSaveInputSchema.shape.expectedAgentConfigurationVersionIds,
+  saveCommandId: GraphIdSchema.optional(),
+  stagedAgents: CurrentEditSaveInputSchema.shape.stagedAgents,
+  resultantAgentConfigurationVersionIds: CurrentEditSaveInputSchema.shape.resultantAgentConfigurationVersionIds,
   locationRevision: CurrentWorkflowSaveInputSchema.shape.expectedLocationRevision,
   locationDigest: GraphDigestSchema,
   runLocationPins: z.array(z.object({ runId: GraphIdSchema, digest: GraphDigestSchema }).strict()),
@@ -30,7 +42,7 @@ export const CurrentEditDraftSchema = z.object({
 export const CurrentEditIntentSchema = z.object({
   ...CurrentJournalIdentitySchema.shape,
   kind: z.literal('current'), stagedDraft: CurrentEditDraftSchema,
-  saveInput: CurrentWorkflowSaveInputSchema, result: CurrentWorkflowSavedSchema.optional(),
+  saveInput: CurrentEditSaveInputSchema, result: CurrentWorkflowSavedSchema.optional(),
 }).strict().superRefine((value, context) => {
   const fail = (message: string) => context.addIssue({ code: 'custom', message })
   const draft = value.stagedDraft, save = value.saveInput
@@ -42,10 +54,12 @@ export const CurrentEditIntentSchema = z.object({
     || save.expectedRevision !== value.expectedRevision || save.expectedWorkflowVersionId !== value.expectedWorkflowVersionId
     || !sameWorkflowValue(save.graph, draft.graph)
     || !sameWorkflowValue(save.expectedAgentConfigurationVersionIds, draft.agentConfigurationVersionIds)
+    || !sameWorkflowValue(save.stagedAgents, draft.stagedAgents)
+    || !sameWorkflowValue(save.resultantAgentConfigurationVersionIds, draft.resultantAgentConfigurationVersionIds)
     || save.expectedLocationRevision !== draft.locationRevision) fail('CURRENT_EDIT_PAYLOAD_CONFLICT')
   const runs = new Set(value.affected.map((pin) => pin.runId))
   if (runs.size !== value.affected.length || value.affected.some((pin) => pin.workspaceId !== value.workspaceId
-    || pin.workflowId !== value.workflowId)) fail('CURRENT_EDIT_AFFECTED_SCOPE_CONFLICT')
+)) fail('CURRENT_EDIT_AFFECTED_SCOPE_CONFLICT')
   if (new Set(value.stops.map((stop) => stop.input.runId)).size !== value.stops.length
     || value.stops.some((stop) => stop.input.workspaceId !== value.workspaceId || !runs.has(stop.input.runId)
       || stop.receipt && stop.receipt.runId !== stop.input.runId)) fail('CURRENT_EDIT_STOP_SCOPE_CONFLICT')
@@ -53,9 +67,27 @@ export const CurrentEditIntentSchema = z.object({
   if (locations.size !== draft.runLocationPins.length || locations.size !== runs.size
     || [...locations].some((id) => !runs.has(id))) fail('CURRENT_EDIT_LOCATION_PINS_CONFLICT')
   const agents = new Set(value.agentPins.map((pin) => pin.agentId))
-  if (agents.size !== value.agentPins.length || agents.size !== Object.keys(draft.agentConfigurationVersionIds).length
-    || value.agentPins.some((pin) => pin.metadataRevision === null || pin.configurationVersionId === null
-      || pin.configurationVersionId !== draft.agentConfigurationVersionIds[pin.agentId])) fail('CURRENT_EDIT_AGENT_PINS_CONFLICT')
+  const updates = draft.stagedAgents ?? []
+  if (updates.length && (draft.saveCommandId !== save.commandId || !draft.resultantAgentConfigurationVersionIds)) fail('CURRENT_EDIT_PAYLOAD_CONFLICT')
+  const resultant = draft.resultantAgentConfigurationVersionIds ?? draft.agentConfigurationVersionIds
+  if (value.result && updates.length && (value.result.agents?.length !== updates.length
+    || new Set(value.result.agents?.map((item) => item.agent.id)).size !== updates.length
+    || value.result.agents?.some((item) => {
+      const original = updates.find((update) => update.agent.id === item.agent.id)
+      return !original || item.agent.configurationVersionId !== resultant[item.agent.id]
+        || item.agent.name !== original.agent.name || item.metadataRevision !== (original.baseRevision ?? 0) + 1
+    }))) fail('CURRENT_EDIT_SAVED_AGENTS_CONFLICT')
+  const nodeAgents = draft.graph.nodes.map((node) => node.agentId).sort()
+  if (new Set(updates.map((item) => item.agent.id)).size !== updates.length
+    || updates.some((item) => !nodeAgents.includes(item.agent.id)
+      || (item.agent.configurationVersionId ?? null) !== (draft.agentConfigurationVersionIds[item.agent.id] ?? null))
+    || !sameWorkflowValue(Object.keys(resultant).sort(), nodeAgents)
+    || Object.entries(resultant).some(([id, pin]) => !updates.some((item) => item.agent.id === id) && pin !== draft.agentConfigurationVersionIds[id])
+    || Object.keys(draft.agentConfigurationVersionIds).some((id) => !nodeAgents.includes(id))
+    || agents.size !== value.agentPins.length || !sameWorkflowValue([...agents].sort(), nodeAgents)
+    || value.agentPins.some((pin) => pin.configurationVersionId !== (draft.agentConfigurationVersionIds[pin.agentId] ?? null)
+      || (pin.metadataRevision === null) !== (pin.configurationVersionId === null)
+      || updates.some((item) => item.agent.id === pin.agentId && item.baseRevision !== pin.metadataRevision))) fail('CURRENT_EDIT_AGENT_PINS_CONFLICT')
   const commands = [value.stageCommandId, value.advanceCommandId, value.discardCommandId, save.commandId,
     ...value.stops.map((stop) => stop.input.commandId)]
   if (new Set(commands).size !== commands.length) fail('CURRENT_EDIT_COMMAND_ID_CONFLICT')
@@ -63,7 +95,7 @@ export const CurrentEditIntentSchema = z.object({
   if (value.result && (value.result.workspaceId !== value.workspaceId || value.result.workflowId !== value.workflowId
     || value.result.revision !== value.expectedRevision + 1 || value.result.currentVersionId === value.expectedWorkflowVersionId
     || !sameExecutableWorkflow(value.result.version.definition, draft.graph)
-    || !sameWorkflowValue(value.result.version.agentConfigurationVersionIds, draft.agentConfigurationVersionIds))) fail('CURRENT_EDIT_SAVED_RESULT_CONFLICT')
+    || !sameWorkflowValue(value.result.version.agentConfigurationVersionIds, resultant))) fail('CURRENT_EDIT_SAVED_RESULT_CONFLICT')
 })
 export type CurrentEditIntent = z.infer<typeof CurrentEditIntentSchema>
 export type CurrentEditDraft = z.infer<typeof CurrentEditDraftSchema>
@@ -78,6 +110,7 @@ export const CurrentEditMutationInputSchema = z.discriminatedUnion('action', [
  * payloads, arbitrary Stop IDs, cross-action fields and missing exact pins. */
 export const CurrentEditMutationToolInputSchema = z.object({
   ...CurrentWorkflowSaveInputSchema.partial().shape,
+  stagedAgents: CurrentEditStageInputSchema.shape.stagedAgents,
   workspaceId: GraphIdSchema, workflowId: GraphIdSchema,
   commandId: CurrentWorkflowSaveInputSchema.shape.commandId,
   action: z.enum(['stage_edits', 'stop_and_save', 'discard_edits']),

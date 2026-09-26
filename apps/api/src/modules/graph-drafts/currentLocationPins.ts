@@ -7,7 +7,7 @@ import { DomainError } from '../errors.js'
 /** Shared journal pins, extracted from the repeat-only editor. Read under the
  * workspace/workflow locks. No locations, credentials or Run inputs go on wire. */
 export async function readCurrentEditLocationPins(client: pg.PoolClient, principal: ManagementPrincipal,
-  scope: { workspaceId: string; workflowId: string }) {
+  scope: { workspaceId: string; workflowId: string; stagedAgentIds?: string[] }) {
   const workspace = (await client.query<{
     location_revision: string; execution_location: unknown; execution_location_identity: unknown
   }>(`select location_revision::text,execution_location,execution_location_identity
@@ -21,10 +21,13 @@ export async function readCurrentEditLocationPins(client: pg.PoolClient, princip
     runner_id: string | null; working_directory: string | null; location_revision: string | null; execution_location: unknown
   }>(`select id,workspace_id,workflow_id,workflow_version_id,runner_id,working_directory,
       location_revision::text,record->'executionLocation' as execution_location
-    from runs where workspace_id=$1 and workflow_id=$2 order by id for share`, [scope.workspaceId, scope.workflowId])
+    from runs r where workspace_id=$1 and (workflow_id=$2
+      or r.record->'agentConfigurationVersionIds' ?| $3::text[]
+      or exists(select 1 from workflow_versions v where v.id=r.workflow_version_id and v.record->'agentConfigurationVersionIds' ?| $3::text[]))
+    order by id for share`, [scope.workspaceId, scope.workflowId, scope.stagedAgentIds ?? []])
   const runLocationPins = rows.rows.map((row) => {
-    requireAuthorization(principal, 'runs:read', { ...scope, runId: row.id })
-    if (row.workspace_id !== scope.workspaceId || row.workflow_id !== scope.workflowId) {
+    requireAuthorization(principal, 'runs:read', { workspaceId: row.workspace_id, workflowId: row.workflow_id, runId: row.id })
+    if (row.workspace_id !== scope.workspaceId) {
       throw new DomainError('GRAPH_EDIT_INTENT_INVALID', 'An affected Run location is outside the exact scope.', 409)
     }
     return { runId: row.id, digest: commandInputHash(row) }

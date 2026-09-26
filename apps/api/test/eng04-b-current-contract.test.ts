@@ -100,7 +100,8 @@ describe('ENG-S3-ONLY current definition and shared authoring policy', () => {
   it('ordinary canonical metadata rejects repeat occurrences not declared by its topology', () => {
     const ordinary = { kind: 'snapshot', protocolVersion: 1, scope: f.scope, asOfSequence: '1', retentionFloor: '0',
       historyCoverage: 'from_admission', topology: repeatGraphTopologyV3(f.version), state: {
-        run: { executionState: 'queued', outcome: 'pending', stopRequested: false }, occurrences: [], executions: [],
+        run: { executionState: 'queued', outcome: 'pending', stopRequested: false, cleanupPending: false,
+          unsettledReviewCount: 0, pendingInteractionCount: 0 }, nodes: [], inputBindings: [], interactions: [], reviews: [], occurrences: [], executions: [],
         resolutions: [], results: [], bindings: [], decisions: [],
       } }
     expect(RepeatGraphSnapshotV3Schema.parse(ordinary)).toEqual(ordinary)
