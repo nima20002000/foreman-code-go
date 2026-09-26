@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, withAdvancedDefaults, type HarnessDefaults, type WorkflowDefinition } from '@graphql/contracts'
 
 import { queryKeys } from '../../shared/api/query'
+import { ApiError } from '../../shared/api/client'
 import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
 import { defaultAgentForHarness } from '../agents/agentSettings'
 import { AgentSettingsForm, GraphEditor, type GraphEditorProps } from './GraphEditor'
@@ -117,6 +118,24 @@ afterEach(() => {
 })
 
 describe('PR #3 editor lifecycle regressions', () => {
+  it('shows executable graph validation issues and preserves the rejected draft', async () => {
+    const user = userEvent.setup()
+    const queryClient = client()
+    useGraphDraftStore.getState().updateDraft(key, workflow, (current) => ({ ...current, name: 'Keep this edit' }))
+    saveGraph.mockRejectedValueOnce(new ApiError({
+      code: 'GRAPH_INVALID',
+      message: 'The graph is not executable.',
+      details: { issues: [{ code: 'WORKFLOW_HAS_NO_ENTRY_POINT', message: 'Add at least one Agent before saving an executable workflow.' }] },
+    }, 409))
+    render(editor(queryClient))
+
+    await user.click(screen.getByRole('button', { name: 'Save graph' }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Add at least one Agent before saving an executable workflow.'))
+    expect(getGraphDraft(key)?.workflow.name).toBe('Keep this edit')
+    expect(screen.getByRole('button', { name: 'Save graph' })).toBeEnabled()
+  })
+
   it('submits unchanged OpenCode settings and the prompt after unmounting and remounting', async () => {
     const user = userEvent.setup()
     const queryClient = client()

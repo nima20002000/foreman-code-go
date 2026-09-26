@@ -1,13 +1,15 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { Agent, WorkflowDefinition, WorkflowRun } from '@graphql/contracts'
+import type { Agent, WorkflowDefinition, WorkflowRun, WorkflowRunSummary } from '@graphql/contracts'
 import type { GraphDraft } from '@graphql/contracts/management'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { queryKeys } from '../../shared/api/query'
 import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
 import { GraphEditor } from './GraphEditor'
+import { captureManagedBase } from './managedGraphState'
+import { managedSaveQueue } from './managedSave'
 import { getGraphDraft, useGraphDraftStore, workflowDraftKey } from './store'
 
 // These existing tests isolate editor behavior; pr12-navigation.test.tsx covers the real router Link.
@@ -40,6 +42,7 @@ beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } })
 })
 afterEach(() => {
+  managedSaveQueue.reset()
   client.clear()
   vi.unstubAllGlobals()
   useGraphDraftStore.getState().clearAllDrafts()
@@ -52,6 +55,57 @@ function editor(managedDraft?: GraphDraft) {
     <GraphEditor workspaceId={workflow.workspaceId} workflow={workflow} agents={agents} managedDraft={managedDraft} />
   </QueryClientProvider>)
 }
+
+const savedDraft: GraphDraft = {
+  id: 'draft-controls', workspaceId: workflow.workspaceId, workflowId: workflow.id,
+  revision: 1, publishedRevision: 1, baseWorkflowVersionId: 'workflow-controls-v1', graph: workflow,
+  stagedAgents: [], updatedByPrincipalId: 'principal-1', updatedAt: '2026-09-15T00:00:00.000Z',
+}
+
+it('does not offer Save for a clean published graph', () => {
+  editor(savedDraft)
+  expect(screen.queryByRole('button', { name: 'Save graph' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Discard local edits' })).not.toBeInTheDocument()
+})
+
+it('guides a fresh empty workflow to add an Agent, then offers Save for a meaningful shared draft', () => {
+  const emptyWorkflow = { ...workflow, nodes: [], edges: [] }
+  const emptyDraft: GraphDraft = { ...savedDraft, revision: 0, publishedRevision: undefined,
+    baseWorkflowVersionId: null, graph: emptyWorkflow }
+  const view = render(<QueryClientProvider client={client}>
+    <GraphEditor workspaceId={workflow.workspaceId} workflow={emptyWorkflow} agents={agents} managedDraft={emptyDraft} />
+  </QueryClientProvider>)
+
+  expect(screen.queryByRole('button', { name: 'Save graph' })).not.toBeInTheDocument()
+  expect(screen.getByText('Add an Agent before saving this workflow.')).toBeVisible()
+  expect(screen.queryByText('The shared draft has unpublished changes. Save graph before starting it.')).not.toBeInTheDocument()
+
+  view.rerender(<QueryClientProvider client={client}>
+    <GraphEditor workspaceId={workflow.workspaceId} workflow={workflow} agents={agents}
+      managedDraft={{ ...emptyDraft, revision: 1, graph: workflow }} />
+  </QueryClientProvider>)
+  expect(screen.getByRole('button', { name: 'Save graph' })).toBeEnabled()
+  expect(screen.getByText('The shared draft has unpublished changes. Save graph before starting it.')).toBeVisible()
+})
+
+it('keeps Save available to retry an uncertain managed publication', async () => {
+  const key = workflowDraftKey(workflow.workspaceId, workflow.id)
+  const base = captureManagedBase(savedDraft, agents, {})
+  await expect(managedSaveQueue.run(key, () => ({
+    submitted: { workflow, agentOverrides: {}, managedBase: base }, base, operations: [],
+  }), {
+    apply: async () => { throw new Error('Unexpected apply') },
+    save: async () => { throw new Error('Network lost') },
+    onApplied: () => undefined,
+    onSaved: () => undefined,
+    setSaving: () => undefined,
+    assertSession: () => undefined,
+  })).rejects.toThrow('Network lost')
+
+  editor(savedDraft)
+  expect(screen.getByRole('button', { name: 'Save graph' })).toBeEnabled()
+  expect(screen.getByText('The previous save is unresolved. Retry Save graph before discarding local edits or starting.')).toBeVisible()
+})
 
 it('disables managed Start until the backend reports a ready execution location', async () => {
   const managedDraft: GraphDraft = {
@@ -99,6 +153,35 @@ it('locks Start after 202 while details are delayed or queued; unlocks only at c
     })
   })
   await waitFor(() => expect(screen.getByRole('button', { name: 'Start workflow' })).toBeEnabled())
+})
+
+it('shows a canceled execution after remount without a success tone', async () => {
+  const canceledRun: WorkflowRun = {
+    ...run, executionState: 'completed', outcome: 'canceled', result: { outcome: 'canceled' },
+    finishedAt: '2026-09-14T00:01:00.000Z',
+  }
+  const runFacts: WorkflowRunSummary[] = [{
+    id: run.id, workspaceId: workflow.workspaceId, workflowId: workflow.id,
+    executionCondition: run.executionCondition, executionState: 'completed', outcome: 'canceled',
+    authRequired: false, browserWait: null, runnerHealth: { status: 'healthy' },
+    finishedAt: '2026-09-14T00:01:00.000Z',
+  }]
+  client.setQueryData(queryKeys.run(workflow.workspaceId, run.id), {
+    run: canceledRun,
+    executions: [{ workflowNodeId: 'a', state: 'completed', result: { outcome: 'canceled' } }],
+    activity: [],
+  })
+  const renderCanceled = () => render(<QueryClientProvider client={client}>
+    <GraphEditor workspaceId={workflow.workspaceId} workflow={workflow} agents={agents} runFacts={runFacts} />
+  </QueryClientProvider>)
+
+  const first = renderCanceled()
+  expect(screen.getByText('Canceled').closest('[data-tone]')).toHaveAttribute('data-tone', 'neutral')
+  first.unmount()
+  renderCanceled()
+
+  expect(screen.getByText('Canceled').closest('[data-tone]')).toHaveAttribute('data-tone', 'neutral')
+  expect(screen.getByRole('button', { name: 'Start workflow' })).toBeEnabled()
 })
 
 it('explains the fourth-step safety limit and requires an explicit operator change before Save', async () => {

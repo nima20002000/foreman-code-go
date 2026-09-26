@@ -71,7 +71,7 @@ import {
   queryKeys,
 } from '../../shared/api/query'
 import { useCancelRunMutation } from '../../shared/api/runActions'
-import { applyManagedGraphDraft, saveManagedGraphDraft } from '../../shared/api/client'
+import { ApiError, applyManagedGraphDraft, saveManagedGraphDraft } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { managedSaveQueue } from './managedSave'
 import {
@@ -184,14 +184,24 @@ type NodeMenuContextValue = {
 const NodeMenuContext = createContext<NodeMenuContextValue | undefined>(undefined)
 
 function agentNodeTone(data: GraphNode['data']): Tone {
-  if (data.runState === 'completed' || data.executionState === 'available') return 'success'
+  if (data.runState === 'completed') {
+    if (data.runOutcome === 'failed') return 'danger'
+    if (data.runOutcome === 'canceled') return 'neutral'
+    return data.runOutcome === 'succeeded' ? 'success' : 'neutral'
+  }
   if (data.executionState === 'auth_required' || data.executionState === 'waiting_browser' || data.runState === 'waiting') return 'warning'
   if (data.executionState === 'interrupted' || data.executionState === 'disconnected') return 'danger'
   if (data.executionState === 'working' || data.runState === 'queued' || data.runState === 'starting' || data.runState === 'running') return 'accent'
+  if (data.executionState === 'available') return 'success'
   return 'neutral'
 }
 
 function agentNodeStatus(data: GraphNode['data']): string {
+  if (data.runState === 'completed') {
+    if (data.runOutcome === 'canceled') return 'Canceled'
+    if (data.runOutcome === 'failed') return 'Failed'
+    if (data.runOutcome === 'succeeded') return 'Completed'
+  }
   return data.runState?.replaceAll('_', ' ') ?? data.executionStateLabel
 }
 
@@ -499,7 +509,13 @@ function AgentMinimapDot({
 }
 
 function graphErrorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback
+  const message = error instanceof Error && error.message ? error.message : fallback
+  if (!ApiError.is(error) || error.code !== 'GRAPH_INVALID' || !Array.isArray(error.details?.issues)) return message
+  const issues = error.details.issues.flatMap((issue) =>
+    issue && typeof issue === 'object' && 'message' in issue && typeof issue.message === 'string' && issue.message.trim()
+      ? [issue.message.trim()] : [],
+  )
+  return issues.length > 0 ? `${message} ${issues.join(' ')}` : message
 }
 
 function cacheManagedBase(queryClient: ReturnType<typeof useQueryClient>, base: ManagedEditBase) {
@@ -584,6 +600,7 @@ export function GraphEditor({
   const [activeRunId, setActiveRunId] = useState<string | undefined>(() => runFacts?.find((run) =>
     run.workflowId === workflow.id && run.executionState !== 'completed',
   )?.id)
+  const displayedRunId = activeRunId ?? runFacts?.find((run) => run.workflowId === workflow.id)?.id
   const startLock = useRef(Boolean(activeRunId))
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
   const [workflowSettingsOpen, setWorkflowSettingsOpen] = useState(false)
@@ -646,12 +663,17 @@ export function GraphEditor({
   const startManagedRun = useStartManagedRunMutation()
   const stopManagedRun = useStopManagedRunMutation()
   const cancelRunMutation = useCancelRunMutation()
-  const runQuery = useRunQuery(workspaceId, activeRunId ?? '', {
-    enabled: Boolean(activeRunId),
+  const runQuery = useRunQuery(workspaceId, displayedRunId ?? '', {
+    enabled: Boolean(displayedRunId),
     refetchInterval: (query) => query.state.data?.run.executionState === 'completed' ? false : 1_000,
   })
   const runStatesByNodeId = useMemo(
     () => new Map(runQuery.data?.executions.map((execution) => [execution.workflowNodeId, execution.state]) ?? []),
+    [runQuery.data?.executions],
+  )
+  const runOutcomesByNodeId = useMemo(
+    () => new Map(runQuery.data?.executions.flatMap((execution) => execution.result
+      ? [[execution.workflowNodeId, execution.result.outcome] as const] : []) ?? []),
     [runQuery.data?.executions],
   )
 
@@ -749,7 +771,11 @@ export function GraphEditor({
   const hasLocalChanges = draft?.dirty === true || hasSessionCleanup
     || Object.keys(agentOverrides).length > 0 || hasUnsavedAgentSettings
   const hasUnpublishedChanges = Boolean(managedDraft && !managedDraftIsPublished(managedDraft))
-  const isDirty = hasLocalChanges || hasUnpublishedChanges || managedSaveQueue.hasPending(workflowKey)
+  const hasPendingSave = managedSaveQueue.hasPending(workflowKey)
+  const needsAgentBeforeSave = Boolean(managedDraft && displayedWorkflow.nodes.length === 0 && !hasPendingSave)
+  const isDirty = hasLocalChanges || hasUnpublishedChanges || hasPendingSave
+  const showGraphActions = hasLocalChanges || (hasUnpublishedChanges && !needsAgentBeforeSave) || hasPendingSave
+  const saveDisabled = isSaving || needsAgentBeforeSave || (executionLimitExceeded && !hasPendingSave)
   const recordUndo = useCallback(() => {
     undoStackRef.current.push({ workflow: displayedWorkflow, agentOverrides, managedBase, cloneSources: draft?.cloneSources })
     if (undoStackRef.current.length > 100) undoStackRef.current.shift()
@@ -912,6 +938,7 @@ export function GraphEditor({
         selectedAgentId,
         selectedNodeIds,
         runStatesByNodeId,
+        runOutcomesByNodeId,
         onSelectAgent: selectAgent,
         onOpenNodeSettings: openNodeSettings,
         onRemoveEdge: removeGraphEdge,
@@ -922,7 +949,7 @@ export function GraphEditor({
         enteringNodeIds,
       },
     ),
-    [catalogAgents, displayedWorkflow, enteringNodeIds, openNodeSettings, removeGraphEdge, removeGraphNode, resizeGraphNode, runFacts, runStatesByNodeId, saveNodeSettings, selectAgent, selectedAgentId, selectedNodeIds],
+    [catalogAgents, displayedWorkflow, enteringNodeIds, openNodeSettings, removeGraphEdge, removeGraphNode, resizeGraphNode, runFacts, runOutcomesByNodeId, runStatesByNodeId, saveNodeSettings, selectAgent, selectedAgentId, selectedNodeIds],
   )
 
   const visibleNodes = useMemo(() => {
@@ -1006,7 +1033,7 @@ export function GraphEditor({
   }, [discardDraft, onClearAgent, workflowKey])
 
   const handleSave = useCallback(async () => {
-    if ((!isDirty && onSaveSession) || saveLock.current || managedSaveQueue.isRunning(workflowKey)) return
+    if (!isDirty || needsAgentBeforeSave || saveLock.current || managedSaveQueue.isRunning(workflowKey)) return
     if (executionLimitExceeded && !managedSaveQueue.hasPending(workflowKey)) {
       setNotice({ kind: 'error', text: 'Review the execution limit before saving this graph.' })
       return
@@ -1126,12 +1153,12 @@ export function GraphEditor({
       setNotice({ kind: 'error', text: `Graph could not be saved: ${graphErrorMessage(error, 'The server rejected the graph.')}${retry}` })
     } finally { saveLock.current = false }
   }, [agentOverrides, agents, catalogAgents, completeSave, displayedWorkflow, draft?.cloneSources,
-    executionLimitExceeded, isDirty, localAgents, managedBase, managedDraft, onPersisted,
+    executionLimitExceeded, isDirty, localAgents, managedBase, managedDraft, needsAgentBeforeSave, onPersisted,
     onSaveSession, queryClient, saveMutation, workspaceId, workflowKey])
 
   useUnsavedChanges({ label: 'workflow graph', dirty: hasLocalChanges, busy: isSaving,
     uncertain: managedSaveQueue.hasPending(workflowKey),
-    saveDisabled: executionLimitExceeded && !managedSaveQueue.hasPending(workflowKey),
+    saveDisabled: needsAgentBeforeSave || (executionLimitExceeded && !hasPendingSave),
     error: notice?.kind === 'error' ? notice.text : undefined, save: handleSave, discard: handleDiscard,
   }, (current, next) => current.pathname !== next.pathname || current.search.workflowId !== next.search.workflowId)
 
@@ -1455,7 +1482,7 @@ export function GraphEditor({
               variant="secondary"
               className="n-icon-button workflow-graph-run"
               aria-label={runActive ? 'Cancel workflow' : 'Start workflow'}
-              title={runActive ? 'Cancel workflow' : managedLocationReady ? 'Start workflow' : 'Set a valid workspace execution location first'}
+              title={runActive ? 'Cancel workflow' : needsAgentBeforeSave ? 'Add an Agent before starting this workflow' : managedLocationReady ? 'Start workflow' : 'Set a valid workspace execution location first'}
               disabled={runActive ? cancelRunMutation.isPending || stopManagedRun.isPending : startDisabled || (Boolean(managedDraft) && (isDirty || isSaving))}
               onClick={runActive && activeRunId
                 ? () => managedDraft
@@ -1535,13 +1562,13 @@ export function GraphEditor({
           <p>Normal graph edges do not grant approval authority. These workflow settings are pinned when you Save graph.</p>
         </div> : null}
 
-        {isDirty || managedDraft ? (
+        {showGraphActions ? (
           <div className="workflow-graph-actions">
             <Toolbar label="Graph actions">
               <Button variant="secondary" onClick={handleDiscard} disabled={!hasLocalChanges || isSaving}>
                 {managedDraft ? 'Discard local edits' : 'Discard'}
               </Button>
-              <Button variant="primary" onClick={handleSave} disabled={isSaving || (executionLimitExceeded && !managedSaveQueue.hasPending(workflowKey))}>
+              <Button variant="primary" onClick={handleSave} disabled={saveDisabled}>
                 {isSaving ? 'Saving…' : 'Save graph'}
               </Button>
             </Toolbar>
@@ -1549,9 +1576,10 @@ export function GraphEditor({
         ) : null}
 
         <div className="workflow-graph-notifications" data-testid="workflow-graph-notifications">
-          {hasLocalChanges ? <Alert live title="Unsaved graph changes. Use Save graph to persist applied agent and workflow settings." /> : null}
-          {managedSaveQueue.hasPending(workflowKey) && !managedSaving ? <Alert live tone="warning" title="The previous save is unresolved. Retry Save graph before discarding local edits or starting." /> : null}
-          {hasUnpublishedChanges ? <Alert live tone="warning" title="The shared draft has unpublished changes. Save graph before starting it." /> : null}
+          {hasLocalChanges && !needsAgentBeforeSave ? <Alert live title="Unsaved graph changes. Use Save graph to persist applied agent and workflow settings." /> : null}
+          {hasPendingSave && !managedSaving ? <Alert live tone="warning" title="The previous save is unresolved. Retry Save graph before discarding local edits or starting." /> : null}
+          {needsAgentBeforeSave ? <Alert live tone="warning" title={hasLocalChanges ? 'Unsaved graph changes. Add an Agent before saving.' : 'Add an Agent before saving this workflow.'} /> : null}
+          {hasUnpublishedChanges && !needsAgentBeforeSave ? <Alert live tone="warning" title="The shared draft has unpublished changes. Save graph before starting it." /> : null}
           {runQuery.data?.run.executionLocation ? (
             <Alert live title={`Run location: ${runQuery.data.run.executionLocation.rootPath}`} />
           ) : null}
