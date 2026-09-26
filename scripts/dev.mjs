@@ -133,7 +133,7 @@ async function main() {
       throw new Error(`Port ${port} is in use by a different or unhealthy service.`)
     }
     if (!await runningApiAcceptsBrowserOrigin(apiUrl, webUrl)) {
-      throw new Error(`The API at ${apiUrl} does not allow local development browser access from ${webUrl}. Stop it and restart corepack pnpm dev.`)
+      throw new Error(`The API at ${apiUrl} does not accept local browser access from ${browser.origin}. Restart the intended API with this GRAPHQL_BROWSER_ORIGIN, or choose its existing browser origin.`)
     }
     if (!await responds(`${apiUrl}/health/identity`, apiIdentityMatches(await expectedIdentity()))) {
       throw new Error(`The API at ${apiUrl} belongs to a different checkout or database installation. Stop the intended process explicitly or choose a different PORT.`)
