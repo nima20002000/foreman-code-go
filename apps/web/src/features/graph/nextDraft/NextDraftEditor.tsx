@@ -2,10 +2,10 @@ import { useDraftLayout } from './useDraftLayout'
 import { useBrowserAccessQuery } from '../../../shared/api/settingsExperience'
 import { canUseBoardAction } from '../../workflow-board/permissions'
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Inbox } from 'lucide-react'
+import { Inbox, Save, Undo2 } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GraphDraftV3Schema, staysOnWorkflowBoard, sameExecutableWorkflow, type WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
-import { AgentFacts, Alert, Badge, Button, ConfirmDialog, EmptyState, Icon, IconButton, LoadingState, TextField, Toolbar, type AgentPanel } from '../../../shared/ui/nocturne'
+import { AgentFacts, Alert, Button, ConfirmDialog, EmptyState, Icon, IconButton, LoadingState, TextField, Toolbar, type AgentPanel } from '../../../shared/ui/nocturne'
 import { GraphPresentationProvider } from '../GraphPresentation'
 import { useGraphPresentation, useGraphPresentationStore } from '../useGraphPresentation'
 import { applyGraphGeometry, type GraphGeometryChange } from '../geometry'
@@ -28,6 +28,7 @@ import { agentSettingRows } from '../signalEdge'
 import { runNodeView, useSelectedRunRecord } from '../../workflow-board/runFacts'
 import { useWorkflowBoard } from '../../workflow-board/context'
 import { BoardAgentSettings, NewBoardAgent } from '../../workflow-board/AgentControls'
+import { AgentPickerPanel } from '../../workflow-board/AgentPickerPanel'
 import { boardDraftContextKey, boardRunListKey } from '../../workflow-board/keys'
 import { useApprovalInboxStore } from '../../approvals'
 import { RepeatEditor } from '../../repeats/RepeatEditor'
@@ -98,6 +99,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const [panel, setPanel] = useState<Panel>(null)
   const [openNode, setOpenNode] = useState<OpenAgentPanel>()
   const [confirm, setConfirm] = useState<'save' | 'discard' | 'reload'>()
+  const runAfterSave = useRef(false)
   const runRecord = useSelectedRunRecord()
   const [message, setMessage] = useState<string>()
   const [localError, setLocalError] = useState<string>()
@@ -179,7 +181,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     canvas.current?.flush()
     useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state, graph: discardMeaningfulChanges(state.context, state.graph),
       context: { ...state.context, draft: { ...(state.context.savedDraft ?? state.context.draft), layoutRevision: state.context.draft.layoutRevision } },
-      history: [], agentEdits: undefined, agentHistory: undefined, error: undefined, validation: undefined }))
+      history: [], future: [], agentEdits: undefined, agentHistory: undefined, error: undefined, validation: undefined }))
     nextDraftApi.discardLocal(graph.workspaceId, graph.id)
     setLocalError(undefined); setMessage('Changes discarded.')
   }
@@ -194,6 +196,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     else if (result.intent?.state === 'blocked' || result.intent?.state === 'uncertain') {
       setLocalError(result.intent.error?.message ?? 'Saving isn’t confirmed yet. Your changes are still here.')
     } else setMessage('Edits retained. Save waits for every affected Run to stop and finish cleanup.')
+    return result
   }
   const discardChanges = async () => {
     canvas.current?.flush()
@@ -233,7 +236,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
       setLocalError(undefined); setMessage(pendingStart ? 'Loaded the saved draft. Confirm the earlier start before starting again.' : 'Loaded the saved draft.')
     } catch (error) { report(error) }
   }
-  const startMutation = useMutation({ retry: false, mutationFn: async () => {
+  const startMutation = useMutation({ retry: false, mutationFn: async (options?: { saveFirst?: boolean; allowStop?: boolean }) => {
     if (startLock.current) return
     const generation = sessionGeneration()
     let sent: BoardStartInput | undefined
@@ -243,17 +246,26 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
       // or capabilities. A lost acknowledgement never becomes a second Start.
       if (!canStart) throw new Error('Start permission is unavailable for this exact workflow. No command was sent.')
       const existing = readBoardStart(draftKey)
+      let saved = false
+      if (!existing && options?.saveFirst) {
+        runAfterSave.current = true
+        const result = await stopAndSave(options.allowStop)
+        assertSession(generation)
+        saved = result.intent?.state === 'saved'
+        if (!saved || !alive.current) return
+        runAfterSave.current = false
+      }
       const current = useGraphDraftStore.getState().nextDrafts[draftKey]
       if (!current) throw new Error('The draft is no longer mounted.')
       let candidate = existing
       if (!candidate) {
-        if (current.busy || current.pending || editIntent.locked || nextDraftDirty(current)
+        if (current.busy || current.pending || (!saved && editIntent.locked) || nextDraftDirty(current)
           || current.startRejectedVersionId === current.context.draft.baseWorkflowVersionId
-          || preflight.isError || !preflight.data) throw new Error('Save, reload or reconcile before creating a new Start.')
-        const displayedPins = boardStartPins(current.context.draft, preflight.data)
+          || (!saved && (preflight.isError || !preflight.data))) throw new Error('Save, reload or reconcile before creating a new Start.')
+        const displayedPins = saved ? undefined : boardStartPins(current.context.draft, preflight.data!)
         const fresh = await readBoardStartPreflight(current.context.draft)
         assertSession(generation)
-        if (!sameBoardStartPins(displayedPins, boardStartPins(current.context.draft, fresh))
+        if ((displayedPins && !sameBoardStartPins(displayedPins, boardStartPins(current.context.draft, fresh)))
           || useGraphDraftStore.getState().nextDrafts[draftKey] !== current) {
           throw new Error('The displayed Start pins or local form changed. Reload before starting a new Run.')
         }
@@ -300,6 +312,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     if (!guard || await guard.surfaces()) await action()
   }
   const dirty = nextDraftDirty(edit)
+  const needsSave = dirty || !context.draft.baseWorkflowVersionId
   const startReloadRequired = !!edit.startRejectedVersionId && edit.startRejectedVersionId === context.draft.baseWorkflowVersionId
   let preflightReason: string | undefined
   try {
@@ -307,17 +320,41 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     if (!preflight.data) throw new Error('Checking saved workflow and runtime availability…')
     boardStartPins(context.draft, preflight.data)
   } catch (error) { preflightReason = error instanceof Error ? error.message : 'Saved Start pins are unavailable.' }
-  const startDisabled = !canStart || storageFailed || starting || (!pendingStart && (!!preflightReason || startReloadRequired || editIntent.locked
-    || edit.busy || !!edit.pending || dirty || !context.draft.baseWorkflowVersionId))
+  const startDisabled = !canStart || storageFailed || starting || reloading || (!pendingStart && ((!needsSave && !!preflightReason) || startReloadRequired || editIntent.locked
+    || edit.busy || !!edit.pending))
   const startReason = !canStart ? 'Start permission is unavailable for this workflow' : pendingStart ? 'Reconcile the exact earlier Start command' : startReloadRequired ? 'Reload after the saved version was rejected'
-    : dirty ? 'Save executable edits before Start; presentation-only layout does not change a Run' : preflightReason ?? 'Start the exact saved current workflow'
+    : needsSave ? 'Save and run' : preflightReason ?? 'Run the saved workflow'
   const saveBusy = edit.busy || reloading || !!edit.pending || !!pendingStart || editIntent.mutation.isPending
   // Workflow-local Run summaries cannot describe blockers of a shared-Agent edit.
   // Stage/reconcile first; ask for Stop only for that exact authoritative set.
   const affectedRuns = editIntent.query.data?.current.filter((item) => !item.settled) ?? []
   const affectedWorkflows = new Set(affectedRuns.map((item) => item.pin.workflowId)).size
   const stopBlocked = !!editIntent.query.data?.affectedSetChanged || (affectedRuns.length > 0 && !editIntent.query.data?.canStop)
-  const requestSave = () => { void prepare(() => stopAndSave()).catch(report) }
+  const requestSave = () => { runAfterSave.current = false; void prepare(() => stopAndSave()).catch(report) }
+  const historyAction = (direction: 'undo' | 'redo') => {
+    if (saveBusy || starting || editIntent.locked || board?.run) return
+    void prepare(() => {
+      canvas.current?.flush()
+      const store = useGraphDraftStore.getState()
+      if (direction === 'undo') store.undoNextDraft(draftKey)
+      else store.redoNextDraft(draftKey)
+      layout.mutate()
+    }).catch(report)
+  }
+  useEffect(() => {
+    const shortcut = (event: KeyboardEvent) => {
+      if ((!event.ctrlKey && !event.metaKey) || event.altKey || event.defaultPrevented) return
+      const target = event.target
+      if (target instanceof Element && target.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], dialog')) return
+      const key = event.key.toLowerCase()
+      if (key !== 'z' && key !== 'y') return
+      if (saveBusy || starting || editIntent.locked || board?.run) return
+      event.preventDefault()
+      historyAction(key === 'y' || event.shiftKey ? 'redo' : 'undo')
+    }
+    window.addEventListener('keydown', shortcut)
+    return () => window.removeEventListener('keydown', shortcut)
+  })
   const openAgent = (nodeId: string, next: AgentPanel = 'settings') => inspect(() => {
     presentation.getState().setFocusedNodeId(nodeId); presentation.getState().setFocusedEdgeId(undefined)
     setOpenNode({ nodeId, panel: next })
@@ -368,10 +405,15 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
       <header className="board-topbar">
         <div className="board-title">
           <h2>{graph.name}</h2>
-          <Badge tone={dirty ? 'warning' : 'neutral'} dot>{dirty ? 'Unsaved changes' : context.draft.baseWorkflowVersionId ? 'Saved' : 'Not saved yet'}</Badge>
           {hints.length ? <Button size="sm" variant="ghost" leading={<Icon name="warning" size={14} />} onClick={() => openPanel('readiness')}>
             {hints.length} {hints.length === 1 ? 'thing' : 'things'} to fix</Button> : null}
         </div>
+        <div className="board-control-cluster">
+          {dirty ? <Toolbar label="Draft actions">
+            <IconButton label="Undo" variant="ghost" disabled={saveBusy || starting || editIntent.locked || !edit.history.length}
+              onClick={() => historyAction('undo')}><Undo2 aria-hidden="true" size={16} /></IconButton>
+            <IconButton label="Discard changes" variant="ghost" disabled={saveBusy || starting} onClick={() => setConfirm('discard')}><Icon name="close" size={22} /></IconButton>
+          </Toolbar> : null}
         <Toolbar label="Workflow controls">
           <IconButton label="Add agent to graph" onClick={() => openPanel('agents')}><Icon name="plus" size={16} /></IconButton>
           <IconButton label="Workflow settings" onClick={() => openPanel('workflow')}><Icon name="settings" size={16} /></IconButton>
@@ -380,14 +422,20 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
             {pendingApprovals ? <span className="workflow-approval-inbox-badge" aria-hidden="true">{pendingApprovals}</span> : null}</Button>
           <Button size="sm" variant="ghost" onClick={() => openPanel('repeat')}>Repeats</Button>
           {board ? <IconButton label="Runs" onClick={board.openRuns}><Icon name="history" size={16} /></IconButton> : null}
-          <Button variant="primary" leading={<Icon name="play" size={14} />} aria-label={pendingStart ? 'Reconcile Start' : 'Start saved version'}
-            title={startReason} disabled={startDisabled} loading={starting} onClick={() => void (pendingStart ? start() : prepare(start)).catch(report)}>{pendingStart ? 'Confirm start' : 'Start run'}</Button>
+          {dirty || edit.pending || editIntent.locked ? <>
+            {edit.pending ? <Button disabled={saveBusy || starting} onClick={requestSave}>Retry save</Button> : null}
+            {editIntent.locked ? <Button disabled={saveBusy || starting || !!editIntent.storageError || stopBlocked} onClick={requestSave}>
+              {affectedRuns.length ? 'Stop affected Runs and save' : 'Reconcile Save'}</Button>
+              : <IconButton label="Save changes" disabled={saveBusy || starting || !!editIntent.storageError} onClick={requestSave}><Save aria-hidden="true" size={16} /></IconButton>}
+          </> : null}
+          <Button variant="primary" leading={<Icon name="play" size={14} />} aria-label={pendingStart ? 'Reconcile Start' : needsSave ? 'Save and run' : 'Start saved version'}
+            title={startReason} disabled={startDisabled} loading={starting} onClick={() => void (pendingStart ? start() : prepare(() => needsSave ? startMutation.mutateAsync({ saveFirst: true }) : start())).catch(report)}>{pendingStart ? 'Confirm start' : needsSave ? 'Save and run' : 'Run'}</Button>
         </Toolbar>
+        </div>
       </header>
       <div className="board-notices" aria-live="polite">
         {layout.isError || layout.retained || layout.journalError ? <Alert tone="warning" title="Positions are retained locally.">{layout.journalError ?? layout.error?.message}
           <Button size="sm" disabled={layout.isPending || !!layout.journalError} onClick={() => layout.mutate()}>Reconcile layout</Button></Alert> : null}
-        {!pendingStart && preflightReason ? <Alert tone="warning" title="Start is not ready.">{preflightReason}</Alert> : null}
         {!pendingStart && workspace.data && workspace.data.locationValidation.status !== 'ready' ? <Alert tone="warning" title="Choose an execution folder to run this workflow."
           action={<Button size="sm" onClick={board?.openLocation}>Choose folder</Button>} /> : null}
         {pendingStart ? <Alert tone="warning" title="An earlier start may have gone through."
@@ -410,11 +458,16 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         <header><h2>Business repeats</h2><IconButton variant="ghost" label="Close panel" onClick={() => openPanel(null)}><Icon name="close" size={16} /></IconButton></header>
         <RepeatEditor graph={graph} change={change} disabled={edit.busy || reloading || editIntent.locked || !!edit.pending || !!pendingStart} />
       </aside>
-      {(panel && panel !== 'repeat') || selectedEdge ? <aside className="board-side-panel" aria-label={panelTitle || 'Board controls'}>
+      {panel === 'agents' ? <AgentPickerPanel close={() => openPanel(null)}>
+        <fieldset disabled={edit.busy || reloading || editIntent.locked || starting}>
+          <NewBoardAgent draftKey={draftKey} edit={edit} report={report} />
+          <AttachAgentField graph={graph} context={context} change={change} report={report} />
+        </fieldset>
+      </AgentPickerPanel> : null}
+      {(panel && panel !== 'repeat' && panel !== 'agents') || (!panel && selectedEdge) ? <aside className="board-side-panel" aria-label={panelTitle || 'Board controls'}>
         <header><h2>{panelTitle}</h2><IconButton variant="ghost" label="Close panel" onClick={() => openPanel(null)}><Icon name="close" size={16} /></IconButton></header>
         <fieldset disabled={edit.busy || reloading || editIntent.locked}>
           {selectedEdge && !panel ? <RelationshipFields graph={graph} relationship={selectedEdge} change={change} report={report} /> : null}
-          {panel === 'agents' ? <><NewBoardAgent draftKey={draftKey} edit={edit} report={report} added={() => setPanel(null)} /><AttachAgentField graph={graph} context={context} change={change} report={report} /></> : null}
           {panel === 'workflow' ? <>
             <EntryFields graph={graph} context={context} agentEdits={edit.agentEdits} change={change} />
             <ApprovalFields graph={graph} context={context} agentEdits={edit.agentEdits} change={change} report={report} />
@@ -448,20 +501,6 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
           </section> : null}
         </fieldset>
       </aside> : null}
-      {dirty || edit.pending || editIntent.locked ? <div className="board-save-bar" role="region" aria-label="Unsaved changes">
-        <span><span className="n-dirty-dot" aria-hidden="true" />{editIntent.locked ? 'Edits retained; reconcile the pending save' : edit.busy ? 'Saving…' : 'You have unsaved changes'}</span>
-        <div className="n-actions">
-          <Button variant="ghost" leading={<Icon name="history" size={14} />} disabled={edit.busy || editIntent.locked || !edit.history.length}
-            onClick={() => void prepare(() => { canvas.current?.flush(); useGraphDraftStore.getState().undoNextDraft(draftKey) })}>Undo</Button>
-          <Button disabled={saveBusy} onClick={() => setConfirm('discard')}>Discard changes</Button>
-          {edit.pending ? <Button disabled={edit.busy || editIntent.locked} onClick={requestSave}>Retry save</Button> : null}
-          {editIntent.locked ? <Button variant="primary" disabled={saveBusy || !!editIntent.storageError || stopBlocked}
-            onClick={requestSave}>
-            {affectedRuns.length ? 'Stop affected Runs and save' : 'Reconcile Save'}</Button> : null}
-          <Button variant="primary" loading={editIntent.mutation.isPending} disabled={saveBusy || !!editIntent.storageError || editIntent.locked} onClick={requestSave}>
-            Save changes</Button>
-        </div>
-      </div> : null}
       <nav className="board-keyboard-list" aria-label="Agents and connections">
         {graph.nodes.map((node) => <Button size="sm" variant="ghost" key={node.id} onClick={() => openAgent(node.id)}>
           {graph.entryNodeId === node.id ? 'Entry · ' : ''}{nodeTitle(graph, node.id)}</Button>)}
@@ -472,7 +511,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     </div>
     <ConfirmDialog open={confirm === 'save' && affectedRuns.length > 0 && !stopBlocked} onOpenChange={(open) => { if (!open) setConfirm(undefined) }} title="Stop running work and save?"
       description={`${affectedRuns.length} affected ${affectedRuns.length === 1 ? 'Run requires' : 'Runs require'} Stop or cleanup across ${affectedWorkflows} ${affectedWorkflows === 1 ? 'workflow' : 'workflows'}.${affectedRuns.some((item) => item.pin.workflowId !== graph.id) ? ' This includes shared-Agent work in another workflow.' : ''} Stop-and-save stops every affected Run and waits for full cleanup before saving. Stopped runs are not restarted.`}
-      confirmLabel="Stop runs and save" onConfirm={() => { setConfirm(undefined); void prepare(() => stopAndSave(true)).catch(report) }} />
+      confirmLabel="Stop runs and save" onConfirm={() => { setConfirm(undefined); void prepare(() => runAfterSave.current ? startMutation.mutateAsync({ saveFirst: true, allowStop: true }) : stopAndSave(true)).catch(report) }} />
     <ConfirmDialog open={confirm === 'discard'} onOpenChange={(open) => { if (!open) setConfirm(undefined) }} title="Discard your changes?"
       description="Your unsaved edits are removed. Agent positions on the board are kept. Running work isn’t affected."
       confirmLabel="Discard changes" onConfirm={() => { setConfirm(undefined); void prepare(discardChanges).catch(report) }} />

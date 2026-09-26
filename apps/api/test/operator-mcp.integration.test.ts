@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveResultSchema } from '@graphql/contracts/wave25'
@@ -48,7 +48,7 @@ describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration',
       await f.access.revoke(readonly.principal.id)
       expect((await post(readonly.token)).status).toBe(401)
       expect((await post(f.writer.token, 'https://example.com')).status).toBe(403)
-      expect((await f.db.pool.query('select id from management_audit where principal_id=$1', [readonly.principal.id])).rowCount).toBeGreaterThan(0)
+      expect((await f.db.pool.query('select sequence from management_audit where principal_id=$1', [readonly.principal.id])).rowCount).toBeGreaterThan(0)
     } finally { await f.close() }
   }, 60000)
 
@@ -81,6 +81,10 @@ describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration',
   it('saves, validates, reads, starts and Stops through authenticated MCP with exact current pins and durable retries', async () => {
     const f = await currentOperatorIntegration()
     try {
+      const location = await f.db.pool.query<{ root: string }>("select execution_location->>'rootPath' as root from workspaces where id=$1", [f.f.scope.workspaceId])
+      const identity = await stat(location.rows[0]!.root, { bigint: true })
+      await f.db.pool.query('update workspaces set execution_location_identity=$2::jsonb where id=$1',
+        [f.f.scope.workspaceId, JSON.stringify({ device: String(identity.dev), inode: String(identity.ino) })])
       const input = await f.create(), { commandId: _commandId, ...validation } = input
       value(await f.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.validate, arguments: validation }))
       const saved = CurrentWorkflowSaveResultSchema.parse(value(await f.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: input })))

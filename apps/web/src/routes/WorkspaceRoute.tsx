@@ -134,10 +134,9 @@ export function WorkspaceRouteView({
   resolvedSlots.graph = (
     <WorkspaceExecutionLocationSetup workspaceId={workspaceId} enabled={!allowBoardWithoutLocation && state !== 'loading' && state !== 'error' && state !== 'not-found'}>
       {state === 'ready' ? <div className="workspace-board">
-        <div className="workspace-board-actions" data-testid="workspace-board-actions">
-          {lastRunId ? <WorkflowRunLocation workspaceId={workspaceId} runId={lastRunId} /> : null}
-          <NewWorkflowAction workspaceId={workspaceId} variant="secondary" />
-        </div>
+        {lastRunId ? <div className="workspace-board-actions" data-testid="workspace-board-actions">
+          <WorkflowRunLocation workspaceId={workspaceId} runId={lastRunId} />
+        </div> : null}
         {resolvedSlots.graph}
       </div> : resolvedSlots.graph}
     </WorkspaceExecutionLocationSetup>

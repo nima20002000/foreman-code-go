@@ -1,3 +1,4 @@
+import { mockRuntimeIdentity } from '../../shared/mocks/handlers'
 import { Buffer } from 'node:buffer'
 import { webcrypto } from 'node:crypto'
 import { createElement } from 'react'
@@ -144,7 +145,7 @@ export function installBoardTestLifecycle() {
   configure({ asyncUtilTimeout: 5000 })
   beforeEach(() => {
     unhandled.length = 0; server.events.on('request:unhandled', recordUnhandled)
-    localStorage.clear(); sessionStorage.clear(); clearBoardStartStorage(); clearBoardStopStorage()
+    localStorage.clear(); localStorage.setItem('graphql.chat-instance-binding', `${mockRuntimeIdentity.checkoutId}:${mockRuntimeIdentity.installationId}`); sessionStorage.clear(); clearBoardStartStorage(); clearBoardStopStorage()
     useGraphDraftStore.getState().clearAllDrafts(); useInspectionPresentation.setState({ open: {} })
     vi.stubGlobal('crypto', webcrypto)
     const queues = new Map<string, Promise<unknown>>()

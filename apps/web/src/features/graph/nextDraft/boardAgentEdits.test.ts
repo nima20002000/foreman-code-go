@@ -3,7 +3,7 @@ import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
 import { GraphDraftOperationV3Schema } from '@graphql/contracts/wave25'
 import { fixture } from './core.cases'
 import { draftOperations } from './model'
-import { newNextDraft, editNextDraft, undoNextDraft, nextDraftDirty } from './state'
+import { newNextDraft, editNextDraft, undoNextDraft, redoNextDraft, nextDraftDirty } from './state'
 import { acknowledgeAgentEdits, changeDraftAgent, configureAgentOperations, hasAgentEdits, referencedAgentEdits } from './agentEdits'
 
 function context() {
@@ -12,6 +12,17 @@ function context() {
   return result
 }
 describe('board Agent edits use the existing typed serial writer', () => {
+  it('redos graph and Agent edits together and clears redo after a new edit', () => {
+    const c = context(), base = newNextDraft(c, 'instance')
+    const changed = changeDraftAgent(base, { ...c.agents[0]!.agent, name: 'Renamed' }, base.graph)
+    const undone = undoNextDraft(changed)
+    const redone = redoNextDraft(undone)
+    expect(redone.agentEdits).toEqual(changed.agentEdits)
+    expect(redone.graph).toEqual(changed.graph)
+    expect(redone.context).toBe(changed.context)
+    expect(editNextDraft(undone, (graph) => ({ ...graph, name: 'Other change' })).future).toEqual([])
+    expect(changeDraftAgent(undone, { ...c.agents[0]!.agent, name: 'Different' }, base.graph).future).toEqual([])
+  })
   it('stages settings locally without changing the server context or its revision', () => {
     const c = context(), before = structuredClone(c), agent = { ...c.agents[0]!.agent, name: 'Renamed' }
     const edit = changeDraftAgent(newNextDraft(c, 'instance'), agent, c.draft.graph)

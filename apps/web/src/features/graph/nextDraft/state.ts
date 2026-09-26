@@ -24,6 +24,7 @@ export type NextDraftEdit = {
   context: NextDraftContext
   graph: WorkflowDefinitionV3
   history: WorkflowDefinitionV3[]
+  future?: { graph: WorkflowDefinitionV3; agentEdits: DraftAgentEdits }[]
   agentEdits?: DraftAgentEdits
   agentHistory?: DraftAgentEdits[]
   /** Local form provenance from authenticated hydration, never a command submission. */
@@ -44,7 +45,7 @@ export function newNextDraft(context: NextDraftContext, instanceId: string): Nex
 export function editNextDraft(current: NextDraftEdit, update: (graph: WorkflowDefinitionV3) => WorkflowDefinitionV3): NextDraftEdit {
   const graph = update(current.graph)
   if (sameValue(graph, current.graph)) return current
-  return { ...current, graph, history: [...current.history.slice(-49), current.graph], validation: undefined,
+  return { ...current, graph, history: [...current.history.slice(-49), current.graph], future: [], validation: undefined,
     ...(current.agentHistory ? { agentEdits: referencedAgentEdits(graph, current.agentEdits),
       agentHistory: [...current.agentHistory.slice(-49), current.agentEdits ?? {}] } : {}),
     // Typing cannot clear an unresolved command or an authorization/conflict error.
@@ -58,7 +59,18 @@ export function undoNextDraft(current: NextDraftEdit): NextDraftEdit {
   const base = current.context.draft.graph
   return { ...current, graph: { ...previous, version: base.version, createdAt: base.createdAt, updatedAt: base.updatedAt },
     history: current.history.slice(0, -1), validation: undefined,
+    future: [...(current.future ?? []).slice(-49), { graph: current.graph, agentEdits: current.agentEdits ?? {} }],
     ...(current.agentHistory ? { agentEdits: current.agentHistory.at(-1) ?? {}, agentHistory: current.agentHistory.slice(0, -1) } : {}) }
+}
+
+export function redoNextDraft(current: NextDraftEdit): NextDraftEdit {
+  const next = current.future?.at(-1)
+  if (!next) return current
+  const base = current.context.draft.graph
+  return { ...current, graph: { ...next.graph, version: base.version, createdAt: base.createdAt, updatedAt: base.updatedAt },
+    agentEdits: next.agentEdits, history: [...current.history.slice(-49), current.graph],
+    agentHistory: [...(current.agentHistory ?? current.history.map(() => ({}))).slice(-49), current.agentEdits ?? {}],
+    future: current.future!.slice(0, -1), validation: undefined }
 }
 
 export function nextDraftDirty(edit: NextDraftEdit): boolean {
@@ -71,6 +83,7 @@ export type NextDraftSlice = {
   installNextDraft: (key: string, context: NextDraftContext, replace?: boolean) => void
   changeNextDraft: (key: string, update: (graph: WorkflowDefinitionV3) => WorkflowDefinitionV3) => void
   undoNextDraft: (key: string) => void
+  redoNextDraft: (key: string) => void
   updateNextDraft: (key: string, update: (edit: NextDraftEdit) => NextDraftEdit) => void
   dropNextDraft: (key: string) => void
 }
@@ -82,7 +95,9 @@ export function createNextDraftSlice(set: SetSlice): NextDraftSlice {
   const update = (key: string, change: (edit: NextDraftEdit) => NextDraftEdit) => set((state) => {
     const current = state.nextDrafts[key]
     if (!current) return state
-    const next = change(current)
+    let next = change(current)
+    if (next.context.draft.revision !== current.context.draft.revision
+      || next.context.draft.baseWorkflowVersionId !== current.context.draft.baseWorkflowVersionId) next = { ...next, future: [] }
     return next === current ? state : { nextDrafts: { ...state.nextDrafts, [key]: next } }
   })
   return {
@@ -94,6 +109,7 @@ export function createNextDraftSlice(set: SetSlice): NextDraftSlice {
     }),
     changeNextDraft: (key, change) => update(key, (edit) => editNextDraft(edit, change)),
     undoNextDraft: (key) => update(key, undoNextDraft),
+    redoNextDraft: (key) => update(key, redoNextDraft),
     updateNextDraft: update,
     dropNextDraft: (key) => set((state) => {
       const current = state.nextDrafts[key]

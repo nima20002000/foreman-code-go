@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
-import { Background, ConnectionMode, Controls, ReactFlow,
+import { Background, ConnectionMode, ReactFlow,
   type Connection, type IsValidConnection, type NodeChange, type ReactFlowInstance } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { AgentNode, HandoffEdge } from './GraphElements'
@@ -159,7 +159,6 @@ export const GraphCanvas = memo(function GraphCanvas({
         defaultEdgeOptions={defaultEdgeOptions} proOptions={proOptions}
         aria-label={readOnly ? 'Run graph canvas' : 'Workflow editor canvas'} onInit={onInit}>
         <Background color="var(--border)" gap={24} size={1} />
-        <Controls position="bottom-left" showInteractive={false} fitViewOptions={fitViewOptions} />
       </ReactFlow>
     </GraphGeometryContext.Provider>
   </div>

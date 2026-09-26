@@ -40,7 +40,6 @@
   .pinned-run-heading > strong, .pinned-run-heading > span { flex-basis: 100%; }
 }
 
-.unified-workflow-board:has(.board-save-bar) .pinned-run-canvas { padding-bottom: 136px; }
 .unified-workflow-board .board-run-banner { max-width: calc(100% - 2rem); white-space: normal; }
 .unified-workflow-board .board-run-banner > span { min-width: 0; overflow-wrap: anywhere; }
 .unified-workflow-board .board-run-banner > button { flex-shrink: 0; }

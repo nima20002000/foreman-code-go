@@ -1,5 +1,5 @@
 import { createContext, forwardRef, memo, useContext, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Background, ConnectionMode, Controls, ReactFlow, type Edge, type EdgeProps, type NodeChange, type NodeProps } from '@xyflow/react'
+import { Background, ConnectionMode, ReactFlow, type Edge, type EdgeProps, type NodeChange, type NodeProps } from '@xyflow/react'
 import { WorkflowRelationshipSchema, type WorkflowDefinitionV3, type WorkflowRelationship } from '@graphql/contracts/wave25'
 import type { Agent } from '@graphql/contracts'
 import { AgentNodeView, AgentPopover, type AgentPanel } from '../../../shared/ui/nocturne'
@@ -25,12 +25,13 @@ type Canvas = {
   open?: OpenAgentPanel
   setOpen: (next?: OpenAgentPanel) => void
   panels: (nodeId: string) => AgentPanels
+  selectNode?: (nodeId: string) => void
 }
 const CanvasContext = createContext<Canvas>({ draftKey: '', inspect: (action) => action(), setOpen: () => undefined,
   panels: () => ({ chat: null, settings: null, info: null }) })
 
 const DraftAgent = memo(function DraftAgent({ id, data, selected }: NodeProps<GraphNode>) {
-  const { draftKey, inspect, open, setOpen, panels } = useContext(CanvasContext)
+  const { draftKey, inspect, open, setOpen, panels, selectNode } = useContext(CanvasContext)
   const entry = useGraphDraftStore((state) => state.nextDrafts[draftKey]?.graph.entryNodeId === id)
   const presentation = useGraphPresentationStore()
   const runSelected = Boolean(useWorkflowBoard()?.run)
@@ -43,7 +44,7 @@ const DraftAgent = memo(function DraftAgent({ id, data, selected }: NodeProps<Gr
     <AgentNodeView ref={core} name={data.label} harness={facts.harness} harnessLabel={facts.harnessLabel} model={facts.model}
       icon={facts.icon} statusLabel={run.label} state={run.state} meta={facts.meta} entry={entry} selected={selected} openPanel={panel}
       ariaLabel={`${data.label}, ${facts.roleLabel}${entry ? ', starts the workflow' : ''}, ${facts.harnessLabel}, ${run.label}`}
-      onSelect={select}
+      onSelect={(event) => { event.stopPropagation(); if (selectNode) selectNode(id); else select() }}
       onAction={(next) => inspect(() => {
         presentation.getState().setFocusedNodeId(id); presentation.getState().setFocusedEdgeId(undefined)
         setOpen(panel === next ? undefined : { nodeId: id, panel: next })
@@ -88,6 +89,7 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
   const [adapter] = useState(() => createGraphGeometryAdapter(topology.nodes))
   const [nodes, setNodes] = useState(topology.nodes)
   const [connecting, setConnecting] = useState(false)
+  const connectionSource = useRef<string | undefined>(undefined)
   const selectedIds = useGraphPresentation((state) => state.selectedNodeIds)
   const focusedEdge = useGraphPresentation((state) => state.focusedEdgeId)
   const presentation = useGraphPresentationStore()
@@ -120,7 +122,22 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
     setNodes(result.nodes); pending(result.pending)
     if (result.finished) flush()
   }
-  const context = useMemo(() => ({ draftKey, inspect, open, setOpen, panels }), [draftKey, inspect, open, setOpen, panels])
+  const connectNodes = (source: string, target: string) => {
+    try { change((value) => value.edges.some((edge) => edge.kind === kind && edge.source === source && edge.target === target) ? value
+      : putRelationship(value, WorkflowRelationshipSchema.parse({ id: `relationship-${crypto.randomUUID()}`, kind, source, target }))) }
+    catch (error) { report(error) }
+  }
+  const selectNode = (nodeId: string) => inspect(() => {
+    const source = connectionSource.current
+    if (source && source !== nodeId && graph.nodes.some((node) => node.id === source)) {
+      connectNodes(source, nodeId)
+      connectionSource.current = undefined
+    } else connectionSource.current = source === nodeId ? undefined : nodeId
+    presentation.getState().setFocusedNodeId(nodeId)
+    presentation.getState().setSelectedNodeIds(new Set([nodeId]))
+    presentation.getState().setFocusedEdgeId(undefined)
+  })
+  const context = { draftKey, inspect, open, setOpen, panels, selectNode }
   return <CanvasContext.Provider value={context}>
     <div className={`next-draft-canvas board-draft-canvas${connecting ? ' is-connecting' : ''}`} style={selectedRun ? { display: 'none' } : undefined} aria-hidden={!!selectedRun} inert={!!selectedRun} aria-label="Editable workflow graph">
       {/* While a Run is shown, the draft's data stays mounted but its flow does not: a hidden
@@ -131,16 +148,14 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
         isValidConnection={(connection) => connection.source !== connection.target}
         onConnectStart={() => setConnecting(true)} onConnectEnd={() => setConnecting(false)}
         onClickConnectStart={() => setConnecting(true)} onClickConnectEnd={() => setConnecting(false)}
-        onNodeClick={(_, node) => inspect(() => { presentation.getState().setFocusedNodeId(node.id); presentation.getState().setFocusedEdgeId(undefined) })}
+        onNodeClick={(_, node) => selectNode(node.id)}
         onEdgeClick={(_, edge) => inspect(() => { setOpen(undefined); presentation.getState().setFocusedEdgeId(edge.id); presentation.getState().setFocusedNodeId(undefined) })}
-        onPaneClick={() => inspect(() => { setOpen(undefined); presentation.getState().setFocusedNodeId(undefined); presentation.getState().setFocusedEdgeId(undefined) })}
+        onPaneClick={() => inspect(() => { connectionSource.current = undefined; setOpen(undefined); presentation.getState().setFocusedNodeId(undefined); presentation.getState().setFocusedEdgeId(undefined) })}
         onConnect={(connection) => {
-          try { change((value) => value.edges.some((edge) => edge.kind === kind && edge.source === connection.source && edge.target === connection.target) ? value
-            : putRelationship(value, WorkflowRelationshipSchema.parse({ id: `relationship-${crypto.randomUUID()}`, kind, source: connection.source, target: connection.target }))) }
-          catch (error) { report(error) }
+          connectionSource.current = undefined
+          connectNodes(connection.source, connection.target)
         }}>
         <Background color="var(--border)" gap={24} size={1} />
-        <Controls position="bottom-left" showInteractive={false} fitViewOptions={fitViewOptions} />
       </ReactFlow>}
       {children}
     </div>

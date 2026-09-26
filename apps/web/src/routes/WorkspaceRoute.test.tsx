@@ -62,13 +62,13 @@ describe('WorkspaceRoute', () => {
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
   })
 
-  it('offers a new workflow on the empty board and beside an open graph', async () => {
+  it('offers creation on an empty board without an extra button above an open graph', async () => {
     const empty = renderWithRouter(<WorkspaceRouteView workspaceId="workspace-1" state="empty" />)
     expect(within(await screen.findByTestId('workspace-empty')).getByRole('button', { name: 'New workflow' })).toBeVisible()
     empty.unmount()
 
     renderWithRouter(<WorkspaceRouteView workspaceId="workspace-1" state="ready" />)
     expect(await screen.findByTestId('workspace-ready')).toBeVisible()
-    expect(within(screen.getByTestId('workspace-board-actions')).getByRole('button', { name: 'New workflow' })).toBeVisible()
+    expect(screen.queryByTestId('workspace-board-actions')).not.toBeInTheDocument()
   })
 })

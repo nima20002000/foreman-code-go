@@ -1,5 +1,6 @@
+import { mockRuntimeIdentity } from '../../shared/mocks/handlers'
 // @vitest-environment jsdom
-import { act, cleanup, configure, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
@@ -32,7 +33,7 @@ const recordUnhandled = ({ request }: { request: Request }) => {
 const authoring = () => screen.getByRole('region', { name: 'Workflow authoring' })
 const controls = () => within(authoring()).getByRole('group', { name: 'Workflow controls' })
 const control = (name: string) => within(controls()).getByRole('button', { name })
-const saveButton = () => within(screen.getByRole('region', { name: 'Unsaved changes' }))
+const saveButton = () => within(screen.getByRole('region', { name: 'Workflow authoring' }))
   .getByRole('button', { name: /^Save changes$/ })
 let fixtureNumber = 0
 function newBoardMock(options: Parameters<typeof createCurrentBoardMock>[0] = {}) {
@@ -49,7 +50,7 @@ function locks() {
 configure({ asyncUtilTimeout: 5000 })
 beforeEach(() => {
   unhandledRequests.length = 0; server.events.on('request:unhandled', recordUnhandled)
-  useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); sessionStorage.clear(); locks()
+  useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); localStorage.setItem('graphql.chat-instance-binding', `${mockRuntimeIdentity.checkoutId}:${mockRuntimeIdentity.installationId}`); sessionStorage.clear(); locks()
   // DOM infrastructure only; never stub a Board/editor/React Flow component.
   vi.stubGlobal('ResizeObserver', class {
     constructor(private readonly notify: ResizeObserverCallback) {}
@@ -125,7 +126,8 @@ async function save(mock: Mock, user: ReturnType<typeof userEvent.setup>, expect
   const dialog = screen.queryByRole('alertdialog', { name: 'Stop running work and save?' })
   if (dialog) await user.click(within(dialog).getByRole('button', { name: 'Stop runs and save' }))
   await waitFor(() => expect(mock.versions.size).toBe(expectedVersions))
-  await waitFor(() => expect(screen.queryByRole('region', { name: 'Unsaved changes' })).not.toBeInTheDocument())
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument())
+  expect(within(authoring()).queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
   const version = [...mock.versions.values()].at(-1)!
   expect(WorkflowVersionV3Schema.parse(version).executionSemanticsVersion).toBe(3)
   return version
@@ -142,13 +144,66 @@ async function start(mock: Mock, user: ReturnType<typeof userEvent.setup>, expec
 }
 
 describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
+  it('saves before starting the exact newly published version from Save and run', async () => {
+    const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup()
+    await mount(mock)
+    const { key } = await create(mock, user)
+    expect(within(authoring()).queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
+    expect(within(authoring()).queryByRole('button', { name: 'New workflow' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Zoom In|Zoom Out|Fit View/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
+    stageShape(key, 'sequential', mock)
+    expect(screen.queryByText('Start is not ready.')).not.toBeInTheDocument()
+    expect(screen.queryByText('You have unsaved changes')).not.toBeInTheDocument()
+    await user.click(control('Save and run'))
+    await waitFor(() => expect(mock.runs.size).toBe(1))
+    const version = [...mock.versions.values()].at(-1)!
+    expect([...mock.runs.values()][0]!.run.workflowVersionId).toBe(version.id)
+    expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[key]!)).toBe(false)
+    expect(within(authoring()).queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the agent picker open across additions and connects two clicks with undo and redo', async () => {
+    const mock = newBoardMock(), user = userEvent.setup()
+    await mount(mock)
+    const { key } = await create(mock, user)
+    await user.click(control('Add agent to graph'))
+    const picker = screen.getByRole('complementary', { name: 'Add agents to the board' })
+    const worker = within(picker).getByRole('button', { name: 'Worker' })
+    await waitFor(() => expect(worker).toBeEnabled())
+    await user.click(worker); await user.click(worker)
+    expect(picker).toBeVisible()
+    expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes).toHaveLength(2)
+    const draftActions = within(screen.getByRole('group', { name: 'Draft actions' }))
+    expect(draftActions.getByRole('button', { name: 'Discard changes' })).toBeVisible()
+    expect(draftActions.getAllByRole('button')).toHaveLength(2)
+    expect(within(controls()).queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
+    await user.keyboard('{Control>}z{/Control}{Control>}z{/Control}')
+    await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes).toHaveLength(0))
+    expect(within(authoring()).queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
+    await user.keyboard('{Control>}y{/Control}{Control>}y{/Control}')
+    await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes).toHaveLength(2))
+    await user.click(within(picker).getByRole('button', { name: 'Close agent picker' }))
+    stageShape(key, 'sequential', mock)
+    act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph, edges: [] })))
+    const canvas = within(screen.getByLabelText('Editable workflow graph'))
+    fireEvent.click(canvas.getByRole('button', { name: new RegExp(`^${mock.agents[0]!.name},`) }))
+    await waitFor(() => expect(canvas.getByRole('button', { name: new RegExp(`^${mock.agents[0]!.name},`) })).toHaveAttribute('aria-pressed', 'true'))
+    fireEvent.click(canvas.getByRole('button', { name: new RegExp(`^${mock.agents[1]!.name},`) }))
+    await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.edges).toHaveLength(1))
+    expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.edges).toHaveLength(1)
+    await user.keyboard('{Control>}z{/Control}')
+    expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.edges).toHaveLength(0)
+    await user.keyboard('{Control>}y{/Control}')
+    expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.edges).toHaveLength(1)
+  })
   it.each<Shape>(['single', 'sequential', 'parallel', 'conditional', 'approval'])('S3-01..04: fresh %s Save/reopen/Start persists V3 without dummy repeat state', async (shape) => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), first = await mount(mock)
     const { id, key } = await create(mock, user)
     if (shape === 'single') {
       // Exercise real keyboard-accessible attach + entry controls from the empty Board.
       await user.click(control('Add agent to graph'))
-      const add = within(screen.getByRole('complementary', { name: 'Add agent' }))
+      const add = within(screen.getByRole('complementary', { name: 'Add agents to the board' }))
       await user.selectOptions(add.getByRole('combobox', { name: 'Existing agent' }), mock.agents[0]!.id)
       await user.click(add.getByRole('button', { name: 'Add to workflow' }))
       await user.click(control('Workflow settings'))
@@ -303,6 +358,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]).not.toHaveProperty('initialPrompt')
     expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[key]!)).toBe(false)
     expect(mock.versions.size).toBe(1); expect(mock.controls.stopCalls).toBe(1)
+    expect(within(authoring()).queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
   })
   it('stages before Stop confirmation even when the Board summary misses an active Run', async () => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)

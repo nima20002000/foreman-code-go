@@ -1,3 +1,4 @@
+import { mockRuntimeIdentity } from '../../shared/mocks/handlers'
 // @vitest-environment jsdom
 import { act, cleanup, configure, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -29,7 +30,7 @@ const onUnhandled = ({ request }: { request: Request }) => unhandled.push(`${req
 let serial = 0
 configure({ asyncUtilTimeout: 5000 })
 beforeEach(() => {
-  localStorage.clear(); sessionStorage.clear(); clearBoardStartStorage(); clearBoardStopStorage()
+  localStorage.clear(); localStorage.setItem('graphql.chat-instance-binding', `${mockRuntimeIdentity.checkoutId}:${mockRuntimeIdentity.installationId}`); sessionStorage.clear(); clearBoardStartStorage(); clearBoardStopStorage()
   useGraphDraftStore.getState().clearAllDrafts()
   unhandled.length = 0; server.events.on('request:unhandled', onUnhandled)
   const tails = new Map<string, Promise<unknown>>()
@@ -107,7 +108,7 @@ function edit(f: Fixture) {
     nodes: graph.nodes.map((node) => ({ ...node, initialPrompt: 'Instructions staged while recovery is unresolved' })),
   })))
 }
-const saveButton = () => within(screen.getByRole('region', { name: 'Unsaved changes' })).getByRole('button', { name: /^Save changes$/ })
+const saveButton = () => within(screen.getByRole('region', { name: 'Workflow authoring' })).getByRole('button', { name: /^Save changes$/ })
 const editCalls = (f: Fixture, actionName: string) => f.mock.calls.filter((call) => call.method === 'POST'
   && call.path.endsWith('/definition/edits') && (call.body as { action?: string }).action === actionName)
 

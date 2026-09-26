@@ -56,7 +56,7 @@ export function changeDraftAgent(edit: NextDraftEdit, agent: Agent, graph: Workf
   const history = edit.agentHistory ?? edit.history.map(() => ({}))
   const edits = { ...edit.agentEdits, [agent.id]: agent }
   if (sameValue(draftAgents(edit.context).find((item) => item.id === agent.id), agent)) delete edits[agent.id]
-  return { ...edit, graph, agentEdits: referencedAgentEdits(graph, edits),
+  return { ...edit, graph, agentEdits: referencedAgentEdits(graph, edits), future: [],
     history: [...edit.history.slice(-49), edit.graph], agentHistory: [...history.slice(-49), edit.agentEdits ?? {}], validation: undefined }
 }
 

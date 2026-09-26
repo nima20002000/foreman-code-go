@@ -1,6 +1,6 @@
 import { createContext, useContext, memo, useMemo, useRef, useState } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
-import { Background, Controls, ReactFlow, type Edge, type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
+import { Background, ReactFlow, type Edge, type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
 import type { RepeatGraphScopeV3, WorkflowRelationship } from '@graphql/contracts/wave25'
 import { AgentNodeView, Alert, Button, type AgentNodeState, type AgentNodeTransition } from '../../../shared/ui/nocturne'
 import { useProtectedAccessError } from '../../auth/useProtectedAccessError'
@@ -165,7 +165,6 @@ export function SelectedRunCanvas({ scope }: { scope: RepeatGraphScopeV3 }) {
         fitView fitViewOptions={fitViewOptions} proOptions={proOptions} minZoom={0.1} maxZoom={1.6}
         aria-label="Run graph canvas">
         <Background color="var(--border)" gap={24} size={1} />
-        <Controls position="bottom-left" showInteractive={false} fitViewOptions={fitViewOptions} />
       </ReactFlow></Choreography.Provider>
     </div> : null}
     {version ? <p className="pinned-run-footnote">{version.definition.repeat

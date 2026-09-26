@@ -16,7 +16,7 @@ installBoardTestLifecycle()
 type Fixture = Awaited<ReturnType<typeof meaningfulSaveFixture>>
 type EditKind = 'graph-only' | 'update-agent' | 'create-agent'
 const draft = (f: Fixture) => useGraphDraftStore.getState().nextDrafts[f.key]!
-const saveBar = () => within(screen.getByRole('region', { name: 'Unsaved changes' }))
+const saveBar = () => within(screen.getByRole('region', { name: 'Workflow authoring' }))
 const saveDialog = () => screen.findByRole('alertdialog', { name: 'Stop running work and save?' })
 async function mount(f: Fixture) {
   const wire = measureBoardWire(f.mock, f.reply), view = await mountMeasuredBoard(f.href)

@@ -25,9 +25,9 @@ function installAgent(draftKey: string, instanceId: string, agent: Agent, nodeId
   })
 }
 
-export function NewBoardAgent({ draftKey, edit, report, added }: { draftKey: string; edit: NextDraftEdit; report(error: unknown): void; added?(): void }) {
+export function NewBoardAgent({ draftKey, edit, report }: { draftKey: string; edit: NextDraftEdit; report(error: unknown): void }) {
   const defaults = useAgentDefaultsQuery()
-  return <section className="next-draft-section" aria-label="Create board Agent"><h3>New agent</h3>
+  return <section className="next-draft-section" aria-label="Create board Agent">
     {defaults.isError ? <Alert tone="danger" title="Agent defaults could not be loaded."
       action={<Button size="sm" onClick={() => void defaults.refetch()}>Try again</Button>} /> : null}
     <div className="board-new-agent">{(['orchestrator', 'coder'] as const).map((role) => <Button key={role} variant="secondary"
@@ -39,9 +39,8 @@ export function NewBoardAgent({ draftKey, edit, report, added }: { draftKey: str
         const workers = editorAgents(edit).filter((item) => item.productRole === 'coder' && edit.graph.nodes.some((node) => node.agentId === item.id)).length
         const name = role === 'orchestrator' ? 'Orchestrator' : `Worker ${workers + 1}`
         try { installAgent(draftKey, edit.instanceId, defaultAgentForHarness(saved.harness.harness,
-          `agent-${crypto.randomUUID()}`, name, saved.harness, role)); added?.() } catch (error) { report(error) }
+          `agent-${crypto.randomUUID()}`, name, saved.harness, role)) } catch (error) { report(error) }
       }}>{role === 'orchestrator' ? 'Orchestrator' : 'Worker'}</Button>)}</div>
-    <p className="next-draft-hint">Starts from your saved agent defaults. Orchestrators plan and hand off work; workers do it.</p>
   </section>
 }
 
