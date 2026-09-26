@@ -14,7 +14,12 @@ import type { ExecutionCredentialProvider } from '../src/modules/harnesses/mcpDe
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../src/modules/harnesses/port.js'
 import type { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
-import type { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
+import type { Wave25InteractionRepository as PostgresInteractionRepository } from '../src/modules/interactions/wave25/repository.js'
+import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
+import type { RepeatNativeObservationStore } from '../src/modules/interactions/repeatObservation.js'
+import type { WorkflowClosureStore } from '../src/modules/interactions/workflowClosure.js'
+import type { RepeatNativeEvidence } from '../src/modules/runs/repeatNativeRepository.js'
+import { nativeApprovalContext } from '../src/modules/interactions/nativeApprovalContext.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import type { PostgresRunRepository } from '../src/modules/runs/postgres.js'
@@ -81,7 +86,7 @@ class ScriptedManager implements NativeHarnessSessionManager {
   async reconcile(session: NativeSessionReference, correlationId: string) {
     if (!this.turns.length && !this.attaches.length) return { events: [], pendingInteractions: [] }
     const history = await this.history(session)
-    return { ...history, ...(history.terminalResult ? { terminalTurn: { correlationId, providerId: 'workflow-turn', result: history.terminalResult } } : {}) }
+    return { ...history, correlationId, nativeTurnId: 'workflow-turn', ...(history.terminalResult ? { terminalTurn: { correlationId, providerId: 'workflow-turn', result: history.terminalResult } } : {}) }
   }
   async close(session: NativeSessionReference) { this.closed.push(session) }
 }
@@ -105,7 +110,8 @@ function fixture(harness: AgentHarness = 'codex') {
     workflowNodeId: candidate.workflowNodeId, workingDirectory: candidate.workingDirectory!,
     runtimeDirectory: candidate.runtimeDirectory!, configuration, input: candidate.input,
   }
-  const executions = new Map<string, HarnessExecution>()
+  const captures = createWorkflowNativeCaptureChannel()
+  const executions = new Map<string, HarnessExecution>([[candidate.id, structuredClone(candidate)]])
   const records = new Map<string, DurableInteraction>()
   const updates: HarnessExecution[] = []
   const revoked: string[] = []
@@ -118,8 +124,14 @@ function fixture(harness: AgentHarness = 'codex') {
   let budgetFailure: Error | undefined
   let stopFailure: Error | undefined
   let cancelPendingCalls = 0
+  let stopRequested = false, cleanupPending = false
+  const negativeSettlements: Array<{ id: string; canceled: boolean }> = []
   const owner = { runId: candidate.runId, assertOwned() {}, client: {} } as unknown as RunOwnership
   const runs = {
+    async getRepeatSnapshot() { return { run: { executionState: 'running' }, stopRequested, cleanupPending } },
+    async requestCleanup() { cleanupPending = true },
+    async *executionPages() { yield [...executions.values()] },
+    async repeat() { return { async settleNegativeExecution(id: string, canceled: boolean) { negativeSettlements.push({ id, canceled }) } } },
     async ensureExecution(input: HarnessExecution) {
       const existing = [...executions.values()].find((item) => item.runId === input.runId
         && item.workflowNodeId === input.workflowNodeId && item.attempt === input.attempt)
@@ -131,7 +143,20 @@ function fixture(harness: AgentHarness = 'codex') {
     async getExecutionConfiguration() { return configuration },
     async get() { return { id: candidate.runId, workspaceId: configuration.workspaceId } },
     async listExecutions() { return [...executions.values()].map((item) => structuredClone(item)) },
-    async updateExecution(execution: HarnessExecution, actualOwner: RunOwnership) {
+    async updateExecution(execution: HarnessExecution, actualOwner: RunOwnership, evidence: RepeatNativeEvidence) {
+      const captured = captures.verify.read(evidence)
+      if (captured.source.type === 'history') for (const pending of captured.source.history.pendingInteractions) {
+        const id = pending.turn.nativeRequestId!
+        if (![...records.values()].some((item) => item.nativeRequestId === id)) {
+          const context = nativeApprovalContext(pending, captured.source.history.events)
+          records.set(id, { id, revision: 0, workspaceId: configuration.workspaceId, workflowId: 'workflow-1',
+            runId: execution.runId, executionId: execution.id, requestingAgentId: execution.agentId,
+            ...pending.session, nativeRequestId: id, nativeRequestType: pending.nativeRequestType,
+            graphThreadId: execution.runId, request: pending.request, responseOptions: pending.responseOptions,
+            ...(context ? { reviewContext: context } : {}), approval: { handler: 'user' },
+            status: 'pending', deliveryState: 'not_started', createdAt: now, updatedAt: now })
+        }
+      }
       assert.equal(actualOwner, owner)
       assert.ok(executions.has(execution.id), 'must update the ensured durable execution, not a candidate')
       executions.set(execution.id, structuredClone(execution))
@@ -159,6 +184,7 @@ function fixture(harness: AgentHarness = 'codex') {
       return { interaction: structuredClone(input), created: true }
     },
     async get(id: string) { return records.get(id) },
+    async getNativeRequest(_executionId: string, _harness: string, _sessionId: string, requestId: string) { return [...records.values()].find((item) => item.nativeRequestId === requestId) },
     async getForExecution(id: string) { return [...records.values()].filter((item) => item.executionId === id).at(-1) },
     async cancelPendingForExecution(executionId: string, ids?: readonly string[]) {
       for (const [id, row] of records) if (row.executionId === executionId && row.status === 'pending'
@@ -186,13 +212,42 @@ function fixture(harness: AgentHarness = 'codex') {
         agentId: configuration.agentId, variables: { GRAPHQL_APP_MCP_TOKEN: 'test-scoped-token' },
       } } }
     },
+    async revoke() { revoked.push(candidate.id) },
     async revokeForExecution(id: string) { revoked.push(id) },
   } as unknown as ExecutionCredentialProvider
   const manager = new ScriptedManager(harness)
   const resolver = new ExecutionScopedNativeSessionManagerResolver(() => manager)
-  const coordinator = new ApprovalExecutionCoordinator(runs, interactions, budgets, resolver, 60_000, credentials)
+  let closed: Awaited<ReturnType<WorkflowClosureStore['read']>>
+  const closures: WorkflowClosureStore = {
+    async begin() { closed = undefined; return '1' },
+    async record(execution, session, durableGeneration, check) { check(); closed = { execution, session, durableGeneration }; return closed },
+    async read() { return closed },
+    async recordDetached(_execution, _session, _generation, check) { check() },
+    async recordUnbound(execution, durableGeneration, check) { check(); return { execution, durableGeneration } },
+    async readUnbound() { return undefined },
+  }
+  let launch = true
+  const store: RepeatNativeObservationStore = {
+    async readExecution(id) {
+      const execution = executions.get(id)
+      if (!execution) throw new DomainError('EXECUTION_NOT_FOUND', 'No admitted execution', 404)
+      return { execution, ref: { nodeId: execution.workflowNodeId, occurrence: null }, slotId: 'approval-slot',
+        input: { executionSemanticsVersion: 3, runInput: {}, occurrence: null, entry: null, predecessors: [] },
+        inputDigest: `sha256:${'1'.repeat(64)}`, accepted: false }
+    },
+    async assertExecutionAdmission(id) { assert.ok(executions.has(id)) },
+    async assertNativeBoundary(id) { assert.ok(executions.has(id)) },
+    async exactSession() { return manager.session },
+    async authorizeNativeSubmission() {},
+    consumeLaunch() { const available = launch; launch = false; return available },
+    async settleNativeExecution() {
+      if (!closed) throw new DomainError('REPEAT_CLEANUP_PENDING', 'Original manager close is required', 409)
+    },
+  }
+  const coordinator = new ApprovalExecutionCoordinator(runs, interactions, budgets, resolver, 60_000, credentials,
+    undefined, closures, undefined, captures.capture)
   const controller = new AbortController()
-  const input = { candidate, request, approval: { handler: 'user' as const }, workflowId: 'workflow-1',
+  const input = { execution: candidate, store, request, approval: { handler: 'user' as const }, workflowId: 'workflow-1',
     graphThreadId: candidate.runId, owner, signal: controller.signal }
   function pending(id: string): PendingNativeInteraction {
     const option: ApprovalResponseOption = { optionId: `option:${id}`, semantic: 'approve_once', label: 'Approve once',
@@ -210,6 +265,7 @@ function fixture(harness: AgentHarness = 'codex') {
     return next
   }
   return { candidate, configuration, request, input, executions, records, updates, revoked, prepared, waits, resumes, stops,
+    store, negativeSettlements, stopFence() { stopRequested = true }, loseLaunch() { launch = false },
     coordinator, manager, resolver, controller, owner, pending, snapshot, delivered, budgets, interactions, runs,
     failActivity(error: Error) { activityFailure = error },
     failPrepare(error: Error) { prepareFailure = error },
@@ -221,7 +277,7 @@ function fixture(harness: AgentHarness = 'codex') {
 it('continues observing normal native work after approval without replay or credential revocation', async () => {
   const f = fixture()
   f.snapshot('request-a')
-  assert.equal((await f.coordinator.ensureObserve(f.input)).state, 'waiting')
+  assert.equal((await f.coordinator.observeExact(f.input)).state, 'waiting')
   f.delivered('request-a')
   f.snapshot()
   let observations = 0
@@ -229,7 +285,7 @@ it('continues observing normal native work after approval without replay or cred
     assert.equal(f.revoked.length, 0)
     if (++observations === 3) f.manager.snapshot = { events: [], pendingInteractions: [], terminalResult: success }
   }
-  const result = await f.coordinator.ensureObserve(f.input)
+  const result = await f.coordinator.observeExact(f.input)
   assert.equal(result.state, 'completed')
   assert.equal(observations, 3)
   assert.equal(f.manager.creates.length, 1)
@@ -244,11 +300,11 @@ it('continues observing normal native work after approval without replay or cred
 it('persists a later approval under its own exact request and does not return the prior delivery', async () => {
   const f = fixture()
   f.snapshot('request-a')
-  const first = await f.coordinator.ensureObserve(f.input)
+  const first = await f.coordinator.observeExact(f.input)
   assert.equal(first.state, 'waiting')
   const delivered = f.delivered('request-a')
   f.snapshot('request-b')
-  const second = await f.coordinator.ensureObserve(f.input)
+  const second = await f.coordinator.observeExact(f.input)
   assert.equal(second.state, 'waiting')
   if (second.state !== 'waiting') throw new Error('expected approval')
   assert.equal(second.interaction.nativeRequestId, 'request-b')
@@ -264,7 +320,7 @@ it('persists redacted context from the exact native file-change item with the pe
   f.manager.snapshot = { pendingInteractions: [request], events: [{ sequence: 49, type: 'item.started', occurredAt: now,
     payload: { threadId: f.manager.session.nativeSessionId, turnId: 'turn-exact', item: { id: 'item-file', type: 'fileChange',
       changes: [{ path: '/accepted/test-scoped-token.ts', diff: '--- a/file\n+++ b/file\n@@ -1 +1 @@\n-secret\n+test-scoped-token' }] } } }] }
-  const observed = await f.coordinator.ensureObserve(f.input)
+  const observed = await f.coordinator.observeExact(f.input)
   assert.equal(observed.state, 'waiting')
   if (observed.state !== 'waiting') throw new Error('expected approval')
   assert.deepEqual(observed.interaction.reviewContext, {
@@ -276,14 +332,14 @@ it('persists redacted context from the exact native file-change item with the pe
 it('persists all simultaneous OpenCode approvals and tolerates out-of-order delivery', async () => {
   const f = fixture('opencode')
   f.snapshot('request-a', 'request-b', 'request-c')
-  const first = await f.coordinator.ensureObserve(f.input)
+  const first = await f.coordinator.observeExact(f.input)
   assert.equal(first.state, 'waiting')
   if (first.state !== 'waiting') throw new Error('expected approval')
   assert.deepEqual(first.interactions.map((item) => item.nativeRequestId), ['request-a', 'request-b', 'request-c'])
   const ids = [...f.records.keys()]
   f.delivered('request-b')
   // The native snapshot may still include a delivered request while applying it.
-  const second = await f.coordinator.ensureObserve(f.input)
+  const second = await f.coordinator.observeExact(f.input)
   assert.equal(second.state, 'waiting')
   if (second.state !== 'waiting') throw new Error('expected approval')
   assert.deepEqual(second.interactions.map((item) => item.nativeRequestId), ['request-a', 'request-c'])
@@ -294,13 +350,13 @@ it('persists all simultaneous OpenCode approvals and tolerates out-of-order deli
 it('ignores an already-delivered native ask until its same turn becomes terminal', async () => {
   const f = fixture()
   f.snapshot('request-a')
-  await f.coordinator.ensureObserve(f.input)
+  await f.coordinator.observeExact(f.input)
   f.delivered('request-a')
   let observed = 0
   f.manager.onHistory = () => {
     if (++observed === 2) f.manager.snapshot = { events: [], pendingInteractions: [], terminalResult: success }
   }
-  assert.equal((await f.coordinator.ensureObserve(f.input)).state, 'completed')
+  assert.equal((await f.coordinator.observeExact(f.input)).state, 'completed')
   assert.equal(f.records.size, 1)
   assert.equal(f.manager.turns.length, 1)
 })
@@ -308,7 +364,7 @@ it('ignores an already-delivered native ask until its same turn becomes terminal
 it('reuses a resident Codex App-MCP context without attaching, replacing credentials, or closing it', async () => {
   const f = fixture()
   f.snapshot('request-a')
-  const waiting = await f.coordinator.ensureObserve(f.input)
+  const waiting = await f.coordinator.observeExact(f.input)
   if (waiting.state !== 'waiting') throw new Error('expected approval')
   const attached = await f.coordinator.attachInteraction(waiting.interaction)
   assert.deepEqual(attached.session, f.manager.session)
@@ -321,7 +377,7 @@ it('reuses a resident Codex App-MCP context without attaching, replacing credent
 it('rejects a different native session before touching a healthy resident manager', async () => {
   const f = fixture()
   f.snapshot('request-a')
-  const waiting = await f.coordinator.ensureObserve(f.input)
+  const waiting = await f.coordinator.observeExact(f.input)
   if (waiting.state !== 'waiting') throw new Error('expected approval')
   const reads = f.manager.observed.length
   await assert.rejects(f.coordinator.attachInteraction({ ...waiting.interaction, nativeSessionId: 'other-session' }), /ownership context/)
@@ -333,10 +389,11 @@ it('reconstructs cold attachment from the ensured durable execution rather than 
   const f = fixture()
   f.executions.set(f.candidate.id, { ...f.candidate, state: 'running', nativeSessionId: f.manager.session.nativeSessionId })
   f.manager.snapshot = { events: [], pendingInteractions: [], terminalResult: success }
-  const observation = await f.coordinator.ensureObserve({ ...f.input,
-    candidate: { ...f.candidate, id: 'fresh-candidate', input: { wrong: true } },
-    request: { ...f.request, executionId: 'fresh-candidate', input: { wrong: true }, runtimeDirectory: '/fresh/runtime' },
-  })
+  await assert.rejects(f.coordinator.observeExact({ ...f.input,
+    execution: { ...f.candidate, id: 'fresh-candidate', input: { wrong: true } },
+  }), { code: 'EXECUTION_NOT_FOUND' })
+  assert.equal(f.manager.attaches.length, 0)
+  const observation = await f.coordinator.observeExact(f.input)
   assert.equal(observation.execution.id, f.candidate.id)
   const attached = f.manager.attaches[0]!
   assert.notEqual(attached.kind, 'operator')
@@ -352,15 +409,15 @@ it('reconstructs cold attachment from the ensured durable execution rather than 
 
 it('fails closed for an existing attempt with no durable native identity rather than replaying a start', async () => {
   const f = fixture()
-  f.executions.set(f.candidate.id, f.candidate)
-  await assert.rejects(f.coordinator.ensureObserve(f.input), /will not be replayed/)
+  f.loseLaunch()
+  await assert.rejects(f.coordinator.observeExact(f.input), { code: 'NATIVE_SESSION_START_UNCERTAIN' })
   assert.equal(f.manager.creates.length, 0)
   assert.equal(f.manager.turns.length, 0)
-  assert.equal(f.executions.get(f.candidate.id)?.result?.outcome, 'failed')
+  assert.equal(f.executions.get(f.candidate.id)?.result, undefined)
 })
 
 for (const failure of ['prepare', 'create', 'turn', 'activity', 'budget'] as const) {
-  it(`terminally settles the durable execution after a ${failure} failure`, async () => {
+  it(`preserves uncertain execution after a ${failure} transport or persistence failure`, async () => {
     const f = fixture()
     const error = new Error(`${failure} failed`)
     f.snapshot('request-a')
@@ -369,22 +426,22 @@ for (const failure of ['prepare', 'create', 'turn', 'activity', 'budget'] as con
     if (failure === 'turn') f.manager.turnError = error
     if (failure === 'activity') f.failActivity(error)
     if (failure === 'budget') f.failBudget(error)
-    await assert.rejects(f.coordinator.ensureObserve(f.input), error)
-    assert.equal(f.executions.get(f.candidate.id)?.state, 'completed')
-    assert.equal(f.executions.get(f.candidate.id)?.result?.outcome, 'failed')
-    assert.ok(f.executions.get(f.candidate.id)?.finishedAt)
-    assert.ok(f.revoked.includes(f.candidate.id))
+    await assert.rejects(f.coordinator.observeExact(f.input), error)
+    assert.notEqual(f.executions.get(f.candidate.id)?.state, 'completed')
+    assert.equal(f.negativeSettlements.length, 0)
+    assert.equal(f.executions.get(f.candidate.id)?.finishedAt, undefined)
+    assert.equal(f.revoked.length, 0)
   })
 }
 
 it('settles resumed history failure using the durable identity and preserves the native failure code', async () => {
   const f = fixture()
   f.snapshot('request-a')
-  await f.coordinator.ensureObserve(f.input)
+  await f.coordinator.observeExact(f.input)
   f.delivered('request-a')
   f.manager.historyError = new HarnessExecutionError('TRANSPORT_LOST', 'The native transport disconnected.')
-  await assert.rejects(f.coordinator.ensureObserve({ ...f.input, candidate: { ...f.candidate, id: 'fresh-candidate' } }), /disconnected/)
-  assert.equal(f.executions.get(f.candidate.id)?.result?.error?.code, 'TRANSPORT_LOST')
+  await assert.rejects(f.coordinator.observeExact(f.input), /disconnected/)
+  assert.deepEqual(f.negativeSettlements, [{ id: f.candidate.id, canceled: false }])
   assert.equal(f.manager.canceled.length, 1)
   assert.equal(f.manager.closed.length, 1)
   assert.equal(f.updates.some((item) => item.id === 'fresh-candidate'), false)
@@ -393,14 +450,14 @@ it('settles resumed history failure using the durable identity and preserves the
 it('does not return an old delivered interaction when cold attachment fails', async () => {
   const f = fixture()
   f.snapshot('request-a')
-  await f.coordinator.ensureObserve(f.input)
+  await f.coordinator.observeExact(f.input)
   f.delivered('request-a')
   f.resolver.release({ harness: f.manager.harness, executionId: f.candidate.id, agentId: f.candidate.agentId,
     workingDirectory: f.candidate.workingDirectory!, configuration: f.configuration })
   f.manager.attachError = new Error('native session unavailable')
-  await assert.rejects(f.coordinator.ensureObserve(f.input), /native session unavailable/)
-  assert.equal(f.executions.get(f.candidate.id)?.state, 'completed')
-  assert.equal(f.executions.get(f.candidate.id)?.result?.outcome, 'failed')
+  await assert.rejects(f.coordinator.observeExact(f.input), /native session unavailable/)
+  assert.notEqual(f.executions.get(f.candidate.id)?.state, 'completed')
+  assert.equal(f.executions.get(f.candidate.id)?.result, undefined)
   assert.equal(f.manager.creates.length, 1)
   assert.equal(f.manager.turns.length, 1)
 })
@@ -408,21 +465,24 @@ it('does not return an old delivered interaction when cold attachment fails', as
 it('handles cancellation during post-approval observation without replay', async () => {
   const f = fixture()
   f.snapshot('request-a')
-  await f.coordinator.ensureObserve(f.input)
+  await f.coordinator.observeExact(f.input)
   f.delivered('request-a')
   f.snapshot()
   f.manager.onHistory = () => f.controller.abort()
-  await assert.rejects(f.coordinator.ensureObserve(f.input))
-  assert.equal(f.executions.get(f.candidate.id)?.result?.outcome, 'canceled')
+  await assert.rejects(f.coordinator.observeExact(f.input))
+  f.stopFence()
+  await f.coordinator.cancelRun(f.candidate.runId, f.owner)
+  assert.notEqual(f.executions.get(f.candidate.id)?.result?.outcome, 'succeeded')
   assert.equal(f.manager.turns.length, 1)
   assert.equal(f.manager.canceled.length, 1)
-  assert.deepEqual(f.revoked, [f.candidate.id])
+  assert.deepEqual([...new Set(f.revoked)], [f.candidate.id])
+  assert.deepEqual(f.negativeSettlements, [{ id: f.candidate.id, canceled: true }])
 })
 
 it('passes the abort signal to the initial native turn', async () => {
   const f = fixture()
   f.snapshot('request-a')
-  await f.coordinator.ensureObserve(f.input)
+  await f.coordinator.observeExact(f.input)
   const nativeSignal = f.manager.turns[0]?.signal
   assert.ok(nativeSignal)
   assert.equal(nativeSignal.aborted, false)
@@ -433,7 +493,7 @@ it('passes the abort signal to the initial native turn', async () => {
 it('returns a terminal canceled result without replacing the native session', async () => {
   const f = fixture()
   f.manager.snapshot = { events: [], pendingInteractions: [], terminalResult: { outcome: 'canceled' } }
-  const observation = await f.coordinator.ensureObserve(f.input)
+  const observation = await f.coordinator.observeExact(f.input)
   assert.equal(observation.state, 'completed')
   assert.equal(observation.execution.result?.outcome, 'canceled')
   assert.equal(f.manager.creates.length, 1)
@@ -442,28 +502,29 @@ it('returns a terminal canceled result without replacing the native session', as
 
 it('returns a completed durable result before checking its stopped active-time budget', async () => {
   const f = fixture()
-  f.executions.set(f.candidate.id, { ...f.candidate, state: 'completed', result: success, finishedAt: now })
+  f.manager.snapshot = { events: [], pendingInteractions: [], terminalResult: success }
+  await f.coordinator.observeExact(f.input)
+  const reads = f.manager.observed.length
   f.failBudget(new Error('budget already stopped'))
-  const observation = await f.coordinator.ensureObserve(f.input)
+  const observation = await f.coordinator.observeExact(f.input)
   assert.equal(observation.state, 'completed')
-  assert.equal(f.manager.creates.length, 0)
-  assert.equal(f.manager.observed.length, 0)
+  assert.equal(f.manager.creates.length, 1)
+  assert.equal(f.manager.observed.length, reads)
 })
 
-it('rejects a native pending request whose harness/session identity does not match the observed turn', async () => {
+it('cannot return a native ask whose original-source publication did not commit', async () => {
   const f = fixture()
-  const pending = f.pending('request-a')
-  f.manager.snapshot = { events: [], pendingInteractions: [{ ...pending,
-    session: { ...pending.session, nativeSessionId: 'other-session' } }] }
-  await assert.rejects(f.coordinator.ensureObserve(f.input), /session identity/)
-  assert.equal(f.records.size, 0)
-  assert.equal(f.executions.get(f.candidate.id)?.result?.outcome, 'failed')
+  f.snapshot('request-a')
+  f.interactions.getNativeRequest = async () => undefined
+  await assert.rejects(f.coordinator.observeExact(f.input), { code: 'APPROVAL_ORIGINAL_SOURCE_REQUIRED' })
+  assert.equal(f.executions.get(f.candidate.id)?.result, undefined)
+  assert.equal(f.manager.responses, 0)
 })
 
 it('consumes only delivered resume identities belonging to this exact durable execution', async () => {
   const f = fixture()
   f.snapshot('request-a', 'request-b')
-  const waiting = await f.coordinator.ensureObserve(f.input)
+  const waiting = await f.coordinator.observeExact(f.input)
   if (waiting.state !== 'waiting') throw new Error('expected approval')
   const a = f.delivered('request-a')
   await f.coordinator.assertResume(waiting.execution, { interactionId: a.id })
@@ -483,10 +544,12 @@ it('settles every unfinished execution on owned run cleanup even if one budget s
   f.executions.set('execution-sibling', { ...f.candidate, id: 'execution-sibling', workflowNodeId: 'sibling', state: 'waiting' })
   f.executions.set('execution-success', { ...f.candidate, id: 'execution-success', workflowNodeId: 'success',
     state: 'completed', result: success, finishedAt: now })
+  f.stopFence()
   f.failStop(new Error('budget cleanup unavailable'))
   await assert.rejects(f.coordinator.cancelRun(f.candidate.runId, f.owner), AggregateError)
-  assert.equal(f.executions.get(f.candidate.id)?.result?.outcome, 'canceled')
-  assert.equal(f.executions.get('execution-sibling')?.result?.outcome, 'canceled')
+  assert.notEqual(f.executions.get(f.candidate.id)?.result?.outcome, 'succeeded')
+  assert.equal(f.executions.get('execution-sibling')?.result, undefined)
+  assert.equal(f.negativeSettlements.length, 0)
   assert.deepEqual(f.executions.get('execution-success')?.result, success)
   assert.equal(f.cancelPendingCalls(), 1)
   assert.equal(f.revoked.length, 3)
@@ -495,7 +558,7 @@ it('settles every unfinished execution on owned run cleanup even if one budget s
 it('does not overwrite a live execution when cancellation is requested without its owner', async () => {
   const f = fixture()
   f.executions.set(f.candidate.id, f.candidate)
-  await f.coordinator.cancelRun(f.candidate.runId)
+  await assert.rejects(f.coordinator.cancelRun(f.candidate.runId), { code: 'GRAPH_STOP_CONFLICT' })
   assert.equal(f.executions.get(f.candidate.id)?.state, 'starting')
   assert.equal(f.updates.length, 0)
 })
@@ -504,7 +567,7 @@ it('rejects a cold attach that returns a different native identity', async () =>
   const f = fixture()
   f.executions.set(f.candidate.id, { ...f.candidate, state: 'running', nativeSessionId: f.manager.session.nativeSessionId })
   f.manager.attachedSession = { ...f.manager.session, nativeSessionId: 'replacement-session' }
-  await assert.rejects(f.coordinator.ensureObserve(f.input), /different session identity/)
+  await assert.rejects(f.coordinator.observeExact(f.input), /different session identity/)
   assert.equal(f.manager.creates.length, 0)
   assert.equal(f.manager.turns.length, 0)
   assert.equal(f.executions.get(f.candidate.id)?.nativeSessionId, f.manager.session.nativeSessionId)
@@ -513,12 +576,12 @@ it('rejects a cold attach that returns a different native identity', async () =>
 it('stops post-approval observation when the active-time budget expires', async () => {
   const f = fixture()
   f.snapshot('request-a')
-  await f.coordinator.ensureObserve(f.input)
+  await f.coordinator.observeExact(f.input)
   f.delivered('request-a')
   f.snapshot()
   f.manager.onHistory = () => f.failBudget(new DomainError('EXECUTION_ACTIVE_TIMEOUT', 'active budget exhausted', 409))
-  await assert.rejects(f.coordinator.ensureObserve(f.input), /active budget exhausted/)
-  assert.equal(f.executions.get(f.candidate.id)?.result?.error?.code, 'EXECUTION_ACTIVE_TIMEOUT')
+  await assert.rejects(f.coordinator.observeExact(f.input), /active budget exhausted/)
+  assert.notEqual(f.executions.get(f.candidate.id)?.result?.outcome, 'succeeded')
   assert.equal(f.manager.turns.length, 1)
 })
 
@@ -526,24 +589,25 @@ it('stops post-approval observation when the active-time budget expires', async 
 it('does not accept a terminal success when cancellation arrives during the history read', async () => {
   const f = fixture()
   f.snapshot('request-a')
-  await f.coordinator.ensureObserve(f.input)
+  await f.coordinator.observeExact(f.input)
   f.delivered('request-a')
   f.manager.snapshot = { events: [], pendingInteractions: [], terminalResult: success }
   f.manager.onHistory = () => f.controller.abort()
-  await assert.rejects(f.coordinator.ensureObserve(f.input))
-  assert.equal(f.executions.get(f.candidate.id)?.result?.outcome, 'canceled')
+  await assert.rejects(f.coordinator.observeExact(f.input))
+  assert.notEqual(f.executions.get(f.candidate.id)?.result?.outcome, 'succeeded')
   assert.equal(f.manager.turns.length, 1)
 })
 
 it('still cancels the resident native session when stopping its budget fails', async () => {
   const f = fixture()
   f.snapshot('request-a')
-  await f.coordinator.ensureObserve(f.input)
+  await f.coordinator.observeExact(f.input)
+  f.stopFence()
   f.failStop(new Error('budget stop failed'))
   await assert.rejects(f.coordinator.cancelRun(f.candidate.runId, f.owner), AggregateError)
   assert.equal(f.manager.canceled.length, 1)
   assert.equal(f.manager.closed.length, 1)
-  assert.equal(f.executions.get(f.candidate.id)?.result?.outcome, 'canceled')
+  assert.notEqual(f.executions.get(f.candidate.id)?.result?.outcome, 'succeeded')
   assert.equal(f.cancelPendingCalls(), 1)
 })
 
@@ -551,17 +615,17 @@ it('still cancels the resident native session when stopping its budget fails', a
 it('does not stop the shared budget or revoke replacement credentials after ownership is lost', async () => {
   const f = fixture()
   f.snapshot('request-a')
-  await f.coordinator.ensureObserve(f.input)
+  await f.coordinator.observeExact(f.input)
   f.delivered('request-a')
   f.snapshot()
   f.manager.onHistory = () => {
     f.owner.assertOwned = () => { throw new Error('execution owner disconnected') }
   }
-  await assert.rejects(f.coordinator.ensureObserve(f.input), /owner disconnected/)
+  await assert.rejects(f.coordinator.observeExact(f.input), /owner disconnected/)
   assert.equal(f.stops.length, 0)
   assert.equal(f.revoked.length, 0)
   assert.equal(f.manager.canceled.length, 0)
-  assert.equal(f.manager.closed.length, 1)
+  assert.equal(f.manager.closed.length, 0)
 })
 
 
@@ -570,12 +634,12 @@ it('aborts a stalled native iterator at its own remaining execution budget', asy
   f.budgets.remaining = async () => 20
   f.manager.startTurn = async function* () { await new Promise(() => undefined); yield {} as NativeHarnessEvent }
   const started = Date.now()
-  await assert.rejects(f.coordinator.ensureObserve(f.input), { code: 'EXECUTION_ACTIVE_TIMEOUT' })
+  await assert.rejects(f.coordinator.observeExact(f.input), { code: 'EXECUTION_ACTIVE_TIMEOUT' })
   assert.ok(Date.now() - started < 1000)
   assert.equal(f.manager.canceled.length, 1)
   assert.equal(f.manager.closed.length, 1)
-  assert.equal(f.executions.get(f.candidate.id)?.result?.outcome, 'failed')
-  assert.equal(f.executions.get(f.candidate.id)?.result?.error?.code, 'EXECUTION_ACTIVE_TIMEOUT')
+  assert.equal(f.executions.get(f.candidate.id)?.result, undefined)
+  assert.notEqual(f.executions.get(f.candidate.id)?.result?.outcome, 'succeeded')
 })
 
 it('refuses a generic terminal result that belongs to a different native turn', async () => {
@@ -584,19 +648,21 @@ it('refuses a generic terminal result that belongs to a different native turn', 
   f.manager.snapshot = { events: [], pendingInteractions: [], terminalResult: success }
   f.manager.reconcile = async () => ({ events: [], pendingInteractions: [], terminalResult: success,
     terminalTurn: { correlationId: 'unrelated-review', providerId: 'review-turn', result: success } })
-  await assert.rejects(f.coordinator.ensureObserve(f.input), (error: unknown) => error instanceof Error && error.cause instanceof DomainError && error.cause.code === 'EXECUTION_ACTIVE_TIMEOUT')
+  await assert.rejects(f.coordinator.observeExact(f.input), (error: unknown) => error instanceof DomainError && error.code === 'EXECUTION_ACTIVE_TIMEOUT'
+    || error instanceof Error && error.cause instanceof DomainError && error.cause.code === 'EXECUTION_ACTIVE_TIMEOUT')
   assert.notEqual(f.executions.get(f.candidate.id)?.result?.outcome, 'succeeded')
 })
 
 
-it('cancels durable sibling asks after a provider rejection and successful completion', async () => {
+it('does not replay sibling asks after exact provider completion', async () => {
   const f = fixture('opencode')
   f.snapshot('first', 'sibling')
-  await f.coordinator.ensureObserve(f.input)
+  await f.coordinator.observeExact(f.input)
   f.delivered('first')
   f.manager.snapshot = { events: [], pendingInteractions: [], canceledRequestIds: ['sibling'], terminalResult: success }
-  const completed = await f.coordinator.ensureObserve(f.input)
+  const completed = await f.coordinator.observeExact(f.input)
   assert.equal(completed.state, 'completed')
-  assert.equal([...f.records.values()].find((row) => row.nativeRequestId === 'sibling')?.status, 'canceled')
+  assert.equal(f.manager.responses, 0)
+  assert.equal(f.manager.turns.length, 1)
   assert.equal([...f.records.values()].find((row) => row.nativeRequestId === 'first')?.status, 'delivered')
 })
