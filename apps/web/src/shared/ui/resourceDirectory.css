@@ -91,6 +91,10 @@
 .resource-card :is(.workflow-card-actions, .workspace-card-actions) .n-button { min-height: 44px; font-size: 13px; }
 .resource-card :is(.workflow-card-actions, .workspace-card-actions) .n-input { min-height: 44px; font-size: 15px; }
 .workspace-overview { display: grid; align-content: start; gap: var(--space-6); }
+.workspace-overview > .workflow-directory { width: 100%; margin: 0; padding: var(--space-4) 0 0; border-top: 1px solid var(--n-border); }
+.workspace-overview > .workflow-directory .n-page-header { padding: 0; flex-wrap: wrap; gap: var(--space-3); }
+.workspace-overview > .workflow-directory h2 { font-size: 15px; font-weight: 500; }
+.workspace-overview > .workflow-directory .n-empty { padding: var(--space-4) var(--space-3); }
 .workspace-overview .settings-card-list { grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: var(--space-3); }
 .workspace-overview .settings-card-open { width: 100%; min-height: 5rem; gap: var(--space-3); padding: 1rem; border: 0; background: transparent; font: inherit; text-align: left; cursor: pointer; }
 .workspace-overview .settings-card-icon { width: 1rem; height: 1rem; min-width: 1rem; padding: 0; border: 0; background: none; color: var(--n-muted); }

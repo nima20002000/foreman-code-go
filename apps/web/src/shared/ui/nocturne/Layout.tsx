@@ -13,8 +13,9 @@ export function CardHeader({ title, description, action, eyebrow }: { title: str
 }
 export function CardBody({ children, className }: { children: ReactNode; className?: string }) { return <div className={cx('n-card-body', className)}>{children}</div> }
 export function CardFooter({ children }: { children: ReactNode }) { return <div className="n-card-footer">{children}</div> }
-export function PageHeader({ title, description, eyebrow, actions }: { title: string; description?: string; eyebrow?: string; actions?: ReactNode }) {
-  return <header className="n-page-header"><div>{eyebrow && <p className="n-eyebrow">{eyebrow}</p>}<h1>{title}</h1>{description && <p>{description}</p>}</div>{actions && <div className="n-actions">{actions}</div>}</header>
+export function PageHeader({ title, description, eyebrow, actions, headingLevel = 1 }: { title: string; description?: string; eyebrow?: string; actions?: ReactNode; headingLevel?: 1 | 2 }) {
+  const Heading = headingLevel === 2 ? 'h2' : 'h1'
+  return <header className="n-page-header"><div>{eyebrow && <p className="n-eyebrow">{eyebrow}</p>}<Heading>{title}</Heading>{description && <p>{description}</p>}</div>{actions && <div className="n-actions">{actions}</div>}</header>
 }
 /** A semantic grouping, not an ARIA toolbar: children retain normal Tab order. */
 export function Toolbar({ children, label }: { children: ReactNode; label: string }) { return <div className="n-toolbar" role="group" aria-label={label}>{children}</div> }

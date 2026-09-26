@@ -80,11 +80,11 @@ function WorkflowCardActions({ name, onRename, onRemove }: {
   )
 }
 
-export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
-  return <WorkflowDirectoryContent key={workspaceId} workspaceId={workspaceId} />
+export function WorkflowDirectory({ workspaceId, headingLevel = 1 }: { workspaceId: string; headingLevel?: 1 | 2 }) {
+  return <WorkflowDirectoryContent key={workspaceId} workspaceId={workspaceId} headingLevel={headingLevel} />
 }
 
-function WorkflowDirectoryContent({ workspaceId }: { workspaceId: string }) {
+function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: string; headingLevel: 1 | 2 }) {
   const queryClient = useQueryClient()
   const managedQuery = useWorkflowPages(workspaceId, true)
   const updateWorkflow = useUpdateManagedWorkflowMutation()
@@ -139,6 +139,7 @@ function WorkflowDirectoryContent({ workspaceId }: { workspaceId: string }) {
     <section className="workflow-directory resource-directory" aria-label="Workflows">
       <PageHeader
         title="Workflows"
+        headingLevel={headingLevel}
         actions={workflows.length > 0 ? <div className="resource-directory-actions">
           {!selection.selecting ? <>
             <Button ref={selectRef} onClick={selection.start}>Select workflows</Button>

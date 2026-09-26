@@ -9,6 +9,7 @@ import { AgentsDirectory } from '../features/agents'
 import { McpDetectionSettings, WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
 import { useApprovalInboxStore } from '../features/approvals'
 import { WorkflowDirectory } from '../features/workflows'
+import { RemoveWorkspaceButton } from '../features/workspaces/RemoveWorkspaceButton'
 import { Badge, Card, EmptyState, Icon, PageHeader, SettingsSection, type IconName } from '../shared/ui/nocturne'
 import { WorkspaceShell, type WorkspaceSection } from '../shared/ui/WorkspaceShell'
 import {
@@ -142,6 +143,9 @@ export function SettingsRouteEntry() {
             <PageHeader
               eyebrow={name ?? 'Workspace'}
               title="Settings"
+              actions={workspace.data?.workspace.id === workspaceId ? <RemoveWorkspaceButton
+                key={workspaceId} workspaceId={workspaceId} name={workspace.data.workspace.name} revision={workspace.data.revision}
+              /> : undefined}
             />
             <ul className="settings-card-list">
               {workspace.data?.locationValidation.status === 'ready' ? <li>
@@ -155,6 +159,7 @@ export function SettingsRouteEntry() {
                 </Card>
               </li>
             </ul>
+            <WorkflowDirectory workspaceId={workspaceId} headingLevel={2} />
             <McpDetectionSettings workspaceId={workspaceId} />
           </div>
         ),

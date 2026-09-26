@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
@@ -165,8 +165,43 @@ describe('workspace section routes', () => {
   it('omits the approvals shortcut from workspace settings', async () => {
     renderRoute('/workspaces/workspace-1/settings')
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
-    expect(screen.queryByTestId('workflow-card-workflow-content-pipeline')).not.toBeInTheDocument()
+    expect(await screen.findByTestId('workflow-card-workflow-content-pipeline')).toBeVisible()
     expect(screen.queryByRole('button', { name: /Approvals Review requests in this workspace/ })).not.toBeInTheDocument()
+  })
+
+  it('confirms workspace removal in settings and returns to the workspace list', async () => {
+    const user = userEvent.setup()
+    const { router } = renderRoute('/workspaces/workspace-1/settings')
+    await user.click(await screen.findByRole('button', { name: 'Remove workspace' }))
+    let dialog = screen.getByRole('dialog', { name: 'Remove Website?' })
+    expect(dialog).toHaveTextContent('Workflows, run history and project files are retained.')
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings')
+    expect(screen.queryByRole('dialog', { name: 'Remove Website?' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Remove workspace' }))
+    dialog = screen.getByRole('dialog', { name: 'Remove Website?' })
+    await user.click(within(dialog).getByRole('button', { name: 'Remove workspace' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces'))
+    expect(await screen.findByTestId('workspace-directory-empty')).toBeVisible()
+    expect(screen.queryByTestId('workspace-entry-workspace-1')).not.toBeInTheDocument()
+  })
+
+  it('offers workflow management within the selected workspace settings', async () => {
+    const user = userEvent.setup()
+    renderRoute('/workspaces/workspace-1/settings')
+    expect(await screen.findByRole('heading', { name: 'Workflows', level: 2 })).toBeVisible()
+    const section = within(screen.getByRole('region', { name: 'Workflows' }))
+    expect(await section.findByTestId('workflow-card-workflow-content-pipeline')).toBeVisible()
+    await user.click(section.getByRole('button', { name: 'Open actions for Research to review' }))
+    await user.clear(screen.getByRole('textbox', { name: 'Name' }))
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Settings workflow')
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    await waitFor(() => expect(section.getByTestId('workflow-card-workflow-content-pipeline')).toHaveTextContent('Settings workflow'))
+    await user.click(section.getByRole('button', { name: 'Select workflows' }))
+    expect(section.getByRole('checkbox', { name: 'Select Settings workflow' })).toBeVisible()
+    await user.click(section.getByRole('button', { name: 'Cancel selection' }))
+    await user.click(section.getByRole('button', { name: 'New workflow' }))
+    expect(screen.getByRole('dialog', { name: 'New workflow' })).toBeVisible()
   })
 
   it('redirects an old approval deep link back to its workflow board and opens the panel', async () => {
