@@ -37,6 +37,7 @@ import { WorkspaceManagementService } from '../../src/modules/workspaces/managem
 import { currentOperatorIntegration } from './currentOperatorIntegration.js'
 import { providerLaunchCredentials, providerAppEndpoint } from './wave25Br1003Runtime.js'
 import { RecoveryProvider, type Fault, type Submission } from './eng06DProvider.js'
+import { waitForEng06Settlement } from './eng06DSettlement.js'
 
 export type Form = 'sequential' | 'repeat'
 type Base = Awaited<ReturnType<typeof currentOperatorIntegration>>
@@ -51,7 +52,9 @@ function composeRuntime(base: Base, provider: RecoveryProvider, errors: unknown[
   const { pool, directory, schema } = base.db
   const commands = new PostgresCommandCoordinator(pool)
   const workflows = new PostgresWorkflowRepository(pool)
-  const locations = new WorkspaceLocationService(pool, commands)
+  // Keep the explicitly seeded provider runner through real location_set/Start.
+  // The production default is runner-local; this provider fixture models local.
+  const locations = new WorkspaceLocationService(pool, commands, undefined, base.f.run.executionLocation!.runnerId)
   vi.spyOn(locations, 'revalidateSnapshot').mockResolvedValue(undefined)
   const workflowCapture = createWorkflowNativeCaptureChannel(), reviewCapture = createReviewNativeCaptureChannel()
   const runs = new PostgresRunRepository(pool, workflows, locations,
@@ -168,19 +171,23 @@ export async function recoveryFixture(form: Form, plan: (input: Submission) => F
     },
     async settled(runId = base.f.run.id) {
       try {
-        await expect.poll(async () => {
+        await waitForEng06Settlement(async () => {
           await runtime.engine.reconcile((error) => errors.push(error))
           const snapshot = await runtime.runs.getRepeatSnapshot(runId)
-          return { state: snapshot.run.executionState, cleanupPending: snapshot.cleanupPending }
-        }, { timeout: 20000, interval: 200 }).toEqual({ state: 'completed', cleanupPending: false })
+          const executions = (await base.db.pool.query<{ id: string; state: string; accepted: boolean }>(
+            "select id,record->>'state' as state,accepted from harness_executions where run_id=$1 order by id", [runId])).rows
+          return { state: snapshot.run.executionState, cleanupPending: snapshot.cleanupPending, executions }
+        })
       } catch (error) {
         // Preserve the real error behind HTTP INTERNAL_ERROR / a generic timeout.
         // No catch converts a failed convergence assertion into a passing test.
         const rows = (await base.db.pool.query<{ id: string; state: string; result: unknown }>(
           "select id,record->>'state' as state,record->'result' as result from harness_executions where run_id=$1 order by id", [runId])).rows
-        throw new Error(`ENG06-D settlement failed: ${JSON.stringify({ runId, rows,
-          starts: provider.counts.starts, recoveries: provider.recoveryCalls,
-          errors: errors.map((item) => describeError(item)), shutdownErrors: shutdownErrors.map((item) => describeError(item)) })}`,
+        // Put the cause before large result rows so truncated reports retain it.
+        throw new Error(`ENG06-D settlement failed: ${JSON.stringify({ runId,
+          errors: errors.map((item) => describeError(item)),
+          shutdownErrors: shutdownErrors.map((item) => describeError(item)), wait: describeError(error),
+          starts: provider.counts.starts, recoveries: provider.recoveryCalls, rows })}`,
         { cause: error })
       }
     },
@@ -262,6 +269,7 @@ export async function readback(f: RecoveryFixture, runId = f.base.f.run.id) {
 export async function fullRunInput(f: RecoveryFixture) {
   // The inherited fixture seeds a synthetic filesystem identity. A NEW Start
   // must revalidate a real accepted location, not borrow the old Run's snapshot.
+  expect(f.runtime.locations.runnerId).toBe(f.base.f.run.executionLocation!.runnerId)
   const location = toolValue(await f.transport.client.callTool({ name: 'workspace_location_set', arguments: {
     workspaceId: f.base.f.scope.workspaceId, commandId: randomUUID(), expectedLocationRevision: 1,
     runnerId: f.runtime.locations.runnerId, rootPath: f.base.db.directory,

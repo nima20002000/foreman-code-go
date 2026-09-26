@@ -189,6 +189,24 @@ export class WorkflowNativeProofServices {
           where execution_native_sessions.reference=excluded.reference returning execution_id`,
         [stored.execution.id, canonicalGraphJson(capture.session)])
         if (bound.rowCount !== 1) return fail('NATIVE_SESSION_IDENTITY_MISMATCH')
+        // Preflight issued this execution's token before its native ID existed.
+        // Bind it on the SAME original-session publication, not in a second
+        // transaction or at authentication. Never rebind an old/revoked token.
+        const lane = (await sql.query<{ generation: string | null }>(
+          `select record->>'connectionGeneration' as generation from native_session_lanes
+           where harness=$1 and native_session_id=$2 and owner_agent_id=$3 for update`,
+          [capture.session.harness, capture.session.nativeSessionId, stored.execution.agentId])).rows[0]
+        if (!lane?.generation || !/^(0|[1-9][0-9]*)$/.test(lane.generation)) return fail('APPROVAL_SESSION_LANE_MISSING')
+        await sql.query(`update worker_credential_bindings b
+          set approval_native_session_id=$2,approval_connection_generation=$3::bigint
+          from management_principals p where b.execution_id=$1 and b.purpose='workflow'
+            and b.run_id=$4 and b.workspace_id=$5 and b.workflow_id=$6 and b.agent_id=$7
+            and b.environment_variable='GRAPHQL_APP_MCP_TOKEN'
+            and b.approval_native_session_id is null and b.approval_connection_generation is null
+            and b.revoked_at is null and p.id=b.principal_id and p.revoked_at is null
+            and p.expires_at>clock_timestamp() and p.audience='worker' and p.agent_id=b.agent_id`,
+          [stored.execution.id, capture.session.nativeSessionId, lane.generation,
+            scope.runId, scope.workspaceId, scope.workflowId, stored.execution.agentId])
       }
       const proofId = repeatId('workflow-native-source', stored.execution.id, repeatDigest(originalIdentity(capture)))
       const proposed: WorkflowNativeProofRecord = { proofId, scope, ref: stored.ref,

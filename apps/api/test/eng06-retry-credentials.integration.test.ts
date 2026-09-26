@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
 import { assertWave25WorkerBinding } from '../src/modules/interactions/wave25/credentialAuthority.js'
+import { beforeGraphCommit } from '../src/modules/run-graph/connection.js'
+import { WorkflowNativeProofServices } from '../src/modules/runs/workflowNativeProof.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { executionRows, readback, recoveryFixture } from './helpers/eng06DRecovery.js'
 
@@ -43,12 +45,18 @@ describe.skipIf(!postgresEnabled)('ENG06 fresh authority for a same-slot technic
         where b.run_id=$1 and b.purpose='workflow' order by e.attempt,b.principal_id`, [f.base.f.run.id])).rows
       const old = bindings.filter((binding) => binding.execution_id === first.execution.id)
       expect(old.length).toBeGreaterThan(0)
-      for (const binding of old) expect(binding).toMatchObject({ principal_revoked: true, binding_revoked: true })
+      for (const binding of old) expect(binding).toMatchObject({ principal_revoked: true, binding_revoked: true,
+        native_session_id: first.execution.nativeSessionId })
       const live = bindings.filter((binding) => binding.execution_id === retry.execution.id && !binding.principal_revoked && !binding.binding_revoked)
       expect(live).toHaveLength(1)
       const current = live[0]!
       expect(current).toMatchObject({ execution_closed: false, unexpired: true, native_session_id: retry.execution.nativeSessionId })
       expect(current.generation).not.toBeNull()
+      const lane = (await f.base.db.pool.query<{ generation: string }>(
+        `select record->>'connectionGeneration' as generation from native_session_lanes
+         where harness=$1 and native_session_id=$2 and owner_agent_id=$3`,
+        ['codex', retry.execution.nativeSessionId, retry.execution.agentId])).rows
+      expect(lane).toEqual([{ generation: current.generation }])
       expect(old.some((binding) => binding.principal_id === current.principal_id)).toBe(false)
 
       const issued = await Promise.all(issuance.mock.results.flatMap((result) => result.type === 'return' ? [result.value] : []))
@@ -88,6 +96,53 @@ describe.skipIf(!postgresEnabled)('ENG06 fresh authority for a same-slot technic
       await expect(access.authenticate(currentIssued!.token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
       await expect(credentials.renewForExecution(retry.execution.id, { principalId: current.principal_id })).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
       expect(f.provider.counts).toMatchObject({ starts: 2, sessions: 2, attaches: 0 })
+    } finally { await f.close() }
+  }, 90000)
+
+  it.each(['sequential', 'repeat'] as const)('%s: session proof and launch-credential binding roll back together', async (form) => {
+    const original = WorkflowNativeProofServices.prototype.persistOriginalLocked
+    const injected = new Error('ENG06 injected session-publication commit failure')
+    let bindingObserved = false
+    vi.spyOn(WorkflowNativeProofServices.prototype, 'persistOriginalLocked').mockImplementation(async function (
+      this: WorkflowNativeProofServices, ...args: Parameters<typeof original>
+    ) {
+      const proof = await original.apply(this, args)
+      if (proof.original.type === 'session_created') beforeGraphCommit(args[0], async () => {
+        // Read the actual in-transaction binding, then fail its publication.
+        // Do not forge an execution, source proof, credential or closure row.
+        const rows = (await args[0].query<{ native_session_id: string | null; generation: string | null }>(
+          `select approval_native_session_id as native_session_id,approval_connection_generation::text as generation
+           from worker_credential_bindings where execution_id=$1 and purpose='workflow' and revoked_at is null`,
+          [proof.execution.executionId])).rows
+        bindingObserved = rows.length === 1 && rows[0]!.native_session_id === proof.session.nativeSessionId
+          && rows[0]!.generation !== null
+        throw injected
+      })
+      return proof
+    })
+    const f = await recoveryFixture(form, () => 'park')
+    try {
+      f.launch()
+      await expect.poll(() => f.errors.some((error) => error instanceof Error && error.message === injected.message),
+        { timeout: 20000 }).toBe(true)
+      expect(bindingObserved).toBe(true)
+      const rows = await executionRows(f)
+      expect(rows).toHaveLength(1)
+      const execution = rows[0]!.execution
+      expect(execution).toMatchObject({ state: 'starting', attempt: 1 })
+      expect(execution.nativeSessionId).toBeUndefined()
+      expect(execution.result).toBeUndefined()
+      const sql = f.base.db.pool
+      expect((await sql.query('select execution_id from execution_native_sessions where execution_id=$1',
+        [execution.id])).rows).toEqual([])
+      expect((await sql.query('select proof_id from workflow_native_proofs where execution_id=$1',
+        [execution.id])).rows).toEqual([])
+      const bindings = (await sql.query(`select approval_native_session_id,approval_connection_generation,
+        revoked_at is not null as revoked from worker_credential_bindings
+        where execution_id=$1 and purpose='workflow'`, [execution.id])).rows
+      expect(bindings).toEqual([{ approval_native_session_id: null, approval_connection_generation: null, revoked: false }])
+      // A rolled-back source publication grants no turn submission or retry.
+      expect(f.provider.counts).toMatchObject({ sessions: 1, starts: 0, attaches: 0 })
     } finally { await f.close() }
   }, 90000)
 })
