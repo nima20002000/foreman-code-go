@@ -189,6 +189,7 @@ export function buildProductionApp(
     runs, repository, budgets, managers, config.harnesses.timeoutMs, launchCredentials, validateContinuation,
     new PostgresWorkflowClosureStore(database.pool), new PostgresRepeatReviewerBindings(database.pool),
     workflowCapture.capture, reviewCapture.capture,
+    (executionId, signal) => processRegistry.closeOwner(`execution:${executionId}`, signal),
   )
   const engine = new LangGraphWorkflowEngine(
     runs, workflows, approvals, checkpoints.saver, config.harnesses.workspaceRoot,

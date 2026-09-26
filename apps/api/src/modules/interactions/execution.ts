@@ -49,7 +49,7 @@ import type {
   ResolvedNativeSessionManager,
 } from './runtimePorts.js'
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
-import type { WorkflowClosureStore } from './workflowClosure.js'
+import { recoverWorkflowNativeClosure, type WorkflowClosureStore } from './workflowClosure.js'
 import type { RepeatReviewerBindings } from './repeatReviewer.js'
 import { assertSameRepeatExecution, assertSameReviewJob, repeatPhysicalSettlementPending,
   reviewPhysicallySettled, type RepeatNativeObservationStore } from './repeatObservation.js'
@@ -423,6 +423,7 @@ export class ApprovalExecutionCoordinator {
     private readonly repeatReviewerBindings?: RepeatReviewerBindings,
     private readonly nativeCaptures?: WorkflowNativeCapturePort,
     private readonly reviewNativeCaptures?: ReviewNativeCapturePort,
+    private readonly recoverNativeProcesses?: (executionId: string, signal: AbortSignal) => Promise<boolean>,
   ) {
     this.reviewers = new ReviewerDispatcher(interactions.coordination, this)
   }
@@ -871,6 +872,12 @@ export class ApprovalExecutionCoordinator {
       || execution.nativeSessionId !== sessionReference.nativeSessionId || sessionReference.harness !== context.harness) {
       throw new Error('The native session ownership context does not match its durable execution.')
     }
+    // The delivery reconciler can race the Run reconciler after API restart.
+    // Do not let a cold attach allocate a manager and masquerade as a resident
+    // requester before its Run owner can fence and settle the dead lifetime.
+    if (!this.ownedSessions.has(execution.id) && (execution.state !== 'completed'
+      || !await this.workflowClosures?.read(execution))) throw new DomainError(
+      'NATIVE_SESSION_RECOVERY_REQUIRED', 'The original requester is not resident. Reconcile its Run without replaying native work.', 409)
     const run = await this.runs.get(execution.runId)
     if (!run) throw new Error('The durable execution Run is unavailable.')
     if (run.executionState === 'completed') throw new Error('A completed Run cannot restart native work.')
@@ -954,9 +961,34 @@ export class ApprovalExecutionCoordinator {
     }
   }
 
+  /** Absence of a local owner selects conservative interruption, not closure.
+   * Starting includes a crash after launch admission but before session binding.
+   * Queued attempts have not entered native work; accepted results are retained.
+   * The acquired Run owner and committed cleanup fence prevent a recovery read
+   * from becoming a new submission or an approval/graph resume. */
+  async requestColdRunCleanup(owner: RunOwnership): Promise<boolean> {
+    owner.assertOwned()
+    for await (const executions of this.runs.executionPages(owner.runId, owner)) {
+      for (const execution of executions) {
+        if (this.ownedSessions.has(execution.id)) continue
+        if (execution.state === 'queued' && !execution.nativeSessionId && !execution.startedAt) continue
+        // Accepted results are immutable. A completed attempt with an unclosed
+        // native lifetime still needs physical recovery; do not loop forever in
+        // finishRepeatExecution or overwrite that result with an interruption.
+        if (execution.state === 'completed' && (!execution.nativeSessionId
+          || await this.workflowClosures?.read(execution))) continue
+        await this.runs.requestCleanup(owner.runId, owner)
+        owner.assertOwned()
+        return true
+      }
+    }
+    return false
+  }
+
   /** Stop first fences all new work in the database. This pass only cancels
    * ORIGINAL resident managers and revokes execution resources under that fence.
    * Missing local managers are never resolved, attached or treated as closed.
+   * The owner-only cold pass uses positive kernel-backed registry receipts.
    * Positive repository proof, not this method's return value, settles a Run. */
   async cancelRun(runId: string, owner?: RunOwnership): Promise<void> {
     owner?.assertOwned()
@@ -996,6 +1028,17 @@ export class ApprovalExecutionCoordinator {
     if (owner) {
       owner.assertOwned()
       const store = await this.runs.repeat(owner)
+      const failures: Error[] = []
+      for await (const executions of this.runs.executionPages(runId, owner)) {
+        for (const execution of executions) {
+          // An original resident/opening manager must finish its own captured
+          // cleanup; a cold resolver is never substituted for that lifetime.
+          if (this.ownedSessions.has(execution.id)) continue
+          await attemptCleanup(failures, `${execution.id}: recover original native lifetime`, (signal) =>
+            recoverWorkflowNativeClosure(owner, execution, this.recoverNativeProcesses, signal))
+        }
+      }
+      if (failures.length) throw new AggregateError(failures, 'Cold native closure remains unconfirmed.')
       // Original closures and revocations above precede review retirement. The
       // attempt settlement gate below requires those review receipts, not vice versa.
       await this.interactions.coordination.finishStoppedReviews(runId, Boolean(this.credentials))

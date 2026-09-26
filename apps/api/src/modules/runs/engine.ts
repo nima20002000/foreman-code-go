@@ -9,6 +9,7 @@ import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
 import type { ApprovalExecutionCoordinator } from '../interactions/execution.js'
 import type { PostgresInteractionRepository } from '../interactions/postgres.js'
 import type { GraphResumeClaim } from '../interactions/deliveryPostgres.js'
+import { hasRecoveredWorkflowNativeLifetime } from '../interactions/workflowClosure.js'
 import { withCleanupDeadline } from '../interactions/cleanup.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
@@ -128,6 +129,13 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       }
       if (!['queued', 'running', 'waiting'].includes(snapshot.run.executionState)) throw new DomainError(
         'RUN_NOT_RESUMABLE', 'This Run requires Stop settlement or a separately authorized new Run.', 409)
+      // Classify cold native lifetimes before binding/consuming an interrupt.
+      // A dead requester may leave a valid approval alongside a task error. Do
+      // not weaken checkpoint validation or replay delivery to escape that wait.
+      if (await this.nativeExecutions.requestColdRunCleanup(owner)) {
+        await this.cleanupOwned(owner)
+        return
+      }
       const checkpoint = await readWorkflowCheckpoint(runId, snapshot.version, this.checkpointer)
       if (checkpoint.values.runId && checkpoint.values.runId !== runId) throw new DomainError('RUN_PIN_CONFLICT', 'The checkpoint belongs to another Run.', 409)
       let permit: WorkflowResumePermit | undefined
@@ -219,7 +227,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     try {
       if (snapshot.run.executionState !== 'completed' || snapshot.stopRequested || snapshot.run.outcome !== 'succeeded') {
         await this.nativeExecutions.cancelRun(owner.runId, owner)
-        await settleWorkflowRun(owner, false)
+        await settleWorkflowRun(owner, await hasRecoveredWorkflowNativeLifetime(owner))
       } else await this.nativeExecutions.finishRun(owner.runId)
       await this.finishOwned(owner)
     } catch (error) {

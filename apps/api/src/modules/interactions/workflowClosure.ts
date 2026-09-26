@@ -2,7 +2,8 @@ import { isDeepStrictEqual } from 'node:util'
 import { HarnessExecutionSchema, NativeSessionReferenceSchema,
   type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
 import type pg from 'pg'
-import type { GraphSqlClient } from '../run-graph/connection.js'
+import { beforeGraphCommit, type GraphSqlClient, type GraphTransactionSql } from '../run-graph/connection.js'
+import type { RunOwnership } from '../runs/ownership.js'
 import { DomainError } from '../errors.js'
 import type { ClosedWorkflowSession } from './stoppedWorkflowFinalization.js'
 
@@ -89,7 +90,11 @@ export async function readWorkflowClosure(sql: Sql, execution: HarnessExecution)
     join lateral (select * from execution_native_closures where execution_id=e.id
       order by generation desc limit 1) c on true where e.id=$1 and e.run_id=$2`, [execution.id, execution.runId])
   const row = result.rows[0]
-  if (!row || !row.closed || row.detached || row.closed_without_session || row.prior_unclosed !== false) return undefined
+  if (!row || !row.closed || row.detached || row.closed_without_session || row.prior_unclosed !== false) {
+    const recovered = await readRecoveredWorkflowClosure(sql, execution)
+    return recovered?.session ? { execution: { ...executionIdentity(execution), nativeSessionId: recovered.session.nativeSessionId },
+      session: recovered.session, durableGeneration: recovered.generation } : undefined
+  }
   const current = HarnessExecutionSchema.parse(row.record)
   const session = NativeSessionReferenceSchema.parse(row.reference)
   if (!isDeepStrictEqual(executionIdentity(current), executionIdentity(execution))
@@ -106,7 +111,10 @@ export async function readWorkflowClosure(sql: Sql, execution: HarnessExecution)
  * never the source of this proof. It cannot accept success or authorize retry. */
 export async function readUnboundWorkflowClosure(sql: Sql, execution: HarnessExecution): Promise<UnboundWorkflowClosure | undefined> {
   const row = await latest(sql, execution.id)
-  if (!row || !row.closed || row.detached || !row.closed_without_session || row.prior_unclosed !== false) return undefined
+  if (!row || !row.closed || row.detached || !row.closed_without_session || row.prior_unclosed !== false) {
+    const recovered = await readRecoveredWorkflowClosure(sql, execution)
+    return recovered && !recovered.session ? { execution: executionIdentity(execution), durableGeneration: recovered.generation } : undefined
+  }
   const current = (await sql.query<{ record: unknown; bound: boolean }>(`select e.record,
     exists(select 1 from execution_native_sessions s where s.execution_id=e.id) as bound
     from harness_executions e where e.id=$1 and e.run_id=$2`, [execution.id, execution.runId])).rows[0]
@@ -248,4 +256,126 @@ export class PostgresWorkflowClosureStore implements WorkflowClosureStore {
   read(execution: HarnessExecution): Promise<ClosedWorkflowSession | undefined> {
     return readWorkflowClosure(this.pool, execution)
   }
+}
+
+/** Private physical-disposal receipts are separate from original-manager close
+ * and restart-detach receipts. Never rewrite a detached generation into a close,
+ * invent a native terminal/ACK, or let a registry miss stand in for a receipt. */
+interface RecoveredClosureRow {
+  generation: string
+  execution_identity: unknown
+  reference: unknown | null
+}
+async function readRecoveredWorkflowClosure(sql: Sql, execution: HarnessExecution): Promise<{
+  generation: string; session: NativeSessionReference | null
+} | undefined> {
+  const row = (await sql.query<RecoveredClosureRow>(`select p.generation::text,p.execution_identity,p.reference
+    from execution_native_recoveries p join execution_native_closures c on c.generation=p.generation
+    where p.execution_id=$1 and c.execution_id=p.execution_id
+      and not exists(select 1 from execution_native_closures n where n.execution_id=c.execution_id and n.generation>c.generation)
+      and not exists(select 1 from execution_native_closures n where n.execution_id=c.execution_id
+        and n.generation<c.generation and n.closed_at is null and n.detached_at is null)`, [execution.id])).rows[0]
+  if (!row) return undefined
+  const current = (await sql.query<{ record: unknown; reference: unknown | null }>(`select e.record,s.reference
+    from harness_executions e left join execution_native_sessions s on s.execution_id=e.id
+    where e.id=$1 and e.run_id=$2`, [execution.id, execution.runId])).rows[0]
+  if (!current) return conflict()
+  const parsed = HarnessExecutionSchema.parse(current.record)
+  const session = current.reference === null ? null : NativeSessionReferenceSchema.parse(current.reference)
+  if (!isDeepStrictEqual(executionIdentity(parsed), executionIdentity(execution))
+    || !isDeepStrictEqual(row.execution_identity, executionIdentity(parsed))
+    || !isDeepStrictEqual(row.reference, session)
+    || (parsed.nativeSessionId ?? null) !== (session?.nativeSessionId ?? null)
+    || (execution.nativeSessionId ?? null) !== (session?.nativeSessionId ?? null)) return conflict()
+  return { generation: row.generation, session }
+}
+
+async function recoveryTarget(sql: GraphTransactionSql, owner: RunOwnership, execution: HarnessExecution) {
+  owner.assertOwned()
+  if (execution.runId !== owner.runId) return conflict()
+  const run = (await sql.query<{ semantics: string; fenced: boolean }>(`select
+    r.record->>'executionSemanticsVersion' as semantics,
+    (r.stop_requested_at is not null or r.execution_state='completed'
+      or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending)) as fenced
+    from runs r where r.id=$1 for update`, [owner.runId])).rows[0]
+  if (run?.semantics !== '3' || run.fenced !== true) return conflict()
+  const fence = await owner.readOneShotFence(sql)
+  const current = (await sql.query<{ record: unknown }>(
+    'select record from harness_executions where id=$1 and run_id=$2 for update', [execution.id, owner.runId])).rows[0]
+  if (!current) return conflict()
+  const parsed = HarnessExecutionSchema.parse(current.record)
+  if (!isDeepStrictEqual(executionIdentity(parsed), executionIdentity(execution))
+    || parsed.nativeSessionId !== execution.nativeSessionId) return conflict()
+  if (!execution.nativeSessionId) {
+    const entry = (await sql.query<{ phase: string }>(
+      'select phase from workflow_native_entries where execution_id=$1 and run_id=$2', [execution.id, owner.runId])).rows[0]
+    // The normal repository must still validate and seal the exact canonical
+    // reserved/prepared entry. Preparation cannot spawn native work, so a crash
+    // between lifetime registration and native entry needs no invented close.
+    if (entry && ['reserved', 'prepared', 'not_submitted'].includes(entry.phase)) return undefined
+  }
+  const lifetime = await latest(sql, execution.id)
+  if (!lifetime) return undefined // Only the existing repository can seal a reserved entry.
+  if (lifetime.prior_unclosed || !isDeepStrictEqual(lifetime.execution_identity, executionIdentity(parsed))) return conflict()
+  if (await (execution.nativeSessionId ? readWorkflowClosure : readUnboundWorkflowClosure)(sql, execution)) return undefined
+  const native = (await sql.query<{ reference: unknown }>(
+    'select reference from execution_native_sessions where execution_id=$1 for share', [execution.id])).rows[0]
+  const session = native ? NativeSessionReferenceSchema.parse(native.reference) : null
+  if ((execution.nativeSessionId ?? null) !== (session?.nativeSessionId ?? null)
+    || lifetime.expected_reference !== null && !isDeepStrictEqual(lifetime.expected_reference, session)
+    || lifetime.detached && !isDeepStrictEqual(lifetime.detached_reference, session)) return conflict()
+  beforeGraphCommit(sql, async () => {
+    owner.assertOwned()
+    if (!isDeepStrictEqual(fence, await owner.readOneShotFence(sql))) return conflict()
+  })
+  return { lifetime, execution: executionIdentity(parsed), session, fence }
+}
+
+/** The production callback is NativeProcessRegistry.closeOwner for THIS exact
+ * execution scope. It validates positive launch/guardian/cgroup closure receipts;
+ * an empty registry returns false. No manager, credential, attach, turn or native
+ * response is created here. SQL locks are never held over native IO. */
+export async function recoverWorkflowNativeClosure(owner: RunOwnership, execution: HarnessExecution,
+  closeProcesses: ((executionId: string, signal: AbortSignal) => Promise<boolean>) | undefined,
+  signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted()
+  const target = await owner.oneShotConnection().transaction((sql) => recoveryTarget(sql, owner, execution))
+  if (!target) return
+  owner.assertOwned(); signal.throwIfAborted()
+  if (!closeProcesses || !await closeProcesses(execution.id, signal)) throw new DomainError(
+    'REPEAT_CLEANUP_PENDING', 'The original native process has no positive closure receipt. It was not resubmitted.', 409)
+  owner.assertOwned(); signal.throwIfAborted()
+  await owner.oneShotConnection().transaction(async (sql) => {
+    const current = await recoveryTarget(sql, owner, execution)
+    // An original close may have committed while physical cleanup ran. Reuse
+    // only its exact readback; any other generation/session/owner change fails.
+    if (!current) {
+      const proof = await (execution.nativeSessionId ? readWorkflowClosure : readUnboundWorkflowClosure)(sql, execution)
+      if (proof?.durableGeneration !== target.lifetime.generation) return conflict()
+      return
+    }
+    if (!isDeepStrictEqual(current, target)) return conflict()
+    owner.assertOwned(); signal.throwIfAborted()
+    await sql.query(`insert into execution_native_recoveries
+      (generation,execution_id,execution_identity,reference,owner_id,owner_fence)
+      values($1::bigint,$2,$3::jsonb,$4::jsonb,$5,$6)`,
+    [target.lifetime.generation, execution.id, JSON.stringify(target.execution),
+      target.session === null ? null : JSON.stringify(target.session), target.fence.ownerId, target.fence.fence])
+    beforeGraphCommit(sql, async () => {
+      owner.assertOwned(); signal.throwIfAborted()
+      const proof = await readRecoveredWorkflowClosure(sql, execution)
+      if (proof?.generation !== target.lifetime.generation || !isDeepStrictEqual(proof.session, target.session)) return conflict()
+    })
+  })
+}
+
+/** Diagnostic selection only, never settlement authority. The existing finalizer
+ * still revalidates every exact attempt, native generation and resource receipt. */
+export async function hasRecoveredWorkflowNativeLifetime(owner: RunOwnership): Promise<boolean> {
+  owner.assertOwned()
+  const row = (await owner.oneShotConnection().query<{ recovered: boolean }>(`select exists(
+    select 1 from execution_native_recoveries p join harness_executions e on e.id=p.execution_id
+    where e.run_id=$1) as recovered`, [owner.runId])).rows[0]
+  owner.assertOwned()
+  return row?.recovered === true
 }
