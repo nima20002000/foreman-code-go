@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { pluginHttpRead } from './pluginReadCancellation.js'
 import {
+  ExecutionReadinessInputSchema, ExecutionReadinessSchema,
   HarnessOptionsInputSchema, HarnessOptionsRefreshInputSchema, HarnessOptionsResultSchema, HarnessMcpListInputSchema, HarnessMcpListResultSchema,
   HarnessMcpManagedInputSchema, HarnessMcpPlanInputSchema, HarnessMcpPlanResultSchema, HarnessMcpPlansResultSchema, HarnessMcpPlanSchema,
   HarnessMcpPlanGetInputSchema, HarnessMcpDecisionInputSchema, HarnessMcpReconcileInputSchema,
@@ -17,6 +18,13 @@ import type { OperatorServices } from '../mcp/operator/types.js'
 import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema } from '@graphql/contracts/management'
 
 export function registerHarnessSettingsRoutes(app: FastifyInstance, services: OperatorServices): void {
+  app.get('/api/management/harnesses/:harness/execution-readiness', async (request) => {
+    const principal = requirePrincipal(request)
+    requireAuthorization(principal, 'harnesses:read')
+    const { harness } = ExecutionReadinessInputSchema.parse(request.params)
+    if (!services.executionReadiness) throw new DomainError('READINESS_UNAVAILABLE', 'Execution readiness is unavailable.', 503)
+    return ExecutionReadinessSchema.parse(await services.executionReadiness.get(principal, harness))
+  })
   app.get('/api/management/harnesses/:harness/options', async (request) => {
     requireAuthorization(requirePrincipal(request), 'harnesses:read')
     const { harness } = HarnessOptionsInputSchema.parse(request.params)

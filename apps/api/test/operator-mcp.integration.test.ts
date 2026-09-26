@@ -21,10 +21,14 @@ describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration',
       const names = (await f.client.listTools()).tools.map((tool) => tool.name)
       expect(names).toEqual(expect.arrayContaining(['workspace_create', 'workflow_create', 'run_start', 'run_stop', CURRENT_WORKFLOW_TOOLS.save]))
       expect(names).not.toContain('graph_draft_open')
+      const readiness = value(await f.client.callTool({ name: 'execution_readiness_get', arguments: { harness: 'codex' } }))
+      expect(readiness).toMatchObject({ status: 'eligible', scope: 'saved-harness-defaults', defaultsRevision: (await f.services.harnesses.get(f.writer.principal, 'codex')).defaultsRevision })
       const readonly = await f.access.issue({ name: 'Reader', audience: 'operator', expiresAt: new Date(Date.now() + 600000),
         grants: [{ actions: ['workflows:read', 'graph:read', 'workspace_locations:validate'], scope: { workspaceIds: [f.f.scope.workspaceId] } }] })
       const reader = await f.connect(readonly.token)
       expect((await reader.listTools()).tools.map((tool) => tool.name)).not.toContain(CURRENT_WORKFLOW_TOOLS.save)
+      expect((await reader.listTools()).tools.map((tool) => tool.name)).not.toContain('execution_readiness_get')
+      await expect(reader.callTool({ name: 'execution_readiness_get', arguments: { harness: 'codex' } })).rejects.toThrow('not found')
       const input = await f.create()
       expect((await reader.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: input })).isError).toBe(true)
       const wrong = await f.access.issue({ name: 'Wrong workspace', audience: 'operator', expiresAt: new Date(Date.now() + 600000),

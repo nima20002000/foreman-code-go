@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 
 import {
+  ExecutionReadinessInputSchema, ExecutionReadinessSchema,
   HarnessCatalogEntrySchema, HarnessCatalogResultSchema, HarnessDefaultsUpdateInputSchema,
   HarnessDefaultsUpdateResultSchema, HarnessGetInputSchema,
 } from '@graphql/contracts/management'
@@ -10,6 +11,11 @@ import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'
 
 export function registerHarnessTools(server: McpServer, context: OperatorRequestContext): void {
+  if (operatorToolAvailable(context, 'execution_readiness_get')) server.registerTool('execution_readiness_get', {
+    description: 'Read native rollout eligibility and model-free qualification of persisted harness defaults. Configured MCP and server health are separate; execution still checks the selected configuration, workspace, grants, and MCP policy.',
+    inputSchema: ExecutionReadinessInputSchema, outputSchema: ExecutionReadinessSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input) => invokeOperatorTool(context, 'execution_readiness_get', () => context.services.executionReadiness!.get(context.principal, input.harness)))
   if (operatorToolAvailable(context, 'harness_list')) server.registerTool('harness_list', {
     description: 'List qualified local harness capabilities and saved defaults.', inputSchema: z.object({}).strict(),
     outputSchema: HarnessCatalogResultSchema,

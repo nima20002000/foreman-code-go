@@ -637,6 +637,7 @@ export const OperatorToolNameSchema = z.enum([
   "harness_mcp_servers_list", "harness_mcp_change_request", "harness_mcp_managed_request", "harness_mcp_change_get",
   "codex_plugins_list", "codex_plugin_get",
   "harness_configuration_check",
+  "execution_readiness_get",
   "harness_options_get",
   "harness_options_refresh",
   "opencode_models_cache_update",
@@ -715,3 +716,5 @@ export const OperatorCapabilitiesSchema = z.object({
   runtimeLimits: z.array(z.object({feature: z.string(), state: z.enum(["unsupported", "protected", "limited"]), detail: z.string()}).strict()).optional(),
   workerToolsMcp: z.object({ implemented: z.boolean(), endpoint: z.literal("/mcp/tools") }).strict(),
 }).strict();
+
+export * from './executionReadiness.js'
