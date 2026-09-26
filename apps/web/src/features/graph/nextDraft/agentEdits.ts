@@ -1,4 +1,5 @@
 import type { Agent } from '@graphql/contracts'
+import { StagedAgentSchema } from '@graphql/contracts/management'
 import type { GraphDraftOperationV3, WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
 import { draftAgents, sameValue, type DraftNode, type NextDraftContext } from './model'
 import type { NextDraftEdit } from './state'
@@ -94,4 +95,16 @@ export function coalesceAgentEdits(operations: readonly GraphDraftOperationV3[])
     edits.set(operation.agentId, edit)
   })
   return edits
+}
+
+/** Pin each private Agent snapshot to the metadata revision displayed by this form. */
+export function stageAgentEdits(edit: NextDraftEdit) {
+  return Object.values(referencedAgentEdits(edit.graph, edit.agentEdits)).map((agent) => {
+    const source = edit.context.agents.find((item) => item.agent.id === agent.id)
+    if (source && source.agent.configurationVersionId !== agent.configurationVersionId) {
+      throw new Error('The Agent form no longer matches its displayed configuration. Reload before staging.')
+    }
+    if (!source && agent.configurationVersionId) throw new Error('Reload the Agent revision before staging its settings.')
+    return StagedAgentSchema.parse({ agent, baseRevision: source?.metadataRevision ?? null })
+  })
 }

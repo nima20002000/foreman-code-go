@@ -25,6 +25,14 @@ export const CurrentWorkflowValidateInputSchema = z.object({
 }).strict()
 export const CurrentWorkflowSaveInputSchema = CurrentWorkflowValidateInputSchema.extend({
   commandId: CommandIdSchema,
+  // Optional compare-and-swap for presentation-only Save. It never changes the
+  // executable revision and cannot accompany a meaningful publication.
+  expectedGeometry: z.array(z.object({
+    id: GraphIdSchema,
+    position: WorkflowDefinitionV3Schema.shape.nodes.element.shape.position,
+    width: WorkflowDefinitionV3Schema.shape.nodes.element.shape.width,
+    height: WorkflowDefinitionV3Schema.shape.nodes.element.shape.height,
+  }).strict()).optional(),
 }).strict()
 export type CurrentWorkflowSaveRequest = z.input<typeof CurrentWorkflowSaveInputSchema>
 export type CurrentWorkflowSaveInput = z.infer<typeof CurrentWorkflowSaveInputSchema>

@@ -11,13 +11,13 @@ import { sameExecutableWorkflow, sameWorkflowValue } from './meaningfulEdit.js'
 
 /** Full current-v3 payload in the EXISTING private durable edit journal. No
  * selected Run or caller-provided Stop IDs. All graph forms use this one arm. */
-export const CurrentEditStageInputSchema = CurrentWorkflowSaveInputSchema.extend({
+export const CurrentEditStageInputSchema = CurrentWorkflowSaveInputSchema.omit({ expectedGeometry: true }).extend({
   action: z.literal('stage_edits'), draftId: GraphIdSchema,
   stagedAgents: z.array(StagedAgentSchema).max(1000).optional(),
 }).strict()
 /** Private journal publication only. Ordinary workflow_save_v3 deliberately
  * rejects these Agent mutations and server-reserved resultant pins. */
-export const CurrentEditSaveInputSchema = CurrentWorkflowSaveInputSchema.extend({
+export const CurrentEditSaveInputSchema = CurrentWorkflowSaveInputSchema.omit({ expectedGeometry: true }).extend({
   stagedAgents: z.array(StagedAgentSchema).max(1000).optional(),
   resultantAgentConfigurationVersionIds: CurrentWorkflowSaveInputSchema.shape.expectedAgentConfigurationVersionIds.optional(),
 }).strict()
@@ -109,7 +109,7 @@ export const CurrentEditMutationInputSchema = z.discriminatedUnion('action', [
 /** Object-root MCP schema; the strict union still rejects substituted Stage
  * payloads, arbitrary Stop IDs, cross-action fields and missing exact pins. */
 export const CurrentEditMutationToolInputSchema = z.object({
-  ...CurrentWorkflowSaveInputSchema.partial().shape,
+  ...CurrentWorkflowSaveInputSchema.omit({ expectedGeometry: true }).partial().shape,
   stagedAgents: CurrentEditStageInputSchema.shape.stagedAgents,
   workspaceId: GraphIdSchema, workflowId: GraphIdSchema,
   commandId: CurrentWorkflowSaveInputSchema.shape.commandId,

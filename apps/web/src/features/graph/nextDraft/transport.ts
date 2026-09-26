@@ -1,10 +1,10 @@
-import { AgentMutationResultSchema, ManagedWorkspaceSchema, type GraphValidationResultSchema, type AgentCreateInputSchema, type AgentUpdateInput } from '@graphql/contracts/management'
+import { AgentMutationResultSchema, ManagedWorkspaceSchema, StagedAgentSchema, type GraphValidationResultSchema, type AgentCreateInputSchema, type AgentUpdateInput } from '@graphql/contracts/management'
 import {
   GraphEditReadResultV3Schema, GraphEditReadInputV3Schema, GraphEditStageInputV3Schema, GraphEditAdvanceInputV3Schema, GraphEditDiscardInputV3Schema,
   type GraphEditReadInputV3, type GraphEditStageInputV3, type GraphEditAdvanceInputV3, type GraphEditDiscardInputV3, type GraphEditReadResultV3,
   GraphDraftV3Schema, WorkflowDefinitionV3Schema, CurrentManagedWorkflowSchema, CurrentWorkflowReadResultSchema,
   CurrentWorkflowSaveResultSchema, CurrentWorkflowValidationSchema, CURRENT_WORKFLOW_ROUTES,
-  GraphDraftOperationV3Schema, CurrentRunPageSchema, sameExecutableWorkflow,
+  GraphDraftOperationV3Schema, CurrentRunPageSchema, sameExecutableWorkflow, preserveWorkflowGeometry,
   type GraphDraftOperationV3, type WorkflowDefinitionV3,
 } from '@graphql/contracts/wave25'
 import { apiClient, ApiError, type ApiClient, type RequestOptions } from '../../../shared/api/client'
@@ -60,7 +60,8 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
     const draft = GraphDraftV3Schema.parse({
       id: draftIdFor(workflowId), workspaceId, workflowId, revision: workflow.revision, publishedRevision: workflow.revision,
       baseWorkflowVersionId: workflow.currentVersionId ?? null,
-      graph: saved?.version.definition ?? workflow.workflow, stagedAgents: [],
+      graph: saved ? preserveWorkflowGeometry({ ...saved.version.definition, name: workflow.workflow.name,
+        description: workflow.workflow.description }, workflow.workflow) : workflow.workflow, stagedAgents: [],
       updatedByPrincipalId: 'board', updatedAt: new Date().toISOString(),
     })
     assertScope(draft, workspaceId, workflowId)
@@ -78,12 +79,14 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
     assertScope(draft, workspaceId, workflowId, draftId)
     return draft
   }
-  const expectedPins = async (workspaceId: string, graph: WorkflowDefinitionV3) => {
+  const expectedPins = async (workspaceId: string, graph: WorkflowDefinitionV3, stagedAgents: z.infer<typeof StagedAgentSchema>[] = [], displayedAgents?: NextDraftContext['agents']) => {
     const [agents, workspace] = await Promise.all([client.listManagedAgents(workspaceId),
       client.request(`/api/management/workspaces/${part(workspaceId)}`, ManagedWorkspaceSchema)])
     const configurations: Record<string, string> = {}
     for (const node of graph.nodes) {
-      const agent = agents.items.find((item) => item.agent.id === node.agentId)?.agent
+      const staged = stagedAgents.find((item) => item.agent.id === node.agentId)
+      if (staged?.baseRevision === null) continue
+      const agent = staged?.agent ?? (displayedAgents ?? agents.items).find((item) => item.agent.id === node.agentId)?.agent
       if (!agent?.configurationVersionId) throw new ApiError({ code: 'AGENT_NOT_FOUND', message: 'A board Agent has no saved configuration. Reload before saving.' }, 409)
       configurations[node.agentId] = agent.configurationVersionId
     }
@@ -146,8 +149,20 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
       const entry = opened.get(key(workspaceId, workflowId))
       if (entry) opened.set(key(workspaceId, workflowId), { ...entry, draft: entry.savedDraft })
     },
+    /** Fresh persisted presentation and immutable pins, without changing local authoring state. */
+    async layoutBase(workspaceId: string, workflowId: string) {
+      const current = await load(workspaceId, workflowId)
+      const saved = await client.request(route(CURRENT_WORKFLOW_ROUTES.saved, workspaceId, workflowId), CurrentWorkflowReadResultSchema)
+      const workspace = await client.request(`/api/management/workspaces/${part(workspaceId)}`, ManagedWorkspaceSchema)
+      if (current.draft.revision !== saved.revision || current.draft.baseWorkflowVersionId !== saved.currentVersionId) {
+        throw new ApiError({ code: 'REVISION_CONFLICT', message: 'The saved workflow changed while reading positions.' }, 409)
+      }
+      return { draft: current.draft, expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds,
+        expectedLocationRevision: workspace.locationRevision }
+    },
     /** Current Agent configuration and location pins for a complete-definition command. */
-    pins: (workspaceId: string, graph: WorkflowDefinitionV3) => expectedPins(workspaceId, graph),
+    pins: (workspaceId: string, graph: WorkflowDefinitionV3, stagedAgents?: z.infer<typeof StagedAgentSchema>[], displayedAgents?: NextDraftContext['agents']) =>
+      expectedPins(workspaceId, graph, stagedAgents, displayedAgents),
     async editRead(raw: GraphEditReadInputV3, options?: RequestOptions) {
       const input = GraphEditReadInputV3Schema.parse(raw)
       const query = new URLSearchParams({ ...(input.draftId ? { draftId: input.draftId } : {}), ...(input.intentId ? { intentId: input.intentId } : {}) })

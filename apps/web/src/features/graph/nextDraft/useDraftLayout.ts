@@ -2,15 +2,14 @@ import { useEffect } from 'react'
 import { create } from 'zustand'
 import { useMutation } from '@tanstack/react-query'
 import { z } from 'zod'
-import { GraphDraftLayoutInputSchema } from '@graphql/contracts/management'
-import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import { CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema, CURRENT_WORKFLOW_ROUTES, sameWorkflowValue } from '@graphql/contracts/wave25'
 import { apiClient, ApiError } from '../../../shared/api/client'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
 import { assertSession, sessionGeneration } from '../../../shared/api/sessionBoundary'
 import { useGraphDraftStore } from '../store'
 import { nextDraftApi } from './transport'
 
-const JournalSchema = z.object({ request: GraphDraftLayoutInputSchema, rejectedRevision: z.boolean() }).strict()
+const JournalSchema = z.object({ request: CurrentWorkflowSaveInputSchema, nodeId: z.string(), rejectedRevision: z.boolean() }).strict()
 const journalViews = create<{ values: Record<string, { retained: boolean; error?: string }> }>(() => ({ values: {} }))
 function refreshView(key: string) {
   let view: { retained: boolean; error?: string }
@@ -36,10 +35,10 @@ function clear(key: string, journal: z.infer<typeof JournalSchema>) {
   refreshView(key)
 }
 
-/** Presentation-only writes use the existing layout revision domain service.
+/** Presentation-only writes use the current complete-definition service.
  * No semantic revision, WorkflowVersion, Stop or Run is created by a drag.
  * A lost response retains the exact command; only a definitive revision rejection
- * permits an explicit retry to read a fresh layout revision and reserve a new command. */
+ * permits an explicit retry to read a fresh saved definition and reserve a new command. */
 export function useDraftLayout(draftKey: string) {
   const view = journalViews((state) => state.values[draftKey])
   useEffect(() => {
@@ -60,16 +59,17 @@ export function useDraftLayout(draftKey: string) {
         if (!edit || edit.instanceId !== instance) return
         const draft = edit.context.draft
         if (draft.graph.executionSemanticsVersion !== 3) throw new Error('Retired workflow layouts cannot be written.')
-        if (journal && (journal.request.draftId !== draft.id || journal.request.workspaceId !== draft.workspaceId
+        if (journal && (journal.request.workspaceId !== draft.workspaceId
           || journal.request.workflowId !== draft.workflowId)) throw new Error('A retained layout belongs to a different draft. No layout was sent.')
         if (journal?.rejectedRevision) {
           // This branch runs only after a previous explicit attempt received a definitive 409.
           // A transport error never reaches this branch.
-          const fresh = await nextDraftApi.get(draft.workspaceId, draft.workflowId, draft.id)
+          const fresh = await nextDraftApi.layoutBase(draft.workspaceId, draft.workflowId)
           assertSession(generation)
           if (useGraphDraftStore.getState().nextDrafts[draftKey]?.instanceId !== instance) return
-          useGraphDraftStore.getState().updateNextDraft(draftKey, (current) => ({ ...current,
-            context: { ...current.context, draft: { ...current.context.draft, layoutRevision: fresh.layoutRevision ?? 0 } } }))
+          if (fresh.draft.revision !== draft.revision || fresh.draft.baseWorkflowVersionId !== draft.baseWorkflowVersionId) {
+            throw new Error('The saved workflow changed. Reload before saving positions.')
+          }
           clear(draftKey, journal); journal = undefined
           continue
         }
@@ -77,29 +77,45 @@ export function useDraftLayout(draftKey: string) {
           const moved = edit.graph.nodes.find((node) => node.position && draft.graph.nodes.some((base) =>
             base.id === node.id && !sameWorkflowValue(base.position, node.position)))
           if (!moved?.position) return // Newly authored nodes publish their initial position with Save.
-          journal = { request: GraphDraftLayoutInputSchema.parse({ workspaceId: draft.workspaceId,
-            workflowId: draft.workflowId, draftId: draft.id, commandId: crypto.randomUUID(),
-            expectedLayoutRevision: draft.layoutRevision ?? 0, nodeId: moved.id, position: moved.position }), rejectedRevision: false }
+          // Read the persisted meaning, never send locally staged executable edits.
+          const saved = await nextDraftApi.layoutBase(draft.workspaceId, draft.workflowId)
+          assertSession(generation)
+          if (saved.draft.revision !== draft.revision || saved.draft.baseWorkflowVersionId !== draft.baseWorkflowVersionId) {
+            throw new Error('The saved workflow changed. Reload before saving positions.')
+          }
+          const graph = { ...saved.draft.graph, nodes: saved.draft.graph.nodes.map((node) =>
+            node.id === moved.id ? { ...node, position: moved.position } : node) }
+          journal = { request: CurrentWorkflowSaveInputSchema.parse({ workspaceId: draft.workspaceId,
+            workflowId: draft.workflowId, commandId: crypto.randomUUID(), executionSemanticsVersion: 3,
+            expectedRevision: draft.revision, expectedWorkflowVersionId: draft.baseWorkflowVersionId,
+            expectedAgentConfigurationVersionIds: saved.expectedAgentConfigurationVersionIds,
+            expectedLocationRevision: saved.expectedLocationRevision, graph,
+            expectedGeometry: saved.draft.graph.nodes.map(({ id, position, width, height }) => ({ id, position, width, height })) }), nodeId: moved.id, rejectedRevision: false }
           retain(draftKey, journal) // durable before HTTP
         }
         const request = journal.request
+        const nodeId = journal.nodeId
         try {
-          const result = await apiClient.putManagedGraphLayout(request)
+          const result = await apiClient.request(CURRENT_WORKFLOW_ROUTES.saved
+            .replace(':workspaceId', encodeURIComponent(request.workspaceId)).replace(':workflowId', encodeURIComponent(request.workflowId)),
+          CurrentWorkflowSaveResultSchema, { method: 'PUT', body: request })
           assertSession(generation)
-          if (result.value.draftId !== request.draftId || result.value.nodeId !== request.nodeId
-            || result.value.layoutRevision !== request.expectedLayoutRevision + 1
-            || !sameWorkflowValue(result.value.position, request.position)) throw new Error('The layout acknowledgement does not match the exact request.')
+          if (result.value.workspaceId !== request.workspaceId || result.value.workflowId !== request.workflowId
+            || result.value.revision !== request.expectedRevision || result.value.currentVersionId !== request.expectedWorkflowVersionId) {
+            throw new Error('The layout acknowledgement does not match the exact saved workflow.')
+          }
+          const position = request.graph.nodes.find((node) => node.id === nodeId)?.position
           if (useGraphDraftStore.getState().nextDrafts[draftKey]?.instanceId !== instance) return
           // Acknowledge only presentation fields. Never replace meaning or a newer local drag.
           useGraphDraftStore.getState().updateNextDraft(draftKey, (current) => ({ ...current,
-            context: { ...current.context, draft: { ...current.context.draft, layoutRevision: result.value.layoutRevision,
+            context: { ...current.context, draft: { ...current.context.draft,
               graph: { ...current.context.draft.graph, nodes: current.context.draft.graph.nodes.map((node) =>
-                node.id === request.nodeId ? { ...node, position: result.value.position } : node) } } } }))
+                node.id === nodeId ? { ...node, position } : node) } } } }))
           clear(draftKey, journal); journal = undefined
         } catch (error) {
           assertSession(generation)
-          if (ApiError.is(error) && error.status === 409 && error.code === 'LAYOUT_REVISION_CONFLICT') {
-            journal = { request, rejectedRevision: true }; retain(draftKey, journal)
+          if (ApiError.is(error) && error.status === 409 && ['REVISION_CONFLICT', 'LAYOUT_REVISION_CONFLICT'].includes(error.code)) {
+            journal = { request, nodeId, rejectedRevision: true }; retain(draftKey, journal)
           }
           throw error
         }

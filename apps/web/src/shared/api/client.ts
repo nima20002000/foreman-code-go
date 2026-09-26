@@ -72,8 +72,6 @@ import {
   ManagedWorkspaceSchema,
   ManagedWorkspacePageSchema,
   ManagedAgentPageSchema,
-  GraphDraftLayoutInputSchema,
-  GraphDraftLayoutResultSchema,
   RunStopInputSchema,
   RunStopResultSchema,
   HarnessCatalogSchema,
@@ -367,15 +365,6 @@ export class ApiClient {
     ), options?.signal)
   }
 
-  putManagedGraphLayout(input: z.input<typeof GraphDraftLayoutInputSchema>, options?: RequestOptions) {
-    const request = parseRequest(GraphDraftLayoutInputSchema, input)
-    return this.request(
-      `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/drafts/${toPath(request.draftId)}/layout`,
-      GraphDraftLayoutResultSchema,
-      { ...options, method: 'PUT', body: request },
-    )
-  }
-
   startManagedRun(input: z.input<typeof RunStartV3InputSchema>, options?: RequestOptions) {
     const request = parseRequest(RunStartV3InputSchema, input)
     return this.request(
@@ -642,7 +631,6 @@ export const createManagedWorkflow = apiClient.createManagedWorkflow.bind(apiCli
 export const updateManagedWorkflow = apiClient.updateManagedWorkflow.bind(apiClient)
 export const archiveManagedWorkflow = apiClient.archiveManagedWorkflow.bind(apiClient)
 export const listManagedAgents = apiClient.listManagedAgents.bind(apiClient)
-export const putManagedGraphLayout = apiClient.putManagedGraphLayout.bind(apiClient)
 export const startManagedRun = apiClient.startManagedRun.bind(apiClient)
 export const stopManagedRun = apiClient.stopManagedRun.bind(apiClient)
 export const getManagedHarnessCatalog = apiClient.getManagedHarnessCatalog.bind(apiClient)

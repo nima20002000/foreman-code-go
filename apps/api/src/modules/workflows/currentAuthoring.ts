@@ -252,6 +252,13 @@ export class CurrentWorkflowAuthoring {
     const configurationPins = staged?.resultant ?? input.expectedAgentConfigurationVersionIds
     const presentationOnly = !staged && !!base && sameExecutableWorkflow(current, input.graph)
       && sameWorkflowValue(base.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)
+    if ('expectedGeometry' in input && input.expectedGeometry) {
+      if (!presentationOnly) return fail('LAYOUT_MEANING_CONFLICT', 'A geometry command cannot publish executable changes.')
+      const geometry = current.nodes.map(({ id, position, width, height }) => ({ id, position, width, height }))
+      if (!sameWorkflowValue(geometry, input.expectedGeometry)) {
+        return fail('LAYOUT_REVISION_CONFLICT', 'The stored node geometry changed. Reconcile this rejected layout command before retrying.')
+      }
+    }
     if (presentationOnly && base) return { presentationOnly, version: base, content: '',
       definition: WorkflowDefinitionV3Schema.parse({ ...input.graph, updatedAt: new Date().toISOString() }) }
 
