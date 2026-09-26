@@ -28,7 +28,6 @@ import type { ReviewCleanupSession, ReviewCredentialMaintenance } from './review
 import { coordinateSessionManager, isLeaseLost, type SingleWriterSessionManager } from './sessionWriter.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
-import { redactKnownSecrets, redactSecretText } from '../harnesses/secrets.js'
 import { attemptCleanup } from './cleanup.js'
 import type { ClosedWorkflowSession } from './stoppedWorkflowFinalization.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
@@ -1071,22 +1070,11 @@ export class ApprovalExecutionCoordinator {
       if (!credential) return
       knownSecrets.push(...Object.values(credential.environment.variables))
     }
-    const safeError = (error: unknown): unknown => {
-      if (error instanceof AggregateError) return new AggregateError(
-        [...error.errors].map(safeError), redactSecretText(error.message, knownSecrets),
-      )
-      if (error instanceof HarnessExecutionError) {
-        return new HarnessExecutionError(error.result.error?.code ?? 'NATIVE_EXECUTION_FAILED',
-          redactSecretText(error.message, knownSecrets), error.result.error?.retryable)
-      }
-      if (error instanceof DomainError) return new DomainError(error.code,
-        redactSecretText(error.message, knownSecrets), error.status, redactKnownSecrets(error.details, knownSecrets))
-      if (error instanceof Error) {
-        const message = redactSecretText(error.message, knownSecrets)
-        return error.cause === undefined ? new Error(message) : new Error(message, { cause: safeError(error.cause) })
-      }
-      return redactKnownSecrets(error, knownSecrets)
-    }
+    // Recovery history may contain a previous process credential that is no
+    // longer in the manager environment. Use the same persistence boundary as
+    // native publishers, while retaining values captured during this lifetime.
+    const safeValue = <T>(value: T): T => nativePersistenceRedactor(knownSecrets).value(value)
+    const safeError = (error: unknown): unknown => nativePersistenceRedactor(knownSecrets).error(error)
     const startCredentialMaintenance = () => {
       watchCredential()
       if (!this.credentials || stopRenewal || !manager || !this.managerCredentials.has(manager)) return
@@ -1178,10 +1166,10 @@ export class ApprovalExecutionCoordinator {
       const observePending = async (history: NativeHistory, sourceEvent?: NativeHarnessEvent,
         sourceLease?: WorkflowNativeLease): Promise<ApprovalExecutionObservation | undefined> => {
         const originalHistory = this.captureNative(input.owner, execution,
-          { type: 'history', history: redactKnownSecrets(history, knownSecrets) }, sourceLease?.live ? 'live' : 'recovery',
+          { type: 'history', history: safeValue(history) }, sourceLease?.live ? 'live' : 'recovery',
           manager!.capturedLease(session!))
         history = { ...history, events: history.events.map((event) => normalizeNativeProducerEvent(
-          redactKnownSecrets({ ...event, executionId: execution.id }, knownSecrets)).event) }
+          safeValue({ ...event, executionId: execution.id })).event) }
         signal.throwIfAborted()
         input.owner.assertOwned()
         if (!history.pendingInteractions.length) return undefined
@@ -1234,7 +1222,7 @@ export class ApprovalExecutionCoordinator {
           signal.throwIfAborted()
           await this.budgets.assertActive(execution.id)
           const lease = manager.currentProjectionLease(session)
-          const originalEvent = redactKnownSecrets({ ...event, executionId: execution.id }, knownSecrets)
+          const originalEvent = safeValue({ ...event, executionId: execution.id })
           await this.runs.appendNativeEvent(originalEvent, input.owner, lease, undefined, undefined,
             this.captureNative(input.owner, execution, { type: 'event', event: originalEvent }, 'live', manager.capturedLease(session)))
           const waiting = await observePending(await manager.history(session, signal), event, lease)
@@ -1280,12 +1268,12 @@ export class ApprovalExecutionCoordinator {
           }
           const lease = { ...lane.fence, ...(lane.providerId ? { providerId: lane.providerId } : {}), live: false as const }
           const captured = this.captureNative(input.owner, execution,
-            { type: 'history', history: redactKnownSecrets(observed, knownSecrets) }, 'recovery', lane)
+            { type: 'history', history: safeValue(observed) }, 'recovery', lane)
           const waiting = await observePending(observed, observed.events.at(-1), lease)
           if (waiting) return { history: observed, exactTerminal, waiting }
           if (exactTerminal) {
             const completed = HarnessExecutionSchema.parse({ ...execution, state: 'completed',
-              result: redactKnownSecrets(observed.terminalTurn!.result, knownSecrets), finishedAt: capturedWorkflowNativeTime(captured) })
+              result: safeValue(observed.terminalTurn!.result), finishedAt: capturedWorkflowNativeTime(captured) })
             await this.runs.updateExecution(completed, input.owner, captured)
             // Read the first-terminal normalizer's immutable result, not a local
             // copy of unvalidated provider output. The original remains private.
@@ -1294,7 +1282,7 @@ export class ApprovalExecutionCoordinator {
           } else {
             for (const event of observed.events) {
               await lane.guard.check()
-              const originalEvent = redactKnownSecrets({ ...event, executionId: execution.id }, knownSecrets)
+              const originalEvent = safeValue({ ...event, executionId: execution.id })
               await this.runs.appendNativeEvent(originalEvent, input.owner, lease, undefined, undefined,
                 this.captureNative(input.owner, execution, { type: 'event', event: originalEvent }, 'recovery', lane))
             }
