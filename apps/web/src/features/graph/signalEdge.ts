@@ -44,7 +44,8 @@ export function useFloatingCurve(source: string, target: string, bend: number): 
 const cap = (value: string) => value ? value[0]!.toUpperCase() + value.slice(1) : value
 
 /** Words shown on an agent node; never inferred from a label. */
-export function agentNodeFacts(agent: Agent, role?: string): {
+export type AgentFactsSource = Partial<Pick<Agent, 'harnessConfiguration' | 'harness' | 'productRole' | 'effort' | 'model' | 'harnessSummary'>>
+export function agentNodeFacts(agent: AgentFactsSource, role?: string): {
   harness?: string; harnessLabel: string; model?: string; icon: IconName; roleLabel: string; meta: { label: string; value: string }[]
 } {
   const configuration = agent.harnessConfiguration

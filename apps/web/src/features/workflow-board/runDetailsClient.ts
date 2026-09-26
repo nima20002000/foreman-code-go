@@ -21,13 +21,15 @@ export async function readPinnedRunVersion(scope: RepeatGraphScopeV3, detail: Cu
   assertInspectionScope(scope, scopeForBoardRun(detail.run))
   const { version } = await readRunInspectionVersion(scope, options)
   CurrentRunVersionSnapshotSchema.parse({ run: detail.run, version })
-  const configurations = await Promise.all(Object.entries(version.agentConfigurationVersionIds).map(async ([agentId, versionId]) => {
-    const result = await apiClient.request(`/api/management/workspaces/${part(scope.workspaceId)}/agents/${part(agentId)}/versions/${part(versionId)}`,
-      AgentVersionResultSchema, options)
-    if (result.version.id !== versionId || result.version.agentId !== agentId || result.version.workspaceId !== scope.workspaceId) throw invalid('Configuration detail returned a different immutable Agent pin.')
-    return result.version
-  }))
+  const configurations = await Promise.all(Object.entries(version.agentConfigurationVersionIds).map(([agentId, versionId]) =>
+    readPinnedAgentVersion(scope.workspaceId, agentId, versionId, options)))
   return { version, configurations }
+}
+export async function readPinnedAgentVersion(workspaceId: string, agentId: string, versionId: string, options?: RequestOptions) {
+  const result = await apiClient.request(`/api/management/workspaces/${part(workspaceId)}/agents/${part(agentId)}/versions/${part(versionId)}`,
+    AgentVersionResultSchema, options)
+  if (result.version.id !== versionId || result.version.agentId !== agentId || result.version.workspaceId !== workspaceId) throw invalid('Configuration detail returned a different immutable Agent pin.')
+  return result.version
 }
 export async function digestCurrentValue(value: unknown, maxBytes = 4 * 1024 * 1024): Promise<string> {
   const input = new TextEncoder().encode(canonicalGraphJson(value, maxBytes))

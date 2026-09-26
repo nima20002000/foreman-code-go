@@ -1,35 +1,52 @@
-import { memo, useMemo, useRef } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react'
-import type { RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
-import { Alert, Button } from '../../../shared/ui/nocturne'
+import { memo, useMemo, useRef, useState } from 'react'
+import { useQueries, useQuery } from '@tanstack/react-query'
+import { Background, Controls, ReactFlow, type Edge, type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
+import type { RepeatGraphScopeV3, WorkflowRelationship } from '@graphql/contracts/wave25'
+import { AgentNodeView, Alert, Button, type AgentNodeState } from '../../../shared/ui/nocturne'
 import { useProtectedAccessError } from '../../auth/useProtectedAccessError'
+import { AgentHandles } from '../../graph/AgentHandles'
+import { SignalEdgeShape } from '../../graph/SignalEdgeShape'
+import { agentNodeFacts, edgeBend, useFloatingCurve } from '../../graph/signalEdge'
 import { useWorkflowBoard } from '../context'
 import { currentRunKey } from '../currentRunQuery'
+import { readPinnedAgentVersion } from '../runDetailsClient'
 import { useSelectedRunRecord } from '../runFacts'
-import { useRunVersionQuery } from './queries'
+import { runInspectionQueryKey, useRunVersionQuery } from './queries'
 import { pinnedNodeStates, pinnedTopology } from './pinnedTopology'
 import './inspection.css'
 
+type Facts = ReturnType<typeof agentNodeFacts>
 type RunNode = Node<{
   label: string; agentId: string; configurationId: string; entry: boolean
-  blockId?: string; recorded: string; selected: boolean; inspect(): void
+  blockId?: string; recorded: string; status: string; state: AgentNodeState; facts: Facts
+  selected: boolean; inspect(): void
 }, 'pinnedRunNode'>
+/** The editor's agent card, locked: no rim actions, no connections, status from the Run. */
 const PinnedRunNode = memo(function PinnedRunNode({ data }: NodeProps<RunNode>) {
-  return <div className={`pinned-run-node${data.selected ? ' is-selected' : ''}`}>
-    <Handle type="target" position={Position.Left} id="in" isConnectable={false} />
-    <button type="button" className="nodrag nopan" aria-pressed={data.selected}
-      aria-label={`Inspect Run node ${data.label}`} onClick={data.inspect}>
-      <strong>{data.label}</strong>
-      <span>{data.entry ? 'Entry · ' : ''}{data.blockId ? `Repeat block ${data.blockId}` : 'Saved Run node'}</span>
-      <span>{data.recorded}</span>
-    </button>
-    <Handle type="source" position={Position.Right} id="out" isConnectable={false} />
-  </div>
+  const meta = [...(data.blockId ? [{ label: 'Repeat', value: data.blockId }] : []), ...data.facts.meta].slice(0, 2)
+  return <AgentNodeView className="pinned-run-node" name={data.label} harness={data.facts.harness} harnessLabel={data.facts.harnessLabel}
+    model={data.facts.model} icon={data.facts.icon} statusLabel={data.status} state={data.state} meta={meta}
+    entry={data.entry} selected={data.selected} ariaLabel={`Inspect Run node ${data.label}`} onSelect={data.inspect}>
+    <AgentHandles name={data.label} connectable={false} />
+  </AgentNodeView>
 })
-const nodeTypes = { pinnedRunNode: PinnedRunNode }
+type RunEdge = Edge<{ kind: WorkflowRelationship['kind']; bend: number; label: string; explicit: boolean }>
+const PinnedRunEdge = memo(function PinnedRunEdge({ id, source, target, data, selected }: EdgeProps<RunEdge>) {
+  const curve = useFloatingCurve(source, target, data?.bend ?? 28)
+  const [hovered, setHovered] = useState(false)
+  if (!curve) return null
+  return <g onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
+    <SignalEdgeShape id={id} curve={curve} kind={data?.kind} label={data?.label} showLabel={hovered || selected || data?.explicit} />
+  </g>
+})
+const nodeTypes = { pinnedRunNode: PinnedRunNode }, edgeTypes = { pinnedRunEdge: PinnedRunEdge }
 const fitViewOptions = { padding: 0.25, minZoom: 0.3, maxZoom: 1 }
 const proOptions = { hideAttribution: true }
+const cap = (value: string) => value ? value[0]!.toUpperCase() + value.slice(1) : value
+const visualState = (label?: string): AgentNodeState => label === 'queued' || label === 'starting' ? 'queued'
+  : label === 'running' ? 'running' : label === 'waiting' ? 'waiting' : label === 'succeeded' ? 'completed'
+  : label === 'failed' ? 'failed' : label === 'canceled' ? 'unavailable' : 'idle'
+const unknownFacts: Facts = { harnessLabel: 'Pinned settings unavailable', icon: 'bot', roleLabel: 'Agent', meta: [] }
 
 /** Mounted in the EXISTING canvas region. The editor owner and buffered draft
  * stay mounted beside it, but neither draft nodes nor current Agent settings
@@ -45,37 +62,53 @@ export function SelectedRunCanvas({ scope }: { scope: RepeatGraphScopeV3 }) {
   const record = useSelectedRunRecord()
   const topology = useMemo(() => version ? pinnedTopology(version) : undefined, [version])
   const states = useMemo(() => pinnedNodeStates(record), [record])
+  // Facts come from each node's pinned Agent configuration version, never current Agent settings.
+  const pins = useMemo(() => [...new Map(topology?.nodes.map((node) => [node.configurationId, node.agentId])).entries()], [topology])
+  const configurations = useQueries({ queries: pins.map(([versionId, agentId]) => ({
+    queryKey: [...runInspectionQueryKey(scope), 'agent-version', agentId, versionId],
+    queryFn: ({ signal }: { signal: AbortSignal }) => readPinnedAgentVersion(scope.workspaceId, agentId, versionId, { signal }),
+    retry: false, staleTime: Infinity, gcTime: 60_000, refetchOnWindowFocus: false,
+  })), combine: (results) => results.map((result) => result.data) })
+  const facts = useMemo(() => new Map(configurations.flatMap((configuration) => configuration
+    ? [[configuration.id, agentNodeFacts({ harnessConfiguration: configuration.harness, productRole: configuration.productRole })] as const] : [])),
+  [configurations])
   // Activity-only ticks replace the whole current record. Keep each node's data
   // object (and its inspect callback) unless that node's own presentation changed,
   // so React Flow does not rebuild the pinned canvas on every poll.
   const inspectRef = useRef<(nodeId: string) => void>(() => undefined)
   inspectRef.current = (nodeId: string) => { board.selectInspection({ runNodeId: nodeId }); board.openRuns() }
-  const previous = useRef(new Map<string, { source: unknown; selected: boolean; recorded: string; node: RunNode }>())
+  const previous = useRef(new Map<string, { source: unknown; selected: boolean; recorded: string; facts: Facts; node: RunNode }>())
   const nodes = useMemo<RunNode[]>(() => {
-    const next = new Map<string, { source: unknown; selected: boolean; recorded: string; node: RunNode }>()
+    const next = new Map<string, { source: unknown; selected: boolean; recorded: string; facts: Facts; node: RunNode }>()
     const result = topology?.nodes.map((node) => {
       const state = states.get(node.id)
       const selected = board.inspection.runNodeId === node.id
       const recorded = !record ? 'Current status unavailable' : !state ? 'No activation in the bounded current cut' :
         `${state.label}${state.occurrenceIndex ? ` · repetition ${state.occurrenceIndex}` : ''}${state.attempt ? ` · attempt ${state.attempt}` : ''}`
+      const nodeFacts = facts.get(node.configurationId) ?? unknownFacts
       const cached = previous.current.get(node.id)
-      const entry = cached && cached.source === node && cached.selected === selected && cached.recorded === recorded ? cached
-        : { source: node, selected, recorded, node: { id: node.id, type: 'pinnedRunNode', position: node.position,
-          data: { ...node, selected, inspect: () => inspectRef.current(node.id), recorded } } as RunNode }
+      const entry = cached && cached.source === node && cached.selected === selected && cached.recorded === recorded && cached.facts === nodeFacts ? cached
+        : { source: node, selected, recorded, facts: nodeFacts, node: { id: node.id, type: 'pinnedRunNode', position: node.position,
+          data: { ...node, selected, inspect: () => inspectRef.current(node.id), recorded, facts: nodeFacts,
+            status: !record ? 'Unavailable' : !state ? 'Not started' : cap(state.label), state: visualState(state?.label) } } as RunNode }
       next.set(node.id, entry)
       return entry.node
     }) ?? []
     previous.current = next
     return result
-  }, [topology, states, record, board.inspection.runNodeId])
-  const edges = useMemo<Edge[]>(() => topology?.edges.map((edge) => ({
-    id: edge.id, source: edge.source, target: edge.target, sourceHandle: 'out', targetHandle: 'in',
-    type: 'smoothstep', label: edge.label || (edge.kind === 'approval' ? 'Approval' : 'Handoff'),
-    selected: edge.id === board.inspection.runRelationshipId,
-    ariaLabel: `${edge.kind} relationship ${edge.id} from ${edge.source} to ${edge.target}`,
-    markerEnd: { type: MarkerType.ArrowClosed },
-    ...(edge.kind === 'approval' ? { style: { strokeDasharray: '5 4' } } : {}),
-  })) ?? [], [topology, board.inspection.runRelationshipId])
+  }, [topology, states, record, facts, board.inspection.runNodeId])
+  const edges = useMemo<RunEdge[]>(() => {
+    const counts = new Map<string, number>()
+    return topology?.edges.map((edge) => {
+      const pair = JSON.stringify([edge.source, edge.target].sort()), count = counts.get(pair) ?? 0
+      counts.set(pair, count + 1)
+      const kindLabel = edge.kind === 'approval' ? 'Approval' : 'Handoff'
+      return { id: edge.id, source: edge.source, target: edge.target, type: 'pinnedRunEdge',
+        selected: edge.id === board.inspection.runRelationshipId,
+        ariaLabel: `${edge.kind} relationship ${edge.id} from ${edge.source} to ${edge.target}`,
+        data: { kind: edge.kind, bend: edgeBend(count, edge.source < edge.target), label: edge.label || kindLabel, explicit: Boolean(edge.label) } }
+    }) ?? []
+  }, [topology, board.inspection.runRelationshipId])
   const missingNode = !!version && !!board.inspection.runNodeId
     && !version.definition.nodes.some((node) => node.id === board.inspection.runNodeId)
   return <section className="next-draft-canvas board-draft-canvas pinned-run-canvas" aria-label="Selected Run pinned topology">
@@ -101,7 +134,7 @@ export function SelectedRunCanvas({ scope }: { scope: RepeatGraphScopeV3 }) {
       if (!edgeId || !topology?.edges.some((edge) => edge.id === edgeId)) return
       event.preventDefault(); board.selectInspection({ runRelationshipId: edgeId }); board.openRuns()
     }}>
-      <ReactFlow<RunNode, Edge> nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+      <ReactFlow<RunNode, RunEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable
         elementsSelectable deleteKeyCode={null} onlyRenderVisibleElements
         onEdgeClick={(_, edge) => { board.selectInspection({ runRelationshipId: edge.id }); board.openRuns() }}
