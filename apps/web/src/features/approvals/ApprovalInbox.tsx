@@ -55,6 +55,10 @@ function RequestDetailDisclosure({ interaction }: { interaction: DurableInteract
     <span id={id} role="tooltip" className="approval-hover-card approval-request-hover-card">
       <strong>{summary.operation}</strong>
       <code>{summary.command ?? summary.target ?? summary.explanation ?? 'No additional details supplied.'}</code>
+      {interaction.reviewContext ? <>
+        <span><strong>Target:</strong> {interaction.reviewContext.target}</span>
+        <span><strong>Proposed change:</strong> {interaction.reviewContext.changeSummary}</span>
+      </> : null}
     </span>
   </span>
 }
