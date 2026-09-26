@@ -293,11 +293,14 @@ export class CurrentWorkflowAuthoring {
       [input.workflowId])).rows[0]?.next)
     if (!Number.isSafeInteger(number) || number < 1 || base && number <= base.version) return fail('WORKFLOW_BASE_CONFLICT', 'The next immutable version is invalid.')
     const now = new Date().toISOString()
-    const version = WorkflowVersionV3Schema.parse({ id: `workflow-version-${randomUUID()}`, workspaceId: input.workspaceId,
+    const parsedVersion = WorkflowVersionV3Schema.safeParse({ id: `workflow-version-${randomUUID()}`, workspaceId: input.workspaceId,
       workflowId: input.workflowId, version: number, executionSemanticsVersion: 3, entryNodeId: input.graph.entryNodeId,
       definition: { ...preserveWorkflowGeometry(input.graph, current), version: number, updatedAt: now }, approval: input.graph.approval,
       agentConfigurationVersionIds: configurationPins, contentHash: `sha256:${'0'.repeat(64)}`, createdAt: now })
-    ExecutableWorkflowV3Schema.parse({ version, configurations })
+    if (!parsedVersion.success) return fail('GRAPH_INVALID', parsedVersion.error.issues.map((issue) => issue.message).join('; '))
+    const version = parsedVersion.data
+    const executable = ExecutableWorkflowV3Schema.safeParse({ version, configurations })
+    if (!executable.success) return fail('GRAPH_INVALID', executable.error.issues.map((issue) => issue.message).join('; '))
     for (const config of configurations) {
       if (config.assignedSkills?.length) requireAuthorization(principal, 'skills:read', { workspaceId: input.workspaceId })
       if (config.harness.harness === 'codex' && config.harness.sandbox === 'danger-full-access') requireAuthorization(principal, 'harnesses:update', input)

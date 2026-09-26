@@ -11,6 +11,26 @@ describe.skipIf(!postgresEnabled)('ENG04 current full-definition durable edit pa
   beforeAll(async () => { db = await currentDatabase() }, 60000)
   afterEach(async () => { await Promise.all(fixtures.splice(0).map((t) => t.app.close())) })
   afterAll(async () => { await db?.close() })
+  it.each(['approval', 'limits'] as const)('rejects invalid %s before staging and permits a corrected save', async (invalid) => {
+    const t = await writerFixture(db, 'sequential'); fixtures.push(t)
+    const graph = structuredClone(t.input.graph)
+    if (invalid === 'approval') graph.approval = { handler: 'orchestrator' }
+    else delete graph.executionPolicy
+    const stage = { ...t.input, graph, action: 'stage_edits', draftId: `editor-${randomUUID()}`, commandId: randomUUID() }
+    const rejected = await t.app.inject({ method: 'POST', url: `${t.url}/edits`, headers: graphHeaders(t.writer.token), payload: stage })
+    expect(rejected.statusCode, rejected.body).toBe(409)
+    expect(rejected.json().error.code).toBe('GRAPH_INVALID')
+    const mcp = await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)
+    expect(mcp.result?.isError).toBe(true)
+    expect(JSON.stringify(mcp.result)).toContain('GRAPH_INVALID')
+    expect((await db.pool.query('select 1 from graph_edit_intents where workflow_id=$1', [t.input.workflowId])).rowCount).toBe(0)
+    const corrected = { ...stage, graph: t.input.graph, commandId: randomUUID() }
+    const staged = CurrentEditReadResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, corrected)).result))
+    expect(staged.intent?.state).toBe('staged')
+    expect(staged.intent?.stagedDraft.graph).toEqual(t.input.graph)
+    const denied = await t.credential([{ actions: ['workflows:read', 'graph:read'], scope: { workspaceIds: [t.input.workspaceId] } }])
+    expect((await t.call(CURRENT_WORKFLOW_TOOLS.edits, corrected, denied.token)).result?.isError).toBe(true)
+  })
   it.each(['sequential', 'repeat'] as const)('%s stages and discards the exact private intent across HTTP and MCP', async (form) => {
     const t = await writerFixture(db, form); fixtures.push(t)
     const savedResponse = await t.app.inject({ method: 'PUT', url: t.url, headers: graphHeaders(t.writer.token), payload: t.input })
