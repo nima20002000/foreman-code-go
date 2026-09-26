@@ -144,6 +144,22 @@ async function start(mock: Mock, user: ReturnType<typeof userEvent.setup>, expec
 }
 
 describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
+  it('renames from the board title, cancels with Escape, and persists through Save beside Discard', async () => {
+    const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup()
+    await mount(mock)
+    const { key } = await create(mock, user)
+    stageShape(key, 'single', mock)
+    await user.click(screen.getByRole('button', { name: 'S3 mounted workflow' }))
+    await user.keyboard('Canceled name{Escape}')
+    expect(screen.getByRole('button', { name: 'S3 mounted workflow' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'S3 mounted workflow' }))
+    await user.keyboard('Renamed board{Enter}')
+    expect(screen.getByRole('button', { name: 'Renamed board' })).toBeVisible()
+    const actions = within(screen.getByRole('group', { name: 'Draft actions' }))
+    expect(actions.getByRole('button', { name: 'Save changes' })).toBeVisible()
+    const version = await save(mock, user, 1)
+    expect(version.definition.name).toBe('Renamed board')
+  })
   it('saves before starting the exact newly published version from Save and run', async () => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup()
     await mount(mock)
@@ -176,7 +192,8 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes).toHaveLength(2)
     const draftActions = within(screen.getByRole('group', { name: 'Draft actions' }))
     expect(draftActions.getByRole('button', { name: 'Discard changes' })).toBeVisible()
-    expect(draftActions.getAllByRole('button')).toHaveLength(2)
+    expect(draftActions.getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual(['Undo', 'Discard changes', 'Save changes'])
+    expect(within(controls()).queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
     expect(within(controls()).queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
     await user.keyboard('{Control>}z{/Control}{Control>}z{/Control}')
     await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes).toHaveLength(0))

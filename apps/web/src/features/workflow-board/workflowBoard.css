@@ -106,3 +106,7 @@
 .board-agent-picker h2 button:active { cursor: grabbing; }
 .board-agent-picker-content > fieldset { display: grid; gap: var(--space-4); min-width: 0; margin: 0; padding: var(--space-4); border: 0; }
 .board-agent-picker .next-draft-hint { display: none; }
+.board-name-button { max-width: 100%; padding: 4px 0; overflow: hidden; border: 0; background: transparent; color: inherit; font: inherit; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
+.board-name-field { width: min(24rem, 40vw); min-width: 8rem; }
+.board-name-field > label { display: none; }
+.board-name-field .n-input { font: var(--type-heading); }

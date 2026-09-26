@@ -29,6 +29,7 @@ import { runNodeView, useSelectedRunRecord } from '../../workflow-board/runFacts
 import { useWorkflowBoard } from '../../workflow-board/context'
 import { BoardAgentSettings, NewBoardAgent } from '../../workflow-board/AgentControls'
 import { AgentPickerPanel } from '../../workflow-board/AgentPickerPanel'
+import { WorkflowName } from '../../workflow-board/WorkflowName'
 import { boardDraftContextKey, boardRunListKey } from '../../workflow-board/keys'
 import { useApprovalInboxStore } from '../../approvals'
 import { RepeatEditor } from '../../repeats/RepeatEditor'
@@ -404,15 +405,22 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         action={<Button variant="primary" leading={<Icon name="plus" size={15} />} onClick={() => openPanel('agents')}>Add agent</Button>} /></div> : null}
       <header className="board-topbar">
         <div className="board-title">
-          <h2>{graph.name}</h2>
+          <WorkflowName name={graph.name} disabled={saveBusy || starting || editIntent.locked}
+            onRename={(name) => change((current) => ({ ...current, name }))} />
           {hints.length ? <Button size="sm" variant="ghost" leading={<Icon name="warning" size={14} />} onClick={() => openPanel('readiness')}>
             {hints.length} {hints.length === 1 ? 'thing' : 'things'} to fix</Button> : null}
         </div>
         <div className="board-control-cluster">
-          {dirty ? <Toolbar label="Draft actions">
-            <IconButton label="Undo" variant="ghost" disabled={saveBusy || starting || editIntent.locked || !edit.history.length}
-              onClick={() => historyAction('undo')}><Undo2 aria-hidden="true" size={16} /></IconButton>
-            <IconButton label="Discard changes" variant="ghost" disabled={saveBusy || starting} onClick={() => setConfirm('discard')}><Icon name="close" size={22} /></IconButton>
+          {dirty || edit.pending || editIntent.locked ? <Toolbar label="Draft actions">
+            {dirty ? <>
+              <IconButton label="Undo" variant="ghost" disabled={saveBusy || starting || editIntent.locked || !edit.history.length}
+                onClick={() => historyAction('undo')}><Undo2 aria-hidden="true" size={16} /></IconButton>
+              <IconButton label="Discard changes" variant="ghost" disabled={saveBusy || starting} onClick={() => setConfirm('discard')}><Icon name="close" size={22} /></IconButton>
+            </> : null}
+            {edit.pending ? <Button disabled={saveBusy || starting} onClick={requestSave}>Retry save</Button> : null}
+            {editIntent.locked ? <Button disabled={saveBusy || starting || !!editIntent.storageError || stopBlocked} onClick={requestSave}>
+              {affectedRuns.length ? 'Stop affected Runs and save' : 'Reconcile Save'}</Button>
+              : <IconButton label="Save changes" disabled={saveBusy || starting || !!editIntent.storageError} onClick={requestSave}><Save aria-hidden="true" size={16} /></IconButton>}
           </Toolbar> : null}
         <Toolbar label="Workflow controls">
           <IconButton label="Add agent to graph" onClick={() => openPanel('agents')}><Icon name="plus" size={16} /></IconButton>
@@ -422,12 +430,6 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
             {pendingApprovals ? <span className="workflow-approval-inbox-badge" aria-hidden="true">{pendingApprovals}</span> : null}</Button>
           <Button size="sm" variant="ghost" onClick={() => openPanel('repeat')}>Repeats</Button>
           {board ? <IconButton label="Runs" onClick={board.openRuns}><Icon name="history" size={16} /></IconButton> : null}
-          {dirty || edit.pending || editIntent.locked ? <>
-            {edit.pending ? <Button disabled={saveBusy || starting} onClick={requestSave}>Retry save</Button> : null}
-            {editIntent.locked ? <Button disabled={saveBusy || starting || !!editIntent.storageError || stopBlocked} onClick={requestSave}>
-              {affectedRuns.length ? 'Stop affected Runs and save' : 'Reconcile Save'}</Button>
-              : <IconButton label="Save changes" disabled={saveBusy || starting || !!editIntent.storageError} onClick={requestSave}><Save aria-hidden="true" size={16} /></IconButton>}
-          </> : null}
           <Button variant="primary" leading={<Icon name="play" size={14} />} aria-label={pendingStart ? 'Reconcile Start' : needsSave ? 'Save and run' : 'Start saved version'}
             title={startReason} disabled={startDisabled} loading={starting} onClick={() => void (pendingStart ? start() : prepare(() => needsSave ? startMutation.mutateAsync({ saveFirst: true }) : start())).catch(report)}>{pendingStart ? 'Confirm start' : needsSave ? 'Save and run' : 'Run'}</Button>
         </Toolbar>
