@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
+import { useCallback, useMemo, useSyncExternalStore } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import type { WorkflowRunSummary } from '@graphql/contracts'
 import type { RepeatGraphCurrentV3 } from '@graphql/contracts/wave25'
 import type { AgentNodeState, Tone } from '../../shared/ui/nocturne'
@@ -7,12 +8,18 @@ import type { EdgeSignal } from '../graph/signalEdge'
 import { currentRunKey } from './currentRunQuery'
 import { useWorkflowBoard } from './context'
 
-/** Cache-only subscriber: one selected-Run observer owns fetching. */
+/** Cache-only subscriber: no Query observer with a competing queryFn. Only
+ * CurrentRunObserver owns current-state fetching and invalidation/refetch work. */
 export function useSelectedRunRecord(): RepeatGraphCurrentV3 | undefined {
-  const scope = useWorkflowBoard()?.run
-  const query = useQuery<RepeatGraphCurrentV3>({ queryKey: scope ? currentRunKey(scope) : ['workbench', 'no-board-run', sessionGeneration()],
-    enabled: false, queryFn: () => { throw new Error('The current Run observer owns fetching.') } })
-  return query.isError ? undefined : query.data
+  const scope = useWorkflowBoard()?.run, cache = useQueryClient(), generation = sessionGeneration()
+  const { workspaceId, workflowId, runId, workflowVersionId, executionSemanticsVersion } = scope ?? {}
+  const key = useMemo(() => workspaceId && workflowId && runId && workflowVersionId && executionSemanticsVersion === 3
+    ? currentRunKey({ workspaceId, workflowId, runId, workflowVersionId, executionSemanticsVersion }, generation) : undefined,
+    [workspaceId, workflowId, runId, workflowVersionId, executionSemanticsVersion, generation])
+  const subscribe = useCallback((notify: () => void) => cache.getQueryCache().subscribe(notify), [cache])
+  const snapshot = useCallback(() => key ? cache.getQueryState<RepeatGraphCurrentV3>(key) : undefined, [cache, key])
+  const state = useSyncExternalStore(subscribe, snapshot, () => undefined)
+  return state?.status === 'error' || state?.fetchStatus === 'paused' ? undefined : state?.data
 }
 export type RunNodeView = { state: AgentNodeState; label: string; activity?: string; inRun: boolean }
 const words: Record<string, [AgentNodeState, string]> = {

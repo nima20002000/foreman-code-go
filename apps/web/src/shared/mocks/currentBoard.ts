@@ -1,4 +1,5 @@
 import { http, HttpResponse, type RequestHandler } from 'msw'
+import { inspectionFixturePage, runInspectionFixtureResponse, type RunInspectionFixture, type RunInspectionActivity } from './runInspection'
 import { AgentConfigurationVersionSchema, AgentSchema, WorkflowRunSummarySchema, type Agent } from '@graphql/contracts'
 import { AgentCreateInputSchema, AgentUpdateInputSchema, AgentMutationResultSchema, BrowserAccessSessionSchema, ManagedWorkspaceSchema, RunStopInputSchema, WorkflowUpdateInputSchema, WorkflowArchiveInputSchema } from '@graphql/contracts/management'
 import {
@@ -40,6 +41,8 @@ export function createCurrentBoardMock(options: {
   const archivedWorkflows = new Set<string>()
   const intents = new Map<string, GraphEditReadResultV3>(), runs = new Map<string, CurrentRunDetails>()
   const currents = new Map<string, RepeatGraphCurrentV3>()
+  const inspection = new Map<string, RunInspectionFixture[]>()
+  const history = new Map<string, RunInspectionActivity[]>()
   const receipts = new Map<string, { input: unknown; value: unknown }>()
   const calls: Array<{ method: string; path: string; body?: unknown }> = []
   const controls = { start: options.allowSimulatedStart === true, deniedStart: false, deniedStop: false, deniedRead: false,
@@ -307,14 +310,21 @@ export function createCurrentBoardMock(options: {
             }
         }
       }
-      if (path === `${prefix}/runs` && method === 'GET') return HttpResponse.json({ items: [...runs.values()].map((r) => r.run).filter((run) => run.workflowId === url.searchParams.get('workflowId')), pageInfo })
+      if (path === `${prefix}/runs` && method === 'GET') return HttpResponse.json(inspectionFixturePage(
+        [...runs.values()].map((r) => r.run).filter((run) => run.workflowId === url.searchParams.get('workflowId')),
+        (run) => run.id, [workspaceId, url.searchParams.get('workflowId'), 'runs'], url.searchParams, 20, 100))
       const match = path.match(/\/runs\/([^/]+)(.*)$/)
       if (match) {
         const runId = match[1]!, tail = match[2]!, detail = runs.get(runId)
         if (!detail) return failure('NOT_FOUND', 'Run not found', 404)
         if (!tail && method === 'GET') return HttpResponse.json(detail)
         if (tail.includes('/graph') && tail.endsWith('/current') && method === 'GET') return HttpResponse.json(currents.get(runId))
-        if (tail === '/events' && method === 'GET') return HttpResponse.json({ items: [], pageInfo })
+        if (method === 'GET' && path.startsWith(prefix)) {
+          const inspected = runInspectionFixtureResponse(url, tail, detail, versions.get(detail.run.workflowVersionId), inspection.get(runId) ?? [])
+          if (inspected) return inspected
+        }
+        if (tail === '/events' && method === 'GET') return HttpResponse.json(inspectionFixturePage(
+          history.get(runId) ?? [], (item) => item.id, [workspaceId, runId, 'activity'], url.searchParams, 50, 500))
         if (tail === '/stop' && method === 'POST') {
           const input = RunStopInputSchema.parse(body)
           if (controls.deniedStop) return failure('FORBIDDEN', 'Stop denied', 403)
@@ -362,5 +372,5 @@ export function createCurrentBoardMock(options: {
     current.asOfSequence = String(BigInt(current.asOfSequence) + 1n)
   }
   return { workspaceId, agents, configurations, workflows, drafts, versions, runs, currents, calls, controls, receipts,
-    handlers, dispatch, install, details, managed, catalog, capabilities, settle, record }
+    handlers, dispatch, install, details, managed, catalog, capabilities, settle, record, inspection, history }
 }

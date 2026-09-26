@@ -1,39 +1,50 @@
 import { useProtectedAccessError } from '../auth/useProtectedAccessError'
-import { useEffect } from 'react'
-import { create } from 'zustand'
+import { useEffect, useRef, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
 import { Alert, Badge, Button } from '../../shared/ui/nocturne'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { useBrowserAccessQuery } from '../../shared/api/settingsExperience'
 import { useCurrentRunQuery, currentRunKey } from './currentRunQuery'
-import { readPinnedRun, readPinnedRunVersion, verifyRunExecutionDetails } from './runDetailsClient'
+import { readPinnedRun } from './runDetailsClient'
+import { useRunVersionQuery } from './inspect/queries'
+import { ExecutionInspector } from './inspect/ExecutionInspector'
+import { JsonValue } from './inspect/JsonValue'
+import { useInspectionPresentation } from './inspect/presentation'
 import { recordBoardStopReceipt, reserveBoardStop, sendBoardStop, settleBoardStop, useBoardStopOutbox } from './stopOutbox'
 import { canUseBoardAction } from './permissions'
-import { RepeatStatus } from '../repeats/RepeatStatus'
 import { RunHistory } from './RunHistory'
-import { useWorkflowBoard } from './context'
 
-const interaction = create<{ open: Record<string, boolean>; limit: Record<string, number>; toggle(key: string, value: boolean): void; more(key: string): void }>((set) => ({
-  open: {}, limit: {}, toggle: (key, value) => set((state) => ({ open: { ...state.open, [key]: value } })),
-  more: (key) => set((state) => ({ limit: { ...state.limit, [key]: (state.limit[key] ?? 50) + 50 } })),
-}))
-const json = (value: unknown) => JSON.stringify(value, null, 2)
-export function CurrentRunDetails({ scope }: { scope: RepeatGraphScopeV3 }) {
-  const canonical = useCurrentRunQuery(scope), cache = useQueryClient(), generation = sessionGeneration()
-  const board = useWorkflowBoard(), access = useBrowserAccessQuery(), outbox = useBoardStopOutbox(scope)
+/** Lane C replaces the action controls, not the Board's passive Stop-journal
+ * settlement. Both authenticated Run readbacks must confirm terminal + cleanup
+ * settled before the existing locked, exact-request outbox may be cleared. */
+export type RunDetailsProps = { scope: RepeatGraphScopeV3; runActions?: ReactNode }
+export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
+  const canonical = useCurrentRunQuery(scope, false), cache = useQueryClient(), generation = sessionGeneration()
+  const access = useBrowserAccessQuery(), outbox = useBoardStopOutbox(scope)
   const identity = JSON.stringify([generation, scope]), detailsKey = ['workbench', 'pinned-v3-run-details', generation, scope.workspaceId, scope.workflowId, scope.runId, scope.workflowVersionId]
   const run = useQuery({ queryKey: detailsKey, queryFn: ({ signal }) => readPinnedRun(scope, { signal }), retry: false,
-    refetchOnReconnect: 'always', refetchInterval: (query) => query.state.error ? false : query.state.data?.run.executionState !== 'completed' || query.state.data?.cleanupPending ? 1500 : false })
+    staleTime: Infinity, refetchOnMount: 'always', refetchOnReconnect: false, refetchOnWindowFocus: false })
   const runDenied = useProtectedAccessError(run), canonicalDenied = useProtectedAccessError(canonical)
-  const detail = run.isError || canonical.isError || runDenied || canonicalDenied ? undefined : run.data
-  const pinned = useQuery({ queryKey: [...detailsKey, 'configuration'], enabled: !!detail,
-    queryFn: ({ signal }) => readPinnedRunVersion(scope, detail!, { signal }), retry: false, staleTime: Infinity })
-  const snapshot = canonical.isError || canonicalDenied || runDenied ? undefined : canonical.data
-  const evidence = useQuery({ queryKey: [...detailsKey, 'evidence', canonical.data?.asOfSequence, run.dataUpdatedAt], enabled: !!snapshot && !!detail,
-    queryFn: () => verifyRunExecutionDetails(snapshot!, detail!), retry: false, staleTime: Infinity })
-  const limit = interaction((state) => state.limit[identity] ?? 50)
-  const open = interaction((state) => state.open)
+  const detail = run.isError || runDenied || canonicalDenied ? undefined : run.data
+  const pinned = useRunVersionQuery(scope, !runDenied && !canonicalDenied)
+  const pinnedDenied = useProtectedAccessError(pinned)
+  const version = pinned.isError || pinnedDenied || runDenied || canonicalDenied ? undefined : pinned.data?.version
+  const configurationKey = `${identity}:configuration`
+  const configurationOpen = useInspectionPresentation((state) => !!state.open[configurationKey])
+  const snapshot = canonical.isError || canonical.isPaused || canonicalDenied || runDenied ? undefined : canonical.data
+  // Only a terminal/cleanup transition needs a fresh private Run read for the
+  // pre-existing Stop settlement fence. Never poll execution/activity arrays.
+  const lastSettlement = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    if (!snapshot || runDenied || canonicalDenied) return
+    const terminal = snapshot.state.run.executionState === 'completed'
+    const marker = JSON.stringify([scope.runId, terminal, snapshot.state.run.cleanupPending])
+    if (lastSettlement.current === marker) return
+    const previous = lastSettlement.current
+    lastSettlement.current = marker
+    if (terminal && previous !== undefined) void run.refetch()
+  }, [scope.runId, snapshot, runDenied, canonicalDenied, run.refetch])
   const stop = useMutation({ retry: false, mutationFn: async () => {
     if (!snapshot || canonical.isError) throw new Error('Refresh the exact selected Run before Stop. No command was sent.')
     const journal = await reserveBoardStop(scope)
@@ -46,30 +57,41 @@ export function CurrentRunDetails({ scope }: { scope: RepeatGraphScopeV3 }) {
   } })
   const settlement = useMutation({ retry: false, mutationFn: async () => {
     const journal = outbox.journal
-    if (journal && detail?.run.executionState === 'completed' && detail.cleanupPending === false && snapshot?.state.run.executionState === 'completed') {
+    assertSession(generation)
+    if (journal?.receipt && journal.receipt.status !== 'not_owner'
+      && detail?.run.executionState === 'completed' && detail.cleanupPending === false
+      && snapshot?.state.run.executionState === 'completed' && snapshot.state.run.cleanupPending === false) {
       await settleBoardStop(scope, journal.request)
     }
   } })
   useEffect(() => {
-    if (!outbox.journal?.receipt || outbox.journal.receipt.status === 'not_owner' || run.isError || canonical.isError
-      || detail?.run.executionState !== 'completed' || detail.cleanupPending !== false || snapshot?.state.run.executionState !== 'completed'
+    // The contextual slot can render C's controls while this Board still owns
+    // passive settlement. Clearing a journal sends no Stop and moves no focus.
+    if (!outbox.journal?.receipt || outbox.journal.receipt.status === 'not_owner' || outbox.error
+      || run.isError || canonical.isError || run.isFetching || canonical.isFetching || run.isPaused || canonical.isPaused
+      || detail?.run.executionState !== 'completed' || detail.cleanupPending !== false
+      || snapshot?.state.run.executionState !== 'completed' || snapshot.state.run.cleanupPending !== false
       || settlement.isPending || settlement.isError) return
     settlement.mutate()
-  }, [outbox.journal, detail, snapshot, run.isError, canonical.isError, settlement.isPending, settlement.isError, settlement.mutate])
+  }, [outbox.journal, outbox.error, detail, snapshot, run.isError, canonical.isError, run.isFetching, canonical.isFetching,
+    run.isPaused, canonical.isPaused, settlement.isPending, settlement.isError, settlement.mutate])
   const principal = !access.isError ? access.data?.principal : undefined
   const permitted = !!principal && Date.parse(principal.expiresAt) > Date.now() && canUseBoardAction(principal.grants, 'runs:stop', scope)
   const receipt = outbox.journal?.receipt
   const canNeedStop = snapshot?.state.run.executionState !== 'completed' || detail?.cleanupPending !== false || !!outbox.journal
-  const selectedNode = board?.inspection.runNodeId
-  const selectedRelationship = board?.inspection.runRelationshipId
-  const rows = evidence.isError || !detail || !snapshot ? [] : evidence.data?.filter((item) => !selectedNode || item.fact.identity.workflowNodeId === selectedNode) ?? []
   return <section aria-label="Pinned Run details" className="current-run-details">
     <header><Badge tone="neutral">Semantics 3</Badge><p>Run <code>{scope.runId}</code> · saved version <code>{scope.workflowVersionId}</code></p></header>
-    {!snapshot ? <Alert tone="warning" title="Current Run state is unavailable.">No cached status, native acknowledgement or synthetic occurrence is used.
+    {canonical.isPending && !canonical.isPaused ? <p role="status">Loading the bounded current Run state…</p>
+      : !snapshot ? <Alert tone="warning" title={canonical.isPaused ? 'Current Run refresh is paused.' : 'Current Run state is unavailable.'}>
+      No stale status, native acknowledgement or synthetic occurrence is used.
       <Button size="sm" onClick={() => void canonical.refetch()}>Refresh exact Run</Button></Alert> : <p role="status">
       Recorded {snapshot.state.run.executionState} · {snapshot.state.run.outcome} · complete cut {snapshot.asOfSequence}.
       {snapshot.state.run.stopRequested ? ' Stop requested; cleanup is not implied.' : ''}</p>}
+    {run.isPending ? <p role="status">Reading accepted Run facts…</p> : null}
+    {detail ? <p>Accepted Run facts below are from an explicit authenticated read.
+      <Button size="sm" variant="ghost" disabled={run.isFetching} onClick={() => void run.refetch()}>Refresh accepted Run facts</Button></p> : null}
     {run.isError ? <Alert tone="warning" title="Private Run details are unavailable."><Button size="sm" onClick={() => void run.refetch()}>Retry pinned details</Button></Alert> : null}
+    <div data-testid="run-details-actions-slot">{runActions !== undefined ? runActions : <>
     {canNeedStop ? <div className="n-actions"><Button variant="danger" disabled={!permitted || !snapshot || stop.isPending || !!outbox.error}
       onClick={() => stop.mutate()}>{stop.isPending ? 'Sending exact Stop…' : outbox.journal ? 'Reconcile Stop' : 'Stop this Run'}</Button>
       {!permitted ? <span>Stop permission is unavailable for this exact Run.</span> : null}</div> : null}
@@ -77,43 +99,29 @@ export function CurrentRunDetails({ scope }: { scope: RepeatGraphScopeV3 }) {
       {outbox.error ?? stop.error?.message ?? settlement.error?.message} The original command is retained; no replacement Run is started.</Alert> : null}
     {receipt ? <p role="status">Stop receipt: {receipt.status}{receipt.replayed ? ' (replayed)' : ''}. {receipt.processStopped ? 'Native process closure was observed.' : 'Native process closure has not been confirmed.'}
       {' '}A Stop receipt is not cleanup settlement.</p> : null}
-    {detail ? <dl><dt>Saved configuration pins</dt><dd><pre>{json(detail.run.agentConfigurationVersionIds)}</pre></dd>
-      <dt>Accepted execution folder</dt><dd>{detail.run.executionLocation ? <pre>{json(detail.run.executionLocation)}</pre> : 'Restricted or unavailable; the current workspace folder is not substituted.'}</dd>
-      <dt>Accepted Run input</dt><dd><pre>{json(detail.run.input)}</pre></dd>
+    </>}</div>
+    {runActions !== undefined && outbox.journal && settlement.isError ? <Alert tone="warning" title="Stop journal settlement is not confirmed.">
+      {settlement.error.message} The retained command was not replaced. Refresh the exact Run and use the cleanup verification control to retry.
+    </Alert> : null}
+    {detail ? <dl><dt>Saved configuration pins</dt><dd><JsonValue label="Run configuration pins" value={detail.run.agentConfigurationVersionIds} /></dd>
+      <dt>Accepted execution folder</dt><dd>{detail.run.executionLocation ? <JsonValue label="Run execution folder" value={detail.run.executionLocation} /> : 'Restricted or unavailable; the current workspace folder is not substituted.'}</dd>
+      <dt>Accepted Run input</dt><dd><JsonValue label="Accepted Run input" value={detail.run.input} /></dd>
       <dt>Cleanup</dt><dd>{detail.cleanupPending === true ? 'Pending' : detail.cleanupPending === false ? 'Settled according to authenticated Run readback' : 'Unknown'}</dd>
-      {detail.run.result ? <><dt>Recorded Run result</dt><dd><pre>{json(detail.run.result)}</pre></dd></> : null}</dl> : null}
-    <details onToggle={(event) => interaction.getState().toggle(`${identity}:configuration`, event.currentTarget.open)}>
-      <summary>Exact saved definition and Agent configurations</summary>
-      {pinned.isError ? <p role="alert">The immutable configuration could not be read. Current Agent settings are not substituted.</p> : null}
-      {pinned.isPending ? <p role="status">Reading saved configuration pins…</p> : null}
-      {open[`${identity}:configuration`] && detail && snapshot && pinned.data && !pinned.isError ? <><pre>{json(pinned.data.version)}</pre>
-        {pinned.data.configurations.map((configuration) => <details key={configuration.id}><summary>Configuration {configuration.id}</summary><pre>{json(configuration)}</pre></details>)}</> : null}
+      {detail.run.result ? <><dt>Recorded Run result</dt><dd><JsonValue label="Recorded Run result" value={detail.run.result} /></dd></> : null}</dl> : null}
+    <details open={configurationOpen} onToggle={(event) => useInspectionPresentation.getState().setOpen(configurationKey, event.currentTarget.open)}>
+      <summary>Exact saved definition and Agent configuration pins</summary>
+      {configurationOpen ? <>
+        {pinned.isPending ? <p role="status">Reading this Run’s immutable saved version…</p> : null}
+        {pinned.isError || pinnedDenied ? <Alert tone="warning" title="The immutable version is unavailable.">
+          Current Agent settings are not substituted. {!pinnedDenied ? <Button size="sm" onClick={() => void pinned.refetch()}>Retry saved version</Button> : null}
+        </Alert> : null}
+        {version ? <JsonValue label="Pinned WorkflowVersion" value={version} /> : null}
+      </> : null}
     </details>
-    {snapshot?.topology.repeat ? <RepeatStatus scope={scope} /> : null}
-    {snapshot ? <section aria-label="Exact execution inputs and results">
-      <header><h3>Execution inputs and accepted results</h3>{selectedNode || selectedRelationship ? <Button size="sm" onClick={() => board?.selectInspection({})}>Clear detail filter</Button> : null}</header>
-      <div className="n-actions">{snapshot.topology.nodes.map((node) => <Button size="sm" key={node.workflowNodeId} aria-pressed={selectedNode === node.workflowNodeId}
-        onClick={() => board?.selectInspection({ runNodeId: node.workflowNodeId })}>{node.workflowNodeId}</Button>)}</div>
-      {evidence.isError ? <Alert tone="danger" title="Execution evidence did not match the pinned canonical cut.">No mismatched input or result is displayed.</Alert> : null}
-      {evidence.isPending && detail ? <p role="status">Verifying exact execution and result digests…</p> : null}
-      <ol>{rows.slice(0, limit).map(({ fact, execution, acceptedResult }) => {
-        const id = fact.identity, key = `${identity}:execution:${id.executionId}`
-        const bindings = snapshot.state.bindings.filter((binding) => binding.recipient.executionId === id.executionId && (!selectedRelationship || binding.relationshipId === selectedRelationship))
-        return <li key={id.executionId}><strong>{id.workflowNodeId} · technical attempt {id.attempt}</strong>
-          {id.occurrence ? <p>{id.occurrence.blockId} · business occurrence {id.occurrence.occurrenceIndex} · <code>{id.occurrence.occurrenceId}</code></p> : null}
-          <p>Recorded {fact.state}{fact.resultOutcome ? ` · ${fact.resultOutcome}` : ''}. Execution <code>{id.executionId}</code>.</p>
-          <details onToggle={(event) => interaction.getState().toggle(key, event.currentTarget.open)}><summary>Read this exact input and result</summary>
-            {open[key] ? <><p>Input digest <code>{fact.inputDigest}</code>. Configuration <code>{id.agentConfigurationVersionId}</code>.</p>
-              {execution ? <><pre aria-label={`Input ${id.executionId}`}>{json(execution.input)}</pre>
-                <p>Native session: {execution.nativeSessionId ?? 'Not recorded'}</p></> : <p>Authorized detail for this exact execution is not available yet.</p>}
-              {acceptedResult ? <pre aria-label={`Accepted result ${id.executionId}`}>{json(acceptedResult)}</pre> : <p>No accepted result detail is verified in this cut.</p>}
-              <h4>Exact predecessor/result bindings</h4>{bindings.length ? <pre>{json(bindings)}</pre> : <p>No predecessor binding is recorded for this execution.</p>}</> : null}
-          </details></li>
-      })}</ol>
-      {rows.length > limit ? <Button size="sm" onClick={() => interaction.getState().more(identity)}>Show more executions</Button> : null}
-      {!rows.length && !evidence.isPending && !evidence.isError ? <p>No execution is recorded for this selection.</p> : null}
-      <details><summary>Selected and unselected routing / joins</summary><pre>{json(snapshot.state.resolutions.filter((resolution) => !selectedNode || resolution.ref.nodeId === selectedNode))}</pre></details>
-    </section> : null}
+    {version ? <ExecutionInspector scope={scope} version={version} /> : pinned.isPending ? <p role="status">Loading the pinned version before inspection…</p>
+      : <Alert tone="warning" title="Run inspection is unavailable until its immutable version is verified.">
+        {!pinnedDenied && !runDenied && !canonicalDenied ? <Button size="sm" onClick={() => void pinned.refetch()}>Retry Run inspection</Button> : null}
+      </Alert>}
     {detail ? <RunHistory scope={scope} /> : null}
   </section>
 }

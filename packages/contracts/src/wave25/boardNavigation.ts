@@ -9,6 +9,33 @@ export const WorkspaceBoardInspectionSchema = z.object({
 }).strict()
 export type WorkspaceBoardInspection = z.infer<typeof WorkspaceBoardInspectionSchema>
 
+/**
+ * The existing runExchangeKey travels through both mounted route aliases. Reserve
+ * an unambiguous namespace for execution/occurrence inspection; ordinary graph
+ * exchange keys retain their meaning. IDs cannot contain '/', and '-' is not an ID.
+ * No additional route-local mirror of this linkable state is needed.
+ */
+export const WorkspaceBoardExecutionSelectionSchema = z.object({
+  occurrenceId: GraphIdSchema.optional(), executionId: GraphIdSchema.optional(),
+}).strict()
+export type WorkspaceBoardExecutionSelection = z.infer<typeof WorkspaceBoardExecutionSelectionSchema>
+export function runInspectionKey(selection: WorkspaceBoardExecutionSelection): string | undefined {
+  const value = WorkspaceBoardExecutionSelectionSchema.parse(selection)
+  return value.occurrenceId || value.executionId
+    ? `inspection/${value.occurrenceId ?? '-'}/${value.executionId ?? '-'}` : undefined
+}
+export function readRunInspectionKey(key?: string): WorkspaceBoardExecutionSelection {
+  if (!key?.startsWith('inspection/')) return {}
+  const parts = key.split('/')
+  if (parts.length !== 3) throw new Error('Invalid execution inspection selection.')
+  const value = WorkspaceBoardExecutionSelectionSchema.parse({
+    ...(parts[1] !== '-' ? { occurrenceId: parts[1] } : {}),
+    ...(parts[2] !== '-' ? { executionId: parts[2] } : {}),
+  })
+  if (!value.occurrenceId && !value.executionId) throw new Error('Empty execution inspection selection.')
+  return value
+}
+
 /** Presentation only. A URL requests a Run; it never authorizes or proves its pins. */
 export const WorkspaceBoardSearchSchema = UrlSearchSelectionSchema.extend({
   ...WorkspaceBoardInspectionSchema.shape,
@@ -19,6 +46,8 @@ export const WorkspaceBoardSearchSchema = UrlSearchSelectionSchema.extend({
   ]).optional(),
 }).strict().superRefine((value, context) => {
   if (value.runNodeId && value.runRelationshipId) context.addIssue({ code: 'custom', message: 'Inspect one Run node or relationship at a time.' })
+  try { readRunInspectionKey(value.runExchangeKey) }
+  catch { context.addIssue({ code: 'custom', path: ['runExchangeKey'], message: 'Invalid execution or occurrence inspection identity.' }) }
   const pins = [value.runId, value.workflowVersionId, value.executionSemanticsVersion]
   if (pins.some((pin) => pin !== undefined) && (!value.workflowId || pins.some((pin) => pin === undefined))) {
     context.addIssue({ code: 'custom', message: 'A Run selection needs its workflow, Run, immutable version and execution semantics.' })

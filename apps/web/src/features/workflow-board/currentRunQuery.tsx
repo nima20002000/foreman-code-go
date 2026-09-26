@@ -21,8 +21,11 @@ export function useCurrentRunQuery(scope?: RepeatGraphScopeV3, live = true, clie
     }, retry: false, staleTime: 1000, refetchOnReconnect: 'always', refetchOnWindowFocus: live,
     refetchInterval: (state) => {
       const error = state.state.error
+      // Stop only on authority/not-found; a transient failure keeps polling.
       if (ApiError.is(error) && [401, 403, 404].includes(error.status)) return false
-      return live && state.state.data?.state.run.executionState !== 'completed' ? 1500 : false
+      const run = state.state.data?.state.run
+      return live && (!run || run.executionState !== 'completed' || run.cleanupPending
+        || run.pendingInteractionCount > 0 || run.unsettledReviewCount > 0) ? 1500 : false
     },
   })
 }
@@ -30,8 +33,11 @@ export function CurrentRunObserver({ scope }: { scope: RepeatGraphScopeV3 }) { u
 export function clearCurrentRunAccess(client: QueryClient) {
   client.removeQueries({ queryKey: ['workbench', 'current-v3-run'] })
   client.removeQueries({ queryKey: ['workbench', 'pinned-v3-run-details'] })
+  client.removeQueries({ queryKey: ['workbench', 'run-inspection'] })
+  client.removeQueries({ queryKey: ['workbench', 'board-history'] })
+  client.removeQueries({ queryKey: ['workbench', 'board-run-discovery'] })
 }
 export function revokeCurrentRunWorkspace(client: QueryClient, workspaceId: string) {
-  client.removeQueries({ predicate: (query) => ['current-v3-run', 'pinned-v3-run-details'].includes(String(query.queryKey[1]))
+  client.removeQueries({ predicate: (query) => ['current-v3-run', 'pinned-v3-run-details', 'run-inspection', 'board-run-discovery', 'board-history'].includes(String(query.queryKey[1]))
     && query.queryKey[3] === workspaceId })
 }

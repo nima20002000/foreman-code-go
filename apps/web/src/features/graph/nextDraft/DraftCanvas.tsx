@@ -13,8 +13,8 @@ import { SignalEdgeShape } from '../SignalEdgeShape'
 import type { GraphNode } from '../types'
 import { nodeTitle, putRelationship } from './model'
 import type { EditGraph } from './AuthoringFields'
-import { runEdgeSignal, runNodeView, useSelectedRunRecord } from '../../workflow-board/runFacts'
 import { useWorkflowBoard } from '../../workflow-board/context'
+import { SelectedRunCanvas } from '../../workflow-board/inspect/SelectedRunCanvas'
 import '@xyflow/react/dist/style.css'
 
 export type OpenAgentPanel = { nodeId: string; panel: AgentPanel }
@@ -33,8 +33,8 @@ const DraftAgent = memo(function DraftAgent({ id, data, selected }: NodeProps<Gr
   const { draftKey, inspect, open, setOpen, panels } = useContext(CanvasContext)
   const entry = useGraphDraftStore((state) => state.nextDrafts[draftKey]?.graph.entryNodeId === id)
   const presentation = useGraphPresentationStore()
-  const record = useSelectedRunRecord(), runSelected = Boolean(useWorkflowBoard()?.run)
-  const run = runNodeView(record, runSelected, id, data.agent.id)
+  const runSelected = Boolean(useWorkflowBoard()?.run)
+  const run = { label: 'Idle', state: 'idle' as const }
   const facts = agentNodeFacts(data.agent)
   const core = useRef<HTMLButtonElement>(null)
   const panel = open?.nodeId === id ? open.panel : undefined
@@ -50,7 +50,7 @@ const DraftAgent = memo(function DraftAgent({ id, data, selected }: NodeProps<Gr
       })}>
       <AgentHandles name={data.label} />
     </AgentNodeView>
-    {panel ? <AgentPopover open anchor={core} title={data.label} subtitle={`${facts.roleLabel} · ${facts.harnessLabel}${facts.model ? ` · ${facts.model}` : ''}`}
+    {panel && !runSelected ? <AgentPopover open anchor={core} title={data.label} subtitle={`${facts.roleLabel} · ${facts.harnessLabel}${facts.model ? ` · ${facts.model}` : ''}`}
       icon={facts.icon} harness={facts.harness} panel={panel} onPanelChange={(next) => setOpen({ nodeId: id, panel: next })}
       onClose={() => inspect(() => setOpen(undefined))} {...panels(id)} /> : null}
   </>
@@ -59,11 +59,10 @@ const DraftAgent = memo(function DraftAgent({ id, data, selected }: NodeProps<Gr
 type DraftEdge = Edge<{ kind: WorkflowRelationship['kind']; bend: number; label: string; explicit: boolean }>
 const TypedEdge = memo(function TypedEdge({ id, source, target, data, selected }: EdgeProps<DraftEdge>) {
   const curve = useFloatingCurve(source, target, data?.bend ?? 28)
-  const record = useSelectedRunRecord()
   const [hovered, setHovered] = useState(false)
   if (!curve) return null
   return <g onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
-    <SignalEdgeShape id={id} curve={curve} kind={data?.kind} signal={data?.kind === 'execution' ? runEdgeSignal(record, id, source, target) : undefined}
+    <SignalEdgeShape id={id} curve={curve} kind={data?.kind}
       label={data?.label} showLabel={hovered || selected || data?.explicit} />
   </g>
 })
@@ -72,7 +71,9 @@ const fitViewOptions = { padding: 0.25, minZoom: 0.5, maxZoom: 1 }
 const proOptions = { hideAttribution: true }
 export type DraftCanvasHandle = { flush(): void; cancel(): void }
 
-/** Draft geometry and typed records only. Run state is read from the selected Run's cache, never written. */
+/** The draft remains mounted with its geometry buffer while the selected Run
+ * renders its immutable topology. Hidden draft nodes do not subscribe to live
+ * Run state or repeatedly scan execution history. */
 export const DraftCanvas = forwardRef<DraftCanvasHandle, {
   draftKey: string; graph: WorkflowDefinitionV3; agents: readonly Agent[]; kind: WorkflowRelationship['kind']
   change: EditGraph; geometry: (changes: GraphGeometryChange[]) => void; pending: (pending: boolean) => void
@@ -81,6 +82,7 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
   children?: ReactNode
 }>(function DraftCanvas({ draftKey, graph, agents, kind, change, geometry, pending, report, inspect = (action) => action(),
   open, setOpen = () => undefined, panels = () => ({ chat: null, settings: null, info: null }), children }, ref) {
+  const selectedRun = useWorkflowBoard()?.run
   const [project] = useState(() => createGraphTopologyProjector())
   const topology = useMemo(() => project(graph, agents), [project, graph, agents])
   const [adapter] = useState(() => createGraphGeometryAdapter(topology.nodes))
@@ -119,7 +121,7 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
   }
   const context = useMemo(() => ({ draftKey, inspect, open, setOpen, panels }), [draftKey, inspect, open, setOpen, panels])
   return <CanvasContext.Provider value={context}>
-    <div className={`next-draft-canvas board-draft-canvas${connecting ? ' is-connecting' : ''}`} aria-label="Editable workflow graph">
+    <div className={`next-draft-canvas board-draft-canvas${connecting ? ' is-connecting' : ''}`} style={selectedRun ? { display: 'none' } : undefined} aria-hidden={!!selectedRun} inert={!!selectedRun} aria-label="Editable workflow graph">
       <ReactFlow<GraphNode, DraftEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         onNodesChange={onNodesChange} connectionMode={ConnectionMode.Loose} connectionRadius={120} deleteKeyCode={null}
         fitView fitViewOptions={fitViewOptions} proOptions={proOptions} minZoom={0.3} maxZoom={1.6}
@@ -139,5 +141,6 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
       </ReactFlow>
       {children}
     </div>
+    {selectedRun ? <SelectedRunCanvas key={JSON.stringify(selectedRun)} scope={selectedRun} /> : null}
   </CanvasContext.Provider>
 })

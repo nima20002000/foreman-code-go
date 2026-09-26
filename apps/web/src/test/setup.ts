@@ -14,6 +14,13 @@ if (typeof HTMLDialogElement !== 'undefined' && !HTMLDialogElement.prototype.clo
   HTMLDialogElement.prototype.close = function close() { this.open = false }
 }
 
+// jsdom has no SVG layout; React Flow edge labels measure text with getBBox.
+if (typeof SVGElement !== 'undefined' && !('getBBox' in SVGElement.prototype)) {
+  Object.defineProperty(SVGElement.prototype, 'getBBox', {
+    configurable: true, value: () => ({ x: 0, y: 0, width: 0, height: 0 }),
+  })
+}
+
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 
 afterEach(() => {
