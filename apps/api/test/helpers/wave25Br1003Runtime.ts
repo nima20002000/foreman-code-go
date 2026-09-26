@@ -44,7 +44,9 @@ import { approvalFixture } from './wave25ApprovalFixture.js'
  * qualification are synthetic. This is not a buildProductionApp/HTTP test. */
 export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerExecution: 1 | 2 = 1,
   options: { acknowledgeStarts?: boolean; disconnectAfterStart?: boolean; fixture?: ReturnType<typeof makeCurrentWorkflowFixture>;
-    approvalNodeIds?: string[]; outputFor?: ConstructorParameters<typeof CheckpointTestProvider>[4] } = {}) {
+    approvalNodeIds?: string[]; outputFor?: ConstructorParameters<typeof CheckpointTestProvider>[4];
+    /** Exact physical closure port; omitted unless a fixture supplies native lifetimes. */
+    recoverNativeProcesses?: ConstructorParameters<typeof ApprovalExecutionCoordinator>[11] } = {}) {
   const db = await agent3Database()
   const engines: LangGraphWorkflowEngine[] = []
   try {
@@ -106,7 +108,7 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
       const native = new ApprovalExecutionCoordinator(runs, repository, budgets, managers, 600000,
         launchCredentials, continuationValidator(db.pool, locations),
         new PostgresWorkflowClosureStore(db.pool), new PostgresRepeatReviewerBindings(db.pool),
-        workflowCapture.capture, reviewCapture.capture)
+        workflowCapture.capture, reviewCapture.capture, options.recoverNativeProcesses)
       const engine = new LangGraphWorkflowEngine(runs, workflows, native, checkpointer, db.directory,
         locations, launchCredentials, repository, undefined, { workerParallelism: 2 })
       const service = new InteractionService(repository, budgets, native, (interaction) => engine.resumeInteraction(interaction))
