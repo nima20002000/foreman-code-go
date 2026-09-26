@@ -74,3 +74,24 @@ export function acknowledgeAgentEdits(current: DraftAgentEdits | undefined, sent
       createdAt: acknowledged.createdAt, updatedAt: acknowledged.updatedAt } : agent]]
   }))
 }
+
+/** Keep one Agent edit atomic while retaining its first operation's command identity. */
+export function coalesceAgentEdits(operations: readonly GraphDraftOperationV3[]) {
+  const edits = new Map<string, {
+    index: number
+    rename?: Extract<GraphDraftOperationV3, { type: 'agent.rename' }>
+    configure?: Extract<GraphDraftOperationV3, { type: 'agent.configure' }>
+  }>()
+  operations.forEach((operation, index) => {
+    if (operation.type !== 'agent.rename' && operation.type !== 'agent.configure') return
+    const edit = edits.get(operation.agentId) ?? { index }
+    const previous = edit.rename ?? edit.configure
+    if (previous && previous.expectedAgentRevision !== operation.expectedAgentRevision) {
+      throw new Error('Agent edits must share the same original revision.')
+    }
+    if (operation.type === 'agent.rename') edit.rename = operation
+    else edit.configure = operation
+    edits.set(operation.agentId, edit)
+  })
+  return edits
+}

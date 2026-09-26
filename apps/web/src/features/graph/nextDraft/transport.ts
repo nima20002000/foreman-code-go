@@ -11,6 +11,7 @@ import { apiClient, ApiError, type ApiClient, type RequestOptions } from '../../
 import type { z } from 'zod'
 import type { DraftRequest } from './state'
 import type { NextDraftContext } from './model'
+import { coalesceAgentEdits } from './agentEdits'
 
 export type CurrentDraft = z.infer<typeof GraphDraftV3Schema>
 export type AuthoringContext = { draft: CurrentDraft; agents: NextDraftContext['agents'] }
@@ -91,11 +92,14 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
   /** Agent operations use the shared Agent service; graph operations stay local. */
   const applyAgents = async (workspaceId: string, operations: readonly GraphDraftOperationV3[], commandId: string) => {
     const created = new Set<string>()
+    const edits = coalesceAgentEdits(operations)
     const agentsPath = `/api/management/workspaces/${part(workspaceId)}/agents`
     let index = 0
     const catalog = async () => (await client.listManagedAgents(workspaceId)).items
     for (const operation of operations) {
       const command = `${commandId}:${index++}`
+      if ((operation.type === 'agent.configure' || operation.type === 'agent.rename')
+        && (created.has(operation.agentId) || edits.get(operation.agentId)!.index !== index - 1)) continue
       const pendingKey = JSON.stringify([workspaceId, command])
       const pending = pendingAgentCommands.get(pendingKey)
       if (pending) {
@@ -116,11 +120,15 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
         await client.request(pending.path, AgentMutationResultSchema, { method: pending.method, body: pending.body })
         created.add(operation.agentId)
       } else if ((operation.type === 'agent.configure' || operation.type === 'agent.rename') && !created.has(operation.agentId)) {
+        const edit = edits.get(operation.agentId)!
         const agent = (await catalog()).find((item) => item.agent.id === operation.agentId)
         if (!agent?.agent.configurationVersionId) throw new ApiError({ code: 'AGENT_NOT_FOUND', message: 'The edited Agent is unavailable. Reload before saving.' }, 409)
-        const body = operation.type === 'agent.rename' ? { name: operation.name } : {
-          configuration: operation.configuration, prompt: operation.prompt, assignedSkills: operation.assignedSkills,
-          description: operation.description ?? null, role: operation.role ?? null }
+        const body = {
+          ...(edit.rename ? { name: edit.rename.name } : {}),
+          ...(edit.configure ? { configuration: edit.configure.configuration, prompt: edit.configure.prompt,
+            assignedSkills: edit.configure.assignedSkills, description: edit.configure.description ?? null,
+            role: edit.configure.role ?? null } : {}),
+        }
         const pending = structuredClone({ path: `${agentsPath}/${part(operation.agentId)}`, method: 'PATCH' as const, body: {
           commandId: command, expectedRevision: operation.expectedAgentRevision,
           expectedConfigurationVersionId: agent.agent.configurationVersionId, ...body } })
