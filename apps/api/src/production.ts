@@ -73,6 +73,8 @@ import { WorkspaceManagementService } from './modules/workspaces/management.js'
 import { PostgresWorkspaceRepository } from './modules/workspaces/postgres.js'
 import { RunGraphReadService } from './modules/run-graph/readService.js'
 import type { CurrentRunProductionFactory, CurrentRunProductionBinding, CurrentStopContext } from './modules/runs/currentProduction.js'
+import type { FastifyBaseLogger } from 'fastify'
+import { componentLogger } from './infrastructure/logger.js'
 
 function inspectorFor(manager: NativeHarnessSessionManager) {
   if (manager instanceof CodexAppServerSessionManager) return codexMcpInspectorAdapter(manager)
@@ -85,7 +87,8 @@ export function buildProductionApp(
   config: ApiConfig,
   database: ReturnType<typeof createDatabase>,
   checkpoints: CheckpointStore,
-  logger = true,
+  // The shared API logger by default; tests pass false.
+  logger: boolean | FastifyBaseLogger = componentLogger('http'),
   createCurrentProduction?: CurrentRunProductionFactory,
 ) {
   const responseJournal = new NativeResponseJournal(resolve(config.harnesses.workspaceRoot, 'native-response-receipts'))
