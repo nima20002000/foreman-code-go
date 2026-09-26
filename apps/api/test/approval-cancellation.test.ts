@@ -444,14 +444,42 @@ it('shutdown preserves waiting Run facts while draining the captured restart bou
   assert.equal(f.run().executionState, 'waiting')
 })
 
-it('shutdown aborts active work before draining its original restart closure', async () => {
-  const task = deferred<void>(), controller = new AbortController()
-  const f = engineFixture({ cancelRun: async () => undefined } as unknown as ApprovalExecutionCoordinator)
-  f.approvals.closeForRestart = async () => { assert.equal(controller.signal.aborted, true); task.resolve() }
+it('shutdown captures original restart closure before abort and drains it before returning', async () => {
+  const task = deferred<void>(), closure = deferred<void>(), controller = new AbortController()
+  const events: string[] = []
+  const cancelRun = vi.fn(async () => undefined)
+  const f = engineFixture({ cancelRun } as unknown as ApprovalExecutionCoordinator)
+  f.approvals.closeForRestart = async () => {
+    // Capture the original transport while it still belongs to the execution.
+    // The engine aborts only after capture, not before calling this port.
+    events.push('capture')
+    assert.equal(controller.signal.aborted, false)
+    await closure.promise
+    events.push('closed')
+    task.resolve()
+  }
+  controller.signal.addEventListener('abort', () => { events.push('abort') }, { once: true })
   f.internals.activeRuns.set('run-1', controller); f.internals.activeTasks.set('run-1', task.promise)
-  await f.engine.shutdown()
-  assert.equal(controller.signal.reason.code, 'ENGINE_RESTART')
-  assert.equal(f.run().executionState, 'waiting')
+  let settled = false
+  const shutdown = f.engine.shutdown().finally(() => { settled = true })
+  try {
+    assert.deepEqual(events, ['capture', 'abort'])
+    assert.equal(controller.signal.reason.code, 'ENGINE_RESTART')
+    await Promise.resolve()
+    assert.equal(settled, false, 'abort alone is not a confirmed original transport close')
+    closure.resolve()
+    await shutdown
+    assert.deepEqual(events, ['capture', 'abort', 'closed'])
+    assert.equal(cancelRun.mock.calls.length, 0, 'restart must not synthesize Stop')
+    assert.equal(f.run().executionState, 'waiting')
+    assert.equal(f.run().result, undefined)
+    assert.ok(!f.calls.includes('settle'))
+  } finally {
+    // A failed ordering assertion must not strand the engine drain until its
+    // cleanup deadline and obscure the actual assertion with a test timeout.
+    closure.resolve(); task.resolve()
+    await shutdown.catch(() => undefined)
+  }
 })
 
 it('Stop still settles a Run when active work races the transition to waiting', async () => {

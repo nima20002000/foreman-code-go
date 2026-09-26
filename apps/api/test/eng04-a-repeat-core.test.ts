@@ -19,6 +19,7 @@ import {
 } from '../src/modules/runs/repeatResolution.js'
 import { executeRepeatRuntime, repeatExecutionDirectoryKey } from '../src/modules/runs/repeatRuntime.js'
 import { compileExecutionTopology } from '../src/modules/runs/topology.js'
+import { workflowNativeReservation, type WorkflowNativeReservation } from '../src/modules/runs/workflowNativeEntry.js'
 import { repeatOccurrenceMigrationSql } from '../src/infrastructure/repeatOccurrenceMigration.js'
 
 const at = '2026-09-25T00:00:00.000Z'
@@ -232,17 +233,19 @@ interface DbState {
   resolutions: Map<string, RepeatResolution>; bindings: Array<{ recipient: string; record: unknown }>
   results: Map<string, { result_json: string; result_digest: string }>; decisions: Map<string, unknown>
   effects: Map<string, string>; receipts: Map<string, string>
+  nativeEntries: Map<string, { reservation: WorkflowNativeReservation; reservation_json: string; reservation_digest: string; phase: 'reserved' }>
+  native: Map<string, { session: { harness: 'codex'; providerVersion: string; nativeSessionId: string }; finalized: boolean; closed: boolean }>
 }
 function postgresShape(cap = 3) {
   const f = fixture(cap), events: string[] = []
   let state: DbState = { run: f.run, stopped: false, occurrences: new Map(), slots: new Map(), executions: new Map(),
-    resolutions: new Map(), bindings: [], results: new Map(), decisions: new Map(), effects: new Map(), receipts: new Map() }
+    resolutions: new Map(), bindings: [], results: new Map(), decisions: new Map(), effects: new Map(), receipts: new Map(), nativeEntries: new Map(), native: new Map() }
   let saved: DbState | undefined, fault = '', lostCommit = false, fence = 0
   const key = (kind: unknown, id: unknown) => `${kind}:${id}`
   const client = { query: async (text: string, values: unknown[] = []) => {
     const q = text.replace(/\s+/g, ' ').trim().toLowerCase(), v = values as Array<string | null>
     events.push(q)
-    let rows: unknown[] = []
+    let rows: unknown[] = [], rowCount: number | undefined
     if (q.startsWith('begin ')) saved = structuredClone(state)
     else if (q === 'commit') { saved = undefined; if (lostCommit) { lostCommit = false; throw new Error('COMMIT reply lost') } }
     else if (q === 'rollback') { if (saved) state = saved; saved = undefined }
@@ -258,11 +261,84 @@ function postgresShape(cap = 3) {
     else if (q.startsWith('insert into run_repeat_effects')) state.effects.set(key(v[1], v[2]), v[3]!)
     else if (q.startsWith('insert into run_repeat_slots')) state.slots.set(v[0]!, { slot_id: v[0]!, occurrence_id: v[2]!, workflow_node_id: v[3]!, input_json: v[4]!, input_digest: v[5]! })
     else if (q.startsWith('insert into harness_executions')) state.executions.set(v[0]!, { record: JSON.parse(v[6]!), accepted: false, slot_id: '', identity: {}, previous: null })
+    else if (q.startsWith('insert into workflow_native_entries')) {
+      const entry = state.executions.get(v[0]!)!, slot = state.slots.get(entry.slot_id)!
+      const occurrence = slot.occurrence_id ? state.occurrences.get(slot.occurrence_id)!.record.identity : null
+      const reservation = workflowNativeReservation(f.scope, { nodeId: slot.workflow_node_id, occurrence }, entry.record, slot.input_digest)
+      expect(values).toEqual([entry.record.id, f.scope.runId, canonicalGraphJson(reservation), canonicalGraphJson(reservation), repeatDigest(reservation)])
+      expect(q).toContain("values($1,$2,$3::jsonb,$4::text,$5,'reserved')")
+      expect(state.nativeEntries.has(entry.record.id)).toBe(false)
+      state.nativeEntries.set(entry.record.id, { reservation: structuredClone(reservation), reservation_json: v[3]!, reservation_digest: v[4]!, phase: 'reserved' })
+      rowCount = 1
+    }
     else if (q.startsWith('insert into run_repeat_executions')) Object.assign(state.executions.get(v[0]!)!, { slot_id: v[2], identity: JSON.parse(v[6]!), previous: v[5] })
+    else if (q.startsWith('select x.execution_id from run_repeat_executions x')) {
+      rows = [...state.executions.values()].filter((e) => e.record.runId === v[0]
+        && state.slots.get(e.slot_id)!.occurrence_id === v[1] && e.record.workflowNodeId === v[2]
+        && e.record.attempt === 1).map((e) => ({ execution_id: e.record.id }))
+    }
     else if (q.startsWith('select execution_id from run_repeat_executions')) rows = [...state.executions.values()]
       .filter((x) => q.includes('previous_execution_id') ? x.previous === v[0] : x.slot_id === v[0])
       .sort((a, b) => b.record.attempt - a.record.attempt).slice(0, 1).map((x) => ({ execution_id: x.record.id }))
-    else if (q.startsWith('select e.record,e.accepted')) { const e = state.executions.get(v[0]!); if (e) rows = [{ ...e, ...state.slots.get(e.slot_id)! }] }
+    else if (q.startsWith('select e.record,e.accepted')) {
+      const e = state.executions.get(v[0]!)
+      if (e && e.record.runId === v[1]) {
+        const slot = state.slots.get(e.slot_id)!
+        rows = [{ ...e, ...slot, execution_run_id: e.record.runId, execution_node_id: e.record.workflowNodeId,
+          execution_agent_id: e.record.agentId, execution_attempt: e.record.attempt,
+          execution_occurrence_id: slot.occurrence_id, identity_occurrence_id: slot.occurrence_id,
+          technical_attempt: e.record.attempt }]
+      }
+    }
+    else if (q.startsWith('select e.id from harness_executions e')) {
+      expect(q).toContain('left join run_repeat_executions')
+      expect(q).toContain('order by e.id limit 100 for update of e')
+      rows = [...state.executions.values()].filter((e) => e.record.runId === v[0] && e.record.id > v[1]!
+        && (v[2] === 'run' || v[2] === 'occurrence' && state.slots.get(e.slot_id)!.occurrence_id === v[3]
+          || v[2] === 'slot' && e.slot_id === v[3] && e.record.attempt <= Number(values[4])))
+        .sort((a, b) => a.record.id.localeCompare(b.record.id)).slice(0, 100).map((e) => ({ id: e.record.id }))
+    }
+    else if (q.startsWith("select id,record->>'executionsemanticsversion'")) {
+      expect(values).toEqual([f.scope.runId])
+      rows = [{ id: f.scope.runId, semantics: '3', workspace_id: f.scope.workspaceId, workflow_id: f.scope.workflowId,
+        pins_match: true, negative_cleanup: false }]
+    }
+    else if (q.startsWith('select id,run_id,workflow_node_id,agent_id,attempt,record from harness_executions')) {
+      const e = state.executions.get(v[0]!)
+      if (e && e.record.runId === v[1]) rows = [{ id: e.record.id, run_id: e.record.runId,
+        workflow_node_id: e.record.workflowNodeId, agent_id: e.record.agentId, attempt: e.record.attempt, record: e.record }]
+    }
+    else if (q.startsWith('select j.id,j.execution_id,j.state,j.record')) {
+      // This semantic repository fixture has no approvals or reviewer jobs.
+      expect(q).toContain('i.execution_id=$2 or j.execution_id=$2'); rows = []
+    }
+    else if (q.startsWith('select i.id,i.execution_id,i.status,i.record')) rows = []
+    else if (q.startsWith('select ( exists(select 1 from worker_credential_bindings')) {
+      // No credential/budget/reviewer resources are allocated by this SQL model.
+      expect(state.native.has(v[0]!)).toBe(true); rows = [{ outstanding: false }]
+    }
+    else if (q.startsWith('select reference,workflow_finalized_at')) {
+      const native = state.native.get(v[0]!)
+      if (native) rows = [{ reference: native.session, finalized: native.finalized }]
+    }
+    else if (q.startsWith('select c.record#>>')) {
+      const agent = Object.entries(f.run.agentConfigurationVersionIds).find(([, id]) => id === v[0])?.[0]
+      if (agent && v[1] === f.scope.runId) rows = [{ harness: 'codex', agent_id: agent, workspace_id: f.scope.workspaceId, pinned: true }]
+    }
+    else if (q.startsWith('select c.generation::text,c.execution_identity')) {
+      const e = state.executions.get(v[0]!), native = state.native.get(v[0]!)
+      if (e && native && e.record.runId === v[1]) rows = [{ generation: '1',
+        execution_identity: { id: e.record.id, runId: e.record.runId, workflowNodeId: e.record.workflowNodeId,
+          agentId: e.record.agentId, agentConfigurationVersionId: e.record.agentConfigurationVersionId, attempt: e.record.attempt },
+        expected_reference: native.session, closed_reference: native.session, record: e.record, reference: native.session,
+        closed: native.closed, detached: false, closed_without_session: false, prior_unclosed: false }]
+    }
+    else if (q.startsWith('update execution_native_sessions')) {
+      const native = state.native.get(v[0]!)
+      if (native && canonicalGraphJson(native.session) === canonicalGraphJson(JSON.parse(v[1]!))) {
+        native.finalized = true; rows = [{ execution_id: v[0] }]
+      }
+    }
     else if (q.startsWith('insert into run_repeat_bindings')) state.bindings.push({ recipient: v[2]!, record: JSON.parse(v[8]!) })
     else if (q.startsWith('select record from run_repeat_bindings')) rows = state.bindings.filter((b) => b.recipient === v[0]).map((b) => ({ record: b.record }))
     else if (q.startsWith('insert into run_repeat_results')) state.results.set(v[0]!, { result_json: v[3]!, result_digest: v[4]! })
@@ -273,7 +349,7 @@ function postgresShape(cap = 3) {
     else if (q.startsWith('select record from run_repeat_decisions') || q.startsWith('select 1 from run_repeat_decisions')) {
       const record = state.decisions.get(v[0]!); if (record) rows = [{ record }]
     } else throw new Error(`Unscripted SQL: ${q}`)
-    return { rows, rowCount: rows.length, command: q.split(' ')[0], fields: [], oid: 0 }
+    return { rows, rowCount: rowCount ?? rows.length, command: q.split(' ')[0], fields: [], oid: 0 }
   } }
   const connection = new ExclusiveGraphConnection(client as unknown as pg.ClientBase, () => {
     if (fault === 'owner') throw new Error('RUN_OWNERSHIP_LOST')
@@ -301,7 +377,13 @@ function postgresShape(cap = 3) {
     if (result.kind !== 'admitted') throw new Error(`unexpected ${result.kind}`)
     return result.execution
   }
-  const finish = (id: string, output: unknown = {}) => { const row = state.executions.get(id)!; row.record = successful(row.record, output) }
+  const finish = (id: string, output: unknown = {}) => {
+    // Explicit native-store fixture data, not a dispatch/ACK capability. The real
+    // settlement reader checks the physical binding and positive close below.
+    const row = state.executions.get(id)!, nativeSessionId = `synthetic-${id}`
+    state.native.set(id, { session: { harness: 'codex', providerVersion: 'unit-no-provider', nativeSessionId }, finalized: false, closed: true })
+    row.record = successful({ ...row.record, nativeSessionId }, output)
+  }
   const accept = (id: string) => store.acceptTerminal(id, (attempt) => execution(f, state.executions.get(id)!.record.workflowNodeId, `${id}-attempt-${attempt}`, attempt))
   const body = async (occ: RepeatOccurrenceV1, outcome = 'issues') => {
     const work = await admit(occ, 'work'); finish(work.id); await accept(work.id)
@@ -384,6 +466,7 @@ describe('ENG04-A real repository with PostgreSQL-shaped scripted transactions (
   })
   it('retries a negatively settled technical failure with identical input inside its occurrence', async () => {
     const db = postgresShape(), occ = await db.enter(), work = await db.admit(occ, 'work')
+    db.finish(work.id)
     const row = db.state().executions.get(work.id)!
     row.record = HarnessExecutionSchema.parse({ ...row.record, state: 'completed', finishedAt: at,
       result: { outcome: 'failed', error: { code: 'TEMPORARY', message: 'synthetic', retryable: true } } })
@@ -424,6 +507,39 @@ describe('ENG04-A real repository with PostgreSQL-shaped scripted transactions (
       } } })
     expect(calls).toEqual(['work:1', 'review:1', 'work:2', 'review:2', 'limit:0', 'cleanup.requested', 'cleanup.native', 'cleanup.finished'])
     expect(db.state().occurrences.size).toBe(2)
+  })
+  it('queues an exact reserved native entry once and reuses it without granting a launch', async () => {
+    const db = postgresShape(), occurrence = await db.enter(), work = await db.admit(occurrence, 'work')
+    const before = structuredClone(db.state().nativeEntries.get(work.id))
+    expect(before?.phase).toBe('reserved')
+    expect(before?.reservation.inputDigest).toBe(repeatDigest(work.input))
+    expect(before?.reservation.ref.occurrence).toEqual(occurrence.identity)
+    expect(await db.admit(occurrence, 'work')).toEqual(work)
+    expect(db.state().nativeEntries.size).toBe(1)
+    expect(db.state().nativeEntries.get(work.id)).toEqual(before)
+    expect(db.store.consumeLaunchPermit(work.id)).toBe(false)
+    expect(db.events.filter((q) => q.startsWith('insert into workflow_native_entries'))).toHaveLength(1)
+  })
+  it('rolls back native reservation, input slot and execution together on failed admission publication', async () => {
+    const db = postgresShape(), occurrence = await db.enter()
+    const before = structuredClone(db.state())
+    db.fail('publication.after')
+    await expect(db.admit(occurrence, 'work')).rejects.toThrow('publication.after')
+    expect(db.state()).toEqual(before)
+    db.fail('')
+    const work = await db.admit(occurrence, 'work')
+    expect(db.state().nativeEntries.size).toBe(1)
+    expect(db.state().nativeEntries.get(work.id)?.phase).toBe('reserved')
+  })
+  it('a terminal enum without a positive close cannot pass concrete settlement or accept a result', async () => {
+    const db = postgresShape(), occurrence = await db.enter(), work = await db.admit(occurrence, 'work')
+    db.finish(work.id)
+    db.state().native.get(work.id)!.closed = false
+    await expect(db.accept(work.id)).rejects.toMatchObject({ code: 'REPEAT_CLEANUP_PENDING' })
+    expect(db.state().executions.get(work.id)!.accepted).toBe(false)
+    expect(db.state().results.size).toBe(0)
+    expect(db.state().native.get(work.id)!.finalized).toBe(false)
+    expect(db.state().occurrences.size).toBe(1)
   })
   it('migration proposal has no registry change and preserves legacy uniqueness alongside exact occurrence keys', () => {
     expect(repeatOccurrenceMigrationSql).toContain("pg_get_constraintdef(oid)='UNIQUE (run_id, workflow_node_id, attempt)'")

@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import type pg from 'pg'
-import { DurableInteractionSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction, type HarnessExecution } from '@graphql/contracts'
+import { HarnessExecutionSchema, DurableInteractionSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction, type HarnessExecution } from '@graphql/contracts'
 import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
 import { decisionDigest } from '../src/modules/interactions/wave25/publication.js'
 import { settleRepeatNativeExecutionLocked } from '../src/modules/interactions/repeatNativeSettlement.js'
 import { nativeAt, nativeCompleted, nativeFixture } from './eng04-native-fixtures.js'
+import { canonicalRepeatEffectReceipt } from '../src/modules/run-graph/repeatPublication.js'
+import { bindRepeatNodeInput, repeatDigest, repeatExecutionIdentity, repeatSlotId } from '../src/modules/runs/repeatResolution.js'
+import { workflowNativeReservation, type WorkflowNativeReservation } from '../src/modules/runs/workflowNativeEntry.js'
+import { currentUnitSnapshot, currentUnitRunRow, currentUnitVersionRow, currentUnitConfigurationRows,
+  type CurrentUnitSnapshot } from './helpers/currentUnitSnapshot.js'
 
 /** A scripted pg-shaped transaction, NOT a PostgreSQL/native integration test.
  * It executes the real settlement and readWorkflowClosure functions. Unknown
@@ -27,7 +32,10 @@ class NativePgShape {
   replaceGenerationOnSecondRead = false
   closureReads = 0
   resourcesOutstanding = false
-  possibleSubmission = false
+  entryFixture: CurrentUnitSnapshot | undefined
+  entryReservation: WorkflowNativeReservation | undefined
+  entryPhase: 'reserved' | 'prepared' | 'entered' | null = 'reserved'
+  bindingDigest = ''
   configurationPinned = true
   updateCount = 0
   casMatches = true
@@ -89,13 +97,63 @@ class NativePgShape {
         closed_reference: this.session, closed: this.closed, prior_unclosed: this.priorUnclosed,
         record: this.execution, reference: this.session }])
     }
-    if (q.startsWith('select ( exists(select 1 from run_graph_effects')) {
-      expect(q).toContain("effect_kind='execution.launch'")
-      expect(q).toContain('execution_native_closures')
-      expect(q).toContain('harness_native_events')
-      expect(q).toContain('run_native_correlations')
-      expect(q).toContain('worker_credential_bindings')
-      return rows([{ possible_submission: this.possibleSubmission }])
+    if (q.startsWith('select state,approval_native_ack_id,approval_native_ack_record,approval_native_ack_source')) {
+      expect(values).toEqual([this.interactions[0]!.value.id])
+      // An ID is not an original ACK descriptor. This fixture intentionally has
+      // no captured native source, even when delivery and checkpoint are done.
+      return rows(this.resume ? [{ ...this.resume, approval_native_ack_record: null, approval_native_ack_source: null }] : [])
+    }
+    if (this.entryFixture && this.entryReservation) {
+      const f = this.entryFixture, reservation = this.entryReservation
+      if (q.startsWith('select r.id,r.workspace_id,r.workflow_id,r.workflow_version_id,r.execution_state,')) {
+        expect(values).toEqual([f.run.id]); return rows([currentUnitRunRow(f)])
+      }
+      if (q.startsWith('select id,workspace_id,workflow_id,version,entry_node_id,execution_semantics_version,record')) {
+        expect(values).toEqual([f.version.id, f.run.workspaceId, f.run.workflowId])
+        return rows([currentUnitVersionRow(f)])
+      }
+      if (q.startsWith('select id,workspace_id,agent_id,version,record from agent_configuration_versions')) {
+        expect(values).toEqual([f.run.workspaceId, Object.values(f.run.agentConfigurationVersionIds)])
+        return rows(currentUnitConfigurationRows(f))
+      }
+      if (q === 'select protocol_version from run_graph_heads where run_id=$1 for share') {
+        expect(values).toEqual([f.run.id]); return rows([{ protocol_version: 1 }])
+      }
+      if (q.startsWith('select e.record,e.accepted,x.identity,s.slot_id,')) {
+        expect(values).toEqual([this.execution.id, f.run.id])
+        return rows([{ record: this.execution, accepted: false, identity: repeatExecutionIdentity(this.execution),
+          slot_id: repeatSlotId(f.run.id, reservation.ref), occurrence_id: null,
+          execution_occurrence_id: null, identity_occurrence_id: null, technical_attempt: this.execution.attempt,
+          execution_run_id: this.execution.runId, execution_node_id: this.execution.workflowNodeId,
+          execution_agent_id: this.execution.agentId, execution_attempt: this.execution.attempt,
+          workflow_node_id: this.execution.workflowNodeId, input_json: JSON.stringify(this.execution.input),
+          input_digest: reservation.inputDigest }])
+      }
+      if (q.startsWith('select payload_digest from run_repeat_effects')) {
+        expect(values).toEqual([f.run.id, 'input.bind', this.execution.id])
+        return rows([{ payload_digest: this.bindingDigest }])
+      }
+      if (q.includes('join run_graph_sources s')) {
+        const receipt = canonicalRepeatEffectReceipt(f.scope, { kind: 'input.bind', entityId: this.execution.id, digest: this.bindingDigest })
+        expect(values).toEqual([f.run.id, receipt.evidence.sourceKind, receipt.evidence.sourceId,
+          receipt.evidence.sourceRevision, receipt.effect!.kind, receipt.effect!.entityId])
+        return rows([{ workspace_id: f.scope.workspaceId, workflow_id: f.scope.workflowId,
+          workflow_version_id: f.scope.workflowVersionId, execution_semantics_version: 3, protocol_version: 1,
+          head_sequence: '1', source_digest: this.bindingDigest, source_semantic_digest: repeatDigest(reservation), source_sequence: '1',
+          effect_digest: this.bindingDigest, effect_semantic_digest: repeatDigest(reservation), effect_sequence: '1' }])
+      }
+      if (q.startsWith('select phase,reservation,reservation_digest,transition,source_id,source_digest from workflow_native_entries')) {
+        expect(values).toEqual([this.execution.id, f.run.id])
+        return rows(this.entryPhase === null ? [] : [{ phase: this.entryPhase, reservation,
+          reservation_digest: repeatDigest(reservation), transition: this.entryPhase === 'reserved' ? null : {
+            reservation, phase: this.entryPhase, ownerId: 'unit-owner', ownerFence: '1', launchDigest: this.bindingDigest,
+          }, source_id: null, source_digest: null }])
+      }
+      if (q.startsWith('select generation::text,execution_identity,')) {
+        expect(values).toEqual([this.execution.id])
+        expect(q).toContain('from execution_native_closures')
+        return rows([]) // Entered is possible submission, not a positive dispose receipt.
+      }
     }
     if (q.startsWith('update execution_native_sessions')) {
       expect(q).toContain('reference=$2::jsonb')
@@ -112,6 +170,27 @@ class NativePgShape {
     try { await connection.transaction((sql) => settleRepeatNativeExecutionLocked(sql, this.execution.runId, this.execution)) }
     catch (error) { this.finalized = original; throw error }
     finally { await connection.close() }
+  }
+  unboundExecution() {
+    const f = currentUnitSnapshot('eng04-native-unbound')
+    f.run = { ...f.run, executionState: 'running', startedAt: f.createdAt }
+    this.fixture.scope = f.scope
+    const identity = f.identities[0]!, ref = { nodeId: identity.workflowNodeId, occurrence: null }
+    const candidate = HarnessExecutionSchema.parse({ id: identity.executionId, runId: f.run.id,
+      workflowNodeId: identity.workflowNodeId, agentId: identity.agentId,
+      agentConfigurationVersionId: identity.agentConfigurationVersionId, attempt: 1,
+      input: {}, createdAt: f.createdAt, state: 'queued' })
+    const binding = bindRepeatNodeInput({ version: f.version, runInput: f.run.input, recipient: candidate,
+      ref, occurrence: null, entry: null, predecessors: [] })
+    this.execution = HarnessExecutionSchema.parse({ ...candidate, input: binding.input, state: 'completed',
+      finishedAt: f.createdAt, result: { outcome: 'failed', error: {
+        code: 'ADMISSION_FAILED', message: 'not launched', retryable: false,
+      } } })
+    this.entryFixture = f
+    this.entryReservation = workflowNativeReservation(f.scope, ref, this.execution, repeatDigest(binding.input, 4 * 1024 * 1024))
+    // This is preexisting input admission in the SQL model, not native entry.
+    this.bindingDigest = repeatDigest({ execution: repeatExecutionIdentity(candidate), input: binding.input, bindings: binding.bindings })
+    this.hasSession = false
   }
   delivered() {
     const value = DurableInteractionSchema.parse({ ...NATIVE_INTERACTION_FIXTURES.codex,
@@ -210,18 +289,30 @@ describe('ENG04 native SQL-shaped exact per-execution settlement', () => {
   it('does not infer native success from an absent session row', async () => {
     const sql = new NativePgShape()
     sql.hasSession = false
-    await expect(sql.settle()).rejects.toMatchObject({ code: 'REPEAT_BOUNDARY_PENDING' })
+    // A recorded native identity/success contradicts a missing binding; this is
+    // an identity conflict, not permission to use the unbound-entry path.
+    await expect(sql.settle()).rejects.toMatchObject({ code: 'REPEAT_NATIVE_IDENTITY_CONFLICT' })
+    expect(sql.updateCount).toBe(0)
+    expect(sql.finalized).toBe(false)
   })
   it('keeps a negative execution without a native row pending until original no-dispatch proof exists', async () => {
     const sql = new NativePgShape()
-    sql.hasSession = false
-    sql.execution = { id: sql.execution.id, runId: sql.execution.runId, workflowNodeId: 'review', agentId: 'agent-review',
-      agentConfigurationVersionId: 'config-review', attempt: 1, input: {}, createdAt: nativeAt,
-      state: 'completed', finishedAt: nativeAt, result: { outcome: 'failed', error: { code: 'ADMISSION_FAILED', message: 'not launched', retryable: false } } }
-    await expect(sql.settle()).rejects.toMatchObject({ code: 'REPEAT_BOUNDARY_PENDING' })
+    sql.unboundExecution()
+    const original = structuredClone(sql.execution)
+    for (const phase of ['reserved', 'prepared'] as const) {
+      sql.entryPhase = phase
+      await expect(sql.settle()).rejects.toMatchObject({ code: 'REPEAT_BOUNDARY_PENDING' })
+    }
+    sql.entryPhase = 'entered'
+    await expect(sql.settle()).rejects.toMatchObject({ code: 'REPEAT_CLEANUP_PENDING' })
+    sql.entryPhase = null
+    await expect(sql.settle()).rejects.toMatchObject({ code: 'NATIVE_ENTRY_CONFLICT' })
+    expect(sql.calls.some((q) => q.includes('from workflow_native_entries'))).toBe(true)
+    expect(sql.calls.some((q) => q.includes('from execution_native_closures'))).toBe(true)
     expect(sql.updateCount).toBe(0)
-    sql.possibleSubmission = true
-    await expect(sql.settle()).rejects.toMatchObject({ code: 'REPEAT_BOUNDARY_PENDING' })
+    expect(sql.finalized).toBe(false)
+    expect(sql.execution).toEqual(original)
+    expect(sql.calls.some((q) => /^(insert|update|delete) /.test(q))).toBe(false)
   })
   it('requires delivery, checkpoint consumption and real native acknowledgment separately', async () => {
     const sql = new NativePgShape()
@@ -231,7 +322,9 @@ describe('ENG04 native SQL-shaped exact per-execution settlement', () => {
     sql.resume = { state: 'resuming', approval_native_ack_id: 'real-history-ack' }
     await expect(sql.settle()).rejects.toMatchObject({ code: 'APPROVAL_SETTLEMENT_PENDING' })
     sql.resume = { state: 'resumed', approval_native_ack_id: 'real-history-ack' }
-    await expect(sql.settle()).rejects.toMatchObject({ code: 'REPEAT_APPROVAL_SOURCE_PROOF_REQUIRED' })
+    await expect(sql.settle()).rejects.toMatchObject({ code: 'APPROVAL_SETTLEMENT_PENDING' })
+    expect(sql.calls.some((q) => q.startsWith('select state,approval_native_ack_id,approval_native_ack_record'))).toBe(true)
+    expect(sql.updateCount).toBe(0)
     expect(sql.finalized).toBe(false)
   })
   it.each(['workspaceId', 'workflowId', 'providerVersion'] as const)('rejects an approval from another %s', async (key) => {

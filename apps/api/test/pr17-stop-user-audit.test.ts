@@ -3,6 +3,8 @@ import Fastify from 'fastify'
 import { it, vi } from 'vitest'
 import { ManagementPrincipalSchema } from '@graphql/contracts/management'
 import type { DurableInteraction } from '@graphql/contracts'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import { DomainError } from '../src/modules/errors.js'
 import type { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
@@ -10,38 +12,59 @@ import type { InteractionService } from '../src/modules/interactions/service.js'
 import { registerUserInteractions } from '../src/routes/userInteractions.js'
 
 it('F11: failed cleanup remains retryable after terminal settlement and a fresh engine instance', async () => {
-  let record: Record<string, unknown> = { id: 'run', executionState: 'waiting', outcome: 'pending' }
-  let pending = false
+  // This test begins AFTER business settlement. The retired fixture synthesized
+  // a terminal Run inside settleOrphan even when physical closure had failed.
+  // Current V3 instead preserves the accepted result while cleanup is retried.
+  const f = makeCurrentWorkflowFixture('pr17-stop-user-audit', 'single')
+  const record = AcceptedWorkflowRunV3Schema.parse({ ...f.run, executionState: 'completed',
+    outcome: 'succeeded', result: { outcome: 'succeeded' }, finishedAt: f.createdAt,
+    authorizationPrincipalId: 'principal-pr17-cleanup', executionLocation: { runnerId: 'runner-pr17-cleanup',
+      rootPath: '/synthetic/pr17-stop-user-audit', locationRevision: 1, identityHash: `sha256:${'a'.repeat(64)}` } })
+  const original = structuredClone(record)
+  let pending = true
   let fail = true
   let attempts = 0
-  const owner = { client: {}, assertOwned() {}, async release() {} }
+  let releases = 0
+  const owner = { runId: record.id, assertOwned() {}, async release() { releases++ } } as unknown as RunOwnership
   const runs = {
+    repeatRepositoryFactory: () => ({}),
     async requestCleanup() { pending = true },
-    async hasPendingCleanup() { return pending },
-    async finishCleanup(_id: string, failed: boolean) { pending = failed },
-    async acquireOwnership() { return owner },
-    async get() { return { ...record } },
-    async settleOrphan(_id: string, _owner: unknown, canceled: boolean) {
-      if (record.executionState === 'completed') return false
-      record = { ...record, executionState: canceled ? 'completed' : 'interrupted', outcome: canceled ? 'canceled' : 'pending' }
-      return true
+    async finishCleanup(_id: string, failed: boolean, actual: RunOwnership) {
+      assert.equal(actual, owner)
+      pending = failed
     },
-    async updateState(_id: string, update: Record<string, unknown>) { record = { ...record, ...update } },
+    async acquireOwnership(id: string) { assert.equal(id, record.id); return owner },
+    async getRepeatSnapshot(id: string, actual?: RunOwnership) {
+      assert.equal(id, record.id)
+      if (actual) assert.equal(actual, owner)
+      return { run: structuredClone(record), version: f.version, configurations: f.configurations,
+        stopRequested: false, cleanupPending: pending }
+    },
   }
-  const nativeExecutions = { residentRunIds: () => [], async cancelRun() { attempts++; if (fail) throw new Error('native close failed') } }
-  const freshEngine = () => Object.assign(Object.create(LangGraphWorkflowEngine.prototype), {
-    runs, nativeExecutions, activeRuns: new Map(), activeTasks: new Map(), resumeTasks: new Map(),
-    workerCredentials: { async revokeForRun() {} },
-  }) as LangGraphWorkflowEngine
-  await assert.rejects(freshEngine().cancel('run'), /native close failed/)
+  const nativeExecutions = {
+    async finishRun(id: string) {
+      assert.equal(id, record.id)
+      attempts++
+      if (fail) throw new Error('native close failed')
+    },
+    cancelRun: vi.fn(async () => { throw new Error('Successful terminal cleanup must not cancel the Run') }),
+  }
+  type Args = ConstructorParameters<typeof LangGraphWorkflowEngine>
+  const freshEngine = () => new LangGraphWorkflowEngine(runs as unknown as Args[0], {} as Args[1],
+    nativeExecutions as unknown as Args[2], {} as Args[3], '/synthetic/pr17-stop-user-audit',
+    {} as Args[5], {} as Args[6], {} as Args[7])
+  await assert.rejects(freshEngine().cancel(record.id), /native close failed/)
   assert.equal(record.executionState, 'completed')
   assert.equal(pending, true)
-  const outcome = record.outcome
+  assert.equal(attempts, 2, 'the owner rechecks physical cleanup after the initial best-effort close')
+  assert.deepEqual(record, original, 'uncertain cleanup must not rewrite the accepted Run')
   fail = false
-  assert.equal(await freshEngine().cancel('run'), true)
-  assert.equal(attempts, 3, 'the terminal owner makes a final fenced cleanup pass')
+  assert.equal(await freshEngine().cancel(record.id), true)
+  assert.equal(attempts, 5, 'retry performs the physical, owned-cleanup and terminal-finalization passes')
+  assert.equal(releases, 2, 'both fresh engine instances release their actual cleanup owner')
   assert.equal(pending, false)
-  assert.equal(record.outcome, outcome, 'cleanup success must not rewrite the business outcome')
+  assert.deepEqual(record, original, 'cleanup success must not rewrite the business outcome or immutable pins')
+  assert.equal(nativeExecutions.cancelRun.mock.calls.length, 0)
 })
 
 function userInteraction(): DurableInteraction {
