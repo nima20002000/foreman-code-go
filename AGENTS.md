@@ -41,6 +41,10 @@ Every critical product capability added or changed in the app must ship with equ
 
 Do not duplicate one state source in another layer without a documented reason.
 
+## UI/UX rules
+
+- Dismissible modals close when the user clicks their backdrop, outside the modal. Clicks inside the modal and drags that start inside must not dismiss it. Use the shared Dialog behavior; preserve pending-operation locks and unsaved-change guards. Any exception must have a concrete interaction reason.
+
 ## Verification
 
 From the repository root, use the pinned pnpm runtime. Plain npm installs are

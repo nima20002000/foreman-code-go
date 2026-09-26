@@ -19,6 +19,7 @@ describe('WorkflowDirectory', () => {
     await screen.findByTestId('workflow-card-workflow-content-pipeline')
     await user.click(screen.getByRole('button', { name: 'New workflow' }))
     expect(screen.getByRole('dialog', { name: 'New workflow' })).toBeVisible()
+    expect(screen.queryByRole('textbox', { name: 'Description' })).not.toBeInTheDocument()
   })
 
   it('offers creation directly in the empty state', async () => {

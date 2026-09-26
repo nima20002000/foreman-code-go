@@ -26,6 +26,7 @@ function WorkspaceCardActions({ workspaceId, name, revision = 0, onCommand }: {
   onCommand: (input: CardCommand & { commandId: string }) => Promise<void>
 }) {
   const [open, setOpen] = useState(false)
+  const [confirmingRemove, setConfirmingRemove] = useState(false)
   const [nextName, setNextName] = useState(name)
   const [baseRevision, setBaseRevision] = useState(revision)
   const [pending, setPending] = useState(false)
@@ -70,7 +71,7 @@ function WorkspaceCardActions({ workspaceId, name, revision = 0, onCommand }: {
     <div className="workspace-card-actions-wrap">
       <IconButton ref={triggerRef} label={`Open actions for ${name}`} variant="ghost"
         aria-haspopup="dialog" aria-expanded={open}
-        onClick={() => { if (open) close(); else { setNextName(name); setBaseRevision(revision); setError(undefined); setOpen(true) } }}>
+        onClick={() => { if (open) close(); else { setNextName(name); setBaseRevision(revision); setError(undefined); setConfirmingRemove(false); setOpen(true) } }}>
         <Icon name="more" size={16} />
       </IconButton>
       {open ? <div ref={surfaceRef} className="workspace-card-actions" role="dialog" aria-label={`${name} actions`}>
@@ -79,9 +80,13 @@ function WorkspaceCardActions({ workspaceId, name, revision = 0, onCommand }: {
         {uncertain ? <>
           <Alert live tone="warning" title="The previous request may have succeeded.">Retry it before making another change.</Alert>
           <Button onClick={() => void submit(lastCommand.current?.type ?? 'rename')}>Retry previous request</Button>
+        </> : confirmingRemove ? <>
+          <Alert tone="warning" title="Remove this workspace?">App-created project folders and their contents will be deleted. Existing folders you selected are kept. Workflow and run history is retained.</Alert>
+          <Button variant="danger" disabled={pending} onClick={() => void submit('archive')}>Confirm removal</Button>
+          <Button disabled={pending} onClick={() => setConfirmingRemove(false)}>Cancel</Button>
         </> : <>
           <Button disabled={pending} onClick={() => void submit('rename')}>Rename</Button>
-          <Button variant="danger" disabled={pending} onClick={() => void submit('archive')}>Remove workspace</Button>
+          <Button variant="danger" disabled={pending} onClick={() => setConfirmingRemove(true)}>Remove workspace</Button>
           <Button variant="ghost" disabled={pending} onClick={close}>Close</Button>
         </>}
       </div> : null}
@@ -216,7 +221,7 @@ export function WorkspaceDirectory() {
       <LoadMore label="workspaces" query={managedQuery} />
       <Dialog open={selection.confirming} onOpenChange={(open) => { if (!open) closeConfirmation() }}
         title={`Delete ${count} ${count === 1 ? 'workspace' : 'workspaces'}?`}
-        description="Selected workspaces will be removed from the list. Workflows, run history and project files are retained. Workspaces with active runs cannot be deleted."
+        description="Selected workspaces will be removed from the list. App-created project folders and their contents will be deleted. Existing folders you selected are kept. Workflow and run history is retained. Workspaces with active runs cannot be deleted."
         busy={locked} initialFocusRef={cancelRef} size="sm"
         footer={<>
           <Button ref={cancelRef} disabled={locked} onClick={closeConfirmation}>Cancel</Button>

@@ -15,7 +15,7 @@ describe('WorkspaceShell', () => {
     sessionStorage.clear()
   })
 
-  it('prefills the parent location and previews a folder for the entered name', async () => {
+  it('selects the suggested name for replacement and keeps creation fields minimal', async () => {
     server.use(http.get('/api/management/harnesses/directories', () => HttpResponse.json({
       roots: [{ id: 'projects', label: 'Projects', path: '/projects' }], rootId: 'projects', path: '/projects',
       parent: null, directories: [], nextCursor: null,
@@ -26,13 +26,15 @@ describe('WorkspaceShell', () => {
     const location = await screen.findByRole('button', { name: 'Location' })
     await waitFor(() => expect(location.parentElement).toHaveTextContent('/home/test/.local/share/graphql/workspaces'))
     const name = screen.getByRole('textbox', { name: 'Name' })
-    await user.clear(name)
-    await user.type(name, 'My Project')
-    expect(screen.getByText('Folder: /home/test/.local/share/graphql/workspaces/My Project')).toBeVisible()
+    await user.keyboard('My Project')
+    expect(name).toHaveValue('My Project')
+    expect(screen.queryByText(/^Folder:/)).not.toBeInTheDocument()
+    expect(screen.queryByText('A project folder will be created for this workspace.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Description (optional)' })).not.toBeInTheDocument()
     await user.click(location)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Select location' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Select location' }))
-    expect(screen.getByText('Folder: /projects/My Project')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Location' }).parentElement).toHaveTextContent('/projects')
   })
 
   it('nests the workspace destinations under an active Workspaces menu', async () => {

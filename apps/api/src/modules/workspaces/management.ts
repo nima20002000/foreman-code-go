@@ -18,8 +18,9 @@ import { DomainError } from '../errors.js'
 import { WorkspaceLocationService } from './location.js'
 import { replayWorkspaceResult } from './receipts.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
+import { cleanupWorkspaceProjectFolders, WORKSPACE_FOLDER_LIFECYCLE_LOCK } from './projectFolderCleanup.js'
 
-interface WorkspaceRow { record: unknown; revision: string; archived_at: Date | null }
+interface WorkspaceRow { record: unknown; revision: string; archived_at: Date | null; created_project_folder?: unknown }
 
 function managed(row: WorkspaceRow): ManagedWorkspace {
   return ManagedWorkspaceSchema.parse({
@@ -85,6 +86,7 @@ export class WorkspaceManagementService {
       principal, source, operation: 'workspace.create', commandId: input.commandId,
       targetKey: 'workspaces:new', payload: input,
       perform: async (client) => {
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
         const defaults = input.description === undefined ? await this.defaults.getWorkspaceDefaults(client) : undefined
         const description = input.description ?? defaults?.value.description ?? ''
         const now = new Date().toISOString()
@@ -98,11 +100,12 @@ export class WorkspaceManagementService {
           : undefined
         try {
           const result = await client.query<WorkspaceRow>(
-            `insert into workspaces (id, record, execution_location, execution_location_identity, location_revision)
-             values ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5)
+            `insert into workspaces (id, record, execution_location, execution_location_identity, location_revision, created_project_folder)
+             values ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5, $6::jsonb)
              returning record, revision, archived_at`,
             [workspace.id, JSON.stringify(workspace), folder ? JSON.stringify(folder.validation.location) : null,
-              folder ? JSON.stringify(folder.identity) : null, folder ? 1 : 0],
+              folder ? JSON.stringify(folder.identity) : null, folder ? 1 : 0,
+              folder ? JSON.stringify({ ...folder.validation.location, identity: folder.identity }) : null],
           )
           const value = managed(result.rows[0]!)
           return folder ? ManagedWorkspaceSchema.parse({ ...value,
@@ -158,7 +161,7 @@ export class WorkspaceManagementService {
     const input = WorkspaceBatchArchiveInputSchema.parse(raw)
     for (const item of input.workspaces) requireAuthorization(principal, 'workspaces:archive', { workspaceId: item.workspaceId })
     const ids = input.workspaces.map((item) => item.workspaceId).sort()
-    return this.commands.execute({
+    const result = await this.commands.execute({
       principal, source, operation: 'workspace.batch_archive', commandId: input.commandId,
       targetKey: 'workspaces:batch', payload: input,
       perform: async (client) => {
@@ -167,9 +170,10 @@ export class WorkspaceManagementService {
           `select pg_advisory_xact_lock(hashtext(lock_key)) from
            (select 'admission:workspace:' || id as lock_key from unnest($1::text[]) as selected(id) order by id) locks`, [ids],
         )
-        const current = await client.query<{ id: string; revision: string }>(
-          'select id, revision from workspaces where id = any($1::text[]) order by id for update', [ids],
+        const current = await client.query<{ id: string; revision: string; created_project_folder: unknown }>(
+          'select id, revision, created_project_folder from workspaces where id = any($1::text[]) order by id for update', [ids],
         )
+        for (const row of current.rows) if (row.created_project_folder) requireAuthorization(principal, 'workspace_locations:provision', { workspaceId: row.id })
         if (current.rows.length !== ids.length) throw new DomainError('WORKSPACE_NOT_FOUND', 'A selected workspace was not found. Nothing was deleted.', 404)
         const revisions = new Map(input.workspaces.map((item) => [item.workspaceId, item.expectedRevision]))
         if (current.rows.some((row) => Number(row.revision) !== revisions.get(row.id))) {
@@ -186,23 +190,26 @@ export class WorkspaceManagementService {
         return { workspaceIds: ids }
       },
     })
+    await cleanupWorkspaceProjectFolders(this.pool, principal, ids, this.locations.runnerId, source, input.commandId)
+    return result
   }
 
   async archive(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
     workspaceId: string; commandId: string; expectedRevision: number
   }) {
     requireAuthorization(principal, 'workspaces:archive', { workspaceId: input.workspaceId })
-    return this.commands.execute({
+    const result = await this.commands.execute({
       replayResult: replayWorkspaceResult,
       principal, source, operation: 'workspace.archive', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}`, payload: input,
       perform: async (client) => {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.workspaceId}`])
         const current = await client.query<WorkspaceRow>(
-          'select record, revision, archived_at from workspaces where id = $1 for update', [input.workspaceId],
+          'select record, revision, archived_at, created_project_folder from workspaces where id = $1 for update', [input.workspaceId],
         )
         const row = current.rows[0]
         if (!row) throw new DomainError('WORKSPACE_NOT_FOUND', `Workspace '${input.workspaceId}' was not found.`, 404)
+        if (row.created_project_folder) requireAuthorization(principal, 'workspace_locations:provision', { workspaceId: input.workspaceId })
         if (Number(row.revision) !== input.expectedRevision) {
           throw new DomainError('REVISION_CONFLICT', 'The workspace changed since it was read.', 409, { currentRevision: Number(row.revision) })
         }
@@ -219,5 +226,7 @@ export class WorkspaceManagementService {
         return managed(result.rows[0]!)
       },
     })
+    await cleanupWorkspaceProjectFolders(this.pool, principal, [input.workspaceId], this.locations.runnerId, source, input.commandId)
+    return result
   }
 }

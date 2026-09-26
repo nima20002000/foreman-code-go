@@ -24,6 +24,7 @@ import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { requireWorkspaceStoragePath } from './storage.js'
 import { canonicalRuntimePath, pathsOverlap, withFilesystemDeadline } from './filesystem.js'
+import { WORKSPACE_FOLDER_LIFECYCLE_LOCK } from './projectFolderCleanup.js'
 
 export const LOCAL_RUNNER_ID = 'runner-local'
 
@@ -172,6 +173,7 @@ export class WorkspaceLocationService {
       principal, source, operation: 'workspace.location.set', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}:location`, payload: input,
       perform: async (client) => {
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.workspaceId}`])
         const current = await client.query<LocationRow>(
           `select execution_location, execution_location_identity, location_revision, archived_at

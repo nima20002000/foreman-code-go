@@ -47,7 +47,7 @@ export function RemoveWorkspaceButton({ workspaceId, name, revision }: {
     }}><Icon name="trash" size={16} /></IconButton>
     <Dialog open={open} onOpenChange={(value) => { if (!value) close() }}
       title={`Remove ${name}?`}
-      description="This workspace will be removed from the list. Workflows, run history and project files are retained. Workspaces with active runs cannot be removed."
+      description="This workspace will be removed from the list. App-created project folders and their contents will be deleted. Existing folders you selected are kept. Workflow and run history is retained. Workspaces with active runs cannot be removed."
       busy={locked} initialFocusRef={cancelRef} size="sm"
       footer={<>
         <Button ref={cancelRef} disabled={locked} onClick={close}>Cancel</Button>

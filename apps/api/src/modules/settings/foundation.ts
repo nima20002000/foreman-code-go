@@ -57,6 +57,7 @@ export class PostgresFoundationSettingsRepository {
 
   async updateWorkspaceDefaults(value: WorkspaceDefaults, expectedRevision: number, client?: pg.ClientBase): Promise<VersionedSetting<WorkspaceDefaults>> {
     if (!client) return inTransaction(this.pool, undefined, (transaction) => this.updateWorkspaceDefaults(value, expectedRevision, transaction))
+    await client.query('select pg_advisory_xact_lock(hashtext($1))', ['workspace-folder-lifecycle'])
     const accepted = WorkspaceDefaultsSchema.parse(value)
     if (this.projectRoot && accepted.parentPath) {
       accepted.parentPath = await realpath(accepted.parentPath)

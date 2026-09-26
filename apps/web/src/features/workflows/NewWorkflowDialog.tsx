@@ -8,7 +8,7 @@ import { type CurrentWorkspaceDetails as WorkspaceDetailsResponse } from '@graph
 import { type WorkflowDefinitionV3 as WorkflowDefinition } from '@graphql/contracts/wave25'
 import { getWorkspaceDetails } from '../../shared/api/client'
 import { queryKeys, useCreateManagedWorkflowMutation } from '../../shared/api/query'
-import { Button, Dialog, Textarea, TextField } from '../../shared/ui/nocturne'
+import { Button, Dialog, TextField } from '../../shared/ui/nocturne'
 
 export interface NewWorkflowDialogProps {
   workspaceId: string
@@ -25,14 +25,13 @@ export function NewWorkflowDialog({
   const queryClient = useQueryClient()
   const createManagedWorkflow = useCreateManagedWorkflowMutation()
   const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
   const [nameError, setNameError] = useState<string>()
   const [createdWorkflow, setCreatedWorkflow] = useState<WorkflowDefinition>()
   const [openError, setOpenError] = useState<string>()
   const nameInputRef = useRef<HTMLInputElement>(null)
   const inFlight = useRef(false)
   const created = useRef(false)
-  const attempt = useRef(new CommandAttempt<{ workspaceId: string; name: string; description?: string }>())
+  const attempt = useRef(new CommandAttempt<{ workspaceId: string; name: string }>())
   const openingMutation = useMutation({ retry: false, mutationFn: async (workflow: WorkflowDefinition) => {
     const generation = sessionGeneration(), detailsKey = queryKeys.workspaceDetails(workspaceId)
     await queryClient.cancelQueries({ queryKey: detailsKey })
@@ -74,7 +73,7 @@ export function NewWorkflowDialog({
     setNameError(undefined)
     let workflow: WorkflowDefinition | undefined
     try {
-      const input = { workspaceId, name: trimmedName, ...(description ? { description } : {}) }
+      const input = { workspaceId, name: trimmedName }
       workflow = (await createManagedWorkflow.mutateAsync(attempt.current.input(input))).value.workflow
       assertSession(generation)
       attempt.current.succeeded()
@@ -88,9 +87,9 @@ export function NewWorkflowDialog({
     if (workflow && created.current) await openCreated(workflow)
   }
 
-  const leave = useUnsavedChanges({ scope: 'surface', label: 'new workflow', get dirty() { return !created.current && Boolean(name || description) },
+  const leave = useUnsavedChanges({ scope: 'surface', label: 'new workflow', get dirty() { return !created.current && Boolean(name) },
     get busy() { return inFlight.current && !created.current }, uncertain, error: nameError, save: create,
-    discard: () => { setName(''); setDescription(''); setNameError(undefined) },
+    discard: () => { setName(''); setNameError(undefined) },
   })
   const close = () => { if (!inFlight.current && !attempt.current.unresolved) void leave(onCancel) }
 
@@ -125,17 +124,6 @@ export function NewWorkflowDialog({
             {nameError}
           </p>
         ) : null}
-
-        <Textarea
-          id="new-workflow-description"
-          label="Description"
-          hint="(optional)"
-          name="description"
-          rows={3}
-          value={description}
-          disabled={pending || uncertain || Boolean(createdWorkflow)}
-          onChange={(event) => setDescription(event.target.value)}
-        />
 
         {uncertain ? <p role="status">The previous request may have succeeded. Retry Create workflow to resolve it without creating a duplicate.</p> : null}
         {openError ? <p role="alert">{openError}</p> : null}

@@ -172,7 +172,7 @@ describe('workspace section routes', () => {
     const { router } = renderRoute('/workspaces/workspace-1/settings')
     await user.click(await screen.findByRole('button', { name: 'Remove workspace' }))
     let dialog = screen.getByRole('dialog', { name: 'Remove Website?' })
-    expect(dialog).toHaveTextContent('Workflows, run history and project files are retained.')
+    expect(dialog).toHaveTextContent('App-created project folders and their contents will be deleted. Existing folders you selected are kept. Workflow and run history is retained.')
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings')
     expect(screen.queryByRole('dialog', { name: 'Remove Website?' })).not.toBeInTheDocument()

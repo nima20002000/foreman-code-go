@@ -63,12 +63,12 @@ export function registerWorkspaceTools(server: McpServer, context: OperatorReque
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workspace_update', () => context.services.workspaces.update(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_batch_archive')) server.registerTool('workspace_batch_archive', {
-    description: 'Atomically delete (archive) 1–100 selected workspaces, retaining workflows, history and project files. Requires archive permission and expected revision for every workspace. Any active run or conflict rejects the entire batch. Retry an uncertain outcome with the same commandId and input.',
+    description: 'Archive 1–100 workspaces and delete their app-created project folders, including contents. Retain workflow/run history and externally selected folders. Requires archive permission and expected revision for every workspace, plus workspace_locations:provision for owned folders. Active runs or conflicts reject the entire archive batch. Folder cleanup follows the database commit; on cleanup failure retry with the same commandId and input.',
     inputSchema: WorkspaceBatchArchiveInputSchema, outputSchema: WorkspaceBatchArchiveResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workspace_batch_archive', () => context.services.workspaces.archiveBatch(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_archive')) server.registerTool('workspace_archive', {
-    description: 'Archive a settled workspace while retaining its history.', inputSchema: WorkspaceArchiveInputSchema,
+    description: 'Archive a settled workspace and delete its app-created project folder, including contents. Retain workflow/run history and externally selected folders. Requires workspaces:archive, plus workspace_locations:provision for an owned folder. On cleanup failure retry with the same commandId and input; the workspace may already be archived.', inputSchema: WorkspaceArchiveInputSchema,
     outputSchema: ManagedWorkspaceCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workspace_archive', () => context.services.workspaces.archive(context.principal, 'mcp', input)))

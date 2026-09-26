@@ -240,5 +240,3 @@
     width: 1.5rem;
   }
 }
-
-.workspace-create-path { margin: 0; overflow-wrap: anywhere; color: var(--text-muted); font: var(--type-mono); }

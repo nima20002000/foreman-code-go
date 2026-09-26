@@ -27,7 +27,7 @@ import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 
 import { queryKeys, useCreateManagedWorkspaceMutation, useManagedWorkspaceQuery } from '../../shared/api/query'
-import { Button, Dialog, Divider, Icon, IconButton, TextField, Textarea } from '../../shared/ui/nocturne'
+import { Button, Dialog, Divider, Icon, IconButton, TextField } from '../../shared/ui/nocturne'
 import { useWorkspaceCreationDefaultsQuery } from '../../shared/api/settingsExperience'
 import { usePresence } from '../../shared/ui/usePresence'
 import { WorkflowNavigation } from '../workflows'
@@ -119,9 +119,8 @@ const workspaceSectionItems = workspaceSections.map((section) => ({
 function NewWorkspaceControl() {
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
   const [parentPath, setParentPath] = useState('')
-  const touched = useRef({ name: false, description: false, parentPath: false, defaultsApplied: false })
+  const touched = useRef({ name: false, parentPath: false, defaultsApplied: false })
   const defaults = useWorkspaceCreationDefaultsQuery(creating)
   const [nameError, setNameError] = useState<string>()
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -130,16 +129,15 @@ function NewWorkspaceControl() {
   const queryClient = useQueryClient()
   const createManagedWorkspace = useCreateManagedWorkspaceMutation()
   const inFlight = useRef(false)
-  const attempt = useRef(new CommandAttempt<{ name: string; description: string; parentPath: string }>())
+  const attempt = useRef(new CommandAttempt<{ name: string; parentPath: string }>())
   const uncertain = attempt.current.unresolved && !createManagedWorkspace.isPending
 
   const closeCreateDialog = useCallback(() => {
     if (inFlight.current || attempt.current.unresolved) return
     setCreating(false)
     setName('')
-    setDescription('')
     setParentPath('')
-    touched.current = { name: false, description: false, parentPath: false, defaultsApplied: false }
+    touched.current = { name: false, parentPath: false, defaultsApplied: false }
     setNameError(undefined)
     window.setTimeout(() => triggerRef.current?.focus(), 0)
   }, [])
@@ -150,9 +148,14 @@ function NewWorkspaceControl() {
     if (!template) return
     touched.current.defaultsApplied = true
     if (!touched.current.name) setName(template.suggestedName)
-    if (!touched.current.description) setDescription(template.description)
     if (!touched.current.parentPath) setParentPath(template.parentPath ?? '')
   }, [creating, defaults.data])
+
+  useEffect(() => {
+    if (creating && name && !touched.current.name && document.activeElement === nameInputRef.current) {
+      nameInputRef.current?.select()
+    }
+  }, [creating, name])
 
 
   const createNewWorkspace = async () => {
@@ -165,7 +168,7 @@ function NewWorkspaceControl() {
     setNameError(undefined)
     try {
       const workspace = (await createManagedWorkspace.mutateAsync(
-        attempt.current.input({ name: trimmedName, description, parentPath: parentPath.trim() }),
+        attempt.current.input({ name: trimmedName, parentPath: parentPath.trim() }),
       )).value.workspace
       assertSession(generation)
       attempt.current.succeeded()
@@ -199,7 +202,6 @@ function NewWorkspaceControl() {
         open={creating}
         onOpenChange={(open) => { if (!open) closeCreateDialog() }}
         title="New workspace"
-        description="A project folder will be created for this workspace."
         closeLabel="Close new workspace"
         busy={createManagedWorkspace.isPending}
         initialFocusRef={nameInputRef}
@@ -222,6 +224,7 @@ function NewWorkspaceControl() {
             label="Name"
             disabled={createManagedWorkspace.isPending || uncertain}
             value={name}
+            onFocus={(event) => { if (!touched.current.name) event.currentTarget.select() }}
             onChange={(event) => {
               touched.current.name = true
               setName(event.target.value)
@@ -239,12 +242,6 @@ function NewWorkspaceControl() {
           <WorkspaceFolderPicker value={parentPath} label="Location" disabled={createManagedWorkspace.isPending || uncertain} onSelect={(path) => {
             touched.current.parentPath = true; setParentPath(path)
           }} />
-          {parentPath && name.trim() ? <p className="workspace-create-path">Folder: {parentPath.replace(/\/$/, '')}/{name.trim()}</p> : null}
-          <Textarea label="Description (optional)" rows={3} maxLength={10_000} value={description}
-            disabled={createManagedWorkspace.isPending || uncertain} onChange={(event) => {
-              touched.current.description = true
-              setDescription(event.target.value)
-            }} />
           {defaults.isPending ? <p role="status">Loading workspace defaults…</p> : null}
           {defaults.isError ? <p role="status">Defaults could not be loaded. You can still enter your own values. <Button size="sm" onClick={() => void defaults.refetch()}>Retry defaults</Button></p> : null}
           {nameError ? (

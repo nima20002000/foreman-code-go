@@ -173,6 +173,17 @@ describe('Advanced configuration and modal contracts', () => {
     expect(close).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'Close dialog' })).toBeDisabled()
   })
+  it('dismisses on a backdrop click by default but keeps inside clicks and drags open', () => {
+    const close = vi.fn()
+    render(<Dialog open title="Example" onOpenChange={close}><button>Inside</button></Dialog>)
+    const dialog = screen.getByRole('dialog')
+    const inside = screen.getByRole('button', { name: 'Inside' })
+    fireEvent.pointerDown(inside); fireEvent.click(inside)
+    fireEvent.pointerDown(inside); fireEvent.click(dialog)
+    expect(close).not.toHaveBeenCalled()
+    fireEvent.pointerDown(dialog); fireEvent.click(dialog)
+    expect(close).toHaveBeenCalledWith(false)
+  })
   it('exposes sheet and start-side drawer variants', () => {
     const { rerender } = render(<BottomSheet open title="Actions" onOpenChange={vi.fn()}>Actions</BottomSheet>)
     expect(screen.getByRole('dialog')).toHaveClass('n-sheet')

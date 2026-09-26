@@ -706,6 +706,17 @@ export const migrations = [
     alter table harness_mcp_change_plans add constraint harness_mcp_change_plans_managed_preset_check
       check (managed_preset in ('operator', 'worker', 'linear'));
   ` },
+  { version: 264405, sql: `
+    alter table workspaces add column created_project_folder jsonb;
+    update workspaces w set created_project_folder = jsonb_build_object(
+      'runnerId', w.execution_location->>'runnerId',
+      'rootPath', w.execution_location->>'rootPath',
+      'identity', w.execution_location_identity)
+    where w.location_revision = 1 and w.execution_location_identity is not null
+      and exists (select 1 from management_command_receipts r
+        where r.operation = 'workspace.create' and r.result->'workspace'->>'id' = w.id
+          and r.result->'executionLocation' = w.execution_location);
+  ` },
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

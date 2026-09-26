@@ -37,7 +37,7 @@ export interface DialogProps {
   onAfterClose?: () => void
 }
 export function Dialog({ open, onOpenChange, title, description, children, footer, headerLeading, onKeyDownCapture, size = 'md', variant = 'dialog', dismissible = true,
-  closeOnOutsideClick = false, initialFocusRef, className, onAfterClose, side = 'end', role = 'dialog', busy = false, closeLabel = 'Close dialog', returnFocusRef }: DialogProps) {
+  closeOnOutsideClick = true, initialFocusRef, className, onAfterClose, side = 'end', role = 'dialog', busy = false, closeLabel = 'Close dialog', returnFocusRef }: DialogProps) {
   const canDismiss = dismissible && !busy
   const ref = useRef<HTMLDialogElement>(null)
   const heading = useRef<HTMLHeadingElement>(null)
