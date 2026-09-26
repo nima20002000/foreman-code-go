@@ -10,7 +10,7 @@ import {
   CanonicalRunGraphScopeSchema, sameCanonicalGraphScope, RepeatGraphScopeV3Schema,
   RepeatGraphFactV3Schema, RepeatGraphEffectV3Schema, RepeatGraphEventContentV3Schema, RepeatGraphBatchV3Schema,
   assertRepeatGraphFactScope,
-  GraphSequenceSchema, RepeatGraphRunStateV3Schema, AcceptedWorkflowRunV3Schema,
+  GraphSequenceSchema, AcceptedWorkflowRunV3Schema,
   type AcceptedWorkflowRunV3, type RepeatGraphScopeV3, type RepeatGraphBatchV3,
   type CanonicalRunGraphScope, type RepeatGraphFactV3,
   type RepeatGraphEventV3, type RepeatGraphEffectV3,
@@ -640,6 +640,25 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
           || canonicalGraphJson(final.fact) !== canonicalGraphJson(current.fact)) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
       })
     }
+    // Retirement reads source receipts. Persist the staged domain receipts before
+    // capturing their public projection, in this same atomic transaction. The
+    // locked head reserves the next sequence; any finalization failure rolls back.
+    const stagedSources = new Set(this.#sources.keys())
+    if (stagedSources.size) {
+      await this.sql.query(
+        `insert into run_graph_sources(run_id,source_kind,source_id,source_revision,source_digest,semantic_digest,first_sequence)
+         select $1,x.source_kind,x.source_id,x.source_revision,x.source_digest,x.semantic_digest,
+           coalesce(x.first_sequence,h.head_sequence+1)
+         from run_graph_heads h cross join jsonb_to_recordset($2::jsonb)
+           as x(source_kind text,source_id text,source_revision bigint,source_digest text,semantic_digest text,first_sequence bigint)
+         where h.run_id=$1`,
+        [this.scope.runId, JSON.stringify([...this.#sources.values()].map((source) => ({
+          source_kind: source.evidence.sourceKind, source_id: source.evidence.sourceId,
+          source_revision: source.evidence.sourceRevision, source_digest: source.sourceDigest,
+          semantic_digest: source.semanticDigest, first_sequence: source.firstSequence ?? null,
+        })))],
+      )
+    }
     const projection = await capturePublicProjectionLocked(this.sql, this.scope)
     if (projection) {
       const key = canonicalGraphJson(projection.evidence)
@@ -688,7 +707,7 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
           oversized ? 'atomic_change_too_large' : null],
       )
     }
-    const receipts = [...this.#sources.values()].map((source) => ({
+    const receipts = [...this.#sources.entries()].filter(([key]) => !stagedSources.has(key)).map(([, source]) => ({
       first_sequence: source.firstSequence ?? sequence,
       source_kind: source.evidence.sourceKind, source_id: source.evidence.sourceId, source_revision: source.evidence.sourceRevision,
       source_digest: source.sourceDigest, semantic_digest: source.semanticDigest,
