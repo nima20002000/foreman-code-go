@@ -10,7 +10,7 @@ import { approvalDeliveryMessage, type ActionRun } from './policy'
 function Approval({ scope, item, run, permitted, refresh }: {
   scope: RepeatGraphScopeV3; item: DurableInteraction; run: ActionRun; permitted: boolean; refresh(): void
 }) {
-  const [open, setOpen] = useDisclosure(), life = useActionLifetime(), feedback = useRef<HTMLParagraphElement>(null)
+  const [open, setOpen] = useDisclosure(), life = useActionLifetime(), feedback = useRef<HTMLParagraphElement>(null), cache = useQueryClient()
   const detail = useQuery({ queryKey: actionKey(scope, 'approval', item.id), enabled: open,
     queryFn: ({ signal }) => runActionsClient.approval(scope, item.id, { signal }),
     retry: false, gcTime: 0, staleTime: 0, refetchOnWindowFocus: false, refetchOnReconnect: false })
@@ -21,7 +21,10 @@ function Approval({ scope, item, run, permitted, refresh }: {
     const result = await runActionsClient.respond(scope, variables.expected, variables.input, { signal: life.signal })
     life.assertCurrent()
     return result
-  }, onError: refresh, onSuccess: () => { void detail.refetch(); refresh(); feedback.current?.focus() } })
+  }, onError: refresh, onSuccess: () => {
+    void detail.refetch(); refresh(); feedback.current?.focus()
+    void cache.invalidateQueries({ queryKey: actionKey(scope, 'human-approvals'), exact: true })
+  } })
   const value = detail.isError ? undefined : detail.data
   const interaction = value?.interaction
   const reason = !permitted ? 'Response permission is unavailable for this exact Run.'
@@ -30,7 +33,7 @@ function Approval({ scope, item, run, permitted, refresh }: {
         : run.executionState === 'completed' ? 'This Run is terminal. No new approval decision is available.'
           : interaction?.status !== 'pending' ? 'A decision is already recorded or this interaction is canceled.' : undefined
   return <li><details onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary>Human approval {item.id} · {item.status}</summary>
+    <summary>Human approval {item.id} · {(detail.isError ? undefined : detail.data?.interaction.status) ?? item.status}</summary>
     {open ? <div>
       <p>Run <code>{scope.runId}</code> · saved version <code>{scope.workflowVersionId}</code> · interaction <code>{item.id}</code>.</p>
       {detail.isPending ? <p role="status">Reading exact human request and execution identity…</p> : null}

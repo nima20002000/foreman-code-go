@@ -112,7 +112,7 @@ export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
     {detail ? <dl><dt>Saved configuration pins</dt><dd><JsonValue label="Run configuration pins" value={detail.run.agentConfigurationVersionIds} /></dd>
       <dt>Accepted execution folder</dt><dd>{detail.run.executionLocation ? <JsonValue label="Run execution folder" value={detail.run.executionLocation} /> : 'Restricted or unavailable; the current workspace folder is not substituted.'}</dd>
       <dt>Accepted Run input</dt><dd><JsonValue label="Accepted Run input" value={detail.run.input} /></dd>
-      <dt>Cleanup</dt><dd>{detail.cleanupPending === true ? 'Pending' : detail.cleanupPending === false ? 'Settled according to authenticated Run readback' : 'Unknown'}</dd>
+      <dt>Cleanup</dt><dd>{detail.cleanupPending === true ? 'Pending' : detail.cleanupPending === false ? (detail.run.executionState === 'completed' ? 'Settled according to authenticated Run readback' : 'None pending; the Run is still active') : 'Unknown'}</dd>
       {detail.run.result ? <><dt>Recorded Run result</dt><dd><JsonValue label="Recorded Run result" value={detail.run.result} /></dd></> : null}</dl> : null}
     <details open={configurationOpen} onToggle={(event) => useInspectionPresentation.getState().setOpen(configurationKey, event.currentTarget.open)}>
       <summary>Exact saved definition and Agent configuration pins</summary>
