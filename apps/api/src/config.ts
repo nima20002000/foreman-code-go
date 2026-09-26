@@ -1,3 +1,4 @@
+import { resolveLocalBrowserOrigin } from '@graphql/contracts/browser-origin'
 import { z } from 'zod'
 import { readBrowserAuthConfig, type BrowserAuthConfig } from './modules/browser-auth/config.js'
 import { harnessBinaries } from './modules/harnesses/binaries.js'
@@ -27,7 +28,7 @@ export interface ApiConfig {
   /** Trusted composition override for an isolated storage root; never a request field. */
   workspaceStorageRoot?: string
   browserAuth?: BrowserAuthConfig
-  localDevBrowserAccess?: { principalId?: string | undefined }
+  localDevBrowserAccess?: { origin: string; principalId?: string | undefined }
   host: string
   port: number
   readinessTimeoutMs: number
@@ -55,9 +56,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
   if (environment.GRAPHQL_DEV_BROWSER_ACCESS !== undefined && !['0', '1'].includes(environment.GRAPHQL_DEV_BROWSER_ACCESS)) {
     throw new Error('GRAPHQL_DEV_BROWSER_ACCESS must be 0 or 1.')
   }
+  const browserOrigin = localDevBrowserAccess ? resolveLocalBrowserOrigin(environment).origin : undefined
   if (localDevBrowserAccess && (environment.NODE_ENV === 'production' || parsed.HOST !== '127.0.0.1'
     || !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(parsed.DATABASE_URL).hostname)
-    || (browserAuth && browserAuth.origin !== 'http://127.0.0.1:5173'))) {
+    || (browserAuth && browserAuth.origin !== browserOrigin))) {
     throw new Error('Local development browser access requires a loopback API, database and browser origin outside production.')
   }
   const localDevBrowserPrincipalId = environment.GRAPHQL_DEV_OPERATOR_PRINCIPAL_ID?.trim()
@@ -67,6 +69,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
   return {
     ...(browserAuth ? { browserAuth } : {}),
     ...(localDevBrowserAccess ? { localDevBrowserAccess: {
+      origin: browserOrigin!,
       ...(localDevBrowserPrincipalId || browserAuth?.ownerPrincipalId
         ? { principalId: localDevBrowserPrincipalId || browserAuth?.ownerPrincipalId } : {}),
     } } : {}),
