@@ -28,9 +28,9 @@ async function expireAbandonedClaims(f: Fixture) {
     where run_id=$1 and state='resuming'`, [f.f.run.id])
 }
 async function recover(f: Fixture, runtime = f.compose()) {
-  const errors: unknown[] = []
-  await runtime.engine.reconcile((error) => errors.push(error))
-  expect(errors).toEqual([])
+  // Reconciliation schedules work; exact Run resume waits for this drive and
+  // its durable checkpoint/receipt outcome before assertions inspect it.
+  await runtime.engine.resume(f.f.run.id)
   return runtime
 }
 async function stageDelivered(f: Fixture) {
@@ -273,7 +273,7 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
     }
     const failure = new FailSecondBranch(f.db.pool, undefined, { schema: f.db.schema })
     const errors: unknown[] = []
-    await f.compose(failure).engine.reconcile((error) => errors.push(error))
+    await f.compose(failure).engine.resume(f.f.run.id).catch((error: unknown) => errors.push(error))
     expect(failure.writes).toBe(2)
     expect(errors).toHaveLength(1)
     expect(errors[0]).toMatchObject({ code: 'GRAPH_INVALID_FACT' })
@@ -317,7 +317,7 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
     await f.saver.putWrites(cut.config, [['__resume__', [{ interactionId: interaction!.id }]]], interrupted[0])
     const invalid = (await f.saver.getTuple(cut.config))?.pendingWrites
     const errors: unknown[] = []
-    await f.compose().engine.reconcile((error) => errors.push(error))
+    await f.compose().engine.resume(f.f.run.id).catch((error: unknown) => errors.push(error))
     expect(errors).toHaveLength(1)
     expect(errors[0]).toMatchObject({ code: 'GRAPH_INVALID_FACT' }) // The public publication error is sanitized.
     expect((await f.saver.getTuple(cut.config))?.pendingWrites).toEqual(invalid)
