@@ -138,8 +138,7 @@ export function createCurrentBoardMock(options: {
           if (controls.deniedStart) return failure('FORBIDDEN', 'Start denied for exact workflow', 403)
           if (controls.unsupportedStart || !controls.start) return failure('EXECUTION_SEMANTICS_UNSUPPORTED', 'Synthetic runtime admission is disabled', 409)
           const response = journal(`start:${input.commandId}`, input, () => {
-            if (controls.staleStart || input.expectedWorkflowRevision !== revisions.get(id) || input.expectedDraftRevision !== revisions.get(id)
-              || input.draftId !== `board-${id}` || input.workflowVersionId !== draft.baseWorkflowVersionId
+            if (controls.staleStart || input.expectedWorkflowRevision !== revisions.get(id) || input.workflowVersionId !== draft.baseWorkflowVersionId
               || input.expectedLocationRevision !== controls.locationRevision) throw new Error('REVISION_CONFLICT')
             const version = versions.get(input.workflowVersionId)!
             if (!sameWorkflowValue(input.expectedAgentConfigurationVersionIds, version.agentConfigurationVersionIds)) throw new Error('CONFIGURATION_CONFLICT')

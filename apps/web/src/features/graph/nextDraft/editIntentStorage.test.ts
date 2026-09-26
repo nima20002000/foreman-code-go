@@ -1,3 +1,4 @@
+import { journalRequest } from './nim2644Journal.fixture'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { protectedKey, rotateProtectedSession } from '../../../shared/api/protectedChatStorage'
 import { fixture } from './core.cases'
@@ -8,9 +9,7 @@ import { acknowledgeEditOutbox, clearEditIntentStorage, readEditOutbox, readEdit
 const key = nextDraftKey('workspace', 'workflow')
 function candidate(commandId = 'exact-stage'): EditIntentOutbox {
   const context = fixture()
-  return { request: { workspaceId: 'workspace', workflowId: 'workflow', draftId: context.draft.id,
-    expectedRevision: context.draft.revision, expectedWorkflowVersionId: context.draft.baseWorkflowVersionId,
-    executionSemanticsVersion: 3, action: 'stage_edits', commandId, operations: [] }, target: context.draft.graph }
+  return { request: journalRequest(newNextDraft(context, 'fixture'), commandId), target: context.draft.graph }
 }
 beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); clearEditIntentStorage() })

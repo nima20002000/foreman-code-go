@@ -112,7 +112,7 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
       const service = new InteractionService(repository, budgets, native, (interaction) => engine.resumeInteraction(interaction))
       registerApprovalCheckpointResume(service, engine)
       engines.push(engine)
-      return { engine, service, repository, runs, native, locations }
+      return { engine, service, repository, runs, native, locations, workflows, checkpointer }
     }
     const runtime = compose()
     const config = { configurable: { thread_id: f.run.id } }

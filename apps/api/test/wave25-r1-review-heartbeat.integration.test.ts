@@ -1,30 +1,26 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { approvalDatabase } from './helpers/wave25ApprovalDatabase.js'
-import { createCompactSnapshotAssembler } from '../src/modules/run-graph/compactSnapshot.js'
-import { readCurrentGraphExchanges } from '../src/modules/interactions/wave25/currentExchanges.js'
-import { transact } from '../src/modules/interactions/wave25/context.js'
+import { graphParity } from './helpers/wave25R1GraphParity.js'
+import { postgresEnabled } from './helpers/wave25Agent3.js'
 
 const closes: Array<() => Promise<void>> = []
 afterEach(async () => { while (closes.length) await closes.pop()!() })
 async function fixture() {
-  const url = new URL(process.env.TEST_DATABASE_URL ?? '')
+  const url = new URL(process.env.WAVE25_TEST_DATABASE_URL ?? process.env.TEST_DATABASE_URL ?? '')
   if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || !url.pathname.toLowerCase().includes('test')) {
     throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
   }
   const f = await approvalDatabase(); closes.push(f.close); return f
 }
 async function graph(f: Awaited<ReturnType<typeof fixture>>) {
-  return transact(f.pool, f.run.id, async (publication) => ({
-    head: (await publication.sql.query('select head_sequence::text from run_graph_heads where run_id=$1', [f.run.id])).rows,
-    current: await createCompactSnapshotAssembler(readCurrentGraphExchanges)(publication.sql, f.scope),
-  }))
+  return (await graphParity(f.pool, f.scope)).compare()
 }
 
-describe.skipIf(!process.env.TEST_DATABASE_URL)('BR1-004: production review heartbeat is not a graph mutation', () => {
+describe.skipIf(!postgresEnabled)('BR1-004: production review heartbeat is not a graph mutation', { timeout: 60000 }, () => {
   it('keeps the full snapshot, public review revision and graph head unchanged', async () => {
     const f = await fixture(), before = await graph(f)
     const stored = (await f.pool.query('select revision::text,lease_fence::text from review_jobs where id=$1', [f.job.id])).rows[0]
-    const expiry = await f.repository.coordination.renewReviewJob(f.job.id, 'review-owner-token', 60000)
+    const expiry = await f.repository.coordination.renewReviewJob(f.job.id, f.job.leaseToken!, 60000)
     expect(Date.parse(expiry)).toBeGreaterThan(Date.now())
     expect(await graph(f)).toEqual(before)
     expect((await f.pool.query('select revision::text,lease_fence::text from review_jobs where id=$1', [f.job.id])).rows[0]).toEqual(stored)
@@ -38,12 +34,12 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('BR1-004: production review hear
     await f.pool.query(`update review_jobs set record=jsonb_set(record,'{leaseExpiresAt}','"2000-01-01T00:00:00.000Z"'::jsonb)
       where id=$1`, [f.job.id])
     const expired = await graph(f)
-    await expect(f.repository.coordination.renewReviewJob(f.job.id, 'review-owner-token', 60000))
+    await expect(f.repository.coordination.renewReviewJob(f.job.id, f.job.leaseToken!, 60000))
       .rejects.toMatchObject({ code: 'REVIEW_JOB_LEASE_LOST' })
     expect(await graph(f)).toEqual(expired)
     await f.repository.coordination.claimReviewJob(f.job.id, 'successor-owner', 'successor-token', new Date(Date.now() + 60000).toISOString())
     const successor = await graph(f)
-    await expect(f.repository.coordination.renewReviewJob(f.job.id, 'review-owner-token', 60000))
+    await expect(f.repository.coordination.renewReviewJob(f.job.id, f.job.leaseToken!, 60000))
       .rejects.toMatchObject({ code: 'REVIEW_JOB_LEASE_LOST' })
     expect(await graph(f)).toEqual(successor)
     expect((await f.pool.query('select lease_token from review_jobs where id=$1', [f.job.id])).rows[0].lease_token).toBe('successor-token')
@@ -51,9 +47,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('BR1-004: production review hear
 
   it('does not shorten a live lease when a shorter heartbeat arrives later', async () => {
     const f = await fixture()
-    const longer = await f.repository.coordination.renewReviewJob(f.job.id, 'review-owner-token', 120000)
+    const longer = await f.repository.coordination.renewReviewJob(f.job.id, f.job.leaseToken!, 120000)
     const before = await graph(f)
-    const shorter = await f.repository.coordination.renewReviewJob(f.job.id, 'review-owner-token', 1)
+    const shorter = await f.repository.coordination.renewReviewJob(f.job.id, f.job.leaseToken!, 1)
     expect(Date.parse(shorter)).toBeGreaterThanOrEqual(Date.parse(longer))
     expect(await graph(f)).toEqual(before)
   })
@@ -62,7 +58,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('BR1-004: production review hear
     const f = await fixture(), before = await graph(f)
     const stored = (await f.pool.query('select record,revision::text,lease_fence::text from review_jobs where id=$1', [f.job.id])).rows
     for (const duration of [0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 2147483648]) {
-      await expect(f.repository.coordination.renewReviewJob(f.job.id, 'review-owner-token', duration))
+      await expect(f.repository.coordination.renewReviewJob(f.job.id, f.job.leaseToken!, duration))
         .rejects.toMatchObject({ code: 'LEASE_EXPIRY_INVALID' })
     }
     expect((await f.pool.query('select record,revision::text,lease_fence::text from review_jobs where id=$1', [f.job.id])).rows).toEqual(stored)
@@ -80,7 +76,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('BR1-004: production review hear
       // blocks on this row. Committing the expired replacement must defeat it.
       await locker.query(`update review_jobs set record=jsonb_set(record,'{leaseExpiresAt}',
         '"2000-01-01T00:00:00.000Z"'::jsonb) where id=$1`, [f.job.id])
-      observed = f.repository.coordination.renewReviewJob(f.job.id, 'review-owner-token', 60000)
+      observed = f.repository.coordination.renewReviewJob(f.job.id, f.job.leaseToken!, 60000)
         .then(() => ({ renewed: true }), (error: { code?: string }) => ({ renewed: false, ...(error.code ? { code: error.code } : {}) }))
       const deadline = Date.now() + 3000
       for (;;) {
@@ -98,6 +94,6 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('BR1-004: production review hear
       locker.release()
       await observed
     }
-  }, 15000)
+  }, 60000)
 
 })

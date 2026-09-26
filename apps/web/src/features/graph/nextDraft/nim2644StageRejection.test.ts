@@ -1,3 +1,4 @@
+import { journalRequest } from './nim2644Journal.fixture'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../../../shared/api/client'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
@@ -10,9 +11,7 @@ const key = nextDraftKey('workspace', 'workflow')
 const failure = (code: string, status = 409) => new ApiError({ code, message: `Fixture ${code}` }, status)
 function candidate(commandId = 'rejected-stage'): EditIntentOutbox {
   const context = repairFixture()
-  return { request: { action: 'stage_edits', workspaceId: 'workspace', workflowId: 'workflow', draftId: context.draft.id,
-    commandId, expectedRevision: context.draft.revision, expectedWorkflowVersionId: context.draft.baseWorkflowVersionId,
-    executionSemanticsVersion: 3, operations: [] }, target: context.draft.graph }
+  return { request: journalRequest(newNextDraft(context, 'fixture'), commandId), target: context.draft.graph }
 }
 beforeEach(() => {
   localStorage.clear(); sessionStorage.clear()

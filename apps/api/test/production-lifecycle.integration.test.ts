@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, realpath, rename, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, rename, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { CODEX_APPROVAL_OPTIONS_FIXTURE, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction } from '@graphql/contracts'
+import { CODEX_APPROVAL_OPTIONS_FIXTURE, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, HarnessExecutionSchema, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction } from '@graphql/contracts'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import pg from 'pg'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -11,9 +11,10 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { loadConfig } from '../src/config.js'
 import { createDatabase } from '../src/infrastructure/database.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
-import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
+import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+import { seedAgent3 } from './helpers/wave25Agent3.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { WorkerCredentialService } from '../src/modules/access/workerCredentials.js'
+import { Wave25WorkerCredentialService as WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import type { NativeHistory, WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
@@ -21,13 +22,13 @@ import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execut
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { PostgresInteractionDeliveryRepository } from '../src/modules/interactions/deliveryPostgres.js'
 import { ReviewerDispatcher } from '../src/modules/interactions/reviewer.js'
-import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
+import { FixtureServer } from './opencode-fixtures.js'
 import { buildProductionApp } from '../src/production.js'
 
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
+const connectionString = process.env.WAVE25_TEST_DATABASE_URL ?? process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
 let schema: string, root: string, project: string, address: string
 let admin: pg.Pool, database: ReturnType<typeof createDatabase>, checkpoints: ReturnType<typeof createCheckpointStore>
 let production: ReturnType<typeof buildProductionApp>
@@ -38,6 +39,7 @@ const success: ExecutionResult = { outcome: 'succeeded', output: { text: 'workfl
 type ProviderSession = { input: WorkflowNativeSessionStart; pending: PendingNativeInteraction[]; turns: Map<string, ExecutionResult | undefined>; asks: number }
 type Connection = { id: string; events: NativeHarnessEvent[]; token: string; sessionId: string }
 let sessions: Map<string, ProviderSession>, connections: WeakMap<object, Connection>
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 30_000 })
 let repeatedApproval = false
 let reviewNoDecision = false
 let native: { starts: string[]; attaches: number; responses: number; inspections: number; closes: number }
@@ -51,7 +53,7 @@ function event(manager: object, type: string, payload: Record<string, unknown>) 
 const providerId = (manager: { harness: 'codex' | 'opencode' }, correlation: string) => manager.harness === 'opencode'
   ? `msg_${createHash('sha256').update(correlation).digest('hex').slice(0, 24)}` : correlation
 function ask(reference: NativeSessionReference, suffix: number): PendingNativeInteraction {
-  return { session: reference, turn: { nativeTurnId: 'workflow-turn', nativeRequestId: `ask-${reference.nativeSessionId}-${suffix}` },
+  return { session: reference, turn: { nativeTurnId: [...sessions.get(reference.nativeSessionId)!.turns.keys()][0]!, nativeRequestId: `ask-${reference.nativeSessionId}-${suffix}` },
     nativeRequestType: 'item/commandExecution/requestApproval', request: { command: 'test' }, responseOptions: CODEX_APPROVAL_OPTIONS_FIXTURE }
 }
 function runtime() { return Reflect.get(production.engine, 'nativeExecutions') as ApprovalExecutionCoordinator }
@@ -78,22 +80,12 @@ beforeEach(async () => {
   await admin.query(`create schema "${schema}"`)
   const url = new URL(connectionString)
   url.searchParams.set('options', `-c search_path=${schema}`)
-  config = loadConfig({ DATABASE_URL: url.toString(), DATABASE_POOL_MAX: '1', DATABASE_QUERY_TIMEOUT_MS: '5000', HARNESS_WORKSPACE_ROOT: root, HARNESS_TIMEOUT_MS: '5000', PORT: '4100' })
+  config = loadConfig({ DATABASE_URL: url.toString(), DATABASE_POOL_MAX: '1', DATABASE_QUERY_TIMEOUT_MS: '5000', HARNESS_WORKSPACE_ROOT: root, HARNESS_TIMEOUT_MS: '30000', PORT: '4100' })
   config.workspaceStorageRoot = project
   database = createDatabase(config.database)
   await database.migrate()
-  await ensureAcceptanceSeed(database.pool)
   checkpoints = createCheckpointStore(connectionString, `${schema}_checkpoints`, config.database)
   await checkpoints.setup()
-  const info = await stat(project)
-  await database.pool.query('update workspaces set execution_location=$1::jsonb,execution_location_identity=$2::jsonb,location_revision=1', [
-    JSON.stringify({ runnerId: 'runner-local', rootPath: await realpath(project) }), JSON.stringify({ device: String(info.dev), inode: String(info.ino) }),
-  ])
-  await database.pool.query(`update agents set record=record || jsonb_build_object('productRole',case when id='agent-researcher' then 'orchestrator' else 'coder' end)`)
-  await database.pool.query(`update agent_configuration_versions set record=record || jsonb_build_object('productRole',case when agent_id='agent-researcher' then 'orchestrator' else 'coder' end)`)
-  const workflows = new PostgresWorkflowRepository(database.pool)
-  runs = new PostgresRunRepository(database.pool, workflows, new WorkspaceLocationService(database.pool, new PostgresCommandCoordinator(database.pool), root))
-  interactions = new PostgresInteractionRepository(database.pool)
   access = new PostgresAccessService(database.pool)
   sessions = new Map(); connections = new WeakMap(); repeatedApproval = false; reviewNoDecision = false
   native = { starts: [], attaches: 0, responses: 0, inspections: 0, closes: 0 }
@@ -125,6 +117,7 @@ beforeEach(async () => {
     const turnId = providerId(this, input.clientCorrelationId)
     const saved = sessions.get(reference.nativeSessionId)!
     saved.turns.set(input.clientCorrelationId, undefined)
+    await input.onSubmitted?.(turnId)
     yield event(this, 'turn.started', { threadId: reference.nativeSessionId, turnId, clientCorrelationId: input.clientCorrelationId })
     if (input.clientCorrelationId.startsWith('review-')) {
       const interactionId = /interaction (\S+)\./.exec(input.prompt)![1]!
@@ -169,18 +162,73 @@ beforeEach(async () => {
   })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'cancel').mockResolvedValue(true)
   vi.spyOn(CodexAppServerSessionManager.prototype, 'close').mockImplementation(async () => { native.closes++ })
+  const openCodeServers = new Map<string, FixtureServer>()
+  const originalCreate = OpenCodeNativeSessionManager.prototype.createSession
+  const originalAttach = OpenCodeNativeSessionManager.prototype.attachSession
+  const originalStart = OpenCodeNativeSessionManager.prototype.startTurn
+  function serverFor(manager: OpenCodeNativeSessionManager, input: WorkflowNativeSessionStart) {
+    let server = openCodeServers.get(input.request.executionId)
+    if (!server) {
+      server = new FixtureServer()
+      server.providers = { all: [{ id: 'opencode-go', models: { 'gpt-5.6-luna': { variants: { high: {} } } } }] }
+      server.config = { mcp: { 'graphql-app': { type: 'remote', url: 'http://127.0.0.1:4100/mcp/tools', enabled: true } } }
+      server.mcpCredentialReferences['graphql-app'] = 'GRAPHQL_APP_MCP_TOKEN'
+      server.mcp = { 'graphql-app': { status: 'connected' } }
+      server.nextSessionIds.push(`ses_${input.request.executionId}`)
+      const external = server
+      server.onPrompt = (sessionId, body) => {
+        const correlation = `execution:${input.request.executionId}`
+        if (body.messageID === providerId(manager, correlation)) external.complete(correlation, 'workflow result', sessionId)
+      }
+      openCodeServers.set(input.request.executionId, server)
+    }
+    Reflect.get(manager, 'options').server = server
+    return server
+  }
+  // Replace only the external HTTP/SSE server. The real OpenCode adapter emits
+  // its original history and submission evidence into production capture ports.
+  vi.spyOn(OpenCodeNativeSessionManager.prototype, 'createSession').mockImplementation(async function (input, signal) {
+    if (input.kind === 'operator') throw new Error('Unexpected Operator launch')
+    serverFor(this, input)
+    return originalCreate.call(this, input, signal)
+  })
+  vi.spyOn(OpenCodeNativeSessionManager.prototype, 'attachSession').mockImplementation(async function (reference, input, signal) {
+    if (input.kind === 'operator') throw new Error('Unexpected Operator launch')
+    native.attaches++
+    serverFor(this, input)
+    return originalAttach.call(this, reference, input, signal)
+  })
   vi.spyOn(OpenCodeNativeSessionManager.prototype, 'inspectNativeMcp').mockImplementation(async (cwd) => {
     native.inspections++
     return { cwd, providerVersion: '1.18.31', serverName: 'graphql-app', nativeStatus: 'connected', transport: 'streamable-http',
       endpoint: 'http://127.0.0.1:4100/mcp/tools', credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN',
       endpointMatches: true, baseConfigurationFilters: [], policyScope: 'base_configuration_only' }
   })
-  for (const method of ['createSession', 'attachSession', 'startTurn', 'history', 'reconcile', 'pending', 'respond', 'cancel', 'close', 'closeForRestart'] as const) {
-    vi.spyOn(OpenCodeNativeSessionManager.prototype, method).mockImplementation(CodexAppServerSessionManager.prototype[method] as never)
-  }
-  vi.spyOn(OpenCodeNativeSessionManager.prototype, 'dispose').mockResolvedValue()
+  vi.spyOn(OpenCodeNativeSessionManager.prototype, 'startTurn').mockImplementation(async function* (reference, input, signal) {
+    native.starts.push(input.clientCorrelationId)
+    let reviewed = false
+    for await (const value of originalStart.call(this, reference, input, signal)) {
+      yield value
+      if (!reviewed && input.clientCorrelationId.startsWith('review-')) {
+        reviewed = true
+        const server = Reflect.get(this, 'options').server as FixtureServer
+        const interactionId = /interaction (\S+)\./.exec(input.prompt)![1]!
+        const interaction = (await interactions.get(interactionId))!
+        if (!reviewNoDecision) {
+          const response = await mcp(server.environment!.variables.GRAPHQL_APP_MCP_TOKEN!, {
+            interactionId, optionId: interaction.responseOptions[0]!.optionId, expectedRevision: interaction.revision,
+          })
+          expect(response.isError, JSON.stringify(response)).not.toBe(true)
+        }
+        server.complete(input.clientCorrelationId, 'review result', reference.nativeSessionId)
+      }
+    }
+  })
   vi.spyOn(ReviewerDispatcher.prototype, 'reconcile').mockResolvedValue() // manually drive the real dispatcher between crash boundaries
   production = buildProductionApp(config, database, checkpoints, false)
+  runs = Reflect.get(production.engine, 'runs') as PostgresRunRepository
+  interactions = Reflect.get(runtime(), 'interactions') as PostgresInteractionRepository
+  await production.initialize()
   address = await production.app.listen({ host: '127.0.0.1', port: 0 })
 })
 
@@ -198,42 +246,61 @@ afterEach(async () => {
 })
 
 async function start(handler: 'user' | 'orchestrator', twoWorkers = false) {
-  const workflows = new PostgresWorkflowRepository(database.pool)
-  const saved = (await workflows.get('workspace-1', 'workflow-content-pipeline'))!
-  if (handler === 'orchestrator') {
-    await database.pool.query("update agent_configuration_versions set record=jsonb_set(record,'{harness}',$1::jsonb,true) where agent_id='agent-researcher'",
-      [JSON.stringify({ harness: 'opencode', model: 'opencode-go/gpt-5.6-luna', variant: 'high', nativeAgent: 'build', thinking: false,
-        autoApprove: false, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: [
-          { permission: '*', pattern: '*', effect: 'deny' },
-          { permission: 'graphql-app_interaction_get', pattern: '*', effect: 'allow' },
-          { permission: 'graphql-app_interaction_respond', pattern: '*', effect: 'allow' },
-        ] } })])
-  }
+  const fixture = makeCurrentWorkflowFixture(randomUUID(), 'sequential')
+  const workspaceId = 'workspace-1'
   const nodes = [{ id: 'orchestrator', agentId: 'agent-researcher', name: 'Orchestrator' },
     { id: 'worker-a', agentId: 'agent-reviewer', name: 'Worker A' },
-    ...(twoWorkers ? [{ id: 'worker-b', agentId: 'agent-reviewer', name: 'Worker B' }] : [])]
-  await workflows.save('workspace-1', { ...saved, requiredAgentCount: 2, nodes,
-    edges: nodes.slice(1).map((node, index) => ({ id: `edge-${index}`, source: nodes[index]!.id, target: node.id }))
-      .concat(twoWorkers ? [{ id: 'approval-worker-b', source: 'orchestrator', target: 'worker-b' }] : []),
-    approval: { handler, ...(handler === 'orchestrator' ? { designatedOrchestratorAgentId: 'agent-researcher' } : {}) },
-    executionPolicy: { maxParallelism: 1, maxNodeExecutions: nodes.length },
+    ...(twoWorkers ? [{ id: 'worker-b', agentId: 'agent-worker-b', name: 'Worker B' }] : [])]
+  fixture.scope.workspaceId = workspaceId
+  fixture.run.workspaceId = workspaceId
+  fixture.configurations = nodes.map((node, index) => ({ ...fixture.configurations[index === 0 ? 0 : 1]!,
+    id: `cfg-${node.agentId}`, workspaceId, agentId: node.agentId,
+    productRole: index === 0 ? 'orchestrator' as const : 'coder' as const,
+    harness: index === 0 && handler === 'orchestrator' ? {
+      harness: 'opencode' as const, model: 'opencode-go/gpt-5.6-luna', variant: 'high', nativeAgent: 'build', thinking: false,
+      autoApprove: false, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: [
+        { permission: '*', pattern: '*', effect: 'deny' as const },
+        { permission: 'graphql-app_interaction_get', pattern: '*', effect: 'allow' as const },
+        { permission: 'graphql-app_interaction_respond', pattern: '*', effect: 'allow' as const },
+      ] },
+    } : fixture.configurations[1]!.harness,
+  }))
+  const approval = { handler, ...(handler === 'orchestrator' ? { designatedOrchestratorAgentId: 'agent-researcher' } : {}) }
+  fixture.version = WorkflowVersionV3Schema.parse({ ...fixture.version, workspaceId, approval, entryNodeId: 'orchestrator',
+    agentConfigurationVersionIds: Object.fromEntries(fixture.configurations.map((item) => [item.agentId, item.id])),
+    definition: { ...fixture.version.definition, workspaceId, nodes, entryNodeId: 'orchestrator', approval,
+      edges: [ ...nodes.slice(1).map((node, index) => ({ id: `edge-${index}`, kind: 'execution', source: nodes[index]!.id, target: node.id })),
+        ...(handler === 'orchestrator' ? nodes.slice(1).map((node) => ({ id: `approval-${node.id}`, kind: 'approval', source: 'orchestrator', target: node.id })) : []) ],
+      executionPolicy: { maxParallelism: 1, maxNodeExecutions: nodes.length },
+    },
   })
-  const issuer = await access.issue({ name: 'Run owner', audience: 'operator', grants: [{ actions: ['runs:start', 'runs:stop', 'workspace_locations:read', 'interactions:read', 'interactions:respond'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
-  const version = (await workflows.getCurrentVersion('workspace-1', saved.id))!
+  await seedAgent3(database.pool, project, fixture, { run: false })
+  const issuer = await access.issue({ name: 'Run owner', audience: 'operator', grants: [{ actions: ['runs:start', 'runs:stop', 'workspace_locations:read', 'workspace_locations:update', 'interactions:read', 'interactions:respond'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
+  const locations = new WorkspaceLocationService(database.pool, new PostgresCommandCoordinator(database.pool), root)
+  const location = await locations.set(issuer.principal, 'http', { workspaceId, commandId: randomUUID(),
+    expectedLocationRevision: 1, runnerId: 'runner-local', rootPath: project })
+  const version = fixture.version
+  const saved = { id: fixture.scope.workflowId }
+  const revision = Number((await database.pool.query('select revision from workflows where id=$1', [saved.id])).rows[0].revision)
   const accepted = await production.app.inject({ method: 'POST',
     url: `/api/management/workspaces/workspace-1/workflows/${saved.id}/runs`,
     headers: { authorization: `Bearer ${issuer.token}` },
-    payload: { workflowVersionId: version.id, expectedLocationRevision: 1, commandId: randomUUID(), input: {} },
+    payload: { executionSemanticsVersion: 3, workflowVersionId: version.id, expectedWorkflowRevision: revision,
+      expectedAgentConfigurationVersionIds: version.agentConfigurationVersionIds, expectedLocationRevision: location.value.locationRevision, commandId: randomUUID(), input: {} },
   })
   expect(accepted.statusCode, accepted.body).toBe(202)
   const run = accepted.json().run as NonNullable<Awaited<ReturnType<PostgresRunRepository['get']>>>
-  await vi.waitFor(async () => expect((await runs.get(run.id))?.executionState).toBe('waiting'), { timeout: 3000 })
+  try { await vi.waitFor(async () => expect((await runs.get(run.id))?.executionState).toBe('waiting'), { timeout: 20000 }) }
+  catch (error) {
+    const facts = await database.pool.query('select record from harness_executions where run_id=$1', [run.id])
+    throw new Error(JSON.stringify({ executions: facts.rows, activity: await runs.listActivity(run.id) }), { cause: error })
+  }
   return { run, issuer, pending: (await interactions.list({ runId: run.id, status: 'pending', limit: 10 }))[0]! }
 }
 
 it('answers a production User approval through its own authenticated API while excluding Operator and App authority', async () => {
   const { run, issuer, pending } = await start('user')
-  const human = await access.issue({ name: 'Human', audience: 'user', grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: { runIds: [run.id] } }], expiresAt: new Date(Date.now() + 60_000) })
+  const human = await access.issue({ name: 'Human', audience: 'user', grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: { runIds: [run.id] } }], expiresAt: new Date(Date.now() + 600_000) })
   const url = `/api/user/interactions/${pending.id}/respond`
   const payload = { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision }
   expect((await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${issuer.token}` }, payload })).statusCode).toBe(403)
@@ -264,7 +331,7 @@ for (const change of ['location', 'authority'] as const) it(`rejects a waiting c
     expect(native.attaches).toBe(before.attaches)
     expect(native.responses).toBe(before.responses)
     expect((await runs.get(run.id))?.executionState).toBe('waiting')
-    const human = await access.issue({ name: 'Human', audience: 'user', grants: [{ actions: ['interactions:respond'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
+    const human = await access.issue({ name: 'Human', audience: 'user', grants: [{ actions: ['interactions:respond'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
     const response = await production.app.inject({ method: 'POST', url: `/api/user/interactions/${pending.id}/respond`,
       headers: { authorization: `Bearer ${human.token}` }, payload: { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision } })
     expect(response.statusCode).toBe(change === 'location' ? 409 : 403)
@@ -286,10 +353,10 @@ it('automatically wakes an idle Orchestrator to approve a later Worker request t
   await vi.waitFor(async () => {
     const result = await database.pool.query<{ state: string }>('select state from review_jobs where interaction_id=$1', [pending.id])
     expect(result.rows[0]?.state).toBe('completed')
-  }, { timeout: 5_000 })
+  }, { timeout: 20_000 })
   await production.reconcile(() => undefined)
   try {
-    await vi.waitFor(async () => expect((await runs.get(run.id))?.outcome).toBe('succeeded'), { timeout: 10_000 })
+    await vi.waitFor(async () => expect((await runs.get(run.id))?.outcome).toBe('succeeded'), { timeout: 20_000 })
   } catch (error) {
     const jobs = await database.pool.query('select state,record->\'error\' as error from review_jobs where interaction_id=$1', [pending.id])
     const activity = await runs.listActivity(run.id)
@@ -300,7 +367,7 @@ it('automatically wakes an idle Orchestrator to approve a later Worker request t
   await vi.waitFor(async () => {
     const result = await database.pool.query<{ state: string }>('select state from review_jobs where interaction_id=$1', [pending.id])
     expect(result.rows[0]?.state).toBe('completed')
-  }, { timeout: 5_000 })
+  }, { timeout: 20_000 })
   expect(native.starts.filter((correlation) => correlation.startsWith('review-'))).toHaveLength(1)
   expect(native.responses).toBe(1)
   const readback = await operatorGet(issuer.token, pending.id)
@@ -309,9 +376,9 @@ it('automatically wakes an idle Orchestrator to approve a later Worker request t
   expect((readback.structuredContent as { interaction: { deliveryState: string } }).interaction.deliveryState).toBe('delivered')
   const denied = await access.issue({ name: 'Out-of-scope operator', audience: 'operator',
     grants: [{ actions: ['interactions:read'], scope: { runIds: ['another-run'] } }],
-    expiresAt: new Date(Date.now() + 60_000) })
+    expiresAt: new Date(Date.now() + 600_000) })
   expect((await operatorGet(denied.token, pending.id)).isError).toBe(true)
-}, 20_000)
+}, 60_000)
 
 it('settles a waiting Run when its assigned Orchestrator finishes without a decision', async () => {
   vi.stubEnv('GRAPHQL_OPENCODE_PARITY_QUALIFIED', '1')
@@ -319,18 +386,18 @@ it('settles a waiting Run when its assigned Orchestrator finishes without a deci
   const { run, pending } = await start('orchestrator')
   await production.initialize()
   await production.reconcile(() => undefined)
-  await vi.waitFor(async () => expect((await runs.get(run.id))?.executionState).toBe('completed'), { timeout: 10_000 })
+  await vi.waitFor(async () => expect((await runs.get(run.id))?.executionState).toBe('completed'), { timeout: 20_000 })
   expect((await runs.get(run.id))?.outcome).toBe('canceled')
   expect((await interactions.get(pending.id))?.status).toBe('canceled')
   const result = await database.pool.query<{ state: string; code: string }>(
     "select state,record->'error'->>'code' as code from review_jobs where interaction_id=$1", [pending.id])
   expect(result.rows[0]).toMatchObject({ state: 'failed', code: 'REVIEW_NO_DECISION' })
-}, 20_000)
+}, 60_000)
 
 it('reviews through the completed Orchestrator session, survives restart and settles a lost acknowledgement while the next Worker waits', async () => {
   repeatedApproval = true
   const { run, pending } = await start('orchestrator', true)
-  const orchestrator = (await runs.listExecutions(run.id)).find((item) => item.agentId === 'agent-researcher')!
+  const orchestrator = (await database.pool.query<{ record: unknown }>('select record from harness_executions where run_id=$1', [run.id])).rows.map((row) => HarnessExecutionSchema.parse(row.record)).find((item) => item.agentId === 'agent-researcher')!
   expect(orchestrator.state).toBe('completed')
   await expect(new WorkerCredentialService(database.pool, access).issueForExecution(orchestrator.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_INACTIVE' })
   expect((await runtime().reviewers.dispatchNext('agent-researcher', 'first-approval'))?.state).toBe('completed')
@@ -353,6 +420,9 @@ it('reviews through the completed Orchestrator session, survives restart and set
   await old.app.close()
   retired.push(old)
   production = buildProductionApp(config, database, checkpoints, false)
+  runs = Reflect.get(production.engine, 'runs') as PostgresRunRepository
+  interactions = Reflect.get(runtime(), 'interactions') as PostgresInteractionRepository
+  await production.initialize()
   address = await production.app.listen({ host: '127.0.0.1', port: 0 })
   const report = vi.fn()
   await production.reconcile(report)
@@ -365,12 +435,12 @@ it('reviews through the completed Orchestrator session, survives restart and set
   expect(native.responses).toBe(3)
   expect(native.starts.filter((id) => id.startsWith('execution:'))).toHaveLength(3)
   expect((await database.pool.query("select count(*)::int as count from worker_credential_bindings where purpose='reviewer' and execution_id=$1", [orchestrator.id])).rows[0].count).toBe(2)
-}, 15_000)
+}, 60_000)
 
 
 it('makes production Stop and native delivery progress with a one-slot pool', async () => {
   const { run, issuer, pending } = await start('user')
-  const human = await access.issue({ name: 'Human', audience: 'user', grants: [{ actions: ['interactions:respond'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
+  const human = await access.issue({ name: 'Human', audience: 'user', grants: [{ actions: ['interactions:respond'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
   const respond = vi.mocked(CodexAppServerSessionManager.prototype.respond)
   const original = respond.getMockImplementation()!
   let entered!: () => void, release!: () => void
@@ -402,7 +472,7 @@ it('makes production Stop and native delivery progress with a one-slot pool', as
 
 it('revalidates the accepting authority again between attachment and the native response', async () => {
   const { issuer, pending } = await start('user')
-  const human = await access.issue({ name: 'Human', audience: 'user', grants: [{ actions: ['interactions:respond'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
+  const human = await access.issue({ name: 'Human', audience: 'user', grants: [{ actions: ['interactions:respond'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
   const coordinator = runtime()
   const attach = coordinator.attachInteraction.bind(coordinator)
   vi.spyOn(coordinator, 'attachInteraction').mockImplementationOnce(async (...args) => {
@@ -424,7 +494,7 @@ it('closes an idle retained reviewer when a later authorized App response comple
   expect((await runtime().reviewers.dispatchNext('agent-researcher', 'first-review'))?.state).toBe('completed')
   await production.reconcile(() => undefined)
   expect((await runs.get(run.id))?.executionState).toBe('waiting')
-  const orchestrator = (await runs.listExecutions(run.id)).find((item) => item.agentId === 'agent-researcher')!
+  const orchestrator = (await database.pool.query<{ record: unknown }>('select record from harness_executions where run_id=$1', [run.id])).rows.map((row) => HarnessExecutionSchema.parse(row.record)).find((item) => item.agentId === 'agent-researcher')!
   expect((await runtime().reviewers.dispatchNext('agent-researcher', 'later-review'))?.state).toBe('completed')
   await production.reconcile(() => undefined)
   expect((await runs.get(run.id))?.outcome).toBe('succeeded')

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, configure, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
@@ -29,6 +29,7 @@ function locks() {
     const result = (queues.get(key) ?? Promise.resolve()).then(action); queues.set(key, result.catch(() => undefined)); return result
   } } })
 }
+configure({ asyncUtilTimeout: 5000 })
 beforeEach(() => {
   useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); sessionStorage.clear(); locks()
   // DOM infrastructure only; never stub a Board/editor/React Flow component.

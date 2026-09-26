@@ -1,476 +1,162 @@
-import { readCurrentExecutions } from './helpers/wave25Agent3.js'
-import { randomUUID } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
-import { mkdir, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { setTimeout as delay } from 'node:timers/promises'
-import { DurableInteractionSchema, HarnessExecutionSchema } from '@graphql/contracts'
-import { ManagementActionSchema } from '@graphql/contracts/management'
-import { ExecutableWorkflowV2Schema, makeWave25Fixture } from '@graphql/contracts/wave25'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
-import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { createAppMcpRuntime } from '../src/modules/app-runtime/composition.js'
-import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
-import { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
-import type { ApprovalExecutionCoordinator, ApprovalExecutionObservation } from '../src/modules/interactions/execution.js'
-import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
-import { Wave25InteractionRepository } from '../src/modules/interactions/wave25/repository.js'
-import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
-import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
-import { appendWorkflowNativeGraphEvent } from '../src/modules/runs/workflowNativeGraph.js'
-import { RunManagementService } from '../src/modules/runs/management.js'
-import { resolveExecutionDirectory } from '../src/modules/runs/executionDirectory.js'
-import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
-import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
-import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
-import { agent3Database, candidateFor, deferred, ownedAgent3, postgresEnabled, seedAgent3, terminalAgent3 } from './helpers/wave25Agent3.js'
-import { deliveryFixture } from './helpers/wave25ApprovalFixture.js'
+import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
+import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { deferred, postgresEnabled, readCurrentExecutions } from './helpers/wave25Agent3.js'
+import { graphParity } from './helpers/wave25R1GraphParity.js'
 
-describe.skipIf(!postgresEnabled)('ENG-03 C native lifecycle with durable parallel branches', () => {
-  let db: Awaited<ReturnType<typeof agent3Database>>
-  let checkpoints: ReturnType<typeof createCheckpointStore>
-  beforeAll(async () => {
-    db = await agent3Database()
-    checkpoints = createCheckpointStore(process.env.WAVE25_TEST_DATABASE_URL!, `${db.schema}_c_checkpoints`)
-    await checkpoints.setup()
-  }, 60_000)
-  afterAll(async () => {
-    await checkpoints?.close()
-    if (db) {
-      await db.pool.query(`drop schema if exists ${db.schema}_c_checkpoints cascade`)
-      await db.close()
-    }
-  })
+const closes: Array<() => Promise<void>> = []
+afterEach(async () => { while (closes.length) await closes.pop()!(); vi.restoreAllMocks() })
+async function fixture() {
+  const f = await checkpointRuntimeFixture(2); closes.push(f.close); return f
+}
 
-  async function evidence(scenario: string, runId: string, runs: PostgresRunRepository,
-    expected: unknown, actual: unknown): Promise<void> {
-    const directory = process.env.ENG03_C_EVIDENCE_DIR ?? join(tmpdir(), 'eng03-c-evidence')
-    await mkdir(directory, { recursive: true })
-    const artifactPath = join(directory, `${scenario}-${randomUUID().replaceAll('-', '')}.json`)
-    const executions = await readCurrentExecutions(runs, runId)
-    const cleanup = (await db.pool.query<{ pending: boolean }>(
-      'select pending from run_cleanup_intents where run_id=$1', [runId],
-    )).rows[0]?.pending ?? false
-    await writeFile(artifactPath, JSON.stringify({ scenario, mode: 'native internal synthetic with PostgreSQL saver',
-      sourceSha: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), artifactPath,
-      runId, expected, actual, cleanupPending: cleanup,
-      executions: executions.map((item) => ({ id: item.id, nodeId: item.workflowNodeId,
-        agentId: item.agentId, nativeSessionId: item.nativeSessionId, state: item.state,
-        result: item.result, input: item.input })),
-      commands: ["RUN_WAVE25_POSTGRES_TESTS=1 WAVE25_TEST_DATABASE_URL=<task-owned loopback test DB> corepack pnpm --filter @graphql/api exec vitest run test/eng03-c-lifecycle.integration.test.ts --no-file-parallelism"],
-    }, null, 2))
-    process.stdout.write(`ENG03-C evidence ${artifactPath}\n`)
-  }
+// The deterministic boundary is the provider transport. Production admission,
+// private native capture, receipts, checkpointing and lifecycle writers remain real.
+describe.skipIf(!postgresEnabled)('ENG-03 C current native lifecycle with durable parallel branches', () => {
+  it('acknowledges Stop when the queued launch loses the durable Stop race', async () => {
+    const f = await fixture(), entered = deferred(), release = deferred()
+    const update = f.runs.updateState.bind(f.runs)
+    vi.spyOn(f.runs, 'updateState').mockImplementationOnce(async (...args) => {
+      entered.resolve(); await release.promise; return update(...args)
+    })
+    const started = f.engine.start(f.f.run.id).then(() => undefined, (error: unknown) => error)
+    try {
+      await entered.promise
+      await f.stop()
+      release.resolve()
+      expect(await started).toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
+      await f.engine.cancel(f.f.run.id)
+      expect((await f.runs.get(f.f.run.id))?.outcome).toBe('canceled')
+      expect(await f.runs.hasPendingCleanup(f.f.run.id)).toBe(false)
+      expect(await readCurrentExecutions(f.runs, f.f.run.id)).toHaveLength(0)
+      expect(f.provider.counts.starts).toBe(0)
+    } finally { release.resolve(); await started }
+  }, 60000)
 
-  async function fixture(extraQueued = false) {
-    const f = makeWave25Fixture(randomUUID())
-    const entry = f.version.definition.nodes[0]!, first = f.version.definition.nodes[1]!
-    const sibling = { ...first, id: `sibling-${randomUUID()}`, name: 'Sibling' }
-    const config = { ...f.configurations[1]!, id: `cfg-${randomUUID()}`, agentId: `agent-${randomUUID()}` }
-    sibling.agentId = config.agentId
-    const queuedConfig = extraQueued ? { ...config, id: `cfg-${randomUUID()}`, agentId: `agent-${randomUUID()}` } : undefined
-    const queued = queuedConfig ? { ...first, id: `queued-${randomUUID()}`, agentId: queuedConfig.agentId, name: 'Queued' } : undefined
-    const configurations = [...f.configurations, config, ...(queuedConfig ? [queuedConfig] : [])]
-    const nodes = [entry, first, sibling, ...(queued ? [queued] : [])]
-    const version = ExecutableWorkflowV2Schema.parse({
-      version: { ...f.version, definition: {
-        ...f.version.definition, executionPolicy: { maxParallelism: 2, maxNodeExecutions: nodes.length },
-        nodes, edges: [
-          f.version.definition.edges[0]!,
-          { id: `edge-${randomUUID()}`, kind: 'execution', source: entry.id, target: sibling.id },
-          ...(queued ? [{ id: `edge-${randomUUID()}`, kind: 'execution' as const, source: entry.id, target: queued.id }] : []),
-        ],
-      }, agentConfigurationVersionIds: Object.fromEntries(configurations.map((item) => [item.agentId, item.id])) },
-      configurations,
-    }).version
-    f.version = version
-    f.configurations.push(config)
-    f.identities.push({ workflowNodeId: sibling.id, executionId: `exec-${randomUUID()}`,
-      agentId: config.agentId, agentConfigurationVersionId: config.id, attempt: 1 })
-    if (queued && queuedConfig) {
-      f.configurations.push(queuedConfig)
-      f.identities.push({ workflowNodeId: queued.id, executionId: `exec-${randomUUID()}`,
-        agentId: queuedConfig.agentId, agentConfigurationVersionId: queuedConfig.id, attempt: 1 })
-    }
-    f.run = { ...f.run, agentConfigurationVersionIds: version.agentConfigurationVersionIds }
-    await seedAgent3(db.pool, db.directory, f)
-    return { f, entry: entry.id, first: first.id, sibling: sibling.id, queued: queued?.id }
-  }
+  it('stops both waiting branches and leaves another queued Run intact', async () => {
+    const f = await fixture(), other = await fixture()
+    const { compare } = await graphParity(f.db.pool, f.f.scope)
+    await f.engine.start(f.f.run.id)
+    expect(await f.pending()).toHaveLength(2)
+    expect(f.provider.counts.starts).toBe(3)
+    await compare(); await f.stop(); await f.engine.cancel(f.f.run.id)
+    expect((await compare()).state.run.outcome).toBe('canceled')
+    expect(await f.runs.hasPendingCleanup(f.f.run.id)).toBe(false)
+    expect((await other.runs.get(other.f.run.id))?.executionState).toBe('queued')
+    expect(other.provider.counts.starts).toBe(0)
+    expect(f.provider.counts.starts).toBe(3)
+  }, 60000)
 
-  function runtime(onNode: (nodeId: string, signal: AbortSignal) => Promise<'succeeded' | 'failed'>,
-    interactions?: PostgresInteractionRepository) {
-    const locations = new WorkspaceLocationService(db.pool, new PostgresCommandCoordinator(db.pool), db.directory)
-    vi.spyOn(locations, 'revalidateSnapshot').mockResolvedValue(undefined)
-    const workflows = new PostgresWorkflowRepository(db.pool)
-    const runs = new PostgresRunRepository(db.pool, workflows, locations)
-    const starts: string[] = [], observations: string[] = []
-    const native = {
-      async ensureObserve(input: Parameters<ApprovalExecutionCoordinator['ensureObserve']>[0]): Promise<ApprovalExecutionObservation> {
-        const execution = input.candidate
-        observations.push(execution.workflowNodeId)
-        const fresh = runs.consumeOneShotLaunch(execution.id, input.owner)
-        let session = execution.nativeSessionId ? await runs.exactOneShotSession(execution.id, input.owner) : undefined
-        if (!session) {
-          if (!fresh) throw new Error('Native start may not be replayed')
-          starts.push(execution.workflowNodeId)
-          session = { harness: 'codex' as const, providerVersion: 'synthetic-c', nativeSessionId: `native-${execution.id}` }
-          await new PostgresInteractionCoordinationRepository(db.pool).bindWorkflowSession(execution.id, session)
+  it('fails the Run after a provider exits abnormally and settles the waiting sibling', async () => {
+    const f = await fixture()
+    const original = f.provider.startTurn.bind(f.provider)
+    const history = f.provider.history.bind(f.provider)
+    const create = f.provider.createSession.bind(f.provider)
+    const failing = f.f.version.definition.nodes[2]!.id
+    let failedSession: string | undefined
+    let terminal: import('@graphql/contracts').NativeHarnessEvent | undefined
+    const result = { outcome: 'failed' as const,
+      error: { code: 'SYNTHETIC_PROCESS_EXIT', message: 'Task-owned provider exited.', retryable: false } }
+    vi.spyOn(f.provider, 'createSession').mockImplementation(async (input) => {
+      const session = await create(input)
+      if (input.kind !== 'operator' && input.request.workflowNodeId === failing) failedSession = session.nativeSessionId
+      return session
+    })
+    vi.spyOn(f.provider, 'startTurn').mockImplementation(async function* (session, input) {
+      for await (const event of original(session, input)) {
+        if (session.nativeSessionId === failedSession && event.type === 'turn.started') {
+          yield event
+          terminal = { ...event, sequence: event.sequence + 1, type: 'turn.completed',
+            payload: { ...event.payload, turn: { id: event.payload.turnId, status: 'failed', error: { message: result.error.message } } } }
+          yield terminal
+          return
         }
-        const outcome = await onNode(execution.workflowNodeId, input.signal)
-        input.signal.throwIfAborted()
-        const completed = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: session.nativeSessionId,
-          state: 'completed', result: outcome === 'succeeded' ? { outcome, output: { text: execution.workflowNodeId } }
-            : { outcome, error: { code: 'SYNTHETIC_PROCESS_EXIT', message: 'The task-owned process exited.', retryable: false } },
-          finishedAt: new Date().toISOString() })
-        await runs.updateExecution(completed, input.owner)
-        return { state: 'completed' as const, execution: completed, result: completed.result! }
-      },
-      cancelRun: vi.fn(async () => undefined), finishRun: vi.fn(async () => undefined),
-      assertResume: vi.fn(async () => undefined),
-      residentRunIds: () => [], reconcileReviews: async () => undefined,
-      reviewers: { shutdown: async () => undefined },
-    }
-    const engine = new LangGraphWorkflowEngine(runs, workflows, native as unknown as ApprovalExecutionCoordinator,
-      checkpoints.saver, db.directory, locations, undefined, interactions, undefined, { workerParallelism: 2 })
-    return { engine, runs, locations, starts, observations, native }
-  }
-
-  it('acknowledges immediate Stop after a queued v2 launch loses the durable Stop race', async () => {
-    const { f } = await fixture()
-    const entered = deferred(), release = deferred()
-    const r = runtime(async () => 'succeeded')
-    const originalOneShot = r.runs.oneShot.bind(r.runs)
-    let patched = false
-    vi.spyOn(r.runs, 'oneShot').mockImplementation((owner) => {
-      const store = originalOneShot(owner)
-      if (!patched) {
-        patched = true
-        const originalUpdate = store.updateRun.bind(store)
-        vi.spyOn(store, 'updateRun').mockImplementationOnce(async (update) => {
-          entered.resolve()
-          await release.promise
-          return originalUpdate(update)
-        })
+        yield event
       }
-      return store
     })
-    const started = r.engine.start(f.run.id).then(() => undefined, (error: unknown) => error)
-    await entered.promise
-    const access = new PostgresAccessService(db.pool)
-    const issued = await access.issue({ name: 'ENG-03 Stop race Operator', audience: 'operator',
-      grants: [{ actions: ManagementActionSchema.options, scope: { workspaceIds: [f.scope.workspaceId] } }],
-      expiresAt: new Date(Date.now() + 300_000) })
-    const commands = new PostgresCommandCoordinator(db.pool)
-    const managed = new RunManagementService(db.pool, commands, r.runs, r.engine, r.locations)
-    const stopping = managed.stop(issued.principal, 'http', { workspaceId: f.scope.workspaceId, runId: f.run.id, commandId: randomUUID() })
-    await expect.poll(() => r.runs.hasRequestedStop(f.run.id)).toBe(true)
-    release.resolve()
-    expect(await started).toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
-    await expect(stopping).resolves.toMatchObject({ status: 'accepted', replayed: false, processStopped: false })
-    expect((await r.runs.get(f.run.id))?.outcome).toBe('canceled')
-    expect(await r.runs.hasPendingCleanup(f.run.id)).toBe(false)
-    expect(await readCurrentExecutions(r.runs, f.run.id)).toHaveLength(0)
-    expect(r.starts).toHaveLength(0)
-    await r.engine.shutdown()
-  }, 30_000)
+    vi.spyOn(f.provider, 'history').mockImplementation(async (session) =>
+      session.nativeSessionId === failedSession && terminal
+        ? { events: [terminal], pendingInteractions: [], responseDeliveries: [], terminalResult: result }
+        : history(session))
+    await f.engine.start(f.f.run.id).catch(() => undefined)
+    expect((await f.runs.get(f.f.run.id))?.outcome).toBe('failed')
+    expect(await f.runs.hasPendingCleanup(f.f.run.id)).toBe(false)
+    expect(f.provider.counts.starts).toBe(3)
+    expect((await readCurrentExecutions(f.runs, f.f.run.id)).every((item) => item.state === 'completed')).toBe(true)
+  }, 60000)
 
-  it('stops both active branches before any later native dispatch and leaves another Run intact', async () => {
-    const one = await fixture(true), other = await fixture()
-    const entered = deferred(), release = deferred()
-    const active = new Set<string>()
-    const r = runtime(async (node, signal) => {
-      if (node === one.first || node === one.sibling || node === one.queued) {
-        active.add(node)
-        if (active.size === 2) entered.resolve()
-        await Promise.race([release.promise, new Promise<never>((_, reject) => {
-          signal.addEventListener('abort', () => reject(signal.reason), { once: true })
-          if (signal.aborted) reject(signal.reason)
-        })])
-      }
-      return 'succeeded'
+  it('deduplicates Start and reconciliation while native dispatch is active', async () => {
+    const f = await fixture(), entered = deferred(), release = deferred()
+    const original = f.provider.createSession.bind(f.provider)
+    vi.spyOn(f.provider, 'createSession').mockImplementationOnce(async (...args) => {
+      entered.resolve(); await release.promise; return original(...args)
     })
-    const task = r.engine.start(one.f.run.id).catch(() => undefined)
-    await entered.promise
-    await expect.poll(async () => (await db.pool.query(
-      `select count(*)::int as count from harness_executions where run_id=$1 and record->>'state'='queued'`, [one.f.run.id],
-    )).rows[0]?.count).toBe(1)
-    const queued = (await db.pool.query<{ workflow_node_id: string }>(
-      `select workflow_node_id from harness_executions where run_id=$1 and record->>'state'='queued'`, [one.f.run.id],
-    )).rows[0]!.workflow_node_id
-    await r.engine.cancel(one.f.run.id)
-    await task
-    expect((await r.runs.get(one.f.run.id))?.outcome).toBe('canceled')
-    expect(r.starts).not.toContain(queued)
-    expect((await r.runs.get(other.f.run.id))?.executionState).toBe('queued')
-    expect(r.native.cancelRun).toHaveBeenCalledWith(one.f.run.id)
-    await evidence('E03-L01', one.f.run.id, r.runs,
-      { stoppedBranches: 2, queuedNativeStarts: 0, unrelatedRun: 'queued' },
-      { outcome: (await r.runs.get(one.f.run.id))?.outcome, queuedNativeStarts: r.starts.filter((id) => id === queued).length,
-        unrelatedRun: (await r.runs.get(other.f.run.id))?.executionState })
-    await r.engine.cancel(other.f.run.id)
-    release.resolve()
-    await r.engine.shutdown()
-  }, 30_000)
-
-  it('fails the Run when one branch exits abnormally and cancels the active sibling', async () => {
-    const { f, first, sibling } = await fixture()
-    const siblingEntered = deferred()
-    const r = runtime(async (node, signal) => {
-      if (node === sibling) {
-        siblingEntered.resolve()
-        await new Promise<never>((_, reject) => {
-          signal.addEventListener('abort', () => reject(signal.reason), { once: true })
-          if (signal.aborted) reject(signal.reason)
-        })
-      }
-      if (node === first) await siblingEntered.promise
-      return node === first ? 'failed' : 'succeeded'
-    })
-    await expect(r.engine.start(f.run.id)).rejects.toThrow()
-    expect((await r.runs.get(f.run.id))?.outcome).toBe('failed')
-    expect(r.starts.filter((id) => id === sibling)).toHaveLength(1)
-    expect(r.native.cancelRun).toHaveBeenCalledWith(f.run.id)
-    await evidence('E03-L02', f.run.id, r.runs, { outcome: 'failed', siblingCanceled: true },
-      { outcome: (await r.runs.get(f.run.id))?.outcome, siblingNativeStarts: r.starts.filter((id) => id === sibling).length,
-        siblingOutcome: (await readCurrentExecutions(r.runs, f.run.id)).find((item) => item.workflowNodeId === sibling)?.result?.outcome })
-    await r.engine.shutdown()
-  }, 30_000)
-
-  it('deduplicates Start and reconcile while both branches are active', async () => {
-    const { f, first, sibling } = await fixture()
-    const entered = deferred(), release = deferred(), active = new Set<string>()
-    const r = runtime(async (node) => {
-      if (node === first || node === sibling) {
-        active.add(node)
-        if (active.size === 2) entered.resolve()
-        await release.promise
-      }
-      return 'succeeded'
-    })
-    const task = r.engine.start(f.run.id)
-    await entered.promise
-    expect(r.engine.start(f.run.id)).toBe(task)
-    await r.engine.reconcile()
-    release.resolve()
-    await task
-    expect(r.starts).toHaveLength(3)
-    expect(new Set(r.starts).size).toBe(3)
-    expect((await r.runs.get(f.run.id))?.outcome).toBe('succeeded')
-    await evidence('E03-L03', f.run.id, r.runs, { nativeStarts: 3, uniqueStarts: 3 },
-      { nativeStarts: r.starts.length, uniqueStarts: new Set(r.starts).size })
-    await delay(1)
-    await r.engine.shutdown()
-  }, 30_000)
-
-  it('reconciles an unfinished exact session after one sibling was accepted without another native start', async () => {
-    const { f, entry, first, sibling } = await fixture()
-    const held = await ownedAgent3(db.pool, f)
-    let unfinishedId: string
+    const task = f.engine.start(f.f.run.id)
     try {
-      await held.store.updateRun({ executionState: 'running', outcome: 'pending', startedAt: new Date().toISOString() })
-      const admittedEntry = await held.store.admit(entry, () => candidateFor(f, entry))
-      if (admittedEntry.kind !== 'admitted') throw new Error('Entry was not admitted')
-      await terminalAgent3(db.pool, held.store, f, admittedEntry.execution)
-      await held.store.acceptTerminal(admittedEntry.execution.id)
-      const accepted = await held.store.admit(first, () => candidateFor(f, first))
-      if (accepted.kind !== 'admitted') throw new Error('First branch was not admitted')
-      await terminalAgent3(db.pool, held.store, f, accepted.execution, { accepted: 'first' })
-      await held.store.acceptTerminal(accepted.execution.id)
-      const unfinished = await held.store.admit(sibling, () => candidateFor(f, sibling))
-      if (unfinished.kind !== 'admitted') throw new Error('Sibling was not admitted')
-      unfinishedId = unfinished.execution.id
-      await held.store.claimLaunch(unfinishedId, { workingDirectory: db.directory,
-        runtimeDirectory: resolveExecutionDirectory(db.directory, f.run.id, sibling, 1, f.scope.workspaceId) })
-      await new PostgresInteractionCoordinationRepository(db.pool).bindWorkflowSession(unfinishedId,
-        { harness: 'codex', providerVersion: 'exact-before-restart', nativeSessionId: `native-${unfinishedId}` })
-    } finally { await held.owner.release() }
-    const r = runtime(async () => 'succeeded')
-    await r.engine.reconcile()
-    expect(r.starts).toEqual([])
-    expect(r.observations).toEqual([sibling])
-    expect((await r.runs.getExecution(unfinishedId))?.nativeSessionId).toBe(`native-${unfinishedId}`)
-    expect((await r.runs.get(f.run.id))?.outcome).toBe('succeeded')
-    expect((await db.pool.query('select count(*)::int as count from harness_executions where run_id=$1', [f.run.id])).rows[0]?.count).toBe(3)
-    await evidence('E03-L04', f.run.id, r.runs,
-      { acceptedSiblingPreserved: true, replacementNativeStarts: 0, exactSessionId: `native-${unfinishedId}` },
-      { outcome: (await r.runs.get(f.run.id))?.outcome, replacementNativeStarts: r.starts.length,
-        acceptedSiblingOutcome: (await readCurrentExecutions(r.runs, f.run.id)).find((item) => item.workflowNodeId === first)?.result?.outcome,
-        nativeSessionId: (await r.runs.getExecution(unfinishedId))?.nativeSessionId })
-    await r.engine.shutdown()
-  }, 30_000)
+      await entered.promise
+      expect(f.engine.start(f.f.run.id)).toBe(task)
+      await f.engine.reconcile()
+      release.resolve(); await task
+      expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3 })
+      expect(new Set(f.provider.startedNodes).size).toBe(3)
+    } finally { release.resolve(); await task.catch(() => undefined) }
+  }, 60000)
 
-  it('issues an authenticated v2 App credential through the composed runtime and revokes it at Stop', async () => {
-    const { f, entry } = await fixture()
-    const held = await ownedAgent3(db.pool, f)
-    let executionId: string
-    try {
-      await held.store.updateRun({ executionState: 'running', outcome: 'pending', startedAt: new Date().toISOString() })
-      const admitted = await held.store.admit(entry, () => candidateFor(f, entry))
-      if (admitted.kind !== 'admitted') throw new Error('Entry was not admitted')
-      executionId = admitted.execution.id
-      await held.store.claimLaunch(executionId, { workingDirectory: db.directory,
-        runtimeDirectory: resolveExecutionDirectory(db.directory, f.run.id, entry, 1, f.scope.workspaceId) })
-    } finally { await held.owner.release() }
-    const access = new PostgresAccessService(db.pool)
-    const composed = createAppMcpRuntime({ pool: db.pool, access,
-      commands: new PostgresCommandCoordinator(db.pool), interactions: new PostgresInteractionRepository(db.pool),
-      runnerId: 'runner-local', config: { host: '127.0.0.1', port: 3000,
-        harnesses: { codexBinary: '/bin/false', openCodeBinary: '/bin/false', timeoutMs: 30_000 } } as Parameters<typeof createAppMcpRuntime>[0]['config'] })
-    const credentials = Reflect.get(composed.executionCredentials, 'credentials')
-    expect(credentials).toBeInstanceOf(Wave25WorkerCredentialService)
-    const issued = await credentials.issueForExecution(executionId)
-    const token = issued.environment.variables.GRAPHQL_APP_MCP_TOKEN!
-    expect(await access.authenticate(token, 'worker')).toMatchObject({ agentId: f.configurations[0]!.agentId })
-    await credentials.revokeForRun(f.run.id)
-    await expect(access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
-  }, 30_000)
+  it('recovers the exact waiting session after one sibling is accepted without another native start', async () => {
+    const f = await fixture()
+    await f.engine.start(f.f.run.id)
+    const [first, sibling] = await f.pending()
+    if (!first || !sibling) throw new Error('Expected both native waits')
+    await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(first))
+    const accepted = (await readCurrentExecutions(f.runs, f.f.run.id)).find((item) => item.id === first.executionId)!
+    expect(accepted.result?.outcome).toBe('succeeded')
+    const exact = await f.runs.getExecution(sibling.executionId!)
+    await f.engine.shutdown()
+    const next = f.compose()
+    await next.engine.resume(f.f.run.id)
+    const pending = await next.repository.get(sibling.id)
+    if (!pending) throw new Error('Expected persisted sibling interaction')
+    await next.service.respond({ kind: 'user', principal: f.principal }, br1002Response(pending))
+    expect((await next.runs.get(f.f.run.id))?.outcome).toBe('succeeded')
+    expect((await next.runs.getExecution(sibling.executionId!))?.nativeSessionId).toBe(exact?.nativeSessionId)
+    expect((await next.runs.getExecution(first.executionId!))?.result).toEqual(accepted.result)
+    expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3, responses: 2 })
+  }, 60000)
 
-  it('keeps an approval wait isolated while its sibling finishes, then consumes the exact delivered response once', async () => {
-    const { f, first, sibling } = await fixture()
-    const interactions = new Wave25InteractionRepository(db.pool)
-    const budget = new PostgresApprovalBudgetRepository(db.pool)
-    const waiting = deferred(), releasedSibling = deferred()
-    const r = runtime(async (node) => {
-      if (node === sibling) { await waiting.promise; releasedSibling.resolve() }
-      return 'succeeded'
-    }, interactions)
-    const original = r.native.ensureObserve.bind(r.native)
-    let waitingInteractionId = ''
-    const provider = { connectionId: `c-connection-${randomUUID()}`, turnId: `c-turn-${randomUUID()}`,
-      token: `c-writer-${randomUUID()}`, laneId: '' }
-    vi.spyOn(r.native, 'ensureObserve').mockImplementation(async (input) => {
-      if (input.candidate.workflowNodeId !== first) return original(input)
-      const execution = input.candidate
-      if (waitingInteractionId) throw new Error('The waiting native request was reissued')
-      if (!r.runs.consumeOneShotLaunch(execution.id, input.owner)) throw new Error('Expected first native launch')
-      r.starts.push(first)
-      const session = { harness: 'codex' as const, providerVersion: 'synthetic-c', nativeSessionId: `native-${execution.id}` }
-      const lane = await interactions.coordination.ensureLane({ id: `lane-${execution.id}`, harness: session.harness,
-        nativeSessionId: session.nativeSessionId, ownerAgentId: execution.agentId,
-        revision: 0, observedStatus: 'busy', connectionGeneration: 0, observedAt: new Date().toISOString() })
-      provider.laneId = lane.id
-      await interactions.coordination.claimLane(lane.id, lane.revision, 'c-fixture-writer', provider.token,
-        new Date(Date.now() + 120_000).toISOString(), `execution:${execution.id}`)
-      await interactions.coordination.bindWorkflowSession(execution.id, session)
-      const running = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: session.nativeSessionId, state: 'running' })
-      await r.runs.updateExecution(running, input.owner)
-      await budget.ensure(execution.id, f.run.id, 600_000)
-      const request = deliveryFixture().interaction
-      const pending = DurableInteractionSchema.parse({ ...request, id: `interaction-${randomUUID()}`,
-        workspaceId: f.run.workspaceId, workflowId: f.run.workflowId, runId: f.run.id,
-        executionId: execution.id, requestingAgentId: execution.agentId, providerVersion: session.providerVersion,
-        nativeSessionId: session.nativeSessionId,
-        nativeRequestId: `request-${execution.id}`, graphThreadId: f.run.id, approval: { handler: 'user' },
-        request: { threadId: session.nativeSessionId, turnId: provider.turnId, itemId: 'c-approval-item' },
-        revision: 0, status: 'pending', deliveryState: 'not_started', selectedOptionId: undefined,
-        selectedSemantic: undefined, nativeResponse: undefined, decidedAt: undefined,
-        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
-      const created = await interactions.create(pending)
-      waitingInteractionId = created.interaction.id
-      // Seed actual provider-shaped correlation through the production writer.
-      // Terminal results below must not stand in for a missing native ack.
-      await appendWorkflowNativeGraphEvent(input.owner, { executionId: execution.id,
-        connectionId: provider.connectionId, sequence: 0, type: 'turn.started', occurredAt: new Date().toISOString(),
-        payload: { threadId: session.nativeSessionId, turnId: provider.turnId, turn: { id: provider.turnId, status: 'inProgress' } },
-      }, { id: provider.laneId, token: provider.token, providerId: provider.turnId, live: true },
-      { interaction: created.interaction, nativeTurnId: provider.turnId })
-      const waitingExecution = HarnessExecutionSchema.parse({ ...running, state: 'waiting' })
-      await r.runs.updateExecution(waitingExecution, input.owner)
-      await budget.beginWait(execution.id)
-      waiting.resolve()
-      return { state: 'waiting', execution: waitingExecution,
-        interaction: created.interaction, interactions: [created.interaction] }
+  it('authenticates the real launch credential and revokes it at Stop', async () => {
+    const f = await fixture(), tokens: string[] = []
+    const access = new PostgresAccessService(f.db.pool)
+    const original = f.provider.createSession.bind(f.provider)
+    vi.spyOn(f.provider, 'createSession').mockImplementation(async (input) => {
+      const token = input.environment?.variables.GRAPHQL_APP_MCP_TOKEN
+      if (token) {
+        await expect(access.authenticate(token, 'worker')).resolves.toMatchObject({ audience: 'worker' })
+        tokens.push(token)
+      }
+      return original(input)
     })
-    const start = r.engine.start(f.run.id)
-    void start.catch((error: unknown) => waiting.reject(error))
-    await waiting.promise
-    await releasedSibling.promise
-    await start
-    expect((await r.runs.get(f.run.id))?.executionState).toBe('waiting')
-    expect((await readCurrentExecutions(r.runs, f.run.id)).find((item) => item.workflowNodeId === sibling)?.result?.outcome).toBe('succeeded')
-    const pending = (await interactions.get(waitingInteractionId))!
-    expect(pending.graphInterruptId).toBeTruthy()
-    const paused = (await db.pool.query<{ active_started_at: Date | null; approval_wait_started_at: Date | null }>(
-      'select active_started_at,approval_wait_started_at from approval_execution_state where execution_id=$1', [pending.executionId],
-    )).rows[0]!
-    expect(paused.active_started_at).toBeNull()
-    expect(paused.approval_wait_started_at).not.toBeNull()
-    await r.engine.shutdown()
-    expect((await r.runs.get(f.run.id))?.executionState).toBe('waiting')
-    const restarted = runtime(async () => 'succeeded', interactions)
-    vi.spyOn(restarted.native, 'ensureObserve').mockImplementation(async (input) => {
-      expect(input.candidate.workflowNodeId).toBe(first)
-      expect(input.candidate.nativeSessionId).toBe(pending.nativeSessionId)
-      expect(r.runs.consumeOneShotLaunch(input.candidate.id, input.owner)).toBe(false)
-      const current = await interactions.get(pending.id)
-      expect(current?.deliveryState).toBe('delivered')
-      await budget.resume(input.candidate.id)
-      // The engine already committed graph.resume with the real saver. Only
-      // matching terminal history + delivery evidence can settle the Worker ack.
-      const session = { harness: pending.harness, providerVersion: pending.providerVersion, nativeSessionId: pending.nativeSessionId }
-      await appendWorkflowNativeGraphEvent(input.owner, { executionId: input.candidate.id,
-        connectionId: provider.connectionId, sequence: 1, type: 'turn.completed', occurredAt: new Date().toISOString(),
-        payload: { threadId: pending.nativeSessionId, turnId: provider.turnId, turn: { id: provider.turnId, status: 'completed' } },
-      }, { id: provider.laneId, token: provider.token, providerId: provider.turnId, live: false }, undefined,
-      { session, providerId: provider.turnId, correlationId: `execution:${input.candidate.id}`, responseDeliveries: [{
-        ...session, source: 'provider_acknowledgement', nativeRequestId: current!.nativeRequestId,
-        nativeRequestType: current!.nativeRequestType, optionId: 'approve-once', semantic: 'approve_once',
-      }] })
-      const completed = HarnessExecutionSchema.parse({ ...input.candidate, state: 'completed',
-        result: { outcome: 'succeeded', output: { approved: true } }, finishedAt: new Date().toISOString() })
-      await restarted.runs.updateExecution(completed, input.owner)
-      await budget.finish(completed.id, completed.finishedAt)
-      return { state: 'completed', execution: completed, result: completed.result! }
-    })
-    await restarted.engine.reconcile()
-    expect((await restarted.runs.get(f.run.id))?.executionState).toBe('waiting')
-    const access = new PostgresAccessService(db.pool)
-    const user = await access.issue({ name: 'C exact responder', audience: 'user',
-      expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['interactions:read', 'interactions:respond'],
-        scope: { workspaceIds: [f.run.workspaceId], workflowIds: [f.run.workflowId], runIds: [f.run.id] } }] })
-    const denied = await access.issue({ name: 'Wrong handler', audience: 'operator',
-      expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['interactions:respond'], scope: { runIds: [f.run.id] } }] })
-    await expect(interactions.decide({ id: pending.id, optionId: 'approve-once', expectedRevision: pending.revision,
-      principal: denied.principal, nativeResponse: { optionId: 'approve-once', semantic: 'approve_once' } }))
-      .rejects.toMatchObject({ code: 'INTERACTION_ACCESS_DENIED' })
-    const wrongRun = await access.issue({ name: 'Wrong Run', audience: 'user',
-      expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['interactions:respond'],
-        scope: { runIds: [`other-${f.run.id}`] } }] })
-    await expect(interactions.decide({ id: pending.id, optionId: 'approve-once', expectedRevision: pending.revision,
-      principal: wrongRun.principal, nativeResponse: { optionId: 'approve-once', semantic: 'approve_once' } }))
-      .rejects.toMatchObject({ code: 'INTERACTION_ACCESS_DENIED' })
-    await expect(interactions.create(DurableInteractionSchema.parse({ ...pending,
-      id: `interaction-${randomUUID()}`, revision: 0, graphInterruptId: undefined,
-      nativeSessionId: `other-${pending.nativeSessionId}` })))
-      .rejects.toMatchObject({ code: 'APPROVAL_REQUESTER_MISMATCH' })
-    const respond = () => interactions.decide({ id: pending.id, optionId: 'approve-once', expectedRevision: pending.revision,
-      principal: user.principal, nativeResponse: { optionId: 'approve-once', semantic: 'approve_once' } })
-    const [decision, replay] = await Promise.all([respond(), respond()])
-    expect([decision.replayed, replay.replayed].sort()).toEqual([false, true])
-    const claim = await interactions.delivery.claim(pending.id, 'c-delivery')
-    expect(claim?.mode).toBe('submit')
-    const delivered = await interactions.delivery.finish(claim!, async () => ({ state: 'delivered', evidence: {
-      source: 'provider_acknowledgement', harness: pending.harness, providerVersion: pending.providerVersion,
-      nativeSessionId: pending.nativeSessionId, nativeRequestId: pending.nativeRequestId,
-      nativeRequestType: pending.nativeRequestType, optionId: 'approve-once', semantic: 'approve_once',
-    } }))
-    expect(delivered.deliveryState).toBe('delivered')
-    expect(await interactions.delivery.claim(pending.id, 'c-duplicate')).toBeUndefined()
-    await restarted.engine.resumeInteraction(delivered)
-    expect((await restarted.runs.get(f.run.id))?.outcome).toBe('succeeded')
-    expect(r.starts.filter((node) => node === first)).toHaveLength(1)
-    expect(restarted.starts).toEqual([])
-    expect((await db.pool.query("select count(*)::int as count from run_graph_effects where run_id=$1 and effect_kind='approval.decide'", [f.run.id])).rows[0]?.count).toBe(1)
-    await evidence('E03-A01', f.run.id, restarted.runs,
-      { siblingAcceptedBeforeDecision: true, decisionEffects: 1, waitingSessionReused: pending.nativeSessionId },
-      { outcome: (await restarted.runs.get(f.run.id))?.outcome, resumedNativeStarts: restarted.starts.length,
-        decisionEffects: (await db.pool.query<{ count: number }>(
-          "select count(*)::int as count from run_graph_effects where run_id=$1 and effect_kind='approval.decide'", [f.run.id],
-        )).rows[0]?.count,
-        waitingSessionId: (await restarted.runs.getExecution(pending.executionId))?.nativeSessionId })
-    await restarted.engine.shutdown()
-  }, 30_000)
+    await f.engine.start(f.f.run.id)
+    expect(tokens).toHaveLength(3)
+    await f.stop(); await f.engine.cancel(f.f.run.id)
+    await expect(access.authenticate(tokens[1]!, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+  }, 60000)
+
+  it('isolates a waiting branch while its sibling finishes and consumes each exact response once', async () => {
+    const f = await fixture(), { compare } = await graphParity(f.db.pool, f.f.scope)
+    await f.engine.start(f.f.run.id)
+    const [first, sibling] = await f.pending()
+    if (!first || !sibling) throw new Error('Expected parallel native requests')
+    await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(first))
+    expect((await compare()).state.run.pendingInteractionCount).toBe(1)
+    expect((await f.repository.get(sibling.id))?.status).toBe('pending')
+    const completed = await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(sibling))
+    expect((await compare()).state.run.outcome).toBe('succeeded')
+    const receipts = await f.receipts()
+    expect(receipts).toHaveLength(2)
+    await f.engine.resumeInteraction(completed.interaction)
+    await compare()
+    expect(await f.receipts()).toEqual(receipts)
+    expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3, responses: 2 })
+  }, 60000)
 })

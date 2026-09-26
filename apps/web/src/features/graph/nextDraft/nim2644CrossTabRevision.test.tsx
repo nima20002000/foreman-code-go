@@ -1,17 +1,17 @@
+import { journalRequest, journalIntent, savedJournal } from './nim2644Journal.fixture'
 import { boardStartClient } from '../../workflow-board/startClient'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createStore } from 'zustand/vanilla'
-import { GraphEditIntentV3Schema, GraphEditReadResultV3Schema,
+import { GraphEditReadResultV3Schema,
   type GraphEditReadResultV3, type GraphEditStageInputV3 } from '@graphql/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
 import { queryKeys } from '../../../shared/api/query'
 import { useGraphDraftStore } from '../store'
 import { NextDraftEditor } from './NextDraftEditor'
-import { draftOperations } from './model'
 import { acknowledgeEditIntentSnapshot } from './useGraphEditIntent'
 import { acknowledgeEditOutbox, readEditOutbox, reserveEditOutbox, storeEditSnapshot, type EditIntentOutbox } from './editIntentStorage'
 import { newNextDraft, nextDraftKey, type NextDraftEdit } from './state'
@@ -21,6 +21,20 @@ import { repairFixture } from './nim2644State.cases'
 // Mounted Query/Zustand transport regression. It models two browser tabs with
 // separate Zustand stores/session snapshot IDs and shared protected localStorage.
 // It is not authenticated HTTP, PostgreSQL, native Run, or browser-provider evidence.
+vi.mock('../../workflow-board/context', () => ({ useWorkflowBoard: () => ({ activeRuns: 1 }) }))
+vi.mock('../../../shared/api/settingsExperience', () => ({ useBrowserAccessQuery: () => ({ data: {
+  principal: { expiresAt: '2099-01-01T00:00:00Z', grants: [{ actions: ['runs:start'], scope: {} }] },
+} }) }))
+vi.mock('../../workflow-board/startPreflight', async (original) => ({
+  ...await original<typeof import('../../workflow-board/startPreflight')>(),
+  useBoardStartPreflight: (draft: ReturnType<typeof repairFixture>['draft']) => ({ data: {
+    workflow: { workflow: draft.graph, revision: draft.revision, currentVersionId: draft.baseWorkflowVersionId },
+    workspace: { locationRevision: 1, locationValidation: { status: 'ready' } },
+    capabilities: { runtimeAdmission: true, persistedReadback: true },
+    version: { id: draft.baseWorkflowVersionId, definition: draft.graph,
+      agentConfigurationVersionIds: Object.fromEntries(draft.graph.nodes.map(({ agentId }) => [agentId, `configuration-${agentId}`])) },
+  } }),
+}))
 vi.mock('./DraftCanvas', () => ({ DraftCanvas: () => <div>Canvas fixture</div> }))
 vi.mock('../../../shared/api/query', async (original) => {
   const { DEFAULT_HARNESS_DEFAULTS } = await import('@graphql/contracts')
@@ -35,10 +49,14 @@ vi.mock('../../../shared/api/query', async (original) => {
 const key = nextDraftKey('workspace', 'workflow')
 const tabKey = protectedKey('ui', 'graph-edit-intent:tab')
 const now = '2026-09-24T00:00:00Z'
-const hash = 'sha256:' + '7'.repeat(64)
 const clients: QueryClient[] = []
 const edit = () => useGraphDraftStore.getState().nextDrafts[key]!
 const saveButton = () => screen.getByRole('button', { name: /^Save changes$/ })
+async function saveWithStop(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(saveButton())
+  await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Stop runs and save' }))
+}
+
 
 function inTab<T>(id: string, work: () => T): T {
   const previous = sessionStorage.getItem(tabKey)
@@ -58,41 +76,14 @@ function mark(current: NextDraftEdit, value: string): NextDraftEdit {
   return { ...current, graph: { ...current.graph, nodes: current.graph.nodes.map((node, index) => index ? node : { ...node, initialPrompt: value }) } }
 }
 function outbox(current: NextDraftEdit, commandId: string): EditIntentOutbox {
-  const { draft } = current.context
-  return { request: { action: 'stage_edits', workspaceId: draft.workspaceId, workflowId: draft.workflowId,
-    draftId: draft.id, commandId, expectedRevision: draft.revision,
-    expectedWorkflowVersionId: draft.baseWorkflowVersionId, executionSemanticsVersion: 3,
-    operations: draftOperations(current.context, current.graph, current.agentEdits) },
-  target: current.graph, ...(current.agentEdits ? { agentTarget: current.agentEdits } : {}) }
+  return { request: journalRequest(current, commandId), target: current.graph,
+    ...(current.agentEdits ? { agentTarget: current.agentEdits } : {}) }
 }
 function savedRead(current: NextDraftEdit, submitted: EditIntentOutbox): GraphEditReadResultV3 {
-  const request = submitted.request
-  const stagedDraft = { ...current.context.draft, graph: submitted.target,
-    stagedAgents: Object.values(submitted.agentTarget ?? {}).map((agent) => ({
-      agent: { ...agent, prompt: agent.prompt ?? {}, assignedSkills: agent.assignedSkills ?? [] }, baseRevision: null,
-    })) }
-  const graph = { ...submitted.target, version: 6 }
-  const revision = request.expectedRevision + 1
-  const intent = GraphEditIntentV3Schema.parse({ id: `intent-${request.commandId}`, ownerPrincipalId: 'fixture',
-    workspaceId: request.workspaceId, workflowId: request.workflowId, draftId: request.draftId,
-    stageCommandId: request.commandId, stageInputHash: hash,
-    advanceCommandId: `advance-${request.commandId}`, advanceInputHash: hash,
-    discardCommandId: `discard-${request.commandId}`, discardInputHash: hash,
-    expectedRevision: request.expectedRevision, expectedWorkflowVersionId: request.expectedWorkflowVersionId,
-    savedWorkflowRevision: 1, stagedDraft, agentPins: [], affected: [], stops: [],
-    saveInput: { workspaceId: request.workspaceId, workflowId: request.workflowId, draftId: request.draftId,
-      commandId: `save-${request.commandId}`, expectedRevision: request.expectedRevision, executionSemanticsVersion: 3 },
-    saveInputHash: hash, state: 'saved', saveAttempted: true, createdAt: now, updatedAt: now,
-    result: { draft: { ...stagedDraft, graph, revision, publishedRevision: revision,
-      baseWorkflowVersionId: 'version-6', stagedAgents: [], sourceAgentPins: [] },
-    agents: current.context.agents,
-    version: { id: 'version-6', workspaceId: request.workspaceId, workflowId: request.workflowId, version: 6,
-      executionSemanticsVersion: 3, definition: graph, entryNodeId: graph.entryNodeId, approval: graph.approval,
-      agentConfigurationVersionIds: Object.fromEntries(graph.nodes.map((node) => [node.agentId,
-        current.context.agents.find((item) => item.agent.id === node.agentId)!.agent.configurationVersionId])),
-      contentHash: hash, createdAt: now } } })
-  return GraphEditReadResultV3Schema.parse({ intent, current: [], canStop: false, affectedSetChanged: false })
+  return GraphEditReadResultV3Schema.parse({ intent: savedJournal(journalIntent(submitted.request, current.context), 6),
+    current: [], canStop: false, affectedSetChanged: false })
 }
+
 function stagedRead(request: GraphEditStageInputV3): GraphEditReadResultV3 {
   const retained = readEditOutbox(key)!
   const context = edit().context
@@ -100,18 +91,7 @@ function stagedRead(request: GraphEditStageInputV3): GraphEditReadResultV3 {
   const pin = { workspaceId: request.workspaceId, workflowId: request.workflowId, runId: 'run-correction',
     workflowVersionId: context.draft.baseWorkflowVersionId!, executionSemanticsVersion: 3 as const,
     agentConfigurationVersionIds: { 'agent-0': 'configuration-agent-0' } }
-  const intent = GraphEditIntentV3Schema.parse({ id: `intent-${request.commandId}`, ownerPrincipalId: 'fixture',
-    workspaceId: request.workspaceId, workflowId: request.workflowId, draftId: request.draftId,
-    stageCommandId: request.commandId, stageInputHash: hash,
-    advanceCommandId: `advance-${request.commandId}`, advanceInputHash: hash,
-    discardCommandId: `discard-${request.commandId}`, discardInputHash: hash,
-    expectedRevision: request.expectedRevision, expectedWorkflowVersionId: request.expectedWorkflowVersionId,
-    savedWorkflowRevision: 1, stagedDraft: { ...context.draft, graph: retained.target, stagedAgents: [] },
-    agentPins: [], affected: [pin], stops: [{ input: { workspaceId: request.workspaceId, runId: pin.runId,
-      commandId: `stop-${request.commandId}` }, inputHash: hash }],
-    saveInput: { workspaceId: request.workspaceId, workflowId: request.workflowId, draftId: request.draftId,
-      commandId: `save-${request.commandId}`, expectedRevision: request.expectedRevision, executionSemanticsVersion: 3 },
-    saveInputHash: hash, state: 'staged', saveAttempted: false, createdAt: now, updatedAt: now })
+  const intent = journalIntent(request, context, [pin])
   return GraphEditReadResultV3Schema.parse({ intent, canStop: true, affectedSetChanged: false,
     current: [{ pin, terminal: false, settled: false, outcome: 'pending', cleanupPending: false,
       nativePending: true, interactionPending: false, reviewPending: false }] })
@@ -128,6 +108,12 @@ beforeEach(() => {
   useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); sessionStorage.clear()
   sessionStorage.setItem(tabKey, 'B')
   vi.stubGlobal('navigator', { ...navigator, locks: { request: async (_name: string, work: () => Promise<unknown>) => work() } })
+  vi.spyOn(nextDraftApi, 'pins').mockImplementation(async (_workspaceId, graph, _stagedAgents, agents) => ({
+    expectedAgentConfigurationVersionIds: Object.fromEntries(graph.nodes.flatMap(({ agentId }) => {
+      const pin = agents?.find((item) => item.agent.id === agentId)?.agent.configurationVersionId
+      return pin ? [[agentId, pin]] : []
+    })), expectedLocationRevision: 1, agents: agents ?? [],
+  }))
   vi.spyOn(boardStartClient, 'start').mockRejectedValue(new Error('This regression must not Start a Run'))
 })
 afterEach(() => {
@@ -148,7 +134,7 @@ describe('NIM-2644 typed-board cross-tab stale revision fence', () => {
     const savedA = savedRead(a, aBox)
     inTab('A', () => acknowledgeEditOutbox(key, aBox.request.commandId))
 
-    vi.spyOn(nextDraftApi, 'context').mockResolvedValue({ draft: savedA.intent!.result!.draft, agents: savedA.intent!.result!.agents })
+    vi.spyOn(nextDraftApi, 'context').mockResolvedValue({ draft: { ...base.draft, graph: savedA.intent!.result!.version.definition, revision: 11, publishedRevision: 11, baseWorkflowVersionId: 'version-6' }, agents: base.agents })
     vi.spyOn(nextDraftApi, 'editRead').mockResolvedValue(savedA)
     const stage = vi.spyOn(nextDraftApi, 'editStage').mockImplementation(async (request) => {
       if (request.expectedRevision === 10) throw new ApiError({ code: 'REVISION_CONFLICT', message: 'Draft is now revision 11' }, 409)
@@ -167,7 +153,7 @@ describe('NIM-2644 typed-board cross-tab stale revision fence', () => {
     expect(edit().context.draft.revision).toBe(10)
     expect(edit().graph.nodes[0]?.initialPrompt).toBe('marker B')
 
-    await user.click(saveButton())
+    await saveWithStop(user)
     await waitFor(() => expect(stage).toHaveBeenCalledOnce())
     expect(stage.mock.calls[0]![0].expectedRevision).toBe(10)
     expect(advance).not.toHaveBeenCalled()
@@ -186,7 +172,7 @@ describe('NIM-2644 typed-board cross-tab stale revision fence', () => {
     expect(edit().graph.nodes[0]?.initialPrompt).toBe('marker A')
 
     act(() => useGraphDraftStore.getState().updateNextDraft(key, (current) => mark(current, 'marker B corrected')))
-    await user.click(saveButton())
+    await saveWithStop(user)
     await waitFor(() => expect(stage).toHaveBeenCalledTimes(2))
     expect(stage.mock.calls[1]![0].expectedRevision).toBe(11)
     await waitFor(() => expect(advance).toHaveBeenCalledOnce())

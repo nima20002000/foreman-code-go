@@ -1,7 +1,8 @@
+import { journalRequest, journalIntent, savedJournal } from './nim2644Journal.fixture'
 import assert from 'node:assert/strict'
 import { createStore } from 'zustand/vanilla'
 import type { Agent } from '@graphql/contracts'
-import { GraphEditIntentV3Schema, sameExecutableWorkflow, type GraphEditIntentV3 } from '@graphql/contracts/wave25'
+import { sameExecutableWorkflow, type GraphEditIntentV3 } from '@graphql/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
 import { protectedKey, rotateProtectedSession } from '../../../shared/api/protectedChatStorage'
 import { acknowledgeEditIntentSnapshot } from './useGraphEditIntent'
@@ -9,14 +10,14 @@ import { acknowledgeEditOutbox, clearEditIntentStorage, editSnapshotAcknowledged
   matchesEditIntent, readEditOutbox, readEditSnapshot, readEditSubmission, rejectEditOutbox, reserveEditOutbox,
   storeEditSnapshot, type EditIntentOutbox } from './editIntentStorage'
 import { newNextDraft, nextDraftDirty, nextDraftKey, type NextDraftEdit } from './state'
-import { draftOperations, removeNode } from './model'
+import { removeNode } from './model'
 import { editorAgents } from './agentEdits'
 import { repairFixture } from './nim2644State.cases'
 
 // Two independent Zustand form stores and tab snapshot IDs, sharing only the
 // storage outbox/submission journal. Ordered synchronous cuts model suspended
 // tabs; this is not a live browser, authenticated API, or native Stop test.
-const key = nextDraftKey('workspace', 'workflow'), now = '2026-09-24T00:00:00Z', hash = 'sha256:' + '1'.repeat(64)
+const key = nextDraftKey('workspace', 'workflow'), now = '2026-09-24T00:00:00Z'
 export function inFollowupTab<T>(id: string, work: () => T): T {
   const name = protectedKey('ui', 'graph-edit-intent:tab'), previous = sessionStorage.getItem(name)
   sessionStorage.setItem(name, id)
@@ -43,40 +44,14 @@ function tab(id: string, initial: NextDraftEdit) {
   return { id, store, run, persist, change, readback, reopen, get: () => store.getState().edit }
 }
 function submission(edit: NextDraftEdit, commandId = 'stage-original'): EditIntentOutbox {
-  const { draft } = edit.context
-  return { request: { action: 'stage_edits', workspaceId: draft.workspaceId, workflowId: draft.workflowId,
-    draftId: draft.id, expectedRevision: draft.revision, expectedWorkflowVersionId: draft.baseWorkflowVersionId,
-    commandId, executionSemanticsVersion: 3, operations: draftOperations(edit.context, edit.graph, edit.agentEdits) },
-  target: edit.graph, ...(edit.agentEdits ? { agentTarget: edit.agentEdits } : {}) }
+  return { request: journalRequest(edit, commandId), target: edit.graph,
+    ...(edit.agentEdits ? { agentTarget: edit.agentEdits } : {}) }
 }
 function terminal(edit: NextDraftEdit, outbox: EditIntentOutbox, state: 'saved' | 'discarded'): GraphEditIntentV3 {
-  const { request, target, agentTarget } = outbox
-  const stagedAgents = Object.values(agentTarget ?? {}).map((agent) => ({
-    agent: { ...agent, prompt: agent.prompt ?? {}, assignedSkills: agent.assignedSkills ?? [] },
-    baseRevision: edit.context.agents.find((item) => item.agent.id === agent.id)?.metadataRevision ?? null,
-  }))
-  const stagedDraft = { ...edit.context.draft, graph: target, stagedAgents }
-  const value = { id: `intent-${request.commandId}`, ownerPrincipalId: 'fixture', workspaceId: 'workspace', workflowId: 'workflow',
-    draftId: request.draftId, stageCommandId: request.commandId, stageInputHash: hash, expectedRevision: request.expectedRevision,
-    expectedWorkflowVersionId: request.expectedWorkflowVersionId, savedWorkflowRevision: 1,
-    advanceCommandId: `advance-${request.commandId}`, advanceInputHash: hash,
-    discardCommandId: `discard-${request.commandId}`, discardInputHash: hash,
-    saveInput: { workspaceId: 'workspace', workflowId: 'workflow', draftId: request.draftId,
-      commandId: `save-${request.commandId}`, expectedRevision: request.expectedRevision, executionSemanticsVersion: 3 },
-    saveInputHash: hash, stagedDraft, agentPins: [], affected: [], stops: [], state, saveAttempted: state === 'saved', createdAt: now, updatedAt: now }
-  if (state === 'discarded') return GraphEditIntentV3Schema.parse(value)
-  const catalog = new Map(edit.context.agents.map((item) => [item.agent.id, item]))
-  for (const { agent, baseRevision } of stagedAgents) catalog.set(agent.id, { metadataRevision: (baseRevision ?? 0) + 1,
-    agent: { ...agent, configurationVersionId: `saved-${agent.id}`, createdAt: now, updatedAt: now } })
-  const graph = { ...target, version: 2 }, revision = request.expectedRevision + 1
-  return GraphEditIntentV3Schema.parse({ ...value, result: {
-    draft: { ...stagedDraft, graph, revision, publishedRevision: revision, baseWorkflowVersionId: 'version-2', stagedAgents: [], sourceAgentPins: [] },
-    agents: [...catalog.values()], version: { id: 'version-2', workspaceId: 'workspace', workflowId: 'workflow', version: 2,
-      executionSemanticsVersion: 3, definition: graph, entryNodeId: graph.entryNodeId, approval: graph.approval,
-      agentConfigurationVersionIds: Object.fromEntries(graph.nodes.map((node) => [node.agentId, catalog.get(node.agentId)!.agent.configurationVersionId])),
-      contentHash: hash, createdAt: now },
-  } })
+  const intent = journalIntent(outbox.request, edit.context)
+  return state === 'saved' ? savedJournal(intent) : { ...intent, state }
 }
+
 function newWorker(): NextDraftEdit {
   const edit = newNextDraft(repairFixture(1), 'new-worker')
   const agent: Agent = { id: 'local-worker', name: 'New Worker', role: 'Coder', productRole: 'coder', harness: 'codex',
@@ -134,7 +109,7 @@ export const nim2644FollowupCases: { name: string; run: () => void }[] = [
   { name: 'FE-002 A saves first; independent B clears raw new Worker after A consumes shared outbox', run() {
     const edit = newWorker(), a = tab('A', edit), b = tab('B', edit), outbox = submission(edit), saved = terminal(edit, outbox, 'saved')
     assert.notEqual(a.store, b.store); assert.notEqual(a.get().agentEdits, b.get().agentEdits)
-    assert.notDeepEqual(saved.stagedDraft.stagedAgents[0]!.agent, edit.agentEdits!['local-worker'])
+    assert.notDeepEqual(saved.stagedDraft.stagedAgents![0]!.agent, edit.agentEdits!['local-worker'])
     reserve(a, outbox); a.readback(saved)
     assert.equal(readEditOutbox(key), undefined); assert.equal(nextDraftDirty(b.get()), true)
     assert.deepEqual(readEditSubmission(key, saved), outbox)
@@ -260,7 +235,7 @@ export const nim2644FollowupCases: { name: string; run: () => void }[] = [
     const edit = newWorker(), a = tab('A', edit), outbox = submission(edit), discarded = terminal(edit, outbox, 'discarded')
     a.readback(discarded); assert.deepEqual(a.get(), edit)
     const saved = terminal(edit, outbox, 'saved')
-    a.change((current) => ({ ...current, agentEdits: { 'local-worker': saved.stagedDraft.stagedAgents[0]!.agent } }))
+    a.change((current) => ({ ...current, agentEdits: { 'local-worker': saved.stagedDraft.stagedAgents![0]!.agent } }))
     const before = structuredClone(a.get().agentEdits)
     a.readback(saved); assert.deepEqual(a.get().agentEdits, before)
   } },

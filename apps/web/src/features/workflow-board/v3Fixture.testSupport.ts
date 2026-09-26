@@ -45,7 +45,7 @@ export function boardV3Fixture(reason: 'early_exit' | 'limit_exit' | 'repeat' = 
     exitExecution: execution, acceptedResultDigest: digest, outcome: reason === 'early_exit' ? 'done' : 'again', reason,
     target: reason === 'repeat' ? { kind: 'next_occurrence', entryNodeId: entry!.id, occurrenceIndex: 2 } : { kind: 'branch_end' }, decidedAt: time })
   const state = RepeatGraphStateV3Schema.parse({ ...emptyBoardRepeatState(),
-    run: { executionState: run.executionState, outcome: run.outcome, stopRequested: false },
+    run: { executionState: run.executionState, outcome: run.outcome, stopRequested: false, cleanupPending: false, unsettledReviewCount: 0, pendingInteractionCount: 0 },
     occurrences: [occurrence], decisions: [decision], executions, results: [{ execution, resultDigest: digest }] })
   const current = RepeatGraphCurrentV3Schema.parse({ protocolVersion: 1, kind: 'current', scope,
     topology: repeatGraphTopologyV3(version), state, asOfSequence: '3', retentionFloor: '0', historyCoverage: 'from_admission' })

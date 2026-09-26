@@ -1,3 +1,4 @@
+import { journalRequest, journalIntent } from './nim2644Journal.fixture'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inFollowupTab, nim2644FollowupCases } from './nim2644Followup.cases'
 
@@ -5,7 +6,6 @@ import { protectedKey } from '../../../shared/api/protectedChatStorage'
 import { repairFixture } from './nim2644State.cases'
 import { newNextDraft, nextDraftKey } from './state'
 import { removeNode } from './model'
-import { GraphEditIntentV3Schema } from '@graphql/contracts/wave25'
 import { acknowledgeEditIntentSnapshot } from './useGraphEditIntent'
 import { acknowledgeEditOutbox, editSnapshotAcknowledged, readEditOutbox, readEditSnapshot, readEditSubmission,
   reserveEditOutbox, storeEditSnapshot, type EditIntentOutbox } from './editIntentStorage'
@@ -23,17 +23,9 @@ const scope = nextDraftKey('workspace', 'workflow')
 function retainedDiscard() {
   const current = newNextDraft(repairFixture(3), 'storage-cut')
   current.graph = removeNode(current.graph, 'node-2')
-  const outbox: EditIntentOutbox = { request: { action: 'stage_edits', workspaceId: 'workspace', workflowId: 'workflow',
-    draftId: 'draft', expectedRevision: 7, expectedWorkflowVersionId: 'version-1', commandId: 'stage-storage',
-    executionSemanticsVersion: 3, operations: [{ type: 'node.remove', nodeId: 'node-2' }] }, target: current.graph }
-  const hash = 'sha256:' + '2'.repeat(64)
-  const intent = GraphEditIntentV3Schema.parse({ id: 'intent-storage', ownerPrincipalId: 'fixture', workspaceId: 'workspace', workflowId: 'workflow',
-    draftId: 'draft', expectedRevision: 7, expectedWorkflowVersionId: 'version-1', savedWorkflowRevision: 1,
-    stageCommandId: 'stage-storage', stageInputHash: hash, advanceCommandId: 'advance-storage', advanceInputHash: hash,
-    discardCommandId: 'discard-storage', discardInputHash: hash,
-    saveInput: { workspaceId: 'workspace', workflowId: 'workflow', draftId: 'draft', expectedRevision: 7, commandId: 'save-storage', executionSemanticsVersion: 3 },
-    saveInputHash: hash, stagedDraft: { ...current.context.draft, graph: current.graph }, agentPins: [], affected: [], stops: [],
-    state: 'discarded', saveAttempted: false, createdAt: '2026-09-24T00:00:00Z', updatedAt: '2026-09-24T00:00:00Z' })
+  const outbox: EditIntentOutbox = { request: journalRequest(current, 'stage-storage'), target: current.graph }
+  const intent = { ...journalIntent(outbox.request, current.context), state: 'discarded' as const }
+
   storeEditSnapshot(scope, current)
   return { current, outbox, intent }
 }
