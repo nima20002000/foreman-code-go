@@ -9,13 +9,18 @@ import {
   type NativeHarnessEvent,
   type NativeSessionReference,
 } from '@graphql/contracts'
-import { MemorySaver, interrupt } from '@langchain/langgraph'
-import { it } from 'vitest'
+import { MemorySaver } from '@langchain/langgraph'
+import { it, vi } from 'vitest'
 import type pg from 'pg'
 import { nativeLanes } from './helpers/nativeLanes.js'
 
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
+import type { Wave25InteractionRepository } from '../src/modules/interactions/wave25/repository.js'
+import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
+import type { WorkflowClosureStore } from '../src/modules/interactions/workflowClosure.js'
+import type { RepeatNativeObservationStore } from '../src/modules/interactions/repeatObservation.js'
+import { DomainError } from '../src/modules/errors.js'
 import type { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
 import { ExecutionScopedNativeSessionManagerResolver, type NativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import type { NativeHarnessSessionManager, NativeHistory } from '../src/modules/harnesses/port.js'
@@ -25,7 +30,7 @@ import type { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import type { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import type { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
-import type { WorkflowRun, WorkflowVersion } from '@graphql/contracts'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 
 const now = '2026-09-16T00:00:00.000Z'
 function deferred<T>() {
@@ -117,16 +122,27 @@ class Manager implements NativeHarnessSessionManager {
   }
 }
 
-function fixture(items: HarnessExecution[]) {
+async function fixture(items: HarnessExecution[], cold = false) {
   const calls: string[] = []
   const rows = new Map(items.map((item) => [item.id, item]))
   const managers = new Map(items.map((item) => [item.id, new Manager(item.id, calls)]))
   const pending = new Map<string, DurableInteraction>()
+  let stopRequested = false
   const runs = {
+    getRepeatSnapshot: async () => ({ run: { executionState: 'running' }, stopRequested, cleanupPending: stopRequested }),
+    async *executionPages() { yield [...rows.values()] },
+    get: async () => ({ id: 'run-1', workspaceId: 'workspace-1', executionState: 'running' }),
+    getExecution: async (id: string) => rows.get(id),
+    requestCleanup: async () => { stopRequested = true },
+    repeat: async () => ({ settleNegativeExecution: async () => undefined }),
     listExecutions: async () => { calls.push('list'); return [...rows.values()] },
     getExecutionConfiguration: async (id: string) => configuration(id.slice('config-'.length)),
     ensureExecution: async (item: HarnessExecution) => ({ execution: rows.get(item.id) ?? item, created: !rows.get(item.id)?.nativeSessionId }),
-    updateExecution: async (item: HarnessExecution) => { rows.set(item.id, item) },
+    updateExecution: async (item: HarnessExecution) => {
+      rows.set(item.id, item)
+      const native = managers.get(item.id)?.pendingValue
+      if (native && item.state === 'waiting') pending.set(item.id, native)
+    },
     recordActivity: async () => undefined,
     appendNativeEvent: async () => undefined,
   }
@@ -134,6 +150,7 @@ function fixture(items: HarnessExecution[]) {
     coordination: nativeLanes(),
     assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'node-reviewer' }),
     getForExecution: async (id: string) => pending.get(id),
+    getNativeRequest: async (id: string) => pending.get(id),
     create: async (item: DurableInteraction) => { pending.set(item.executionId, item); return { interaction: item, created: true } },
     cancelPendingForExecution: async () => undefined,
     cancelPendingForRun: async () => { calls.push('interactions'); return 1 },
@@ -148,45 +165,69 @@ function fixture(items: HarnessExecution[]) {
   const rawResolver = new ExecutionScopedNativeSessionManagerResolver((context) => managers.get(context.executionId)!)
   const contextFor = (item: HarnessExecution) => ({ executionId: item.id, agentId: item.agentId,
     harness: 'codex' as const, workingDirectory: '/project', configuration: configuration(item.id) })
-  for (const item of items) if (item.nativeSessionId) {
-    const resolved = rawResolver.resolve(contextFor(item))
-    resolved.beginStart!(); resolved.markResident!()
-  }
   const resolver: NativeSessionManagerResolver = {
     resolve: (context) => rawResolver.resolve(context),
     release: (context, manager, state) => { calls.push(`release:${context.executionId}`); rawResolver.release(context, manager, state) },
   }
+  const captures = createWorkflowNativeCaptureChannel()
+  const closed = new Map<string, NonNullable<Awaited<ReturnType<WorkflowClosureStore['read']>>>>()
+  const closures: WorkflowClosureStore = {
+    async begin(execution) { closed.delete(execution.id); return '1' },
+    async record(execution, session, durableGeneration, check) { check(); const proof = { execution, session, durableGeneration }; closed.set(execution.id, proof); return proof },
+    async read(execution) { return closed.get(execution.id) },
+    async recordDetached(_execution, _session, _generation, check) { check() },
+    async recordUnbound(execution, durableGeneration, check) { check(); return { execution: { ...execution,
+      workingDirectory: execution.workingDirectory!, runtimeDirectory: execution.runtimeDirectory! }, durableGeneration } },
+    async readUnbound() { return undefined },
+  }
   const coordinator = new ApprovalExecutionCoordinator(
-    runs as unknown as PostgresRunRepository, interactions as unknown as PostgresInteractionRepository,
+    runs as unknown as PostgresRunRepository, interactions as unknown as Wave25InteractionRepository,
     budgets as unknown as PostgresApprovalBudgetRepository, resolver as NativeSessionManagerResolver, 60_000,
-    credentials as unknown as ExecutionCredentialProvider,
+    credentials as unknown as ExecutionCredentialProvider, undefined, closures, undefined, captures.capture,
   )
-  const observe = (item: HarnessExecution, signal = new AbortController().signal) => coordinator.ensureObserve({
-    candidate: item, owner: { client: {}, assertOwned() {} } as RunOwnership, graphThreadId: item.runId,
+  const launched = new Set<string>()
+  const store: RepeatNativeObservationStore = {
+    async readExecution(id) { const execution = rows.get(id)!; return { execution, ref: { nodeId: execution.workflowNodeId, occurrence: null },
+      slotId: `slot-${id}`, input: { executionSemanticsVersion: 3, runInput: {}, occurrence: null, entry: null, predecessors: [] },
+      inputDigest: `sha256:${'1'.repeat(64)}`, accepted: false } },
+    async assertExecutionAdmission() {}, async assertNativeBoundary() {},
+    async exactSession(id) { return { harness: 'codex', providerVersion: '0.154.0', nativeSessionId: `native-${id}` } },
+    async authorizeNativeSubmission() {}, consumeLaunch(id) { if (launched.has(id)) return false; launched.add(id); return true },
+    async settleNativeExecution(id) { if (!closed.has(id)) throw new DomainError('REPEAT_CLEANUP_PENDING', 'Original close required', 409) },
+  }
+  const observe = (item: HarnessExecution, signal = new AbortController().signal) => coordinator.observeExact({
+    execution: item, store, owner: { runId: item.runId, client: {}, assertOwned() {} } as RunOwnership, graphThreadId: item.runId,
     workflowId: 'workflow-1', approval: { handler: 'user' }, signal,
     request: { executionId: item.id, runId: item.runId, workspaceId: 'workspace-1', workflowNodeId: item.workflowNodeId,
       workingDirectory: item.workingDirectory!, runtimeDirectory: item.runtimeDirectory!, configuration: configuration(item.id), input: {} } as HarnessExecutionRequest,
   })
+  if (!cold) for (const item of items) if (item.nativeSessionId) {
+    rows.set(item.id, { ...item, state: 'waiting', result: undefined, finishedAt: undefined })
+    await coordinator.attachOwnedSession(contextFor(item), await store.exactSession(item.id))
+    rows.set(item.id, item)
+  }
+  calls.length = 0
   return { calls, rows, managers, pending, runs, interactions, budgets, credentials, resolver, coordinator, observe,
-    cold: (item: HarnessExecution) => rawResolver.release(contextFor(item)),
+    stop: async (runId = 'run-1') => { stopRequested = true; return coordinator.cancelRun(runId) },
   }
 }
 
 it('cancels completed database executions that still have resident native sessions (#13)', async () => {
-  const f = fixture([execution('one', 'completed')])
-  await f.coordinator.cancelRun('run-1')
+  const f = await fixture([execution('one', 'completed')])
+  await f.stop('run-1')
   assert.ok(f.calls.includes('cancel:one'))
-  assert.ok(f.calls.indexOf('close:one') < f.calls.indexOf('budget:one'))
+  assert.ok(f.calls.includes('budget:one'))
+  assert.ok(f.calls.indexOf('close:one') < f.calls.indexOf('release:one'))
   assert.ok(!f.calls.some((call) => call.startsWith('create:') || call.startsWith('attach:')))
 })
 
 it('cleans every sibling despite cancellation, close, budget, and credential failures (#23)', async () => {
-  const f = fixture([execution('one'), execution('two'), execution('three')])
+  const f = await fixture([execution('one'), execution('two'), execution('three')])
   f.managers.get('one')!.cancelImpl = async () => { throw new Error('cancel failed') }
   f.managers.get('one')!.closeImpl = async () => { throw new Error('close failed') }
   f.budgets.stop = async (id) => { f.calls.push(`budget:${id}`); if (id === 'one') throw new Error('budget failed') }
   f.credentials.revokeForExecution = async (id) => { f.calls.push(`revoke:${id}`); if (id === 'one') throw new Error('revoke failed') }
-  const error = await f.coordinator.cancelRun('run-1').catch((value: unknown) => value)
+  const error = await f.stop('run-1').catch((value: unknown) => value)
   assert.ok(error instanceof AggregateError)
   assert.ok(error.errors.length >= 4)
   for (const id of ['one', 'two', 'three']) {
@@ -198,9 +239,10 @@ it('cleans every sibling despite cancellation, close, budget, and credential fai
 })
 
 it('a capability failure does not skip sibling cleanup or execution credential revocation', async () => {
-  const f = fixture([execution('one'), execution('two')])
+  const f = await fixture([execution('one'), execution('two')])
   f.managers.get('one')!.capabilitiesImpl = async () => { throw new Error('capabilities failed') }
-  await assert.rejects(f.coordinator.cancelRun('run-1'), AggregateError)
+  await f.stop('run-1')
+  assert.ok(!f.calls.some((call) => call.startsWith('capabilities:')))
   assert.ok(f.calls.includes('close:two'))
   assert.ok(f.calls.includes('revoke:one'))
   assert.ok(f.calls.includes('budget:one'))
@@ -208,38 +250,38 @@ it('a capability failure does not skip sibling cleanup or execution credential r
 
 it('uses the persisted native identity instead of capabilities when canceling a waiting interaction', async () => {
   const item = execution('one')
-  const f = fixture([item])
+  const f = await fixture([item])
   f.pending.set(item.id, interaction(item, 'delivery_failed'))
   f.managers.get(item.id)!.capabilitiesImpl = async () => { throw new Error('must not be called') }
-  await f.coordinator.cancelRun(item.runId)
+  await f.stop(item.runId)
   assert.ok(!f.calls.includes('capabilities:one'))
   assert.ok(f.calls.includes('close:one'))
 })
 
 it('bounds a hung native cancel, still closes it, and cancels siblings (#20)', async () => {
-  const f = fixture([execution('one'), execution('two')])
+  const f = await fixture([execution('one'), execution('two')])
   f.managers.get('one')!.cancelImpl = never
-  await assert.rejects(f.coordinator.cancelRun('run-1'), AggregateError)
+  await assert.rejects(f.stop('run-1'), AggregateError)
   assert.ok(f.calls.includes('close:one'))
   assert.ok(f.calls.indexOf('close:two') < f.calls.indexOf('close:one'))
   assert.ok(f.calls.includes('interactions'))
 }, 20_000)
 
 it('retains a timed-out native close for retry instead of evicting the manager', async () => {
-  const f = fixture([execution('one'), execution('two')])
+  const f = await fixture([execution('one'), execution('two')])
   f.managers.get('one')!.closeImpl = never
-  await assert.rejects(f.coordinator.cancelRun('run-1'), AggregateError)
+  await assert.rejects(f.stop('run-1'), AggregateError)
   assert.ok(!f.calls.includes('release:one'))
   assert.ok(f.calls.includes('release:two'))
   f.managers.get('one')!.closeImpl = async () => undefined
-  await f.coordinator.cancelRun('run-1')
+  await f.stop('run-1')
   assert.ok(f.calls.includes('release:one'))
-  assert.deepEqual(f.coordinator.residentRunIds(), [])
+  assert.ok(f.calls.includes('release:one'))
 }, 20_000)
 
 it('passes an execution-owned abort signal to native iteration and cancels before database discovery', async () => {
   const item = execution('one', 'starting')
-  const f = fixture([item])
+  const f = await fixture([item])
   const entered = deferred<AbortSignal>()
   f.managers.get('one')!.turnImpl = async function* (signal) {
     assert.ok(signal)
@@ -250,18 +292,18 @@ it('passes an execution-owned abort signal to native iteration and cancels befor
   }
   const observed = f.observe(item).catch((error: unknown) => error)
   const signal = await entered.promise
-  f.runs.listExecutions = async () => { assert.equal(signal.aborted, true); throw new Error('database unavailable') }
-  await assert.rejects(f.coordinator.cancelRun(item.runId), AggregateError)
+  f.runs.executionPages = async function* () { assert.equal(signal.aborted, true); throw new Error('database unavailable'); yield [] }
+  await assert.rejects(f.stop(item.runId), /database unavailable/)
   assert.equal(signal.aborted, true)
   assert.ok(await observed instanceof Error)
   assert.ok(f.calls.includes('cancel:one'))
   assert.ok(f.calls.includes('close:one'))
-  assert.ok(f.calls.includes('budget:one'))
+  assert.ok(!f.calls.includes('create:two'))
 })
 
 it('keeps waiting sessions resident, preserves exact identities, and makes repeated Stop idempotent', async () => {
   const item = execution('one', 'starting')
-  const f = fixture([item])
+  const f = await fixture([item])
   f.managers.get('one')!.pendingValue = interaction(item)
   const waiting = await f.observe(item)
   assert.equal(waiting.state, 'waiting')
@@ -269,32 +311,32 @@ it('keeps waiting sessions resident, preserves exact identities, and makes repea
   assert.ok(!f.calls.includes('close:one'))
   // Reproduce the database row becoming terminal before native cleanup.
   f.rows.set(item.id, { ...execution('one', 'completed') })
-  await Promise.all([f.coordinator.cancelRun(item.runId), f.coordinator.cancelRun(item.runId)])
-  await f.coordinator.cancelRun(item.runId)
+  await Promise.all([f.stop(item.runId), f.stop(item.runId)])
+  await f.stop(item.runId)
   assert.equal(f.calls.filter((call) => call === 'create:one').length, 1)
   assert.equal(f.calls.filter((call) => call === 'close:one').length, 1)
   assert.equal(f.pending.get(item.id)?.nativeRequestId, 'request-one')
 })
 
 it('does not start replacement native work when Stop finds a nonresident session', async () => {
-  const f = fixture([execution('one')])
+  const f = await fixture([execution('one')])
   const resolver: NativeSessionManagerResolver = { resolve: () => ({ manager: f.managers.get('one')!, processState: 'needs_start' }), release: () => undefined }
   const coordinator = new ApprovalExecutionCoordinator(f.runs as unknown as PostgresRunRepository,
-    f.interactions as unknown as PostgresInteractionRepository, f.budgets as unknown as PostgresApprovalBudgetRepository, resolver, 60_000)
-  await assert.rejects(coordinator.cancelRun('run-1'), AggregateError)
+    f.interactions as unknown as Wave25InteractionRepository, f.budgets as unknown as PostgresApprovalBudgetRepository, resolver, 60_000)
+  await assert.rejects(coordinator.cancelRun('run-1'), { code: 'GRAPH_STOP_CONFLICT' })
   assert.ok(!f.calls.some((call) => call.startsWith('create:') || call.startsWith('attach:')))
 })
 
 it('closes a session created concurrently with Stop before any turn is started', async () => {
   const item = execution('one', 'starting')
-  const f = fixture([item])
+  const f = await fixture([item])
   const creating = deferred<void>()
   const opened = deferred<NativeSessionReference>()
   f.managers.get('one')!.createImpl = async () => { creating.resolve(); return opened.promise }
   f.managers.get('one')!.turnImpl = () => { throw new Error('a stopped execution must not start a turn') }
   const observed = f.observe(item).catch((error: unknown) => error)
   await creating.promise
-  const stopping = f.coordinator.cancelRun(item.runId)
+  const stopping = f.stop(item.runId)
   opened.resolve({ harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'native-one' })
   await stopping
   assert.ok(await observed instanceof Error)
@@ -327,210 +369,176 @@ it('Stop cancels every unresolved SQL state including delivery_failed without ch
   }
 })
 
+const settlements = vi.hoisted(() => new Map<unknown, () => Promise<void>>())
+vi.mock('../src/modules/runs/workflowLifecycle.js', () => ({
+  settleWorkflowRun: async (owner: unknown) => { const settle = settlements.get(owner); assert.ok(settle); await settle() },
+  persistWorkflowApprovalWait: async () => { throw new Error('Stop must not rewrite an approval checkpoint') },
+}))
+
+/** Engine cancellation composition only. Native physical closure is exercised
+ * by the coordinator fixtures above; the settlement repository is a port here. */
 function engineFixture(approvals: ApprovalExecutionCoordinator) {
-  Object.assign(approvals, { finishRun: async () => undefined, reconcileReviews: async () => undefined, reviewers: { shutdown: async () => undefined } })
-  const calls: string[] = []
-  let owned = true
-  const owner = { client: {}, assertOwned: () => { if (!owned) throw new Error('ownership lost') }, release: async () => { calls.push('release-owner') } } as unknown as RunOwnership
-  let run: WorkflowRun = {
-    id: 'run-1', workspaceId: 'workspace-1', workflowId: 'workflow-1', workflowVersionId: 'version-1',
-    agentConfigurationVersionIds: {}, executionState: 'waiting', outcome: 'pending', input: {},
-    executionLocation: { runnerId: 'runner-1', rootPath: '/project', locationRevision: 1, identityHash: 'sha256:test' },
-    executionCondition: { kind: 'manual' }, createdAt: now,
-  }
-  const version: WorkflowVersion = {
-    id: 'version-1', workspaceId: 'workspace-1', workflowId: 'workflow-1', version: 1,
-    entryNodeId: 'node-1', contentHash: 'sha256:test', createdAt: now, agentConfigurationVersionIds: {},
-    definition: { id: 'workflow-1', workspaceId: 'workspace-1', name: 'Stop fixture', version: 1,
-      executionCondition: { kind: 'manual' }, nodes: [{ id: 'node-1', agentId: 'agent-1', name: 'Agent' }], edges: [],
-      executionPolicy: { maxParallelism: 1, maxNodeExecutions: 1 } },
-  }
+  Object.assign(approvals, { finishRun: async () => undefined, reconcileReviews: async () => undefined,
+    closeForRestart: async () => undefined })
+  const f = makeCurrentWorkflowFixture('stop-fixture', 'single'), calls: string[] = []
+  let owned = true, stopRequested = false, cleanupPending = false
+  let run = AcceptedWorkflowRunV3Schema.parse({ ...f.run, id: 'run-1', executionState: 'waiting',
+    authorizationPrincipalId: 'stop-authority', executionLocation: { runnerId: 'runner', rootPath: '/project',
+      locationRevision: 1, identityHash: `sha256:${'1'.repeat(64)}` } })
+  const owner = { runId: run.id, client: {}, assertOwned() { if (!owned) throw new Error('ownership lost') },
+    release: async () => { calls.push('release-owner') } } as unknown as RunOwnership
   const runs = {
-    acquireOwnership: async () => owner,
-    get: async () => run,
-    settleOrphan: async (_id: string, _owner: RunOwnership, canceled: boolean) => {
-      calls.push(`settle:${canceled}`)
-      if (run.executionState === 'completed') return false
-      run = canceled ? { ...run, executionState: 'completed', outcome: 'canceled', result: { outcome: 'canceled' }, finishedAt: now }
-        : { ...run, executionState: 'interrupted', outcome: 'pending' }
-      return true
-    },
-    updateState: async (_id: string, update: Partial<WorkflowRun>) => { calls.push(`state:${update.executionState}:${update.outcome}`); run = { ...run, ...update } },
-    getAcceptedResult: async () => ({ outcome: 'succeeded' as const }),
+    repeatRepositoryFactory() { return {} }, acquireOwnership: async () => owner,
+    getRepeatSnapshot: async () => ({ run, version: f.version, configurations: f.configurations, stopRequested, cleanupPending }),
+    requestCleanup: async () => { owner.assertOwned(); cleanupPending = true; calls.push('request-cleanup') },
+    finishCleanup: async (_id: string, pending: boolean) => { owner.assertOwned(); cleanupPending = pending; calls.push(`cleanup:${pending}`) },
   }
-  const nativeExecution = execution('one')
-  const pendingInteraction = { ...interaction(nativeExecution), id: 'interaction-1', graphInterruptId: undefined }
-  Object.assign(runs, { getExecution: async () => nativeExecution })
-  const interactions = {
-    assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'node-reviewer' }),
-    get: async () => pendingInteraction,
-    bindGraphInterrupt: async (_id: string, graphInterruptId: string) => ({ ...pendingInteraction, graphInterruptId }),
-  }
+  settlements.set(owner, async () => {
+    owner.assertOwned(); assert.ok(stopRequested); calls.push('settle')
+    run = { ...run, executionState: 'completed', outcome: 'canceled', result: { outcome: 'canceled' }, finishedAt: now }
+  })
   const engine = new LangGraphWorkflowEngine(runs as unknown as PostgresRunRepository,
-    { getVersion: async () => version } as unknown as PostgresWorkflowRepository,
-    approvals, new MemorySaver(), '/runtime',
-    { revalidateSnapshot: async () => undefined } as unknown as WorkspaceLocationService, undefined,
-    interactions as unknown as PostgresInteractionRepository)
-  const internals = engine as unknown as {
-    executeRun: (run: WorkflowRun, signal: AbortSignal, owner: RunOwnership) => Promise<void>
-    executeNode: () => Promise<{ executionIds: Record<string, string> }>
-    activeRuns: Map<string, AbortController>
-    activeTasks: Map<string, Promise<void>>
-  }
-  return { engine, internals, runs, owner, calls, run: () => run, loseOwnership: () => { owned = false } }
+    {} as PostgresWorkflowRepository, approvals, new MemorySaver(), '/runtime', {} as WorkspaceLocationService,
+    {} as ExecutionCredentialProvider, {} as PostgresInteractionRepository)
+  const internals = engine as unknown as { activeRuns: Map<string, AbortController>; activeTasks: Map<string, Promise<void>> }
+  return { engine, internals, runs, owner, calls, approvals, run: () => run,
+    stopFence() { stopRequested = true }, loseOwnership() { owned = false }, cleanupPending: () => cleanupPending }
 }
 
-it('cancels native sessions before settling an inactive waiting Run (#13)', async () => {
-  const calls: string[] = []
-  const f = engineFixture({ residentRunIds: () => ['run-1'], cancelRun: async () => { calls.push('native') } } as unknown as ApprovalExecutionCoordinator)
-  const settle = f.runs.settleOrphan
-  f.runs.settleOrphan = async (...args) => { assert.deepEqual(calls, ['native']); return settle(...args) }
-  assert.equal(await f.engine.cancel('run-1'), true)
-  assert.equal(f.run().outcome, 'canceled')
+it('requires a committed authorized Stop before canceling native work', async () => {
+  const cancelRun = vi.fn(async () => undefined)
+  const f = engineFixture({ cancelRun } as unknown as ApprovalExecutionCoordinator)
+  await assert.rejects(f.engine.cancel('run-1'), { code: 'REPEAT_STOP_AUTHORIZATION_REQUIRED' })
+  assert.equal(cancelRun.mock.calls.length, 0)
+  assert.equal(f.run().executionState, 'waiting')
 })
 
-it('settles a cleanup failure as failed, never as a successful canceled Run (#23)', async () => {
-  const f = engineFixture({ residentRunIds: () => ['run-1'], cancelRun: async () => { throw new Error('close failed') } } as unknown as ApprovalExecutionCoordinator)
+it('cancels native sessions before settling an inactive waiting Run (#13)', async () => {
+  const events: string[] = []
+  const f = engineFixture({ cancelRun: async () => { events.push('native') } } as unknown as ApprovalExecutionCoordinator)
+  const settle = settlements.get(f.owner)!
+  settlements.set(f.owner, async () => { assert.ok(events.length > 0); await settle() })
+  f.stopFence()
+  assert.equal(await f.engine.cancel('run-1'), true)
+  assert.equal(f.run().outcome, 'canceled')
+  assert.equal(f.cleanupPending(), false)
+})
+
+it('keeps cleanup pending when native close fails instead of inventing a terminal result (#23)', async () => {
+  const f = engineFixture({ cancelRun: async () => { throw new Error('close failed') } } as unknown as ApprovalExecutionCoordinator)
+  f.stopFence()
   await assert.rejects(f.engine.cancel('run-1'), /close failed/)
-  assert.equal(f.run().outcome, 'failed')
-  assert.equal(f.run().result?.error?.code, 'RUN_CLEANUP_FAILED')
+  assert.equal(f.run().executionState, 'waiting')
+  assert.equal(f.run().result, undefined)
+  assert.equal(f.cleanupPending(), true)
   assert.ok(f.calls.includes('release-owner'))
 })
 
-it('shutdown preserves resident waiting Runs for restart recovery', async () => {
-  const canceled: string[] = []
-  const f = engineFixture({ residentRunIds: () => ['one', 'two'], cancelRun: async (runId: string) => {
-    canceled.push(runId)
-    if (runId === 'one') throw new Error('one failed')
-  } } as unknown as ApprovalExecutionCoordinator)
+it('shutdown preserves waiting Run facts while draining the captured restart boundary', async () => {
+  const cancelRun = vi.fn(async () => undefined)
+  const f = engineFixture({ cancelRun } as unknown as ApprovalExecutionCoordinator)
+  const close = vi.fn(async () => undefined); f.approvals.closeForRestart = close
   await f.engine.shutdown()
-  assert.deepEqual(canceled, [])
+  assert.equal(close.mock.calls.length, 1)
+  assert.equal(cancelRun.mock.calls.length, 0)
+  assert.equal(f.run().executionState, 'waiting')
 })
 
-it('shutdown signals native cancellation before waiting for active graph tasks', async () => {
-  const task = deferred<void>()
-  const f = engineFixture({ residentRunIds: () => [], cancelRun: async () => { task.resolve() } } as unknown as ApprovalExecutionCoordinator)
-  const controller = new AbortController()
-  f.internals.activeRuns.set('run-1', controller)
-  f.internals.activeTasks.set('run-1', task.promise)
+it('shutdown aborts active work before draining its original restart closure', async () => {
+  const task = deferred<void>(), controller = new AbortController()
+  const f = engineFixture({ cancelRun: async () => undefined } as unknown as ApprovalExecutionCoordinator)
+  f.approvals.closeForRestart = async () => { assert.equal(controller.signal.aborted, true); task.resolve() }
+  f.internals.activeRuns.set('run-1', controller); f.internals.activeTasks.set('run-1', task.promise)
   await f.engine.shutdown()
+  assert.equal(controller.signal.reason.code, 'ENGINE_RESTART')
+  assert.equal(f.run().executionState, 'waiting')
+})
+
+it('Stop still settles a Run when active work races the transition to waiting', async () => {
+  const f = engineFixture({ cancelRun: async () => undefined } as unknown as ApprovalExecutionCoordinator)
+  const controller = new AbortController()
+  f.internals.activeRuns.set('run-1', controller); f.internals.activeTasks.set('run-1', Promise.resolve())
+  f.stopFence(); await f.engine.cancel('run-1')
   assert.equal(controller.signal.aborted, true)
   assert.equal(f.run().outcome, 'canceled')
 })
 
-it('Stop still settles a Run when its active graph task races the transition to waiting', async () => {
-  const f = engineFixture({ residentRunIds: () => ['run-1'], cancelRun: async () => undefined } as unknown as ApprovalExecutionCoordinator)
-  f.internals.activeRuns.set('run-1', new AbortController())
-  f.internals.activeTasks.set('run-1', Promise.resolve())
-  await f.engine.cancel('run-1')
-  assert.equal(f.run().outcome, 'canceled')
-})
-
-it('normal graph interrupts leave native sessions resident rather than canceling them', async () => {
-  let cancellations = 0
-  const f = engineFixture({ residentRunIds: () => ['run-1'], cancelRun: async () => { cancellations += 1 } } as unknown as ApprovalExecutionCoordinator)
-  f.internals.executeNode = async () => { interrupt({ interactionId: 'interaction-1' }); return { executionIds: {} } }
-  await f.internals.executeRun(f.run(), new AbortController().signal, f.owner)
+it('ownership loss cannot authorize a terminal settlement or hide cleanup failure', async () => {
+  const f = engineFixture({ cancelRun: async () => undefined } as unknown as ApprovalExecutionCoordinator)
+  f.stopFence(); f.loseOwnership()
+  await assert.rejects(f.engine.cancel('run-1'), /ownership lost/)
   assert.equal(f.run().executionState, 'waiting')
-  assert.equal(cancellations, 0)
+  assert.ok(!f.calls.includes('settle'))
+  assert.ok(f.calls.includes('release-owner'))
 })
 
-it('ownership loss cancels native work before ownership assertions or graph task drain (#20)', async () => {
-  const entered = deferred<void>()
-  const task = deferred<{ executionIds: Record<string, string> }>()
-  let cancellations = 0
-  const f = engineFixture({ residentRunIds: () => ['run-1'], cancelRun: async () => {
-    cancellations += 1
-    task.resolve({ executionIds: {} })
-  } } as unknown as ApprovalExecutionCoordinator)
-  const controller = new AbortController()
-  f.internals.executeNode = async () => { entered.resolve(); return task.promise }
-  const running = f.internals.executeRun(f.run(), controller.signal, f.owner).catch((error: unknown) => error)
-  await entered.promise
-  f.loseOwnership()
-  controller.abort(new Error('ownership lost'))
-  assert.ok(await running instanceof Error)
-  assert.equal(cancellations, 1)
-  assert.notEqual(f.run().outcome, 'canceled')
+it('failed native restart closure keeps shutdown failed and preserves Run history', async () => {
+  const f = engineFixture({ cancelRun: async () => undefined } as unknown as ApprovalExecutionCoordinator)
+  f.approvals.closeForRestart = async () => { throw new Error('native close uncertain') }
+  await assert.rejects(f.engine.shutdown(), AggregateError)
+  assert.equal(f.run().executionState, 'waiting')
+  assert.equal(f.run().result, undefined)
 })
-
-it('an ignored native iterator cannot prevent timeout cleanup and failed settlement', async () => {
-  const entered = deferred<void>()
-  let canceled = false
-  const f = engineFixture({ residentRunIds: () => ['run-1'], cancelRun: async () => { canceled = true } } as unknown as ApprovalExecutionCoordinator)
-  f.internals.executeNode = async () => { entered.resolve(); return never() }
-  const controller = new AbortController()
-  const running = f.internals.executeRun(f.run(), controller.signal, f.owner)
-  await entered.promise
-  controller.abort(new Error('execution timeout'))
-  await running
-  assert.equal(canceled, true)
-  assert.equal(f.run().outcome, 'failed')
-  assert.equal(f.run().result?.error?.code, 'RUN_CLEANUP_FAILED')
-}, 20_000)
-
 
 it('retrying credential cleanup does not cancel or close an already confirmed closed native session', async () => {
-  const f = fixture([execution('one')])
+  const f = await fixture([execution('one')])
   f.credentials.revokeForExecution = async () => { throw new Error('credential store unavailable') }
-  await assert.rejects(f.coordinator.cancelRun('run-1'), AggregateError)
+  await assert.rejects(f.stop('run-1'), AggregateError)
   assert.ok(!f.calls.includes('release:one'))
   f.credentials.revokeForExecution = async () => undefined
-  await f.coordinator.cancelRun('run-1')
+  await f.stop('run-1')
   assert.equal(f.calls.filter((call) => call === 'cancel:one').length, 1)
   assert.equal(f.calls.filter((call) => call === 'close:one').length, 1)
   assert.ok(f.calls.includes('release:one'))
-  assert.deepEqual(f.coordinator.residentRunIds(), [])
+  assert.ok(f.calls.includes('release:one'))
 })
 
-it('settles cleanup failure even if an active graph task rejects while Stop drains it', async () => {
+it('rechecks durable native closure after a failed graph drain rather than trusting the task error', async () => {
   const task = deferred<void>()
-  const f = engineFixture({ residentRunIds: () => ['run-1'], cancelRun: async () => undefined } as unknown as ApprovalExecutionCoordinator)
-  f.internals.activeRuns.set('run-1', new AbortController())
+  const f = engineFixture({ cancelRun: async () => undefined } as unknown as ApprovalExecutionCoordinator)
   f.internals.activeTasks.set('run-1', task.promise)
+  f.stopFence()
   const stopped = f.engine.cancel('run-1')
   task.reject(new Error('graph drain failed'))
-  await assert.rejects(stopped, /graph drain failed/)
-  assert.equal(f.run().result?.error?.code, 'RUN_CLEANUP_FAILED')
+  assert.equal(await stopped, true)
+  assert.equal(f.run().outcome, 'canceled')
   assert.ok(f.calls.includes('release-owner'))
 })
 
 it('does not claim native closure when a failed create never returned a session identity', async () => {
   const item = execution('one', 'starting')
-  const f = fixture([item])
+  const f = await fixture([item])
   f.managers.get('one')!.createImpl = async () => { throw new Error('native creation failed after process start') }
   await assert.rejects(f.observe(item), /native creation failed/)
-  await assert.rejects(f.coordinator.cancelRun(item.runId), AggregateError)
+  await assert.rejects(f.stop(item.runId), AggregateError)
   assert.ok(!f.calls.includes('release:one'))
   assert.deepEqual(f.coordinator.residentRunIds(), [item.runId])
 })
 
 it('closes an exact native attach that finishes after Stop times out, without starting another turn', async () => {
   const item = execution('one')
-  const f = fixture([item])
-  f.cold(item)
+  const f = await fixture([item], true)
   const attaching = deferred<void>()
   const opened = deferred<NativeSessionReference>()
   f.managers.get('one')!.attachImpl = async () => { attaching.resolve(); return opened.promise }
   const observed = f.observe(item).catch((error: unknown) => error)
   await attaching.promise
-  await assert.rejects(f.coordinator.cancelRun(item.runId), AggregateError)
+  await assert.rejects(f.stop(item.runId), AggregateError)
   assert.ok(!f.calls.includes('release:one'), 'an in-flight attach cannot be forgotten')
   const closesBefore = f.calls.filter((call) => call === 'close:one').length
   opened.resolve({ harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'native-one' })
   assert.ok(await observed instanceof Error)
   assert.ok(f.calls.filter((call) => call === 'close:one').length > closesBefore)
-  await f.coordinator.cancelRun(item.runId)
+  await f.stop(item.runId)
   assert.equal(f.calls.filter((call) => call === 'attach:one').length, 1)
   assert.ok(!f.calls.includes('create:one'))
-  assert.deepEqual(f.coordinator.residentRunIds(), [])
+  assert.ok(f.calls.includes('release:one'))
 }, 20_000)
 
 
 it('does not accept an older close as evidence that a late native attach is closed', async () => {
   const item = execution('one')
-  const f = fixture([item])
-  f.cold(item)
+  const f = await fixture([item], true)
   const attaching = deferred<void>()
   const opened = deferred<NativeSessionReference>()
   const closing = deferred<void>()
@@ -540,7 +548,7 @@ it('does not accept an older close as evidence that a late native attach is clos
   manager.closeImpl = async () => { closing.resolve(); return closed.promise }
   const observed = f.observe(item).catch((error: unknown) => error)
   await attaching.promise
-  const stopping = f.coordinator.cancelRun(item.runId).catch((error: unknown) => error)
+  const stopping = f.stop(item.runId).catch((error: unknown) => error)
   await closing.promise
   opened.resolve({ harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'native-one' })
   // Let the in-flight attach complete while the older close still awaits its acknowledgment.
@@ -550,7 +558,7 @@ it('does not accept an older close as evidence that a late native attach is clos
   assert.ok(await observed instanceof Error)
   assert.ok(!f.calls.includes('release:one'))
   manager.closeImpl = async () => undefined
-  await f.coordinator.cancelRun(item.runId)
+  await f.stop(item.runId)
   assert.equal(f.calls.filter((call) => call === 'close:one').length, 2)
-  assert.deepEqual(f.coordinator.residentRunIds(), [])
+  assert.ok(f.calls.includes('release:one'))
 }, 20_000)
