@@ -50,7 +50,6 @@ import type {
 } from './runtimePorts.js'
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
 import { recoverWorkflowNativeClosure, type WorkflowClosureStore } from './workflowClosure.js'
-import { finishRecoveredWorkflowCredentials } from './workflowTerminalRecovery.js'
 import type { RepeatReviewerBindings } from './repeatReviewer.js'
 import { assertSameRepeatExecution, assertSameReviewJob, repeatPhysicalSettlementPending,
   reviewPhysicallySettled, type RepeatNativeObservationStore } from './repeatObservation.js'
@@ -67,7 +66,6 @@ interface OwnedNativeSession {
   generation: number
   closureGeneration?: string
   closureRegistration?: Promise<string>
-  launchReserved?: boolean
   failed?: boolean
   session?: NativeSessionReference
   opening?: Promise<NativeSessionReference>
@@ -335,10 +333,10 @@ export class ApprovalExecutionCoordinator {
         'No durable exact-session closure exists. Native work will not be restarted.', 409)
       await this.budgets.finish(execution.id, execution.finishedAt)
       check()
-      // Capture and revoke only exact workflow-purpose principals under the
-      // owner/closure fence. Never revoke a successor reviewer's credential.
-      await finishRecoveredWorkflowCredentials(owner, execution, this.credentials, signal)
-      check()
+      // A read of workflow_finalized_at is not an atomic revocation fence:
+      // another owner could finalize and attach a reviewer after that read.
+      // Without captured principal IDs, leave any credential gap pending.
+      // The repository gate below can still repair already-revoked/budget gaps.
     }
     check()
     await store.settleNativeExecution(execution.id)
@@ -426,7 +424,6 @@ export class ApprovalExecutionCoordinator {
     private readonly nativeCaptures?: WorkflowNativeCapturePort,
     private readonly reviewNativeCaptures?: ReviewNativeCapturePort,
     private readonly recoverNativeProcesses?: (executionId: string, signal: AbortSignal) => Promise<boolean>,
-    private readonly reserveNativeLaunch?: (executionId: string, manager: NativeHarnessSessionManager) => void,
   ) {
     this.reviewers = new ReviewerDispatcher(interactions.coordination, this)
   }
@@ -547,13 +544,6 @@ export class ApprovalExecutionCoordinator {
     if (this.workflowClosures) {
       const owned = this.ownedSessions.get(context.executionId)
       if (!owned || owned.manager !== resolved.manager) throw new Error('Native preflight has no exact manager owner.')
-      // The original process intent must be durable before entered commits.
-      // Allocation/reviewer cleanup alone must not reserve or dispatch anything.
-      if (resolved.processState === 'needs_start' && !owned.launchReserved) {
-        signal?.throwIfAborted()
-        this.reserveNativeLaunch?.(context.executionId, this.rawManagers.get(owned.manager) ?? owned.manager)
-        owned.launchReserved = true
-      }
       // OpenCode credential inspection can spawn its server. Invalidate older
       // closure evidence BEFORE that inspection, not only before attachSession.
       owned.closureRegistration ??= this.workflowClosures.begin(owned.execution)
@@ -971,28 +961,22 @@ export class ApprovalExecutionCoordinator {
     }
   }
 
-  /** Cold non-terminal work selects conservative interruption, not closure.
-   * A durable terminal needs only physical recovery here: its original source,
-   * ACKs and finite technical retry are checked by normal same-slot re-entry.
-   * Never turn missing close evidence alone into a negative Run intent. */
+  /** Absence of a local owner selects conservative interruption, not closure.
+   * Starting includes a crash after launch admission but before session binding.
+   * Queued attempts have not entered native work; accepted results are retained.
+   * The acquired Run owner and committed cleanup fence prevent a recovery read
+   * from becoming a new submission or an approval/graph resume. */
   async requestColdRunCleanup(owner: RunOwnership): Promise<boolean> {
     owner.assertOwned()
     for await (const executions of this.runs.executionPages(owner.runId, owner)) {
       for (const execution of executions) {
         if (this.ownedSessions.has(execution.id)) continue
         if (execution.state === 'queued' && !execution.nativeSessionId && !execution.startedAt) continue
-        if (execution.state === 'completed') {
-          if (execution.nativeSessionId && !await this.workflowClosures?.read(execution)) {
-            const failures: Error[] = []
-            await attemptCleanup(failures, `${execution.id}: recover terminal native lifetime`, (signal) =>
-              recoverWorkflowNativeClosure(owner, execution, this.recoverNativeProcesses, signal, 'terminal'))
-            owner.assertOwned()
-            if (failures.length) throw new AggregateError(failures, 'Terminal native closure remains unconfirmed.')
-          }
-          // Includes a failed original terminal: do not poison technical retry
-          // by setting cleanupPending before the repository evaluates its slot.
-          continue
-        }
+        // Accepted results are immutable. A completed attempt with an unclosed
+        // native lifetime still needs physical recovery; do not loop forever in
+        // finishRepeatExecution or overwrite that result with an interruption.
+        if (execution.state === 'completed' && (!execution.nativeSessionId
+          || await this.workflowClosures?.read(execution))) continue
         await this.runs.requestCleanup(owner.runId, owner)
         owner.assertOwned()
         return true

@@ -7,7 +7,7 @@ import { registerApprovalCheckpointResume } from './modules/runs/approvalCheckpo
 import { createCurrentNativeProductionFactory, isCurrentNativeProductionBinding } from './modules/runs/workflowProduction.js'
 import { isDeepStrictEqual } from 'node:util'
 import { NativeResponseJournal } from './modules/harnesses/recovery/responseJournal.js'
-import { NativeProcessRegistry, type NativeProcessRecovery } from './modules/harnesses/recovery/processRegistry.js'
+import { NativeProcessRegistry } from './modules/harnesses/recovery/processRegistry.js'
 import { resolve } from 'node:path'
 
 import type { ApiConfig } from './config.js'
@@ -131,31 +131,25 @@ export function buildProductionApp(
       await Promise.all([processRegistry.closeOwner('settings:mcp:codex'), processRegistry.closeOwner('settings:mcp:opencode')])
     }, operatorMcpEndpoint),
   }
-  const launchScopes = new WeakMap<NativeHarnessSessionManager, NativeProcessRecovery>()
   const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
     const configuration = context.configuration.harness
     if (configuration.harness !== context.harness) {
       throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'The pinned configuration does not match the execution harness.', 409)
     }
-    // Object allocation remains native/registry IO-free. The coordinator reserves
-    // this SAME scope immediately before its lifetime/entered commits.
-    const recovery = processRegistry.scope(`execution:${context.executionId}`)
-    const manager = configuration.harness === 'codex'
-      ? new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, undefined, recovery)
-      : new OpenCodeNativeSessionManager({
+    if (configuration.harness === 'codex') return new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, undefined,
+      processRegistry.scope(`execution:${context.executionId}`))
+    return new OpenCodeNativeSessionManager({
       server: new ManagedOpenCodeServer({
         binary: config.harnesses.openCodeBinary,
         workingDirectory: context.workingDirectory,
         ownerAgentId: context.agentId,
-        processRecovery: recovery,
+        processRecovery: processRegistry.scope(`execution:${context.executionId}`),
         ...(configuration.advanced ? { advancedConfiguration: configuration.advanced } : {}),
       }),
       ownerAgentId: context.agentId,
       responseJournal,
       expectedAppMcpEndpoint: appMcpEndpoint,
     })
-    launchScopes.set(manager, recovery)
-    return manager
   })
   const validateContinuation = continuationValidator(database.pool, locations)
   const credentials = new WorkerCredentialService(database.pool, access)
@@ -196,12 +190,6 @@ export function buildProductionApp(
     new PostgresWorkflowClosureStore(database.pool), new PostgresRepeatReviewerBindings(database.pool),
     workflowCapture.capture, reviewCapture.capture,
     (executionId, signal) => processRegistry.closeOwner(`execution:${executionId}`, signal),
-    (executionId, manager) => {
-      const scope = launchScopes.get(manager)
-      if (!scope || scope.owner !== `execution:${executionId}` || scope.launchId) throw new DomainError(
-        'NATIVE_LAUNCH_RESERVATION_CONFLICT', 'The exact manager launch scope is unavailable or already reserved.', 409)
-      Object.assign(scope, processRegistry.reserveLaunch(scope.owner))
-    },
   )
   const engine = new LangGraphWorkflowEngine(
     runs, workflows, approvals, checkpoints.saver, config.harnesses.workspaceRoot,

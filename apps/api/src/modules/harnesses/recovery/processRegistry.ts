@@ -9,15 +9,7 @@ import { cgroupBoundary, cgroupPopulated, killCgroup, retireCgroup, type NativeC
 import { NATIVE_GUARDIAN_SOURCE } from './nativeGuardian.js'
 import { privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from './storage.js'
 
-export interface NativeProcessRecovery {
-  root: string
-  owner: string
-  /** Write-ahead registration captured before the workflow's entered commit. */
-  launchId?: string
-}
-// This tracks ordinary sequential subprocesses of the SAME live manager. It is
-// never consulted as closure evidence and cannot be reconstructed on restart.
-const consumedLaunchScopes = new WeakSet<NativeProcessRecovery>()
+export interface NativeProcessRecovery { root: string; owner: string }
 interface LaunchRecord {
   format: 1; id: string; owner: string; boot: string; parent: LinuxProcessIdentity; controlKey: string
 }
@@ -197,14 +189,6 @@ export class NativeProcessRegistry {
     if (!owner.trim() || owner.length > 4096) throw new Error('Invalid process owner.')
     return { root: this.root, owner }
   }
-  /** Allocate before authorizing native submission, not at child_process.spawn.
-   * A dead original parent plus this durable intent and no dispatch is positive
-   * native_not_started evidence. A missing directory still proves nothing. */
-  reserveLaunch(owner: string): NativeProcessRecovery {
-    const scope = this.scope(owner)
-    if (process.platform !== 'linux') return scope
-    return { ...scope, launchId: reserveProcess(scope).id }
-  }
   async closeOwner(owner: string, signal?: AbortSignal): Promise<boolean> {
     if (process.platform !== 'linux') return false
     const root = privateDirectory(this.root)
@@ -356,48 +340,6 @@ function assertOwnerIdle(directory: string, owner: string): void {
   }
 }
 
-/** Publish a complete intent atomically. A crash before the rename cannot leave
- * a half-registration in the unresolved inventory. No executable is dispatched. */
-function reserveProcess(scope: NativeProcessRecovery): LaunchRecord {
-  const ownerDirectory = privateDirectory(join(privateDirectory(scope.root), key(scope.owner)))
-  assertOwnerIdle(ownerDirectory, scope.owner)
-  const parent = processIdentity(process.pid)
-  if (!parent) throw new Error('Cannot identify the launching API process.')
-  const id = randomUUID()
-  const launch: LaunchRecord = { format: 1, id, owner: scope.owner, boot: bootIdentity(), parent,
-    controlKey: randomBytes(32).toString('hex') }
-  const temporary = privateDirectory(join(ownerDirectory, `.pending-${id}`))
-  writeRecord(join(temporary, 'intent.json'), launch, true)
-  renameSync(temporary, join(ownerDirectory, id))
-  syncDirectory(ownerDirectory)
-  return launch
-}
-
-/** A recovered/revoked scope must NEVER silently allocate a replacement launch.
- * The parent identity and immutable id fence the handoff. All operations through
- * guardian dispatch are synchronous; a live parent cannot race its own cleanup.
- * A foreign recovery process can prove no-dispatch only after that parent dies. */
-function takeLaunch(scope: NativeProcessRecovery): LaunchRecord {
-  if (!scope.launchId || consumedLaunchScopes.has(scope)) return reserveProcess(scope)
-  if (!/^[0-9a-f-]{36}$/.test(scope.launchId)) throw new Error('Invalid reserved native launch.')
-  const directory = join(privateDirectory(scope.root), key(scope.owner), scope.launchId)
-  const launch = launchRecord(readRecord(join(directory, 'intent.json')))
-  const parent = processIdentity(process.pid)
-  if (launch.id !== scope.launchId || launch.owner !== scope.owner || launch.boot !== bootIdentity()
-    || !parent || launch.parent.pid !== parent.pid || launch.parent.startTicks !== parent.startTicks
-    || readRecord(join(directory, 'claimed.json')) !== undefined
-    || readRecord(join(directory, 'dispatched.json')) !== undefined
-    || readRecord(join(directory, 'birth.json')) !== undefined
-    || readRecord(join(directory, 'not-started.json')) !== undefined
-    || readRecord(join(directory, 'closed.json')) !== undefined) {
-    throw new Error('The exact native launch reservation is no longer dispatchable.')
-  }
-  // Exclusive, durable single-use claim; it does not authorize native code.
-  // dispatched.json still precedes sending configuration to the guardian.
-  writeRecord(join(directory, 'claimed.json'), { format: 1, id: launch.id, owner: scope.owner }, true)
-  return launch
-}
-
 /**
  * A Node guardian leads the process session and writes a birth certificate BEFORE
  * spawning native code. Its authenticated control socket survives API replacement.
@@ -411,16 +353,22 @@ export function spawnNativeProcess(binary: string, args: string[], options: {
     stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
   })
   const scope = options.recovery
-  const launch = takeLaunch(scope)
-  const { id } = launch
-  const directory = join(privateDirectory(scope.root), key(scope.owner), id)
+  const ownerDirectory = privateDirectory(join(privateDirectory(scope.root), key(scope.owner)))
+  assertOwnerIdle(ownerDirectory, scope.owner)
+  const id = randomUUID()
+  const directory = privateDirectory(join(ownerDirectory, id))
+  syncDirectory(ownerDirectory)
+  const parent = processIdentity(process.pid)
+  if (!parent) throw new Error('Cannot identify the launching API process.')
+  const launch: LaunchRecord = { format: 1, id, owner: scope.owner, boot: bootIdentity(), parent,
+    controlKey: randomBytes(32).toString('hex') }
+  writeRecord(join(directory, 'intent.json'), launch, true)
   const child = spawn(process.execPath, ['-e', NATIVE_GUARDIAN_SOURCE], {
     cwd: directory, env: {}, detached: true, stdio: ['pipe', 'pipe', 'pipe', 'ipc'], windowsHide: true,
   }) as ChildProcessWithoutNullStreams
   // Observe startup errors before sending configuration or exposing the child to the adapter.
   child.on('error', () => undefined)
   owned.set(child, { scope, id })
-  if (scope.launchId) consumedLaunchScopes.add(scope)
   let dispatchAttempted = false
   try {
     if (!child.pid) {

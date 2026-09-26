@@ -56,27 +56,13 @@ describe('ENG06-A cold Run and Stop orchestration', () => {
     await f.owner.release()
   })
 
-  it('recovers physical lifetime without poisoning a completed result with a Run cleanup intent', async () => {
-    const f = fixture({ detached: true }); f.state.execution = recoveryExecution('completed'); f.state.fenced = false
+  it('recovers physical lifetime without rewriting an already completed durable result', async () => {
+    const f = fixture({ detached: true }); f.state.execution = recoveryExecution('completed')
     const original = structuredClone(f.state.execution)
-    assert.equal(await f.coordinator.requestColdRunCleanup(f.owner), false)
+    assert.equal(await f.coordinator.requestColdRunCleanup(f.owner), true)
+    await f.coordinator.cancelRun(f.owner.runId, f.owner)
     assert.deepEqual(f.state.execution, original)
-    assert.deepEqual(f.calls, ['close-processes'])
-    assert.equal(f.snapshot.cleanupPending, false)
-    assert.ok(await readWorkflowClosure(f.connection, original))
-    await f.owner.release()
-  })
-
-  it('leaves a completed terminal uncertain, not failed, when registry evidence is absent', async () => {
-    const f = fixture(); f.state.execution = recoveryExecution('completed'); f.state.fenced = false
-    const original = structuredClone(f.state.execution)
-    const internals = f.coordinator as unknown as { recoverNativeProcesses: () => Promise<boolean> }
-    internals.recoverNativeProcesses = async () => false
-    await assert.rejects(f.coordinator.requestColdRunCleanup(f.owner), AggregateError)
-    assert.deepEqual(f.state.execution, original)
-    assert.deepEqual(f.calls, [])
-    assert.equal(f.snapshot.cleanupPending, false)
-    assert.equal(f.state.proof, undefined)
+    assert.equal(f.calls.filter((call) => call === 'close-processes').length, 1)
     await f.owner.release()
   })
 
