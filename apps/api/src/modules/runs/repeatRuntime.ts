@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
+import { setTimeout as delay } from 'node:timers/promises'
 import { interrupt, isGraphInterrupt } from '@langchain/langgraph'
 import { HarnessExecutionSchema, HarnessExecutionRequestSchema, type HarnessExecution } from '@graphql/contracts'
 import { AcceptedWorkflowRunV3Schema, CurrentRunVersionSnapshotSchema,
   type AcceptedWorkflowRunV3, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
 import { DomainError } from '../errors.js'
+import { REPEAT_NATIVE_PENDING_MESSAGE } from '../interactions/repeatNativeEvidence.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { ApprovalExecutionCoordinator } from '../interactions/execution.js'
 import { assertSameRepeatExecution, type RepeatNativeLaunchStore, type RepeatNativeObservationStore } from '../interactions/repeatObservation.js'
@@ -13,6 +15,7 @@ import { requiredLocationAccess, type WorkspaceLocationService } from '../worksp
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import type { RunnerAdmission } from './runnerAdmission.js'
 import { currentInitialPrompt } from './currentRouting.js'
+import { readUnconsumedWorkflowApprovals } from './workflowLifecycle.js'
 
 import type { RunOwnership } from './ownership.js'
 import { normalizeRepeatTerminal, type RepeatExecutionDriver } from './repeatNode.js'
@@ -96,7 +99,17 @@ export function repeatExecutionDriver(input: {
         await input.store.settleNativeExecution(execution.id)
         input.owner.assertOwned()
         signal.throwIfAborted()
-      })().finally(() => { if (inFlight.get(execution.id) === task) inFlight.delete(execution.id) })
+      })().catch((error: unknown) => {
+        if (!repeatSettlementPending(error)) throw error
+        input.owner.assertOwned()
+        signal.throwIfAborted()
+        // LangGraph persists name/message, not DomainError.code. Give ONLY the
+        // allowlisted live settlement waits a stable retry marker; retain the
+        // original diagnostic locally and leave every other error unchanged.
+        const pending = new DomainError(String((error as { code: unknown }).code), REPEAT_NATIVE_PENDING_MESSAGE, 409)
+        pending.cause = error
+        throw pending
+      }).finally(() => { if (inFlight.get(execution.id) === task) inFlight.delete(execution.id) })
       inFlight.set(execution.id, task)
       return task
     },
@@ -148,6 +161,22 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       await native.observeExact({ ...common, execution, store, signal })
       return
     }
+    // LangGraph restarts every unresolved wrapper, not just the notified
+    // branch. Re-interrupt an unconsumed sibling before budget resume, native
+    // preflight, attachment or observation. An old task-local resume value is
+    // only a notification: it cannot release a newer/unconsumed approval.
+    const waitForApprovals = async () => {
+      while (execution.state === 'waiting') {
+        const pending = await readUnconsumedWorkflowApprovals(owner, execution)
+        check()
+        if (!pending.length) break
+        const resumed: unknown = interrupt({ interactionId: pending[0]!.id,
+          interactionIds: pending.map((item) => item.id) })
+        await native.assertResume(execution, resumed)
+        execution = await reload()
+      }
+    }
+    await waitForApprovals()
     await context.admission.run(run.id, signal, async () => {
       execution = await reload() // Stop or another exact observation may win while queued.
       if (execution.state === 'completed') {
@@ -221,10 +250,9 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
         const observation = await native.observeExact({ ...common, execution, request, store: boundary, signal })
         execution = observation.execution
         if (observation.state === 'completed') return
-        const resumed: unknown = interrupt({ interactionId: observation.interaction.id,
-          interactionIds: observation.interactions.map((item) => item.id) })
-        // Same delivered interaction checkpoint; never a new decision/delivery.
-        await native.assertResume(execution, resumed)
+        // Also gate a later request in this same native turn. Replaying older
+        // task-local resume values must not reopen its budget/native observer.
+        await waitForApprovals()
       }
     })
   }
@@ -268,9 +296,9 @@ export interface RepeatRuntimeLifecycle {
   finishCleanup(): Promise<void>
 }
 
-/** Executes the one graph on the existing Run thread. The only loops here drain
- * already tracked wrappers; business progression is inside guarded graph edges.
- * The shared engine remains responsible for Run ownership, admission of the Run,
+/** Executes the one graph on the existing Run thread. Settlement retries drain
+ * wrappers and re-enter the same checkpoint; business progression stays inside
+ * guarded graph edges. The shared engine owns Run ownership/admission,
  * authenticated graph-resume claims and choosing this semantics-3 entry point. */
 export async function executeRepeatRuntime(input: {
   runId: string; version: WorkflowVersionV3
@@ -326,26 +354,49 @@ export async function executeRepeatRuntime(input: {
     if (snapshot.values.runId && snapshot.values.runId !== input.runId) return repeatConflict('RUN_PIN_CONFLICT')
     // A2 commits authenticated task-local resume writes on this checkpointer.
     // The runtime never accepts an unreceipted raw resume Command.
-    const state = snapshot.values.runId === input.runId ? null
+    let state = snapshot.values.runId === input.runId ? null
       : { runId: input.runId, occurrences: {}, boundaries: {}, executionIds: {} }
-    // Native iterators need not honor cancellation; the graph invocation is raced
-    // independently, then existing exact native cleanup and wrapper drain run below.
-    let onAbort: (() => void) | undefined
-    try {
-      await Promise.race([graph.invoke(state, config), new Promise<never>((_resolve, reject) => {
-        onAbort = () => reject(signal.reason)
-        signal.addEventListener('abort', onAbort, { once: true })
-        if (signal.aborted) onAbort()
-      })])
-    } finally { if (onAbort) signal.removeEventListener('abort', onAbort) }
-    await drain()
-    signal.throwIfAborted()
-    if (firstFailure) throw firstFailure
-    if (await input.lifecycle.persistWait(await graph.getState(config))) return
-    await input.store.completeRun()
-    await input.lifecycle.requestCleanup()
-    await input.lifecycle.finishNative()
-    await input.lifecycle.finishCleanup()
+    for (let attempt = 0; ; attempt++) {
+      try {
+        // Native iterators need not honor cancellation; the graph invocation is raced
+        // independently, then existing exact native cleanup and wrapper drain run below.
+        let onAbort: (() => void) | undefined
+        try {
+          await Promise.race([graph.invoke(state, config), new Promise<never>((_resolve, reject) => {
+            onAbort = () => reject(signal.reason)
+            signal.addEventListener('abort', onAbort, { once: true })
+            if (signal.aborted) onAbort()
+          })])
+        } finally { if (onAbort) signal.removeEventListener('abort', onAbort) }
+        await drain()
+        signal.throwIfAborted()
+        if (firstFailure) throw firstFailure
+        if (await input.lifecycle.persistWait(await graph.getState(config))) return
+        await input.store.completeRun()
+        await input.lifecycle.requestCleanup()
+        await input.lifecycle.finishNative()
+        await input.lifecycle.finishCleanup()
+        return
+      } catch (error) {
+        if (!repeatSettlementPending(error)) throw error
+        await drain()
+        input.owner.assertOwned()
+        signal.throwIfAborted()
+        if (firstFailure) throw firstFailure
+        const current = await input.lifecycle.currentState()
+        if (current.stopRequested || current.executionState === 'completed') throw error
+        // Yield to the caller when another REAL approval is outstanding. Holding
+        // this callback could prevent the orchestrator from answering that wait.
+        if (await input.lifecycle.persistWait(await graph.getState(config))) return
+        // Retry only the same saved checkpoint, after all wrappers have drained.
+        // Bound this local retry: a reviewer may itself be awaiting this MCP
+        // response. The existing engine reconciliation handles longer receipt
+        // gaps; neither a new Run nor a new occurrence/native turn is admitted.
+        if (attempt >= 2) throw error
+        state = null
+        await delay(100, undefined, { signal })
+      }
+    }
   } catch (error) {
     input.owner.assertOwned()
     if (input.signal.aborted && input.signal.reason instanceof DomainError && input.signal.reason.code === 'ENGINE_RESTART') {
@@ -360,7 +411,8 @@ export async function executeRepeatRuntime(input: {
     const terminalFailure = !preflightComplete || !!firstFailure || definitive(error) || input.signal.aborted || current.stopRequested
     if (!terminalFailure) {
       await drain()
-      if (isGraphInterrupt(error) && await input.lifecycle.persistWait(await graph.getState(config))) return
+      if ((isGraphInterrupt(error) || repeatSettlementPending(error))
+        && await input.lifecycle.persistWait(await graph.getState(config))) return
       // I/O, ambiguous receipts and settlement waits retain exact durable work.
       // The owning engine may retry the same checkpoint, never initial state.
       throw error

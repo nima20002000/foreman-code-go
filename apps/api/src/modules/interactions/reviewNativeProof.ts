@@ -135,8 +135,11 @@ export class ReviewNativeProofServices {
 
 export async function assertReviewOriginalProofLocked(sql: GraphTransactionSql, job: ReviewJob,
   observation: NativeGraphObservation, proofId: string): Promise<ReviewNativeProofRecord> {
+  // Graph reads verify this inside a read-only repeatable-read cut, where a
+  // row lock is both unavailable and unnecessary; writers still lock it.
+  const lock = hasRunGraphPublication(sql, observation.scope) ? ' for share' : ''
   const row = (await sql.query<{ record: ReviewNativeProofRecord; source_digest: string }>(
-    'select record,source_digest from review_native_proofs where proof_id=$1 and job_id=$2 for share', [proofId, job.id])).rows[0]
+    `select record,source_digest from review_native_proofs where proof_id=$1 and job_id=$2${lock}`, [proofId, job.id])).rows[0]
   if (!row || graphSourceDigest(row.record) !== row.source_digest || row.record.proofId !== proofId
     || !sameRepeatValue(row.record.job, jobIdentity(job)) || !sameRepeatValue(row.record.scope, observation.scope)
     || !sameRepeatValue(row.record.execution, observation.work.execution)

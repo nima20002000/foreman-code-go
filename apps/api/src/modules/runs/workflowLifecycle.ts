@@ -2,7 +2,7 @@ import { readPublicRunStateLocked } from '../run-graph/publicRunState.js'
 import { publicAttentionTotals, readPublicAttentionCounts } from '../run-graph/currentAttention.js'
 import type pg from 'pg'
 import { AcceptedWorkflowRunV3Schema, canonicalGraphJson, type AcceptedWorkflowRunV3 } from '@graphql/contracts/wave25'
-import type { DurableInteraction, ExecutionResult } from '@graphql/contracts'
+import { DurableInteractionSchema, type DurableInteraction, type ExecutionResult, type HarnessExecution } from '@graphql/contracts'
 import { DomainError } from '../errors.js'
 import { beforeGraphCommit, poisonGraphTransaction, withExclusiveGraphConnection, type GraphTransactionSql } from '../run-graph/connection.js'
 import { graphSourceDigest } from '../run-graph/publication.js'
@@ -17,7 +17,7 @@ import { readRepeatExecutionLocked } from './repeatPostgres.js'
 import { isAtomicApprovalCheckpointSaver } from '../../infrastructure/approvalCheckpointSaver.js'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import { lockInteraction, readContext } from '../interactions/wave25/context.js'
-import { nextInteraction, publishInteraction } from '../interactions/wave25/publication.js'
+import { decisionDigest, nextInteraction, publishInteraction } from '../interactions/wave25/publication.js'
 import { assertSavedPendingApprovalOriginalLocked } from '../interactions/nativeApprovalProof.js'
 import { isSettlementPendingCheckpointError } from '../interactions/repeatNativeEvidence.js'
 
@@ -32,6 +32,62 @@ async function retainOwner(sql: GraphTransactionSql, owner: RunOwnership): Promi
   })
 }
 
+/** Re-enter an unresolved approval BEFORE native observation resumes its budget
+ * or touches a resident process. A parallel graph invocation re-runs siblings
+ * too; delivery alone does not consume their task-local checkpoint. This is a
+ * read of existing original requests and canonical receipts, not a resume/ACK
+ * writer or permission to launch. The native boundary still revalidates all
+ * owner, credential, session, generation and original-continuation evidence. */
+export async function readUnconsumedWorkflowApprovals(owner: RunOwnership,
+  execution: HarnessExecution): Promise<DurableInteraction[]> {
+  owner.assertOwned()
+  if (execution.runId !== owner.runId || execution.state !== 'waiting') return fail('GRAPH_SCOPE_MISMATCH')
+  return owner.oneShotConnection().transaction(async (sql) => {
+    const { snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
+    await retainOwner(sql, owner)
+    if (snapshot.stopRequested || snapshot.cleanupPending) return fail('GRAPH_STOP_CONFLICT')
+    if (!['running', 'waiting'].includes(snapshot.run.executionState)) return fail('GRAPH_TERMINAL_CONFLICT')
+    const stored = await readRepeatExecutionLocked(sql, snapshot, execution.id)
+    if (!sameRepeatValue(stored.execution, execution)) return fail('REPEAT_EXECUTION_INPUT_CONFLICT')
+    const rows = (await sql.query<{ id: string; status: string; record: unknown;
+      resume_state: string | null; effect_digest: string | null }>(`
+      select i.id,i.status,i.record,g.state as resume_state,f.effect_digest
+      from durable_interactions i
+      left join interaction_graph_resumes g on g.interaction_id=i.id
+      left join run_graph_effects f on f.run_id=i.run_id and f.effect_kind='graph.resume' and f.entity_id=i.id
+      where i.run_id=$1 and i.execution_id=$2 order by i.id limit 1001 for update of i`,
+    [owner.runId, execution.id])).rows
+    if (rows.length > 1000) return fail('GRAPH_RESUME_LIMIT')
+    const waiting: DurableInteraction[] = []
+    for (const row of rows) {
+      const item = DurableInteractionSchema.parse(row.record)
+      if (item.id !== row.id || item.status !== row.status || item.runId !== owner.runId
+        || item.graphThreadId !== owner.runId || item.executionId !== execution.id
+        || item.workspaceId !== snapshot.run.workspaceId || item.workflowId !== snapshot.run.workflowId
+        || item.requestingAgentId !== execution.agentId || item.nativeSessionId !== execution.nativeSessionId) {
+        return fail('INTERACTION_IDENTITY_CONFLICT')
+      }
+      if (item.status === 'canceled') continue // Stop/terminal writers still require canonical retirement.
+      await assertSavedPendingApprovalOriginalLocked(sql, item)
+      if (row.effect_digest !== null) {
+        const expected = graphSourceDigest({ interactionId: item.id, runId: item.runId,
+          executionId: item.executionId, graphThreadId: item.graphThreadId,
+          graphInterruptId: item.graphInterruptId ?? null, decision: decisionDigest(item) })
+        if (row.effect_digest !== expected || row.resume_state !== 'resumed'
+          || item.status !== 'delivered' || item.deliveryState !== 'delivered' || !item.graphInterruptId) {
+          return fail('GRAPH_RESUME_RECEIPT_MISSING')
+        }
+        // An ACK is deliberately NOT required here: only observing the original
+        // native continuation after this checkpoint consume can produce it.
+        continue
+      }
+      if (row.resume_state === 'resumed') return fail('GRAPH_RESUME_RECEIPT_MISSING')
+      waiting.push(item) // Includes delivered but not yet consumed approvals.
+    }
+    return waiting
+  })
+}
+
 /** An engine checkpoint must be read from the existing saver. The same SQL
  * transaction then verifies the saver's ORIGINAL interrupt rows, exact native
  * pending source, execution/occurrence and immutable version before binding.
@@ -42,10 +98,12 @@ export async function persistWorkflowApprovalWait(owner: RunOwnership, saver: Ba
   const checkpoint = structuredClone(supplied)
   if (!checkpoint.tasks.some((task) => task.interrupts?.length)) return []
   if (checkpoint.values.runId !== owner.runId || checkpoint.tasks.length > 1000
-    // A parallel branch can observe its native terminal before its own approval
-    // resume is consumed; that settlement-pending error re-runs with the resume.
+    // A completed sibling can still await physical settlement after consuming
+    // its interrupt. Retain its task/error for retry; it must not prevent binding
+    // the OTHER branch's original interrupt. This classification grants no
+    // receipt/terminal authority: the replay rechecks the actual live guards.
     || checkpoint.tasks.some((task) => task.error != null
-      && !(task.interrupts?.length && isSettlementPendingCheckpointError(task.error)))) return fail('GRAPH_INTERRUPT_INVALID')
+      && !isSettlementPendingCheckpointError(task.error))) return fail('GRAPH_INTERRUPT_INVALID')
   return owner.oneShotConnection().transaction(async (sql) => {
     try {
       const { publication, snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)

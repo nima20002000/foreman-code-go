@@ -13,6 +13,7 @@ import { withCleanupDeadline } from '../interactions/cleanup.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
 import { executeRepeatEngineStart } from './repeatStartComposition.js'
+import { repeatSettlementPending } from './repeatRuntime.js'
 import { readWorkflowCheckpoint } from './repeatGraph.js'
 import { persistWorkflowApprovalWait, settleWorkflowRun } from './workflowLifecycle.js'
 import { consumeDeliveredApprovals, type WorkflowResumePermit } from './approvalCheckpointResume.js'
@@ -117,6 +118,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     const owner = await this.runs.acquireOwnership(runId, () => controller.abort(new DomainError(
       'RUN_OWNERSHIP_LOST', 'The database execution owner disconnected.', 409)))
     if (!owner) throw new DomainError('RUN_ALREADY_OWNED', 'This Run is owned by another engine.', 409)
+    let runtimeEntered = false
     try {
       owner.assertOwned(); controller.signal.throwIfAborted()
       let snapshot = await this.runs.getRepeatSnapshot(runId, owner)
@@ -144,6 +146,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       } else if (requestedIds) return
       owner.assertOwned(); controller.signal.throwIfAborted()
       const { run } = snapshot
+      runtimeEntered = true
       await executeRepeatEngineStart({ owner, signal: controller.signal,
         checkpointer: this.checkpointer, admission: this.workerAdmission,
         configuredParallelism: this.configuredParallelism, runtimeRoot: this.workspaceRoot,
@@ -179,6 +182,18 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         },
       })
       if ((await this.runs.getRepeatSnapshot(runId, owner)).run.executionState === 'completed') await this.finishOwned(owner)
+    } catch (error) {
+      owner.assertOwned(); controller.signal.throwIfAborted()
+      // Only an entered runtime may yield settlement to existing recovery. In
+      // particular, NEVER turn a pre-consume/claim/COMMIT failure into a void
+      // successful resume callback (which would have no graph.resume receipt).
+      if (!runtimeEntered || !repeatSettlementPending(error)) throw error
+      const current = await this.runs.getRepeatSnapshot(runId, owner)
+      if (current.stopRequested || current.cleanupPending
+        || !['running', 'waiting'].includes(current.run.executionState)) throw error
+      // The exact task/error and native lifetime remain durable/resident. A
+      // consumed approval is not callback failure merely because cleanup or a
+      // sibling reviewer still needs to finish; reconcile() retries this thread.
     } finally {
       // Wait only for captured native closure, never shutdownTask (which drains
       // this drive). A rejected closure is explicit uncertainty reported by
