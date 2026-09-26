@@ -24,7 +24,9 @@ function fixture(): RepeatGraphSnapshotV3 {
     } })
   return RepeatGraphSnapshotV3Schema.parse({ kind: 'snapshot', protocolVersion: 1,
     scope: { ...f.scope, executionSemanticsVersion: 3 }, asOfSequence: '1', retentionFloor: '0', historyCoverage: 'from_admission',
-    topology: repeatGraphTopologyV3(version), state: { run: { executionState: 'queued', outcome: 'pending', stopRequested: false },
+    topology: repeatGraphTopologyV3(version), state: { run: { executionState: 'queued', outcome: 'pending', stopRequested: false,
+      cleanupPending: false, unsettledReviewCount: 0, pendingInteractionCount: 0 },
+      nodes: [], inputBindings: [], interactions: [], reviews: [],
       occurrences: [], executions: [], resolutions: [], results: [], bindings: [], decisions: [] },
   })
 }
@@ -93,10 +95,12 @@ describe('ENG04 graph composition / shared contracts', () => {
   it('rejects Stop reversal and changes to a completed Run', () => {
     const snapshot = fixture()
     const stopped = { ...snapshot, state: { ...snapshot.state, run: { ...snapshot.state.run, stopRequested: true } } }
+    expect(RepeatGraphSnapshotV3Schema.safeParse(stopped).success).toBe(true)
     expect(() => reduceRepeatGraphPageV3(stopped, page(stopped, [batch(stopped, 2, snapshot.state.run)]))).toThrow()
     const terminal = { ...snapshot, state: { ...snapshot.state, run: {
-      executionState: 'completed' as const, outcome: 'succeeded' as const, stopRequested: false,
+      ...snapshot.state.run, executionState: 'completed' as const, outcome: 'succeeded' as const, stopRequested: false,
     } } }
+    expect(RepeatGraphSnapshotV3Schema.safeParse(terminal).success).toBe(true)
     expect(() => reduceRepeatGraphPageV3(terminal, page(terminal, [batch(terminal, 2, snapshot.state.run)]))).toThrow()
   })
   it('rejects private input/result/native fields instead of stripping them into public facts', () => {

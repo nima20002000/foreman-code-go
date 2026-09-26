@@ -19,7 +19,7 @@ describe('MCP result envelopes', () => {
     const error = new DomainError('REVISION_CONFLICT', 'The resource changed.', 409, details)
     const body = { error: { code: 'REVISION_CONFLICT', message: 'The resource changed.', ...(details ? { details } : {}) } }
     expect(toolFailure(error)).toEqual({
-      isError: true, content: [{ type: 'text', text: JSON.stringify(body) }], structuredContent: body,
+      isError: true, content: [{ type: 'text', text: JSON.stringify(body) }],
     })
   })
 
@@ -29,7 +29,7 @@ describe('MCP result envelopes', () => {
   ])('redacts unexpected failures while retaining the selected fallback: $expected', ({ message, expected }) => {
     const body = { error: { code: 'INTERNAL_ERROR', message: expected } }
     expect(toolFailure(new Error('sensitive provider diagnostic'), message)).toEqual({
-      isError: true, content: [{ type: 'text', text: JSON.stringify(body) }], structuredContent: body,
+      isError: true, content: [{ type: 'text', text: JSON.stringify(body) }],
     })
   })
 })

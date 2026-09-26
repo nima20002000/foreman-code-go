@@ -1,103 +1,138 @@
-import { describe, expect, it, vi } from 'vitest'
+import { createHash, randomUUID } from 'node:crypto'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { McpServer } from '@modelcontextprotocol/server'
 import type pg from 'pg'
-import { makeWave25Fixture, type RepeatWorkflowVersionV1 } from '@graphql/contracts/wave25'
+import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveInputSchema, canonicalGraphJson, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-
-import { RepeatAuthoringService } from '../src/modules/repeats/authoring.js'
-import { RepeatReadbackService } from '../src/modules/repeats/readback.js'
-import { registerRepeatTools } from '../src/mcp/operator/repeats.js'
+import { CurrentWorkflowAuthoring } from '../src/modules/workflows/currentAuthoring.js'
+import { WorkflowManagementService } from '../src/modules/workflows/management.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { RunGraphReadService } from '../src/modules/run-graph/readService.js'
+import { registerCurrentWorkflowTools, unavailableCurrentWorkflowToolCall } from '../src/mcp/operator/tools/currentWorkflow.js'
+import type { OperatorRequestContext } from '../src/mcp/operator/types.js'
 
 const expiresAt = '2099-01-01T00:00:00.000Z'
+const fixture = () => makeCurrentWorkflowFixture('eng04-b-current-tools', 'repeat')
 function principal(actions: ManagementPrincipal['grants'][number]['actions'], workflowIds?: string[]): ManagementPrincipal {
-  return { id: `principal-${actions.length}`, name: 'Operator', audience: 'operator', expiresAt, revokedAt: null,
-    grants: [{ actions, scope: { workspaceIds: ['workspace-repeat'], ...(workflowIds ? { workflowIds } : {}) } }] }
+  const grants: ManagementPrincipal['grants'] = []
+  if (actions.includes('capabilities:read')) grants.push({ actions: ['capabilities:read'], scope: {} })
+  if (actions.includes('workspace_locations:read')) grants.push({ actions: ['workspace_locations:read'], scope: { workspaceIds: [fixture().scope.workspaceId] } })
+  const scoped = actions.filter((action) => action !== 'capabilities:read' && action !== 'workspace_locations:read')
+  if (scoped.length) grants.push({ actions: scoped, scope: { workspaceIds: [fixture().scope.workspaceId], ...(workflowIds ? { workflowIds } : {}) } })
+  return { id: `principal-${actions.length}`, name: 'Operator', audience: 'operator', expiresAt, revokedAt: null, grants }
 }
-function candidate(): RepeatWorkflowVersionV1 {
-  const baseline = makeWave25Fixture('eng04-b').version
-  const names = ['work', 'review', 'done', 'limit']
-  return {
-    ...baseline, id: 'workflow-repeat-v2', workspaceId: 'workspace-repeat', workflowId: 'workflow-repeat',
-    version: 2, entryNodeId: 'work', executionSemanticsVersion: 3,
-    agentConfigurationVersionIds: Object.fromEntries(names.map((id) => [`agent-${id}`, `config-${id}`])),
-    definition: {
-      ...baseline.definition, id: 'workflow-repeat', workspaceId: 'workspace-repeat', version: 2,
-      entryNodeId: 'work', executionSemanticsVersion: 3,
-      executionPolicy: { maxParallelism: 2, maxNodeExecutions: 8 },
-      nodes: names.map((id) => ({ id, agentId: `agent-${id}`, name: id, ...(id === 'review' ? { choice: { outcomes: [
-        { outcome: 'pass', target: { kind: 'edge' as const, relationshipId: 'review-done' } },
-        { outcome: 'issues', target: { kind: 'edge' as const, relationshipId: 'review-limit' } },
-      ] } } : {}) })),
-      edges: [
-        { id: 'work-review', kind: 'execution', source: 'work', target: 'review' },
-        { id: 'review-done', kind: 'execution', source: 'review', target: 'done' },
-        { id: 'review-limit', kind: 'execution', source: 'review', target: 'limit' },
-      ],
-      repeat: { contractVersion: 1, blocks: [{ id: 'review-fix', nodeIds: ['work', 'review'], entryNodeId: 'work', exitNodeId: 'review',
-        maxOccurrences: 3, repeatOutcome: 'issues', earlyExitOutcome: 'pass', limitExit: { kind: 'edge', relationshipId: 'review-limit' } }] },
-    },
-  }
+function context(p: ManagementPrincipal) {
+  const connect = vi.fn(() => { throw new Error('Tool discovery/denial must not acquire SQL') })
+  const pool = { connect } as unknown as pg.Pool
+  const commands = new PostgresCommandCoordinator(pool)
+  const workflows = new WorkflowManagementService(pool, commands)
+  // This registrar uses only workflows and commands. Unrelated Operator ports
+  // are deliberately absent in this registration unit test.
+  return { connect, context: { principal: p, services: { workflows, commands } } as OperatorRequestContext }
 }
 
-describe('NIM-2646 repeat HTTP/MCP lane', () => {
-  it('MCP exposes UI-equivalent save/read tools to a fully authorized Operator', () => {
-    const registered = new Map<string, unknown>()
-    const server = { registerTool(name: string, _definition: unknown, handler: unknown) { registered.set(name, handler) } } as unknown as McpServer
-    const p = principal(['capabilities:read','workflows:read','workflows:update','graph:read','graph:edit','graph:save','runs:read'])
-    registerRepeatTools(server, {
-      principal: p,
-      commands: { recordDenied: vi.fn() } as never,
-      authoring: { capabilities: vi.fn(), save: vi.fn() } as never,
-      readback: { workflow: vi.fn(), run: vi.fn() } as never,
-      available: () => true,
-    })
-    expect([...registered.keys()].sort()).toEqual(['repeat_capabilities_get','repeat_get','repeat_run_get','repeat_update'])
-  })
+afterEach(() => vi.restoreAllMocks())
 
-  it('does not advertise write authoring to a read-only Operator', () => {
+describe('NIM-2646 current V3 authoring/read MCP boundaries', () => {
+  it('exposes the UI-equivalent single current save/read surface, including optional repeat', () => {
     const registered = new Set<string>()
     const server = { registerTool(name: string) { registered.add(name) } } as unknown as McpServer
-    const p = principal(['capabilities:read','workflows:read','graph:read','runs:read'])
-    registerRepeatTools(server, { principal: p, commands: { recordDenied: vi.fn() } as never,
-      authoring: {} as never, readback: {} as never,
-      available: (name) => name !== 'repeat_update' })
-    expect(registered.has('repeat_update')).toBe(false)
-    expect(registered.has('repeat_get')).toBe(true)
+    const c = context(principal(['capabilities:read', 'workflows:read', 'workflows:update', 'graph:read',
+      'graph:edit', 'graph:save', 'runs:read', 'agents:read', 'workspace_locations:read']))
+    registerCurrentWorkflowTools(server, c.context)
+    expect([...registered].sort()).toEqual(['workflow_authoring_capabilities_v3', 'workflow_edit_v3', 'workflow_edits_get_v3',
+      'workflow_save_v3', 'workflow_saved_get_v3', 'workflow_validate_v3'])
+    expect([...registered].some((name) => name.startsWith('repeat_'))).toBe(false)
+    expect(c.connect).not.toHaveBeenCalled()
   })
 
-  it('rejects a wrong-workflow scoped writer before any command or database work', async () => {
-    const execute = vi.fn()
-    const service = new RepeatAuthoringService({} as pg.Pool, { execute } as never)
-    const p = principal(['workflows:read','workflows:update','graph:read','graph:edit','graph:save'], ['other-workflow'])
-    await expect(service.save(p, 'mcp', {
-      workspaceId: 'workspace-repeat', workflowId: 'workflow-repeat', commandId: 'command-repeat-1',
-      expectedRevision: 1, expectedWorkflowVersionId: 'workflow-repeat-v1', executionSemanticsVersion: 3,
-      repeat: candidate().definition.repeat,
-    })).rejects.toMatchObject({ code: 'ACCESS_DENIED', status: 403 })
+  it('does not advertise Save or staged writes to a read-only Operator', () => {
+    const registered = new Set<string>()
+    const server = { registerTool(name: string) { registered.add(name) } } as unknown as McpServer
+    const c = context(principal(['capabilities:read', 'workflows:read', 'graph:read', 'runs:read']))
+    registerCurrentWorkflowTools(server, c.context)
+    expect(registered.has(CURRENT_WORKFLOW_TOOLS.save)).toBe(false)
+    expect(registered.has(CURRENT_WORKFLOW_TOOLS.edits)).toBe(false)
+    expect(registered.has(CURRENT_WORKFLOW_TOOLS.saved)).toBe(true)
+    expect(c.connect).not.toHaveBeenCalled()
+  })
+
+  it('rejects a wrong-workflow writer before any command or database work', async () => {
+    const f = fixture()
+    const c = context(principal(['workflows:read', 'workflows:update', 'graph:read', 'graph:edit', 'graph:save',
+      'agents:read', 'workspace_locations:read'], ['other-workflow']))
+    const execute = vi.spyOn(c.context.services.commands, 'execute')
+    const input = CurrentWorkflowSaveInputSchema.parse({ workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId,
+      commandId: randomUUID(), expectedRevision: 1, expectedWorkflowVersionId: f.version.id, executionSemanticsVersion: 3,
+      expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds, expectedLocationRevision: 1, graph: f.version.definition })
+    await expect(c.context.services.workflows.current.save(c.context.principal, 'mcp', input))
+      .rejects.toMatchObject({ code: 'ACCESS_DENIED', status: 403 })
     expect(execute).not.toHaveBeenCalled()
+    expect(c.connect).not.toHaveBeenCalled()
   })
 
-  it('reads back the exact persisted v3 version instead of reconstructing repeat state', async () => {
-    const version = candidate()
-    const pool = { query: vi.fn().mockResolvedValue({ rows: [{
-      revision: '9', current_version_id: version.id, version_record: version, execution_semantics_version: 3,
-      version: version.version, entry_node_id: version.entryNodeId,
-    }] }) } as unknown as pg.Pool
-    const service = new RepeatReadbackService(pool)
-    const p = principal(['workflows:read','graph:read'], ['workflow-repeat'])
-    const result = await service.workflow(p, { workspaceId: 'workspace-repeat', workflowId: 'workflow-repeat' })
-    expect(result.revision).toBe(9)
-    expect(result.currentVersionId).toBe(version.id)
+  it('reads the exact persisted V3 version with live authority and immutable hash validation', async () => {
+    const f = fixture(), version = f.version
+    version.contentHash = `sha256:${createHash('sha256').update(canonicalGraphJson({ definition: version.definition,
+      configurations: version.agentConfigurationVersionIds, entryNodeId: version.entryNodeId })).digest('hex')}`
+    const p = principal(['workflows:read', 'graph:read'], [version.workflowId])
+    const query = vi.fn(async (sql: string, values?: unknown[]) => {
+      const text = sql.replace(/\s+/g, ' ').trim()
+      if (['begin', 'commit', 'rollback'].includes(text)) return { rows: [], rowCount: 0 }
+      if (text.includes('from management_principals')) {
+        expect(values).toEqual([p.id])
+        return { rows: [{ id: p.id, name: p.name, audience: p.audience, grants: p.grants,
+          expires_at: new Date(p.expiresAt), revoked_at: null, delegated_from: null }], rowCount: 1 }
+      }
+      if (text.startsWith('select revision::text,current_version_id from workflows')) {
+        expect(values).toEqual([version.workspaceId, version.workflowId])
+        return { rows: [{ revision: '9', current_version_id: version.id }], rowCount: 1 }
+      }
+      if (text.includes('from workflow_versions')) {
+        expect(values).toEqual([version.id, version.workspaceId, version.workflowId])
+        return { rows: [{ id: version.id, workspace_id: version.workspaceId, workflow_id: version.workflowId,
+          version: version.version, entry_node_id: version.entryNodeId, execution_semantics_version: 3, record: version }], rowCount: 1 }
+      }
+      if (text.includes('from agent_configuration_versions')) {
+        expect(values).toEqual([Object.values(version.agentConfigurationVersionIds)])
+        return { rows: f.configurations.map((configuration) => ({ id: configuration.id, workspace_id: configuration.workspaceId,
+          agent_id: configuration.agentId, version: configuration.version, record: configuration })), rowCount: f.configurations.length }
+      }
+      throw new Error(`Unscripted current read SQL: ${text}`)
+    })
+    const client = { query, release: vi.fn() }
+    const pool = { connect: vi.fn(async () => client) } as unknown as pg.Pool
+    const service = new CurrentWorkflowAuthoring(pool, new PostgresCommandCoordinator(pool))
+    const result = await service.read(p, { workspaceId: version.workspaceId, workflowId: version.workflowId })
+    expect(result).toEqual({ workspaceId: version.workspaceId, workflowId: version.workflowId, revision: 9,
+      currentVersionId: version.id, version })
     expect(result.version.definition.repeat).toEqual(version.definition.repeat)
+    expect(query.mock.calls.at(-1)).toEqual(['commit'])
+    expect(client.release).toHaveBeenCalledOnce()
   })
 
-  it('fails explicitly when A occurrence storage is not wired, rather than fabricating Run repeat state', async () => {
-    const pool = { query: vi.fn().mockResolvedValue({ rows: [{
-      workflow_version_id: 'workflow-repeat-v2', record: { executionSemanticsVersion: 3 },
-    }] }) } as unknown as pg.Pool
-    const service = new RepeatReadbackService(pool)
-    const p = principal(['workflows:read','graph:read','runs:read'], ['workflow-repeat'])
-    await expect(service.run(p, { workspaceId: 'workspace-repeat', workflowId: 'workflow-repeat', runId: 'run-repeat', limit: 50, includeResultData: false }))
-      .rejects.toMatchObject({ code: 'REPEAT_RUNTIME_READBACK_UNAVAILABLE', status: 503 })
+  it('fails explicitly when canonical Run reads are not qualified instead of fabricating repeat state', async () => {
+    const f = fixture(), c = context(principal(['workflows:read', 'graph:read', 'runs:read'], [f.scope.workflowId]))
+    const reads = new RunGraphReadService({ connect: c.connect } as unknown as pg.Pool)
+    await expect(reads.current(c.context.principal, { protocolVersion: 1, scope: f.scope }))
+      .rejects.toMatchObject({ code: 'GRAPH_NOT_INITIALIZED' })
+    expect(c.connect).not.toHaveBeenCalled()
+  })
+
+  it('returns a text-only MCP denial and records it without invoking Save', async () => {
+    const c = context(principal(['workflows:read', 'graph:read']))
+    const denied = vi.spyOn(c.context.services.commands, 'recordDenied').mockResolvedValue(undefined)
+    const save = vi.spyOn(c.context.services.workflows.current, 'save')
+    const response = await unavailableCurrentWorkflowToolCall(c.context, { jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: CURRENT_WORKFLOW_TOOLS.save, arguments: {} } })
+    expect(response?.result.isError).toBe(true)
+    expect(response?.result).not.toHaveProperty('structuredContent')
+    expect(response?.result.content).toHaveLength(1)
+    const text = response?.result.content[0]
+    if (!text || text.type !== 'text') throw new Error('MCP denial must have text content')
+    expect(JSON.parse(text.text)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+    expect(denied).toHaveBeenCalledExactlyOnceWith(c.context.principal.id, 'mcp', CURRENT_WORKFLOW_TOOLS.save, `mcp:${CURRENT_WORKFLOW_TOOLS.save}`)
+    expect(save).not.toHaveBeenCalled()
+    expect(c.connect).not.toHaveBeenCalled()
   })
 })

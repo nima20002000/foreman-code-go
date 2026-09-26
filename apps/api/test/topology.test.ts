@@ -1,99 +1,91 @@
 import { describe, expect, it } from 'vitest'
 
-import { WorkflowVersionSchema, type WorkflowVersion } from '@graphql/contracts'
+import { NodeResolutionSchema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 
-import { DomainError } from '../src/modules/errors.js'
-import { validateExecutableTopology } from '../src/modules/runs/topology.js'
+import { compileExecutionTopology, decideExecutionAdmission } from '../src/modules/runs/topology.js'
 
-function workflowVersion(): WorkflowVersion {
-  return WorkflowVersionSchema.parse({
-    id: 'workflow-1-v1',
-    workspaceId: 'workspace-1',
-    workflowId: 'workflow-1',
-    version: 1,
-    entryNodeId: 'node-a',
-    definition: {
-      id: 'workflow-1',
-      workspaceId: 'workspace-1',
-      name: 'Test',
-      executionCondition: { kind: 'manual' },
-      requiredAgentCount: 3,
-      version: 1,
-      executionPolicy: { maxParallelism: 2, maxNodeExecutions: 3 },
-      nodes: [
-        { id: 'node-a', agentId: 'agent-a', name: 'A', position: { x: 900, y: 0 } },
-        { id: 'node-b', agentId: 'agent-b', name: 'B', position: { x: 0, y: 0 } },
-        { id: 'node-c', agentId: 'agent-c', name: 'C', join: { mode: 'all' } },
-      ],
-      edges: [
-        { id: 'a-c', source: 'node-a', target: 'node-c', route: { outcomes: ['succeeded'] } },
-        { id: 'b-c', source: 'node-b', target: 'node-c', route: { outcomes: ['succeeded'] } },
-        { id: 'a-b', source: 'node-a', target: 'node-b', route: { outcomes: ['succeeded'] } },
-      ],
-    },
-    agentConfigurationVersionIds: {
-      'agent-a': 'config-a',
-      'agent-b': 'config-b',
-      'agent-c': 'config-c',
-    },
-    contentHash: 'sha256:test',
-    createdAt: '2026-09-14T00:00:00.000Z',
-  })
+function fixture() {
+  const f = makeCurrentWorkflowFixture('topology', 'parallel')
+  const [entry, left, right, join] = f.version.definition.nodes
+  return { ...f, entry: entry!, left: left!, right: right!, join: join! }
 }
 
-describe('LangGraph topology validation', () => {
-  it('uses the explicit entry point rather than canvas position', () => {
-    const topology = validateExecutableTopology(workflowVersion())
-    expect(topology.outgoing.get('node-a')).toEqual(['node-c', 'node-b'])
-    expect(topology.incoming.get('node-c')).toEqual(['node-a', 'node-b'])
-    expect(topology.sinks).toEqual(['node-c'])
+describe('current LangGraph topology validation', () => {
+  it('uses the explicit entry and relationship identities rather than canvas or array position', () => {
+    const f = fixture()
+    f.entry.position = { x: 900, y: 0 }
+    f.left.position = { x: 0, y: 0 }
+    f.version.definition.edges.reverse()
+    const topology = compileExecutionTopology(WorkflowVersionV3Schema.parse(f.version))
+    expect(topology.entryNodeId).toBe(f.entry.id)
+    expect(topology.outgoing.get(f.entry.id)?.map((edge) => edge.target)).toEqual([f.left.id, f.right.id])
+    expect(topology.incoming.get(f.join.id)?.map((edge) => edge.source)).toEqual([f.left.id, f.right.id])
+    expect(topology.sinks).toEqual([f.join.id])
   })
 
   it.each(['source', 'target'] as const)('rejects an unknown edge %s before building adjacency', (endpoint) => {
-    const version = workflowVersion()
-    version.definition.edges[0]![endpoint] = 'missing-node'
-
-    expect(() => validateExecutableTopology(version)).toThrow('references an unknown node')
+    const f = fixture()
+    f.version.definition.edges[0]![endpoint] = 'missing-node'
+    expect(() => WorkflowVersionV3Schema.parse(f.version)).toThrow('relationships require distinct existing endpoints')
+    expect(() => compileExecutionTopology(f.version)).toThrow('invalid identity or endpoints')
   })
 
-  it('rejects a missing all join at a fan-in', () => {
-    const version = workflowVersion()
-    delete version.definition.nodes[2]!.join
-
-    expect(() => validateExecutableTopology(version)).toThrow('must use an all join')
-  })
-
-  it('rejects an unreachable node even when all edge endpoints exist', () => {
-    const version = workflowVersion()
-    version.definition.edges = version.definition.edges.filter((edge) => edge.id !== 'a-b')
-
-    expect(() => validateExecutableTopology(version)).toThrow('Every workflow node must be reachable')
-  })
-
-  it('rejects a reachable cycle instead of treating it as a terminal graph', () => {
-    const version = workflowVersion()
-    version.definition.edges.push({
-      ...version.definition.edges[0]!, id: 'c-a', source: 'node-c', target: 'node-a',
-    })
-
-    expect(() => validateExecutableTopology(version)).toThrow('Cycles and bounded repeats are not supported')
-  })
-
-  it('rejects unsupported result routing instead of silently changing it', () => {
-    const version = workflowVersion()
-    version.definition.edges[0]!.route = {
-      outcomes: ['succeeded'],
-      result: { path: ['approved'], operator: 'equals', value: true },
+  it('retains all-required fan-in when the optional all-join annotation is omitted', () => {
+    const f = fixture()
+    delete f.join.join
+    const topology = compileExecutionTopology(WorkflowVersionV3Schema.parse(f.version))
+    expect(topology.incoming.get(f.join.id)?.map((edge) => edge.source)).toEqual([f.left.id, f.right.id])
+    const resolutions = new Map<string, ReturnType<typeof NodeResolutionSchema.parse>>()
+    expect(decideExecutionAdmission(topology, f.join.id, resolutions)).toEqual({ kind: 'waiting' })
+    for (const node of [f.left, f.right]) {
+      const selected = topology.outgoing.get(node.id)!.map((edge) => edge.id)
+      resolutions.set(node.id, NodeResolutionSchema.parse({ workflowNodeId: node.id, resolution: 'succeeded',
+        execution: f.identities.find((identity) => identity.workflowNodeId === node.id),
+        acceptedResultDigest: `sha256:${'1'.repeat(64)}`, branchEnded: false,
+        selectedRelationshipIds: selected, unselectedRelationshipIds: [], resolvedAt: f.createdAt,
+      }))
+      expect(decideExecutionAdmission(topology, f.join.id, resolutions)).toEqual(node === f.left
+        ? { kind: 'waiting' } : { kind: 'run', selected: topology.incoming.get(f.join.id) })
     }
-    expect(() => validateExecutableTopology(version)).toThrowError(DomainError)
-    expect(() => validateExecutableTopology(version)).toThrow('uses routing not supported')
   })
 
-  it('rejects a graph that no longer matches its declared agent count', () => {
-    const version = workflowVersion()
-    version.definition.nodes[2] = { ...version.definition.nodes[2]!, agentId: 'agent-b' }
+  it('rejects an excluded predecessor feeding a reachable node', () => {
+    const f = fixture()
+    f.version.definition.edges = f.version.definition.edges.filter((edge) => !(edge.source === f.entry.id && edge.target === f.right.id))
+    expect(() => compileExecutionTopology(f.version)).toThrow('An excluded component cannot supply a selected-component dependency')
+  })
 
-    expect(() => validateExecutableTopology(version)).toThrowError(DomainError)
-    expect(() => validateExecutableTopology(version)).toThrow('requires exactly 3 agents but references 2')
+  it('rejects an authored cycle instead of treating it as a terminal graph', () => {
+    const f = fixture()
+    f.version.definition.edges.push({ id: 'back-edge', kind: 'execution', source: f.join.id, target: f.left.id })
+    expect(() => WorkflowVersionV3Schema.parse(f.version)).toThrow('execution relationships must form an acyclic graph')
+    expect(() => compileExecutionTopology(f.version)).toThrow('only explicit finite block boundaries may repeat')
+  })
+
+  it('accepts explicit finite repeat without introducing a back-edge into the DAG', () => {
+    const { version } = makeCurrentWorkflowFixture('topology-repeat', 'repeat')
+    const topology = compileExecutionTopology(WorkflowVersionV3Schema.parse(version))
+    expect(topology.order).toEqual(version.definition.nodes.map((node) => node.id))
+    expect(version.definition.repeat?.blocks[0]?.maxOccurrences).toBe(3)
+  })
+
+  it('rejects legacy result expressions instead of silently translating them to named choices', () => {
+    const { version } = fixture()
+    const [edge, ...rest] = version.definition.edges
+    const invalid = { ...version, definition: { ...version.definition, edges: [{ ...edge,
+      route: { outcomes: ['succeeded'], result: { path: ['approved'], operator: 'equals', value: true } },
+    }, ...rest] } }
+    expect(() => WorkflowVersionV3Schema.parse(invalid)).toThrow()
+    expect(WorkflowVersionV3Schema.safeParse(makeCurrentWorkflowFixture('named-choice', 'conditional').version).success).toBe(true)
+  })
+
+  it('rejects duplicate Agents and a mismatched declared topology count', () => {
+    const f = fixture()
+    f.version.definition.requiredAgentCount = f.version.definition.nodes.length
+    f.join.agentId = f.right.agentId
+    expect(() => WorkflowVersionV3Schema.parse(f.version)).toThrow('an Agent may occur only once in this topology')
+    const other = fixture()
+    other.version.definition.requiredAgentCount = other.version.definition.nodes.length - 1
+    expect(() => WorkflowVersionV3Schema.parse(other.version)).toThrow('requiredAgentCount does not match the topology')
   })
 })

@@ -7,8 +7,10 @@ import { ManagementActionSchema } from '@graphql/contracts/management'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 
-function value(result: { isError?: boolean; structuredContent?: unknown }) {
-  expect(result.isError, JSON.stringify(result.structuredContent)).not.toBe(true)
+function value(result: { isError?: boolean | undefined; structuredContent?: unknown }) {
+  // SDK optional properties can be present with undefined. Success retains its
+  // structured body; an error's text-only envelope is diagnostic, not success.
+  expect(result.isError, JSON.stringify(result)).not.toBe(true)
   return result.structuredContent as Record<string, unknown>
 }
 afterEach(() => vi.restoreAllMocks())

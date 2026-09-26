@@ -18,7 +18,7 @@ import { DomainError } from '../src/modules/errors.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
-import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
+import { Wave25InteractionRepository } from '../src/modules/interactions/wave25/repository.js'
 import type { NativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import { InteractionService } from '../src/modules/interactions/service.js'
 import { buildProductionApp } from '../src/production.js'
@@ -42,7 +42,7 @@ function interaction(overrides: Partial<DurableInteraction> = {}): DurableIntera
     id: 'interaction-1', revision: 0, workspaceId: 'workspace-1', workflowId: 'workflow-1',
     runId: 'run-1', executionId: 'execution-1', requestingAgentId: 'agent-1', harness: 'codex',
     providerVersion: 'codex-cli 0.154.0', nativeSessionId: 'native-session-1', nativeRequestId: 'native-request-1',
-    nativeRequestType: 'item/commandExecution/requestApproval', graphThreadId: 'thread-1',
+    nativeRequestType: 'item/commandExecution/requestApproval', graphThreadId: 'run-1',
     request: { command: ['true'] }, approval: { handler: 'user' },
     responseOptions: CODEX_APPROVAL_OPTIONS_FIXTURE, status: 'pending', deliveryState: 'not_started',
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...overrides,
@@ -118,7 +118,7 @@ it('uses one real approval runtime across production HTTP, Operator MCP, App MCP
   const approvals: unknown = Reflect.get(production.engine, 'nativeExecutions')
   const repository: unknown = Reflect.get(production.engine, 'interactions')
   expect(approvals).toBeInstanceOf(ApprovalExecutionCoordinator)
-  expect(repository).toBeInstanceOf(PostgresInteractionRepository)
+  expect(repository).toBeInstanceOf(Wave25InteractionRepository)
   expect(service).toBeInstanceOf(InteractionService)
   expect(service).toHaveProperty('nativeRuntime', approvals)
   expect(service).toHaveProperty('interactions', repository)
@@ -132,9 +132,14 @@ it('uses one real approval runtime across production HTTP, Operator MCP, App MCP
   expect(production.app.hasRoute({ method: 'GET', url: '/api/interactions' })).toBe(false)
   for (const url of ['/mcp/operator', '/mcp/tools']) expect(production.app.hasRoute({ method: 'POST', url })).toBe(true)
   const resume = vi.spyOn(production.engine, 'resumeInteraction').mockResolvedValue(undefined)
-  const callback = Reflect.get(service, 'resumeGraph') as (value: DurableInteraction) => Promise<void>
-  await callback(current)
-  expect(resume).toHaveBeenCalledExactlyOnceWith(current)
+  const callback = Reflect.get(service, 'atomicApprovalResume') as
+    Parameters<InteractionService['useAtomicApprovalResume']>[0] | undefined
+  expect(callback).toBeTypeOf('function')
+  // Construction-level wiring only: the spied engine receives the exact claim;
+  // no SQL checkpoint, native response, or resume receipt is manufactured here.
+  const claim = { interaction: current, ownerToken: 'composition-resume-owner' }
+  await callback!(claim)
+  expect(resume).toHaveBeenCalledExactlyOnceWith(current, claim)
 })
 
 it.each(['codex', 'opencode'] as const)('constructs separate native %s managers for each accepted execution', (harness) => {

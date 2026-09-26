@@ -41,7 +41,10 @@ export async function currentRepositoryFixture(db: Awaited<ReturnType<typeof age
   const repository = new PostgresRunRepository(db.pool, new PostgresWorkflowRepository(db.pool), locations,
     { runtimeRoot: db.directory, ...createWorkflowRepositoryServices(capture.verify) })
   const authorizeStop = async (sql: GraphTransactionSql) => {
-    const live = await currentOperatorAuthority(sql, issued.principal.id)
+    // The authority reader uses only the promise/string query overload. Keep
+    // it on this leased transaction, never on db.pool outside the Stop fence.
+    const database = { query: sql.query.bind(sql) as Parameters<typeof currentOperatorAuthority>[0]['query'] }
+    const live = await currentOperatorAuthority(database, issued.principal.id)
     requireAuthorization(live.principal, 'runs:stop', { workspaceId: f.scope.workspaceId,
       workflowId: f.scope.workflowId, runId: f.run.id })
   }

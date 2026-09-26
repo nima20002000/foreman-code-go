@@ -46,8 +46,19 @@ describe('ENG-S3-ONLY read discovery and manual admission contracts', () => {
     const capabilities = { capabilityVersion: 1, protocolVersions: [1], readSemanticsVersions: [3], transport: 'http_poll', activePollMs: 1000,
       semantics3: { persistedReads: true, payload: 'metadata_only', runtimeAdmission: false, meaningfulEdit: false } }
     expect(CanonicalRunGraphReadCapabilitiesSchema.parse(capabilities)).toEqual(capabilities)
+    // The shared shape also represents a fully bound production runtime. A
+    // qualified reader alone must still not advertise Start or meaningful edits.
+    expect(CanonicalRunGraphReadCapabilitiesSchema.safeParse({ ...capabilities,
+      semantics3: { ...capabilities.semantics3, runtimeAdmission: true },
+    }).success).toBe(true)
+    const connect = vi.fn(() => { throw new Error('Discovery must not acquire SQL') })
+    const reads = new RunGraphReadService({ connect } as unknown as pg.Pool, { qualifiedReads: true })
+    expect(reads.capabilities(principal).semantics3).toMatchObject({
+      persistedReads: true, runtimeAdmission: false, meaningfulEdit: false,
+    })
+    expect(connect).not.toHaveBeenCalled()
     for (const value of [{ ...capabilities, readSemanticsVersions: [2] }, { ...capabilities, readSemanticsVersions: [2, 3] },
-      { ...capabilities, protocolVersions: [] }, { ...capabilities, semantics3: { ...capabilities.semantics3, runtimeAdmission: true } }]) {
+      { ...capabilities, protocolVersions: [] }]) {
       expect(CanonicalRunGraphReadCapabilitiesSchema.safeParse(value).success).toBe(false)
     }
   })
