@@ -1,4 +1,5 @@
-import { basename, join, resolve } from 'node:path'
+import { readdir, stat, unlink } from 'node:fs/promises'
+import { basename, dirname, join, resolve } from 'node:path'
 import pino, { type Level, type Logger, type LevelWithSilent } from 'pino'
 
 /** Components that own a child logger. Keep this list short and stable: it is the `component` field operators filter on. */
@@ -41,18 +42,42 @@ export function logFilePath(env: NodeJS.ProcessEnv): string | undefined {
   return undefined
 }
 
+const positive = (value: string | undefined, fallback: number) => {
+  const number = Number(value ?? fallback)
+  return Number.isSafeInteger(number) && number > 0 ? number : fallback
+}
+
 /**
- * Adds a rotating file beside stdout: a new file daily or at LOG_MAX_SIZE (default 20m),
- * keeping LOG_MAX_FILES (default 14). Writes are synchronous for the same crash reason.
+ * Deletes rotated files older than `days`, then all but the newest `count`. Only this
+ * logger's own files (`<base>.<n>.log`) are touched; anything else in the directory stays.
+ */
+export async function pruneLogFiles(file: string, count: number, days: number, now = Date.now()): Promise<string[]> {
+  const directory = dirname(file), base = basename(file).replace(/\.log$/, '')
+  const own = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.\\d+\\.log$`)
+  const names = (await readdir(directory).catch(() => [] as string[])).filter((name) => own.test(name))
+  const files = (await Promise.all(names.map(async (name) => ({ name, modified: (await stat(join(directory, name))).mtimeMs }))))
+    .sort((a, b) => b.modified - a.modified)
+  const expired = files.filter((item, index) => index >= count || now - item.modified > days * 86_400_000).map((item) => item.name)
+  await Promise.allSettled(expired.map((name) => unlink(join(directory, name))))
+  return expired
+}
+
+/**
+ * Adds a rotating file beside stdout: a new file daily or at LOG_MAX_SIZE (default 20m).
+ * Retention: at most LOG_MAX_FILES files (default 14) and nothing older than
+ * LOG_RETENTION_DAYS (default 14), enforced at startup and on every roll, across restarts.
+ * Writes are synchronous for the same crash reason.
  */
 export async function enableFileLogging(env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
   const file = logFilePath(env)
   if (!file) return undefined
+  const count = positive(env.LOG_MAX_FILES, 14), days = positive(env.LOG_RETENTION_DAYS, 14)
+  const pruned = await pruneLogFiles(file, count, days)
   const { default: roll } = await import('pino-roll')
-  const count = Number(env.LOG_MAX_FILES ?? 14)
+  // removeOtherLogFiles: count files left by earlier processes too, not only this one's.
   const stream = await roll({ file: file.replace(/\.log$/, ''), extension: '.log', frequency: 'daily', size: env.LOG_MAX_SIZE ?? '20m',
-    mkdir: true, symlink: true, sync: true, limit: { count: Number.isSafeInteger(count) && count > 0 ? count : 14 } })
+    mkdir: true, symlink: true, sync: true, limit: { count, removeOtherLogFiles: true } })
   streams.add({ level: level === 'silent' ? 'fatal' : level as Level, stream })
-  logger.info({ component: 'lifecycle', file: basename(file) }, 'file logging enabled')
+  logger.info({ component: 'lifecycle', file: basename(file), maxFiles: count, retentionDays: days, prunedFiles: pruned.length }, 'file logging enabled')
   return file
 }

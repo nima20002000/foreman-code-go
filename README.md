@@ -70,9 +70,16 @@ and harness input/output are redacted.
 - `LOG_LEVEL`: `fatal`, `error`, `warn`, `info` (default), `debug`, `trace` or
   `silent`. Unit tests default to `silent`.
 - `LOG_DIR` or `LOG_FILE`: also write to a rotating file (`api.<n>.log` plus a
-  `current.log` link), rolled daily or at `LOG_MAX_SIZE` (default `20m`),
-  keeping `LOG_MAX_FILES` (default 14). `corepack pnpm dev` sets
-  `LOG_DIR=.logs` unless you choose a destination.
+  `current.log` link), rolled daily or at `LOG_MAX_SIZE` (default `20m`).
+  `corepack pnpm dev` sets `LOG_DIR=.logs` unless you choose a destination.
+- Retention: at most `LOG_MAX_FILES` files (default 14) and nothing older than
+  `LOG_RETENTION_DAYS` (default 14). Enforced at startup and on every roll,
+  including files left by earlier runs, so disk use stays bounded
+  (about 14 × 20 MB by default). Other files in the directory are never touched.
+
+Requests log one `request completed` line: `debug` for routine success,
+`info` for 4xx, `warn` for anything slower than 2 s, `error` for 5xx. Paths are
+logged without query strings. Set `LOG_LEVEL=debug` to see every request.
 
 Nothing ends silently: startup, readiness, shutdown signals, stop, uncaught
 exceptions, unhandled rejections, failed startup and every process exit are
