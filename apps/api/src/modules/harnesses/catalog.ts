@@ -72,7 +72,7 @@ export class HarnessCatalogService {
     } catch (error) {
       return {
         harness, defaults: defaults[harness], defaultsRevision: revision, capability: null,
-        discoveryError: { code: 'HARNESS_DISCOVERY_UNAVAILABLE', message: error instanceof Error ? error.message : 'Harness discovery failed.' },
+        discoveryError: { code: error instanceof DomainError ? error.code : 'HARNESS_DISCOVERY_UNAVAILABLE', message: error instanceof Error ? error.message : 'Harness discovery failed.' },
       }
     }
   }

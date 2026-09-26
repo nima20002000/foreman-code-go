@@ -48,6 +48,7 @@ import { codexMcpInspectorAdapter } from './modules/harnesses/codexMcpInspectorA
 import { McpDetectionService, WorkerLaunchCredentialService, type ExecutionCredentialProvider } from './modules/harnesses/mcpDetection.js'
 import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from './modules/harnesses/opencodeServer.js'
 import { openCodeMcpInspectorAdapter } from './modules/harnesses/opencodeMcpInspectorAdapter.js'
+import { ExecutionReadinessService } from './modules/harnesses/executionReadiness.js'
 import { NativeRollout } from './modules/harnesses/nativeRollout.js'
 import type { NativeHarnessSessionManager } from './modules/harnesses/port.js'
 import { NativeHarnessConfigurationQualifier } from './modules/harnesses/nativeConfigurationQualifier.js'
@@ -293,6 +294,7 @@ export function buildProductionApp(
   })
 
   const operatorServices = {
+    executionReadiness: new ExecutionReadinessService(rollout, harnessCatalog),
     operatorChat: chat,
     workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings),
     locations,

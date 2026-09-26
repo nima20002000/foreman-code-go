@@ -1,4 +1,5 @@
 import type { OperatorChatSetup } from '@graphql/contracts'
+import { ExecutionReadinessNotice } from './ExecutionReadinessNotice'
 import { Alert, Button } from '../../shared/ui/nocturne'
 
 export function OperatorSetupNotice({ data, checking, failed, onRetry }: {
@@ -7,7 +8,8 @@ export function OperatorSetupNotice({ data, checking, failed, onRetry }: {
   if (checking && !data) return <p role="status">Checking Operator MCP installation…</p>
   if (failed) return <Alert tone="warning" title="Operator MCP could not be checked"
     action={<Button size="sm" disabled={checking} onClick={onRetry}>Check again</Button>}>Chat is unavailable until the installation is verified.</Alert>
-  if (!data || data.status === 'configured') return null
+  if (!data) return null
+  if (data.status === 'configured') return <ExecutionReadinessNotice harness={data.harness} />
   const name = data.harness === 'opencode' ? 'OpenCode' : 'Codex'
   return <Alert tone="warning" title={`Install Operator MCP in ${name} first`}
     action={<><a className="n-button n-button--secondary n-button--sm"

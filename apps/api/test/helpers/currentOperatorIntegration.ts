@@ -1,3 +1,5 @@
+import { ExecutionReadinessService } from '../../src/modules/harnesses/executionReadiness.js'
+import { NativeRollout } from '../../src/modules/harnesses/nativeRollout.js'
 import { randomUUID } from 'node:crypto'
 import { ManagementActionSchema } from '@graphql/contracts/management'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -34,7 +36,7 @@ export async function currentOperatorIntegration(options: Parameters<typeof chec
     version: 'fixture', authenticated: true, ready: true, structuredEvents: true, supportsResume: true,
     supportsCancellation: true, supportsWorkingDirectory: true, supportsStartupPrompt: true,
     supportedNativeTools: [], supportedSettings: [], unsupportedCapabilities: [] }) }, settings, commands, f.db.directory)
-  const services = { commands, locations: f.locations, workflows: new WorkflowManagementService(f.db.pool, commands),
+  const services = { executionReadiness: new ExecutionReadinessService(new NativeRollout({ GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: '1' }), harnesses), commands, locations: f.locations, workflows: new WorkflowManagementService(f.db.pool, commands),
     runs: new RunManagementService(f.db.pool, commands, f.runs, f.engine, f.locations, binding),
     workspaces: new WorkspaceManagementService(f.db.pool, commands, f.locations), agents: new AgentManagementService(f.db.pool), harnesses,
     settings: new FoundationSettingsManagementService(new PostgresFoundationSettingsRepository(f.db.pool), commands, harnesses, new PostgresOperatorRepository(f.db.pool)) }

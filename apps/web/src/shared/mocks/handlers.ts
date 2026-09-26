@@ -251,6 +251,12 @@ export const handlers: RequestHandler[] = [
   http.get('/api/management/interactions', () => HttpResponse.json({
     items: [], nextCursor: null, pendingCount: 0, pendingByWorkflow: {},
   })),
+  http.get('/api/management/harnesses/:harness/execution-readiness', ({ params }) => HttpResponse.json({
+    harness: params.harness, scope: 'saved-harness-defaults', status: 'unverified', rolloutEnabled: false,
+    defaultsRevision: null, checkedAt: new Date().toISOString(),
+    reason: { code: 'HARNESS_DISCOVERY_UNAVAILABLE', message: 'Execution qualification has not been checked.' },
+    limitation: 'Deterministic fixture; no native execution.',
+  })),
   http.get('/api/management/harnesses', () => HttpResponse.json(getMockHarnessCatalog())),
   http.get('/api/management/harnesses/:harness/options', ({ params }) => {
     const harness = String(params.harness)
