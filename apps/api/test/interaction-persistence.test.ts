@@ -199,7 +199,7 @@ it('keeps every applied migration byte-for-byte and composes HAP-04 and HAP-05 m
     return { rows: [], rowCount: 0 }
   } }) } as unknown as pg.Pool
   await applyApplicationMigrations(pool)
-  assert.deepEqual([...observed.keys()], [...Object.keys(expected).map(Number), 503, 507, 508, 509, 700, 701, 800, 1701, 1702, 170017, 170018, 170019, 170020, 170021, 170022, 170023, 170024, 170025, 170026, 250001, 250002, 250003, 250005, 264201, 264401, 264402])
+  assert.deepEqual([...observed.keys()], [...Object.keys(expected).map(Number), 503, 507, 508, 509, 700, 701, 800, 1701, 1702, 170017, 170018, 170019, 170020, 170021, 170022, 170023, 170024, 170025, 170026, 250001, 250002, 250003, 250005, 264201, 264401, 264402, 264403, 264404])
   for (const [version, hash] of Object.entries(expected)) assert.equal(observed.get(Number(version)), hash, `migration ${version}`)
   assert.equal(observed.get(170021), '5d91e223036ef21375b5d67916956121b4ed4ca5de702a545650a1ef054b2e6a')
   assert.equal(observed.get(170022), '8cc94ebe79fb52b2bce61655d2d2a57a7c2bb766752594f21b4b08d0d71bfa20')

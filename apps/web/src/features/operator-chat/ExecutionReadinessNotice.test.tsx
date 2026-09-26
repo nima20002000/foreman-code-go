@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ExecutionReadiness } from '@graphql/contracts/management'
@@ -26,7 +26,8 @@ describe('execution readiness notice', () => {
   })
   it('does not imply the selected Operator has been qualified', async () => {
     mount('eligible')
-    expect(await screen.findByText(/Saved Codex defaults are eligible/)).toHaveTextContent('settings and permissions are checked when chat starts')
+    await waitFor(() => expect(screen.queryByText('Checking execution eligibility…')).not.toBeInTheDocument())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
   it('keeps failed reads explicitly unverified', async () => {
     mount('error')

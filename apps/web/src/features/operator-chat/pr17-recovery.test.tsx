@@ -8,7 +8,7 @@ import { OperatorChat } from './OperatorChat'
 import { useOperatorChatStore } from './operatorChatStore'
 
 const api = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), create: vi.fn(), clearDraft: vi.fn() }))
-vi.mock('../../shared/api/client', () => ({ getOperatorConversation: api.get, createOperatorConversation: api.create, sendOperatorMessage: vi.fn(), cancelOperatorTurn: vi.fn(), respondOperatorInteraction: vi.fn() }))
+vi.mock('../../shared/api/client', async (original) => ({ ApiError: (await original<typeof import('../../shared/api/client')>()).ApiError, getOperatorConversation: api.get, createOperatorConversation: api.create, sendOperatorMessage: vi.fn(), cancelOperatorTurn: vi.fn(), respondOperatorInteraction: vi.fn() }))
 vi.mock('../../shared/api/operatorChatSummaries', () => ({ listOperatorConversationSummaries: api.list }))
 vi.mock('../../shared/api/operatorChatStream', () => ({ subscribeOperatorChat: () => () => {} }))
 vi.mock('../../shared/api/sessionBoundary', () => ({ sessionGeneration: () => 1, sessionIsSwitching: () => false }))

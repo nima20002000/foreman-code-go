@@ -182,7 +182,10 @@ function managedWorkflow(workflow: WorkflowDefinition) {
   }
 }
 
+export const mockRuntimeIdentity = { installationId: 'd95abeb8-598a-49a4-8c3c-c6e3533053e8', checkoutId: 'a'.repeat(64), databaseId: 'b'.repeat(64) }
+
 export const handlers: RequestHandler[] = [
+  http.get('/api/auth/identity', () => HttpResponse.json(mockRuntimeIdentity)),
   ...settingsExperienceHandlers,
   http.get('/api/operator/setup', () => HttpResponse.json({ harness: getMockAgentDefaults().value.operator.harness.harness,
     status: 'configured', configurationVersionId: 'operator-config',

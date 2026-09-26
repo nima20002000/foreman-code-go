@@ -55,9 +55,9 @@ async function listening(port, host = '127.0.0.1') {
   })
 }
 
-async function responds(url, accepts) {
+async function responds(url, accepts, headers) {
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(2000) })
+    const response = await fetch(url, { signal: AbortSignal.timeout(2000), ...(headers ? { headers } : {}) })
     return accepts(response, await response.text())
   } catch { return false }
 }
@@ -126,8 +126,8 @@ async function main() {
     if (!await responds(`${apiUrl}/health/live`, apiLive)) {
       throw new Error(`Port ${port} is in use by a different or unhealthy service.`)
     }
-    if (!await responds(`${apiUrl}/api/auth/session`, (response, body) => response.ok && body.includes('"localDev":true'))) {
-      throw new Error(`The API at ${apiUrl} is not running with local development browser access. Stop it and restart corepack pnpm dev.`)
+    if (!await responds(`${apiUrl}/api/auth/session`, (response, body) => response.ok && body.includes('"localDev":true'), { Origin: browser.origin })) {
+      throw new Error(`The API at ${apiUrl} does not accept local browser access from ${browser.origin}. Restart the intended API with this GRAPHQL_BROWSER_ORIGIN, or choose its existing browser origin.`)
     }
     if (!await responds(`${apiUrl}/health/identity`, apiIdentityMatches(await expectedIdentity()))) {
       throw new Error(`The API at ${apiUrl} belongs to a different checkout or database installation. Stop the intended process explicitly or choose a different PORT.`)
