@@ -85,9 +85,10 @@ async function signIn(app: FastifyInstance) {
 
 describe('Better Auth owner browser lifecycle (PostgreSQL)', () => {
   it('serves the real API in local dev without browser credentials while enforcing grants and origin', async () => withDatabase(async ({ app, access, pool }) => {
-    const dev = new LocalDevBrowserAccess(pool, access)
+    const devOrigin = 'http://localhost:5175'
+    const dev = new LocalDevBrowserAccess(pool, access, devOrigin)
     const server = app({}, undefined, dev)
-    const localHeaders = { host: '127.0.0.1:3000', origin: 'http://127.0.0.1:5173' }
+    const localHeaders = { host: '127.0.0.1:3000', origin: devOrigin }
     const session = await server.inject({ method: 'GET', url: '/api/auth/session', headers: localHeaders })
     expect(session.statusCode).toBe(200)
     expect(session.json().localDev).toBe(true)
@@ -101,11 +102,13 @@ describe('Better Auth owner browser lifecycle (PostgreSQL)', () => {
         value: { ...defaults.value, suggestedName: 'Local dev workspace' } } })
     expect(saved.statusCode).toBe(200)
     expect(saved.json().value.value.suggestedName).toBe('Local dev workspace')
+    const readback = await server.inject({ method: 'GET', url: '/api/management/settings/workspaces', headers: localHeaders })
+    expect(readback.json().value.suggestedName).toBe('Local dev workspace')
     expect((await server.inject({ method: 'GET', url: '/api/auth/session', headers: { ...localHeaders, authorization: 'Bearer invalid' } })).statusCode).toBe(401)
     expect((await server.inject({ method: 'PUT', url: '/api/management/settings/workspaces',
       headers: { host: localHeaders.host }, payload: {} })).statusCode).toBe(403)
     expect((await server.inject({ method: 'GET', url: '/api/auth/session', headers: {
-      ...localHeaders, origin: 'http://localhost:5173',
+      ...localHeaders, origin: 'http://127.0.0.1:5175',
     } })).statusCode).toBe(403)
     expect((await server.inject({ method: 'GET', url: '/api/auth/session', headers: localHeaders,
       remoteAddress: '192.0.2.10' })).statusCode).toBe(403)
@@ -117,14 +120,15 @@ describe('Better Auth owner browser lifecycle (PostgreSQL)', () => {
       grants: [{ actions: ['settings:read'], scope: {} }], expiresAt: new Date(Date.now() + 3_600_000) })
     const before = (await pool.query('select grants from management_principals where id=$1', [issued.principal.id])).rows[0]
     const localHeaders = { host: '127.0.0.1:3000', origin: 'http://127.0.0.1:5173' }
-    const singleOwner = app({}, undefined, new LocalDevBrowserAccess(pool, access))
+    const devOrigin = 'http://127.0.0.1:5173'
+    const singleOwner = app({}, undefined, new LocalDevBrowserAccess(pool, access, devOrigin))
     expect((await singleOwner.inject({ method: 'GET', url: '/api/auth/session', headers: localHeaders })).json().principal.id)
       .toBe(issued.principal.id)
     await access.issue({ name: 'Other root Operator', audience: 'operator', grants: [],
       expiresAt: new Date(Date.now() + 3_600_000) })
-    const ambiguous = app({}, undefined, new LocalDevBrowserAccess(pool, access))
+    const ambiguous = app({}, undefined, new LocalDevBrowserAccess(pool, access, devOrigin))
     expect((await ambiguous.inject({ method: 'GET', url: '/api/auth/session', headers: localHeaders })).statusCode).toBe(503)
-    const server = app({}, undefined, new LocalDevBrowserAccess(pool, access, issued.principal.id))
+    const server = app({}, undefined, new LocalDevBrowserAccess(pool, access, devOrigin, issued.principal.id))
     expect((await server.inject({ method: 'GET', url: '/api/auth/session', headers: localHeaders })).json().principal.grants)
       .toEqual(issued.principal.grants)
     expect((await server.inject({ method: 'GET', url: '/api/management/settings/workspaces', headers: localHeaders })).statusCode).toBe(200)

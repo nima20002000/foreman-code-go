@@ -13,7 +13,7 @@ const flow = vi.hoisted(() => ({ props: null as ReactFlowProps<GraphNode, GraphE
 vi.mock('@xyflow/react', async () => ({
   ...await vi.importActual<typeof import('@xyflow/react')>('@xyflow/react'),
   ReactFlow: (props: ReactFlowProps<GraphNode, GraphEdge>) => { flow.props = props; return <div /> },
-  Background: () => null, MiniMap: () => null,
+  Background: () => null, Controls: () => null,
 }))
 vi.mock('./GraphElements', () => ({ AgentNode: () => null, AgentMinimapDot: () => null, HandoffEdge: () => null }))
 
@@ -23,7 +23,7 @@ function setup(readOnly = false) {
   const geometryRef = createRef<GraphCanvasHandle>()
   const start = vi.fn(), commit = vi.fn(), cancel = vi.fn()
   const mounted = render(<GraphPresentationProvider><GraphCanvas topology={topology}
-    departing={{ nodes: [], edges: [] }} theme="dark" geometryRef={geometryRef} readOnly={readOnly}
+    departing={{ nodes: [], edges: [] }} geometryRef={geometryRef} readOnly={readOnly}
     onGeometryStart={start} onGeometryCommit={commit} onGeometryCancel={cancel} /></GraphPresentationProvider>)
   const begin = () => act(() => flow.props!.onNodeDragStart?.({} as never, topology.nodes[0], [topology.nodes[0]]))
   const move = (x: number, dragging: boolean | undefined = true) => act(() => flow.props!.onNodesChange?.([

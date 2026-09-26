@@ -314,7 +314,7 @@ describe('Operator chat UX', () => {
     fireEvent.click(screen.getByRole('button', { name: /Model B model-b/ }))
     expect(onChange).toHaveBeenCalledWith({ harness: 'codex', model: 'model-b', reasoningEffort: 'low', serviceTier: 'standard', showThinking: false })
     expect(screen.getByRole('switch', { name: 'Show thinking' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'OpenCode' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'OpenCode' }))
     expect(onChange).toHaveBeenLastCalledWith(operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.opencode))
   })
   it('returns keyboard focus to effort after an automatic settings save', () => {

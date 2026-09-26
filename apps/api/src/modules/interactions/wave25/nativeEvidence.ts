@@ -1,3 +1,4 @@
+import { assertReviewOriginalProofLocked } from '../reviewNativeProof.js'
 import { DurableInteractionSchema, ReviewJobSchema } from '@graphql/contracts'
 import {
   parseNativeGraphObservation, assertNativeGraphProjectionAuthority, sameGraphScope,
@@ -14,7 +15,7 @@ import { reviewFact, sourceForReview } from './publication.js'
  * This consumer does not parse native frames, infer completion or acquire a runtime.
  * Run it in the same publication as A5's source/projection write. */
 export async function recordReviewObservation(publication: RunGraphPublication,
-  value: NativeGraphObservation, guard: NativeGraphProjectionGuard): Promise<void> {
+  value: NativeGraphObservation, guard: NativeGraphProjectionGuard, originalProofId: string): Promise<void> {
   const observation = parseNativeGraphObservation(value)
   if (observation.work.workKind !== 'review' || !sameGraphScope(observation.scope, publication.scope)
     || canonicalGraphJson(guard.expected.key) !== canonicalGraphJson(observation.work)
@@ -29,6 +30,7 @@ export async function recordReviewObservation(publication: RunGraphPublication,
   // Liveness never overwrites semantic evidence and never creates a turn.
   if (observation.kind === 'transport') return
   if (!job.submittedAt) return fail('GRAPH_EVIDENCE_INVALID')
+  await assertReviewOriginalProofLocked(publication.sql, job, observation, originalProofId)
   if (job.providerTurnOrMessageId && job.providerTurnOrMessageId !== observation.submissionId) return fail('REVIEW_JOB_IDENTITY_CONFLICT')
   const previous = row?.approval_native_evidence ? parseNativeGraphObservation(row.approval_native_evidence) : undefined
   if (previous && previous.kind !== 'transport') {
@@ -57,19 +59,24 @@ export async function recordReviewObservation(publication: RunGraphPublication,
   // business transition. A changed acknowledgement must never reuse a revision.
   const revision = String(BigInt(row.revision) + 1n)
   await publication.source({ evidence: sourceForReview(job, revision, observation.source),
-    sourceDigest: graphSourceDigest({ job, nativeEvidence: observation }),
+    sourceDigest: graphSourceDigest({ job, nativeEvidence: observation, originalProofId }),
     facts: [reviewFact(context, job, revision, acknowledgementId(observation))] }, async (sql) => {
-    const result = await sql.query(`update review_jobs set approval_native_evidence=$2::jsonb,revision=revision+1
-      where id=$1 and revision=$3::bigint`, [job.id, JSON.stringify(observation), row.revision])
+    const result = await sql.query(`update review_jobs set approval_native_evidence=$2::jsonb,approval_original_proof_id=$4,revision=revision+1
+      where id=$1 and revision=$3::bigint`, [job.id, JSON.stringify(observation), row.revision, originalProofId])
     if (result.rowCount !== 1) return fail('REVISION_CONFLICT')
   })
 }
 
 export async function reviewEvidence(sql: GraphTransactionSql, jobId: string): Promise<NativeGraphObservation | undefined> {
-  const row = (await sql.query<{ approval_native_evidence: unknown }>(
-    'select approval_native_evidence from review_jobs where id=$1', [jobId])).rows[0]
-  return row?.approval_native_evidence ? parseNativeGraphObservation(row.approval_native_evidence) : undefined
+  const row = (await sql.query<{ record: unknown; approval_native_evidence: unknown; approval_original_proof_id: string | null }>(
+    'select record,approval_native_evidence,approval_original_proof_id from review_jobs where id=$1', [jobId])).rows[0]
+  if (!row?.approval_native_evidence) return undefined
+  const observation = parseNativeGraphObservation(row.approval_native_evidence)
+  if (!row.approval_original_proof_id) return fail('REVIEW_ORIGINAL_SOURCE_REQUIRED')
+  await assertReviewOriginalProofLocked(sql, ReviewJobSchema.parse(row.record), observation, row.approval_original_proof_id)
+  return observation
 }
+
 export function acknowledgementId(observation: NativeGraphObservation | undefined): string | undefined {
   return observation && (observation.kind === 'terminal' && observation.terminal.nativeSettled
     || observation.kind === 'submission' && observation.state === 'acknowledged')

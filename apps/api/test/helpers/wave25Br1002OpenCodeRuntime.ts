@@ -1,7 +1,16 @@
+import { insertProviderRun, providerLaunchCredentials, providerAppEndpoint, stopProviderRun } from './wave25Br1003Runtime.js'
+import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE } from '../../src/modules/access/workerCredentials.js'
+import { openCodeMcpInspectorAdapter } from '../../src/modules/harnesses/opencodeMcpInspectorAdapter.js'
+import { createWorkflowNativeCaptureChannel } from '../../src/modules/interactions/workflowNativeCapture.js'
+import { createReviewNativeCaptureChannel } from '../../src/modules/interactions/reviewNativeCapture.js'
+import { ReviewNativeProofServices } from '../../src/modules/interactions/reviewNativeProof.js'
+import { PostgresRepeatReviewerBindings } from '../../src/modules/interactions/repeatReviewer.js'
+import { PostgresWorkflowClosureStore } from '../../src/modules/interactions/workflowClosure.js'
+import { createWorkflowRepositoryServices } from '../../src/modules/runs/workflowRepositoryServices.js'
 import { randomUUID } from 'node:crypto'
 import { vi } from 'vitest'
 import { AgentConfigurationVersionSchema, type DurableInteraction } from '@graphql/contracts'
-import { ExecutableWorkflowV2Schema, makeWave25Fixture, WorkflowRunV2Schema } from '@graphql/contracts/wave25'
+import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture, WorkflowRunV3Schema } from '@graphql/contracts/wave25'
 import { ApprovalPostgresSaver } from '../../src/infrastructure/approvalCheckpointSaver.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
@@ -13,11 +22,9 @@ import { InteractionService } from '../../src/modules/interactions/service.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../../src/modules/interactions/runtimePorts.js'
 import { Wave25InteractionRepository } from '../../src/modules/interactions/wave25/repository.js'
 import { Wave25WorkerCredentialService } from '../../src/modules/interactions/wave25/credentials.js'
-import { withExclusiveGraphConnection } from '../../src/modules/run-graph/connection.js'
 import { registerApprovalCheckpointResume } from '../../src/modules/runs/approvalCheckpointRegistration.js'
 import { continuationValidator } from '../../src/modules/runs/continuation.js'
 import { LangGraphWorkflowEngine } from '../../src/modules/runs/engine.js'
-import { insertOneShotRun } from '../../src/modules/runs/oneShotAdmission.js'
 import { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres.js'
 import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
@@ -33,6 +40,9 @@ export class Br1002OpenCodeServer extends FixtureServer {
     super()
     // Each execution owns a separate OpenCode process in production. Distinct
     // provider-issued session IDs also keep this deterministic fixture honest.
+    this.config = { mcp: { 'graphql-app': { type: 'remote', url: providerAppEndpoint, enabled: true } } }
+    this.mcpCredentialReferences['graphql-app'] = APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
+    this.mcp = { 'graphql-app': { status: 'connected' } }
     this.nextSessionIds.push(`ses_${executionId}`)
     this.onPrompt = (sessionID, body) => {
       const workflowCorrelation = `execution:${executionId}`
@@ -67,15 +77,15 @@ export class Br1002OpenCodeServer extends FixtureServer {
 
 /** Real coordinator, dispatcher, SQL owner, repositories, registration and
  * ApprovalPostgresSaver. Only external transport and accepted filesystem
- * identity are substituted. Execution credential preparation/heartbeat and
- * authenticated HTTP/MCP are NOT qualified by this fixture. Reviewer decisions
+ * identity are substituted. Execution credential preparation uses the real inspector and SQL issuer.
+ * Authenticated HTTP/MCP and a live provider are NOT qualified by this fixture. Reviewer decisions
  * below use a real issued SQL-scoped principal, not a fabricated binding. */
 export async function br1002OpenCodeRuntime(handler: 'user' | 'orchestrator' = 'user') {
   const db = await agent3Database()
   let engine: LangGraphWorkflowEngine | undefined
   const adapters: OpenCodeNativeSessionManager[] = []
   try {
-    const f = makeWave25Fixture(randomUUID())
+    const f = makeCurrentWorkflowFixture(randomUUID())
     const entry = f.version.definition.nodes.find((node) => node.id === f.version.entryNodeId)!
     const approval = handler === 'user' ? { handler } : { handler, designatedOrchestratorAgentId: entry.agentId }
     f.configurations = f.configurations.map((c) => AgentConfigurationVersionSchema.parse({ ...c,
@@ -97,17 +107,17 @@ export async function br1002OpenCodeRuntime(handler: 'user' | 'orchestrator' = '
       if (node.id !== entry.id) f.version.definition.edges.push({ id: `approval-${node.id}`,
         kind: 'approval', source: entry.id, target: node.id })
     }
-    f.version = ExecutableWorkflowV2Schema.parse({ version: f.version, configurations: f.configurations }).version
-    f.run = WorkflowRunV2Schema.parse({ ...f.run, approval, agentConfigurationVersionIds: f.version.agentConfigurationVersionIds })
+    f.version = ExecutableWorkflowV3Schema.parse({ version: f.version, configurations: f.configurations }).version
+    f.run = WorkflowRunV3Schema.parse({ ...f.run, approval, agentConfigurationVersionIds: f.version.agentConfigurationVersionIds })
     await seedAgent3(db.pool, db.directory, f, { run: false })
     const access = new PostgresAccessService(db.pool)
     const authority = await access.issue({ name: 'BR1-002 Run authority', audience: 'operator',
       expiresAt: new Date(Date.now() + 600000), grants: [
-        { actions: ['runs:start'], scope: { workspaceIds: [f.scope.workspaceId], workflowIds: [f.scope.workflowId] } },
+        { actions: ['runs:start', 'runs:stop'], scope: { workspaceIds: [f.scope.workspaceId], workflowIds: [f.scope.workflowId] } },
         { actions: ['workspace_locations:read'], scope: { workspaceIds: [f.scope.workspaceId] } },
       ] })
-    f.run = WorkflowRunV2Schema.parse({ ...f.run, authorizationPrincipalId: authority.principal.id })
-    await withExclusiveGraphConnection(db.pool, (connection) => connection.transaction((sql) => insertOneShotRun(sql, f.run)))
+    f.run = WorkflowRunV3Schema.parse({ ...f.run, authorizationPrincipalId: authority.principal.id })
+    await insertProviderRun(db.pool, f)
     const user = await access.issue({ name: 'BR1-002 user', audience: 'user', expiresAt: new Date(Date.now() + 600000),
       grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: {
         workspaceIds: [f.scope.workspaceId], workflowIds: [f.scope.workflowId], runIds: [f.run.id],
@@ -132,19 +142,31 @@ export async function br1002OpenCodeRuntime(handler: 'user' | 'orchestrator' = '
     const workflows = new PostgresWorkflowRepository(db.pool)
     const locations = new WorkspaceLocationService(db.pool, new PostgresCommandCoordinator(db.pool))
     vi.spyOn(locations, 'revalidateSnapshot').mockResolvedValue(undefined)
-    const runs = new PostgresRunRepository(db.pool, workflows, locations)
-    const repository = new Wave25InteractionRepository(db.pool), budgets = new PostgresApprovalBudgetRepository(db.pool)
+    const workflowCapture = createWorkflowNativeCaptureChannel()
+    const nativeCapture = { capture: workflowCapture.capture.capture.bind(workflowCapture.capture) }
+    const reviewCapture = createReviewNativeCaptureChannel()
+    const runs = new PostgresRunRepository(db.pool, workflows, locations,
+      { runtimeRoot: db.directory, ...createWorkflowRepositoryServices(workflowCapture.verify) })
+    const repository = new Wave25InteractionRepository(db.pool, new ReviewNativeProofServices(reviewCapture.verify)), budgets = new PostgresApprovalBudgetRepository(db.pool)
+    const credentials = new Wave25WorkerCredentialService(db.pool, access)
+    const launchCredentials = providerLaunchCredentials(runs, locations, managers, credentials, (manager) => {
+      if (!(manager instanceof OpenCodeNativeSessionManager)) throw new Error('Expected OpenCode native manager')
+      return openCodeMcpInspectorAdapter(manager)
+    }, db.pool)
     const native = new ApprovalExecutionCoordinator(runs, repository, budgets, managers, 600000,
-      undefined, continuationValidator(db.pool, locations))
+      launchCredentials, continuationValidator(db.pool, locations),
+      new PostgresWorkflowClosureStore(db.pool), new PostgresRepeatReviewerBindings(db.pool),
+      nativeCapture, reviewCapture.capture)
     engine = new LangGraphWorkflowEngine(runs, workflows, native, saver, db.directory,
-      locations, undefined, repository, undefined, { workerParallelism: 2 })
+      locations, launchCredentials, repository, undefined, { workerParallelism: 2 })
     const activeEngine = engine
     const service = new InteractionService(repository, budgets, native, (i) => activeEngine.resumeInteraction(i))
     registerApprovalCheckpointResume(service, engine)
-    const credentials = new Wave25WorkerCredentialService(db.pool, access)
     const config = { configurable: { thread_id: f.run.id } }
     return { db, f, engine, native, runs, repository, service, saver, config, servers, credentials, access,
+      nativeCapture, nativeVerification: workflowCapture.verify,
       principal: user.principal, authorizationPrincipalId: authority.principal.id,
+      stop: () => stopProviderRun(runs, f, authority.principal.id),
       async pending() { return repository.list({ runId: f.run.id, limit: 100 }) },
       async receipts() { return (await db.pool.query(`select entity_id,effect_digest,first_sequence::text
         from run_graph_effects where run_id=$1 and effect_kind='graph.resume' order by entity_id`, [f.run.id])).rows },

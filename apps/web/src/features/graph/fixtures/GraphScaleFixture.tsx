@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { GetRunResponse } from '@graphql/contracts'
+import { type CurrentRunDetails as GetRunResponse } from '@graphql/contracts/wave25'
 import { GraphCanvas, type GraphCanvasHandle } from '../GraphCanvas'
 import { GraphPresentationProvider } from '../GraphPresentation'
 import { GraphRuntimeProvider } from '../GraphRuntime'
@@ -10,7 +10,6 @@ import { applyGraphGeometry, type GraphGeometryChange } from '../geometry'
 import { makeScaleGraph, makeSyntheticRun } from './scaleData'
 import { queryKeys } from '../../../shared/api/query'
 import { shareRunResponseOrSelection } from '../../../shared/api/runLiveCache'
-import { useTheme } from '../../theme'
 import '../graph.css'
 
 const EMPTY_DEPARTURES = { nodes: [], edges: [] }
@@ -35,7 +34,6 @@ export function GraphScaleFixture({ count = 300 }: { count?: number }) {
 }
 
 function SyntheticCanvas({ count, client }: { count: number; client: QueryClient }) {
-  const theme = useTheme()
   const [source, setSource] = useState(() => makeScaleGraph(count))
   const [project] = useState(() => createGraphTopologyProjector())
   const store = useGraphPresentationStore()
@@ -90,7 +88,7 @@ function SyntheticCanvas({ count, client }: { count: number; client: QueryClient
     <section className="workflow-graph" aria-label="Synthetic scale graph">
       <div className="workflow-graph-canvas" style={{ position: 'relative', flex: 1 }}>
         <GraphRuntimeProvider scope={scope}><GraphCanvas topology={topology} departing={EMPTY_DEPARTURES}
-          theme={theme} geometryRef={geometry} onGeometryStart={noOp} onGeometryCancel={noOp}
+          geometryRef={geometry} onGeometryStart={noOp} onGeometryCancel={noOp}
           onGeometryCommit={commit} onPaneClick={clearSelection} /></GraphRuntimeProvider>
       </div>
     </section>

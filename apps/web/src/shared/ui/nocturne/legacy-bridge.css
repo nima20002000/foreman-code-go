@@ -1,43 +1,13 @@
 @import './nocturne.css';
 
-/* Optional visual migration for PR #17. Existing light theme and all feature logic remain intact. */
-:root:not([data-theme='light']) {
-  --color-canvas: var(--n-canvas);
-  --color-sidebar: var(--n-sidebar);
-  --color-header: var(--n-surface);
-  --color-surface: var(--n-surface);
-  --color-surface-raised: var(--n-raised);
-  --color-surface-subtle: var(--n-hover);
-  --color-border: var(--n-border);
-  --color-border-strong: var(--n-control-border);
-  --color-text: var(--n-text);
-  --color-text-strong: var(--n-text);
-  --color-text-muted: var(--n-muted);
-  --color-text-faint: var(--n-faint);
-  --color-accent: var(--n-accent);
-  --color-accent-strong: var(--n-accent-hover);
-  --color-accent-contrast: var(--n-accent-ink);
-  --color-focus: var(--n-focus);
-  --color-status-bg: var(--n-raised);
-  --color-status-dot: var(--n-muted);
-  --color-success-text: var(--n-success);
-  --color-warning-text: var(--n-warning);
-  --color-error-text: var(--n-danger);
-  --color-dashed: var(--n-control-border);
-  --color-minimap-mask: rgba(14, 15, 20, .8);
-}
-:root:not([data-theme='light']) .nav-item { border-radius: 7px; min-height: 38px; }
-:root:not([data-theme='light']) .nav-item-active { background: var(--n-accent-subtle); border-color: #443757; }
-:root:not([data-theme='light']) .nav-item-active .nav-item-icon { color: var(--n-accent); }
-:root:not([data-theme='light']) .sidebar-brand-mark { border-radius: 7px; }
-:root:not([data-theme='light']) .sidebar-collapse-button { border-radius: 7px; background: var(--n-raised); }
-:root:not([data-theme='light']) .react-flow__controls { border: 1px solid var(--n-border-strong); border-radius: 8px; overflow: hidden; box-shadow: var(--n-shadow); }
-:root:not([data-theme='light']) .react-flow__controls-button { color: var(--n-text); fill: currentColor; border-color: var(--n-border); background: var(--n-raised); min-width: 32px; min-height: 32px; }
-:root:not([data-theme='light']) .react-flow__controls-button:hover { background: var(--n-hover); }
-:root:not([data-theme='light']) .react-flow__controls-button:focus-visible { outline: 2px solid var(--n-focus); outline-offset: -3px; }
+/* xyflow controls on the design-system tokens, both themes. */
+.react-flow__controls { border: 1px solid var(--border-strong); border-radius: var(--radius-md); overflow: hidden; box-shadow: var(--shadow-popover); }
+.react-flow__controls-button { color: var(--text); fill: currentColor; border-color: var(--border); background: var(--surface-raised); min-width: 32px; min-height: 32px; }
+.react-flow__controls-button:hover { background: var(--surface-hover); }
+.react-flow__controls-button:focus-visible { outline: 2px solid var(--focus); outline-offset: -3px; }
 @media (pointer: coarse) {
-  :root:not([data-theme='light']) .react-flow__controls-button { min-width: 44px; min-height: 44px; }
+  .react-flow__controls-button { min-width: 44px; min-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  :root:not([data-theme='light']) .react-flow__edge-path { animation: none !important; }
+  .react-flow__edge-path { animation: none !important; }
 }

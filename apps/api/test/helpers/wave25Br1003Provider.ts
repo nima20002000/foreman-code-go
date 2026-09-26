@@ -13,6 +13,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
   readonly harness = 'codex' as const
   readonly counts = { sessions: 0, starts: 0, responses: 0, attaches: 0 }
   readonly startedNodes: string[] = []
+  readonly startedExecutions: string[] = []
   private readonly requests = new Map<string, HarnessExecutionRequest>()
   private readonly waits = new Map<string, PendingNativeInteraction[]>()
   private readonly terminals = new Map<string, NonNullable<NativeHistory['terminalResult']>>()
@@ -22,7 +23,8 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
   beforeRespond?: () => Promise<void>
 
   constructor(private readonly approvalNodes: ReadonlySet<string>, private readonly pendingPerExecution: 1 | 2 = 1,
-    private readonly acknowledgeStarts = false, private readonly disconnectAfterStart = false) {}
+    private readonly acknowledgeStarts = true, private readonly disconnectAfterStart = false,
+    private readonly outputFor?: (nodeId: string) => NonNullable<NativeHistory['terminalResult']>['output']) {}
 
   connection(): NativeHarnessSessionManager {
     // Separate transport facades per execution; only external history is shared.
@@ -59,7 +61,10 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
   async *startTurn(session: NativeSessionReference, input: Parameters<NativeHarnessSessionManager['startTurn']>[1]): AsyncIterable<NativeHarnessEvent> {
     const request = this.requests.get(session.nativeSessionId)
     if (!request) throw new Error('Missing accepted provider request')
-    if (this.startedNodes.includes(request.workflowNodeId)) throw new Error('A predecessor/native turn was replayed')
+    // A repeat occurrence/new Run/technical attempt legitimately reuses a node.
+    // Replaying the SAME accepted execution remains forbidden.
+    if (this.startedExecutions.includes(request.executionId)) throw new Error('A predecessor/native turn was replayed')
+    this.startedExecutions.push(request.executionId)
     this.startedNodes.push(request.workflowNodeId)
     this.counts.starts++
     const turnId = `turn-${request.executionId}`
@@ -80,8 +85,12 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
         type: 'interaction.pending', occurredAt: new Date().toISOString(), payload: {} })
       return
     }
-    this.terminals.set(session.nativeSessionId, { outcome: 'succeeded', output: { node: request.workflowNodeId } })
-    yield NativeHarnessEventSchema.parse({ sequence: 1, type: 'turn.completed', occurredAt: new Date().toISOString(), payload: { turnId } })
+    this.terminals.set(session.nativeSessionId, { outcome: 'succeeded', output: this.outputFor ? this.outputFor(request.workflowNodeId) : { node: request.workflowNodeId } })
+    const terminal = NativeHarnessEventSchema.parse({ sequence: 1, type: 'turn.completed', occurredAt: new Date().toISOString(),
+      payload: { turnId, threadId: session.nativeSessionId, clientCorrelationId: input.clientCorrelationId,
+        turn: { id: turnId, status: 'completed' } } })
+    this.continuationEvents.set(session.nativeSessionId, terminal)
+    yield terminal
   }
   async pending(session: NativeSessionReference) { return this.waits.get(session.nativeSessionId)?.[0] }
   async respond(session: NativeSessionReference, requestId: string,
@@ -99,8 +108,9 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
       optionId: option.optionId, semantic: option.semantic })
     this.receipts.set(session.nativeSessionId, receipts)
     if (!remaining.length) {
-      this.terminals.set(session.nativeSessionId, { outcome: 'succeeded', output: { approved: true } })
       const request = this.requests.get(session.nativeSessionId)!
+      this.terminals.set(session.nativeSessionId, { outcome: 'succeeded',
+        output: this.outputFor ? this.outputFor(request.workflowNodeId) : { approved: true } })
       this.continuationEvents.set(session.nativeSessionId, NativeHarnessEventSchema.parse({ sequence: this.disconnectAfterStart ? 3 : 2,
         type: 'turn.completed', occurredAt: new Date().toISOString(), payload: {
           threadId: session.nativeSessionId, turnId: `turn-${request.executionId}`,
@@ -121,8 +131,9 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
   }
   async reconcile(session: NativeSessionReference, correlationId: string): Promise<NativeHistory> {
     const history = await this.history(session), request = this.requests.get(session.nativeSessionId)
-    return { ...history, ...(request && correlationId === `execution:${request.executionId}` && history.terminalResult ? {
-      terminalTurn: { correlationId, providerId: `turn-${request.executionId}`, result: history.terminalResult },
+    return { ...history, ...(request && correlationId === `execution:${request.executionId}` ? {
+      correlationId, nativeTurnId: `turn-${request.executionId}`,
+      ...(history.terminalResult ? { terminalTurn: { correlationId, providerId: `turn-${request.executionId}`, result: history.terminalResult } } : {}),
     } : {}) }
   }
   async cancel() { return true }

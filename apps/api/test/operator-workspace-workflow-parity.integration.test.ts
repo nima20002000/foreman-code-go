@@ -6,6 +6,7 @@ import pg from 'pg'
 import { z } from 'zod'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import * as c from '@graphql/contracts/management'
+import * as current from '@graphql/contracts/wave25'
 import { expect, it } from 'vitest'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
@@ -17,11 +18,14 @@ import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { WorkspaceManagementService } from '../src/modules/workspaces/management.js'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import { HarnessDirectoryBrowser } from '../src/modules/harnesses/directoryBrowser.js'
-import { GraphDraftService } from '../src/modules/graph-drafts/service.js'
+import { OperatorAgentMutationService } from '../src/modules/workspaces/operatorAgents.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
-it('provides authenticated Operator MCP parity for creation, defaults and workspace/workflow settings', async () => {
-  const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
+it.skipIf(process.env.RUN_WAVE25_POSTGRES_TESTS !== '1')('provides authenticated Operator MCP parity for creation, defaults and workspace/workflow settings', async () => {
+  const connectionString = process.env.WAVE25_TEST_DATABASE_URL
+  if (!connectionString) throw new Error('WAVE25_TEST_DATABASE_URL is required')
+  const parsed = new URL(connectionString)
+  if (!['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || !parsed.pathname.includes('test')) throw new Error('Use a disposable loopback test database')
   const schema = 'mcp_parity_' + randomUUID().replaceAll('-', '')
   const admin = new pg.Pool({ connectionString })
   const parentPath = await mkdtemp(join(tmpdir(), 'mcp-parity-'))
@@ -35,7 +39,12 @@ it('provides authenticated Operator MCP parity for creation, defaults and worksp
   const services = {
     harnessSettings: { directories: new HarnessDirectoryBrowser([parentPath], pool), mcp: {} },
     commands, locations, settings, workspaces: new WorkspaceManagementService(pool, commands, locations),
-    workflows: new WorkflowManagementService(pool, commands), drafts: new GraphDraftService(pool, commands),
+    workflows: new WorkflowManagementService(pool, commands),
+    extensions: { agents: new OperatorAgentMutationService(pool, commands, { qualifyConfiguration: async (configuration) => ({
+      harness: configuration.harness, version: 'synthetic-test-port', authenticated: true, ready: true,
+      structuredEvents: true, supportsResume: true, supportsCancellation: true, supportsWorkingDirectory: true,
+      supportsStartupPrompt: true, supportedNativeTools: [], supportedSettings: [], unsupportedCapabilities: [],
+    }) }) },
   } as unknown as OperatorServices
   const app = buildApp({ logger: false, readiness: {
     database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined },
@@ -61,7 +70,7 @@ it('provides authenticated Operator MCP parity for creation, defaults and worksp
       return schema.parse(response.structuredContent)
     }
     const toolNames = (await client.listTools()).tools.map((tool) => tool.name)
-    expect(toolNames).toEqual(expect.arrayContaining(['workspace_create', 'workspace_update', 'workspace_defaults_update', 'workspace_location_set', 'workflow_create', 'workflow_update', 'workflow_defaults_update', 'graph_draft_apply', 'graph_save', 'workspace_folder_undo']))
+    expect(toolNames).toEqual(expect.arrayContaining(['workspace_create', 'workspace_update', 'workspace_defaults_update', 'workspace_location_set', 'workflow_create', 'workflow_update', 'workflow_defaults_update', 'workflow_validate_v3', 'workflow_save_v3', 'workspace_folder_undo']))
     const defaults = await call('workspace_defaults_get', c.ManagedWorkspaceDefaultsSchema)
     await call('workspace_defaults_update', c.WorkspaceDefaultsUpdateResultSchema, {
       commandId: randomUUID(), expectedRevision: defaults.revision, value: { ...defaults.value, parentPath },
@@ -193,26 +202,32 @@ it('provides authenticated Operator MCP parity for creation, defaults and worksp
     expect((await call('workspace_get', c.ManagedWorkspaceSchema, { workspaceId })).executionLocation?.rootPath).toBe(alternate)
     const workflowDefaults = await call('workflow_defaults_get', c.ManagedWorkflowDefaultsSchema)
     await call('workflow_defaults_update', c.WorkflowDefaultsUpdateResultSchema, { commandId: randomUUID(), expectedRevision: workflowDefaults.revision, value: { approvalHandler: 'user' } })
-    const workflow = (await call('workflow_create', c.ManagedWorkflowCommandResultSchema, { workspaceId, commandId: randomUUID(), name: 'MCP Workflow' })).value
+    const workflow = (await call('workflow_create', current.SavedManagedWorkflowCommandResultSchema, { workspaceId, commandId: randomUUID(), name: 'MCP Workflow' })).value
     const workflowId = workflow.workflow.id
     expect(workflow.workflow.approval?.handler).toBe('user')
-    await call('workflow_update', c.ManagedWorkflowCommandResultSchema, { workspaceId, workflowId, commandId: randomUUID(), expectedRevision: workflow.revision, name: 'Renamed workflow' })
-    const draft = await call('graph_draft_open', c.GraphDraftSchema, { workspaceId, workflowId })
-    const applied = await call('graph_draft_apply', c.GraphDraftCommandResultSchema, {
-      workspaceId, workflowId, draftId: draft.id, expectedRevision: draft.revision, commandId: randomUUID(),
-      operations: [
-        { type: 'agent.add_from_template', template: 'coder', agentId: 'parity-agent', nodeId: 'parity-node', name: 'Coder' },
-        { type: 'workflow.set_approval', approval: { handler: 'user' } },
-        { type: 'workflow.set_required_agent_count', requiredAgentCount: 1 },
-        { type: 'workflow.set_execution_condition', executionCondition: { kind: 'manual', description: 'Operator managed' } },
-        { type: 'workflow.set_execution_limits', maxParallelism: 1, maxNodeExecutions: 5 },
-      ],
-    })
-    await call('graph_save', c.GraphSaveCommandResultSchema, { workspaceId, workflowId, draftId: draft.id, expectedRevision: applied.value.draft.revision, commandId: randomUUID() })
-    const readback = await call('workflow_get', c.ManagedWorkflowSchema, { workspaceId, workflowId })
+    const renamedWorkflow = (await call('workflow_update', current.SavedManagedWorkflowCommandResultSchema, {
+      workspaceId, workflowId, commandId: randomUUID(), expectedRevision: workflow.revision, name: 'Renamed workflow',
+    })).value
+    const agent = (await call('agent_create', c.AgentMutationResultSchema, {
+      workspaceId, agentId: 'parity-agent', commandId: randomUUID(), name: 'Coder', productRole: 'coder',
+      configuration: { harness: 'codex', model: 'fixture', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' },
+    })).value.agent
+    const location = await call('workspace_get', c.ManagedWorkspaceSchema, { workspaceId })
+    const saveInput = { workspaceId, workflowId, executionSemanticsVersion: 3, commandId: randomUUID(),
+      expectedRevision: renamedWorkflow.revision, expectedWorkflowVersionId: null,
+      expectedAgentConfigurationVersionIds: { [agent.id]: agent.configurationVersionId }, expectedLocationRevision: location.locationRevision,
+      graph: { ...renamedWorkflow.workflow, entryNodeId: 'parity-node', nodes: [{ id: 'parity-node', agentId: agent.id, name: 'Coder' }],
+        edges: [], approval: { handler: 'user' }, executionCondition: { kind: 'manual', description: 'Operator managed' },
+        executionPolicy: { maxParallelism: 1, maxNodeExecutions: 5 } } }
+    const saved = await call('workflow_save_v3', current.CurrentWorkflowSaveResultSchema, saveInput)
+    expect((await call('workflow_save_v3', current.CurrentWorkflowSaveResultSchema, saveInput)).replayed).toBe(true)
+    const exact = await call('workflow_saved_get_v3', current.CurrentWorkflowReadResultSchema, { workspaceId, workflowId,
+      workflowVersionId: saved.value.currentVersionId })
+    expect(exact.version).toEqual(saved.value.version)
+    const readback = await call('workflow_get', current.SavedManagedWorkflowSchema, { workspaceId, workflowId })
     expect(readback.workflow.name).toBe('Renamed workflow')
     expect(readback.workflow.executionPolicy?.maxNodeExecutions).toBe(5)
-    expect(readback.workflow.requiredAgentCount).toBe(1)
+    expect(readback.workflow.nodes).toHaveLength(1)
     expect(readback.workflow.executionCondition.description).toBe('Operator managed')
     const restricted = await access.issue({ name: 'No provisioning', audience: 'operator',
       grants: [{ actions: ['workspaces:create'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
@@ -222,6 +237,12 @@ it('provides authenticated Operator MCP parity for creation, defaults and worksp
     expect((await limited.listTools()).tools.map((tool) => tool.name)).not.toContain('workspace_folders_delete')
     await expect(limited.callTool({ name: 'workspace_folders_delete', arguments: { paths: [folder.value.path], commandId: randomUUID() } })).rejects.toThrow('not found')
     await expect(limited.callTool({ name: 'workspace_folder_undo', arguments: { ...undoInput, commandId: randomUUID() } })).rejects.toThrow('not found')
+    const readOnly = await access.issue({ name: 'Workflow reader', audience: 'operator',
+      grants: [{ actions: ['workflows:read', 'graph:read'], scope: { workspaceIds: [workspaceId] } }],
+      expiresAt: new Date(Date.now() + 60000) })
+    const workflowReader = await connect(readOnly.token)
+    expect((await workflowReader.callTool({ name: 'workflow_save_v3', arguments: { ...saveInput, commandId: randomUUID() } })).isError).toBe(true)
+    expect((await call('workflow_saved_get_v3', current.CurrentWorkflowReadResultSchema, { workspaceId, workflowId })).version).toEqual(saved.value.version)
     const denied = await limited.callTool({ name: 'workspace_create', arguments: { ...create, name: 'Denied', commandId: randomUUID() } })
     expect(denied.isError).toBe(true)
     expect(await readdir(parentPath)).not.toContain('Denied')

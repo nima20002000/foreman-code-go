@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import type { GraphDraftV2, WorkflowDefinitionV2 } from '@graphql/contracts/wave25'
+import type { GraphDraftV3, WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
 import { attachAgent, authoringHints, changeApprovalHandler, draftOperations, entryChoices, hasLocalChanges,
   mergeAcknowledgement, putRelationship, relationshipPairs, removeNode, removeRelationship, roleEvidence, sameValue,
   type NextDraftContext } from './model'
@@ -9,8 +9,8 @@ import { createNextDraftWriter, draftFailure } from './writer'
 import type { NextDraftApi } from './transport'
 
 export function fixture(roles: ('coder' | 'orchestrator')[] = ['coder', 'coder']): NextDraftContext {
-  const graph: WorkflowDefinitionV2 = {
-    id: 'workflow', workspaceId: 'workspace', name: 'Authoring fixture', executionSemanticsVersion: 2,
+  const graph: WorkflowDefinitionV3 = {
+    id: 'workflow', workspaceId: 'workspace', name: 'Authoring fixture', executionSemanticsVersion: 3,
     entryNodeId: 'node-0', executionCondition: { kind: 'manual' }, approval: { handler: 'user' },
     executionPolicy: { maxParallelism: 4, maxNodeExecutions: 1000 }, version: 1,
     nodes: roles.map((_, index) => ({ id: `node-${index}`, agentId: `agent-${index}`, name: `Node ${index}`, position: { x: index * 250, y: 0 } })),
@@ -22,8 +22,8 @@ export function fixture(roles: ('coder' | 'orchestrator')[] = ['coder', 'coder']
     productRole, configurationVersionId: `configuration-${index}` } })) }
 }
 const clone = <T>(value: T): T => structuredClone(value)
-const graphWith = (context: NextDraftContext, update: Partial<WorkflowDefinitionV2>) => ({ ...context.draft.graph, ...update })
-const issue = (graph: WorkflowDefinitionV2, context: NextDraftContext, code: string) => authoringHints(graph, context).some((item) => item.code === code)
+const graphWith = (context: NextDraftContext, update: Partial<WorkflowDefinitionV3>) => ({ ...context.draft.graph, ...update })
+const issue = (graph: WorkflowDefinitionV3, context: NextDraftContext, code: string) => authoringHints(graph, context).some((item) => item.code === code)
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>((done) => { resolve = done })
@@ -35,7 +35,7 @@ function harness(context = fixture()) {
   let edit: NextDraftEdit | undefined = newNextDraft(context, 'instance')
   let server = clone(context.draft)
   const calls: DraftRequest[] = []
-  const committed = new Map<string, { draft: GraphDraftV2; agents: undefined }>()
+  const committed = new Map<string, { draft: GraphDraftV3; agents: undefined }>()
   const write: NextDraftApi['write'] = async (request) => {
     calls.push(clone(request))
     const replay = committed.get(request.commandId)
@@ -49,7 +49,7 @@ function harness(context = fixture()) {
           if (node.id !== op.nodeId) return node
           const next = { ...node }; if (op.choice) next.choice = op.choice; else delete next.choice; return next
         }) }; break
-        case 'node.replace_v2': graph = { ...graph, nodes: graph.nodes.map((node) => node.id === op.node.id ? op.node : node) }; break
+        case 'node.replace_v3': graph = { ...graph, nodes: graph.nodes.map((node) => node.id === op.node.id ? op.node : node) }; break
         case 'node.remove': graph = removeNode(graph, op.nodeId); break
         case 'relationship.put': graph = putRelationship(graph, op.relationship); break
         case 'edge.disconnect': graph = removeRelationship(graph, op.edgeId); break
@@ -66,17 +66,22 @@ function harness(context = fixture()) {
     committed.set(request.commandId, result)
     return result
   }
-  const api: NextDraftApi = { write, open: async () => server, get: async () => server,
-    context: async () => ({ draft: server, agents: context.agents }), validate: async () => ({ valid: true, issues: [] }) }
+  const api: NextDraftApi = { write, layoutBase: async () => ({ draft: server, expectedAgentConfigurationVersionIds: {}, expectedLocationRevision: 1 }), pins: async () => ({ expectedAgentConfigurationVersionIds: {}, expectedLocationRevision: 1, agents: context.agents }), discardLocal: () => { throw new Error('Authoring fixture does not discard local transport state') }, open: async () => server, get: async () => server,
+    context: async () => ({ draft: server, agents: context.agents }), validate: async () => ({ valid: true, issues: [] }),
+    editRead: async () => { throw new Error('Authoring fixture does not read edit intents') },
+    editStage: async () => { throw new Error('Authoring fixture does not stage edit intents') },
+    editAdvance: async () => { throw new Error('Authoring fixture does not advance edit intents') },
+    editDiscard: async () => { throw new Error('Authoring fixture does not discard edit intents') },
+    runs: async () => ({ items: [], pageInfo: { nextCursor: null } }) }
   const access = { get: () => edit, update: (_: string, update: (edit: NextDraftEdit) => NextDraftEdit) => { if (edit) edit = update(edit) } }
   let sequence = 0
   return { api, calls, committed, access, edit: () => edit!, server: () => server,
-    change: (update: (graph: WorkflowDefinitionV2) => WorkflowDefinitionV2) => { edit = editNextDraft(edit!, update) },
+    change: (update: (graph: WorkflowDefinitionV3) => WorkflowDefinitionV3) => { edit = editNextDraft(edit!, update) },
     replace: (next: NextDraftEdit | undefined) => { edit = next },
-    writer: (validate: (graph: WorkflowDefinitionV2, operations: unknown[]) => void = () => undefined, session?: () => () => void) =>
+    writer: (validate: (graph: WorkflowDefinitionV3, operations: unknown[]) => void = () => undefined, session?: () => () => void) =>
       createNextDraftWriter(api, access, validate, () => `command-${++sequence}`, session) }
 }
-const rename = (graph: WorkflowDefinitionV2, name = 'Edited node') => ({ ...graph, nodes: graph.nodes.map((node, index) => index === 0 ? { ...node, name } : node) })
+const rename = (graph: WorkflowDefinitionV3, name = 'Edited node') => ({ ...graph, nodes: graph.nodes.map((node, index) => index === 0 ? { ...node, name } : node) })
 export const coreCases: { name: string; run: () => void | Promise<void> }[] = [
   { name: 'draft keys cannot collide across opaque workspace or workflow separators', run() { assert.notEqual(nextDraftKey('a::b', 'c'), nextDraftKey('a', 'b::c')); assert.notEqual(nextDraftKey('a', 'b:c'), nextDraftKey('a:b', 'c')) } },
   { name: 'sole Worker explicitly starts itself', run() { const c = fixture(['coder']); assert.equal(entryChoices(c.draft.graph, c).valid, true); assert.equal(entryChoices(c.draft.graph, c).mode, 'sole') } },
@@ -87,7 +92,7 @@ export const coreCases: { name: string; run: () => void | Promise<void> }[] = [
   { name: 'labels and free role text cannot create an Orchestrator', run() { const c = fixture(); c.agents[1]!.agent.role = 'Orchestrator'; c.draft.graph.nodes[1]!.name = 'Orchestrator'; assert.equal(entryChoices(c.draft.graph, c).mode, 'worker') } },
   { name: 'unknown product-role pins disable Worker fallback', run() { const c = fixture(); delete c.agents[1]!.agent.productRole; assert.equal(entryChoices(c.draft.graph, c).eligible.length, 0); assert(issue(c.draft.graph, c, 'ROLE_PIN_UNAVAILABLE')) } },
   { name: 'changed source configuration is unavailable until explicit reload', run() { const c = fixture(); c.draft.sourceAgentPins = [{ agentId: 'agent-0', metadataRevision: 3, configurationVersionId: 'older-pin' }]; assert.equal(roleEvidence(c, 'agent-0').source, 'unavailable') } },
-  { name: 'staged server role is labeled staged, not claimed immutable', run() { const c = fixture(); c.draft.stagedAgents = [{ agent: { ...c.agents[0]!.agent, productRole: 'orchestrator' }, baseRevision: 3 }]; assert.equal(roleEvidence(c, 'agent-0').source, 'staged'); assert.equal(entryChoices(c.draft.graph, c).mode, 'orchestrator') } },
+  { name: 'local role edits cannot override the saved catalog configuration', run() { const c = fixture(); const edits = { 'agent-0': { ...c.agents[0]!.agent, productRole: 'orchestrator' as const } }; assert.equal(roleEvidence(c, 'agent-0', edits).source, 'configuration'); assert.equal(entryChoices(c.draft.graph, c, edits).mode, 'worker') } },
   { name: 'reorder and geometry never alter the entry pin', run() { const c = fixture(); const g = graphWith(c, { nodes: [...c.draft.graph.nodes].reverse().map((n) => ({ ...n, position: { x: 700, y: 900 } })) }); assert.equal(g.entryNodeId, 'node-0'); assert(!draftOperations(c, g).some((o) => o.type === 'workflow.set_entry')) } },
   { name: 'deleting entry clears it rather than selecting another node', run() { const c = fixture(); const g = removeNode(c.draft.graph, 'node-0'); assert.equal(g.entryNodeId, null); assert(issue(g, c, 'ENTRY_REQUIRED')) } },
   { name: 'deleting a non-entry leaves entry and unrelated references unchanged', run() { const c = fixture(['coder', 'coder', 'coder']); const g = removeNode(c.draft.graph, 'node-1'); assert.equal(g.entryNodeId, 'node-0'); assert.equal(g.nodes[0], c.draft.graph.nodes[0]); assert.equal(g.edges.length, 1) } },
@@ -108,7 +113,7 @@ export const coreCases: { name: string; run: () => void | Promise<void> }[] = [
   { name: 'attaching Agent uses exact metadata/configuration source pins without model mutation', run() { const c = fixture(); const extra = { metadataRevision: 11, agent: { id: 'extra', name: 'Existing Agent', productRole: 'coder' as const, configurationVersionId: 'exact-config' } }; c.agents.push(extra); const g = attachAgent(c.draft.graph, extra, 'added'); const ops = draftOperations(c, g); assert(ops.some((op) => op.type === 'agent.attach' && op.expectedAgentRevision === 11 && op.expectedConfigurationVersionId === 'exact-config')); assert(!ops.some((op) => op.type === 'agent.configure')); assert.equal(g.entryNodeId, c.draft.graph.entryNodeId) } },
   { name: 'first explicitly attached node becomes its own entry', run() { const c = fixture(['coder']); c.draft.graph.nodes = []; c.draft.graph.edges = []; c.draft.graph.entryNodeId = null; assert.equal(attachAgent(c.draft.graph, c.agents[0]!, 'new').entryNodeId, 'new') } },
   { name: 'undo content cannot rewind acknowledged revision or configuration pins', run() { const c = fixture(); let e = editNextDraft(newNextDraft(c, 'i'), rename); e = { ...e, context: { ...e.context, draft: { ...e.context.draft, revision: 19 } } }; const result = undoNextDraft(e); assert.equal(result.context.draft.revision, 19); assert.equal(result.context.agents[0]!.agent.configurationVersionId, 'configuration-0'); assert.equal(result.graph.nodes[0]!.name, 'Node 0') } },
-  { name: 'failed form edits and exact pending command survive further typing', run() { const c = fixture(); const pending: DraftRequest = { kind: 'save', commandId: 'retained', workspaceId: 'workspace', workflowId: 'workflow', draftId: 'draft', expectedRevision: 7, executionSemanticsVersion: 2 }; let e = newNextDraft(c, 'i'); e = { ...e, pending, error: { code: 'NETWORK_ERROR', message: 'uncertain', uncertain: true } }; e = editNextDraft(e, rename); assert.equal(e.pending, pending); assert.equal(e.error!.uncertain, true); assert(nextDraftDirty(e)) } },
+  { name: 'failed form edits and exact pending command survive further typing', run() { const c = fixture(); const pending: DraftRequest = { kind: 'save', commandId: 'retained', workspaceId: 'workspace', workflowId: 'workflow', draftId: 'draft', expectedRevision: 7, executionSemanticsVersion: 3 }; let e = newNextDraft(c, 'i'); e = { ...e, pending, error: { code: 'NETWORK_ERROR', message: 'uncertain', uncertain: true } }; e = editNextDraft(e, rename); assert.equal(e.pending, pending); assert.equal(e.error!.uncertain, true); assert(nextDraftDirty(e)) } },
   { name: 'own acknowledgement preserves newer input and unchanged entity references', run() { const c = fixture(); const sent = rename(c.draft.graph, 'sent'), saved = { ...sent, version: 2 }, current = rename(sent, 'new typing'); const result = mergeAcknowledgement(current, sent, saved); assert.equal(result.nodes[0]!.name, 'new typing'); assert.equal(result.nodes[1], current.nodes[1]); assert.equal(result.version, 2) } },
   { name: 'metadata timestamps alone are not authored dirtiness', run() { const c = fixture(); assert(!hasLocalChanges(c, { ...c.draft.graph, updatedAt: '2026-09-22T00:01:00Z' })); assert(sameValue({ a: undefined, b: 2 }, { b: 2 })) } },
   { name: 'safe slice install/remount retains unsaved form and cannot drop uncertain work', run() { let state: NextDraftSlice; const set = (update: (s: NextDraftSlice) => Partial<NextDraftSlice>) => { state = { ...state, ...update(state) } }; state = createNextDraftSlice(set); state.installNextDraft('key', fixture()); state.changeNextDraft('key', rename); const before = state.nextDrafts.key; state.installNextDraft('key', fixture()); assert.equal(state.nextDrafts.key, before); state.updateNextDraft('key', (e) => ({ ...e, busy: true })); state.dropNextDraft('key'); assert(state.nextDrafts.key) } },

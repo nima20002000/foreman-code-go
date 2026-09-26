@@ -8,8 +8,6 @@ import type { OperatorChatService } from '../../modules/conversations/operatorCh
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
 import type { AgentManagementService } from '../../modules/workspaces/agents.js'
-import type { Wave25ApprovalDraftService } from '../../modules/workflows/approvalDraftService.js'
-import type { GraphDraftService } from '../../modules/graph-drafts/service.js'
 import type { HarnessCatalogService } from '../../modules/harnesses/catalog.js'
 import type { RunManagementService } from '../../modules/runs/management.js'
 import type { WorkflowManagementService } from '../../modules/workflows/management.js'
@@ -29,8 +27,6 @@ export interface OperatorServices {
   locations: WorkspaceLocationService
   workflows: WorkflowManagementService
   agents: AgentManagementService
-  drafts: GraphDraftService
-  approvalDrafts?: Wave25ApprovalDraftService
   harnesses: HarnessCatalogService
   settings?: FoundationSettingsManagementService
   runs: RunManagementService

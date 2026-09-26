@@ -1,18 +1,19 @@
 import { replaceEqualDeep } from '@tanstack/react-query'
 import { RunLiveSequenceSchema } from '@graphql/contracts'
-import type { GetRunResponse } from '@graphql/contracts'
+import type { CurrentRunDetails } from '@graphql/contracts/wave25'
 
-function hasActivityOrder(activity: GetRunResponse['liveActivity']): boolean {
+function hasActivityOrder(activity: CurrentRunDetails['liveActivity']): boolean {
   return Boolean(activity && RunLiveSequenceSchema.safeParse(activity.sequence).success
     && RunLiveSequenceSchema.safeParse(activity.eventCount).success)
 }
 
 /** Query-cache ownership only; never copy server state into a graph/Zustand store. */
-export function keepLatestRunResponse(current: GetRunResponse | undefined, incoming: GetRunResponse): GetRunResponse {
+export function keepLatestRunResponse(current: CurrentRunDetails | undefined, incoming: CurrentRunDetails): CurrentRunDetails {
   if (!isRunResponse(incoming)) return current ?? incoming
   if (!current || !isRunResponse(current) || current.run.id !== incoming.run.id || current.run.workspaceId !== incoming.run.workspaceId
     || current.run.workflowId !== incoming.run.workflowId) return incoming
-  if (current.run.workflowVersionId !== incoming.run.workflowVersionId) return current
+  if (current.run.workflowVersionId !== incoming.run.workflowVersionId
+    || current.run.executionSemanticsVersion !== incoming.run.executionSemanticsVersion) return current
 
   const before = current.liveActivity
   const after = incoming.liveActivity
@@ -34,12 +35,12 @@ export function keepLatestRunResponse(current: GetRunResponse | undefined, incom
   return incoming
 }
 
-function isRunResponse(value: unknown): value is GetRunResponse {
+function isRunResponse(value: unknown): value is CurrentRunDetails {
   if (!value || typeof value !== 'object' || !('run' in value) || !('executions' in value) || !('activity' in value)) return false
   const run = value.run
   return Boolean(run && typeof run === 'object' && 'id' in run && typeof run.id === 'string'
     && 'workspaceId' in run && typeof run.workspaceId === 'string'
-    && 'workflowId' in run && typeof run.workflowId === 'string' && Array.isArray(value.executions) && Array.isArray(value.activity))
+    && 'workflowId' in run && typeof run.workflowId === 'string' && 'executionSemanticsVersion' in run && run.executionSemanticsVersion === 3 && Array.isArray(value.executions) && Array.isArray(value.activity))
 }
 
 /**

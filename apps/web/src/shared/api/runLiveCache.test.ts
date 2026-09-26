@@ -1,14 +1,21 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
-import type { GetRunResponse } from '@graphql/contracts'
+import { type CurrentRunDetails as GetRunResponse } from '@graphql/contracts/wave25'
+import { makeSyntheticRun } from '../../features/graph/fixtures/scaleData'
 import { keepLatestRunResponse } from './runLiveCache'
 
-function snapshot(sequence: string, eventCount = sequence, state = 'running', runId = 'run'): GetRunResponse {
-  return {
-    run: { id: runId, workspaceId: 'workspace', workflowId: 'workflow', workflowVersionId: 'version', executionState: state },
-    executions: [], activity: [], liveActivity: { runId, workspaceId: 'workspace', workflowId: 'workflow',
-      workflowVersionId: 'version', active: state !== 'completed', sequence, eventCount, nodes: [] },
-  } as unknown as GetRunResponse
+function snapshot(sequence: string, eventCount = sequence,
+  state: GetRunResponse['run']['executionState'] = 'running', runId = 'run'): GetRunResponse {
+  // Current V3 facts must reach the lifecycle guard, not its invalid-response arm.
+  const value = makeSyntheticRun(1, sequence)
+  value.run.id = runId
+  value.run.executionState = state
+  if (state === 'completed') {
+    value.run.outcome = 'succeeded'
+    value.run.result = { outcome: 'succeeded' }
+  }
+  Object.assign(value.liveActivity!, { runId, eventCount, active: state !== 'completed' })
+  return value
 }
 
 describe('live Run React Query cache ordering', () => {

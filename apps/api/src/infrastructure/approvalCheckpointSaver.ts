@@ -12,10 +12,11 @@ const MAX_WRITE_BYTES = 262144
 const MAX_CHECKPOINT_WRITE_BYTES = 2_000_000
 interface StoredWrite { task_id: string; channel: string; type: string; blob: Buffer }
 export interface AtomicApprovalCheckpointSaver extends BaseCheckpointSaver {
+  inspectApprovalInterrupt(sql: GraphTransactionSql, interaction: Pick<DurableInteraction, 'id' | 'runId' | 'graphThreadId' | 'graphInterruptId'>): Promise<string>
   consumeApprovalInterrupt(sql: GraphTransactionSql, interaction: DurableInteraction): Promise<void>
 }
 export function isAtomicApprovalCheckpointSaver(saver: BaseCheckpointSaver): saver is AtomicApprovalCheckpointSaver {
-  return 'consumeApprovalInterrupt' in saver && typeof saver.consumeApprovalInterrupt === 'function'
+  return saver instanceof ApprovalPostgresSaver
 }
 function denied(code = 'GRAPH_INTERRUPT_INVALID'): never {
   throw new DomainError(code, 'The exact persisted approval checkpoint could not be consumed.', 409)
@@ -42,10 +43,10 @@ export class ApprovalPostgresSaver extends PostgresSaver implements AtomicApprov
     this.approvalSchema = options.schema
   }
 
-  async consumeApprovalInterrupt(sql: GraphTransactionSql, interaction: DurableInteraction): Promise<void> {
+  private async readApprovalInterrupt(sql: GraphTransactionSql,
+    interaction: Pick<DurableInteraction, 'id' | 'runId' | 'graphThreadId' | 'graphInterruptId'>) {
     assertGraphTransaction(sql)
-    if (interaction.graphThreadId !== interaction.runId || !interaction.graphInterruptId
-      || interaction.status !== 'delivered' || interaction.deliveryState !== 'delivered') denied()
+    if (interaction.runId !== interaction.graphThreadId || !interaction.graphInterruptId) denied()
     const thread = interaction.graphThreadId, namespace = ''
     // Run/head/owner locks are already held. Pin the latest root checkpoint, not
     // a historical checkpoint selected by an untrusted request or stale callback.
@@ -77,6 +78,19 @@ export class ApprovalPostgresSaver extends PostgresSaver implements AtomicApprov
       }
     }
     if (!selected) denied('GRAPH_INTERRUPT_NOT_CURRENT')
+    return { thread, namespace, latest, writes, selected }
+  }
+
+  async inspectApprovalInterrupt(sql: GraphTransactionSql,
+    interaction: Pick<DurableInteraction, 'id' | 'runId' | 'graphThreadId' | 'graphInterruptId'>): Promise<string> {
+    return (await this.readApprovalInterrupt(sql, interaction)).latest.checkpoint_id
+  }
+
+  async consumeApprovalInterrupt(sql: GraphTransactionSql, interaction: DurableInteraction): Promise<void> {
+    assertGraphTransaction(sql)
+    if (interaction.graphThreadId !== interaction.runId || !interaction.graphInterruptId
+      || interaction.status !== 'delivered' || interaction.deliveryState !== 'delivered') denied()
+    const { thread, namespace, latest, writes, selected } = await this.readApprovalInterrupt(sql, interaction)
     const task = selected
     const resumes = writes.filter((row) => row.task_id === task.taskId && row.channel === RESUME)
     if (resumes.length > 1) denied()

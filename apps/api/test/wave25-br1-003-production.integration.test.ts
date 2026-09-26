@@ -8,12 +8,14 @@ import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
 
 type Fixture = Awaited<ReturnType<typeof checkpointRuntimeFixture>>
 const fixtures: Fixture[] = []
+const currentRuntimes = new WeakMap<Fixture, ReturnType<Fixture['compose']>>()
 afterEach(async () => {
   try { while (fixtures.length) await fixtures.pop()!.close() } finally { vi.restoreAllMocks() }
 })
 async function fixture(branches: 1 | 2 = 1, pendingPerExecution: 1 | 2 = 1) {
   const f = await checkpointRuntimeFixture(branches, pendingPerExecution)
   fixtures.push(f)
+  currentRuntimes.set(f, f)
   return f
 }
 function response(interaction: DurableInteraction) {
@@ -27,12 +29,22 @@ async function expireAbandonedClaims(f: Fixture) {
   await f.db.pool.query(`update interaction_graph_resumes set lease_expires_at=clock_timestamp()-interval '1 microsecond'
     where run_id=$1 and state='resuming'`, [f.f.run.id])
 }
-async function recover(f: Fixture, runtime = f.compose()) {
-  const errors: unknown[] = []
-  await runtime.engine.reconcile((error) => errors.push(error))
-  expect(errors).toEqual([])
+async function restart(f: Fixture, checkpointer?: ApprovalPostgresSaver) {
+  // A replacement composition is a real restart only after the original native
+  // lifetime has produced its durable closure, with the Run owner still held.
+  await currentRuntimes.get(f)!.engine.shutdown()
+  const runtime = f.compose(checkpointer)
+  currentRuntimes.set(f, runtime)
   return runtime
 }
+async function recover(f: Fixture, supplied?: ReturnType<Fixture['compose']>) {
+  const runtime = supplied ?? await restart(f)
+  // Reconciliation schedules work; exact Run resume waits for this drive and
+  // its durable checkpoint/receipt outcome before assertions inspect it.
+  await runtime.engine.resume(f.f.run.id)
+  return runtime
+}
+
 async function stageDelivered(f: Fixture) {
   // Crash the registered callback, not the delivery/helper implementation.
   // Both native decisions are delivered via the real service/coordinator first.
@@ -124,9 +136,9 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
       }
     }
     const failure = new FailingSaver(f.db.pool, undefined, { schema: f.db.schema })
-    const failed = f.compose(failure)
+    const failed = await restart(f, failure)
     const errors: unknown[] = []
-    await failed.engine.reconcile((error) => errors.push(error))
+    await failed.engine.resume(f.f.run.id).catch((error: unknown) => errors.push(error))
     expect(errors).toHaveLength(1)
     expect(failure.writes).toBe(1)
     expect(errors[0]).toMatchObject({ code: 'GRAPH_INVALID_FACT' }) // Publication sanitizes callback errors.
@@ -146,7 +158,7 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
     await f.engine.start(f.f.run.id)
     const cut = await checkpointCut(f)
     const failingSaver = crashAfterCommitSaver(f)
-    const failed = f.compose(failingSaver)
+    const failed = await restart(f, failingSaver)
     const [interaction] = await f.pending()
     const result = await failed.service.respond({ kind: 'user', principal: f.principal }, response(interaction!))
     expect(result.interaction.deliveryState).toBe('delivered')
@@ -172,16 +184,16 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
     'a committed receipt is not continuation authority after %s', async (race) => {
       const f = await fixture()
       await f.engine.start(f.f.run.id)
-      const cut = await checkpointCut(f), saver = crashAfterCommitSaver(f), failed = f.compose(saver)
+      const cut = await checkpointCut(f), saver = crashAfterCommitSaver(f), failed = await restart(f, saver)
       const [interaction] = await f.pending()
       const result = await failed.service.respond({ kind: 'user', principal: f.principal }, response(interaction!))
       expect(saver.crashed).toBe(true)
       const receipts = await f.receipts(), committed = (await f.saver.getTuple(cut.config))?.pendingWrites
       expect(receipts).toHaveLength(1)
-      if (race === 'stop') await f.runs.requestStop(f.f.run.id)
+      if (race === 'stop') await f.stop()
       if (race === 'revoked_authority') await f.db.pool.query('update management_principals set revoked_at=clock_timestamp() where id=$1', [f.authorizationPrincipalId])
       if (race === 'closed_execution') await f.db.pool.query('update harness_executions set worker_credentials_closed_at=clock_timestamp() where id=$1', [interaction!.executionId])
-      const successor = f.compose(), observe = vi.spyOn(successor.native, 'ensureObserve')
+      const successor = await restart(f), observe = vi.spyOn(successor.native, 'observeExact')
       await expect(successor.engine.resumeInteraction(result.interaction)).rejects.toMatchObject({
         code: race === 'revoked_authority' ? 'RUN_AUTHORIZATION_REVOKED' : 'EXECUTION_STOPPED',
       })
@@ -218,7 +230,7 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
         expect((await f.db.pool.query('select state from interaction_graph_resumes where interaction_id=$1', [interaction!.id])).rows[0])
           .toEqual({ state: 'resuming' })
         if (race === 'lease_expiry') await expireAbandonedClaims(f)
-        if (race === 'stop') await f.runs.requestStop(f.f.run.id)
+        if (race === 'stop') await f.stop()
         if (race === 'revoked_authority') await f.db.pool.query('update management_principals set revoked_at=clock_timestamp() where id=$1', [f.authorizationPrincipalId])
         if (race === 'closed_execution') await f.db.pool.query('update harness_executions set worker_credentials_closed_at=clock_timestamp() where id=$1', [interaction!.executionId])
         release.resolve()
@@ -273,7 +285,7 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
     }
     const failure = new FailSecondBranch(f.db.pool, undefined, { schema: f.db.schema })
     const errors: unknown[] = []
-    await f.compose(failure).engine.reconcile((error) => errors.push(error))
+    await (await restart(f, failure)).engine.resume(f.f.run.id).catch((error: unknown) => errors.push(error))
     expect(failure.writes).toBe(2)
     expect(errors).toHaveLength(1)
     expect(errors[0]).toMatchObject({ code: 'GRAPH_INVALID_FACT' })
@@ -317,7 +329,7 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
     await f.saver.putWrites(cut.config, [['__resume__', [{ interactionId: interaction!.id }]]], interrupted[0])
     const invalid = (await f.saver.getTuple(cut.config))?.pendingWrites
     const errors: unknown[] = []
-    await f.compose().engine.reconcile((error) => errors.push(error))
+    await (await restart(f)).engine.resume(f.f.run.id).catch((error: unknown) => errors.push(error))
     expect(errors).toHaveLength(1)
     expect(errors[0]).toMatchObject({ code: 'GRAPH_INVALID_FACT' }) // The public publication error is sanitized.
     expect((await f.saver.getTuple(cut.config))?.pendingWrites).toEqual(invalid)

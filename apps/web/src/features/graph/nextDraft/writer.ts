@@ -1,4 +1,5 @@
-import type { WorkflowDefinitionV2 } from '@graphql/contracts/wave25'
+import { acknowledgeAgentEdits, hasAgentEdits } from './agentEdits'
+import type { WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
 import { draftOperations, hasLocalChanges, mergeAcknowledgement, type AuthoringIssue } from './model'
 import type { DraftFailure, DraftRequest, NextDraftEdit } from './state'
 import type { NextDraftApi } from './transport'
@@ -32,7 +33,7 @@ export function draftFailure(error: unknown, commandMayHaveRun: boolean): DraftF
 export function createNextDraftWriter(
   api: NextDraftApi,
   access: DraftAccess,
-  validateSubmission: (graph: WorkflowDefinitionV2, operations: unknown[]) => void,
+  validateSubmission: (graph: WorkflowDefinitionV3, operations: unknown[]) => void,
   commandId: () => string = () => crypto.randomUUID(),
   captureSession: () => () => void = () => () => undefined,
 ) {
@@ -57,10 +58,10 @@ export function createNextDraftWriter(
       }
       try {
         if (!initial.pending) {
-          const operations = draftOperations(initial.context, initial.graph)
+          const operations = draftOperations(initial.context, initial.graph, initial.agentEdits)
           validateSubmission(initial.graph, operations)
           update((edit) => ({ ...edit, busy: true, error: undefined, validation: undefined,
-            plan: { target: initial.graph, operations, publish } }))
+            plan: { target: initial.graph, operations, publish, agentTarget: initial.agentEdits } }))
         } else {
           // Retry means reconcile the old intent, not submit newer edits under its command ID.
           if (!initial.plan) throw new Error('The unresolved command has no retained submission. Do not start a replacement write.')
@@ -85,26 +86,32 @@ export function createNextDraftWriter(
               }
               const base = edit.context.draft
               const scope = { commandId: commandId(), workspaceId: base.workspaceId, workflowId: base.workflowId,
-                draftId: base.id, expectedRevision: base.revision, executionSemanticsVersion: 2 as const }
+                draftId: base.id, expectedRevision: base.revision, executionSemanticsVersion: 3 as const }
               request = plan.operations.length
                 ? { kind: 'apply', ...scope, operations: plan.operations.slice(0, 100) }
                 : { kind: 'save', ...scope }
               update((state) => ({ ...state, pending: request }))
             }
             const sent: DraftRequest = request
-            const result = await api.write(sent)
+            // The final apply batch acknowledges the complete local target graph.
+            const final = sent.kind === 'apply' && plan.operations.length <= sent.operations!.length
+            const result = await api.write(sent, final ? plan.target : undefined)
             current()
             update((state) => {
               if (state.pending?.commandId !== sent.commandId || !state.plan) return state
               if (result.draft.id !== sent.draftId || result.draft.workspaceId !== sent.workspaceId
-                || result.draft.workflowId !== sent.workflowId || result.draft.revision !== sent.expectedRevision + 1) throw new Error('A command returned an unexpected draft identity or revision.')
+                || result.draft.workflowId !== sent.workflowId || (sent.kind === 'apply' ? result.draft.revision !== sent.expectedRevision + 1
+                  : result.draft.publishedRevision !== result.draft.revision)) throw new Error('A command returned an unexpected draft identity or revision.')
               const remaining = sent.kind === 'apply' ? state.plan.operations.slice(sent.operations!.length) : []
               const catalog = new Map(state.context.agents.map((record) => [record.agent.id, record]))
               for (const record of result.agents ?? []) catalog.set(record.agent.id, record)
               const complete = sent.kind === 'save' || remaining.length === 0
-              return { ...state, context: { draft: result.draft, agents: result.agents ? [...catalog.values()] : state.context.agents },
+              return { ...state, context: { draft: result.draft, savedDraft: sent.kind === 'save' ? result.draft : state.context.savedDraft ?? state.context.draft, agents: result.agents ? [...catalog.values()] : state.context.agents },
                 // Intermediate batches are not the whole submitted document. Never replace unapplied edits with them.
                 graph: complete ? mergeAcknowledgement(state.graph, state.plan.target, result.draft.graph) : state.graph,
+                agentEdits: complete ? acknowledgeAgentEdits(state.agentEdits, state.plan.agentTarget, {
+                  draft: result.draft, agents: [...catalog.values()],
+                }) : state.agentEdits,
                 pending: undefined, error: undefined,
                 plan: sent.kind === 'save' ? undefined : { ...state.plan, operations: remaining } }
             })
@@ -118,13 +125,13 @@ export function createNextDraftWriter(
             if (readback.revision !== before.revision) {
               update((edit) => ({ ...edit, error: { code: 'REVISION_CONFLICT', uncertain: false,
                 message: 'The shared draft changed during validation. Your local edits are retained; reload explicitly before continuing.' } }))
-            } else update((edit) => edit.context.draft.revision !== before.revision || hasLocalChanges(edit.context, edit.graph) ? edit : {
+            } else update((edit) => edit.context.draft.revision !== before.revision || hasLocalChanges(edit.context, edit.graph) || hasAgentEdits(edit) ? edit : {
               ...edit, validation: { revision: before.revision, valid: validation.valid, issues: validation.issues },
             })
           }
           const done = current()
           update((edit) => ({ ...edit, busy: false }))
-          return { published, newerLocalEdits: hasLocalChanges(done.context, done.graph) }
+          return { published, newerLocalEdits: hasLocalChanges(done.context, done.graph) || hasAgentEdits(done) }
         } catch (error) {
           const edit = access.get(key)
           if (edit?.instanceId === instanceId) {

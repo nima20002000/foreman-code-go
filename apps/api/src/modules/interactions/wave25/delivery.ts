@@ -1,11 +1,11 @@
-import type { DurableInteraction } from '@graphql/contracts'
+import type { DurableInteraction, NativeHarnessEvent } from '@graphql/contracts'
 import type pg from 'pg'
 import type { GraphEffect } from '@graphql/contracts/wave25'
 import { PostgresInteractionDeliveryRepository, type GraphResumeClaim } from '../deliveryPostgres.js'
 import { observeNativeDispatch } from './dispatchWait.js'
 import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence,
   type InteractionDeliveryClaim, type NativeDeliveryOutcome } from '../delivery.js'
-import { assertBudget, fail, isV2, lockInteraction, readContext, runFor, transact, requireLeaseAtCommit } from './context.js'
+import { assertBudget, fail, isCurrentApprovalRun, lockInteraction, readContext, runFor, transact, requireLeaseAtCommit } from './context.js'
 import { decisionDigest, nextInteraction, publishInteraction } from './publication.js'
 import type { GraphTransactionSql } from '../../run-graph/connection.js'
 import { claimResume, finishResume, renewResume } from './resume.js'
@@ -42,29 +42,31 @@ async function ownAttempt(sql: GraphTransactionSql, claim: InteractionDeliveryCl
   if (!attempt || !lease?.live || lease.delivery_token !== claim.ownerToken || attempt.lease_owner !== claim.ownerToken
     || !attempt.leased || attempt.attempt !== claim.attempt || attempt.delivery_fence !== lease.delivery_fence
     || current.selectedOptionId !== claim.interaction.selectedOptionId || attempt.correlation_id !== claim.correlationId) return fail('DELIVERY_OWNER_LOST')
-  if (attempt.approval_connection_generation !== await generationFor(sql, current)) return fail('GRAPH_STALE_GENERATION')
+  if (claim.mode === 'submit' && attempt.approval_connection_generation !== await generationFor(sql, current)) return fail('GRAPH_STALE_GENERATION')
   return { current, attempt, expiresAt: lease.expires_at }
 }
 export class Wave25InteractionDeliveryRepository extends PostgresInteractionDeliveryRepository {
   constructor(private readonly approvalPool: pg.Pool) { super(approvalPool) }
   private async mode(id: string) { const runId = await runFor(this.approvalPool, 'interaction', id)
-    return { runId, enabled: await isV2(this.approvalPool, runId) } }
+    return { runId, enabled: await isCurrentApprovalRun(this.approvalPool, runId) } }
 
   override async claim(id: string, ownerToken: string, reconcileOnly = false): Promise<InteractionDeliveryClaim | undefined> {
     const mode = await this.mode(id)
-    if (!mode.enabled) return super.claim(id, ownerToken, reconcileOnly)
+
     return transact(this.approvalPool, mode.runId, async (publication) => {
       const sql = publication.sql, current = await lockInteraction(sql, id)
       if (!current.selectedOptionId || !['decided','delivery_pending','delivery_failed'].includes(current.status)) return undefined
       const context = await readContext(sql, current)
-      if (context.stopped || !await settled(sql, current)) return undefined
-      await assertBudget(sql, current)
       const owned = await sql.query('select 1 from durable_interactions where id=$1 and delivery_lease_expires_at>clock_timestamp()', [id])
       if (owned.rowCount) return undefined
       const prior = await attemptFor(sql, id)
       if (prior?.leased) return undefined
       const reconcile = !!prior?.approval_write_started_at || ['submitted','uncertain'].includes(current.deliveryState)
         || !!prior && prior.approval_connection_generation === null
+      if (!await settled(sql, current) || context.stopped && !prior?.approval_write_started_at) return undefined
+      // A terminal execution cannot authorize a new native write. It may still
+      // reconcile the exact already-started attempt from immutable evidence.
+      if (!reconcile) await assertBudget(sql, current)
       if (reconcileOnly && !reconcile) return undefined
       const attempt = prior && reconcile ? prior.attempt : (prior?.attempt ?? 0) + 1
       const correlationId = prior && reconcile ? prior.correlation_id : `approval-${ownerToken}`
@@ -74,7 +76,7 @@ export class Wave25InteractionDeliveryRepository extends PostgresInteractionDeli
           delivery_lease_expires_at=clock_timestamp()+($3::integer*interval '1 millisecond') where id=$1 returning delivery_fence::text`,
       [id, ownerToken, INTERACTION_DELIVERY_LEASE_MS])).rows[0]!.delivery_fence
       if (prior && reconcile) await sql.query(`update interaction_delivery_attempts set state='uncertain',lease_owner=$3,
-        delivery_fence=$4::bigint,approval_connection_generation=$5::bigint,
+        delivery_fence=$4::bigint,approval_connection_generation=coalesce(approval_connection_generation,$5::bigint),
         lease_expires_at=clock_timestamp()+($6::integer*interval '1 millisecond') where interaction_id=$1 and attempt=$2`,
       [id, attempt, ownerToken, fence, generation, INTERACTION_DELIVERY_LEASE_MS])
       else await sql.query(`insert into interaction_delivery_attempts(interaction_id,attempt,state,native_session_id,native_request_id,
@@ -84,6 +86,41 @@ export class Wave25InteractionDeliveryRepository extends PostgresInteractionDeli
       // No public revision or progress is created by acquiring a lease.
       return { interaction: current, attempt, ownerToken, correlationId, mode: reconcile ? 'reconcile' : 'submit' }
     })
+  }
+
+  /** Read only the exact approval attempt, correlation and retained provider
+   * events. A later connection generation cannot be promoted into its receipt. */
+  async persistedResponseEvidence(interaction: DurableInteraction) {
+    if (interaction.harness !== 'codex') return undefined
+    const request = interaction.request as Record<string, unknown>
+    if (typeof request.itemId !== 'string' || typeof request.turnId !== 'string') return undefined
+    const rows = await this.approvalPool.query<{ source_sequence: number; connection_id: string; record: Record<string, unknown> }>(
+      `select e.source_sequence,e.connection_id,e.record
+       from run_native_correlations c
+       join interaction_delivery_attempts a on a.interaction_id=$7
+         and a.approval_connection_generation=c.connection_generation and a.approval_write_started_at is not null
+       join harness_native_events e on e.execution_id=c.execution_id and e.connection_id=c.connection_id
+       where c.run_id=$1 and c.execution_id=$2 and c.work_kind='workflow' and c.work_id=$2
+         and c.correlation_key=$3 and c.provider='codex' and c.native_session_id=$4
+         and c.native_turn_id=$5 and c.native_request_id=$6 and c.interaction_id=$7
+         and ((e.record->>'type' in ('interaction.pending','interaction.submitted','interaction.resolved')
+               and e.record->'payload'->>'nativeRequestId'=$6)
+           or (e.record->>'type'='item.completed' and e.record->'payload'->'item'->>'id'=$8))
+       order by e.source_sequence limit 32`,
+      [interaction.runId, interaction.executionId, `approval:${interaction.id}`, interaction.nativeSessionId,
+        request.turnId, interaction.nativeRequestId, interaction.id, request.itemId],
+    )
+    const events: NativeHarnessEvent[] = rows.rows.flatMap((row) => {
+      const type = row.record.type, occurredAt = row.record.occurredAt, payload = row.record.payload
+      return typeof type === 'string' && typeof occurredAt === 'string' && payload !== null
+        && typeof payload === 'object' && !Array.isArray(payload)
+        ? [{ sequence: row.source_sequence, connectionId: row.connection_id, type, occurredAt,
+            payload: payload as Record<string, unknown> }] : []
+    })
+    return matchingDeliveryEvidence(interaction, {
+      harness: interaction.harness, providerVersion: interaction.providerVersion,
+      nativeSessionId: interaction.nativeSessionId,
+    }, { events, pendingInteractions: [] })
   }
   private async prepare(claim: InteractionDeliveryClaim): Promise<void> {
     await transact(this.approvalPool, claim.interaction.runId, async (publication) => {
@@ -149,7 +186,7 @@ export class Wave25InteractionDeliveryRepository extends PostgresInteractionDeli
   override async finish(claim: InteractionDeliveryClaim,
     outcome: NativeDeliveryOutcome | ((interaction: DurableInteraction, signal: AbortSignal) => Promise<NativeDeliveryOutcome>),
     signal?: AbortSignal): Promise<DurableInteraction> {
-    if (!await isV2(this.approvalPool, claim.interaction.runId)) return super.finish(claim, outcome, signal)
+
     let result: NativeDeliveryOutcome
     if (typeof outcome === 'function') { await this.prepare(claim); result = await this.nativeWrite(claim, outcome, signal) }
     else result = outcome
@@ -183,7 +220,7 @@ export class Wave25InteractionDeliveryRepository extends PostgresInteractionDeli
 
   async claimAtomicGraphResume(id: string, ownerToken: string): Promise<GraphResumeClaim | undefined> {
     const mode = await this.mode(id)
-    if (!mode.enabled) return super.claimGraphResume(id, ownerToken)
+
     return claimResume(this.approvalPool, mode.runId, id, ownerToken, true)
   }
   override async claimGraphResume(id: string, ownerToken: string): Promise<GraphResumeClaim | undefined> {
@@ -191,11 +228,11 @@ export class Wave25InteractionDeliveryRepository extends PostgresInteractionDeli
     return mode.enabled ? claimResume(this.approvalPool, mode.runId, id, ownerToken) : super.claimGraphResume(id, ownerToken)
   }
   override async renewGraphResume(claim: GraphResumeClaim): Promise<void> {
-    if (!await isV2(this.approvalPool, claim.interaction.runId)) return super.renewGraphResume(claim)
+
     return renewResume(this.approvalPool, claim)
   }
   override async finishGraphResume(claim: GraphResumeClaim, error?: string): Promise<void> {
-    if (!await isV2(this.approvalPool, claim.interaction.runId)) return super.finishGraphResume(claim, error)
+
     return finishResume(this.approvalPool, claim, error)
   }
 }

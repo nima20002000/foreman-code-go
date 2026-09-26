@@ -1,10 +1,6 @@
 import {
   AgentSchema,
-  CreateRunRequestSchema,
-  CreateRunResponseSchema,
   GetAgentResponseSchema,
-  GetRunResponseSchema,
-  GetWorkflowResponseSchema,
   GetHarnessDefaultsResponseSchema,
   GetAgentDefaultsResponseSchema,
   UpdateAgentDefaultsResponseSchema,
@@ -15,12 +11,11 @@ import {
   ListAgentsResponseSchema,
   ListInteractionsResponseSchema,
   GetInteractionResponseSchema,
-  SaveWorkflowRequestSchema,
-  SaveWorkflowResponseSchema,
   SaveHarnessDefaultsRequestSchema,
   SaveHarnessDefaultsResponseSchema,
-  WorkspaceDetailsResponseSchema,
 } from '@graphql/contracts'
+import { SavedWorkspaceDetailsSchema, SavedWorkflowResponseSchema, SavedRunDetailsSchema } from '@graphql/contracts/wave25'
+import type { OperatorServices } from '../mcp/operator/types.js'
 import { InteractionListInputSchema } from '@graphql/contracts/management'
 import type { FastifyInstance } from 'fastify'
 
@@ -56,7 +51,7 @@ function notFound(kind: string, id: string): never {
   throw new DomainError(`${kind.toUpperCase()}_NOT_FOUND`, `${kind} '${id}' was not found.`, 404)
 }
 
-export function registerProductRoutes(app: FastifyInstance, services: ProductServices, managementOnlyMutations = false): void {
+export function registerProductRoutes(app: FastifyInstance, services: ProductServices, managementOnlyMutations = false, management?: Pick<OperatorServices, 'workflows' | 'runs'>): void {
   if (services.chat) registerOperatorChatRoutes(app, services.chat)
   if (services.foundationSettings) {
     app.get('/api/settings/agents', async () => GetAgentDefaultsResponseSchema.parse(
@@ -89,8 +84,8 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
   })
 
   app.get<{ Params: WorkspaceParams }>('/api/workspaces/:workspaceId', async (request) => {
-    const details = await services.workspaces.getDetails(request.params.workspaceId)
-    return details ? WorkspaceDetailsResponseSchema.parse(details) : notFound('workspace', request.params.workspaceId)
+    const details = await services.workspaces.getDetails(request.params.workspaceId, requirePrincipal(request))
+    return details ? SavedWorkspaceDetailsSchema.parse(details) : notFound('workspace', request.params.workspaceId)
   })
 
   app.get<{ Params: WorkspaceParams }>('/api/workspaces/:workspaceId/agents', async (request) =>
@@ -102,66 +97,25 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
   })
 
   app.put<{ Params: AgentParams; Body: unknown }>('/api/workspaces/:workspaceId/agents/:agentId', async (request) => {
-    if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the shared graph draft commands to edit Agents.', 409)
+    if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the authorized current Agent management commands.', 409)
     const agent = await services.workspaces.saveAgent(request.params.workspaceId, request.params.agentId, AgentSchema.parse(request.body))
     return GetAgentResponseSchema.parse({ agent })
   })
 
   app.get<{ Params: WorkflowParams }>('/api/workspaces/:workspaceId/workflows/:workflowId', async (request) => {
-    const workflow = await services.workflows.get(request.params.workspaceId, request.params.workflowId)
-    return workflow ? GetWorkflowResponseSchema.parse({ workflow }) : notFound('workflow', request.params.workflowId)
+    const principal = requirePrincipal(request)
+    if (!management) throw new DomainError('WORKFLOW_SERVICES_UNAVAILABLE', 'Current workflow services are not composed.', 503)
+    const managed = await management.workflows.get(principal, request.params.workspaceId, request.params.workflowId)
+    return SavedWorkflowResponseSchema.parse({ workflow: managed.workflow })
   })
 
-  const saveWorkflow = async (request: {
-    params: WorkspaceParams
-    body: unknown
-  }) => {
-    if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the shared graph draft Save command.', 409)
-    const input = SaveWorkflowRequestSchema.parse(request.body)
-    if (input.workspaceId !== request.params.workspaceId) {
-      throw new DomainError('INVALID_WORKFLOW', 'The workflow payload does not match the requested workspace.', 400)
-    }
-    const workflow = await services.workflows.save(input.workspaceId, input.workflow, input.agents)
-    return SaveWorkflowResponseSchema.parse({
-      workflow,
-      agents: await services.workspaces.listAgents(input.workspaceId),
-    })
-  }
-
-  app.put<{ Params: WorkflowParams; Body: unknown }>(
-    '/api/workspaces/:workspaceId/workflows/:workflowId',
-    async (request) => {
-      const input = SaveWorkflowRequestSchema.parse(request.body)
-      if (input.workflow.id !== request.params.workflowId) {
-        throw new DomainError('INVALID_WORKFLOW', 'The workflow payload does not match the requested workflow.', 400)
-      }
-      return saveWorkflow(request)
-    },
-  )
-  app.put<{ Params: WorkspaceParams; Body: unknown }>('/api/workspaces/:workspaceId/graph', saveWorkflow)
-
-  app.post<{ Params: WorkflowParams; Body: unknown }>(
-    '/api/workspaces/:workspaceId/workflows/:workflowId/runs',
-    async (request, reply) => {
-      if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the exact-version management Start command.', 409)
-      const input = CreateRunRequestSchema.parse(request.body)
-      if (input.workspaceId !== request.params.workspaceId || input.workflowId !== request.params.workflowId) {
-        throw new DomainError('INVALID_RUN', 'The run payload does not match the requested workflow.', 400)
-      }
-      const run = await services.runs.createForWorkflow(
-        input.workspaceId, input.workflowId, input.input, input.expectedLocationRevision,
-      )
-      setImmediate(() => {
-        void services.engine.start(run.id).catch((error: unknown) => request.log.error({ err: error, runId: run.id }, 'run failed before terminal state'))
-      })
-      reply.code(202)
-      return CreateRunResponseSchema.parse({ run })
-    },
-  )
-
+  // Raw workflow Save/Start and cancel adapters are retired. All mutations use
+  // the authenticated revision/receipt-checked current management family.
   app.get<{ Params: RunParams }>('/api/workspaces/:workspaceId/runs/:runId', async (request) => {
-    const details = await services.runs.getDetails(request.params.workspaceId, request.params.runId)
-    return details ? GetRunResponseSchema.parse(details) : notFound('run', request.params.runId)
+    const principal = requirePrincipal(request)
+    if (!management) throw new DomainError('RUN_SERVICES_UNAVAILABLE', 'Current Run services are not composed.', 503)
+    const details = await management.runs.get(principal, request.params.workspaceId, request.params.runId)
+    return details ? SavedRunDetailsSchema.parse(details) : notFound('run', request.params.runId)
   })
 
   const interactions = services.interactions
@@ -181,13 +135,4 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
     }
   }
 
-  app.post<{ Params: RunParams }>('/api/workspaces/:workspaceId/runs/:runId/cancel', async (request) => {
-    if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the idempotent management Stop command.', 409)
-    const run = await services.runs.getForWorkspace(request.params.workspaceId, request.params.runId)
-    if (!run) return notFound('run', request.params.runId)
-    if (!await services.engine.cancel(run.id)) {
-      throw new DomainError('RUN_NOT_CANCELABLE', `Run '${run.id}' is terminal or owned by another live engine.`, 409)
-    }
-    return { accepted: true, runId: run.id }
-  })
 }

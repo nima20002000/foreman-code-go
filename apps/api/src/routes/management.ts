@@ -1,5 +1,9 @@
+import { CurrentWorkflowCreateInputSchema } from '@graphql/contracts/wave25'
+import { AgentCreateInputSchema, AgentUpdateInputSchema } from '@graphql/contracts/management'
+import { registerCurrentWorkflowRoutes } from './currentWorkflow.js'
+import { registerRunInspectionRoutes } from './runInspection.js'
+import { registerCurrentVersionReadRoutes } from './currentVersionReads.js'
 import type { FastifyInstance } from 'fastify'
-import { RUN_CURRENT_ROUTE, RunCurrentRequestSchema } from '@graphql/contracts/run-current'
 import { registerWorkspaceDefaultsRoutes } from './workspaceDefaults.js'
 import { registerHarnessSettingsRoutes } from './harnessSettings.js'
 
@@ -7,12 +11,6 @@ import {
   AgentGetInputSchema,
   AgentDefaultsUpdateInputSchema,
   AgentListInputSchema,
-  GraphDraftApplyInputSchema,
-  GraphDraftDiscardInputSchema,
-  GraphDraftGetInputSchema,
-  GraphDraftOpenInputSchema,
-  GraphSaveInputSchema,
-  GraphValidateInputSchema,
   HarnessDefaultsUpdateInputSchema,
   HarnessGetInputSchema,
   HarnessConfigurationCheckInputSchema,
@@ -20,10 +18,8 @@ import {
   RunEventsListInputSchema,
   RunGetInputSchema,
   RunListInputSchema,
-  RunStartInputSchema,
   RunStopInputSchema,
   WorkflowArchiveInputSchema,
-  WorkflowCreateInputSchema,
   WorkflowGetInputSchema,
   WorkflowListInputSchema,
   WorkflowUpdateInputSchema,
@@ -36,7 +32,7 @@ import {
   WorkspaceLocationValidateInputSchema,
   WorkflowDefaultsUpdateInputSchema,
 } from '@graphql/contracts/management'
-import { GraphDraftApplyV2InputSchema, GraphSaveV2InputSchema, RunStartV2InputSchema } from '@graphql/contracts/wave25'
+import { ManualRunStartInputSchema } from '@graphql/contracts/wave25'
 import { requireBrowserSession, requirePrincipal } from '../modules/access/http.js'
 import type { OperatorServices } from '../mcp/operator/types.js'
 import { DomainError } from '../modules/errors.js'
@@ -66,8 +62,23 @@ function page(query: Query) {
 }
 
 export function registerManagementRoutes(app: FastifyInstance, services: OperatorServices): void {
+  registerCurrentWorkflowRoutes(app, services.workflows, services.runs)
+  registerCurrentVersionReadRoutes(app, services)
+  registerRunInspectionRoutes(app, services)
   registerWorkspaceDefaultsRoutes(app, services)
   registerHarnessSettingsRoutes(app, services)
+  // Board authoring creates and edits Agents through the same service as the
+  // Operator MCP agent_create/agent_update tools (graph:edit via HTTP policy).
+  if (services.extensions) {
+    const agents = services.extensions.agents
+    app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/agents', async (request, reply) => {
+      const result = await agents.create(requirePrincipal(request), AgentCreateInputSchema.parse(routeInput(request.params, request.body)))
+      if (result && typeof result === 'object' && 'replayed' in result && result.replayed === false) reply.code(201)
+      return result
+    })
+    app.patch<{ Params: Params & { agentId: string }; Body: unknown }>('/api/management/workspaces/:workspaceId/agents/:agentId', async (request) =>
+      agents.update(requirePrincipal(request), AgentUpdateInputSchema.parse(routeInput(request.params, request.body))))
+  }
   app.get<{ Querystring: Query }>('/api/management/workspaces', async (request) =>
     services.workspaces.list(requirePrincipal(request), WorkspaceListInputSchema.parse(page(request.query))))
   app.post<{ Body: unknown }>('/api/management/workspaces', async (request, reply) => {
@@ -93,7 +104,7 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
   app.get<{ Params: Params; Querystring: Query }>('/api/management/workspaces/:workspaceId/workflows', async (request) =>
     services.workflows.list(requirePrincipal(request), WorkflowListInputSchema.parse({ ...request.params, ...page(request.query) })))
   app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows', async (request, reply) => {
-    const result = await services.workflows.create(requirePrincipal(request), 'http', WorkflowCreateInputSchema.parse(routeInput(request.params, request.body)))
+    const result = await services.workflows.create(requirePrincipal(request), 'http', CurrentWorkflowCreateInputSchema.parse(routeInput(request.params, request.body)))
     reply.code(result.replayed ? 200 : 201)
     return result
   })
@@ -112,25 +123,6 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
     const input = AgentGetInputSchema.parse(request.params)
     return services.agents.get(requirePrincipal(request), input.workspaceId, input.agentId)
   })
-
-  app.post<{ Params: Params }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/drafts', async (request) => {
-    const input = GraphDraftOpenInputSchema.parse(request.params)
-    return services.drafts.open(requirePrincipal(request), input.workspaceId, input.workflowId)
-  })
-  app.get<{ Params: Params }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/drafts/:draftId', async (request) => {
-    const input = GraphDraftGetInputSchema.parse(request.params)
-    return services.drafts.get(requirePrincipal(request), input.workspaceId, input.workflowId, input.draftId)
-  })
-  app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/drafts/:draftId/operations', async (request) =>
-    services.drafts.apply(requirePrincipal(request), 'http', GraphDraftApplyInputSchema.or(GraphDraftApplyV2InputSchema).parse(routeInput(request.params, request.body))))
-  app.post<{ Params: Params }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/drafts/:draftId/validate', async (request) => {
-    const input = GraphValidateInputSchema.parse(request.params)
-    return services.drafts.validate(requirePrincipal(request), input.workspaceId, input.workflowId, input.draftId)
-  })
-  app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/drafts/:draftId/save', async (request) =>
-    services.drafts.save(requirePrincipal(request), 'http', GraphSaveInputSchema.or(GraphSaveV2InputSchema).parse(routeInput(request.params, request.body))))
-  app.delete<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/drafts/:draftId', async (request) =>
-    services.drafts.discard(requirePrincipal(request), 'http', GraphDraftDiscardInputSchema.parse(routeInput(request.params, request.body))))
 
   app.post<{ Body: unknown }>('/api/management/harnesses/validate', async (request) => {
     const input = HarnessConfigurationCheckInputSchema.parse(request.body)
@@ -158,11 +150,6 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
 
   app.get<{ Params: Params; Querystring: Query }>('/api/management/workspaces/:workspaceId/runs', async (request) =>
     services.runs.list(requirePrincipal(request), RunListInputSchema.parse({ ...page(request.query), ...(request.query.workflowId !== undefined ? { workflowId: request.query.workflowId } : {}), ...request.params })))
-  app.get<{ Params: Params; Querystring: Query }>(RUN_CURRENT_ROUTE, async (request) =>
-    services.runs.current(requirePrincipal(request), RunCurrentRequestSchema.parse({
-      ...request.query, ...request.params,
-      executionSemanticsVersion: request.query.executionSemanticsVersion === '1' ? 1 : undefined,
-    })))
   app.get<{ Params: Params }>('/api/management/workspaces/:workspaceId/runs/:runId', async (request) => {
     const input = RunGetInputSchema.parse(request.params)
     return services.runs.get(requirePrincipal(request), input.workspaceId, input.runId)
@@ -174,7 +161,7 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
       ...(request.query.limit ? { limit: Number(request.query.limit) } : {}),
     })))
   app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/runs', async (request, reply) => {
-    const result = await services.runs.start(requirePrincipal(request), 'http', RunStartInputSchema.or(RunStartV2InputSchema).parse(routeInput(request.params, request.body)))
+    const result = await services.runs.start(requirePrincipal(request), 'http', ManualRunStartInputSchema.parse(routeInput(request.params, request.body)))
     reply.code(202)
     return result
   })

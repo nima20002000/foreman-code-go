@@ -4,6 +4,12 @@ import { createHash } from 'node:crypto'
 import { DurableInteractionSchema, type DurableInteraction, type HarnessNativeEvent } from '@graphql/contracts'
 import type pg from 'pg'
 import { it } from 'vitest'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
+import type { NativeDeliveryOutcome, NativeResponseDeliveryEvidence } from '../src/modules/interactions/delivery.js'
+import { Wave25InteractionRepository } from '../src/modules/interactions/wave25/repository.js'
+import { SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
+import { nativeLanes } from './helpers/nativeLanes.js'
 
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
@@ -18,7 +24,7 @@ function interaction(): DurableInteraction {
     id: 'interaction-1', revision: 0, workspaceId: 'workspace-1', workflowId: 'workflow-1',
     runId: 'run-1', executionId: 'execution-1', requestingAgentId: 'agent-1',
     harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'native-session-1',
-    nativeRequestId: 'native-request-1', nativeRequestType: 'approval', graphThreadId: 'thread-1',
+    nativeRequestId: 'native-request-1', nativeRequestType: 'approval', graphThreadId: 'run-1',
     graphInterruptId: 'interrupt-1', request: { command: ['echo', 'test'] }, approval: { handler: 'user' },
     responseOptions: [{ optionId: 'opaque-option-1', semantic: 'approve_once', label: 'Approve once',
       persistence: 'request', affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false }],
@@ -128,53 +134,89 @@ it('stores native event envelopes and their activity references atomically, with
   assert.deepEqual(events.get('execution-1:legacy:7'), event)
 })
 
+const principal: ManagementPrincipal = { id: 'unit-user', name: 'Unit User', audience: 'user',
+  expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null,
+  grants: [{ actions: ['interactions:respond'], scope: { workspaceIds: ['workspace-1'] } }] }
+
+/** Current service + actual native control queue, with explicit repository and
+ * provider-history ports. This is not a database or a real native receipt test. */
 function deliveryService(attachError?: Error, graphError?: Error) {
   let current = interaction()
-  const outcomes: Array<{ state: string; error?: string }> = []
+  const outcomes: NativeDeliveryOutcome[] = []
   const graphErrors: Array<string | undefined> = []
-  const repository = {
-    get: async () => current,
-    assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'node-reviewer' }),
-    decide: async () => {
-      current = { ...current, revision: 1, status: 'delivery_pending', deliveryState: 'pending', selectedOptionId: response.optionId }
-      return { interaction: current, replayed: false }
+  const noSql = () => { throw new Error('Unscripted SQL in persistence service unit fixture') }
+  const repository = new Wave25InteractionRepository({ query: noSql, connect: noSql } as unknown as pg.Pool)
+  Object.assign(repository, {
+    get: async () => structuredClone(current),
+    decide: async (input: Parameters<Wave25InteractionRepository['decide']>[0]) => {
+      assert.equal(input.principal, principal); assert.equal(input.id, current.id)
+      assert.equal(input.expectedRevision, current.revision)
+      assert.deepEqual(input.nativeResponse, { optionId: response.optionId, semantic: 'approve_once' })
+      current = DurableInteractionSchema.parse({ ...current, revision: 1, status: 'delivery_pending',
+        deliveryState: 'pending', selectedOptionId: response.optionId, selectedSemantic: 'approve_once',
+        nativeResponse: input.nativeResponse, decidedAt: current.createdAt })
+      return { interaction: structuredClone(current), replayed: false }
     },
-    delivery: {
-      claim: async () => ({ interaction: current, attempt: 1, ownerToken: 'owner', correlationId: 'delivery', mode: 'submit' }),
-      finish: async (_claim: unknown, input: { state: string; error?: string } | ((item: DurableInteraction, signal: AbortSignal) => Promise<{ state: string; error?: string }>)) => {
-        const outcome = typeof input === 'function' ? await input(current, new AbortController().signal) : input
-        outcomes.push(outcome)
-        current = { ...current, deliveryState: outcome.state as DurableInteraction['deliveryState'],
-          status: outcome.state === 'delivered' ? 'delivered' : 'delivery_failed' }
-        return current
-      },
-      claimGraphResume: async () => ({ interaction: current, ownerToken: 'graph-owner' }),
-      finishGraphResume: async (_claim: unknown, error?: string) => { graphErrors.push(error) },
+  })
+  Object.assign(repository.delivery, {
+    claim: async () => ({ interaction: structuredClone(current), attempt: 1,
+      ownerToken: 'owner', correlationId: 'delivery', mode: 'submit' as const }),
+    finish: async (_claim: unknown, input: NativeDeliveryOutcome |
+      ((item: DurableInteraction, signal: AbortSignal) => Promise<NativeDeliveryOutcome>)) => {
+      const outcome = typeof input === 'function' ? await input(current, new AbortController().signal) : input
+      outcomes.push(outcome)
+      current = DurableInteractionSchema.parse({ ...current, deliveryState: outcome.state,
+        status: outcome.state === 'delivered' ? 'delivered' : outcome.state === 'failed' ? 'delivery_failed' : 'delivery_pending',
+        ...(outcome.state === 'delivered' ? { deliveredAt: current.createdAt } : {}) })
+      return structuredClone(current)
     },
-  } as unknown as PostgresInteractionRepository
-  const budgets = { assertActive: async () => undefined, resume: async () => undefined } as unknown as PostgresApprovalBudgetRepository
-  const runtime = { attachInteraction: async () => {
-    if (attachError) throw attachError
-    return { manager: { harness: current.harness, respond: async () => undefined },
-      session: { harness: current.harness, providerVersion: current.providerVersion, nativeSessionId: current.nativeSessionId } }
-  } } as unknown as InteractionNativeRuntime
-  const service = new InteractionService(repository, budgets, runtime, async () => { if (graphError) throw graphError })
-  return { service, outcomes, graphErrors }
+    assertNativeDispatch: async () => ({ interaction: structuredClone(current), expiresAt: new Date(Date.now() + 30_000) }),
+    claimAtomicGraphResume: async () => ({ interaction: structuredClone(current), ownerToken: 'graph-owner' }),
+    finishGraphResume: async (_claim: unknown, error?: string) => { graphErrors.push(error) },
+  })
+  const proof: NativeResponseDeliveryEvidence = { source: 'provider_history', harness: current.harness,
+    providerVersion: current.providerVersion, nativeSessionId: current.nativeSessionId,
+    nativeRequestId: current.nativeRequestId, nativeRequestType: current.nativeRequestType,
+    optionId: response.optionId, semantic: 'approve_once' }
+  // The receipt is independently supplied test data; a void send is not proof.
+  const history = { events: [], pendingInteractions: [], responseDeliveries: [proof] }
+  const manager = new SingleWriterSessionManager({ harness: current.harness,
+    respond: async () => undefined, history: async () => history, reconcile: async () => history,
+  } as unknown as NativeHarnessSessionManager, nativeLanes(), current.requestingAgentId)
+  const budgets = { assertActive: async () => { throw new Error('Retired service budget path') },
+    resume: async () => { throw new Error('Delivery is not checkpoint consumption') } } as unknown as PostgresApprovalBudgetRepository
+  const runtime: InteractionNativeRuntime = {
+    validateInteraction: async () => undefined,
+    attachInteraction: async () => {
+      if (attachError) throw attachError
+      return { manager, session: { harness: current.harness, providerVersion: current.providerVersion,
+        nativeSessionId: current.nativeSessionId } }
+    },
+  }
+  const service = new InteractionService(repository, budgets, runtime, async () => {
+    throw new Error('The retired graph callback must not be called')
+  })
+  service.useAtomicApprovalResume(async (claim) => {
+    assert.equal(claim.ownerToken, 'graph-owner'); assert.equal(claim.interaction.graphThreadId, current.runId)
+    throw graphError ?? new Error('No successful checkpoint implementation in this fixture')
+  })
+  return { service, outcomes, graphErrors, proof }
 }
 
-it('keeps attachment failure details instead of persisting an unexplained failed flag', async () => {
-  const { service, outcomes, graphErrors } = deliveryService(new Error('native session is unavailable'))
-  await service.respond({ kind: 'user' }, response)
-  assert.deepEqual(outcomes, [{ state: 'failed', error: 'native session is unavailable' }])
+it('persists a safe attachment failure code rather than an unexplained flag or private native error', async () => {
+  const { service, outcomes, graphErrors } = deliveryService(new Error('native session /private/runtime is unavailable'))
+  await service.respond({ kind: 'user', principal }, response)
+  assert.deepEqual(outcomes, [{ state: 'failed', error: 'APPROVAL_NATIVE_QUALIFICATION_FAILED' }])
+  assert.ok(!JSON.stringify(outcomes).includes('/private/runtime'))
   assert.deepEqual(graphErrors, [])
 })
 
-it('does not relabel delivered native work as failed when graph resume throws', async () => {
-  const { service, outcomes, graphErrors } = deliveryService(undefined, new Error('checkpoint unavailable'))
-  const result = await service.respond({ kind: 'user' }, response)
+it('does not relabel proven native delivery as failed when atomic checkpoint consumption throws', async () => {
+  const { service, outcomes, graphErrors, proof } = deliveryService(undefined, new Error('checkpoint unavailable'))
+  const result = await service.respond({ kind: 'user', principal }, response)
   assert.equal(result.interaction.deliveryState, 'delivered')
-  assert.deepEqual(outcomes, [{ state: 'delivered' }])
-  assert.deepEqual(graphErrors, ['checkpoint unavailable'])
+  assert.deepEqual(outcomes, [{ state: 'delivered', evidence: proof }])
+  assert.deepEqual(graphErrors, ['GRAPH_RESUME_CHECKPOINT_UNCERTAIN'])
 })
 
 it('keeps every applied migration byte-for-byte and composes HAP-04 and HAP-05 migrations', async () => {
@@ -199,8 +241,9 @@ it('keeps every applied migration byte-for-byte and composes HAP-04 and HAP-05 m
     return { rows: [], rowCount: 0 }
   } }) } as unknown as pg.Pool
   await applyApplicationMigrations(pool)
-  assert.deepEqual([...observed.keys()], [...Object.keys(expected).map(Number), 503, 507, 508, 509, 700, 701, 800, 1701, 1702, 170017, 170018, 170019, 170020, 170021, 170022, 170023, 170024, 170025, 170026, 250001, 250002, 250003, 250005])
+  assert.deepEqual([...observed.keys()], [...Object.keys(expected).map(Number), 503, 507, 508, 509, 700, 701, 800, 1701, 1702, 170017, 170018, 170019, 170020, 170021, 170022, 170023, 170024, 170025, 170026, 250001, 250002, 250003, 250005, 264201, 264401, 264501, 264502, 264601, 264602, 264603, 264604, 26090501, 265501, 265502])
   for (const [version, hash] of Object.entries(expected)) assert.equal(observed.get(Number(version)), hash, `migration ${version}`)
+  assert.equal(observed.get(265502), 'd7d97908fcc2a4865c9931fbee66b05ca1d23398d8d8539bdbb13c32eba29576')
   assert.equal(observed.get(170021), '5d91e223036ef21375b5d67916956121b4ed4ca5de702a545650a1ef054b2e6a')
   assert.equal(observed.get(170022), '8cc94ebe79fb52b2bce61655d2d2a57a7c2bb766752594f21b4b08d0d71bfa20')
   assert.equal(observed.get(170023), '1667cc56e58e0ec2d16737e3e9da7368d8a4e48c195f65f94e56fbdcd8acf962')

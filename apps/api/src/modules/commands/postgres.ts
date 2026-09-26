@@ -30,6 +30,9 @@ export class PostgresCommandCoordinator {
     targetKey: string
     payload: unknown
     perform(client: pg.PoolClient): Promise<T>
+    /** Revalidate live authority under the command lock, including receipt reads.
+     * Transactional callers may retain their authority row locks through COMMIT. */
+    authorize?(client: pg.PoolClient): Promise<void>
     /** Lifecycle callbacks may await runtime cleanup that needs the application pool. */
     dedicatedConnection?: true
     /** Explicit compatibility boundary for historical receipts, never new commands. */
@@ -55,6 +58,7 @@ export class PostgresCommandCoordinator {
       } else {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [commandLock])
       }
+      await input.authorize?.(client)
       const existing = await client.query<{ input_hash: string; target_key: string; result: unknown }>(
         `select input_hash, target_key, result from management_command_receipts
          where principal_id = $1 and operation = $2 and command_id = $3`,

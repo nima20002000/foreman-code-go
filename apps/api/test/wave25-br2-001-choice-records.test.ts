@@ -1,178 +1,176 @@
-import type pg from 'pg'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
-import { canonicalGraphJson, type NodeResolution } from '@graphql/contracts/wave25'
-import { ExclusiveGraphConnection, assertGraphTransaction } from '../src/modules/run-graph/connection.js'
-import { graphSourceDigest, openRunGraphPublication } from '../src/modules/run-graph/publication.js'
-import { putNodeResolution } from '../src/modules/run-graph/records.js'
-import { oneShotResolution } from '../src/modules/runs/oneShotResolution.js'
+import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import { assertGraphTransaction } from '../src/modules/run-graph/connection.js'
+import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
+import { readRepeatAcceptedResultLocked } from '../src/modules/runs/repeatPostgres.js'
+import { repeatTerminalResolution } from '../src/modules/runs/repeatNode.js'
+import { currentExecutionReadUnit } from './helpers/currentExecutionReadUnit.js'
+import { currentUnitSnapshot } from './helpers/currentUnitSnapshot.js'
 import {
   br2001Fixture, br2001InvalidTexts, br2001Providers, br2001Terminal, br2001Text,
+  type Br2001Provider,
 } from './helpers/wave25Br2001Choice.js'
 
-type Fixture = ReturnType<typeof br2001Fixture>
-
-/** Only the SQL transport is scripted. The actual transaction/publication guards,
- * schemas, digest checks and durable record writer run unchanged. These tests
- * catch a missing THIRD parser call without requiring PostgreSQL. They are not
- * proof of SQL constraints, real ownership or atomic database publication.
- */
-async function writeResolution(f: Fixture, execution: HarnessExecution, resolution: NodeResolution,
-  options: { accepted?: boolean; catchInside?: boolean } = {}) {
-  const inserts: unknown[][] = []
-  const commands: string[] = []
-  const query = vi.fn(async (text: string, values: unknown[] = []) => {
-    const sql = text.replace(/\s+/g, ' ').trim()
-    commands.push(sql)
-    let rows: Record<string, unknown>[]
-    if (sql.startsWith('begin ') || sql === 'commit' || sql === 'rollback') rows = []
-    else if (sql.startsWith('select r.workspace_id,r.workflow_id,r.workflow_version_id,v.execution_semantics_version')) {
-      expect(values).toEqual([f.scope.runId])
-      rows = [{ workspace_id: f.scope.workspaceId, workflow_id: f.scope.workflowId,
-        workflow_version_id: f.scope.workflowVersionId, execution_semantics_version: 2 }]
-    } else if (sql === 'select protocol_version from run_graph_heads where run_id=$1 for update') {
-      expect(values).toEqual([f.scope.runId])
-      rows = [{ protocol_version: 1 }]
-    } else if (sql.startsWith('select v.record from runs r join workflow_versions v')) {
-      expect(values).toEqual([f.scope.runId, resolution.workflowNodeId])
-      rows = [{ record: f.version }]
-    } else if (sql.startsWith('select record,accepted from harness_executions')) {
-      expect(values).toEqual([f.scope.runId, resolution.workflowNodeId])
-      rows = [{ record: execution, accepted: options.accepted ?? true }]
-    } else if (sql.startsWith('insert into run_node_resolutions(')) {
-      inserts.push(values)
-      rows = [{ run_id: f.scope.runId }]
-    } else throw new Error(`Unexpected choice record test SQL: ${sql}`)
-    return { rows, rowCount: rows.length, command: '', oid: 0, fields: [] }
-  })
-  const connection = new ExclusiveGraphConnection({ query } as unknown as pg.ClientBase, () => undefined)
-  let rejected = false, error: unknown
-  try {
-    await connection.transaction(async (sql) => {
-      await openRunGraphPublication(sql, f.scope)
-      if (!options.catchInside) return putNodeResolution(sql, f.scope, resolution)
-      // Even a caller swallowing the parser error cannot commit this transaction.
-      await expect(putNodeResolution(sql, f.scope, resolution)).rejects.toThrow()
-      expect(() => assertGraphTransaction(sql)).toThrow('GRAPH_TRANSACTION_FAILED')
-    })
-  } catch (cause) { rejected = true; error = cause }
-  finally { await connection.close() }
-  return { rejected, error, inserts, commands }
+/** The removed putNodeResolution/oneShotResolution seam is now the current
+ * accepted-result readback: it independently re-parses the raw carrier, compares
+ * its saved resolution and input identity, and requires canonical receipts.
+ * SQL data is synthetic; the real V3 reader/parser/transaction guards execute.
+ * Acceptance writes are covered separately by eng04-a-repeat-core.test.ts. */
+function fixture(provider: Br2001Provider, suffix: string, ordinary = false) {
+  const choice = br2001Fixture(provider, suffix)
+  if (ordinary) delete choice.version.definition.nodes[0]!.choice
+  const f = currentUnitSnapshot(suffix, 'sequential')
+  return currentExecutionReadUnit({ ...f, version: choice.version, configurations: choice.configurations })
 }
-
-function successfulResolution(f: Fixture, execution: HarnessExecution, outcome = 'pass'): NodeResolution {
-  // Deliberately form the claim from a known valid envelope, independent of the
-  // stored raw result. Negative tests supply a plausible but untrusted claim.
-  const reference = HarnessExecutionSchema.parse({ ...execution, result: {
+type Fixture = ReturnType<typeof fixture>
+function claimedResolution(f: Fixture, execution: HarnessExecution, outcome = 'pass') {
+  // An untrusted persisted claim is constructed independently of the stored raw
+  // carrier. Merely giving it the correct raw digest must not make it acceptable.
+  const valid = HarnessExecutionSchema.parse({ ...execution, result: {
     outcome: 'succeeded', output: { routing: { outcome }, data: null },
   } })
-  return { ...oneShotResolution(f.version, reference), acceptedResultDigest: graphSourceDigest(execution.result) }
+  const resolution = repeatTerminalResolution(f.f.version, f.f.scope, f.ref, valid)
+  return { ...resolution, value: { ...resolution.value, acceptedResultDigest: graphSourceDigest(execution.result) } }
+}
+async function rejectsRead(f: Fixture) {
+  f.calls.length = 0
+  await expect(f.read()).rejects.toBeInstanceOf(Error)
+  expect(f.calls.some(({ q }) => q === 'rollback')).toBe(true)
+  expect(f.calls.some(({ q }) => q === 'commit')).toBe(false)
+  expect(f.calls.some(({ q }) => /^(insert|update|delete)\b/i.test(q))).toBe(false)
 }
 
-function expectRejected(attempt: Awaited<ReturnType<typeof writeResolution>>) {
-  expect(attempt.rejected).toBe(true)
-  expect(attempt.error).toBeInstanceOf(Error)
-  expect(attempt.inserts).toEqual([])
-  expect(attempt.commands).toContain('rollback')
-  expect(attempt.commands).not.toContain('commit')
-}
-
-describe.each(br2001Providers)('BR2-001: %s durable choice revalidation', (provider) => {
-  it.each(['pass', 'issues'])('writes %s from the exact accepted raw carrier', async (outcome) => {
-    const f = br2001Fixture(provider, `br2001-record-${provider}`)
-    const terminal = br2001Terminal(f.executions[0]!, provider, br2001Text(outcome, { provider }))
-    const before = structuredClone(terminal.execution)
-    const resolution = successfulResolution(f, terminal.execution, outcome)
-    const attempt = await writeResolution(f, terminal.execution, resolution)
-    expect(attempt.error).toBeUndefined()
-    expect(attempt.rejected).toBe(false)
-    expect(attempt.inserts).toEqual([[f.scope.runId, resolution.workflowNodeId, 'succeeded',
-      terminal.execution.id, 1, canonicalGraphJson(resolution)]])
-    expect(attempt.commands).toContain('commit')
-    expect(attempt.commands).not.toContain('rollback')
-    expect(terminal.execution).toEqual(before)
-    expect(resolution.acceptedResultDigest).toBe(graphSourceDigest(terminal.result))
-    expect(resolution.selectedRelationshipIds).toEqual(outcome === 'issues' ? [f.version.definition.edges[0]!.id] : [])
-    expect(resolution.branchEnded).toBe(outcome === 'pass')
+describe.each(br2001Providers)('BR2-001: %s durable current choice revalidation', (provider) => {
+  it.each(['pass', 'issues'])('reads %s from the exact accepted raw carrier without rewriting it', async (outcome) => {
+    const f = fixture(provider, `br2001-record-${provider}`)
+    try {
+      const terminal = br2001Terminal(f.state.execution, provider, br2001Text(outcome, { provider }))
+      const before = structuredClone(terminal.execution), resolution = claimedResolution(f, terminal.execution, outcome)
+      f.seedAccepted(terminal.execution, resolution)
+      expect(await f.read()).toEqual(terminal.result)
+      expect(f.state.execution).toEqual(before)
+      expect(f.state.resolution).toEqual(resolution)
+      expect(resolution.value.acceptedResultDigest).toBe(graphSourceDigest(terminal.result))
+      expect(resolution.value.selectedRelationshipIds).toEqual(outcome === 'issues' ? [f.f.version.definition.edges[0]!.id] : [])
+      expect(resolution.value.branchEnded).toBe(outcome === 'pass')
+      expect(f.calls.some(({ q }) => q === 'commit')).toBe(true)
+      expect(f.calls.some(({ q }) => /^(insert|update|delete)\b/i.test(q))).toBe(false)
+    } finally { await f.connection.close() }
   })
 
   it.each(br2001InvalidTexts)('independently rejects stored $name despite a matching raw digest', async ({ text }) => {
-    const f = br2001Fixture(provider, `br2001-record-invalid-${provider}`)
-    const execution = br2001Terminal(f.executions[0]!, provider, text).execution
-    expectRejected(await writeResolution(f, execution, successfulResolution(f, execution)))
+    const f = fixture(provider, `br2001-record-invalid-${provider}`)
+    try {
+      const execution = br2001Terminal(f.state.execution, provider, text).execution
+      f.seedAccepted(execution, claimedResolution(f, execution))
+      await rejectsRead(f)
+    } finally { await f.connection.close() }
   })
 
   it('does not accept mixed, nested, non-string or array carriers', async () => {
-    const f = br2001Fixture(provider, `br2001-record-mixed-${provider}`)
-    const text = br2001Text(), base = br2001Terminal(f.executions[0]!, provider, text).execution
-    for (const output of [
-      { text, extra: true }, { text, routing: { outcome: 'issues' }, data: null },
-      { text: JSON.parse(text) }, { text: null }, { text: 0 }, { output: { text } }, [{ text }],
-    ]) {
-      const execution = HarnessExecutionSchema.parse({ ...base, result: { outcome: 'succeeded', output } })
-      expectRejected(await writeResolution(f, execution, successfulResolution(f, execution)))
-    }
+    const f = fixture(provider, `br2001-record-mixed-${provider}`)
+    try {
+      const text = br2001Text(), base = br2001Terminal(f.state.execution, provider, text).execution
+      for (const output of [{ text, extra: true }, { text, routing: { outcome: 'issues' }, data: null },
+        { text: JSON.parse(text) }, { text: null }, { text: 0 }, { output: { text } }, [{ text }]]) {
+        const execution = HarnessExecutionSchema.parse({ ...base, result: { outcome: 'succeeded', output } })
+        f.seedAccepted(execution, claimedResolution(f, execution))
+        await rejectsRead(f)
+      }
+    } finally { await f.connection.close() }
   })
 
-  it('preserves raw byte limits at the independent durable boundary', async () => {
-    const f = br2001Fixture(provider, `br2001-record-bound-${provider}`)
-    const empty = br2001Terminal(f.executions[0]!, provider, br2001Text('pass', ''))
-    const overhead = Buffer.byteLength(canonicalGraphJson(empty.result), 'utf8')
-    const data = 'x'.repeat(64 * 1024 - overhead)
-    const atLimit = br2001Terminal(f.executions[0]!, provider, br2001Text('pass', data)).execution
-    const allowed = await writeResolution(f, atLimit, successfulResolution(f, atLimit))
-    expect(allowed.error).toBeUndefined()
-    expect(allowed.inserts).toHaveLength(1)
-    const overLimit = br2001Terminal(f.executions[0]!, provider, br2001Text('pass', data + 'x')).execution
-    expectRejected(await writeResolution(f, overLimit, successfulResolution(f, overLimit)))
+  it('preserves complete raw-result byte limits at the independent durable boundary', async () => {
+    const f = fixture(provider, `br2001-record-bound-${provider}`)
+    try {
+      const empty = br2001Terminal(f.state.execution, provider, br2001Text('pass', ''))
+      const overhead = Buffer.byteLength(canonicalGraphJson(empty.result), 'utf8')
+      const data = 'x'.repeat(64 * 1024 - overhead)
+      const atLimit = br2001Terminal(f.state.execution, provider, br2001Text('pass', data)).execution
+      f.seedAccepted(atLimit, claimedResolution(f, atLimit))
+      expect(Buffer.byteLength(f.state.result!.result_json, 'utf8')).toBe(64 * 1024)
+      expect(await f.read()).toEqual(atLimit.result)
+      const overLimit = br2001Terminal(f.state.execution, provider, br2001Text('pass', data + 'x')).execution
+      f.seedAccepted(overLimit, claimedResolution(f, overLimit))
+      await rejectsRead(f)
+    } finally { await f.connection.close() }
   })
 
-  it('cannot commit after a swallowed choice-validation error', async () => {
-    const f = br2001Fixture(provider, `br2001-record-poison-${provider}`)
-    const execution = br2001Terminal(f.executions[0]!, provider, 'not JSON').execution
-    const attempt = await writeResolution(f, execution, successfulResolution(f, execution), { catchInside: true })
-    expectRejected(attempt)
-    expect(attempt.error).toMatchObject({ code: 'GRAPH_TRANSACTION_FAILED' })
+  it('rolls back a failed choice read even when its caller catches the rejection', async () => {
+    const f = fixture(provider, `br2001-record-poison-${provider}`)
+    try {
+      const execution = br2001Terminal(f.state.execution, provider, 'not JSON').execution
+      f.seedAccepted(execution, claimedResolution(f, execution))
+      await rejectsRead(f)
+      expect(f.state.execution.result).toEqual(execution.result)
+      expect(f.state.accepted).toBe(true) // A read must not "repair" corrupted historical data.
+    } finally { await f.connection.close() }
+  })
+
+  it('cannot commit after a caller swallows a missing canonical receipt error', async () => {
+    const f = fixture(provider, `br2001-record-receipt-${provider}`)
+    try {
+      const execution = br2001Terminal(f.state.execution, provider, br2001Text()).execution
+      f.seedAccepted(execution)
+      f.state.receipts = f.state.receipts.filter((row) => row.effect?.kind !== 'input.bind')
+      await expect(f.transaction(async (sql) => {
+        await expect(readRepeatAcceptedResultLocked(sql, f.snapshot(), f.candidate.id))
+          .rejects.toMatchObject({ code: 'REPEAT_PUBLICATION_RECEIPT_CONFLICT' })
+        expect(() => assertGraphTransaction(sql)).toThrow('GRAPH_TRANSACTION_FAILED')
+      })).rejects.toMatchObject({ code: 'GRAPH_TRANSACTION_FAILED' })
+      expect(f.calls.some(({ q }) => q === 'commit')).toBe(false)
+      expect(f.calls.some(({ q }) => q === 'rollback')).toBe(true)
+    } finally { await f.connection.close() }
   })
 
   it('retains acceptance, raw digest, identity, immutable pin and declared-route checks', async () => {
-    const f = br2001Fixture(provider, `br2001-record-fences-${provider}`)
-    const terminal = br2001Terminal(f.executions[0]!, provider, br2001Text('issues'))
-    const execution = terminal.execution, resolution = successfulResolution(f, execution, 'issues')
-    expectRejected(await writeResolution(f, execution, resolution, { accepted: false }))
-    for (const proposed of [
-      { ...resolution, acceptedResultDigest: graphSourceDigest({ outcome: 'succeeded', output: terminal.result.output.text }) },
-      { ...resolution, outcome: 'pass', branchEnded: true, selectedRelationshipIds: [],
-        unselectedRelationshipIds: [f.version.definition.edges[0]!.id] },
-      { ...resolution, execution: { ...resolution.execution!, executionId: 'different-execution' } },
-      { ...resolution, selectedRelationshipIds: ['different-edge'], unselectedRelationshipIds: [] },
-    ]) expectRejected(await writeResolution(f, execution, proposed))
-    for (const record of [
-      { ...execution, runId: 'different-run' },
-      { ...execution, agentConfigurationVersionId: 'different-pin' },
-      { ...execution, attempt: 2 },
-      { ...execution, state: 'running', result: undefined, finishedAt: undefined },
-    ]) expectRejected(await writeResolution(f, HarnessExecutionSchema.parse(record), resolution))
+    const f = fixture(provider, `br2001-record-fences-${provider}`)
+    try {
+      const terminal = br2001Terminal(f.state.execution, provider, br2001Text('issues'))
+      const execution = terminal.execution, resolution = claimedResolution(f, execution, 'issues')
+      f.seedAccepted(execution, resolution)
+      f.state.accepted = false
+      expect(await f.read()).toBeUndefined()
+      expect(f.calls.some(({ q }) => q.includes('result_json,result_digest from run_repeat_results'))).toBe(false)
+      for (const proposed of [
+        { ...resolution.value, acceptedResultDigest: graphSourceDigest({ outcome: 'succeeded', output: terminal.result.output.text }) },
+        { ...resolution.value, outcome: 'pass', branchEnded: true, selectedRelationshipIds: [], unselectedRelationshipIds: [f.f.version.definition.edges[0]!.id] },
+        { ...resolution.value, execution: { ...resolution.value.execution!, executionId: 'different-execution' } },
+        { ...resolution.value, selectedRelationshipIds: ['different-edge'], unselectedRelationshipIds: [] },
+      ]) {
+        f.seedAccepted(execution, { ...resolution, value: proposed })
+        await rejectsRead(f)
+      }
+      for (const record of [{ ...execution, runId: 'different-run' },
+        { ...execution, agentConfigurationVersionId: 'different-pin' }, { ...execution, attempt: 2 },
+        { ...execution, state: 'running', result: undefined, finishedAt: undefined }]) {
+        f.seedAccepted(execution, resolution)
+        f.state.execution = HarnessExecutionSchema.parse(record)
+        await rejectsRead(f)
+      }
+    } finally { await f.connection.close() }
   })
 
   it('preserves direct string/object choice results and ordinary non-choice results', async () => {
-    const f = br2001Fixture(provider, `br2001-record-compat-${provider}`)
-    const base = br2001Terminal(f.executions[0]!, provider, br2001Text()).execution
-    for (const output of [br2001Text(), JSON.parse(br2001Text()), { text: ` \n${br2001Text()}\t ` }]) {
-      const execution = HarnessExecutionSchema.parse({ ...base, result: { outcome: 'succeeded', output } })
-      const attempt = await writeResolution(f, execution, successfulResolution(f, execution))
-      expect(attempt.error).toBeUndefined()
-      expect(attempt.inserts).toHaveLength(1)
-    }
-    delete f.version.definition.nodes[0]!.choice
-    for (const output of [{ text: 'ordinary reply' }, 'plain text', { done: true }]) {
-      const execution = HarnessExecutionSchema.parse({ ...base, result: { outcome: 'succeeded', output } })
-      const resolution = oneShotResolution(f.version, execution)
-      const attempt = await writeResolution(f, execution, resolution)
-      expect(attempt.error).toBeUndefined()
-      expect(attempt.inserts).toHaveLength(1)
-      expect(resolution.outcome).toBeUndefined()
-      expect(resolution.selectedRelationshipIds).toEqual([f.version.definition.edges[0]!.id])
+    for (const ordinary of [false, true]) {
+      const f = fixture(provider, `br2001-record-compatible-${provider}`, ordinary)
+      try {
+        const base = br2001Terminal(f.state.execution, provider, br2001Text()).execution
+        const values = ordinary ? [{ text: 'ordinary reply' }, 'plain text', { done: true }]
+          : [br2001Text(), JSON.parse(br2001Text()), { text: ` \n${br2001Text()}\t ` }]
+        for (const output of values) {
+          const execution = HarnessExecutionSchema.parse({ ...base, result: { outcome: 'succeeded', output } })
+          const resolution = repeatTerminalResolution(f.f.version, f.f.scope, f.ref, execution)
+          f.seedAccepted(execution, resolution)
+          expect(await f.read()).toEqual(execution.result)
+          expect(f.state.execution).toEqual(execution)
+          if (ordinary) {
+            expect(resolution.value.outcome).toBeUndefined()
+            expect(resolution.value.selectedRelationshipIds).toEqual([f.f.version.definition.edges[0]!.id])
+          }
+        }
+      } finally { await f.connection.close() }
     }
   })
 })

@@ -4,12 +4,12 @@ import type pg from 'pg'
 import type { NativeRollout } from '../harnesses/nativeRollout.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
-import { PostgresInteractionCoordinationRepository } from './coordination.js'
-import { ReviewerDispatcher } from './reviewer.js'
+import type { PostgresInteractionCoordinationRepository } from './coordination.js'
+import type { ReviewerDispatcher } from './reviewer.js'
 import { assertOrchestratorGraphAuthority } from './graphAuthority.js'
 import { DomainError } from '../errors.js'
 import { requestReviewFailureStop } from './reviewFailureLifecycle.js'
-import type { InteractionNativeRuntime } from './runtimePorts.js'
+import type { ApprovalExecutionCoordinator } from './execution.js'
 
 /** Drives durable, explicitly assigned reviewers; never fabricates a board Agent or grants. */
 export class AutomaticReviewService {
@@ -22,10 +22,10 @@ export class AutomaticReviewService {
   private closing = false
   private shutdownTask: Promise<void> | undefined
   constructor(private readonly pool: pg.Pool, private readonly runs: PostgresRunRepository,
-    native: InteractionNativeRuntime, private readonly locations: WorkspaceLocationService, private readonly rollout: NativeRollout,
+    private readonly native: ApprovalExecutionCoordinator, private readonly locations: WorkspaceLocationService, private readonly rollout: NativeRollout,
     private readonly stopFailedRun?: (runId: string) => Promise<void>) {
-    this.coordination = new PostgresInteractionCoordinationRepository(pool)
-    this.dispatcher = new ReviewerDispatcher(this.coordination, native)
+    this.coordination = native.reviewCoordination
+    this.dispatcher = native.reviewers
   }
   tick(): Promise<void> {
     if (this.closing) return Promise.resolve()
@@ -50,12 +50,12 @@ export class AutomaticReviewService {
         const interaction = DurableInteractionSchema.parse(row.record)
         if (!interaction.graphInterruptId || this.tasks.has(interaction.id)) continue
         const task = this.schedule(interaction).catch(async (error: unknown) => {
-          const message = error instanceof Error ? error.message : 'Automatic reviewer setup failed.'
+          const message = error instanceof DomainError ? error.code : 'REVIEW_SETUP_UNCERTAIN'
           if (this.lastErrors.get(interaction.id) === message) return
           this.lastErrors.set(interaction.id, message)
-          await this.runs.recordActivity(interaction.runId, 'backend', 'review_job_state', {
-            interactionId: interaction.id, state: 'blocked', message,
-          }, interaction.executionId)
+          // A failed setup is not native terminal evidence. The authoritative
+          // interaction remains pending; do not publish fabricated job facts.
+
         }).finally(() => this.tasks.delete(interaction.id))
         this.tasks.set(interaction.id, task)
         void task.catch(() => undefined)
@@ -89,13 +89,12 @@ export class AutomaticReviewService {
 
   private async schedule(interaction: DurableInteraction): Promise<void> {
     const run = await this.runs.get(interaction.runId)
-    if (!run || run.executionState !== 'waiting' || !run.authorizationPrincipalId) return
+    if (!run || !['running', 'waiting'].includes(run.executionState) || !run.authorizationPrincipalId) return
     await this.locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId)
     if (this.closing) return
     const reviewerId = interaction.approval.designatedOrchestratorAgentId
     if (!reviewerId || reviewerId === interaction.requestingAgentId) throw new Error('Automatic review requires a different designated Orchestrator.')
-    let connection: Awaited<ReturnType<typeof assertOrchestratorGraphAuthority>>
-    try { connection = await assertOrchestratorGraphAuthority(this.pool, interaction) }
+    try { await assertOrchestratorGraphAuthority(this.pool, interaction) }
     catch (error) {
       if (error instanceof DomainError && error.code === 'INTERACTION_ACCESS_DENIED') {
         // A pre-upgrade invalid wait must not repeatedly dispatch or wait forever.
@@ -106,23 +105,13 @@ export class AutomaticReviewService {
       }
       throw error
     }
-    const versionId = run.agentConfigurationVersionIds[reviewerId]
-    const execution = (await this.runs.listExecutions(run.id)).filter((item) => item.agentId === reviewerId
-      && item.workflowNodeId === connection?.orchestratorNodeId
-      && item.agentConfigurationVersionId === versionId && item.state === 'completed' && item.nativeSessionId && item.workingDirectory).at(-1)
-    if (!execution?.nativeSessionId || !execution.workingDirectory) throw new Error('The designated Orchestrator needs an existing completed native session in this Run. No replacement reviewer was created.')
-    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
-    if (!configuration || !this.rollout.enabled(configuration.harness.harness)) throw new Error('The designated reviewer has not passed its native rollout gate.')
-    const native = await this.coordination.workflowSession(execution.id)
-    if (!native || native.session.harness !== configuration.harness.harness
-      || native.session.nativeSessionId !== execution.nativeSessionId) {
-      throw new Error('The designated reviewer native session identity is unavailable or inconsistent.')
-    }
-    const session = native.session
-    await this.coordination.ensureLane({ id: `review-lane:${session.harness}:${session.nativeSessionId}`,
-      harness: session.harness, nativeSessionId: session.nativeSessionId, ownerAgentId: reviewerId,
-      revision: 0, observedStatus: 'idle', connectionGeneration: 0, observedAt: new Date().toISOString() })
-    await this.dispatcher.enqueue(interaction, reviewerId, session, { executionId: execution.id, workingDirectory: execution.workingDirectory })
+    const configurationId = run.agentConfigurationVersionIds[reviewerId]
+    const configuration = configurationId && await this.runs.getExecutionConfiguration(configurationId)
+    if (!configuration || !this.rollout.enabled(configuration.harness.harness)) throw new DomainError(
+      'REVIEWER_NATIVE_UNQUALIFIED', 'The pinned reviewer has not passed native provider qualification.', 409)
+    // The coordinator selects the exact accepted execution/occurrence through
+    // the saved approval relationship, not a latest execution for the Agent.
+    await this.native.enqueueReview(interaction)
     if (this.closing) return
     const job = await this.dispatcher.dispatchNext(reviewerId, this.workerId)
     // Transactional review events already carry the actual job's Run/execution.

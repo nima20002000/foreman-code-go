@@ -3,13 +3,11 @@ import { beginSessionChange, clearProtectedStorage } from '../../shared/api/sess
 import { useConversationDraftStore } from '../conversations/conversationDraftStore'
 import { useOperatorChatStore } from '../operator-chat/operatorChatStore'
 import { useGraphDraftStore } from '../graph/store'
-import { managedSaveQueue } from '../graph/managedSave'
 import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
 import { clearRevisionedFormPersistence } from '../settings/revisionedForm'
 
 export function clearBrowserIdentity(client: QueryClient): void {
   client.clear()
-  managedSaveQueue.reset()
   useGraphDraftStore.getState().clearAllDrafts()
   useAgentDirectoryStore.getState().reset()
   useConversationDraftStore.getState().clearAllDrafts()

@@ -1,4 +1,5 @@
-import type { GetRunResponse, RunNodeLiveActivity } from '@graphql/contracts'
+import { type RunNodeLiveActivity } from '@graphql/contracts'
+import { type CurrentRunDetails as GetRunResponse } from '@graphql/contracts/wave25'
 import { describe, expect, it } from 'vitest'
 import { makeScaleGraph, makeSyntheticRun } from './fixtures/scaleData'
 import { graphRuntimeIndex, selectGraphNodeActivity } from './runtimeIndex'

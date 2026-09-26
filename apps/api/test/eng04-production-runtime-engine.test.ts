@@ -1,0 +1,173 @@
+import assert from 'node:assert/strict'
+import { test, vi } from 'vitest'
+import type pg from 'pg'
+import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import type { DurableInteraction } from '@graphql/contracts'
+import type { GraphResumeClaim } from '../src/modules/interactions/deliveryPostgres.js'
+import type { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
+import type { RepeatEngineStartContext } from '../src/modules/runs/repeatStartComposition.js'
+import type { RunOwnership } from '../src/modules/runs/ownership.js'
+
+// Engine REGISTRATION/fence tests with explicit recording ports. Actual graph
+// progression lives in eng04-a1-engine-foundation.test.ts. Neither is PG/native proof.
+const calls = vi.hoisted(() => ({ entries: [] as RepeatEngineStartContext[],
+  work: undefined as undefined | ((context: RepeatEngineStartContext) => Promise<void>) }))
+vi.mock('../src/modules/runs/repeatStartComposition.js', () => ({ executeRepeatEngineStart: async (context: RepeatEngineStartContext) => {
+  calls.entries.push(context); await calls.work?.(context)
+} }))
+
+const checkpoints = vi.hoisted(() => ({ interrupted: false, delivered: false, consumed: false, stale: false, claim: undefined as GraphResumeClaim | undefined }))
+vi.mock('../src/modules/runs/repeatGraph.js', () => ({ readWorkflowCheckpoint: async () => ({
+  values: {}, tasks: checkpoints.interrupted ? [{ interrupts: [{}] }] : [],
+}) }))
+const lifecycleCalls = vi.hoisted(() => ({ settle: undefined as undefined | (() => void) }))
+vi.mock('../src/modules/runs/workflowLifecycle.js', () => ({
+  persistWorkflowApprovalWait: async () => [{ id: 'approval-a1', status: checkpoints.delivered ? 'delivered' : 'pending',
+    deliveryState: checkpoints.delivered ? 'delivered' : 'pending' }],
+  settleWorkflowRun: async () => lifecycleCalls.settle?.(),
+}))
+vi.mock('../src/modules/runs/approvalCheckpointResume.js', () => ({
+  consumeDeliveredApprovals: async (_owner: unknown, _checkpointer: unknown, _interactions: unknown, _delivered: unknown, claim?: GraphResumeClaim) => {
+    checkpoints.consumed = true; checkpoints.claim = claim; return checkpoints.stale ? undefined : {}
+  },
+}))
+async function fixture(options: { form?: 'single' | 'parallel' | 'conditional' | 'approval' | 'repeat' } = {}) {
+  calls.entries = []; calls.work = undefined
+  checkpoints.interrupted = false; checkpoints.delivered = false; checkpoints.consumed = false; checkpoints.stale = false; checkpoints.claim = undefined
+  const f = makeCurrentWorkflowFixture('a1-engine-registration', options.form ?? 'single')
+  const run = AcceptedWorkflowRunV3Schema.parse({ ...f.run, authorizationPrincipalId: 'principal-a1-engine',
+    executionLocation: { runnerId: 'runner-a1-engine', rootPath: '/synthetic/a1-engine', locationRevision: 1, identityHash: `sha256:${'a'.repeat(64)}` } })
+  const state = { run, stopRequested: false, cleanupPending: false, owned: true, released: 0,
+    factoryReads: 0, nativeCancel: 0, clean: true, events: [] as string[] }
+  const snapshot = () => ({ run: state.run, version: f.version, configurations: f.configurations,
+    stopRequested: state.stopRequested, cleanupPending: state.cleanupPending })
+  const connection = new ExclusiveGraphConnection({ query: async (text: string, values: unknown[]) => {
+    const q = text.replace(/\s+/g, ' ').trim()
+    assert.match(q, /select exists\(/)
+    assert.match(q, /from execution_native_recoveries p join harness_executions e/)
+    assert.match(q, /where e\.run_id=\$1\) as recovered/)
+    assert.deepEqual(values, [run.id])
+    // Registration-only fixtures have no recovered physical lifetime. This is
+    // the diagnostic read, never a fabricated closure or settlement receipt.
+    return { rows: [{ recovered: false }], rowCount: 1, command: 'SELECT', oid: 0, fields: [] }
+  } } as unknown as pg.ClientBase, () => { if (!state.owned) throw new Error('owner-lost') })
+  const owner = { runId: run.id, oneShotConnection: () => connection, assertOwned() { if (!state.owned) throw new Error('owner-lost') },
+    release: async () => { state.released++; state.events.push('release') } } as unknown as RunOwnership
+  const factory = {} as RepeatEngineStartContext['factory']
+  const runs = { acquireOwnership: async () => owner, getRepeatSnapshot: async () => {
+    AcceptedWorkflowRunV3Schema.parse(state.run); return snapshot()
+  }, repeatRepositoryFactory() { state.factoryReads++; return factory },
+    requestCleanup: async () => { state.cleanupPending = true; state.events.push('request-cleanup') },
+    finishCleanup: async (_id: string, failed: boolean) => { state.cleanupPending = failed; state.events.push('finish-cleanup') },
+    reconciliationCandidates: async () => [state.run] }
+  const terminal = () => { state.run = { ...state.run, executionState: 'completed', outcome: 'canceled',
+    result: { outcome: 'canceled' }, finishedAt: f.createdAt } }
+  lifecycleCalls.settle = () => { state.events.push('settle'); terminal() }
+  const native = { cancelRun: async () => { state.nativeCancel++; if (!state.clean) throw new Error('native closure uncertain') },
+    finishRun: async () => { state.events.push('finish-native') },
+    nativeBoundaryEvidence: async () => { throw new Error('No fake native evidence in registration tests') },
+    closeForRestart: async () => { state.events.push('restart-close') }, reconcileReviews: async () => undefined, requestColdRunCleanup: async () => false }
+  const { LangGraphWorkflowEngine: Engine } = await import('../src/modules/runs/engine.js')
+  type Args = ConstructorParameters<typeof LangGraphWorkflowEngine>
+  const engine = new Engine(runs as unknown as Args[0], {} as Args[1], native as unknown as Args[2], {} as Args[3],
+    '/synthetic/a1-engine', {} as Args[5], {} as Args[6], {} as Args[7],
+    async () => { state.events.push('terminal-notification') }, { workerParallelism: 2 })
+  return { f, run, state, owner, native, runs, engine, factory, terminal }
+}
+
+for (const form of ['single', 'parallel', 'conditional', 'approval', 'repeat'] as const) test(`ENG04 A1 engine ${form}: the same owner/gate/composition entry`, async () => {
+  const h = await fixture({ form })
+  await h.engine.start(h.run.id)
+  assert.equal(calls.entries.length, 1); assert.equal(calls.entries[0]!.owner, h.owner)
+  assert.equal(calls.entries[0]!.factory, h.factory)
+  assert.equal(calls.entries[0]!.configuredParallelism, 2); assert.equal(h.state.released, 1)
+  await assert.rejects(calls.entries[0]!.nativeBoundaryEvidence('synthetic-execution'), /No fake native evidence/)
+})
+
+test('ENG04 A1 simultaneous Start notifications allocate only one owner/runtime task', async () => {
+  const h = await fixture(); let release!: () => void
+  const barrier = new Promise<void>((done) => { release = done })
+  calls.work = async () => barrier
+  const one = h.engine.start(h.run.id), two = h.engine.start(h.run.id)
+  assert.equal(one, two); release(); await one
+  assert.equal(calls.entries.length, 1); assert.equal(h.state.released, 1)
+})
+
+test('ENG04 A1 cold running recovery uses the same gate but requires authoritative continuation', async () => {
+  const h = await fixture(); await h.engine.start(h.run.id)
+  const gate = calls.entries[0]!.admission
+  h.state.run = { ...h.run, executionState: 'running', startedAt: h.f.createdAt }
+  await h.engine.resume(h.run.id)
+  assert.equal(calls.entries.length, 2)
+  assert.equal(calls.entries[1]!.admission, gate)
+})
+
+test('ENG04 A1 approval notices require a delivered current checkpoint', async () => {
+  const h = await fixture(); h.state.run = { ...h.run, executionState: 'waiting' }; checkpoints.interrupted = true
+  const interaction = { id: 'approval-a1', runId: h.run.id, graphThreadId: h.run.id } as DurableInteraction
+  const claim = { id: 'claim-a1' } as unknown as GraphResumeClaim
+  await h.engine.resumeInteraction(interaction, claim)
+  assert.equal(calls.entries.length, 0); assert.equal(checkpoints.consumed, false)
+  checkpoints.delivered = true; checkpoints.stale = true
+  await h.engine.resumeInteraction(interaction, claim)
+  assert.equal(calls.entries.length, 0); assert.equal(checkpoints.claim, claim)
+  checkpoints.stale = false
+  await h.engine.resumeInteraction(interaction, claim)
+  assert.equal(calls.entries.length, 1); assert.equal(checkpoints.consumed, true)
+  await assert.rejects(h.engine.resumeInteraction({ ...interaction, graphThreadId: 'another-run' }), { code: 'INTERACTION_RUN_MISMATCH' })
+})
+
+test('ENG04 A1 cancellation requires a committed authorized Stop before any native action', async () => {
+  const h = await fixture()
+  await assert.rejects(h.engine.cancel(h.run.id), { code: 'REPEAT_STOP_AUTHORIZATION_REQUIRED' })
+  assert.equal(h.state.nativeCancel, 0)
+  h.state.stopRequested = true
+  assert.equal(await h.engine.cancel(h.run.id), true)
+  assert.equal(h.state.nativeCancel, 2); assert.equal(h.state.cleanupPending, false)
+  assert(h.state.events.indexOf('settle') < h.state.events.indexOf('finish-cleanup'))
+})
+
+test('ENG04 A1 uncertain native cleanup retains intent and cannot report stopped-and-settled', async () => {
+  const h = await fixture(); h.state.stopRequested = true; h.state.clean = false
+  await assert.rejects(h.engine.cancel(h.run.id), /native closure uncertain/)
+  assert.equal(h.state.cleanupPending, true)
+})
+
+test('ENG04 A1 terminal notifications finish exact lifecycle, never re-enter graph execution', async () => {
+  const h = await fixture(); h.terminal()
+  await h.engine.start(h.run.id)
+  assert.equal(calls.entries.length, 0)
+  assert(h.state.events.includes('finish-native')); assert(h.state.events.includes('terminal-notification'))
+  assert.equal(h.state.cleanupPending, false)
+})
+
+test('ENG04 A1 owner loss blocks factory/runtime without creating fallback work', async () => {
+  const h = await fixture(); h.state.owned = false
+  await assert.rejects(h.engine.start(h.run.id), /owner-lost/)
+  assert.equal(h.state.factoryReads, 1); assert.equal(calls.entries.length, 0)
+})
+
+test('ENG04 A1 restart waits for captured native closure and drains tasks without synthetic Stop', async () => {
+  const h = await fixture(); let entered!: () => void, closed!: () => void
+  const started = new Promise<void>((done) => { entered = done }), closure = new Promise<void>((done) => { closed = done })
+  h.native.closeForRestart = async () => { await closure; h.state.events.push('restart-close') }
+  calls.work = async (context) => {
+    entered()
+    await new Promise<void>((_resolve, reject) => context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true }))
+  }
+  const active = h.engine.start(h.run.id); void active.catch(() => undefined)
+  await started; const shutdown = h.engine.shutdown()
+  await Promise.resolve()
+  closed(); await shutdown; await assert.rejects(active, { code: 'ENGINE_RESTART' })
+  assert.equal(h.state.released, 1); assert.equal(h.state.stopRequested, false)
+  assert(!h.state.events.includes('settle')); assert(!h.state.events.includes('finish-cleanup'))
+  await assert.rejects(h.engine.start(h.run.id), { code: 'ENGINE_CLOSING' })
+})
+
+test('current engine rejects incomplete composition at construction', async () => {
+  const { LangGraphWorkflowEngine: Engine } = await import('../src/modules/runs/engine.js')
+  const runs = { repeatRepositoryFactory: () => ({}) }
+  assert.throws(() => Reflect.construct(Engine, [runs, {}, {}, {}, '/synthetic/runtime', {}, {}, undefined]),
+    { code: 'WORKFLOW_RUNTIME_COMPOSITION_REQUIRED' })
+})

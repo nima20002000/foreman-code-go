@@ -1,18 +1,18 @@
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
-import { ExecutableWorkflowV2Schema, makeWave25Fixture } from '@graphql/contracts/wave25'
+import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 
 export const br2001Providers = ['codex', 'opencode'] as const
 export type Br2001Provider = typeof br2001Providers[number]
 
 /** Synthetic immutable records only; no model, permission or rollout settings are written. */
 export function br2001Fixture(provider: Br2001Provider, suffix: string) {
-  const fixture = makeWave25Fixture(suffix)
+  const fixture = makeCurrentWorkflowFixture(suffix)
   if (provider === 'opencode') fixture.configurations = fixture.configurations.map((configuration) =>
     AgentConfigurationVersionSchema.parse({ ...configuration, harness: {
       harness: 'opencode', model: 'synthetic-no-native-call', variant: '', nativeAgent: 'build',
       thinking: false, autoApprove: false,
     } }))
-  fixture.version = ExecutableWorkflowV2Schema.parse({
+  fixture.version = ExecutableWorkflowV3Schema.parse({
     configurations: fixture.configurations,
     version: { ...fixture.version, definition: { ...fixture.version.definition,
       nodes: fixture.version.definition.nodes.map((node, index) => index === 0 ? {
@@ -23,7 +23,12 @@ export function br2001Fixture(provider: Br2001Provider, suffix: string) {
       } : { ...node, name: 'Fixer' }),
     } },
   }).version
-  return fixture
+  const executions = fixture.identities.map((identity) => HarnessExecutionSchema.parse({
+    id: identity.executionId, runId: fixture.run.id, workflowNodeId: identity.workflowNodeId,
+    agentId: identity.agentId, agentConfigurationVersionId: identity.agentConfigurationVersionId,
+    attempt: identity.attempt, input: {}, state: 'queued', createdAt: fixture.createdAt,
+  }))
+  return { ...fixture, executions }
 }
 
 export function br2001Text(outcome = 'pass', data: unknown = null): string {

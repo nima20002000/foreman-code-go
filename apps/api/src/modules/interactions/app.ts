@@ -7,7 +7,7 @@ import {
   RespondToInteractionResponseSchema,
   HarnessExecutionSchema,
 } from '@graphql/contracts'
-import { CompatibleWorkflowRunSchema, CompatibleWorkflowVersionSchema } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
 import { resolveImmutableApprovalRoute } from '../workflows/approvalRoutes.js'
 import { assertWave25WorkerBinding } from './wave25/credentialAuthority.js'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -111,13 +111,12 @@ export class PostgresAppInteractionService implements AppInteractionService {
       [principal.id, principal.agentId, JSON.stringify(scopes)],
     )
     return result.rows.some((row) => {
-      const run = CompatibleWorkflowRunSchema.safeParse(row.run)
-      const version = CompatibleWorkflowVersionSchema.safeParse(row.version)
+      const run = AcceptedWorkflowRunV3Schema.safeParse(row.run)
+      const version = WorkflowVersionV3Schema.safeParse(row.version)
       const execution = HarnessExecutionSchema.safeParse(row.execution)
       if (!run.success || !version.success || !execution.success) return false
       const r = run.data, v = version.data, e = execution.data
-      if (('executionSemanticsVersion' in r) !== ('executionSemanticsVersion' in v)
-        || r.workflowVersionId !== v.id || r.workspaceId !== v.workspaceId || r.workflowId !== v.workflowId
+      if (r.workflowVersionId !== v.id || r.workspaceId !== v.workspaceId || r.workflowId !== v.workflowId
         || v.definition.id !== r.workflowId || v.definition.workspaceId !== r.workspaceId
         || e.runId !== r.id || e.agentId !== principal.agentId || e.workflowNodeId !== row.node_id
         || e.agentConfigurationVersionId !== r.agentConfigurationVersionIds[e.agentId]
@@ -170,25 +169,14 @@ export class PostgresAppInteractionService implements AppInteractionService {
     let current: ReturnType<typeof DurableInteractionSchema.parse> | undefined
     try {
       current = requireRespondableInteraction(principal, await this.interactions.get(parsed.interactionId))
-      const result = this.orchestration
-        ? await this.orchestration.respond({
-            kind: 'orchestrator', principal,
-            authority: {
-              agentId: principal.agentId!, workspaceId: current.workspaceId, workflowId: current.workflowId,
-            },
-            beforeCommit: (client, decision) => this.commands.recordAudit(
-              principal.id, 'mcp', 'interaction_respond', `interaction:${current!.id}`, 'succeeded',
-              { replayed: decision.replayed, optionId: parsed.optionId }, client,
-            ),
-          }, parsed)
-        : await this.interactions.decide({
-            id: parsed.interactionId, optionId: parsed.optionId, expectedRevision: parsed.expectedRevision,
-            nativeResponse: null, principal,
-            beforeCommit: (client, decision) => this.commands.recordAudit(
-              principal.id, 'mcp', 'interaction_respond', `interaction:${current!.id}`, 'succeeded',
-              { replayed: decision.replayed, optionId: parsed.optionId }, client,
-            ),
-          })
+      if (!this.orchestration) throw new DomainError('APPROVAL_RUNTIME_UNAVAILABLE',
+        'The current approval decision service is unavailable.', 503)
+      const result = await this.orchestration.respond({
+        kind: 'orchestrator', principal,
+        authority: {
+          agentId: principal.agentId!, workspaceId: current.workspaceId, workflowId: current.workflowId,
+        },
+      }, parsed)
       return RespondToInteractionResponseSchema.parse(result)
     } catch (error) {
       const denied = error instanceof DomainError && ['INTERACTION_NOT_FOUND', 'INTERACTION_ACCESS_DENIED'].includes(error.code)

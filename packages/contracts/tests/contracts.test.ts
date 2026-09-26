@@ -16,8 +16,6 @@ import {
   SaveWorkflowRequestSchema,
   ScenarioSelectionSchema,
   WorkflowRunSchema,
-  WorkflowDefinitionSchema,
-  WorkflowVersionSchema,
   WorkspaceDetailsResponseSchema,
   AgentDefaultsSchema,
   CODEX_APPROVAL_OPTIONS_FIXTURE,
@@ -39,12 +37,18 @@ import {
   ScopedMcpDetectionSchema,
 } from "../src/index.js";
 
+import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema } from "../src/wave25/saved.js";
+import { makeCurrentWorkflowFixture } from "../src/wave25/currentFixture.js";
+
 const condition = { kind: "manual" as const };
 const agent = { id: "agent-1", name: "Researcher" };
 const workflow = {
   id: "workflow-1",
   workspaceId: "workspace-1",
   name: "Research workflow",
+  executionSemanticsVersion: 3 as const,
+  entryNodeId: "node-1",
+  approval: { handler: "user" as const },
   executionCondition: condition,
   nodes: [{ id: "node-1", agentId: "agent-1", name: "Research" }],
   edges: [],
@@ -95,16 +99,17 @@ describe("neutral product contracts", () => {
     };
     const version = {
       id: "workflow-1-v1", workspaceId: "workspace-1", workflowId: "workflow-1", version: 1,
-      entryNodeId: "node-1", definition: executableDefinition,
+      executionSemanticsVersion: 3, entryNodeId: "node-1", definition: executableDefinition,
       agentConfigurationVersionIds: { "agent-1": "agent-config-1" },
-      contentHash: "sha256:workflow", createdAt: "2026-09-16T00:00:00.000Z",
+      contentHash: `sha256:${"0".repeat(64)}`, createdAt: "2026-09-16T00:00:00.000Z",
     };
-    expect(WorkflowDefinitionSchema.safeParse({ ...workflow, approval: incompleteApproval }).success).toBe(true);
-    expect(WorkflowVersionSchema.safeParse({ ...version, approval: incompleteApproval }).success).toBe(false);
-    expect(WorkflowVersionSchema.safeParse({ ...version, approval: acceptedApproval }).success).toBe(true);
+    expect(WorkflowDefinitionV3Schema.safeParse({ ...workflow, approval: incompleteApproval }).success).toBe(true);
+    expect(WorkflowVersionV3Schema.safeParse({ ...version, approval: incompleteApproval }).success).toBe(false);
+    expect(WorkflowVersionV3Schema.safeParse({ ...version, approval: acceptedApproval, definition: { ...executableDefinition, approval: acceptedApproval } }).success).toBe(true);
 
     const run = {
       id: "run-1", workspaceId: "workspace-1", workflowId: "workflow-1", workflowVersionId: version.id,
+      executionSemanticsVersion: 3,
       agentConfigurationVersionIds: version.agentConfigurationVersionIds, executionCondition: condition,
       executionState: "queued", outcome: "pending", input: {}, createdAt: "2026-09-16T00:00:00.000Z",
     };
@@ -193,7 +198,7 @@ describe("neutral product contracts", () => {
     ] as const) {
       expect(AgentSchema.parse({ ...agent, executionState }).executionState).toBe(executionState);
     }
-    expect(WorkflowDefinitionSchema.parse({
+    expect(WorkflowDefinitionV3Schema.parse({
       ...workflow,
       nodes: [{
         ...workflow.nodes[0],
@@ -207,7 +212,7 @@ describe("neutral product contracts", () => {
       height: 140,
       initialPrompt: "Summarize the accepted input.",
     });
-    expect(WorkflowDefinitionSchema.safeParse({
+    expect(WorkflowDefinitionV3Schema.safeParse({
       ...workflow,
       nodes: [{ ...workflow.nodes[0], width: 0 }],
     }).success).toBe(false);
@@ -219,13 +224,13 @@ describe("neutral product contracts", () => {
 
   it("keeps workflow node identity separate from an Agent", () => {
     expect(
-      WorkflowDefinitionSchema.safeParse({
+      WorkflowDefinitionV3Schema.safeParse({
         ...workflow,
         nodes: [{ id: "node-1", name: "Research", agent: agent }],
       }).success,
     ).toBe(false);
     expect(
-      WorkflowDefinitionSchema.safeParse({
+      WorkflowDefinitionV3Schema.safeParse({
         ...workflow,
         nodes: [{ id: "node-1", name: "Research", agentId: "agent-1" }],
       }).success,
@@ -234,7 +239,7 @@ describe("neutral product contracts", () => {
 
   it("requires an explicit execution condition", () => {
     expect(ExecutionConditionSchema.safeParse({}).success).toBe(false);
-    expect(WorkflowDefinitionSchema.safeParse({ ...workflow, executionCondition: undefined }).success).toBe(
+    expect(WorkflowDefinitionV3Schema.safeParse({ ...workflow, executionCondition: undefined }).success).toBe(
       false,
     );
   });
@@ -340,75 +345,58 @@ describe("neutral product contracts", () => {
       edges: [],
     };
     expect(
-      WorkflowVersionSchema.parse({
+      WorkflowVersionV3Schema.parse({
         id: "workflow-1-v4",
         workspaceId: "workspace-1",
         workflowId: "workflow-1",
         version: 4,
+        executionSemanticsVersion: 3, approval: workflow.approval,
         entryNodeId: "node-1",
         definition: versionedWorkflow,
         agentConfigurationVersionIds: { "agent-1": agentConfiguration.id },
-        contentHash: "sha256:workflow",
+        contentHash: `sha256:${"0".repeat(64)}`,
         createdAt: "2026-09-14T00:00:00.000Z",
       }).agentConfigurationVersionIds,
     ).toEqual({ "agent-1": "agent-config-1-v3" });
 
     expect(
-      WorkflowVersionSchema.safeParse({
+      WorkflowVersionV3Schema.safeParse({
         id: "workflow-1-v4",
         workspaceId: "workspace-1",
         workflowId: "workflow-1",
         version: 4,
+        executionSemanticsVersion: 3, approval: workflow.approval,
         entryNodeId: "node-1",
         definition: versionedWorkflow,
         agentConfigurationVersionIds: {},
-        contentHash: "sha256:workflow",
+        contentHash: `sha256:${"0".repeat(64)}`,
         createdAt: "2026-09-14T00:00:00.000Z",
       }).success,
     ).toBe(false);
   });
 
   it("models explicit routing, bounded repeats, parallel attempts and native session input", () => {
-    const routedWorkflow = WorkflowDefinitionSchema.parse({
-      ...workflow,
-      version: 2,
-      executionPolicy: { maxParallelism: 2, maxNodeExecutions: 8 },
-      nodes: [
-        workflow.nodes[0],
-        { id: "node-2", agentId: "agent-2", name: "Review", join: { mode: "any" } },
-      ],
-      edges: [
-        {
-          id: "edge-1",
-          source: "node-1",
-          target: "node-2",
-          route: {
-            outcomes: ["succeeded"],
-            result: { path: ["approved"], operator: "equals", value: true },
-            maxTraversals: 2,
-          },
-        },
-      ],
-    });
-    expect(routedWorkflow.edges[0]?.route?.maxTraversals).toBe(2);
-
-    expect(
-      WorkflowDefinitionSchema.safeParse({
-        ...routedWorkflow,
-        edges: [
-          {
-            ...routedWorkflow.edges[0],
-            route: { outcomes: ["succeeded"], result: { path: ["approved"], operator: "equals" } },
-          },
-        ],
-      }).success,
-    ).toBe(false);
+    // Current positive fixtures are authored as V3, not converted legacy graphs.
+    const conditional = makeCurrentWorkflowFixture("contract-routing", "conditional");
+    const repeated = makeCurrentWorkflowFixture("contract-repeat", "repeat");
+    expect(WorkflowVersionV3Schema.parse(conditional.version).definition.nodes[0]?.choice?.outcomes)
+      .toEqual(conditional.version.definition.nodes[0]?.choice?.outcomes);
+    expect(WorkflowVersionV3Schema.parse(repeated.version).definition.repeat?.blocks[0]?.maxOccurrences).toBe(3);
+    expect(WorkflowDefinitionV3Schema.safeParse({
+      ...conditional.version.definition,
+      edges: [{ ...conditional.version.definition.edges[0], route: { outcomes: ["succeeded"], maxTraversals: 2 } }],
+    }).success).toBe(false);
+    expect(WorkflowDefinitionV3Schema.safeParse({
+      ...conditional.version.definition,
+      nodes: conditional.version.definition.nodes.map((node) => ({ ...node, join: { mode: "any" } })),
+    }).success).toBe(false);
 
     const run = WorkflowRunSchema.parse({
       id: "run-2",
       workspaceId: "workspace-1",
       workflowId: "workflow-1",
       workflowVersionId: "workflow-1-v2",
+      executionSemanticsVersion: 3, approval: workflow.approval,
       executionLocation: {
         runnerId: "runner-local",
         rootPath: "/srv/project",

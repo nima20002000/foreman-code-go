@@ -1,8 +1,8 @@
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
-import { Background, ConnectionMode, MarkerType, MiniMap, ReactFlow,
+import { Background, ConnectionMode, Controls, ReactFlow,
   type Connection, type IsValidConnection, type NodeChange, type ReactFlowInstance } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { AgentMinimapDot, AgentNode, HandoffEdge } from './GraphElements'
+import { AgentNode, HandoffEdge } from './GraphElements'
 import { GraphGeometryContext } from './graphContexts'
 import { createGraphGeometryAdapter, type GraphGeometryChange } from './geometry'
 import { AGENT_HANDOFF_EDGE_TYPE } from './mapper'
@@ -12,13 +12,11 @@ import type { GraphNode, GraphEdge, GraphProjection } from './types'
 
 const nodeTypes = { agent: AgentNode }
 const edgeTypes = { [AGENT_HANDOFF_EDGE_TYPE]: HandoffEdge }
-const fitViewOptions = { padding: 0.2, minZoom: 0.7, maxZoom: 1.1 }
+const fitViewOptions = { padding: 0.25, minZoom: 0.5, maxZoom: 1 }
 const proOptions = { hideAttribution: true }
 const defaultEdgeOptions = {
   type: AGENT_HANDOFF_EDGE_TYPE, selectable: false, focusable: false,
-  markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: 'var(--n-border-strong)' },
 }
-const minimapClass = (node: { selected?: boolean }) => node.selected ? 'workflow-graph-minimap-node-selected' : 'workflow-graph-minimap-node'
 
 export type GraphCanvasHandle = {
   flush: () => void
@@ -30,7 +28,6 @@ export type GraphCanvasHandle = {
 export type GraphCanvasProps = {
   topology: GraphProjection
   departing: GraphProjection
-  theme: string
   geometryRef?: Ref<GraphCanvasHandle>
   readOnly?: boolean
   onGeometryStart: (dirty: boolean) => void
@@ -47,7 +44,7 @@ export type GraphCanvasProps = {
  * animation clocks, or workflow scheduling here. Geometry stays local until flush.
  */
 export const GraphCanvas = memo(function GraphCanvas({
-  topology, departing, theme, geometryRef, readOnly = false,
+  topology, departing, geometryRef, readOnly = false,
   onGeometryStart, onGeometryCommit, onGeometryCancel, onConnect, isValidConnection, onPaneClick, onInit,
 }: GraphCanvasProps) {
   const selectedIds = useGraphPresentation((state) => state.selectedNodeIds)
@@ -132,9 +129,7 @@ export const GraphCanvas = memo(function GraphCanvas({
     const ids = new Set(topology.edges.map((edge) => edge.id))
     return [...topology.edges, ...departing.edges.filter((edge) => !ids.has(edge.id))]
   }, [topology.edges, departing.edges])
-  const nodeColor = useCallback((node: { selected?: boolean }) => node.selected
-    ? theme === 'dark' ? '#bfdbfe' : '#1d4ed8' : theme === 'dark' ? '#60a5fa' : '#2563eb', [theme])
-  const nodeStrokeColor = useCallback(() => theme === 'dark' ? '#22272a' : '#f2f2ef', [theme])
+  const [connecting, setConnecting] = useState(false)
   const onDragStop = useCallback((_event: unknown, node: GraphNode, draggedNodes: GraphNode[]) => {
     if (readOnly || cancelled.current) return
     const moved = draggedNodes?.length ? draggedNodes : [node]
@@ -144,7 +139,7 @@ export const GraphCanvas = memo(function GraphCanvas({
     flush()
   }, [adapter, begin, flush, readOnly])
 
-  return <div className="graph-render-adapter" style={{ position: 'absolute', inset: 0 }}
+  return <div className={`graph-render-adapter${connecting ? ' is-connecting' : ''}`} style={{ position: 'absolute', inset: 0 }}
     onPointerDownCapture={() => { if (!gesturing.current) cancelled.current = false }}
     onPointerCancel={() => { flush(); cancelled.current = true }}
     onKeyDownCapture={(event) => {
@@ -156,17 +151,15 @@ export const GraphCanvas = memo(function GraphCanvas({
         nodes={visibleNodes} edges={visibleEdges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         connectionMode={ConnectionMode.Loose} onNodesChange={onNodesChange}
         onNodeDragStart={startDrag} onNodeDragStop={onDragStop}
-        onConnect={onConnect} onPaneClick={onPaneClick} isValidConnection={isValidConnection}
+        onConnect={onConnect} onPaneClick={onPaneClick} isValidConnection={isValidConnection} connectionRadius={120}
+        onConnectStart={() => setConnecting(true)} onConnectEnd={() => setConnecting(false)}
+        onClickConnectStart={() => setConnecting(true)} onClickConnectEnd={() => setConnecting(false)}
         nodesDraggable={!readOnly} nodesConnectable={!readOnly} elementsSelectable
         panOnDrag zoomOnScroll deleteKeyCode={null} fitView fitViewOptions={fitViewOptions}
         defaultEdgeOptions={defaultEdgeOptions} proOptions={proOptions}
         aria-label={readOnly ? 'Run graph canvas' : 'Workflow editor canvas'} onInit={onInit}>
-        <Background color={theme === 'dark' ? '#3e474c' : '#deded9'} gap={24} size={1} />
-        <MiniMap position="bottom-right" pannable zoomable ariaLabel="Workflow overview"
-          nodeComponent={AgentMinimapDot} nodeClassName={minimapClass} nodeColor={nodeColor}
-          nodeStrokeColor={nodeStrokeColor} nodeStrokeWidth={2}
-          bgColor={theme === 'dark' ? '#22272a' : '#f2f2ef'}
-          maskColor={theme === 'dark' ? 'rgba(17, 20, 22, 0.78)' : 'rgba(255, 255, 255, 0.72)'} />
+        <Background color="var(--border)" gap={24} size={1} />
+        <Controls position="bottom-left" showInteractive={false} fitViewOptions={fitViewOptions} />
       </ReactFlow>
     </GraphGeometryContext.Provider>
   </div>

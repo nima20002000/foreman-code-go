@@ -1,3 +1,4 @@
+import type { WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
 import type {
   Agent,
   AgentExecutionState,
@@ -5,7 +6,6 @@ import type {
   RunOutcome,
   RunNodeLiveActivity,
   ReviewStatus,
-  WorkflowDefinition,
   WorkflowExecutionPolicy,
   WorkflowRunSummary,
 } from '@graphql/contracts'
@@ -100,7 +100,7 @@ export type GraphMapperOptions = {
 }
 
 export type GraphSource = {
-  workflow: WorkflowDefinition
+  workflow: WorkflowDefinitionV3
   agents: readonly Agent[]
   runFacts?: readonly WorkflowRunSummary[]
 }

@@ -1,0 +1,91 @@
+import { z } from 'zod'
+import {
+  HarnessExecutionSchema, RunActivitySchema, RunLiveActivitySchema, WorkspaceSchema, AgentSchema, WorkflowRunSummarySchema,
+  ResourceSummarySchema, BrowserProfileSummarySchema, RunnerSummarySchema, TimestampSchema,
+} from '../index.js'
+import { ExpectedRevisionSchema, ManagementPageInfoSchema } from '../management/index.js'
+import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema, WorkflowRunV3Schema } from './workflowSchemas.js'
+import { GraphIdSchema } from './graphPrimitives.js'
+import { sameWorkflowValue } from './meaningfulEdit.js'
+
+/** Current persisted V3 records only. Unsupported/missing execution tags fail;
+ * historical version IDs remain immutable, not converted or reinterpreted. */
+export { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema, WorkflowRunV3Schema } from './workflowSchemas.js'
+export type { WorkflowDefinitionV3, WorkflowVersionV3, WorkflowRunV3 } from './workflowSchemas.js'
+
+export const SavedWorkflowDefinitionSchema = WorkflowDefinitionV3Schema
+export const SavedWorkflowVersionSchema = WorkflowVersionV3Schema
+export const SavedWorkflowRunSchema = WorkflowRunV3Schema
+export type SavedWorkflowDefinition = z.infer<typeof SavedWorkflowDefinitionSchema>
+export type SavedWorkflowVersion = z.infer<typeof SavedWorkflowVersionSchema>
+export type SavedWorkflowRun = z.infer<typeof SavedWorkflowRunSchema>
+
+/** Public detail retains existing result authorization/redaction obligations.
+ * This is NOT the content-free graph/occurrence metadata contract. A redacted
+ * Run may omit location and principal; internal admission uses a stronger schema. */
+export const RunDetailsV3Schema = z.object({ run: WorkflowRunV3Schema,
+  executions: z.array(HarnessExecutionSchema), activity: z.array(RunActivitySchema), cleanupPending: z.boolean().optional(),
+  liveActivity: RunLiveActivitySchema.optional(),
+  activityPageInfo: z.object({ hasEarlier: z.boolean() }).strict().optional(),
+}).strict()
+  .superRefine(({ run, executions, activity }, context) => {
+    const ids = new Set<string>()
+    for (const execution of executions) {
+      if (ids.has(execution.id) || execution.runId !== run.id
+        || execution.agentConfigurationVersionId !== run.agentConfigurationVersionIds[execution.agentId]) {
+        context.addIssue({ code: 'custom', message: 'RUN_EXECUTION_PIN_MISMATCH' })
+      }
+      ids.add(execution.id)
+    }
+    if (activity.some((event) => event.runId !== run.id)) {
+      context.addIssue({ code: 'custom', message: 'RUN_ACTIVITY_PIN_MISMATCH' })
+    }
+  })
+export const SavedRunDetailsSchema = RunDetailsV3Schema
+export type SavedRunDetails = z.infer<typeof SavedRunDetailsSchema>
+
+export const SavedManagedWorkflowSchema = z.object({ workflow: SavedWorkflowDefinitionSchema,
+  revision: ExpectedRevisionSchema, currentVersionId: GraphIdSchema.nullable(), archivedAt: TimestampSchema.nullable(),
+}).strict()
+export type SavedManagedWorkflow = z.infer<typeof SavedManagedWorkflowSchema>
+export const SavedManagedWorkflowPageSchema = z.object({
+  items: z.array(SavedManagedWorkflowSchema), pageInfo: ManagementPageInfoSchema,
+}).strict()
+export const SavedManagedWorkflowCommandResultSchema = z.object({
+  value: SavedManagedWorkflowSchema, replayed: z.boolean(),
+}).strict()
+export const SavedWorkspaceDetailsSchema = z.object({
+  workspace: WorkspaceSchema, agents: z.array(AgentSchema), workflows: z.array(SavedWorkflowDefinitionSchema),
+  runs: z.array(WorkflowRunSummarySchema), resources: z.array(ResourceSummarySchema),
+  browserProfiles: z.array(BrowserProfileSummarySchema).optional(), runners: z.array(RunnerSummarySchema).optional(),
+}).strict()
+export const SavedWorkflowVersionPageSchema = z.object({
+  items: z.array(SavedWorkflowVersionSchema), pageInfo: ManagementPageInfoSchema,
+}).strict()
+export const SavedWorkflowVersionDetailSchema = z.object({ version: SavedWorkflowVersionSchema }).strict()
+export const SavedRunPageSchema = z.object({ items: z.array(SavedWorkflowRunSchema), pageInfo: ManagementPageInfoSchema }).strict()
+
+/** Loaded immutable snapshots only. No lookup of a moving workflow/Agent head.
+ * The DB reader must additionally prove physical row identity and content hash. */
+export const SavedRunVersionSnapshotSchema = z.object({
+  run: SavedWorkflowRunSchema, version: SavedWorkflowVersionSchema,
+}).strict().superRefine(({ run, version }, context) => {
+  if (run.executionSemanticsVersion !== version.executionSemanticsVersion || run.workflowVersionId !== version.id
+    || run.workspaceId !== version.workspaceId || run.workflowId !== version.workflowId
+    || !sameWorkflowValue(run.agentConfigurationVersionIds, version.agentConfigurationVersionIds)
+    || !sameWorkflowValue(run.approval, version.approval)
+    || !sameWorkflowValue(run.executionCondition, version.definition.executionCondition)) {
+    context.addIssue({ code: 'custom', message: 'RUN_VERSION_SNAPSHOT_PIN_MISMATCH' })
+  }
+})
+export type SavedRunVersionSnapshot = z.infer<typeof SavedRunVersionSnapshotSchema>
+
+export type RunDetailsV3 = z.infer<typeof RunDetailsV3Schema>
+export type SavedManagedWorkflowPage = z.infer<typeof SavedManagedWorkflowPageSchema>
+export type SavedManagedWorkflowCommandResult = z.infer<typeof SavedManagedWorkflowCommandResultSchema>
+export type SavedWorkspaceDetails = z.infer<typeof SavedWorkspaceDetailsSchema>
+export type SavedWorkflowVersionPage = z.infer<typeof SavedWorkflowVersionPageSchema>
+export type SavedWorkflowVersionDetail = z.infer<typeof SavedWorkflowVersionDetailSchema>
+export type SavedRunPage = z.infer<typeof SavedRunPageSchema>
+
+export const SavedWorkflowResponseSchema = z.object({ workflow: SavedWorkflowDefinitionSchema }).strict()

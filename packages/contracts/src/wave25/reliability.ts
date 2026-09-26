@@ -7,15 +7,10 @@ import {
 import { NativeGraphProjectionKeySchema } from './storage.js'
 import { canonicalGraphJson } from './json.js'
 
-/** Internal operation identity, independent of observation, reconnect, owner and lease attempt. */
-export const GraphEffectIdentitySchema = z.object({
-  kind: z.enum(['execution.launch', 'result.accept', 'route.resolve', 'input.bind', 'approval.decide',
-    'approval.deliver', 'graph.resume', 'review.settle', 'run.stop']),
-  entityId: GraphIdSchema,
-}).strict()
-export type GraphEffectIdentity = z.infer<typeof GraphEffectIdentitySchema>
-export const GraphEffectSchema = z.object({ identity: GraphEffectIdentitySchema, digest: GraphDigestSchema }).strict()
-export type GraphEffect = z.infer<typeof GraphEffectSchema>
+// Graph effects have one schema identity; the current primitive module is also
+// used by the public protocol. Re-exporting it avoids two conflicting families.
+import { GraphEffectIdentitySchema, GraphEffectSchema } from './graphPrimitives.js'
+export { GraphEffectIdentitySchema, GraphEffectSchema, type GraphEffectIdentity, type GraphEffect } from './graphPrimitives.js'
 
 /** A reference to EXISTING authority. These fields do not acquire a lease or grant permissions. */
 export const GraphEffectFenceSchema = z.object({
@@ -106,7 +101,6 @@ export const NativeGraphObservationSchema = z.discriminatedUnion('kind', [
     terminal: NativeTerminalEvidenceSchema }).strict(),
 ]).superRefine((value, context) => {
   if (value.source.sourceKind !== 'native_event') context.addIssue({ code: 'custom', message: 'normalized native observations retain native source identity' })
-  if (value.scope.executionSemanticsVersion === 2 && value.work.execution.attempt !== 1) context.addIssue({ code: 'custom', message: 'one-shot execution only' })
 })
 export type NativeGraphObservation = z.infer<typeof NativeGraphObservationSchema>
 export const NATIVE_GRAPH_EVIDENCE_MAX_BYTES = 32768

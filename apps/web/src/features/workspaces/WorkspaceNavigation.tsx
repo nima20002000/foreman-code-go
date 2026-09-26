@@ -5,7 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
@@ -26,9 +25,8 @@ import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 
 import { queryKeys, useCreateManagedWorkspaceMutation, useManagedWorkspaceQuery } from '../../shared/api/query'
-import { Button, Divider, Icon, IconButton, TextField, Textarea } from '../../shared/ui/nocturne'
+import { Button, Dialog, Divider, Icon, IconButton, TextField, Textarea } from '../../shared/ui/nocturne'
 import { useWorkspaceCreationDefaultsQuery } from '../../shared/api/settingsExperience'
-import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { usePresence } from '../../shared/ui/usePresence'
 import { WorkflowNavigation } from '../workflows'
 import { useNavigationUiStore } from './navigationUiStore'
@@ -114,21 +112,6 @@ const workspaceSectionItems = workspaceSections.map((section) => ({
   label: sectionLabels[section],
 }))
 
-function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>) {
-  if (event.key !== 'Tab') return
-  const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled)')]
-  const first = controls[0]
-  const last = controls.at(-1)
-  if (!first || !last) return
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault()
-    last.focus()
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault()
-    first.focus()
-  }
-}
-
 /** The always-visible, server-backed create entry point for the workspace list. */
 function NewWorkspaceControl() {
   const [creating, setCreating] = useState(false)
@@ -139,8 +122,6 @@ function NewWorkspaceControl() {
   const defaults = useWorkspaceCreationDefaultsQuery(creating)
   const [nameError, setNameError] = useState<string>()
   const triggerRef = useRef<HTMLButtonElement>(null)
-  const closeButtonRef = useRef<HTMLButtonElement>(null)
-  const dialogRef = useRef<HTMLDivElement>(null)
   const nameInputRef = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -170,17 +151,6 @@ function NewWorkspaceControl() {
     if (!touched.current.parentPath) setParentPath(template.parentPath ?? '')
   }, [creating, defaults.data])
 
-  useEffect(() => {
-    if (!creating) return
-    nameInputRef.current?.focus()
-  }, [creating])
-
-  useDismissableSurface({
-    open: creating,
-    onDismiss: closeCreateDialog,
-    surfaceRef: dialogRef,
-    triggerRef,
-  })
 
   const createNewWorkspace = async () => {
     if (inFlight.current || (defaults.isPending && !attempt.current.unresolved)) return
@@ -222,80 +192,66 @@ function NewWorkspaceControl() {
         <span className="nav-item-label">New workspace</span>
       </Button>
 
-      {creating ? (
-        <div className="workspace-create-backdrop">
-          <div
-            ref={dialogRef}
-            className="workspace-create-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="new-workspace-title"
-            aria-describedby="new-workspace-description"
-            onKeyDown={trapDialogFocus}
+      <Dialog
+        open={creating}
+        onOpenChange={(open) => { if (!open) closeCreateDialog() }}
+        title="New workspace"
+        description="A project folder will be created for this workspace."
+        closeLabel="Close new workspace"
+        busy={createManagedWorkspace.isPending}
+        initialFocusRef={nameInputRef}
+        size="sm"
+        footer={<>
+          <Button onClick={closeCreateDialog}>Close</Button>
+          <Button
+            variant="primary"
+            onClick={() => void createNewWorkspace()}
+            disabled={createManagedWorkspace.isPending || (defaults.isPending && !uncertain)}
           >
-            <div className="workspace-create-heading">
-              <h2 id="new-workspace-title">New workspace</h2>
-              <IconButton
-                ref={closeButtonRef}
-                label="Close new workspace"
-                onClick={closeCreateDialog}
-              >
-                <Icon name="close" size={16} />
-              </IconButton>
-            </div>
-            <p id="new-workspace-description">
-              A project folder will be created for this workspace.
-            </p>
-            <TextField
-              ref={nameInputRef}
-              id="new-workspace-name"
-              label="Name"
-              disabled={createManagedWorkspace.isPending || uncertain}
-              value={name}
-              autoFocus
-              onChange={(event) => {
-                touched.current.name = true
-                setName(event.target.value)
-                if (nameError) setNameError(undefined)
-              }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  void createNewWorkspace()
-                }
-              }}
-              aria-invalid={nameError ? true : undefined}
-              aria-describedby={nameError ? 'new-workspace-name-error' : undefined}
-            />
-            <WorkspaceFolderPicker value={parentPath} label="Location" disabled={createManagedWorkspace.isPending || uncertain} onSelect={(path) => {
-              touched.current.parentPath = true; setParentPath(path)
+            Create workspace
+          </Button>
+        </>}
+      >
+        <div className="n-stack">
+          <TextField
+            ref={nameInputRef}
+            id="new-workspace-name"
+            label="Name"
+            disabled={createManagedWorkspace.isPending || uncertain}
+            value={name}
+            onChange={(event) => {
+              touched.current.name = true
+              setName(event.target.value)
+              if (nameError) setNameError(undefined)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                void createNewWorkspace()
+              }
+            }}
+            aria-invalid={nameError ? true : undefined}
+            aria-describedby={nameError ? 'new-workspace-name-error' : undefined}
+          />
+          <WorkspaceFolderPicker value={parentPath} label="Location" disabled={createManagedWorkspace.isPending || uncertain} onSelect={(path) => {
+            touched.current.parentPath = true; setParentPath(path)
+          }} />
+          {parentPath && name.trim() ? <p className="workspace-create-path">Folder: {parentPath.replace(/\/$/, '')}/{name.trim()}</p> : null}
+          <Textarea label="Description (optional)" rows={3} maxLength={10_000} value={description}
+            disabled={createManagedWorkspace.isPending || uncertain} onChange={(event) => {
+              touched.current.description = true
+              setDescription(event.target.value)
             }} />
-            {parentPath && name.trim() ? <p className="workspace-create-path">Folder: {parentPath.replace(/\/$/, '')}/{name.trim()}</p> : null}
-            <Textarea label="Description (optional)" rows={3} maxLength={10_000} value={description}
-              disabled={createManagedWorkspace.isPending || uncertain} onChange={(event) => {
-                touched.current.description = true
-                setDescription(event.target.value)
-              }} />
-            {defaults.isPending ? <p role="status">Loading workspace defaults…</p> : null}
-            {defaults.isError ? <p role="status">Defaults could not be loaded. You can still enter your own values. <Button size="sm" onClick={() => void defaults.refetch()}>Retry defaults</Button></p> : null}
-            {nameError ? (
-              <p id="new-workspace-name-error" className="workspace-create-error" role="alert">
-                {nameError}
-              </p>
-            ) : null}
-            {uncertain ? <p role="status">The previous request may have succeeded. Retry Create workspace to resolve it without creating a duplicate.</p> : null}
-            <div className="workspace-create-actions">
-              <Button onClick={closeCreateDialog}>Close</Button>
-              <Button
-                onClick={() => void createNewWorkspace()}
-                disabled={createManagedWorkspace.isPending || (defaults.isPending && !uncertain)}
-              >
-                Create workspace
-              </Button>
-            </div>
-          </div>
+          {defaults.isPending ? <p role="status">Loading workspace defaults…</p> : null}
+          {defaults.isError ? <p role="status">Defaults could not be loaded. You can still enter your own values. <Button size="sm" onClick={() => void defaults.refetch()}>Retry defaults</Button></p> : null}
+          {nameError ? (
+            <p id="new-workspace-name-error" className="workspace-create-error" role="alert">
+              {nameError}
+            </p>
+          ) : null}
+          {uncertain ? <p role="status">The previous request may have succeeded. Retry Create workspace to resolve it without creating a duplicate.</p> : null}
         </div>
-      ) : null}
+      </Dialog>
     </>
   )
 }

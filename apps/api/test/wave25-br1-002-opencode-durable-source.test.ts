@@ -13,7 +13,7 @@ const session = { harness: 'opencode' as const, providerVersion: '1.18.31', nati
 const expected = { ownerAgentId: 'agent', correlationId: 'execution:execution', nativeSessionId: session.nativeSessionId,
   nativeTurnId: 'msg_user', providerVersion: session.providerVersion }
 const scope: RunGraphScope = { workspaceId: 'workspace', workflowId: 'workflow', runId: 'run',
-  workflowVersionId: 'version', executionSemanticsVersion: 2 }
+  workflowVersionId: 'version', executionSemanticsVersion: 3 }
 const work: NativeGraphProjectionKey = { execution: { workflowNodeId: 'node', executionId: 'execution',
   agentId: 'agent', agentConfigurationVersionId: 'config', attempt: 1 }, workKind: 'workflow', workId: 'execution' }
 function fixture() {

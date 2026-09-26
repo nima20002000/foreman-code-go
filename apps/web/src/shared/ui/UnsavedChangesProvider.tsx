@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useBlocker } from '@tanstack/react-router'
+import { staysOnWorkflowBoard } from '@graphql/contracts/wave25'
 import { Alert, Button, Dialog } from './nocturne'
 import { UnsavedChangesContext, type EditorRegistration, type LeaveTarget } from './unsavedChanges'
 
@@ -45,6 +46,10 @@ export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
   const context = useMemo(() => ({ register, request: ask, changed, surfaces }), [register, ask, changed, surfaces])
   const shouldBlockFn = useCallback(async ({ current, next }: { current: LeaveTarget; next: LeaveTarget }) => {
     if (current.pathname === next.pathname && JSON.stringify(current.search) === JSON.stringify(next.search)) return false
+    // Nested aliases and Run query selection keep all authoring surfaces mounted.
+    // Only Run pins may differ; Agent/workflow selection and departure still prompt.
+    if (pending.current) return true
+    if (staysOnWorkflowBoard(current, next)) return false
     const ids = [...editors.current].filter(([, editor]) => !editor.blocks || editor.blocks(current, next)).map(([id]) => id)
     return !await ask(ids)
   }, [ask])

@@ -8,9 +8,10 @@ import { NativeProcessRegistry, spawnNativeProcess } from '../src/modules/harnes
 import { sessionAlive } from '../src/modules/harnesses/recovery/linuxIdentity.js'
 import type { NativeResponseDeliveryEvidence } from '../src/modules/interactions/delivery.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
-import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
+import type { RepeatNativeObservationStore } from '../src/modules/interactions/repeatObservation.js'
 import type { PostgresRunRepository } from '../src/modules/runs/postgres.js'
-import type { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
+import { Wave25InteractionRepository } from '../src/modules/interactions/wave25/repository.js'
+import type pg from 'pg'
 import type { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
 import type { NativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
@@ -85,7 +86,7 @@ it.skipIf(process.platform !== 'linux')('PR17 fresh registry closes the register
   expect(await registry.closeOwner('execution:test')).toBe(true)
 }, 10_000)
 
-it('PR17 terminal execution recovery does not change the unconfirmed approval decision', async () => {
+it('PR17 uncertain approval recovery cannot start native work without its exact admitted request', async () => {
   const fixture = NATIVE_INTERACTION_FIXTURES.codex
   const option = fixture.responseOptions[0]!
   const interaction = { ...fixture, selectedOptionId: option.optionId, selectedSemantic: option.semantic,
@@ -96,24 +97,18 @@ it('PR17 terminal execution recovery does not change the unconfirmed approval de
     agentConfigurationVersionId: 'configuration-test', attempt: 1, input: {}, state: 'waiting',
     nativeSessionId: interaction.nativeSessionId, createdAt: interaction.createdAt,
   }
-  const updateExecution = vi.fn(async () => undefined)
-  const runs = { getExecution: async () => execution, updateExecution,
-    appendNativeEvent: async () => undefined, recordActivity: async () => undefined } as unknown as PostgresRunRepository
+  const updateExecution = vi.fn(async () => undefined), resolve = vi.fn()
+  const runs = { updateExecution } as unknown as PostgresRunRepository
   const coordinator = new ApprovalExecutionCoordinator(runs,
-    { coordination: {} } as unknown as PostgresInteractionRepository,
-    {} as PostgresApprovalBudgetRepository, {} as NativeSessionManagerResolver, 60_000)
-  const session: NativeSessionReference = { harness: interaction.harness,
-    providerVersion: interaction.providerVersion, nativeSessionId: interaction.nativeSessionId }
-  const correlationId = `execution:${execution.id}`
-  const respond = vi.fn(), startTurn = vi.fn()
-  const manager = { reconcile: async () => ({ correlationId, nativeTurnId: 'native-turn', events: [], pendingInteractions: [],
-    terminalTurn: { correlationId, providerId: 'native-turn', result: { outcome: 'succeeded', output: { text: 'verified' } } } }),
-    respond, startTurn } as unknown as NativeHarnessSessionManager
-  vi.spyOn(coordinator, 'attachInteraction').mockResolvedValue({ manager, session, signal: new AbortController().signal })
-  const owner = { assertOwned() {}, client: {} } as unknown as RunOwnership
-  expect(await coordinator.recoverTerminalInteraction(interaction, owner, new AbortController().signal)).toBe(true)
-  expect(updateExecution).toHaveBeenCalledWith(expect.objectContaining({ state: 'completed', result: { outcome: 'succeeded', output: { text: 'verified' } } }), owner)
+    new Wave25InteractionRepository({} as pg.Pool), {} as PostgresApprovalBudgetRepository,
+    { resolve } as unknown as NativeSessionManagerResolver, 60_000)
+  const owner = { runId: execution.runId, assertOwned() {}, client: {} } as unknown as RunOwnership
+  const store = { readExecution: async () => ({ execution }) } as unknown as RepeatNativeObservationStore
+  await expect(coordinator.observeExact({ execution, store, owner, workflowId: interaction.workflowId,
+    graphThreadId: execution.runId, signal: new AbortController().signal }))
+    .rejects.toMatchObject({ code: 'REPEAT_EXECUTION_INPUT_CONFLICT' })
+  expect(updateExecution).not.toHaveBeenCalled()
+  expect(resolve).not.toHaveBeenCalled()
   expect(interaction.deliveryState).toBe('uncertain')
-  expect(respond).not.toHaveBeenCalled()
-  expect(startTurn).not.toHaveBeenCalled()
+  expect(execution.state).toBe('waiting')
 })

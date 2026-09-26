@@ -113,6 +113,9 @@ export interface OpenCodeMcpInspection {
 export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager {
   readonly harness = 'opencode' as const
   private readonly sessions = new Map<string, SessionState>()
+  // Same-manager retry proof only. Durable restart recovery still requires the
+  // closure-store receipt and never infers closure from a missing process.
+  private readonly restartClosures = new Map<string, NativeSessionReference>()
   private lifecycle: Promise<unknown> = Promise.resolve()
   private lifetime = new AbortController()
   private disposal: Promise<void> | undefined
@@ -203,6 +206,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         // A returned provider identity is authoritative even if cancellation raced
         // the response. Publish and return it so the caller can persist ownership.
         this.sessions.set(response.id, newState(directory, configuration))
+        this.restartClosures.delete(response.id)
         return session
       } catch (error) { return this.cleanupFailedSetup(error) }
     })
@@ -229,6 +233,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         const state = newState(directory, configuration)
         if (input.correlationId) state.recoveryCorrelationId = input.correlationId
         this.sessions.set(session.nativeSessionId, state)
+        this.restartClosures.delete(session.nativeSessionId)
         return session
       } catch (error) { return this.cleanupFailedSetup(error) }
     })
@@ -762,12 +767,31 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   close(session: NativeSessionReference): Promise<void> {
+    return this.closeOwnedSession(session, false)
+  }
+
+  /** A process restart preserves the durable native turn for reconciliation.
+   * Stop and ordinary cleanup still use close(), which rejects unresolved work. */
+  closeForRestart(session: NativeSessionReference): Promise<void> {
+    return this.closeOwnedSession(session, true)
+  }
+
+  private closeOwnedSession(session: NativeSessionReference, restart: boolean): Promise<void> {
     return this.exclusive(async () => {
+      this.validateReference(session)
+      const closed = this.restartClosures.get(session.nativeSessionId)
+      if (restart && closed) {
+        if (!isDeepStrictEqual(closed, session)) {
+          throw new HarnessExecutionError('OPENCODE_SESSION_CONTEXT_MISSING', 'The restart closure belongs to another native session identity.')
+        }
+        return
+      }
       const state = this.requireSession(session)
-      if (state.turn?.observing || (state.turn?.submitted && !state.turn.terminalResult)) {
+      if (!restart && (state.turn?.observing || (state.turn?.submitted && !state.turn.terminalResult))) {
         throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'Cancel or reconcile this native turn before closing its session.')
       }
       if (this.sessions.size === 1) await this.disposeUnusedServer()
+      if (restart) this.restartClosures.set(session.nativeSessionId, structuredClone(session))
       this.sessions.delete(session.nativeSessionId)
     })
   }
@@ -1043,7 +1067,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private sanitize<T>(value: T): T {
-    const safe = redactKnownSecrets(value, [...this.knownSecrets])
+    const secrets = [...this.knownSecrets]
+    if (this.options.server instanceof ManagedOpenCodeServer) {
+      return this.options.server.redactWithAdditionalSecrets(value, secrets)
+    }
+    const safe = redactKnownSecrets(value, secrets)
     return this.options.server.redact ? this.options.server.redact(safe) : safe
   }
 

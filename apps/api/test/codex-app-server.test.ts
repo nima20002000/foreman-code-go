@@ -307,6 +307,16 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await result
   })
 
+  it('restart closes a pending approval without selecting or widening a native permission', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session, 'approval')
+    await pending(session)
+    await manager.closeForRestart(session)
+    await result.catch(() => undefined)
+    assert.equal((await wire()).filter((message) => message.id === 901 && message.result).length, 0)
+    assert.equal((await wire()).filter((message) => message.id === 901 && message.error).length, 0)
+  })
+
   it('F18/F32: duplicate native requests are idempotent and legitimate concurrent requests are retained', async () => {
     const session = await manager.createSession(source)
     const { result } = await start(session, 'multi')

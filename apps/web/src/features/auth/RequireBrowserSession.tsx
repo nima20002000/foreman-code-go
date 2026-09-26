@@ -4,6 +4,7 @@ import { safeAuthReturnTo } from '@graphql/contracts/management'
 import { ApiError } from '../../shared/api/client'
 import { authenticationRequiredEvent } from '../../shared/api/authEvents'
 import { useBrowserAccessQuery } from '../../shared/api/settingsExperience'
+import { Button } from '../../shared/ui/nocturne'
 import { SignOutButton } from './SignOutButton'
 import './auth.css'
 
@@ -31,8 +32,10 @@ export function RequireBrowserSession({ children }: { children: ReactNode }) {
       <h1>{denied ? 'Access denied' : 'Cannot reach the server'}</h1>
       <p>{denied ? 'You are signed in, but this account no longer has active Operator access.'
         : 'Your sign-in could not be checked. This is a server or connection problem, not a rejected password.'}</p>
-      {!denied ? <button type="button" onClick={() => void session.refetch()}>Try again</button> : null}
-      <SignOutButton />
+      <div className="n-actions">
+        {!denied ? <Button variant="primary" onClick={() => void session.refetch()}>Try again</Button> : null}
+        <SignOutButton />
+      </div>
     </section></main>
   }
   if (session.isPending || !session.data) return <main className="auth-screen" role="status">Checking your session…</main>

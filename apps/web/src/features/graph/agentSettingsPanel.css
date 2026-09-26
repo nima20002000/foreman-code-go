@@ -1,17 +1,3 @@
-.agent-settings-inspector {
-  position: fixed;
-  z-index: 110;
-  width: min(22.5rem, calc(100vw - 1rem));
-  max-height: min(34rem, calc(100dvh - 1rem));
-  padding: 0;
-  border: 1px solid var(--color-border-strong);
-  border-radius: .65rem;
-  color: var(--color-text);
-  background: var(--color-surface-raised);
-  box-shadow: 0 .9rem 2.4rem rgb(0 0 0 / 34%);
-  overflow: hidden;
-}
-
 .agent-settings-panel {
   display: flex;
   flex-direction: column;
@@ -25,7 +11,7 @@
 .agent-settings-heading {
   display: flex;
   flex: 0 0 auto;
-  gap: .5rem;
+  gap: var(--space-2);
   align-items: center;
   justify-content: space-between;
   min-height: 2.65rem;
@@ -37,7 +23,7 @@
 .agent-settings-header-actions {
   display: flex;
   align-items: center;
-  gap: .4rem;
+  gap: var(--space-2);
   min-width: 0;
 }
 
@@ -45,7 +31,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: .94rem;
+  font-size: 15px;
 }
 
 .agent-settings-panel .agent-settings-back svg { transform: rotate(180deg); }
@@ -55,7 +41,7 @@
 .agent-settings-general,
 .agent-settings-advanced-view {
   display: grid;
-  gap: .58rem;
+  gap: var(--space-2);
   min-height: 0;
   padding: .7rem .75rem .65rem;
   overflow: auto;
@@ -64,7 +50,7 @@
 
 .agent-settings-row {
   display: grid;
-  gap: .58rem;
+  gap: var(--space-2);
   min-width: 0;
 }
 
@@ -78,7 +64,7 @@
 .agent-settings-panel > .agent-settings-footer {
   display: flex;
   flex: 0 0 auto;
-  gap: .3rem;
+  gap: var(--space-1);
   align-items: center;
   min-width: 0;
   padding: .3rem .5rem;
@@ -86,14 +72,14 @@
 }
 
 .agent-settings-panel .agent-settings-advanced-link {
-  gap: .18rem;
+  gap: var(--space-0-5);
   min-height: 1.6rem;
   padding: .15rem .3rem;
   border: 0;
-  border-radius: .3rem;
+  border-radius: var(--radius-sm);
   color: var(--color-accent);
   background: transparent;
-  font-size: .72rem;
+  font-size: 11px;
   font-weight: 600;
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
@@ -112,17 +98,17 @@
 .agent-settings-panel .agent-settings-trash { margin-left: auto; }
 
 .agent-settings-panel .agent-settings-trash:hover:not(:disabled) {
-  color: var(--color-danger, #c65f5f);
-  background: color-mix(in srgb, var(--color-danger, #c65f5f) 14%, transparent);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
 }
 
-.agent-settings-advanced-view { gap: .8rem; max-height: 28rem; }
+.agent-settings-advanced-view { gap: var(--space-3); max-height: 28rem; }
 .agent-settings-advanced-view .agent-settings-prompt { grid-column: 1 / -1; }
-.agent-settings-advanced-view .harness-configuration-fields { display: grid; gap: .65rem; }
+.agent-settings-advanced-view .harness-configuration-fields { display: grid; gap: var(--space-3); }
 .agent-settings-advanced-only > :not(.advanced-settings):not(.settings-help) { display: none !important; }
 .agent-settings-advanced-only > .advanced-settings { margin: 0; border: 0; }
 .agent-settings-advanced-only > .advanced-settings > summary { display: none; }
-.agent-settings-advanced-only .settings-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
+.agent-settings-advanced-only .settings-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
 .agent-settings-advanced-only .settings-field-grid > .n-field:has(textarea),
 .agent-settings-advanced-only .settings-field-grid > .n-field:has(select[aria-label='Permission handling']),
 .agent-settings-advanced-only .settings-field-grid > fieldset,
@@ -133,8 +119,8 @@
   padding: 0 0 .3rem;
   border-bottom: 1px solid var(--color-border);
   color: var(--color-text-muted);
-  font-size: .61rem;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
   letter-spacing: .08em;
   line-height: 1.2;
   text-transform: uppercase;
@@ -146,12 +132,12 @@
 .agent-settings-advanced-only .n-field-hint,
 .agent-settings-advanced-only fieldset > small,
 .agent-settings-advanced-only fieldset > p { display: none; }
-.agent-settings-advanced-only .permission-rules > div { display: flex; flex-wrap: wrap; gap: .35rem; }
+.agent-settings-advanced-only .permission-rules > div { display: flex; flex-wrap: wrap; gap: var(--space-1); }
 
 .agent-settings-panel .settings-help {
   margin: 0;
   color: var(--color-text-muted);
-  font-size: .75rem;
+  font-size: 12px;
   overflow-wrap: anywhere;
 }
 
@@ -159,7 +145,6 @@
 .agent-settings-advanced-only > .settings-help { display: none; }
 
 @media (max-width: 600px) {
-  .agent-settings-inspector { width: calc(100vw - 1rem); }
 }
 
 @media (prefers-reduced-motion: reduce) {

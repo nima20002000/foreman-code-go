@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event'
 import type { ReactElement } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { AgentSettingsForm } from '../graph/GraphEditor'
+import { AgentSettingsForm } from '../graph/AgentSettingsForm'
 import { configuredHarness, defaultAgentForHarness } from './agentSettings'
 
 afterEach(cleanup)

@@ -15,7 +15,12 @@ export const CURRENT_NATIVE_ACTIVITIES_SQL = `
     a.activity,a.last_native_sequence::text,a.terminal_native_sequence::text,a.projection_revision::text,
     e.record->>'state'='completed' as work_closed
   from run_native_activity a join harness_executions e on e.id=a.execution_id and e.run_id=a.run_id
-  where a.run_id=$1 and a.work_kind='workflow' and ($2::text[] is null or a.workflow_node_id=any($2))
+  where a.run_id=$1 and a.work_kind='workflow'
+    and a.execution_id=(select x.execution_id from run_repeat_executions x
+      left join run_repeat_occurrences o on o.occurrence_id=x.occurrence_id and o.run_id=x.run_id
+      where x.run_id=a.run_id and x.workflow_node_id=a.workflow_node_id
+      order by coalesce(o.occurrence_index,0) desc,x.technical_attempt desc limit 1)
+    and ($2::text[] is null or a.workflow_node_id=any($2))
   union all
   select a.execution_id,a.workflow_node_id,a.attempt,a.work_kind,a.work_id,
     e.record->>'agentId',e.record->>'agentConfigurationVersionId',a.activity,a.last_native_sequence::text,
@@ -59,8 +64,11 @@ export async function readCurrentActivityContext(sql: GraphTransactionSql, scope
   const result = await sql.query<{ closed: boolean; workflow_closed: boolean; pending_id: string | null; delivery_blocked: boolean }>(
     `select r.stop_requested_at is not null or r.execution_state in ('completed','interrupted')
        or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as closed,
-       exists(select 1 from harness_executions e where e.run_id=r.id and e.workflow_node_id=$2
-         and e.record->>'state'='completed') as workflow_closed,
+       coalesce((select e.record->>'state'='completed' from harness_executions e
+         join run_repeat_executions x on x.execution_id=e.id
+         left join run_repeat_occurrences o on o.occurrence_id=x.occurrence_id and o.run_id=x.run_id
+         where e.run_id=r.id and e.workflow_node_id=$2
+         order by coalesce(o.occurrence_index,0) desc,x.technical_attempt desc limit 1),false) as workflow_closed,
        (select i.id from durable_interactions i join harness_executions e on e.id=i.execution_id and e.run_id=i.run_id
         where i.run_id=r.id and e.workflow_node_id=$2 and i.status='pending' order by i.id limit 1) as pending_id,
        exists(select 1 from durable_interactions i join harness_executions e on e.id=i.execution_id and e.run_id=i.run_id

@@ -1,5 +1,5 @@
 import { ReviewJobSchema, RunStopCauseSchema, type ReviewJob } from '@graphql/contracts'
-import { WorkflowRunV2Schema, type GraphEffect } from '@graphql/contracts/wave25'
+import { WorkflowRunV3Schema, type GraphEffect } from '@graphql/contracts/wave25'
 import { graphSourceDigest, type RunGraphPublication } from '../../run-graph/publication.js'
 import { publicReviewStopError } from '../reviewPolicy.js'
 import { fail, type ApprovalContext } from './context.js'
@@ -14,7 +14,7 @@ export async function stopForReviewFailure(publication: RunGraphPublication, job
   const sql = publication.sql
   const row = (await sql.query<{ record: unknown; stopped: boolean; stop_cause: unknown }>(
     'select record,stop_requested_at is not null as stopped,stop_cause from runs where id=$1', [context.scope.runId])).rows[0]
-  const run = WorkflowRunV2Schema.parse(row?.record)
+  const run = WorkflowRunV3Schema.parse(row?.record)
   if (row?.stopped || run.executionState === 'completed') return
   const saved = (await sql.query<{ record: unknown; revision: string }>(
     'select record,revision::text from review_jobs where id=$1 for update', [job.id])).rows[0]

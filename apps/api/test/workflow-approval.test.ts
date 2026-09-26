@@ -1,114 +1,146 @@
 import { describe, expect, it } from 'vitest'
-
-import { validateWorkflowApproval } from '../src/modules/workflows/approval.js'
-import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, NATIVE_INTERACTION_FIXTURES } from '@graphql/contracts'
+import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, NATIVE_INTERACTION_FIXTURES,
+  type HarnessConfiguration } from '@graphql/contracts'
+import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { validateReviewerBootstrap } from '../src/modules/workflows/reviewerBootstrap.js'
 import { assertOrchestratorInteractionAuthority } from '../src/modules/interactions/authorization.js'
 
-const definition = {
-  id: 'workflow-1', workspaceId: 'workspace-1', name: 'Approval workflow', executionCondition: { kind: 'manual' as const },
-  nodes: [
-    { id: 'node-orchestrator', agentId: 'agent-orchestrator', name: 'Orchestrator' },
-    { id: 'node-coder', agentId: 'agent-coder', name: 'Coder' },
-  ], edges: [{ id: 'direct', source: 'node-orchestrator', target: 'node-coder' }],
+function openCodeReviewer(): HarnessConfiguration {
+  return { harness: 'opencode', model: 'test-model', variant: 'high', nativeAgent: 'build', thinking: false, autoApprove: false,
+    advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionHandling: 'graphql_routed', permissionRules: [
+      { permission: '*', pattern: '*', effect: 'deny' },
+      { permission: 'graphql-app_interaction_get', pattern: '*', effect: 'allow' },
+      { permission: 'graphql-app_interaction_respond', pattern: '*', effect: 'allow' },
+    ] } }
 }
-const agents = [
-  { id: 'agent-orchestrator', name: 'O', role: 'anything', productRole: 'orchestrator' as const,
-    harnessConfiguration: { harness: 'opencode' as const, model: 'test-model', variant: 'high',
-      nativeAgent: 'build' as const, thinking: false, autoApprove: false,
-      advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: [
-        { permission: '*', pattern: '*', effect: 'deny' as const },
-        { permission: 'graphql-app_interaction_get', pattern: '*', effect: 'allow' as const },
-        { permission: 'graphql-app_interaction_respond', pattern: '*', effect: 'allow' as const },
-      ] } } },
-  { id: 'agent-coder', name: 'C', role: 'orchestrator', productRole: 'coder' as const },
-]
+function fixture() {
+  const f = makeCurrentWorkflowFixture('approval-authority', 'approval')
+  f.configurations[0]!.harness = openCodeReviewer()
+  return f
+}
+// These are the shared executable validator and bootstrap used by current Save,
+// not an adapter from the deleted approval module or a runtime qualification.
+function validate(f: ReturnType<typeof fixture>) {
+  const { version, configurations } = ExecutableWorkflowV3Schema.parse({ version: f.version, configurations: f.configurations })
+  validateReviewerBootstrap(version.definition, version.approval, configurations[0]!.harness, version.entryNodeId)
+}
 
-describe('workflow approval authority', () => {
-
-  it('requires a direct edge for each routed requesting occurrence, not transitive membership', () => {
-    const approval = { handler: 'orchestrator' as const, designatedOrchestratorAgentId: 'agent-orchestrator' }
-    const bridge = { id: 'bridge', agentId: 'agent-bridge', name: 'Bridge' }
-    const allAgents = [...agents, { id: 'agent-bridge', productRole: 'coder' as const }]
-    const chain = { ...definition, nodes: [...definition.nodes, bridge], edges: [
-      { id: 'first', source: 'node-orchestrator', target: 'bridge' },
-      { id: 'second', source: 'bridge', target: 'node-coder' },
-    ] }
-    expect(() => validateWorkflowApproval(chain, approval, allAgents))
-      .toThrowError(expect.objectContaining({ code: 'APPROVAL_DIRECT_CONNECTION_REQUIRED' }))
-    expect(() => validateWorkflowApproval({ ...definition, edges: [] }, approval, agents))
-      .toThrowError(expect.objectContaining({ code: 'APPROVAL_DIRECT_CONNECTION_REQUIRED' }))
-    expect(() => validateWorkflowApproval({ ...chain, edges: [...chain.edges, definition.edges[0]!] }, approval, allAgents)).not.toThrow()
-    const repeated = { ...definition, nodes: [...definition.nodes, { id: 'other-coder', agentId: 'agent-coder', name: 'Other occurrence' }] }
-    expect(() => validateWorkflowApproval(repeated, approval, agents))
-      .toThrowError(expect.objectContaining({ code: 'APPROVAL_DIRECT_CONNECTION_REQUIRED' }))
+describe('current workflow approval authority', () => {
+  it('requires explicit reviewer relationships, not execution edges or transitive membership', () => {
+    const f = fixture(), [entry, worker] = f.version.definition.nodes
+    const bridge = { ...worker!, id: 'bridge', agentId: 'agent-bridge', name: 'Bridge' }
+    const configuration = { ...f.configurations[1]!, id: 'cfg-bridge', agentId: bridge.agentId }
+    f.configurations.push(configuration)
+    f.version.agentConfigurationVersionIds[bridge.agentId] = configuration.id
+    f.version.definition.nodes.push(bridge)
+    f.version.definition.executionPolicy = { maxParallelism: 1, maxNodeExecutions: 3 }
+    f.version.definition.edges = [
+      { id: 'first', kind: 'execution', source: entry!.id, target: bridge.id },
+      { id: 'second', kind: 'execution', source: bridge.id, target: worker!.id },
+      { id: 'review-bridge', kind: 'approval', source: entry!.id, target: bridge.id },
+    ]
+    expect(() => validate(f)).toThrow('explicit reviewer relationship')
+    const transitive = structuredClone(f)
+    transitive.version.definition.edges.push({ id: 'transitive-review', kind: 'approval', source: bridge.id, target: worker!.id })
+    expect(() => validate(transitive)).toThrow('independent or recursive reviewer startup is unsupported')
+    f.version.definition.edges.push({ id: 'review-worker', kind: 'approval', source: entry!.id, target: worker!.id })
+    expect(() => validate(f)).not.toThrow()
+    const repeated = structuredClone(f)
+    repeated.version.definition.nodes[2]!.agentId = worker!.agentId
+    expect(() => validate(repeated)).toThrow('an Agent may occur only once')
   })
 
-  it('keeps explicit native Codex self-review local while another node routes directly', () => {
-    const approval = { handler: 'orchestrator' as const, designatedOrchestratorAgentId: 'agent-orchestrator' }
-    const native = { id: 'native-worker', productRole: 'coder' as const, harnessConfiguration: {
+  it('keeps explicit native Codex self-review local while another Worker routes directly', () => {
+    const f = fixture(), worker = f.version.definition.nodes[1]!
+    const native: (typeof f.configurations)[number] = { ...f.configurations[1]!, id: 'cfg-native', agentId: 'agent-native', harness: {
       harness: 'codex' as const, model: 'test-model', sandbox: 'read-only' as const,
       reasoningEffort: 'medium' as const, serviceTier: 'standard' as const,
       advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalsReviewer: 'auto_review' as const, approvalPolicy: 'on-request' as const },
     } }
-    const mixed = { ...definition, nodes: [...definition.nodes, { id: 'native-node', agentId: native.id, name: 'Native self-review' }],
-      edges: [...definition.edges, { id: 'indirect-native', source: 'node-coder', target: 'native-node' }] }
-    expect(() => validateWorkflowApproval(mixed, approval, [...agents, native])).not.toThrow()
-    expect(() => validateWorkflowApproval(mixed, approval, [...agents, { ...native, harnessConfiguration: { ...native.harnessConfiguration,
-      advanced: { ...native.harnessConfiguration.advanced, approvalsReviewer: 'user' as const } } }]))
-      .toThrowError(expect.objectContaining({ code: 'APPROVAL_DIRECT_CONNECTION_REQUIRED' }))
+    f.configurations.push(native)
+    f.version.agentConfigurationVersionIds[native.agentId] = native.id
+    f.version.definition.nodes.push({ id: 'native-node', agentId: native.agentId, name: 'Native self-review' })
+    f.version.definition.edges.push({ id: 'indirect-native', kind: 'execution', source: worker.id, target: 'native-node' })
+    f.version.definition.executionPolicy = { maxParallelism: 1, maxNodeExecutions: 3 }
+    expect(() => validate(f)).not.toThrow()
+    if (native.harness.harness !== 'codex') throw new Error('Codex self-review fixture required')
+    native.harness = { ...native.harness, advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'on-request', approvalsReviewer: 'user' } }
+    expect(() => validate(f)).toThrow('explicit reviewer relationship')
   })
 
-  it('rejects an incomplete Orchestrator selection at executable validation', () => {
-    expect(() => validateWorkflowApproval(definition, { handler: 'orchestrator' }, agents))
-      .toThrowError(expect.objectContaining({ code: 'WORKFLOW_APPROVAL_INCOMPLETE' }))
+  it('rejects incomplete Orchestrator selection at immutable executable validation', () => {
+    const f = fixture()
+    const approval = { handler: 'orchestrator' }
+    expect(ExecutableWorkflowV3Schema.safeParse({ configurations: f.configurations, version: { ...f.version, approval,
+      definition: { ...f.version.definition, approval } } }).success).toBe(false)
   })
 
-  it('uses durable product roles and requires a distinct Coder', () => {
-    expect(() => validateWorkflowApproval(definition, { handler: 'orchestrator', designatedOrchestratorAgentId: 'agent-orchestrator' }, agents)).not.toThrow()
-    expect(() => validateWorkflowApproval({ ...definition, nodes: [definition.nodes[0]!] }, { handler: 'orchestrator', designatedOrchestratorAgentId: 'agent-orchestrator' }, agents)).toThrowError(expect.objectContaining({ code: 'APPROVAL_DISTINCT_CODER_REQUIRED' }))
+  it('uses durable product roles and never permits a reviewer relationship to itself', () => {
+    const f = fixture()
+    expect(() => validate(f)).not.toThrow()
+    f.version.definition.edges.push({ id: 'self-review', kind: 'approval', source: f.version.entryNodeId, target: f.version.entryNodeId })
+    expect(() => validate(f)).toThrow('distinct existing endpoints')
   })
 
-  it('rejects a model-supplied display role and wrong-workflow designation', () => {
-    expect(() => validateWorkflowApproval(definition, { handler: 'orchestrator', designatedOrchestratorAgentId: 'agent-coder' }, agents)).toThrowError(expect.objectContaining({ code: 'APPROVAL_ORCHESTRATOR_ROLE_REQUIRED' }))
-    expect(() => validateWorkflowApproval(definition, { handler: 'orchestrator', designatedOrchestratorAgentId: 'agent-other' }, agents)).toThrowError(expect.objectContaining({ code: 'APPROVAL_ORCHESTRATOR_WRONG_WORKFLOW' }))
+  it('allows a sole entry Orchestrator without inventing an App-routed requester', () => {
+    // The old global two-Agent minimum was retired. Distinct requester/reviewer
+    // identities remain mandatory for an actual approval relationship.
+    const f = fixture(), configuration = f.configurations[0]!
+    f.configurations = [configuration]
+    f.version.definition.nodes = [f.version.definition.nodes[0]!]
+    f.version.definition.edges = []
+    f.version.agentConfigurationVersionIds = { [configuration.agentId]: configuration.id }
+    expect(() => validate(f)).not.toThrow()
   })
 
-  it('rejects a downstream reviewer and an interactive reviewer bootstrap', () => {
-    const approval = { handler: 'orchestrator' as const, designatedOrchestratorAgentId: 'agent-orchestrator' }
-    expect(() => validateWorkflowApproval({ ...definition, nodes: [...definition.nodes].reverse() }, approval, agents))
+  it('rejects display-role spoofing and wrong-workflow or Worker designation', () => {
+    const f = fixture()
+    expect(ExecutableWorkflowV3Schema.safeParse({ version: f.version,
+      configurations: [{ ...f.configurations[0]!, productRole: 'coder', role: 'orchestrator' }, f.configurations[1]!] }).success).toBe(false)
+    for (const designatedOrchestratorAgentId of [f.configurations[1]!.agentId, 'agent-other']) {
+      const invalid = structuredClone(f)
+      invalid.version.approval = { handler: 'orchestrator', designatedOrchestratorAgentId }
+      invalid.version.definition.approval = invalid.version.approval
+      expect(() => validate(invalid)).toThrow('explicit entry Orchestrator')
+    }
+  })
+
+  it('uses the authored entry, not array order, and rejects downstream or interactive bootstrap', () => {
+    const f = fixture(), reviewer = f.configurations[0]!.harness
+    f.version.definition.nodes.reverse()
+    expect(() => validate(f)).not.toThrow()
+    expect(() => validateReviewerBootstrap({ ...f.version.definition, entryNodeId: f.version.definition.nodes[0]!.id },
+      f.version.approval, reviewer, f.version.definition.nodes[0]!.id))
       .toThrowError(expect.objectContaining({ code: 'APPROVAL_REVIEWER_BOOTSTRAP_ORDER' }))
-    const interactive = agents.map((agent) => agent.id !== 'agent-orchestrator' ? agent : { ...agent,
-      harnessConfiguration: { ...agent.harnessConfiguration!,
-        advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: [{ permission: '*', pattern: '*', effect: 'ask' as const }] } } })
-    expect(() => validateWorkflowApproval(definition, approval, interactive))
+    expect(() => validateReviewerBootstrap(f.version.definition, f.version.approval, reviewer, 'another-entry'))
+      .toThrowError(expect.objectContaining({ code: 'APPROVAL_REVIEWER_BOOTSTRAP_ORDER' }))
+    const interactive: HarnessConfiguration = { harness: 'opencode', model: 'test-model', variant: 'high', nativeAgent: 'build', thinking: false,
+      autoApprove: false, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionHandling: 'graphql_routed',
+        permissionRules: [{ permission: '*', pattern: '*', effect: 'ask' }] } }
+    expect(() => validateReviewerBootstrap(f.version.definition, f.version.approval, interactive, f.version.entryNodeId))
       .toThrowError(expect.objectContaining({ code: 'APPROVAL_REVIEWER_BOOTSTRAP_INTERACTIVE' }))
   })
 
-  it('requires Codex automatic review or explicit OpenCode App MCP grants before a Run starts', () => {
-    const approval = { handler: 'orchestrator' as const, designatedOrchestratorAgentId: 'agent-orchestrator' }
-    const codex = agents.map((agent) => agent.id !== 'agent-orchestrator' ? agent : { ...agent,
-      harnessConfiguration: { harness: 'codex' as const, model: 'test-model', reasoningEffort: 'medium' as const,
-        sandbox: 'read-only' as const, serviceTier: 'standard' as const,
-        advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'never' as const } } })
-    expect(() => validateWorkflowApproval(definition, approval, codex))
-      .toThrowError(expect.objectContaining({ code: 'APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED' }))
-    const codexAuto = agents.map((agent) => agent.id !== 'agent-orchestrator' ? agent : { ...agent,
-      harnessConfiguration: { harness: 'codex' as const, model: 'gpt-5.6-luna', reasoningEffort: 'high' as const,
-        sandbox: 'read-only' as const, serviceTier: 'standard' as const,
-        advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'on-request' as const,
-          approvalsReviewer: 'auto_review' as const } } })
-    expect(() => validateWorkflowApproval(definition, approval, codexAuto)).not.toThrow()
-    const missing = agents.map((agent) => agent.id !== 'agent-orchestrator' ? agent : { ...agent,
-      harnessConfiguration: { ...agent.harnessConfiguration!, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
-        permissionRules: [{ permission: '*', pattern: '*', effect: 'deny' as const }] } } })
-    expect(() => validateWorkflowApproval(definition, approval, missing))
-      .toThrowError(expect.objectContaining({ code: 'APPROVAL_REVIEWER_APP_MCP_REQUIRED' }))
-    const overridden = agents.map((agent) => agent.id !== 'agent-orchestrator' ? agent : { ...agent,
-      harnessConfiguration: { ...agent.harnessConfiguration!, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
-        permissionRules: [...agents[0]!.harnessConfiguration!.advanced!.permissionRules,
-          { permission: 'graphql-app_*', pattern: '*', effect: 'deny' as const }] } } })
-    expect(() => validateWorkflowApproval(definition, approval, overridden))
-      .toThrowError(expect.objectContaining({ code: 'APPROVAL_REVIEWER_APP_MCP_REQUIRED' }))
+  it('requires Codex automatic review or final OpenCode App MCP grants without changing native permissions', () => {
+    const f = fixture()
+    const bootstrap = (configuration: HarnessConfiguration) => validateReviewerBootstrap(
+      f.version.definition, f.version.approval, configuration, f.version.entryNodeId)
+    const codex: HarnessConfiguration = { harness: 'codex', model: 'test-model', reasoningEffort: 'medium',
+      sandbox: 'read-only', serviceTier: 'standard', advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'never' } }
+    expect(() => bootstrap(codex)).toThrowError(expect.objectContaining({ code: 'APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED' }))
+    expect(() => bootstrap({ ...codex, advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION,
+      approvalPolicy: 'on-request', approvalsReviewer: 'auto_review' } })).not.toThrow()
+    for (const extra of [[], [{ permission: 'graphql-app_*', pattern: '*', effect: 'deny' as const }]]) {
+      const reviewer = openCodeReviewer()
+      if (reviewer.harness !== 'opencode') throw new Error('OpenCode reviewer fixture required')
+      const configuration: HarnessConfiguration = { ...reviewer, advanced: { ...reviewer.advanced!,
+        permissionRules: extra.length ? [...(reviewer.advanced?.permissionRules ?? []), ...extra]
+          : [{ permission: '*', pattern: '*', effect: 'deny' }] } }
+      const before = structuredClone(configuration)
+      expect(() => bootstrap(configuration)).toThrowError(expect.objectContaining({ code: 'APPROVAL_REVIEWER_APP_MCP_REQUIRED' }))
+      expect(configuration).toEqual(before)
+    }
+    expect(() => bootstrap(openCodeReviewer())).not.toThrow()
   })
 
   it('denies cross-workflow and self approval from worker identity', () => {

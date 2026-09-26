@@ -9,7 +9,11 @@ This directory is the canonical shared UI toolkit for the web application. Featu
 - Migrate one production surface at a time and retain its behavior tests.
 - Do not copy Nocturne components into feature directories or fork their CSS locally.
 - Do not use showcase fixtures in production code.
-- Nocturne v2 is dark-only. The compatibility bridge preserves the existing light theme; a production call site using a Nocturne component must either be an intentional dark surface or wait for verified light tokens.
+- Style with the design-system tokens in `tokens.css` (`--canvas`, `--text-muted`, `--space-4`, `--radius-md`, `--type-body`, …). Do not add hex colors, off-scale font sizes or radii in feature CSS.
+
+## Design system
+
+The source of truth is the graphql design system in Claude Design: https://claude.ai/artifact/RE7u9oLHtJVKxy7SdmuV91. `tokens.css` is generated from its `project/tokens.json`, and `foundation.css` / `advanced.css` follow its `project/components/bundle.css`. Both dark (default) and light themes are defined there; components never branch on theme. The legacy `--color-*` variables in `styles.css` are aliases of these tokens.
 
 ## Provenance
 

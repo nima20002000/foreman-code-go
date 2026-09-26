@@ -1,44 +1,46 @@
+import type { ReviewNativeProofServices } from '../reviewNativeProof.js'
 import type { DurableInteraction } from '@graphql/contracts'
 import type pg from 'pg'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
 import { PostgresInteractionRepository } from '../postgres.js'
 import { Wave25InteractionCoordinationRepository } from './reviews.js'
 import { Wave25InteractionDeliveryRepository } from './delivery.js'
-import { createRequest, decide } from './decisions.js'
-import { fail, isV2, lockInteraction, readContext, runFor, transact } from './context.js'
+import { decide } from './decisions.js'
+import { fail, isCurrentApprovalRun, lockInteraction, readContext, runFor, transact } from './context.js'
 import { CANCELED_INTERACTION_RETIRED_SQL, nextInteraction, publishInteraction, retireCanceledInteraction, retireCanceledInteractionsAfterCleanup } from './publication.js'
 import type { RunGraphPublication } from '../../run-graph/publication.js'
 import { runCleanupAllowed } from './cleanupAuthority.js'
 
-/** Production replaces only this constructor and the matching service constructor.
- * Legacy reads/writes retain the S1 implementation; v2 never falls back to a raw
- * transaction or an unqualified compatibility delivery method. */
+/** Current approval repository: every product mutation joins canonical G1.
+ * The base provides shared bounded reads and native lane primitives only. */
 export class Wave25InteractionRepository extends PostgresInteractionRepository {
   override readonly delivery: Wave25InteractionDeliveryRepository
   override readonly coordination: Wave25InteractionCoordinationRepository
-  constructor(private readonly approvalPool: pg.Pool) {
+  constructor(private readonly approvalPool: pg.Pool, nativeProofs?: ReviewNativeProofServices) {
     super(approvalPool)
     this.delivery = new Wave25InteractionDeliveryRepository(approvalPool)
-    this.coordination = new RetiringInteractionCoordinationRepository(approvalPool)
+    this.coordination = new RetiringInteractionCoordinationRepository(approvalPool, nativeProofs)
   }
-  usesAtomicApproval(runId: string): Promise<boolean> { return isV2(this.approvalPool, runId) }
+  usesAtomicApproval(runId: string): Promise<boolean> { return isCurrentApprovalRun(this.approvalPool, runId) }
   private async mode(id: string) { const runId = await runFor(this.approvalPool, 'interaction', id)
-    return { runId, enabled: await isV2(this.approvalPool, runId) } }
-  override async create(input: DurableInteraction) {
-    return await this.usesAtomicApproval(input.runId) ? createRequest(this.approvalPool, input) : super.create(input)
+    return { runId, enabled: await isCurrentApprovalRun(this.approvalPool, runId) } }
+  override async create(input: DurableInteraction): Promise<{ interaction: DurableInteraction; created: boolean }> {
+    void input
+    return fail('APPROVAL_ORIGINAL_SOURCE_REQUIRED',
+      'Native requests are created atomically by the owned original-source writer, not by caller JSON.')
   }
   override async decide(input: Parameters<PostgresInteractionRepository['decide']>[0]) {
     const mode = await this.mode(input.id)
-    if (!mode.enabled) return super.decide(input)
+
     if (!input.principal) return fail('INTERACTION_ACCESS_DENIED')
     if (input.beforeCommit) return fail('APPROVAL_RAW_AUDIT_CALLBACK_REJECTED',
-      'The v2 repository records its audit on the G1 transaction; a raw-client callback cannot join that transaction.')
+      'The V3 repository records its audit on the G1 transaction; a raw-client callback cannot join that transaction.')
     return decide(this.approvalPool, mode.runId, { id: input.id, optionId: input.optionId, expectedRevision: input.expectedRevision,
       nativeResponse: input.nativeResponse, principal: input.principal })
   }
   override async bindGraphInterrupt(id: string, graphInterruptId: string): Promise<DurableInteraction> {
     const mode = await this.mode(id)
-    if (!mode.enabled) return super.bindGraphInterrupt(id, graphInterruptId)
+
     return transact(this.approvalPool, mode.runId, async (publication) => {
       const current = await lockInteraction(publication.sql, id)
       if (current.graphInterruptId) {
@@ -55,7 +57,7 @@ export class Wave25InteractionRepository extends PostgresInteractionRepository {
   }
   override async cancelPendingForExecution(executionId: string, nativeRequestIds?: readonly string[]): Promise<void> {
     const runId = await runFor(this.approvalPool, 'execution', executionId)
-    if (!await this.usesAtomicApproval(runId)) return super.cancelPendingForExecution(executionId, nativeRequestIds)
+
     await transact(this.approvalPool, runId, async (publication) => {
       if (!nativeRequestIds && !(await publication.sql.query(
         "select 1 from harness_executions where id=$1 and record->>'state'='completed'", [executionId])).rowCount) return fail('APPROVAL_TERMINAL_EVIDENCE_REQUIRED')
@@ -70,7 +72,7 @@ export class Wave25InteractionRepository extends PostgresInteractionRepository {
     })
   }
   override async cancelPendingForRun(runId: string): Promise<number> {
-    if (!await this.usesAtomicApproval(runId)) return super.cancelPendingForRun(runId)
+
     return transact(this.approvalPool, runId, async (publication) => {
       const sql = publication.sql
       if (!await runCleanupAllowed(sql, runId)) return fail('EXECUTION_NOT_STOPPED')
@@ -90,11 +92,12 @@ export class Wave25InteractionRepository extends PostgresInteractionRepository {
           continue
         }
         canceled += 1
+        // Cancellation never proves a submitted/uncertain response failed.
         const next = nextInteraction(current, { status: 'canceled', deliveryState: current.deliveryState === 'not_started' ? 'not_started'
-          : current.deliveryState === 'delivered' ? 'delivered' : 'failed' })
+          : current.deliveryState === 'delivered' ? 'delivered'
+            : current.deliveryState === 'submitted' || current.deliveryState === 'uncertain' ? 'uncertain' : 'failed' })
         await publishInteraction(publication, context, current, next, { resumeState: 'unknown', mutate: async (transaction) => {
-          // The frozen canceled shape cannot carry deliveryState=uncertain. The
-          // private attempt retains uncertainty; cancellation never proves failure.
+          // The private attempt keeps the same uncertainty as the public record.
           await transaction.query(`update interaction_delivery_attempts set state=case when state='submitted' then 'uncertain' else state end,
             lease_expires_at=null where interaction_id=$1`, [id])
           await transaction.query(`update interaction_graph_resumes set state='canceled',lease_owner=null,lease_token=null,lease_expires_at=null,
@@ -108,7 +111,7 @@ export class Wave25InteractionRepository extends PostgresInteractionRepository {
   }
   override async recordReconciliation(...args: Parameters<PostgresInteractionRepository['recordReconciliation']>) {
     const [id, expectedRevision, evidence, lease] = args, mode = await this.mode(id)
-    if (!mode.enabled) return super.recordReconciliation(...args)
+
     canonicalGraphJson(evidence, 32768)
     return transact(this.approvalPool, mode.runId, async (publication) => {
       const sql = publication.sql, current = await lockInteraction(sql, id)
@@ -134,24 +137,24 @@ export class Wave25InteractionRepository extends PostgresInteractionRepository {
     })
   }
   override async updateDelivery(...args: Parameters<PostgresInteractionRepository['updateDelivery']>) {
-    if ((await this.mode(args[0])).enabled) return fail('APPROVAL_QUALIFIED_DELIVERY_REQUIRED')
-    return super.updateDelivery(...args)
+    void args
+    return fail('APPROVAL_QUALIFIED_DELIVERY_REQUIRED')
   }
   override async reconcileDelivery(...args: Parameters<PostgresInteractionRepository['reconcileDelivery']>) {
-    if ((await this.mode(args[0])).enabled) return fail('APPROVAL_QUALIFIED_DELIVERY_REQUIRED')
-    return super.reconcileDelivery(...args)
+    void args
+    return fail('APPROVAL_QUALIFIED_DELIVERY_REQUIRED')
   }
   override async beginDeliveryAttempt(...args: Parameters<PostgresInteractionRepository['beginDeliveryAttempt']>) {
-    if (await this.usesAtomicApproval(args[0].runId)) return fail('APPROVAL_QUALIFIED_DELIVERY_REQUIRED')
-    return super.beginDeliveryAttempt(...args)
+    void args
+    return fail('APPROVAL_QUALIFIED_DELIVERY_REQUIRED')
   }
   override async finishDeliveryAttempt(...args: Parameters<PostgresInteractionRepository['finishDeliveryAttempt']>) {
-    if ((await this.mode(args[0])).enabled) return fail('APPROVAL_QUALIFIED_DELIVERY_REQUIRED')
-    return super.finishDeliveryAttempt(...args)
+    void args
+    return fail('APPROVAL_QUALIFIED_DELIVERY_REQUIRED')
   }
   override async settleDeliveryAttempt(...args: Parameters<PostgresInteractionRepository['settleDeliveryAttempt']>) {
-    if ((await this.mode(args[0].interactionId)).enabled) return fail('APPROVAL_QUALIFIED_DELIVERY_REQUIRED')
-    return super.settleDeliveryAttempt(...args)
+    void args
+    return fail('APPROVAL_QUALIFIED_DELIVERY_REQUIRED')
   }
 }
 

@@ -9,7 +9,7 @@ import '../features/settings/settingsExperience.css'
 
 function SettingsShell({ children, back }: { children: ReactNode; back?: ReactNode }) {
   return <WorkspaceShell workspaceId="workspace-1" activeGlobalSection="settings" slots={{ main:
-    <div className="settings-page settings-experience n-theme">
+    <div className="settings-page settings-experience">
       {back ?? <Link to="/settings" className="settings-back-link" aria-label="Back to settings"><span aria-hidden="true">←</span> Settings</Link>}
       {children}
     </div>,
@@ -44,6 +44,6 @@ export function OperatorAccessSettingsRouteEntry() {
 
 export function AccountRouteEntry() {
   return <WorkspaceShell workspaceId="workspace-1" activeGlobalSection="account" slots={{ main:
-    <div className="settings-page settings-experience n-theme"><AccountAccess /></div>,
+    <div className="settings-page settings-experience"><AccountAccess /></div>,
   }} />
 }

@@ -1,84 +1,106 @@
-import { describe, expect, it, vi } from 'vitest'
-import type pg from 'pg'
-import { readRunCurrent } from '../src/modules/runs/liveSnapshot.js'
-import { RunManagementService } from '../src/modules/runs/management.js'
-import { currentPrincipal, currentRow, currentScope } from './helpers/feR2001Current.js'
+import { describe, expect, it } from 'vitest'
+import { currentGraphPrincipal, currentGraphReadUnit } from './helpers/currentGraphReadUnit.js'
 
-describe('FE-R2-001 current read (SQL seam, not a database scale test)', () => {
-  it('issues one scoped statement and never requests historical bodies or lifetime counts', async () => {
-    const query = vi.fn(async () => ({ rows: [currentRow()] }))
-    const value = await readRunCurrent({ query } as unknown as Pick<pg.Pool, 'query'>, currentScope)
-    expect(query).toHaveBeenCalledTimes(1)
-    const [sql, params] = (query.mock.calls as unknown as Array<[string, string[]]>)[0]!
-    expect(params).toEqual([currentScope.workspaceId, currentScope.workflowId, currentScope.runId, currentScope.workflowVersionId])
-    expect(sql).toMatch(/from run_activity a\s+where a.run_id=r.id order by a.sequence desc limit 1/)
-    expect(sql).toMatch(/where e.run_id=r.id and e.workflow_node_id=node.value->>'id'\s+order by e.attempt desc limit 1/)
-    expect(sql).not.toMatch(/count\s*\(|harness_native_events|a\.payload|review_jobs|offset\s/i)
-    expect(value).toMatchObject({ history: 'not-included', settlement: 'unconfirmed', executions: [{ attempt: 3 }] })
-    expect(value).not.toHaveProperty('activity')
-    expect(value).not.toHaveProperty('liveActivity')
+// Current V3 canonical read, not the removed V1 liveSnapshot SQL. The actual
+// primary transaction, immutable readers, projection and permanent-receipt
+// verification run on a strict SQL-shaped model. This is not a scale benchmark.
+describe('FE-R2-001 current canonical read (SQL model, not a database scale test)', () => {
+  it('uses one coherent read transaction and never loads historical bodies or unbounded activity', async () => {
+    const f = await currentGraphReadUnit()
+    const value = await f.canonical.current(f.principal, f.request)
+    expect(value.kind).toBe('current')
+    expect(value.scope).toEqual(f.request.scope)
+    expect(f.db.calls[0]).toBe('begin isolation level repeatable read read only')
+    expect(f.db.calls.at(-1)).toBe('commit')
+    expect(f.db.calls.filter((q) => q.startsWith('begin '))).toHaveLength(1)
+    expect(f.db.calls.some((q) => /insert |update |from run_activity|harness_native_events|input_json|result_json|\boffset\b/i.test(q))).toBe(false)
+    expect(f.db.calls.some((q) => q.startsWith('select record,source_digest,semantic_digest,sequence::text from run_graph_public_projection'))).toBe(true)
+    expect(f.db.calls.some((q) => q.startsWith('select first_sequence::text,source_digest,semantic_digest from run_graph_sources'))).toBe(true)
+    expect(value).not.toHaveProperty('activity'); expect(value).not.toHaveProperty('liveActivity')
+    const latest = f.db.calls.find((q) => q.startsWith('select distinct on (e.workflow_node_id) e.id'))!
+    expect(latest).toContain('order by e.workflow_node_id,coalesce(o.occurrence_index,0) desc,x.technical_attempt desc limit 1001')
+    expect(latest).not.toContain("e.record->'input'")
+    expect(latest).not.toContain("e.record->'result' as")
+    expect(value.state.executions).toEqual([]); expect(value.state.occurrences).toEqual([])
   })
-  it('has fixed current DTO work for 10 versus 100000 observed activities (mock rows only)', async () => {
-    const responses = []
-    for (const head of ['10', '100000']) {
-      const query = vi.fn(async () => ({ rows: [currentRow(head)] }))
-      responses.push(await readRunCurrent({ query } as unknown as Pick<pg.Pool, 'query'>, currentScope))
-      expect(query).toHaveBeenCalledTimes(1)
+  it('has fixed current DTO/query work at positions 10 versus 100000 (model rows only)', async () => {
+    const responses = [], queries = []
+    for (const head of [10, 100000]) {
+      const f = await currentGraphReadUnit()
+      // Scalar position only: the model supplies the same committed current cut,
+      // not an in-memory list of fabricated historical execution rounds.
+      f.db.state.head = head
+      responses.push(await f.canonical.current(f.principal, f.request)); queries.push([...f.db.calls])
     }
-    expect({ ...responses[0], asOfActivitySequence: 'same' }).toEqual({ ...responses[1], asOfActivitySequence: 'same' })
+    expect(queries[0]).toEqual(queries[1])
+    expect({ ...responses[0], asOfSequence: 'same' }).toEqual({ ...responses[1], asOfSequence: 'same' })
     expect(JSON.stringify(responses[1]).length - JSON.stringify(responses[0]).length).toBe(4)
   })
-  it.each([false, true])('keeps completed outcome separate from cleanup=%s and unconfirmed settlement', async (cleanupPending) => {
-    const row = currentRow('30', cleanupPending)
-    row.run = { ...row.run, executionState: 'completed', outcome: 'succeeded', finishedAt: '2026-09-22T01:00:00.000Z' }
-    const query = vi.fn(async () => ({ rows: [row] }))
-    expect(await readRunCurrent({ query } as unknown as Pick<pg.Pool, 'query'>, currentScope))
-      .toMatchObject({ run: { executionState: 'completed', outcome: 'succeeded' }, cleanupPending, settlement: 'unconfirmed' })
+  it.each([false, true])('keeps completed outcome separate from cleanup=%s without inferring physical closure', async (cleanupPending) => {
+    const f = await currentGraphReadUnit()
+    await f.db.changeRun({ executionState: 'completed', outcome: 'succeeded', cleanupPending })
+    const result = await f.canonical.current(f.principal, f.request)
+    expect(result.state.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded', cleanupPending })
+    expect(result.state.run).not.toHaveProperty('processStopped')
+    expect(result.state.run).not.toHaveProperty('nativeAcknowledged')
   })
-  it('rejects v2, string semantics and unknown saved semantics instead of normalizing them', async () => {
-    for (const marker of [2, 3, '1', null]) {
-      const query = vi.fn(async () => ({ rows: [{ ...currentRow(), run_semantics: marker }] }))
-      await expect(readRunCurrent({ query } as unknown as Pick<pg.Pool, 'query'>, currentScope))
-        .rejects.toMatchObject({ code: 'EXECUTION_SEMANTICS_UNSUPPORTED' })
+  it('rejects retired, missing, string and unknown request semantics before SQL rather than normalizing', async () => {
+    const f = await currentGraphReadUnit()
+    for (const executionSemanticsVersion of [1, 2, 4, '3', null, undefined]) {
+      await expect(Promise.resolve().then(() => f.canonical.current(f.principal,
+        { ...f.request, scope: { ...f.request.scope, executionSemanticsVersion } })))
+        .rejects.toMatchObject({ code: 'GRAPH_SCOPE_MISMATCH' })
+    }
+    expect(f.db.calls).toEqual([])
+  })
+  it('rejects conflicting physical, version and definition semantics without substituting another reader', async () => {
+    for (const layer of ['physical', 'version', 'definition'] as const) {
+      const f = await currentGraphReadUnit()
+      if (layer === 'physical') f.db.scope.executionSemanticsVersion = 2
+      else if (layer === 'version') Object.assign(f.db.fixture.version, { executionSemanticsVersion: 2 })
+      else Object.assign(f.db.fixture.version.definition, { executionSemanticsVersion: 2 })
+      await expect(f.canonical.current(f.principal, f.request)).rejects.toMatchObject({
+        code: layer === 'physical' ? 'GRAPH_SCOPE_MISMATCH' : 'GRAPH_INVARIANT_VIOLATION',
+      })
+      expect(f.db.calls).toContain('rollback')
+      expect(f.db.calls.some((q) => /run_activity|input_json|result_json/.test(q))).toBe(false)
     }
   })
-  it('rejects a conflicting authoritative version pin or definition semantics', async () => {
-    for (const patch of [{ version_pin: 2 }, { definition_semantics: 2 }, { version_semantics: 2 }]) {
-      const query = vi.fn(async () => ({ rows: [{ ...currentRow(), ...patch }] }))
-      await expect(readRunCurrent({ query } as unknown as Pick<pg.Pool, 'query'>, currentScope))
-        .rejects.toMatchObject({ code: 'EXECUTION_SEMANTICS_UNSUPPORTED' })
+  it('rejects inconsistent persisted identity, definition, duplicate nodes and changed configuration pins', async () => {
+    const changes: Array<(f: Awaited<ReturnType<typeof currentGraphReadUnit>>) => void> = [
+      (f) => { f.db.fixture.version.id = 'wrong-version' },
+      (f) => { f.db.fixture.version.definition.id = 'wrong-workflow' },
+      (f) => { f.db.fixture.run.workspaceId = 'wrong-workspace' },
+      (f) => { f.db.fixture.version.definition.nodes.push({ ...f.db.fixture.version.definition.nodes[0]! }) },
+      (f) => { f.db.fixture.configurations[0]!.agentId = 'wrong-agent' },
+      (f) => { f.db.fixture.version.contentHash = `sha256:${'f'.repeat(64)}` },
+    ]
+    for (const change of changes) {
+      const f = await currentGraphReadUnit(); change(f)
+      await expect(f.canonical.current(f.principal, f.request)).rejects.toMatchObject({ code: 'GRAPH_INVARIANT_VIOLATION' })
+      expect(f.db.calls).toContain('rollback')
+      expect(f.db.calls.some((q) => q.startsWith('update ') || q.startsWith('insert '))).toBe(false)
     }
   })
-  it('rejects inconsistent persisted identity, definition and duplicate saved nodes', async () => {
-    for (const patch of [{ version_id: 'wrong' }, { definition_id: 'wrong' }, { identities_valid: false },
-      { nodes_valid: false }, { node_ids: ['duplicate', 'duplicate'] }, { run: { ...currentRow().run, workspaceId: 'wrong' } }]) {
-      const query = vi.fn(async () => ({ rows: [{ ...currentRow(), ...patch }] }))
-      await expect(readRunCurrent({ query } as unknown as Pick<pg.Pool, 'query'>, currentScope))
-        .rejects.toMatchObject({ code: 'RUN_IDENTITY_INVALID' })
-    }
+  it('authorizes before protected metadata reads using runs:read without location privilege', async () => {
+    const f = await currentGraphReadUnit()
+    await expect(f.canonical.current(currentGraphPrincipal(false), f.request)).rejects.toMatchObject({ code: 'GRAPH_READ_ACCESS_DENIED' })
+    expect(f.db.calls).toEqual([])
+    const foreign = currentGraphPrincipal()
+    foreign.grants[0]!.scope.workflowIds = ['foreign']
+    await expect(f.canonical.current(foreign, f.request)).rejects.toMatchObject({ code: 'GRAPH_READ_ACCESS_DENIED' })
+    expect(f.db.calls.filter((q) => q.startsWith('select '))).toEqual(['select workspace_id,workflow_id,id from runs where id=$1'])
+    const result = await f.canonical.current(f.principal, f.request)
+    const wire = JSON.stringify(result)
+    expect(wire).not.toMatch(/PRIVATE-RUN-INPUT|executionLocation|authorizationPrincipalId|workingDirectory|runtimeDirectory|nativeSessionId|"prompt"/)
   })
-  it('authorizes before reading and preserves the same runs:read scope with no location privilege', async () => {
-    const query = vi.fn(async () => ({ rows: [currentRow()] }))
-    type Args = ConstructorParameters<typeof RunManagementService>
-    const services = new RunManagementService({ query } as unknown as pg.Pool,
-      {} as Args[1], {} as Args[2], {} as Args[3], {} as Args[4])
-    await expect(services.current(currentPrincipal(false), currentScope)).rejects.toMatchObject({ status: 403 })
-    expect(query).not.toHaveBeenCalled()
-    await expect(services.current(currentPrincipal(), { ...currentScope, workflowId: 'foreign' })).rejects.toMatchObject({ status: 403 })
-    expect(query).not.toHaveBeenCalled()
-    const result = await services.current(currentPrincipal(), currentScope)
-    expect(result.history).toBe('not-included')
-    expect(result.run).not.toHaveProperty('executionLocation')
-    expect(result.run).not.toHaveProperty('authorizationPrincipalId')
-    expect(result.executions[0]).not.toHaveProperty('workingDirectory')
-  })
-  it('does not fall back to full details on a scope miss', async () => {
-    const query = vi.fn(async () => ({ rows: [] }))
-    type Args = ConstructorParameters<typeof RunManagementService>
-    const getDetails = vi.fn()
-    const service = new RunManagementService({ query } as unknown as pg.Pool, {} as Args[1],
-      { getDetails } as unknown as Args[2], {} as Args[3], {} as Args[4])
-    await expect(service.current(currentPrincipal(), currentScope)).rejects.toMatchObject({ status: 404 })
-    expect(getDetails).not.toHaveBeenCalled()
+  it('does not fall back to full details on missing head or an exact scope miss', async () => {
+    const f = await currentGraphReadUnit(); f.db.initialized = false
+    await expect(f.canonical.current(f.principal, f.request)).rejects.toMatchObject({ code: 'GRAPH_NOT_INITIALIZED' })
+    expect(f.db.calls.some((q) => /run_activity|harness_native_events|insert |update /.test(q))).toBe(false)
+    f.db.initialized = true; f.db.calls.length = 0
+    await expect(f.canonical.current(f.principal, { ...f.request, scope: { ...f.request.scope, workflowVersionId: 'foreign-version' } }))
+      .rejects.toMatchObject({ code: 'GRAPH_SCOPE_MISMATCH' })
+    expect(f.db.calls.some((q) => q.includes('version_record') || q.includes('run_activity'))).toBe(false)
   })
 })

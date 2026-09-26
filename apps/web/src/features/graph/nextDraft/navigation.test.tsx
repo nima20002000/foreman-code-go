@@ -1,50 +1,79 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { UnsavedChangesContext, type EditorRegistration } from '../../../shared/ui/unsavedChanges'
 import { useGraphDraftStore } from '../store'
 import { nextDraftKey } from './state'
 import { fixture } from './core.cases'
 import { NextDraftEditor } from './NextDraftEditor'
+import { queryKeys } from '../../../shared/api/query'
 
-// Forms/registration test only. This replacement is not React Flow or browser evidence.
-vi.mock('./DraftCanvas', () => ({ DraftCanvas: () => <div>Canvas test placeholder</div> }))
+async function confirmDiscard(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: /^Discard changes$/ }))
+  await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Discard changes' }))
+}
+// Form/registration tests. This is not React Flow or authenticated browser evidence.
+vi.mock('./DraftCanvas', () => ({ DraftCanvas: ({ open, panels }: { open?: { nodeId: string; panel: 'chat' | 'settings' | 'info' }; panels?: (nodeId: string) => Record<string, unknown> }) => <div>Canvas fixture{open && panels
+  ? <section role="dialog" aria-label={`${open.nodeId} ${open.panel}`}>{panels(open.nodeId)[open.panel] as never}</section> : null}</div> }))
+vi.mock('../../../shared/api/query', async (original) => ({
+  ...await original<typeof import('../../../shared/api/query')>(),
+  useInteractionsQuery: () => ({ data: { items: [] } }),
+}))
 const key = nextDraftKey('workspace', 'workflow')
-beforeEach(() => { useGraphDraftStore.getState().clearAllDrafts() })
+beforeEach(() => {
+  useGraphDraftStore.getState().clearAllDrafts()
+  const queues = new Map<string, Promise<unknown>>()
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (name: string, work: () => unknown) => {
+    const result = (queues.get(name) ?? Promise.resolve()).then(work)
+    queues.set(name, result.catch(() => undefined))
+    return result
+  } } })
+})
+afterEach(() => { cleanup(); useGraphDraftStore.getState().clearAllDrafts(); vi.restoreAllMocks() })
 
+function readyClient() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+  client.setQueryData(queryKeys.managedWorkspace('workspace'), { workspace: { id: 'workspace', name: 'Fixture' },
+    locationRevision: 1, locationValidation: { status: 'ready', checkedAt: '2026-09-23T00:00:00.000Z' } })
+  return client
+}
 it('registers local form dirtiness and discard with the existing navigation guard', async () => {
   useGraphDraftStore.getState().installNextDraft(key, fixture())
   const registrations = new Map<string, EditorRegistration>()
   const guard = { changed: vi.fn(), surfaces: async () => true, request: async () => true,
     register: (id: string, editor: EditorRegistration) => { registrations.set(id, editor); return () => { registrations.delete(id) } } }
-  const user = userEvent.setup()
-  render(<UnsavedChangesContext.Provider value={guard}><NextDraftEditor workspaceId="workspace" workflowId="workflow" /></UnsavedChangesContext.Provider>)
-  await user.click(screen.getByRole('button', { name: /Entry · Node 0/ }))
-  await user.type(screen.getByLabelText('Node instruction'), 'Unsaved instruction')
+  const user = userEvent.setup(), client = readyClient()
+  render(<QueryClientProvider client={client}><UnsavedChangesContext.Provider value={guard}>
+    <NextDraftEditor workspaceId="workspace" workflowId="workflow" />
+  </UnsavedChangesContext.Provider></QueryClientProvider>)
+    await user.click(screen.getByRole('button', { name: /Entry · Node 0/ }))
+  const panel = await screen.findByRole('dialog', { name: /settings$/ })
+  const name = within(panel).getByRole('textbox', { name: 'Name' }), original = (name as HTMLInputElement).value
+  await user.clear(name); await user.type(name, 'Unsaved name')
+  await user.click(within(panel).getByRole('button', { name: 'Save agent settings' }))
   const registered = [...registrations.values()].find((item) => item.current.label.endsWith('next draft'))!
   expect(registered.current.dirty).toBe(true)
   await act(async () => { await registered.current.discard() })
-  expect(screen.getByLabelText('Node instruction')).toHaveValue('')
+  expect(within(screen.getByRole('dialog', { name: /settings$/ })).getByRole('textbox', { name: 'Name' })).toHaveValue(original)
   expect(registered.current.dirty).toBe(false)
 })
-
-it('clearing the application session also purges next drafts and pending conversions', () => {
+it('discarding a semantic edit preserves independent node layout', async () => {
   useGraphDraftStore.getState().installNextDraft(key, fixture())
-  useGraphDraftStore.getState().setNextDraftPromotion(key, { busy: false, request: { kind: 'apply', executionSemanticsVersion: 2,
-    expectedRevision: 7, workspaceId: 'workspace', workflowId: 'workflow', draftId: 'draft', commandId: 'pending-conversion', operations: [] } })
+  const client = readyClient(), user = userEvent.setup()
+  render(<QueryClientProvider client={client}><NextDraftEditor workspaceId="workspace" workflowId="workflow" /></QueryClientProvider>)
+  const position = { x: 615, y: -90 }
+  act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph,
+    nodes: graph.nodes.map((node, index) => index === 0 ? { ...node, position, initialPrompt: 'Unpublished instruction' } : node),
+  })))
+  await confirmDiscard(user)
+  const draft = useGraphDraftStore.getState().nextDrafts[key]!
+  expect(draft.graph.nodes[0]?.initialPrompt).toBeUndefined()
+  expect(draft.graph.nodes[0]?.position).toEqual(position)
+  expect(draft.context.draft.revision).toBe(7)
+})
+it('principal teardown purges the unified local draft store', () => {
+  useGraphDraftStore.getState().installNextDraft(key, fixture())
   useGraphDraftStore.getState().clearAllDrafts()
   expect(useGraphDraftStore.getState().nextDrafts).toEqual({})
-  expect(useGraphDraftStore.getState().nextDraftPromotions).toEqual({})
-})
-
-it('a remount cannot hide an ambiguous promotion just because the server already returns v2', async () => {
-  const { nextDraftApi } = await import('./transport')
-  const context = fixture()
-  useGraphDraftStore.getState().setNextDraftPromotion(key, { busy: false, error: { code: 'NETWORK_ERROR', message: 'Unknown result', uncertain: true },
-    request: { kind: 'apply', executionSemanticsVersion: 2, expectedRevision: 6, workspaceId: 'workspace', workflowId: 'workflow', draftId: 'draft', commandId: 'pending-conversion', operations: [{ type: 'nodes.reorder', nodeIds: ['node-0', 'node-1'] }] } })
-  const read = vi.spyOn(nextDraftApi, 'context').mockResolvedValue(context)
-  render(<NextDraftEditor workspaceId="workspace" workflowId="workflow" />)
-  expect(await screen.findByRole('button', { name: 'Reconcile conversion' })).toBeInTheDocument()
-  expect(useGraphDraftStore.getState().nextDrafts[key]).toBeUndefined()
-  read.mockRestore()
 })

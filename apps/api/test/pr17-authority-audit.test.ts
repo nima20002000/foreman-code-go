@@ -7,10 +7,8 @@ import { DomainError } from '../src/modules/errors.js'
 import { acceptRunAuthority, bindRunAuthority, currentOperatorAuthority } from '../src/modules/access/runAuthority.js'
 import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
-import { InteractionService } from '../src/modules/interactions/service.js'
+import type { InteractionService } from '../src/modules/interactions/service.js'
 import type { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
-import type { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
-import type { InteractionNativeRuntime } from '../src/modules/interactions/runtimePorts.js'
 
 function interaction(): DurableInteraction {
   return { id: 'interaction-proof', revision: 0, workspaceId: 'workspace', workflowId: 'workflow', runId: 'run',
@@ -26,42 +24,32 @@ const principal = () => ManagementPrincipalSchema.parse({ id: 'worker', name: 'R
   grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: { workspaceIds: ['workspace'], workflowIds: ['workflow'], runIds: ['run'] } }],
   expiresAt: new Date(Date.now() + 60_000).toISOString(), revokedAt: null })
 
-for (const revoked of [true, false]) it(`F03: production App service retains transactional worker authority and audit; revoked=${revoked}`, async () => {
-  let record = interaction()
-  const actor = principal()
-  const client = { query: vi.fn() } as unknown as pg.PoolClient
+for (const revoked of [true, false]) it(`F03: App response forwards exact worker authority to the current decision writer; revoked=${revoked}`, async () => {
+  const record = interaction(), actor = principal()
   const recordAudit = vi.fn(async () => undefined)
   const commands = { recordAudit, recordDenied: vi.fn(async () => undefined) } as unknown as PostgresCommandCoordinator
-  const decide = vi.fn(async (input: Parameters<PostgresInteractionRepository['decide']>[0]) => {
-    assert.equal(input.principal?.id, actor.id, 'production must not drop the authenticated worker principal')
-    assert(input.beforeCommit, 'the successful management audit belongs to the decision transaction')
+  const respond: InteractionService['respond'] = async (responder, input) => {
+    assert.equal(responder.kind, 'orchestrator')
+    assert.equal(responder.principal, actor)
+    assert(!('beforeCommit' in responder), 'raw audit callbacks cannot join the current G1 decision transaction')
+    if (responder.kind === 'orchestrator') assert.deepEqual(responder.authority,
+      { agentId: actor.agentId, workspaceId: record.workspaceId, workflowId: record.workflowId })
+    assert.deepEqual(input, { interactionId: record.id, optionId: 'choice', expectedRevision: 0 })
     if (revoked) throw new DomainError('AUTH_REVOKED', 'The live binding was revoked before commit.', 401)
-    record = { ...record, revision: 1, selectedOptionId: 'choice', selectedSemantic: 'approve_once', nativeResponse: null,
-      decidedAt: '2026-09-16T00:00:01.000Z', status: 'delivery_pending', deliveryState: 'pending' }
-    const value = { interaction: structuredClone(record), replayed: false }
-    await input.beforeCommit(client, value)
-    return value
-  })
-  const repository = { get: async () => structuredClone(record), decide,
-    assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'node-reviewer' }),
-    coordination: { findReviewJob: async () => ({ state: 'completed' }) },
-    delivery: { claim: async () => undefined } } as unknown as PostgresInteractionRepository
-  const budgets = { assertActive: async () => undefined } as unknown as PostgresApprovalBudgetRepository
-  const attach = vi.fn()
-  const native = { attachInteraction: attach } as unknown as InteractionNativeRuntime
-  const orchestration = new InteractionService(repository, budgets, native, async () => undefined)
-  const app = new PostgresAppInteractionService({} as pg.Pool, repository, commands, orchestration)
+    return { interaction: { ...record, revision: 1, selectedOptionId: 'choice', selectedSemantic: 'approve_once', nativeResponse: null,
+      decidedAt: '2026-09-16T00:00:01.000Z', status: 'delivery_pending', deliveryState: 'pending' }, replayed: false }
+  }
+  const repository = { get: async () => structuredClone(record) } as unknown as PostgresInteractionRepository
+  const app = new PostgresAppInteractionService({} as pg.Pool, repository, commands, { respond })
   const action = app.respond(actor, { interactionId: record.id, optionId: 'choice', expectedRevision: 0 })
   if (revoked) {
     await assert.rejects(action, (error: unknown) => error instanceof DomainError && error.code === 'AUTH_REVOKED')
     assert.equal(record.selectedOptionId, undefined)
-    assert(!recordAudit.mock.calls.some((call) => (call as unknown[])[4] === 'succeeded'))
+    assert.equal((recordAudit.mock.calls[0] as unknown[])[4], 'failed')
   } else {
     assert.equal((await action).interaction.selectedOptionId, 'choice')
-    assert.equal(recordAudit.mock.calls.length, 1, 'no second, post-commit successful audit')
-    assert.equal((recordAudit.mock.calls[0] as unknown[])[6], client)
+    assert.equal(recordAudit.mock.calls.length, 0, 'the decision writer owns the successful transactional audit')
   }
-  assert.equal(attach.mock.calls.length, 0)
 })
 
 function authorityDatabase() {

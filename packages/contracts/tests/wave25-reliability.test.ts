@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { makeCurrentGraphFixture } from './currentGraphFixture.js'
 import {
-  makeWave25Fixture, canonicalGraphJson, graphJsonBytes, assertGraphEffectAuthority,
+  canonicalGraphJson, graphJsonBytes, assertGraphEffectAuthority,
   GraphEffectAuthoritySchema, GraphEffectFenceSchema, NativeGraphProjectionFenceSchema,
   assertNativeGraphProjectionAuthority, NativeTerminalEvidenceSchema, NativeWorkReliabilitySchema,
   assertNativeWorkTransition, nativeSubmissionRecovery, parseNativeGraphObservation,
@@ -11,7 +12,7 @@ import {
 
 const digest = 'sha256:' + 'a'.repeat(64)
 function fences() {
-  const fixture = makeWave25Fixture()
+  const fixture = makeCurrentGraphFixture()
   const expected = GraphEffectFenceSchema.parse({ scope: fixture.scope,
     effect: { kind: 'execution.launch', entityId: fixture.identities[0]!.executionId }, effectDigest: digest,
     ownerId: 'existing-owner', fence: '9007199254740993', connectionGeneration: '4' })
@@ -19,7 +20,7 @@ function fences() {
   return { fixture, expected, current }
 }
 function observation() {
-  const fixture = makeWave25Fixture()
+  const fixture = makeCurrentGraphFixture()
   return { scope: fixture.scope,
     work: { execution: fixture.identities[0]!, workKind: 'workflow' as const, workId: fixture.identities[0]!.executionId },
     source: { sourceKind: 'native_event' as const, sourceId: 'native-source-1', sourceRevision: '0' },
@@ -115,9 +116,9 @@ describe('v3 terminal, uncertainty and transport separation', () => {
 
 describe('v3 monotonic Stop and complete structured limits', () => {
   it('never clears Stop or rewrites a terminal outcome, while allowing independent cleanup', () => {
-    const fixture = makeWave25Fixture(), previous = { ...fixture.snapshot.state.run, stopRequested: true }
+    const fixture = makeCurrentGraphFixture(), previous = { ...fixture.snapshot.state.run, stopRequested: true }
     expect(() => assertGraphRunTransition(previous, { ...previous, stopRequested: false })).toThrow('GRAPH_STOP_CONFLICT')
-    expect(() => assertGraphRunTransition(previous, { ...previous, stopRequested: null })).toThrow('GRAPH_STOP_CONFLICT')
+    expect(() => assertGraphRunTransition(previous, { ...previous, stopRequested: null as never })).toThrow()
     expect(() => assertGraphRunTransition(previous, { ...previous, executionState: 'completed', outcome: 'succeeded' })).toThrow('GRAPH_STOP_CONFLICT')
     const completed = GraphRunStateSchema.parse({ ...fixture.snapshot.state.run, executionState: 'completed', outcome: 'succeeded', cleanupPending: true })
     expect(() => assertGraphRunTransition(completed, { ...completed, stopRequested: true, cleanupPending: false })).not.toThrow()
@@ -125,10 +126,10 @@ describe('v3 monotonic Stop and complete structured limits', () => {
     const terminal = { workflowNodeId: fixture.identities[0]!.workflowNodeId, lifecycle: 'interrupted' as const, execution: fixture.identities[0]! }
     expect(() => assertGraphNodeTransition(terminal, { ...terminal, lifecycle: 'running' })).toThrow('GRAPH_TERMINAL_CONFLICT')
     expect(RunGraphSnapshotSchema.safeParse({ ...fixture.snapshot, state: { ...fixture.snapshot.state, run: { ...previous, stopRequested: null } } }).success).toBe(false)
-    expect(RunGraphSnapshotSchema.safeParse({ ...fixture.snapshot, scope: { ...fixture.scope, executionSemanticsVersion: 1 }, state: { ...fixture.snapshot.state, run: { ...previous, stopRequested: null } } }).success).toBe(true)
+    expect(RunGraphSnapshotSchema.safeParse({ ...fixture.snapshot, scope: { ...fixture.scope, executionSemanticsVersion: 1 } }).success).toBe(false)
   })
   it('rejects an atomic batch that would resurrect a stopped node without committing any of it', () => {
-    const fixture = makeWave25Fixture(), original = fixture.snapshot
+    const fixture = makeCurrentGraphFixture(), original = fixture.snapshot
     const events = [
       { fact: { type: 'run.state', state: { ...original.state.run, stopRequested: true } } },
       { fact: { type: 'node.state', state: { workflowNodeId: fixture.identities[0]!.workflowNodeId, lifecycle: 'starting', execution: fixture.identities[0] } } },

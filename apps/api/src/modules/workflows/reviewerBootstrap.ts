@@ -1,11 +1,10 @@
-import type { HarnessConfiguration, WorkflowApprovalConfiguration, WorkflowDefinition } from '@graphql/contracts'
-import type { WorkflowDefinitionV2 } from '@graphql/contracts/wave25'
-import { isApprovalDefinitionV2 } from './approvalRoutes.js'
+import type { HarnessConfiguration, WorkflowApprovalConfiguration } from '@graphql/contracts'
+import type { WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
 import { DomainError } from '../errors.js'
 
 /** Reject an unavailable reviewer before launch. Never change native permissions to make it work. */
 export function validateReviewerBootstrap(
-  definition: WorkflowDefinition | WorkflowDefinitionV2,
+  definition: WorkflowDefinitionV3,
   approval: WorkflowApprovalConfiguration,
   configuration: HarnessConfiguration | undefined,
   acceptedEntryNodeId?: string,
@@ -13,15 +12,15 @@ export function validateReviewerBootstrap(
   if (approval.handler !== 'orchestrator') return
   const nodes = definition.nodes.filter((node) => node.agentId === approval.designatedOrchestratorAgentId)
   const reviewer = nodes[0]
-  const v2 = isApprovalDefinitionV2(definition)
-  const entryNodeId = v2 ? definition.entryNodeId : acceptedEntryNodeId ?? definition.nodes[0]?.id
-  if (v2 && acceptedEntryNodeId !== undefined && acceptedEntryNodeId !== entryNodeId) {
+  const entryNodeId = definition.entryNodeId
+  if (acceptedEntryNodeId !== undefined && acceptedEntryNodeId !== entryNodeId) {
     throw new DomainError('APPROVAL_REVIEWER_BOOTSTRAP_ORDER',
       'The authored entry must match the accepted immutable entry.', 409)
   }
   if (nodes.length !== 1 || !reviewer || entryNodeId !== reviewer.id
-    || definition.edges.some((edge) => edge.target === reviewer.id
-      && (!v2 || !('kind' in edge) || edge.kind === 'execution'))) {
+    || definition.approval?.handler !== 'orchestrator'
+    || definition.approval.designatedOrchestratorAgentId !== approval.designatedOrchestratorAgentId
+    || definition.edges.some((edge) => edge.target === reviewer.id && edge.kind === 'execution')) {
     throw new DomainError('APPROVAL_REVIEWER_BOOTSTRAP_ORDER',
       'The designated Orchestrator must appear once as the accepted entry, with no incoming execution dependency. Independent or recursive reviewer startup is unsupported.', 409)
   }

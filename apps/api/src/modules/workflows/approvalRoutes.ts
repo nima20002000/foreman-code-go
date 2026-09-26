@@ -1,8 +1,8 @@
-import type { HarnessConfiguration, WorkflowVersion } from '@graphql/contracts'
-import type { WorkflowDefinitionV2, WorkflowVersionV2 } from '@graphql/contracts/wave25'
+import type { HarnessConfiguration } from '@graphql/contracts'
+import type { WorkflowVersionV3 } from '@graphql/contracts/wave25'
 
 /** These are immutable accepted versions, never a current editable workflow. */
-export type ApprovalRouteVersion = WorkflowVersion | WorkflowVersionV2
+export type ApprovalRouteVersion = WorkflowVersionV3
 
 export interface ImmutableApprovalRoute {
   workspaceId: string
@@ -15,7 +15,7 @@ export interface ImmutableApprovalRoute {
   orchestratorNodeId: string
   reviewerAgentId: string
   reviewerConfigurationVersionId: string
-  /** Only v2 has an explicit approval relationship identity. */
+  /** The exact saved approval relationship, never inferred from adjacency. */
   relationshipId?: string
 }
 
@@ -26,9 +26,9 @@ export function usesNativeSelfReview(configuration: HarnessConfiguration | undef
 }
 
 /** Approval topology does not schedule, infer roles, select sessions, or grant access. */
-export function hasSupportedApprovalTopology(version: WorkflowVersionV2): boolean {
+export function hasSupportedApprovalTopology(version: WorkflowVersionV3): boolean {
   const graph = version.definition
-  if (version.executionSemanticsVersion !== 2 || graph.executionSemanticsVersion !== 2
+  if (version.executionSemanticsVersion !== 3 || graph.executionSemanticsVersion !== 3
     || !graph.entryNodeId || graph.entryNodeId !== version.entryNodeId) return false
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]))
   if (nodes.size !== graph.nodes.length
@@ -60,8 +60,8 @@ function ownPin(pins: Readonly<Record<string, string>>, id: string): string | un
  * Callers must still validate pinned roles/configurations and live scopes, credentials,
  * revisions, ownership and exact sessions. A returned relationship is NOT a grant.
  *
- * Legacy accepted versions retain exact, undirected adjacency; v2 never falls back
- * to execution adjacency, transitive reachability, canvas order or another reviewer.
+ * Current V3 never falls back to execution adjacency, transitive reachability,
+ * canvas order or another reviewer.
  */
 export function resolveImmutableApprovalRoute(
   version: ApprovalRouteVersion,
@@ -88,32 +88,16 @@ export function resolveImmutableApprovalRoute(
   const reviewerPin = ownPin(version.agentConfigurationVersionIds, reviewer.agentId)
   if (!requestingPin || !reviewerPin) return undefined
 
-  let relationshipId: string | undefined
-  if ('executionSemanticsVersion' in version) {
-    if (version.executionSemanticsVersion !== 2 || !hasSupportedApprovalTopology(version)) return undefined
-    const relationship = version.definition.edges.find((edge) => edge.kind === 'approval'
-      && edge.source === reviewer.id && edge.target === requester.id)
-    if (!relationship) return undefined
-    relationshipId = relationship.id
-  } else {
-    // A partially upgraded/mixed record cannot acquire legacy adjacency authority.
-    if ('executionSemanticsVersion' in graph || graph.edges.some((edge) => 'kind' in edge)) return undefined
-    if (!graph.edges.some((edge) => (edge.source === reviewer.id && edge.target === requester.id)
-      || (edge.source === requester.id && edge.target === reviewer.id))) return undefined
-  }
+  if (!hasSupportedApprovalTopology(version)) return undefined
+  const relationship = version.definition.edges.find((edge) => edge.kind === 'approval'
+    && edge.source === reviewer.id && edge.target === requester.id)
+  if (!relationship) return undefined
   return {
     workspaceId: version.workspaceId, workflowId: version.workflowId, workflowVersionId: version.id,
     requestingNodeId: requester.id, requestingAgentId: requester.agentId,
     requestingConfigurationVersionId: requestingPin,
     orchestratorNodeId: reviewer.id, reviewerAgentId: reviewer.agentId,
     reviewerConfigurationVersionId: reviewerPin,
-    ...(relationshipId === undefined ? {} : { relationshipId }),
+    relationshipId: relationship.id,
   }
-}
-
-/** Explicit entry selection is available only on the frozen v2 definition. */
-export function isApprovalDefinitionV2(
-  definition: WorkflowVersion['definition'] | WorkflowDefinitionV2,
-): definition is WorkflowDefinitionV2 {
-  return 'executionSemanticsVersion' in definition && definition.executionSemanticsVersion === 2
 }

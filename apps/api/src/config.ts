@@ -8,6 +8,18 @@ const databaseSchemaName = z
   .min(1)
   .regex(/^[a-z_][a-z0-9_]*$/, 'must be a lowercase PostgreSQL identifier')
 
+const LOCAL_DEV_BROWSER_ORIGIN = 'http://127.0.0.1:5173'
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
+
+function readLocalDevBrowserOrigin(value: string | undefined): string {
+  const url = new URL(value ?? LOCAL_DEV_BROWSER_ORIGIN)
+  if (url.protocol !== 'http:' || !LOOPBACK_HOSTS.has(url.hostname) || !url.port
+    || url.username || url.password || (url.pathname !== '/' && url.pathname !== '') || url.search || url.hash) {
+    throw new Error('GRAPHQL_DEV_BROWSER_ORIGIN must be one exact HTTP loopback browser origin, including its port.')
+  }
+  return url.origin
+}
+
 const EnvironmentSchema = z.object({
   HOST: z.string().trim().min(1).default('127.0.0.1'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
@@ -27,7 +39,7 @@ export interface ApiConfig {
   /** Trusted composition override for an isolated storage root; never a request field. */
   workspaceStorageRoot?: string
   browserAuth?: BrowserAuthConfig
-  localDevBrowserAccess?: { principalId?: string | undefined }
+  localDevBrowserAccess?: { origin: string; principalId?: string | undefined }
   host: string
   port: number
   readinessTimeoutMs: number
@@ -55,9 +67,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
   if (environment.GRAPHQL_DEV_BROWSER_ACCESS !== undefined && !['0', '1'].includes(environment.GRAPHQL_DEV_BROWSER_ACCESS)) {
     throw new Error('GRAPHQL_DEV_BROWSER_ACCESS must be 0 or 1.')
   }
+  const localDevBrowserOrigin = readLocalDevBrowserOrigin(environment.GRAPHQL_DEV_BROWSER_ORIGIN)
   if (localDevBrowserAccess && (environment.NODE_ENV === 'production' || parsed.HOST !== '127.0.0.1'
     || !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(parsed.DATABASE_URL).hostname)
-    || (browserAuth && browserAuth.origin !== 'http://127.0.0.1:5173'))) {
+    || (browserAuth && browserAuth.origin !== localDevBrowserOrigin))) {
     throw new Error('Local development browser access requires a loopback API, database and browser origin outside production.')
   }
   const localDevBrowserPrincipalId = environment.GRAPHQL_DEV_OPERATOR_PRINCIPAL_ID?.trim()
@@ -67,6 +80,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
   return {
     ...(browserAuth ? { browserAuth } : {}),
     ...(localDevBrowserAccess ? { localDevBrowserAccess: {
+      origin: localDevBrowserOrigin,
       ...(localDevBrowserPrincipalId || browserAuth?.ownerPrincipalId
         ? { principalId: localDevBrowserPrincipalId || browserAuth?.ownerPrincipalId } : {}),
     } } : {}),

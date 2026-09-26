@@ -113,6 +113,8 @@ export interface NativeHarnessSessionManager {
   /** Read-only recovery of the exact response; missing evidence remains uncertain. */
   reconcileResponse?(session: NativeSessionReference, response: NativeResponseIdentity, signal?: AbortSignal): Promise<NativeHistory>
   close(session: NativeSessionReference): Promise<void>
+  /** Detach the local runtime for process restart without canceling unresolved provider work. */
+  closeForRestart?(session: NativeSessionReference): Promise<void>
   /** Stop every owned transport, including creations without a known session identity. */
   dispose?(): Promise<void>
 }

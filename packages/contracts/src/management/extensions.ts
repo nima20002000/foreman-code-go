@@ -1,6 +1,7 @@
 import { z } from "zod";
+import { WorkflowVersionV3Schema } from "../wave25/workflowSchemas.js";
 import {
-  AgentSchema, AgentConfigurationVersionSchema, WorkflowVersionSchema,
+  AgentSchema, AgentConfigurationVersionSchema,
   HarnessConfigurationSchema, HarnessQualificationSchema, ScopedMcpDetectionSchema,
   IdSchema, TimestampSchema, ApprovalHandlerSchema,
 } from "../index.js";
@@ -77,9 +78,9 @@ export const NativeConfigurationCheckResultSchema = z.object({
 export const WorkflowVersionListInputSchema = z.object({ ...Workflow, ...Page }).strict();
 export const WorkflowVersionGetInputSchema = z.object({ ...Workflow, versionId: IdSchema }).strict();
 export const WorkflowVersionPageSchema = z.object({
-  items: z.array(WorkflowVersionSchema), pageInfo: z.object({ nextCursor: z.string().nullable() }).strict(),
+  items: z.array(WorkflowVersionV3Schema), pageInfo: z.object({ nextCursor: z.string().nullable() }).strict(),
 }).strict();
-export const WorkflowVersionResultSchema = z.object({ version: WorkflowVersionSchema }).strict();
+export const WorkflowVersionResultSchema = z.object({ version: WorkflowVersionV3Schema }).strict();
 export const AgentVersionListInputSchema = z.object({ ...Workspace, agentId: IdSchema, ...Page }).strict();
 export const AgentVersionGetInputSchema = z.object({ ...Workspace, agentId: IdSchema, versionId: IdSchema }).strict();
 export const AgentVersionPageSchema = z.object({

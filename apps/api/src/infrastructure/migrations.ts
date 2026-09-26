@@ -1,4 +1,15 @@
+import { workflowTerminalRecoveryMigration } from './workflowTerminalRecoveryMigration.js'
+import { workflowRestartRecoveryMigration } from './workflowRestartRecoveryMigration.js'
+import { runInspectionMigration } from './runInspectionMigration.js'
+import { currentApprovalAckMigration } from './currentApprovalAckMigration.js'
+import { workflowNativeLifecycleMigration } from './workflowNativeLifecycleMigration.js'
 import type pg from 'pg'
+import { currentWorkflowWriterMigration } from './currentWorkflowWriterMigration.js'
+import { currentStagedAgentsMigration } from './currentStagedAgentsMigration.js'
+import { repeatWriterMigration } from './repeatWriterMigration.js'
+import { repeatOccurrenceMigration } from './repeatOccurrenceMigration.js'
+import { workflowClosureMigration } from './workflowClosureMigration.js'
+import { graphEditIntentMigration } from './graphEditIntentMigration.js'
 import { harnessSettingsMigration } from './harnessSettingsMigration.js'
 import { pr18RecoveryMigration } from './pr18RecoveryMigration.js'
 import { runLiveActivityMigration } from './runLiveActivityMigration.js'
@@ -674,6 +685,17 @@ export const migrations = [
   wave25ReliabilityMigration,
   { version: 250003, sql: wave25ApprovalMigrationSql },
   nativeProjectionMigration,
+  graphEditIntentMigration,
+  workflowClosureMigration,
+  repeatOccurrenceMigration,
+  repeatWriterMigration,
+  currentWorkflowWriterMigration,
+  workflowNativeLifecycleMigration,
+  currentApprovalAckMigration,
+  currentStagedAgentsMigration,
+  runInspectionMigration,
+  workflowRestartRecoveryMigration,
+  workflowTerminalRecoveryMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

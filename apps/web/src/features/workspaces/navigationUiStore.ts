@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export const DEFAULT_NAVIGATION_WIDTH = 216
+export const DEFAULT_NAVIGATION_WIDTH = 264
 export const MIN_NAVIGATION_WIDTH = 192
 export const MAX_NAVIGATION_WIDTH = 360
 

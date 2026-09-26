@@ -33,6 +33,7 @@ import { WorkerCredentialService } from '../src/modules/access/workerCredentials
 import { McpDetectionService, WorkerLaunchCredentialService, type ExecutionCredentialProvider } from '../src/modules/harnesses/mcpDetection.js'
 import { codexMcpInspectorAdapter } from '../src/modules/harnesses/codexMcpInspectorAdapter.js'
 import { openCodeMcpInspectorAdapter } from '../src/modules/harnesses/opencodeMcpInspectorAdapter.js'
+import { runEng03NativeScenario } from './helpers/eng03NativeAcceptance.js'
 
 const connectionString =
   process.env.TEST_DATABASE_URL
@@ -236,4 +237,19 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
       if (projectDirectory) await rm(projectDirectory, { recursive: true, force: true })
     }
   }, 360_000)
+})
+
+describe.skipIf(!realHarnessesEnabled)('ENG-03 preliminary native parallel matrix', () => {
+  it.each([
+    ['E03-P01', 'codex', 'opencode'],
+    ['E03-P02', 'codex', 'codex'],
+    ['E03-P03', 'opencode', 'opencode'],
+  ] as const)('%s overlaps two real %s/%s workers and joins their accepted results', async (scenario, first, second) => {
+    const evidence = await runEng03NativeScenario(scenario, first, second)
+    expect(evidence.outcome, evidence.artifactPath).toBe('succeeded')
+    expect(evidence.overlap, evidence.artifactPath).toBe(true)
+    expect(evidence.identitiesDistinct, evidence.artifactPath).toBe(true)
+    expect(evidence.joinExact, evidence.artifactPath).toBe(true)
+    expect(evidence.cleanup, evidence.artifactPath).toBe(true)
+  }, 300_000)
 })

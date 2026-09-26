@@ -1,15 +1,21 @@
 import { describe, expect, it } from 'vitest'
 import { HarnessExecutionSchema } from '@graphql/contracts'
-import { makeWave25Fixture } from '@graphql/contracts/wave25'
-import { bindOneShotInput, normalizeOneShotTerminal, oneShotResolution } from '../src/modules/runs/oneShotResolution.js'
+import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { bindRepeatNodeInput, repeatExecutionIdentity, repeatDigest } from '../src/modules/runs/repeatResolution.js'
+import { normalizeRepeatTerminal, repeatTerminalResolution } from '../src/modules/runs/repeatNode.js'
 
 function choiceFixture() {
-  const fixture = makeWave25Fixture('a3-choice')
+  const fixture = makeCurrentWorkflowFixture('a3-choice')
   fixture.version.definition.nodes[0]!.choice = { outcomes: [
     { outcome: 'pass', target: { kind: 'branch_end' } },
     { outcome: 'issues', target: { kind: 'edge', relationshipId: fixture.version.definition.edges[0]!.id } },
   ] }
-  return fixture
+  const executions = fixture.identities.map((identity) => HarnessExecutionSchema.parse({
+    id: identity.executionId, runId: fixture.run.id, workflowNodeId: identity.workflowNodeId,
+    agentId: identity.agentId, agentConfigurationVersionId: identity.agentConfigurationVersionId,
+    attempt: 1, input: {}, state: 'queued', createdAt: fixture.createdAt,
+  }))
+  return { ...fixture, executions }
 }
 
 describe('Agent 3 complete accepted evidence and exact input receipts', () => {
@@ -17,7 +23,7 @@ describe('Agent 3 complete accepted evidence and exact input receipts', () => {
     const f = choiceFixture()
     const execution = HarnessExecutionSchema.parse({ ...f.executions[0], state: 'completed', finishedAt: f.createdAt,
       result: { outcome: 'succeeded', output: { routing: { outcome }, data: { ok: true } } } })
-    const resolved = oneShotResolution(f.version, normalizeOneShotTerminal(f.version, execution))
+    const resolved = repeatTerminalResolution(f.version, f.scope, { nodeId: execution.workflowNodeId, occurrence: null }, normalizeRepeatTerminal(f.version, f.scope, { nodeId: execution.workflowNodeId, occurrence: null }, execution)).value
     expect(resolved.selectedRelationshipIds).toEqual(outcome === 'issues' ? [f.version.definition.edges[0]!.id] : [])
     expect(resolved.branchEnded).toBe(outcome === 'pass')
   })
@@ -35,9 +41,9 @@ describe('Agent 3 complete accepted evidence and exact input receipts', () => {
     const f = choiceFixture()
     const execution = HarnessExecutionSchema.parse({ ...f.executions[0], state: 'completed', finishedAt: f.createdAt,
       result: { outcome: 'succeeded', output } })
-    const normalized = normalizeOneShotTerminal(f.version, execution)
+    const normalized = normalizeRepeatTerminal(f.version, f.scope, { nodeId: execution.workflowNodeId, occurrence: null }, execution)
     expect(normalized.result?.outcome).toBe('failed')
-    const resolved = oneShotResolution(f.version, normalized)
+    const resolved = repeatTerminalResolution(f.version, f.scope, { nodeId: normalized.workflowNodeId, occurrence: null }, normalized).value
     expect(resolved.selectedRelationshipIds).toEqual([])
     expect(resolved.unselectedRelationshipIds).toEqual([f.version.definition.edges[0]!.id])
   })
@@ -45,16 +51,18 @@ describe('Agent 3 complete accepted evidence and exact input receipts', () => {
     const f = choiceFixture()
     const previous = HarnessExecutionSchema.parse({ ...f.executions[0], state: 'completed', finishedAt: f.createdAt,
       result: { outcome: 'succeeded', output: { routing: { outcome: 'issues' }, data: { finding: 7 } } } })
-    const resolution = oneShotResolution(f.version, previous)
-    const request = { version: f.version, runInput: f.run.input, recipient: f.executions[1]!, boundAt: f.createdAt,
-      resolutions: new Map([[previous.workflowNodeId, resolution]]), predecessors: new Map([[previous.id, { execution: previous, accepted: true }]]) }
-    const first = bindOneShotInput(request)
-    const repeat = bindOneShotInput(request)
-    expect(repeat).toEqual(first)
-    expect(first.bindings[0]).toMatchObject({ inputOrdinal: 0, sender: { executionId: previous.id }, recipient: { executionId: f.executions[1]!.id } })
-    expect(first.execution.input).toMatchObject({ predecessors: [{ acceptedResult: previous.result, senderExecutionId: previous.id }] })
-    expect(() => bindOneShotInput({ ...request, predecessors: new Map([[previous.id, { execution: previous, accepted: false }]]) })).toThrow()
-    const changed = HarnessExecutionSchema.parse({ ...previous, result: { outcome: 'succeeded', output: 'different' } })
-    expect(() => bindOneShotInput({ ...request, predecessors: new Map([[previous.id, { execution: changed, accepted: true }]]) })).toThrow()
+    const source = { relationshipId: f.version.definition.edges[0]!.id, execution: repeatExecutionIdentity(previous),
+      occurrence: null, acceptedResult: previous.result!, acceptedResultDigest: repeatDigest(previous.result) }
+    const request = { version: f.version, runInput: f.run.input, recipient: f.executions[1]!,
+      ref: { nodeId: f.executions[1]!.workflowNodeId, occurrence: null }, occurrence: null, entry: null, predecessors: [source] }
+    const first = bindRepeatNodeInput(request)
+    expect(bindRepeatNodeInput(request)).toEqual(first)
+    expect(first.bindings[0]).toMatchObject({ ordinal: 0, source: { execution: { executionId: previous.id } },
+      recipient: { executionId: f.executions[1]!.id } })
+    expect(first.input).toMatchObject({ predecessors: [{ acceptedResult: previous.result, execution: { executionId: previous.id } }] })
+    expect(() => bindRepeatNodeInput({ ...request, predecessors: [{ ...source,
+      acceptedResult: { outcome: 'failed', error: { code: 'FAIL', message: 'Rejected', retryable: false } } }] })).toThrow()
+    expect(() => bindRepeatNodeInput({ ...request, predecessors: [{ ...source,
+      acceptedResult: { outcome: 'succeeded', output: 'different' } }] })).toThrow()
   })
 })

@@ -3,15 +3,20 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import type { AgentConfigurationVersion, ExecutionResult, HarnessExecution, NativeHarnessEvent, NativeSessionReference, WorkflowRun, WorkflowVersion } from '@graphql/contracts'
+import type { AgentConfigurationVersion, ExecutionResult, HarnessExecution, NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
 import { MemorySaver } from '@langchain/langgraph'
-import { describe, it } from 'vitest'
+import { describe, it, vi } from 'vitest'
 
 import { DomainError } from '../src/modules/errors.js'
 import type { ExecutionCredentialProvider } from '../src/modules/harnesses/mcpDetection.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../src/modules/harnesses/port.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
+import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
+import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
+import type { WorkflowClosureStore } from '../src/modules/interactions/workflowClosure.js'
+import type { RepeatNativeObservationStore } from '../src/modules/interactions/repeatObservation.js'
+import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import { nativeLanes } from './helpers/nativeLanes.js'
 
 const secret = 'private-pr11-engine-secret'
@@ -23,7 +28,7 @@ async function createFixture() {
     id: 'config-1', workspaceId: 'workspace-1', agentId: 'agent-1', version: 1,
     prompt: { system: 'Test' }, assignedSkills: [],
     // Explicit native handling: no inferred authority and no routed reviewer.
-    harness: { harness: 'opencode', model: 'opencode-go/deepseek-v4.1-flash', variant: 'max', nativeAgent: 'build', thinking: false, autoApprove: true },
+    harness: { harness: 'opencode', model: 'opencode-go/deepseek-v4.1-flash', variant: 'max', nativeAgent: 'build', thinking: false, autoApprove: false },
     contentHash: 'sha256:fixture', createdAt: now,
   }
   const run = {
@@ -31,11 +36,13 @@ async function createFixture() {
     agentConfigurationVersionIds: { 'agent-1': 'config-1' }, authorizationPrincipalId: 'operator-1',
     executionLocation: { runnerId: 'runner-local', rootPath: directory }, input: {},
     executionState: 'running', outcome: 'pending',
-  } as unknown as WorkflowRun
-  const version = { definition: { nodes: [{ id: 'node-1', agentId: 'agent-1', initialPrompt: 'Test' }] } } as unknown as WorkflowVersion
-  const rows = new Map<string, HarnessExecution>()
+  }
+  const candidate: HarnessExecution = { id: 'execution-pr11', runId: run.id, workflowNodeId: 'node-1', agentId: configuration.agentId,
+    agentConfigurationVersionId: configuration.id, attempt: 1, input: {}, state: 'starting', createdAt: now,
+    workingDirectory: directory, runtimeDirectory: join(directory, 'runtime') }
+  const rows = new Map<string, HarnessExecution>([[candidate.id, candidate]])
   const accepted: HarnessExecution[] = [], events: unknown[] = [], activities: unknown[] = [], revoked: string[] = []
-  let changedDirectory = false, revokedAuthority = false, cleanupFails = false
+  let changedDirectory = false, revokedAuthority = false, cleanupFails = false, cleanupPending = false
   let prepared: () => Promise<void> = async () => undefined
   let expiresIn = 60_000, creates = 0, starts = 0, cancels = 0
   let native: (signal: AbortSignal) => Promise<ExecutionResult> = async () => ({ outcome: 'succeeded', output: { text: `done ${secret}` } })
@@ -68,12 +75,18 @@ async function createFixture() {
     history: async (): Promise<NativeHistory> => ({ events: [], pendingInteractions: [], ...(terminal ? { terminalResult: terminal } : {}) }),
     reconcile: async (_session: NativeSessionReference, id: string): Promise<NativeHistory> => {
       void _session
-      return { events: [], pendingInteractions: [], ...(terminal && id === correlation
+      return { events: [], pendingInteractions: [], correlationId: id, nativeTurnId: 'turn-exact', ...(terminal && id === correlation
         ? { terminalResult: terminal, terminalTurn: { correlationId: id, providerId: 'turn-exact', result: terminal } } : {}) }
     },
     close: async () => undefined,
+    dispose: async () => undefined,
   }
+  const negativeSettlements: string[] = []
   const runs = {
+    getRepeatSnapshot: async () => ({ run, stopRequested: false, cleanupPending }),
+    requestCleanup: async () => { cleanupPending = true },
+    async *executionPages() { yield [...rows.values()] },
+    repeat: async () => ({ settleNegativeExecution: async (id: string) => { negativeSettlements.push(id) } }),
     get: async () => run, getExecution: async (id: string) => rows.get(id),
     ensureExecution: async (value: HarnessExecution) => {
       const previous = [...rows.values()].find((row) => row.workflowNodeId === value.workflowNodeId && row.attempt === value.attempt)
@@ -93,7 +106,7 @@ async function createFixture() {
       return { credential: { principalId: 'worker-1', environment: { agentId: 'agent-1', variables: { GRAPHQL_APP_MCP_TOKEN: secret } },
         expiresAt: new Date(Date.now() + expiresIn).toISOString() }, detection: {} as never }
     },
-    revoke: async () => undefined,
+    revoke: async () => { revoked.push(candidate.id); if (cleanupFails) throw new Error('database unavailable') },
     revokeForExecution: async (id) => { revoked.push(id); if (cleanupFails) throw new Error('database unavailable'); return 1 },
     revokeForRun: async (id) => { revoked.push(id); return 1 },
     reconcileTerminalCredentials: async () => undefined,
@@ -107,21 +120,40 @@ async function createFixture() {
     cancelPendingForRun: async () => undefined }
   const budgets = { ensure: async () => undefined, remaining: async () => 300_000, assertActive: async () => undefined,
     finish: async () => undefined, stop: async () => undefined }
+  const captures = createWorkflowNativeCaptureChannel()
+  let closed: Awaited<ReturnType<WorkflowClosureStore['read']>>
+  const closures: WorkflowClosureStore = {
+    async begin() { closed = undefined; return '1' },
+    async record(execution, session, durableGeneration, check) { check(); closed = { execution, session, durableGeneration }; return closed },
+    async read() { return closed }, async recordDetached(_execution, _session, _generation, check) { check() },
+    async recordUnbound(execution, durableGeneration, check) { check(); return { execution: { ...execution,
+      workingDirectory: execution.workingDirectory!, runtimeDirectory: execution.runtimeDirectory! }, durableGeneration } },
+    async readUnbound() { return undefined },
+  }
+  let launched = false
+  const store: RepeatNativeObservationStore = {
+    async readExecution(id) { const execution = rows.get(id)!; return { execution, ref: { nodeId: execution.workflowNodeId, occurrence: null },
+      slotId: 'pr11-slot', input: { executionSemanticsVersion: 3, runInput: {}, occurrence: null, entry: null, predecessors: [] },
+      inputDigest: `sha256:${'1'.repeat(64)}`, accepted: false } },
+    async assertExecutionAdmission() {}, async assertNativeBoundary() {}, async exactSession() { return session },
+    async authorizeNativeSubmission() {}, consumeLaunch() { if (launched) return false; launched = true; return true },
+    async settleNativeExecution() { if (!closed || cleanupFails) throw new DomainError('REPEAT_CLEANUP_PENDING', 'Native cleanup pending', 409) },
+  }
   const coordinator = new ApprovalExecutionCoordinator(runs as never, interactions as never, budgets as never,
-    { resolve: () => ({ manager, processState: 'needs_start' }) }, 300_000, credentials,
-    async () => { await locations.revalidateRunAuthorization(); await locations.revalidateSnapshot() })
-  const engine = new LangGraphWorkflowEngine(runs as never, { getAgentConfiguration: async () => configuration } as never,
-    coordinator, new MemorySaver(), join(directory, 'runtime'), locations as never, credentials, interactions as never)
-  const owner = { assertOwned: () => undefined, client: {} }
+    new ExecutionScopedNativeSessionManagerResolver(() => manager), 300_000, credentials,
+    async () => { await locations.revalidateRunAuthorization(); await locations.revalidateSnapshot() }, closures, undefined, captures.capture)
+  const owner = { runId: run.id, assertOwned: () => undefined, client: {} } as unknown as RunOwnership
   return {
-    engine, coordinator, credentials, rows, accepted, events, activities, revoked,
+    coordinator, credentials, rows, accepted, events, activities, revoked, negativeSettlements,
     setDirectoryChanged: () => { changedDirectory = true }, setAuthorityRevoked: () => { revokedAuthority = true },
     failCleanup: () => { cleanupFails = true }, onPrepare: (callback: () => Promise<void>) => { prepared = callback },
     setNative: (callback: (signal: AbortSignal) => Promise<ExecutionResult>) => { native = callback },
     setExpiresIn: (ms: number) => { expiresIn = ms }, counters: () => ({ creates, starts, cancels }),
-    execute: () => (engine as unknown as { executeNode(...args: unknown[]): Promise<unknown> }).executeNode(
-      run, version, 'node-1', [], { runId: run.id, executionIds: {} }, new AbortController().signal, owner),
-    async close() { cleanupFails = false; await coordinator.cancelRun(run.id); await rm(directory, { recursive: true, force: true }) },
+    execute: () => coordinator.observeExact({ execution: candidate, store, owner, approval: { handler: 'user' },
+      workflowId: run.workflowId, graphThreadId: run.id, signal: new AbortController().signal,
+      request: { executionId: candidate.id, runId: run.id, workspaceId: run.workspaceId, workflowNodeId: candidate.workflowNodeId,
+        workingDirectory: directory, runtimeDirectory: candidate.runtimeDirectory!, configuration, input: {} } }),
+    async close() { cleanupFails = false; cleanupPending = true; await coordinator.cancelRun(run.id); await rm(directory, { recursive: true, force: true }) },
   }
 }
 async function withFixture(perform: (fixture: Fixture) => Promise<void>) {
@@ -135,7 +167,7 @@ describe('native launch, outcome and credential lifecycle', () => {
       f.onPrepare(async () => f.setDirectoryChanged())
       await assert.rejects(f.execute(), { code: 'WORKSPACE_LOCATION_CHANGED' })
       assert.equal(f.counters().creates, 0)
-      assert.equal(f.revoked.length, 1)
+      assert.equal(f.revoked.length, 0)
     })
   })
   it('rechecks launch authority after asynchronous credential preparation', async () => {
@@ -143,7 +175,7 @@ describe('native launch, outcome and credential lifecycle', () => {
       f.onPrepare(async () => f.setAuthorityRevoked())
       await assert.rejects(f.execute(), { code: 'AUTH_REVOKED' })
       assert.equal(f.counters().creates, 0)
-      assert.equal(f.revoked.length, 1)
+      assert.equal(f.revoked.length, 0)
     })
   })
   it('retains the native result but refuses successful finalization until cleanup is confirmed', async () => {
@@ -177,7 +209,7 @@ describe('native launch, outcome and credential lifecycle', () => {
       }))
       await assert.rejects(f.execute(), { code: 'WORKER_CREDENTIAL_EXPIRING' })
       assert.equal(f.counters().starts, 1)
-      assert.equal([...f.rows.values()][0]?.result?.outcome, 'failed')
+      assert.deepEqual(f.negativeSettlements, ['execution-pr11'])
       assert.equal(f.revoked.length, 1)
     })
   })
@@ -190,50 +222,27 @@ describe('native launch, outcome and credential lifecycle', () => {
       assert(!JSON.stringify([f.accepted, f.events]).includes(secret))
     })
   })
-  it('uses the management transaction for the Stop credential barrier', async () => {
+  it('does not turn a preflight authority rejection into a successful or retryable terminal result', async () => {
     await withFixture(async (f) => {
-      const controller = new AbortController()
-      ;(f.engine as unknown as { activeRuns: Map<string, AbortController> }).activeRuns.set('run-1', controller)
-      const client = {} as never
-      let released: (() => void) | undefined, passedClient: unknown
-      f.credentials.revokeForRun = async (_id, transactionClient) => {
-        passedClient = transactionClient
-        await new Promise<void>((resolve) => { released = resolve })
-        return 1
-      }
-      let completed = false
-      const cancel = f.engine.cancel('run-1', client).then(() => { completed = true })
-      await new Promise<void>((resolve) => setImmediate(resolve))
-      assert.equal(controller.signal.aborted, true)
-      assert.equal(completed, false)
-      assert.equal(passedClient, client)
-      released!()
-      await cancel
-      assert.equal(completed, true)
+      f.setAuthorityRevoked()
+      await assert.rejects(f.execute(), { code: 'AUTH_REVOKED' })
+      assert.equal(f.counters().creates, 0)
+      assert.equal(f.counters().starts, 0)
+      assert.equal([...f.rows.values()][0]?.result, undefined)
+      assert.equal(f.negativeSettlements.length, 0)
     })
   })
 })
 
-it('sweeps credentials, cancels orphaned native work and revokes Run authority without replay', async () => {
+it('sweeps terminal credentials before dispatching persisted current work through the same engine', async () => {
   const actions: string[] = []
-  const owner = { release: async () => { actions.push('release') } }
-  const engine = new LangGraphWorkflowEngine({
-    reconciliationCandidates: async () => [{ id: 'orphan', executionState: 'running' }],
-    acquireOwnership: async () => owner,
-    get: async () => ({ id: 'orphan', executionState: 'running' }),
-    settleOrphan: async () => { actions.push('settle'); return true },
-  } as never, {} as never, {
-    reconcileReviews: async () => { actions.push('reviews') },
-    cancelRun: async () => { actions.push('native-cancel') },
-  } as never, new MemorySaver(), '/tmp/native-orphan', {} as never, {
-    prepare: async () => { throw new Error('must not launch during recovery') },
-    revoke: async () => undefined, revokeForExecution: async () => 0,
-    revokeForRun: async () => { actions.push('revoke'); return 1 },
+  const engine = new LangGraphWorkflowEngine({ repeatRepositoryFactory: () => ({}),
+    reconciliationCandidates: async () => [{ id: 'persisted-current-run', executionState: 'queued' }],
+  } as never, {} as never, { reconcileReviews: async () => { actions.push('reviews') } } as never,
+  new MemorySaver(), '/tmp/native-orphan', {} as never, {
     reconcileTerminalCredentials: async () => { actions.push('sweep') },
-  })
-  ;(engine as unknown as { readCheckpoint: () => Promise<unknown> }).readCheckpoint = async () => ({
-    version: {}, snapshot: { values: { runId: 'orphan', executionIds: {} }, next: ['node'], tasks: [] },
-  })
+  } as never, {} as never)
+  vi.spyOn(engine, 'start').mockImplementation(async (id) => { actions.push(`start:${id}`) })
   await engine.reconcile((error) => { throw error })
-  assert.deepEqual(actions, ['sweep', 'reviews', 'native-cancel', 'settle', 'revoke', 'release'])
+  assert.deepEqual(actions, ['sweep', 'reviews', 'start:persisted-current-run'])
 })

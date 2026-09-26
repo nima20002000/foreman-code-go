@@ -4,10 +4,11 @@ import {
   type DurableInteraction, type HarnessExecution,
 } from '@graphql/contracts'
 import {
-  WorkflowRunV2Schema, WorkflowVersionV2Schema, canonicalGraphJson,
+  WorkflowRunV3Schema, WorkflowVersionV3Schema, canonicalGraphJson,
   type GraphExecutionIdentity, type RunGraphScope,
 } from '@graphql/contracts/wave25'
 import type pg from 'pg'
+import { PostgresRepeatReviewerBindings } from '../repeatReviewer.js'
 import { DomainError } from '../../errors.js'
 import { resolveImmutableApprovalRoute, usesNativeSelfReview } from '../../workflows/approvalRoutes.js'
 import { validateReviewerBootstrap } from '../../workflows/reviewerBootstrap.js'
@@ -23,10 +24,11 @@ export function identity(e: HarnessExecution): GraphExecutionIdentity {
     agentConfigurationVersionId: e.agentConfigurationVersionId, attempt: e.attempt }
 }
 export async function scopeForRun(sql: GraphSqlClient, runId: string): Promise<RunGraphScope> {
-  const row = (await sql.query<{ workspace_id: string; workflow_id: string; workflow_version_id: string; execution_semantics_version: 1 | 2 }>(
+  const row = (await sql.query<{ workspace_id: string; workflow_id: string; workflow_version_id: string; execution_semantics_version: number }>(
     `select r.workspace_id,r.workflow_id,r.workflow_version_id,v.execution_semantics_version
      from runs r join workflow_versions v on v.id=r.workflow_version_id where r.id=$1`, [runId])).rows[0]
   if (!row) return fail('APPROVAL_RUN_NOT_FOUND')
+  if (row.execution_semantics_version !== 3) return fail('EXECUTION_SEMANTICS_UNSUPPORTED')
   return { runId, workspaceId: row.workspace_id, workflowId: row.workflow_id,
     workflowVersionId: row.workflow_version_id, executionSemanticsVersion: row.execution_semantics_version }
 }
@@ -37,16 +39,17 @@ export async function runFor(sql: GraphSqlClient, kind: 'interaction' | 'review'
   if (!row) return fail('APPROVAL_SUBJECT_NOT_FOUND')
   return row.run_id
 }
-export async function isV2(sql: GraphSqlClient, runId: string): Promise<boolean> {
-  return (await scopeForRun(sql, runId)).executionSemanticsVersion === 2
+export async function isCurrentApprovalRun(sql: GraphSqlClient, runId: string): Promise<boolean> {
+  return (await scopeForRun(sql, runId)).executionSemanticsVersion === 3
 }
 export async function transact<T>(pool: pg.Pool, runId: string, work: (publication: RunGraphPublication) => Promise<T>): Promise<T> {
   return withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
     const scope = await scopeForRun(sql, runId)
-    if (scope.executionSemanticsVersion !== 2) return fail('APPROVAL_SEMANTICS_MISMATCH')
+    if (scope.executionSemanticsVersion !== 3) return fail('APPROVAL_SEMANTICS_MISMATCH')
     const publication = await openRunGraphPublication(sql, scope)
     // The Run and graph head precede child locks; never upgrade the parent lock.
-    await sql.query('select id from harness_executions where run_id=$1 order by id for update', [runId])
+    // The Run lock serializes its children. Exact writers lock only their
+    // requester/reviewer identities, never an unbounded whole-Run history.
     return work(publication)
   }))
 }
@@ -69,9 +72,9 @@ export async function readContext(sql: GraphSqlClient, interaction: DurableInter
     `select r.record as run,v.record as version,
        ${RUN_CLEANUP_BOUNDARY_SQL} or r.worker_credentials_closed_at is not null as stopped
      from runs r join workflow_versions v on v.id=r.workflow_version_id
-     where r.id=$1 and v.execution_semantics_version=2`, [interaction.runId])).rows[0]
+     where r.id=$1 and v.execution_semantics_version=3`, [interaction.runId])).rows[0]
   if (!row) return fail('APPROVAL_RUN_NOT_FOUND')
-  const r = WorkflowRunV2Schema.parse(row.run), v = WorkflowVersionV2Schema.parse(row.version)
+  const r = WorkflowRunV3Schema.parse(row.run), v = WorkflowVersionV3Schema.parse(row.version)
   if (r.id !== interaction.runId || r.workspaceId !== interaction.workspaceId || r.workflowId !== interaction.workflowId
     || r.workflowVersionId !== v.id || r.workspaceId !== v.workspaceId || r.workflowId !== v.workflowId
     || canonicalGraphJson(r.approval) !== canonicalGraphJson(v.approval)
@@ -79,26 +82,25 @@ export async function readContext(sql: GraphSqlClient, interaction: DurableInter
     || canonicalGraphJson(r.agentConfigurationVersionIds) !== canonicalGraphJson(v.agentConfigurationVersionIds)) return fail('APPROVAL_IDENTITY_MISMATCH')
   const stopped = row.stopped || !['queued', 'running', 'waiting'].includes(r.executionState)
   if (requireOpen && stopped) return fail('EXECUTION_STOPPED')
-  const rows = (await sql.query<{ record: unknown; closed: boolean }>(
+  const requesterRow = (await sql.query<{ record: unknown; closed: boolean }>(
     `select record,worker_credentials_closed_at is not null as closed from harness_executions
-     where run_id=$1 and (id=$2 or agent_id=$3) order by id`,
-    [r.id, interaction.executionId, interaction.approval.designatedOrchestratorAgentId ?? null])).rows
-  const executions = rows.map((item) => HarnessExecutionSchema.parse(item.record))
-  const requester = executions.find((e) => e.id === interaction.executionId)
-  if (!requester || requester.runId !== r.id || requester.agentId !== interaction.requestingAgentId || requester.attempt !== 1
+     where run_id=$1 and id=$2`, [r.id, interaction.executionId])).rows[0]
+  const requester = requesterRow ? HarnessExecutionSchema.parse(requesterRow.record) : undefined
+  if (!requester || requester.runId !== r.id || requester.agentId !== interaction.requestingAgentId
     || requester.nativeSessionId !== interaction.nativeSessionId
     || requester.agentConfigurationVersionId !== v.agentConfigurationVersionIds[requester.agentId]
     || !v.definition.nodes.some((n) => n.id === requester.workflowNodeId && n.agentId === requester.agentId)) return fail('APPROVAL_REQUESTER_MISMATCH')
-  if (requireOpen && !completedReplay && (requester.state === 'completed' || rows[executions.indexOf(requester)]?.closed)) return fail('EXECUTION_STOPPED')
+  if (requireOpen && !completedReplay && (requester.state === 'completed' || requesterRow!.closed)) return fail('EXECUTION_STOPPED')
   const route = interaction.approval.handler === 'orchestrator' ? resolveImmutableApprovalRoute(v, requester.workflowNodeId, requester.agentId) : undefined
   if (interaction.approval.handler === 'orchestrator' && !route?.relationshipId) return fail('APPROVAL_DIRECT_CONNECTION_REQUIRED')
-  const reviewers = route ? executions.filter((e) => e.agentId === route.reviewerAgentId) : []
-  const reviewer = reviewers[0]
-  if (route && (reviewers.length !== 1 || !reviewer || reviewer.workflowNodeId !== route.orchestratorNodeId
-    || reviewer.attempt !== 1 || reviewer.agentConfigurationVersionId !== route.reviewerConfigurationVersionId
+  const binding = route ? await new PostgresRepeatReviewerBindings(sql).select(interaction, route.orchestratorNodeId) : undefined
+  const reviewer = binding?.execution
+  if (route && (!reviewer || reviewer.workflowNodeId !== route.orchestratorNodeId
+    || reviewer.agentConfigurationVersionId !== route.reviewerConfigurationVersionId
+    || binding?.relationshipId !== route.relationshipId
     || reviewer.state !== 'completed' || reviewer.result?.outcome !== 'succeeded')) return fail('REVIEWER_EXECUTION_NOT_READY')
   const scope: RunGraphScope = { workspaceId: r.workspaceId, workflowId: r.workflowId, runId: r.id,
-    workflowVersionId: v.id, executionSemanticsVersion: 2 }
+    workflowVersionId: v.id, executionSemanticsVersion: 3 }
   const saved = (await sql.query<{ approval_relationship_id: string | null; approval_reviewer_execution_id: string | null }>(
     'select approval_relationship_id,approval_reviewer_execution_id from durable_interactions where id=$1', [interaction.id])).rows[0]
   if (saved && (saved.approval_relationship_id !== (route?.relationshipId ?? null)
@@ -129,7 +131,7 @@ export async function readContext(sql: GraphSqlClient, interaction: DurableInter
     }
   }
   return { scope: { workspaceId: r.workspaceId, workflowId: r.workflowId, runId: r.id,
-    workflowVersionId: v.id, executionSemanticsVersion: 2 }, requester, stopped,
+    workflowVersionId: v.id, executionSemanticsVersion: 3 }, requester, stopped,
     ...(reviewer ? { reviewer } : {}), ...(route?.relationshipId ? { relationshipId: route.relationshipId } : {}) }
 }
 

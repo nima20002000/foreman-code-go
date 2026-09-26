@@ -21,6 +21,7 @@ const paths = {
   settings: 'M4 7h16M4 17h16M8 3v8M16 13v8',
   shield: 'm12 2 9 4v6c0 5-9 10-9 10S3 17 3 12V6l9-4Zm-4 10 3 3 5-6',
   warning: 'm12 3 10 18H2L12 3Zm0 6v5m0 3v.1',
+  chat: 'M7.9 20A9 9 0 1 0 4 16.1L2 22Z',
   info: 'M12 11v6m0-10v.1M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',
   clock: 'M12 6v6l4 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',
   folder: 'M3 6h6l2 3h10v12H3V6Z',

@@ -1,5 +1,5 @@
 import type { DurableInteraction, ReviewJob } from '@graphql/contracts'
-import { WorkflowRunV2Schema, type GraphFact } from '@graphql/contracts/wave25'
+import { WorkflowRunV3Schema, type GraphFact } from '@graphql/contracts/wave25'
 import type { GraphTransactionSql } from '../../run-graph/connection.js'
 import { publicAttentionTotals, readPublicAttentionCounts } from '../../run-graph/currentAttention.js'
 import { publicNodeProjectionDelta, readPublicNodeProjection, type PublicProjectionOverlay } from '../../run-graph/publicProjection.js'
@@ -20,7 +20,7 @@ export async function approvalAttentionFacts(sql: GraphTransactionSql, context: 
   const runRow = (await sql.query<{ record: unknown; execution_state: string; stopped: boolean; cleanup: boolean }>(`select record,execution_state,
     stop_requested_at is not null as stopped,exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as cleanup
     from runs r where id=$1`, [context.scope.runId])).rows[0]!
-  const run = WorkflowRunV2Schema.parse(runRow.record)
+  const run = WorkflowRunV3Schema.parse(runRow.record)
   if (run.executionState !== runRow.execution_state) return fail('APPROVAL_RUN_STATE_MISMATCH')
   const ids = [...new Set([context.requester.workflowNodeId, ...(context.reviewer ? [context.reviewer.workflowNodeId] : [])])]
   const before = await readPublicNodeProjection(sql, context.scope, ids)

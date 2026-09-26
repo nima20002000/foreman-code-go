@@ -2,13 +2,17 @@ import assert from 'node:assert/strict'
 
 import type { DurableInteraction, NativeSessionReference } from '@graphql/contracts'
 import { it } from 'vitest'
+import type pg from 'pg'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
 
 import { DomainError } from '../src/modules/errors.js'
-import type { NativeHistory, NativeResponseIdentity } from '../src/modules/harnesses/port.js'
+import type { NativeHarnessSessionManager, NativeHistory, NativeResponseIdentity } from '../src/modules/harnesses/port.js'
 import type { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
 import { matchingDeliveryEvidence, type InteractionDeliveryClaim, type NativeDeliveryOutcome, type NativeResponseDeliveryEvidence } from '../src/modules/interactions/delivery.js'
 import type { GraphResumeClaim } from '../src/modules/interactions/deliveryPostgres.js'
-import type { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
+import { Wave25InteractionRepository } from '../src/modules/interactions/wave25/repository.js'
+import { SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
+import { nativeLanes } from './helpers/nativeLanes.js'
 import type { InteractionNativeRuntime } from '../src/modules/interactions/runtimePorts.js'
 import { InteractionService } from '../src/modules/interactions/service.js'
 
@@ -31,13 +35,25 @@ function deferred() {
   return { promise, resolve }
 }
 
+const userPrincipal: ManagementPrincipal = { id: 'unit-user', name: 'Unit User', audience: 'user',
+  expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null,
+  grants: [{ actions: ['interactions:respond'], scope: { workspaceIds: ['workspace-fixture'] } }] }
+const reviewerPrincipal: ManagementPrincipal = { ...userPrincipal, id: 'unit-reviewer',
+  audience: 'worker', agentId: 'agent-reviewer' }
+
+/** Real current service and SingleWriterSessionManager; repository methods are
+ * explicit recording ports, not PostgreSQL/native receipt qualification. The
+ * delegate tests below retain exact token/decision checks and distinguish a
+ * committed checkpoint fixture from a callback that merely returns. */
 function harness() {
   let record = fixture()
   let claim: InteractionDeliveryClaim | undefined
   let graphOwned = false
   let attempt = 0
+  let resumeReceipt: GraphResumeClaim | undefined
+  let writeStarted = false
   const control = {
-    stopped: false, completedRun: false, timeout: false, crashCommit: false,
+    stopped: false, completedRun: false, timeout: false, crashCommit: false, commitResume: true,
     reviewState: 'completed' as 'acknowledged' | 'completed',
     resumeState: 'absent' as 'absent' | 'required' | 'completed' | 'canceled',
     resumeError: undefined as string | undefined,
@@ -51,31 +67,45 @@ function harness() {
   const session: NativeSessionReference = {
     harness: record.harness, providerVersion: record.providerVersion, nativeSessionId: record.nativeSessionId,
   }
-  const repository = {
+  const ports = {
     assertOrchestratorConnection: async () => ({ orchestratorNodeId: 'node-reviewer' }),
     coordination: { findReviewJob: async () => ({ state: control.reviewState }) },
     get: async () => structuredClone(record),
-    decide: async (input: { optionId: string; expectedRevision: number }) => {
-      if (record.selectedOptionId) return { interaction: structuredClone(record), replayed: true }
+    decide: async (input: Parameters<Wave25InteractionRepository['decide']>[0]) => {
+      assert.equal(input.id, record.id)
+      assert.ok(input.principal, 'the service must forward authenticated authority, including on replay')
+      const option = record.responseOptions.find((item) => item.optionId === input.optionId)!
+      assert.deepEqual(input.nativeResponse, { optionId: option.optionId, semantic: option.semantic })
+      if (record.selectedOptionId) {
+        if (record.selectedOptionId !== input.optionId) throw new DomainError('INTERACTION_ALREADY_DECIDED', 'Different persisted choice', 409)
+        return { interaction: structuredClone(record), replayed: true }
+      }
       assert.equal(input.expectedRevision, record.revision)
       record = { ...record, revision: record.revision + 1, selectedOptionId: input.optionId,
-        selectedSemantic: 'approve_once', status: 'delivery_pending', deliveryState: 'pending' }
+        selectedSemantic: option.semantic, nativeResponse: input.nativeResponse, decidedAt: record.createdAt,
+        status: 'delivery_pending', deliveryState: 'pending' }
       return { interaction: structuredClone(record), replayed: false }
     },
     delivery: {
       claim: async (_id: string, ownerToken: string, reconcileOnly: boolean) => {
         if (claim || control.stopped || record.deliveryState === 'delivered') return undefined
-        const mode = ['submitted', 'uncertain'].includes(record.deliveryState) ? 'reconcile' : 'submit'
+        if (record.approval.handler === 'orchestrator' && control.reviewState !== 'completed') return undefined
+        const mode = writeStarted || ['submitted', 'uncertain'].includes(record.deliveryState) ? 'reconcile' : 'submit'
         if (reconcileOnly && mode !== 'reconcile') return undefined
         if (mode === 'submit') attempt++
         control.attemptState = mode === 'submit' ? 'submitted' : 'uncertain'
-        record = { ...record, revision: record.revision + 1, deliveryState: control.attemptState, status: 'delivery_pending' }
+        // A private lease claim does not itself publish a delivery revision.
         claim = { interaction: structuredClone(record), attempt, ownerToken, correlationId: 'persisted-correlation', mode }
         return claim
       },
       finish: async (owned: InteractionDeliveryClaim, outcome: NativeDeliveryOutcome | ((current: DurableInteraction, signal: AbortSignal) => Promise<NativeDeliveryOutcome>)) => {
         assert.equal(owned.ownerToken, claim?.ownerToken)
-        if (control.stopped) throw new DomainError('EXECUTION_STOPPED', 'stopped', 409)
+        if (control.stopped) throw new DomainError('DELIVERY_OWNER_LOST', 'Stop invalidated the delivery owner', 409)
+        if (typeof outcome === 'function') {
+          assert.equal(owned.mode, 'submit'); assert.equal(writeStarted, false)
+          writeStarted = true
+          record = { ...record, revision: record.revision + 1, deliveryState: 'submitted', status: 'delivery_pending' }
+        }
         const result = typeof outcome === 'function' ? await outcome(structuredClone(record), new AbortController().signal) : outcome
         if (control.crashCommit) { control.crashCommit = false; throw new Error('database commit lost after native write') }
         control.attemptState = result.state
@@ -85,24 +115,38 @@ function harness() {
         claim = undefined
         return structuredClone(record)
       },
-      claimGraphResume: async (_id: string, ownerToken: string) => {
+      persistedResponseEvidence: async () => undefined,
+      assertNativeDispatch: async (owned: InteractionDeliveryClaim) => {
+        assert.equal(owned.ownerToken, claim?.ownerToken)
+        assert.equal(owned.correlationId, claim?.correlationId)
+        assert.ok(writeStarted)
+        if (control.stopped) throw new DomainError('GRAPH_STOP_CONFLICT', 'stopped', 409)
+        return { interaction: structuredClone(record), expiresAt: new Date(Date.now() + 30_000) }
+      },
+      claimAtomicGraphResume: async (_id: string, ownerToken: string) => {
         if (control.resumeState !== 'required' || graphOwned) return undefined
         if (control.stopped || control.completedRun) {
-          control.resumeState = control.stopped ? 'canceled' : 'completed'
-          return undefined
+          return undefined // A terminal Run is not a checkpoint-consumption receipt.
         }
         if (!record.graphInterruptId) return undefined
         graphOwned = true
         return { interaction: structuredClone(record), ownerToken }
       },
-      finishGraphResume: async (_owned: GraphResumeClaim, error?: string) => {
-        control.resumeState = error === undefined ? 'completed' : 'required'
-        control.resumeError = error
+      finishGraphResume: async (owned: GraphResumeClaim, error?: string) => {
+        const committed = resumeReceipt?.ownerToken === owned.ownerToken
+          && resumeReceipt.interaction.id === owned.interaction.id
+          && resumeReceipt.interaction.graphInterruptId === owned.interaction.graphInterruptId
+        control.resumeState = committed ? 'completed' : 'required'
+        control.resumeError = committed ? undefined : error ?? 'GRAPH_RESUME_RECEIPT_MISSING'
         graphOwned = false
       },
       recoveryCandidates: async () => [structuredClone(record)],
     },
-  } as unknown as PostgresInteractionRepository
+  }
+  const noSql = () => { throw new Error('Unscripted SQL in the approval service unit fixture') }
+  const repository = new Wave25InteractionRepository({ query: noSql, connect: noSql } as unknown as pg.Pool)
+  Object.assign(repository, { get: ports.get, decide: ports.decide })
+  Object.assign(repository.delivery, ports.delivery)
   const budgets = {
     assertActive: async () => {
       calls.asserts++
@@ -111,33 +155,43 @@ function harness() {
     },
     resume: async () => { calls.budgetResumes++ },
   } as unknown as PostgresApprovalBudgetRepository
-  const runtime = {
-    attachInteraction: async () => {
-      calls.attaches++
-      await control.onAttach()
-      return { session, manager: {
-        harness: 'codex',
-        respond: async (actualSession: NativeSessionReference, requestId: string) => {
-          assert.deepEqual(actualSession, session)
-          assert.equal(requestId, record.nativeRequestId)
-          calls.sends++
-          await control.onSend()
-        },
-        reconcileResponse: async (_session: NativeSessionReference, response: NativeResponseIdentity) => {
-          assert.equal(response.nativeRequestId, record.nativeRequestId)
-          assert.equal(response.nativeRequestType, record.nativeRequestType)
-          assert.equal(response.option.optionId, record.selectedOptionId)
-          calls.reconciles++
-          return control.history
-        },
-      } }
+  const rawManager = {
+    harness: 'codex',
+    respond: async (actualSession: NativeSessionReference, requestId: string) => {
+      assert.deepEqual(actualSession, session); assert.equal(requestId, record.nativeRequestId)
+      calls.sends++; await control.onSend()
     },
-  } as unknown as InteractionNativeRuntime
-  const service = () => new InteractionService(repository, budgets, runtime, async (interaction) => {
-    calls.resumes++
-    await control.onResume(interaction)
-  })
-  const respond = (instance = service()) => instance.respond({ kind: 'user' }, {
+    history: async () => control.history,
+    reconcile: async () => control.history,
+    reconcileResponse: async (_session: NativeSessionReference, response: NativeResponseIdentity) => {
+      assert.equal(response.nativeRequestId, record.nativeRequestId)
+      assert.equal(response.nativeRequestType, record.nativeRequestType)
+      assert.equal(response.option.optionId, record.selectedOptionId)
+      calls.reconciles++; return control.history
+    },
+  } as unknown as NativeHarnessSessionManager
+  const writer = new SingleWriterSessionManager(rawManager, nativeLanes(), record.requestingAgentId)
+  const runtime: InteractionNativeRuntime = {
+    validateInteraction: async () => { await budgets.assertActive(record.executionId) },
+    attachInteraction: async () => {
+      calls.attaches++; await control.onAttach()
+      return { session, manager: writer }
+    },
+  }
+  const service = () => {
+    const instance = new InteractionService(repository, budgets, runtime, async () => {
+      throw new Error('The retired void graph callback must not be used')
+    })
+    instance.useAtomicApprovalResume(async (owned) => {
+      assert.ok(graphOwned); assert.equal(owned.interaction.id, record.id)
+      assert.equal(owned.interaction.graphInterruptId, record.graphInterruptId)
+      calls.resumes++; await control.onResume(owned.interaction)
+      // Explicit simulated checkpoint COMMIT, not a native acknowledgement.
+      if (control.commitResume) resumeReceipt = structuredClone(owned)
+    })
+    return instance
+  }
+  const respond = (instance = service()) => instance.respond({ kind: 'user', principal: userPrincipal }, {
     interactionId: record.id, optionId: 'opaque-option', expectedRevision: record.revision,
   })
   const proof = (): NativeResponseDeliveryEvidence => ({
@@ -145,6 +199,9 @@ function harness() {
     nativeSessionId: record.nativeSessionId, nativeRequestId: record.nativeRequestId,
     nativeRequestType: record.nativeRequestType, optionId: 'opaque-option', semantic: 'approve_once',
   })
+  // Independent provider-history fixture. Returning void from respond is never
+  // converted into delivery proof by either this manager or the service.
+  control.history = { events: [], pendingInteractions: [], responseDeliveries: [proof()] }
   return { control, calls, session, service, respond, proof, get: () => structuredClone(record),
     change: (fields: Partial<DurableInteraction>) => { record = { ...record, ...fields, revision: record.revision + 1 } },
     abandonOwner: () => { claim = undefined },
@@ -157,7 +214,7 @@ it('keeps native delivery proven when graph resume fails and recovers without an
   assert.equal((await h.respond()).interaction.deliveryState, 'delivered')
   assert.equal(h.control.attemptState, 'delivered')
   assert.equal(h.control.resumeState, 'required')
-  assert.match(h.control.resumeError!, /checkpoint/)
+  assert.equal(h.control.resumeError, 'GRAPH_RESUME_CHECKPOINT_UNCERTAIN')
   h.control.onResume = async () => undefined
   await h.service().recover({ limit: 10 })
   assert.equal(h.control.resumeState, 'completed')
@@ -169,7 +226,7 @@ it('resumes an orchestrator-approved Worker only after the reviewer turn complet
   h.change({ approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'agent-reviewer' } })
   h.control.reviewState = 'acknowledged'
   const current = h.get()
-  await h.service().respond({ kind: 'orchestrator', authority: {
+  await h.service().respond({ kind: 'orchestrator', principal: reviewerPrincipal, authority: {
     agentId: 'agent-reviewer', workspaceId: current.workspaceId, workflowId: current.workflowId,
   } }, { interactionId: current.id, optionId: 'opaque-option', expectedRevision: current.revision })
   assert.equal(h.get().deliveryState, 'pending')
@@ -286,8 +343,8 @@ it('fences a response when Stop wins during attachment (#12)', async () => {
     h.control.stopped = true
     h.change({ status: 'canceled' })
   }
-  const result = await h.respond()
-  assert.equal(result.interaction.status, 'canceled')
+  await assert.rejects(h.respond(), { code: 'DELIVERY_OWNER_LOST' })
+  assert.equal(h.get().status, 'canceled')
   assert.equal(h.calls.sends, 0)
   assert.equal(h.calls.resumes, 0)
 })
@@ -315,15 +372,16 @@ it('allows a completed same-option replay without expired active-time accounting
   assert.deepEqual(h.calls, previous)
 })
 
-it('settles an unacknowledged graph handoff for a terminal Run without touching its budget (#28)', async () => {
+it('a terminal Run cannot manufacture an unconsumed graph handoff or touch its budget (#28)', async () => {
   const h = harness()
+  h.control.commitResume = false
   await h.respond()
   h.control.resumeState = 'required'
   h.control.completedRun = true
   h.control.timeout = true
   const previous = { ...h.calls }
   await h.respond()
-  assert.equal(h.control.resumeState, 'completed')
+  assert.equal(h.control.resumeState, 'required')
   assert.deepEqual(h.calls, previous)
 })
 
@@ -338,7 +396,7 @@ it('rejects conflicting options rather than reusing another durable decision', a
   const h = harness()
   await h.respond()
   h.change({ responseOptions: [...h.get().responseOptions, { ...h.get().responseOptions[0]!, optionId: 'different', semantic: 'reject' }] })
-  await assert.rejects(h.service().respond({ kind: 'user' }, { interactionId: h.get().id, optionId: 'different', expectedRevision: 0 }),
+  await assert.rejects(h.service().respond({ kind: 'user', principal: userPrincipal }, { interactionId: h.get().id, optionId: 'different', expectedRevision: 0 }),
     (error: unknown) => error instanceof DomainError && error.code === 'INTERACTION_ALREADY_DECIDED')
   assert.equal(h.calls.sends, 1)
 })
@@ -370,4 +428,23 @@ it('treats the legacy pendingInteraction observation as a conflicting receipt (#
       request: current.request, responseOptions: current.responseOptions,
     },
   }), undefined)
+})
+
+
+it('a void atomic consumer cannot be mistaken for a checkpoint receipt', async () => {
+  const h = harness(); h.control.commitResume = false
+  await h.respond()
+  assert.equal(h.get().deliveryState, 'delivered')
+  assert.equal(h.control.resumeState, 'required')
+  assert.equal(h.control.resumeError, 'GRAPH_RESUME_RECEIPT_MISSING')
+  assert.equal(h.calls.budgetResumes, 0)
+  assert.equal(h.calls.sends, 1)
+})
+
+it('an acknowledged send without exact provider evidence remains uncertain', async () => {
+  const h = harness(); h.control.history = { events: [], pendingInteractions: [] }
+  await h.respond()
+  assert.equal(h.calls.sends, 1)
+  assert.equal(h.get().deliveryState, 'uncertain')
+  assert.equal(h.calls.resumes, 0)
 })

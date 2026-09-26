@@ -6,7 +6,7 @@ import { it } from 'vitest'
 import { DomainError } from '../src/modules/errors.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
-import { correlationId, event, historicalSecret, permission, providerId, reviewerFixture, secret, session, terminal } from './helpers/reviewerAudit.js'
+import { correlationId, event, historicalSecret, permission, providerId, reviewerFixture, secret, session, terminal, sourceTerminal } from './helpers/reviewerAudit.js'
 
 function assertNoSecrets(value: unknown): void {
   const representation = inspect(value, { depth: null })
@@ -31,10 +31,7 @@ it('F3/F6: live reviewer-native approval fails durably, records exact request, c
   assert.deepEqual(fixture.run.approval, accepted)
   assert.equal(await fixture.dispatcher.dispatchNext(fixture.job.reviewerAgentId, 'worker'), undefined)
   assertNoSecrets(fixture.saved)
-  const failureActivity = fixture.saved.activity as { kind: string; payload: { nativeApproval?: typeof pending } }[]
-  assert.equal(failureActivity[0]?.kind, 'review_job_state')
-  assert.deepEqual(failureActivity[0]?.payload.nativeApproval?.turn, pending.turn)
-  assert.match(JSON.stringify(failureActivity), /\[REDACTED\]/)
+  assert.ok(result.error?.message.includes(pending.turn.nativeRequestId!))
   assert.ok(fixture.saved.jobs.find((job) => job.state === 'failed'
     && job.error?.code === 'REVIEWER_NATIVE_APPROVAL_UNSUPPORTED' && job.cleanup))
 })
@@ -92,17 +89,17 @@ it('F3: enqueue refuses a reviewer that is also the requesting Agent', async () 
 it('F6: reviewer live events and recovered native history are redacted before the persistence boundary', async () => {
   const live = await reviewerFixture({ events: 3 })
   assert.equal((await live.dispatcher.dispatchNext(live.job.reviewerAgentId, 'worker'))?.state, 'completed')
-  assert.equal(live.saved.events.length, 4)
+  assert.equal(live.saved.events.length, 5)
   assertNoSecrets(live.saved)
   assert.match(JSON.stringify(live.saved.events), /\[REDACTED\]/)
   const recovered = await reviewerFixture({ recovering: true })
-  recovered.setHistory({ ...terminal(), events: [event('item.output', { text: `${secret} ${historicalSecret}`, turnId: providerId })] })
+  recovered.setHistory({ ...sourceTerminal(), events: [...sourceTerminal().events, event('item.output', { text: `${secret} ${historicalSecret}`, turnId: providerId })] })
   assert.equal((await recovered.dispatcher.dispatchNext(recovered.job.reviewerAgentId, 'worker'))?.state, 'completed')
   assertNoSecrets(recovered.saved)
   assert.ok(JSON.stringify(recovered.saved.events).includes(providerId), 'provider identity is retained')
 })
 
-it('F6: terminal recovery redacts both events and result/output without claiming ambiguous approval delivery', async () => {
+it('F6: terminal recovery redacts both events and result/output after confirmed approval delivery', async () => {
   const fixture = await reviewerFixture({ workflow: true })
   const expectedCorrelation = `execution:${fixture.execution.id}`
   const history = terminal(expectedCorrelation)
@@ -110,16 +107,16 @@ it('F6: terminal recovery redacts both events and result/output without claiming
   history.terminalTurn!.result = { outcome: 'succeeded', output: { nested: [secret, historicalSecret] } }
   fixture.setHistory(history)
   const original = structuredClone(fixture.interaction)
-  assert.equal(await fixture.runtime.recoverTerminalInteraction(fixture.interaction, fixture.owner, new AbortController().signal), true)
+  assert.equal((await fixture.observeWorkflow()).state, 'completed')
   assertNoSecrets(fixture.saved)
   assertNoSecrets(fixture.execution)
   assert.equal(fixture.execution.state, 'completed')
   assert.deepEqual(fixture.execution.result?.output, { nested: ['[REDACTED]', '[REDACTED]'] })
   assert.deepEqual(fixture.interaction, original)
-  assert.equal(fixture.interaction.deliveryState, 'uncertain')
+  assert.equal(fixture.interaction.deliveryState, 'delivered')
   assert.equal(fixture.responses, 0)
   assert.equal(fixture.starts.length, 0)
-  assert.match(JSON.stringify(fixture.saved.activity), /approvalDeliveryUnconfirmed/)
+  assert.equal(fixture.execution.result?.outcome, 'succeeded')
 })
 
 it('F6: replay redaction is identical across different process credential contexts', () => {
@@ -174,7 +171,7 @@ it('F6: reviewer stream failures store only redacted errors and keep ambiguous d
 it('F6: terminal recovery reconcile failures are redacted before reaching error/audit callers', async () => {
   const fixture = await reviewerFixture({ workflow: true })
   fixture.hooks.history = async () => { throw new DomainError('PROVIDER_FAILED', `${secret} ${historicalSecret}`, 409, { output: secret }) }
-  await assert.rejects(fixture.runtime.recoverTerminalInteraction(fixture.interaction, fixture.owner, new AbortController().signal),
+  await assert.rejects(fixture.observeWorkflow(),
     (error: unknown) => { assertNoSecrets(error); return error instanceof DomainError && error.code === 'PROVIDER_FAILED' })
   assert.equal(fixture.saved.executions.length, 0)
 })
@@ -183,7 +180,7 @@ it('F6: attach/cleanup failures redact before credentials are released', async (
   const fixture = await reviewerFixture({ workflow: true })
   fixture.hooks.attachError = new Error(`Attach ${secret} ${historicalSecret}`)
   fixture.hooks.closeError = new Error(`Close ${secret} ${historicalSecret}`)
-  await assert.rejects(fixture.runtime.recoverTerminalInteraction(fixture.interaction, fixture.owner, new AbortController().signal),
+  await assert.rejects(fixture.observeWorkflow(),
     (error: unknown) => { assertNoSecrets(error); return error instanceof Error })
   assertNoSecrets(fixture.saved)
 })
@@ -197,8 +194,7 @@ it('F3: every simultaneously recovered permission keeps its exact identity in th
   assert.equal(result?.state, 'failed')
   assert.ok(result.error?.message.includes(first.turn.nativeRequestId!))
   assert.ok(result.error?.message.includes(second.turn.nativeRequestId))
-  const activity = fixture.saved.activity as { payload: { nativeApprovals: unknown[] } }[]
-  assert.equal(activity[0]?.payload.nativeApprovals.length, 2)
+  assert.equal(result.cleanup?.nativeState, 'pending')
   assertNoSecrets(fixture.saved)
   assert.equal(fixture.responses, 0)
   assert.equal(fixture.starts.length, 0)
@@ -209,7 +205,7 @@ it('F6: recovered failure results are redacted before execution storage and Run 
   const history = terminal(`execution:${fixture.execution.id}`)
   history.terminalTurn!.result = { outcome: 'failed', error: { code: 'NATIVE_FAILED', message: `${secret} ${historicalSecret}`, retryable: false } }
   fixture.setHistory(history)
-  assert.equal(await fixture.runtime.recoverTerminalInteraction(fixture.interaction, fixture.owner, new AbortController().signal), true)
+  assert.equal((await fixture.observeWorkflow()).state, 'completed')
   assertNoSecrets(fixture.execution)
   assertNoSecrets(fixture.saved)
   assert.equal(fixture.execution.result?.error?.code, 'NATIVE_FAILED')

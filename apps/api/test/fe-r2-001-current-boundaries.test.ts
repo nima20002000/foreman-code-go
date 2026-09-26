@@ -1,98 +1,94 @@
 import { describe, expect, it, vi } from 'vitest'
 import Fastify from 'fastify'
-import { ZodError } from 'zod'
-import type pg from 'pg'
 import type { McpServer } from '@modelcontextprotocol/server'
-import { RUN_CURRENT_MCP_TOOL, RunCurrentRequestSchema, RunCurrentResponseSchema } from '@graphql/contracts/run-current'
+import {
+  CANONICAL_RUN_GRAPH_MCP_TOOLS, CANONICAL_RUN_GRAPH_ROUTES,
+  CanonicalRunGraphReadRequestSchema, CanonicalRunGraphCurrentSchema, CanonicalRunGraphEventsResponseSchema,
+} from '@graphql/contracts/wave25'
 import { DomainError } from '../src/modules/errors.js'
 import { registerOperatorHttpSecurity } from '../src/modules/access/http.js'
 import type { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { RunManagementService } from '../src/modules/runs/management.js'
-import { registerManagementRoutes } from '../src/routes/management.js'
-import { registerRunTools } from '../src/mcp/operator/tools/runs.js'
+import { registerRunGraphRoutes } from '../src/routes/runGraph.js'
+import { registerRunGraphTools, unavailableRunGraphToolCall } from '../src/mcp/operator/tools/runGraph.js'
 import type { OperatorRequestContext, OperatorServices } from '../src/mcp/operator/types.js'
-import { currentPrincipal, currentRow, currentScope } from './helpers/feR2001Current.js'
+import type { RunGraphReadApi } from '../src/modules/run-graph/readService.js'
+import { currentGraphPrincipal, currentGraphReadUnit, currentGraphRequest } from './helpers/currentGraphReadUnit.js'
 
-// In-process adapter tests. Authentication is a test credential resolver, not
-// evidence of real browser login, persisted grants or an MCP network session.
-function services() {
-  const query = vi.fn(async (sql: string) => sql.includes('select sequence::text, source') ? { rows: [{
-    sequence: '1', source: 'backend', kind: 'run_state_changed', harness_execution_id: null,
-    occurred_at: new Date('2026-09-22T00:00:00.000Z'), payload: {},
-  }] } : { rows: [currentRow()] })
-  type Args = ConstructorParameters<typeof RunManagementService>
-  const getDetails = vi.fn()
-  const runs = new RunManagementService({ query } as unknown as pg.Pool, {} as Args[1], {
-    getForWorkspace: async () => currentRow().run, getDetails,
-  } as unknown as Args[2], {} as Args[3], {} as Args[4])
-  const recordDenied = vi.fn(async () => undefined)
-  const service = { runs, commands: { recordDenied } } as unknown as OperatorServices
-  return { service, query, getDetails, recordDenied }
-}
-function tools(context: OperatorRequestContext) {
-  const registered = new Map<string, { definition: Record<string, unknown>; invoke: (input: unknown) => Promise<unknown> }>()
+// In-process HTTP/MCP adapters, real canonical service and strict SQL model.
+// Authentication is a credential resolver port, not browser login or live grants.
+function tools(context: OperatorRequestContext, reads: RunGraphReadApi) {
+  const registered = new Map<string, { definition: Record<string, unknown>; invoke(input: unknown): Promise<unknown> }>()
   const server = { registerTool(name: string, definition: Record<string, unknown>, invoke: (input: unknown) => Promise<unknown>) {
     registered.set(name, { definition, invoke })
   } } as unknown as McpServer
-  registerRunTools(server, context)
+  registerRunGraphTools(server, context, reads)
   return registered
 }
-const currentUrl = () => `/api/management/workspaces/${currentScope.workspaceId}/runs/${currentScope.runId}/current?${new URLSearchParams({
-  workflowId: currentScope.workflowId, workflowVersionId: currentScope.workflowVersionId, executionSemanticsVersion: '1',
-})}`
+function url(kind: 'current' | 'events' = 'current') {
+  const { scope } = currentGraphRequest
+  const route = CANONICAL_RUN_GRAPH_ROUTES[kind].replace(':workspaceId', scope.workspaceId)
+    .replace(':workflowId', scope.workflowId).replace(':runId', scope.runId)
+  return `${route}?${new URLSearchParams({ workflowVersionId: scope.workflowVersionId, executionSemanticsVersion: '3',
+    ...(kind === 'events' ? { afterSequence: '0' } : {}) })}`
+}
 
-describe('FE-R2-001 HTTP/MCP shared read boundaries', () => {
-  it('uses the actual authenticated HTTP route and same current service/schema as the versioned MCP tool', async () => {
-    const f = services()
-    let principal = currentPrincipal()
+describe('FE-R2-001 current V3 HTTP/MCP shared read boundaries', () => {
+  it('uses the authenticated canonical HTTP route and the same service/schema as Operator MCP', async () => {
+    const f = await currentGraphReadUnit(), recordDenied = vi.fn(async () => undefined)
+    const services = { runGraph: f.reads, commands: { recordDenied } } as unknown as OperatorServices
+    let principal = currentGraphPrincipal()
     const app = Fastify()
-    app.setErrorHandler((error, _request, reply) => {
-      const status = error instanceof DomainError ? error.status : error instanceof ZodError ? 400 : 500
-      return reply.code(status).send({ error: { code: error instanceof DomainError ? error.code : 'INVALID_INPUT', message: 'Request rejected' } })
-    })
+    app.setErrorHandler((error, _request, reply) => reply.code(error instanceof DomainError ? error.status : 500)
+      .send({ error: { code: error instanceof DomainError ? error.code : 'INVALID_INPUT', message: 'Request rejected' } }))
     registerOperatorHttpSecurity(app, { authenticate: async (token: string | undefined) => {
       if (token !== 'fe-r2-test-credential') throw new DomainError('AUTH_REQUIRED', 'Test credential required', 401)
       return principal
     } } as unknown as PostgresAccessService)
-    registerManagementRoutes(app, f.service)
+    registerRunGraphRoutes(app, f.reads, async (id, code, route) => { await recordDenied(); void id; void code; void route })
     try {
-      const headers = { authorization: 'Bearer fe-r2-test-credential' }
-      const response = await app.inject({ method: 'GET', url: currentUrl(), headers })
-      expect(response.statusCode).toBe(200)
-      const current = RunCurrentResponseSchema.parse(response.json())
-      expect(current.history).toBe('not-included')
-      expect(response.headers['cache-control']).toBe('no-store')
-      expect(f.query).toHaveBeenCalledTimes(1)
-      expect(f.getDetails).not.toHaveBeenCalled()
-      const registry = tools({ principal, services: f.service })
-      const tool = registry.get(RUN_CURRENT_MCP_TOOL)!
-      expect(tool.definition.inputSchema).toBe(RunCurrentRequestSchema)
-      expect(tool.definition.outputSchema).toBe(RunCurrentResponseSchema)
-      const mcp = await tool.invoke(currentScope) as { structuredContent: unknown }
-      expect(RunCurrentResponseSchema.parse(mcp.structuredContent)).toEqual(current)
-
-      const history = await app.inject({ method: 'GET', headers,
-        url: `/api/management/workspaces/${currentScope.workspaceId}/runs/${currentScope.runId}/events?limit=50` })
-      expect(history.statusCode).toBe(200)
-      expect(history.json().items).toHaveLength(1)
-      expect(f.query.mock.calls.at(-1)?.[0]).toMatch(/order by run_activity\.sequence limit \$3/)
-
-      const calls = f.query.mock.calls.length
-      expect((await app.inject({ method: 'GET', url: currentUrl() })).statusCode).toBe(401)
-      expect((await app.inject({ method: 'GET', headers, url: currentUrl().replace('executionSemanticsVersion=1', 'executionSemanticsVersion=2') })).statusCode).toBe(400)
-      principal = currentPrincipal(false)
-      expect((await app.inject({ method: 'GET', headers, url: currentUrl() })).statusCode).toBe(403)
-      expect(f.query).toHaveBeenCalledTimes(calls)
+      const headers = { host: 'localhost', authorization: 'Bearer fe-r2-test-credential' }
+      const response = await app.inject({ method: 'GET', url: url(), headers })
+      expect(response.statusCode, response.body).toBe(200)
+      const current = CanonicalRunGraphCurrentSchema.parse(response.json())
+      expect(current.kind).toBe('current'); expect(current.scope.executionSemanticsVersion).toBe(3)
+      expect(response.headers['cache-control']).toBe('private, no-store')
+      expect(response.headers.vary).toBe('Authorization, Cookie')
+      expect(JSON.stringify(current)).not.toMatch(/PRIVATE-RUN-INPUT|executionLocation|authorizationPrincipalId|nativeSessionId/)
+      const tool = tools({ principal, services }, f.reads).get(CANONICAL_RUN_GRAPH_MCP_TOOLS.current)!
+      expect(tool.definition.inputSchema).toBe(CanonicalRunGraphReadRequestSchema)
+      expect(tool.definition.outputSchema).toBe(CanonicalRunGraphCurrentSchema)
+      const mcp = await tool.invoke(f.request) as { structuredContent: unknown }
+      expect(CanonicalRunGraphCurrentSchema.parse(mcp.structuredContent)).toEqual(current)
+      const events = await app.inject({ method: 'GET', headers, url: url('events') })
+      expect(events.statusCode, events.body).toBe(200)
+      const history = CanonicalRunGraphEventsResponseSchema.parse(events.json())
+      expect(history.kind).toBe('page')
+      if (history.kind === 'page') {
+        expect(history.batches).toHaveLength(1); expect(history.throughSequence).toBe('1'); expect(history.hasMore).toBe(false)
+      }
+      const calls = f.db.calls.length
+      expect((await app.inject({ method: 'GET', url: url(), headers: { host: 'localhost' } })).statusCode).toBe(401)
+      const retired = await app.inject({ method: 'GET', headers, url: url().replace('executionSemanticsVersion=3', 'executionSemanticsVersion=2') })
+      expect(retired.statusCode).toBe(409); expect(retired.json().error.code).toBe('GRAPH_SCOPE_MISMATCH')
+      principal = currentGraphPrincipal(false)
+      expect((await app.inject({ method: 'GET', headers, url: url() })).statusCode).toBe(403)
+      expect(f.db.calls).toHaveLength(calls)
     } finally { await app.close() }
   })
-  it('keeps discovery action parity and enforces/audits scope denial on direct MCP invocation', async () => {
-    const f = services()
-    expect(tools({ principal: currentPrincipal(false), services: f.service }).has(RUN_CURRENT_MCP_TOOL)).toBe(false)
-    const context = { principal: currentPrincipal(), services: f.service }
-    const tool = tools(context).get(RUN_CURRENT_MCP_TOOL)!
-    const result = await tool.invoke({ ...currentScope, workflowId: 'foreign-workflow' }) as { isError: boolean }
-    expect(result.isError).toBe(true)
-    expect(f.query).not.toHaveBeenCalled()
-    expect(f.recordDenied).toHaveBeenCalledWith(context.principal.id, 'mcp', RUN_CURRENT_MCP_TOOL, `mcp:${RUN_CURRENT_MCP_TOOL}`)
+  it('keeps discovery parity and audits hidden/direct MCP denials before protected metadata reads', async () => {
+    const f = await currentGraphReadUnit(), recordDenied = vi.fn(async (..._args: unknown[]) => undefined)
+    const services = { runGraph: f.reads, commands: { recordDenied } } as unknown as OperatorServices
+    const denied = { principal: currentGraphPrincipal(false), services }
+    expect(tools(denied, f.reads).has(CANONICAL_RUN_GRAPH_MCP_TOOLS.current)).toBe(false)
+    const hidden = await unavailableRunGraphToolCall(denied, { jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: CANONICAL_RUN_GRAPH_MCP_TOOLS.current, arguments: f.request } })
+    expect(hidden?.result.isError).toBe(true); expect(f.db.calls).toEqual([])
+    const principal = currentGraphPrincipal(); principal.grants[0]!.scope.workflowIds = ['foreign-workflow']
+    const context = { principal, services }, tool = tools(context, f.reads).get(CANONICAL_RUN_GRAPH_MCP_TOOLS.current)!
+    const result = await tool.invoke(f.request) as { isError: boolean; structuredContent?: unknown }
+    expect(result.isError).toBe(true); expect(result.structuredContent).toBeUndefined()
+    expect(f.db.calls.filter((q) => q.startsWith('select '))).toEqual(['select workspace_id,workflow_id,id from runs where id=$1'])
+    expect(recordDenied).toHaveBeenLastCalledWith(context.principal.id, 'mcp', 'GRAPH_READ_ACCESS_DENIED',
+      `mcp:${CANONICAL_RUN_GRAPH_MCP_TOOLS.current}`)
   })
 })

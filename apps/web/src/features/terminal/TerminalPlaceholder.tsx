@@ -21,7 +21,7 @@ export function TerminalPlaceholder({
 
   return (
     <section
-      className="terminal-placeholder n-theme"
+      className="terminal-placeholder"
       data-testid="terminal-placeholder"
       aria-label="No terminal connected"
     >

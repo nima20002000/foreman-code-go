@@ -36,7 +36,10 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
   if (claim.mode === 'reconcile') {
     let result: NativeDeliveryOutcome = { state: 'uncertain' }
     try {
-      const cached = deps.journal?.read(expectedSession, { nativeRequestId: current.nativeRequestId, nativeRequestType: current.nativeRequestType, option })
+      const persisted = await deps.repository.delivery.persistedResponseEvidence(current)
+      const cached = persisted ?? deps.journal?.read(expectedSession, {
+        nativeRequestId: current.nativeRequestId, nativeRequestType: current.nativeRequestType, option,
+      })
       if (cached) result = { state: 'delivered', evidence: cached }
       else {
         const attached = await deps.nativeRuntime.attachInteraction(current, signal)
@@ -90,7 +93,7 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
 export async function resumeApproval(deps: ApprovalRuntimeDependencies, interaction: DurableInteraction): Promise<void> {
   if (interaction.deliveryState !== 'delivered' || interaction.status === 'canceled') return
   if (!deps.atomicResume) return fail('GRAPH_RESUME_ATOMIC_CONSUMER_REQUIRED',
-    'The v2 checkpoint consumer is not attached. Delivery is persisted; no native response or graph callback was replayed.')
+    'The current checkpoint consumer is not attached. Delivery is persisted; no native response or graph callback was replayed.')
   const claim = await deps.repository.delivery.claimAtomicGraphResume(interaction.id, randomUUID())
   if (!claim) return
   let error: string | undefined

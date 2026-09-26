@@ -1,16 +1,17 @@
 import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import { makeWave25Fixture } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { candidateFor } from './helpers/wave25Agent3.js'
 import { continuationValidator } from '../src/modules/runs/continuation.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 
-function fixture(mode: 1 | 2 = 2) {
-  const f = makeWave25Fixture(`r1-continuation-${mode}`)
+function fixture() {
+  const f = makeCurrentWorkflowFixture('r1-continuation-v3')
   const run: Record<string, unknown> = { ...f.run, executionState: 'running', authorizationPrincipalId: 'authorized-user',
     executionLocation: { runnerId: 'local', rootPath: '/synthetic/project', locationRevision: 1, identityHash: `sha256:${'1'.repeat(64)}` } }
-  if (mode === 1) delete run.executionSemanticsVersion
-  const row = { run, execution: { ...f.executions[0]!, state: 'running', workingDirectory: '/synthetic/project' },
-    configuration: structuredClone(f.configurations[0]!) }
+  const row = { run, execution: { ...candidateFor(f), state: 'running', workingDirectory: '/synthetic/project' },
+    configuration: structuredClone(f.configurations[0]!), stopped: false, cleanup_pending: false,
+    workflow_version_id: f.version.id, location_revision: '1', runner_id: 'local', root: '/synthetic/project' }
   const query = vi.fn(async () => ({ rows: [row] }))
   const authorization = vi.fn(async () => undefined), location = vi.fn(async () => undefined)
   const pool = { query } as unknown as pg.Pool
@@ -19,14 +20,14 @@ function fixture(mode: 1 | 2 = 2) {
 }
 
 describe('BR1-001: real shared continuation validator', () => {
-  it.each([1, 2] as const)('valid v%s records reach the existing authority and filesystem checks', async (mode) => {
-    const f = fixture(mode), signal = new AbortController().signal
+  it('current records reach the existing authority and filesystem checks', async () => {
+    const f = fixture(), signal = new AbortController().signal
     await f.validate(f.row.execution.id, signal)
     expect(f.authorization).toHaveBeenCalledWith('authorized-user', f.run.workspaceId, f.run.workflowId, f.pool)
     expect(f.location).toHaveBeenCalledWith(f.run.workspaceId, f.row.run.executionLocation, requiredLocationAccess([f.row.configuration]), signal)
   })
-  it.each([1, 2] as const)('v%s malformed records are still strictly rejected', async (mode) => {
-    const f = fixture(mode)
+  it('malformed current records are still strictly rejected', async () => {
+    const f = fixture()
     f.row.run.unrecognizedField = true
     await expect(f.validate(f.row.execution.id)).rejects.toBeDefined()
     expect(f.authorization).not.toHaveBeenCalled()
@@ -45,6 +46,16 @@ describe('BR1-001: real shared continuation validator', () => {
       await expect(f.validate(requestedId)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_IDENTITY_INVALID' })
       expect(f.location).not.toHaveBeenCalled()
     })
+  it.each(['stopped', 'cleanup_pending'] as const)('rejects a durable %s fence before authority or filesystem work', async (field) => {
+    const f = fixture(); f.row[field] = true
+    await expect(f.validate(f.row.execution.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_IDENTITY_INVALID' })
+    expect(f.authorization).not.toHaveBeenCalled(); expect(f.location).not.toHaveBeenCalled()
+  })
+  it.each(['workflow_version_id', 'location_revision', 'runner_id', 'root'] as const)('rejects mismatched SQL %s identity', async (field) => {
+    const f = fixture(); f.row[field] = 'different'
+    await expect(f.validate(f.row.execution.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_IDENTITY_INVALID' })
+    expect(f.authorization).not.toHaveBeenCalled(); expect(f.location).not.toHaveBeenCalled()
+  })
   it('revoked authority remains denied before filesystem work', async () => {
     const f = fixture(), revoked = new Error('AUTH_REVOKED')
     f.authorization.mockRejectedValueOnce(revoked)
@@ -61,9 +72,10 @@ describe('BR1-001: real shared continuation validator', () => {
     await expect(f.validate(f.row.execution.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_IDENTITY_INVALID' })
     expect(f.location).not.toHaveBeenCalled()
   })
-  it('missing accepted location is not invented for legacy or v2 work', async () => {
+  it('missing accepted location is not invented for current work', async () => {
     const f = fixture(); delete f.row.run.executionLocation
-    await expect(f.validate(f.row.execution.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_IDENTITY_INVALID' })
+    await expect(f.validate(f.row.execution.id)).rejects.toMatchObject({ name: 'ZodError' })
+    expect(f.authorization).not.toHaveBeenCalled()
   })
   it('cancellation remains visible after validation', async () => {
     const f = fixture(), controller = new AbortController(), error = new Error('stop')

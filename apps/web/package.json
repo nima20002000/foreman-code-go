@@ -7,8 +7,8 @@
     "dev": "vite",
     "typecheck": "tsc -b",
     "lint": "eslint . --max-warnings 0",
-    "test": "corepack pnpm test:run-graph-smoke && vitest run",
-    "test:run-graph-smoke": "node --experimental-strip-types --test src/features/run-graph/core.smoke.mjs",
+    "test": "corepack pnpm test:run-graph-smoke && vitest run --maxWorkers=4",
+    "test:run-graph-smoke": "node --test src/features/workflow-board/currentSource.smoke.mjs",
     "build": "tsc -b && vite build"
   },
   "dependencies": {

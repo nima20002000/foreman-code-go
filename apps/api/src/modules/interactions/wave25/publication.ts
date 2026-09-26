@@ -1,3 +1,5 @@
+import { readWorkflowClosure } from '../workflowClosure.js'
+import { assertReviewJobTerminalProofLocked } from '../reviewNativeProof.js'
 import { createHash } from 'node:crypto'
 import { approvalAttentionFacts } from './attention.js'
 import { DurableInteractionSchema, ReviewJobSchema, type DurableInteraction, type ReviewJob } from '@graphql/contracts'
@@ -97,11 +99,15 @@ async function cancellationRetirable(sql: GraphTransactionSql, context: Approval
       or exists(select 1 from interaction_graph_resumes where interaction_id=$1)`, [interaction.id])
     if (outstanding.rowCount) return false
   }
-  const jobs = await sql.query<{ record: unknown }>('select record from review_jobs where interaction_id=$1', [interaction.id])
-  return jobs.rows.every(({ record }) => {
+  if (nativeClosed && !await readWorkflowClosure(sql, context.requester)) return false
+  const jobs = await sql.query<{ record: unknown; execution_id: string }>(
+    'select record,execution_id from review_jobs where interaction_id=$1 order by id for update', [interaction.id])
+  for (const { record, execution_id } of jobs.rows) {
     const job = ReviewJobSchema.parse(record)
-    return !publicReviewUnsettled(job) && job.cleanup?.nativeState !== 'pending' && job.cleanup?.credentialState !== 'pending'
-  })
+    if (publicReviewUnsettled(job) || job.cleanup?.nativeState === 'pending' || job.cleanup?.credentialState === 'pending') return false
+    await assertReviewJobTerminalProofLocked(sql, job, execution_id)
+  }
+  return true
 }
 
 /** Ordinary authoritative request cancellation; no caller can supply a closure

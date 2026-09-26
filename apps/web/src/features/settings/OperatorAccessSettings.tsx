@@ -9,7 +9,6 @@ import { useConversationDraftStore } from '../conversations/conversationDraftSto
 import { useOperatorChatStore } from '../operator-chat/operatorChatStore'
 import { beginSessionChange, clearProtectedStorage } from '../../shared/api/sessionBoundary'
 import { useGraphDraftStore } from '../graph/store'
-import { managedSaveQueue } from '../graph/managedSave'
 import { useAgentDirectoryStore } from '../agents/agentDirectoryStore'
 import { clearRevisionedFormPersistence } from './revisionedForm'
 import { browserCredentialCommand, revokeCredentialCommand } from './accessSetup'
@@ -67,8 +66,7 @@ export function OperatorAccessSettings() {
 
   const clear = () => {
     queryClient.clear()
-    managedSaveQueue.reset()
-    useGraphDraftStore.getState().clearAllDrafts()
+      useGraphDraftStore.getState().clearAllDrafts()
     useAgentDirectoryStore.getState().reset()
     useConversationDraftStore.getState().clearAllDrafts()
     useOperatorChatStore.getState().reset()

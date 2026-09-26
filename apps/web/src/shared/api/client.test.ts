@@ -1,6 +1,8 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
 import { HarnessConfigurationCheckResultSchema } from '@graphql/contracts/management'
+import { CurrentWorkflowSaveResultSchema } from '@graphql/contracts/wave25'
+import { currentWorkflowFixture as makeWave25Fixture } from '../mocks/currentWorkflow'
 
 import { ApiError, ApiClient, apiClient } from './client'
 import { resetMockFixtures, setMockScenario } from '../mocks/scenarios'
@@ -22,8 +24,8 @@ describe('Phase 1 API boundary', () => {
       'Reviewer',
     ])
     expect(result.workflows[0]?.edges).toEqual([
-      { id: 'edge-researcher-developer', source: 'node-researcher', target: 'node-developer' },
-      { id: 'edge-developer-reviewer', source: 'node-developer', target: 'node-reviewer' },
+      { id: 'edge-researcher-developer', kind: 'execution', source: 'node-researcher', target: 'node-developer' },
+      { id: 'edge-developer-reviewer', kind: 'execution', source: 'node-developer', target: 'node-reviewer' },
     ])
   })
 
@@ -97,5 +99,22 @@ describe('Phase 1 API boundary', () => {
     controller.abort('caller cancelled')
     expect(receivedSignal?.aborted).toBe(true)
     expect(receivedSignal?.reason).toBe('caller cancelled')
+  })
+
+  it('parses complete-definition Save and its exact HTTP replay', async () => {
+    const fixture = makeWave25Fixture('web-save')
+    const value = { workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId,
+      revision: 9, currentVersionId: fixture.version.id, version: fixture.version }
+    const response = (replayed: boolean) => new Response(JSON.stringify({ value, replayed }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } })
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(response(false)).mockResolvedValueOnce(response(true))
+    const client = new ApiClient({ fetch })
+    const input = { commandId: 'save-exact', executionSemanticsVersion: 3, expectedRevision: 8,
+      expectedWorkflowVersionId: null, expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
+      expectedLocationRevision: 1, graph: fixture.version.definition }
+    const path = `/api/management/workspaces/${value.workspaceId}/workflows/${value.workflowId}/definition`
+    expect(await client.request(path, CurrentWorkflowSaveResultSchema, { method: 'PUT', body: input })).toEqual({ value, replayed: false })
+    expect(await client.request(path, CurrentWorkflowSaveResultSchema, { method: 'PUT', body: input })).toEqual({ value, replayed: true })
+    expect(fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([input, input])
   })
 })

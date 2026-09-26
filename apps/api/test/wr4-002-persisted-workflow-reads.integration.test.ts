@@ -11,8 +11,9 @@ import {
 } from '@graphql/contracts/management'
 import {
   GraphDraftCommandV2ResultSchema, GraphSaveCommandV2ResultSchema, WorkflowVersionV2Schema,
-  WAVE25_ADMISSION_ENABLED, makeWave25Fixture,
+  WAVE25_ADMISSION_ENABLED, RunStartV2ResultSchema, CompatibleRunDetailsSchema, makeWave25Fixture,
 } from '@graphql/contracts/wave25'
+import { RunStopResultSchema } from '@graphql/contracts/management'
 import { buildApp } from '../src/app.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -43,6 +44,7 @@ describe.skipIf(!postgresEnabled)('WR4-002 committed mixed-v1/v2 workflow read p
   let access: PostgresAccessService
   let commands: PostgresCommandCoordinator
   let workflows: PostgresWorkflowRepository
+  let locations: WorkspaceLocationService
   let managed: WorkflowManagementService
   let workspaces: PostgresWorkspaceRepository
   let address: string
@@ -53,13 +55,13 @@ describe.skipIf(!postgresEnabled)('WR4-002 committed mixed-v1/v2 workflow read p
     db = await agent3Database()
     access = new PostgresAccessService(db.pool)
     commands = new PostgresCommandCoordinator(db.pool)
-    const locations = new WorkspaceLocationService(db.pool, commands, db.directory)
+    locations = new WorkspaceLocationService(db.pool, commands, db.directory)
     workflows = new PostgresWorkflowRepository(db.pool)
     const runs = new PostgresRunRepository(db.pool, workflows, locations)
     workspaces = new PostgresWorkspaceRepository(db.pool, workflows, runs)
     managed = new WorkflowManagementService(db.pool, commands)
     const settings = new PostgresSettingsRepository(db.pool)
-    const engine = { start, cancel: vi.fn(async () => false) } as unknown as LangGraphWorkflowEngine
+    const engine = { start, cancel: vi.fn(async () => true) } as unknown as LangGraphWorkflowEngine
     const qualifier: HarnessConfigurationQualifier = { async qualify(configuration) {
       return { harness: configuration.harness, version: 'synthetic-no-native-call', authenticated: true, ready: true,
         structuredEvents: true, supportsResume: true, supportsCancellation: true, supportsWorkingDirectory: true,
@@ -126,7 +128,7 @@ describe.skipIf(!postgresEnabled)('WR4-002 committed mixed-v1/v2 workflow read p
 
   for (const handler of ['user', 'orchestrator'] as const) {
     it(`publishes via the common service and preserves ${handler} topology across persisted reads and revocation`, async () => {
-      expect(WAVE25_ADMISSION_ENABLED).toBe(false)
+      expect(WAVE25_ADMISSION_ENABLED).toBe(true)
       const candidate = makeWave25Fixture(randomUUID())
       if (handler === 'orchestrator') {
         // The initialized entry is the actual pinned Orchestrator, not a label.
@@ -257,7 +259,64 @@ describe.skipIf(!postgresEnabled)('WR4-002 committed mixed-v1/v2 workflow read p
       expect((await db.pool.query<{ record: unknown }>('select record from workflows where id=$1', [siblingId])).rows[0]!.record).toEqual(sibling.workflow)
       expect((await db.pool.query('select 1 from runs where workspace_id=$1', [scope.workspaceId])).rowCount).toBe(0)
       expect(start).not.toHaveBeenCalled()
-      expect(WAVE25_ADMISSION_ENABLED).toBe(false)
+      expect(WAVE25_ADMISSION_ENABLED).toBe(true)
     }, 120000)
   }
+  it('starts and reads a persisted v2 Run through authenticated HTTP and Operator MCP, with denial and Stop replay', async () => {
+    const f = await seedAgent3(db.pool, db.directory, makeWave25Fixture(randomUUID()), { run: false })
+    const scope = { workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId }
+    const owner = await access.issue({ name: 'ENG03-D owner', audience: 'operator',
+      grants: [{ actions: ManagementActionSchema.options, scope: { workspaceIds: [scope.workspaceId] } }],
+      expiresAt: new Date(Date.now() + 600_000) })
+    const cookie = await enroll(owner.token)
+    const client = await connect(owner.token)
+    const configured = await locations.set(owner.principal, 'mcp', { workspaceId: scope.workspaceId,
+      commandId: randomUUID(), expectedLocationRevision: 1, runnerId: 'runner-local', rootPath: process.cwd() })
+    const draft = await new GraphDraftService(db.pool, commands).open(owner.principal, scope.workspaceId, scope.workflowId)
+    const input = { ...scope, workflowVersionId: f.version.id, executionSemanticsVersion: 2 as const,
+      draftId: draft.id, expectedDraftRevision: draft.revision,
+      commandId: randomUUID(), expectedLocationRevision: configured.value.locationRevision, input: {} }
+    const path = `/api/management/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/runs`
+    const response = await app.inject({ method: 'POST', url: path, headers: { host: 'localhost', origin: 'http://localhost', cookie }, payload: input })
+    expect(response.statusCode, response.body).toBe(202)
+    const accepted = RunStartV2ResultSchema.parse(response.json())
+    expect(accepted.replayed).toBe(false)
+    const replay = await call(client, 'run_start', RunStartV2ResultSchema, input)
+    expect(replay).toMatchObject({ replayed: true, run: { id: accepted.run.id } })
+    const detailPath = `/api/management/workspaces/${scope.workspaceId}/runs/${accepted.run.id}`
+    const detail = await read(detailPath, cookie, CompatibleRunDetailsSchema)
+    expect(detail.run).toMatchObject({ workflowVersionId: f.version.id, executionSemanticsVersion: 2 })
+    expect(detail).not.toHaveProperty('liveActivity')
+    expect((await call(client, 'run_get', CompatibleRunDetailsSchema,
+      { workspaceId: scope.workspaceId, runId: accepted.run.id })).run).toEqual(detail.run)
+    const deniedCaller = await access.issue({ name: 'ENG03-D read only', audience: 'operator',
+      grants: [{ actions: ['runs:read'], scope: { workspaceIds: [scope.workspaceId] } }],
+      expiresAt: new Date(Date.now() + 600_000) })
+    const deniedClient = await connect(deniedCaller.token)
+    await denied(deniedClient, 'run_start', { ...input, commandId: randomUUID() })
+    const wrongScope = await access.issue({ name: 'ENG03-D wrong scope', audience: 'operator',
+      grants: [{ actions: ManagementActionSchema.options, scope: { workspaceIds: ['other-workspace'] } }],
+      expiresAt: new Date(Date.now() + 600_000) })
+    const wrongCookie = await enroll(wrongScope.token)
+    expect((await app.inject({ method: 'GET', url: detailPath, headers: { host: 'localhost', cookie: wrongCookie } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: path, headers: { host: 'localhost', origin: 'http://localhost', cookie: wrongCookie },
+      payload: { ...input, commandId: randomUUID() } })).statusCode).toBe(403)
+    const { executionSemanticsVersion: _semantics, ...legacyInput } = input
+    expect(_semantics).toBe(2)
+    const legacy = await app.inject({ method: 'POST', url: path, headers: { host: 'localhost', origin: 'http://localhost', cookie },
+      payload: { ...legacyInput, commandId: randomUUID() } })
+    expect(legacy.statusCode).toBe(409)
+    expect(legacy.json().error.code).toBe('V2_ADMISSION_REQUIRED')
+    const legacyMcp = await client.callTool({ name: 'run_start', arguments: { ...legacyInput, commandId: randomUUID() } })
+    expect(legacyMcp.isError).toBe(true)
+    expect(legacyMcp.structuredContent).toMatchObject({ error: { code: 'V2_ADMISSION_REQUIRED' } })
+    expect((await db.pool.query('select 1 from runs where workflow_id=$1', [scope.workflowId])).rowCount).toBe(1)
+    const stopInput = { workspaceId: scope.workspaceId, runId: accepted.run.id, commandId: randomUUID() }
+    const stopped = await call(client, 'run_stop', RunStopResultSchema, stopInput)
+    expect(stopped).toMatchObject({ status: 'accepted', replayed: false, processStopped: false })
+    const stopReplay = await app.inject({ method: 'POST', url: `${detailPath}/stop`, headers: { host: 'localhost', origin: 'http://localhost', cookie }, payload: stopInput })
+    expect(stopReplay.statusCode).toBe(200)
+    expect(RunStopResultSchema.parse(stopReplay.json())).toMatchObject({ replayed: true, processStopped: false })
+    expect((await read(detailPath, cookie, CompatibleRunDetailsSchema)).run).toMatchObject({ executionSemanticsVersion: 2 })
+  }, 120000)
 })

@@ -17,8 +17,14 @@ export async function lockPrincipal(sql: GraphTransactionSql, snapshot: Manageme
   const principal = ManagementPrincipalSchema.parse({ id: row.id, name: row.name, audience: row.audience,
     ...(row.agent_id ? { agentId: row.agent_id } : {}), grants: row.grants, expiresAt: row.expires_at.toISOString(), revokedAt: null })
   if (interaction.approval.handler === 'user') {
-    if (!canUserInteract(principal, 'interactions:respond', interaction)) return fail('INTERACTION_ACCESS_DENIED')
-    return principal
+    // The local browser owner is an operator principal that the user-interaction
+    // route projects as a User with interaction grants. Re-apply that same
+    // projection to the freshly locked (live, unrevoked) row.
+    const effective = principal.audience === 'operator' && snapshot.audience === 'user'
+      ? { ...principal, audience: 'user' as const, grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: {} }] }
+      : principal
+    if (!canUserInteract(effective as ManagementPrincipal, 'interactions:respond', interaction)) return fail('INTERACTION_ACCESS_DENIED')
+    return effective as ManagementPrincipal
   }
   requireRespondableInteraction(principal, interaction)
   const reviewer = context.reviewer

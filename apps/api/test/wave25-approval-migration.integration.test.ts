@@ -1,59 +1,60 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { approvalDatabase } from './helpers/wave25ApprovalDatabase.js'
-import { legacyApprovalFixture } from './helpers/wave25ApprovalFixture.js'
-import { persistLegacyApprovalRelationships } from '../src/modules/workflows/approvalMigrationPersistence.js'
+import { randomUUID } from 'node:crypto'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { ManagementActionSchema } from '@graphql/contracts/management'
+import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { WorkflowManagementService } from '../src/modules/workflows/management.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
+import { approvalFixture } from './helpers/wave25ApprovalFixture.js'
 
-const closes: Array<() => Promise<void>> = []
-afterEach(async () => { while (closes.length) await closes.pop()!() })
-async function setup() { const f = await approvalDatabase(); closes.push(f.close); return f }
-describe('A4 persisted approval migration and older-writer protection', () => {
-  it('rejects dropping the v2 marker, relationship kinds or approval assignments', async () => {
-    const f = await setup()
-    await expect(f.pool.query("update graph_drafts set record=record #- '{graph,executionSemanticsVersion}' where id=$1", [f.draft.id])).rejects.toMatchObject({ code: 'PGA01' })
-    await expect(f.pool.query("update graph_drafts set record=record #- '{graph,edges,1,kind}' where id=$1", [f.draft.id])).rejects.toMatchObject({ code: 'PGA01' })
-    await expect(f.pool.query("update graph_drafts set record=record #- '{graph,edges,1}' where id=$1", [f.draft.id])).rejects.toMatchObject({ code: 'PGA04' })
-    expect((await f.draftService.getIfV2(f.operator.principal, f.run.workspaceId, f.run.workflowId, f.draft.id))?.graph.edges).toEqual(f.draft.graph.edges)
+// Legacy approval inference/materialization is retired. Current protection uses
+// the typed complete-definition writer and preserves accepted immutable facts.
+describe.skipIf(!postgresEnabled)('Current persisted approval writer protection', () => {
+  let db: Awaited<ReturnType<typeof agent3Database>>
+  beforeAll(async () => { db = await agent3Database() }, 60000)
+  afterAll(async () => { await db?.close() })
+  async function setup() {
+    const f = makeCurrentWorkflowFixture(randomUUID(), 'approval')
+    const native = approvalFixture().configurations
+    f.configurations.forEach((config, index) => { config.harness = structuredClone(native[index]!.harness) })
+    await seedAgent3(db.pool, db.directory, f, { run: false })
+    const writer = await new PostgresAccessService(db.pool).issue({ name: 'Approval definition author', audience: 'operator',
+      expiresAt: new Date(Date.now() + 300000), grants: [{ actions: ManagementActionSchema.options,
+        scope: { workspaceIds: [f.scope.workspaceId] } }] })
+    const workflows = new WorkflowManagementService(db.pool, new PostgresCommandCoordinator(db.pool))
+    const managed = await workflows.get(writer.principal, f.scope.workspaceId, f.scope.workflowId)
+    const save = (graph: typeof f.version.definition) => workflows.current.save(writer.principal, 'http', {
+      workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId, commandId: randomUUID(), executionSemanticsVersion: 3,
+      expectedRevision: managed.revision, expectedWorkflowVersionId: f.version.id, expectedLocationRevision: 1,
+      expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds, graph,
+    })
+    const read = async () => (await db.pool.query<{ record: unknown }>('select record from workflow_versions where id=$1', [f.version.id])).rows[0]!.record
+    return { f, save, read }
+  }
+  it('rejects a raw writer dropping current semantics or relationship kinds', async () => {
+    const { f, read } = await setup(), before = await read()
+    await expect(db.pool.query("update workflow_versions set record=record - 'executionSemanticsVersion' where id=$1", [f.version.id])).rejects.toThrow()
+    await expect(db.pool.query("update workflow_versions set record=record #- '{definition,edges,1,kind}' where id=$1", [f.version.id])).rejects.toThrow()
+    expect(await read()).toEqual(before)
   })
-  it('refuses in-place changes to an accepted v2 version', async () => {
-    const f = await setup()
-    await expect(f.pool.query("update workflow_versions set record=jsonb_set(record,'{definition,name}','\"changed\"'::jsonb) where id=$1", [f.version.id])).rejects.toMatchObject({ code: 'PGA02' })
+  it('refuses in-place changes to an accepted current version', async () => {
+    const { f, read } = await setup(), before = await read()
+    await expect(db.pool.query("update workflow_versions set record=jsonb_set(record,'{definition,name}','\"changed\"'::jsonb) where id=$1", [f.version.id])).rejects.toThrow()
+    expect(await read()).toEqual(before)
   })
-  it('materializes reverse legacy adjacency without reversing execution or rewriting active history', async () => {
-    const f = await setup(), legacy = legacyApprovalFixture().version
-    legacy.id = 'legacy-approval-version'; legacy.version = 2; legacy.definition.version = 2
-    Object.assign(legacy.definition.edges[0]!, { source: 'node-worker', target: 'node-reviewer' })
-    await f.pool.query(`insert into workflow_versions(id,workspace_id,workflow_id,version,entry_node_id,record)
-      values($1,$2,$3,2,$4,$5::jsonb)`, [legacy.id, legacy.workspaceId, legacy.workflowId, legacy.entryNodeId, JSON.stringify(legacy)])
-    const converted = { ...f.draft, baseWorkflowVersionId: legacy.id, graph: { ...f.draft.graph,
-      edges: [{ id: 'legacy-edge', kind: 'execution', source: 'node-worker', target: 'node-reviewer' }] } }
-    const client = await f.pool.connect()
-    try {
-      await client.query('begin'); await client.query("select set_config('graphql.approval_writer','v2',true)")
-      await client.query('update graph_drafts set base_workflow_version_id=$2,record=$3::jsonb where id=$1', [f.draft.id, legacy.id, JSON.stringify(converted)])
-      await client.query('commit')
-      await client.query('begin')
-      const migrated = await persistLegacyApprovalRelationships(client, f.operator.principal, {
-        workspaceId: f.run.workspaceId, workflowId: f.run.workflowId, draftId: f.draft.id, expectedRevision: 0, sourceVersionId: legacy.id })
-      await client.query('commit')
-      expect(migrated.graph.edges[0]).toEqual(converted.graph.edges[0])
-      expect(migrated.graph.edges.filter((edge) => edge.kind === 'approval')).toEqual([
-        expect.objectContaining({ source: 'node-reviewer', target: 'node-worker', kind: 'approval' }),
-      ])
-      await client.query('begin')
-      const replay = await persistLegacyApprovalRelationships(client, f.operator.principal, {
-        workspaceId: f.run.workspaceId, workflowId: f.run.workflowId, draftId: f.draft.id, expectedRevision: 1, sourceVersionId: legacy.id })
-      await client.query('commit'); expect(replay.revision).toBe(1)
-      expect((await f.pool.query('select record from workflow_versions where id=$1', [legacy.id])).rows[0].record).toEqual(legacy)
-      expect((await f.pool.query('select record from runs where id=$1', [f.run.id])).rows[0].record).toEqual(f.run)
-    } finally { await client.query('rollback').catch(() => undefined); client.release() }
+  it('does not infer an approval assignment from execution adjacency', async () => {
+    const { f, save, read } = await setup(), before = await read()
+    const graph = { ...f.version.definition, edges: f.version.definition.edges.filter((edge) => edge.kind === 'execution') }
+    await expect(save(graph)).rejects.toThrow()
+    expect(await read()).toEqual(before)
   })
-  it('User handler changes are explicit and preserve execution direction and native settings', async () => {
-    const f = await setup(), before = (await f.pool.query('select record from agent_configuration_versions order by id')).rows
-    const changed = await f.draftService.apply(f.operator.principal, 'http', { executionSemanticsVersion: 2,
-      workspaceId: f.run.workspaceId, workflowId: f.run.workflowId, draftId: f.draft.id, expectedRevision: 0,
-      commandId: 'explicit-user-handler', operations: [{ type: 'workflow.set_approval', approval: { handler: 'user' } }] })
-    expect(changed.value.draft.graph.approval).toEqual({ handler: 'user' })
-    expect(changed.value.draft.graph.edges).toEqual(f.version.definition.edges.filter((edge) => edge.kind === 'execution'))
-    expect((await f.pool.query('select record from agent_configuration_versions order by id')).rows).toEqual(before)
+  it('rejects a User-handler change that conflicts with pinned native review instead of rewriting configurations', async () => {
+    const { f, save, read } = await setup(), before = await read()
+    const configurations = (await db.pool.query('select record from agent_configuration_versions where workspace_id=$1 order by id', [f.scope.workspaceId])).rows
+    const edges = f.version.definition.edges.filter((edge) => edge.kind === 'execution')
+    await expect(save({ ...f.version.definition, approval: { handler: 'user' }, edges })).rejects.toThrow('pinned native configuration conflicts with approval authority')
+    expect(await read()).toEqual(before)
+    expect((await db.pool.query('select record from agent_configuration_versions where workspace_id=$1 order by id', [f.scope.workspaceId])).rows).toEqual(configurations)
   })
 })

@@ -1,0 +1,97 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type pg from 'pg'
+import { ManagementPrincipalSchema, type ManagementGrant } from '@graphql/contracts/management'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { readCurrentRunDetails } from '../src/modules/runs/currentRead.js'
+import { readAcceptedRepeatRunLocked } from '../src/modules/runs/repeatStartRead.js'
+import { readRepeatExecutionLocked } from '../src/modules/runs/repeatPostgres.js'
+
+// The immutable publication readers are ports here; live grants, transaction
+// ownership, bounded queries and public redaction run their real implementations.
+vi.mock('../src/modules/runs/repeatStartRead.js', () => ({ readAcceptedRepeatRunLocked: vi.fn() }))
+vi.mock('../src/modules/runs/repeatPostgres.js', () => ({ readRepeatExecutionLocked: vi.fn() }))
+beforeEach(() => vi.resetAllMocks())
+
+function fixture() {
+  const f = makeCurrentWorkflowFixture('history', 'single')
+  const run = AcceptedWorkflowRunV3Schema.parse({ ...f.run, authorizationPrincipalId: 'private-authority',
+    executionState: 'completed', outcome: 'succeeded', result: { outcome: 'succeeded', output: { text: 'saved-result' } },
+    finishedAt: f.createdAt, executionLocation: { runnerId: 'runner', rootPath: '/private/project', locationRevision: 1,
+      identityHash: `sha256:${'1'.repeat(64)}` } })
+  const { executionId, ...identity } = f.identities[0]!
+  const execution = { ...identity, id: executionId, runId: run.id,
+    input: {}, state: 'completed' as const, result: run.result, createdAt: f.createdAt, finishedAt: f.createdAt,
+    workingDirectory: '/private/project', runtimeDirectory: '/private/runtime' }
+  const principal = ManagementPrincipalSchema.parse({ id: 'history-reader', name: 'History reader', audience: 'operator',
+    expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null,
+    grants: [{ actions: ['runs:read'], scope: { workspaceIds: [run.workspaceId], workflowIds: [run.workflowId], runIds: [run.id] } }] })
+  let liveGrants: ManagementGrant[] = structuredClone(principal.grants)
+  let revoked = false
+  vi.mocked(readAcceptedRepeatRunLocked).mockResolvedValue({ run, version: f.version,
+    configurations: f.configurations, stopRequested: false, cleanupPending: false } as Awaited<ReturnType<typeof readAcceptedRepeatRunLocked>>)
+  vi.mocked(readRepeatExecutionLocked).mockResolvedValue({ execution, ref: { nodeId: execution.workflowNodeId, occurrence: null },
+    slotId: 'history-slot', input: { executionSemanticsVersion: 3, runInput: {}, occurrence: null, entry: null, predecessors: [] },
+    inputDigest: `sha256:${'1'.repeat(64)}`, accepted: true })
+  const query = vi.fn(async (sql: string, values?: unknown[]) => {
+    if (/^(begin|commit|rollback)/.test(sql)) return { rows: [] }
+    if (sql.startsWith('select workspace_id,workflow_id from runs')) {
+      expect(values).toEqual([run.id, run.workspaceId])
+      return { rows: [{ workspace_id: run.workspaceId, workflow_id: run.workflowId }] }
+    }
+    if (sql.includes('from management_principals')) return { rows: [{ id: principal.id, name: principal.name,
+      audience: 'operator', grants: liveGrants, expires_at: new Date(principal.expiresAt),
+      revoked_at: revoked ? new Date() : null, delegated_from: null }] }
+    if (sql.includes('from harness_executions')) return { rows: [{ id: execution.id }] }
+    if (sql.includes('from run_activity')) return { rows: [] }
+    if (sql.includes('from run_cleanup_intents')) return { rows: [{ pending: false }] }
+    throw new Error(`Unexpected query: ${sql}`)
+  })
+  const release = vi.fn()
+  const pool = { connect: async () => ({ query, release, on() {}, removeListener() {} }) } as unknown as pg.Pool
+  return { ...f, run, execution, principal, query, release,
+    read: () => readCurrentRunDetails(pool, principal, run.workspaceId, run.id),
+    grants: (value: ManagementGrant[]) => { liveGrants = value }, revoke: () => { revoked = true } }
+}
+
+describe('saved current Run read', () => {
+  it('returns the exact V3 Run and accepted execution without exposing private location or authority', async () => {
+    const f = fixture()
+    const value = await f.read()
+    expect(value.run).toMatchObject({ executionSemanticsVersion: 3, workflowVersionId: f.version.id,
+      agentConfigurationVersionIds: f.version.agentConfigurationVersionIds, result: { output: { text: 'saved-result' } } })
+    expect(value.executions[0]).toMatchObject({ id: f.execution.id, agentConfigurationVersionId: f.configurations[0]!.id })
+    expect(JSON.stringify(value)).not.toMatch(/private-authority|private\/project|private\/runtime/)
+    expect(readRepeatExecutionLocked).toHaveBeenCalledWith(expect.objectContaining({ transaction: true }),
+      expect.objectContaining({ run: f.run }), f.execution.id)
+    expect(f.query).toHaveBeenCalledWith('commit')
+    expect(f.release).toHaveBeenCalledOnce()
+  })
+
+  it('uses live location grants instead of the stale transport principal', async () => {
+    const f = fixture()
+    f.grants([...f.principal.grants, { actions: ['workspace_locations:read'], scope: { workspaceIds: [f.run.workspaceId] } }])
+    const value = await f.read()
+    expect(value.run.executionLocation).toEqual(f.run.executionLocation)
+    expect(value.executions[0]?.workingDirectory).toBe('/private/project')
+    expect(value.run).not.toHaveProperty('authorizationPrincipalId')
+  })
+
+  it.each(['wrong-run', 'revoked'])('rejects %s authority before reading saved facts', async (kind) => {
+    const f = fixture()
+    if (kind === 'revoked') f.revoke()
+    else f.grants([{ actions: ['runs:read'], scope: { runIds: ['foreign-run'] } }])
+    await expect(f.read()).rejects.toMatchObject({ status: 403 })
+    expect(readAcceptedRepeatRunLocked).not.toHaveBeenCalled()
+    expect(readRepeatExecutionLocked).not.toHaveBeenCalled()
+    expect(f.query).toHaveBeenCalledWith('rollback')
+    expect(f.release).toHaveBeenCalledOnce()
+  })
+
+  it('propagates an immutable execution pin conflict without returning partial history', async () => {
+    const f = fixture()
+    vi.mocked(readRepeatExecutionLocked).mockRejectedValue(new Error('execution pin changed'))
+    await expect(f.read()).rejects.toThrow('execution pin changed')
+    expect(f.query).not.toHaveBeenCalledWith('commit')
+    expect(f.query).toHaveBeenCalledWith('rollback')
+  })
+})

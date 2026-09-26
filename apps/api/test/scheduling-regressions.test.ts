@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import type { WorkflowVersion } from '@graphql/contracts'
+import { WorkflowVersionV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { it } from 'vitest'
 
 import { ExecutionLimiter } from '../src/modules/runs/limiter.js'
-import { validateExecutableTopology } from '../src/modules/runs/topology.js'
+import { compileExecutionTopology } from '../src/modules/runs/topology.js'
 
 for (const maximum of [1, 2]) {
   it(`never exceeds maxParallelism=${maximum} during delayed fan-out work`, async () => {
@@ -38,37 +38,46 @@ it('does not launch a canceled waiter and returns slots after failures', async (
   assert.equal(await limiter.run(new AbortController().signal, async () => 'released'), 'released')
 })
 
-type WorkflowJoin = NonNullable<WorkflowVersion['definition']['nodes'][number]['join']>
-
-function graph(join: WorkflowJoin | undefined, predecessorCount: number): WorkflowVersion {
-  const edges = predecessorCount === 0 ? [] : predecessorCount === 1
-    ? [{ source: 'a', target: 'c' }]
-    : [{ source: 'a', target: 'b' }, { source: 'a', target: 'c' }, { source: 'b', target: 'c' }]
-  const ids = predecessorCount === 0 ? ['c'] : predecessorCount === 1 ? ['a', 'c'] : ['a', 'b', 'c']
-  return {
-    id: 'version', workflowId: 'workflow', workspaceId: 'workspace', version: 1,
-    entryNodeId: ids[0]!, contentHash: 'sha256:test', createdAt: '2026-09-14T00:00:00.000Z',
-    agentConfigurationVersionIds: { agent: 'configuration' },
-    definition: {
-      id: 'workflow', workspaceId: 'workspace', name: 'Test', version: 1,
-      executionCondition: { kind: 'manual' },
-      executionPolicy: { maxParallelism: 1, maxNodeExecutions: ids.length },
-      nodes: ids.map((id) => ({ id, agentId: 'agent', name: id, ...(id === 'c' && join ? { join } : {}) })),
-      edges: edges.map((edge, index) => ({ ...edge, id: String(index), route: { outcomes: ['succeeded'] } })),
-    },
-  }
+// Admission, not the DAG compiler, validates unsupported join declarations.
+// Begin with a valid V3 graph so a rejection cannot be caused by retired tags,
+// missing immutable pins or duplicated fixture Agents.
+function graph(predecessorCount: number) {
+  const { version } = makeCurrentWorkflowFixture('scheduling', 'parallel')
+  const count = predecessorCount + 1
+  version.definition.nodes = version.definition.nodes.slice(0, count).map((node) => {
+    const { join: _join, ...rest } = node
+    return rest
+  })
+  const [a, b, c] = version.definition.nodes
+  version.definition.edges = predecessorCount === 0 ? [] : predecessorCount === 1
+    ? [{ id: 'a-b', kind: 'execution', source: a!.id, target: b!.id }]
+    : [{ id: 'a-b', kind: 'execution', source: a!.id, target: b!.id },
+      { id: 'a-c', kind: 'execution', source: a!.id, target: c!.id },
+      { id: 'b-c', kind: 'execution', source: b!.id, target: c!.id }]
+  version.agentConfigurationVersionIds = Object.fromEntries(version.definition.nodes.map((node) =>
+    [node.agentId, version.agentConfigurationVersionIds[node.agentId]!]))
+  return WorkflowVersionV3Schema.parse(version)
 }
 
-for (const join of [{ mode: 'threshold', required: 2 }, { mode: 'any' }] satisfies WorkflowJoin[]) {
+for (const join of [{ mode: 'threshold', required: 2 }, { mode: 'any' }]) {
   for (const predecessors of [0, 1, 2]) {
     it(`rejects ${join.mode} joins with ${predecessors} predecessors`, () => {
-      assert.throws(() => validateExecutableTopology(graph(join, predecessors)), { code: 'WORKFLOW_JOIN_UNSUPPORTED' })
+      const version = graph(predecessors)
+      const targetId = version.definition.nodes.at(-1)!.id
+      const result = WorkflowVersionV3Schema.safeParse({ ...version, definition: { ...version.definition,
+        nodes: version.definition.nodes.map((node) => node.id === targetId ? { ...node, join } : node),
+      } })
+      assert.equal(result.success, false)
+      if (!result.success) assert.ok(result.error.issues.some((issue) => issue.path.includes('join')))
     })
   }
 }
 
 it('validates an all-join with unequal predecessor path lengths', () => {
-  const topology = validateExecutableTopology(graph({ mode: 'all' }, 2))
-  assert.deepEqual(topology.incoming.get('c'), ['a', 'b'])
-  assert.deepEqual(topology.sinks, ['c'])
+  const version = graph(2)
+  const [a, b, c] = version.definition.nodes
+  c!.join = { mode: 'all' }
+  const topology = compileExecutionTopology(WorkflowVersionV3Schema.parse(version))
+  assert.deepEqual(topology.incoming.get(c!.id)?.map((edge) => edge.source), [a!.id, b!.id])
+  assert.deepEqual(topology.sinks, [c!.id])
 })

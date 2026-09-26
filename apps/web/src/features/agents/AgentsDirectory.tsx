@@ -1,5 +1,6 @@
+import type { WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
 import { useCallback, useRef, useState } from 'react'
-import type { Agent, WorkflowDefinition } from '@graphql/contracts'
+import type { Agent } from '@graphql/contracts'
 import { Link } from '@tanstack/react-router'
 
 import { useWorkspaceDetailsQuery } from '../../shared/api/query'
@@ -7,7 +8,8 @@ import {
   Button, Card, CardHeader, EmptyState, Icon, IconButton, LoadingState, PageHeader,
 } from '../../shared/ui/nocturne'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
-import { useGraphDraftStore, workflowDraftKey } from '../graph/store'
+import { useGraphDraftStore } from '../graph/store'
+import { nextDraftKey } from '../graph/nextDraft/state'
 import { useAgentDirectoryStore } from './agentDirectoryStore'
 import { useReorderableAgents, type AgentReorderCardProps } from './useReorderableAgents'
 import './agents.css'
@@ -27,7 +29,7 @@ function AgentCard({
   agent: Agent
   reorderProps?: AgentReorderCardProps
   workspaceId: string
-  blockers: readonly Pick<WorkflowDefinition, 'id' | 'name'>[]
+  blockers: readonly Pick<WorkflowDefinitionV3, 'id' | 'name'>[]
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -85,9 +87,9 @@ export function AgentsDirectoryContent({
 }: {
   workspaceId: string
   agents: readonly Agent[]
-  workflows?: readonly WorkflowDefinition[]
+  workflows?: readonly WorkflowDefinitionV3[]
 }) {
-  const graphDrafts = useGraphDraftStore((state) => state.drafts)
+  const graphDrafts = useGraphDraftStore((state) => state.nextDrafts)
   const announcement = useAgentDirectoryStore((state) => state.announcement)
   const reorder = useReorderableAgents(
     workspaceId,
@@ -97,7 +99,7 @@ export function AgentsDirectoryContent({
   const orderedAgents = reorder.orderedIds
     .map((agentId) => agentById.get(agentId))
     .filter((agent): agent is Agent => Boolean(agent))
-  const workspaceWorkflows = workflows.map((workflow) => graphDrafts[workflowDraftKey(workspaceId, workflow.id)]?.workflow ?? workflow)
+  const workspaceWorkflows = workflows.map((workflow) => graphDrafts[nextDraftKey(workspaceId, workflow.id)]?.graph ?? workflow)
   return (
     <div className="agents-directory" data-testid="agents-directory">
       <PageHeader

@@ -10,9 +10,14 @@ import { DomainError } from '../../src/modules/errors.js'
 import type { ExecutionCredentialProvider } from '../../src/modules/harnesses/mcpDetection.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../../src/modules/harnesses/port.js'
 import type { PostgresApprovalBudgetRepository } from '../../src/modules/interactions/budget.js'
-import type { PostgresInteractionCoordinationRepository, WriterFence } from '../../src/modules/interactions/coordination.js'
+import type { WriterFence } from '../../src/modules/interactions/coordination.js'
+import type { Wave25InteractionCoordinationRepository } from '../../src/modules/interactions/wave25/reviews.js'
 import { ApprovalExecutionCoordinator } from '../../src/modules/interactions/execution.js'
-import type { PostgresInteractionRepository } from '../../src/modules/interactions/postgres.js'
+import type { Wave25InteractionRepository as PostgresInteractionRepository } from '../../src/modules/interactions/wave25/repository.js'
+import { createReviewNativeCaptureChannel, type ReviewNativeCapture } from '../../src/modules/interactions/reviewNativeCapture.js'
+import { createWorkflowNativeCaptureChannel } from '../../src/modules/interactions/workflowNativeCapture.js'
+import type { RepeatNativeObservationStore } from '../../src/modules/interactions/repeatObservation.js'
+import type { WorkflowClosureStore } from '../../src/modules/interactions/workflowClosure.js'
 import { ReviewerDispatcher } from '../../src/modules/interactions/reviewer.js'
 import type { NativeSessionManagerResolver } from '../../src/modules/interactions/runtimePorts.js'
 import type { RunOwnership } from '../../src/modules/runs/ownership.js'
@@ -34,6 +39,12 @@ export function terminal(correlation = correlationId): NativeHistory {
   return { correlationId: correlation, nativeTurnId: providerId, events: [], pendingInteractions: [],
     terminalTurn: { correlationId: correlation, providerId, result: { outcome: 'succeeded', output: { done: true } } } }
 }
+/** An actual provider thread read, rather than only derived terminal metadata. */
+export function sourceTerminal(correlation = correlationId): NativeHistory {
+  return { ...terminal(correlation), events: [event('thread.reconciled', { thread: {
+    id: session.nativeSessionId, status: 'idle', turns: [{ id: providerId, clientUserMessageId: correlation, status: 'completed', items: [] }],
+  } })] }
+}
 export function permission(): PendingNativeInteraction {
   return { session, turn: { nativeTurnId: providerId, nativeRequestId: 'review-permission-exact' },
     nativeRequestType: 'item/commandExecution/requestApproval', request: { command: `echo ${secret}` },
@@ -53,7 +64,7 @@ export async function until(condition: () => boolean): Promise<void> {
 
 /** Database and native transport are doubles; dispatch, evidence, fences, attach,
  * credential maintenance and redaction execute the production implementations. */
-export async function reviewerFixture(options: { recovering?: boolean; workflow?: boolean; silent?: boolean; events?: number } = {}) {
+export async function reviewerFixture(options: { recovering?: boolean; workflow?: boolean; silent?: boolean; events?: number; closedWorkflow?: boolean } = {}) {
   const configuration: AgentConfigurationVersion = {
     id: 'configuration-pinned', workspaceId: 'workspace-1', agentId: 'reviewer-1', version: 1,
     productRole: 'orchestrator', prompt: {}, assignedSkills: [], contentHash: 'sha256:fixture', createdAt: now,
@@ -90,7 +101,7 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
   const attaches: NativeSessionStart[] = []
   const cancellations: { session: NativeSessionReference; nativeTurnId: string | undefined }[] = []
   let responds = 0
-  let history: NativeHistory = options.recovering ? terminal() : { events: [], pendingInteractions: [] }
+  let history: NativeHistory = options.recovering ? sourceTerminal() : { events: [], pendingInteractions: [] }
   const manager: NativeHarnessSessionManager = {
     harness: 'codex',
     async capabilities() { throw new Error('Capabilities were not needed by this test.') },
@@ -113,7 +124,7 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
       }
       if (options.silent) await silence.promise
       hooks.reviewPending = false
-      history = terminal(input.clientCorrelationId)
+      history = sourceTerminal(input.clientCorrelationId)
     },
     async pending() { return hooks.pending },
     async respond() { responds += 1 },
@@ -135,6 +146,7 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
       return history
     },
   }
+  const captures = createReviewNativeCaptureChannel()
   const coordination = nativeLanes()
   await coordination.bindWorkflowSession(execution.id, session)
   await coordination.finalizeWorkflowSession(execution.id)
@@ -146,6 +158,13 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
     }
   }
   Object.assign(coordination, {
+    async findReviewJob() { return structuredClone(job) },
+    async assertReviewPhysicalSettlement(current: ReviewJob, executionId: string) {
+      assert.equal(executionId, execution.id)
+      assert.equal(current.id, job.id)
+      assert.ok(current.state === 'completed' && current.providerTurnOrMessageId || current.cleanup?.completedAt)
+    },
+    async hasUnsettledReview() { return !['completed', 'failed'].includes(job.state) },
     async reviewJobAgents() { return [job.reviewerAgentId] },
     async nextReviewJob() { return ['failed', 'completed'].includes(job.state) ? undefined : structuredClone(job) },
     async claimReviewJob(id: string, owner: string, token: string, expiresAt: string) {
@@ -163,9 +182,10 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
       return job.leaseExpiresAt
     },
     async transitionReviewJob(id: string, token: string, state: ReviewJob['state'], fields: {
-      providerTurnOrMessageId?: string; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']; releaseLease?: boolean; writerFence?: WriterFence
+      providerTurnOrMessageId?: string; error?: ReviewJob['error']; cleanup?: ReviewJob['cleanup']; releaseLease?: boolean; writerFence?: WriterFence; nativeCapture?: ReviewNativeCapture
     } = {}) {
       await assertJob(id, token)
+      if (fields.nativeCapture) captures.verify.read(fields.nativeCapture)
       if (fields.writerFence) await coordination.assertLaneLease(fields.writerFence.id, fields.writerFence.token)
       if (job.providerTurnOrMessageId && fields.providerTurnOrMessageId) assert.equal(fields.providerTurnOrMessageId, job.providerTurnOrMessageId)
       job = { ...job, state, updatedAt: new Date().toISOString(),
@@ -186,9 +206,12 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
       hooks.eventCount += 1
       if (!hooks.countOnly) saved.events.push(structuredClone(native))
     },
-  } satisfies Partial<PostgresInteractionCoordinationRepository>)
-  const owner = { assertOwned() {}, client: {} } as unknown as RunOwnership
+  } satisfies Partial<Wave25InteractionCoordinationRepository>)
+  let stopped = false
+  const owner = { runId: execution.runId, assertOwned() {}, client: {} } as unknown as RunOwnership
   const runs = {
+    async getRepeatSnapshot() { return { run, stopRequested: stopped, cleanupPending: false } },
+    async *executionPages() { yield [execution] },
     async get() { return structuredClone(run) },
     async getExecution() { return structuredClone(execution) },
     async getExecutionConfiguration() { return structuredClone(configuration) },
@@ -202,7 +225,7 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
   const interactions = { coordination, async getForExecution() { return undefined },
     async cancelPendingForRun() {}, async cancelPendingForExecution() {},
   } as unknown as PostgresInteractionRepository
-  const budgets = { async stop() {} } as unknown as PostgresApprovalBudgetRepository
+  const budgets = { async stop() {}, async finish() {}, async ensure() {}, async resume() {}, async remaining() { return 60000 }, async assertActive() {} } as unknown as PostgresApprovalBudgetRepository
   let resident = false
   const managers: NativeSessionManagerResolver = {
     resolve() { return { manager, get processState() { return resident ? 'resident' as const : 'needs_start' as const },
@@ -228,13 +251,45 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
     async revoke(actual) { revoked.push(actual.principalId) },
     async revokeForExecution(id) { revoked.push(`execution:${id}`); return 1 },
   }
+  // Reviewer fixtures start AFTER a positively closed workflow lifetime. Its
+  // terminal execution and finalized lane alone are not physical-close proof.
+  // Keep an explicit missing-receipt variant for the cold-attach guard.
+  let closure: Awaited<ReturnType<WorkflowClosureStore['read']>> = !options.workflow && options.closedWorkflow !== false
+    ? { execution: structuredClone(execution), session: { ...session }, durableGeneration: '1' }
+    : undefined
+  let generation = closure ? 1 : 0
+  const closures: WorkflowClosureStore = {
+    async begin() { closure = undefined; return String(++generation) },
+    async record(execution, session, durableGeneration, check) { check(); closure = { execution, session, durableGeneration }; return closure },
+    async read() { return closure },
+    async recordDetached(_execution, _session, _generation, check) { check() },
+    async recordUnbound(execution, durableGeneration, check) {
+      check(); return { execution: { ...execution, workingDirectory: execution.workingDirectory!, runtimeDirectory: execution.runtimeDirectory! }, durableGeneration }
+    },
+    async readUnbound() { return undefined },
+  }
+  const workflowCapture = createWorkflowNativeCaptureChannel()
   const runtime = new ApprovalExecutionCoordinator(runs, interactions, budgets, managers, 30_000, credentials, async () => {
     hooks.validations += 1
     await hooks.validate?.()
-  })
+  }, closures, undefined, workflowCapture.capture, captures.capture)
+  const workflowStore: RepeatNativeObservationStore = {
+    async readExecution() { return { execution, ref: { nodeId: execution.workflowNodeId, occurrence: null }, slotId: 'review-worker-slot',
+      input: { executionSemanticsVersion: 3, runInput: {}, occurrence: null, entry: null, predecessors: [] },
+      inputDigest: `sha256:${'1'.repeat(64)}`, accepted: false } },
+    async assertExecutionAdmission() {}, async assertNativeBoundary() {}, async exactSession() { return session },
+    async authorizeNativeSubmission() { throw new Error('Recovery must never submit') }, consumeLaunch() { return false },
+    async settleNativeExecution() { if (!closure) throw new DomainError('REPEAT_CLEANUP_PENDING', 'Original close required', 409) },
+  }
   const dispatcher = new ReviewerDispatcher(coordination, runtime)
   return { dispatcher, runtime, coordination, manager, saved, hooks, starts, attaches, cancellations, prepared, renewed, revoked,
-    owner, run, credential, configuration, finish: () => silence.resolve(),
+    owner, run, credential, configuration, stopFence() { stopped = true },
+    observeWorkflow() { return runtime.observeExact({ execution, store: workflowStore, owner,
+      workflowId: run.workflowId, graphThreadId: run.id, signal: new AbortController().signal,
+      approval: { handler: 'user' }, request: { executionId: execution.id, runId: run.id,
+        workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId,
+        workingDirectory: execution.workingDirectory!, runtimeDirectory: execution.runtimeDirectory!, configuration, input: execution.input } }) },
+    finish: () => silence.resolve(),
     get responses() { return responds }, get execution() { return execution }, get job() { return job },
     setHistory(value: NativeHistory) {
       history = value
@@ -244,6 +299,8 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
     attach(signal?: AbortSignal) { return runtime.attachOwnedSession({ harness: session.harness, agentId: execution.agentId,
       executionId: execution.id, workingDirectory: execution.workingDirectory!, purpose: 'reviewer', correlationId }, session, signal) },
     interaction: { id: 'waiting-interaction', executionId: execution.id, runId: run.id, requestingAgentId: execution.agentId,
-      ...session, selectedOptionId: 'approve', deliveryState: 'uncertain' } as DurableInteraction,
+      ...session, selectedOptionId: 'approve', selectedSemantic: 'approve_once',
+      ...(options.workflow ? { status: 'delivered', deliveryState: 'delivered', deliveredAt: now }
+        : { status: 'delivery_pending', deliveryState: 'uncertain' }) } as DurableInteraction,
   }
 }
