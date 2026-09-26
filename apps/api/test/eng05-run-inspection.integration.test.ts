@@ -10,6 +10,7 @@ import {
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
+import { waitForSuccessfulRunCleanup } from './helpers/runSettlement.testSupport.js'
 
 type Fixture = Awaited<ReturnType<typeof currentOperatorIntegration>>
 type Client = Fixture['client']
@@ -61,10 +62,9 @@ async function reader(f: Fixture, grants?: ManagementPrincipal['grants']) {
   return { ...issued, client: await f.connect(issued.token) }
 }
 async function terminal(f: Fixture, runId = f.f.run.id) {
-  await expect.poll(async () => (await f.runs.get(runId))?.executionState, { timeout: 20000 }).toBe('completed')
-  await expect.poll(async () => (await f.db.pool.query<{ pending: boolean }>(
-    'select exists(select 1 from run_cleanup_intents where run_id=$1 and pending) as pending', [runId])).rows[0]?.pending,
-  { timeout: 20000 }).toBe(false)
+  await waitForSuccessfulRunCleanup({ pool: f.db.pool, runId, timeoutMs: 20000,
+    readRecord: () => f.services.runs.inspection.record(f.writer.principal,
+      { workspaceId: f.f.scope.workspaceId, runId }) })
 }
 async function allExecutions(f: Fixture, r: Awaited<ReturnType<typeof reader>>) {
   const items: RunExecutionSummary[] = [], seen = new Set<string>()
@@ -99,10 +99,14 @@ async function resaveChangingRepeat(f: Fixture) {
     graph.executionPolicy = { maxParallelism: 2, maxNodeExecutions: graph.nodes.length * 2 }
   }
   const row = (await f.db.pool.query<{ revision: string }>('select revision::text from workflows where id=$1', [before.scope.workflowId])).rows[0]!
+  // Public location_set may have advanced the workspace since this Run was
+  // accepted. Save against the live workspace revision; leave the old Run pin alone.
+  const location = (await f.db.pool.query<{ revision: string }>(
+    'select location_revision::text as revision from workspaces where id=$1', [before.scope.workspaceId])).rows[0]!
   const saved = CurrentWorkflowSaveResultSchema.parse(value(await f.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: {
     workspaceId: before.scope.workspaceId, workflowId: before.scope.workflowId, executionSemanticsVersion: 3,
     commandId: randomUUID(), expectedRevision: Number(row.revision), expectedWorkflowVersionId: before.version.id,
-    expectedLocationRevision: 1, expectedAgentConfigurationVersionIds: before.version.agentConfigurationVersionIds, graph,
+    expectedLocationRevision: Number(location.revision), expectedAgentConfigurationVersionIds: before.version.agentConfigurationVersionIds, graph,
   } })))
   expect(saved.value.version.id).not.toBe(before.version.id)
   expect(!!saved.value.version.definition.repeat).toBe(!before.version.definition.repeat)
@@ -207,6 +211,8 @@ describe.skipIf(!postgresEnabled)('ENG-05 PostgreSQL authenticated Run inspectio
         workspaceId: args.workspaceId, commandId: randomUUID(), expectedLocationRevision: 1,
         runnerId: f.locations.runnerId, rootPath: f.db.directory } })) as { locationRevision?: number; value?: { locationRevision: number } }
       const locationRevision = location.value?.locationRevision ?? location.locationRevision
+      expect(locationRevision).toBe(2)
+      expect(f.f.run.executionLocation?.locationRevision).toBe(1)
       const revision = (await f.db.pool.query<{ revision: string }>('select revision::text from workflows where id=$1', [f.f.scope.workflowId])).rows[0]!.revision
       const started = value(await f.client.callTool({ name: 'run_start', arguments: {
         workspaceId: args.workspaceId, workflowId: f.f.scope.workflowId, workflowVersionId: f.f.version.id,

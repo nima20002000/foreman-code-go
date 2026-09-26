@@ -86,7 +86,11 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
     await saver.setup()
     function compose(checkpointer: ApprovalPostgresSaver = saver) {
       const workflows = new PostgresWorkflowRepository(db.pool)
-      const locations = new WorkspaceLocationService(db.pool, new PostgresCommandCoordinator(db.pool))
+      // seedAgent3 and providerLaunchCredentials use the deterministic runner
+      // "local". The product default is "runner-local"; inheriting it makes a
+      // public location_set/Start fail credential preflight before createSession.
+      const locations = new WorkspaceLocationService(db.pool, new PostgresCommandCoordinator(db.pool),
+        undefined, f.run.executionLocation!.runnerId)
       // No native binaries or accepted runner filesystem are qualified here.
       // Keep SQL authorization real, including its accepted/root grant checks.
       vi.spyOn(locations, 'revalidateSnapshot').mockResolvedValue(undefined)
