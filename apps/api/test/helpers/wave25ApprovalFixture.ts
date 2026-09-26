@@ -1,5 +1,5 @@
 import type { AgentConfigurationVersion, HarnessExecution, WorkflowRun, WorkflowVersion } from '@graphql/contracts'
-import type { WorkflowVersionV2 } from '@graphql/contracts/wave25'
+import type { WorkflowVersionV3 } from '@graphql/contracts/wave25'
 
 /** Synthetic accepted identities only. Never starts a native session. */
 export function approvalFixture() {
@@ -19,13 +19,13 @@ export function approvalFixture() {
     prompt: {}, assignedSkills: [], contentHash: 'sha256:' + '0'.repeat(64), createdAt,
   }))
   const approval = { handler: 'orchestrator' as const, designatedOrchestratorAgentId: 'agent-reviewer' }
-  const version: WorkflowVersionV2 = {
+  const version: WorkflowVersionV3 = {
     id: 'version-approval', workspaceId: 'workspace-approval', workflowId: 'workflow-approval', version: 1,
-    executionSemanticsVersion: 2, entryNodeId: 'node-reviewer', approval,
+    executionSemanticsVersion: 3, entryNodeId: 'node-reviewer', approval,
     agentConfigurationVersionIds: { 'agent-reviewer': 'cfg-reviewer', 'agent-worker': 'cfg-worker' },
     definition: {
       id: 'workflow-approval', workspaceId: 'workspace-approval', name: 'Approval fixture', version: 1,
-      executionSemanticsVersion: 2, entryNodeId: 'node-reviewer', approval,
+      executionSemanticsVersion: 3, entryNodeId: 'node-reviewer', approval,
       executionCondition: { kind: 'manual' }, executionPolicy: { maxParallelism: 1, maxNodeExecutions: 2 },
       nodes: [{ id: 'node-reviewer', agentId: 'agent-reviewer', name: 'Reviewer' },
         { id: 'node-worker', agentId: 'agent-worker', name: 'Worker' }],
@@ -34,9 +34,11 @@ export function approvalFixture() {
     },
     contentHash: 'sha256:' + '0'.repeat(64), createdAt,
   }
-  const run: WorkflowRun & { executionSemanticsVersion: 2 } = {
+  const run: WorkflowRun & { executionSemanticsVersion: 3 } = {
     id: 'run-approval', workspaceId: version.workspaceId, workflowId: version.workflowId,
-    workflowVersionId: version.id, executionSemanticsVersion: 2,
+    workflowVersionId: version.id, executionSemanticsVersion: 3,
+    authorizationPrincipalId: 'approval-fixture-author',
+    executionLocation: { runnerId: 'local', rootPath: '/synthetic/approval-test', locationRevision: 1, identityHash: 'sha256:' + '1'.repeat(64) },
     agentConfigurationVersionIds: { ...version.agentConfigurationVersionIds }, approval: { ...approval },
     executionCondition: { kind: 'manual' }, executionState: 'waiting', outcome: 'pending', input: {}, createdAt,
   }
@@ -68,7 +70,7 @@ export function legacyApprovalFixture(): { version: WorkflowVersion; configurati
   }
 }
 
-export const routeDenialCases: ReadonlyArray<readonly [string, (version: WorkflowVersionV2) => void]> = [
+export const routeDenialCases: ReadonlyArray<readonly [string, (version: WorkflowVersionV3) => void]> = [
   ['execution adjacency only', (v) => { v.definition.edges = v.definition.edges.filter((e) => e.kind === 'execution') }],
   ['reversed approval', (v) => { Object.assign(v.definition.edges[1]!, { source: 'node-worker', target: 'node-reviewer' }) }],
   ['duplicate identical assignment', (v) => { v.definition.edges.push({ ...v.definition.edges[1]!, id: 'duplicate' }) }],

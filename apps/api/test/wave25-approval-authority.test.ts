@@ -1,5 +1,7 @@
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
+import { repeatDigest, repeatExecutionIdentity, repeatSlotId } from '../src/modules/runs/repeatResolution.js'
+import { repeatTerminalResolution } from '../src/modules/runs/repeatNode.js'
 import { assertOrchestratorGraphAuthority } from '../src/modules/interactions/graphAuthority.js'
 import { approvalFixture, deliveryFixture } from './helpers/wave25ApprovalFixture.js'
 
@@ -7,6 +9,9 @@ function setup() {
   const f = approvalFixture()
   const requester = f.executions[1]!
   const reviewer = f.executions[0]!
+  reviewer.state = 'completed'
+  reviewer.result = { outcome: 'succeeded', output: { reviewed: true } }
+  reviewer.finishedAt = f.createdAt
   const interaction = deliveryFixture().interaction
   const row = {
     run_record: f.run, version_record: f.version, execution_record: requester,
@@ -14,7 +19,25 @@ function setup() {
     workflow_node_id: requester.workflowNodeId,
   }
   const owner = { rows: [{ id: reviewer.id, record: reviewer }] }
-  const query = vi.fn().mockImplementation(async () => ({ rows: [row] }))
+  const executionRow = (execution: typeof reviewer) => ({ record: execution, identity: repeatExecutionIdentity(execution),
+    accepted: execution.id === reviewer.id, execution_id: execution.id, run_id: f.run.id,
+    workflow_node_id: execution.workflowNodeId, agent_id: execution.agentId, attempt: execution.attempt,
+    slot_id: repeatSlotId(f.run.id, { nodeId: execution.workflowNodeId, occurrence: null }),
+    occurrence_id: null, execution_occurrence_id: null, identity_occurrence_id: null,
+    technical_attempt: execution.attempt, input_json: JSON.stringify(execution.input), input_digest: repeatDigest(execution.input), occurrence_record: null })
+  const query = vi.fn().mockImplementation(async (sql: string, parameters: unknown[]) => {
+    if (sql.includes("as semantics from runs")) return { rows: [{ semantics: '3' }] }
+    if (sql.includes('r.id as run_id')) return { rows: [{ run_record: f.run, version_record: f.version,
+      run_id: f.run.id, workspace_id: f.run.workspaceId, workflow_id: f.run.workflowId, workflow_version_id: f.version.id }] }
+    if (sql.includes('join run_repeat_executions')) return { rows: [executionRow(parameters[0] === reviewer.id ? reviewer : requester)] }
+    if (sql.includes('from run_repeat_resolutions')) return { rows: [{
+      record: repeatTerminalResolution(f.version, { workspaceId: f.run.workspaceId, workflowId: f.run.workflowId,
+        workflowVersionId: f.version.id, runId: f.run.id, executionSemanticsVersion: 3 }, { nodeId: reviewer.workflowNodeId, occurrence: null }, reviewer),
+      execution_id: reviewer.id, source_occurrence_id: null }] }
+    if (sql.includes('from run_repeat_results')) return { rows: [{ execution_id: reviewer.id, run_id: f.run.id,
+      occurrence_id: null, result_json: JSON.stringify(reviewer.result), result_digest: repeatDigest(reviewer.result) }] }
+    return { rows: [row] }
+  })
   return { ...f, requester, reviewer, interaction, row, owner, query, client: { query } as unknown as pg.Pool }
 }
 
