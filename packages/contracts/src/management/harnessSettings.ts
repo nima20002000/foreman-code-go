@@ -30,7 +30,7 @@ export const HarnessMcpChangeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('enable'), name: Name, enabled: z.boolean() }).strict(),
 ])
 export type HarnessMcpChange = z.infer<typeof HarnessMcpChangeSchema>
-export const HarnessMcpManagedPresetSchema = z.enum(['operator', 'linear'])
+export const HarnessMcpManagedPresetSchema = z.enum(['operator', 'worker', 'linear'])
 export type HarnessMcpManagedPreset = z.infer<typeof HarnessMcpManagedPresetSchema>
 const HarnessMcpManagedBase = z.object({ harness: Harness, preset: HarnessMcpManagedPresetSchema,
   commandId: CommandId, expectedRevision: Revision })
@@ -47,7 +47,7 @@ export const HarnessMcpServerSummarySchema = z.object({
 }).strict()
 export const HarnessMcpListResultSchema = z.object({
   harness: Harness, revision: Revision, servers: z.array(HarnessMcpServerSummarySchema),
-  presets: z.object({ operator: z.enum(['missing', 'installed', 'disabled', 'mismatch', 'inherited']),
+  presets: z.object({ worker: z.enum(['missing', 'installed', 'disabled', 'mismatch', 'inherited']).optional(), operator: z.enum(['missing', 'installed', 'disabled', 'mismatch', 'inherited']),
     linear: z.enum(['missing', 'installed', 'disabled', 'mismatch', 'inherited']) }).strict().optional(),
   checkedAt: z.string().datetime({ offset: true }), scope: z.literal('native-user'),
 }).strict()

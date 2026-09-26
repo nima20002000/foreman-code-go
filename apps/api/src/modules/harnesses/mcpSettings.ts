@@ -73,6 +73,7 @@ export class HarnessMcpSettingsService {
         const snapshot = await this.adapters[harness].read(signal)
         const list = publicMcpList(snapshot)
         return { ...list, ...(this.operatorEndpoint ? { presets: {
+          worker: managedStatus(snapshot, 'worker', this.operatorEndpoint),
           operator: managedStatus(snapshot, 'operator', this.operatorEndpoint),
           linear: managedStatus(snapshot, 'linear', this.operatorEndpoint),
         } } : {}) }
