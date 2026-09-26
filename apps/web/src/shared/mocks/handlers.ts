@@ -3,7 +3,7 @@ import { http, HttpResponse, type RequestHandler } from 'msw'
 import { settingsExperienceHandlers, resetSettingsExperienceFixtures } from './settingsExperienceHandlers'
 import { currentWorkflowFixture as makeWave25Fixture } from './currentWorkflow'
 import { ApiErrorResponseSchema, CreateMessageRequestSchema, SaveHarnessDefaultsRequestSchema, } from '@graphql/contracts'
-import { type WorkflowDefinitionV3 as WorkflowDefinition, type WorkflowRunV3 as WorkflowRun } from '@graphql/contracts/wave25'
+import { CURRENT_WORKFLOW_CAPABILITIES, type WorkflowDefinitionV3 as WorkflowDefinition, type WorkflowRunV3 as WorkflowRun } from '@graphql/contracts/wave25'
 import {
   AgentDefaultsUpdateInputSchema,
   HarnessConfigurationCheckInputSchema,
@@ -396,13 +396,7 @@ export const handlers: RequestHandler[] = [
     if (managedWorkspaces.has(workspaceId)) managedWorkspaces.set(workspaceId, value)
     return HttpResponse.json({ value, replayed: false })
   }),
-  http.get('/api/management/repeats/capabilities', () => HttpResponse.json({
-    contractVersion: 1, executionSemanticsVersion: 3, supported: false,
-    authoring: { flatScopesOnly: true, nesting: false, arbitraryCycles: false, maxOccurrencesMin: 1,
-      maxOccurrencesMax: 2147483647, explicitLimitExit: true, earlyExitOutcome: true },
-    availability: { savedAuthoring: true, persistedReadback: true, runtimeAdmission: false, meaningfulEdit: true,
-      reasons: ['NATIVE_START_NOT_READY'] },
-  })),
+  http.get('/api/management/workflows/capabilities/v3', () => HttpResponse.json(CURRENT_WORKFLOW_CAPABILITIES)),
   http.patch('/api/management/workspaces/:workspaceId/workflows/:workflowId', async ({ params, request }) => {
     const workspaceId = String(params.workspaceId)
     const fixture = getMockFixture(workspaceId)
