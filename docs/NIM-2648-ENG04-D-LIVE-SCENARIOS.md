@@ -1,9 +1,12 @@
 # NIM-2648 / ENG04-D — ENG-S3-ONLY reusable gate scenarios
 
-This document prepares the later NIM-2649 live testers. This Web lane did **not** run the mounted browser, a hosted/local native Codex or OpenCode session, the authenticated production app, or a PostgreSQL-17 qualification cluster.
+This document prepares NIM-2649 live testing. The current D checkpoint ran authenticated HTTP/MCP and PostgreSQL 17 tests, but did not run the mounted browser or a real Codex/OpenCode workflow.
 
-Source delta base: `c6c9e61e8a1991e7c8a67f2dd0ba82aa47fdf26a`.
-The observed PR head while this handoff was prepared was `13a43e6eea2256c0cb44076a76dfd0227829886d`; its only delta from the declared base is the independent code-line reporting commit. The D bundle intentionally does not touch those files.
+Current regression checkpoint base: `c327f4a7a70635643c9302fd9ba80bfa1ea41ac2`.
+The current automated evidence and remaining boundaries are recorded in
+`NIM-2648-ENG04-D-RETIREMENT-INVENTORY.md`. This document remains the live
+qualification contract; automated PostgreSQL and synthetic runtime passes do
+not mark these native scenarios complete.
 
 ## ENG-S3-ONLY evidence rule
 

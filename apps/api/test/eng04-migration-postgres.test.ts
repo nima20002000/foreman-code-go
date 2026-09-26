@@ -6,7 +6,7 @@ import { repeatOccurrenceMigration } from '../src/infrastructure/repeatOccurrenc
 import {
   acceptResult, acceptedResult, decision, digest, disposableDatabase, evidenceTables,
   execution, finishOccurrence, insertDecision, insertExecution, insertOccurrence,
-  insertResolution, installLegacy, legacyReplay, now, occurrence, seedRun, text, transaction,
+  insertResolution, installPreRepeatRegistry, now, occurrence, seedRun, text, transaction,
   type JsonObject,
 } from './eng04-migration-fixtures.js'
 
@@ -77,60 +77,14 @@ async function schemaState(pool: pg.Pool) {
     versions: versions.rows, repeat: repeat.rows, functions: functions.rows }
 }
 
-postgresDescribe('ENG04 migration successor — real PostgreSQL 17 compatibility gate', () => {
-  it('migrates the exact preceding registry once, without rewriting legacy JSON or tuples', async () => {
-    await disposableDatabase(async (pool) => {
-      await installLegacy(pool)
-      const legacy = await transaction(pool, async (sql) => {
-        const v1 = await seedRun(sql, 'forward-v1', 1), v2 = await seedRun(sql, 'forward-v2', 2)
-        expect(await legacyReplay(sql, v1, 'forward-v1-execution', false)).toBe(1)
-        expect(await legacyReplay(sql, v2, 'forward-v2-execution', false)).toBe(1)
-        return [v1, v2]
-      })
-      const snapshots = async () => ({
-        versions: (await pool.query('select id,record::text,execution_semantics_version,xmin::text,ctid::text from workflow_versions order by id')).rows,
-        runs: (await pool.query('select id,record::text,xmin::text,ctid::text from runs order by id')).rows,
-        executions: (await pool.query('select id,record::text,xmin::text,ctid::text from harness_executions order by id')).rows,
-      })
-      const before = await snapshots()
-      const oldVersions = (await pool.query('select version,applied_at::text from application_migrations order by version')).rows
-      await applyApplicationMigrations(pool)
-      expect(await snapshots()).toEqual(before)
-      expect((await pool.query('select version,applied_at::text from application_migrations where version=any($1::integer[]) order by version',
-        [oldVersions.map((row) => row.version)])).rows).toEqual(oldVersions)
-      expect((await pool.query('select count(*)::integer as n from application_migrations where version=$1',
-        [repeatOccurrenceMigration.version])).rows[0]!.n).toBe(1)
+postgresDescribe('ENG04 migration successor — real PostgreSQL 17 V3 constraint gate', () => {
+  it('installs the current registry idempotently and retains the exact execution identity FK target', async () => {
+    await migrated(async (pool) => {
       const installed = await schemaState(pool)
       await applyApplicationMigrations(pool)
       expect(await schemaState(pool)).toEqual(installed)
       expect(migrations.filter((item) => item.version === repeatOccurrenceMigration.version)).toHaveLength(1)
       expect(new Set(migrations.map((item) => item.version)).size).toBe(migrations.length)
-      for (const run of legacy) {
-        // The explicitly proposed native-owner predicate, not a claim that the
-        // unchanged production writer can infer a partial unique index.
-        expect(await transaction(pool, (sql) => legacyReplay(sql, run, `${run.id}-replay`, true))).toBe(0)
-        expect((await pool.query("select count(*)::integer as n from run_activity where run_id=$1 and kind='node_scheduled'", [run.id])).rows[0]!.n).toBe(1)
-      }
-      await transaction(pool, (sql) => seedRun(sql, 'forward-v3', 3))
-      expect((await pool.query("select execution_semantics_version from workflow_versions where id='forward-v3-version'")).rows[0]!.execution_semantics_version).toBe(3)
-      const pin = (await pool.query(`select convalidated,pg_get_constraintdef(oid) as definition from pg_constraint
-        where conrelid='workflow_versions'::regclass and conname='run_graph_semantics_pin_matches_record'`)).rows[0]!
-      expect(pin.convalidated).toBe(true)
-      expect(pin.definition).toContain('COALESCE')
-    })
-  }, timeout)
-
-  it('exposes the native writer dependency and retains v1/v2 uniqueness and the four-column FK target', async () => {
-    await migrated(async (pool) => {
-      const run = await transaction(pool, (sql) => seedRun(sql, 'legacy-key', 2))
-      await rejectsTransaction(pool, (sql) => legacyReplay(sql, run, 'old-inference', false), ['42P10'])
-      expect(await transaction(pool, (sql) => legacyReplay(sql, run, 'legacy-one', true))).toBe(1)
-      expect(await transaction(pool, (sql) => legacyReplay(sql, run, 'legacy-other-id', true))).toBe(0)
-      await rejectsTransaction(pool, (sql) => sql.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
-        select 'legacy-duplicate',run_id,workflow_node_id,agent_id,attempt,record from harness_executions where id='legacy-one'`), ['23505'])
-      await rejectsTransaction(pool, (sql) => sql.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
-        select 'legacy-named',run_id,workflow_node_id,agent_id,attempt,record from harness_executions where id='legacy-one'
-        on conflict on constraint harness_executions_run_id_workflow_node_id_attempt_key do nothing`), ['42704'])
       const target = await pool.query(`select i.indisunique,i.indisvalid,i.indpred is null as unconditional,
         pg_get_indexdef(i.indexrelid) as definition from pg_index i where i.indexrelid='run_graph_execution_identity'::regclass`)
       expect(target.rows[0]).toMatchObject({ indisunique: true, indisvalid: true, unconditional: true })
@@ -138,18 +92,12 @@ postgresDescribe('ENG04 migration successor — real PostgreSQL 17 compatibility
       const fks = await pool.query(`select conname from pg_constraint where contype='f'
         and confrelid='harness_executions'::regclass and conindid='run_graph_execution_identity'::regclass`)
       expect(fks.rows.length).toBeGreaterThan(0)
-      await transaction(pool, (sql) => sql.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
-        select 'legacy-attempt-2',run_id,workflow_node_id,agent_id,2,
-          jsonb_set(jsonb_set(record,'{id}','"legacy-attempt-2"'),'{attempt}','2')
-        from harness_executions where id='legacy-one'`))
-      expect((await pool.query("select count(*)::integer as n from harness_executions where run_id=$1 and repeat_occurrence_id is null", [run.id])).rows[0]!.n).toBe(2)
     })
   }, timeout)
 
   it('rolls back complete DDL after a transaction failure and rejects semantics-check drift atomically', async () => {
     await disposableDatabase(async (pool) => {
-      await installLegacy(pool)
-      await transaction(pool, (sql) => seedRun(sql, 'rollback-legacy', 1))
+      await installPreRepeatRegistry(pool)
       const before = await schemaState(pool)
       await rejectsTransaction(pool, async (sql) => {
         await sql.query(repeatOccurrenceMigration.sql)
@@ -235,7 +183,7 @@ postgresDescribe('ENG04 migration successor — real PostgreSQL 17 compatibility
     })
   }, timeout)
 
-  it('rejects malformed caps, foreign scope, unknown semantics and legacy retagging without residual rows', async () => {
+  it('rejects malformed caps, foreign scope, unknown semantics and changed V3 pins without residual rows', async () => {
     await migrated(async (pool) => {
       for (const [index, cap] of [null, '2', 0, 1.5, 2147483648].entries()) {
         await rejectsTransaction(pool, async (sql) => {
@@ -246,10 +194,10 @@ postgresDescribe('ENG04 migration successor — real PostgreSQL 17 compatibility
           await insertOccurrence(sql, occurrence(run))
         }, ['P0001'], /REPEAT_(LIMIT|BLOCK)_INVALID/)
       }
-      const [run, foreign, legacy] = await transaction(pool, async (sql) => [
-        await seedRun(sql, 'scope-one'), await seedRun(sql, 'scope-two'), await seedRun(sql, 'scope-legacy', 1),
+      const [run, foreign] = await transaction(pool, async (sql) => [
+        await seedRun(sql, 'scope-one'), await seedRun(sql, 'scope-two'),
       ])
-      assert.ok(run && foreign && legacy)
+      assert.ok(run && foreign)
       for (const field of ['workspaceId', 'workflowId', 'workflowVersionId'] as const) {
         const first = occurrence(run)
         first.record.identity.scope[field] = field === 'workspaceId' ? foreign.workspaceId : field === 'workflowId' ? foreign.workflowId : foreign.versionId
@@ -261,12 +209,9 @@ postgresDescribe('ENG04 migration successor — real PostgreSQL 17 compatibility
       const nonmember = occurrence(run, 1, undefined, 'other-block')
       await transaction(pool, (sql) => insertOccurrence(sql, nonmember))
       await rejectsTransaction(pool, (sql) => insertExecution(sql, execution(run, nonmember, { nodeId: 'body' })), ['P0001'], /REPEAT_EXECUTION_SCOPE_CONFLICT/)
-      await rejectsTransaction(pool, (sql) => insertOccurrence(sql, occurrence(legacy)), ['P0001'], /REPEAT_SCOPE_CONFLICT/)
-      await rejectsTransaction(pool, (sql) => sql.query(`update workflow_versions set execution_semantics_version=3,
-        record=jsonb_set(record,'{executionSemanticsVersion}','3') where id=$1`, [legacy.versionId]), ['P0001'], /REPEAT_VERSION_IMMUTABLE/)
       await rejectsTransaction(pool, (sql) => sql.query(`update workflow_versions set execution_semantics_version=4,
-        record=jsonb_set(record,'{executionSemanticsVersion}','4') where id=$1`, [legacy.versionId]), ['23514'])
-      await rejectsTransaction(pool, (sql) => sql.query(`update runs set record=jsonb_set(record,'{executionSemanticsVersion}','3') where id=$1`, [legacy.id]), ['P0001'], /REPEAT_RUN_PIN_IMMUTABLE/)
+        record=jsonb_set(record,'{executionSemanticsVersion}','4') where id=$1`, [run.versionId]), ['P0001'], /REPEAT_VERSION_IMMUTABLE/)
+      await rejectsTransaction(pool, (sql) => sql.query(`update runs set record=jsonb_set(record,'{executionSemanticsVersion}','2') where id=$1`, [run.id]), ['P0001'], /REPEAT_RUN_PIN_IMMUTABLE/)
       expect((await pool.query("select count(*)::integer as n from runs where id like 'bad-cap-%'")).rows[0]!.n).toBe(0)
     })
   }, timeout)

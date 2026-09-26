@@ -174,7 +174,7 @@ describe('NIM-2648 ENG04-D bounded-repeat raw identity/digest matrix', () => {
     harness.state().nativeSessions.delete(work.id)
     harness.blockSettlement('APPROVAL_SETTLEMENT_PENDING', work.id)
 
-    await expect(harness.accept(work.id)).rejects.toMatchObject({ code: 'REPEAT_BOUNDARY_PENDING' })
+    await expect(harness.accept(work.id)).rejects.toMatchObject({ code: 'REPEAT_NATIVE_IDENTITY_CONFLICT' })
     expect(harness.events.includes('settlement')).toBe(false)
     expect(harness.state().results.has(work.id)).toBe(false)
 

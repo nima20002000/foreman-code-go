@@ -1,6 +1,5 @@
-import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@graphql/contracts'
+import { HarnessExecutionSchema } from '@graphql/contracts'
 import {
   AcceptedWorkflowRunV3Schema,
   ExecutableWorkflowV3Schema,
@@ -8,9 +7,9 @@ import {
   SavedRunVersionSnapshotSchema,
   SavedWorkflowVersionDetailSchema,
   WorkflowVersionV3Schema,
-  canonicalGraphJson,
 } from '@graphql/contracts/wave25'
 
+import { at, digest, location, noRepeatScenario, runCandidate } from './helpers/eng04ArchitectureScenarios.js'
 import { runStartSemantics } from '../src/modules/runs/repeatStartDispatch.js'
 import {
   exitDecision,
@@ -18,144 +17,6 @@ import {
   makeSimpleRepeatFixture,
   repeatExitOutput,
 } from './helpers/eng04RepeatFixtures.js'
-
-type NoRepeatShape = 'single' | 'sequential' | 'parallel' | 'conditional' | 'approval'
-
-type RawScenario = {
-  id: string
-  shape: NoRepeatShape
-  version: Record<string, unknown>
-  configurations: Array<ReturnType<typeof AgentConfigurationVersionSchema.parse>>
-  nodeIds: string[]
-}
-
-const at = '2026-09-25T14:00:00.000Z'
-const digest = (value: unknown) => `sha256:${createHash('sha256').update(canonicalGraphJson(value)).digest('hex')}`
-const edge = (id: string, source: string, target: string) => ({ id, kind: 'execution' as const, source, target })
-const approvalEdge = (id: string, source: string, target: string) => ({ id, kind: 'approval' as const, source, target })
-
-function configuration(workspaceId: string, scenario: string, name: string, role: 'coder' | 'orchestrator' = 'coder') {
-  const agentId = `agent-${scenario}-${name}`
-  return AgentConfigurationVersionSchema.parse({
-    id: `config-${scenario}-${name}`,
-    workspaceId,
-    agentId,
-    productRole: role,
-    version: 1,
-    harness: {
-      harness: 'codex',
-      model: 'synthetic-no-native-call',
-      reasoningEffort: 'low',
-      sandbox: 'read-only',
-      serviceTier: 'standard',
-    },
-    prompt: {},
-    assignedSkills: [],
-    contentHash: `sha256:${'0'.repeat(64)}`,
-    createdAt: at,
-  })
-}
-
-function noRepeatScenario(id: string, shape: NoRepeatShape): RawScenario {
-  const workspaceId = `ws-${id}`
-  const workflowId = `wf-${id}`
-  const names = shape === 'single' ? ['a']
-    : shape === 'sequential' || shape === 'approval' ? ['a', 'b']
-      : shape === 'parallel' ? ['a', 'b', 'c', 'e', 'd']
-        : ['a', 'b', 'c', 'd']
-  const configurations = names.map((name) => configuration(workspaceId, id, name,
-    shape === 'approval' && name === 'a' ? 'orchestrator' : 'coder'))
-  const nodes = configurations.map((item) => ({ id: `node-${id}-${item.agentId.split('-').at(-1)}`, agentId: item.agentId,
-    name: `S3 ${item.agentId}` }))
-  const node = (name: string) => nodes[names.indexOf(name)]!.id
-  const edges = shape === 'single' ? []
-    : shape === 'sequential' ? [edge(`${id}-a-b`, node('a'), node('b'))]
-      : shape === 'parallel' ? [
-        edge(`${id}-a-b`, node('a'), node('b')),
-        edge(`${id}-a-c`, node('a'), node('c')),
-        edge(`${id}-c-e`, node('c'), node('e')),
-        edge(`${id}-b-d`, node('b'), node('d')),
-        edge(`${id}-e-d`, node('e'), node('d')),
-      ]
-        : shape === 'conditional' ? [
-          edge(`${id}-a-b`, node('a'), node('b')),
-          edge(`${id}-a-c`, node('a'), node('c')),
-          edge(`${id}-b-d`, node('b'), node('d')),
-          edge(`${id}-c-d`, node('c'), node('d')),
-        ]
-          : [edge(`${id}-a-b`, node('a'), node('b')), approvalEdge(`${id}-approval-a-b`, node('a'), node('b'))]
-
-  if (shape === 'conditional') {
-    nodes[0] = {
-      ...nodes[0]!,
-      choice: { outcomes: [
-        { outcome: 'left', target: { kind: 'edge' as const, relationshipId: `${id}-a-b` } },
-        { outcome: 'right', target: { kind: 'edge' as const, relationshipId: `${id}-a-c` } },
-      ] },
-    } as typeof nodes[number]
-  }
-
-  const approval = shape === 'approval'
-    ? { handler: 'orchestrator' as const, designatedOrchestratorAgentId: configurations[0]!.agentId }
-    : { handler: 'user' as const }
-  const definition = {
-    id: workflowId,
-    workspaceId,
-    name: `S3 ${id}`,
-    version: 1,
-    executionSemanticsVersion: 3 as const,
-    entryNodeId: nodes[0]!.id,
-    executionCondition: { kind: 'manual' as const },
-    approval,
-    executionPolicy: { maxParallelism: shape === 'parallel' || shape === 'conditional' ? 3 : 1, maxNodeExecutions: nodes.length },
-    nodes,
-    edges,
-    // Canonical S3-01..04 representation: repeat is ABSENT, never null/empty/cap-one.
-  }
-  const pins = Object.fromEntries(configurations.map((item) => [item.agentId, item.id]))
-  const version = {
-    id: `wv-${id}`,
-    workspaceId,
-    workflowId,
-    version: 1,
-    executionSemanticsVersion: 3 as const,
-    entryNodeId: nodes[0]!.id,
-    definition,
-    approval,
-    agentConfigurationVersionIds: pins,
-    contentHash: digest({ definition, pins }),
-    createdAt: at,
-  }
-  return { id, shape, version, configurations, nodeIds: nodes.map((item) => item.id) }
-}
-
-function location(id: string) {
-  return { runnerId: `runner-${id}`, rootPath: `/synthetic/${id}`, locationRevision: 9,
-    identityHash: digest({ device: id, inode: 9 }) }
-}
-
-function runCandidate(scenario: RawScenario, input: Record<string, unknown>) {
-  const version = scenario.version as {
-    id: string; workspaceId: string; workflowId: string; agentConfigurationVersionIds: Record<string, string>;
-    approval: unknown; definition: { executionCondition: unknown }
-  }
-  return {
-    id: `run-${scenario.id}`,
-    workspaceId: version.workspaceId,
-    workflowId: version.workflowId,
-    workflowVersionId: version.id,
-    executionSemanticsVersion: 3 as const,
-    agentConfigurationVersionIds: version.agentConfigurationVersionIds,
-    approval: version.approval,
-    executionLocation: location(scenario.id),
-    authorizationPrincipalId: `principal-${scenario.id}`,
-    executionCondition: version.definition.executionCondition,
-    executionState: 'queued' as const,
-    outcome: 'pending' as const,
-    input,
-    createdAt: at,
-  }
-}
 
 const noRepeatCases = [
   ['S3-01-single', 'single'],
@@ -172,9 +33,7 @@ describe('NIM-2648 ENG04-D reusable ENG-S3-ONLY architecture matrix', () => {
     expect(Object.hasOwn(rawDefinition, 'repeat')).toBe(false)
     expect(rawDefinition.executionSemanticsVersion).toBe(3)
 
-    // These are required positive assertions. At c6c9e61 they expose A's current
-    // repeat-required V3 schema gap; do not change them to safeParse(false), skip,
-    // an empty repeat plan or a V2 projection merely to make this lane green.
+    // Ordinary workflows use absent repeat data throughout the same V3 family.
     const version = WorkflowVersionV3Schema.parse(scenario.version)
     expect(ExecutableWorkflowV3Schema.parse({ version, configurations: scenario.configurations }).version).toEqual(version)
     expect(SavedWorkflowVersionDetailSchema.parse({ version }).version).toEqual(version)
@@ -252,7 +111,7 @@ describe('NIM-2648 ENG04-D reusable ENG-S3-ONLY architecture matrix', () => {
   it('S3-05 preserves bounded-repeat early exit and exact finite limit exit', () => {
     const fixture = makeSimpleRepeatFixture(2, { suffix: 'eng04-d-s3-05' })
     expect(fixture.version.executionSemanticsVersion).toBe(3)
-    expect(fixture.version.definition.repeat.blocks).toHaveLength(1)
+    expect(fixture.version.definition.repeat!.blocks).toHaveLength(1)
 
     const first = firstOccurrence(fixture)
     const early = exitDecision(fixture, first.occurrence, 'pass', 's3-05-early-execution')

@@ -66,8 +66,8 @@ export async function transaction<T>(pool: pg.Pool, work: (sql: pg.PoolClient) =
   } finally { client.release() }
 }
 
-/** Exact preceding registry SQL, not a substitute hand-written legacy schema. */
-export async function installLegacy(pool: pg.Pool): Promise<void> {
+/** Historical migration setup only; no retired execution records are seeded. */
+export async function installPreRepeatRegistry(pool: pg.Pool): Promise<void> {
   await transaction(pool, async (sql) => {
     await sql.query('select pg_advisory_xact_lock($1)', [810_001])
     for (const migration of migrations) {
@@ -83,7 +83,7 @@ export interface RunFixture {
   workspaceId: string
   workflowId: string
   versionId: string
-  semantics: 1 | 2 | 3
+  semantics: 3
   version: JsonObject
   record: JsonObject
   cap: number
@@ -95,7 +95,7 @@ export interface RunFixture {
  * include the exact columns/JSON pins the migration consumes; no launch, owner,
  * approval acknowledgement or native closure is simulated by these inserts.
  */
-export async function seedRun(sql: Sql, id: string, semantics: 1 | 2 | 3 = 3,
+export async function seedRun(sql: Sql, id: string, semantics: 3 = 3,
   options: { cap?: number; versionPatch?: (version: JsonObject) => void } = {}): Promise<RunFixture> {
   const workspaceId = `${id}-workspace`, workflowId = `${id}-workflow`, versionId = `${id}-version`
   const agentIds = { body: `${id}-body-agent`, outside: `${id}-outside-agent`, other: `${id}-other-agent` }
@@ -119,11 +119,11 @@ export async function seedRun(sql: Sql, id: string, semantics: 1 | 2 | 3 = 3,
     ] } } : {}),
   }
   const version: JsonObject = { id: versionId, workspaceId, workflowId, version: 1, entryNodeId: 'body',
-    definition, agentConfigurationVersionIds: pins, ...(semantics === 1 ? {} : { executionSemanticsVersion: semantics }) }
+    definition, agentConfigurationVersionIds: pins, executionSemanticsVersion: semantics }
   options.versionPatch?.(version)
   const record: JsonObject = { id, workspaceId, workflowId, workflowVersionId: versionId,
     agentConfigurationVersionIds: pins, input: { prompt: 'migration fixture' },
-    executionState: 'running', outcome: 'pending', ...(semantics === 1 ? {} : { executionSemanticsVersion: semantics }) }
+    executionState: 'running', outcome: 'pending', executionSemanticsVersion: semantics }
   await sql.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId, text({ id: workspaceId })])
   await sql.query('insert into workflows(id,workspace_id,record) values($1,$2,$3::jsonb)', [workflowId, workspaceId, text({ id: workflowId, workspaceId })])
   for (const [nodeId, agentId] of Object.entries(agentIds)) {
@@ -286,19 +286,4 @@ export async function finishOccurrence(sql: Sql, value: ExecutionFixture, outcom
   await sql.query(`insert into run_repeat_effects(run_id,effect_kind,entity_id,payload_digest,owner_id,owner_fence)
     values($1,'terminal.accept',$2,$3,'sql-fixture-owner','1')`, [value.run.id, value.id, digest(route.record)])
   return { decision: route, successor }
-}
-
-export async function legacyReplay(sql: Sql, run: RunFixture, id: string, predicate: boolean): Promise<number> {
-  const record = { id, runId: run.id, workflowNodeId: 'body', agentId: run.agentIds.body,
-    agentConfigurationVersionId: run.configIds.body, attempt: 1, state: 'queued' }
-  const rows = await sql.query(`with occurrence as (
-    insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
-      values($1,$2,'body',$3,1,$4::jsonb)
-      on conflict (run_id,workflow_node_id,attempt) ${predicate ? 'where repeat_occurrence_id is null' : ''}
-      do nothing returning record
-    ), scheduled as (
-      insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
-        select $2,'langgraph','node_scheduled',$1,$5::timestamptz,'{}'::jsonb from occurrence returning sequence
-    ) select occurrence.record from occurrence cross join scheduled`, [id, run.id, run.agentIds.body, text(record), now])
-  return rows.rowCount ?? 0
 }

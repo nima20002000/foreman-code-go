@@ -29,11 +29,10 @@ function startSetup() {
 }
 
 describe('ENG04 shared exact immutable SQL readers', () => {
-  it('validates v3 physical pins/hash; retained v2 does not get rehashed under a new algorithm', () => {
+  it('validates v3 physical pins/hash and rejects retired physical execution tags', () => {
     const t = sharedFixture()
     expect(readImmutableWorkflowVersion(t.versionRow)).toEqual(t.version)
-    const v2 = t.f.version
-    expect(readImmutableWorkflowVersion({ ...t.versionRow, id: v2.id, execution_semantics_version: 2, record: v2 })).toEqual(v2)
+    expect(() => readImmutableWorkflowVersion({ ...t.versionRow, execution_semantics_version: 2 })).toThrow()
     expect(readImmutableAgentConfiguration(t.configurations[0]!)).toEqual(t.f.configurations[0])
   })
   it('rejects physical scope/tag/version/entry/hash mismatches rather than accepting plausible JSON', () => {
@@ -50,18 +49,17 @@ describe('ENG04 shared exact immutable SQL readers', () => {
       expect(() => readImmutableAgentConfiguration(row)).toThrow()
     }
   })
-  it('uses explicit v3 read methods and keeps old engine getters and repository insert closed', async () => {
+  it('uses the same exact V3 reads for engine and saved views and keeps direct inserts closed', async () => {
     const t = sharedFixture(), query = vi.fn().mockResolvedValue({ rows: [t.versionRow], rowCount: 1 })
     const repository = new PostgresWorkflowRepository({ query } as unknown as pg.Pool)
     expect(await repository.getSavedVersion(t.version.id)).toEqual(t.version)
     expect(await repository.getCurrentSavedVersion(t.run.workspaceId, t.run.workflowId)).toEqual(t.version)
     expect(query.mock.calls[1]![0]).toContain('version.workspace_id=workflow.workspace_id and version.workflow_id=workflow.id')
-    await expect(repository.getVersion(t.version.id)).rejects.toThrow()
-    await expect(repository.getCurrentVersion(t.run.workspaceId, t.run.workflowId)).rejects.toThrow()
+    expect(await repository.getVersion(t.version.id)).toEqual(t.version)
+    expect(await repository.getCurrentVersion(t.run.workspaceId, t.run.workflowId)).toEqual(t.version)
     query.mockClear()
-    await expect(repository.insertVersion(t.version)).rejects.toMatchObject({ code: 'REPEAT_SAVE_ADMISSION_REQUIRED' })
-    expect(query).not.toHaveBeenCalled()
-    await expect(repository.save(t.run.workspaceId, t.version.definition)).rejects.toMatchObject({ code: 'REPEAT_SAVE_ADMISSION_REQUIRED' })
+    expect(repository).not.toHaveProperty('insertVersion')
+    expect(repository).not.toHaveProperty('save')
     expect(query).not.toHaveBeenCalled()
   })
   it('keeps history grants explicit and validates the same exact pin in list and get', async () => {

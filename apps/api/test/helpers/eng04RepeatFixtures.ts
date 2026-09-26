@@ -301,6 +301,7 @@ export interface RepeatHarnessState {
   occurrences: Map<string, { record: RepeatOccurrenceV1; input_json: string; input_digest: string }>
   slots: Map<string, { slot_id: string; occurrence_id: string | null; workflow_node_id: string; input_json: string; input_digest: string }>
   executions: Map<string, HarnessExecutionRow>
+  nativeReservations: Map<string, { runId: string; reservation: unknown; digest: string }>
   nativeSessions: Map<string, HarnessNativeSessionRow>
   nativeClosures: Map<string, HarnessNativeClosureRow>
   resolutions: Map<string, RepeatResolution>
@@ -356,6 +357,7 @@ export function createRepeatHarness(fixture = makeSimpleRepeatFixture()): Repeat
     occurrences: new Map(),
     slots: new Map(),
     executions: new Map(),
+    nativeReservations: new Map(),
     nativeSessions: new Map(),
     nativeClosures: new Map(),
     resolutions: new Map(),
@@ -455,6 +457,10 @@ export function createRepeatHarness(fixture = makeSimpleRepeatFixture()): Repeat
           identity_occurrence_id: null,
           technical_attempt: 0,
         })
+      } else if (q.startsWith('insert into workflow_native_entries')) {
+        if (state.nativeReservations.has(v[0]!)) throw new Error('Duplicate native reservation')
+        state.nativeReservations.set(v[0]!, { runId: v[1]!, reservation: JSON.parse(v[2]!), digest: v[4]! })
+        rows = [{ execution_id: v[0] }]
       } else if (q.startsWith('insert into run_repeat_executions')) {
         const row = state.executions.get(v[0]!)
         if (!row) throw new Error(`Missing execution ${v[0]}`)

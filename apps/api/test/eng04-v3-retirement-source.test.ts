@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
@@ -29,7 +29,8 @@ describe('NIM-2648 ENG04-D active execution-semantics retirement source guard', 
     expect(engine).not.toContain('executeOneShotRuntime')
     expect(engine).not.toContain('isOneShotRun')
     expect(engine).not.toContain('WorkflowVersionV2Schema')
-    expect(production).toContain('repeatStartPublication')
+    expect(production).toContain('createCurrentNativeProductionFactory')
+    expect(source('../src/modules/runs/workflowProduction.ts')).toContain('startPublication: repeatStartPublication')
     expect(management).not.toContain('RunStartV3InputSchema.parse(command), undefined')
   })
 
@@ -40,19 +41,18 @@ describe('NIM-2648 ENG04-D active execution-semantics retirement source guard', 
 
     expect(routes).toContain("services.runs.start(requirePrincipal(request), 'http'")
     expect(mcp).toContain("context.services.runs.start(context.principal, 'mcp', input)")
-    expect(admission).not.toContain('RunStartInputSchema')
+    expect(admission).not.toMatch(/\bRunStartInputSchema\b/)
     expect(admission).not.toContain('RunStartV2InputSchema')
   })
 
   it('keeps the mounted Board on current V3 run/read state and treats repeat as optional V3 authoring state', () => {
     const board = source('../../web/src/features/workflow-board/client.ts')
-    const authoring = source('../../web/src/features/repeats/useRepeatAuthoring.ts')
+    expect(existsSync(new URL('../../web/src/features/repeats/useRepeatAuthoring.ts', import.meta.url))).toBe(false)
 
     expect(board).not.toContain('CompatibleRunDetailsSchema')
     expect(board).not.toMatch(/executionSemanticsVersion[^\n]+:\s*1/)
-    expect(authoring).not.toContain('savedSemantics: 2 | 3')
-    expect(authoring).not.toContain("error.code !== 'WORKFLOW_VERSION_UNSUPPORTED'")
-    expect(authoring).not.toContain('savedSemantics: 2')
+    expect(board).toContain('CurrentRunDetailsSchema')
+    expect(board).toContain('RepeatGraphScopeV3Schema.parse')
   })
 
   it('uses the same verified current cut for V3 snapshot and complete delta and keeps production reads qualified', () => {
@@ -63,7 +63,8 @@ describe('NIM-2648 ENG04-D active execution-semantics retirement source guard', 
     expect(uses).toBeGreaterThanOrEqual(3)
     expect(reader).toContain('readRepeatGraphSnapshot')
     expect(reader).toContain('readRepeatGraphPage')
-    expect(production).toMatch(/qualifiedReads:\s*true,\s*qualifiedRepeatReads:\s*true/)
+    expect(production).toMatch(/new RunGraphReadService\(database.pool,\s*\{ qualifiedReads: true \}\)/)
+    expect(source('../src/modules/run-graph/readService.ts')).toContain('new RepeatGraphReadService')
   })
 
   it('flags compatibility-only PostgreSQL fixtures until the gate retires them rather than treating them as current positives', () => {

@@ -34,14 +34,14 @@ describe('ENG04 shared meaningful-save admission (SQL-shaped unit tests, not Pos
     expect(plan[0]!.settled).toBe(true)
     expect(JSON.stringify(plan)).not.toMatch(/PRIVATE|synthetic-principal|identityHash|latestDeliverable|prompt|resultData/)
   })
-  it('does not require private v3 proof for valid old v1/v2 settlement', async () => {
+  it('rejects retired execution tags even when legacy settlement flags appear complete', async () => {
     const t = fixture()
-    for (const semantics of [undefined, 2]) {
+    for (const semantics of [undefined, 1, 2]) {
       const { executionSemanticsVersion, ...legacy } = t.row.record
       void executionSemanticsVersion
       const record = semantics === undefined ? legacy : { ...legacy, executionSemanticsVersion: semantics }
       const sql = sqlReturning([{ ...t.row, record, version_row: null, configurations: null }])
-      await expect(assertMeaningfulSaveAdmitted(sql.client, t.scope)).resolves.toBeUndefined()
+      await expect(assertMeaningfulSaveAdmitted(sql.client, t.scope)).rejects.toMatchObject({ code: 'WORKFLOW_RUNS_UNSETTLED' })
     }
     await expect(assertMeaningfulSaveAdmitted(sqlReturning([]).client, t.scope)).resolves.toBeUndefined()
   })
@@ -85,12 +85,12 @@ describe('ENG04 shared meaningful-save admission (SQL-shaped unit tests, not Pos
     await assertMeaningfulSaveAdmitted(sql.client, t.scope)
     const text: string = sql.query.mock.calls[0]![0]
     for (const predicate of [
-      "coalesce(r.record->>'executionSemanticsVersion','1')='3' and", // no SQL NULL leakage into v1 flags
+      "r.record->'executionSemanticsVersion' is distinct from '3'::jsonb",
       'order by c.generation desc limit 1', 's.workflow_finalized_at>=c.closed_at', 'c.closed_reference=s.reference',
       'c.expected_reference=s.reference', 'c.execution_identity=jsonb_strip_nulls(jsonb_build_object(',
       'prior.generation<c.generation and prior.closed_at is null', 'left join management_principals p',
-      'p.id is null or p.revoked_at is null', "e.record->>'nativeSessionId' is null", "e.record->>'startedAt' is not null",
-      "r.record->>'executionSemanticsVersion' in ('2','3')", 'canceled-interaction-',
+      'p.id is null or p.revoked_at is null', "e.record->>'nativeSessionId' is null",
+      'canceled-interaction-',
       "g.state is distinct from 'resumed'", 'g.execution_id is distinct from i.execution_id',
       'g.graph_interrupt_id is distinct from', "f.effect_kind='graph.resume'", "s.source_kind='native_event'",
       's.source_id=i.id and s.source_revision=i.revision', 'from run_native_correlations c',

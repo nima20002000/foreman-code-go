@@ -17,12 +17,19 @@ describe('NIM-2648 ENG04-D replay and retry separation', () => {
 
     const work = await harness.admit(occurrence, 'work', 'raw-work-replay-1')
     const effectsAfterAdmission = harness.state().effects.size
+    const reservation = structuredClone(harness.state().nativeReservations.get(work.id))
+    expect(reservation).toMatchObject({ runId: work.runId, reservation: {
+      scope: harness.fixture.scope, execution: { executionId: work.id },
+      ref: { nodeId: work.workflowNodeId, occurrence: occurrence.identity },
+    } })
     const reused = await harness.store.admit(
       { nodeId: 'work', occurrence: occurrence.identity },
       () => { throw new Error('duplicate admission must not allocate') },
     )
     expect(reused).toMatchObject({ kind: 'admitted', reused: true, execution: { id: work.id } })
     expect(harness.state().effects.size).toBe(effectsAfterAdmission)
+    expect(harness.state().nativeReservations.size).toBe(1)
+    expect(harness.state().nativeReservations.get(work.id)).toEqual(reservation)
 
     harness.finish(work.id)
     await harness.accept(work.id)

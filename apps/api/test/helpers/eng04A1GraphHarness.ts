@@ -116,6 +116,8 @@ export function graphHarness(f: A1Scenario, options: {
         const resolution = inactiveRepeatResolution(version, ref, admission.kind, now)
         rows.set(ref.nodeId, resolution); return { kind: 'resolved', resolution }
       }
+      assert.equal(admission.kind, 'run')
+      if (admission.kind !== 'run') throw new Error('Expected runnable admission')
       const prior = slots.get(repeatSlotId(f.run.id, ref))
       if (prior) return { kind: 'admitted', execution: executions.get(prior)!, reused: true }
       const predecessors = admission.selected.map((edge) => source(rows.get(edge.source)!, edge.id))
