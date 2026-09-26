@@ -44,9 +44,10 @@ export function acknowledgeEditIntentSnapshot(draftKey: string, current: NextDra
   let context = current.context
   if (intent.state === 'saved') {
     if (!intent.result) return current
-    const catalog = new Map(context.agents.map((item) => [item.agent.id, item]))
-    for (const item of intent.result.agents) catalog.set(item.agent.id, item)
-    context = { draft: intent.result.draft, agents: [...catalog.values()] }
+    // The saved acknowledgement is the new published base of the local draft.
+    const saved = intent.result
+    context = { ...context, draft: { ...context.draft, revision: saved.revision, publishedRevision: saved.revision,
+      baseWorkflowVersionId: saved.currentVersionId, graph: saved.version.definition } }
   }
   const graph = intent.state === 'saved' && cleanRemoteForm && !submittedHere && !exactSubmittedForm
     ? preserveWorkflowGeometry(context.draft.graph, current.graph)
@@ -121,7 +122,7 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
       const submission = readEditSubmission(draftKey, intent)
       const submittedGraph = submission?.target ?? intent.stagedDraft.graph
       const submittedAgents = submission ? submission.agentTarget
-        : Object.fromEntries(intent.stagedDraft.stagedAgents.map((item) => [item.agent.id, item.agent]))
+        : {}
       hydrated.current = intent.id
       // Fresh/reopened clean boards show the exact private payload. Never
       // overwrite another tab's/newer unsent form or replace its revision base.
@@ -177,11 +178,20 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
       && useGraphDraftStore.getState().nextDrafts[draftKey] !== beforeAcknowledgement) return data
     if (action === 'advance' && !activeEditIntent(data.intent) && !retained) {
       if (!nextDraftDirty(current)) { accept(data); return data }
-      assertDraftSubmission(current.graph, draftOperations(current.context, current.graph, current.agentEdits))
-      const request = GraphEditStageInputV3Schema.parse({ ...readInput(current), action: 'stage_edits',
+      const operations = draftOperations(current.context, current.graph, current.agentEdits)
+      assertDraftSubmission(current.graph, operations)
+      // The staged payload pins saved Agent configurations; Agent edits are saved
+      // through the Agent service first, while no affected Run is active.
+      if (operations.some((item) => item.type.startsWith('agent.') && item.type !== 'agent.attach')) {
+        throw new Error('Save new or changed Agent settings before staging edits for a running workflow.')
+      }
+      const pins = await nextDraftApi.pins(current.context.draft.workspaceId, current.graph)
+      const request = GraphEditStageInputV3Schema.parse({ workspaceId: current.context.draft.workspaceId,
+        workflowId: current.context.draft.workflowId, draftId: current.context.draft.id, action: 'stage_edits',
         commandId: crypto.randomUUID(), expectedRevision: current.context.draft.revision,
         expectedWorkflowVersionId: current.context.draft.baseWorkflowVersionId, executionSemanticsVersion: 3,
-        operations: draftOperations(current.context, current.graph, current.agentEdits) })
+        expectedAgentConfigurationVersionIds: pins.expectedAgentConfigurationVersionIds,
+        expectedLocationRevision: pins.expectedLocationRevision, graph: current.graph })
       const reserved = reserveEditOutbox(draftKey, { request, target: current.graph,
         ...(current.agentEdits ? { agentTarget: current.agentEdits } : {}) })
       setOutboxPending(true)

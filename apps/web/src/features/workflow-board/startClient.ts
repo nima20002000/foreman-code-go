@@ -1,4 +1,4 @@
-import { AcceptedWorkflowRunV3Schema, RunStartV3InputSchema, RunStartV3ResultSchema, sameWorkflowValue, type RunStartV3Input } from '@graphql/contracts/wave25'
+import { WorkflowRunV3Schema, RunStartV3InputSchema, RunStartV3ResultSchema, sameWorkflowValue, type RunStartV3Input } from '@graphql/contracts/wave25'
 import { apiClient, ApiError, type ApiClient } from '../../shared/api/client'
 
 export type BoardStartInput = RunStartV3Input
@@ -11,8 +11,9 @@ export function createBoardStartClient(client: ApiClient = apiClient) {
       const result = await client.request(
         `/api/management/workspaces/${encodeURIComponent(input.workspaceId)}/workflows/${encodeURIComponent(input.workflowId)}/runs`,
         RunStartV3ResultSchema, { method: 'POST', body: input })
-      if (!AcceptedWorkflowRunV3Schema.safeParse(result.run).success) {
-        throw new ApiError({ code: 'INVALID_RESPONSE', message: 'The admitted Run is missing accepted configuration, authority or location pins. Reconcile the same command.' })
+      // The public Run omits its private authority principal; location is required.
+      if (!WorkflowRunV3Schema.safeParse(result.run).success || !result.run.executionLocation) {
+        throw new ApiError({ code: 'INVALID_RESPONSE', message: 'The admitted Run is missing accepted configuration or location pins. Reconcile the same command.' })
       }
       if (result.run.workspaceId !== input.workspaceId || result.run.workflowId !== input.workflowId
         || result.run.workflowVersionId !== input.workflowVersionId || result.run.executionSemanticsVersion !== 3

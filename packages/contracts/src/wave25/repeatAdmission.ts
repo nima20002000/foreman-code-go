@@ -50,7 +50,7 @@ export const ExecutableWorkflowV3Schema = ExecutableRepeatWorkflowV1Schema
 export const GraphDraftV3Schema = z.object({
   id: GraphIdSchema, workspaceId: GraphIdSchema, workflowId: GraphIdSchema,
   revision: ExpectedRevisionSchema, layoutRevision: ExpectedRevisionSchema.optional(),
-  baseWorkflowVersionId: GraphIdSchema, publishedRevision: ExpectedRevisionSchema,
+  baseWorkflowVersionId: GraphIdSchema.nullable(), publishedRevision: ExpectedRevisionSchema,
   graph: WorkflowDefinitionV3Schema,
   stagedAgents: z.array(z.never()).length(0),
   sourceAgentPins: z.array(z.object({ agentId: GraphIdSchema, metadataRevision: ExpectedRevisionSchema,

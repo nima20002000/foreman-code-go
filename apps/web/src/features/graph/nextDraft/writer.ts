@@ -93,12 +93,15 @@ export function createNextDraftWriter(
               update((state) => ({ ...state, pending: request }))
             }
             const sent: DraftRequest = request
-            const result = await api.write(sent)
+            // The final apply batch acknowledges the complete local target graph.
+            const final = sent.kind === 'apply' && plan.operations.length <= sent.operations!.length
+            const result = await api.write(sent, final ? plan.target : undefined)
             current()
             update((state) => {
               if (state.pending?.commandId !== sent.commandId || !state.plan) return state
               if (result.draft.id !== sent.draftId || result.draft.workspaceId !== sent.workspaceId
-                || result.draft.workflowId !== sent.workflowId || result.draft.revision !== sent.expectedRevision + 1) throw new Error('A command returned an unexpected draft identity or revision.')
+                || result.draft.workflowId !== sent.workflowId || (sent.kind === 'apply' ? result.draft.revision !== sent.expectedRevision + 1
+                  : result.draft.publishedRevision !== result.draft.revision)) throw new Error('A command returned an unexpected draft identity or revision.')
               const remaining = sent.kind === 'apply' ? state.plan.operations.slice(sent.operations!.length) : []
               const catalog = new Map(state.context.agents.map((record) => [record.agent.id, record]))
               for (const record of result.agents ?? []) catalog.set(record.agent.id, record)

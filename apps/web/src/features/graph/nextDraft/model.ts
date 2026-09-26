@@ -19,16 +19,14 @@ export type RoleEvidence = {
 export const sameValue = sameWorkflowValue
 
 export function draftAgents(context: NextDraftContext): Agent[] {
-  const agents = new Map(context.agents.map(({ agent }) => [agent.id, agent]))
-  for (const staged of context.draft.stagedAgents) agents.set(staged.agent.id, staged.agent)
-  return [...agents.values()]
+  // Board drafts are local; every Agent is a saved catalog Agent.
+  return [...new Map(context.agents.map(({ agent }) => [agent.id, agent])).values()]
 }
 
 /** Existing Agents require server evidence. Explicit new-Agent roles are only
  * local authoring evidence, never a saved configuration pin or execution grant. */
 export function roleEvidence(context: NextDraftContext, agentId: string, agentEdits: DraftAgentEdits = {}): RoleEvidence {
-  const staged = context.draft.stagedAgents.find((item) => item.agent.id === agentId)
-  const agent = staged?.agent ?? context.agents.find((item) => item.agent.id === agentId)?.agent
+  const agent = context.agents.find((item) => item.agent.id === agentId)?.agent
   const expected = context.draft.sourceAgentPins?.find((pin) => pin.agentId === agentId)
   const local = agentEdits[agentId]
   if (!agent && !expected && !context.draft.graph.nodes.some((node) => node.agentId === agentId)
@@ -36,11 +34,11 @@ export function roleEvidence(context: NextDraftContext, agentId: string, agentEd
     && (local.productRole === 'coder' || local.productRole === 'orchestrator')) {
     return { role: local.productRole, source: 'local' }
   }
-  if (!agent || (!staged && (!agent.configurationVersionId
-    || (expected && expected.configurationVersionId !== agent.configurationVersionId)))) return { source: 'unavailable' }
+  if (!agent || !agent.configurationVersionId
+    || (expected && expected.configurationVersionId !== agent.configurationVersionId)) return { source: 'unavailable' }
   const role = agent.productRole
   if (role !== 'orchestrator' && role !== 'coder') return { source: 'unavailable' }
-  return { role, source: staged ? 'staged' : 'configuration', configurationVersionId: agent.configurationVersionId }
+  return { role, source: 'configuration', configurationVersionId: agent.configurationVersionId }
 }
 
 export function entryChoices(graph: WorkflowDefinitionV3, context: NextDraftContext, agentEdits: DraftAgentEdits = {}) {

@@ -37,7 +37,7 @@ import {
   listManagedWorkspaces, createManagedWorkspace, updateManagedWorkspace, archiveManagedWorkspace,
   getManagedWorkspace, validateWorkspaceLocation, setWorkspaceLocation,
   listManagedWorkflows, createManagedWorkflow, updateManagedWorkflow, archiveManagedWorkflow,
-  listManagedAgents, getManagedGraphContext, openManagedGraphDraft, applyManagedGraphDraft, saveManagedGraphDraft, discardManagedGraphDraft,
+  listManagedAgents, 
   startManagedRun, stopManagedRun,
   getManagedHarnessCatalog, updateManagedHarnessDefaults,
   getManagedAgentDefaults, updateManagedAgentDefaults,
@@ -199,40 +199,6 @@ export function useArchiveManagedWorkflowMutation() {
 
 export function useManagedAgentsQuery(workspaceId: string, enabled = true) {
   return useQuery({ enabled, queryKey: queryKeys.managedAgents(workspaceId), queryFn: ({ signal }) => listManagedAgents(workspaceId, { signal }) })
-}
-
-export function useManagedGraphDraftQuery(workspaceId: string, workflowId: string, enabled = true) {
-  return useQuery({
-    enabled, queryKey: queryKeys.managedDraft(workspaceId, workflowId),
-    queryFn: ({ signal }) => openManagedGraphDraft(workspaceId, workflowId, { signal }),
-    refetchInterval: enabled ? 3_000 : false,
-  })
-}
-
-export function useManagedGraphContextQuery(workspaceId: string, workflowId: string, enabled = true) {
-  const client = useQueryClient()
-  return useQuery({
-    enabled, queryKey: queryKeys.managedGraphContext(workspaceId, workflowId),
-    queryFn: async ({ signal }) => {
-      const next = await getManagedGraphContext(workspaceId, workflowId, { signal })
-      const current = client.getQueryData<Awaited<ReturnType<typeof getManagedGraphContext>>>(queryKeys.managedGraphContext(workspaceId, workflowId))
-      // An older poll must not undo an Apply/Save acknowledged while it was in flight.
-      return current?.draft.id === next.draft.id && current.draft.revision > next.draft.revision ? current : next
-    },
-    refetchInterval: enabled ? 3_000 : false,
-  })
-}
-
-export function useApplyManagedGraphDraftMutation() {
-  return useMutation({ mutationFn: (input: Parameters<typeof applyManagedGraphDraft>[0]) => applyManagedGraphDraft(input) })
-}
-
-export function useSaveManagedGraphDraftMutation() {
-  return useMutation({ mutationFn: (input: Parameters<typeof saveManagedGraphDraft>[0]) => saveManagedGraphDraft(input) })
-}
-
-export function useDiscardManagedGraphDraftMutation() {
-  return useMutation({ mutationFn: (input: Parameters<typeof discardManagedGraphDraft>[0]) => discardManagedGraphDraft(input) })
 }
 
 export function useStartManagedRunMutation() {

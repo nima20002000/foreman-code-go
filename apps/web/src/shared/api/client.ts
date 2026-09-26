@@ -1,5 +1,5 @@
 import {
-  CurrentWorkspaceDetailsSchema, CurrentGetWorkflowResponseSchema, CurrentRunDetailsSchema, CurrentManagedWorkflowCommandResultSchema, CurrentManagedWorkflowPageSchema, GraphDraftV3Schema, GraphDraftCommandV3ResultSchema, GraphSaveCommandV3ResultSchema, GraphDraftApplyV3InputSchema, GraphSaveV3InputSchema, RunStartV3InputSchema, RunStartV3ResultSchema, CurrentWorkflowCreateInputSchema, GraphDraftRevertAppliedV3ResultSchema,
+  CurrentWorkspaceDetailsSchema, CurrentGetWorkflowResponseSchema, CurrentRunDetailsSchema, CurrentManagedWorkflowCommandResultSchema, CurrentManagedWorkflowPageSchema, RunStartV3InputSchema, RunStartV3ResultSchema, CurrentWorkflowCreateInputSchema, 
   type CurrentWorkspaceDetails, type CurrentGetWorkflowResponse, type CurrentRunDetails, type CurrentWorkflowCreateInput,
 } from '@graphql/contracts/wave25'
 import {
@@ -74,8 +74,6 @@ import {
   ManagedAgentPageSchema,
   GraphDraftLayoutInputSchema,
   GraphDraftLayoutResultSchema,
-  GraphDraftRevertAppliedInputSchema,
-  GraphDraftDiscardInputSchema,
   RunStopInputSchema,
   RunStopResultSchema,
   HarnessCatalogSchema,
@@ -369,68 +367,12 @@ export class ApiClient {
     ), options?.signal)
   }
 
-  async getManagedGraphContext(workspaceId: string, workflowId: string, options?: RequestOptions) {
-    // Read agents between matching draft revisions. MCP publication clears
-    // stagedAgents; never pair that newer draft with an older agent catalog.
-    for (let attempt = 0; attempt < 3; ++attempt) {
-      const before = await this.openManagedGraphDraft(workspaceId, workflowId, options)
-      const agents = await this.listManagedAgents(workspaceId, options)
-      const draft = await this.openManagedGraphDraft(workspaceId, workflowId, options)
-      if (before.id === draft.id && before.revision === draft.revision) return { draft, agents }
-    }
-    throw new ApiError({ code: 'GRAPH_CHANGING', message: 'The shared graph is changing. Retry when the current edit finishes.' }, 409)
-  }
-
-  openManagedGraphDraft(workspaceId: string, workflowId: string, options?: RequestOptions) {
-    return this.request(
-      `/api/management/workspaces/${toPath(workspaceId)}/workflows/${toPath(workflowId)}/drafts`,
-      GraphDraftV3Schema,
-      { ...options, method: 'POST' },
-    )
-  }
-
-  applyManagedGraphDraft(input: z.input<typeof GraphDraftApplyV3InputSchema>, options?: RequestOptions) {
-    const request = parseRequest(GraphDraftApplyV3InputSchema, input)
-    return this.request(
-      `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/drafts/${toPath(request.draftId)}/operations`,
-      GraphDraftCommandV3ResultSchema,
-      { ...options, method: 'POST', body: request },
-    )
-  }
-
   putManagedGraphLayout(input: z.input<typeof GraphDraftLayoutInputSchema>, options?: RequestOptions) {
     const request = parseRequest(GraphDraftLayoutInputSchema, input)
     return this.request(
       `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/drafts/${toPath(request.draftId)}/layout`,
       GraphDraftLayoutResultSchema,
       { ...options, method: 'PUT', body: request },
-    )
-  }
-
-  revertManagedGraphApply(input: z.input<typeof GraphDraftRevertAppliedInputSchema>, options?: RequestOptions) {
-    const request = parseRequest(GraphDraftRevertAppliedInputSchema, input)
-    return this.request(
-      `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/drafts/${toPath(request.draftId)}/revert-applied`,
-      GraphDraftRevertAppliedV3ResultSchema,
-      { ...options, method: 'POST', body: request },
-    )
-  }
-
-  saveManagedGraphDraft(input: z.input<typeof GraphSaveV3InputSchema>, options?: RequestOptions) {
-    const request = parseRequest(GraphSaveV3InputSchema, input)
-    return this.request(
-      `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/drafts/${toPath(request.draftId)}/save`,
-      GraphSaveCommandV3ResultSchema,
-      { ...options, method: 'POST', body: request },
-    )
-  }
-
-  discardManagedGraphDraft(input: { workspaceId: string; workflowId: string; draftId: string; commandId: string; expectedRevision: number }, options?: RequestOptions) {
-    const request = parseRequest(GraphDraftDiscardInputSchema, input)
-    return this.request(
-      `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/${toPath(request.workflowId)}/drafts/${toPath(request.draftId)}`,
-      z.object({ value: z.object({ discarded: z.literal(true), draftId: z.string(), revision: z.number() }).strict(), replayed: z.boolean() }).strict(),
-      { ...options, method: 'DELETE', body: request },
     )
   }
 
@@ -700,13 +642,7 @@ export const createManagedWorkflow = apiClient.createManagedWorkflow.bind(apiCli
 export const updateManagedWorkflow = apiClient.updateManagedWorkflow.bind(apiClient)
 export const archiveManagedWorkflow = apiClient.archiveManagedWorkflow.bind(apiClient)
 export const listManagedAgents = apiClient.listManagedAgents.bind(apiClient)
-export const getManagedGraphContext = apiClient.getManagedGraphContext.bind(apiClient)
-export const openManagedGraphDraft = apiClient.openManagedGraphDraft.bind(apiClient)
-export const applyManagedGraphDraft = apiClient.applyManagedGraphDraft.bind(apiClient)
 export const putManagedGraphLayout = apiClient.putManagedGraphLayout.bind(apiClient)
-export const revertManagedGraphApply = apiClient.revertManagedGraphApply.bind(apiClient)
-export const saveManagedGraphDraft = apiClient.saveManagedGraphDraft.bind(apiClient)
-export const discardManagedGraphDraft = apiClient.discardManagedGraphDraft.bind(apiClient)
 export const startManagedRun = apiClient.startManagedRun.bind(apiClient)
 export const stopManagedRun = apiClient.stopManagedRun.bind(apiClient)
 export const getManagedHarnessCatalog = apiClient.getManagedHarnessCatalog.bind(apiClient)

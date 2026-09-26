@@ -322,7 +322,7 @@ export function createCurrentBoardMock(options: {
   function settle(runId: string, cleanup = false) { const detail = runs.get(runId), current = currents.get(runId)
     if (!detail || !current) throw new Error('Run not found')
     detail.run = { ...detail.run, executionState: 'completed', outcome: 'canceled', result: { outcome: 'canceled' }, finishedAt: at }; detail.cleanupPending = cleanup
-    current.state.run = { executionState: 'completed', outcome: 'canceled', stopRequested: true }
+    current.state.run = { executionState: 'completed', outcome: 'canceled', stopRequested: true, cleanupPending: cleanup, unsettledReviewCount: 0, pendingInteractionCount: 0 }
     current.asOfSequence = String(BigInt(current.asOfSequence) + 1n)
   }
   return { workspaceId, agents, configurations, workflows, drafts, versions, runs, currents, calls, controls, receipts,

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import {
-  HarnessExecutionSchema, RunActivitySchema, WorkspaceSchema, AgentSchema, WorkflowRunSummarySchema,
+  HarnessExecutionSchema, RunActivitySchema, RunLiveActivitySchema, WorkspaceSchema, AgentSchema, WorkflowRunSummarySchema,
   ResourceSummarySchema, BrowserProfileSummarySchema, RunnerSummarySchema, TimestampSchema,
 } from '../index.js'
 import { ExpectedRevisionSchema, ManagementPageInfoSchema } from '../management/index.js'
@@ -29,6 +29,7 @@ export type SavedWorkflowRun = z.infer<typeof SavedWorkflowRunSchema>
  * Run may omit location and principal; internal admission uses a stronger schema. */
 export const RunDetailsV3Schema = z.object({ run: WorkflowRunV3Schema,
   executions: z.array(HarnessExecutionSchema), activity: z.array(RunActivitySchema), cleanupPending: z.boolean().optional(),
+  liveActivity: RunLiveActivitySchema.optional(),
   activityPageInfo: z.object({ hasEarlier: z.boolean() }).strict().optional(),
 }).strict()
   .superRefine(({ run, executions, activity }, context) => {

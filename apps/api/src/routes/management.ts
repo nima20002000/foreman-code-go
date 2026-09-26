@@ -1,4 +1,5 @@
 import { CurrentWorkflowCreateInputSchema } from '@graphql/contracts/wave25'
+import { AgentCreateInputSchema, AgentUpdateInputSchema } from '@graphql/contracts/management'
 import { registerCurrentWorkflowRoutes } from './currentWorkflow.js'
 import { registerCurrentVersionReadRoutes } from './currentVersionReads.js'
 import type { FastifyInstance } from 'fastify'
@@ -64,6 +65,18 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
   registerCurrentVersionReadRoutes(app, services)
   registerWorkspaceDefaultsRoutes(app, services)
   registerHarnessSettingsRoutes(app, services)
+  // Board authoring creates and edits Agents through the same service as the
+  // Operator MCP agent_create/agent_update tools (graph:edit via HTTP policy).
+  if (services.extensions) {
+    const agents = services.extensions.agents
+    app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/agents', async (request, reply) => {
+      const result = await agents.create(requirePrincipal(request), AgentCreateInputSchema.parse(routeInput(request.params, request.body)))
+      if (result && typeof result === 'object' && 'replayed' in result && result.replayed === false) reply.code(201)
+      return result
+    })
+    app.patch<{ Params: Params & { agentId: string }; Body: unknown }>('/api/management/workspaces/:workspaceId/agents/:agentId', async (request) =>
+      agents.update(requirePrincipal(request), AgentUpdateInputSchema.parse(routeInput(request.params, request.body))))
+  }
   app.get<{ Querystring: Query }>('/api/management/workspaces', async (request) =>
     services.workspaces.list(requirePrincipal(request), WorkspaceListInputSchema.parse(page(request.query))))
   app.post<{ Body: unknown }>('/api/management/workspaces', async (request, reply) => {

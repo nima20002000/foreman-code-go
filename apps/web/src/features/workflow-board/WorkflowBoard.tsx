@@ -20,7 +20,7 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
   const run = requestedRun?.workspaceId === workspaceId && requestedRun.workflowId === workflowId ? requestedRun : undefined
   const [locationOpen, setLocationOpen] = useState(false)
   const [runsOpen, setRunsOpen] = useState(false)
-  const activeRuns = summaries.filter((item) => item.workspaceId === workspaceId && isActiveRun(item)).length
+  const activeRuns = summaries.filter((item) => item.workspaceId === workspaceId && item.workflowId === workflowId && isActiveRun(item)).length
   const value = useMemo(() => ({ workspaceId, workflowId, run, selectRun, inspection, selectInspection, selectedAgentId, selectDraftAgent,
     openLocation: () => setLocationOpen(true), openRuns: () => setRunsOpen(true), activeRuns,
   }), [workspaceId, workflowId, run, selectRun, inspection, selectInspection, selectedAgentId, selectDraftAgent, activeRuns])

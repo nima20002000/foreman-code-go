@@ -122,6 +122,7 @@ const mockStartedRun: WorkflowRun = {
   id: 'run-mock-started',
   workspaceId: 'workspace-1',
   workflowId: 'workflow-editor-test',
+  approval: { handler: 'user' },
   workflowVersionId: 'workflow-editor-test-v1',
   agentConfigurationVersionIds: {},
   executionCondition: { kind: 'manual' },

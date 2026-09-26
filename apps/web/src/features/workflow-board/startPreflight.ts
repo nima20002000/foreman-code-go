@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { ManagedWorkspaceSchema } from '@graphql/contracts/management'
 import { CurrentManagedWorkflowSchema, CurrentWorkflowCapabilitiesSchema, CurrentWorkflowVersionDetailSchema,
-  GraphDraftV3Schema, RunStartV3InputSchema, sameExecutableWorkflow, sameWorkflowValue,
+  CURRENT_WORKFLOW_ROUTES, RunStartV3InputSchema, sameExecutableWorkflow, sameWorkflowValue,
   type GraphDraftV3, type RunStartV3Input } from '@graphql/contracts/wave25'
 import { apiClient, ApiError, type ApiClient, type RequestOptions } from '../../shared/api/client'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
@@ -13,15 +13,13 @@ export function createBoardPreflightClient(client: ApiClient = apiClient) {
   return async (displayed: GraphDraftV3, options?: RequestOptions) => {
     const { workspaceId, workflowId } = displayed
     const workflowPath = `/api/management/workspaces/${part(workspaceId)}/workflows/${part(workflowId)}`
-    const query = new URLSearchParams({ workspaceId, workflowId })
-    const [workflow, workspace, capabilities, draft] = await Promise.all([
+    // The Board draft is local; Start pins come only from saved server reads.
+    const [workflow, workspace, capabilities] = await Promise.all([
       client.request(workflowPath, CurrentManagedWorkflowSchema, options),
       client.request(`/api/management/workspaces/${part(workspaceId)}`, ManagedWorkspaceSchema, options),
-      client.request(`/api/management/repeats/capabilities?${query}`, CurrentWorkflowCapabilitiesSchema, options),
-      client.request(`${workflowPath}/drafts/${part(displayed.id)}`, GraphDraftV3Schema, options),
+      client.request(CURRENT_WORKFLOW_ROUTES.capabilities, CurrentWorkflowCapabilitiesSchema, options),
     ])
-    if (workflow.workflow.id !== workflowId || workflow.workflow.workspaceId !== workspaceId || workspace.workspace.id !== workspaceId
-      || draft.id !== displayed.id || draft.workspaceId !== workspaceId || draft.workflowId !== workflowId) {
+    if (workflow.workflow.id !== workflowId || workflow.workflow.workspaceId !== workspaceId || workspace.workspace.id !== workspaceId) {
       throw mismatch('Saved Start readback belongs to a different scope.')
     }
     const detail = workflow.currentVersionId ? await client.request(
@@ -30,25 +28,24 @@ export function createBoardPreflightClient(client: ApiClient = apiClient) {
     if (version && (version.id !== workflow.currentVersionId || version.workspaceId !== workspaceId || version.workflowId !== workflowId)) {
       throw mismatch('Immutable workflow readback returned a different saved version.')
     }
-    return { workflow, workspace, capabilities, draft, version }
+    return { workflow, workspace, capabilities, version }
   }
 }
 export const readBoardStartPreflight = createBoardPreflightClient()
 export type BoardStartPreflight = Awaited<ReturnType<typeof readBoardStartPreflight>>
 export type BoardStartPins = Pick<RunStartV3Input, 'workflowVersionId' | 'expectedWorkflowRevision' |
-  'expectedAgentConfigurationVersionIds' | 'expectedLocationRevision' | 'draftId' | 'expectedDraftRevision'>
+  'expectedAgentConfigurationVersionIds' | 'expectedLocationRevision'>
 
 export function boardStartPins(displayed: GraphDraftV3, facts: BoardStartPreflight): BoardStartPins {
-  const { workflow, workspace, capabilities, draft, version } = facts
-  if (!capabilities.supported || !capabilities.availability.runtimeAdmission || !capabilities.availability.persistedReadback) {
-    throw new Error(`Current workflow Start is unavailable on this deployment${capabilities.availability.reasons.length ? `: ${capabilities.availability.reasons.join(', ')}` : '.'}`)
+  const { workflow, workspace, capabilities, version } = facts
+  if (!capabilities.runtimeAdmission || !capabilities.persistedReadback) {
+    throw new Error(`Current workflow Start is unavailable on this deployment${capabilities.reasons.length ? `: ${capabilities.reasons.join(', ')}` : '.'}`)
   }
   if (!version || !displayed.baseWorkflowVersionId) throw new Error('Save the workflow before starting a Run.')
   if (workflow.archivedAt || workspace.archivedAt || workspace.locationValidation.status !== 'ready') throw new Error('The workspace, workflow or execution folder is unavailable.')
-  if (draft.id !== displayed.id || draft.revision !== displayed.revision || draft.baseWorkflowVersionId !== displayed.baseWorkflowVersionId
-    || draft.publishedRevision !== draft.revision || displayed.publishedRevision !== displayed.revision || draft.stagedAgents.length
+  if (displayed.publishedRevision !== displayed.revision || displayed.revision !== workflow.revision
     || version.id !== displayed.baseWorkflowVersionId || version.id !== workflow.currentVersionId
-    || !sameExecutableWorkflow(draft.graph, displayed.graph) || !sameExecutableWorkflow(version.definition, displayed.graph)) {
+    || !sameExecutableWorkflow(version.definition, displayed.graph)) {
     throw mismatch('The displayed draft is not the exact published workflow. Save or explicitly reload before Start.')
   }
   // Metadata labels may have changed since the immutable version. They do not
@@ -56,13 +53,8 @@ export function boardStartPins(displayed: GraphDraftV3, facts: BoardStartPreflig
   if (!sameExecutableWorkflow(version.definition, { ...workflow.workflow, name: version.definition.name, description: version.definition.description })) {
     throw mismatch('Saved executable meaning changed. Reload before Start.')
   }
-  if (draft.sourceAgentPins && Object.entries(version.agentConfigurationVersionIds).some(([agentId, configurationVersionId]) =>
-    !draft.sourceAgentPins?.some((pin) => pin.agentId === agentId && pin.configurationVersionId === configurationVersionId))) {
-    throw mismatch('The displayed configuration pins are no longer current. Save or reload the workflow.')
-  }
   return { workflowVersionId: version.id, expectedWorkflowRevision: workflow.revision,
-    expectedAgentConfigurationVersionIds: version.agentConfigurationVersionIds, expectedLocationRevision: workspace.locationRevision,
-    draftId: displayed.id, expectedDraftRevision: displayed.revision }
+    expectedAgentConfigurationVersionIds: version.agentConfigurationVersionIds, expectedLocationRevision: workspace.locationRevision }
 }
 export function sameBoardStartPins(a: BoardStartPins, b: BoardStartPins) { return sameWorkflowValue(a, b) }
 export function currentBoardStartRequest(displayed: GraphDraftV3, facts: BoardStartPreflight, commandId: string): RunStartV3Input {

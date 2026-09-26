@@ -33,12 +33,11 @@ export function addAgentOperations(agent: Agent, node: DraftNode): GraphDraftOpe
 export function configureAgentOperations(context: NextDraftContext, graph: WorkflowDefinitionV3, edits: DraftAgentEdits): GraphDraftOperationV3[] {
   const operations: GraphDraftOperationV3[] = []
   for (const [id, after] of Object.entries(referencedAgentEdits(graph, edits))) {
-    const staged = context.draft.stagedAgents.find((item) => item.agent.id === id)
     const source = context.agents.find((item) => item.agent.id === id)
-    const before = staged?.agent ?? source?.agent
+    const before = source?.agent
     if (!before) continue // Created explicitly by addAgentOperations in the same serial writer.
     if (before.productRole !== after.productRole) throw new Error('An existing Agent role cannot be rewritten by the board.')
-    const revision = staged ? staged.baseRevision ?? 0 : source?.metadataRevision
+    const revision = source?.metadataRevision
     if (revision === undefined) throw new Error('The Agent revision is unavailable. Reload before editing its settings.')
     if (before.name !== after.name) operations.push({ type: 'agent.rename', agentId: id, expectedAgentRevision: revision, name: after.name })
     if (!sameValue({ configuration: before.harnessConfiguration, ...content(before) }, { configuration: after.harnessConfiguration, ...content(after) })) {

@@ -61,7 +61,14 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext }: {
   useEffect(() => {
     if (useGraphDraftStore.getState().nextDrafts[draftKey]) return
     try {
-      const retained = readEditSnapshot(draftKey)
+      const snapshot = readEditSnapshot(draftKey)
+      const fresh = source.data && !source.isError ? source.data.draft : undefined
+      // A snapshot of an older saved base is superseded when it was clean or its
+      // meaning is exactly what has since been saved.
+      const stale = snapshot && fresh && (snapshot.context.draft.baseWorkflowVersionId !== fresh.baseWorkflowVersionId
+        || snapshot.context.draft.publishedRevision !== fresh.publishedRevision)
+        && (!hasLocalChanges(snapshot.context, snapshot.graph) || sameExecutableWorkflow(snapshot.graph, fresh.graph))
+      const retained = stale ? undefined : snapshot
       if (retained) {
         useGraphDraftStore.getState().installNextDraft(draftKey, retained.context)
         useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state,
@@ -307,7 +314,9 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const startReason = !canStart ? 'Start permission is unavailable for this workflow' : pendingStart ? 'Reconcile the exact earlier Start command' : startReloadRequired ? 'Reload after the saved version was rejected'
     : dirty ? 'Save executable edits before Start; presentation-only layout does not change a Run' : preflightReason ?? 'Start the exact saved current workflow'
   const saveBusy = edit.busy || reloading || !!edit.pending || !!pendingStart || editIntent.mutation.isPending
-  const requestSave = () => { if (board?.activeRuns) setConfirm('save'); else void prepare(() => stopAndSave()).catch(report) }
+  // No active Run for this workflow: publish directly. The server still rejects
+  // a meaningful save that races a newly started Run.
+  const requestSave = () => { if (board?.activeRuns) setConfirm('save'); else void prepare(() => save(true)).catch(report) }
   const openAgent = (nodeId: string, next: AgentPanel = 'settings') => inspect(() => {
     presentation.getState().setFocusedNodeId(nodeId); presentation.getState().setFocusedEdgeId(undefined)
     setOpenNode({ nodeId, panel: next })
@@ -460,7 +469,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
       </nav>
     </div>
     <ConfirmDialog open={confirm === 'save'} onOpenChange={(open) => { if (!open) setConfirm(undefined) }} title="Stop running work and save?"
-      description={`${board?.activeRuns ?? 0} ${board?.activeRuns === 1 ? 'run is' : 'runs are'} active in this workspace. Saving stops every run that uses these agents. Stopped runs are not restarted.`}
+      description={`${board?.activeRuns ?? 0} ${board?.activeRuns === 1 ? 'run is' : 'runs are'} active for this workflow. Saving stops them. Stopped runs are not restarted.`}
       confirmLabel="Stop runs and save" onConfirm={() => { setConfirm(undefined); void prepare(() => stopAndSave(true)).catch(report) }} />
     <ConfirmDialog open={confirm === 'discard'} onOpenChange={(open) => { if (!open) setConfirm(undefined) }} title="Discard your changes?"
       description="Your unsaved edits are removed. Agent positions on the board are kept. Running work isn’t affected."
