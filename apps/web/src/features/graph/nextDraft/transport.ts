@@ -1,4 +1,4 @@
-import { AgentMutationResultSchema, ManagedWorkspaceSchema, type GraphValidationResultSchema } from '@graphql/contracts/management'
+import { AgentMutationResultSchema, ManagedWorkspaceSchema, type GraphValidationResultSchema, type AgentCreateInputSchema, type AgentUpdateInput } from '@graphql/contracts/management'
 import {
   GraphEditReadResultV3Schema, GraphEditReadInputV3Schema, GraphEditStageInputV3Schema, GraphEditAdvanceInputV3Schema, GraphEditDiscardInputV3Schema,
   type GraphEditReadInputV3, type GraphEditStageInputV3, type GraphEditAdvanceInputV3, type GraphEditDiscardInputV3, type GraphEditReadResultV3,
@@ -43,6 +43,10 @@ type Opened = { draft: CurrentDraft; savedRevision: number }
 /** Uses the existing session-generation-fenced, same-origin HTTP boundary. No bearer fallback. */
 export function createNextDraftApi(client: ApiClient = apiClient) {
   const opened = new Map<string, Opened>()
+  const pendingAgentCommands = new Map<string, {
+    path: string; method: 'POST' | 'PATCH';
+    body: Omit<z.input<typeof AgentCreateInputSchema>, 'workspaceId'> | Omit<AgentUpdateInput, 'workspaceId' | 'agentId'>;
+  }>()
   const key = (workspaceId: string, workflowId: string) => JSON.stringify([workspaceId, workflowId])
 
   const load = async (workspaceId: string, workflowId: string, options?: RequestOptions): Promise<Opened> => {
@@ -92,15 +96,24 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
     const catalog = async () => (await client.listManagedAgents(workspaceId)).items
     for (const operation of operations) {
       const command = `${commandId}:${index++}`
-      if (operation.type === 'agent.add') {
+      const pendingKey = JSON.stringify([workspaceId, command])
+      const pending = pendingAgentCommands.get(pendingKey)
+      if (pending) {
+        // A lost response can follow a committed mutation. Reconcile its receipt
+        // with the original pins before reading the now-changed catalog.
+        await client.request(pending.path, AgentMutationResultSchema, { method: pending.method, body: pending.body })
+        if (operation.type === 'agent.add') created.add(operation.agentId)
+      } else if (operation.type === 'agent.add') {
         const configure = operations.find((item) => item.type === 'agent.configure' && item.agentId === operation.agentId)
         const content = configure?.type === 'agent.configure' ? {
           prompt: configure.prompt, assignedSkills: configure.assignedSkills,
           ...(configure.description ? { description: configure.description } : {}), ...(configure.role ? { role: configure.role } : {}),
         } : { prompt: {}, assignedSkills: [] }
-        await client.request(agentsPath, AgentMutationResultSchema, { method: 'POST', body: {
+        const pending = structuredClone({ path: agentsPath, method: 'POST' as const, body: {
           commandId: command, agentId: operation.agentId, name: operation.name, productRole: operation.productRole,
           configuration: configure?.type === 'agent.configure' ? configure.configuration : operation.configuration, ...content } })
+        pendingAgentCommands.set(pendingKey, pending)
+        await client.request(pending.path, AgentMutationResultSchema, { method: pending.method, body: pending.body })
         created.add(operation.agentId)
       } else if ((operation.type === 'agent.configure' || operation.type === 'agent.rename') && !created.has(operation.agentId)) {
         const agent = (await catalog()).find((item) => item.agent.id === operation.agentId)
@@ -108,12 +121,16 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
         const body = operation.type === 'agent.rename' ? { name: operation.name } : {
           configuration: operation.configuration, prompt: operation.prompt, assignedSkills: operation.assignedSkills,
           description: operation.description ?? null, role: operation.role ?? null }
-        await client.request(`${agentsPath}/${part(operation.agentId)}`, AgentMutationResultSchema, { method: 'PATCH', body: {
+        const pending = structuredClone({ path: `${agentsPath}/${part(operation.agentId)}`, method: 'PATCH' as const, body: {
           commandId: command, expectedRevision: operation.expectedAgentRevision,
           expectedConfigurationVersionId: agent.agent.configurationVersionId, ...body } })
+        pendingAgentCommands.set(pendingKey, pending)
+        await client.request(pending.path, AgentMutationResultSchema, { method: pending.method, body: pending.body })
       }
     }
-    return created.size || operations.some((item) => item.type === 'agent.configure' || item.type === 'agent.rename') ? catalog() : undefined
+    const agents = created.size || operations.some((item) => item.type === 'agent.configure' || item.type === 'agent.rename') ? await catalog() : undefined
+    for (let index = 0; index < operations.length; index++) pendingAgentCommands.delete(JSON.stringify([workspaceId, `${commandId}:${index}`]))
+    return agents
   }
   return {
     open, get,
