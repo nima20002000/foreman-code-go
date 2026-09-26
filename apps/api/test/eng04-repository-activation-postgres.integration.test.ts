@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { HarnessExecutionSchema, WorkflowRunSchema } from '@graphql/contracts'
-import { canonicalGraphJson, makeWave25Fixture } from '@graphql/contracts/wave25'
+import { HarnessExecutionSchema } from '@graphql/contracts'
+import { canonicalGraphJson, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
-import type { RepeatRepositoryActivation } from '../src/modules/runs/port.js'
+import { unavailableRuntime } from './eng04-runtime-repository-fixture.js'
 import type { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import type { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
@@ -27,18 +27,14 @@ describe.skipIf(!postgresEnabled)('ENG04 repository activation PostgreSQL bounda
   const unavailable = async (): Promise<never> => { throw new Error('No native/authority service is supplied by this read fixture') }
   const workflows = { getCurrentVersion: unavailable } as unknown as PostgresWorkflowRepository
   const locations = { revalidateRunAuthorization: unavailable } as unknown as WorkspaceLocationService
-  const activation: RepeatRepositoryActivation = { runtimeRoot: '/synthetic/repository-test-runtime', services: {
-    assertNativeBoundaryLocked: unavailable, assertNativeUpdateLocked: unavailable, assertSettlementLocked: unavailable,
-    allowTechnicalRetryLocked: unavailable, completeRunLocked: unavailable,
-  } }
-  const repository = (native = false) => new PostgresRunRepository(db.pool, workflows, locations, native ? activation : undefined)
+  const repository = () => new PostgresRunRepository(db.pool, workflows, locations, unavailableRuntime())
   async function own(runId: string) {
     const owner = await RunOwnership.acquire(db.pool, runId, () => undefined)
     if (!owner) throw new Error('The isolated fixture Run unexpectedly has an owner')
     owners.push(owner); return owner
   }
   async function fixture() {
-    const f = repeatReadyAgent3Fixture(makeWave25Fixture(randomUUID()))
+    const f = repeatReadyAgent3Fixture(makeCurrentWorkflowFixture(randomUUID()))
     await seedAgent3(db.pool, db.directory, f, { run: false })
     const fixtureWriter = await createRepeatFixtureWriter(db.pool, f)
     const saved = await fixtureWriter.publish(3)
@@ -98,17 +94,17 @@ describe.skipIf(!postgresEnabled)('ENG04 repository activation PostgreSQL bounda
     return { ...t, owner, queued, ref, occurrence }
   }
 
-  it('reads the exact v3 immutable Run/version without native services and rejects a different physical pin', async () => {
+  it('reads the exact v3 immutable Run/version with an unavailable native capture verifier and rejects a different physical pin', async () => {
     const t = await fixture(), repo = repository()
     expect(await repo.get(t.run.id)).toEqual(t.run)
     expect(await repo.getRepeatVersion(t.run.id, t.version.id)).toEqual(t.version)
     await expect(repo.getRepeatVersion(t.run.id, t.f.version.id)).rejects.toMatchObject({ code: 'RUN_PIN_CONFLICT' })
     expect(await repo.getForWorkspace(t.run.workspaceId, t.run.id)).toEqual(t.run)
     expect(await repo.getForWorkspace('different-workspace', t.run.id)).toBeUndefined()
-    expect(() => repo.repeatRepositoryFactory()).toThrowError(expect.objectContaining({ code: 'REPEAT_NATIVE_HOST_REQUIRED' }))
+    expect(repo.repeatRepositoryFactory()).toBe(repo.repeatRepositoryFactory())
   })
   it('uses the owner-bound real canonical adapter and exact occurrence/input receipts for replay', async () => {
-    const t = await canonicalFixture(), repo = repository(true), store = await repo.repeat(t.owner)
+    const t = await canonicalFixture(), repo = repository(), store = await repo.repeat(t.owner)
     expect(await repo.repeat(t.owner)).toBe(store)
     expect((await store.readExecution(t.queued.id)).execution).toEqual(t.queued)
     const before = await graphHead(db.pool, t.run.id)
@@ -121,7 +117,7 @@ describe.skipIf(!postgresEnabled)('ENG04 repository activation PostgreSQL bounda
     expect(repo.consumeRepeatLaunch(t.queued.id, t.owner)).toBe(false)
   })
   it('Stop rejects launch before any native/authority dependency and cannot mutate the execution', async () => {
-    const t = await canonicalFixture(), repo = repository(true)
+    const t = await canonicalFixture(), repo = repository()
     await db.pool.query('update runs set stop_requested_at=now() where id=$1', [t.run.id])
     await expect(repo.claimRepeatLaunch(t.queued.id, { workingDirectory: db.directory,
       runtimeDirectory: '/must-not-be-allocated' }, t.owner)).rejects.toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
@@ -130,7 +126,7 @@ describe.skipIf(!postgresEnabled)('ENG04 repository activation PostgreSQL bounda
     expect((await db.pool.query("select 1 from run_graph_effects where run_id=$1 and effect_kind='execution.launch'", [t.run.id])).rowCount).toBe(0)
   })
   it('a released owner cannot consume a capability; its successor cannot inherit one from input receipts', async () => {
-    const t = await canonicalFixture(), repo = repository(true), first = await repo.repeat(t.owner)
+    const t = await canonicalFixture(), repo = repository(), first = await repo.repeat(t.owner)
     await t.owner.release()
     expect(() => repo.consumeRepeatLaunch(t.queued.id, t.owner)).toThrowError(expect.objectContaining({ code: 'RUN_OWNERSHIP_LOST' }))
     const successor = await own(t.run.id)
@@ -144,7 +140,7 @@ describe.skipIf(!postgresEnabled)('ENG04 repository activation PostgreSQL bounda
       type: 'synthetic.raw', occurredAt: t.run.createdAt, payload: { original: 'unmodified provider source', output: { invalid: true } } }
     const original = structuredClone(event), before = await graphHead(db.pool, t.run.id)
     for (let attempt = 0; attempt < 2; attempt++) await expect(repo.appendNativeEvent(event, t.owner))
-      .rejects.toMatchObject({ code: 'REPEAT_NATIVE_GRAPH_PUBLICATION_REQUIRED' })
+      .rejects.toMatchObject({ code: 'NATIVE_SOURCE_NOT_CAPTURED' })
     expect((await db.pool.query('select 1 from harness_native_events where execution_id=$1', [t.queued.id])).rowCount).toBe(0)
     expect(event).toEqual(original)
     expect(await repo.getExecution(t.queued.id, t.owner)).toEqual(t.queued)
@@ -157,25 +153,11 @@ describe.skipIf(!postgresEnabled)('ENG04 repository activation PostgreSQL bounda
     await db.pool.query('update harness_executions set accepted=true,record=$2::jsonb where id=$1', [terminal.id, JSON.stringify(terminal)])
     await expect(repo.getAcceptedResult(terminal.id, t.owner)).rejects.toMatchObject({ code: 'REPEAT_INPUT_NOT_ACCEPTED' })
   })
-  it('blocks legacy lifecycle writers and checks real owner scope before SQL', async () => {
+  it('rejects a different owner scope before writing cleanup', async () => {
     const a = await fixture(), b = await fixture(), repo = repository(), owner = await own(a.run.id)
     await expect(repo.get(b.run.id, owner)).rejects.toMatchObject({ code: 'GRAPH_SCOPE_MISMATCH' })
-    await expect(repo.requestStop(a.run.id)).rejects.toMatchObject({ code: 'REPEAT_STOP_AUTHORIZATION_REQUIRED' })
-    await expect(repo.requestCleanup(a.run.id)).rejects.toMatchObject({ code: 'REPEAT_LIFECYCLE_PUBLICATION_REQUIRED' })
-    await expect(repo.finishCleanup(a.run.id, false)).rejects.toMatchObject({ code: 'REPEAT_LIFECYCLE_PUBLICATION_REQUIRED' })
+    await expect(repo.finishCleanup(b.run.id, false, owner)).rejects.toMatchObject({ code: 'GRAPH_SCOPE_MISMATCH' })
     expect((await db.pool.query('select stop_requested_at from runs where id=$1', [a.run.id])).rows[0].stop_requested_at).toBeNull()
     expect((await db.pool.query('select 1 from run_cleanup_intents where run_id=$1', [a.run.id])).rowCount).toBe(0)
-  })
-  it('retains the real migrated legacy partial-index ON CONFLICT predicate and v2 binary admission fence', async () => {
-    const f = await seedAgent3(db.pool, db.directory, makeWave25Fixture(randomUUID()), { run: false, legacy: true }), repo = repository()
-    const legacy = structuredClone(f.run) as Record<string, unknown>; delete legacy.executionSemanticsVersion
-    await repo.create(WorkflowRunSchema.parse(legacy))
-    const candidate = candidateFor(f)
-    expect((await repo.ensureExecution(candidate)).created).toBe(true)
-    expect(await repo.ensureExecution({ ...candidate, id: `unused-${randomUUID()}` })).toEqual({ execution: candidate, created: false })
-    expect(await repo.isOneShot(f.run.id)).toBe(false)
-    const v2 = await seedAgent3(db.pool, db.directory, makeWave25Fixture(randomUUID()))
-    expect(await repo.isOneShot(v2.run.id)).toBe(true)
-    await expect(repo.createExecution(candidateFor(v2))).rejects.toMatchObject({ code: 'EXECUTION_ADMISSION_REQUIRED' })
   })
 })

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, it } from 'vitest'
 import type pg from 'pg'
-import { makeWave25Fixture } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import type { ManagementGrant } from '@graphql/contracts/management'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { acceptRunAuthority, bindRunAuthority, currentOperatorAuthority } from '../src/modules/access/runAuthority.js'
@@ -27,7 +27,7 @@ describe.skipIf(!postgresEnabled)('ENG04 production runtime lifecycle PostgreSQL
   beforeAll(async () => { db = await agent3Database() }, 60000)
   afterAll(async () => { for (const owner of owners) await owner.release(); await db?.close() })
   async function fixture(withHead = true) {
-    const f = repeatReadyAgent3Fixture(makeWave25Fixture(randomUUID()))
+    const f = repeatReadyAgent3Fixture(makeCurrentWorkflowFixture(randomUUID()))
     await seedAgent3(db.pool, db.directory, f, { run: false })
     const fixtureWriter = await createRepeatFixtureWriter(db.pool, f)
     const saved = await fixtureWriter.publish(3)

@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
 import type pg from 'pg'
-import { makeWave25Fixture } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { assertApprovalTerminalSettlement } from '../src/modules/interactions/wave25/resume.js'
 import { beforeGraphCommit, ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { RepeatRunRepository, type RepeatLockedHooks } from '../src/modules/runs/repeatPostgres.js'
 import { repeatDigest, repeatExecutionIdentity, repeatSlotId, freezeRepeatEntry } from '../src/modules/runs/repeatResolution.js'
 import { repeatLaunchClaim, type RepeatNativeChange, type RepeatNativeEvidence } from '../src/modules/runs/repeatNativeRepository.js'
+import { createWorkflowNativeCaptureChannel, type WorkflowNativeCaptureInput } from '../src/modules/interactions/workflowNativeCapture.js'
+import { workflowNativeReservation } from '../src/modules/runs/workflowNativeEntry.js'
 import { nativeAt, nativeCompleted, nativeFixture } from './eng04-native-fixtures.js'
 
 // Exact approval/native acknowledgement is an explicit TEST DOUBLE here. The
@@ -18,8 +20,9 @@ beforeEach(() => vi.mocked(assertApprovalTerminalSettlement).mockClear())
  * replies. The authority/publication adapters here are TEST DOUBLES, not a
  * production v3 adapter, authenticated HTTP/MCP test, or PostgreSQL fixture. */
 function fixture() {
+  const channel = createWorkflowNativeCaptureChannel()
   const f = nativeFixture(), entry = freezeRepeatEntry({}, [])
-  const configuration = AgentConfigurationVersionSchema.parse({ ...makeWave25Fixture('repository-activation-config').configurations[0],
+  const configuration = AgentConfigurationVersionSchema.parse({ ...makeCurrentWorkflowFixture('repository-activation-config').configurations[0],
     id: f.execution.agentConfigurationVersionId, agentId: f.execution.agentId, workspaceId: f.scope.workspaceId })
   const session = { harness: configuration.harness.harness, providerVersion: 'synthetic-no-native-call', nativeSessionId: f.execution.nativeSessionId! }
   const input = { executionSemanticsVersion: 3, runInput: {}, occurrence: f.occurrence, entry, predecessors: [] }
@@ -30,7 +33,7 @@ function fixture() {
   let saved: { execution: HarnessExecution; launchDigest: string | undefined } | undefined
   const state = { stopped: false, owned: true, deny: false, loseCommit: false, missingReceipt: false,
     possible: false, forgedAttempt: false, failPublication: false, consumedInside: false,
-    corruptGuard: false, loseOwnerAtFinalize: false, missingSession: false }
+    corruptGuard: false, loseOwnerAtFinalize: false, missingSession: false, missingReservation: false }
   const calls: string[] = [], changes: RepeatNativeChange[] = []
   const rows = (items: unknown[]) => ({ rows: items, rowCount: items.length })
   const client = { async query(text: string, values: unknown[] = []) {
@@ -67,9 +70,18 @@ function fixture() {
     }])
     if (q.startsWith('select payload_digest from run_repeat_effects')) return rows([{ payload_digest: repeatDigest(input) }])
     if (q.startsWith('select reference from execution_native_sessions')) return rows(state.missingSession ? [] : [{ reference: session }])
+    if (q.startsWith('select c.record,s.reference from agent_configuration_versions')) {
+      expect(values).toEqual([execution.id, configuration.id, configuration.agentId, configuration.workspaceId])
+      return rows(state.missingSession ? [] : [{ record: configuration, reference: session }])
+    }
     if (q.startsWith('select id,agent_id,workspace_id,record from agent_configuration_versions')) return rows([{
       id: configuration.id, agent_id: configuration.agentId, workspace_id: configuration.workspaceId, record: configuration,
     }])
+    if (q.startsWith('select phase,reservation,reservation_digest,transition')) {
+      const reservation = workflowNativeReservation(f.scope, f.ref, execution, repeatDigest(input))
+      return rows(state.missingReservation ? [] : [{ phase: 'reserved', reservation,
+        reservation_digest: repeatDigest(reservation), transition: null, source_id: null, source_digest: null }])
+    }
     if (q.startsWith('select effect_digest from run_graph_effects')) return rows(launchDigest ? [{ effect_digest: launchDigest }] : [])
     if (q.startsWith('select ( exists(select 1 from run_graph_effects')) return rows([{ possible_submission: state.possible }])
     if (q.startsWith('update harness_executions set record=$3::jsonb')) {
@@ -98,10 +110,17 @@ function fixture() {
         assertBoundaryLocked: async () => { calls.push('native-boundary') },
         assertUpdateLocked: async (_sql, _previous, incoming, _ref, evidence) => {
           calls.push('native-update')
+          // Explicit recording-adapter result; this is not native capture evidence.
+          const recorded = { proofId: 'recording-proof', scope: f.scope, ref: f.ref,
+            execution: repeatExecutionIdentity(incoming), inputDigest: repeatDigest(input), commandId: 'recording-command',
+            session, original: channel.verify.read(evidence).source, observedAt: nativeAt,
+            ownerId: 'owner', ownerFence: '17', lifetimeGeneration: 1, closureGeneration: 'recording-close', lane: null }
+
           if (state.corruptGuard) {
             incoming.result = { outcome: 'canceled' }
-            evidence.evidence = { rewritten: true }
+            expect(() => { evidence.evidence = { rewritten: true } }).toThrow()
           }
+          return recorded
         },
         publishLocked: async (sql, change, mutate) => {
           changes.push(structuredClone(change)); calls.push('publish')
@@ -125,7 +144,19 @@ function fixture() {
   } }
   const store = new RepeatRunRepository(owner, host, f.version)
   return { f, state, calls, changes, connection, store, session,
-    proof: (): RepeatNativeEvidence => ({ kind: 'live', session, evidence: { connectionId: 'source-connection', sequence: 7, raw: { output: 'original' } } }),
+    // Private unit-test channel: never accepted by a production capture verifier.
+    proof: (terminal = nativeCompleted(execution)): RepeatNativeEvidence => {
+      const lease = { fence: { id: 'recording-lane', token: 'recording-token' },
+        previous: { connectionGeneration: 1 }, providerId: 'recording-turn' }
+      return channel.capture.capture({ owner, execution, session, lease,
+        manager: { harness: session.harness, assertCapturedLease(actual: unknown, captured: unknown) {
+          expect(actual).toEqual(session); expect(captured).toBe(lease)
+        } }, lifetimeGeneration: 1, closureGeneration: null, kind: 'live', assertCurrent: assertOwned,
+        source: { type: 'history', history: { events: [], pendingInteractions: [], responseDeliveries: [],
+          correlationId: `execution:${execution.id}`, nativeTurnId: lease.providerId,
+          terminalTurn: { correlationId: `execution:${execution.id}`, providerId: lease.providerId, result: terminal.result } } },
+      } as unknown as WorkflowNativeCaptureInput)
+    },
     attach: () => { execution = HarnessExecutionSchema.parse({ ...execution, state: 'running', nativeSessionId: session.nativeSessionId }) },
     restoreClaimReceipt: () => { launchDigest = repeatDigest(repeatLaunchClaim(f.scope, f.ref, execution, repeatDigest(input))) },
     record: () => structuredClone(execution),
@@ -149,14 +180,14 @@ describe('ENG04 repository activation terminal preparation and owner lifetime', 
     const t = fixture()
     await t.store.claimLaunch(t.f.execution.id, paths); t.store.consumeLaunchPermit(t.f.execution.id); t.attach()
     const incoming = nativeCompleted(t.record(), { prose: 'invalid exit contract; preserve this original source' })
-    const original = structuredClone(incoming), proof = t.proof(), originalProof = structuredClone(proof)
+    const original = structuredClone(incoming), proof = t.proof(incoming), originalProof = structuredClone(proof)
     t.state.corruptGuard = true
     await t.store.updateExecution(incoming, proof)
     expect(t.record().result).toMatchObject({ outcome: 'failed', error: { code: 'REPEAT_RESULT_INVALID' } })
     expect(incoming).toEqual(original); expect(proof).toEqual(originalProof)
     const change = t.changes.at(-1)!
     expect(change.kind).toBe('observation')
-    expect(change.source).toMatchObject({ incoming: original, native: originalProof, next: t.record() })
+    expect(change.source).toMatchObject({ incoming: original, native: { original: { type: 'history', history: { terminalTurn: { result: original.result } } } }, next: t.record() })
     expect(t.calls.indexOf('native-update')).toBeLessThan(t.calls.lastIndexOf('publish'))
     expect(assertApprovalTerminalSettlement).toHaveBeenCalledTimes(1)
     await t.connection.close()
@@ -186,6 +217,12 @@ describe('ENG04 repository activation terminal preparation and owner lifetime', 
     await expect(t.store.updateExecution(nativeCompleted(before), t.proof())).rejects.toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
     expect(t.calls).not.toContain('native-update'); expect(t.record()).toEqual(before)
     await t.connection.close()
+  })
+  it('a missing native entry reservation cannot claim a first launch', async () => {
+    const t = fixture(); t.state.missingReservation = true
+    await expect(t.store.claimLaunch(t.f.execution.id, paths)).rejects.toMatchObject({ code: 'NATIVE_ENTRY_CONFLICT' })
+    expect(t.record().state).toBe('queued'); expect(t.changes).toHaveLength(0)
+    expect(t.store.consumeLaunchPermit(t.f.execution.id)).toBe(false)
   })
   it('the original canonical claim commits before a one-use permit exists; replay cannot reconstruct it', async () => {
     const t = fixture()
