@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
 import { HarnessConfigurationCheckResultSchema } from '@graphql/contracts/management'
-import { GraphDraftV3Schema } from '@graphql/contracts/wave25'
+import { CurrentWorkflowSaveResultSchema } from '@graphql/contracts/wave25'
 import { currentWorkflowFixture as makeWave25Fixture } from '../mocks/currentWorkflow'
 
 import { ApiError, ApiClient, apiClient } from './client'
@@ -25,7 +25,7 @@ describe('Phase 1 API boundary', () => {
     ])
     expect(result.workflows[0]?.edges).toEqual([
       { id: 'edge-researcher-developer', kind: 'execution', source: 'node-researcher', target: 'node-developer' },
-      { id: 'edge-developer-reviewer', source: 'node-developer', target: 'node-reviewer' },
+      { id: 'edge-developer-reviewer', kind: 'execution', source: 'node-developer', target: 'node-reviewer' },
     ])
   })
 
@@ -101,28 +101,20 @@ describe('Phase 1 API boundary', () => {
     expect(receivedSignal?.reason).toBe('caller cancelled')
   })
 
-  it('accepts an exact v2 Apply revert and its idempotent HTTP replay', async () => {
-    const fixture = makeWave25Fixture('web-revert')
-    const draft = GraphDraftV3Schema.parse({
-      id: 'draft-web-revert', workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId,
-      revision: 9, publishedRevision: 9, baseWorkflowVersionId: fixture.version.id,
-      graph: fixture.version.definition, stagedAgents: [], updatedByPrincipalId: 'principal-web-revert',
-      updatedAt: fixture.createdAt,
-    })
-    const response = (replayed: boolean) => new Response(JSON.stringify({
-      value: { draft, revertedApplyCommandId: 'apply-web-revert', priorRevision: 7 }, replayed,
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    const fetch = vi.fn<typeof globalThis.fetch>()
-      .mockResolvedValueOnce(response(false))
-      .mockResolvedValueOnce(response(true))
+  it('parses complete-definition Save and its exact HTTP replay', async () => {
+    const fixture = makeWave25Fixture('web-save')
+    const value = { workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId,
+      revision: 9, currentVersionId: fixture.version.id, version: fixture.version }
+    const response = (replayed: boolean) => new Response(JSON.stringify({ value, replayed }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } })
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(response(false)).mockResolvedValueOnce(response(true))
     const client = new ApiClient({ fetch })
-    const input = { workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId,
-      draftId: draft.id, commandId: 'revert-web-revert', expectedRevision: 8,
-      applyCommandId: 'apply-web-revert' }
-
-    expect((await client.revertManagedGraphApply(input)).value.draft).toEqual(draft)
-    expect(await client.revertManagedGraphApply(input)).toMatchObject({ replayed: true, value: { draft } })
-    expect(fetch).toHaveBeenCalledTimes(2)
+    const input = { commandId: 'save-exact', executionSemanticsVersion: 3, expectedRevision: 8,
+      expectedWorkflowVersionId: null, expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
+      expectedLocationRevision: 1, graph: fixture.version.definition }
+    const path = `/api/management/workspaces/${value.workspaceId}/workflows/${value.workflowId}/definition`
+    expect(await client.request(path, CurrentWorkflowSaveResultSchema, { method: 'PUT', body: input })).toEqual({ value, replayed: false })
+    expect(await client.request(path, CurrentWorkflowSaveResultSchema, { method: 'PUT', body: input })).toEqual({ value, replayed: true })
     expect(fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([input, input])
   })
 })

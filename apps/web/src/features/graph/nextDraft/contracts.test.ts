@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { GraphDraftV3Schema, GraphDraftApplyV3InputSchema, WorkflowChoiceSchema,
+import { GraphDraftV3Schema, GraphDraftOperationV3Schema, WorkflowChoiceSchema,
   WorkflowVersionV3Schema, ChoiceResultEnvelopeSchema } from '@graphql/contracts/wave25'
 import { fixture } from './core.cases'
 import { draftOperations, removeRelationship } from './model'
@@ -9,7 +9,7 @@ function version() {
   return { id: 'workflow-version-1', workspaceId: draft.workspaceId, workflowId: draft.workflowId,
     version: 1, entryNodeId: 'node-0', executionSemanticsVersion: 3 as const, definition: draft.graph,
     agentConfigurationVersionIds: { 'agent-0': 'configuration-0', 'agent-1': 'configuration-1' },
-    approval: { handler: 'user' as const }, contentHash: 'fixture-not-production', createdAt: '2026-09-22T00:00:00Z' }
+    approval: { handler: 'user' as const }, contentHash: `sha256:${'0'.repeat(64)}`, createdAt: '2026-09-22T00:00:00Z' }
 }
 describe('Agent 6 consumes frozen S2 schemas without a private contract', () => {
   it('fixture draft and generated typed removal operations round-trip', () => {
@@ -17,8 +17,7 @@ describe('Agent 6 consumes frozen S2 schemas without a private contract', () => 
     GraphDraftV3Schema.parse(context.draft)
     const graph = removeRelationship(context.draft.graph, 'execution-1')
     const operations = draftOperations(context, graph)
-    expect(GraphDraftApplyV3InputSchema.parse({ executionSemanticsVersion: 3,
-      workspaceId: 'workspace', workflowId: 'workflow', draftId: 'draft', commandId: 'typed-removal-fixture', expectedRevision: 7, operations }).operations).toEqual(operations)
+    expect(operations.map((operation) => GraphDraftOperationV3Schema.parse(operation))).toEqual(operations)
   })
   it('accepts an explicit branch end but rejects an incomplete or duplicate outcome', () => {
     expect(WorkflowChoiceSchema.safeParse({ outcomes: [{ outcome: 'done', target: { kind: 'branch_end' } }] }).success).toBe(true)

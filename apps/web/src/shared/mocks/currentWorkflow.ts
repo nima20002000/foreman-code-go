@@ -38,8 +38,8 @@ export function currentWorkflowFixture(suffix = 'fixture') {
     attempt: 1, input: { executionSemanticsVersion: 3, runInput: {}, predecessors: [] }, state: 'queued', createdAt }))
   const current = RepeatGraphCurrentV3Schema.parse({ kind: 'current', protocolVersion: 1, scope, asOfSequence: '0', retentionFloor: '0',
     historyCoverage: 'from_admission', topology: repeatGraphTopologyV3(version), state: {
-      run: { executionState: 'queued', outcome: 'pending', stopRequested: false },
-      occurrences: [], executions: [], resolutions: [], results: [], bindings: [], decisions: [],
+      run: { executionState: 'queued', outcome: 'pending', stopRequested: false, cleanupPending: false, unsettledReviewCount: 0, pendingInteractionCount: 0 },
+      nodes: [], inputBindings: [], interactions: [], reviews: [], occurrences: [], executions: [], resolutions: [], results: [], bindings: [], decisions: [],
     } })
   return { configurations, version, run, scope, identities, executions, current, createdAt }
 }

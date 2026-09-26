@@ -2,8 +2,8 @@ import { WorkflowVersionV3Schema, WorkflowRunV3Schema, RepeatOccurrenceV1Schema,
 import { currentWorkflowFixture as makeWave25Fixture } from '../../shared/mocks/currentWorkflow'
 
 export const emptyBoardRepeatState = () => RepeatGraphStateV3Schema.parse({
-  run: { executionState: 'queued', outcome: 'pending', stopRequested: false },
-  occurrences: [], executions: [], resolutions: [], results: [], bindings: [], decisions: [],
+  run: { executionState: 'queued', outcome: 'pending', stopRequested: false, cleanupPending: false, unsettledReviewCount: 0, pendingInteractionCount: 0 },
+  nodes: [], inputBindings: [], interactions: [], reviews: [], occurrences: [], executions: [], resolutions: [], results: [], bindings: [], decisions: [],
 })
 
 /** Deterministic shared-schema read fixture, not a native/SQL qualification proof. */

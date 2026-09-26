@@ -9,7 +9,7 @@ const handler = (fixture: ReturnType<typeof boardV3Fixture>, value: unknown) => 
   const query = new URL(request.url).searchParams
   expect(query.get('executionSemanticsVersion')).toBe('3')
   expect(query.get('workflowVersionId')).toBe(fixture.scope.workflowVersionId)
-  return HttpResponse.json(value)
+  return new HttpResponse(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } })
 })
 
 describe('real shared-schema canonical v3 HTTP reads', () => {
