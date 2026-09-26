@@ -825,6 +825,10 @@ export class ApprovalExecutionCoordinator {
           await owned.opening
           if (this.ownedSessions.get(owned.execution.id) !== owned) return
           if (this.closedExecutions.has(owned.execution.id)) return
+          // Opening has settled without a session: this manager never launched
+          // native work, so there is nothing to close. Durable launch-reservation
+          // evidence lets cold recovery settle the execution after restart.
+          if (!owned.session) return
           await this.closeWorkflowSession(owned, true)
         })
         return failures.map((error) => safe.error(error) as Error)
