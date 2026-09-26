@@ -36,7 +36,8 @@ export async function createRepeatFixtureWriter(pool: pg.Pool, fixture: Agent3Fi
   const grantScope = { workspaceIds: [fixture.scope.workspaceId], workflowIds: [fixture.scope.workflowId] }
   const credential = (grants: ManagementGrant[]) => access.issue({ name: 'ENG04 PostgreSQL fixture writer', audience: 'operator',
     expiresAt: new Date(Date.now() + 300000), grants })
-  const writer = await credential([{ actions: ['capabilities:read'], scope: {} }, {
+  const writer = await credential([{ actions: ['capabilities:read'], scope: {} },
+    { actions: ['workspace_locations:read', 'skills:read'], scope: { workspaceIds: [fixture.scope.workspaceId] } }, {
     actions: ManagementActionSchema.options.filter((action) => action !== 'capabilities:read'), scope: grantScope,
   }])
   const workflows = new WorkflowManagementService(pool, commands)
@@ -50,6 +51,7 @@ export async function createRepeatFixtureWriter(pool: pg.Pool, fixture: Agent3Fi
     const revision = Number(head.revision)
     if (!Number.isSafeInteger(revision)) throw new Error('The disposable repeat fixture has an invalid workflow revision')
     const entry = fixture.version.definition.nodes[0]!, exit = fixture.version.definition.nodes[1]!
+    if (!fixture.run.executionLocation) throw new Error('The current fixture requires an execution location')
     const input: CurrentWorkflowSaveInput = {
       workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId, commandId: randomUUID(),
       expectedRevision: revision, expectedWorkflowVersionId: head.current_version_id, executionSemanticsVersion: 3,
