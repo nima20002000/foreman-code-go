@@ -1,7 +1,9 @@
+import { Buffer } from 'node:buffer'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  CURRENT_WORKFLOW_TOOLS, RUN_INSPECTION_TOOLS, CurrentWorkflowSaveResultSchema,
+  CURRENT_WORKFLOW_TOOLS, RUN_INSPECTION_TOOLS, RUN_INSPECTION_LIMITS, CurrentWorkflowSaveResultSchema,
+  RunRecordDetailSchema, WorkflowRunV3Schema,
   RunExecutionsPageSchema, RunExecutionDetailSchema, RunExecutionBindingsPageSchema, RunVersionDetailSchema,
   makeCurrentWorkflowFixture, type RunExecutionSummary, type RunInspectionToolName,
 } from '@graphql/contracts/wave25'
@@ -27,7 +29,8 @@ const requestScope = (f: Fixture) => ({ workspaceId: f.f.scope.workspaceId, runI
 function path(input: Record<string, unknown>, name: RunInspectionToolName) {
   const { workspaceId, runId, executionId, ...query } = input
   const base = `/api/management/workspaces/${encodeURIComponent(String(workspaceId))}/runs/${encodeURIComponent(String(runId))}`
-  const suffix = name === RUN_INSPECTION_TOOLS.version ? '/version' : name === RUN_INSPECTION_TOOLS.executions ? '/executions'
+  const suffix = name === RUN_INSPECTION_TOOLS.record ? '/record'
+    : name === RUN_INSPECTION_TOOLS.version ? '/version' : name === RUN_INSPECTION_TOOLS.executions ? '/executions'
     : `/executions/${encodeURIComponent(String(executionId))}${name === RUN_INSPECTION_TOOLS.bindings ? '/bindings' : ''}`
   const parameters = new URLSearchParams(Object.entries(query).filter(([, val]) => val !== undefined).map(([key, val]) => [key, String(val)]))
   return `${base}${suffix}${parameters.size ? `?${parameters}` : ''}`
@@ -189,6 +192,12 @@ describe.skipIf(!postgresEnabled)('ENG-05 PostgreSQL authenticated Run inspectio
       await denied(f, wrongGrant.client, wrongGrant.token, RUN_INSPECTION_TOOLS.execution, detailArgs, 403, 'ACCESS_DENIED')
       const runsOnly = await reader(f, [{ actions: ['runs:read'], scope: { runIds: [args.runId] } }])
       await parity(f, runsOnly.client, runsOnly.token, RUN_INSPECTION_TOOLS.execution, detailArgs)
+      const runRecord = RunRecordDetailSchema.parse(await parity(f, runsOnly.client, runsOnly.token, RUN_INSPECTION_TOOLS.record, args))
+      expect(runRecord.run.workflowVersionId).toBe(f.f.version.id)
+      expect(runRecord.run.agentConfigurationVersionIds).toEqual(f.f.version.agentConfigurationVersionIds)
+      expect(runRecord.run).not.toHaveProperty('authorizationPrincipalId')
+      expect(runRecord.run).not.toHaveProperty('executionLocation')
+      expect(Object.keys(runRecord).sort()).toEqual(['cleanupPending', 'run', 'stopRequested'])
       await denied(f, runsOnly.client, runsOnly.token, RUN_INSPECTION_TOOLS.version, args, 403, 'ACCESS_DENIED')
 
       // Same actual workflow/node, different authentic Run/execution: no cross-Run detail leak.
@@ -213,7 +222,9 @@ describe.skipIf(!postgresEnabled)('ENG-05 PostgreSQL authenticated Run inspectio
       const indexes = (await f.db.pool.query<{ indexname: string }>(
         "select indexname from pg_indexes where schemaname=current_schema() and indexname like 'eng05_%'" )).rows
       expect(indexes).toHaveLength(5)
+      const oldRecord = await parity(f, f.client, f.writer.token, RUN_INSPECTION_TOOLS.record, args)
       await resaveChangingRepeat(f)
+      expect(await parity(f, f.client, f.writer.token, RUN_INSPECTION_TOOLS.record, args)).toEqual(oldRecord)
       expect(f.dispatchErrors).toEqual([])
     } finally { await f.close() }
   }, 90000)
@@ -288,4 +299,64 @@ describe.skipIf(!postgresEnabled)('ENG-05 PostgreSQL authenticated Run inspectio
       await f.stop()
     } finally { await f.close() }
   }, 90000)
+
+  it('discloses the exact Run-only record over HTTP/MCP when aggregate execution history exceeds 2 MiB', async () => {
+    const fixture = makeCurrentWorkflowFixture(randomUUID(), 'parallel')
+    // Four real executions each retain this input. No execution/receipt rows are
+    // fabricated; each individual accepted input stays below the existing 4 MiB bound.
+    fixture.run.input = { instruction: 'Retain the exact original Run input', payload: 'x'.repeat(768 * 1024) }
+    const f = await currentOperatorIntegration({ fixture, approvalNodeIds: [] })
+    try {
+      const args = requestScope(f), name = RUN_INSPECTION_TOOLS.record
+      const queued = RunRecordDetailSchema.parse(await parity(f, f.client, f.writer.token, name, args))
+      expect(queued.run.executionState).toBe('queued')
+      expect(queued.run).not.toHaveProperty('result')
+      await f.engine.start(f.f.run.id); await terminal(f)
+      const counts = { ...f.provider.counts }
+      const aggregate = await f.app.inject({ method: 'GET',
+        url: `/api/management/workspaces/${args.workspaceId}/runs/${args.runId}`,
+        headers: { authorization: `Bearer ${f.writer.token}` } })
+      expect(aggregate.statusCode, aggregate.body).toBe(409)
+      expect(aggregate.json()).toMatchObject({ error: { code: 'RUN_DETAIL_TOO_LARGE' } })
+
+      const persisted = (await f.db.pool.query<{ record: unknown; stopped: boolean; pending: boolean }>(
+        `select r.record,r.stop_requested_at is not null as stopped,
+         exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as pending
+         from runs r where r.id=$1`, [args.runId])).rows[0]!
+      const expected = WorkflowRunV3Schema.parse(persisted.record)
+      delete expected.authorizationPrincipalId
+      const full = RunRecordDetailSchema.parse(await parity(f, f.client, f.writer.token, name, args))
+      expect(full).toEqual({ run: expected, stopRequested: persisted.stopped, cleanupPending: persisted.pending })
+      expect(full.run.input).toEqual(fixture.run.input)
+      expect(full.run.result).toBeDefined()
+      expect(full.run.executionLocation).toEqual(queued.run.executionLocation)
+      expect(full.run.agentConfigurationVersionIds).toEqual(queued.run.agentConfigurationVersionIds)
+      expect(full.run.workflowVersionId).toBe(queued.run.workflowVersionId)
+      expect(Object.keys(full).sort()).toEqual(['cleanupPending', 'run', 'stopRequested'])
+      expect(Buffer.byteLength(JSON.stringify(full), 'utf8')).toBeLessThan(RUN_INSPECTION_LIMITS.responseBytes)
+      expect(f.provider.counts).toEqual(counts)
+
+      const restricted = await reader(f, [{ actions: ['runs:read'], scope: { runIds: [args.runId] } }])
+      const redacted = RunRecordDetailSchema.parse(await parity(f, restricted.client, restricted.token, name, args))
+      delete expected.executionLocation
+      expect(redacted).toEqual({ run: expected, stopRequested: persisted.stopped, cleanupPending: persisted.pending })
+      const forbidden = await reader(f, [{ actions: ['capabilities:read'], scope: {} }])
+      expect((await forbidden.client.listTools()).tools.map((tool) => tool.name)).not.toContain(name)
+      await denied(f, forbidden.client, forbidden.token, name, args, 403, 'ACCESS_DENIED')
+      const audits = (await f.db.pool.query<{ source: string }>(
+        'select source from management_audit where principal_id=$1', [forbidden.principal.id])).rows
+      expect(audits.map((row) => row.source)).toEqual(expect.arrayContaining(['http', 'mcp']))
+      const wrongScope = await reader(f, [{ actions: ['runs:read'], scope: { workspaceIds: ['other-workspace'] } }])
+      await denied(f, wrongScope.client, wrongScope.token, name, args, 403, 'ACCESS_DENIED')
+      await denied(f, f.client, f.writer.token, name, { ...args, workspaceId: 'missing-workspace' }, 404, 'RUN_NOT_FOUND')
+      expect((await f.app.inject({ method: 'GET', url: path(args, name) })).statusCode).toBe(401)
+
+      // The database itself refuses to rewrite an admitted Run's version pin.
+      await expect(f.db.pool.query("update runs set record=jsonb_set(record,'{workflowVersionId}',to_jsonb($2::text)) where id=$1",
+        [args.runId, 'corrupt-version-pin'])).rejects.toThrow(/REPEAT_RUN_PIN_IMMUTABLE/)
+      expect(await parity(f, f.client, f.writer.token, name, args)).toEqual(full)
+      expect(f.dispatchErrors).toEqual([])
+    } finally { await f.close() }
+  }, 90000)
+
 })

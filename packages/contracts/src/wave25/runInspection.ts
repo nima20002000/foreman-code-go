@@ -6,11 +6,12 @@ import {
 import { GraphDigestSchema, GraphExecutionIdentitySchema, GraphIdSchema } from './graphPrimitives.js'
 import { AcceptedCurrentNodeResultSchema, CurrentRunScopeSchema } from './currentWorkflowFoundation.js'
 import { RepeatExecutionIdentityV1Schema, RepeatOccurrenceIdentityV1Schema, RepeatOccurrenceV1Schema } from './repeat.js'
-import { WorkflowVersionV3Schema } from './saved.js'
+import { WorkflowRunV3Schema, WorkflowVersionV3Schema } from './saved.js'
 import { canonicalGraphJson } from './json.js'
 
 /** Private, authenticated inspection. These bodies NEVER enter graph snapshots/deltas. */
 export const RUN_INSPECTION_TOOLS = {
+  record: 'run_record_get',
   executions: 'run_executions_list', execution: 'run_execution_get',
   bindings: 'run_execution_bindings_list', version: 'run_version_get',
 } as const
@@ -30,11 +31,26 @@ export const RunExecutionGetInputSchema = RunRequest.extend({ executionId: Graph
 export const RunExecutionBindingsListInputSchema = RunExecutionGetInputSchema.extend({
   cursor: Cursor.optional(), limit: z.number().int().min(1).max(RUN_INSPECTION_LIMITS.bindings).default(10),
 }).strict()
+export const RunRecordGetInputSchema = RunRequest
 export const RunVersionGetInputSchema = RunRequest
 export type RunExecutionsListInput = z.infer<typeof RunExecutionsListInputSchema>
 export type RunExecutionGetInput = z.infer<typeof RunExecutionGetInputSchema>
 export type RunExecutionBindingsListInput = z.infer<typeof RunExecutionBindingsListInputSchema>
+export type RunRecordGetInput = z.infer<typeof RunRecordGetInputSchema>
 export type RunVersionGetInput = z.infer<typeof RunVersionGetInputSchema>
+
+/** Explicit private Run disclosure, independent of execution/activity history.
+ * Retains exact Run input/result and immutable pins. Principal identity is never
+ * disclosed; executionLocation is present only with live location-read grants.
+ * Stop acceptance and cleanup settlement are distinct, required persisted facts.
+ * Oversized records fail as a whole; no truncated input is usable for a new Run. */
+export const RunRecordDetailSchema = z.object({
+  run: WorkflowRunV3Schema, stopRequested: z.boolean(), cleanupPending: z.boolean(),
+}).strict().superRefine((value, context) => {
+  try { canonicalGraphJson(value, RUN_INSPECTION_LIMITS.responseBytes) }
+  catch { context.addIssue({ code: 'custom', message: 'Run record exceeds its exact-value bound.' }) }
+})
+export type RunRecordDetail = z.infer<typeof RunRecordDetailSchema>
 
 /** Refreshable lifecycle metadata; no input, output, native/session or location paths. */
 export const RunInspectionRunSchema = CurrentRunScopeSchema.extend({

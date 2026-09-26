@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { ManagementAction, ManagementScope } from '@graphql/contracts/management'
 import {
   RUN_INSPECTION_TOOLS, RunInspectionToolNameSchema, type RunInspectionToolName,
+  RunRecordGetInputSchema, RunRecordDetailSchema,
   RunExecutionsListInputSchema, RunExecutionsPageSchema, RunExecutionGetInputSchema, RunExecutionDetailSchema,
   RunExecutionBindingsListInputSchema, RunExecutionBindingsPageSchema, RunVersionGetInputSchema, RunVersionDetailSchema,
 } from '@graphql/contracts/wave25'
@@ -42,6 +43,10 @@ export function registerRunInspectionTools(server: McpServer, context: OperatorR
   const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   const reads = context.services.runs?.inspection
   if (!reads) return
+  if (runInspectionToolAvailable(context, RUN_INSPECTION_TOOLS.record)) server.registerTool(RUN_INSPECTION_TOOLS.record, {
+    description: 'Read one exact WorkflowRunV3 record: original input, recorded result, lifecycle, Stop-request and cleanup-pending facts, and immutable pins. No executions, activity, native events or workflow definition. Maximum 6 MiB; oversized records fail, never truncate. Requires runs:read on the Run; location is redacted without live workspace_locations:read. Use for result disclosure or full-Run retry preflight, not aggregate run_get.',
+    inputSchema: RunRecordGetInputSchema, outputSchema: RunRecordDetailSchema, annotations,
+  }, async (input) => invokeOperatorTool(context, RUN_INSPECTION_TOOLS.record, () => reads.record(context.principal, input)))
   if (runInspectionToolAvailable(context, RUN_INSPECTION_TOOLS.executions)) server.registerTool(RUN_INSPECTION_TOOLS.executions, {
     description: 'Read a bounded page of current V3 Run executions, optionally filtered by node and real repeat occurrence. Default 25, maximum 100; newest creation time then ID. Replay opaque cursors with unchanged scope/filters. Metadata only: no input/result/native bodies; use this, not aggregate run_get, for inspector refresh.',
     inputSchema: RunExecutionsListInputSchema, outputSchema: RunExecutionsPageSchema, annotations,

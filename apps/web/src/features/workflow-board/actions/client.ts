@@ -4,14 +4,14 @@ import {
 import { BrowserAccessSessionSchema, InteractionListInputSchema, ManagedWorkspaceSchema,
   type ManagementAction } from '@graphql/contracts/management'
 import {
-  CURRENT_WORKFLOW_ROUTES, CurrentManagedWorkflowSchema, CurrentRunDetailsSchema, CurrentRunVersionSnapshotSchema,
+  CURRENT_WORKFLOW_ROUTES, CurrentManagedWorkflowSchema, RunRecordDetailSchema, CurrentRunVersionSnapshotSchema,
   CurrentWorkflowCapabilitiesSchema, RunExecutionDetailSchema, RunExecutionsPageSchema,
   RunStartV3InputSchema, RunVersionDetailSchema, sameExecutableWorkflow, sameWorkflowValue,
   type RepeatGraphScopeV3, type RunExecutionSummary,
 } from '@graphql/contracts/wave25'
 import { apiClient, ApiError, type ApiClient, type RequestOptions } from '../../../shared/api/client'
 import { canUseBoardAction } from '../permissions'
-import { readBoardRun, scopeForBoardRun } from '../client'
+import { scopeForBoardRun } from '../client'
 import type { BoardStartInput } from '../startClient'
 
 export type RunActionSelection = Pick<RepeatGraphScopeV3, 'workspaceId' | 'workflowId' | 'runId'>
@@ -119,25 +119,28 @@ export function createRunActionsClient(client: ApiClient = apiClient) {
     }
     return result
   }
-  const runResult = async (scope: RepeatGraphScopeV3, options?: RequestOptions) => {
-    // Explicit disclosure only. The existing private detail endpoint also carries
-    // execution/activity arrays; discard those rather than caching another history.
-    const detail = await client.request(path(scope), CurrentRunDetailsSchema, options)
+  const record = async (scope: RepeatGraphScopeV3, options?: RequestOptions) => {
+    const detail = await client.request(`${path(scope)}/record`, RunRecordDetailSchema, options)
     assertActionScope(scopeForBoardRun(detail.run), scope)
+    return detail
+  }
+  const runResult = async (scope: RepeatGraphScopeV3, options?: RequestOptions) => {
+    // Explicit Run-only disclosure, never aggregate execution/activity history.
+    const detail = await record(scope, options)
     return { scope: scopeForBoardRun(detail.run), result: detail.run.result,
       executionState: detail.run.executionState, outcome: detail.run.outcome, stopCause: detail.run.stopCause }
   }
-  return { authorize, capabilities, status, executions, execution, version, approvals, approval, respond, runResult }
+  return { authorize, capabilities, status, executions, execution, version, approvals, approval, respond, record, runResult }
 }
 export const runActionsClient = createRunActionsClient()
 
-/** Explicit user preflight, not a polling pipeline. The old Run input is available
- * only on the existing private Run detail route; it is read once per preflight.
+/** Explicit user preflight, not a polling pipeline. Read the exact old Run input
+ * from the bounded Run-only route, independently of execution-history size.
  * No local draft is read, saved, discarded, retagged or supplied as a Start pin. */
 export async function prepareNewFullRun(scope: RepeatGraphScopeV3, commandId: string, options?: RequestOptions) {
   const workflowPath = `/api/management/workspaces/${part(scope.workspaceId)}/workflows/${part(scope.workflowId)}`
   const [detail, pinned, workflow, workspace, capabilities] = await Promise.all([
-    readBoardRun(scope.workspaceId, scope.workflowId, scope.runId, options),
+    runActionsClient.record(scope, options),
     runActionsClient.version(scope, options),
     apiClient.request(workflowPath, CurrentManagedWorkflowSchema, options),
     apiClient.request(`/api/management/workspaces/${part(scope.workspaceId)}`, ManagedWorkspaceSchema, options),

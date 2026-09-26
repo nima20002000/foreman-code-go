@@ -8,7 +8,7 @@ import { http, HttpResponse } from 'msw'
 import { DurableInteractionSchema, NATIVE_INTERACTION_FIXTURES, RespondToInteractionRequestSchema } from '@graphql/contracts'
 import { BrowserAccessSessionSchema, ManagedWorkspaceSchema, type ManagementAction } from '@graphql/contracts/management'
 import { CURRENT_WORKFLOW_CAPABILITIES, CurrentWorkflowCapabilitiesSchema, RunExecutionDetailSchema,
-  RunExecutionSummarySchema, RunInspectionRunSchema, RunStartV3InputSchema, WorkflowRunV3Schema,
+  RunExecutionSummarySchema, RunInspectionRunSchema, RunRecordDetailSchema, RunStartV3InputSchema, WorkflowRunV3Schema,
   makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { server } from '../../../mocks/server'
 import { useGraphDraftStore } from '../../graph/store'
@@ -17,6 +17,7 @@ import { readBoardStop, clearBoardStopStorage } from '../stopOutbox'
 import { readBoardStart, reserveBoardStart, clearBoardStartStorage } from '../startOutbox'
 import { RunActions } from './index'
 import { actionKey } from './state'
+import { prepareNewFullRun, runActionsClient } from './client'
 
 const clients: QueryClient[] = []
 const unhandled: string[] = []
@@ -82,7 +83,17 @@ function fixture(outcome: 'pending' | 'failed' | 'canceled' = 'pending') {
         acceptedResult: { status: 'not_accepted' }, ...(state.run.result ? { reportedResult: state.run.result } : {}) }))
     }),
     http.get(`*${runPath}/version`, async ({ request }) => { await record(request); return HttpResponse.json({ scope: f.scope, version: f.version }) }),
-    http.get(`*${runPath}`, async ({ request }) => { await record(request); return HttpResponse.json({ run: state.run, executions: [], activity: [], cleanupPending: state.cleanupPending }) }),
+    http.get(`*${runPath}/record`, async ({ request }) => {
+      await record(request)
+      return HttpResponse.json(RunRecordDetailSchema.parse({ run: state.run,
+        stopRequested: false, cleanupPending: state.cleanupPending }))
+    }),
+    // Regression guard: aggregate history is unavailable for this Run. Neither
+    // explicit result disclosure nor full-Run preflight may request/fall back to it.
+    http.get(`*${runPath}`, async ({ request }) => {
+      await record(request)
+      return HttpResponse.json({ error: { code: 'RUN_DETAIL_TOO_LARGE', message: 'Aggregate history exceeds 2 MiB' } }, { status: 409 })
+    }),
     http.get(`*${workflowPath}`, async ({ request }) => { await record(request); return HttpResponse.json({ workflow: f.version.definition,
       revision: state.revision, currentVersionId: state.currentVersionId, archivedAt: null }) }),
     http.get(`*/api/management/workspaces/${workspaceId}`, async ({ request }) => {
@@ -172,7 +183,7 @@ describe('ENG-05 contextual Run actions on current S3 contracts', () => {
     const statusReads = mock.state.requests.filter((request) => request.path.includes('/executions'))
     expect(statusReads.length).toBeGreaterThan(0)
     expect(statusReads.every((request) => request.path.endsWith('/executions?limit=1'))).toBe(true)
-    expect(mock.state.requests.some((request) => request.path === mock.runPath || request.path.endsWith('/version'))).toBe(false)
+    expect(mock.state.requests.some((request) => request.path === mock.runPath || request.path.endsWith('/version') || request.path.endsWith('/record'))).toBe(false)
     expect(screen.getByRole('button', { name: 'Resume execution — unavailable' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: /retry.*node|restart.*provider/i })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Refresh / reconnect client state' }))
@@ -227,7 +238,7 @@ describe('ENG-05 contextual Run actions on current S3 contracts', () => {
     expect(screen.getByRole('button', { name: 'Review new full Run' })).toBeDisabled()
     expect(screen.getByText(/Cleanup is pending\. A new full Run is unavailable/)).toBeInTheDocument()
   })
-  it.each(['failed', 'canceled'] as const)('starts a NEW full Run for settled %s using same version, input and fresh pins', async (outcome) => {
+  it.each(['failed', 'canceled'] as const)('starts a NEW full Run for settled %s despite unavailable aggregate history, using exact input and fresh pins', async (outcome) => {
     const mock = fixture(outcome), user = userEvent.setup(), old = structuredClone(mock.state.run)
     await mount(mock)
     await user.click(screen.getByRole('button', { name: 'Review new full Run' }))
@@ -241,6 +252,8 @@ describe('ENG-05 contextual Run actions on current S3 contracts', () => {
       expectedWorkflowRevision: 7, expectedLocationRevision: 9, expectedAgentConfigurationVersionIds: mock.f.version.agentConfigurationVersionIds })
     expect(sent).not.toHaveProperty('draftId'); expect(sent).not.toHaveProperty('repeat')
     expect(mock.state.run).toEqual(old)
+    expect(mock.state.requests.filter((call) => call.path === `${mock.runPath}/record`)).toHaveLength(2)
+    expect(mock.state.requests.some((call) => call.path === mock.runPath)).toBe(false)
     expect(readBoardStart(nextDraftKey(mock.f.scope.workspaceId, mock.f.scope.workflowId))).toBeUndefined()
   })
   it('explains unavailable historical-version retry rather than substituting the current head', async () => {
@@ -329,7 +342,11 @@ describe('ENG-05 contextual Run actions on current S3 contracts', () => {
     await mount(mock)
     await user.click(screen.getByText('Failure details and execution reports'))
     await user.click(screen.getByText('Recorded Run-level result'))
-    await screen.findByLabelText('Exact recorded Run result')
+    const result = await screen.findByLabelText('Exact recorded Run result')
+    expect(result).toHaveTextContent('Exact native failure')
+    const records = mock.state.requests.filter((call) => call.path === `${mock.runPath}/record`).length
+    expect(records).toBe(1)
+    expect(mock.state.requests.some((call) => call.path === mock.runPath)).toBe(false)
     const first = mock.f.identities[0]!
     await user.click(await screen.findByText(`Execution ${first.executionId} · ${first.workflowNodeId} · attempt 1 · completed`))
     await screen.findByLabelText(`Reported result ${first.executionId}`)
@@ -341,6 +358,7 @@ describe('ENG-05 contextual Run actions on current S3 contracts', () => {
     const reports = mock.state.requests.filter((call) => call.path.includes(`/executions/${first.executionId}`)).length
     await user.click(screen.getByRole('button', { name: 'Refresh / reconnect client state' })); await flush()
     expect(mock.state.requests.filter((call) => call.path.includes(`/executions/${first.executionId}`))).toHaveLength(reports)
+    expect(mock.state.requests.filter((call) => call.path === `${mock.runPath}/record`)).toHaveLength(records)
   })
   it('describes an ordinary saved workflow without inventing business-repeat rounds', async () => {
     const mock = fixture('failed'), user = userEvent.setup()
@@ -401,7 +419,7 @@ describe('ENG-05 contextual Run actions on current S3 contracts', () => {
     const before = mock.state.requests.filter((call) => call.path.endsWith('/executions?limit=1')).length
     await act(async () => { vi.advanceTimersByTime(5001) })
     await waitFor(() => expect(mock.state.requests.filter((call) => call.path.endsWith('/executions?limit=1')).length).toBeGreaterThan(before))
-    expect(mock.state.requests.every((call) => !call.path.includes('/executions/') && !call.path.endsWith('/version') && call.path !== mock.runPath)).toBe(true)
+    expect(mock.state.requests.every((call) => !call.path.includes('/executions/') && !call.path.endsWith('/version') && !call.path.endsWith('/record') && call.path !== mock.runPath)).toBe(true)
   })
   it('hides prior actionable state when synchronization is denied, without sending a command', async () => {
     const mock = fixture(), user = userEvent.setup()
@@ -425,6 +443,44 @@ describe('ENG-05 contextual Run actions on current S3 contracts', () => {
     expect(screen.queryByText('Exact input and configuration pins to send')).not.toBeInTheDocument()
     expect(readBoardStart(nextDraftKey(mock.f.scope.workspaceId, mock.f.scope.workflowId))?.workflowVersionId).toBe(mock.f.version.id)
     expect(screen.getByRole('button', { name: 'Review new full Run' })).toBeDisabled()
+  })
+
+  it.each(['id', 'workflowVersionId'] as const)('rejects foreign record %s for both result disclosure and full-Run preflight', async (pin) => {
+    const mock = fixture('failed')
+    server.use(...mock.handlers)
+    server.use(http.get(`*${mock.runPath}/record`, () => HttpResponse.json({
+      run: { ...mock.state.run, [pin]: 'foreign-pin' }, stopRequested: false, cleanupPending: false,
+    })))
+    await expect(runActionsClient.runResult(mock.f.scope)).rejects.toThrow(/selected Run and immutable version/)
+    await expect(prepareNewFullRun(mock.f.scope, 'record-pin-test')).rejects.toThrow(/selected Run and immutable version/)
+    await flush()
+    expect(writes(mock, '/runs')).toEqual([])
+    expect(mock.state.requests.some((call) => call.path === mock.runPath)).toBe(false)
+  })
+
+  it.each(['cleanupPending', 'stopRequested'] as const)('rejects a record with missing persisted %s instead of assuming settlement', async (missing) => {
+    const mock = fixture('failed')
+    server.use(...mock.handlers)
+    const payload: Record<string, unknown> = { run: mock.state.run, stopRequested: false, cleanupPending: false }
+    delete payload[missing]
+    server.use(http.get(`*${mock.runPath}/record`, () => HttpResponse.json(payload)))
+    await expect(runActionsClient.runResult(mock.f.scope)).rejects.toThrow()
+    await expect(prepareNewFullRun(mock.f.scope, 'missing-cleanup-test')).rejects.toThrow()
+    await flush()
+    expect(writes(mock, '/runs')).toEqual([])
+    expect(mock.state.requests.some((call) => call.path === mock.runPath)).toBe(false)
+  })
+
+  it.each([403, 409])('does not fall back to aggregate detail when the Run-only read fails with %i', async (status) => {
+    const mock = fixture('failed')
+    server.use(...mock.handlers)
+    const code = status === 403 ? 'ACCESS_DENIED' : 'RUN_INSPECTION_TOO_LARGE'
+    server.use(http.get(`*${mock.runPath}/record`, () => HttpResponse.json({ error: { code, message: 'Exact Run record unavailable' } }, { status })))
+    await expect(runActionsClient.runResult(mock.f.scope)).rejects.toThrow('Exact Run record unavailable')
+    await expect(prepareNewFullRun(mock.f.scope, 'no-fallback-test')).rejects.toThrow('Exact Run record unavailable')
+    await flush()
+    expect(writes(mock, '/runs')).toEqual([])
+    expect(mock.state.requests.some((call) => call.path === mock.runPath)).toBe(false)
   })
 
 })

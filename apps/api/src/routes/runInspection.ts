@@ -24,6 +24,11 @@ export function registerRunInspectionRoutes(app: FastifyInstance, services: Oper
     return services.runs.inspection
   }
   const base = '/api/management/workspaces/:workspaceId/runs/:runId'
+  app.get<Request>(`${base}/record`, async (request, reply) => {
+    privateRead(reply)
+    const principal = requirePrincipal(request)
+    return reads().record(principal, input(request.params, request.query))
+  })
   app.get<Request>(`${base}/executions`, async (request, reply) => {
     privateRead(reply)
     const principal = requirePrincipal(request)

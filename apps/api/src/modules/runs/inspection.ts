@@ -7,11 +7,11 @@ import {
   RunExecutionDetailSchema, RunExecutionGetInputSchema, RunExecutionSummarySchema,
   RunExecutionsListInputSchema, RunExecutionsPageSchema, RunInspectionRunSchema,
   RunVersionDetailSchema, RunVersionGetInputSchema, RepeatOccurrenceIdentityV1Schema,
-  canonicalGraphJson,
+  canonicalGraphJson, RunRecordGetInputSchema, RunRecordDetailSchema, WorkflowRunV3Schema,
   type RunExecutionBindingsPage, type RunExecutionDetail, type RunExecutionSummary,
-  type RunExecutionsPage, type RunVersionDetail,
+  type RunExecutionsPage, type RunVersionDetail, type RunRecordDetail,
 } from '@graphql/contracts/wave25'
-import { requireAuthorization } from '../access/policy.js'
+import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { withCurrentRunRead } from './currentRead.js'
@@ -123,6 +123,23 @@ export class RunInspectionService {
       }
       throw error
     }
+  }
+
+  /** Run-only disclosure. The shared transaction checks live Run grants, exact
+   * version/configuration/location pins and persisted lifecycle/cleanup facts.
+   * Do not compose aggregate detail (or even an execution page) for this read. */
+  async record(principal: ManagementPrincipal, raw: unknown): Promise<RunRecordDetail> {
+    const input = RunRecordGetInputSchema.parse(raw)
+    return this.read(principal, input, async (_sql, snapshot, live) => {
+      // Parse a public copy: redaction must not mutate the accepted snapshot.
+      const run = WorkflowRunV3Schema.parse(snapshot.run)
+      delete run.authorizationPrincipalId
+      if (!isAuthorized(live, 'workspace_locations:read', { workspaceId: run.workspaceId })) delete run.executionLocation
+      // Bound before output validation so an oversized exact record has the same
+      // explicit error on HTTP and MCP, never an input/result truncation.
+      return RunRecordDetailSchema.parse(bounded({ run, stopRequested: snapshot.stopRequested,
+        cleanupPending: snapshot.cleanupPending }))
+    })
   }
 
   async executions(principal: ManagementPrincipal, raw: unknown): Promise<RunExecutionsPage> {
