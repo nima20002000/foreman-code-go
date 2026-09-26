@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto'
 
 import {
   ManagedWorkspaceSchema,
+  WorkspaceBatchArchiveInputSchema,
+  type WorkspaceBatchArchiveInput,
   type ManagementPrincipal,
   type ManagedWorkspace,
   type WorkspaceCreateInput,
@@ -40,7 +42,8 @@ export class WorkspaceManagementService {
 
   async list(principal: ManagementPrincipal, input: { cursor?: string | undefined; limit: number; includeArchived: boolean }) {
     if (!hasAction(principal, 'workspaces:read')) requireAuthorization(principal, 'workspaces:read')
-    const relevant = principal.grants.filter((grant) => grant.actions.includes('workspaces:read'))
+    const relevant = principal.grants.filter((grant) => grant.actions.includes('workspaces:read')
+      && grant.scope.workflowIds === undefined && grant.scope.runIds === undefined)
     const allowedWorkspaceIds = relevant.some((grant) => grant.scope.workspaceIds === undefined)
       ? undefined
       : [...new Set(relevant.flatMap((grant) => grant.scope.workspaceIds ?? []))]
@@ -56,10 +59,11 @@ export class WorkspaceManagementService {
       .filter((item) => {
         try { requireAuthorization(principal, 'workspaces:read', { workspaceId: item.workspace.id }); return true } catch { return false }
       })
-    const items = await Promise.all(visible.slice(0, input.limit).map(async (item) => {
-      if (!isAuthorized(principal, 'workspace_locations:read', { workspaceId: item.workspace.id })) return item
-      return ManagedWorkspaceSchema.parse({ ...item, ...await this.locations.inspect(principal, item.workspace.id) })
-    }))
+    const page = visible.slice(0, input.limit)
+    const locationIds = page.filter((item) => isAuthorized(principal, 'workspace_locations:read', { workspaceId: item.workspace.id }))
+      .map((item) => item.workspace.id)
+    const locations = locationIds.length ? await this.locations.inspectMany(principal, locationIds) : new Map()
+    const items = page.map((item) => ManagedWorkspaceSchema.parse({ ...item, ...locations.get(item.workspace.id) }))
     return { items, pageInfo: { nextCursor: visible.length > input.limit ? items.at(-1)!.workspace.id : null } }
   }
 
@@ -146,6 +150,40 @@ export class WorkspaceManagementService {
           [input.workspaceId, JSON.stringify(workspace)],
         )
         return managed(result.rows[0]!)
+      },
+    })
+  }
+
+  async archiveBatch(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: WorkspaceBatchArchiveInput) {
+    const input = WorkspaceBatchArchiveInputSchema.parse(raw)
+    for (const item of input.workspaces) requireAuthorization(principal, 'workspaces:archive', { workspaceId: item.workspaceId })
+    const ids = input.workspaces.map((item) => item.workspaceId).sort()
+    return this.commands.execute({
+      principal, source, operation: 'workspace.batch_archive', commandId: input.commandId,
+      targetKey: 'workspaces:batch', payload: input,
+      perform: async (client) => {
+        // Match child admission locks in stable order, in one database round trip.
+        await client.query(
+          `select pg_advisory_xact_lock(hashtext(lock_key)) from
+           (select 'admission:workspace:' || id as lock_key from unnest($1::text[]) as selected(id) order by id) locks`, [ids],
+        )
+        const current = await client.query<{ id: string; revision: string }>(
+          'select id, revision from workspaces where id = any($1::text[]) order by id for update', [ids],
+        )
+        if (current.rows.length !== ids.length) throw new DomainError('WORKSPACE_NOT_FOUND', 'A selected workspace was not found. Nothing was deleted.', 404)
+        const revisions = new Map(input.workspaces.map((item) => [item.workspaceId, item.expectedRevision]))
+        if (current.rows.some((row) => Number(row.revision) !== revisions.get(row.id))) {
+          throw new DomainError('REVISION_CONFLICT', 'A selected workspace changed. Nothing was deleted. Reload the list and select again.', 409)
+        }
+        const active = await client.query(
+          `select 1 from runs where workspace_id = any($1::text[]) and execution_state <> 'completed' limit 1`, [ids],
+        )
+        if (active.rows.length) throw new DomainError('ARCHIVE_BLOCKED_BY_ACTIVE_RUN', 'A selected workspace has active runs. Nothing was deleted. Settle active work and try again.', 409)
+        await client.query(
+          `update workspaces set archived_at = coalesce(archived_at, now()), revision = revision + 1
+           where id = any($1::text[])`, [ids],
+        )
+        return { workspaceIds: ids }
       },
     })
   }

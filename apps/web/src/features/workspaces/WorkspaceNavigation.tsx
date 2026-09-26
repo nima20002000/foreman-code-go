@@ -20,6 +20,8 @@ import {
   Workflow,
 } from 'lucide-react'
 import { WorkspaceFolderPicker } from '../settings/WorkspaceFolderPicker'
+import { LoadMore } from '../../shared/ui/LoadMore'
+import type { ComponentProps } from 'react'
 import type { Workspace } from '@graphql/contracts'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
@@ -68,6 +70,7 @@ export interface WorkspaceNavigationProps {
    * projection from the workspace query is the only entry.
    */
   workspaces?: readonly WorkspaceNavigationEntry[]
+  workspacePagination?: ComponentProps<typeof LoadMore>['query'] | undefined
   navigationCollapsed?: boolean
   /** The workspace directory is selected instead of a specific workspace. */
   workspaceOverviewActive?: boolean
@@ -446,6 +449,7 @@ export function WorkspaceNavigation({
   navigationCollapsed = false,
   workspaceOverviewActive = false,
   workflowsContent,
+  workspacePagination,
 }: WorkspaceNavigationProps) {
   const detailsQuery = useManagedWorkspaceQuery(workspaceId)
   const rememberWorkspace = useNavigationUiStore((state) => state.rememberWorkspace)
@@ -470,10 +474,11 @@ export function WorkspaceNavigation({
           id: workspaceId,
           name: detailsQuery.data.workspace.name,
         })
+        if (workspacePagination && workspaces?.length) next.length = workspaces.length
       }
       return next
     },
-    [detailsQuery.data?.workspace, workspaces, workspaceId, workspaceOverviewActive],
+    [detailsQuery.data?.workspace, workspaces, workspaceId, workspaceOverviewActive, workspacePagination],
   )
 
   const entryItems = useMemo(
@@ -558,6 +563,7 @@ export function WorkspaceNavigation({
                   />
                 )
               })}
+              {workspacePagination ? <li><LoadMore label="workspaces" query={workspacePagination} /></li> : null}
               <li>
                 <NewWorkspaceControl />
               </li>

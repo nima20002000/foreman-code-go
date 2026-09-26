@@ -221,6 +221,16 @@ export const WorkspaceArchiveInputSchema = z.object({
   ...WorkspaceScopeSchema.shape,
   ...RevisionMutationFields,
 }).strict();
+export const WorkspaceBatchArchiveInputSchema = z.object({
+  ...MutationFields,
+  workspaces: z.array(z.object({ workspaceId: IdSchema, expectedRevision: ExpectedRevisionSchema }).strict())
+    .min(1).max(100).refine((items) => new Set(items.map((item) => item.workspaceId)).size === items.length,
+      "Each workspace must appear only once"),
+}).strict();
+export type WorkspaceBatchArchiveInput = z.infer<typeof WorkspaceBatchArchiveInputSchema>;
+export const WorkspaceBatchArchiveResultSchema = z.object({
+  value: z.object({ workspaceIds: z.array(IdSchema) }).strict(), replayed: z.boolean(),
+}).strict();
 export const WorkspaceLocationAccessModeSchema = z.enum(["read-only", "read-write"]);
 export type WorkspaceLocationAccessMode = z.infer<typeof WorkspaceLocationAccessModeSchema>;
 export const WorkspaceLocationValidateInputSchema = z.object({
@@ -277,6 +287,17 @@ export const WorkflowUpdateInputSchema = z.object({
 export const WorkflowArchiveInputSchema = z.object({
   ...WorkflowScopeSchema.shape,
   ...RevisionMutationFields,
+}).strict();
+export const WorkflowBatchArchiveInputSchema = z.object({
+  ...WorkspaceScopeSchema.shape,
+  ...MutationFields,
+  workflows: z.array(z.object({ workflowId: IdSchema, expectedRevision: ExpectedRevisionSchema }).strict())
+    .min(1).max(100).refine((items) => new Set(items.map((item) => item.workflowId)).size === items.length,
+      "Each workflow must appear only once"),
+}).strict();
+export type WorkflowBatchArchiveInput = z.infer<typeof WorkflowBatchArchiveInputSchema>;
+export const WorkflowBatchArchiveResultSchema = z.object({
+  value: z.object({ workflowIds: z.array(IdSchema) }).strict(), replayed: z.boolean(),
 }).strict();
 export type WorkflowCreateInput = z.infer<typeof WorkflowCreateInputSchema>;
 export type WorkflowUpdateInput = z.infer<typeof WorkflowUpdateInputSchema>;
@@ -649,9 +670,9 @@ export const OperatorToolNameSchema = z.enum([
   "operator_get_capabilities", "harness_list", "harness_get", "harness_defaults_update",
   "agent_defaults_get", "agent_defaults_update", "workflow_defaults_get", "workflow_defaults_update",
   "workspace_folders_list", "workspace_folder_create", "workspace_folder_rename", "workspace_folder_undo", "workspace_folders_delete",
-  "workspace_list", "workspace_get", "workspace_create", "workspace_update", "workspace_archive",
+  "workspace_list", "workspace_get", "workspace_create", "workspace_update", "workspace_archive", "workspace_batch_archive",
   "workspace_location_validate", "workspace_location_set",
-  "workflow_list", "workflow_get", "workflow_create", "workflow_update", "workflow_archive",
+  "workflow_list", "workflow_get", "workflow_create", "workflow_update", "workflow_archive", "workflow_batch_archive",
   "agent_list", "agent_get", "graph_draft_open", "graph_draft_get", "graph_draft_apply",
   "graph_draft_layout", "graph_draft_revert_applied", "graph_validate", "graph_save", "graph_draft_discard", "run_list", "run_get", "run_current_get_v1", "run_history_get_v1",
   "run_events_list", "run_start", "run_stop",

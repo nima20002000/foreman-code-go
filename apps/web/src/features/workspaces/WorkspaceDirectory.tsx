@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { useQueryClient } from '@tanstack/react-query'
-import type { ManagedWorkspace } from '@graphql/contracts/management'
+import { useStore } from 'zustand'
+import { createResourceSelection } from '../../shared/ui/resourceSelection'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import type { InfiniteData } from '@tanstack/react-query'
+import { LoadMore } from '../../shared/ui/LoadMore'
+import type { ManagedWorkspace, WorkspaceBatchArchiveInput } from '@graphql/contracts/management'
 
 import {
-  queryKeys, useArchiveManagedWorkspaceMutation, useManagedWorkspacesQuery,
+  queryKeys, useArchiveManagedWorkspaceMutation, useWorkspacePages,
   useUpdateManagedWorkspaceMutation,
 } from '../../shared/api/query'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
-import { ApiError } from '../../shared/api/client'
+import { ApiError, apiClient } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
-import { Alert, Button, Card, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField } from '../../shared/ui/nocturne'
+import { Alert, Button, Card, Checkbox, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField } from '../../shared/ui/nocturne'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import '../../shared/ui/resourceDirectory.css'
 interface CardCommand { type: 'rename' | 'archive'; workspaceId: string; expectedRevision: number; name?: string }
@@ -87,15 +91,59 @@ function WorkspaceCardActions({ workspaceId, name, revision = 0, onCommand }: {
 
 export function WorkspaceDirectory() {
   const queryClient = useQueryClient()
-  const managedQuery = useManagedWorkspacesQuery(true)
+  const managedQuery = useWorkspacePages(true)
   const updateWorkspace = useUpdateManagedWorkspaceMutation()
   const archiveWorkspace = useArchiveManagedWorkspaceMutation()
 
+  const [selectionStore] = useState(createResourceSelection)
+  const selection = useStore(selectionStore)
+  const count = Object.keys(selection.selected).length
+  const attempt = useRef(new CommandAttempt<Omit<WorkspaceBatchArchiveInput, 'commandId'>>())
+  const inFlight = useRef(false)
+  const selectRef = useRef<HTMLButtonElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const wasSelecting = useRef(false)
+  useEffect(() => {
+    if (wasSelecting.current && !selection.selecting) selectRef.current?.focus()
+    wasSelecting.current = selection.selecting
+  }, [selection.selecting])
+  const batch = useMutation({
+    mutationFn: (input: WorkspaceBatchArchiveInput) => apiClient.archiveManagedWorkspaceBatch(input),
+    onError: (error) => attempt.current.failed(error),
+  })
+  const locked = batch.isPending || attempt.current.unresolved
+  const closeConfirmation = () => { if (!locked) { selection.confirm(false); batch.reset() } }
+  const deleteSelected = async () => {
+    if (inFlight.current) return
+    inFlight.current = true
+    const generation = sessionGeneration()
+    try {
+      const result = await batch.mutateAsync(attempt.current.input({
+        workspaces: Object.entries(selection.selected).map(([workspaceId, expectedRevision]) => ({ workspaceId, expectedRevision })),
+      }))
+      assertSession(generation)
+      attempt.current.succeeded()
+      const deleted = new Set(result.value.workspaceIds)
+      queryClient.setQueryData<InfiniteData<Awaited<ReturnType<typeof apiClient.listManagedWorkspacePage>>>>(
+        [...queryKeys.managedWorkspaces, 'pages'], (current) => current ? {
+          ...current, pages: current.pages.map((page) => ({ ...page, items: page.items.filter((item) => !deleted.has(item.workspace.id)) })),
+        } : current,
+      )
+      selection.clear(`${deleted.size} ${deleted.size === 1 ? 'workspace' : 'workspaces'} deleted.`)
+      void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkspaces })
+      // Refresh cached details for every removed workspace without per-item HTTP reads.
+      queryClient.removeQueries({ predicate: (query) => deleted.has(String(query.queryKey[3]))
+        && query.queryKey[1] === 'management' && query.queryKey[2] === 'workspace' })
+    } catch (error) { attempt.current.failed(error) }
+    finally { inFlight.current = false }
+  }
+
+  const items = useMemo(() => managedQuery.data?.pages.flatMap((page) => page.items) ?? [], [managedQuery.data])
   const workspaces = useMemo(
-    () => managedQuery.isError ? [] : managedQuery.data?.items.map((item) => item.workspace) ?? [],
-    [managedQuery.data?.items, managedQuery.isError],
+    () => items.map((item) => item.workspace),
+    [items],
   )
-  const managedById = new Map(managedQuery.data?.items.map((item) => [item.workspace.id, item]))
+  const managedById = new Map(items.map((item) => [item.workspace.id, item]))
 
   const execute = async (input: CardCommand & { commandId: string }) => {
     const { workspaceId, commandId, expectedRevision } = input
@@ -103,24 +151,33 @@ export function WorkspaceDirectory() {
       ? await updateWorkspace.mutateAsync({ workspaceId, commandId, expectedRevision, name: input.name! })
       : await archiveWorkspace.mutateAsync({ workspaceId, commandId, expectedRevision })
     // The write has committed. Cache refresh failure must not turn it into a retryable write.
-    queryClient.setQueryData<{ items: ManagedWorkspace[]; pageInfo: { nextCursor: string | null } }>(queryKeys.managedWorkspaces, (current) => current ? {
+    queryClient.setQueryData<InfiniteData<{ items: ManagedWorkspace[]; pageInfo: { nextCursor: string | null } }>>([...queryKeys.managedWorkspaces, 'pages'], (current) => current ? {
       ...current,
-      items: input.type === 'archive' ? current.items.filter((item) => item.workspace.id !== workspaceId)
-        : current.items.map((item) => item.workspace.id === workspaceId ? response.value : item),
+      pages: current.pages.map((page) => ({ ...page, items: input.type === 'archive' ? page.items.filter((item) => item.workspace.id !== workspaceId)
+        : page.items.map((item) => item.workspace.id === workspaceId ? response.value : item) })),
     } : current)
     void Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkspaces }),
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) }),
     ]).catch(() => undefined)
   }
-  const failed = managedQuery.isError
+  const failed = managedQuery.isError && !managedQuery.isFetchNextPageError
   const loading = managedQuery.isPending
   const needsAccess = failed && ApiError.is(managedQuery.error) && managedQuery.error.status === 401
   return (
     <section className="workspace-directory resource-directory" aria-label="Workspaces">
       <PageHeader
         title="Workspaces"
+        actions={workspaces.length > 0 && !failed ? <div className="resource-directory-actions">
+          {!selection.selecting ? <Button ref={selectRef} onClick={selection.start}>Select workspaces</Button> : <>
+            <span role="status">{count} selected</span>
+            <Button variant="danger" disabled={!count || locked} onClick={() => selection.confirm(true)}>Delete selected{count ? ` (${count})` : ''}</Button>
+            <Button disabled={locked} onClick={() => selection.clear()}>Cancel selection</Button>
+          </>}
+        </div> : undefined}
       />
+      {selection.notice ? <p role="status">{selection.notice}</p> : null}
+      {selection.selecting ? <p className="resource-selection-hint">Select workspaces to delete. You can show more and keep your selection. Up to 100 at a time.</p> : null}
       {needsAccess ? <EmptyState icon="warning" title="Connect this browser"
         description="App access is required to load workspaces."
         action={<Link to="/settings/operator-access" className="n-button n-button--primary">Open App access</Link>} />
@@ -128,7 +185,11 @@ export function WorkspaceDirectory() {
           onRetry={() => void managedQuery.refetch()} /> : workspaces.length > 0 ? (
         <ul className="workspace-card-list resource-card-list" data-testid="workspace-card-list">
           {workspaces.map((workspace) => <li key={workspace.id}>
-            <Card className="workspace-card resource-card" data-testid={`workspace-card-${workspace.id}`}>
+            <Card className={`workspace-card resource-card${workspace.id in selection.selected ? ' is-selected' : ''}`} data-testid={`workspace-card-${workspace.id}`}>
+              {selection.selecting ? <Checkbox className="resource-card-select" label={workspace.name}
+                aria-label={`Select ${workspace.name}`} checked={workspace.id in selection.selected}
+                disabled={locked || (count >= 100 && !(workspace.id in selection.selected))}
+                onChange={() => selection.toggle(workspace.id, managedById.get(workspace.id)!.revision)} /> : <>
               <Link to="/workspaces/$workspaceId/settings" params={{ workspaceId: workspace.id }} search={{}} className="workspace-card-open resource-card-open" aria-label={workspace.name}>
                 <Icon name="grid" size={16} />
                 <span className="resource-card-copy">
@@ -138,7 +199,7 @@ export function WorkspaceDirectory() {
                 </span>
               </Link>
               <WorkspaceCardActions workspaceId={workspace.id} name={workspace.name}
-                revision={managedById.get(workspace.id)?.revision} onCommand={execute} />
+                revision={managedById.get(workspace.id)?.revision} onCommand={execute} /></>}
             </Card>
           </li>)}
         </ul>
@@ -147,6 +208,20 @@ export function WorkspaceDirectory() {
           : <div data-testid="workspace-directory-empty">
             <EmptyState icon="folder" title="No workspaces yet" description="Use New workspace in the navigation to create one." />
           </div>}
+      <LoadMore label="workspaces" query={managedQuery} />
+      <Dialog open={selection.confirming} onOpenChange={(open) => { if (!open) closeConfirmation() }}
+        title={`Delete ${count} ${count === 1 ? 'workspace' : 'workspaces'}?`}
+        description="Selected workspaces will be removed from the list. Workflows, run history and project files are retained. Workspaces with active runs cannot be deleted."
+        busy={locked} initialFocusRef={cancelRef} size="sm"
+        footer={<>
+          <Button ref={cancelRef} disabled={locked} onClick={closeConfirmation}>Cancel</Button>
+          <Button variant="danger" disabled={batch.isPending} onClick={() => void deleteSelected()}>
+            {batch.isPending ? 'Deleting…' : attempt.current.unresolved ? 'Retry deletion' : `Delete ${count} ${count === 1 ? 'workspace' : 'workspaces'}`}
+          </Button>
+        </>}>
+        {batch.isError ? <Alert tone="danger" live title={batch.error.message} /> : null}
+        {attempt.current.unresolved && !batch.isPending ? <p role="status">The request may have succeeded. Retry deletion to check its outcome safely.</p> : null}
+      </Dialog>
     </section>
   )
 }

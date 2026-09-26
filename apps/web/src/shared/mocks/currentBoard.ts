@@ -1,7 +1,7 @@
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { inspectionFixturePage, runInspectionFixtureResponse, type RunInspectionFixture, type RunInspectionActivity } from './runInspection'
 import { AgentConfigurationVersionSchema, AgentSchema, WorkflowRunSummarySchema, type Agent } from '@graphql/contracts'
-import { AgentCreateInputSchema, AgentUpdateInputSchema, AgentMutationResultSchema, BrowserAccessSessionSchema, ManagedWorkspaceSchema, RunStopInputSchema, WorkflowUpdateInputSchema, WorkflowArchiveInputSchema } from '@graphql/contracts/management'
+import { AgentCreateInputSchema, AgentUpdateInputSchema, AgentMutationResultSchema, BrowserAccessSessionSchema, ManagedWorkspaceSchema, RunStopInputSchema, WorkflowUpdateInputSchema, WorkflowArchiveInputSchema, WorkflowBatchArchiveInputSchema } from '@graphql/contracts/management'
 import {
   CurrentManagedWorkflowSchema, CurrentWorkspaceDetailsSchema, CurrentWorkflowCreateInputSchema,
   CurrentWorkflowCapabilitiesSchema, GraphDraftV3Schema, WorkflowDefinitionV3Schema, WorkflowVersionV3Schema,
@@ -179,6 +179,21 @@ export function createCurrentBoardMock(options: {
             workspaceId, name: input.name, ...(input.description ? { description: input.description } : {}), executionSemanticsVersion: 3,
             entryNodeId: null, nodes: [], edges: [], executionCondition: { kind: 'manual' }, approval: { handler: 'user' },
             executionPolicy: { maxParallelism: 4, maxNodeExecutions: 40 } })), { status: 201 }) }
+      }
+      if (path === `${prefix}/workflows/batch-archive` && method === 'POST') {
+        const input = WorkflowBatchArchiveInputSchema.parse({ ...(body as object), workspaceId })
+        return HttpResponse.json(journal(`workflow-batch:${input.commandId}`, input, () => {
+          for (const item of input.workflows) {
+            if (!workflows.has(item.workflowId)) throw new Error('WORKFLOW_NOT_FOUND')
+            if (revisions.get(item.workflowId) !== item.expectedRevision) throw new Error('REVISION_CONFLICT')
+            if ([...runs.values()].some(({ run }) => run.workflowId === item.workflowId && run.executionState !== 'completed')) throw new Error('ARCHIVE_BLOCKED_BY_ACTIVE_RUN')
+          }
+          for (const item of input.workflows) {
+            archivedWorkflows.add(item.workflowId)
+            revisions.set(item.workflowId, revisions.get(item.workflowId)! + 1)
+          }
+          return { workflowIds: input.workflows.map((item) => item.workflowId).sort() }
+        }))
       }
       const workflowMatch = path.match(/\/workflows\/([^/]+)(.*)$/)
       if (workflowMatch) {

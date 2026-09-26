@@ -696,6 +696,9 @@ export const migrations = [
   runInspectionMigration,
   workflowRestartRecoveryMigration,
   workflowTerminalRecoveryMigration,
+  { version: 264402, sql: `
+    create index workflows_workspace_id_page_idx on workflows (workspace_id, id);
+  ` },
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

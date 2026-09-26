@@ -4,6 +4,7 @@ import {
   HarnessDirectoryBrowseInputSchema, HarnessDirectoryBrowseResultSchema,
   WorkspaceFolderUndoInputSchema, WorkspaceFolderUndoResultSchema,
   WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema, WorkspaceFolderRenameInputSchema, WorkspaceFolderRenameResultSchema,
+  WorkspaceBatchArchiveInputSchema, WorkspaceBatchArchiveResultSchema,
   WorkspaceArchiveInputSchema, WorkspaceCreateInputSchema, WorkspaceGetInputSchema,
   WorkspaceListInputSchema, WorkspaceUpdateInputSchema,
   ManagedWorkspaceCommandResultSchema, ManagedWorkspacePageSchema, ManagedWorkspaceSchema,
@@ -42,7 +43,7 @@ export function registerWorkspaceTools(server: McpServer, context: OperatorReque
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (input) => invokeOperatorTool(context, 'workspace_folder_create', () => context.services.harnessSettings!.directories.create(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_list')) server.registerTool('workspace_list', {
-    description: 'List authorized workspaces with revisions and archive state.', inputSchema: WorkspaceListInputSchema,
+    description: 'List one cursor page of authorized workspaces with revisions and archive state. Pass pageInfo.nextCursor as cursor to load more; null means the end.', inputSchema: WorkspaceListInputSchema,
     outputSchema: ManagedWorkspacePageSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workspace_list', () => context.services.workspaces.list(context.principal, input)))
@@ -61,6 +62,11 @@ export function registerWorkspaceTools(server: McpServer, context: OperatorReque
     outputSchema: ManagedWorkspaceCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workspace_update', () => context.services.workspaces.update(context.principal, 'mcp', input)))
+  if (operatorToolAvailable(context, 'workspace_batch_archive')) server.registerTool('workspace_batch_archive', {
+    description: 'Atomically delete (archive) 1–100 selected workspaces, retaining workflows, history and project files. Requires archive permission and expected revision for every workspace. Any active run or conflict rejects the entire batch. Retry an uncertain outcome with the same commandId and input.',
+    inputSchema: WorkspaceBatchArchiveInputSchema, outputSchema: WorkspaceBatchArchiveResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, async (input) => invokeOperatorTool(context, 'workspace_batch_archive', () => context.services.workspaces.archiveBatch(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_archive')) server.registerTool('workspace_archive', {
     description: 'Archive a settled workspace while retaining its history.', inputSchema: WorkspaceArchiveInputSchema,
     outputSchema: ManagedWorkspaceCommandResultSchema,

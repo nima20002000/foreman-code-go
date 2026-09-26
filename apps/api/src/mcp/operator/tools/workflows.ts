@@ -5,6 +5,7 @@ import { SavedManagedWorkflowCommandResultSchema as ManagedWorkflowCommandResult
 import type { McpServer } from '@modelcontextprotocol/server'
 
 import {
+  WorkflowBatchArchiveInputSchema, WorkflowBatchArchiveResultSchema,
   WorkflowArchiveInputSchema, WorkflowGetInputSchema,
   WorkflowListInputSchema, WorkflowUpdateInputSchema,
 } from '@graphql/contracts/management'
@@ -15,7 +16,7 @@ import type { OperatorRequestContext } from '../types.js'
 export function registerWorkflowTools(server: McpServer, context: OperatorRequestContext): void {
   registerCurrentWorkflowTools(server, context)
   if (operatorToolAvailable(context, 'workflow_list')) server.registerTool('workflow_list', {
-    description: 'List authorized workflows, including empty workflows.', inputSchema: WorkflowListInputSchema,
+    description: 'List one cursor page of authorized workflows, including empty workflows. Pass pageInfo.nextCursor as cursor to load more; null means the end.', inputSchema: WorkflowListInputSchema,
     outputSchema: ManagedWorkflowPageSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workflow_list', () => context.services.workflows.list(context.principal, input)))
@@ -34,6 +35,11 @@ export function registerWorkflowTools(server: McpServer, context: OperatorReques
     outputSchema: ManagedWorkflowCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workflow_update', () => context.services.workflows.update(context.principal, 'mcp', input)))
+  if (operatorToolAvailable(context, 'workflow_batch_archive')) server.registerTool('workflow_batch_archive', {
+    description: 'Atomically delete (archive) 1–100 selected workflows, retaining versions and runs. Requires archive permission for every workflow and its expected revision. Active runs or any conflict reject the entire batch. Retry an uncertain outcome with the same commandId and input.',
+    inputSchema: WorkflowBatchArchiveInputSchema, outputSchema: WorkflowBatchArchiveResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, async (input) => invokeOperatorTool(context, 'workflow_batch_archive', () => context.services.workflows.archiveBatch(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workflow_archive')) server.registerTool('workflow_archive', {
     description: 'Archive a settled workflow while retaining versions and runs.', inputSchema: WorkflowArchiveInputSchema,
     outputSchema: ManagedWorkflowCommandResultSchema,
