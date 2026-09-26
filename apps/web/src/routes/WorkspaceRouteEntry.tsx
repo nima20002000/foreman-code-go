@@ -12,6 +12,7 @@ import { WorkflowGraph } from '../features/graph'
 import { ApiError } from '../shared/api/client'
 import {
   queryKeys,
+  useManagedWorkflowsQuery,
   useWorkspaceDetailsQuery,
 } from '../shared/api/query'
 import { WorkspaceSelection } from './WorkspaceRoute'
@@ -47,6 +48,7 @@ export function WorkspaceRouteEntry() {
   const navigate = useNavigate({ from: '/workspaces/$workspaceId' })
   const queryClient = useQueryClient()
   const workspaceQuery = useWorkspaceDetailsQuery(workspaceId)
+  const managedWorkflowsQuery = useManagedWorkflowsQuery(workspaceId)
 
   const selectAgent = useCallback(
     (nextAgentId: string) => {
@@ -75,35 +77,43 @@ export function WorkspaceRouteEntry() {
 
   const resolvedDetails = workspaceQuery.data
   const availableWorkflows = resolvedDetails?.workflows ?? []
+  const managedWorkflow = managedWorkflowsQuery.data?.items.find((item) => item.workflow.id === workflowId)?.workflow
   const workflow = resolvedDetails
-    ? availableWorkflows.find((item) => item.id === workflowId) ?? availableWorkflows[0]
+    ? availableWorkflows.find((item) => item.id === workflowId) ?? managedWorkflow ?? availableWorkflows[0]
     : undefined
 
   useEffect(() => {
-    if (!resolvedDetails) return
-    if (workflow && workflowId !== workflow.id) {
-      void navigate({
-        replace: true,
-        search: (previous) => {
-          const next = { ...previous, workflowId: workflow.id }
-          if (workflowId) delete next.agentId
-          return next
-        },
-      })
-      return
-    }
-    if (!workflow && workflowId) {
-      void navigate({
-        replace: true,
-        search: (previous) => {
-          const next = { ...previous }
-          delete next.workflowId
-          delete next.agentId
-          return next
-        },
-      })
-    }
-  }, [navigate, resolvedDetails, workflow, workflowId])
+    const detailsKey = queryKeys.workspaceDetails(workspaceId)
+    const managedKey = queryKeys.managedWorkflows(workspaceId)
+    const latestDetails = queryClient.getQueryData<WorkspaceDetailsResponse>(detailsKey)
+    const latestManaged = queryClient.getQueryData<NonNullable<typeof managedWorkflowsQuery.data>>(managedKey)
+    if (!latestDetails || (workflowId && (
+      latestDetails.workflows.some((item) => item.id === workflowId)
+      || latestManaged?.items.some((item) => item.workflow.id === workflowId)
+      || queryClient.getQueryState(managedKey)?.fetchStatus === 'fetching'
+    ))) return
+    const fallbackId = latestDetails.workflows[0]?.id
+    if (workflowId === fallbackId) return
+    void navigate({
+      replace: true,
+      search: (previous) => {
+        const currentDetails = queryClient.getQueryData<WorkspaceDetailsResponse>(detailsKey)
+        const currentManaged = queryClient.getQueryData<NonNullable<typeof managedWorkflowsQuery.data>>(managedKey)
+        // A newer selection or accepted workflow may have arrived since this effect ran.
+        if (!currentDetails || previous.workflowId !== workflowId || (previous.workflowId && (
+          currentDetails.workflows.some((item) => item.id === previous.workflowId)
+          || currentManaged?.items.some((item) => item.workflow.id === previous.workflowId)
+          || queryClient.getQueryState(managedKey)?.fetchStatus === 'fetching'
+        ))) return previous
+        const next = { ...previous }
+        const currentFallbackId = currentDetails.workflows[0]?.id
+        if (currentFallbackId) next.workflowId = currentFallbackId
+        else delete next.workflowId
+        if (workflowId) delete next.agentId
+        return next
+      },
+    })
+  }, [navigate, queryClient, resolvedDetails, managedWorkflowsQuery.data, managedWorkflowsQuery.fetchStatus, workflowId, workspaceId])
 
   if (workspaceQuery.isPending) {
     return <WorkspaceSelection workspaceId={workspaceId} state="loading" />
