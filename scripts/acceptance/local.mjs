@@ -239,7 +239,7 @@ async function main() {
   await readyHttp(webUrl, (body) => /<html(?:\s|>)/i.test(body))
   await readyHttp(`${webUrl}/api/auth/session`, (body) => JSON.parse(body).localDev === true, { origin: webUrl })
   console.log(`ENG07 ready: ${webUrl} (API ${apiUrl}). Dev browser access is loopback-only.`)
-  console.log(`Workspace: ${demo.workspaceId}; seven saved workflows, ${demo.agentCount} Agents.`)
+  console.log(`Workspace: ${demo.workspaceId}; eight saved workflows, ${demo.agentCount} Agents.`)
   console.log(`Execution folder: ${demo.executionFolder}`)
   if (opts.codexModel) console.log('Codex branch seeded. Check native project-config trust and MCP readiness before Start; no trust or account settings were changed.')
   const probe = async (runId) => {

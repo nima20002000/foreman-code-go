@@ -66,7 +66,10 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext }: {
       // A snapshot of an older saved base is superseded when it was clean or its
       // meaning is exactly what has since been saved. Remote hydration waits for
       // its exact journal result rather than substituting current mutable Agent heads.
-      const stale = snapshot && !snapshot.remoteEditIntent && fresh && (snapshot.context.draft.baseWorkflowVersionId !== fresh.baseWorkflowVersionId
+      // Retained Agent edits are never superseded by a newer saved workflow: they
+      // belong to shared Agents, not the graph, and need explicit save or discard.
+      const agentEdited = Object.keys(snapshot?.agentEdits ?? {}).length > 0
+      const stale = snapshot && !snapshot.remoteEditIntent && !agentEdited && fresh && (snapshot.context.draft.baseWorkflowVersionId !== fresh.baseWorkflowVersionId
         || snapshot.context.draft.publishedRevision !== fresh.publishedRevision)
         && (!hasLocalChanges(snapshot.context, snapshot.graph) || sameExecutableWorkflow(snapshot.graph, fresh.graph))
       const retained = stale ? undefined : snapshot

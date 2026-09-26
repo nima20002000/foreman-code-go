@@ -1,9 +1,11 @@
 import { useEffect, useRef } from 'react'
-import { useMutation } from '@tanstack/react-query'
-import { sameWorkflowValue, type RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { sameWorkflowValue, type GraphEditIntentV3, type RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
 import { useGraphDraftStore } from '../../graph/store'
 import { ApiError } from '../../../shared/api/client'
 import { nextDraftKey } from '../../graph/nextDraft/state'
+import { readEditOutbox } from '../../graph/nextDraft/editIntentStorage'
+import { activeEditIntent, graphEditIntentKey } from '../../graph/nextDraft/useGraphEditIntent'
 import { boardStartClient, type BoardStartInput } from '../startClient'
 import { acknowledgeBoardStart, readBoardStart, reserveBoardStart, useBoardStartOutbox } from '../startOutbox'
 import { scopeForBoardRun } from '../client'
@@ -17,13 +19,18 @@ export function StartControls({ scope, run, permitted, available, refresh, viewR
 }) {
   const key = nextDraftKey(scope.workspaceId, scope.workflowId), outbox = useBoardStartOutbox(key)
   const life = useActionLifetime(), [confirming, setConfirming] = useDisclosure()
-  const editPending = useGraphDraftStore((state) => {
-    const edit = state.nextDrafts[key]
-    return !!(edit?.busy || edit?.pending || edit?.remoteEditIntent)
-  })
+  const cache = useQueryClient()
+  // Same journal the main Start honours: legacy writer flags, the local edit
+  // outbox and the authoritative (cached) edit intent for this draft.
+  const hasPendingEdit = (edit = useGraphDraftStore.getState().nextDrafts[key]) => {
+    if (edit?.busy || edit?.pending || edit?.remoteEditIntent || readEditOutbox(key)) return true
+    const draftId = edit?.context.draft.id
+    const intent = draftId ? cache.getQueryData<{ intent?: GraphEditIntentV3 | null }>(graphEditIntentKey(scope.workspaceId, scope.workflowId, draftId))?.intent : undefined
+    return activeEditIntent(intent)
+  }
+  const editPending = useGraphDraftStore((state) => hasPendingEdit(state.nextDrafts[key]))
   const assertNoPendingEdit = () => {
-    const edit = useGraphDraftStore.getState().nextDrafts[key]
-    if (edit?.busy || edit?.pending || edit?.remoteEditIntent) throw new Error('Resolve the existing Save / Stop-and-save / Discard journal before starting new work. Pending edits are preserved.')
+    if (hasPendingEdit()) throw new Error('Resolve the existing Save / Stop-and-save / Discard journal before starting new work. Pending edits are preserved.')
   }
   const trigger = useRef<HTMLButtonElement>(null), heading = useRef<HTMLHeadingElement>(null)
   const sectionHeading = useRef<HTMLHeadingElement>(null), wasConfirming = useRef(false)

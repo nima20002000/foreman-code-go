@@ -21,7 +21,11 @@ export function configuration(kind, codexModel, approval = false) {
 }
 export const SCENARIOS = [
   { key: 'S3-01', name: 'S3-01 Sequential', nodes: ['First', 'Second'], pairs: [[0, 1]], executions: 2 },
-  { key: 'S3-02', name: 'S3-02 Parallel join', nodes: ['Fork', 'Left', 'Right', 'Join'], pairs: [[0, 1], [0, 2], [1, 3], [2, 3]], executions: 4 },
+  { key: 'S3-02', name: 'S3-02 Parallel join', nodes: ['Fork', 'Left', 'Right', 'Join'], pairs: [[0, 1], [0, 2], [1, 3], [2, 3]], executions: 4, parallel: true },
+  // Both branches selected, one deeper than the other: the all-required join must
+  // wait for the deeper predecessor and then run exactly once.
+  { key: 'S3-02-uneven', name: 'S3-02 Uneven parallel join', nodes: ['Fork', 'Short', 'Long one', 'Long two', 'Join'],
+    pairs: [[0, 1], [0, 2], [2, 3], [1, 4], [3, 4]], executions: 5, parallel: true },
   { key: 'S3-03-short', name: 'S3-03 Uneven join short', nodes: ['Route', 'Short', 'Long one', 'Long two', 'Join'],
     pairs: [[0, 1], [0, 2], [2, 3], [1, 4], [3, 4]], executions: 3, route: 'short' },
   { key: 'S3-03-long', name: 'S3-03 Uneven join long', nodes: ['Route', 'Short', 'Long one', 'Long two', 'Join'],
@@ -41,7 +45,7 @@ export function scenarioGraph(spec, workflow, codexModel) {
     position: { x: i * 280, y: i % 2 * 200 },
     initialPrompt: `Do not use tools. Return exactly the text ENG07_${spec.key}_${i}.` }))
   const edges = spec.pairs.map(([from, to]) => ({ id: `edge-${randomUUID()}`, kind: 'execution', source: nodes[from].id, target: nodes[to].id }))
-  if (spec.key === 'S3-02' || spec.route) nodes.at(-1).join = { mode: 'all' }
+  if (spec.parallel || spec.route) nodes.at(-1).join = { mode: 'all' }
   if (spec.key === 'S3-02') for (const i of [1, 2]) nodes[i].initialPrompt = `Do not use tools. Output twenty short numbered lines explaining the number ${i}, then ENG07_${spec.key}_${i}.`
   if (spec.route) {
     nodes[0].choice = { outcomes: ['short', 'long'].map((outcome, i) => ({ outcome, target: { kind: 'edge', relationshipId: edges[i].id } })) }
@@ -55,7 +59,7 @@ export function scenarioGraph(spec, workflow, codexModel) {
   }
   const graph = { ...workflow, executionSemanticsVersion: 3, entryNodeId: nodes[0].id,
     approval: { handler: 'user' }, executionCondition: { kind: 'manual' },
-    executionPolicy: { maxParallelism: spec.key === 'S3-02' ? 2 : 1, maxNodeExecutions: spec.repeat ? 6 : nodes.length }, nodes, edges }
+    executionPolicy: { maxParallelism: spec.parallel ? 2 : 1, maxNodeExecutions: spec.repeat ? 6 : nodes.length }, nodes, edges }
   if (spec.repeat) graph.repeat = { contractVersion: 1, blocks: [{ id: 'repair', nodeIds: nodes.map((node) => node.id),
     entryNodeId: nodes[0].id, exitNodeId: nodes[1].id, maxOccurrences: 3,
     repeatOutcome: 'issues', earlyExitOutcome: 'pass', limitExit: { kind: 'branch_end' } }] }

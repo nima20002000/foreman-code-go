@@ -30,7 +30,7 @@ Run a disposable setup smoke check first. Supply your PostgreSQL 17 binary direc
 node scripts/acceptance/local.mjs --pg-bin /usr/lib/postgresql/17/bin --smoke
 ```
 
-**Expected:** a new private cluster, database and schemas; real migrations/checkpointer setup; seven saved workflows and 22 persisted Agents; web/API readiness; authenticated HTTP/MCP reads, idempotent metadata write/replay and read/write denials; orderly teardown. No native Run or browser acceptance is claimed by this command. Failure is nonzero, with a stage/code rather than raw logs. Do not continue on a failed smoke check.
+**Expected:** a new private cluster, database and schemas; real migrations/checkpointer setup; eight saved workflows and 27 persisted Agents; web/API readiness; authenticated HTTP/MCP reads, idempotent metadata write/replay and read/write denials; orderly teardown. No native Run or browser acceptance is claimed by this command. Failure is nonzero, with a stage/code rather than raw logs. Do not continue on a failed smoke check.
 
 Start the interactive session with available ports:
 
@@ -85,6 +85,12 @@ For every scenario, check current Run facts while active, past Run facts after s
    **Expected:** it does not run after just one branch; its exact accepted input contains both successful predecessor results with their distinct execution identities/bindings, and it runs once. Normal total: four executions.
 3. With the optional Codex seed, inspect each accepted configuration.
    **Expected:** Left is OpenCode, Right is Codex, both actually execute, and Join consumes both results. Model labels without native execution are not mixed-provider proof. Without this option, record mixed-provider evidence as NOT RUN.
+
+### S3-02 Uneven parallel join (both branches selected)
+
+Run **S3-02 Uneven parallel join**. Fork feeds Short and Long one; Long one feeds Long two; Short and Long two both feed Join (all required).
+
+**Expected:** Short completes while Long one/Long two are still running, and Join stays unadmitted until Long two's result is accepted. Join then runs exactly once, with both exact accepted predecessor bindings (Short and Long two). Five executions, and the Run succeeds.
 
 ## 5. S3-03 — conditional routing with an uneven join
 
@@ -162,7 +168,7 @@ parity
 parity RUN_ID
 ```
 
-Replace `RUN_ID` with one **settled** Run ID from this workspace. The first command reads the workspace and all seven saved definitions, performs a same-description workspace metadata update over HTTP, replays the **same command ID/payload** through MCP, and checks exactly one revision increment. It also verifies unauthorized read and write denial over both transports. Each invocation deliberately adds one workspace metadata revision; it never edits executable definitions or Starts a Run.
+Replace `RUN_ID` with one **settled** Run ID from this workspace. The first command reads the workspace and all eight saved definitions, performs a same-description workspace metadata update over HTTP, replays the **same command ID/payload** through MCP, and checks exactly one revision increment. It also verifies unauthorized read and write denial over both transports. Each invocation deliberately adds one workspace metadata revision; it never edits executable definitions or Starts a Run.
 
 The second additionally compares Run record, accepted version, every bounded execution page/detail and every bounded input-binding page. It checks terminal stability across the probe. It uses one short-lived, workspace-scoped Operator principal for both transports; a separate under-granted principal supplies denials. Raw tokens stay in process memory, only hashes enter the access table, and both principals are revoked in `finally`. The terminal reports counts only. Revocation failure is a probe failure, not success.
 

@@ -6,7 +6,7 @@ import { configuration, OPEN_CODE_MODEL, SCENARIOS, scenarioGraph, seed } from '
 
 const workflow = { id: 'wf-test', workspaceId: 'ws-test', name: 'test', executionSemanticsVersion: 3,
   entryNodeId: null, nodes: [], edges: [], executionCondition: { kind: 'manual' } }
-test('all seven concrete scenarios use semantics 3 and distinct real Agent identities', () => {
+test('all eight concrete scenarios use semantics 3 and distinct real Agent identities', () => {
   const ids = new Set()
   for (const spec of SCENARIOS) {
     const { graph, agents } = scenarioGraph(spec, workflow)
@@ -23,7 +23,7 @@ test('all seven concrete scenarios use semantics 3 and distinct real Agent ident
     assert.equal(graph.edges.every((edge) => edge.kind === 'execution'), true)
     assert.equal(Object.hasOwn(graph, 'repeat'), Boolean(spec.repeat))
   }
-  assert.equal(ids.size, 22)
+  assert.equal(ids.size, 27)
 })
 test('ordinary workflows never manufacture a repeat plan, even an empty one', () => {
   for (const spec of SCENARIOS.filter((item) => !item.repeat)) {
@@ -116,13 +116,13 @@ test('seed uses real-route request shapes and reserved journal commands, never R
     const parse = { parse: (value) => value }
     const demo = await seed({ apiUrl: 'http://127.0.0.1:3307', webUrl: 'http://127.0.0.1:5307', projectRoot: state,
       schemas: { CurrentEditStageInputSchema: parse, CurrentWorkflowReadResultSchema: parse } })
-    assert.equal(demo.workflowIds.length, 7); assert.equal(demo.agentCount, 22)
+    assert.equal(demo.workflowIds.length, 8); assert.equal(demo.agentCount, 27)
     assert.equal(calls.some((call) => call.path.includes('/runs')), false)
     const native = JSON.parse(await readFile(join(folder, 'opencode.json'), 'utf8'))
     assert.deepEqual(native.mcp['graphql-app'], { type: 'remote', url: 'http://127.0.0.1:3307/mcp/tools',
       enabled: true, oauth: false, headers: { Authorization: 'Bearer {env:GRAPHQL_APP_MCP_TOKEN}' } })
-    assert.equal(calls.filter((call) => call.body?.action === 'stage_edits').length, 7)
-    assert.equal(calls.filter((call) => call.body?.action === 'stop_and_save').length, 7)
+    assert.equal(calls.filter((call) => call.body?.action === 'stage_edits').length, 8)
+    assert.equal(calls.filter((call) => call.body?.action === 'stop_and_save').length, 8)
   } finally { globalThis.fetch = original; await rm(state, { recursive: true, force: true }) }
 })
 test('seed does not blindly resubmit a failed or uncertain write', async () => {
