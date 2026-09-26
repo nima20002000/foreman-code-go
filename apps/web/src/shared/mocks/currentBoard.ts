@@ -1,6 +1,6 @@
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { AgentConfigurationVersionSchema, AgentSchema, WorkflowRunSummarySchema, type Agent } from '@graphql/contracts'
-import { BrowserAccessSessionSchema, ManagedWorkspaceSchema, RunStopInputSchema } from '@graphql/contracts/management'
+import { AgentCreateInputSchema, AgentUpdateInputSchema, AgentMutationResultSchema, BrowserAccessSessionSchema, ManagedWorkspaceSchema, RunStopInputSchema, WorkflowUpdateInputSchema, WorkflowArchiveInputSchema } from '@graphql/contracts/management'
 import {
   CurrentManagedWorkflowSchema, CurrentWorkspaceDetailsSchema, CurrentWorkflowCreateInputSchema,
   CurrentWorkflowCapabilitiesSchema, GraphDraftV3Schema, WorkflowDefinitionV3Schema, WorkflowVersionV3Schema,
@@ -37,6 +37,7 @@ export function createCurrentBoardMock(options: {
   const catalog = agents.map((agent) => ({ agent, metadataRevision: 1, archivedAt: null }))
   const drafts = new Map<string, GraphDraftV3>(), versions = new Map<string, WorkflowVersionV3>()
   const revisions = new Map<string, number>(), workflows = new Map<string, WorkflowDefinitionV3>()
+  const archivedWorkflows = new Set<string>()
   const intents = new Map<string, GraphEditReadResultV3>(), runs = new Map<string, CurrentRunDetails>()
   const currents = new Map<string, RepeatGraphCurrentV3>()
   const receipts = new Map<string, { input: unknown; value: unknown }>()
@@ -45,17 +46,17 @@ export function createCurrentBoardMock(options: {
     staleStart: false, unsupportedStart: false, loseStartReply: false, loseStageReply: false, loseStopReply: false,
     notOwner: false, affectedSetChanged: false, locationRevision: 1, stopCalls: 0 }
   let nextWorkflow = 0, nextRun = 0
-  const workspace = () => ({ id: workspaceId, name: 'Current Board MSW (synthetic)', agentIds: agents.map((a) => a.id), workflowIds: [...workflows.keys()], createdAt: at, updatedAt: at })
+  const workspace = () => ({ id: workspaceId, name: 'Current Board MSW (synthetic)', agentIds: agents.map((a) => a.id), workflowIds: [...workflows.keys()].filter((id) => !archivedWorkflows.has(id)), createdAt: at, updatedAt: at })
   const managedWorkspace = () => ManagedWorkspaceSchema.parse({ workspace: workspace(), revision: 1, archivedAt: null,
     executionLocation: { runnerId: 'runner-synthetic', rootPath: '/synthetic/board' }, locationRevision: controls.locationRevision,
     locationValidation: { status: 'ready', checkedAt: at } })
   const managed = (id: string) => CurrentManagedWorkflowSchema.parse({ workflow: workflows.get(id), revision: revisions.get(id),
-    currentVersionId: drafts.get(id)?.baseWorkflowVersionId ?? null, archivedAt: null })
+    currentVersionId: drafts.get(id)?.baseWorkflowVersionId ?? null, archivedAt: archivedWorkflows.has(id) ? at : null })
   const summaries = () => [...runs.values()].map(({ run, cleanupPending }) => WorkflowRunSummarySchema.parse({ id: run.id,
     workspaceId, workflowId: run.workflowId, executionCondition: run.executionCondition, executionState: run.executionState,
     outcome: run.outcome, authRequired: false, browserWait: null, runnerHealth: { status: 'healthy', checkedAt: at }, cleanupPending,
     ...(run.startedAt ? { startedAt: run.startedAt } : {}), ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}) }))
-  const details = () => CurrentWorkspaceDetailsSchema.parse({ workspace: workspace(), agents, workflows: [...workflows.values()], runs: summaries(),
+  const details = () => CurrentWorkspaceDetailsSchema.parse({ workspace: workspace(), agents, workflows: [...workflows.values()].filter((graph) => !archivedWorkflows.has(graph.id)), runs: summaries(),
     resources: [], browserProfiles: [], runners: [{ id: 'runner-synthetic', name: 'Synthetic only', health: { status: 'healthy', checkedAt: at } }] })
   function install(raw: WorkflowDefinitionV3, saved = false) {
     const graph = WorkflowDefinitionV3Schema.parse(raw)
@@ -73,11 +74,12 @@ export function createCurrentBoardMock(options: {
     const id = staged.workflowId, revision = (revisions.get(id) ?? 0) + 1
     const number = [...versions.values()].filter((v) => v.workflowId === id).length + 1
     const graph = { ...staged.graph, version: number }
-    const pins = Object.fromEntries(graph.nodes.map((node) => { const config = configurations.find((c) => c.agentId === node.agentId)
+    const pins = Object.fromEntries(graph.nodes.map((node) => { const config = configurations.find((c) => c.agentId === node.agentId
+      && c.id === catalog.find((item) => item.agent.id === node.agentId)?.agent.configurationVersionId)
       if (!config) throw new Error('Missing exact configuration'); return [node.agentId, config.id] }))
     const { version } = ExecutableWorkflowV3Schema.parse({ version: { id: `version-${id}-${number}`, workspaceId, workflowId: id,
       version: number, definition: graph, entryNodeId: graph.entryNodeId, executionSemanticsVersion: 3, approval: graph.approval,
-      agentConfigurationVersionIds: pins, contentHash: hash, createdAt: at }, configurations: configurations.filter((c) => c.agentId in pins) })
+      agentConfigurationVersionIds: pins, contentHash: hash, createdAt: at }, configurations: configurations.filter((c) => pins[c.agentId] === c.id) })
     const draft = GraphDraftV3Schema.parse({ ...drafts.get(id), graph: version.definition, revision, publishedRevision: revision,
       baseWorkflowVersionId: version.id, stagedAgents: [] })
     versions.set(version.id, copy(version)); drafts.set(id, draft); workflows.set(id, draft.graph)
@@ -106,18 +108,68 @@ export function createCurrentBoardMock(options: {
     const publicPrefix = `/api/workspaces/${workspaceId}`
     if (!path.startsWith(prefix) && !path.startsWith(publicPrefix)) return undefined
     if (controls.deniedRead && method === 'GET') return failure('FORBIDDEN', 'Private fixture read denied', 403)
-    const body: unknown = ['POST', 'PUT'].includes(method) ? await request.clone().json().catch(() => ({})) : undefined
+    const body: unknown = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) ? await request.clone().json().catch(() => ({})) : undefined
     calls.push({ method, path, ...(body ? { body: copy(body) } : {}) })
     try {
       if (method === 'GET' && path === publicPrefix) return HttpResponse.json(details())
       if (method === 'GET' && path === `${publicPrefix}/agents`) return HttpResponse.json({ agents })
       if (method === 'GET' && path === prefix) return HttpResponse.json(managedWorkspace())
       if (method === 'GET' && path === `${prefix}/agents`) return HttpResponse.json({ items: catalog, pageInfo })
+      if (method === 'POST' && path === `${prefix}/agents`) {
+        const input = AgentCreateInputSchema.parse({ ...(body as object), workspaceId })
+        const result = journal(`agent-create:${input.commandId}`, input, () => {
+          if (catalog.some((item) => item.agent.id === input.agentId)) throw new Error('AGENT_CONFLICT')
+          const configuration = input.configuration ?? { harness: 'codex', model: 'synthetic-no-native-call',
+            reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' }
+          const version = AgentConfigurationVersionSchema.parse({ id: `cfg-${input.agentId}-1`,
+            agentId: input.agentId, workspaceId, version: 1, productRole: input.productRole,
+            harness: configuration, prompt: input.prompt ?? {}, assignedSkills: input.assignedSkills ?? [], contentHash: hash, createdAt: at })
+          const agent = AgentSchema.parse({ id: input.agentId, name: input.name, productRole: input.productRole,
+            harness: version.harness.harness, harnessConfiguration: version.harness, configurationVersionId: version.id,
+            description: input.description, role: input.role, prompt: version.prompt, assignedSkills: version.assignedSkills,
+            createdAt: at, updatedAt: at })
+          configurations.push(version); agents.push(agent); catalog.push({ agent, metadataRevision: 1, archivedAt: null })
+          return { agent, metadataRevision: 1 }
+        })
+        return HttpResponse.json(AgentMutationResultSchema.parse(result), { status: 201 })
+      }
+      const agentMatch = path.match(/\/agents\/([^/]+)$/)
+      if (method === 'GET' && agentMatch) {
+        const item = catalog.find((item) => item.agent.id === agentMatch[1])
+        return item ? HttpResponse.json({ ...item, workflowIds: [...workflows.values()].filter((graph) => !archivedWorkflows.has(graph.id)
+          && graph.nodes.some((node) => node.agentId === item.agent.id)).map((graph) => graph.id) })
+          : failure('NOT_FOUND', 'Agent not found', 404)
+      }
+      if (method === 'PATCH' && agentMatch) {
+        const input = AgentUpdateInputSchema.parse({ ...(body as object), workspaceId, agentId: agentMatch[1] })
+        const result = journal(`agent-update:${input.commandId}`, input, () => {
+          const item = catalog.find((item) => item.agent.id === input.agentId)
+          if (!item) throw new Error('AGENT_NOT_FOUND')
+          if (input.expectedRevision !== item.metadataRevision) throw new Error('REVISION_CONFLICT')
+          if (input.expectedConfigurationVersionId !== item.agent.configurationVersionId) throw new Error('CONFIGURATION_CONFLICT')
+          const previous = configurations.find((version) => version.id === input.expectedConfigurationVersionId)!
+          const changesConfiguration = input.configuration !== undefined || input.prompt !== undefined || input.assignedSkills !== undefined
+          const version = changesConfiguration ? AgentConfigurationVersionSchema.parse({ ...previous,
+            id: `cfg-${input.agentId}-${previous.version + 1}`, version: previous.version + 1,
+            harness: input.configuration ?? previous.harness, prompt: input.prompt ?? previous.prompt,
+            assignedSkills: input.assignedSkills ?? previous.assignedSkills, createdAt: at }) : previous
+          const agent = AgentSchema.parse({ ...item.agent, name: input.name ?? item.agent.name,
+            description: input.description === null ? undefined : input.description ?? item.agent.description,
+            role: input.role === null ? undefined : input.role ?? item.agent.role,
+            harness: version.harness.harness, harnessConfiguration: version.harness, configurationVersionId: version.id,
+            prompt: version.prompt, assignedSkills: version.assignedSkills, updatedAt: at })
+          if (changesConfiguration) configurations.push(version)
+          agents[agents.findIndex((agent) => agent.id === input.agentId)] = agent
+          item.agent = agent; item.metadataRevision++
+          return { agent, metadataRevision: item.metadataRevision }
+        })
+        return HttpResponse.json(AgentMutationResultSchema.parse(result))
+      }
       const configMatch = path.match(/\/agents\/([^/]+)\/versions\/([^/]+)$/)
       if (method === 'GET' && configMatch) { const version = configurations.find((c) => c.agentId === configMatch[1] && c.id === configMatch[2])
         return version ? HttpResponse.json({ version }) : failure('NOT_FOUND', 'Pinned configuration not found', 404) }
       if (path === `${prefix}/workflows`) {
-        if (method === 'GET') return HttpResponse.json({ items: [...workflows.keys()].map(managed), pageInfo })
+        if (method === 'GET') return HttpResponse.json({ items: [...workflows.keys()].filter((id) => url.searchParams.get('includeArchived') === 'true' || !archivedWorkflows.has(id)).map(managed), pageInfo })
         if (method === 'POST') { const input = CurrentWorkflowCreateInputSchema.parse(body)
           if (input.workspaceId !== workspaceId) return failure('SCOPE_MISMATCH', 'Out of scope')
           return HttpResponse.json(journal(`create:${input.commandId}`, input, () => install({ id: `workflow-current-${++nextWorkflow}`,
@@ -130,6 +182,24 @@ export function createCurrentBoardMock(options: {
         const id = workflowMatch[1]!, tail = workflowMatch[2]!, draft = drafts.get(id)
         if (!draft) return failure('NOT_FOUND', 'Workflow not found', 404)
         if (!tail && method === 'GET') return HttpResponse.json(path.startsWith(publicPrefix) ? { workflow: workflows.get(id) } : managed(id))
+        if (!tail && (method === 'PATCH' || method === 'DELETE')) {
+          const input = (method === 'PATCH' ? WorkflowUpdateInputSchema : WorkflowArchiveInputSchema)
+            .parse({ ...(body as object), workspaceId, workflowId: id })
+          return HttpResponse.json(journal(`workflow-${method}:${input.commandId}`, input, () => {
+            if (input.expectedRevision !== revisions.get(id)) throw new Error('REVISION_CONFLICT')
+            if (method === 'DELETE') archivedWorkflows.add(id)
+            else {
+              const update = WorkflowUpdateInputSchema.parse(input), graph = workflows.get(id)!
+              workflows.set(id, WorkflowDefinitionV3Schema.parse({ ...graph, name: update.name ?? graph.name,
+                description: update.description === null ? undefined : update.description ?? graph.description, updatedAt: at }))
+              options.onSaved?.(copy(workflows.get(id)!))
+            }
+            const revision = revisions.get(id)! + 1
+            revisions.set(id, revision)
+            drafts.set(id, { ...draft, graph: workflows.get(id)!, revision, publishedRevision: revision })
+            return managed(id)
+          }))
+        }
         if (method === 'GET' && tail.startsWith('/versions/')) { const version = versions.get(tail.slice('/versions/'.length))
           return version?.workflowId === id ? HttpResponse.json({ version }) : failure('NOT_FOUND', 'Version not found', 404) }
         if (method === 'GET' && tail === '/versions') return HttpResponse.json({ items: [...versions.values()].filter((v) => v.workflowId === id), pageInfo })
@@ -172,12 +242,20 @@ export function createCurrentBoardMock(options: {
           return HttpResponse.json(journal(`save:${save.commandId}`, save, () => {
             check()
             const version = versions.get(draft.baseWorkflowVersionId!)
-            if (version && sameExecutableWorkflow(version.definition, save.graph)) {
+            if (version && sameExecutableWorkflow(workflows.get(id)!, save.graph)
+              && sameWorkflowValue(version.agentConfigurationVersionIds, save.expectedAgentConfigurationVersionIds)) {
               const geometry = (graph: WorkflowDefinitionV3) => graph.nodes.map(({ id, position, width, height }) => ({ id, position, width, height }))
               if (save.expectedGeometry && !sameWorkflowValue(save.expectedGeometry, geometry(workflows.get(id)!))) throw new Error('GEOMETRY_CONFLICT')
-              workflows.set(id, copy(save.graph))
+              workflows.set(id, copy(save.graph)); options.onSaved?.(copy(save.graph))
               return { workspaceId, workflowId: id, revision: revisions.get(id)!, currentVersionId: version.id, version }
             }
+            // Mirror currentAuthoring.prepare -> assertMeaningfulSaveAdmitted.
+            // A stale Board summary cannot authorize publication or an implicit Stop.
+            const unsettled = [...runs.values()].some((detail) => detail.run.workflowId === id
+              && (detail.run.executionState !== 'completed' || detail.cleanupPending !== false
+                || (currents.get(detail.run.id)?.state.run.pendingInteractionCount ?? 0) > 0
+                || (currents.get(detail.run.id)?.state.run.unsettledReviewCount ?? 0) > 0))
+            if (unsettled) throw new Error('WORKFLOW_RUNS_UNSETTLED')
             return publish({ workflowId: id, graph: save.graph })
           }))
         }
@@ -262,7 +340,7 @@ export function createCurrentBoardMock(options: {
   const handlers: RequestHandler[] = [
     http.get('/api/auth/session', () => HttpResponse.json(BrowserAccessSessionSchema.parse({ principal: {
       id: 'principal-current-mock', name: 'Synthetic current Board', expiresAt: '2099-01-01T00:00:00.000Z', grants: [{
-        actions: ['workspaces:read', 'workflows:read', 'workflows:create', 'agents:read', 'graph:read', 'graph:edit', 'graph:save', 'interactions:read', 'runs:read',
+        actions: ['workspaces:read', 'workflows:read', 'workflows:create', 'workflows:update', 'workflows:archive', 'agents:read', 'agents:create', 'agents:update', 'graph:read', 'graph:edit', 'graph:save', 'interactions:read', 'runs:read',
           ...(!controls.deniedStart ? ['runs:start'] : []), ...(!controls.deniedStop ? ['runs:stop'] : [])], scope: { workspaceIds: [workspaceId] },
       }] }, account: { name: 'Synthetic current Board', email: 'current-board@example.test' } }))),
     http.get('/api/management/workflows/capabilities/v3', () => HttpResponse.json(capabilities())),

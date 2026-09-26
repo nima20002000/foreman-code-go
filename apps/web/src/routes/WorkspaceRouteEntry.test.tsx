@@ -4,11 +4,12 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import type { WorkspaceDetailsResponse } from '@graphql/contracts'
+import type { CurrentWorkspaceDetails as WorkspaceDetailsResponse } from '@graphql/contracts/wave25'
+import { useGraphDraftStore } from '../features/graph/store'
 
 import { routeTree } from '../app/router'
 import { queryKeys } from '../shared/api/query'
@@ -26,10 +27,24 @@ function readyWorkspace() {
   }
 }
 
+const clients: QueryClient[] = []
+async function researcherButton() {
+  const fixture = getMockFixture('workspace-1')!
+  const node = fixture.workflows.find((workflow) => workflow.id === 'workflow-content-pipeline')!
+    .nodes.find((node) => node.agentId === 'agent-researcher')!
+  const title = node.name ?? fixture.agents.find((agent) => agent.id === node.agentId)!.name
+  return screen.findByRole('button', { name: (name) => name.startsWith(`${title},`) })
+}
+async function workflowBoard(name: string) {
+  const board = await screen.findByRole('region', { name: 'Workflow authoring' })
+  expect(await within(board).findByRole('heading', { name, exact: true })).toBeVisible()
+  return board
+}
 function renderWorkspace(initialEntry: string) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 0 } },
   })
+  clients.push(queryClient)
   const router = createRouter({
     routeTree,
     history: createMemoryHistory({ initialEntries: [initialEntry] }),
@@ -46,21 +61,23 @@ function renderWorkspace(initialEntry: string) {
 
 describe('WorkspaceRouteEntry integration', () => {
   beforeEach(() => {
+    useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); sessionStorage.clear()
     server.use(http.get('/api/management/workspaces/workspace-1', () => HttpResponse.json(readyWorkspace())))
-  })
-
-  beforeAll(() => {
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      },
-    )
+    // JSDOM measurements only: the real mounted Board and React Flow stay intact.
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private readonly notify: ResizeObserverCallback) {}
+      observe(target: Element) { queueMicrotask(() => this.notify([{ target, contentRect: target.getBoundingClientRect() } as ResizeObserverEntry], this as unknown as ResizeObserver)) }
+      unobserve() {} disconnect() {}
+    })
+    if (!globalThis.DOMMatrixReadOnly) vi.stubGlobal('DOMMatrixReadOnly', class { m11 = 1; m22 = 1; m41 = 0; m42 = 0 })
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(1000)
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(720)
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => ({ x: 0, y: 0, left: 0, top: 0, right: 1000, bottom: 720, width: 1000, height: 720, toJSON: () => ({}) }))
   })
 
   afterEach(() => {
+    cleanup(); clients.splice(0).forEach((client) => client.clear())
+    useGraphDraftStore.getState().clearAllDrafts(); vi.restoreAllMocks(); vi.unstubAllGlobals()
     setMockScenario('normal')
     sessionStorage.clear()
     vi.unstubAllEnvs()
@@ -69,13 +86,12 @@ describe('WorkspaceRouteEntry integration', () => {
   it('renders the saved workflow and keeps a valid agent selection in the URL', async () => {
     const { router } = renderWorkspace('/workspaces/workspace-1')
 
-    expect(await screen.findByTestId('agent-node-agent-researcher', {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(await researcherButton()).toBeVisible()
     expect(document.querySelector('.shell-header')).not.toBeInTheDocument()
     expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
     expect(screen.queryByRole('separator', { name: 'Resize workspace context panel' })).not.toBeInTheDocument()
 
-    const nodeButton = screen.getByTestId('agent-node-agent-researcher').querySelector('button')
-    if (!nodeButton) throw new Error('Researcher node button missing')
+    const nodeButton = await researcherButton()
     fireEvent.click(nodeButton)
 
     await waitFor(() => expect(router.state.location.search.agentId).toBe('agent-researcher'))
@@ -87,8 +103,8 @@ describe('WorkspaceRouteEntry integration', () => {
   it('keeps an URL-selected agent in the graph without mounting a context panel', async () => {
     const { router } = renderWorkspace('/workspaces/workspace-1?agentId=agent-researcher')
 
-    const node = await screen.findByTestId('agent-node-agent-researcher', {}, { timeout: 5000 })
-    expect(node.querySelector('button')).toHaveAttribute('aria-pressed', 'true')
+    const node = await researcherButton()
+    expect(node).toHaveAttribute('aria-pressed', 'true')
     expect(router.state.location.search.agentId).toBe('agent-researcher')
     expect(document.querySelector('.shell-header')).not.toBeInTheDocument()
     expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
@@ -98,7 +114,7 @@ describe('WorkspaceRouteEntry integration', () => {
   it('keeps a stale URL selection in the graph without exposing an operator surface', async () => {
     renderWorkspace('/workspaces/workspace-1?agentId=agent-old')
 
-    expect(await screen.findByTestId('workflow-graph')).toBeInTheDocument()
+    expect(await workflowBoard('Research to review')).toBeVisible()
     expect(screen.queryByTestId('agent-context-stale')).not.toBeInTheDocument()
     expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
   })
@@ -106,7 +122,7 @@ describe('WorkspaceRouteEntry integration', () => {
   it('opens the accepted new workflow while workspace details still serve the old list', async () => {
     const user = userEvent.setup()
     const { router, queryClient } = renderWorkspace('/workspaces/workspace-1?workflowId=workflow-content-pipeline')
-    expect(await screen.findByRole('region', { name: 'Research to review workflow graph' })).toBeVisible()
+    expect(await workflowBoard('Research to review')).toBeVisible()
 
     const oldDetails = queryClient.getQueryData<WorkspaceDetailsResponse>(queryKeys.workspaceDetails('workspace-1'))
     if (!oldDetails) throw new Error('Workspace details were not loaded')
@@ -125,7 +141,7 @@ describe('WorkspaceRouteEntry integration', () => {
     })
     expect(queryClient.getQueryData<WorkspaceDetailsResponse>(queryKeys.workspaceDetails('workspace-1'))?.workflows.some((item) => item.id === createdId)).toBe(false)
     await waitFor(() => expect(router.state.location.search.workflowId).toBe(createdId))
-    expect(await screen.findByRole('region', { name: 'Draft workflow workflow graph' })).toBeVisible()
+    expect(await workflowBoard('Draft workflow')).toBeVisible()
   })
 
   it('still replaces a genuinely unknown workflow selection', async () => {

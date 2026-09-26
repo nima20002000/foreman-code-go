@@ -103,7 +103,8 @@ describe('frontend Stop/terminal/current ordering fences', () => {
   it('does not infer a future Run state into a known terminal or idle outcome', () => {
     const current = makeSyntheticRun(1)
     const unknown = makeSyntheticRun(1, '2')
-    Object.assign(unknown.run, { executionState: 'uncertain' })
+    // Deliberately malformed future wire data; the V3 seed otherwise has outcome: 'pending'.
+    Object.assign(unknown.run, { executionState: 'uncertain', outcome: undefined })
     const accepted = shareRunResponseOrSelection(current, unknown)
     expect(accepted.run.executionState).toBe('uncertain')
     expect(accepted.run.outcome).toBeUndefined()

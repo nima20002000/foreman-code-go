@@ -34,8 +34,10 @@ describe('Agent 6 existing authenticated HTTP boundary (mock responses, not back
     const [url, init] = fetch.mock.calls.at(-1)!
     expect(String(url)).toMatch(/\/definition$/)
     expect(init!.credentials).toBe('same-origin')
-    expect(JSON.parse(String(init!.body))).toMatchObject({ graph: target, expectedRevision: draft.revision,
-      expectedWorkflowVersionId: draft.baseWorkflowVersionId, commandId: 'shared-save', expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds })
+    // Optional undefined form fields are absent on the JSON wire, not lost edits.
+    expect(JSON.parse(String(init!.body))).toEqual({ graph: JSON.parse(JSON.stringify(target)), expectedRevision: draft.revision,
+      expectedWorkflowVersionId: draft.baseWorkflowVersionId, commandId: 'shared-save', executionSemanticsVersion: 3,
+      expectedLocationRevision: 1, expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds })
     expect(mock.versions.size).toBe(2)
     expect(mock.calls.some((call) => call.path.includes('/drafts'))).toBe(false)
   })
@@ -61,7 +63,7 @@ describe('Agent 6 existing authenticated HTTP boundary (mock responses, not back
     const { saved, fetch, api } = harness()
     const result = await api.context(saved.scope.workspaceId, saved.scope.workflowId)
     expect(result.agents[0]!.agent.configurationVersionId).toBe(saved.configurations[0]!.id)
-    expect(fetch.mock.calls.map(([url]) => String(url).split('/').at(-1))).toEqual([
+    expect(fetch.mock.calls.map(([url]) => new URL(String(url), 'http://localhost').pathname.split('/').at(-1))).toEqual([
       saved.scope.workflowId, 'definition', 'agents', saved.scope.workflowId, 'definition'])
   })
   it('starts the exact saved V3 version through authenticated HTTP and rejects mismatched admission', async () => {
@@ -69,7 +71,7 @@ describe('Agent 6 existing authenticated HTTP boundary (mock responses, not back
     const input = { workspaceId: saved.scope.workspaceId, workflowId: saved.scope.workflowId,
       workflowVersionId: saved.scope.workflowVersionId, executionSemanticsVersion: 3 as const,
       expectedWorkflowRevision: 1, expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds,
-      draftId: 'draft-web-start', expectedDraftRevision: 3, expectedLocationRevision: 1,
+      expectedLocationRevision: 1,
       commandId: 'start-web-start', input: {} }
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ run: saved.run, accepted: true, replayed: false }))
     const api = createBoardStartClient(new ApiClient({ fetch }))
@@ -77,9 +79,10 @@ describe('Agent 6 existing authenticated HTTP boundary (mock responses, not back
     const [url, init] = fetch.mock.calls[0]!
     expect(String(url)).toContain(`/workspaces/${saved.scope.workspaceId}/workflows/${saved.scope.workflowId}/runs`)
     expect(init!.credentials).toBe('same-origin')
-    expect(JSON.parse(String(init!.body))).toMatchObject({ executionSemanticsVersion: 3,
-      workflowVersionId: saved.scope.workflowVersionId, draftId: input.draftId,
-      expectedDraftRevision: 3, commandId: input.commandId })
+    const sent = JSON.parse(String(init!.body))
+    expect(sent).toEqual(input)
+    expect(sent).not.toHaveProperty('draftId')
+    expect(sent).not.toHaveProperty('expectedDraftRevision')
     fetch.mockResolvedValue(response({ run: { ...saved.run, workflowId: 'other-workflow' }, accepted: true, replayed: false }))
     await expect(api.start(input)).rejects.toMatchObject({ code: 'INVALID_RESPONSE' })
   })

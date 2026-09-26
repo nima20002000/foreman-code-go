@@ -30,6 +30,7 @@ vi.mock('../../shared/api/query', async (original) => ({
   ...await original<typeof import('../../shared/api/query')>(), useInteractionsQuery: () => ({ data: { items: [] } }),
 }))
 const key = nextDraftKey('workspace', 'workflow')
+const clients: QueryClient[] = []
 function Harness() {
   const location = useLocation(), navigate = useNavigate()
   const selected = resolveWorkflowBoardLocation(location.pathname, location.search)
@@ -52,6 +53,7 @@ function setup() {
   const history = createMemoryHistory({ initialEntries: ['/workspaces/workspace?workflowId=workflow'] })
   const router = createRouter({ routeTree: tree, history })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+  clients.push(client)
   client.setQueryData(queryKeys.managedWorkspace('workspace'), { workspace: { id: 'workspace', name: 'Fixture' }, locationRevision: 1, locationValidation: { status: 'ready' } })
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
   return { router, client, history }
@@ -61,7 +63,7 @@ function setup() {
  * not browser gesture, production authentication or native execution evidence. */
 describe('one mounted board across current route aliases', () => {
   beforeEach(() => { mounts.canvas = 0; mounts.disposed = 0; useGraphDraftStore.getState().clearAllDrafts(); useGraphDraftStore.getState().installNextDraft(key, fixture()) })
-  afterEach(() => { cleanup(); useGraphDraftStore.getState().clearAllDrafts(); vi.restoreAllMocks() })
+  afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()); useGraphDraftStore.getState().clearAllDrafts(); vi.restoreAllMocks() })
   it('opens an old draft deep link in the same workspace and keeps the editor mounted', async () => {
     const { router, history, client } = setup()
     await screen.findByTestId('retained-canvas')
@@ -86,8 +88,9 @@ describe('one mounted board across current route aliases', () => {
     await act(async () => { await router.navigate({ to: '/workspaces/$workspaceId', params: { workspaceId: 'workspace' },
       search: { workflowId: 'workflow', runId: 'run-one', workflowVersionId: 'version-one', executionSemanticsVersion: 3 } }) })
     expect(screen.getByTestId('selected-run')).toHaveTextContent('run-one:version-one')
+    // Old URL shape, current semantics: a retired tag is not a supported Run alias.
     await act(async () => { await router.navigate({ to: '/workspaces/$workspaceId/workflows/$workflowId/runs/$runId/graph/$workflowVersionId/$executionSemanticsVersion',
-      params: { workspaceId: 'workspace', workflowId: 'workflow', runId: 'run-old', workflowVersionId: 'version-old', executionSemanticsVersion: '2' }, search: {} }) })
+      params: { workspaceId: 'workspace', workflowId: 'workflow', runId: 'run-old', workflowVersionId: 'version-old', executionSemanticsVersion: '3' }, search: {} }) })
     expect(screen.getByTestId('selected-run')).toHaveTextContent('run-old:version-old')
     expect(screen.getByText('Geometry is buffered')).toBeInTheDocument()
     expect(screen.queryByRole('alertdialog')).toBeNull()

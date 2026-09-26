@@ -23,6 +23,12 @@ import { queryKeys } from '../../shared/api/query'
 type Mock = ReturnType<typeof createCurrentBoardMock>
 type Shape = 'single' | 'sequential' | 'parallel' | 'conditional' | 'approval' | 'repeat-ready'
 const clients: QueryClient[] = []
+let fixtureNumber = 0
+function newBoardMock(options: Parameters<typeof createCurrentBoardMock>[0] = {}) {
+  // Separate synthetic backends must not alias the module-level local-draft cache.
+  // A reopen deliberately retains this same factory and workspace identity.
+  return createCurrentBoardMock({ ...options, workspaceId: `ws-board-case-${++fixtureNumber}` })
+}
 function locks() {
   const queues = new Map<string, Promise<unknown>>()
   Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (key: string, action: () => unknown) => {
@@ -111,7 +117,7 @@ async function start(mock: Mock, user: ReturnType<typeof userEvent.setup>, expec
 
 describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
   it.each<Shape>(['single', 'sequential', 'parallel', 'conditional', 'approval'])('S3-01..04: fresh %s Save/reopen/Start persists V3 without dummy repeat state', async (shape) => {
-    const mock = createCurrentBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), first = await mount(mock)
+    const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), first = await mount(mock)
     const { id, key } = await create(mock, user)
     if (shape === 'single') {
       // Exercise real keyboard-accessible attach + entry controls from the empty Board.
@@ -134,9 +140,11 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     const second = await mount(mock, href)
     await screen.findByRole('region', { name: 'Workflow authoring' })
     const run = await start(mock, user)
-    expect(second.router.state.location.search).toMatchObject({ workflowId: id, runId: run.id, workflowVersionId: version.id, executionSemanticsVersion: 3 })
+    await waitFor(() => expect(second.router.state.location.search).toMatchObject({ workflowId: id, runId: run.id, workflowVersionId: version.id, executionSemanticsVersion: 3 }))
     const requests = mock.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/runs'))
     expect(requests).toHaveLength(1)
+    expect(requests[0]!.body).not.toHaveProperty('draftId')
+    expect(requests[0]!.body).not.toHaveProperty('expectedDraftRevision')
     const request = RunStartV3InputSchema.parse(requests[0]!.body)
     expect(request.expectedAgentConfigurationVersionIds).toEqual(version.agentConfigurationVersionIds)
     expect(request.workflowVersionId).toBe(version.id); expect(request.expectedLocationRevision).toBe(1)
@@ -148,7 +156,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     expect(readBoardStart(key)).toBeUndefined()
   })
   it('S3-05: the same form adds and removes finite repeat as separate V3 versions, while past Runs retain exact pins', async () => {
-    const mock = createCurrentBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)
+    const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)
     const { id, key } = await create(mock, user); stageShape(key, 'repeat-ready', mock)
     const ordinary = await save(mock, user, 1), oldRun = await start(mock, user)
     mock.settle(oldRun.id)
@@ -182,8 +190,8 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     await user.click(screen.getByRole('button', { name: 'Clear Run selection' }))
     expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).not.toHaveProperty('repeat')
   })
-  it('keeps production capability false without issuing Start, and rejects retired saved tags before draft dispatch', async () => {
-    const mock = createCurrentBoardMock(), user = userEvent.setup(), mounted = await mount(mock)
+  it('keeps production capability false without issuing Start, and rejects retired saved tags before definition dispatch', async () => {
+    const mock = newBoardMock(), user = userEvent.setup(), mounted = await mount(mock)
     const { key } = await create(mock, user); stageShape(key, 'single', mock); await save(mock, user, 1)
     expect(screen.getByRole('button', { name: 'Start saved version' })).toBeDisabled()
     expect(mock.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/runs'))).toEqual([])
@@ -191,19 +199,19 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     for (const tag of [1, 2, 99, undefined]) {
       const details = mock.details(), workflow = details.workflows[0]!
       server.use(http.get(`/api/workspaces/${mock.workspaceId}`, () => HttpResponse.json({ ...details, workflows: [{ ...workflow, executionSemanticsVersion: tag }] })))
-      const before = mock.calls.filter((call) => call.path.endsWith('/drafts')).length
+      const before = mock.calls.filter((call) => /\/(?:definition|drafts)(?:\/|$)/.test(call.path)).length
       // Mount without replacing the denial override with the fixture handlers.
       const query = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(query)
       const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [`/workspaces/${mock.workspaceId}`] }) })
       const view = render(<QueryClientProvider client={query}><RouterProvider router={router} /></QueryClientProvider>)
       await waitFor(() => expect(screen.queryByRole('region', { name: 'Workflow authoring' })).not.toBeInTheDocument())
       await waitFor(() => expect(query.getQueryState(queryKeys.workspaceDetails(mock.workspaceId))?.status).toBe('error'))
-      expect(mock.calls.filter((call) => call.path.endsWith('/drafts'))).toHaveLength(before)
+      expect(mock.calls.filter((call) => /\/(?:definition|drafts)(?:\/|$)/.test(call.path))).toHaveLength(before)
       view.unmount(); query.clear()
     }
   })
   it.each(['denied', 'stale', 'unsupported', 'lost'] as const)('Start %s is fail-closed; reload never fabricates a replacement command', async (mode) => {
-    const mock = createCurrentBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)
+    const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)
     const { key } = await create(mock, user); stageShape(key, 'sequential', mock); await save(mock, user, 1)
     const button = screen.getByRole('button', { name: 'Start saved version' }); await waitFor(() => expect(button).toBeEnabled())
     // Deny in the service AFTER its allowed session/read display: authority is rechecked.
@@ -222,15 +230,19 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     const retained = readBoardStart(key)!, href = mounted.router.state.location.href
     if (mode === 'denied' || mode === 'stale') expect(mock.runs.size).toBe(0)
     if (mode !== 'lost') return
-    expect(mock.runs.size).toBe(1); mounted.unmount(); mounted.query.clear()
+    expect(mock.runs.size).toBe(1)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Reconcile Start' })).toBeEnabled())
+    mounted.unmount(); mounted.query.clear()
     act(() => useGraphDraftStore.setState({ nextDrafts: {} })); await mount(mock, href)
-    await user.click(await screen.findByRole('button', { name: 'Reconcile Start' }))
+    const reconcile = await screen.findByRole('button', { name: 'Reconcile Start' })
+    await waitFor(() => expect(reconcile).toBeEnabled())
+    await user.click(reconcile)
     await waitFor(() => expect(readBoardStart(key)).toBeUndefined())
     const requests = mock.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/runs'))
     expect(requests.at(-1)!.body).toEqual(retained); expect(mock.runs.size).toBe(1)
   })
   it('Stop receipt replay is not cleanup proof; Discard does not Stop and layout does not publish', async () => {
-    const mock = createCurrentBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)
+    const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)
     const { key } = await create(mock, user); stageShape(key, 'single', mock); await save(mock, user, 1)
     const run = await start(mock, user), scope = mock.currents.get(run.id)!.scope
     await user.click(screen.getByRole('button', { name: 'Details' }))
@@ -255,25 +267,40 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[key]!)).toBe(false)
     expect(mock.versions.size).toBe(1); expect(mock.controls.stopCalls).toBe(1)
   })
-  it('stages a raced active Run without Stop, then requires explicit Stop-and-save and authoritative settlement', async () => {
-    const mock = createCurrentBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)
+  it('retains a Save rejected by a raced active Run, then uses saved pins for explicit Stop-and-save and settlement', async () => {
+    const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)
     const { key, id } = await create(mock, user); stageShape(key, 'single', mock); await save(mock, user, 1)
     const run = await start(mock, user)
     act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph,
       nodes: graph.nodes.map((node) => ({ ...node, initialPrompt: 'Next pinned instructions' })) })))
+    await mounted.query.invalidateQueries({ queryKey: queryKeys.workspaceDetails(mock.workspaceId) })
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
-    let dialog = screen.queryByRole('alertdialog')
-    if (dialog) await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
-    // Exercise the stale-banner race by clearing ONLY the workspace summary cache;
-    // the service retains the real affected Run and must not receive advance.
+    const canceled = await screen.findByRole('alertdialog')
+    await user.click(within(canceled).getByRole('button', { name: 'Cancel' }))
+    expect(mock.record(id).intent).toBeNull(); expect(mock.controls.stopCalls).toBe(0)
+    // Only the summary lies. The current definition service still sees its Run.
+    let hideRun = true
+    server.use(http.get(`/api/workspaces/${mock.workspaceId}`, () => HttpResponse.json({ ...mock.details(), ...(hideRun ? { runs: [] } : {}) })))
     act(() => { mounted.query.setQueryData(queryKeys.workspaceDetails(mock.workspaceId), { ...mock.details(), runs: [] }) })
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
-    await waitFor(() => expect(mock.record(id).intent?.state).toBe('staged'))
+    await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[key]?.error?.code).toBe('WORKFLOW_RUNS_UNSETTLED'))
+    expect(mock.record(id).intent).toBeNull(); expect(readEditOutbox(key)).toBeUndefined()
     expect(mock.controls.stopCalls).toBe(0); expect(mock.versions.size).toBe(1)
-    expect(readEditOutbox(key)).toBeDefined()
-    await user.click(await screen.findByRole('button', { name: 'Stop affected Runs and save' }))
-    dialog = await screen.findByRole('alertdialog')
-    await user.click(within(dialog).getByRole('button', { name: 'Stop runs and save' }))
+    expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[key]!)).toBe(true)
+    expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]!.initialPrompt).toBe('Next pinned instructions')
+    hideRun = false
+    await mounted.query.invalidateQueries({ queryKey: queryKeys.workspaceDetails(mock.workspaceId) })
+    const saveAgain = screen.getByRole('button', { name: 'Save changes' })
+    await waitFor(() => expect(saveAgain).toBeEnabled())
+    await user.click(saveAgain)
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Stop runs and save' }))
+    const stages = () => mock.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/definition/edits')
+      && (call.body as { action?: string }).action === 'stage_edits')
+    await waitFor(() => expect(stages()).toHaveLength(1))
+    // Keep this assertion: at 8c55ec5 local apply can leak revision + 1 into Stage.
+    // Do not teach the mock to accept it; see README product-blocker evidence.
+    expect(stages()[0]!.body).toMatchObject({ expectedRevision: mock.managed(id).revision,
+      expectedWorkflowVersionId: mock.managed(id).currentVersionId })
     await waitFor(() => expect(mock.record(id).intent?.state).toBe('waiting'))
     expect(mock.controls.stopCalls).toBe(1); expect(mock.versions.size).toBe(1)
     mock.settle(run.id); await mounted.query.invalidateQueries()

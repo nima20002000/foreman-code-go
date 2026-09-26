@@ -62,8 +62,30 @@ const empty: GraphEditReadResultV3 = { intent: null, current: [], canStop: false
 const now = '2026-09-24T00:00:00Z'
 const edit = () => useGraphDraftStore.getState().nextDrafts[key]!
 const saveButton = () => screen.getByRole('button', { name: /^Save changes$/ })
+const recoveryName = /^(?:Stop affected Runs and save|Reconcile Save)$/
+async function retainedSaveReady() {
+  await waitFor(() => {
+    // A pending journal is reconciled; ordinary Save must not create a new command.
+    expect(saveButton()).toBeDisabled()
+    expect(screen.getByRole('button', { name: recoveryName })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /^Discard changes$/ })).toBeEnabled()
+  })
+}
 async function saveWithStop(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(saveButton())
+  const button = screen.queryByRole('button', { name: recoveryName }) ?? saveButton()
+  await waitFor(() => expect(button).toBeEnabled())
+  const reconcileOnly = button.textContent?.trim() === 'Reconcile Save'
+  await user.click(button)
+  if (reconcileOnly) {
+    // An unknown reply is read/replayed first. Confirm Stop only if that read
+    // discovers unsettled work; a sibling's saved receipt needs no second Stop.
+    await waitFor(() => {
+      const stop = screen.queryByRole('button', { name: 'Stop affected Runs and save' })
+      expect(!startButton().hasAttribute('disabled') || !!stop && !stop.hasAttribute('disabled')).toBe(true)
+    })
+    if (!startButton().hasAttribute('disabled')) return
+    await user.click(screen.getByRole('button', { name: 'Stop affected Runs and save' }))
+  }
   await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Stop runs and save' }))
 }
 
@@ -188,7 +210,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
       const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => (persisted = waiting(persisted)))
       const user = userEvent.setup(), first = mount(); typeMeaning(); await saveWithStop(user)
       await waitFor(() => expect(stage).toHaveBeenCalledOnce())
-      await waitFor(() => expect(saveButton()).toBeEnabled())
+      await retainedSaveReady()
       const request = stage.mock.calls[0]![0]
       expect(readEditOutbox(key)?.request).toEqual(request)
       reopen(first); await screen.findByRole('region', { name: 'Workflow authoring' })
@@ -203,7 +225,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockRejectedValue(new ApiError({ code: 'REVISION_CONFLICT', message: 'After Stage' }, 409))
     const user = userEvent.setup(); mount(); typeMeaning(); await saveWithStop(user)
     await waitFor(() => expect(advance).toHaveBeenCalledOnce())
-    await waitFor(() => expect(saveButton()).toBeEnabled())
+    await retainedSaveReady()
     expect(readEditOutbox(key)?.request.commandId).toBe(persisted.intent?.stageCommandId)
     expect(startButton()).toBeDisabled(); expect(edit().graph.nodes[0]?.initialPrompt).toBe('submitted instruction')
   })
@@ -247,7 +269,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => { persisted = published(persisted); throw new Error('publication reply lost') })
     const user = userEvent.setup(), first = mount(), node = await createWorker(user)
     await saveWithStop(user); await waitFor(() => expect(advance).toHaveBeenCalledOnce())
-    await waitFor(() => expect(saveButton()).toBeEnabled())
+    await retainedSaveReady()
     expect(readEditOutbox(key)?.agentTarget?.[node.agentId]?.prompt).toBeUndefined()
     expect(readEditOutbox(key)).toBeDefined()
     visible = persisted; reopen(first); await screen.findByRole('region', { name: 'Workflow authoring' })
@@ -292,15 +314,20 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     const user = userEvent.setup(), first = mount()
     act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => removeNode(graph, 'node-1')))
     await saveWithStop(user); await waitFor(() => expect(advance).toHaveBeenCalledOnce())
-    await waitFor(() => expect(saveButton()).toBeEnabled()); moveSurvivor()
+    await retainedSaveReady(); moveSurvivor()
     if (newer) {
       typeMeaning('independently newer')
       act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => removeNode(graph, 'node-2')))
     }
     await confirmDiscard(user)
     await waitFor(() => expect(discard).toHaveBeenCalledOnce())
-    // With nothing left to save the save bar closes; otherwise Save is available again.
-    await waitFor(() => { const button = screen.queryByRole('button', { name: /^Save changes$/ }); if (button) expect(button).toBeEnabled() })
+    // Only a confirmed Discard unlocks ordinary Save. A dropped reply remains reserved.
+    if (dropped) await retainedSaveReady()
+    else await waitFor(() => {
+      expect(readEditOutbox(key)).toBeUndefined()
+      const button = screen.queryByRole('button', { name: /^Save changes$/ })
+      if (newer) expect(button).toBeEnabled(); else expect(button).not.toBeInTheDocument()
+    })
     if (dropped) {
       expect(readEditOutbox(key)).toBeDefined(); expect(edit().graph.nodes.some((node) => node.id === 'node-1')).toBe(false)
     } else await waitFor(() => expect(readEditOutbox(key)).toBeUndefined())
@@ -388,7 +415,7 @@ describe('NIM-2644 follow-up mounted stale-tab readback', () => {
     const user = userEvent.setup(), first = mount(), node = await createWorker(user)
     await saveWithStop(user)
     await waitFor(() => expect(persisted.intent?.state).toBe('saved'))
-    await waitFor(() => expect(saveButton()).toBeEnabled())
+    await retainedSaveReady()
     const raw = structuredClone(edit())
     expect(raw.agentEdits?.[node.agentId]?.prompt).toBeUndefined()
     const sibling = siblingConsumes(persisted)
@@ -421,8 +448,8 @@ describe('NIM-2644 follow-up mounted stale-tab readback', () => {
     moveSurvivor()
     await confirmDiscard(user)
     await waitFor(() => expect(discard).toHaveBeenCalledOnce())
-    // With nothing left to save the save bar closes; otherwise Save is available again.
-    await waitFor(() => { const button = screen.queryByRole('button', { name: /^Save changes$/ }); if (button) expect(button).toBeEnabled() })
+    // The reply was lost: reconcile/Discard remain available, ordinary Save does not.
+    await retainedSaveReady()
     if (newer) typeMeaning('independent newer instruction')
     const raw = structuredClone(edit()), sibling = siblingConsumes(persisted)
     expect(sibling.getState().edit.graph.nodes.map((node) => node.id)).toEqual(['node-0', 'node-1', 'node-2'])

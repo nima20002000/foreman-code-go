@@ -28,7 +28,7 @@ const remoteAgents = (intent: GraphEditIntentV3) =>
 function remoteBaseMatches(current: NextDraftEdit, intent: GraphEditIntentV3) {
   const draft = current.context.draft
   return draft.workspaceId === intent.workspaceId && draft.workflowId === intent.workflowId && draft.id === intent.draftId
-    && draft.revision === intent.expectedRevision && draft.baseWorkflowVersionId === intent.expectedWorkflowVersionId
+    && draft.publishedRevision === intent.expectedRevision && draft.baseWorkflowVersionId === intent.expectedWorkflowVersionId
     && intent.agentPins.every((pin) => {
       const source = current.context.agents.find((item) => item.agent.id === pin.agentId)
       return pin.metadataRevision === null ? !source : source?.metadataRevision === pin.metadataRevision
@@ -43,7 +43,7 @@ export function acknowledgeEditIntentSnapshot(draftKey: string, current: NextDra
   const draft = current.context.draft
   if (current.busy || current.pending || !['saved', 'discarded'].includes(intent.state)
     || draft.workspaceId !== intent.workspaceId || draft.workflowId !== intent.workflowId || draft.id !== intent.draftId
-    || draft.revision !== intent.expectedRevision || draft.baseWorkflowVersionId !== intent.expectedWorkflowVersionId
+    || draft.publishedRevision !== intent.expectedRevision || draft.baseWorkflowVersionId !== intent.expectedWorkflowVersionId
     || editSnapshotAcknowledged(draftKey, current, intent.stageCommandId)) return current
   const submission = readEditSubmission(draftKey, intent)
   // Without exact local evidence, a remote Discard says nothing about this form.
@@ -209,7 +209,7 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
       const pins = await nextDraftApi.pins(current.context.draft.workspaceId, current.graph, stagedAgents, current.context.agents)
       const request = GraphEditStageInputV3Schema.parse({ workspaceId: current.context.draft.workspaceId,
         workflowId: current.context.draft.workflowId, draftId: current.context.draft.id, action: 'stage_edits',
-        commandId: crypto.randomUUID(), expectedRevision: current.context.draft.revision,
+        commandId: crypto.randomUUID(), expectedRevision: current.context.draft.publishedRevision,
         expectedWorkflowVersionId: current.context.draft.baseWorkflowVersionId, executionSemanticsVersion: 3,
         expectedAgentConfigurationVersionIds: pins.expectedAgentConfigurationVersionIds,
         expectedLocationRevision: pins.expectedLocationRevision, graph: current.graph,
