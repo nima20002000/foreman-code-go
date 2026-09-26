@@ -7,6 +7,7 @@ import { registerContextTools } from './tools/context.js'
 import { registerHarnessTools } from './tools/harnesses.js'
 import { registerHarnessMcpTools } from './tools/harnessMcp.js'
 import { registerRunGraphTools } from './tools/runGraph.js'
+import { registerRunInspectionTools } from './tools/runInspection.js'
 import { registerRunTools } from './tools/runs.js'
 import { registerWorkflowTools } from './tools/workflows.js'
 import { registerWorkspaceTools } from './tools/workspaces.js'
@@ -25,6 +26,7 @@ export function createOperatorMcpServer(context: OperatorRequestContext): McpSer
   registerWorkflowTools(server, context)
   registerAgentTools(server, context)
   registerRunTools(server, context)
+  registerRunInspectionTools(server, context)
   if (context.services.runGraph) registerRunGraphTools(server, context, context.services.runGraph)
   registerInteractionTools(server, context)
   registerExtendedOperatorTools(server, context)

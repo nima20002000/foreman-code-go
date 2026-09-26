@@ -4,6 +4,7 @@ import type pg from 'pg'
 import { RunStartV3InputSchema, SavedWorkflowRunSchema, CurrentJournalStopSchema, canonicalGraphJson,
   type RunStartV3Input } from '@graphql/contracts/wave25'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
+import { RunInspectionService } from './inspection.js'
 import { readCurrentRunDetails, withCurrentRunRead } from './currentRead.js'
 import { readAcceptedRepeatRunLocked } from './repeatStartRead.js'
 import { admitRepeatRun } from './repeatStartAdmission.js'
@@ -17,6 +18,7 @@ import type { WorkspaceLocationService } from '../workspaces/location.js'
 import type { CurrentRunProductionBinding, CurrentRuntimeAvailability } from './currentProduction.js'
 
 export class RunManagementService {
+  readonly inspection: RunInspectionService
   constructor(
     private readonly pool: pg.Pool,
     private readonly commands: PostgresCommandCoordinator,
@@ -24,7 +26,7 @@ export class RunManagementService {
     private readonly engine: LangGraphWorkflowEngine,
     private readonly locations: WorkspaceLocationService,
     private readonly currentProduction?: CurrentRunProductionBinding,
-  ) {}
+  ) { this.inspection = new RunInspectionService(pool) }
 
   private visibleRun(principal: ManagementPrincipal, run: ReturnType<typeof SavedWorkflowRunSchema.parse>) {
     const visible = { ...run }

@@ -1,3 +1,4 @@
+import { unavailableRunInspectionToolCall } from './tools/runInspection.js'
 import { unavailableRunGraphToolCall } from './tools/runGraph.js'
 import { unavailableCurrentWorkflowToolCall } from './tools/currentWorkflow.js'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
@@ -24,6 +25,7 @@ export function registerOperatorMcp(
       ?? await unavailableManualRunToolCall({ principal, services }, request.body)
       ?? await unavailableCurrentWorkflowToolCall({ principal, services }, request.body)
       ?? await unavailableRunGraphToolCall({ principal, services }, request.body)
+      ?? await unavailableRunInspectionToolCall({ principal, services }, request.body)
     if (unavailable) return reply.send(unavailable)
     const server = createOperatorMcpServer({ principal, services })
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })

@@ -18,8 +18,8 @@ import { checkpointRuntimeFixture } from './wave25Br1003Runtime.js'
 
 /** Real authenticated transport and qualified production binding over the shared
  * provider-boundary fixture. No fake engine Start/Stop receipt or native proof. */
-export async function currentOperatorIntegration() {
-  const f = await checkpointRuntimeFixture()
+export async function currentOperatorIntegration(options: Parameters<typeof checkpointRuntimeFixture>[2] = {}) {
+  const f = await checkpointRuntimeFixture(1, 1, options)
   const clients: Client[] = []
   const commands = new PostgresCommandCoordinator(f.db.pool), access = new PostgresAccessService(f.db.pool)
   const writer = await access.issue({ name: 'Current Operator integration', audience: 'operator', expiresAt: new Date(Date.now() + 600000),

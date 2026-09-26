@@ -22,6 +22,7 @@ export * from './currentBoardAuthoring.js'
 export * from './currentWorkflowFoundation.js'
 export * from './currentJournal.js'
 export * from './currentOperator.js'
+export * from './runInspection.js'
 export * from './currentFixture.js'
 export {
   CurrentManagedWorkflowSchema, CurrentManagedWorkflowPageSchema, CurrentManagedWorkflowCommandResultSchema,

@@ -13,6 +13,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
   readonly harness = 'codex' as const
   readonly counts = { sessions: 0, starts: 0, responses: 0, attaches: 0 }
   readonly startedNodes: string[] = []
+  readonly startedExecutions: string[] = []
   private readonly requests = new Map<string, HarnessExecutionRequest>()
   private readonly waits = new Map<string, PendingNativeInteraction[]>()
   private readonly terminals = new Map<string, NonNullable<NativeHistory['terminalResult']>>()
@@ -60,7 +61,10 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
   async *startTurn(session: NativeSessionReference, input: Parameters<NativeHarnessSessionManager['startTurn']>[1]): AsyncIterable<NativeHarnessEvent> {
     const request = this.requests.get(session.nativeSessionId)
     if (!request) throw new Error('Missing accepted provider request')
-    if (this.startedNodes.includes(request.workflowNodeId)) throw new Error('A predecessor/native turn was replayed')
+    // A repeat occurrence/new Run/technical attempt legitimately reuses a node.
+    // Replaying the SAME accepted execution remains forbidden.
+    if (this.startedExecutions.includes(request.executionId)) throw new Error('A predecessor/native turn was replayed')
+    this.startedExecutions.push(request.executionId)
     this.startedNodes.push(request.workflowNodeId)
     this.counts.starts++
     const turnId = `turn-${request.executionId}`

@@ -1,7 +1,8 @@
 import type { McpServer } from '@modelcontextprotocol/server'
 import { OperatorCapabilityInputSchema } from '@graphql/contracts/management'
-import { CurrentOperatorCapabilitiesSchema, CURRENT_WORKFLOW_TOOLS, CANONICAL_RUN_GRAPH_MCP_TOOLS } from '@graphql/contracts/wave25'
+import { CurrentOperatorCapabilitiesSchema, CURRENT_WORKFLOW_TOOLS, CANONICAL_RUN_GRAPH_MCP_TOOLS, RUN_INSPECTION_TOOLS } from '@graphql/contracts/wave25'
 import { currentWorkflowAvailable, currentWorkflowRequirements, type CurrentWorkflowOperation } from '../../../modules/workflows/currentWorkflowPolicy.js'
+import { runInspectionToolAvailable, runInspectionRequirements } from './runInspection.js'
 import { runGraphToolAvailable } from './runGraph.js'
 import { hasAction, isAuthorized } from '../../../modules/access/policy.js'
 import { invokeOperatorTool } from '../invoke.js'
@@ -41,7 +42,8 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
     const graph = context.services.runGraph && (Object.keys(resource).length
       ? isAuthorized(context.principal, 'runs:read', resource) : hasAction(context.principal, 'runs:read'))
       ? Object.values(CANONICAL_RUN_GRAPH_MCP_TOOLS).filter((name) => runGraphToolAvailable(context, name)) : []
-    const tools = [...ordinary, ...current.map((operation) => CURRENT_WORKFLOW_TOOLS[operation]), ...graph]
+    const inspection = Object.values(RUN_INSPECTION_TOOLS).filter((name) => runInspectionToolAvailable(context, name, resource))
+    const tools = [...ordinary, ...current.map((operation) => CURRENT_WORKFLOW_TOOLS[operation]), ...graph, ...inspection]
     return {endpoint:'/mcp/operator',audience:'operator',protocol:'2026-07-28',tools,
       principal:{id:context.principal.id,name:context.principal.name,expiresAt:context.principal.expiresAt},
       grants:context.principal.grants,requestedResource:resource,
@@ -50,7 +52,9 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
         ...current.map((operation) => ({ name: CURRENT_WORKFLOW_TOOLS[operation],
           actions: currentWorkflowRequirements[operation].map((item) => item.action),
           detail: 'Current V3 only. Concrete services recheck all scope, pin and settlement requirements; Stop also needs each affected Run grant.' })),
-        ...graph.map((name) => ({ name, actions: ['runs:read' as const], detail: 'Exact current Run/workflow/version scope. Metadata reads do not grant execution authority.' }))],
+        ...graph.map((name) => ({ name, actions: ['runs:read' as const], detail: 'Exact current Run/workflow/version scope. Metadata reads do not grant execution authority.' })),
+        ...inspection.map((name) => ({ name, actions: runInspectionRequirements(name),
+          detail: 'Private bounded V3 Run inspection. runs:read is checked on the exact persisted Run; run_version_get additionally requires workflows:read on its workflow. Read-only grants are sufficient; no execution authority is conferred.' }))],
       runtimeLimits:[...OPERATOR_RUNTIME_LIMITS],
       workerToolsMcp:{implemented:context.services.workerToolsMcpImplemented===true,endpoint:'/mcp/tools'}}
   }))

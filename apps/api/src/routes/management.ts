@@ -1,6 +1,7 @@
 import { CurrentWorkflowCreateInputSchema } from '@graphql/contracts/wave25'
 import { AgentCreateInputSchema, AgentUpdateInputSchema } from '@graphql/contracts/management'
 import { registerCurrentWorkflowRoutes } from './currentWorkflow.js'
+import { registerRunInspectionRoutes } from './runInspection.js'
 import { registerCurrentVersionReadRoutes } from './currentVersionReads.js'
 import type { FastifyInstance } from 'fastify'
 import { registerWorkspaceDefaultsRoutes } from './workspaceDefaults.js'
@@ -63,6 +64,7 @@ function page(query: Query) {
 export function registerManagementRoutes(app: FastifyInstance, services: OperatorServices): void {
   registerCurrentWorkflowRoutes(app, services.workflows, services.runs)
   registerCurrentVersionReadRoutes(app, services)
+  registerRunInspectionRoutes(app, services)
   registerWorkspaceDefaultsRoutes(app, services)
   registerHarnessSettingsRoutes(app, services)
   // Board authoring creates and edits Agents through the same service as the

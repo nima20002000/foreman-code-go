@@ -1,3 +1,4 @@
+import type { RunInspectionToolName } from '@graphql/contracts/wave25'
 import type { OperatorToolName } from '@graphql/contracts/management'
 
 import { DomainError } from '../../modules/errors.js'
@@ -6,7 +7,7 @@ import type { OperatorRequestContext } from './types.js'
 
 export async function invokeOperatorTool(
   context: OperatorRequestContext,
-  name: OperatorToolName,
+  name: OperatorToolName | RunInspectionToolName,
   work: () => Promise<unknown>,
 ) {
   try { return toolResult(await work()) } catch (error) {

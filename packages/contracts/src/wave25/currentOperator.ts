@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { OperatorCapabilitiesSchema, OperatorToolNameSchema, ManagementActionSchema } from '../management/index.js'
+import { RUN_INSPECTION_TOOLS } from './runInspection.js'
 import { CURRENT_WORKFLOW_TOOLS } from './currentAuthoring.js'
 import { CANONICAL_RUN_GRAPH_MCP_TOOLS } from './repeatGraphMetadata.js'
 
@@ -15,6 +16,7 @@ export const RETIRED_EXECUTION_TOOLS = [
 export const CurrentOperatorToolNameSchema = z.enum([
   ...OperatorToolNameSchema.options.filter((name) => !RETIRED_EXECUTION_TOOLS.some((retired) => retired === name)),
   ...Object.values(CURRENT_WORKFLOW_TOOLS), ...Object.values(CANONICAL_RUN_GRAPH_MCP_TOOLS),
+  ...Object.values(RUN_INSPECTION_TOOLS),
 ])
 export const CurrentOperatorCapabilitiesSchema = OperatorCapabilitiesSchema.extend({
   tools: z.array(CurrentOperatorToolNameSchema),
