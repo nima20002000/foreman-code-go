@@ -1,3 +1,4 @@
+import { installationIdentityMigration } from './runtimeIdentity.js'
 import type pg from 'pg'
 import { workflowClosureMigration } from './workflowClosureMigration.js'
 import { graphEditIntentMigration } from './graphEditIntentMigration.js'
@@ -681,6 +682,7 @@ export const migrations = [
   { version: 264402, sql: `
     create index workflows_workspace_id_page_idx on workflows (workspace_id, id);
   ` },
+  installationIdentityMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

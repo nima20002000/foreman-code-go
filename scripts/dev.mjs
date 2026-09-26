@@ -1,3 +1,5 @@
+import { createRequire } from 'node:module'
+import { apiIdentityMatches, webIdentityMatches } from './dev-identity.mjs'
 import { spawn } from 'node:child_process'
 import { constants } from 'node:fs'
 import { access, copyFile, chmod } from 'node:fs/promises'
@@ -44,9 +46,9 @@ async function run(name, args) {
   if (code !== 0) throw new Error(`${name} failed (exit ${code}).`)
 }
 
-async function listening(port) {
+async function listening(port, host = '127.0.0.1') {
   return new Promise((resolve) => {
-    const socket = createConnection({ host: '127.0.0.1', port })
+    const socket = createConnection({ host, port })
     socket.once('connect', () => { socket.destroy(); resolve(true) })
     socket.once('error', () => resolve(false))
     socket.setTimeout(1000, () => { socket.destroy(); resolve(false) })
@@ -90,10 +92,26 @@ async function main() {
   if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is missing from apps/api/.env.')
   const database = new URL(process.env.DATABASE_URL)
   const apiUrl = `http://127.0.0.1:${port}`
-  const webUrl = 'http://127.0.0.1:5173'
+  await run('Contracts build', ['--filter', '@graphql/contracts', 'build'])
+  const { resolveLocalBrowserOrigin } = await import('../packages/contracts/dist/browserOrigin.js')
+  const { createRuntimeIdentity } = await import('../packages/contracts/dist/runtimeIdentityNode.js')
+  const browser = resolveLocalBrowserOrigin(process.env)
+  process.env.GRAPHQL_BROWSER_ORIGIN = browser.origin
+  const webUrl = browser.origin
+  const { Client } = createRequire(join(root, 'apps/api/package.json'))('pg')
+  async function expectedIdentity() {
+    const client = new Client({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 2000, query_timeout: 2000 })
+    try {
+      await client.connect()
+      const result = await client.query('select id from application_installation where singleton = true')
+      if (!result.rows[0]?.id) throw new Error('Missing installation identity')
+      return createRuntimeIdentity(root, process.env.DATABASE_URL, result.rows[0].id)
+    } catch { throw new Error('Could not verify the configured database installation identity. Restart the intended API after applying migrations.') }
+    finally { await client.end() }
+  }
   const apiLive = (response, body) => response.ok && body.includes('"service":"graphql-api"')
   const apiReady = (response, body) => response.ok && body.includes('"status":"ok"')
-  const webReady = (response, body) => response.ok && body.includes('src="/src/main.tsx')
+  const webReady = webIdentityMatches(createRuntimeIdentity(root, process.env.DATABASE_URL, '').checkoutId, apiUrl)
 
   if (['127.0.0.1', 'localhost'].includes(database.hostname)
       && (database.port || '5432') === '5432' && database.pathname === '/graphql'
@@ -102,7 +120,6 @@ async function main() {
   } else {
     console.log('Using the configured PostgreSQL database; Docker Compose was skipped.')
   }
-  await run('Contracts build', ['--filter', '@graphql/contracts', 'build'])
 
   let api
   if (await listening(port)) {
@@ -112,6 +129,9 @@ async function main() {
     if (!await responds(`${apiUrl}/api/auth/session`, (response, body) => response.ok && body.includes('"localDev":true'))) {
       throw new Error(`The API at ${apiUrl} is not running with local development browser access. Stop it and restart corepack pnpm dev.`)
     }
+    if (!await responds(`${apiUrl}/health/identity`, apiIdentityMatches(await expectedIdentity()))) {
+      throw new Error(`The API at ${apiUrl} belongs to a different checkout or database installation. Stop the intended process explicitly or choose a different PORT.`)
+    }
     console.log(`Using the GraphQL API already running at ${apiUrl}.`)
   } else {
     api = start('API', ['--filter', '@graphql/api', 'dev'], {
@@ -120,10 +140,12 @@ async function main() {
   }
   await waitFor('API', `${apiUrl}/health/ready`, apiReady, api)
 
+  await waitFor('API identity', `${apiUrl}/health/identity`, apiIdentityMatches(await expectedIdentity()), api)
+
   let web
-  if (await listening(5173)) {
-    if (!await responds(webUrl, webReady)) {
-      throw new Error('Port 5173 is in use by a different or unhealthy service.')
+  if (await listening(browser.port, browser.host)) {
+    if (!await responds(`${webUrl}/__graphql_dev_identity`, webReady)) {
+      throw new Error(`Port ${browser.port} is in use by a different checkout, API target or unhealthy web service. Stop that process explicitly or choose a different GRAPHQL_WEB_PORT.`)
     }
     console.log(`Using the GraphQL web server already running at ${webUrl}.`)
   } else {
@@ -131,7 +153,7 @@ async function main() {
       env: { ...process.env, VITE_API_URL: apiUrl },
     })
   }
-  await waitFor('Web', webUrl, webReady, web)
+  await waitFor('Web', `${webUrl}/__graphql_dev_identity`, webReady, web)
 
   if (children.length === 0) {
     console.log('GraphQL is already running.')
@@ -140,6 +162,7 @@ async function main() {
   // dev:api and dev:web already own a contracts watcher when one is reused.
   if (api && web) start('Contracts watcher', ['--filter', '@graphql/contracts', 'dev'])
   console.log(`GraphQL ready: ${webUrl} (API ${apiUrl}).`)
+  console.log('Server ready for browsing. Harness execution eligibility is separate; check Operator chat for rollout and saved-default qualification status.')
   console.log('Local development browser access is active; open the app without signing in.')
   const ended = await Promise.race(children.map(({ exited }) => exited))
   if (!stopping) {
