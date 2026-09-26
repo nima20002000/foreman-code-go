@@ -1,7 +1,9 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { HttpResponse, http } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { server } from '../../mocks/server'
 import { renderWithRouter } from '../../test/renderWithRouter'
 import { WorkflowDirectory } from './WorkflowDirectory'
 
@@ -34,5 +36,35 @@ describe('WorkflowDirectory', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('workflow-card-workflow-content-pipeline')).not.toBeInTheDocument()
     })
+  })
+
+  it('keeps an empty rename draft visible and focuses the field without sending an update', async () => {
+    const user = userEvent.setup()
+    let updateRequests = 0
+    server.use(http.patch('/api/management/workspaces/:workspaceId/workflows/:workflowId', () => {
+      updateRequests += 1
+      return HttpResponse.json({})
+    }))
+    renderWithRouter(<WorkflowDirectory workspaceId="workspace-1" />)
+
+    await user.click(await screen.findByRole('button', { name: 'Open actions for Research to review' }))
+    const nameInput = screen.getByRole('textbox', { name: 'Name' })
+    await user.clear(nameInput)
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+
+    expect(nameInput).toHaveValue('')
+    expect(nameInput).toHaveFocus()
+    expect(nameInput).toHaveAccessibleDescription('Enter a workflow name.')
+    expect(screen.getByText('Enter a workflow name.')).toBeVisible()
+    expect(updateRequests).toBe(0)
+
+    await user.type(nameInput, '   ')
+    expect(screen.queryByText('Enter a workflow name.')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+
+    expect(nameInput).toHaveValue('   ')
+    expect(nameInput).toHaveFocus()
+    expect(nameInput).toHaveAccessibleDescription('Enter a workflow name.')
+    expect(updateRequests).toBe(0)
   })
 })
