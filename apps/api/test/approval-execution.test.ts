@@ -223,7 +223,7 @@ function fixture(harness: AgentHarness = 'codex') {
     async record(execution, session, durableGeneration, check) { check(); closed = { execution, session, durableGeneration }; return closed },
     async read() { return closed },
     async recordDetached(_execution, _session, _generation, check) { check() },
-    async recordUnbound(execution, durableGeneration, check) { check(); return { execution, durableGeneration } },
+    async recordUnbound(execution, durableGeneration, check) { check(); return { execution: { ...execution, workingDirectory: execution.workingDirectory!, runtimeDirectory: execution.runtimeDirectory! }, durableGeneration } },
     async readUnbound() { return undefined },
   }
   let launch = true
@@ -666,3 +666,29 @@ it('does not replay sibling asks after exact provider completion', async () => {
   assert.equal(f.manager.turns.length, 1)
   assert.equal([...f.records.values()].find((row) => row.nativeRequestId === 'first')?.status, 'delivered')
 })
+
+for (const boundary of ['terminal result', 'approval source', 'native error'] as const) {
+  it(`redacts a historical App credential at the ${boundary} boundary`, async () => {
+    const f = fixture()
+    const historicalToken = `opm_${'a'.repeat(43)}`
+    if (boundary === 'terminal result') {
+      f.manager.snapshot = { events: [], pendingInteractions: [], terminalResult: { outcome: 'succeeded', output: { text: historicalToken } } }
+      const observed = await f.coordinator.observeExact(f.input)
+      assert.equal(JSON.stringify(observed).includes(historicalToken), false)
+      assert.equal(JSON.stringify(f.updates).includes(historicalToken), false)
+    } else if (boundary === 'approval source') {
+      const pending = f.pending('historical-token-source')
+      pending.request = { command: `echo ${historicalToken}` }
+      f.manager.snapshot = { events: [], pendingInteractions: [pending] }
+      const observed = await f.coordinator.observeExact(f.input)
+      assert.equal(JSON.stringify(observed).includes(historicalToken), false)
+      assert.equal(JSON.stringify([...f.records.values()]).includes(historicalToken), false)
+    } else {
+      f.manager.turnError = new Error(`Provider failed: ${historicalToken}`)
+      let thrown: unknown
+      try { await f.coordinator.observeExact(f.input) } catch (error) { thrown = error }
+      assert.ok(thrown instanceof Error)
+      assert.equal(thrown.message.includes(historicalToken), false)
+    }
+  })
+}
