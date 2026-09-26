@@ -1,5 +1,5 @@
 import { OperatorMcpRoutes } from '../src/modules/harnesses/operatorMcpRoutes.js'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { copyFile, mkdtemp, rm, readFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -96,5 +96,7 @@ it('routes simultaneous instances and changed ports through authenticated MCP, p
   expect((await ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).structuredContent).toMatchObject({ value })
   await access.revoke(owner.principal.id)
   await restarted.refresh()
-  expect(await readdir(join(directory, 'routes'))).toHaveLength(0)
+  const remaining = await readdir(join(directory, 'routes'))
+  // Other integration fixtures may leave active root credentials in this DB.
+  for (const token of [owner.token, reader.token]) expect(remaining).not.toContain(`${createHash('sha256').update(token).digest('hex')}.json`)
 }, 30_000)

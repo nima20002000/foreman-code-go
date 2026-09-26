@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { BrowserAuthSearchSchema } from '@graphql/contracts/management'
 import { server } from '../../mocks/server'
@@ -16,6 +16,11 @@ import userEvent from '@testing-library/user-event'
 // These tests exercise auth HTTP, routing and rendering, not the confirmation dialog implementation.
 vi.mock('./SignOutButton', () => ({ SignOutButton: () => <button type="button">Sign out</button> }))
 vi.mock('./sessionTransition', () => ({ prepareBrowserIdentityChange: vi.fn(async () => undefined), clearBrowserIdentity: vi.fn() }))
+const runtimeIdentity = { installationId: 'd95abeb8-598a-49a4-8c3c-c6e3533053e8', checkoutId: 'a'.repeat(64), databaseId: 'b'.repeat(64) }
+beforeEach(() => {
+  window.localStorage.setItem('graphql.chat-instance-binding', `${runtimeIdentity.checkoutId}:${runtimeIdentity.installationId}`)
+  server.use(http.get('*/api/auth/identity', () => HttpResponse.json(runtimeIdentity)))
+})
 const clients: QueryClient[] = []
 const session = { principal: { id: 'principal-owner', name: 'Owner', expiresAt: '2099-01-01T00:00:00Z', grants: [{ actions: ['settings:read'], scope: {} }] } }
 function failure(status: number) { return HttpResponse.json({ error: { code: `AUTH_${status}`, message: status === 401 ? 'The email or password is incorrect.' : 'Request failed.' } }, { status }) }

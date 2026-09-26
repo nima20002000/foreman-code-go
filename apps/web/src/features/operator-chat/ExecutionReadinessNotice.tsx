@@ -12,7 +12,7 @@ export function ExecutionReadinessNotice({ harness }: { harness: AgentHarness })
     MCP installation alone does not confirm that agents can run. You can continue browsing.
   </Alert>
   const result = query.data
-  if (result.status === 'eligible') return <p role="status">Saved {harness === 'codex' ? 'Codex' : 'OpenCode'} defaults are eligible. This Operator’s settings and permissions are checked when chat starts.</p>
+  if (result.status === 'eligible') return null
   return <Alert tone="warning" title={result.status === 'unverified' ? 'Execution eligibility is unverified' : 'Execution is unavailable'}
     action={<Button size="sm" disabled={query.isFetching} onClick={() => void query.refetch()}>Check again</Button>}>
     <p>{result.reason?.message}</p>
