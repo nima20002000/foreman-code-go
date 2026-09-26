@@ -8,7 +8,7 @@ import { DomainError } from '../src/modules/errors.js'
 import { ReviewEvidenceTracker, reviewTurnEvidence } from '../src/modules/interactions/reviewerEvidence.js'
 import { LeaseGuard, ownedEvents, SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
 import { nativeLanes } from './helpers/nativeLanes.js'
-import { correlationId, event, permission, providerId, reviewerFixture, session, terminal } from './helpers/reviewerAudit.js'
+import { correlationId, event, permission, providerId, reviewerFixture, session, terminal, sourceTerminal } from './helpers/reviewerAudit.js'
 
 it('F2: cold Codex terminal metadata completes the exact review with no retained live events', () => {
   assert.deepEqual(reviewTurnEvidence(session, terminal(), correlationId), {
@@ -29,7 +29,7 @@ it('F2: cold dispatcher recovery attaches the durable review correlation and nev
   assert.equal(fixture.starts.length, 0)
   assert.equal(fixture.attaches[0]?.correlationId, correlationId)
   assert.equal(fixture.responses, 0)
-  assert.equal(fixture.saved.events.length, 0)
+  assert.equal(fixture.saved.events.length, 1)
 })
 
 it('F2: a durable provider ID is supplied to cold attach and cannot be substituted', async () => {
@@ -161,12 +161,12 @@ it('F11: actual reviewer streaming reads each payload only for evidence and reda
     for (let index = 0; index < count; index += 1) {
       yield { ...event('item.delta', {}, index), get payload() { reads += 1; return { text: 'delta' } } }
     }
-    fixture.setHistory(terminal())
+    fixture.setHistory(sourceTerminal())
   }
-  fixture.hooks.history = async () => terminal()
+  fixture.hooks.history = async () => sourceTerminal()
   const result = await fixture.dispatcher.dispatchNext(fixture.job.reviewerAgentId, 'worker')
   assert.equal(result?.state, 'completed')
-  assert.equal(fixture.hooks.eventCount, count)
+  assert.equal(fixture.hooks.eventCount, count + 1)
   // Redaction reads the provider getter once; evidence consumes the bounded
   // normalized copy, so no second provider-body walk or history rescan occurs.
   assert.equal(reads, count)
@@ -176,7 +176,7 @@ it('F11: actual reviewer streaming reads each payload only for evidence and reda
 
 it('F2/F11: lease loss after provider reconciliation forbids persisting the returned terminal evidence', async () => {
   const fixture = await reviewerFixture({ recovering: true })
-  fixture.hooks.history = async () => { fixture.hooks.lostJob = true; return terminal() }
+  fixture.hooks.history = async () => { fixture.hooks.lostJob = true; return sourceTerminal() }
   await assert.rejects(fixture.dispatcher.dispatchNext(fixture.job.reviewerAgentId, 'worker'),
     (error: unknown) => error instanceof DomainError && error.code === 'REVIEW_JOB_LEASE_LOST')
   assert.equal(fixture.saved.events.length, 0)

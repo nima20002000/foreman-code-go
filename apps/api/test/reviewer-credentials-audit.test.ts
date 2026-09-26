@@ -100,7 +100,8 @@ it('F8: Run cancellation stops the reviewer heartbeat and retains the no-replay 
     const task = fixture.dispatcher.dispatchNext(fixture.job.reviewerAgentId, 'worker').catch(() => undefined)
     await until(() => fixture.starts.length === 1)
     await vi.advanceTimersByTimeAsync(1)
-    await fixture.runtime.cancelRun(fixture.run.id)
+    fixture.stopFence()
+  await fixture.runtime.cancelRun(fixture.run.id)
     await task
     const count = fixture.renewed.length
     await vi.advanceTimersByTimeAsync(120_000)
