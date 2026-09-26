@@ -235,7 +235,8 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     const stage = vi.spyOn(nextDraftApi, 'editStage').mockImplementation(async (input) => (persisted = stageValue(input)))
     const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => (persisted = published(persisted)))
     const user = userEvent.setup(), first = mount(), node = await createWorker(user)
-        await user.click(screen.getByRole('button', { name: 'Entry · Node 0' }))
+    const rawWorker = structuredClone(edit().agentEdits![node.agentId]!)
+    await user.click(screen.getByRole('button', { name: 'Entry · Node 0' }))
     await user.click(screen.getByRole('button', { name: /from workflow$/ }))
     expect(edit().graph.entryNodeId).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Workflow settings' }))
@@ -248,8 +249,12 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     const request = stage.mock.calls[0]![0]
     expect(request.graph.entryNodeId).toBe(node.id)
     expect(request.graph.nodes.map((item) => item.id)).toEqual([node.id])
-    expect(request.stagedAgents).toContainEqual(expect.objectContaining({ baseRevision: null,
-      agent: expect.objectContaining({ id: node.agentId, productRole: 'coder', prompt: {}, assignedSkills: [] }) }))
+    // Stage carries the exact local Agent. Defaults appear only in saved readback.
+    expect(rawWorker).toMatchObject({ id: node.agentId, productRole: 'coder' })
+    expect(rawWorker.prompt).toBeUndefined(); expect(rawWorker.assignedSkills).toBeUndefined()
+    expect(request.stagedAgents).toEqual([{ baseRevision: null, agent: rawWorker }])
+    expect(persisted.intent!.stagedDraft.stagedAgents).toEqual(request.stagedAgents)
+    expect(persisted.intent!.saveInput.stagedAgents).toEqual(request.stagedAgents)
     expect(request.expectedAgentConfigurationVersionIds).toEqual({})
     expect(request.expectedLocationRevision).toBe(1)
     expect(advance.mock.calls[0]![0]).toMatchObject({ action: 'stop_and_save', commandId: persisted.intent!.advanceCommandId })

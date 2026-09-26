@@ -14,7 +14,11 @@ const workspaceId = 'workspace-1', workflowId = 'workflow-content-pipeline'
 const workspacePath = `/api/management/workspaces/${workspaceId}`
 const workflowPath = `${workspacePath}/workflows/${workflowId}`
 async function request(path: string, method = 'GET', body?: unknown, status = 200): Promise<unknown> {
-  const response = await fetch(`http://localhost${path}`, { method,
+  // Relative MSW handlers use this document's origin (including its test port).
+  // Do not send these requests to a different hard-coded localhost origin.
+  const url = new URL(path, document.baseURI)
+  expect(url.origin).toBe(window.location.origin)
+  const response = await fetch(url, { method,
     ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) })
   const result: unknown = await response.json()
   expect(response.status, JSON.stringify(result)).toBe(status)

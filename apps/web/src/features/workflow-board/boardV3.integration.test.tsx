@@ -23,6 +23,17 @@ import { queryKeys } from '../../shared/api/query'
 type Mock = ReturnType<typeof createCurrentBoardMock>
 type Shape = 'single' | 'sequential' | 'parallel' | 'conditional' | 'approval' | 'repeat-ready'
 const clients: QueryClient[] = []
+const unhandledRequests: string[] = []
+const recordUnhandled = ({ request }: { request: Request }) => {
+  unhandledRequests.push(`${request.method} ${request.url}`)
+}
+// Scope role queries to small control surfaces instead of repeatedly scanning
+// every Agent action and hidden panel in the real React Flow canvas.
+const authoring = () => screen.getByRole('region', { name: 'Workflow authoring' })
+const controls = () => within(authoring()).getByRole('group', { name: 'Workflow controls' })
+const control = (name: string) => within(controls()).getByRole('button', { name })
+const saveButton = () => within(screen.getByRole('region', { name: 'Unsaved changes' }))
+  .getByRole('button', { name: /^Save changes$/ })
 let fixtureNumber = 0
 function newBoardMock(options: Parameters<typeof createCurrentBoardMock>[0] = {}) {
   // Separate synthetic backends must not alias the module-level local-draft cache.
@@ -37,6 +48,7 @@ function locks() {
 }
 configure({ asyncUtilTimeout: 5000 })
 beforeEach(() => {
+  unhandledRequests.length = 0; server.events.on('request:unhandled', recordUnhandled)
   useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); sessionStorage.clear(); locks()
   // DOM infrastructure only; never stub a Board/editor/React Flow component.
   vi.stubGlobal('ResizeObserver', class {
@@ -49,21 +61,31 @@ beforeEach(() => {
   vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(720)
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => ({ x: 0, y: 0, left: 0, top: 0, right: 1000, bottom: 720, width: 1000, height: 720, toJSON: () => ({}) }))
 })
-afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()); useGraphDraftStore.getState().clearAllDrafts(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+afterEach(() => {
+  cleanup(); clients.splice(0).forEach((client) => client.clear())
+  useGraphDraftStore.getState().clearAllDrafts(); vi.restoreAllMocks(); vi.unstubAllGlobals()
+  server.events.removeListener('request:unhandled', recordUnhandled)
+  expect(unhandledRequests, 'No unhandled Board request may bypass MSW').toEqual([])
+})
 
 async function mount(mock: Mock, href = `/workspaces/${mock.workspaceId}`) {
   server.use(...mock.handlers)
   const query = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false } } })
   clients.push(query)
-  const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [href] }) })
+  const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [href] }), defaultPendingMinMs: 0 })
+  // Complete initial memory routing before mounting; do not race a second load
+  // against RouterProvider. Query/HTTP work still runs through the real controls.
+  await router.load()
   const result = render(<QueryClientProvider client={query}><RouterProvider router={router} /></QueryClientProvider>)
-  await act(async () => { await router.load() })
   return { ...result, router, query }
 }
 async function create(mock: Mock, user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole('button', { name: 'New workflow' }))
   const dialog = await screen.findByRole('dialog', { name: 'New workflow' })
-  await user.type(within(dialog).getByRole('textbox', { name: 'Name' }), 'S3 mounted workflow')
+  const name = within(dialog).getByRole('textbox', { name: 'Name' })
+  await user.click(name)
+  await user.paste('S3 mounted workflow')
+  expect(name).toHaveValue('S3 mounted workflow')
   await user.click(within(dialog).getByRole('button', { name: 'Create workflow' }))
   await screen.findByTestId('unified-workflow-board')
   await screen.findByRole('region', { name: 'Workflow authoring' })
@@ -97,22 +119,24 @@ function stageShape(key: string, shape: Shape, mock: Mock) {
   act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => shapeGraph(graph, shape, mock)))
 }
 async function save(mock: Mock, user: ReturnType<typeof userEvent.setup>, expectedVersions: number) {
-  await user.click(screen.getByRole('button', { name: /^Save changes$/ }))
+  await user.click(saveButton())
   const dialog = screen.queryByRole('alertdialog', { name: 'Stop running work and save?' })
   if (dialog) await user.click(within(dialog).getByRole('button', { name: 'Stop runs and save' }))
   await waitFor(() => expect(mock.versions.size).toBe(expectedVersions))
-  await waitFor(() => expect(screen.queryByRole('button', { name: /^Save changes$/ })).not.toBeInTheDocument())
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Unsaved changes' })).not.toBeInTheDocument())
   const version = [...mock.versions.values()].at(-1)!
   expect(WorkflowVersionV3Schema.parse(version).executionSemanticsVersion).toBe(3)
   return version
 }
 async function start(mock: Mock, user: ReturnType<typeof userEvent.setup>, expectedRuns = 1) {
-  const button = screen.getByRole('button', { name: 'Start saved version' })
-  await waitFor(() => expect(button).toBeEnabled())
+  const button = control('Start saved version')
+  await waitFor(() => expect(button, button.title).toBeEnabled())
   await user.click(button)
   await waitFor(() => expect(mock.runs.size).toBe(expectedRuns))
-  await waitFor(() => expect(screen.queryByRole('button', { name: 'Reconcile Start' })).not.toBeInTheDocument())
-  return [...mock.runs.values()].at(-1)!.run
+  const run = [...mock.runs.values()].at(-1)!.run
+  await waitFor(() => expect(readBoardStart(nextDraftKey(mock.workspaceId, run.workflowId))).toBeUndefined())
+  await waitFor(() => expect(within(controls()).queryByRole('button', { name: 'Reconcile Start' })).not.toBeInTheDocument())
+  return run
 }
 
 describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
@@ -121,13 +145,15 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     const { id, key } = await create(mock, user)
     if (shape === 'single') {
       // Exercise real keyboard-accessible attach + entry controls from the empty Board.
-      await user.click(screen.getByRole('button', { name: 'Add agent to graph' }))
-      await user.selectOptions(screen.getByRole('combobox', { name: 'Existing agent' }), mock.agents[0]!.id)
-      await user.click(screen.getByRole('button', { name: 'Add to workflow' }))
-      await user.click(screen.getByRole('button', { name: 'Workflow settings' }))
+      await user.click(control('Add agent to graph'))
+      const add = within(screen.getByRole('complementary', { name: 'Add agent' }))
+      await user.selectOptions(add.getByRole('combobox', { name: 'Existing agent' }), mock.agents[0]!.id)
+      await user.click(add.getByRole('button', { name: 'Add to workflow' }))
+      await user.click(control('Workflow settings'))
       const node = useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]!
-      await user.selectOptions(screen.getByRole('combobox', { name: 'Starts the workflow' }), node.id)
-      await user.click(screen.getAllByRole('button', { name: 'Close panel' }).find((item) => !item.closest('[hidden]'))!)
+      const settings = within(screen.getByRole('complementary', { name: 'Workflow settings' }))
+      await user.selectOptions(settings.getByRole('combobox', { name: 'Starts the workflow' }), node.id)
+      await user.click(settings.getByRole('button', { name: 'Close panel' }))
     } else stageShape(key, shape, mock)
     const version = await save(mock, user, 1)
     expect(version.definition).not.toHaveProperty('repeat')
@@ -135,11 +161,20 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     const href = first.router.state.location.href
     first.unmount(); first.query.clear()
     act(() => useGraphDraftStore.setState({ nextDrafts: {} }))
-    // A acknowledged form may be reloaded from its retained snapshot; the
-    // preflight must still read the exact persisted immutable version.
+    // Acknowledged form memory is lost. The retained snapshot may restore it,
+    // but the remounted Board must still read the exact immutable saved pins.
+    const beforeReopen = mock.calls.length
     const second = await mount(mock, href)
     await screen.findByRole('region', { name: 'Workflow authoring' })
+    await waitFor(() => {
+      const draft = useGraphDraftStore.getState().nextDrafts[key]?.context.draft
+      expect(draft?.baseWorkflowVersionId).toBe(version.id)
+      expect(draft?.publishedRevision).toBe(mock.managed(id).revision)
+      expect(draft?.revision).toBe(draft?.publishedRevision)
+    })
     const run = await start(mock, user)
+    expect(mock.calls.slice(beforeReopen).some((call) => call.method === 'GET'
+      && call.path.endsWith(`/versions/${version.id}`))).toBe(true)
     await waitFor(() => expect(second.router.state.location.search).toMatchObject({ workflowId: id, runId: run.id, workflowVersionId: version.id, executionSemanticsVersion: 3 }))
     const requests = mock.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/runs'))
     expect(requests).toHaveLength(1)
@@ -161,7 +196,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     const ordinary = await save(mock, user, 1), oldRun = await start(mock, user)
     mock.settle(oldRun.id)
     await mounted.query.invalidateQueries({ queryKey: queryKeys.workspaceDetails(mock.workspaceId) })
-    await user.click(screen.getByRole('button', { name: 'Repeats' }))
+    await user.click(control('Repeats'))
     const repeat = screen.getByRole('region', { name: 'Repeat settings' })
     await user.click(within(repeat).getByRole('button', { name: 'Add repeat' }))
     const graph = useGraphDraftStore.getState().nextDrafts[key]!.graph
@@ -183,7 +218,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     expect(mock.workflows.get(id)).not.toHaveProperty('repeat')
     // Current/past selection changes the URL, not the mounted local form.
     const editor = screen.getByRole('region', { name: 'Workflow authoring' })
-    await user.click(screen.getByRole('button', { name: 'Runs' }))
+    await user.click(control('Runs'))
     await user.click(await screen.findByRole('button', { name: new RegExp(`Open Run ${oldRun.id} ·`) }))
     await waitFor(() => expect(mounted.router.state.location.search.workflowVersionId).toBe(ordinary.id))
     expect(screen.getByRole('region', { name: 'Workflow authoring' })).toBe(editor)
@@ -193,7 +228,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
   it('keeps production capability false without issuing Start, and rejects retired saved tags before definition dispatch', async () => {
     const mock = newBoardMock(), user = userEvent.setup(), mounted = await mount(mock)
     const { key } = await create(mock, user); stageShape(key, 'single', mock); await save(mock, user, 1)
-    expect(screen.getByRole('button', { name: 'Start saved version' })).toBeDisabled()
+    expect(control('Start saved version')).toBeDisabled()
     expect(mock.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/runs'))).toEqual([])
     mounted.unmount(); mounted.query.clear(); act(() => useGraphDraftStore.setState({ nextDrafts: {} }))
     for (const tag of [1, 2, 99, undefined]) {
@@ -213,7 +248,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
   it.each(['denied', 'stale', 'unsupported', 'lost'] as const)('Start %s is fail-closed; reload never fabricates a replacement command', async (mode) => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)
     const { key } = await create(mock, user); stageShape(key, 'sequential', mock); await save(mock, user, 1)
-    const button = screen.getByRole('button', { name: 'Start saved version' }); await waitFor(() => expect(button).toBeEnabled())
+    const button = control('Start saved version'); await waitFor(() => expect(button).toBeEnabled())
     // Deny in the service AFTER its allowed session/read display: authority is rechecked.
     if (mode === 'denied') mock.controls.deniedStart = true
     if (mode === 'stale') mock.controls.staleStart = true
@@ -224,7 +259,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     if (mode === 'unsupported') {
       await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[key]?.startRejectedVersionId).toBeDefined())
       expect(readBoardStart(key)).toBeUndefined()
-      expect(mock.runs.size).toBe(0); expect(screen.getByRole('button', { name: 'Start saved version' })).toBeDisabled(); return
+      expect(mock.runs.size).toBe(0); expect(control('Start saved version')).toBeDisabled(); return
     }
     await waitFor(() => expect(readBoardStart(key)).toBeDefined())
     const retained = readBoardStart(key)!, href = mounted.router.state.location.href
@@ -276,7 +311,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     await mounted.query.invalidateQueries({ queryKey: queryKeys.workspaceDetails(mock.workspaceId) })
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
     const canceled = await screen.findByRole('alertdialog')
-    await user.click(within(canceled).getByRole('button', { name: 'Cancel' }))
+    await user.click(within(canceled).getByRole('button', { name: 'Keep it' }))
     expect(mock.record(id).intent).toBeNull(); expect(mock.controls.stopCalls).toBe(0)
     // Only the summary lies. The current definition service still sees its Run.
     let hideRun = true
@@ -297,8 +332,8 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     const stages = () => mock.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/definition/edits')
       && (call.body as { action?: string }).action === 'stage_edits')
     await waitFor(() => expect(stages()).toHaveLength(1))
-    // Keep this assertion: at 8c55ec5 local apply can leak revision + 1 into Stage.
-    // Do not teach the mock to accept it; see README product-blocker evidence.
+    // The failed direct Save advanced only the local apply counter. The repaired
+    // product pins Stage to publishedRevision; keep that persisted-pin regression.
     expect(stages()[0]!.body).toMatchObject({ expectedRevision: mock.managed(id).revision,
       expectedWorkflowVersionId: mock.managed(id).currentVersionId })
     await waitFor(() => expect(mock.record(id).intent?.state).toBe('waiting'))

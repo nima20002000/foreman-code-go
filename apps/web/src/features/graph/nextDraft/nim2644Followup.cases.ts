@@ -218,19 +218,47 @@ export const nim2644FollowupCases: { name: string; run: () => void }[] = [
     a.readback(discarded)
     assert.deepEqual(readEditOutbox(key), newer); assert.equal(nextDraftDirty(a.get()), false)
   } },
-  ...(['saved', 'discarded'] as const).flatMap((state) => ['draft', 'revision', 'version', 'workspace', 'workflow'].map((fence) => ({
-    name: `${state} readback cannot acknowledge a different local ${fence}`, run() {
+  ...(['saved', 'discarded'] as const).flatMap((state) => ['draft', 'saved revision', 'version', 'workspace', 'workflow'].map((fence) => ({
+    name: `${state} readback cannot acknowledge a different ${fence}`, run() {
       const edit = newWorker(), a = tab('A', edit), outbox = submission(edit), intent = terminal(edit, outbox, state)
       reserve(a, outbox)
       const current = structuredClone(a.get()), draft = current.context.draft
       if (fence === 'draft') draft.id = 'other-draft'
-      if (fence === 'revision') draft.revision++
+      // Keep the local apply counter unchanged: only the saved base pin differs.
+      if (fence === 'saved revision') draft.publishedRevision = intent.expectedRevision - 1
       if (fence === 'version') draft.baseWorkflowVersionId = 'other-version'
       if (fence === 'workspace') draft.workspaceId = 'other-workspace'
       if (fence === 'workflow') draft.workflowId = 'other-workflow'
       a.run(() => assert.equal(acknowledgeEditIntentSnapshot(key, current, intent), current))
     },
   }))),
+  ...(['saved', 'discarded'] as const).map((state) => ({
+    name: `${state} readback acknowledges its exact saved base despite a different local apply counter`, run() {
+      const edit = newWorker(), a = tab('A', edit), outbox = submission(edit), intent = terminal(edit, outbox, state)
+      reserve(a, outbox)
+      const current = structuredClone(a.get())
+      current.context.draft.revision += 2
+      assert.equal(current.context.draft.publishedRevision, intent.expectedRevision)
+      assert.notEqual(current.context.draft.revision, intent.expectedRevision)
+      // A new Stage must also use the saved revision, not the apply counter.
+      assert.equal(journalRequest(current, 'stage-after-local-apply').expectedRevision, intent.expectedRevision)
+      a.run(() => {
+        const acknowledged = acknowledgeEditIntentSnapshot(key, current, intent)
+        assert.notEqual(acknowledged, current)
+        assert.deepEqual(acknowledged.agentEdits, {})
+        const expectedGraph = state === 'saved' ? intent.result!.version.definition : edit.context.draft.graph
+        assert(sameExecutableWorkflow(acknowledged.graph, expectedGraph))
+        assert.equal(acknowledged.context.draft.publishedRevision,
+          state === 'saved' ? intent.result!.revision : intent.expectedRevision)
+        assert.equal(acknowledged.context.draft.baseWorkflowVersionId,
+          state === 'saved' ? intent.result!.currentVersionId : intent.expectedWorkflowVersionId)
+        assert.equal(editSnapshotAcknowledged(key, acknowledged, intent.stageCommandId), true)
+        // The acknowledgement cannot alter the original durable command.
+        assert.deepEqual(readEditSubmission(key, intent), outbox)
+        assert.deepEqual(readEditOutbox(key), outbox)
+      })
+    },
+  })),
   { name: 'missing local evidence cannot Discard unrelated work or clear normalized-equal Agent edits', run() {
     const edit = newWorker(), a = tab('A', edit), outbox = submission(edit), discarded = terminal(edit, outbox, 'discarded')
     a.readback(discarded); assert.deepEqual(a.get(), edit)

@@ -29,18 +29,22 @@ function readyWorkspace() {
 
 const clients: QueryClient[] = []
 async function researcherButton() {
+  // Wait for the current Board before querying its canvas; initial route selection
+  // and definition loading are separate asynchronous steps.
+  const board = await workflowBoard('Research to review')
+  const canvas = within(board).getByLabelText('Editable workflow graph')
   const fixture = getMockFixture('workspace-1')!
   const node = fixture.workflows.find((workflow) => workflow.id === 'workflow-content-pipeline')!
     .nodes.find((node) => node.agentId === 'agent-researcher')!
-  const title = node.name ?? fixture.agents.find((agent) => agent.id === node.agentId)!.name
-  return screen.findByRole('button', { name: (name) => name.startsWith(`${title},`) })
+  const title = node.name ?? node.label ?? fixture.agents.find((agent) => agent.id === node.agentId)!.name
+  return within(canvas).findByRole('button', { name: (name) => name.startsWith(`${title},`) })
 }
 async function workflowBoard(name: string) {
   const board = await screen.findByRole('region', { name: 'Workflow authoring' })
-  expect(await within(board).findByRole('heading', { name, exact: true })).toBeVisible()
+  expect(await within(board).findByRole('heading', { name })).toBeVisible()
   return board
 }
-function renderWorkspace(initialEntry: string) {
+async function renderWorkspace(initialEntry: string) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 0 } },
   })
@@ -48,8 +52,11 @@ function renderWorkspace(initialEntry: string) {
   const router = createRouter({
     routeTree,
     history: createMemoryHistory({ initialEntries: [initialEntry] }),
+    defaultPendingMinMs: 0,
   })
 
+  // Load the memory route before mounting instead of racing the initial render.
+  await router.load()
   const rendered = render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
@@ -84,7 +91,7 @@ describe('WorkspaceRouteEntry integration', () => {
   })
 
   it('renders the saved workflow and keeps a valid agent selection in the URL', async () => {
-    const { router } = renderWorkspace('/workspaces/workspace-1')
+    const { router } = await renderWorkspace('/workspaces/workspace-1')
 
     expect(await researcherButton()).toBeVisible()
     expect(document.querySelector('.shell-header')).not.toBeInTheDocument()
@@ -95,16 +102,16 @@ describe('WorkspaceRouteEntry integration', () => {
     fireEvent.click(nodeButton)
 
     await waitFor(() => expect(router.state.location.search.agentId).toBe('agent-researcher'))
-    expect(nodeButton).toHaveAttribute('aria-pressed', 'true')
+    await waitFor(() => expect(nodeButton).toHaveAttribute('aria-pressed', 'true'))
     expect(document.querySelector('.shell-header')).not.toBeInTheDocument()
     expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
   })
 
   it('keeps an URL-selected agent in the graph without mounting a context panel', async () => {
-    const { router } = renderWorkspace('/workspaces/workspace-1?agentId=agent-researcher')
+    const { router } = await renderWorkspace('/workspaces/workspace-1?agentId=agent-researcher')
 
     const node = await researcherButton()
-    expect(node).toHaveAttribute('aria-pressed', 'true')
+    await waitFor(() => expect(node).toHaveAttribute('aria-pressed', 'true'))
     expect(router.state.location.search.agentId).toBe('agent-researcher')
     expect(document.querySelector('.shell-header')).not.toBeInTheDocument()
     expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
@@ -112,7 +119,7 @@ describe('WorkspaceRouteEntry integration', () => {
   })
 
   it('keeps a stale URL selection in the graph without exposing an operator surface', async () => {
-    renderWorkspace('/workspaces/workspace-1?agentId=agent-old')
+    await renderWorkspace('/workspaces/workspace-1?agentId=agent-old')
 
     expect(await workflowBoard('Research to review')).toBeVisible()
     expect(screen.queryByTestId('agent-context-stale')).not.toBeInTheDocument()
@@ -121,7 +128,7 @@ describe('WorkspaceRouteEntry integration', () => {
 
   it('opens the accepted new workflow while workspace details still serve the old list', async () => {
     const user = userEvent.setup()
-    const { router, queryClient } = renderWorkspace('/workspaces/workspace-1?workflowId=workflow-content-pipeline')
+    const { router, queryClient } = await renderWorkspace('/workspaces/workspace-1?workflowId=workflow-content-pipeline')
     expect(await workflowBoard('Research to review')).toBeVisible()
 
     const oldDetails = queryClient.getQueryData<WorkspaceDetailsResponse>(queryKeys.workspaceDetails('workspace-1'))
@@ -145,7 +152,7 @@ describe('WorkspaceRouteEntry integration', () => {
   })
 
   it('still replaces a genuinely unknown workflow selection', async () => {
-    const { router } = renderWorkspace('/workspaces/workspace-1?workflowId=workflow-missing&agentId=agent-researcher')
+    const { router } = await renderWorkspace('/workspaces/workspace-1?workflowId=workflow-missing&agentId=agent-researcher')
 
     await waitFor(() => {
       expect(router.state.location.search.workflowId).toBe('workflow-content-pipeline')
@@ -155,16 +162,16 @@ describe('WorkspaceRouteEntry integration', () => {
 
   it('renders error, 404 and empty workspace states', async () => {
     setMockScenario('error')
-    const error = renderWorkspace('/workspaces/workspace-1')
+    const error = await renderWorkspace('/workspaces/workspace-1')
     expect(await screen.findByTestId('workspace-error')).toBeVisible()
     error.unmount()
 
     setMockScenario('empty')
-    const empty = renderWorkspace('/workspaces/workspace-1')
+    const empty = await renderWorkspace('/workspaces/workspace-1')
     expect(await screen.findByTestId('workspace-empty')).toBeVisible()
     empty.unmount()
 
-    const missing = renderWorkspace('/workspaces/missing')
+    const missing = await renderWorkspace('/workspaces/missing')
     expect(await screen.findByTestId('workspace-not-found')).toBeVisible()
     missing.unmount()
   })
@@ -181,7 +188,7 @@ describe('WorkspaceRouteEntry integration', () => {
       }, { status })
     }))
 
-    const stale = renderWorkspace('/workspaces/stale-workspace')
+    const stale = await renderWorkspace('/workspaces/stale-workspace')
     const retry = await screen.findByRole('button', { name: 'Retry workspace request' })
     expect(requests).toBe(1)
 

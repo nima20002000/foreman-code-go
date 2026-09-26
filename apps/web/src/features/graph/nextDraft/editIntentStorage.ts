@@ -142,7 +142,7 @@ function retainEditSubmission(scope: string, candidate: EditIntentOutbox): EditI
 function snapshotMatchesSubmission(snapshot: z.infer<typeof SnapshotSchema>, value: EditIntentOutbox): boolean {
   const request = value.request, draft = snapshot.context.draft
   return draft.workspaceId === request.workspaceId && draft.workflowId === request.workflowId && draft.id === request.draftId
-    && draft.revision === request.expectedRevision && draft.baseWorkflowVersionId === request.expectedWorkflowVersionId
+    && draft.publishedRevision === request.expectedRevision && draft.baseWorkflowVersionId === request.expectedWorkflowVersionId
     && sameExecutableWorkflow(snapshot.graph, value.target)
     && sameWorkflowValue(snapshot.agentEdits ?? {}, value.agentTarget ?? {})
 }

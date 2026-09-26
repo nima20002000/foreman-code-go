@@ -5,11 +5,12 @@ import type { NextDraftContext } from './model'
 const hash = 'sha256:' + '1'.repeat(64), now = '2026-09-24T00:00:00Z'
 export function journalRequest(edit: NextDraftEdit, commandId: string): GraphEditStageInputV3 {
   const { draft, agents } = edit.context
+  if (draft.publishedRevision == null) throw new Error('The journal fixture requires an exact saved revision.')
   const stagedAgents = Object.values(edit.agentEdits ?? {}).filter((agent) => edit.graph.nodes.some((node) => node.agentId === agent.id))
     .map((agent) => ({ agent: { ...agent, prompt: agent.prompt ?? {}, assignedSkills: agent.assignedSkills ?? [] },
       baseRevision: agents.find((item) => item.agent.id === agent.id)?.metadataRevision ?? null }))
   return { action: 'stage_edits', workspaceId: draft.workspaceId, workflowId: draft.workflowId, draftId: draft.id,
-    commandId, expectedRevision: draft.revision, expectedWorkflowVersionId: draft.baseWorkflowVersionId,
+    commandId, expectedRevision: draft.publishedRevision, expectedWorkflowVersionId: draft.baseWorkflowVersionId,
     executionSemanticsVersion: 3, graph: edit.graph, expectedLocationRevision: 1,
     expectedAgentConfigurationVersionIds: Object.fromEntries(edit.graph.nodes.flatMap((node) => {
       const agent = edit.agentEdits?.[node.agentId] ?? agents.find((item) => item.agent.id === node.agentId)?.agent
@@ -53,7 +54,9 @@ export function savedJournal(intent: GraphEditIntentV3, version = 2): GraphEditI
     result: { workspaceId: intent.workspaceId, workflowId: intent.workflowId, revision: intent.expectedRevision + 1,
       currentVersionId: versionId,
       agents: (intent.stagedDraft.stagedAgents ?? []).map(({ agent, baseRevision }) => ({ metadataRevision: (baseRevision ?? 0) + 1,
-        agent: { ...agent, configurationVersionId: intent.stagedDraft.resultantAgentConfigurationVersionIds![agent.id], createdAt: now, updatedAt: now } })),
+        // Model publication normalization, not mutation of the private Stage payload.
+        agent: { ...agent, prompt: agent.prompt ?? {}, assignedSkills: agent.assignedSkills ?? [],
+          configurationVersionId: intent.stagedDraft.resultantAgentConfigurationVersionIds![agent.id], createdAt: now, updatedAt: now } })),
       version: { id: versionId, workspaceId: intent.workspaceId, workflowId: intent.workflowId, version,
         executionSemanticsVersion: 3, definition: graph, entryNodeId: graph.entryNodeId, approval: graph.approval,
         agentConfigurationVersionIds: intent.stagedDraft.resultantAgentConfigurationVersionIds,
