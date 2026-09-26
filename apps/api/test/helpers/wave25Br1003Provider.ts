@@ -22,7 +22,8 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
   beforeRespond?: () => Promise<void>
 
   constructor(private readonly approvalNodes: ReadonlySet<string>, private readonly pendingPerExecution: 1 | 2 = 1,
-    private readonly acknowledgeStarts = true, private readonly disconnectAfterStart = false) {}
+    private readonly acknowledgeStarts = true, private readonly disconnectAfterStart = false,
+    private readonly outputFor?: (nodeId: string) => NonNullable<NativeHistory['terminalResult']>['output']) {}
 
   connection(): NativeHarnessSessionManager {
     // Separate transport facades per execution; only external history is shared.
@@ -80,7 +81,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
         type: 'interaction.pending', occurredAt: new Date().toISOString(), payload: {} })
       return
     }
-    this.terminals.set(session.nativeSessionId, { outcome: 'succeeded', output: { node: request.workflowNodeId } })
+    this.terminals.set(session.nativeSessionId, { outcome: 'succeeded', output: this.outputFor ? this.outputFor(request.workflowNodeId) : { node: request.workflowNodeId } })
     const terminal = NativeHarnessEventSchema.parse({ sequence: 1, type: 'turn.completed', occurredAt: new Date().toISOString(),
       payload: { turnId, threadId: session.nativeSessionId, clientCorrelationId: input.clientCorrelationId,
         turn: { id: turnId, status: 'completed' } } })
@@ -103,8 +104,9 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
       optionId: option.optionId, semantic: option.semantic })
     this.receipts.set(session.nativeSessionId, receipts)
     if (!remaining.length) {
-      this.terminals.set(session.nativeSessionId, { outcome: 'succeeded', output: { approved: true } })
       const request = this.requests.get(session.nativeSessionId)!
+      this.terminals.set(session.nativeSessionId, { outcome: 'succeeded',
+        output: this.outputFor ? this.outputFor(request.workflowNodeId) : { approved: true } })
       this.continuationEvents.set(session.nativeSessionId, NativeHarnessEventSchema.parse({ sequence: this.disconnectAfterStart ? 3 : 2,
         type: 'turn.completed', occurredAt: new Date().toISOString(), payload: {
           threadId: session.nativeSessionId, turnId: `turn-${request.executionId}`,

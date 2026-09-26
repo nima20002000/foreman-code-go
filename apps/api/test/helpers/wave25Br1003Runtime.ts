@@ -43,11 +43,12 @@ import { approvalFixture } from './wave25ApprovalFixture.js'
  * registration are retained. Only provider transport and filesystem identity
  * qualification are synthetic. This is not a buildProductionApp/HTTP test. */
 export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerExecution: 1 | 2 = 1,
-  options: { acknowledgeStarts?: boolean; disconnectAfterStart?: boolean } = {}) {
+  options: { acknowledgeStarts?: boolean; disconnectAfterStart?: boolean; fixture?: ReturnType<typeof makeCurrentWorkflowFixture>;
+    approvalNodeIds?: string[]; outputFor?: ConstructorParameters<typeof CheckpointTestProvider>[4] } = {}) {
   const db = await agent3Database()
   const engines: LangGraphWorkflowEngine[] = []
   try {
-    const f = makeCurrentWorkflowFixture(randomUUID())
+    const f = options.fixture ?? makeCurrentWorkflowFixture(randomUUID())
     // Real request construction must ask the deterministic provider for an
     // approval. Keep the pinned sandbox/read-only configuration unchanged.
     f.configurations = f.configurations.map((configuration) => AgentConfigurationVersionSchema.parse({
@@ -77,8 +78,8 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
     await insertProviderRun(db.pool, f)
     const user = await access.issue({ name: 'Checkpoint test approver', audience: 'user', expiresAt: new Date(Date.now() + 600000),
       grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: { workspaceIds: [f.scope.workspaceId], workflowIds: [f.scope.workflowId], runIds: [f.run.id] } }] })
-    const provider = new CheckpointTestProvider(new Set(f.version.definition.nodes.filter((node) => node.id !== f.version.entryNodeId).map((node) => node.id)),
-      pendingPerExecution, options.acknowledgeStarts !== false, options.disconnectAfterStart === true)
+    const provider = new CheckpointTestProvider(new Set(options.approvalNodeIds ?? f.version.definition.nodes.filter((node) => node.id !== f.version.entryNodeId).map((node) => node.id)),
+      pendingPerExecution, options.acknowledgeStarts !== false, options.disconnectAfterStart === true, options.outputFor)
     const saver = new ApprovalPostgresSaver(db.pool, undefined, { schema: db.schema })
     await saver.setup()
     function compose(checkpointer: ApprovalPostgresSaver = saver) {
