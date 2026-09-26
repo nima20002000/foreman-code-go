@@ -38,6 +38,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   private closing = false
   private reconciliation: Promise<void> | undefined
   private shutdownTask: Promise<void> | undefined
+  private restartClosure: Promise<void> | undefined
 
   constructor(
     private readonly runs: PostgresRunRepository,
@@ -179,6 +180,10 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       })
       if ((await this.runs.getRepeatSnapshot(runId, owner)).run.executionState === 'completed') await this.finishOwned(owner)
     } finally {
+      // Wait only for captured native closure, never shutdownTask (which drains
+      // this drive). A rejected closure is explicit uncertainty reported by
+      // shutdown; release still drains G1 writes without rewriting Run history.
+      await this.restartClosure?.catch(() => undefined)
       // Drains in-flight G1 writes. Old captures cannot write after release.
       await owner.release()
     }
@@ -278,11 +283,12 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   shutdown(): Promise<void> {
     if (this.shutdownTask) return this.shutdownTask
     this.closing = true
+    this.restartClosure = this.nativeExecutions.closeForRestart()
     const reason = new DomainError('ENGINE_RESTART', 'The engine is preserving the current checkpoint for restart.', 409)
     for (const controller of this.activeRuns.values()) controller.abort(reason)
     this.shutdownTask = (async () => {
       const outcomes = await Promise.allSettled([
-        this.nativeExecutions.closeForRestart(),
+        this.restartClosure,
         withCleanupDeadline(async () => { await Promise.allSettled([...this.activeTasks.values(), ...this.resumeTasks.values()]) }),
         ...this.cleanupTasks.values(),
       ])
