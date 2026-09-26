@@ -80,6 +80,47 @@ describe('ENG06-A cold Run and Stop orchestration', () => {
     await f.owner.release()
   })
 
+  for (const detached of [false, true]) it(`fences a cold finalized reviewer (${detached ? 'detached' : 'crashed'}) before physical recovery`, async () => {
+    const f = fixture({ detached }); f.state.execution = recoveryExecution('completed')
+    f.state.finalized = true; f.state.fenced = false
+    const original = structuredClone(f.state.execution)
+    const internals = f.coordinator as unknown as { recoverNativeProcesses: () => Promise<boolean> }
+    try {
+      // workflow_finalized_at separates a later reviewer from the original
+      // terminal-before-close cut. Selection cannot itself produce a receipt.
+      assert.equal(await f.coordinator.requestColdRunCleanup(f.owner), true)
+      assert.deepEqual(f.calls, ['request-cleanup'])
+      assert.equal(f.snapshot.cleanupPending, true)
+      assert.equal(f.state.proof, undefined)
+      assert.deepEqual(f.state.execution, original)
+      const recover = internals.recoverNativeProcesses
+      internals.recoverNativeProcesses = async () => false
+      await assert.rejects(f.coordinator.cancelRun(f.owner.runId, f.owner), AggregateError)
+      assert.equal(f.state.proof, undefined)
+      assert.equal(f.calls.includes('retire-reviews'), false)
+      assert.equal(f.calls.includes('settle-interrupted'), false)
+      internals.recoverNativeProcesses = recover
+      await f.coordinator.cancelRun(f.owner.runId, f.owner)
+      assert.ok(await readWorkflowClosure(f.connection, original))
+      assert.ok(f.calls.indexOf('retire-reviews') > f.calls.indexOf('close-processes'))
+      assert.ok(f.calls.indexOf('settle-interrupted') > f.calls.indexOf('retire-reviews'))
+      assert.deepEqual(f.state.execution, original)
+      assert.equal(f.calls.includes('resolve'), false)
+    } finally { await f.owner.release() }
+  })
+
+  it('does not select reviewer cleanup from a mismatched session', async () => {
+    const f = fixture(); f.state.execution = recoveryExecution('completed')
+    f.state.finalized = true; f.state.fenced = false
+    f.state.session!.nativeSessionId = 'replacement-session'
+    try {
+      await assert.rejects(f.coordinator.requestColdRunCleanup(f.owner), { code: 'NATIVE_SESSION_IDENTITY_MISMATCH' })
+      assert.deepEqual(f.calls, [])
+      assert.equal(f.snapshot.cleanupPending, false)
+      assert.equal(f.state.proof, undefined)
+    } finally { await f.owner.release() }
+  })
+
   it('leaves a genuine in-process approval owner available for normal delivery', async () => {
     const f = fixture(); f.state.execution.state = 'waiting'
     // Only this local selection path is under test; no manager operation runs.

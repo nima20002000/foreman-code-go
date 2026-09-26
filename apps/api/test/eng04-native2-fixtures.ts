@@ -1,3 +1,6 @@
+import assert from 'node:assert/strict'
+import type pg from 'pg'
+import { assertGraphTransaction, ExclusiveGraphConnection, type GraphTransactionSql } from '../src/modules/run-graph/connection.js'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, type HarnessExecution,
   type NativeSessionReference, type ReviewJob } from '@graphql/contracts'
 import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
@@ -26,15 +29,65 @@ export function native2Fixture(completed = true) {
   let proof: { execution: HarnessExecution; session: NativeSessionReference; durableGeneration: string } | undefined
   const session: NativeSessionReference = { harness: 'codex', providerVersion: 'synthetic-provider-1',
     nativeSessionId: execution.nativeSessionId! }
-  const owner = { runId: execution.runId, client: {}, assertOwned: () => {
+  const assertOwned = () => {
     if (!owned) throw new DomainError('RUN_OWNERSHIP_LOST', 'fixture owner replaced', 409)
-  } }
+  }
+  // Read-only SQL protocol for cold credential repair. No durable principal is
+  // inferred from the resident WeakMap: an unbound resource gap stays pending.
+  // Tests that model durable bindings must name their exact purpose/identity.
+  const recovery = { bindings: [] as Array<{ principalId: string; purpose: 'workflow' | 'reviewer'; revoked: boolean }>,
+    statements: [] as string[], active: false }
+  const query = async (text: string, values: unknown[] = []) => {
+    const q = text.replace(/\s+/g, ' ').trim()
+    recovery.statements.push(q)
+    const result = (rows: unknown[]) => ({ rows: structuredClone(rows), rowCount: rows.length })
+    if (q.startsWith('begin')) { assert.equal(recovery.active, false); recovery.active = true; return result([]) }
+    if (q === 'commit' || q === 'rollback') { assert.equal(recovery.active, true); recovery.active = false; return result([]) }
+    assertOwned()
+    assert.equal(recovery.active, true, 'cold reads must use the real serialized transaction')
+    if (q === 'select id from runs where id=$1 for update') {
+      assert.deepEqual(values, [run.id]); return result([{ id: run.id }])
+    }
+    if (q === 'select record from harness_executions where id=$1 and run_id=$2 for update') {
+      assert.deepEqual(values, [execution.id, run.id]); return result([{ record: execution }])
+    }
+    if (q.startsWith('select c.generation::text,c.execution_identity')) {
+      assert.deepEqual(values, [execution.id, run.id])
+      if (!proof) return result([])
+      const e = proof.execution
+      return result([{ generation: proof.durableGeneration, execution_identity: {
+        id: e.id, runId: e.runId, workflowNodeId: e.workflowNodeId, agentId: e.agentId,
+        agentConfigurationVersionId: e.agentConfigurationVersionId, attempt: e.attempt,
+        ...(e.workingDirectory ? { workingDirectory: e.workingDirectory } : {}),
+        ...(e.runtimeDirectory ? { runtimeDirectory: e.runtimeDirectory } : {}),
+      }, expected_reference: proof.session, closed_reference: proof.session, closed: true,
+      detached: false, closed_without_session: false, prior_unclosed: false, record: execution, reference: session }])
+    }
+    if (q.startsWith('select p.generation::text,p.execution_identity,p.reference')) {
+      assert.deepEqual(values, [execution.id]); return result([]) // No fabricated registry recovery.
+    }
+    if (q.startsWith('select b.principal_id from worker_credential_bindings b')) {
+      assert.deepEqual(values, [execution.id, run.id, execution.agentId])
+      assert.ok(q.includes("b.execution_id=$1 and b.run_id=$2 and b.agent_id=$3 and b.purpose='workflow'"))
+      assert.ok(q.endsWith('order by b.principal_id for share'))
+      return result(recovery.bindings.filter((binding) => binding.purpose === 'workflow')
+        .sort((a, b) => a.principalId.localeCompare(b.principalId)).map((binding) => ({ principal_id: binding.principalId })))
+    }
+    throw new Error(`Unexpected NATIVE-2 cold recovery SQL: ${q}`)
+  }
+  const connection = new ExclusiveGraphConnection({ query } as unknown as pg.ClientBase, assertOwned)
+  const owner = { runId: execution.runId, client: {}, assertOwned, oneShotConnection: () => connection,
+    readOneShotFence: async (sql: GraphTransactionSql) => {
+      assertGraphTransaction(sql); assertOwned(); return { ownerId: 'native2-owner', fence: '1' }
+    } }
   const forbidden = (name: string) => () => { calls.push(name); throw new Error(`Forbidden native operation: ${name}`) }
   const store = {
     readExecution: async (id: string) => { calls.push(`read:${id}`); return nativeStored(execution, fixture) },
     settleNativeExecution: async (id: string) => {
       calls.push(`settle:${id}`)
-      if (!settled && !(closed && revoked && finished)) throw new DomainError('REPEAT_CLEANUP_PENDING', 'exact receipts pending', 409)
+      if (!settled && !(closed && revoked && finished && recovery.bindings.every((binding) => binding.revoked))) {
+        throw new DomainError('REPEAT_CLEANUP_PENDING', 'exact receipts pending', 409)
+      }
     },
     assertNativeBoundary: async (id: string) => { owner.assertOwned(); calls.push(`boundary:${id}`) },
     exactSession: async (id: string) => { calls.push(`session:${id}`); return session },
@@ -71,7 +124,10 @@ export function native2Fixture(completed = true) {
   }
   const credentials = {
     prepare: forbidden('credential-prepare'),
-    revoke: async ({ principalId }: { principalId: string }) => { calls.push(`revoke:${principalId}`); revoked = true },
+    revoke: async ({ principalId }: { principalId: string }) => {
+      calls.push(`revoke:${principalId}`); revoked = true
+      for (const binding of recovery.bindings) if (binding.principalId === principalId) binding.revoked = true
+    },
     revokeForExecution: async (id: string) => { calls.push(`revoke-execution:${id}`); revoked = true },
   }
   const managers = { resolve: forbidden('resolve'), release: () => { calls.push('release-manager') } }
@@ -127,7 +183,7 @@ export function native2Fixture(completed = true) {
   }
   const observe = () => coordinator.observeExact({ execution, store,
     workflowId: run.workflowId, graphThreadId: run.id, owner: owner as never, signal: new AbortController().signal })
-  return { fixture, configuration, run, owner, store, coordinator, internals, resident, installResident, observe,
+  return { fixture, configuration, run, owner, connection, recovery, store, coordinator, internals, resident, installResident, observe,
     calls, persisted, captureChannel, closures, credentials, budgets, manager, managers, interactions, runs, session, history,
     get: () => execution, set: (value: HarnessExecution) => { execution = HarnessExecutionSchema.parse(JSON.parse(JSON.stringify(value))) },
     loseOwner: () => { owned = false }, settled: () => { settled = true },

@@ -203,7 +203,12 @@ async function fixture(items: HarnessExecution[], cold = false) {
       workingDirectory: item.workingDirectory!, runtimeDirectory: item.runtimeDirectory!, configuration: configuration(item.id), input: {} } as HarnessExecutionRequest,
   })
   if (!cold) for (const item of items) if (item.nativeSessionId) {
-    rows.set(item.id, { ...item, state: 'waiting', result: undefined, finishedAt: undefined })
+    // Durable records are JSON. Optional keys must be absent, not undefined;
+    // the real capture intentionally rejects non-JSON values.
+    const waiting: HarnessExecution = { ...item, state: 'waiting' }
+    delete waiting.result
+    delete waiting.finishedAt
+    rows.set(item.id, waiting)
     // Capture the live requester through the real owner-scoped observer. A
     // durable session reference does not, by itself, authorize cold attachment.
     const manager = managers.get(item.id)!

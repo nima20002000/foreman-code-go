@@ -9,6 +9,8 @@ import type { NativeHarnessSessionManager, NativeHistory } from '../src/modules/
 import { PostgresWorkflowClosureStore } from '../src/modules/interactions/workflowClosure.js'
 import { REPEAT_NATIVE_PENDING_MESSAGE, isSettlementPendingCheckpointError } from '../src/modules/interactions/repeatNativeEvidence.js'
 import { RepeatRunRepository } from '../src/modules/runs/repeatPostgres.js'
+import { repeatDigest } from '../src/modules/runs/repeatResolution.js'
+import { canonicalRepeatEffect } from '../src/modules/run-graph/repeatPublication.js'
 import { readWorkflowCheckpoint } from '../src/modules/runs/repeatGraph.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
@@ -27,9 +29,45 @@ async function executions(t: Runtime): Promise<HarnessExecution[]> {
   return (await t.db.pool.query<{ record: unknown }>('select record from harness_executions where run_id=$1 order by created_at,id',
     [t.f.run.id])).rows.map((row) => HarnessExecutionSchema.parse(row.record))
 }
+interface EffectRow { entity_id: string; effect_digest: string; first_sequence: string }
 async function effects(t: Runtime, kind: string) {
-  return (await t.db.pool.query(`select entity_id,effect_digest,first_sequence::text from run_graph_effects
+  return (await t.db.pool.query<EffectRow>(`select entity_id,effect_digest,first_sequence::text from run_graph_effects
     where run_id=$1 and effect_kind=$2 order by entity_id`, [t.f.run.id, kind])).rows
+}
+/** result.accept is a storage category for terminal.accept, INCLUDING failed
+ * node resolution. Its encoded entity key is not the execution id. Check both
+ * private and canonical receipts, without confusing either with success. */
+async function terminalReceipts(t: Runtime) {
+  const privateRows = (await t.db.pool.query<{ execution_id: string; payload_digest: string }>(
+    `select entity_id as execution_id,payload_digest from run_repeat_effects
+      where run_id=$1 and effect_kind='terminal.accept' order by entity_id`, [t.f.run.id])).rows
+  const canonical = await effects(t, 'result.accept')
+  expect(canonical).toHaveLength(privateRows.length)
+  return privateRows.map((row) => {
+    const effect = canonicalRepeatEffect(t.f.scope, { kind: 'terminal.accept', entityId: row.execution_id, digest: row.payload_digest })
+    const exact = canonical.filter((receipt) => receipt.entity_id === effect.identity.entityId)
+    expect(exact).toHaveLength(1)
+    expect(exact[0]!.effect_digest).toBe(effect.digest)
+    return { executionId: row.execution_id, receipt: exact[0]! }
+  })
+}
+async function successfulResults(t: Runtime) {
+  return (await t.db.pool.query<{ execution_id: string; result_json: string; result_digest: string }>(
+    'select execution_id,result_json,result_digest from run_repeat_results where run_id=$1 order by execution_id', [t.f.run.id])).rows
+}
+async function assertSuccessfulResults(t: Runtime, expected: readonly HarnessExecution[]) {
+  const ids = expected.map((execution) => execution.id).sort()
+  const stored = await successfulResults(t)
+  expect(stored.map((row) => row.execution_id)).toEqual(ids)
+  const flags = (await t.db.pool.query<{ id: string }>(
+    'select id from harness_executions where run_id=$1 and accepted order by id', [t.f.run.id])).rows
+  expect(flags.map((row) => row.id)).toEqual(ids)
+  for (const row of stored) {
+    const result = expected.find((execution) => execution.id === row.execution_id)!.result!
+    expect(result.outcome).toBe('succeeded')
+    expect(JSON.parse(row.result_json)).toEqual(result)
+    expect(row.result_digest).toBe(repeatDigest(result, 64 * 1024))
+  }
 }
 async function originalProofs(t: Runtime, id: string) {
   return (await t.db.pool.query('select proof_id,source_digest,record from workflow_native_proofs where execution_id=$1 order by proof_id', [id])).rows
@@ -279,7 +317,8 @@ describe.skipIf(!postgresEnabled)('ENG06 exact restart crash cuts, semantics 3',
             expect(await next.runs.getExecution(original.id)).toEqual(original)
             expect(await next.runs.hasPendingCleanup(t.f.run.id)).toBe(false)
             expect((await t.db.pool.query('select 1 from execution_native_recoveries where execution_id=$1', [original.id])).rowCount).toBe(0)
-            expect(await effects(t, 'result.accept')).toEqual([])
+            expect(await terminalReceipts(t)).toEqual([])
+            await assertSuccessfulResults(t, [])
             expect(await originalProofs(t, original.id)).toEqual(proofs)
             expect(t.provider.counts).toEqual(before)
             expect(cleanupStates).toEqual([])
@@ -323,8 +362,13 @@ describe.skipIf(!postgresEnabled)('ENG06 exact restart crash cuts, semantics 3',
             expect(all).toHaveLength(2)
             expect(all.every((item) => item.result?.outcome === 'failed'
               && item.result.error?.code === 'TRANSIENT_PROVIDER_FAILURE')).toBe(true)
-            expect(await effects(t, 'result.accept')).toEqual([])
+            // Attempt one requested a retry; only exhausted attempt two resolves
+            // the node. A negative terminal receipt must exist, but no successful
+            // accepted-result row or flag may be created for either failure.
+            expect((await terminalReceipts(t)).map((item) => item.executionId))
+              .toEqual([attempts.find((item) => item.attempt === 2)!.id])
           }
+          await assertSuccessfulResults(t, kind === 'stop' ? [] : all.filter((item) => item.result?.outcome === 'succeeded'))
           if (kind.startsWith('retry')) {
             const second = attempts.find((item) => item.attempt === 2)!
             expect(second.id).not.toBe(original.id)
@@ -340,13 +384,18 @@ describe.skipIf(!postgresEnabled)('ENG06 exact restart crash cuts, semantics 3',
               expect(nextSlot.inputDigest).toBe(firstSlot.inputDigest)
             } finally { await owner.release() }
           }
-          if (kind !== 'stop' && !kind.startsWith('retry')) {
-            expect((await effects(t, 'result.accept')).filter((row) => row.entity_id === original.id)).toHaveLength(1)
+          if (kind !== 'stop' && kind !== 'retry-exhausted') {
+            const receipts = await terminalReceipts(t)
+            expect(receipts.map((item) => item.executionId).sort())
+              .toEqual(all.filter((item) => item.result?.outcome === 'succeeded').map((item) => item.id).sort())
+            expect(receipts.filter((item) => item.executionId === original.id)).toHaveLength(kind === 'retry' ? 0 : 1)
           }
           const counts = { ...t.provider.counts }, accepted = await effects(t, 'result.accept')
+          const resultRows = await successfulResults(t)
           await next.engine.start(t.f.run.id)
           expect(t.provider.counts).toEqual(counts)
           expect(await effects(t, 'result.accept')).toEqual(accepted)
+          expect(await successfulResults(t)).toEqual(resultRows)
           expect(await next.runs.hasPendingCleanup(t.f.run.id)).toBe(false)
         } finally { restore(); await t.close() }
       }, 60_000)

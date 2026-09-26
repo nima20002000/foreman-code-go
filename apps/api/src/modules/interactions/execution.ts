@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import {
   DurableInteractionSchema,
   HarnessExecutionSchema,
+  NativeSessionReferenceSchema,
   type DurableInteraction,
   type ExecutionResult,
   type HarnessExecution,
@@ -983,6 +984,24 @@ export class ApprovalExecutionCoordinator {
         if (execution.state === 'queued' && !execution.nativeSessionId && !execution.startedAt) continue
         if (execution.state === 'completed') {
           if (execution.nativeSessionId && !await this.workflowClosures?.read(execution)) {
+            // A finalized workflow has already closed its original lifetime and
+            // may have handed this session to a reviewer. Missing closure now
+            // belongs to that later lifetime, not to the original terminal gap.
+            // This owner-bound read selects cleanup only; it is NOT closure
+            // evidence. The negative pass still rechecks generation/session
+            // and requires positive physical proof under the committed fence.
+            const native = (await owner.oneShotConnection().query<{ reference: unknown; finalized: boolean }>(
+              'select reference,workflow_finalized_at is not null as finalized from execution_native_sessions where execution_id=$1 for share',
+              [execution.id])).rows[0]
+            owner.assertOwned()
+            if (native?.finalized === true) {
+              if (NativeSessionReferenceSchema.parse(native.reference).nativeSessionId !== execution.nativeSessionId) {
+                throw new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH', 'Cleanup changed the captured native session.', 409)
+              }
+              await this.runs.requestCleanup(owner.runId, owner)
+              owner.assertOwned()
+              return true
+            }
             const failures: Error[] = []
             await attemptCleanup(failures, `${execution.id}: recover terminal native lifetime`, (signal) =>
               recoverWorkflowNativeClosure(owner, execution, this.recoverNativeProcesses, signal, 'terminal'))
