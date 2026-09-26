@@ -130,6 +130,8 @@ function WorkflowDirectoryContent({ workspaceId }: { workspaceId: string }) {
     } catch (error) { attempt.current.failed(error) }
     finally { inFlight.current = false }
   }
+  const selectable = managed.slice(0, 100).map((item) => ({ id: item.workflow.id, revision: item.revision }))
+  const allShownSelected = selectable.length > 0 && selectable.every((item) => item.id in selection.selected)
   const managedById = new Map(managed.map((item) => [item.workflow.id, item]))
   const workflows = managed.map((item) => item.workflow)
 
@@ -143,6 +145,9 @@ function WorkflowDirectoryContent({ workspaceId }: { workspaceId: string }) {
             <NewWorkflowAction workspaceId={workspaceId} />
           </> : <>
             <span role="status">{count} selected</span>
+            <Button disabled={locked} onClick={() => allShownSelected ? selection.deselectAll() : selection.selectMany(selectable)}>
+              {allShownSelected ? 'Clear selection' : managed.length > 100 ? 'Select first 100 shown' : 'Select all shown'}
+            </Button>
             <Button variant="danger" disabled={!count || locked} onClick={() => selection.confirm(true)}>Delete selected{count ? ` (${count})` : ''}</Button>
             <Button disabled={locked} onClick={() => selection.clear()}>Cancel selection</Button>
           </>}
