@@ -1371,6 +1371,7 @@ export const OperatorChatSetupQuerySchema = z.object({
 }).strict().refine((value) => !value.requestId || Boolean(value.conversationId), "A request needs its conversation.");
 export type OperatorChatSetupQuery = z.infer<typeof OperatorChatSetupQuerySchema>;
 export const OperatorChatSetupSchema = z.object({
+  routing: z.enum(["automatic", "fixed"]).optional(),
   harness: z.enum(["codex", "opencode"]),
   status: z.enum(["configured", "setup_required"]),
   endpoint: z.string().url(),

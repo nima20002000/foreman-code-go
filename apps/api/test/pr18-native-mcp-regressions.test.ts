@@ -1,6 +1,7 @@
+import { operatorLauncherConnection } from '../src/modules/harnesses/operatorMcpLauncher.js'
 import { describe, expect, it } from 'vitest'
 import { assertChange, assertManagedChange, fingerprint, LINEAR_MCP_ENDPOINT, managedChange, managedEnableChange, managedStatus,
-  publicMcpList, replacement, userOwnsMcpEntry, type NativeMcpSnapshot } from '../src/modules/harnesses/nativeMcpCommon.js'
+  nativeConnection, publicMcpList, replacement, userOwnsMcpEntry, type NativeMcpSnapshot } from '../src/modules/harnesses/nativeMcpCommon.js'
 import { codexMcpOwnership } from '../src/modules/harnesses/codexMcpConnections.js'
 import { NativeMcpNotSubmittedError, withNativeMcpDelivery } from '../src/modules/harnesses/nativeMcpDelivery.js'
 
@@ -31,7 +32,7 @@ describe('PR18 native MCP policy and provenance', () => {
       expect(managedStatus(current, 'operator', endpoint)).toBe(enabled ? 'mismatch' : 'disabled')
       const next = replacement(current, enabled ? managedChange('operator', true, endpoint) : managedEnableChange('operator', true),
         { preset: 'operator', endpoint })
-      expect(next).toEqual({ ...entry, url: endpoint, enabled: true })
+      expect(next).toEqual(enabled ? { ...policy, ...nativeConnection(harness, operatorLauncherConnection()) } : { ...entry, enabled: true })
       expect(next).toMatchObject(policy)
     }
   })
@@ -85,7 +86,7 @@ describe('PR18 native MCP policy and provenance', () => {
     const current = snapshot('opencode')
     current.effective['graphql-operator'] = { type: 'remote', url: endpoint, enabled: true, oauth: false,
       headers: { Authorization: 'Bearer never-return-this-secret' } }
-    expect(managedStatus(current, 'operator', endpoint)).toBe('installed')
+    expect(managedStatus(current, 'operator', endpoint)).toBe('mismatch')
     current.credentialReferences = {}
     expect(managedStatus(current, 'operator', endpoint)).toBe('inherited')
     expect(JSON.stringify(publicMcpList(current))).not.toContain('never-return-this-secret')

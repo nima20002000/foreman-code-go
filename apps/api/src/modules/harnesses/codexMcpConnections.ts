@@ -1,3 +1,4 @@
+import { installOperatorLauncher } from './operatorMcpLauncher.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { backupNativeUserFile, readNativeUserFile } from './nativeConfigFiles.js'
 import { runCommand } from './process.js'
@@ -73,6 +74,7 @@ export class CodexMcpConnections implements NativeMcpAdapter {
         signal.throwIfAborted()
         // Exactly one irreversible native operation. A later error is uncertain.
         writing()
+        if (managed?.preset === 'operator' && change.kind === 'add') await installOperatorLauncher()
         await transport.request('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${change.name}`, value: next ?? null, mergeStrategy: 'replace' }],
           expectedVersion: current.version, filePath: current.file, reloadUserConfig: true }, signal)
         const after = await this.inspect(transport, binary, environment, signal)

@@ -1,3 +1,4 @@
+import { isOperatorLauncher, OPERATOR_TOKEN } from './operatorMcpLauncher.js'
 import { randomBytes } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 
@@ -73,10 +74,12 @@ export async function inspectOpenCodeMcpConfiguration(input: {
     enabled: first.enabled !== false,
     status: first.enabled === false ? 'disabled' : 'status_unavailable',
   }
+  const launcher = input.serverName === 'graphql-operator' && isOperatorLauncher('opencode', first)
   const initialAuthorization = authorization(first)
   // The App endpoint uses GraphQL-issued bearer auth, never provider OAuth.
-  if (first.type !== 'remote' || first.oauth !== false || !initialAuthorization
-    || !/^Bearer $/i.test(initialAuthorization.value)) return common
+  if (!launcher && (first.type !== 'remote' || first.oauth !== false || !initialAuthorization
+    || !/^Bearer $/i.test(initialAuthorization.value))) return common
+  if (launcher && (first.environment as JsonObject)[OPERATOR_TOKEN] !== '') return common
 
   const owner = 'graphql-mcp-configuration-probe'
   const marker = `graphql_probe_${randomBytes(32).toString('hex')}`
@@ -86,9 +89,14 @@ export async function inspectOpenCodeMcpConfiguration(input: {
     beforeSpawn: async () => ({ agentId: owner, variables: { [credentialVariable]: marker } }),
   })
   const second = parseEntry(checked)
+  if (launcher && second && isOperatorLauncher('opencode', second)
+    && (second.environment as JsonObject)[OPERATOR_TOKEN] === '[REDACTED]'
+    && isDeepStrictEqual({ ...first, environment: null }, { ...second, environment: null })) {
+    return { ...common, credentialEnvironmentVariable: credentialVariable, automaticOperatorEndpoint: true }
+  }
   const markedAuthorization = second ? authorization(second) : undefined
   if (!second || !markedAuthorization || !/^Bearer \[REDACTED\]$/i.test(markedAuthorization.value)
-    || markedAuthorization.key !== initialAuthorization.key
+    || markedAuthorization.key !== initialAuthorization?.key
     || !isDeepStrictEqual(withoutAuthorization(first), withoutAuthorization(second))) return common
   return { ...common, credentialEnvironmentVariable: credentialVariable }
 }
