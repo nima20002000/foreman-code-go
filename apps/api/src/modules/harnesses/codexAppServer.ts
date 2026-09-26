@@ -1,3 +1,4 @@
+import { isOperatorLauncher, OPERATOR_TOKEN } from './operatorMcpLauncher.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { normalize } from 'node:path'
 
@@ -117,6 +118,7 @@ export interface CodexMcpConfigurationInspection {
   configured: {
     enabled: boolean; required: boolean; transport: 'stdio' | 'streamable_http' | 'unknown'
     url: string | null; bearerTokenEnvironmentVariable: string | null
+    automaticOperatorEndpoint?: boolean
     enabledTools: string[] | null; disabledTools: string[]
     defaultToolsApprovalMode: string | null; tools: JsonObject
   }
@@ -902,7 +904,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
           enabled: parsed.enabled !== false, required: parsed.required === true,
           transport: transport.type === 'streamable_http' || transport.type === 'stdio'
             ? transport.type : url ? 'streamable_http' : text(transport.command) ? 'stdio' : 'unknown',
-          url, bearerTokenEnvironmentVariable: text(transport.bearer_token_env_var) ?? null,
+          url, bearerTokenEnvironmentVariable: isOperatorLauncher('codex', transport) ? OPERATOR_TOKEN : text(transport.bearer_token_env_var) ?? null,
+          automaticOperatorEndpoint: isOperatorLauncher('codex', transport),
           enabledTools: stringArray(parsed.enabled_tools) ?? null, disabledTools: stringArray(parsed.disabled_tools) ?? [],
           defaultToolsApprovalMode: text(parsed.default_tools_approval_mode) ?? null,
           tools: isObject(parsed.tools) ? parsed.tools : {},

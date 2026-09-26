@@ -1,3 +1,4 @@
+import { OperatorMcpRoutes } from './modules/harnesses/operatorMcpRoutes.js'
 import { registerApprovalCheckpointResume } from './modules/runs/approvalCheckpointRegistration.js'
 import { isDeepStrictEqual } from 'node:util'
 import { NativeResponseJournal } from './modules/harnesses/recovery/responseJournal.js'
@@ -109,6 +110,7 @@ export function buildProductionApp(
     : config.host === '::' || config.host === '::1' ? '[::1]' : config.host
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/tools`
   const operatorMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/operator`
+  const operatorRoutes = new OperatorMcpRoutes(database.pool, operatorMcpEndpoint)
   const harnessSettings = {
     directories: new HarnessDirectoryBrowser([projectRoot], database.pool),
     plugins: new CodexPluginSettingsService(database.pool, new NativeCodexPlugins(config.harnesses.codexBinary, config.harnesses.workspaceRoot,
@@ -329,6 +331,7 @@ export function buildProductionApp(
       { name: 'reconciliation', run: () => reconciliation },
     ],
     dispose: [
+      { name: 'Operator MCP routes', run: () => operatorRoutes.close() },
       { name: 'execution native managers', run: async () => {
         // Ordinary restart must persist the exact retained Worker/reviewer
         // closes before raw disposal loses their manager lifetime identities.
@@ -384,6 +387,7 @@ export function buildProductionApp(
         assertOpen()
       }
       await chatAuthority.revokeOrphanedCredentials()
+      await operatorRoutes.refresh()
       assertOpen()
       await harnessSettings.mcp.recover()
       assertOpen()
@@ -407,6 +411,8 @@ export function buildProductionApp(
       await engine.reconcile(report)
       if (closing) return
       if (initialized) {
+        await operatorRoutes.refresh()
+        if (closing) return
         await chat.reconcileActive()
         if (closing) return
         await reviews.tick()

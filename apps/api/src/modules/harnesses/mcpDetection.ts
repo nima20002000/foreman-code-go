@@ -15,6 +15,7 @@ export type NativeMcpStatus = 'connected' | 'disabled' | 'authentication_require
 export type McpInspectionPhase = 'configuration' | 'health'
 
 export interface NativeMcpEntryEvidence {
+  automaticOperatorEndpoint?: boolean
   name: string
   transport: 'streamable-http' | 'sse' | 'stdio' | 'unknown'
   endpoint?: string

@@ -80,7 +80,8 @@ it('requests exact Operator and Linear presets through authenticated MCP, then a
         const installedList = await listed(harness)
         expect(installedList.presets?.[preset]).toBe('installed')
         expect(installedList.servers.find((server) => server.name === (preset === 'operator' ? 'graphql-operator' : 'linear'))?.endpoint)
-          .toBe(preset === 'operator' ? endpoint : 'https://mcp.linear.app/mcp/readonly')
+          .toBe(preset === 'operator' ? undefined : 'https://mcp.linear.app/mcp/readonly')
+        if (preset === 'operator') expect(installedList.servers.find((server) => server.name === 'graphql-operator')?.transport).toBe('stdio')
         if (preset === 'operator') expect(JSON.stringify((await listed(harness)).servers)).not.toContain('GRAPHQL_OPERATOR_MCP_TOKEN')
         const name = preset === 'operator' ? 'graphql-operator' : 'linear'
         const original = structuredClone(snapshots[harness].user[name])
