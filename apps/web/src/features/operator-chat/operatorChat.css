@@ -25,7 +25,7 @@
 .operator-chat-transcript ol { padding-left: 1.25rem; }
 .operator-chat-partial { white-space: pre-wrap; overflow-wrap: anywhere; }
 .operator-chat-jump { flex: 0 0 auto; align-self: center; font-size: .75rem; }
-.operator-chat-decision-area { flex: 0 1 auto; min-height: 0; max-height: 30%; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--color-border-strong); border-radius: .4rem; }
+.operator-chat-decision-area { flex: 0 1 auto; min-height: 0; max-height: 50%; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--color-border-strong); border-radius: .4rem; }
 .operator-chat fieldset { min-width: 0; margin: 0; padding: .5rem; border: 0; }
 .operator-chat fieldset p { font-size: .75rem; margin: .25rem 0 .6rem; overflow-wrap: anywhere; }
 .operator-chat-approval-details { max-height: 3rem; margin: .25rem 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .75rem; }
@@ -36,7 +36,8 @@
 .operator-chat-controls form { display: grid; gap: .35rem; margin: 0; font-size: .8rem; }
 .operator-chat-controls textarea { width: 100%; min-height: 2.5rem; height: 3.5rem; max-height: 6rem; resize: vertical; padding: .4rem; color: var(--color-text); border: 1px solid var(--color-border-strong); border-radius: .3rem; background: var(--color-surface-raised); }
 .operator-chat-controls form > button { justify-self: end; }
-.operator-chat-feedback, .operator-chat-controls form > [role='alert'] { max-height: 3rem; flex: 0 0 auto; overflow: auto; font-size: .75rem; overflow-wrap: anywhere; }
+.operator-chat-feedback { min-width: 0; font-size: .75rem; overflow-wrap: anywhere; }
+.operator-chat-controls form > [role='alert'] { max-height: 3rem; flex: 0 0 auto; overflow: auto; font-size: .75rem; overflow-wrap: anywhere; }
 .operator-chat-feedback:empty { display: none; }
 .operator-chat-feedback p, .operator-chat-controls form > [role='alert'] { margin: 0; }
 .operator-chat-warning { flex: 0 0 auto; max-height: 3rem; overflow: auto; margin: 0; padding: .4rem .75rem; font-size: .75rem; color: var(--color-warning-text); background: var(--color-surface-subtle); }

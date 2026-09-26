@@ -5,17 +5,32 @@ import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal, Se
 const outboxLock = 'graphql.operator-outbox.v1'
 const storageError = 'Durable message storage is unavailable. Sending is disabled to avoid repeating a command after a lost response.'
 
-function readKey(key: string): { command?: SendOperatorMessageRequest; error?: string } {
+type PendingMessage = { command?: SendOperatorMessageRequest; error?: string; sendFailure?: string }
+
+function readKey(key: string): PendingMessage {
   try {
     const value = window.localStorage.getItem(key)
     if (value === null) return {}
-    const result = SendOperatorMessageRequestSchema.safeParse(JSON.parse(value))
-    return result.success ? { command: result.data } : { error: 'The saved pending command is invalid. Recover its receipt before sending another command.' }
+    const saved = JSON.parse(value)
+    const command = SendOperatorMessageRequestSchema.safeParse(saved?.command ?? saved)
+    if (command.success && (saved?.command === undefined || typeof saved?.sendFailure === 'string')) {
+      return { command: command.data, ...(typeof saved?.sendFailure === 'string' ? { sendFailure: saved.sendFailure } : {}) }
+    }
+    return { error: 'The saved pending command is invalid. Recover its receipt before sending another command.' }
   } catch { return { error: storageError } }
 }
 
-export function readPendingOperatorMessage(id: string): { command?: SendOperatorMessageRequest; error?: string } {
+export function readPendingOperatorMessage(id: string): PendingMessage {
   try { return readKey(protectedKey('outbox', id)) } catch { return { error: storageError } }
+}
+
+/** Keep a failed delivery reason with the exact pending command across reloads. */
+export function recordOperatorMessageFailure(id: string, requestId: string, message: string): Promise<void> {
+  return exclusive(id, (key) => {
+    const pending = readKey(key)
+    if (pending.error || pending.command?.requestId !== requestId) return
+    window.localStorage.setItem(key, JSON.stringify({ command: pending.command, sendFailure: message }))
+  })
 }
 
 /** Cross-document exclusion, not a same-tab mutex or a read/write/read storage guess. */

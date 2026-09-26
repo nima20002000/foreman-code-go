@@ -15,7 +15,7 @@ import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
 import { Alert, Badge, Button, EmptyState, Icon, IconButton, LoadingState, Select } from '../../shared/ui/nocturne'
 import { isNarrowOperatorChat, operatorChatNarrowQuery, useOperatorChatStore } from './operatorChatStore'
 import { useOperatorChatVisibility } from './useOperatorChatVisibility'
-import { acknowledgeOperatorMessage, assertOperatorMessageReserved, readPendingOperatorMessage, reserveOperatorMessage } from './operatorOutbox'
+import { acknowledgeOperatorMessage, assertOperatorMessageReserved, readPendingOperatorMessage, recordOperatorMessageFailure, reserveOperatorMessage } from './operatorOutbox'
 import { projectOperatorText, type OperatorTextProjection } from './operatorTextProjection'
 import { newerOperatorSummaries, operatorNavigationStatus, operatorTurnStatus, summarizeOperatorConversation } from './operatorChatStatus'
 import { OperatorTranscript } from './OperatorTranscript'
@@ -115,6 +115,12 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       acceptState(input.id, result.state)
       await invalidate(input.id)
     },
+    onError: async (error, input) => {
+      if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
+      try { await recordOperatorMessageFailure(input.id, input.command.requestId,
+        error instanceof Error ? error.message : 'Message delivery failed.') } catch { /* The current error remains visible. */ }
+      if (currentSession(input.generation) && input.epoch === identityEpoch()) refreshOutbox((value) => value + 1)
+    },
     // A later 4xx cannot prove an earlier lost delivery was not accepted.
     // Keep the same durable request identity until a successful receipt is read.
   })
@@ -184,8 +190,10 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
   const archived = conversation?.conversation.status === 'archived'
   const requestId = conversation?.activeRequestId
   const pending = selectedId && !accessDenied ? readPendingOperatorMessage(selectedId) : {}
-  const scopedSendError = send.variables?.id === selectedId && send.error instanceof Error ? send.error.message : undefined
-  const sendError = preparationError && preparationError.id === selectedId ? preparationError.message : scopedSendError
+  const scopedSendError = send.variables?.id === selectedId && send.variables?.command.requestId === pending.command?.requestId
+    && send.error instanceof Error ? send.error.message : undefined
+  const sendError = preparationError && preparationError.id === selectedId ? preparationError.message
+    : scopedSendError ?? pending.sendFailure
   const partialText = partial?.value && partial.conversationId === selectedId && partial.value.requestId === requestId
     ? Object.values(partial.value.parts).join('\n\n') : ''
   const entries: OperatorConversationSummary[] = accessDenied ? [] : (list.data?.conversations ?? []).map((item) =>

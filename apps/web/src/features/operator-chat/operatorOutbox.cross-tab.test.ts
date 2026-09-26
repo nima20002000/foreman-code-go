@@ -99,6 +99,28 @@ describe('F12: cross-tab durable Operator reservations', () => {
     expect(Object.keys(JSON.parse(window.localStorage.getItem(key())!)).sort()).toEqual(['content', 'context', 'requestId'])
   })
 
+  it('keeps a failed delivery reason with its pending request until acknowledgement', async () => {
+    const first = await tab()
+    const command = await first.reserveOperatorMessage('conversation-one', 'Check the status.', '/original')
+    await first.recordOperatorMessageFailure('conversation-one', command.requestId, 'Provider is not production-qualified.')
+    const reloaded = await tab()
+    expect(reloaded.readPendingOperatorMessage('conversation-one')).toEqual({ command,
+      sendFailure: 'Provider is not production-qualified.' })
+    await reloaded.recordOperatorMessageFailure('conversation-one', 'different-request', 'Wrong reason')
+    expect(reloaded.readPendingOperatorMessage('conversation-one').sendFailure).toBe('Provider is not production-qualified.')
+    expect(await reloaded.acknowledgeOperatorMessage('conversation-one', command.requestId)).toBe(true)
+    await first.recordOperatorMessageFailure('conversation-one', command.requestId, 'Late reason')
+    expect(first.readPendingOperatorMessage('conversation-one')).toEqual({})
+  })
+
+  it('does not show a failed request reason after enrollment rotation', async () => {
+    const first = await tab()
+    const command = await first.reserveOperatorMessage('conversation-one', 'Check the status.', '/original')
+    await first.recordOperatorMessageFailure('conversation-one', command.requestId, 'Provider is not production-qualified.')
+    window.localStorage.setItem(epochKey, 'epoch-b')
+    expect(first.readPendingOperatorMessage('conversation-one')).toEqual({})
+  })
+
   it('serializes acknowledgement and reservation so a late receipt cannot erase a newer request', async () => {
     const first = await tab(), second = await tab()
     const previous = await first.reserveOperatorMessage('conversation-one', 'First command.', '/a')
