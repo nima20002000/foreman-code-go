@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { insertCurrentRunFixture } from './helpers/eng04CurrentRunFixture.js'
-import { nativeGraphSource } from '../src/modules/run-graph/nativeIngestion.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
 import { readOpenCodeReconciliation } from '../src/modules/harnesses/opencodeReconciliation.js'
@@ -9,7 +8,7 @@ import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
 import { graphParity } from './helpers/wave25R1GraphParity.js'
 import { br1002OpenCodeRuntime, br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
 import { br1002Ack, br1002At, br1002Batches, br1002ContinuationCut,
-  type Br1002NativeArgs, type Br1002Runtime } from './helpers/wave25Br1002Cuts.js'
+  type Br1002Runtime } from './helpers/wave25Br1002Cuts.js'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -40,11 +39,17 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual OpenCode coordinator / Postgre
       expect((await br1002Ack(f, interaction.id))?.approval_native_ack_id ?? null).toBeNull()
       replyRelease.resolve()
       const args = await br1002At(cut.before.promise, response)
-      const [event, , lease, , continuation] = args
-      expect(lease?.live).toBe(false)
+      const capture = f.nativeVerification.read(args[2])
+      if (capture.source.type !== 'history') throw new Error('Expected original full history')
+      const history = capture.source.history, continuation = history.terminalTurn!
+      const event = history.events.find((event) => readOpenCodeReconciliation(event, {
+        ownerAgentId: interaction.requestingAgentId, correlationId: continuation.correlationId,
+        nativeTurnId: continuation.providerId, nativeSessionId: interaction.nativeSessionId,
+        providerVersion: interaction.providerVersion }))!
+      expect(capture.kind).toBe('recovery')
       expect(continuation?.correlationId).toBe(`execution:${interaction.executionId}`)
       expect(continuation?.providerId).toBe(nativeMessageId(`execution:${interaction.executionId}`))
-      expect(continuation?.responseDeliveries).toHaveLength(1)
+      expect(history.responseDeliveries).toHaveLength(1)
       expect((await f.repository.get(interaction.id))?.deliveryState).toBe('delivered')
       expect(await f.receipts()).toHaveLength(1)
       // Inspect the actual saver tuple at the interrupted checkpoint, not a fake
@@ -58,22 +63,25 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual OpenCode coordinator / Postgre
         correlationId: continuation!.correlationId, nativeTurnId: continuation!.providerId,
         nativeSessionId: interaction.nativeSessionId, providerVersion: interaction.providerVersion })!
       expect(proof).toBeDefined()
-      const raw = (await f.db.pool.query<{ source_sequence: string; record: typeof event }>(
-        'select source_sequence::text,record from harness_native_events where execution_id=$1 and connection_id=$2 and source_sequence=0',
-        [interaction.executionId, proof.historySource.connectionId])).rows[0]!
-      expect(raw.source_sequence).toBe('0')
-      expect(raw.record.connectionId).toBe(proof.historySource.connectionId)
-      expect(raw.record.payload.nativeEventId).toBe(proof.historySource.nativeEventId)
-      expect(raw.record.type).toBe('message.updated')
-      expect(event.connectionId).not.toBe(raw.record.connectionId)
+      const raw = history.events.find((source) => source.connectionId === proof.historySource.connectionId
+        && source.sequence === 0)!
+      expect(raw.connectionId).toBe(proof.historySource.connectionId)
+      expect(raw.payload.nativeEventId).toBe(proof.historySource.nativeEventId)
+      expect(raw.type).toBe('message.updated')
+      expect(event.connectionId).not.toBe(raw.connectionId)
       cut.enter.resolve()
       await br1002At(cut.after.promise, response)
       const acknowledged = await compare()
       expect(acknowledged.state.interactions.some((i) => i.interactionId === interaction.id)).toBe(false)
       expect(acknowledged.state.run.pendingInteractionCount).toBe(0)
       expect(await br1002Ack(f, interaction.id)).toMatchObject({
-        state: 'resumed', approval_native_ack_source: nativeGraphSource(event),
+        state: 'resumed', approval_native_ack_source: expect.objectContaining({ sourceKind: 'native_event', sourceRevision: '1' }),
       })
+      const ack = await br1002Ack(f, interaction.id)
+      const source = ack!.approval_native_ack_source as { sourceId: string }
+      const retained = (await f.db.pool.query('select record from workflow_native_proofs where proof_id=$1', [source.sourceId])).rows[0]!
+      expect(retained.record.original).toEqual(capture.source)
+      expect(retained.record.session).toEqual(capture.session)
       const batches = await br1002Batches(f)
       const retirement = batches.filter((batch) => batch.facts.some((fact) => fact.type === 'worker.resumed'
         && fact.interactionId === interaction.id))
@@ -85,7 +93,7 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual OpenCode coordinator / Postgre
       if (final?.type !== 'interaction.state' || retired?.type !== 'exchange.retired') throw new Error('Incomplete retirement publication')
       expect(final.interaction.resumeState).toBe('acknowledged')
       expect(retired.finalRevision).toBe(final.interaction.revision)
-      // Duplicate/reordered raw observations use the exact original tuples and
+      // Duplicate completed-history writes use the exact original capture and
       // currently held owner; neither another provider action nor another ack.
       await cut.original(...args)
       await cut.original(...args)
@@ -133,17 +141,17 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual OpenCode coordinator / Postgre
           expect(terminal.correlationId).toBe(`execution:${i.executionId}`)
           expect(history.responseDeliveries).toHaveLength(1)
           lane.providerId = terminal.providerId
-          for (const event of history.events) await f.runs.appendNativeEvent({ ...event, executionId: i.executionId }, owner,
+          for (const event of history.events) await expect(f.runs.appendNativeEvent({ ...event, executionId: i.executionId }, owner,
             { ...lane.fence, providerId: terminal.providerId, live: false }, undefined,
             { session: attached.session, providerId: terminal.providerId, correlationId: terminal.correlationId,
-              responseDeliveries: history.responseDeliveries ?? [] })
+              responseDeliveries: history.responseDeliveries ?? [] })).rejects.toMatchObject({ code: 'NATIVE_SOURCE_NOT_CAPTURED' })
         })
       } finally { await owner.release() }
       expect((await br1002Ack(f, i.id))?.approval_native_ack_id ?? null).toBeNull()
       expect((await compare()).state.interactions.some((item) => item.interactionId === i.id)).toBe(true)
       await f.engine.resumeInteraction(delivered)
       expect(await f.receipts()).toHaveLength(1)
-      expect((await br1002Ack(f, i.id))?.approval_native_ack_id).toMatch(/^continuation-ack-/)
+      expect((await br1002Ack(f, i.id))?.approval_native_ack_id).toMatch(/^native-approval-ack-/)
       expect((await compare()).state.interactions.some((item) => item.interactionId === i.id)).toBe(false)
       expect(f.counts()).toEqual({ sessions: 2, prompts: 2, responses: 1 })
     } finally { await f.close() }
@@ -159,16 +167,14 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual OpenCode coordinator / Postgre
         const { compare } = await graphParity(f.db.pool, f.f.scope)
         const [i] = await f.pending()
         if (!i) throw new Error('Expected approval')
-        cut = br1002ContinuationCut(f, (args) => {
-          const altered: Br1002NativeArgs = [...args]
-          const proof = args[4]!
+        cut = br1002ContinuationCut(f, (input) => {
+          if (input.source.type !== 'history') return input
+          const history = input.source.history, deliveries = history.responseDeliveries ?? []
           const receipts = field === 'missing' ? [] : field === 'contradictory'
-            ? [...proof.responseDeliveries, ...proof.responseDeliveries.map((receipt) => ({ ...receipt, semantic: 'reject' }))]
-            : proof.responseDeliveries.map((receipt) => ({ ...receipt, [field]: 'foreign' }))
-          // Explicit negative injection at the coordinator's provider-result
-          // boundary. All event/source IDs and persisted delivery stay intact.
-          altered[4] = { ...proof, responseDeliveries: receipts as typeof proof.responseDeliveries }
-          return altered
+            ? [...deliveries, ...deliveries.map((receipt) => ({ ...receipt, semantic: 'reject' }))]
+            : deliveries.map((receipt) => ({ ...receipt, [field]: 'foreign' }))
+          return { ...input, source: { type: 'history', history: { ...history,
+            responseDeliveries: receipts as NonNullable<typeof history.responseDeliveries> } } }
         })
         response = f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(i))
         await br1002At(cut.before.promise, response)
@@ -196,15 +202,19 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual OpenCode coordinator / Postgre
         const { compare } = await graphParity(f.db.pool, f.f.scope)
         const [i] = await f.pending()
         if (!i) throw new Error('Expected approval')
-        cut = br1002ContinuationCut(f, (args) => {
-          const altered: Br1002NativeArgs = [...args], original = args[4]!
-          altered[4] = { ...original, session: { ...original.session } }
-          if (field === 'correlation') altered[4].correlationId = 'execution:another-execution'
-          if (field === 'turn') altered[4].providerId = 'msg_another_turn'
-          if (field === 'session') altered[4].session.nativeSessionId = 'ses_another_session'
-          if (field === 'provider-version') altered[4].session.providerVersion = 'another-version'
-          if (field === 'provider') altered[4].session.harness = 'codex'
-          return altered
+        cut = br1002ContinuationCut(f, (input) => {
+          if (input.source.type !== 'history') return input
+          const history = structuredClone(input.source.history)
+          if (field === 'correlation') history.terminalTurn!.correlationId = 'execution:another-execution'
+          if (field === 'turn') history.terminalTurn!.providerId = 'msg_another_turn'
+          if (field === 'session' || field === 'provider-version' || field === 'provider') {
+            const key = field === 'session' ? 'nativeSessionId' : field === 'provider-version' ? 'providerVersion' : 'provider'
+            history.events = history.events.map((event) => event.payload.reconciliation
+              ? { ...event, payload: { ...event.payload, reconciliation: {
+                ...event.payload.reconciliation as Record<string, unknown>, [key]: 'foreign',
+              } } } : event)
+          }
+          return { ...input, source: { type: 'history', history } }
         })
         response = f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(i))
         await br1002At(cut.before.promise, response)
@@ -222,6 +232,7 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual OpenCode coordinator / Postgre
   for (const boundary of ['writer-token', 'writer-generation', 'run-owner', 'foreign-run-owner', 'Stop'] as const) {
     it(`does not acknowledge a completed history after ${boundary} changes`, async () => {
       const f: Br1002Runtime = await br1002OpenCodeRuntime()
+      let restoreLane: (() => Promise<unknown>) | undefined
       let response: Promise<unknown> | undefined
       let cut: ReturnType<typeof br1002ContinuationCut> | undefined
       try {
@@ -232,14 +243,22 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual OpenCode coordinator / Postgre
         cut = br1002ContinuationCut(f)
         response = f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(i))
         const args = await br1002At(cut.before.promise, response)
-        const owner = args[1]!, lease = args[2]!
+        const owner = args[1], capture = f.nativeVerification.read(args[2]), lease = capture.lane!
+        if (boundary === 'writer-token' || boundary === 'writer-generation') {
+          // Restore only the injected SQL fault after observing rejection, so
+          // the same owned lifetime can perform its real cleanup.
+          restoreLane = () => f.db.pool.query(`update native_session_lanes set record=
+            jsonb_set(jsonb_set(record,'{leaseToken}',to_jsonb($2::text)),
+              '{connectionGeneration}',to_jsonb($3::integer)) where id=$1`,
+          [lease.id, lease.token, lease.connectionGeneration])
+        }
         if (boundary === 'writer-token') {
-          await expect(cut.original(args[0], owner, { ...lease, token: 'not-the-held-token' }, args[3], args[4]))
-            .rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
+          await f.db.pool.query("update native_session_lanes set record=jsonb_set(record,'{leaseToken}',to_jsonb('not-the-held-token'::text)) where id=$1", [lease.id])
+          await expect(cut.original(...args)).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
         } else if (boundary === 'writer-generation') {
           await f.db.pool.query(`update native_session_lanes set record=jsonb_set(record,'{connectionGeneration}',
             to_jsonb((record->>'connectionGeneration')::integer+1)) where id=$1`, [lease.id])
-          await cut.original(...args)
+          await expect(cut.original(...args)).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
         } else if (boundary === 'foreign-run-owner') {
           const revision = Number((await f.db.pool.query<{ revision: string }>(
             'select revision::text from workflows where id=$1', [f.f.scope.workflowId])).rows[0]!.revision)
@@ -251,9 +270,9 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual OpenCode coordinator / Postgre
           if (!otherOwner) throw new Error('Expected an actual independent foreign Run owner')
           const otherPublications = (await f.db.pool.query('select sequence::text,payload from run_graph_batches where run_id=$1 order by sequence', [otherRun.id])).rows
           try {
-            // The event is authentic but belongs to the original Run. No raw
+            // The capture is authentic but belongs to the original Run. No raw
             // source or publication may be attributed to this different owner.
-            await expect(cut.original(args[0], otherOwner, lease, args[3], args[4])).rejects.toBeDefined()
+            await expect(cut.original(args[0], otherOwner, args[2])).rejects.toBeDefined()
             expect((await f.db.pool.query('select sequence::text,payload from run_graph_batches where run_id=$1 order by sequence', [otherRun.id])).rows).toEqual(otherPublications)
           } finally { await otherOwner.release() }
         } else if (boundary === 'run-owner') {
@@ -261,7 +280,7 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual OpenCode coordinator / Postgre
           await expect(cut.original(...args)).rejects.toBeDefined()
         } else {
           await f.stop()
-          await cut.original(...args)
+          await expect(cut.original(...args)).rejects.toBeDefined()
         }
         expect((await br1002Ack(f, i.id))?.approval_native_ack_id ?? null).toBeNull()
         expect((await br1002Batches(f)).flatMap((batch) => batch.facts).filter((fact) => fact.type === 'worker.resumed')).toHaveLength(0)
@@ -270,7 +289,7 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual OpenCode coordinator / Postgre
         // Negative authority cuts are observed while the coordinator is paused.
         // Releasing it is cleanup, NOT evidence of successful new-generation
         // takeover or canceled-exchange parity (the separate BR2-002 lane).
-      } finally { cut?.release(); await response?.catch(() => undefined); cut?.restore(); await f.close() }
+      } finally { await restoreLane?.(); cut?.release(); await response?.catch(() => undefined); cut?.restore(); await f.close() }
     }, 60000)
   }
 })

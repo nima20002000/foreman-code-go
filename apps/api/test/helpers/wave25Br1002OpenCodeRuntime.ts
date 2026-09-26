@@ -143,6 +143,7 @@ export async function br1002OpenCodeRuntime(handler: 'user' | 'orchestrator' = '
     const locations = new WorkspaceLocationService(db.pool, new PostgresCommandCoordinator(db.pool))
     vi.spyOn(locations, 'revalidateSnapshot').mockResolvedValue(undefined)
     const workflowCapture = createWorkflowNativeCaptureChannel()
+    const nativeCapture = { capture: workflowCapture.capture.capture.bind(workflowCapture.capture) }
     const reviewCapture = createReviewNativeCaptureChannel()
     const runs = new PostgresRunRepository(db.pool, workflows, locations,
       { runtimeRoot: db.directory, ...createWorkflowRepositoryServices(workflowCapture.verify) })
@@ -155,7 +156,7 @@ export async function br1002OpenCodeRuntime(handler: 'user' | 'orchestrator' = '
     const native = new ApprovalExecutionCoordinator(runs, repository, budgets, managers, 600000,
       launchCredentials, continuationValidator(db.pool, locations),
       new PostgresWorkflowClosureStore(db.pool), new PostgresRepeatReviewerBindings(db.pool),
-      workflowCapture.capture, reviewCapture.capture)
+      nativeCapture, reviewCapture.capture)
     engine = new LangGraphWorkflowEngine(runs, workflows, native, saver, db.directory,
       locations, launchCredentials, repository, undefined, { workerParallelism: 2 })
     const activeEngine = engine
@@ -163,6 +164,7 @@ export async function br1002OpenCodeRuntime(handler: 'user' | 'orchestrator' = '
     registerApprovalCheckpointResume(service, engine)
     const config = { configurable: { thread_id: f.run.id } }
     return { db, f, engine, native, runs, repository, service, saver, config, servers, credentials, access,
+      nativeCapture, nativeVerification: workflowCapture.verify,
       principal: user.principal, authorizationPrincipalId: authority.principal.id,
       stop: () => stopProviderRun(runs, f, authority.principal.id),
       async pending() { return repository.list({ runId: f.run.id, limit: 100 }) },
