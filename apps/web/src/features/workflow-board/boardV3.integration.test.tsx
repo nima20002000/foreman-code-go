@@ -120,6 +120,8 @@ function stageShape(key: string, shape: Shape, mock: Mock) {
 }
 async function save(mock: Mock, user: ReturnType<typeof userEvent.setup>, expectedVersions: number) {
   await user.click(saveButton())
+  await waitFor(() => expect(mock.versions.size === expectedVersions
+    || !!screen.queryByRole('alertdialog', { name: 'Stop running work and save?' })).toBe(true))
   const dialog = screen.queryByRole('alertdialog', { name: 'Stop running work and save?' })
   if (dialog) await user.click(within(dialog).getByRole('button', { name: 'Stop runs and save' }))
   await waitFor(() => expect(mock.versions.size).toBe(expectedVersions))
@@ -302,41 +304,39 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[key]!)).toBe(false)
     expect(mock.versions.size).toBe(1); expect(mock.controls.stopCalls).toBe(1)
   })
-  it('retains a Save rejected by a raced active Run, then uses saved pins for explicit Stop-and-save and settlement', async () => {
+  it('stages before Stop confirmation even when the Board summary misses an active Run', async () => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)
     const { key, id } = await create(mock, user); stageShape(key, 'single', mock); await save(mock, user, 1)
     const run = await start(mock, user)
+    const beforeEdit = mock.calls.length
     act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph,
       nodes: graph.nodes.map((node) => ({ ...node, initialPrompt: 'Next pinned instructions' })) })))
-    await mounted.query.invalidateQueries({ queryKey: queryKeys.workspaceDetails(mock.workspaceId) })
-    await user.click(screen.getByRole('button', { name: 'Save changes' }))
-    const canceled = await screen.findByRole('alertdialog')
-    await user.click(within(canceled).getByRole('button', { name: 'Keep it' }))
-    expect(mock.record(id).intent).toBeNull(); expect(mock.controls.stopCalls).toBe(0)
-    // Only the summary lies. The current definition service still sees its Run.
-    let hideRun = true
-    server.use(http.get(`/api/workspaces/${mock.workspaceId}`, () => HttpResponse.json({ ...mock.details(), ...(hideRun ? { runs: [] } : {}) })))
+    // Only the summary lies. Stage still discovers the authoritative affected Run.
+    server.use(http.get(`/api/workspaces/${mock.workspaceId}`, () => HttpResponse.json({ ...mock.details(), runs: [] })))
     act(() => { mounted.query.setQueryData(queryKeys.workspaceDetails(mock.workspaceId), { ...mock.details(), runs: [] }) })
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
-    await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[key]?.error?.code).toBe('WORKFLOW_RUNS_UNSETTLED'))
-    expect(mock.record(id).intent).toBeNull(); expect(readEditOutbox(key)).toBeUndefined()
+    const canceled = await screen.findByRole('alertdialog', { name: 'Stop running work and save?' })
+    expect(canceled).toHaveTextContent('1 affected Run requires Stop or cleanup')
+    await user.click(within(canceled).getByRole('button', { name: 'Keep it' }))
+    expect(mock.record(id).intent?.state).toBe('staged')
+    const retained = readEditOutbox(key)!
+    expect(retained).toBeDefined()
     expect(mock.controls.stopCalls).toBe(0); expect(mock.versions.size).toBe(1)
     expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[key]!)).toBe(true)
     expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]!.initialPrompt).toBe('Next pinned instructions')
-    hideRun = false
-    await mounted.query.invalidateQueries({ queryKey: queryKeys.workspaceDetails(mock.workspaceId) })
-    const saveAgain = screen.getByRole('button', { name: 'Save changes' })
+    expect(mock.calls.slice(beforeEdit).some((call) => call.method === 'PUT' && call.path.endsWith('/definition'))).toBe(false)
+    const saveAgain = screen.getByRole('button', { name: 'Stop affected Runs and save' })
     await waitFor(() => expect(saveAgain).toBeEnabled())
     await user.click(saveAgain)
     await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Stop runs and save' }))
-    const stages = () => mock.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/definition/edits')
-      && (call.body as { action?: string }).action === 'stage_edits')
-    await waitFor(() => expect(stages()).toHaveLength(1))
-    // The failed direct Save advanced only the local apply counter. The repaired
-    // product pins Stage to publishedRevision; keep that persisted-pin regression.
-    expect(stages()[0]!.body).toMatchObject({ expectedRevision: mock.managed(id).revision,
-      expectedWorkflowVersionId: mock.managed(id).currentVersionId })
     await waitFor(() => expect(mock.record(id).intent?.state).toBe('waiting'))
+    const stages = mock.calls.slice(beforeEdit).filter((call) => call.method === 'POST' && call.path.endsWith('/definition/edits')
+      && (call.body as { action?: string }).action === 'stage_edits')
+    expect(stages.length).toBeGreaterThan(0)
+    // Reconciliation replays one exact Stage, always pinned to the saved revision.
+    for (const stage of stages) expect(stage.body).toEqual(retained.request)
+    expect(retained.request).toMatchObject({ expectedRevision: mock.managed(id).revision,
+      expectedWorkflowVersionId: mock.managed(id).currentVersionId })
     expect(mock.controls.stopCalls).toBe(1); expect(mock.versions.size).toBe(1)
     mock.settle(run.id); await mounted.query.invalidateQueries()
     await waitFor(() => expect(mock.versions.size).toBe(2))

@@ -15,7 +15,6 @@ import { authoringHints, discardMeaningfulChanges, hasLocalChanges, nodeTitle, r
 import { editorAgents } from './agentEdits'
 import { nextDraftDirty, nextDraftKey, type NextDraftEdit } from './state'
 import { nextDraftApi, type AuthoringContext } from './transport'
-import { nextDraftWriter } from './managed'
 import { readEditOutbox, readEditSnapshot } from './editIntentStorage'
 import { useGraphEditIntent } from './useGraphEditIntent'
 import { EditIntentStatus } from './EditIntentStatus'
@@ -173,16 +172,6 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const openPanel = (next: Panel) => inspect(() => {
     presentation.getState().setFocusedNodeId(undefined); presentation.getState().setFocusedEdgeId(undefined); setPanel(next)
   })
-  const save = async (publish: boolean) => {
-    if (editIntent.locked) throw new Error('Reconcile the retained Stop-and-save intent first.')
-    if (readBoardStart(draftKey)) throw new Error('Reconcile the exact pending Start before publishing edits.')
-    canvas.current?.flush(); setLocalError(undefined); setMessage(undefined)
-    const result = await nextDraftWriter.write(draftKey, publish)
-    void queryClient.invalidateQueries({ queryKey: boardDraftContextKey(graph.workspaceId, graph.id) })
-    setMessage(result.published ? 'Saved. Historical Run settings are unchanged. Start a new Run explicitly to use executable changes.' : 'Draft saved. Check what to fix before running.')
-    if (result.newerLocalEdits) throw new Error('The submitted snapshot was saved, but newer local edits remain. Save them before leaving.')
-    if (publish && !result.published) throw new Error('The earlier command was reconciled. Save the current draft as a version before leaving.')
-  }
   const discardLocal = () => {
     const current = useGraphDraftStore.getState().nextDrafts[draftKey]
     if (!current || current.busy || current.pending || readBoardStart(draftKey)) throw new Error('Reconcile the in-flight or uncertain command first.')
@@ -197,7 +186,10 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const stopAndSave = async (allowStop = false) => {
     if (readBoardStart(draftKey)) throw new Error('Reconcile the exact pending Start before Stop-and-save.')
     canvas.current?.flush(); setLocalError(undefined); setMessage(undefined)
-    const result = await editIntent.advance(allowStop)
+    // Even without a local active Run, graph and shared-Agent changes must be
+    // staged together. Only the authoritative saved receipt acknowledges edits.
+    const result = allowStop ? await editIntent.advance(true) : await editIntent.save()
+    if (!allowStop && result.canStop && !result.affectedSetChanged && result.current.some((item) => !item.settled)) setConfirm('save')
     if (result.intent?.state === 'saved') setMessage(result.intent.stops.length ? 'Saved. Stopped runs were not restarted.' : 'Saved.')
     else if (result.intent?.state === 'blocked' || result.intent?.state === 'uncertain') {
       setLocalError(result.intent.error?.message ?? 'Saving isn’t confirmed yet. Your changes are still here.')
@@ -297,8 +289,8 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     // A generic navigation Save must not implicitly issue Stop. The board
     // exposes the explicit destructive action and the separate safe Discard.
     saveDisabled: !pendingStart && !edit.pending,
-    save: () => pendingStart ? start() : edit.pending ? save(true)
-      : Promise.reject(new Error('Use “Stop current Run and save edits” on the board, or Discard changes.')),
+    save: () => pendingStart ? start() : edit.pending ? stopAndSave()
+      : Promise.reject(new Error('Use “Save changes” on the board to review affected Runs, or Discard changes.')),
     discard: discardChanges }, (current, next) =>
     // The draft document stays mounted when authoring selection changes; dirty contextual forms
     // keep their separate surface registrations and still require a decision before unmounting.
@@ -320,9 +312,12 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const startReason = !canStart ? 'Start permission is unavailable for this workflow' : pendingStart ? 'Reconcile the exact earlier Start command' : startReloadRequired ? 'Reload after the saved version was rejected'
     : dirty ? 'Save executable edits before Start; presentation-only layout does not change a Run' : preflightReason ?? 'Start the exact saved current workflow'
   const saveBusy = edit.busy || reloading || !!edit.pending || !!pendingStart || editIntent.mutation.isPending
-  // No active Run for this workflow: publish directly. The server still rejects
-  // a meaningful save that races a newly started Run.
-  const requestSave = () => { if (board?.activeRuns) setConfirm('save'); else void prepare(() => save(true)).catch(report) }
+  // Workflow-local Run summaries cannot describe blockers of a shared-Agent edit.
+  // Stage/reconcile first; ask for Stop only for that exact authoritative set.
+  const affectedRuns = editIntent.query.data?.current.filter((item) => !item.settled) ?? []
+  const affectedWorkflows = new Set(affectedRuns.map((item) => item.pin.workflowId)).size
+  const stopBlocked = !!editIntent.query.data?.affectedSetChanged || (affectedRuns.length > 0 && !editIntent.query.data?.canStop)
+  const requestSave = () => { void prepare(() => stopAndSave()).catch(report) }
   const openAgent = (nodeId: string, next: AgentPanel = 'settings') => inspect(() => {
     presentation.getState().setFocusedNodeId(nodeId); presentation.getState().setFocusedEdgeId(undefined)
     setOpenNode({ nodeId, panel: next })
@@ -459,11 +454,10 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
           <Button variant="ghost" leading={<Icon name="history" size={14} />} disabled={edit.busy || editIntent.locked || !edit.history.length}
             onClick={() => void prepare(() => { canvas.current?.flush(); useGraphDraftStore.getState().undoNextDraft(draftKey) })}>Undo</Button>
           <Button disabled={saveBusy} onClick={() => setConfirm('discard')}>Discard changes</Button>
-          {edit.pending ? <Button disabled={edit.busy || editIntent.locked} onClick={() => void prepare(() => save(true)).catch(report)}>Retry save</Button> : null}
-          {editIntent.locked ? <Button variant="primary" disabled={saveBusy || !!editIntent.storageError}
-            onClick={() => { if (editIntent.query.data?.current.some((item) => !item.settled)) setConfirm('save');
-              else void prepare(() => stopAndSave()).catch(report) }}>
-            {editIntent.query.data?.current.some((item) => !item.settled) ? 'Stop affected Runs and save' : 'Reconcile Save'}</Button> : null}
+          {edit.pending ? <Button disabled={edit.busy || editIntent.locked} onClick={requestSave}>Retry save</Button> : null}
+          {editIntent.locked ? <Button variant="primary" disabled={saveBusy || !!editIntent.storageError || stopBlocked}
+            onClick={requestSave}>
+            {affectedRuns.length ? 'Stop affected Runs and save' : 'Reconcile Save'}</Button> : null}
           <Button variant="primary" loading={editIntent.mutation.isPending} disabled={saveBusy || !!editIntent.storageError || editIntent.locked} onClick={requestSave}>
             Save changes</Button>
         </div>
@@ -476,8 +470,8 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         })}>{kindName(edge.kind)} · {nodeTitle(graph, edge.source)} → {nodeTitle(graph, edge.target)}</Button>)}
       </nav>
     </div>
-    <ConfirmDialog open={confirm === 'save'} onOpenChange={(open) => { if (!open) setConfirm(undefined) }} title="Stop running work and save?"
-      description={`${board?.activeRuns ?? 0} ${board?.activeRuns === 1 ? 'run is' : 'runs are'} active for this workflow. Stop-and-save stops every affected Run and waits for full cleanup before saving. Stopped runs are not restarted.`}
+    <ConfirmDialog open={confirm === 'save' && affectedRuns.length > 0 && !stopBlocked} onOpenChange={(open) => { if (!open) setConfirm(undefined) }} title="Stop running work and save?"
+      description={`${affectedRuns.length} affected ${affectedRuns.length === 1 ? 'Run requires' : 'Runs require'} Stop or cleanup across ${affectedWorkflows} ${affectedWorkflows === 1 ? 'workflow' : 'workflows'}.${affectedRuns.some((item) => item.pin.workflowId !== graph.id) ? ' This includes shared-Agent work in another workflow.' : ''} Stop-and-save stops every affected Run and waits for full cleanup before saving. Stopped runs are not restarted.`}
       confirmLabel="Stop runs and save" onConfirm={() => { setConfirm(undefined); void prepare(() => stopAndSave(true)).catch(report) }} />
     <ConfirmDialog open={confirm === 'discard'} onOpenChange={(open) => { if (!open) setConfirm(undefined) }} title="Discard your changes?"
       description="Your unsaved edits are removed. Agent positions on the board are kept. Running work isn’t affected."

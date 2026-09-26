@@ -211,7 +211,8 @@ describe.each(forms)('ENG06-D %s Board recovery', (form) => {
     await waitFor(() => expect(f.mock.record(f.workflowId).intent?.state).toBe('waiting'))
     const intent = structuredClone(f.mock.record(f.workflowId).intent)!
     const stage = structuredClone(editCalls(f, 'stage_edits')[0]!.body)
-    expect(editCalls(f, 'stage_edits')).toHaveLength(1)
+    expect(editCalls(f, 'stage_edits').length).toBeGreaterThan(0)
+    for (const replay of editCalls(f, 'stage_edits')) expect(replay.body).toEqual(stage)
     expect(intent.affected).toHaveLength(1)
     expect(intent.affected[0]).toMatchObject(scope)
     expect(intent.affected[0]!.agentConfigurationVersionIds).toEqual(run.agentConfigurationVersionIds)
@@ -263,8 +264,13 @@ describe.each(forms)('ENG06-D %s Board recovery', (form) => {
     const before = writes(f), draft = structuredClone(useGraphDraftStore.getState().nextDrafts[f.key]!.graph)
     await user.click(saveButton())
     await user.click(within(await screen.findByRole('alertdialog', { name: 'Stop running work and save?' })).getByRole('button', { name: 'Keep it' }))
-    expect(writes(f)).toEqual(before); expect(f.mock.controls.stopCalls).toBe(0)
-    expect(f.mock.record(f.workflowId).intent).toBeNull(); expect(readEditOutbox(f.key)).toBeUndefined()
+    // Save discovers blockers through private Stage, not through the Run summary.
+    // Canceling the confirmation must not advance that intent or publish anything.
+    expect(writes(f).slice(before.length)).toEqual(editCalls(f, 'stage_edits'))
+    expect(editCalls(f, 'stage_edits')).toHaveLength(1)
+    expect(editCalls(f, 'stop_and_save')).toEqual([]); expect(f.mock.controls.stopCalls).toBe(0)
+    expect(f.mock.record(f.workflowId).intent?.state).toBe('staged')
+    expect(readEditOutbox(f.key)?.request).toEqual(editCalls(f, 'stage_edits')[0]!.body)
     expect(useGraphDraftStore.getState().nextDrafts[f.key]!.graph).toEqual(draft)
     expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[f.key]!)).toBe(true)
     expect(f.mock.runs.size).toBe(1); expect(f.mock.versions.size).toBe(1)

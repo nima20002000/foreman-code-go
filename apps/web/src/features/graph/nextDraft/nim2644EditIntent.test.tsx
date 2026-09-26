@@ -71,22 +71,30 @@ async function retainedSaveReady() {
     expect(screen.getByRole('button', { name: /^Discard changes$/ })).toBeEnabled()
   })
 }
-async function saveWithStop(user: ReturnType<typeof userEvent.setup>) {
+async function requestSave(user: ReturnType<typeof userEvent.setup>) {
   const button = screen.queryByRole('button', { name: recoveryName }) ?? saveButton()
   await waitFor(() => expect(button).toBeEnabled())
-  const reconcileOnly = button.textContent?.trim() === 'Reconcile Save'
   await user.click(button)
-  if (reconcileOnly) {
-    // An unknown reply is read/replayed first. Confirm Stop only if that read
-    // discovers unsettled work; a sibling's saved receipt needs no second Stop.
-    await waitFor(() => {
-      const stop = screen.queryByRole('button', { name: 'Stop affected Runs and save' })
-      expect(!startButton().hasAttribute('disabled') || !!stop && !stop.hasAttribute('disabled')).toBe(true)
-    })
-    if (!startButton().hasAttribute('disabled')) return
-    await user.click(screen.getByRole('button', { name: 'Stop affected Runs and save' }))
-  }
-  await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Stop runs and save' }))
+}
+async function saveWithStop(user: ReturnType<typeof userEvent.setup>) {
+  const stage = vi.mocked(nextDraftApi.editStage), advance = vi.mocked(nextDraftApi.editAdvance)
+  const beforeStage = stage.mock.calls.length, beforeAdvance = advance.mock.calls.length
+  await requestSave(user)
+  // Stage/readback discovers blockers BEFORE the destructive choice. Neither
+  // a rejected Stage nor a terminal saved receipt should open this dialog.
+  const dialog = await screen.findByRole('alertdialog', { name: 'Stop running work and save?' })
+  expect(stage).toHaveBeenCalledTimes(beforeStage + 1)
+  expect(advance).toHaveBeenCalledTimes(beforeAdvance)
+  expect(dialog).toHaveTextContent('1 affected Run requires Stop or cleanup across 1 workflow.')
+  expect(startButton()).toBeDisabled()
+  expect(nextDraftDirty(edit())).toBe(true)
+  const request = readEditOutbox(key)!.request
+  expect(stage.mock.calls.at(-1)![0]).toEqual(request)
+  await user.click(within(dialog).getByRole('button', { name: 'Stop runs and save' }))
+  // Confirmation replays the SAME Stage to recheck affected-set/permission
+  // fences. An extra transport read is not another edit intent or Stop.
+  await waitFor(() => expect(stage).toHaveBeenCalledTimes(beforeStage + 2))
+  expect(stage.mock.calls.at(-1)![0]).toEqual(request)
 }
 
 const startButton = () => screen.getByRole('button', { name: 'Start saved version' })
@@ -165,9 +173,11 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
   it('FE-001 retains a rejected form, unlocks it, and lets the next Discard finish without Stage replay or Stop', async () => {
     const stage = vi.spyOn(nextDraftApi, 'editStage').mockRejectedValue(new ApiError({ code: 'REVISION_CONFLICT', message: 'Rejected before insert' }, 409))
     const advance = vi.spyOn(nextDraftApi, 'editAdvance'), user = userEvent.setup()
-    mount(); typeMeaning(); await saveWithStop(user)
+    mount(); typeMeaning(); await requestSave(user)
     await waitFor(() => expect(stage).toHaveBeenCalledOnce())
     await waitFor(() => expect(screen.getByText(/Your edits are still here/)).toBeInTheDocument())
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(advance).not.toHaveBeenCalled()
     expect(readEditOutbox(key)).toBeUndefined(); expect(edit().graph.nodes[0]?.initialPrompt).toBe('submitted instruction')
     expect(readEditSnapshot(key)?.graph.nodes[0]?.initialPrompt).toBe('submitted instruction')
     expect(startButton()).toBeDisabled()
@@ -180,9 +190,11 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     const stage = vi.spyOn(nextDraftApi, 'editStage').mockRejectedValueOnce(new ApiError({ code: 'REVISION_CONFLICT', message: 'Rejected before insert' }, 409))
       .mockImplementation(async (input) => stageValue(input))
     const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => waiting(stageValue(stage.mock.calls.at(-1)![0])))
-    const user = userEvent.setup(), first = mount(); typeMeaning(); await saveWithStop(user)
+    const user = userEvent.setup(), first = mount(); typeMeaning(); await requestSave(user)
     await waitFor(() => expect(stage).toHaveBeenCalledOnce())
     await waitFor(() => expect(readEditOutbox(key)).toBeUndefined())
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(advance).not.toHaveBeenCalled()
     reopen(first)
     await screen.findByRole('region', { name: 'Workflow authoring' })
     expect(edit().graph.nodes[0]?.initialPrompt).toBe('submitted instruction')
@@ -193,7 +205,9 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     await waitFor(() => expect(edit().context.draft.revision).toBe(8))
     typeMeaning('corrected'); await saveWithStop(user)
     await waitFor(() => expect(advance).toHaveBeenCalledOnce())
-    expect(stage).toHaveBeenCalledTimes(2)
+    // Rejected attempt, corrected Stage, then exact Stage replay on confirmation.
+    expect(stage).toHaveBeenCalledTimes(3)
+    expect(stage.mock.calls[2]![0]).toEqual(stage.mock.calls[1]![0])
     expect(stage.mock.calls[1]![0].commandId).not.toBe(stage.mock.calls[0]![0].commandId)
     expect(stage.mock.calls[1]![0].expectedRevision).toBe(8)
     expect(boardStartClient.start).not.toHaveBeenCalled()
@@ -208,14 +222,16 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
         return persisted
       })
       const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => (persisted = waiting(persisted)))
-      const user = userEvent.setup(), first = mount(); typeMeaning(); await saveWithStop(user)
+      const user = userEvent.setup(), first = mount(); typeMeaning(); await requestSave(user)
       await waitFor(() => expect(stage).toHaveBeenCalledOnce())
       await retainedSaveReady()
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+      expect(advance).not.toHaveBeenCalled()
       const request = stage.mock.calls[0]![0]
       expect(readEditOutbox(key)?.request).toEqual(request)
       reopen(first); await screen.findByRole('region', { name: 'Workflow authoring' })
       await saveWithStop(user); await waitFor(() => expect(advance).toHaveBeenCalledOnce())
-      expect(stage.mock.calls[1]![0]).toEqual(request)
+      expect(stage.mock.calls.map(([input]) => input)).toEqual([request, request, request])
       expect(readEditOutbox(key)?.request).toEqual(request); expect(boardStartClient.start).not.toHaveBeenCalled()
     })
   it('FE-001 a REVISION_CONFLICT from Advance is not a rejected Stage and cannot release its reservation', async () => {
@@ -282,7 +298,10 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     await waitFor(() => expect(startButton()).toBeEnabled())
     expect(nextDraftDirty(edit())).toBe(false); expect(edit().agentEdits?.[node.agentId]).toBeUndefined()
     expect(edit().context.agents.find((item) => item.agent.id === node.agentId)?.metadataRevision).toBe(1)
-    expect(stage).toHaveBeenCalledOnce(); expect(advance).toHaveBeenCalledOnce(); expect(boardStartClient.start).not.toHaveBeenCalled()
+    // Initial Stage plus confirmation replay; readback adds no new Stage.
+    const request = stage.mock.calls[0]![0]
+    expect(stage.mock.calls.map(([input]) => input)).toEqual([request, request])
+    expect(advance).toHaveBeenCalledOnce(); expect(boardStartClient.start).not.toHaveBeenCalled()
   })
   it('FE-002 publication retains independent newer Agent typing and installs saved metadata without enabling Start', async () => {
     let persisted = empty, release!: (value: GraphEditReadResultV3) => void
@@ -344,7 +363,9 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     expect(edit().graph.nodes[0]?.initialPrompt).toBe(newer ? 'independently newer' : undefined)
     expect(sameExecutableWorkflow(edit().graph, context.draft.graph)).toBe(!newer)
     expect(readEditSnapshot(key)?.graph).toEqual(edit().graph)
-    expect(stage).toHaveBeenCalledTimes(2); expect(stage.mock.calls[1]![0]).toEqual(stage.mock.calls[0]![0])
+    // Stage, confirmation replay, Discard reconciliation; reopen is read-only.
+    const request = stage.mock.calls[0]![0]
+    expect(stage.mock.calls.map(([input]) => input)).toEqual([request, request, request])
     expect(advance).toHaveBeenCalledOnce(); expect(discard).toHaveBeenCalledOnce(); expect(boardStartClient.start).not.toHaveBeenCalled()
   })
 })
@@ -361,14 +382,15 @@ describe('NIM-2644 follow-up stale existing-Agent attach', () => {
     const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => waiting(stageValue(stage.mock.calls.at(-1)![0])))
     const user = userEvent.setup(), first = mount()
     act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => attachAgent(graph, source, 'attached-worker')))
-    await saveWithStop(user)
+    await requestSave(user)
     await waitFor(() => expect(stage).toHaveBeenCalledOnce())
     await waitFor(() => expect(readEditOutbox(key)).toBeUndefined())
     expect(stage.mock.calls[0]![0].expectedAgentConfigurationVersionIds[source.agent.id]).toBe(source.agent.configurationVersionId)
     expect(edit().context.draft.revision).toBe(7)
     expect(edit().graph.nodes.some((node) => node.id === 'attached-worker')).toBe(true)
     expect(readEditSnapshot(key)?.graph).toEqual(edit().graph)
-    expect(saveButton()).toBeEnabled()
+    await waitFor(() => expect(saveButton()).toBeEnabled())
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^Discard changes$/ })).toBeEnabled()
     expect(advance).not.toHaveBeenCalled()
     if (action === 'discard') {
@@ -389,6 +411,8 @@ describe('NIM-2644 follow-up stale existing-Agent attach', () => {
       await waitFor(() => expect(edit().context.agents[1]?.metadataRevision).toBe(source.metadataRevision + 1))
       act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => attachAgent(graph, fresh.agents[1]!, 'attached-worker')))
       await saveWithStop(user); await waitFor(() => expect(advance).toHaveBeenCalledOnce())
+      expect(stage).toHaveBeenCalledTimes(3)
+      expect(stage.mock.calls[2]![0]).toEqual(stage.mock.calls[1]![0])
       expect(stage.mock.calls[1]![0].commandId).not.toBe(stage.mock.calls[0]![0].commandId)
       expect(stage.mock.calls[1]![0].expectedRevision).toBe(7)
       expect(stage.mock.calls[1]![0].expectedAgentConfigurationVersionIds[source.agent.id]).toBe('configuration-updated-in-other-session')
@@ -429,9 +453,14 @@ describe('NIM-2644 follow-up mounted stale-tab readback', () => {
     expect(edit()).toEqual(raw) // Consuming the sibling's store did not alter this one.
     visible = persisted
     if (recovery === 'refresh') reopen(first)
-    else await saveWithStop(user)
+    else await requestSave(user)
     await waitFor(() => expect(startButton()).toBeEnabled())
-    expect(nextDraftApi.editStage).toHaveBeenCalledOnce(); expect(nextDraftApi.editAdvance).toHaveBeenCalledOnce()
+    // The sibling already saved: refresh/retry only reads its terminal receipt,
+    // without showing another Stop dialog or sending another Stage or Advance.
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    const requests = vi.mocked(nextDraftApi.editStage).mock.calls.map(([input]) => input)
+    expect(requests).toEqual([requests[0], requests[0]])
+    expect(nextDraftApi.editAdvance).toHaveBeenCalledOnce()
     expect(nextDraftDirty(edit())).toBe(false); expect(edit().agentEdits).toEqual({})
     expect(editorAgents(edit()).find((agent) => agent.id === node.agentId)?.configurationVersionId).toBe(`saved-${node.agentId}`)
     expect(boardStartClient.start).not.toHaveBeenCalled()
@@ -466,7 +495,8 @@ describe('NIM-2644 follow-up mounted stale-tab readback', () => {
     expect(edit().graph.nodes[0]?.initialPrompt).toBe(newer ? 'independent newer instruction' : undefined)
     expect(nextDraftDirty(edit())).toBe(newer)
     expect(advance).toHaveBeenCalledOnce(); expect(discard).toHaveBeenCalledOnce()
-    expect(stage.mock.calls[1]![0]).toEqual(stage.mock.calls[0]![0])
+    const request = stage.mock.calls[0]![0]
+    expect(stage.mock.calls.map(([input]) => input)).toEqual([request, request, request])
     expect(boardStartClient.start).not.toHaveBeenCalled()
   })
 })

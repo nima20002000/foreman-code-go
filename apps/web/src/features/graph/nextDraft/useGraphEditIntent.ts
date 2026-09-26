@@ -169,7 +169,7 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
     try { accept(query.data) } catch (error) { setStorageError(String(error)) }
   }, [accept, query.data])
 
-  const mutation = useMutation({ mutationFn: async (command: { action: 'advance' | 'discard'; allowStop?: boolean }) => withEditIntentLock(draftKey, async () => {
+  const mutation = useMutation({ mutationFn: async (command: { action: 'save' | 'advance' | 'discard'; allowStop?: boolean }) => withEditIntentLock(draftKey, async () => {
     const { action, allowStop = false } = command
     const generation = sessionGeneration()
     const current = useGraphDraftStore.getState().nextDrafts[draftKey]
@@ -201,7 +201,7 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
     // outbox. Acknowledge that result, not a new Stage from the captured old base.
     if (data.intent && !activeEditIntent(data.intent)
       && useGraphDraftStore.getState().nextDrafts[draftKey] !== beforeAcknowledgement) return data
-    if (action === 'advance' && !activeEditIntent(data.intent) && !retained) {
+    if (action !== 'discard' && !activeEditIntent(data.intent) && !retained) {
       if (!nextDraftDirty(current)) { accept(data); return data }
       const operations = draftOperations(current.context, current.graph, current.agentEdits)
       assertDraftSubmission(current.graph, operations)
@@ -223,7 +223,11 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
     accept(data)
     const intent = data.intent
     if (intent && activeEditIntent(intent)) {
-      if (action === 'advance') {
+      if (action !== 'discard') {
+        // Ordinary Save is not Stop authorization. Return the staged blockers
+        // for review (including other workflows) without mutating shared Agents
+        // or dispatching Stop. Confirmed advance still rechecks every fence below.
+        if (action === 'save' && (data.affectedSetChanged || data.current.some((item) => !item.settled))) return data
         if (data.affectedSetChanged) throw new Error('The affected Run set changed. Retained commands will not Stop any newly discovered Run.')
         if (data.current.some((item) => !item.settled) && !allowStop) throw new Error('Affected Runs require explicit Stop-and-save confirmation. The staged edits are retained; no Stop was sent.')
         if (data.current.some((item) => !item.settled) && !data.canStop) throw new Error('Stop permission is missing for one or more affected Runs. The exact staged edits remain retained.')
@@ -253,6 +257,7 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
     sameDisplayedPayload: !intent || sameExecutableWorkflow(edit.graph, intent.stagedDraft.graph)
       && sameWorkflowValue(referencedAgentEdits(edit.graph, edit.agentEdits),
         Object.fromEntries((intent.stagedDraft.stagedAgents ?? []).map((item) => [item.agent.id, item.agent]))),
+    save: () => mutation.mutateAsync({ action: 'save' }),
     advance: (allowStop = false) => mutation.mutateAsync({ action: 'advance', allowStop }),
     discard: () => mutation.mutateAsync({ action: 'discard' }),
   }

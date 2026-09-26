@@ -54,7 +54,11 @@ const edit = () => useGraphDraftStore.getState().nextDrafts[key]!
 const saveButton = () => screen.getByRole('button', { name: /^Save changes$/ })
 async function saveWithStop(user: ReturnType<typeof userEvent.setup>) {
   await user.click(saveButton())
-  await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Stop runs and save' }))
+  const dialog = await screen.findByRole('alertdialog', { name: 'Stop running work and save?' })
+  expect(nextDraftApi.editAdvance).not.toHaveBeenCalled()
+  expect(dialog).toHaveTextContent('1 affected Run requires Stop or cleanup across 1 workflow.')
+  expect(readEditOutbox(key)?.request).toEqual(vi.mocked(nextDraftApi.editStage).mock.calls.at(-1)![0])
+  await user.click(within(dialog).getByRole('button', { name: 'Stop runs and save' }))
 }
 
 
@@ -153,8 +157,11 @@ describe('NIM-2644 typed-board cross-tab stale revision fence', () => {
     expect(edit().context.draft.revision).toBe(10)
     expect(edit().graph.nodes[0]?.initialPrompt).toBe('marker B')
 
-    await saveWithStop(user)
+    // A stale Stage rejects before any affected-set confirmation or Stop.
+    await user.click(saveButton())
     await waitFor(() => expect(stage).toHaveBeenCalledOnce())
+    await screen.findByText('Changes were not saved.')
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     expect(stage.mock.calls[0]![0].expectedRevision).toBe(10)
     expect(advance).not.toHaveBeenCalled()
     expect(readEditOutbox(key)).toBeUndefined()
@@ -173,7 +180,10 @@ describe('NIM-2644 typed-board cross-tab stale revision fence', () => {
 
     act(() => useGraphDraftStore.getState().updateNextDraft(key, (current) => mark(current, 'marker B corrected')))
     await saveWithStop(user)
-    await waitFor(() => expect(stage).toHaveBeenCalledTimes(2))
+    // Rejected stale Stage, corrected Stage, exact confirmation replay.
+    await waitFor(() => expect(stage).toHaveBeenCalledTimes(3))
+    expect(stage.mock.calls[2]![0]).toEqual(stage.mock.calls[1]![0])
+    expect(stage.mock.calls[1]![0].commandId).not.toBe(stage.mock.calls[0]![0].commandId)
     expect(stage.mock.calls[1]![0].expectedRevision).toBe(11)
     await waitFor(() => expect(advance).toHaveBeenCalledOnce())
     expect(boardStartClient.start).not.toHaveBeenCalled()
