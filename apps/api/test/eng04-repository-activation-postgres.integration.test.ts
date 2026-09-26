@@ -50,7 +50,9 @@ describe.skipIf(!postgresEnabled)('ENG04 repository activation PostgreSQL bounda
    * SQL fixture setup is not the authenticated admission service under test. */
   async function canonicalFixture() {
     const t = await fixture(), owner = await own(t.run.id)
-    const occurrence = makeRepeatOccurrence(t.scope, t.version.definition.repeat.blocks[0]!, freezeRepeatEntry(t.run.input, []), null)
+    const block = t.version.definition.repeat?.blocks[0]
+    if (!block) throw new Error('The published fixture must contain its explicit repeat block')
+    const occurrence = makeRepeatOccurrence(t.scope, block, freezeRepeatEntry(t.run.input, []), null)
     const ref = { nodeId: t.version.entryNodeId, occurrence: occurrence.occurrence.identity }
     const candidate = HarnessExecutionSchema.parse({ ...candidateFor(t.f), id: `execution-${randomUUID()}` })
     const bound = bindRepeatNodeInput({ version: t.version, runInput: t.run.input, recipient: candidate, ref,
