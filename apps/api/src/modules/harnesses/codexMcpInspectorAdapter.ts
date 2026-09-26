@@ -25,6 +25,7 @@ export function codexMcpInspectorAdapter(manager: CodexMcpConfigurationInspector
           inspectedAt: new Date().toISOString(),
           entry: {
             name: result.serverName,
+            automaticWorkerEndpoint: result.configured.automaticWorkerEndpoint === true,
             transport: result.configured.transport === 'streamable_http'
               ? 'streamable-http'
               : result.configured.transport,

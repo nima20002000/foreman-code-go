@@ -1,5 +1,6 @@
 import { readRuntimeIdentity } from './infrastructure/runtimeIdentity.js'
 import { fileURLToPath } from 'node:url'
+import { WorkerMcpRoutes } from './modules/harnesses/workerMcpRoutes.js'
 import { OperatorMcpRoutes } from './modules/harnesses/operatorMcpRoutes.js'
 import { registerApprovalCheckpointResume } from './modules/runs/approvalCheckpointRegistration.js'
 import { isDeepStrictEqual } from 'node:util'
@@ -113,6 +114,7 @@ export function buildProductionApp(
     : config.host === '::' || config.host === '::1' ? '[::1]' : config.host
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/tools`
   const operatorMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/operator`
+  const workerRoutes = new WorkerMcpRoutes(database.pool, appMcpEndpoint)
   const operatorRoutes = new OperatorMcpRoutes(database.pool, operatorMcpEndpoint)
   const harnessSettings = {
     directories: new HarnessDirectoryBrowser([projectRoot], database.pool),
@@ -169,7 +171,9 @@ export function buildProductionApp(
       const detection = new McpDetectionService(inspectorFor(manager), appMcpEndpoint)
       const launch = new WorkerLaunchCredentialService(detection, credentials, run.executionLocation.runnerId)
       try {
-        return await launch.prepare(input)
+        const prepared = await launch.prepare(input)
+        try { await workerRoutes.refresh() } catch (error) { await credentials.revoke(prepared.credential); throw error }
+        return prepared
       } catch (error) {
         // A model-free OpenCode preflight may have started its owned server.
         // Never retain that unauthenticated process after rejected issuance.
@@ -182,7 +186,11 @@ export function buildProductionApp(
     revokeForExecution: (executionId) => credentials.revokeForExecution(executionId),
     revokeForRun: (runId, client) => credentials.revokeForRun(runId, client),
     reconcileTerminalCredentials: () => credentials.reconcileTerminalCredentials(),
-    renew: (executionId, credential) => credentials.renewForExecution(executionId, credential),
+    renew: async (executionId, credential) => {
+      const expiresAt = await credentials.renewForExecution(executionId, credential)
+      await workerRoutes.refresh()
+      return expiresAt
+    },
   }
   const approvals = new ApprovalExecutionCoordinator(
     runs, repository, budgets, managers, config.harnesses.timeoutMs, launchCredentials, validateContinuation,
@@ -336,6 +344,7 @@ export function buildProductionApp(
       { name: 'reconciliation', run: () => reconciliation },
     ],
     dispose: [
+      { name: 'Worker MCP routes', run: () => workerRoutes.close() },
       { name: 'Operator MCP routes', run: () => operatorRoutes.close() },
       { name: 'execution native managers', run: async () => {
         // Ordinary restart must persist the exact retained Worker/reviewer
@@ -393,6 +402,7 @@ export function buildProductionApp(
       }
       await chatAuthority.revokeOrphanedCredentials()
       await operatorRoutes.refresh()
+      await workerRoutes.refresh()
       assertOpen()
       await harnessSettings.mcp.recover()
       assertOpen()
@@ -417,6 +427,7 @@ export function buildProductionApp(
       if (closing) return
       if (initialized) {
         await operatorRoutes.refresh()
+        await workerRoutes.refresh()
         if (closing) return
         await chat.reconcileActive()
         if (closing) return

@@ -15,7 +15,7 @@ const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:
 const clients: Client[] = []
 afterEach(async () => { for (const client of clients.splice(0)) await client.close() })
 
-it('requests exact Operator and Linear presets through authenticated MCP, then applies and reads back both harnesses', async () => {
+it('requests exact Operator, Worker, and Linear presets through authenticated MCP, then applies and reads back both harnesses', async () => {
   const admin = new pg.Pool({ connectionString })
   const schema = `managed_mcp_${randomUUID().replaceAll('-', '')}`
   await admin.query(`create schema "${schema}"`)
@@ -30,7 +30,7 @@ it('requests exact Operator and Linear presets through authenticated MCP, then a
       const user = { ...snapshot.user }
       if (next) user[change.name] = next; else delete user[change.name]
       snapshots[harness] = { ...snapshot, user, effective: structuredClone(user), revision: fingerprint(user),
-        credentialReferences: user['graphql-operator'] ? { 'graphql-operator': 'GRAPHQL_OPERATOR_MCP_TOKEN' } : {} }
+        credentialReferences: { ...(user['graphql-operator'] ? { 'graphql-operator': 'GRAPHQL_OPERATOR_MCP_TOKEN' } : {}), ...(user['graphql-app'] ? { 'graphql-app': 'GRAPHQL_APP_MCP_TOKEN' } : {}) } }
     },
   })
   const adapters = { codex: adapter('codex'), opencode: adapter('opencode') }
@@ -62,7 +62,7 @@ it('requests exact Operator and Linear presets through authenticated MCP, then a
     const listed = async (harness: 'codex' | 'opencode') => HarnessMcpListResultSchema.parse(
       (await client.callTool({ name: 'harness_mcp_servers_list', arguments: { harness } })).structuredContent)
     for (const harness of ['codex', 'opencode'] as const) {
-      for (const preset of ['operator', 'linear'] as const) {
+      for (const preset of ['operator', 'worker', 'linear'] as const) {
         const before = await listed(harness)
         expect(before.presets?.[preset]).toBe('missing')
         const args = { harness, preset, installed: true, expectedRevision: before.revision, commandId: randomUUID() }
@@ -79,11 +79,11 @@ it('requests exact Operator and Linear presets through authenticated MCP, then a
         expect(HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_change_get', arguments: { planId: applied.id } })).structuredContent).status).toBe('applied')
         const installedList = await listed(harness)
         expect(installedList.presets?.[preset]).toBe('installed')
-        expect(installedList.servers.find((server) => server.name === (preset === 'operator' ? 'graphql-operator' : 'linear'))?.endpoint)
-          .toBe(preset === 'operator' ? undefined : 'https://mcp.linear.app/mcp/readonly')
+        expect(installedList.servers.find((server) => server.name === (preset === 'operator' ? 'graphql-operator' : preset === 'worker' ? 'graphql-app' : 'linear'))?.endpoint)
+          .toBe(preset !== 'linear' ? undefined : 'https://mcp.linear.app/mcp/readonly')
         if (preset === 'operator') expect(installedList.servers.find((server) => server.name === 'graphql-operator')?.transport).toBe('stdio')
         if (preset === 'operator') expect(JSON.stringify((await listed(harness)).servers)).not.toContain('GRAPHQL_OPERATOR_MCP_TOKEN')
-        const name = preset === 'operator' ? 'graphql-operator' : 'linear'
+        const name = preset === 'operator' ? 'graphql-operator' : preset === 'worker' ? 'graphql-app' : 'linear'
         const original = structuredClone(snapshots[harness].user[name])
         for (const enabled of [false, true]) {
           const toggle = { harness, preset, enabled, expectedRevision: (await listed(harness)).revision, commandId: randomUUID() }
@@ -111,4 +111,4 @@ it('requests exact Operator and Linear presets through authenticated MCP, then a
     await mcp.shutdown(); await app.close(); await pool.end()
     await admin.query(`drop schema if exists "${schema}" cascade`); await admin.end()
   }
-})
+}, 30_000)

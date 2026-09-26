@@ -1,3 +1,4 @@
+import { installWorkerLauncher } from './workerMcpLauncher.js'
 import { installOperatorLauncher } from './operatorMcpLauncher.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { lstat, open, realpath, rename, rm } from 'node:fs/promises'
@@ -50,16 +51,17 @@ export class OpenCodeMcpConnections implements NativeMcpAdapter {
     const userConfig = source.trim() ? parseConfigObject(source) : {}
     const user = record(userConfig.mcp)
     const credentialReferences: Record<string, string> = {}
-    if (Object.hasOwn(user, 'graphql-operator') && Object.hasOwn(effective, 'graphql-operator')) {
+    for (const [name, credential] of [['graphql-operator', 'GRAPHQL_OPERATOR_MCP_TOKEN'], ['graphql-app', 'GRAPHQL_APP_MCP_TOKEN']] as const) {
+      if (!Object.hasOwn(user, name) || !Object.hasOwn(effective, name)) continue
       const evidence = await inspectOpenCodeMcpConfiguration({ binary: this.binary, workingDirectory: this.directory,
-        serverName: 'graphql-operator', credentialEnvironmentVariable: 'GRAPHQL_OPERATOR_MCP_TOKEN', signal })
-      const entry = record(effective['graphql-operator'])
+        serverName: name, credentialEnvironmentVariable: credential, signal })
+      const entry = record(effective[name])
       if (!evidence || evidence.endpoint !== entry.url
         || (evidence.transport === 'streamable-http') !== (entry.type === 'remote')
         || evidence.enabled !== (entry.enabled !== false)) {
         throw new DomainError('REVISION_CONFLICT', 'OpenCode configuration changed while credential provenance was inspected.', 409)
       }
-      if (evidence.credentialEnvironmentVariable) credentialReferences['graphql-operator'] = evidence.credentialEnvironmentVariable
+      if (evidence.credentialEnvironmentVariable) credentialReferences[name] = evidence.credentialEnvironmentVariable
     }
     const sources = await inspectOpenCodeMcpSources(this.directory, configDirectory, file, user, signal)
     const confirmedSources = await inspectOpenCodeMcpSources(this.directory, configDirectory, file, user, signal)
@@ -97,6 +99,7 @@ export class OpenCodeMcpConnections implements NativeMcpAdapter {
         if (fingerprint(await this.contents(current.file)) !== current.version) throw new DomainError('REVISION_CONFLICT', 'A native editor changed this file. Nothing was overwritten.', 409)
         // The backup and temporary file are not a delivered configuration change.
         writing()
+        if (managed?.preset === 'worker' && change.kind === 'add') await installWorkerLauncher()
         if (managed?.preset === 'operator' && change.kind === 'add') await installOperatorLauncher()
         await rename(temporary, current.file)
         await syncNativeConfigDirectory(current.file)

@@ -1,3 +1,5 @@
+import { workerLauncherConnection } from '../src/modules/harnesses/workerMcpLauncher.js'
+import { nativeConnection } from '../src/modules/harnesses/nativeMcpCommon.js'
 import assert from 'node:assert/strict'
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -190,6 +192,21 @@ describe('PR #11 detection and authorization', () => {
 })
 
 describe.skipIf(process.platform === 'win32')('PR #11 provider-native resolved config protocol', () => {
+  it('proves a managed worker launcher reference without accepting a static environment value', async () => {
+    const entry = nativeConnection('opencode', workerLauncherConnection())
+    await fixture({ mcp: { 'graphql-app': entry } }, async (binary, workingDirectory) => {
+      const proof = await inspectOpenCodeMcpConfiguration({ binary, workingDirectory, serverName: 'graphql-app' })
+      assert.equal(proof?.automaticWorkerEndpoint, true)
+      assert.equal(proof?.credentialEnvironmentVariable, 'GRAPHQL_APP_MCP_TOKEN')
+      assert.equal(proof?.transport, 'stdio')
+    })
+    await fixture({ mcp: { 'graphql-app': { ...entry, environment: { GRAPHQL_APP_MCP_TOKEN: 'static' } } } }, async (binary, workingDirectory) => {
+      const proof = await inspectOpenCodeMcpConfiguration({ binary, workingDirectory, serverName: 'graphql-app' })
+      assert.equal(proof?.automaticWorkerEndpoint, undefined)
+      assert.equal(proof?.credentialEnvironmentVariable, undefined)
+    })
+  })
+
   it('proves the exact documented Authorization environment reference after substitution', async () => {
     await fixture({ mcp: { 'graphql-app': { type: 'remote', url: endpoint, oauth: false, headers: { Authorization: 'Bearer {env:GRAPHQL_APP_MCP_TOKEN}' } } } }, async (binary, workingDirectory) => {
       const entry = await inspectOpenCodeMcpConfiguration({ binary, workingDirectory, serverName: 'graphql-app' })

@@ -683,6 +683,11 @@ export const migrations = [
     create index workflows_workspace_id_page_idx on workflows (workspace_id, id);
   ` },
   installationIdentityMigration,
+  { version: 264404, sql: `
+    alter table harness_mcp_change_plans drop constraint harness_mcp_change_plans_managed_preset_check;
+    alter table harness_mcp_change_plans add constraint harness_mcp_change_plans_managed_preset_check
+      check (managed_preset in ('operator', 'worker', 'linear'));
+  ` },
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
