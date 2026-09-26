@@ -2,25 +2,25 @@ import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { ManagementActionSchema, type ManagementGrant } from '@graphql/contracts/management'
 import {
-  AcceptedRepeatStartV1Schema, AcceptedWorkflowRunV3Schema, RepeatSaveResultSchema, WorkflowVersionV2Schema,
-  type RepeatGraphScopeV3, type RepeatSaveInput, type RepeatSavedWorkflow,
+  AcceptedRepeatStartV1Schema, AcceptedWorkflowRunV3Schema, CurrentWorkflowSaveResultSchema, WorkflowVersionV3Schema,
+  type RepeatGraphScopeV3, type CurrentWorkflowSaveInput, type CurrentWorkflowSavedSchema, type makeCurrentWorkflowFixture,
 } from '@graphql/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
-import { createRepeatServices } from '../src/modules/repeats/composition.js'
+import { WorkflowManagementService } from '../src/modules/workflows/management.js'
+import type { z } from 'zod'
 import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
 import { insertRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
-import type { Agent3Fixture } from './helpers/wave25Agent3.js'
+type Agent3Fixture = ReturnType<typeof makeCurrentWorkflowFixture>
+type RepeatSavedWorkflow = z.infer<typeof CurrentWorkflowSavedSchema>
 
-/** Put the repeat-only executable changes in a real semantics-2 immutable base
- * before seedAgent3 persists it. The typed repeat writer is intentionally not
- * allowed to smuggle these non-repeat changes into the v3 publication. */
+/** Prepare a current V3 graph for an explicit bounded repeat publication. */
 export function repeatReadyAgent3Fixture(fixture: Agent3Fixture): Agent3Fixture {
   const entry = fixture.version.definition.nodes[0]!, exit = fixture.version.definition.nodes[1]!
-  fixture.version = WorkflowVersionV2Schema.parse({ ...fixture.version, definition: { ...fixture.version.definition,
+  fixture.version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: { ...fixture.version.definition,
     executionPolicy: { maxParallelism: 1, maxNodeExecutions: 6 }, nodes: [entry, { ...exit, choice: { outcomes: [
       { outcome: 'pass', target: { kind: 'branch_end' } }, { outcome: 'issues', target: { kind: 'branch_end' } },
     ] } }],
@@ -39,7 +39,7 @@ export async function createRepeatFixtureWriter(pool: pg.Pool, fixture: Agent3Fi
   const writer = await credential([{ actions: ['capabilities:read'], scope: {} }, {
     actions: ManagementActionSchema.options.filter((action) => action !== 'capabilities:read'), scope: grantScope,
   }])
-  const repeats = createRepeatServices(pool, commands)
+  const workflows = new WorkflowManagementService(pool, commands)
 
   async function publish(maxOccurrences = 3): Promise<RepeatSavedWorkflow> {
     const head = (await pool.query<{ revision: string; current_version_id: string | null }>(
@@ -50,26 +50,28 @@ export async function createRepeatFixtureWriter(pool: pg.Pool, fixture: Agent3Fi
     const revision = Number(head.revision)
     if (!Number.isSafeInteger(revision)) throw new Error('The disposable repeat fixture has an invalid workflow revision')
     const entry = fixture.version.definition.nodes[0]!, exit = fixture.version.definition.nodes[1]!
-    const input: RepeatSaveInput = {
+    const input: CurrentWorkflowSaveInput = {
       workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId, commandId: randomUUID(),
       expectedRevision: revision, expectedWorkflowVersionId: head.current_version_id, executionSemanticsVersion: 3,
-      repeat: { contractVersion: 1, blocks: [{ id: 'repair', nodeIds: [entry.id, exit.id], entryNodeId: entry.id,
-        exitNodeId: exit.id, maxOccurrences, repeatOutcome: 'issues', earlyExitOutcome: 'pass', limitExit: { kind: 'branch_end' } }] },
+      expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
+      expectedLocationRevision: fixture.run.executionLocation.locationRevision,
+      graph: { ...fixture.version.definition, repeat: { contractVersion: 1, blocks: [{ id: 'repair', nodeIds: [entry.id, exit.id], entryNodeId: entry.id,
+        exitNodeId: exit.id, maxOccurrences, repeatOutcome: 'issues', earlyExitOutcome: 'pass', limitExit: { kind: 'branch_end' } }] } },
     }
     const app = buildApp({ readiness: { database: { ping: async () => { await pool.query('select 1') } },
       checkpoints: { ping: async () => undefined } }, operator: { access,
-      services: { commands, repeats } as OperatorServices } })
+      services: { commands, workflows } as OperatorServices } })
     await app.ready()
     try {
       const response = await app.inject({ method: 'PUT',
-        url: `/api/management/workspaces/${input.workspaceId}/workflows/${input.workflowId}/repeat`,
+        url: `/api/management/workspaces/${input.workspaceId}/workflows/${input.workflowId}/definition`,
         headers: { host: 'localhost', accept: 'application/json', authorization: `Bearer ${writer.token}` }, payload: input })
       if (response.statusCode !== 200) throw new Error(`Authenticated repeat fixture publication failed: ${response.statusCode} ${response.body}`)
-      return RepeatSaveResultSchema.parse(response.json()).value
+      return CurrentWorkflowSaveResultSchema.parse(response.json()).value
     } finally { await app.close() }
   }
 
-  return { access, commands, repeats, grantScope, credential, writer, publish }
+  return { access, commands, workflows, grantScope, credential, writer, publish }
 }
 
 /** Build the same accepted v3 Start cut used by the real admission layer, then
