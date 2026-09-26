@@ -3,20 +3,25 @@ import Fastify from 'fastify'
 import type pg from 'pg'
 import type { McpServer } from '@modelcontextprotocol/server'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { DISABLED_RUN_GRAPH_CAPABILITIES, RUN_GRAPH_MCP_TOOLS, makeWave25Fixture } from '@graphql/contracts/wave25'
+import { CANONICAL_RUN_GRAPH_MCP_TOOLS as RUN_GRAPH_MCP_TOOLS, makeCurrentWorkflowFixture, RepeatGraphSnapshotV3Schema, repeatGraphTopologyV3 } from '@graphql/contracts/wave25'
 import { registerRunGraphRoutes } from '../../src/routes/runGraph.js'
 import { registerRunGraphTools } from '../../src/mcp/operator/tools/runGraph.js'
 import type { OperatorRequestContext } from '../../src/mcp/operator/types.js'
 import { RunGraphReadService, type RunGraphReadApi } from '../../src/modules/run-graph/readService.js'
 import { RunGraphError } from '../../src/modules/run-graph/errors.js'
 
-const fixture = makeWave25Fixture('a5-transport')
+const f = makeCurrentWorkflowFixture('a5-transport')
+const fixture = { ...f, snapshot: RepeatGraphSnapshotV3Schema.parse({ kind: 'snapshot', protocolVersion: 1,
+  scope: f.scope, asOfSequence: '1', retentionFloor: '0', historyCoverage: 'from_admission',
+  topology: repeatGraphTopologyV3(f.version), state: { run: { executionState: 'queued', outcome: 'pending', stopRequested: false, cleanupPending: false, unsettledReviewCount: 0, pendingInteractionCount: 0 },
+    nodes: [], inputBindings: [], interactions: [], reviews: [], occurrences: [], executions: [], resolutions: [], results: [], bindings: [], decisions: [] } }) }
 const principal: ManagementPrincipal = { id: 'reader', name: 'Reader', audience: 'operator', expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null,
-  grants: [{ actions: ['runs:read'], scope: { workspaceIds: [fixture.scope.workspaceId] } }] }
+  grants: [{ actions: ['capabilities:read'], scope: {} }, { actions: ['runs:read'], scope: { workspaceIds: [fixture.scope.workspaceId] } }] }
 const snapshotPath = `/api/workspaces/${fixture.scope.workspaceId}/workflows/${fixture.scope.workflowId}/runs/${fixture.scope.runId}/graph/v1/snapshot`
-const query = `workflowVersionId=${fixture.scope.workflowVersionId}&executionSemanticsVersion=2`
+const query = `workflowVersionId=${fixture.scope.workflowVersionId}&executionSemanticsVersion=3`
+const disabled = new RunGraphReadService({} as pg.Pool).capabilities(principal)
 function stubReads(): RunGraphReadApi {
-  return { capabilities: () => DISABLED_RUN_GRAPH_CAPABILITIES, snapshot: vi.fn(async () => fixture.snapshot),
+  return { capabilities: () => new RunGraphReadService({} as pg.Pool, { qualifiedReads: true }).capabilities(principal), current: vi.fn(async () => ({ ...fixture.snapshot, kind: 'current' as const })), snapshot: vi.fn(async () => fixture.snapshot),
     events: vi.fn(async () => ({ kind: 'page' as const, protocolVersion: 1 as const, scope: fixture.scope,
       baseSequence: '9007199254740993', throughSequence: '9007199254740993', headSequence: '9007199254740993', retentionFloor: '0', hasMore: false, batches: [] })) }
 }
@@ -71,8 +76,8 @@ describe('A5 Operator extension callbacks', () => {
       tools.set(name, { annotations: definition.annotations, call })
     } } as unknown as McpServer
     const audit = vi.fn(async () => undefined)
-    const context = { principal, services: { commands: { recordDenied: audit } } } as unknown as OperatorRequestContext
     const reads = stubReads()
+    const context = { principal, services: { runGraph: reads, commands: { recordDenied: audit } } } as unknown as OperatorRequestContext
     registerRunGraphTools(server, context, reads)
     expect([...tools.keys()].sort()).toEqual(Object.values(RUN_GRAPH_MCP_TOOLS).sort())
     for (const tool of tools.values()) expect(tool.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false })
@@ -88,14 +93,15 @@ describe('A5 Operator extension callbacks', () => {
   })
   it('keeps reads and admission disabled by default; App, expired and revoked principals cannot discover capabilities', async () => {
     const pool = {} as pg.Pool
-    const service = new RunGraphReadService(pool, async () => { throw new Error('Disabled reader must not query') })
-    expect(service.capabilities(principal)).toEqual(DISABLED_RUN_GRAPH_CAPABILITIES)
+    const service = new RunGraphReadService(pool)
+    expect(service.capabilities(principal)).toEqual(disabled)
     await expect(service.snapshot(principal, { protocolVersion: 1, scope: fixture.scope })).rejects.toMatchObject({ code: 'GRAPH_NOT_INITIALIZED' })
     for (const denied of [{ ...principal, audience: 'worker' as const, agentId: 'agent' },
       { ...principal, expiresAt: '2000-01-01T00:00:00.000Z' }, { ...principal, revokedAt: '2026-01-01T00:00:00.000Z' }]) {
       expect(() => service.capabilities(denied)).toThrow('GRAPH_READ_ACCESS_DENIED')
     }
-    const qualified = new RunGraphReadService(pool, async () => { throw new Error('Unused assembler') }, { qualifiedReads: true })
-    expect(qualified.capabilities(principal)).toMatchObject({ admissionEnabled: true, authoringSemanticsVersions: [2], protocolVersions: [1] })
+    const qualified = new RunGraphReadService(pool, { qualifiedReads: true })
+    expect(qualified.capabilities(principal)).toMatchObject({ readSemanticsVersions: [3], protocolVersions: [1],
+      semantics3: { persistedReads: true, runtimeAdmission: false, meaningfulEdit: false } })
   })
 })

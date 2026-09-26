@@ -1,4 +1,4 @@
-import type { AgentConfigurationVersion, HarnessExecution, WorkflowRun, WorkflowVersion } from '@graphql/contracts'
+import type { AgentConfigurationVersion, HarnessExecution, WorkflowRun } from '@graphql/contracts'
 import type { WorkflowVersionV3 } from '@graphql/contracts/wave25'
 
 /** Synthetic accepted identities only. Never starts a native session. */
@@ -48,26 +48,6 @@ export function approvalFixture() {
     nativeSessionId: `session-${node.agentId}`, input: {}, state: 'waiting', createdAt,
   }))
   return { version, configurations, run, executions, createdAt }
-}
-
-export function legacyApprovalFixture(): { version: WorkflowVersion; configurations: AgentConfigurationVersion[] } {
-  const fixture = approvalFixture()
-  const v = fixture.version
-  return {
-    configurations: fixture.configurations,
-    version: {
-      id: v.id, workspaceId: v.workspaceId, workflowId: v.workflowId, version: v.version,
-      entryNodeId: v.entryNodeId, approval: v.approval, agentConfigurationVersionIds: v.agentConfigurationVersionIds,
-      contentHash: v.contentHash, createdAt: v.createdAt,
-      definition: {
-        id: v.workflowId, workspaceId: v.workspaceId, version: v.version, name: 'Legacy approval fixture',
-        approval: v.approval, executionCondition: { kind: 'manual' },
-        executionPolicy: { maxParallelism: 1, maxNodeExecutions: 2 },
-        nodes: v.definition.nodes.map((node) => ({ id: node.id, agentId: node.agentId, name: node.name })),
-        edges: [{ id: 'legacy-edge', source: 'node-reviewer', target: 'node-worker', route: { outcomes: ['succeeded'] } }],
-      },
-    },
-  }
 }
 
 export const routeDenialCases: ReadonlyArray<readonly [string, (version: WorkflowVersionV3) => void]> = [
