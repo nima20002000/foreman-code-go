@@ -31,6 +31,10 @@
     "./browser-origin": {
       "types": "./dist/browserOrigin.d.ts",
       "import": "./dist/browserOrigin.js"
+    },
+    "./runtime-identity-node": {
+      "types": "./dist/runtimeIdentityNode.d.ts",
+      "import": "./dist/runtimeIdentityNode.js"
     }
   },
   "scripts": {
