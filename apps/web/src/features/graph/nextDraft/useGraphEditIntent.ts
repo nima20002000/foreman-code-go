@@ -21,6 +21,21 @@ const readInput = (edit: NextDraftEdit) => ({ action: 'read_edits' as const, wor
 const commandInput = (intent: GraphEditIntentV3) => ({ workspaceId: intent.workspaceId, workflowId: intent.workflowId,
   draftId: intent.draftId, intentId: intent.id })
 
+const remoteLineage = (intent: GraphEditIntentV3) => ({ id: intent.id, ownerPrincipalId: intent.ownerPrincipalId,
+  stageCommandId: intent.stageCommandId, stageInputHash: intent.stageInputHash })
+const remoteAgents = (intent: GraphEditIntentV3) =>
+  Object.fromEntries((intent.stagedDraft.stagedAgents ?? []).map((item) => [item.agent.id, item.agent]))
+function remoteBaseMatches(current: NextDraftEdit, intent: GraphEditIntentV3) {
+  const draft = current.context.draft
+  return draft.workspaceId === intent.workspaceId && draft.workflowId === intent.workflowId && draft.id === intent.draftId
+    && draft.revision === intent.expectedRevision && draft.baseWorkflowVersionId === intent.expectedWorkflowVersionId
+    && intent.agentPins.every((pin) => {
+      const source = current.context.agents.find((item) => item.agent.id === pin.agentId)
+      return pin.metadataRevision === null ? !source : source?.metadataRevision === pin.metadataRevision
+        && source.agent.configurationVersionId === pin.configurationVersionId
+    })
+}
+
 /** Reconcile only authenticated terminal readback for this exact form base.
  * Persist consumption with the resulting form before exposing it to new typing;
  * the shared outbox is not a per-tab acknowledgement marker. */
@@ -36,11 +51,15 @@ export function acknowledgeEditIntentSnapshot(draftKey: string, current: NextDra
   const submittedHere = editSnapshotSubmitted(draftKey, current, intent.stageCommandId)
   const exactSubmittedForm = !!submission && sameExecutableWorkflow(current.graph, submission.target)
     && sameWorkflowValue(current.agentEdits ?? {}, submission.agentTarget ?? {})
+  const exactRemoteForm = intent.state === 'saved' && !!current.remoteEditIntent
+    && sameWorkflowValue(current.remoteEditIntent, remoteLineage(intent)) && remoteBaseMatches(current, intent)
+    && sameExecutableWorkflow(current.graph, intent.stagedDraft.graph)
+    && sameWorkflowValue(current.agentEdits ?? {}, remoteAgents(intent))
   const cleanRemoteForm = !hasLocalChanges(current.context, current.graph) && !hasAgentEdits(current)
   // A terminal command may be shared across tabs, but its saved revision is not.
   // Keep an independently-diverged unsent form pinned to its original base so
   // its next Stage receives the authoritative stale-revision conflict.
-  if (!submittedHere && !exactSubmittedForm && !cleanRemoteForm) return current
+  if (!submittedHere && !exactSubmittedForm && !cleanRemoteForm && !exactRemoteForm) return current
   let context = current.context
   if (intent.state === 'saved') {
     if (!intent.result) return current
@@ -58,10 +77,10 @@ export function acknowledgeEditIntentSnapshot(draftKey: string, current: NextDra
     ? preserveWorkflowGeometry(context.draft.graph, current.graph)
     : mergeAcknowledgement(current.graph, submission?.target ?? intent.stagedDraft.graph, context.draft.graph)
   const next = { ...current, context, graph,
-    // Never substitute normalized server Agents for a lost local submission.
-    agentEdits: acknowledgeAgentEdits(current.agentEdits, submission?.agentTarget, context,
+    // Clear only an exact local submission or an unchanged authenticated remote hydration.
+    agentEdits: acknowledgeAgentEdits(current.agentEdits, submission?.agentTarget ?? (exactRemoteForm ? remoteAgents(intent) : undefined), context,
       intent.state === 'discarded' ? graph : undefined),
-    error: undefined, validation: undefined }
+    remoteEditIntent: undefined, error: undefined, validation: undefined }
   storeEditSnapshot(draftKey, next, intent.stageCommandId)
   return next
 }
@@ -127,15 +146,16 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
       const submission = readEditSubmission(draftKey, intent)
       const submittedGraph = submission?.target ?? intent.stagedDraft.graph
       const submittedAgents = submission ? submission.agentTarget
-        : Object.fromEntries((intent.stagedDraft.stagedAgents ?? []).map((item) => [item.agent.id, item.agent]))
+        : remoteAgents(intent)
       hydrated.current = intent.id
       // Fresh/reopened clean boards show the exact private payload. Never
       // overwrite another tab's/newer unsent form or replace its revision base.
       if (!hasLocalChanges(current.context, current.graph) && !hasAgentEdits(current)
-        && current.context.draft.id === intent.draftId && current.context.draft.revision === intent.expectedRevision) {
+        && remoteBaseMatches(current, intent)) {
         useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state,
           graph: preserveWorkflowGeometry(submittedGraph, state.graph),
           agentEdits: submittedAgents,
+          remoteEditIntent: submission ? undefined : remoteLineage(intent),
         }))
       }
     }

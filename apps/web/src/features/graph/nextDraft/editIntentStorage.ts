@@ -13,6 +13,8 @@ const prefix = 'graph-edit-intent:'
 const SnapshotSchema = z.object({
   context: z.object({ draft: GraphDraftV3Schema, savedDraft: GraphDraftV3Schema.optional(), agents: z.array(ManagedAgentSchema) }).strict(),
   graph: LocalWorkflowFormSchema, agentEdits: z.record(z.string(), AgentSchema).optional(),
+  remoteEditIntent: z.object({ id: z.string().min(1), ownerPrincipalId: z.string().min(1),
+    stageCommandId: z.string().min(1), stageInputHash: z.string().min(1) }).strict().optional(),
   acknowledgedStageCommands: z.array(z.string()).optional(), submittedStageCommands: z.array(z.string()).optional(),
 }).strict()
 const OutboxSchema = z.object({ request: GraphEditStageInputV3Schema, target: WorkflowDefinitionV3Schema,
@@ -66,7 +68,8 @@ export function readEditSnapshot(scope: string) {
     // Copy the acknowledgement metadata with the form. A new tab must not
     // replay an old Discard against edits made after this snapshot settled.
     if (!existing) write(own, value)
-    return { context: value.context, graph: value.graph, agentEdits: value.agentEdits }
+    return { context: value.context, graph: value.graph, agentEdits: value.agentEdits,
+      ...(value.remoteEditIntent ? { remoteEditIntent: value.remoteEditIntent } : {}) }
   }
   return undefined
 }
@@ -77,6 +80,7 @@ function sameDraftBase(left: NextDraftEdit['context']['draft'], right: NextDraft
 function sameSnapshotForm(left: z.infer<typeof SnapshotSchema>, right: z.infer<typeof SnapshotSchema>) {
   return sameDraftBase(left.context.draft, right.context.draft) && sameWorkflowValue(left.context, right.context)
     && sameWorkflowValue(left.graph, right.graph) && sameWorkflowValue(left.agentEdits ?? {}, right.agentEdits ?? {})
+    && sameWorkflowValue(left.remoteEditIntent, right.remoteEditIntent)
 }
 /** Local consumption only, not server state. Scoped to this tab and form base. */
 export function editSnapshotAcknowledged(scope: string, edit: NextDraftEdit, stageCommandId: string): boolean {
@@ -90,9 +94,10 @@ export function editSnapshotSubmitted(scope: string, edit: NextDraftEdit, stageC
   return !!snapshot && sameDraftBase(snapshot.context.draft, edit.context.draft)
     && !!snapshot.submittedStageCommands?.includes(stageCommandId)
 }
-export function storeEditSnapshot(scope: string, edit: Pick<NextDraftEdit, 'context' | 'graph' | 'agentEdits'>, acknowledgedStageCommandId?: string) {
+export function storeEditSnapshot(scope: string, edit: Pick<NextDraftEdit, 'context' | 'graph' | 'agentEdits' | 'remoteEditIntent'>, acknowledgedStageCommandId?: string) {
   const value = SnapshotSchema.parse({ context: edit.context, graph: edit.graph,
-    ...(edit.agentEdits ? { agentEdits: edit.agentEdits } : {}) })
+    ...(edit.agentEdits ? { agentEdits: edit.agentEdits } : {}),
+    ...(edit.remoteEditIntent ? { remoteEditIntent: edit.remoteEditIntent } : {}) })
   assertScope(scope, value.graph.workspaceId, value.graph.id)
   assertScope(scope, value.context.draft.workspaceId, value.context.draft.workflowId)
   const id = tab(), name = key('draft', `${scope}:${id}`), previous = read(name, SnapshotSchema)

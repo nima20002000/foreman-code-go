@@ -64,15 +64,16 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext }: {
       const snapshot = readEditSnapshot(draftKey)
       const fresh = source.data && !source.isError ? source.data.draft : undefined
       // A snapshot of an older saved base is superseded when it was clean or its
-      // meaning is exactly what has since been saved.
-      const stale = snapshot && fresh && (snapshot.context.draft.baseWorkflowVersionId !== fresh.baseWorkflowVersionId
+      // meaning is exactly what has since been saved. Remote hydration waits for
+      // its exact journal result rather than substituting current mutable Agent heads.
+      const stale = snapshot && !snapshot.remoteEditIntent && fresh && (snapshot.context.draft.baseWorkflowVersionId !== fresh.baseWorkflowVersionId
         || snapshot.context.draft.publishedRevision !== fresh.publishedRevision)
         && (!hasLocalChanges(snapshot.context, snapshot.graph) || sameExecutableWorkflow(snapshot.graph, fresh.graph))
       const retained = stale ? undefined : snapshot
       if (retained) {
         useGraphDraftStore.getState().installNextDraft(draftKey, retained.context)
         useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state,
-          graph: retained.graph, agentEdits: retained.agentEdits }))
+          graph: retained.graph, agentEdits: retained.agentEdits, remoteEditIntent: retained.remoteEditIntent }))
       } else if (source.data && !source.isError) {
         useGraphDraftStore.getState().installNextDraft(draftKey, { draft: GraphDraftV3Schema.parse(source.data.draft), agents: source.data.agents, savedDraft: source.data.savedDraft })
       }
