@@ -1,0 +1,149 @@
+// @vitest-environment jsdom
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { RunActivitySchema } from '@graphql/contracts'
+import { CurrentRunDetailsSchema, RunExecutionDetailSchema } from '@graphql/contracts/wave25'
+import { currentRunKey } from './currentRunQuery'
+import { inspectionBoardFixture } from './inspect/inspectionFixtures'
+import { executionPagesKey } from './inspect/queries'
+import {
+  advanceCurrentSequence, boardHref, currentIdle, installBoardTestLifecycle, intervalTick,
+  isCurrentRequest, measureBoardWire, mountMeasuredBoard, openRunDetails, setRunState,
+  type InspectionFixture,
+} from './eng05D.testSupport'
+
+installBoardTestLifecycle()
+let fixture: InspectionFixture
+let serial = 0
+beforeEach(async () => { fixture = await inspectionBoardFixture(`eng05d-budget-${++serial}`) })
+
+async function seedLongHistory() {
+  const owner = fixture.runs.before
+  const attempts = await Promise.all(Array.from({ length: 151 }, (_, index) => fixture.execution(owner, 0, undefined, index + 1)))
+  for (const item of attempts.slice(0, -1)) {
+    item.detail = RunExecutionDetailSchema.parse({ ...item.detail,
+      execution: { ...item.detail.execution, acceptedResultAvailable: false },
+      acceptedResult: { status: 'not_accepted' },
+      reportedResult: { outcome: 'failed', error: { code: 'TEST_INTERRUPTED_ATTEMPT', message: 'Technical retry, not another repetition', retryable: true } } })
+  }
+  fixture.mock.inspection.set(owner.run.id, attempts)
+  fixture.mock.history.set(owner.run.id, Array.from({ length: 252 }, (_, sequence) => RunActivitySchema.parse({
+    id: `eng05d-event-${sequence}`, runId: owner.run.id, sequence, source: 'backend', kind: 'result_recorded',
+    occurredAt: fixture.before.createdAt, payload: { text: `Event ${sequence}: ${'bounded fixture payload '.repeat(8)}` },
+  })))
+  // Additional independent, schema-valid V3 Run records, not invented repeat rounds.
+  const originals = [...fixture.mock.runs.values()]
+  for (let index = 0; index < 61; index++) {
+    const base = originals[index % originals.length]!
+    const runId = `eng05d-history-run-${index.toString().padStart(3, '0')}`
+    fixture.mock.runs.set(runId, CurrentRunDetailsSchema.parse({ ...base, run: { ...base.run, id: runId } }))
+  }
+}
+
+function totals(samples: readonly { responseBytes: number }[]) {
+  return { requests: samples.length, bytes: samples.reduce((sum, sample) => sum + sample.responseBytes, 0) }
+}
+
+describe('ENG05-D mounted Board bounded-history wire budgets', () => {
+  it('keeps five loaded page windows off the current polling path and refreshes each from one bounded first page', async () => {
+    await seedLongHistory()
+    const scope = fixture.runs.before.scope
+    setRunState(fixture, scope, 'running')
+    const wire = measureBoardWire(fixture.mock, (request) => {
+      if (isCurrentRequest(request)) advanceCurrentSequence(fixture, scope)
+      return undefined
+    })
+    const user = userEvent.setup()
+    const { cache } = await mountMeasuredBoard(boardHref(scope))
+    const inspector = await openRunDetails()
+    await waitFor(() => expect(within(inspector).getAllByRole('listitem')).toHaveLength(25))
+    expect(within(inspector).queryByRole('combobox', { name: 'Business repetition' })).not.toBeInTheDocument()
+    expect(wire.activity()).toHaveLength(0)
+    for (let page = 2; page <= 5; page++) {
+      await user.click(within(inspector).getByRole('button', { name: 'Load more executions' }))
+      await waitFor(() => expect(within(inspector).getAllByRole('listitem')).toHaveLength(page * 25))
+    }
+    const history = screen.getByText('Run activity history').closest('details')!
+    fireEvent.click(within(history).getByText('Run activity history'))
+    await waitFor(() => expect(within(history).getAllByRole('listitem')).toHaveLength(50))
+    for (let page = 2; page <= 5; page++) {
+      await user.click(within(history).getByRole('button', { name: 'Load more activity' }))
+      await waitFor(() => expect(within(history).getAllByRole('listitem')).toHaveLength(page * 50))
+    }
+    await waitFor(() => expect(wire.runLists()).toHaveLength(1))
+    await user.click(screen.getByRole('button', { name: 'Load more Runs' }))
+    await waitFor(() => expect(wire.runLists()).toHaveLength(2))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load more Runs' })).toBeEnabled())
+
+    expect(wire.executions()).toHaveLength(5)
+    expect(wire.activity()).toHaveLength(5)
+    expect(wire.executions().map((sample) => sample.query.has('cursor'))).toEqual([false, true, true, true, true])
+    expect(wire.activity().map((sample) => sample.query.has('cursor'))).toEqual([false, true, true, true, true])
+    for (const sample of wire.executions()) {
+      expect(sample.query.get('limit')).toBe('25')
+      expect(sample.itemCount).toBe(25)
+      expect(sample.responseBytes).toBeGreaterThan(0)
+      expect(sample.responseBytes).toBeLessThan(64 * 1024)
+      // These are metadata pages, never accepted inputs/results or provider bodies.
+      expect(JSON.stringify(sample.body)).not.toMatch(/acceptedInput|nativeSession|credential|workingDirectory/)
+    }
+    for (const sample of wire.activity()) {
+      expect(sample.query.get('limit')).toBe('50')
+      expect(sample.itemCount).toBe(50)
+      expect(sample.responseBytes).toBeLessThan(64 * 1024)
+    }
+    for (const sample of wire.runLists()) {
+      expect(sample.query.get('limit')).toBe('20')
+      expect(sample.itemCount).toBeLessThanOrEqual(20)
+    }
+    const historyBefore = { executions: totals(wire.executions()), events: totals(wire.activity()), runs: totals(wire.runLists()) }
+    const retainedPages = cache.getQueryData(executionPagesKey(scope, {}))
+    const currentBefore = wire.current().length
+    for (let tick = 1; tick <= 8; tick++) {
+      await intervalTick()
+      await waitFor(() => expect(wire.current()).toHaveLength(currentBefore + tick))
+      await currentIdle(cache, currentRunKey(scope))
+    }
+    expect({ executions: totals(wire.executions()), events: totals(wire.activity()), runs: totals(wire.runLists()) }).toEqual(historyBefore)
+    expect(cache.getQueryData(executionPagesKey(scope, {}))).toBe(retainedPages)
+    expect(wire.current().slice(currentBefore).every((sample) => sample.responseBytes > 0 && sample.responseBytes < 16 * 1024)).toBe(true)
+    expect(wire.writes()).toHaveLength(0)
+
+    // Reconnect is automatic current evidence, not permission to replay five pages.
+    // Explicit refresh below must discard the old cursor chain, not refetch it.
+    await user.click(within(inspector).getByRole('button', { name: 'Refresh executions' }))
+    await waitFor(() => expect(within(inspector).getAllByRole('listitem')).toHaveLength(25))
+    expect(wire.executions()).toHaveLength(6)
+    expect(wire.executions().at(-1)!.query.has('cursor')).toBe(false)
+    await user.click(within(history).getByRole('button', { name: 'Refresh activity' }))
+    await waitFor(() => expect(within(history).getAllByRole('listitem')).toHaveLength(50))
+    expect(wire.activity()).toHaveLength(6)
+    expect(wire.activity().at(-1)!.query.has('cursor')).toBe(false)
+    await user.click(screen.getByRole('button', { name: 'Refresh Runs' }))
+    await waitFor(() => expect(wire.runLists()).toHaveLength(3))
+    expect(wire.runLists().at(-1)!.query.has('cursor')).toBe(false)
+    wire.report('mounted-151-attempts-252-events-64-runs-eight-ticks')
+  }, 30_000)
+
+  it('does not grow normal-refresh payloads when unopened lifetime history grows', async () => {
+    const scope = fixture.runs.before.scope
+    setRunState(fixture, scope, 'running')
+    const wire = measureBoardWire(fixture.mock)
+    const { cache } = await mountMeasuredBoard(boardHref(scope))
+    await currentIdle(cache, currentRunKey(scope))
+    await waitFor(() => expect(wire.current()).toHaveLength(1))
+    const bytes = wire.current()[0]!.responseBytes
+    const eventsBefore = wire.activity().length
+    await seedLongHistory()
+    // No version, topology, current cut or selection changed. Only lifetime
+    // backend collections grew, so an ordinary refresh must be byte-stable.
+    await act(async () => { await cache.invalidateQueries({ queryKey: currentRunKey(scope), exact: true }) })
+    await waitFor(() => expect(wire.current()).toHaveLength(2))
+    expect(wire.current()[1]!.responseBytes).toBe(bytes)
+    expect(wire.activity()).toHaveLength(eventsBefore)
+    expect(wire.matching((sample) => sample.query.has('cursor'))).toHaveLength(0)
+    expect(wire.writes()).toHaveLength(0)
+    wire.report('lifetime-growth-does-not-grow-current-cut')
+  }, 15_000)
+})

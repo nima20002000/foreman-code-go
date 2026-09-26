@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { RepeatGraphScopeV3Schema } from '@graphql/contracts/wave25'
 import type { ManagementAction } from '@graphql/contracts/management'
+import { ApiError } from '../../../shared/api/client'
 import { useBrowserAccessQuery } from '../../../shared/api/settingsExperience'
 import { sessionGeneration } from '../../../shared/api/sessionBoundary'
 import { useWorkflowBoard } from '../context'
@@ -37,7 +38,13 @@ function SelectedRunActions({ selection, access }: {
       }
       return value
     }, retry: false, gcTime: 0, staleTime: 1000, refetchOnWindowFocus: true, refetchOnReconnect: 'always',
-    refetchInterval: (query) => query.state.error || !query.state.data || !needsRunRefresh(query.state.data) ? false : 5000,
+    refetchInterval: (query) => {
+      // A transient read failure keeps bounded polling; authority, not-found and
+      // scope/identity failures stop until an explicit refresh.
+      const error = query.state.error
+      if (error && (!ApiError.is(error) || [401, 403, 404].includes(error.status))) return false
+      return query.state.data && needsRunRefresh(query.state.data) ? 5000 : false
+    },
     refetchIntervalInBackground: false })
   const capability = useQuery({ queryKey: actionKey(selection, 'capabilities'), enabled: allowed('runs:read'),
     queryFn: ({ signal }) => runActionsClient.capabilities({ signal }), retry: false, gcTime: 0,

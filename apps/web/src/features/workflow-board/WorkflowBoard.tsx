@@ -59,7 +59,7 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
       </div> : null}
     </div>
     <Drawer open={runsOpen} onOpenChange={setRunsOpen} title="Runs" description="Select current or past Runs in this same Board. The canvas shows the selected Run’s saved topology; draft edits never change it."
-      closeLabel="Close runs" size="lg" closeOnOutsideClick>
+      closeLabel="Close runs" size="lg" closeOnOutsideClick returnFocusRef={detailsTrigger}>
       <RunActivityPanel summaries={summaries} />
     </Drawer>
     <Dialog open={locationOpen} onOpenChange={setLocationOpen} title="Execution folder" closeLabel="Close execution folder"

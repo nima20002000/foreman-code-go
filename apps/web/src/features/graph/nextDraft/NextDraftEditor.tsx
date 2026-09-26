@@ -355,7 +355,9 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
       </>,
     }
   }
-  const errorText = edit.error ? edit.error.message : startOutbox.error ?? localError
+  const rawErrorText = edit.error ? edit.error.message : startOutbox.error ?? localError
+  // The save alert already shows the edit-intent failure; do not repeat it.
+  const errorText = rawErrorText && rawErrorText === editIntent.mutation.error?.message ? undefined : rawErrorText
   const panelTitle = panel === 'workflow' ? 'Workflow settings' : panel === 'agents' ? 'Add agent' : panel === 'readiness' ? 'Before you run' : selectedEdge ? kindName(selectedEdge.kind) : ''
   return <section className="workflow-graph board-typed-editor" aria-label="Workflow authoring">
     <div className="workflow-graph-canvas">

@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo } from 'react'
+import { memo, useMemo, useRef } from 'react'
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react'
 import type { RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
 import { Alert, Button } from '../../../shared/ui/nocturne'
@@ -40,16 +40,29 @@ export function SelectedRunCanvas({ scope }: { scope: RepeatGraphScopeV3 }) {
   const record = useSelectedRunRecord()
   const topology = useMemo(() => version ? pinnedTopology(version) : undefined, [version])
   const states = useMemo(() => pinnedNodeStates(record), [record])
-  const inspectNode = useCallback((nodeId: string) => {
-    board.selectInspection({ runNodeId: nodeId }); board.openRuns()
-  }, [board.selectInspection, board.openRuns])
-  const nodes = useMemo<RunNode[]>(() => topology?.nodes.map((node) => {
-    const state = states.get(node.id)
-    return { id: node.id, type: 'pinnedRunNode', position: node.position,
-      data: { ...node, selected: board.inspection.runNodeId === node.id, inspect: () => inspectNode(node.id),
-        recorded: !record ? 'Current status unavailable' : !state ? 'No activation in the bounded current cut' :
-          `${state.label}${state.occurrenceIndex ? ` · repetition ${state.occurrenceIndex}` : ''}${state.attempt ? ` · attempt ${state.attempt}` : ''}` } }
-  }) ?? [], [topology, states, record, board.inspection.runNodeId, inspectNode])
+  // Activity-only ticks replace the whole current record. Keep each node's data
+  // object (and its inspect callback) unless that node's own presentation changed,
+  // so React Flow does not rebuild the pinned canvas on every poll.
+  const inspectRef = useRef<(nodeId: string) => void>(() => undefined)
+  inspectRef.current = (nodeId: string) => { board.selectInspection({ runNodeId: nodeId }); board.openRuns() }
+  const previous = useRef(new Map<string, { source: unknown; selected: boolean; recorded: string; node: RunNode }>())
+  const nodes = useMemo<RunNode[]>(() => {
+    const next = new Map<string, { source: unknown; selected: boolean; recorded: string; node: RunNode }>()
+    const result = topology?.nodes.map((node) => {
+      const state = states.get(node.id)
+      const selected = board.inspection.runNodeId === node.id
+      const recorded = !record ? 'Current status unavailable' : !state ? 'No activation in the bounded current cut' :
+        `${state.label}${state.occurrenceIndex ? ` · repetition ${state.occurrenceIndex}` : ''}${state.attempt ? ` · attempt ${state.attempt}` : ''}`
+      const cached = previous.current.get(node.id)
+      const entry = cached && cached.source === node && cached.selected === selected && cached.recorded === recorded ? cached
+        : { source: node, selected, recorded, node: { id: node.id, type: 'pinnedRunNode', position: node.position,
+          data: { ...node, selected, inspect: () => inspectRef.current(node.id), recorded } } as RunNode }
+      next.set(node.id, entry)
+      return entry.node
+    }) ?? []
+    previous.current = next
+    return result
+  }, [topology, states, record, board.inspection.runNodeId])
   const edges = useMemo<Edge[]>(() => topology?.edges.map((edge) => ({
     id: edge.id, source: edge.source, target: edge.target, sourceHandle: 'out', targetHandle: 'in',
     type: 'smoothstep', label: edge.label || (edge.kind === 'approval' ? 'Approval' : 'Handoff'),

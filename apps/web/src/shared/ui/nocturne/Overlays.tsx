@@ -30,12 +30,14 @@ export interface DialogProps {
   closeLabel?: string
   dismissible?: boolean
   closeOnOutsideClick?: boolean
+  /** Focus target when the element that opened the dialog is gone on close. */
+  returnFocusRef?: RefObject<HTMLElement | null>
   initialFocusRef?: RefObject<HTMLElement | null>
   className?: string
   onAfterClose?: () => void
 }
 export function Dialog({ open, onOpenChange, title, description, children, footer, headerLeading, onKeyDownCapture, size = 'md', variant = 'dialog', dismissible = true,
-  closeOnOutsideClick = false, initialFocusRef, className, onAfterClose, side = 'end', role = 'dialog', busy = false, closeLabel = 'Close dialog' }: DialogProps) {
+  closeOnOutsideClick = false, initialFocusRef, className, onAfterClose, side = 'end', role = 'dialog', busy = false, closeLabel = 'Close dialog', returnFocusRef }: DialogProps) {
   const canDismiss = dismissible && !busy
   const ref = useRef<HTMLDialogElement>(null)
   const heading = useRef<HTMLHeadingElement>(null)
@@ -54,12 +56,18 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
       if (dialog.open) dialog.close()
       unlock()
       if (previous?.isConnected) previous.focus()
+      else returnFocusRef?.current?.focus()
     }
-  }, [open, initialFocusRef])
+  }, [open, initialFocusRef, returnFocusRef])
   if (typeof document === 'undefined') return null
   return createPortal(<dialog ref={ref} className={cx('n-theme', 'n-dialog', `n-dialog--${size}`, variant === 'drawer' && 'n-drawer', variant === 'sheet' && 'n-sheet', className)}
     role={role} aria-modal="true" aria-busy={busy || undefined} data-side={side} aria-labelledby={`${id}-title`} aria-describedby={description ? `${id}-description` : undefined}
     onKeyDownCapture={onKeyDownCapture}
+    onKeyDown={(event) => {
+      // Handle Escape explicitly rather than relying on the native cancel event.
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      event.preventDefault(); if (canDismiss) onOpenChange(false)
+    }}
     onCancel={(event) => { event.preventDefault(); if (canDismiss) onOpenChange(false) }}
     onClose={(event) => { if (!event.currentTarget.open) { if (open) onOpenChange(false); onAfterClose?.() } }}
     onPointerDown={(event) => { event.stopPropagation(); backdropDown.current = event.target === event.currentTarget }}
