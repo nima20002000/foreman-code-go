@@ -139,7 +139,8 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
   }
   const presets = servers.data?.presets
   const details = servers.data?.servers.find((server) => server.name === detailsName)
-  const detailsPreset = details?.name === 'graphql-operator' && ['installed', 'disabled'].includes(presets?.operator ?? '') ? 'operator'
+  const detailsPreset = details?.name === 'graphql-app' && ['installed', 'disabled'].includes(presets?.worker ?? '') ? 'worker'
+    : details?.name === 'graphql-operator' && ['installed', 'disabled'].includes(presets?.operator ?? '') ? 'operator'
     : details?.name === 'linear' && ['installed', 'disabled'].includes(presets?.linear ?? '') ? 'linear' : undefined
   const detailsRemovable = Boolean(details && (detailsPreset || details.editable))
   const outstanding = allPlans.filter((plan) => ['submitting', 'uncertain'].includes(plan.status)
@@ -166,15 +167,16 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
     {managed.data?.status === 'applied' ? <p role="status" className="harness-success">Connection settings saved. New sessions will use them.</p> : null}
     {feedback ? <p role="status" className="harness-success">{feedback}</p> : null}
     {presets ? <div className="harness-preset-actions" aria-label="Suggested MCP servers">
-      {(['operator', 'linear'] as const).map((preset) => {
+      {(['operator', 'worker', 'linear'] as const).map((preset) => {
         const status = presets[preset]
+        if (!status) return null
         if (status === 'installed' || status === 'disabled') return null
-        const label = preset === 'operator' ? 'Operator MCP' : 'Linear MCP'
+        const label = preset === 'operator' ? 'Operator MCP' : preset === 'worker' ? 'Worker MCP' : 'Linear MCP'
         return <div key={preset} className="harness-preset-row"><div><strong>{label}</strong>
-          <small>{status === 'missing' ? preset === 'operator' ? 'Local app tools for Operator chat.' : 'Read-only Linear connection; sign in with the harness after adding.'
+          <small>{status === 'missing' ? preset === 'operator' ? 'Local app tools for Operator chat.' : preset === 'worker' ? 'Scoped app tools for workflow agents, with automatic instance routing.' : 'Read-only Linear connection; sign in with the harness after adding.'
             : status === 'inherited' ? 'Configured outside this user profile. Edit it at its source.'
-              : preset === 'operator' ? 'Repair the endpoint or enable this entry while keeping its tool and approval policies.' : 'This is not the verified read-only preset. Conversion changes its endpoint; native sign-in remains separate.'}</small></div>
-          {status === 'missing' || (status === 'mismatch' && (preset === 'operator' || !servers.data?.servers.find((server) => server.name === 'linear')?.protected)) ? <Button size="sm" disabled={managedBusy || servers.isFetching || servers.isError} loading={managed.isPending && managed.variables?.preset === preset}
+              : preset !== 'linear' ? 'Repair the connection while keeping its tool, approval, and disabled policies.' : 'This is not the verified read-only preset. Conversion changes its endpoint; native sign-in remains separate.'}</small></div>
+          {status === 'missing' || (status === 'mismatch' && (preset !== 'linear' || !servers.data?.servers.find((server) => server.name === 'linear')?.protected)) ? <Button size="sm" disabled={managedBusy || servers.isFetching || servers.isError} loading={managed.isPending && managed.variables?.preset === preset}
             onClick={() => manage(preset, { installed: true })}>{status === 'mismatch' ? preset === 'linear' ? 'Convert to read-only' : 'Repair' : 'Add'} {label}</Button> : <StatusBadge tone="warning" label={status === 'inherited' ? 'Inherited' : 'Needs attention'} />}
         </div>
       })}
@@ -183,7 +185,7 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
     <ul className="harness-server-list">{servers.data?.servers.map((server) => {
       const status = !server.enabled ? 'Disabled'
         : server.origin === 'inherited' ? 'Inherited'
-          : (server.name === 'graphql-operator' && presets?.operator === 'mismatch') || (server.name === 'linear' && presets?.linear === 'mismatch') ? 'Needs attention' : 'Enabled'
+          : (server.name === 'graphql-app' && presets?.worker === 'mismatch') || (server.name === 'graphql-operator' && presets?.operator === 'mismatch') || (server.name === 'linear' && presets?.linear === 'mismatch') ? 'Needs attention' : 'Enabled'
       return <li key={server.name}>
         <button type="button" className="harness-server-open" aria-label={`View details for ${server.name}, ${status}`} onClick={() => setDetailsName(server.name)}>
           <span className="harness-server-symbol" aria-hidden="true">{server.transport === 'remote' ? '↗' : '⌘'}</span>
@@ -244,8 +246,8 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
         <Button disabled={managed.isPending} onClick={() => setDetailsName(undefined)}>Close</Button>
       </>}>
       {details ? <div className="harness-form-stack">
-        <StatusBadge tone={!details.enabled ? 'danger' : details.origin === 'inherited' || (details.name === 'graphql-operator' && presets?.operator === 'mismatch') || (details.name === 'linear' && presets?.linear === 'mismatch') ? 'warning' : 'success'}
-          label={!details.enabled ? 'Disabled' : details.origin === 'inherited' ? 'Inherited' : (details.name === 'graphql-operator' && presets?.operator === 'mismatch') || (details.name === 'linear' && presets?.linear === 'mismatch') ? 'Needs attention' : 'Enabled'} />
+        <StatusBadge tone={!details.enabled ? 'danger' : details.origin === 'inherited' || (details.name === 'graphql-app' && presets?.worker === 'mismatch') || (details.name === 'graphql-operator' && presets?.operator === 'mismatch') || (details.name === 'linear' && presets?.linear === 'mismatch') ? 'warning' : 'success'}
+          label={!details.enabled ? 'Disabled' : details.origin === 'inherited' ? 'Inherited' : (details.name === 'graphql-app' && presets?.worker === 'mismatch') || (details.name === 'graphql-operator' && presets?.operator === 'mismatch') || (details.name === 'linear' && presets?.linear === 'mismatch') ? 'Needs attention' : 'Enabled'} />
         <dl className="harness-change-details">
           <div><dt>Harness</dt><dd>{harness === 'codex' ? 'Codex' : 'OpenCode'}</dd></div>
           <div><dt>Native name</dt><dd><code>{details.name}</code></dd></div>

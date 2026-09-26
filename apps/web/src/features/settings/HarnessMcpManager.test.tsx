@@ -10,22 +10,22 @@ const checkedAt = '2026-09-20T00:00:00.000Z'
 const clients: QueryClient[] = []
 afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()) })
 
-it.each(['codex', 'opencode'] as const)('adds, toggles, and removes Operator and Linear MCP in %s', async (harness) => {
+it.each(['codex', 'opencode'] as const)('adds, toggles, and removes Operator, Worker, and Linear MCP in %s', async (harness) => {
   const installed = new Map<string, boolean>()
   const calls: Array<{ preset: string; installed?: boolean; enabled?: boolean }> = []
   server.use(
     http.get(`/api/management/harnesses/${harness}/mcp`, () => HttpResponse.json({ harness, revision, checkedAt, scope: 'native-user',
       servers: [...installed].map(([name, enabled]) => ({ name, transport: 'remote', label: name === 'linear' ? 'mcp.linear.app' : '127.0.0.1:3000',
         endpoint: name === 'linear' ? 'https://mcp.linear.app/mcp/readonly' : 'http://127.0.0.1:3000/mcp/operator',
-        enabled, origin: 'user', protected: name === 'graphql-operator', editable: name === 'linear' })),
-      presets: { operator: installed.has('graphql-operator') ? installed.get('graphql-operator') ? 'installed' : 'disabled' : 'missing',
+        enabled, origin: 'user', protected: name !== 'linear', editable: name === 'linear' })),
+      presets: { worker: installed.has('graphql-app') ? installed.get('graphql-app') ? 'installed' : 'disabled' : 'missing', operator: installed.has('graphql-operator') ? installed.get('graphql-operator') ? 'installed' : 'disabled' : 'missing',
         linear: installed.has('linear') ? installed.get('linear') ? 'installed' : 'disabled' : 'missing' },
     })),
     http.get(`/api/management/harnesses/${harness}/mcp/plans`, () => HttpResponse.json({ items: [] })),
     http.post('/api/management/harnesses/mcp/managed', async ({ request }) => {
       const input = await request.json() as { preset: string; installed?: boolean; enabled?: boolean }
       calls.push(input)
-      const name = input.preset === 'operator' ? 'graphql-operator' : 'linear'
+      const name = input.preset === 'operator' ? 'graphql-operator' : input.preset === 'worker' ? 'graphql-app' : 'linear'
       if (input.enabled !== undefined) installed.set(name, input.enabled)
       else if (input.installed) installed.set(name, true); else installed.delete(name)
       return HttpResponse.json({ id: crypto.randomUUID(), harness, revision, change: { kind: input.enabled !== undefined ? 'enable' : input.installed ? 'add' : 'remove', name,
@@ -35,7 +35,7 @@ it.each(['codex', 'opencode'] as const)('adds, toggles, and removes Operator and
   )
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
   render(<QueryClientProvider client={client}><HarnessMcpManager harness={harness} /></QueryClientProvider>)
-  for (const [name, label] of [['graphql-operator', 'Operator MCP'], ['linear', 'Linear MCP']] as const) {
+  for (const [name, label] of [['graphql-operator', 'Operator MCP'], ['graphql-app', 'Worker MCP'], ['linear', 'Linear MCP']] as const) {
     fireEvent.click(await screen.findByRole('button', { name: `Add ${label}` }))
     const card = await screen.findByRole('button', { name: `View details for ${name}, Enabled` })
     card.focus()
@@ -60,6 +60,7 @@ it.each(['codex', 'opencode'] as const)('adds, toggles, and removes Operator and
   }
   expect(calls.map(({ preset, installed, enabled }) => [preset, installed, enabled])).toEqual([
     ['operator', true, undefined], ['operator', undefined, false], ['operator', undefined, true], ['operator', false, undefined],
+    ['worker', true, undefined], ['worker', undefined, false], ['worker', undefined, true], ['worker', false, undefined],
     ['linear', true, undefined], ['linear', undefined, false], ['linear', undefined, true], ['linear', false, undefined],
   ])
 })

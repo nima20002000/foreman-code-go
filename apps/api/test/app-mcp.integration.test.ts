@@ -1,3 +1,9 @@
+import { copyFile, mkdtemp, rm, readdir, readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
+import { registerWorkerRoute } from '../src/modules/harnesses/workerMcpLauncher.js'
+import { WorkerMcpRoutes } from '../src/modules/harnesses/workerMcpRoutes.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { seedInteractionOwners } from './helpers/interactionOwners.js'
@@ -34,7 +40,7 @@ function structured(result: { structuredContent?: unknown }): Record<string, unk
   return result.structuredContent as Record<string, unknown>
 }
 
-describe('App MCP real transport and PostgreSQL policy', () => {
+describe.each(['http', 'launcher'] as const)('App MCP real %s transport and PostgreSQL policy', (transport) => {
   it('isolates identities, catalogs, scopes, responses, replay, revocation, and audience', async () => {
     const suffix = randomUUID()
     const schema = `app_mcp_${suffix.replaceAll('-', '')}`
@@ -151,15 +157,29 @@ describe('App MCP real transport and PostgreSQL policy', () => {
       readiness: { database, checkpoints: { ping: async () => undefined } },
       appMcp: { access, interactions: appInteractions },
     })
+    let firstRequests = 0
+    app.addHook('onRequest', async (request) => { if (request.headers.authorization === `Bearer ${token(coderCredential)}`) firstRequests++ })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
     cleanup.push(async () => { await app.close() })
 
+    const directory = await mkdtemp(join(tmpdir(), 'worker-mcp-routing-'))
+    cleanup.push(() => rm(directory, { recursive: true, force: true }))
+    const launcher = join(directory, 'launcher.mjs')
+    await copyFile(new URL('../../../scripts/worker-mcp.mjs', import.meta.url), launcher)
+    const secondApp = buildApp({ readiness: { database, checkpoints: { ping: async () => undefined } }, appMcp: { access, interactions: appInteractions } })
+    let secondRequests = 0
+    secondApp.addHook('onRequest', async (request) => { if (request.headers.authorization === `Bearer ${token(coderCredential)}`) secondRequests++ })
+    const secondAddress = await secondApp.listen({ host: '127.0.0.1', port: 0 })
+    cleanup.push(() => secondApp.close())
     const connect = async (name: string, bearer: string) => {
       const client = new Client({ name, version: '1.0.0' })
-      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/tools', address), {
+      cleanup.push(async () => client.close())
+      if (transport === 'launcher') {
+        await registerWorkerRoute(bearer, `${name === 'orchestrator' || name === 'wrong-reviewer' ? address : secondAddress}/mcp/tools`, new Date(Date.now() + 60_000).toISOString(), launcher)
+        await client.connect(new StdioClientTransport({ command: process.execPath, args: [launcher], env: { GRAPHQL_APP_MCP_TOKEN: bearer }, stderr: 'pipe' }))
+      } else await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/tools', address), {
         authProvider: { token: async () => bearer },
       }))
-      cleanup.push(async () => client.close())
       return client
     }
     const [coder, orchestrator, wrongReviewer] = await Promise.all([
@@ -168,7 +188,13 @@ describe('App MCP real transport and PostgreSQL policy', () => {
       connect('wrong-reviewer', token(wrongReviewerCredential)),
     ])
 
+    const beforeFirst = firstRequests
+    const beforeSecond = secondRequests
     const coderTools = await coder.listTools()
+    if (transport === 'launcher') {
+      expect(firstRequests).toBe(beforeFirst)
+      expect(secondRequests).toBeGreaterThan(beforeSecond)
+    }
     const orchestratorTools = await orchestrator.listTools()
     const wrongTools = await wrongReviewer.listTools()
     expect(coderTools.tools.map((tool) => tool.name)).toEqual(['context_get', 'interaction_list', 'interaction_get'])
@@ -229,6 +255,21 @@ describe('App MCP real transport and PostgreSQL policy', () => {
       [orchestratorCredential.principalId],
     )).rows[0]?.count).toBe(2)
 
+    if (transport === 'launcher') {
+      // Existing clients and tokens follow a restarted owner on a different port.
+      await app.close()
+      const routes = new WorkerMcpRoutes(database.pool, `${secondAddress}/mcp/tools`, launcher)
+      cleanup.push(() => routes.close())
+      await routes.refresh()
+      expect(structured(await orchestrator.callTool({ name: 'interaction_get', arguments: { interactionId: pending.id } })))
+        .toMatchObject({ interaction: { status: 'delivery_pending', selectedOptionId: responseInput.optionId } })
+      expect((await interactions.get(pending.id))?.selectedOptionId).toBe(responseInput.optionId)
+      for (const file of await readdir(join(directory, 'routes'))) {
+        const stored = await readFile(join(directory, 'routes', file), 'utf8')
+        expect(stored).not.toContain(token(coderCredential))
+        expect(stored).not.toContain(token(orchestratorCredential))
+      }
+    }
     await credentials.revoke(orchestratorCredential)
     await expect(orchestrator.listTools()).rejects.toThrow()
     await expect(connect('operator-wrong-audience', operatorCredential.token)).rejects.toThrow()
