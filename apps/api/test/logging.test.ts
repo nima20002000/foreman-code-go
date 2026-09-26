@@ -1,8 +1,12 @@
 import { spawn } from 'node:child_process'
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { Writable } from 'node:stream'
+import pino from 'pino'
 import { afterEach, describe, expect, it } from 'vitest'
+import { buildApp } from '../src/app.js'
+import { pruneLogFiles } from '../src/infrastructure/logger.js'
 
 const api = resolve(import.meta.dirname, '..')
 const temps: string[] = []
@@ -73,5 +77,39 @@ describe('API logging', () => {
     expect(written).toContain('"level":"fatal"')
     expect(written).toContain('file boom')
     expect(written).toContain('"msg":"process exiting"')
+  })
+})
+
+describe('log retention and noise', () => {
+  it('prunes only its own rotated files, by age and then by count', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'api-prune-')); temps.push(dir)
+    const now = Date.now(), day = 86_400_000
+    const files = { 'api.1.log': 20, 'api.2.log': 3, 'api.3.log': 2, 'api.4.log': 1, 'api.5.log': 0, 'other.1.log': 40, 'api.log.bak': 40 }
+    for (const [name, age] of Object.entries(files)) {
+      await writeFile(join(dir, name), 'x')
+      await utimes(join(dir, name), (now - age * day) / 1000, (now - age * day) / 1000)
+    }
+    const removed = await pruneLogFiles(join(dir, 'api.log'), 3, 14, now)
+    expect(removed.sort()).toEqual(['api.1.log', 'api.2.log'])
+    expect((await readdir(dir)).sort()).toEqual(['api.3.log', 'api.4.log', 'api.5.log', 'api.log.bak', 'other.1.log'])
+  })
+
+  it('keeps routine requests at debug and surfaces failures, without query strings', async () => {
+    const lines: Record<string, unknown>[] = []
+    const sink = new Writable({ write(chunk, _encoding, done) { lines.push(JSON.parse(String(chunk)) as Record<string, unknown>); done() } })
+    const app = buildApp({ logger: pino({ level: 'debug' }, sink), readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } } })
+    app.get('/boom', async () => { throw new Error('boom') })
+    try {
+      await app.inject({ method: 'GET', url: '/health/live?token=abc' })
+      await app.inject({ method: 'GET', url: '/missing' })
+      await app.inject({ method: 'GET', url: '/boom' })
+    } finally { await app.close() }
+    const completed = lines.filter((line) => line.msg === 'request completed')
+    expect(completed.map((line) => [line.level, line.path, line.statusCode])).toEqual([
+      [20, '/health/live', 200], [30, '/missing', 404], [50, '/boom', 500]])
+    // The 500 keeps its error and stack (the app's error handler) with Fastify's own request lines off.
+    expect(lines.find((line) => line.msg === 'The API could not complete the request.')).toMatchObject({ level: 50, err: { message: 'boom' } })
+    expect(JSON.stringify(lines)).not.toContain('token=abc')
+    expect(lines.some((line) => line.msg === 'incoming request')).toBe(false)
   })
 })

@@ -5,7 +5,7 @@ import {
   ServiceHealthSchema,
   type ServiceHealth,
 } from '@graphql/contracts'
-import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify'
+import Fastify, { LogController, type FastifyBaseLogger, type FastifyInstance } from 'fastify'
 import { localhostHostValidation, localhostOriginValidation } from '@modelcontextprotocol/fastify'
 import type pg from 'pg'
 import { z } from 'zod'
@@ -81,6 +81,8 @@ function createDependencyCheck(
   }
 }
 
+const SLOW_REQUEST_MS = 2000
+
 export function buildApp(options: BuildAppOptions): FastifyInstance {
   const timeoutMs = options.readinessTimeoutMs ?? 2000
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) {
@@ -91,6 +93,15 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       ? { loggerInstance: options.logger }
       : { logger: options.logger ?? false }),
     genReqId: () => randomUUID(),
+    // Fastify's per-request lines are replaced by one line whose level says whether it matters.
+    logController: new LogController({ disableRequestLogging: true }),
+  })
+  app.addHook('onResponse', async (request, reply) => {
+    const statusCode = reply.statusCode, responseTimeMs = Math.round(reply.elapsedTime)
+    // Routine success (the Board polls every 1.5s) is debug; failures and slow calls stay visible.
+    const level = statusCode >= 500 ? 'error' : responseTimeMs >= SLOW_REQUEST_MS ? 'warn' : statusCode >= 400 ? 'info' : 'debug'
+    // The path without its query string: queries can carry codes and tokens.
+    request.log[level]({ method: request.method, path: request.url.split('?')[0], statusCode, responseTimeMs }, 'request completed')
   })
   if (options.operator || options.appMcp) {
     app.addHook('onRequest', localhostHostValidation())
